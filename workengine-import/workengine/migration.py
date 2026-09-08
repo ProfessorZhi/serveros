@@ -18,6 +18,10 @@ class MigrationError(ValueError):
 
 
 def path_sha256(path: Path) -> str:
+    return _path_sha256_excluding(path, ())
+
+
+def _path_sha256_excluding(path: Path, excluded: tuple[Path, ...]) -> str:
     if path.is_symlink():
         raise MigrationError(f"symlink sources are not supported: {path}")
     digest = hashlib.sha256()
@@ -26,10 +30,13 @@ def path_sha256(path: Path) -> str:
         return digest.hexdigest()
     if not path.is_dir():
         raise MigrationError(f"source does not exist: {path}")
-    symlink = next((p for p in path.rglob("*") if p.is_symlink()), None)
+    def is_excluded(candidate: Path) -> bool:
+        return any(candidate == item or item in candidate.parents for item in excluded)
+
+    symlink = next((p for p in path.rglob("*") if p.is_symlink() and not is_excluded(p)), None)
     if symlink is not None:
         raise MigrationError(f"symlink sources are not supported: {symlink}")
-    for child in sorted(p for p in path.rglob("*") if p.is_file()):
+    for child in sorted(p for p in path.rglob("*") if p.is_file() and not is_excluded(p)):
         digest.update(child.relative_to(path).as_posix().encode())
         digest.update(b"\0")
         digest.update(child.read_bytes())
@@ -92,7 +99,7 @@ class MigrationManager:
     def _validate(self, manifest: dict) -> None:
         if not manifest.get("project") or not isinstance(manifest.get("operations"), list):
             raise MigrationError("manifest requires project and operations")
-        seen_targets: set[Path] = set()
+        seen_targets: list[tuple[Path, Path]] = []
         for index, operation in enumerate(manifest["operations"]):
             if operation.get("type") != "move":
                 raise MigrationError(f"operation {index}: unsupported type")
@@ -102,9 +109,16 @@ class MigrationManager:
                 raise MigrationError(f"operation {index}: paths must be absolute")
             if source == target or source in target.parents or target in source.parents:
                 raise MigrationError(f"operation {index}: overlapping source and target")
-            if target in seen_targets:
+            if any(target == prior_target for _, prior_target in seen_targets):
                 raise MigrationError(f"operation {index}: duplicate target")
-            seen_targets.add(target)
+            for prior_source, prior_target in seen_targets:
+                if target in prior_target.parents:
+                    raise MigrationError(f"operation {index}: ancestor target must be earlier")
+                if prior_target in target.parents:
+                    relative = target.relative_to(prior_target)
+                    if (prior_source / relative).exists():
+                        raise MigrationError(f"operation {index}: nested target would overwrite parent source content")
+            seen_targets.append((source, target))
             if target.exists():
                 raise MigrationError(f"operation {index}: target already exists: {target}")
             actual = path_sha256(source)
@@ -185,10 +199,16 @@ class MigrationManager:
     def verify(self, project: str) -> dict:
         intent = self.inspect(project)
         failures = []
-        for index, operation in enumerate(intent["manifest"]["operations"]):
+        operations = intent["manifest"]["operations"]
+        for index, operation in enumerate(operations):
             source = Path(operation["source"])
             target = Path(operation["target"])
-            if source.exists() or not target.exists() or path_sha256(target) != operation["sha256"]:
+            nested_targets = tuple(
+                later_target
+                for later in operations[index + 1 :]
+                if target in (later_target := Path(later["target"])).parents
+            )
+            if source.exists() or not target.exists() or _path_sha256_excluding(target, nested_targets) != operation["sha256"]:
                 failures.append(index)
         return {"project": project, "status": "PASS" if not failures else "FAIL", "failures": failures}
 

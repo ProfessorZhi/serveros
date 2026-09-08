@@ -112,6 +112,47 @@ class MigrationManagerTest(unittest.TestCase):
             with self.assertRaisesRegex(MigrationError, "symlink"):
                 manager.plan({"project": "demo", "operations": [{"type": "move", "source": str(source), "target": str(root / "target")}]})
 
+    def test_verify_allows_later_operation_to_add_a_new_nested_target(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            tree = root / "old-tree"
+            tree.mkdir()
+            (tree / "original").write_text("one", encoding="utf-8")
+            extra = root / "extra"
+            extra.write_text("two", encoding="utf-8")
+            target = root / "new-tree"
+            manager = MigrationManager(ServerOSStore(root / "state"))
+            manager.plan({
+                "project": "demo",
+                "operations": [
+                    {"type": "move", "source": str(tree), "target": str(target)},
+                    {"type": "move", "source": str(extra), "target": str(target / "added" / "extra")},
+                ],
+            })
+
+            manager.apply("demo")
+
+            self.assertEqual(manager.verify("demo")["status"], "PASS")
+
+    def test_plan_rejects_nested_target_before_its_parent(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            tree = root / "old-tree"
+            tree.mkdir()
+            extra = root / "extra"
+            extra.write_text("two", encoding="utf-8")
+            target = root / "new-tree"
+            manager = MigrationManager(ServerOSStore(root / "state"))
+
+            with self.assertRaisesRegex(MigrationError, "ancestor target must be earlier"):
+                manager.plan({
+                    "project": "demo",
+                    "operations": [
+                        {"type": "move", "source": str(extra), "target": str(target / "added")},
+                        {"type": "move", "source": str(tree), "target": str(target)},
+                    ],
+                })
+
 
 if __name__ == "__main__":
     unittest.main()
