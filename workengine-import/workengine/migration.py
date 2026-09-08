@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import hashlib
+import errno
 import json
 import os
+import shutil
 from pathlib import Path
 
 from .model import now_iso
@@ -16,18 +18,71 @@ class MigrationError(ValueError):
 
 
 def path_sha256(path: Path) -> str:
+    if path.is_symlink():
+        raise MigrationError(f"symlink sources are not supported: {path}")
     digest = hashlib.sha256()
     if path.is_file():
         digest.update(path.read_bytes())
         return digest.hexdigest()
     if not path.is_dir():
         raise MigrationError(f"source does not exist: {path}")
-    for child in sorted(p for p in path.rglob("*") if p.is_file() and not p.is_symlink()):
+    symlink = next((p for p in path.rglob("*") if p.is_symlink()), None)
+    if symlink is not None:
+        raise MigrationError(f"symlink sources are not supported: {symlink}")
+    for child in sorted(p for p in path.rglob("*") if p.is_file()):
         digest.update(child.relative_to(path).as_posix().encode())
         digest.update(b"\0")
         digest.update(child.read_bytes())
         digest.update(b"\0")
     return digest.hexdigest()
+
+
+def _remove_path(path: Path) -> None:
+    if path.is_dir():
+        shutil.rmtree(path)
+    else:
+        path.unlink()
+
+
+def _fsync_path(path: Path) -> None:
+    """Flush a copied tree before publishing it with an atomic rename."""
+    if path.is_dir():
+        for child in (p for p in path.rglob("*") if p.is_file()):
+            with child.open("rb") as handle:
+                os.fsync(handle.fileno())
+    else:
+        with path.open("rb") as handle:
+            os.fsync(handle.fileno())
+    descriptor = os.open(path.parent, os.O_RDONLY)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
+def _move_verified(source: Path, target: Path, expected: str) -> None:
+    """Move a path, using copy-verify-publish-remove when EXDEV is raised."""
+    try:
+        os.rename(source, target)
+        return
+    except OSError as exc:
+        if exc.errno != errno.EXDEV:
+            raise
+
+    temporary = target.with_name(f".{target.name}.serveros-migrate-{expected[:12]}.tmp")
+    if temporary.exists():
+        if path_sha256(temporary) != expected:
+            _remove_path(temporary)
+    if not temporary.exists():
+        if source.is_dir():
+            shutil.copytree(source, temporary)
+        else:
+            shutil.copy2(source, temporary)
+    if path_sha256(temporary) != expected:
+        raise MigrationError(f"cross-device copy hash mismatch: {source}")
+    _fsync_path(temporary)
+    os.rename(temporary, target)
+    _remove_path(source)
 
 
 class MigrationManager:
@@ -102,10 +157,14 @@ class MigrationManager:
                 if path_sha256(source) != expected:
                     raise MigrationError(f"operation {index}: source changed after plan")
                 target.parent.mkdir(parents=True, exist_ok=True)
-                os.rename(source, target)
+                _move_verified(source, target, expected)
             elif target.exists() and not source.exists():
                 if path_sha256(target) != expected:
                     raise MigrationError(f"operation {index}: resumed target hash mismatch")
+            elif source.exists() and target.exists():
+                if path_sha256(source) != expected or path_sha256(target) != expected:
+                    raise MigrationError(f"operation {index}: ambiguous source/target state")
+                _remove_path(source)
             else:
                 raise MigrationError(f"operation {index}: ambiguous source/target state")
             with self.store.transaction(immediate=True) as conn:
@@ -144,7 +203,7 @@ class MigrationManager:
                 continue
             if target.exists() and not source.exists() and path_sha256(target) == operation["sha256"]:
                 source.parent.mkdir(parents=True, exist_ok=True)
-                os.rename(target, source)
+                _move_verified(target, source, operation["sha256"])
             else:
                 raise MigrationError(f"operation {index}: cannot compensate ambiguous state")
         with self.store.transaction(immediate=True) as conn:

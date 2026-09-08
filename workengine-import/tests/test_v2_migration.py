@@ -1,7 +1,10 @@
 import hashlib
+import errno
+import os
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from workengine.migration import MigrationError, MigrationManager
 from workengine.store import ServerOSStore
@@ -57,6 +60,57 @@ class MigrationManagerTest(unittest.TestCase):
             self.assertEqual(result["status"], "COMPENSATED")
             self.assertTrue(source.exists())
             self.assertFalse(target.exists())
+
+    def test_apply_copies_then_removes_source_across_filesystems(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            source = root / "source"
+            target = root / "elsewhere" / "target"
+            source.write_text("cross-device", encoding="utf-8")
+            manager = MigrationManager(ServerOSStore(root / "state"))
+            manager.plan({"project": "demo", "operations": [{"type": "move", "source": str(source), "target": str(target)}]})
+
+            real_rename = os.rename
+
+            def rename_with_cross_device_error(src, dst):
+                if Path(src) == source and Path(dst) == target:
+                    raise OSError(errno.EXDEV, "Invalid cross-device link")
+                return real_rename(src, dst)
+
+            with mock.patch("workengine.migration.os.rename", side_effect=rename_with_cross_device_error):
+                result = manager.apply("demo")
+
+            self.assertEqual(result["status"], "COMPLETED")
+            self.assertFalse(source.exists())
+            self.assertEqual(target.read_text(encoding="utf-8"), "cross-device")
+
+    def test_apply_recovers_when_verified_source_and_target_both_exist(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            source = root / "source"
+            target = root / "target"
+            source.write_text("same", encoding="utf-8")
+            manager = MigrationManager(ServerOSStore(root / "state"))
+            manager.plan({"project": "demo", "operations": [{"type": "move", "source": str(source), "target": str(target)}]})
+            target.write_text("same", encoding="utf-8")
+
+            result = manager.apply("demo")
+
+            self.assertEqual(result["status"], "COMPLETED")
+            self.assertFalse(source.exists())
+            self.assertTrue(target.exists())
+
+    def test_plan_rejects_symlinks_in_source_tree(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            source = root / "source"
+            source.mkdir()
+            (source / "data").write_text("content", encoding="utf-8")
+            (source / "link").symlink_to(source / "data")
+            manager = MigrationManager(ServerOSStore(root / "state"))
+
+            with self.assertRaisesRegex(MigrationError, "symlink"):
+                manager.plan({"project": "demo", "operations": [{"type": "move", "source": str(source), "target": str(root / "target")}]})
 
 
 if __name__ == "__main__":
