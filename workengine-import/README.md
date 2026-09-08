@@ -47,6 +47,12 @@ serverosctl --json context attach SRV-0001 implement \
 
 serverosctl --json run begin SRV-0001 implement \
   --worker codex --idempotency-key srv-0001-control-plane
+
+serverosctl --json item outcome SRV-0001 --set SUCCESS
+serverosctl --json deliverable add SRV-0001 \
+  --kind report --locator /absolute/path/report.md
+serverosctl --json board render --project serveros \
+  --output-dir /absolute/path/records/projects/serveros/board
 ```
 
 Item states are:
@@ -68,10 +74,12 @@ ALLOCATED → PREPARING → RUNNING → FINALIZING
 
 ## Migration journal
 
-Migration manifests are JSON and contain absolute, non-overlapping move
-operations. `plan` hashes every source and refuses occupied targets. `apply`
-persists a cursor after every move, so a new process can resume. `compensate`
-reverses only hash-matching completed operations.
+Migration manifests are JSON and contain absolute move operations. Layered
+targets are allowed only when the parent move comes first and the nested target
+is new. `plan` hashes every source and refuses occupied or unsafe targets.
+`apply` persists a cursor after every move and uses copy/hash/fsync/atomic
+publish across filesystems, so a new process can resume. `compensate` reverses
+only hash-matching completed operations.
 
 ```bash
 serverosctl --json migrate plan --manifest /absolute/path/migration.json

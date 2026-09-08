@@ -9,9 +9,10 @@ from dataclasses import asdict
 from enum import Enum
 from pathlib import Path
 
+from .board import render as render_board
 from .engine import ServerOS, default_state_dir
 from .migration import MigrationManager
-from .model import ItemState, RunState
+from .model import ItemState, Outcome, RunState
 from .store import ServerOSStore
 
 
@@ -54,7 +55,7 @@ def _cmd_item(args):
         item = server.store.get_item(args.id)
         if item is None:
             raise KeyError(f"unknown Item: {args.id}")
-        return {**item.to_dict(), "events": server.store.item_events(args.id)}
+        return {**item.to_dict(), "deliverables": server.store.list_deliverables(args.id), "events": server.store.item_events(args.id)}
     if args.action == "list":
         return [item.to_dict() for item in server.store.list_items(args.project)]
     if args.action == "transition":
@@ -68,6 +69,8 @@ def _cmd_item(args):
         return server.store.transition_item(args.id, args.to, note=args.note, **side)
     if args.action == "reopen":
         return server.store.reopen_item(args.id, args.reason, args.source)
+    if args.action == "outcome":
+        return server.store.set_outcome(args.id, args.value)
     raise ValueError("unsupported item action")
 
 
@@ -117,6 +120,21 @@ def _cmd_context(args):
     )
 
 
+def _cmd_deliverable(args):
+    store = ServerOSStore(_state_dir(args))
+    if args.action == "add":
+        return store.add_deliverable(args.item, args.kind, args.locator)
+    if args.action == "list":
+        return store.list_deliverables(args.item)
+    raise ValueError("unsupported deliverable action")
+
+
+def _cmd_board(args):
+    if args.action == "render":
+        return render_board(ServerOSStore(_state_dir(args)), args.project, args.output_dir)
+    raise ValueError("unsupported board action")
+
+
 def _cmd_migrate(args):
     manager = MigrationManager(ServerOSStore(_state_dir(args)))
     if args.action == "plan":
@@ -161,6 +179,8 @@ def build_parser() -> argparse.ArgumentParser:
     move.add_argument("--unblock-condition", default="")
     reopen = item_actions.add_parser("reopen", parents=[_common()])
     reopen.add_argument("id"); reopen.add_argument("--reason", required=True); reopen.add_argument("--source", required=True)
+    outcome = item_actions.add_parser("outcome", parents=[_common()])
+    outcome.add_argument("id"); outcome.add_argument("--set", dest="value", required=True, choices=[value.value for value in Outcome])
 
     activity = groups.add_parser("activity", parents=[_common()])
     activity_actions = activity.add_subparsers(dest="action", required=True)
@@ -185,6 +205,17 @@ def build_parser() -> argparse.ArgumentParser:
     attach.add_argument("--revision", required=True); attach.add_argument("--worktree", default="")
     attach.add_argument("--dirty", action="store_true")
 
+    deliverable = groups.add_parser("deliverable", parents=[_common()])
+    deliverable_actions = deliverable.add_subparsers(dest="action", required=True)
+    add_deliverable = deliverable_actions.add_parser("add", parents=[_common()])
+    add_deliverable.add_argument("item"); add_deliverable.add_argument("--kind", required=True); add_deliverable.add_argument("--locator", required=True)
+    list_deliverables = deliverable_actions.add_parser("list", parents=[_common()]); list_deliverables.add_argument("item")
+
+    board = groups.add_parser("board", parents=[_common()])
+    board_actions = board.add_subparsers(dest="action", required=True)
+    render = board_actions.add_parser("render", parents=[_common()])
+    render.add_argument("--project", required=True); render.add_argument("--output-dir", required=True)
+
     migrate = groups.add_parser("migrate", parents=[_common()])
     migrate_actions = migrate.add_subparsers(dest="action", required=True)
     plan = migrate_actions.add_parser("plan", parents=[_common()]); plan.add_argument("--manifest", required=True)
@@ -201,6 +232,8 @@ def main(argv: list[str] | None = None) -> int:
             "activity": _cmd_activity,
             "run": _cmd_run,
             "context": _cmd_context,
+            "deliverable": _cmd_deliverable,
+            "board": _cmd_board,
             "migrate": _cmd_migrate,
         }[args.group]
         emit(handler(args))

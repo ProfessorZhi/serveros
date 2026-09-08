@@ -189,6 +189,42 @@ class ServerOSStore:
             for row in rows
         ]
 
+    def set_outcome(self, item_id: str, outcome: Outcome | str) -> WorkItem:
+        outcome = Outcome(outcome)
+        with self.transaction(immediate=True) as conn:
+            if conn.execute("SELECT 1 FROM items_index WHERE item_id=?", (item_id,)).fetchone() is None:
+                raise KeyError(f"unknown Item: {item_id}")
+            at = now_iso()
+            conn.execute("UPDATE items_index SET outcome=?,updated_at=? WHERE item_id=?", (outcome.value, at, item_id))
+            self._event(conn, item_id, "outcome_recorded", {"outcome": outcome.value})
+        return self.get_item(item_id)
+
+    def add_deliverable(self, item_id: str, kind: str, locator: str) -> dict:
+        if not kind.strip() or not locator.strip():
+            raise ValueError("deliverable requires kind and locator")
+        with self.transaction(immediate=True) as conn:
+            if conn.execute("SELECT 1 FROM items_index WHERE item_id=?", (item_id,)).fetchone() is None:
+                raise KeyError(f"unknown Item: {item_id}")
+            at = now_iso()
+            cursor = conn.execute(
+                "INSERT INTO deliverables(item_id,kind,locator,created_at) VALUES (?,?,?,?)",
+                (item_id, kind, locator, at),
+            )
+            self._event(conn, item_id, "deliverable_added", {"kind": kind, "locator": locator})
+            deliverable_id = cursor.lastrowid
+        return {"id": deliverable_id, "item": item_id, "kind": kind, "locator": locator, "created_at": at}
+
+    def list_deliverables(self, item_id: str) -> list[dict]:
+        with self.connection() as conn:
+            rows = conn.execute(
+                "SELECT deliverable_id,kind,locator,created_at FROM deliverables WHERE item_id=? ORDER BY deliverable_id",
+                (item_id,),
+            ).fetchall()
+        return [
+            {"id": row["deliverable_id"], "item": item_id, "kind": row["kind"], "locator": row["locator"], "created_at": row["created_at"]}
+            for row in rows
+        ]
+
     def add_activity(self, activity: Activity, needs: list[str] | None = None) -> Activity:
         with self.transaction(immediate=True) as conn:
             conn.execute(

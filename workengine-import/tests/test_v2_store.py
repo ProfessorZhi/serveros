@@ -3,7 +3,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from workengine.model import ItemState, WorkItem
+from workengine.model import ItemState, Outcome, WorkItem
 from workengine.store import ServerOSStore
 
 
@@ -58,6 +58,21 @@ class ServerOSStoreTest(unittest.TestCase):
             self.assertEqual(store.connection().execute("PRAGMA journal_mode").fetchone()[0].lower(), "wal")
             self.assertEqual(store.connection().execute("PRAGMA foreign_keys").fetchone()[0], 1)
             self.assertEqual(Path(store.db_path), Path(td) / "serveros.db")
+
+    def test_outcome_and_deliverables_are_independent_from_item_state(self):
+        with tempfile.TemporaryDirectory() as td:
+            store = ServerOSStore(td)
+            store.register_project("serveros", "SRV")
+            store.create_item(WorkItem("SRV-0001", "serveros", "converge", "ops", "/records/card.yaml"))
+
+            item = store.set_outcome("SRV-0001", Outcome.PARTIAL)
+            deliverable = store.add_deliverable("SRV-0001", "report", "/artifacts/report.md")
+
+            self.assertEqual(item.state, ItemState.INBOX)
+            self.assertEqual(item.outcome, Outcome.PARTIAL)
+            self.assertEqual(deliverable["kind"], "report")
+            self.assertEqual(store.list_deliverables("SRV-0001"), [deliverable])
+            self.assertEqual(store.item_events("SRV-0001")[-1]["event_type"], "deliverable_added")
 
 
 if __name__ == "__main__":
