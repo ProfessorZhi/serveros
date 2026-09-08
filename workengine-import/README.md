@@ -1,141 +1,91 @@
-# work-engine
+# ServerOS work engine
 
-Autonomous Delivery Workflow v0 — **C1 Work Engine**: a persistent Work Item
-model + state machine + cross-session `resume`.
+`work-engine` is the ServerOS v2 runtime control plane. It tracks execution,
+not business prose:
 
-**First goal = reliable cross-session resume.** A session can die at any time;
-a brand-new session resolving the same Work Item id must be able to find the
-worktree, read the evidence pointers, and know the legal next transition.
+```text
+Observation / Claim (records information)
+            ↓
+Item card (records project)
+            ↓
+Activity DAG (declared plan + runtime projection)
+            ↓
+Run (SQLite lease, attempt, context, evidence path)
+            ↓
+Deliverable locator and feedback
+```
 
-Pure Python (>= 3.11), cross-platform, **no third-party dependencies**.
+An Item is not a PR and does not require a worktree. One Item may own zero or
+more repo contexts, test environments, Runs, and deliverables. Git worktrees
+are preferred only when source isolation or a fixed revision is required.
 
----
+## Authority boundaries
 
-## What this engine does
+- stable Item intent: `records/projects/<project>/items/<ITEM>/card.yaml`
+- runtime state: `/opt/applications/data/home-hwz/state/serveros/serveros.db`
+- evidence: `/opt/applications/data/home-hwz/artifacts/work-items/<project>/<ITEM>/<RUN>/`
+- code truth: Git
+- test environment definition: `workspace/test-envs/<repo>/<ITEM>/`
 
-- Persists a **Work Item** to local JSON (per-id files in a `state/` directory,
-  located by absolute path).
-- Enforces a strict **state machine** — illegal transitions are rejected.
-- Provides a small CLI: `create / status / advance / resume / list` (+ `evidence`).
-- Exposes stable seams for the future server façade (`WorkRequest`) and the
-  Ability Resolver (`resolve_capability`) — **without hardcoding any skill names**.
+Relative state and artifact roots are rejected. The old v0 JSON format is not
+read by normal commands; filesystem cutovers use the explicit migration
+journal only.
 
-It does **not** run real skills, take Feishu intake, or open PRs. Those are
-later vertical slices; C1 is only the lifecycle + state machine + resume.
+## CLI
 
----
-
-## Quick start
+Both entry points invoke the v2 CLI; `serverosctl` is canonical.
 
 ```bash
-# Create a Work Item in a state directory
-python -m workengine --state-dir ./state create \
-  --title "Ship C1" \
-  --requirement "Work Engine must survive a session crash." \
-  --repo work-engine --worktree /abs/path/to/worktree \
-  --plan "create scaffold" --plan "add state machine"
+serverosctl --json item create \
+  --project serveros --prefix SRV --title "Converge workflows" --kind ops
 
-# Advance through the chain
-python -m workengine advance WI-XXXX --state-dir ./state --to TRIAGED --note "triaged"
-python -m workengine advance WI-XXXX --state-dir ./state --to READY
+serverosctl --json activity add SRV-0001 implement --kind develop
 
-# Resume for a fresh session (new process) — recover worktree, evidence, next step
-python -m workengine resume WI-XXXX --state-dir ./state
+serverosctl --json context attach SRV-0001 implement \
+  --repo work-engine --mode develop --revision "$(git rev-parse HEAD)" \
+  --worktree /opt/applications/data/home-hwz/workspace/worktrees/work-engine/SRV-0001
+
+serverosctl --json run begin SRV-0001 implement \
+  --worker codex --idempotency-key srv-0001-control-plane
 ```
 
-`--state-dir` and `--json` may appear **before or after** the subcommand.
+Item states are:
 
-Grab an id from `list`. `--json` emits machine-readable output.
-
----
-
-## State machine
-
-```
-NEW → TRIAGED → READY → IMPLEMENTING → VERIFYING → PR_OPEN
-    → REVIEWING → READY_TO_MERGE → MERGED
+```text
+INBOX → AVAILABLE → READY → ACTIVE → DELIVERED → CLOSED
 ```
 
-Forward moves are **one step only** (no skipping). Bypass states `BLOCKED` /
-`NEEDS_HUMAN` may be entered from any live state and re-entered into any live
-forward-chain state, or into each other / `CANCELLED`. `MERGED` and `CANCELLED`
-are terminal (no outgoing transitions). An illegal move raises
-`workengine.state_machine.IllegalTransition`.
+`WAITING`, `NEEDS_HUMAN`, and `DELEGATED` require a reason, return state,
+and unblock condition. `CANCELLED` and `CLOSED` can only be restored through an
+explicit reopen event. `outcome` is independent from state.
 
-See `workengine/state_machine.py` (`TRANSITIONS` rule table) and
-`tests/test_state_machine.py` for the full allowed/forbidden matrix.
+Run states are strongly linear:
 
----
-
-## Package layout
-
-```
-workengine/
-  __init__.py            public exports (stable interfaces)
-  model.py               State enum + WorkItem dataclass + now_iso
-  state_machine.py       FORWARD_CHAIN, TRANSITIONS, can/transition, IllegalTransition
-  store.py               WorkItemStore (atomic JSON persistence, absolute-path dir)
-  engine.py              WorkEngine (create/advance/resume/list), default_state_dir
-  resolver.py            AbilityResolver.resolve_capability
-  request.py             WorkRequest.submit(requirement) -> WorkItem
-  cli.py                 argparse CLI
-  __main__.py            python -m workengine entry
-tests/                   unittest suite (37 cases, hermetic)
-demo/resume_demo.py      re-runnable cross-session resume demo
+```text
+ALLOCATED → PREPARING → RUNNING → FINALIZING
+          → SUCCEEDED | FAILED | CANCELLED | INVALID
 ```
 
-State directory resolution order:
+## Migration journal
 
-1. `WORKENGINE_STATE_DIR` environment variable (absolute path).
-2. CLI `--state-dir`.
-3. Default: `<repo>/state/` (gitignored; runtime data, not source).
-
----
-
-## Cross-session resume
-
-The demo `demo/resume_demo.py` (run from repo root) verifies this in the
-strongest way — each CLI call is a **separate OS process**:
-
-1. Session A: `create`, advance to `IMPLEMENTING`, attach 2 evidence pointers.
-2. Session A ends (no in-memory state survives).
-3. Session B (fresh process): `resume <id>` → prints worktree path, evidence
-   pointers, and `next transitions`.
-4. Session B continues the chain (`IMPLEMENTING → VERIFYING`).
+Migration manifests are JSON and contain absolute, non-overlapping move
+operations. `plan` hashes every source and refuses occupied targets. `apply`
+persists a cursor after every move, so a new process can resume. `compensate`
+reverses only hash-matching completed operations.
 
 ```bash
-python demo/resume_demo.py
+serverosctl --json migrate plan --manifest /absolute/path/migration.json
+serverosctl --json migrate apply multi-user-claw
+serverosctl --json migrate verify multi-user-claw
 ```
 
----
-
-## Stable interfaces (future façade / resolver)
-
-- `WorkRequest` — `submit(requirement, *, title, repo, worktree, plan, item_id) -> WorkItem`.
-  The seam a server façade uses to turn a requirement into a Work Item.
-- `AbilityResolver` — `resolve_capability(capability)` (and `register(...)`).
-  The registry starts empty; callers wire in capabilities. **No concrete skill
-  names appear anywhere in this crate.**
-
----
-
-## Tests
+## Verification
 
 ```bash
-python -m unittest discover -s tests -v
+python3 -m unittest discover -s tests -v
 ```
 
-37 tests, all green: model serialization, the full state-machine rule table
-(forward steps, no-skip, terminal, bypass in/out), store round-trips across
-fresh instances, cross-session resume, the WorkRequest/Resolver seams, and CLI
-(argparse + `--state-dir` isolation + illegal-advance rejection).
-
----
-
-## Boundaries (C1)
-
-- No Feishu intake, no requirement understanding, no E2E leasing, no
-  multi-round review, no learning.
-- No real skill execution — lifecycle + state machine + resume only.
-- No dependency on ability-management / workspace-management internals.
-- No push. Committed locally to `main` only.
+The suite exercises real SQLite files and real filesystem moves, including
+concurrent Item allocation, DAG cycle rejection, idempotent Run begin,
+cross-process resume, strict artifact boundaries, crash recovery, and reverse
+compensation.

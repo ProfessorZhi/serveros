@@ -1,42 +1,58 @@
-"""Autonomous Delivery Workflow v0 - C1 Work Engine.
+"""ServerOS v2 control-plane public API."""
 
-Pure-Python, cross-platform, no third-party dependencies.
-
-Public surface (stable interface names):
-  - ``WorkItem``        Work Item data model (persisted state).
-  - ``State``           Work Item state machine enum.
-  - ``WorkItemStore``   Local JSON persistence (absolute-path located).
-  - ``WorkEngine``      Orchestration: create / advance / resume / list.
-  - ``WorkRequest``     Server-faceda facade: requirement -> Work Item.
-  - ``AbilityResolver`` Stable resolver interface (``resolve_capability``).
-"""
-
-from .model import State, WorkItem, now_iso  # noqa: F401
-from .state_machine import (  # noqa: F401
-    IllegalTransition,
-    allowed_transitions,
-    can_transition,
-    transition,
+from .activity import ActivityGraph, GraphError
+from .artifacts import ArtifactBoundaryError, artifact_dir
+from .engine import ServerOS, WorkEngine, default_state_dir
+from .migration import MigrationError, MigrationManager
+from .model import (
+    Activity,
+    ActivityState,
+    ContextMode,
+    ExecutionContext,
+    ItemState,
+    Outcome,
+    Run,
+    RunState,
+    State,
+    WorkItem,
+    now_iso,
 )
-from .store import WorkItemStore  # noqa: F401
-from .engine import WorkEngine, default_state_dir  # noqa: F401
-from .request import WorkRequest  # noqa: F401
-from .resolver import AbilityResolver, CapabilityBinding  # noqa: F401
+from .resolver import AbilityResolver, CapabilityBinding
+from .request import WorkRequest
+from .state_machine import IllegalTransition, allowed_transitions, can_transition, reopen, transition
+from .store import ServerOSStore, WorkItemStore
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
+
 __all__ = [
-    "State",
-    "WorkItem",
-    "now_iso",
+    "Activity",
+    "ActivityGraph",
+    "ActivityState",
+    "ArtifactBoundaryError",
+    "ContextMode",
+    "ExecutionContext",
+    "GraphError",
     "IllegalTransition",
-    "allowed_transitions",
-    "can_transition",
-    "transition",
-    "WorkItemStore",
+    "ItemState",
+    "MigrationError",
+    "MigrationManager",
+    "Outcome",
+    "Run",
+    "RunState",
+    "ServerOS",
+    "ServerOSStore",
+    "State",
     "WorkEngine",
-    "default_state_dir",
+    "WorkItem",
+    "WorkItemStore",
     "WorkRequest",
+    "allowed_transitions",
+    "artifact_dir",
+    "can_transition",
+    "default_state_dir",
+    "now_iso",
+    "reopen",
+    "transition",
     "AbilityResolver",
     "CapabilityBinding",
-    "__version__",
 ]

@@ -1,13 +1,14 @@
 [project]
 name = "workengine"
-version = "0.1.0"
-description = "Autonomous Delivery Workflow v0 - C1 Work Engine: persistent Work Item + state machine + cross-session resume."
+version = "0.2.0"
+description = "ServerOS v2 Item, Activity, Run, context, evidence, and migration control plane."
 requires-python = ">=3.11"
 license = { text = "PROPRIETARY" }
 dependencies = []
 
 [project.scripts]
 workengine = "workengine.cli:main"
+serverosctl = "workengine.cli:main"
 
 [build-system]
 requires = ["setuptools>=61.0"]

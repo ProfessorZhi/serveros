@@ -1,244 +1,213 @@
-"""Command-line interface for the Work Engine.
-
-Commands::
-
-    workengine create   --title <t> --requirement <r> [--repo ..] [--worktree ..]
-                        [--plan step] [--plan step ...] [--id ..]
-    workengine status   <id>
-    workengine advance  <id> --to <STATE> [--note ..]
-    workengine resume   <id> [--json]
-    workengine list     [--status STATE]
-    workengine evidence <id> --path <p> [--kind k] [--note n]
-
-Global flags (may appear before the subcommand)::
-
-    --state-dir PATH     Absolute path to the state directory.
-    --json               Emit machine-readable JSON.
-"""
+"""JSON-first command line interface for ServerOS v2."""
 
 from __future__ import annotations
 
 import argparse
 import json
 import sys
+from dataclasses import asdict
+from enum import Enum
 from pathlib import Path
 
-from .engine import WorkEngine, default_state_dir
-from .model import State
-from .state_machine import IllegalTransition, allowed_transitions
-
-STATES = [s.value for s in State]
-
-
-def _build_engine(args: argparse.Namespace) -> WorkEngine:
-    state_dir = getattr(args, "state_dir", None)
-    return WorkEngine(state_dir=state_dir or default_state_dir())
+from .engine import ServerOS, default_state_dir
+from .migration import MigrationManager
+from .model import ItemState, RunState
+from .store import ServerOSStore
 
 
-def _item_to_json(item) -> dict:
-    return item.to_dict()
+def _json_value(value):
+    if isinstance(value, Enum):
+        return value.value
+    if isinstance(value, Path):
+        return str(value)
+    raise TypeError(type(value).__name__)
 
 
-# -- output helpers ---------------------------------------------------------------
-
-def _print_item(item, next_states=None) -> None:
-    print(f"id            : {item.id}")
-    print(f"title         : {item.title}")
-    print(f"status        : {item.status.value}")
-    print(f"created_at    : {item.created_at}")
-    print(f"updated_at    : {item.updated_at}")
-    print(f"requirement   : {item.requirement}")
-    print(f"repo          : {item.repo or '-'}")
-    print(f"worktree      : {item.worktree or '-'}")
-    print("plan          :")
-    for step in item.plan:
-        print(f"  - {step}")
-    print("evidence      :")
-    for ev in item.evidence:
-        print(f"  - [{ev.get('kind', 'file')}] {ev.get('path', '')}  {('(' + ev.get('note', '') + ')') if ev.get('note') else ''}")
-    print("history       :")
-    for h in item.history:
-        seg = (h.get("from") + " -> " if h.get("from") else "") + h.get("to", "")
-        print(f"  - {h.get('at', '')}  {h.get('action', '')}  {seg}" + (f"  ({h.get('note')})" if h.get("note") else ""))
-    if next_states is not None:
-        print("next transitions : " + (", ".join(next_states) if next_states else "<none>"))
+def emit(value, stream=sys.stdout) -> None:
+    if hasattr(value, "to_dict"):
+        value = value.to_dict()
+    elif hasattr(value, "__dataclass_fields__"):
+        value = asdict(value)
+    print(json.dumps(value, ensure_ascii=False, indent=2, default=_json_value), file=stream)
 
 
-# -- command handlers -------------------------------------------------------------
+def _state_dir(args) -> Path:
+    if getattr(args, "state_dir", None):
+        path = Path(args.state_dir)
+        if not path.is_absolute():
+            raise ValueError("--state-dir must be absolute")
+        return path.resolve()
+    return default_state_dir()
 
-def _cmd_create(args: argparse.Namespace) -> int:
-    engine = _build_engine(args)
-    item = engine.create(
-        title=args.title,
-        requirement=args.requirement,
-        repo=args.repo or "",
-        worktree=args.worktree or "",
-        plan=args.plan or [],
-        item_id=args.id,
+
+def _server(args) -> ServerOS:
+    artifacts = Path(args.artifacts_root).resolve() if getattr(args, "artifacts_root", None) else None
+    return ServerOS(state_dir=_state_dir(args), artifacts_root=artifacts)
+
+
+def _cmd_item(args):
+    server = _server(args)
+    if args.action == "create":
+        server.register_project(args.project, args.prefix)
+        return server.create_item(args.project, args.title, args.kind, args.card_locator)
+    if args.action == "show":
+        item = server.store.get_item(args.id)
+        if item is None:
+            raise KeyError(f"unknown Item: {args.id}")
+        return {**item.to_dict(), "events": server.store.item_events(args.id)}
+    if args.action == "list":
+        return [item.to_dict() for item in server.store.list_items(args.project)]
+    if args.action == "transition":
+        side = {}
+        if ItemState(args.to) in {ItemState.WAITING, ItemState.NEEDS_HUMAN, ItemState.DELEGATED}:
+            side = {
+                "reason": args.reason,
+                "return_state": args.return_state,
+                "unblock_condition": args.unblock_condition,
+            }
+        return server.store.transition_item(args.id, args.to, note=args.note, **side)
+    if args.action == "reopen":
+        return server.store.reopen_item(args.id, args.reason, args.source)
+    raise ValueError("unsupported item action")
+
+
+def _cmd_activity(args):
+    server = _server(args)
+    if args.action == "add":
+        return server.add_activity(args.item, args.activity, args.kind, args.needs)
+    raise ValueError("unsupported activity action")
+
+
+def _run_payload(server: ServerOS, run) -> dict:
+    item = server.store.get_item(run.item_id)
+    return {
+        "item": run.item_id,
+        "activity": run.activity_id,
+        "run": run.id,
+        "project": item.project,
+        "worker": run.worker,
+        "state": run.state.value,
+        "attempt": run.attempt,
+        "artifact_dir": run.artifact_dir,
+        "contexts": [asdict(context) for context in server.store.execution_contexts(run.item_id, run.activity_id)],
+    }
+
+
+def _cmd_run(args):
+    server = _server(args)
+    if args.action == "begin":
+        return _run_payload(server, server.begin_run(args.item, args.activity, args.worker, args.idempotency_key))
+    if args.action == "show":
+        return _run_payload(server, server.resume_run(args.item, args.run))
+    if args.action == "advance":
+        return _run_payload(server, server.advance_run(args.item, args.run, args.to))
+    raise ValueError("unsupported run action")
+
+
+def _cmd_context(args):
+    server = _server(args)
+    return server.attach_context(
+        args.item,
+        args.activity,
+        args.repo,
+        args.mode,
+        revision=args.revision,
+        worktree=args.worktree,
+        dirty=args.dirty,
     )
-    if getattr(args, "json", False):
-        print(json.dumps(_item_to_json(item), ensure_ascii=False, indent=2))
-    else:
-        print(f"created {item.id}")
-        _print_item(item, [s.value for s in allowed_transitions(item.status)])
-    return 0
 
 
-def _cmd_status(args: argparse.Namespace) -> int:
-    engine = _build_engine(args)
-    item = engine.get(args.id)
-    if item is None:
-        print(f"error: unknown work item id: {args.id}", file=sys.stderr)
-        return 1
-    if getattr(args, "json", False):
-        print(json.dumps(_item_to_json(item), ensure_ascii=False, indent=2))
-    else:
-        _print_item(item)
-    return 0
-
-
-def _cmd_advance(args: argparse.Namespace) -> int:
-    engine = _build_engine(args)
-    try:
-        item = engine.advance(args.id, args.to, note=args.note)
-    except KeyError as exc:
-        print(f"error: {exc}", file=sys.stderr)
-        return 1
-    except IllegalTransition as exc:
-        print(f"error: {exc}", file=sys.stderr)
-        return 2
-    if getattr(args, "json", False):
-        print(json.dumps(_item_to_json(item), ensure_ascii=False, indent=2))
-    else:
-        print(f"advanced {item.id} -> {item.status.value}")
-        _print_item(item)
-    return 0
-
-
-def _cmd_resume(args: argparse.Namespace) -> int:
-    engine = _build_engine(args)
-    try:
-        info = engine.resume(args.id)
-    except KeyError as exc:
-        print(f"error: {exc}", file=sys.stderr)
-        return 1
-    item = info["item"]
-    next_states = [s.value for s in info["next"]]
-    if getattr(args, "json", False):
-        payload = item.to_dict()
-        payload["resume"] = {"worktree": item.worktree, "next": next_states}
-        print(json.dumps(payload, ensure_ascii=False, indent=2))
-    else:
-        print("# work-engine resume")
-        print(f"id            : {item.id}")
-        print(f"title         : {item.title}")
-        print(f"status        : {item.status.value}")
-        print(f"worktree      : {item.worktree or '<unset>'}")
-        print("evidence pointers:")
-        for ev in item.evidence:
-            print(f"  - {ev.get('path', '')}")
-        print("next transitions : " + (", ".join(next_states) if next_states else "<none>"))
-    return 0
-
-
-def _cmd_list(args: argparse.Namespace) -> int:
-    engine = _build_engine(args)
-    items = engine.list(status=args.status)
-    if getattr(args, "json", False):
-        print(json.dumps([_item_to_json(i) for i in items], ensure_ascii=False, indent=2))
-    else:
-        if not items:
-            print("no work items")
-            return 0
-        for item in items:
-            print(f"{item.id}\t{item.status.value}\t{item.title}")
-    return 0
-
-
-def _cmd_evidence(args: argparse.Namespace) -> int:
-    engine = _build_engine(args)
-    try:
-        item = engine.attach_evidence(args.id, args.path, kind=args.kind, note=args.note)
-    except KeyError as exc:
-        print(f"error: {exc}", file=sys.stderr)
-        return 1
-    if getattr(args, "json", False):
-        print(json.dumps(_item_to_json(item), ensure_ascii=False, indent=2))
-    else:
-        print(f"attached evidence to {item.id} -> {args.path}")
-    return 0
+def _cmd_migrate(args):
+    manager = MigrationManager(ServerOSStore(_state_dir(args)))
+    if args.action == "plan":
+        return manager.plan(json.loads(Path(args.manifest).read_text(encoding="utf-8")))
+    if args.action == "inspect":
+        return manager.inspect(args.project)
+    if args.action == "apply":
+        return manager.apply(args.project)
+    if args.action == "verify":
+        return manager.verify(args.project)
+    if args.action == "compensate":
+        return manager.compensate(args.project)
+    raise ValueError("unsupported migrate action")
 
 
 def _common() -> argparse.ArgumentParser:
-    """Global options, exposed on both the top-level parser and every subcommand.
-
-    Duplicating them lets flags like ``--json`` / ``--state-dir`` appear either
-    before or after the subcommand. ``default=argparse.SUPPRESS`` is essential:
-    without it, a subparser would emit its default (``None``) for an option the
-    user supplied *before* the subcommand, quietly overriding the value.
-    """
     common = argparse.ArgumentParser(add_help=False)
-    common.add_argument(
-        "--state-dir",
-        default=argparse.SUPPRESS,
-        help="Absolute path to the state directory (default: repo state/).",
-    )
-    common.add_argument("--json", action="store_true", default=argparse.SUPPRESS, help="Emit machine-readable JSON.")
+    common.add_argument("--state-dir", default=argparse.SUPPRESS)
+    common.add_argument("--artifacts-root", default=argparse.SUPPRESS)
+    common.add_argument("--json", action="store_true", default=argparse.SUPPRESS)
     return common
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(
-        prog="workengine",
-        description="Autonomous Delivery Workflow v0 - C1 Work Engine",
-        parents=[_common()],
-    )
+    parser = argparse.ArgumentParser(prog="serverosctl", description="ServerOS v2 control plane", parents=[_common()])
+    groups = parser.add_subparsers(dest="group", required=True)
 
-    sub = parser.add_subparsers(dest="command", required=True)
+    item = groups.add_parser("item", parents=[_common()])
+    item_actions = item.add_subparsers(dest="action", required=True)
+    create = item_actions.add_parser("create", parents=[_common()])
+    create.add_argument("--project", required=True)
+    create.add_argument("--prefix", required=True)
+    create.add_argument("--title", required=True)
+    create.add_argument("--kind", required=True)
+    create.add_argument("--card-locator")
+    show = item_actions.add_parser("show", parents=[_common()]); show.add_argument("id")
+    listing = item_actions.add_parser("list", parents=[_common()]); listing.add_argument("--project")
+    move = item_actions.add_parser("transition", parents=[_common()])
+    move.add_argument("id"); move.add_argument("--to", required=True, choices=[state.value for state in ItemState])
+    move.add_argument("--note", default=""); move.add_argument("--reason", default="")
+    move.add_argument("--return-state", choices=[state.value for state in ItemState])
+    move.add_argument("--unblock-condition", default="")
+    reopen = item_actions.add_parser("reopen", parents=[_common()])
+    reopen.add_argument("id"); reopen.add_argument("--reason", required=True); reopen.add_argument("--source", required=True)
 
-    p_create = sub.add_parser("create", help="Create a new Work Item.", parents=[_common()])
-    p_create.add_argument("--title", required=True)
-    p_create.add_argument("--requirement", required=True)
-    p_create.add_argument("--repo", default="")
-    p_create.add_argument("--worktree", default="")
-    p_create.add_argument("--plan", action="append", default=[], help="Plan step; repeatable.")
-    p_create.add_argument("--id", default=None)
+    activity = groups.add_parser("activity", parents=[_common()])
+    activity_actions = activity.add_subparsers(dest="action", required=True)
+    add = activity_actions.add_parser("add", parents=[_common()])
+    add.add_argument("item"); add.add_argument("activity"); add.add_argument("--kind", required=True)
+    add.add_argument("--needs", action="append", default=[])
 
-    p_status = sub.add_parser("status", help="Show a Work Item.", parents=[_common()])
-    p_status.add_argument("id")
+    run = groups.add_parser("run", parents=[_common()])
+    run_actions = run.add_subparsers(dest="action", required=True)
+    begin = run_actions.add_parser("begin", parents=[_common()])
+    begin.add_argument("item"); begin.add_argument("activity"); begin.add_argument("--worker", required=True)
+    begin.add_argument("--idempotency-key", required=True)
+    show_run = run_actions.add_parser("show", parents=[_common()]); show_run.add_argument("item"); show_run.add_argument("run")
+    advance = run_actions.add_parser("advance", parents=[_common()]); advance.add_argument("item"); advance.add_argument("run")
+    advance.add_argument("--to", required=True, choices=[state.value for state in RunState])
 
-    p_advance = sub.add_parser("advance", help="Advance a Work Item to a legal state.", parents=[_common()])
-    p_advance.add_argument("id")
-    p_advance.add_argument("--to", required=True)
-    p_advance.add_argument("--note", default=None)
+    context = groups.add_parser("context", parents=[_common()])
+    context_actions = context.add_subparsers(dest="action", required=True)
+    attach = context_actions.add_parser("attach", parents=[_common()])
+    attach.add_argument("item"); attach.add_argument("activity"); attach.add_argument("--repo", required=True)
+    attach.add_argument("--mode", required=True, choices=["inspect", "test", "develop", "release"])
+    attach.add_argument("--revision", required=True); attach.add_argument("--worktree", default="")
+    attach.add_argument("--dirty", action="store_true")
 
-    p_resume = sub.add_parser("resume", help="Resume a Work Item for a fresh session.", parents=[_common()])
-    p_resume.add_argument("id")
-
-    p_list = sub.add_parser("list", help="List Work Items.", parents=[_common()])
-    p_list.add_argument("--status", default=None, choices=STATES)
-
-    p_evidence = sub.add_parser("evidence", help="Attach an evidence pointer.", parents=[_common()])
-    p_evidence.add_argument("id")
-    p_evidence.add_argument("--path", required=True)
-    p_evidence.add_argument("--kind", default="file")
-    p_evidence.add_argument("--note", default=None)
-
+    migrate = groups.add_parser("migrate", parents=[_common()])
+    migrate_actions = migrate.add_subparsers(dest="action", required=True)
+    plan = migrate_actions.add_parser("plan", parents=[_common()]); plan.add_argument("--manifest", required=True)
+    for action in ("inspect", "apply", "verify", "compensate"):
+        child = migrate_actions.add_parser(action, parents=[_common()]); child.add_argument("project")
     return parser
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = build_parser()
-    args = parser.parse_args(argv)
-    handler = {
-        "create": _cmd_create,
-        "status": _cmd_status,
-        "advance": _cmd_advance,
-        "resume": _cmd_resume,
-        "list": _cmd_list,
-        "evidence": _cmd_evidence,
-    }[args.command]
-    return handler(args)
+    args = build_parser().parse_args(argv)
+    try:
+        handler = {
+            "item": _cmd_item,
+            "activity": _cmd_activity,
+            "run": _cmd_run,
+            "context": _cmd_context,
+            "migrate": _cmd_migrate,
+        }[args.group]
+        emit(handler(args))
+        return 0
+    except (ValueError, KeyError, OSError) as exc:
+        emit({"error": {"code": "INVALID_INPUT", "message": str(exc)}}, stream=sys.stderr)
+        return 2
 
 
 if __name__ == "__main__":

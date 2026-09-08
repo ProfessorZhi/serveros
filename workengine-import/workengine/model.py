@@ -1,110 +1,150 @@
-"""Work Item data model.
+"""ServerOS v2 domain values.
 
-Fields are intentionally broad so a single persisted object carries
-everything a future session needs to resume work: identity, requirement,
-repo/worktree location, plan, evidence pointers, current state, and a full
-append-only history.
+Stable intent lives in records cards.  The objects here represent only the
+runtime projection required to schedule, resume, and audit work.
 """
 
 from __future__ import annotations
 
 import datetime
-import uuid
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass
 from enum import StrEnum
-from typing import Any
-
-
-class State(StrEnum):
-    """Work Item lifecycle states.
-
-    States are the single source of truth for where a Work Item sits in the
-    delivery pipeline. ``StrEnum`` keeps them JSON/CLI friendly (value == name).
-    """
-
-    NEW = "NEW"
-    TRIAGED = "TRIAGED"
-    READY = "READY"
-    IMPLEMENTING = "IMPLEMENTING"
-    VERIFYING = "VERIFYING"
-    PR_OPEN = "PR_OPEN"
-    REVIEWING = "REVIEWING"
-    READY_TO_MERGE = "READY_TO_MERGE"
-    MERGED = "MERGED"
-
-    # Bypass states (side tracks, entered/exited via explicit decision).
-    BLOCKED = "BLOCKED"
-    NEEDS_HUMAN = "NEEDS_HUMAN"
-    CANCELLED = "CANCELLED"
+from typing import Any, ClassVar
 
 
 def now_iso() -> str:
-    """UTC timestamp in ISO-8601 (with timezone)."""
     return datetime.datetime.now(datetime.timezone.utc).isoformat()
 
 
-def new_id() -> str:
-    """Generate a process-independent, human-readable Work Item id."""
-    return f"WI-{uuid.uuid4().hex[:8].upper()}"
+class ItemState(StrEnum):
+    INBOX = "INBOX"
+    AVAILABLE = "AVAILABLE"
+    READY = "READY"
+    ACTIVE = "ACTIVE"
+    DELIVERED = "DELIVERED"
+    CLOSED = "CLOSED"
+    WAITING = "WAITING"
+    NEEDS_HUMAN = "NEEDS_HUMAN"
+    DELEGATED = "DELEGATED"
+    CANCELLED = "CANCELLED"
+
+
+class Outcome(StrEnum):
+    SUCCESS = "SUCCESS"
+    FAIL = "FAIL"
+    PARTIAL = "PARTIAL"
+    INCONCLUSIVE = "INCONCLUSIVE"
+    NOT_APPLICABLE = "NOT_APPLICABLE"
+
+
+class ActivityState(StrEnum):
+    PENDING = "PENDING"
+    READY = "READY"
+    RUNNING = "RUNNING"
+    SUCCEEDED = "SUCCEEDED"
+    FAILED = "FAILED"
+    SKIPPED = "SKIPPED"
+    BLOCKED = "BLOCKED"
+    CANCELLED = "CANCELLED"
+
+
+class RunState(StrEnum):
+    ALLOCATED = "ALLOCATED"
+    PREPARING = "PREPARING"
+    RUNNING = "RUNNING"
+    FINALIZING = "FINALIZING"
+    SUCCEEDED = "SUCCEEDED"
+    FAILED = "FAILED"
+    CANCELLED = "CANCELLED"
+    INVALID = "INVALID"
+
+
+class ContextMode(StrEnum):
+    INSPECT = "inspect"
+    TEST = "test"
+    DEVELOP = "develop"
+    RELEASE = "release"
 
 
 @dataclass
 class WorkItem:
-    """A persisted delivery Work Item.
-
-    ``id`` is the stable key used by ``resume`` (across sessions/processes).
-    ``worktree`` and every entry in ``evidence`` are stored as **absolute
-    paths** so a new session can locate them regardless of its cwd.
-    """
+    ALLOWED_KINDS: ClassVar[frozenset[str]] = frozenset(
+        {
+            "feature",
+            "bug",
+            "test",
+            "investigation",
+            "analysis",
+            "report",
+            "deploy",
+            "ops",
+            "support",
+            "decision",
+        }
+    )
 
     id: str
+    project: str
     title: str
-    requirement: str
-    repo: str = ""
-    worktree: str = ""
-    plan: list[str] = field(default_factory=list)
-    evidence: list[dict] = field(default_factory=list)  # list of {kind, path, note, at}
-    status: State = State.NEW
-    history: list[dict] = field(default_factory=list)  # list of {action, from, to, at, note}
-    created_at: str = field(default_factory=now_iso)
-    updated_at: str = field(default_factory=now_iso)
+    kind: str
+    card_locator: str
+    state: ItemState = ItemState.INBOX
+    outcome: Outcome | None = None
+    created_at: str = ""
+    updated_at: str = ""
 
-    # -- lifecycle mutation helpers -------------------------------------------------
-
-    def record(self, action: str, from_state: State | None, to_state: State, note: str | None) -> None:
-        """Append an immutable history entry and bump ``updated_at``."""
-        entry = {
-            "action": action,
-            "from": None if from_state is None else from_state.value,
-            "to": to_state.value,
-            "at": now_iso(),
-            "note": note or "",
-        }
-        self.history.append(entry)
-        self.updated_at = entry["at"]
-
-    def add_evidence(self, path: str, kind: str = "file", note: str | None = None) -> dict:
-        """Record an evidence pointer (absolute path) and bump ``updated_at``."""
-        entry = {
-            "kind": kind,
-            "path": path,
-            "note": note or "",
-            "at": now_iso(),
-        }
-        self.evidence.append(entry)
-        self.updated_at = entry["at"]
-        return entry
-
-    # -- serialization --------------------------------------------------------------
+    def __post_init__(self) -> None:
+        if self.kind not in self.ALLOWED_KINDS:
+            raise ValueError(f"unsupported item kind: {self.kind}")
+        if not self.created_at:
+            self.created_at = now_iso()
+        if not self.updated_at:
+            self.updated_at = self.created_at
+        self.state = ItemState(self.state)
+        if self.outcome is not None:
+            self.outcome = Outcome(self.outcome)
 
     def to_dict(self) -> dict[str, Any]:
-        d = asdict(self)
-        d["status"] = self.status.value
-        return d
+        value = asdict(self)
+        value["state"] = self.state.value
+        value["outcome"] = self.outcome.value if self.outcome else None
+        return value
 
-    @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> "WorkItem":
-        d = dict(data)
-        raw_status = d.pop("status", State.NEW)
-        status = State(raw_status) if isinstance(raw_status, str) else State(raw_status)
-        return cls(status=status, **d)
+
+@dataclass(frozen=True)
+class Activity:
+    item_id: str
+    id: str
+    kind: str
+    state: ActivityState = ActivityState.PENDING
+    graph_revision: int = 1
+
+
+@dataclass(frozen=True)
+class ExecutionContext:
+    item_id: str
+    activity_id: str
+    repo: str
+    mode: ContextMode
+    revision: str
+    worktree: str = ""
+    dirty: bool = False
+
+
+@dataclass(frozen=True)
+class Run:
+    item_id: str
+    activity_id: str
+    id: str
+    worker: str
+    idempotency_key: str
+    state: RunState
+    artifact_dir: str
+    attempt: int
+    started_at: str
+    ended_at: str = ""
+
+
+# Transitional import alias only. It names the v2 state model and does not
+# preserve any v0 state values or persistence behavior.
+State = ItemState

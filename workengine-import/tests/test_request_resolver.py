@@ -1,71 +1,36 @@
-"""Tests for the WorkRequest facade and the Ability Resolver seam."""
-
-from __future__ import annotations
-
+import tempfile
 import unittest
 from pathlib import Path
 
-from workengine.engine import WorkEngine
-from workengine.model import State
+from workengine.engine import ServerOS
 from workengine.request import WorkRequest
-from workengine.resolver import AbilityResolver, CapabilityBinding
-
-
-class WorkRequestTest(unittest.TestCase):
-    def test_submit_creates_persisted_new_item(self):
-        import tempfile
-
-        with tempfile.TemporaryDirectory() as tmp:
-            engine = WorkEngine(state_dir=Path(tmp) / "state")
-            req = WorkRequest(engine=engine)
-            item = req.submit("Autonomous delivery needs a resumable work engine.")
-            self.assertEqual(item.status, State.NEW)
-            # Persisted -> a fresh engine over the same dir sees it.
-            again = WorkEngine(state_dir=Path(tmp) / "state").get(item.id)
-            self.assertEqual(again.requirement, "Autonomous delivery needs a resumable work engine.")
-
-    def test_title_defaults_to_requirement(self):
-        import tempfile
-
-        with tempfile.TemporaryDirectory() as tmp:
-            req = WorkRequest(engine=WorkEngine(state_dir=Path(tmp) / "state"))
-            item = req.submit("Just a requirement.")
-            self.assertEqual(item.title, "Just a requirement.")
-
-    def test_submit_accepts_plan(self):
-        import tempfile
-
-        with tempfile.TemporaryDirectory() as tmp:
-            req = WorkRequest(engine=WorkEngine(state_dir=Path(tmp) / "state"))
-            item = req.submit("r", plan=["a", "b", "c"])
-            self.assertEqual(item.plan, ["a", "b", "c"])
+from workengine.resolver import AbilityResolver
+from workengine.store import ServerOSStore
 
 
 class AbilityResolverTest(unittest.TestCase):
-    def test_resolve_capability_stable_interface(self):
+    def test_resolver_starts_empty_and_accepts_external_bindings(self):
         resolver = AbilityResolver()
-        resolver.register("produce_report", "internal/handler-report")
-        binding = resolver.resolve_capability("produce_report")
-        self.assertIsInstance(binding, CapabilityBinding)
-        self.assertEqual(binding.capability, "produce_report")
+        self.assertIsNone(resolver.resolve_capability("workspace.converge"))
+        resolver.register("workspace.converge", "provider-id", version="2")
+        binding = resolver.resolve_capability("workspace.converge")
+        self.assertEqual(binding.resolver, "provider-id")
+        self.assertEqual(resolver.capabilities(), ["workspace.converge"])
 
-    def test_unknown_capability_returns_none(self):
-        resolver = AbilityResolver()
-        self.assertIsNone(resolver.resolve_capability("does_not_exist"))
 
-    def test_no_skill_names_hardcoded(self):
-        # The resolver registry starts empty and only resolves what is
-        # registered from outside. There must be no built-in skill identifiers.
-        resolver = AbilityResolver()
-        self.assertEqual(resolver.capabilities(), [])
-        for name in ("muc-playwright-e2e", "dev-doctor", "feature-development"):
-            self.assertIsNone(resolver.resolve_capability(name))
-
-    def test_capabilities_lists_registered(self):
-        resolver = AbilityResolver()
-        resolver.register("z", "h")
-        resolver.register("a", "h")
-        self.assertEqual(resolver.capabilities(), ["a", "z"])
+class WorkRequestTest(unittest.TestCase):
+    def test_request_creates_generic_item_without_pr_or_worktree(self):
+        with tempfile.TemporaryDirectory() as td:
+            server = ServerOS(store=ServerOSStore(td), artifacts_root=Path(td) / "artifacts")
+            server.register_project("serveros", "SRV")
+            item = WorkRequest(server).submit(
+                project="serveros",
+                title="converge directories",
+                kind="ops",
+            )
+            self.assertEqual(item.id, "SRV-0001")
+            self.assertEqual(item.kind, "ops")
+            self.assertFalse(hasattr(item, "requirement"))
 
 
 if __name__ == "__main__":

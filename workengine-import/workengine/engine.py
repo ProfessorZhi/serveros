@@ -1,137 +1,82 @@
-"""Work Engine orchestration.
-
-Ties together the data model, the state machine, and the store. This is the
-object the CLI and future server façade call. Everything here is deliberately
-stateless beyond the store: a fresh ``WorkEngine`` bound to the same state
-directory will resume exactly where a previous session left off.
-"""
+"""ServerOS v2 control-plane service."""
 
 from __future__ import annotations
 
 import os
 from pathlib import Path
 
-from .model import State, WorkItem, new_id, now_iso
-from .state_machine import allowed_transitions, transition
-from .store import WorkItemStore
-from .resolver import AbilityResolver
+from .model import Activity, ContextMode, ExecutionContext, RunState, WorkItem
+from .store import ServerOSStore
+
+DEFAULT_STATE_ROOT = Path("/opt/applications/data/home-hwz/state/serveros")
+DEFAULT_ARTIFACTS_ROOT = Path("/opt/applications/data/home-hwz/artifacts")
+
+
+def _absolute_override(name: str, default: Path) -> Path:
+    raw = os.environ.get(name)
+    if not raw:
+        return default
+    path = Path(raw)
+    if not path.is_absolute():
+        raise ValueError(f"{name} must be an absolute path")
+    return path.resolve()
 
 
 def default_state_dir() -> Path:
-    """Absolute default state directory.
-
-    ``WORKENGINE_STATE_DIR`` wins; otherwise the ``state/`` directory next to
-    this package (repository root), resolved to an absolute path so it works
-    from any cwd.
-    """
-    env = os.environ.get("WORKENGINE_STATE_DIR")
-    if env:
-        return Path(env).expanduser().resolve()
-    return Path(__file__).resolve().parent.parent / "state"
+    return _absolute_override("SERVEROS_STATE_DIR", DEFAULT_STATE_ROOT)
 
 
-class WorkEngine:
-    """Create, advance, inspect, and resume Work Items.
-
-    ``WorkEngine`` is a thin wrapper over a :class:`WorkItemStore`. Two
-    processes holding two ``WorkEngine`` instances over the same ``store`` see
-    the same persisted Work Items.
-    """
-
-    def __init__(self, store: WorkItemStore | None = None, state_dir: str | os.PathLike | None = None) -> None:
-        if store is not None:
-            self.store = store
-        else:
-            self.store = WorkItemStore(state_dir or default_state_dir())
-        self.resolver = AbilityResolver()
-
-    # -- create ---------------------------------------------------------------------
-
-    def create(
+class ServerOS:
+    def __init__(
         self,
-        title: str,
-        requirement: str,
+        store: ServerOSStore | None = None,
         *,
-        repo: str = "",
-        worktree: str = "",
-        plan: list[str] | None = None,
-        item_id: str | None = None,
-    ) -> WorkItem:
-        """Create a new Work Item in ``NEW`` state and persist it."""
-        item = WorkItem(
-            id=item_id or new_id(),
-            title=title,
-            requirement=requirement,
-            repo=repo,
-            worktree=(str(Path(worktree).expanduser().resolve()) if worktree else ""),
-            plan=list(plan or []),
-            status=State.NEW,
-        )
-        item.record("create", None, State.NEW, "created")
-        self.store.save(item)
-        return item
+        state_dir: str | Path | None = None,
+        artifacts_root: str | Path | None = None,
+    ) -> None:
+        if store is None:
+            store = ServerOSStore(state_dir if state_dir is not None else default_state_dir())
+        self.store = store
+        self.artifacts_root = Path(artifacts_root or _absolute_override("SERVEROS_ARTIFACTS_ROOT", DEFAULT_ARTIFACTS_ROOT))
+        if not self.artifacts_root.is_absolute():
+            raise ValueError("artifacts root must be absolute")
 
-    # -- read -----------------------------------------------------------------------
+    def register_project(self, project: str, prefix: str) -> None:
+        self.store.register_project(project, prefix)
 
-    def get(self, item_id: str) -> WorkItem | None:
-        """Load a Work Item by id, or ``None`` if unknown."""
-        return self.store.load(item_id)
+    def create_item(self, project: str, title: str, kind: str, card_locator: str | None = None) -> WorkItem:
+        item_id = self.store.allocate_item_id(project)
+        locator = card_locator or f"records/projects/{project}/items/{item_id}/card.yaml"
+        return self.store.create_item(WorkItem(item_id, project, title, kind, locator))
 
-    def require(self, item_id: str) -> WorkItem:
-        """Load a Work Item by id, raising ``KeyError`` if unknown."""
-        item = self.store.load(item_id)
-        if item is None:
-            raise KeyError(f"unknown work item id: {item_id}")
-        return item
+    def add_activity(self, item_id: str, activity_id: str, kind: str, needs: list[str] | None = None) -> Activity:
+        return self.store.add_activity(Activity(item_id, activity_id, kind), needs)
 
-    def list(self, status: str | State | None = None) -> list[WorkItem]:
-        """List persisted Work Items, optionally filtered by exact status."""
-        items = self.store.list()
-        if status is None:
-            return items
-        target = State(status) if not isinstance(status, State) else status
-        return [i for i in items if i.status == target]
-
-    # -- advance (state machine) ----------------------------------------------------
-
-    def advance(self, item_id: str, to: str | State, note: str | None = None) -> WorkItem:
-        """Advance a Work Item to ``to`` if legal; persist and return it.
-
-        Raises ``KeyError`` for an unknown id and ``IllegalTransition`` for a
-        disallowed state move.
-        """
-        item = self.require(item_id)
-        to_state = State(to) if not isinstance(to, State) else to
-        # Validate first (raises IllegalTransition on a bad move).
-        transition(item.status, to_state)
-        item.record("advance", item.status, to_state, note)
-        item.status = to_state
-        self.store.save(item)
-        return item
-
-    # -- evidence -------------------------------------------------------------------
-
-    def attach_evidence(
+    def attach_context(
         self,
         item_id: str,
-        path: str,
-        kind: str = "file",
-        note: str | None = None,
-    ) -> WorkItem:
-        """Record an evidence pointer (absolute path) on a Work Item."""
-        item = self.require(item_id)
-        item.add_evidence(str(Path(path).expanduser().resolve()), kind=kind, note=note)
-        self.store.save(item)
-        return item
+        activity_id: str,
+        repo: str,
+        mode: ContextMode | str,
+        *,
+        revision: str,
+        worktree: str = "",
+        dirty: bool = False,
+    ) -> ExecutionContext:
+        context = ExecutionContext(item_id, activity_id, repo, ContextMode(mode), revision, worktree, dirty)
+        return self.store.attach_context(context)
 
-    # -- resume ---------------------------------------------------------------------
+    def begin_run(self, item_id: str, activity_id: str, worker: str, idempotency_key: str):
+        return self.store.begin_run(item_id, activity_id, worker, idempotency_key, self.artifacts_root)
 
-    def resume(self, item_id: str) -> dict:
-        """Return everything a fresh session needs to continue a Work Item.
+    def advance_run(self, item_id: str, run_id: str, state: RunState | str):
+        return self.store.advance_run(item_id, run_id, state)
 
-        The returned dict contains:
-          ``item``  the loaded, fully persisted :class:`WorkItem`
-          ``next``  the sorted list of legal next ``State`` values
-        """
-        item = self.require(item_id)
-        return {"item": item, "next": sorted(allowed_transitions(item.status), key=lambda s: s.value)}
+    def resume_run(self, item_id: str, run_id: str):
+        run = self.store.get_run(item_id, run_id)
+        if run is None:
+            raise KeyError(f"unknown Run: {item_id}/{run_id}")
+        return run
+
+
+WorkEngine = ServerOS
