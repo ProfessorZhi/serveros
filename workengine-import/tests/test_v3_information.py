@@ -186,6 +186,78 @@ class InformationV3Tests(unittest.TestCase):
                 self.assertEqual(conn.execute("SELECT count(*) FROM item_candidates").fetchone()[0], 1)
                 self.assertEqual(conn.execute("SELECT count(*) FROM candidate_claims").fetchone()[0], 1)
 
+    def test_candidate_create_cli_retry_returns_same_object_without_duplicate_state(self):
+        with tempfile.TemporaryDirectory() as td:
+            state = Path(td) / "state"
+            store = ServerOSStore(state)
+            store.register_project("demo", "DEM")
+            source = store.register_source(
+                "github", "issue-cli", revision="r1", locator="https://x"
+            )
+            observation = store.record_observation(
+                source["source_id"],
+                "obs-cli",
+                semantic_type="bug",
+                content_hash="b" * 64,
+            )
+            store.record_claim("claim-cli", "/claim-cli", [observation["observation_id"]])
+            command = [
+                sys.executable,
+                "-m",
+                "workengine.cli",
+                "--state-dir",
+                str(state),
+                "candidate",
+                "create",
+                "candidate-cli",
+                "--project",
+                "demo",
+                "--title",
+                "candidate from CLI",
+                "--kind",
+                "bug",
+                "--dedupe-key",
+                "candidate-cli-dedupe",
+                "--claim",
+                "claim-cli",
+                "--domain",
+                "github",
+                "--external-id",
+                "issue-cli",
+                "--external-revision",
+                "r1",
+            ]
+
+            first = subprocess.run(command, check=False, capture_output=True, text=True)
+            second = subprocess.run(command, check=False, capture_output=True, text=True)
+
+            self.assertEqual(first.returncode, 0, first.stderr)
+            self.assertEqual(second.returncode, 0, second.stderr)
+            first_payload = json.loads(first.stdout)
+            second_payload = json.loads(second.stdout)
+            self.assertEqual(second_payload, first_payload)
+            self.assertEqual(
+                {key: first_payload[key] for key in ("candidate_id", "state", "approved_item_id")},
+                {
+                    "candidate_id": "candidate-cli",
+                    "state": "NEW",
+                    "approved_item_id": None,
+                },
+            )
+            with store.connection() as conn:
+                self.assertEqual(
+                    conn.execute(
+                        "SELECT count(*) FROM item_candidates WHERE candidate_id='candidate-cli'"
+                    ).fetchone()[0],
+                    1,
+                )
+                self.assertEqual(
+                    conn.execute(
+                        "SELECT count(*) FROM candidate_claims WHERE candidate_id='candidate-cli'"
+                    ).fetchone()[0],
+                    1,
+                )
+
     def test_candidate_match_retry_returns_same_mapping(self):
         with tempfile.TemporaryDirectory() as td:
             store, _ = self._create_candidate_fixture(Path(td) / "state")
@@ -197,6 +269,49 @@ class InformationV3Tests(unittest.TestCase):
             self.assertEqual(second, first)
             self.assertEqual(second["state"], "MATCHED")
             self.assertEqual(second["approved_item_id"], item.id)
+
+    def test_candidate_match_cli_retry_returns_same_mapping_without_duplicate_state(self):
+        with tempfile.TemporaryDirectory() as td:
+            state = Path(td) / "state"
+            store, _ = self._create_candidate_fixture(state)
+            item = store.create_item(WorkItem("DEM-0001", "demo", "existing", "bug", "/card"))
+            command = [
+                sys.executable,
+                "-m",
+                "workengine.cli",
+                "--state-dir",
+                str(state),
+                "candidate",
+                "match",
+                "candidate-1",
+                "--item",
+                item.id,
+            ]
+
+            first = subprocess.run(command, check=False, capture_output=True, text=True)
+            second = subprocess.run(command, check=False, capture_output=True, text=True)
+
+            self.assertEqual(first.returncode, 0, first.stderr)
+            self.assertEqual(second.returncode, 0, second.stderr)
+            first_payload = json.loads(first.stdout)
+            second_payload = json.loads(second.stdout)
+            self.assertEqual(second_payload, first_payload)
+            self.assertEqual(
+                {key: first_payload[key] for key in ("candidate_id", "state", "approved_item_id")},
+                {
+                    "candidate_id": "candidate-1",
+                    "state": "MATCHED",
+                    "approved_item_id": "DEM-0001",
+                },
+            )
+            with store.connection() as conn:
+                persisted = conn.execute(
+                    """SELECT candidate_id,state,approved_item_id,count(*)
+                       FROM item_candidates
+                       WHERE candidate_id='candidate-1'
+                       GROUP BY candidate_id,state,approved_item_id"""
+                ).fetchone()
+            self.assertEqual(tuple(persisted), ("candidate-1", "MATCHED", "DEM-0001", 1))
 
     def test_candidate_match_cli_returns_persisted_mapping(self):
         with tempfile.TemporaryDirectory() as td:
