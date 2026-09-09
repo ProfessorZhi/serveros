@@ -18,6 +18,25 @@ class FinalizeV3Tests(unittest.TestCase):
 
     def tearDown(self): self.td.cleanup()
 
+    def _evidence_file(self, name="evidence.txt"):
+        path = Path(self.td.name) / name
+        path.write_text("evidence")
+        return path
+
+    def _record_evidence(self, locator, **overrides):
+        metadata = {
+            "kind": "report",
+            "locator": str(locator),
+            "command": "python -m unittest",
+            "cases": ["test_case"],
+            "exit_code": 0,
+            "revision": "revision-1",
+            "dirty": False,
+            "verdict": "PASS",
+        }
+        metadata.update(overrides)
+        return self.s.record_evidence(self.item.id, self.run.id, **metadata)
+
     def test_finalize_replaces_context_and_is_idempotent(self):
         result = self.s.finalize_run(self.item.id, self.run.id, verdict="PASS", exit_code=0, command="pytest", cases=["one"], revision="final", dirty=False)
         self.assertEqual(result["state"], "SUCCEEDED"); self.assertEqual(result["verdict"], "PASS")
@@ -40,11 +59,50 @@ class FinalizeV3Tests(unittest.TestCase):
         result=self.s.finalize_run(self.item.id,self.run.id,verdict='PASS',exit_code=0,command='pytest',cases=['one'],revision='final',dirty=False)
         self.assertTrue(Path(self.run.artifact_dir,'finalize.json').exists()); self.assertEqual(result['state'],'SUCCEEDED')
 
-    def test_evidence_requires_existing_hashable_file_and_rejects_secrets(self):
+    def test_evidence_requires_existing_hashable_file(self):
         with self.assertRaises(ValueError): self.s.record_evidence(self.item.id,self.run.id,kind='x',locator='/nope',command='x',cases=[],exit_code=0,revision='r',dirty=False,verdict='PASS')
-        p=Path(self.td.name)/'evidence.txt'; p.write_text('evidence')
-        with self.assertRaises(ValueError): self.s.record_evidence(self.item.id,self.run.id,kind='x',locator=str(p),command='--token=secret',cases=[],exit_code=0,revision='r',dirty=False,verdict='PASS')
-        with self.assertRaises(ValueError): self.s.record_evidence(self.item.id,self.run.id,kind='x',locator=str(p),command='pytest',cases=[],exit_code=0,revision='token-revision',dirty=False,verdict='PASS')
+
+    def test_evidence_rejects_secret_like_kind(self):
+        with self.assertRaises(ValueError):
+            self._record_evidence(self._evidence_file(), kind="api-key-report")
+
+    def test_evidence_rejects_secret_like_locator_name(self):
+        with self.assertRaises(ValueError):
+            self._record_evidence(self._evidence_file("token-evidence.txt"))
+
+    def test_evidence_rejects_secret_like_command(self):
+        with self.assertRaises(ValueError):
+            self._record_evidence(self._evidence_file(), command="pytest --token=value")
+
+    def test_evidence_rejects_secret_like_cases(self):
+        with self.assertRaises(ValueError):
+            self._record_evidence(self._evidence_file(), cases=["password-case"])
+
+    def test_evidence_rejects_secret_like_revision(self):
+        with self.assertRaises(ValueError):
+            self._record_evidence(self._evidence_file(), revision="secret-revision")
+
+    def test_evidence_rejects_secret_like_verdict(self):
+        with self.assertRaises(ValueError):
+            self._record_evidence(self._evidence_file(), verdict="TOKEN_FOUND")
+
+    def test_evidence_persists_numeric_exit_code_and_dirty_states(self):
+        clean = self._record_evidence(
+            self._evidence_file("clean.txt"), exit_code=7, dirty=False
+        )
+        dirty = self._record_evidence(
+            self._evidence_file("dirty.txt"), exit_code=9, dirty=True
+        )
+
+        self.assertEqual((clean["exit_code"], clean["dirty"]), (7, 0))
+        self.assertEqual((dirty["exit_code"], dirty["dirty"]), (9, 1))
+        self.assertIs(type(clean["exit_code"]), int)
+        self.assertIs(type(dirty["exit_code"]), int)
+        with self.s.connection() as conn:
+            persisted = conn.execute(
+                "SELECT exit_code, typeof(exit_code), dirty FROM evidence ORDER BY evidence_id"
+            ).fetchall()
+        self.assertEqual([tuple(row) for row in persisted], [(7, "integer", 0), (9, "integer", 1)])
 
     def test_run_evidence_and_finalize_cli_shapes_are_available(self):
         a=build_parser().parse_args(['run','evidence','DEM-0001','RUN-0001','--kind','report','--locator','/tmp/report','--command','pytest','--exit-code','0','--revision','r','--verdict','PASS'])

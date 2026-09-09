@@ -1,8 +1,10 @@
 import sqlite3
 import json
+import subprocess
+import sys
 import tempfile
 import unittest
-from contextlib import redirect_stdout
+from contextlib import redirect_stderr
 import io
 from pathlib import Path
 
@@ -14,6 +16,27 @@ from workengine.cli import main
 
 
 class InformationV3Tests(unittest.TestCase):
+    def _create_candidate_fixture(self, state):
+        store = ServerOSStore(state)
+        store.register_project("demo", "DEM")
+        source = store.register_source("github", "issue-1", revision="r1", locator="https://x")
+        observation = store.record_observation(
+            source["source_id"], "obs-1", semantic_type="bug", content_hash="a" * 64
+        )
+        store.record_claim("claim-1", "/claim", [observation["observation_id"]])
+        candidate = store.create_candidate(
+            "candidate-1",
+            "demo",
+            "candidate",
+            "bug",
+            dedupe_key="candidate-dedupe-1",
+            claim_ids=["claim-1"],
+            domain="github",
+            external_id="issue-1",
+            external_revision="r1",
+        )
+        return store, candidate
+
     def test_reopen_v2_database_runs_additive_migration(self):
         with tempfile.TemporaryDirectory() as td:
             state = Path(td) / "state"
@@ -85,3 +108,148 @@ class InformationV3Tests(unittest.TestCase):
             run('candidate','create','cand','--project','demo','--title','x','--kind','bug','--dedupe-key','d','--claim','cl','--domain','github','--external-id','i','--external-revision','r')
             run('candidate','promote','cand','--create-new','--project','demo','--prefix','DEM','--title','x','--kind','bug'); first=s.list_items('demo')[0].id
             run('candidate','promote','cand','--create-new','--project','demo','--prefix','DEM','--title','x','--kind','bug'); self.assertEqual(first,s.list_items('demo')[0].id); self.assertEqual(len(s.list_items('demo')),1)
+
+    def test_candidate_create_new_missing_candidate_leaves_no_orphan_item(self):
+        with tempfile.TemporaryDirectory() as td:
+            state = Path(td) / "state"
+            store = ServerOSStore(state)
+
+            with redirect_stderr(io.StringIO()):
+                exit_code = main([
+                    "--state-dir", str(state),
+                    "candidate", "promote", "missing",
+                    "--create-new",
+                    "--project", "demo",
+                    "--prefix", "DEM",
+                    "--title", "orphan",
+                    "--kind", "bug",
+                ])
+
+            self.assertEqual(exit_code, 2)
+            self.assertEqual(store.list_items("demo"), [])
+            with store.connection() as conn:
+                self.assertEqual(conn.execute("SELECT count(*) FROM projects").fetchone()[0], 0)
+                self.assertEqual(conn.execute("SELECT count(*) FROM id_sequences").fetchone()[0], 0)
+
+    def test_candidate_create_new_rolls_back_item_when_promotion_fails(self):
+        with tempfile.TemporaryDirectory() as td:
+            store, _ = self._create_candidate_fixture(Path(td) / "state")
+            with store.connection() as conn:
+                conn.execute(
+                    """CREATE TRIGGER fail_candidate_promotion
+                       BEFORE UPDATE OF state ON item_candidates
+                       WHEN NEW.state = 'PROMOTED'
+                       BEGIN
+                         SELECT RAISE(ABORT, 'injected promotion failure');
+                       END"""
+                )
+
+            with self.assertRaises(sqlite3.IntegrityError):
+                store.promote_candidate_to_new_item(
+                    "candidate-1",
+                    project="demo",
+                    prefix="DEM",
+                    title="new item",
+                    kind="bug",
+                )
+
+            self.assertEqual(store.list_items("demo"), [])
+            with store.connection() as conn:
+                candidate = conn.execute(
+                    "SELECT state,approved_item_id FROM item_candidates WHERE candidate_id='candidate-1'"
+                ).fetchone()
+                sequence = conn.execute(
+                    "SELECT next_value FROM id_sequences WHERE scope='demo' AND kind='item'"
+                ).fetchone()[0]
+            self.assertEqual(tuple(candidate), ("NEW", None))
+            self.assertEqual(sequence, 1)
+
+    def test_candidate_create_retry_returns_one_candidate(self):
+        with tempfile.TemporaryDirectory() as td:
+            state = Path(td) / "state"
+            store, first = self._create_candidate_fixture(state)
+
+            second = store.create_candidate(
+                "candidate-1",
+                "demo",
+                "candidate",
+                "bug",
+                dedupe_key="candidate-dedupe-1",
+                claim_ids=["claim-1"],
+                domain="github",
+                external_id="issue-1",
+                external_revision="r1",
+            )
+
+            self.assertEqual(second, first)
+            with store.connection() as conn:
+                self.assertEqual(conn.execute("SELECT count(*) FROM item_candidates").fetchone()[0], 1)
+                self.assertEqual(conn.execute("SELECT count(*) FROM candidate_claims").fetchone()[0], 1)
+
+    def test_candidate_match_retry_returns_same_mapping(self):
+        with tempfile.TemporaryDirectory() as td:
+            store, _ = self._create_candidate_fixture(Path(td) / "state")
+            item = store.create_item(WorkItem("DEM-0001", "demo", "existing", "bug", "/card"))
+
+            first = store.match_candidate("candidate-1", item.id)
+            second = store.match_candidate("candidate-1", item.id)
+
+            self.assertEqual(second, first)
+            self.assertEqual(second["state"], "MATCHED")
+            self.assertEqual(second["approved_item_id"], item.id)
+
+    def test_candidate_match_cli_returns_persisted_mapping(self):
+        with tempfile.TemporaryDirectory() as td:
+            state = Path(td) / "state"
+            store, _ = self._create_candidate_fixture(state)
+            item = store.create_item(WorkItem("DEM-0001", "demo", "existing", "bug", "/card"))
+            result = subprocess.run(
+                [
+                    sys.executable, "-m", "workengine.cli",
+                    "--state-dir", str(state),
+                    "candidate", "match", "candidate-1",
+                    "--item", item.id,
+                ],
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(
+                json.loads(result.stdout) | {"created_at": "ignored"},
+                {
+                    "candidate_id": "candidate-1",
+                    "project": "demo",
+                    "title": "candidate",
+                    "kind": "bug",
+                    "state": "MATCHED",
+                    "dedupe_key": "candidate-dedupe-1",
+                    "domain": "github",
+                    "external_id": "issue-1",
+                    "external_revision": "r1",
+                    "approved_item_id": item.id,
+                    "created_at": "ignored",
+                },
+            )
+
+    def test_candidate_match_cli_rejects_missing_candidate(self):
+        with tempfile.TemporaryDirectory() as td:
+            state = Path(td) / "state"
+            store = ServerOSStore(state)
+            store.register_project("demo", "DEM")
+            item = store.create_item(WorkItem("DEM-0001", "demo", "existing", "bug", "/card"))
+            result = subprocess.run(
+                [
+                    sys.executable, "-m", "workengine.cli",
+                    "--state-dir", str(state),
+                    "candidate", "match", "missing",
+                    "--item", item.id,
+                ],
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+
+            self.assertEqual(result.returncode, 2)
+            self.assertEqual(json.loads(result.stderr)["error"]["code"], "INVALID_INPUT")

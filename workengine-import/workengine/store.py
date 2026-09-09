@@ -254,6 +254,11 @@ class ServerOSStore:
 
     def match_candidate(self, candidate_id, item_id):
         with self.transaction(immediate=True) as c:
+            candidate = c.execute(
+                "SELECT * FROM item_candidates WHERE candidate_id=?", (candidate_id,)
+            ).fetchone()
+            if candidate is None:
+                raise KeyError(candidate_id)
             if not c.execute("SELECT 1 FROM items_index WHERE item_id=?",(item_id,)).fetchone(): raise KeyError(item_id)
             c.execute("UPDATE item_candidates SET state='MATCHED',approved_item_id=? WHERE candidate_id=?",(item_id,candidate_id))
             return dict(c.execute("SELECT * FROM item_candidates WHERE candidate_id=?",(candidate_id,)).fetchone())
@@ -269,6 +274,81 @@ class ServerOSStore:
             c.execute("UPDATE item_candidates SET state='PROMOTED',approved_item_id=? WHERE candidate_id=?",(target,candidate_id))
             if r['domain'] and r['external_id'] and r['external_revision']:
                 c.execute("INSERT OR IGNORE INTO external_item_mappings(domain,external_id,revision,item_id) VALUES(?,?,?,?)",(r['domain'],r['external_id'],r['external_revision'],target))
+        return self.get_item(target)
+
+    def promote_candidate_to_new_item(self, candidate_id, *, project, prefix, title, kind):
+        with self.transaction(immediate=True) as c:
+            candidate = c.execute(
+                "SELECT * FROM item_candidates WHERE candidate_id=?", (candidate_id,)
+            ).fetchone()
+            if candidate is None:
+                raise KeyError(candidate_id)
+            if candidate["state"] == "PROMOTED":
+                target = candidate["approved_item_id"]
+            else:
+                if candidate["project"] != project:
+                    raise ValueError("candidate project does not match new Item project")
+                if not project or not _PREFIX.fullmatch(prefix):
+                    raise ValueError("invalid project or Item prefix")
+                registered = c.execute(
+                    "SELECT prefix FROM projects WHERE project=?", (project,)
+                ).fetchone()
+                if registered and registered["prefix"] != prefix:
+                    raise ValueError(f"project {project} already uses prefix {registered['prefix']}")
+                owner = c.execute("SELECT project FROM projects WHERE prefix=?", (prefix,)).fetchone()
+                if owner and owner["project"] != project:
+                    raise ValueError(f"Item prefix already registered: {prefix}")
+                c.execute("INSERT OR IGNORE INTO projects(project,prefix) VALUES (?,?)", (project, prefix))
+                c.execute(
+                    "INSERT OR IGNORE INTO id_sequences(scope,kind,next_value) VALUES (?,?,1)",
+                    (project, "item"),
+                )
+                sequence = c.execute(
+                    "SELECT next_value FROM id_sequences WHERE scope=? AND kind='item'", (project,)
+                ).fetchone()["next_value"]
+                c.execute(
+                    "UPDATE id_sequences SET next_value=? WHERE scope=? AND kind='item'",
+                    (sequence + 1, project),
+                )
+                target = f"{prefix}-{sequence:04d}"
+                item = WorkItem(
+                    target,
+                    project,
+                    title,
+                    kind,
+                    f"records/projects/{project}/items/{target}/card.yaml",
+                )
+                c.execute(
+                    """INSERT INTO items_index
+                       (item_id,project,title,kind,card_locator,state,outcome,created_at,updated_at)
+                       VALUES (?,?,?,?,?,?,?,?,?)""",
+                    (
+                        item.id,
+                        item.project,
+                        item.title,
+                        item.kind,
+                        item.card_locator,
+                        item.state.value,
+                        None,
+                        item.created_at,
+                        item.updated_at,
+                    ),
+                )
+                self._event(c, target, "created", {"state": item.state.value})
+                c.execute(
+                    "UPDATE item_candidates SET state='PROMOTED',approved_item_id=? WHERE candidate_id=?",
+                    (target, candidate_id),
+                )
+                if candidate["domain"] and candidate["external_id"] and candidate["external_revision"]:
+                    c.execute(
+                        "INSERT OR IGNORE INTO external_item_mappings(domain,external_id,revision,item_id) VALUES(?,?,?,?)",
+                        (
+                            candidate["domain"],
+                            candidate["external_id"],
+                            candidate["external_revision"],
+                            target,
+                        ),
+                    )
         return self.get_item(target)
 
     def transition_activity(self, item_id, activity_id, target):

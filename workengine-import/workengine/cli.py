@@ -152,12 +152,13 @@ def _cmd_candidate(args):
         if args.item: return s.promote_candidate(args.id,args.item)
         if args.create_new:
             if not all((args.project,args.prefix,args.title,args.kind)): raise ValueError('create-new promotion requires project, prefix, title, kind')
-            with s.connection() as c:
-                existing=c.execute('SELECT approved_item_id FROM item_candidates WHERE candidate_id=? AND state=\'PROMOTED\'',(args.id,)).fetchone()
-            if existing: return s.get_item(existing['approved_item_id'])
-            server=ServerOS(state_dir=_state_dir(args), artifacts_root=None); server.register_project(args.project,args.prefix)
-            item=server.create_item(args.project,args.title,args.kind)
-            return s.promote_candidate(args.id,item.id)
+            return s.promote_candidate_to_new_item(
+                args.id,
+                project=args.project,
+                prefix=args.prefix,
+                title=args.title,
+                kind=args.kind,
+            )
         raise ValueError('promotion requires explicit --item or --create-new approval')
     state={'merge':'MERGED','reject':'REJECTED','defer':'DEFERRED'}[args.action]
     with s.transaction(immediate=True) as c:
