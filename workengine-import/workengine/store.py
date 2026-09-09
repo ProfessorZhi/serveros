@@ -402,6 +402,37 @@ class ServerOSStore:
             c.execute("INSERT INTO feedback(item_id,locator,kind,created_at) VALUES(?,?,?,?)",(item_id,locator,kind,now_iso()))
             return dict(c.execute("SELECT * FROM feedback WHERE feedback_id=last_insert_rowid()").fetchone())
 
+    def resolve_evidence_run(self, evidence_run):
+        parts = str(evidence_run).split('/', 1)
+        if len(parts) != 2 or not parts[0] or not re.fullmatch(r"RUN-[0-9]{4,}", parts[1]):
+            raise ValueError("evidence Run must be ITEM/RUN-0001")
+        item_id, run_id = parts
+        if self.get_run(item_id, run_id) is None:
+            raise KeyError(f"unknown Run: {evidence_run}")
+        return item_id, run_id
+
+    def record_publication_receipt(self, domain, locator, sha256, evidence_run):
+        target = Path(locator)
+        if not domain or not target.is_absolute() or not target.is_file():
+            raise ValueError("publication receipt requires domain and existing absolute current locator")
+        if not re.fullmatch(r"[0-9a-f]{64}", str(sha256)):
+            raise ValueError("publication receipt requires SHA-256")
+        if hashlib.sha256(target.read_bytes()).hexdigest() != sha256:
+            raise ValueError("publication receipt hash does not match current projection")
+        item_id, run_id = self.resolve_evidence_run(evidence_run)
+        with self.transaction(immediate=True) as c:
+            c.execute(
+                """INSERT OR IGNORE INTO publication_receipts
+                   (domain,object_id,revision,locator,sha256,evidence_run,item_id,run_id,created_at)
+                   VALUES (?,?,?,?,?,?,?,?,?)""",
+                (domain, 'current', sha256, str(target), sha256, evidence_run, item_id, run_id, now_iso()),
+            )
+            row = c.execute(
+                "SELECT * FROM publication_receipts WHERE domain=? AND locator=? AND evidence_run=?",
+                (domain, str(target), evidence_run),
+            ).fetchone()
+        return dict(row)
+
     def list_deliverables(self, item_id: str) -> list[dict]:
         with self.connection() as conn:
             rows = conn.execute(

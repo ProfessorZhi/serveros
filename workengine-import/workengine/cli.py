@@ -166,10 +166,15 @@ def _cmd_candidate(args):
         return dict(c.execute('SELECT * FROM item_candidates WHERE candidate_id=?',(args.id,)).fetchone())
 
 def _cmd_federation(args):
-    if args.action=='inventory': return federation_inventory(args.domain,args.source,args.target)
+    store=ServerOSStore(_state_dir(args))
+    store.resolve_evidence_run(args.evidence_run)
+    if args.action=='inventory':
+        result=federation_inventory(args.domain,args.source,args.target)
+        receipt=store.record_publication_receipt(args.domain,result['locator'],result['sha256'],args.evidence_run)
+        return {**result,'evidence_run':args.evidence_run,'receipt':receipt}
     observed=[json.loads(x) for x in Path(args.observed).read_text().splitlines() if x.strip()]
     desired=[json.loads(x) for x in Path(args.desired).read_text().splitlines() if x.strip()]
-    d=check_inventory(observed,desired)
+    d=check_inventory(observed,desired,evidence_run=args.evidence_run)
     return federation_proposal(d) if args.action=='proposal' else d
 
 
@@ -250,9 +255,9 @@ def build_parser() -> argparse.ArgumentParser:
     for action in ("merge","reject","defer"):
         x=ca.add_parser(action); x.add_argument("id")
     federation=groups.add_parser("federation",parents=[_common()]); federation.add_argument("domain"); fa=federation.add_subparsers(dest="action",required=True)
-    fi=fa.add_parser("inventory"); fi.add_argument("--source",required=True); fi.add_argument("--target",required=True)
+    fi=fa.add_parser("inventory"); fi.add_argument("--source",required=True); fi.add_argument("--target",required=True); fi.add_argument("--evidence-run",required=True)
     for action in ("check","proposal"):
-        fx=fa.add_parser(action); fx.add_argument("--observed",required=True); fx.add_argument("--desired",required=True)
+        fx=fa.add_parser(action); fx.add_argument("--observed",required=True); fx.add_argument("--desired",required=True); fx.add_argument("--evidence-run",required=True)
 
     run = groups.add_parser("run", parents=[_common()])
     run_actions = run.add_subparsers(dest="action", required=True)

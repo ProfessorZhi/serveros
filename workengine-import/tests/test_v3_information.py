@@ -50,10 +50,12 @@ class InformationV3Tests(unittest.TestCase):
             conn.commit(); conn.close()
             store = ServerOSStore(state)
             with store.connection() as c:
-                self.assertEqual(c.execute("select version from schema_migrations order by version desc limit 1").fetchone()[0], 4)
+                self.assertEqual(c.execute("select version from schema_migrations order by version desc limit 1").fetchone()[0], 5)
                 self.assertEqual(c.execute("select count(*) from items_index").fetchone()[0], 1)
                 for table in ("source_objects", "observations", "claims", "item_candidates", "evidence", "feedback", "publication_receipts"):
                     self.assertIsNotNone(c.execute("select name from sqlite_master where name=?", (table,)).fetchone())
+                receipt_columns = {row[1] for row in c.execute("pragma table_info(publication_receipts)")}
+                self.assertTrue({"sha256", "evidence_run", "item_id", "run_id"} <= receipt_columns)
 
     def test_v3_fixture_upgrades_to_v4_without_losing_candidate_rows(self):
         with tempfile.TemporaryDirectory() as td:
@@ -65,7 +67,7 @@ class InformationV3Tests(unittest.TestCase):
             c.execute("INSERT INTO claims VALUES('cl','/claim','ACTIVE','t')"); c.execute("INSERT INTO claim_observations VALUES('cl','o')"); c.execute("INSERT INTO candidate_claims VALUES('x','cl')"); c.commit(); c.close()
             s=ServerOSStore(state)
             with s.connection() as dbconn:
-                self.assertEqual(dbconn.execute('select max(version) from schema_migrations').fetchone()[0],4); self.assertEqual(dbconn.execute("select external_id from item_candidates where candidate_id='x'").fetchone()[0],'e')
+                self.assertEqual(dbconn.execute('select max(version) from schema_migrations').fetchone()[0],5); self.assertEqual(dbconn.execute("select external_id from item_candidates where candidate_id='x'").fetchone()[0],'e')
                 self.assertEqual(dbconn.execute('select count(*) from candidate_claims where candidate_id="x" and claim_id="cl"').fetchone()[0],1); self.assertEqual(list(dbconn.execute('pragma foreign_key_check')),[])
 
     def test_information_records_require_provenance_and_are_idempotent(self):

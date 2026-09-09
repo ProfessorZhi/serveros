@@ -1,4 +1,4 @@
-"""Additive, versioned SQLite migrations for the v3/v4 control plane."""
+"""Additive, versioned SQLite migrations for the ServerOS v3 control plane."""
 from __future__ import annotations
 import json
 from .model import now_iso
@@ -14,6 +14,29 @@ CREATE TABLE IF NOT EXISTS external_item_mappings (domain TEXT NOT NULL, externa
 CREATE TABLE IF NOT EXISTS evidence (evidence_id INTEGER PRIMARY KEY AUTOINCREMENT, item_id TEXT NOT NULL, run_id TEXT NOT NULL, kind TEXT NOT NULL, locator TEXT NOT NULL, sha256 TEXT NOT NULL, command TEXT NOT NULL, cases_json TEXT NOT NULL, exit_code INTEGER NOT NULL, revision TEXT NOT NULL, dirty INTEGER NOT NULL, verdict TEXT NOT NULL, created_at TEXT NOT NULL, UNIQUE(item_id,run_id,locator));
 CREATE TABLE IF NOT EXISTS feedback (feedback_id INTEGER PRIMARY KEY AUTOINCREMENT, item_id TEXT NOT NULL REFERENCES items_index(item_id), locator TEXT NOT NULL, kind TEXT NOT NULL, created_at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS publication_receipts (receipt_id INTEGER PRIMARY KEY AUTOINCREMENT, domain TEXT NOT NULL, object_id TEXT NOT NULL, revision TEXT NOT NULL, locator TEXT NOT NULL, created_at TEXT NOT NULL, UNIQUE(domain,object_id,revision));
+"""
+
+V5_SQL = """
+CREATE TABLE publication_receipts_v5 (
+    receipt_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    domain TEXT NOT NULL,
+    object_id TEXT NOT NULL,
+    revision TEXT NOT NULL,
+    locator TEXT NOT NULL,
+    sha256 TEXT,
+    evidence_run TEXT,
+    item_id TEXT,
+    run_id TEXT,
+    created_at TEXT NOT NULL,
+    UNIQUE(domain,locator,evidence_run),
+    FOREIGN KEY(item_id,run_id) REFERENCES runs(item_id,run_id)
+);
+INSERT INTO publication_receipts_v5
+    (receipt_id,domain,object_id,revision,locator,created_at)
+    SELECT receipt_id,domain,object_id,revision,locator,created_at
+    FROM publication_receipts;
+DROP TABLE publication_receipts;
+ALTER TABLE publication_receipts_v5 RENAME TO publication_receipts;
 """
 
 def migrate(conn) -> None:
@@ -43,6 +66,15 @@ def migrate(conn) -> None:
             else:
                 conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS candidate_external_identity ON item_candidates(domain,external_id,external_revision)")
             conn.execute("INSERT INTO schema_migrations(version,applied_at) VALUES(4,?)", (now_iso(),))
+            conn.commit()
+        except Exception:
+            conn.rollback(); raise
+    if conn.execute("SELECT 1 FROM schema_migrations WHERE version=5").fetchone() is None:
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            for statement in V5_SQL.split(';'):
+                if statement.strip(): conn.execute(statement)
+            conn.execute("INSERT INTO schema_migrations(version,applied_at) VALUES(5,?)", (now_iso(),))
             conn.commit()
         except Exception:
             conn.rollback(); raise

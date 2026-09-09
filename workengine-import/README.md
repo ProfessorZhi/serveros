@@ -52,17 +52,20 @@ serverosctl --json board render --project serveros \
 # Register a metadata-only Feishu or GitHub inventory and generate drift proposals.
 serverosctl --json federation feishu inventory \
   --source /absolute/path/inventory/feishu-objects.jsonl \
-  --target /opt/applications/data/home-hwz/state/serveros/federation/feishu/current.jsonl
+  --target /opt/applications/data/home-hwz/state/serveros/federation/feishu/current.jsonl \
+  --evidence-run SRV-0001/RUN-0001
 serverosctl --json federation feishu proposal \
   --observed /absolute/path/inventory/feishu-objects.jsonl \
-  --desired /absolute/path/feishu-desired.jsonl
+  --desired /absolute/path/feishu-desired.jsonl \
+  --evidence-run SRV-0001/RUN-0001
 ```
 
 The information-to-work handoff is explicit: `source`, `observation`, and
 `claim` preserve provenance; `candidate` records matching, promotion, merge,
 rejection, or deferral before an Item is created. `federation` accepts only
 metadata and locators, writes a latest successful projection atomically, and
-emits proposals rather than changing Feishu or GitHub.
+records its projection hash and evidence Run in a publication receipt. Drift
+commands emit schema-valid proposals rather than changing Feishu or GitHub.
 
 Execution-context revisions remain authoritative per repo. The revision passed
 to `run finalize` describes the aggregate Run evidence and does not rewrite the

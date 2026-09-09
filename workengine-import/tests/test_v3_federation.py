@@ -1,10 +1,38 @@
+import hashlib
+import json
+import os
+import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
+
+from workengine import Activity, WorkItem
+from workengine.store import ServerOSStore
 from workengine.federation import check_inventory, inventory, proposal
 
 
 class FederationV3Tests(unittest.TestCase):
+    def run_cli(self, state, artifacts, *args):
+        env = os.environ.copy()
+        env["SERVEROS_STATE_DIR"] = str(state)
+        env["SERVEROS_ARTIFACTS_ROOT"] = str(artifacts)
+        return subprocess.run(
+            [sys.executable, "-m", "workengine", "--json", *args],
+            text=True,
+            capture_output=True,
+            env=env,
+            check=False,
+        )
+
+    def create_run(self, root):
+        store = ServerOSStore(root / "state")
+        store.register_project("serveros", "SRV")
+        item = store.create_item(WorkItem("SRV-0001", "serveros", "inventory", "ops", "/card"))
+        store.add_activity(Activity(item.id, "inventory", "inspect"))
+        run = store.begin_run(item.id, "inventory", "codex", "inventory-1", root / "artifacts")
+        return store, item, run
+
     def test_missing_parent_is_placement_drift_and_auth_is_not_topology(self):
         rows = [{"domain":"feishu","object_id":"doc-1","parent":"missing","kind":"doc"}]
         drift = check_inventory(rows, [{"domain":"feishu","object_id":"root","kind":"folder"}])
@@ -33,6 +61,145 @@ class FederationV3Tests(unittest.TestCase):
             with self.assertRaises(ValueError): inventory('github',src,dst)
             self.assertEqual(dst.read_text(),'old\n')
 
+    def test_inventory_cli_records_traceable_current_projection_receipt(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            store, item, run = self.create_run(root)
+            source = root / "evidence.jsonl"
+            target = root / "federation" / "feishu" / "current.jsonl"
+            source.write_text(json.dumps({"object_id": "doc-1", "kind": "doc"}) + "\n")
+
+            published = self.run_cli(
+                root / "state", root / "artifacts",
+                "federation", "feishu", "inventory",
+                "--source", str(source), "--target", str(target),
+                "--evidence-run", f"{item.id}/{run.id}",
+            )
+
+            self.assertEqual(published.returncode, 0, published.stderr)
+            payload = json.loads(published.stdout)
+            digest = hashlib.sha256(target.read_bytes()).hexdigest()
+            self.assertEqual(payload["sha256"], digest)
+            self.assertEqual(payload["evidence_run"], f"{item.id}/{run.id}")
+            self.assertEqual(payload["receipt"]["domain"], "feishu")
+            self.assertEqual(payload["receipt"]["locator"], str(target))
+            self.assertEqual(payload["receipt"]["sha256"], digest)
+            self.assertEqual(payload["receipt"]["evidence_run"], f"{item.id}/{run.id}")
+            repeated = self.run_cli(
+                root / "state", root / "artifacts",
+                "federation", "feishu", "inventory",
+                "--source", str(source), "--target", str(target),
+                "--evidence-run", f"{item.id}/{run.id}",
+            )
+            self.assertEqual(repeated.returncode, 0, repeated.stderr)
+            self.assertEqual(json.loads(repeated.stdout)["receipt"]["receipt_id"], payload["receipt"]["receipt_id"])
+            with store.connection() as conn:
+                receipt = conn.execute("SELECT * FROM publication_receipts").fetchone()
+                receipt_count = conn.execute("SELECT count(*) FROM publication_receipts").fetchone()[0]
+            self.assertEqual(receipt["item_id"], item.id)
+            self.assertEqual(receipt["run_id"], run.id)
+            self.assertEqual(receipt_count, 1)
+
+    def test_inventory_cli_rejects_unknown_run_before_publish_or_receipt(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            store, item, _ = self.create_run(root)
+            source = root / "evidence.jsonl"
+            target = root / "current.jsonl"
+            source.write_text(json.dumps({"object_id": "repo-1", "kind": "repository"}) + "\n")
+            target.write_text("previous\n")
+
+            failed = self.run_cli(
+                root / "state", root / "artifacts",
+                "federation", "github", "inventory",
+                "--source", str(source), "--target", str(target),
+                "--evidence-run", f"{item.id}/RUN-9999",
+            )
+
+            self.assertEqual(failed.returncode, 2)
+            self.assertEqual(target.read_text(), "previous\n")
+            with store.connection() as conn:
+                self.assertEqual(conn.execute("SELECT count(*) FROM publication_receipts").fetchone()[0], 0)
+
+    def test_inventory_cli_failure_does_not_record_publication_receipt(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            store, item, run = self.create_run(root)
+            source = root / "failed.jsonl"
+            target = root / "current.jsonl"
+            source.write_text(json.dumps({"error": "RATE_LIMIT_TRANSIENT"}) + "\n")
+            target.write_text("previous\n")
+
+            failed = self.run_cli(
+                root / "state", root / "artifacts",
+                "federation", "github", "inventory",
+                "--source", str(source), "--target", str(target),
+                "--evidence-run", f"{item.id}/{run.id}",
+            )
+
+            self.assertEqual(failed.returncode, 2)
+            self.assertEqual(target.read_text(), "previous\n")
+            with store.connection() as conn:
+                self.assertEqual(conn.execute("SELECT count(*) FROM publication_receipts").fetchone()[0], 0)
+
+    def test_drift_envelopes_match_cross_repo_schema_contract(self):
+        evidence_run = "SRV-0003/RUN-0006"
+        drifts = check_inventory(
+            [
+                {"domain": "feishu", "object_id": "moved", "parent": "wrong"},
+                {"domain": "feishu", "object_id": "extra", "parent": "root"},
+                {"domain": "feishu", "object_id": "auth", "error": "AUTH_EXPIRED"},
+            ],
+            [
+                {"domain": "feishu", "object_id": "moved", "parent": "right"},
+                {"domain": "feishu", "object_id": "missing", "parent": "root"},
+            ],
+            evidence_run=evidence_run,
+        )
+        required = {
+            "domain", "object_id", "observed", "desired", "class", "risk",
+            "proposed_action", "approval", "evidence_run",
+        }
+        self.assertEqual({drift["class"] for drift in drifts}, {
+            "PLACEMENT_DRIFT", "UNEXPECTED_OBJECT", "AUTH_EXPIRED", "MISSING_OBJECT",
+        })
+        for drift in drifts:
+            self.assertEqual(set(drift), required)
+            self.assertIsInstance(drift["domain"], str)
+            self.assertIsInstance(drift["object_id"], str)
+            self.assertIsInstance(drift["observed"], dict)
+            self.assertIsInstance(drift["desired"], dict)
+            self.assertIn(drift["risk"], {"low", "medium", "high", "critical"})
+            self.assertIn(drift["approval"], {"automatic", "proposal-only", "explicit"})
+            self.assertEqual(drift["evidence_run"], evidence_run)
+        topology = [drift for drift in drifts if drift["class"] != "AUTH_EXPIRED"]
+        self.assertTrue(all(drift["approval"] == "proposal-only" for drift in topology))
+        proposed = proposal(drifts)
+        self.assertTrue(all(set(row) == required for row in proposed))
+
+    def test_proposal_cli_propagates_evidence_run_without_extra_fields(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            _, item, run = self.create_run(root)
+            observed = root / "observed.jsonl"
+            desired = root / "desired.jsonl"
+            observed.write_text(json.dumps({"domain": "github", "object_id": "repo", "parent": "old"}) + "\n")
+            desired.write_text(json.dumps({"domain": "github", "object_id": "repo", "parent": "new"}) + "\n")
+            evidence_run = f"{item.id}/{run.id}"
+
+            result = self.run_cli(
+                root / "state", root / "artifacts",
+                "federation", "github", "proposal",
+                "--observed", str(observed), "--desired", str(desired),
+                "--evidence-run", evidence_run,
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            payload = json.loads(result.stdout)
+            self.assertEqual(payload[0]["evidence_run"], evidence_run)
+            self.assertEqual(payload[0]["approval"], "proposal-only")
+            self.assertNotIn("action", payload[0])
+
     def test_proposal_order_is_stable(self):
-        rows=[{'risk':'medium','action':'z','object_id':'2'},{'risk':'high','action':'b','object_id':'3'},{'risk':'high','action':'a','object_id':'1'}]
+        rows=[{'risk':'medium','proposed_action':'z','object_id':'2'},{'risk':'high','proposed_action':'b','object_id':'3'},{'risk':'high','proposed_action':'a','object_id':'1'}]
         self.assertEqual([x['object_id'] for x in proposal(rows)],['1','3','2'])
