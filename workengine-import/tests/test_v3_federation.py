@@ -1,6 +1,7 @@
 import hashlib
 import json
 import os
+import stat
 import subprocess
 import sys
 import tempfile
@@ -33,6 +34,27 @@ class FederationV3Tests(unittest.TestCase):
         run = store.begin_run(item.id, "inventory", "codex", "inventory-1", root / "artifacts")
         return store, item, run
 
+    def create_interrupted_publication(self, root):
+        class SimulatedCrash(BaseException):
+            pass
+
+        source = root / "evidence.jsonl"
+        target = root / "current.jsonl"
+        source.write_text(json.dumps({
+            "object_id": "repo-1", "kind": "repository", "locator": "github://repo-1",
+            "observed_at": "2026-09-09T10:00:00+00:00",
+        }) + "\n")
+        target.write_text("previous\n")
+        with self.assertRaises(SimulatedCrash):
+            publish_inventory(
+                "github", source, target, "SRV-0003/RUN-0006",
+                lambda *_: (_ for _ in ()).throw(SimulatedCrash()),
+            )
+        journal = target.with_name(f".{target.name}.publish.json")
+        pending = json.loads(journal.read_text())
+        backup = target.parent / Path(pending["backup"]).name
+        return source, target, journal, pending, backup
+
     def test_missing_parent_is_placement_drift_and_auth_is_not_topology(self):
         rows = [{"domain":"feishu","object_id":"doc-1","parent":"missing","kind":"doc"}]
         drift = check_inventory(rows, [{"domain":"feishu","object_id":"root","kind":"folder"}])
@@ -51,15 +73,29 @@ class FederationV3Tests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             src=Path(td)/'bad.jsonl'; dst=Path(td)/'current.jsonl'; dst.write_text('old\n')
             src.write_text('{"error":"AUTH_EXPIRED"}\n')
-            with self.assertRaises(ValueError): inventory('feishu',src,dst)
+            with self.assertRaises(ValueError): inventory('feishu',src)
             self.assertEqual(dst.read_text(),'old\n')
 
     def test_inventory_preserves_previous_projection_on_rate_limit(self):
         with tempfile.TemporaryDirectory() as td:
             src=Path(td)/'bad.jsonl'; dst=Path(td)/'current.jsonl'; dst.write_text('old\n')
             src.write_text('{"error":"RATE_LIMIT_TRANSIENT"}\n')
-            with self.assertRaises(ValueError): inventory('github',src,dst)
+            with self.assertRaises(ValueError): inventory('github',src)
             self.assertEqual(dst.read_text(),'old\n')
+
+    def test_inventory_library_api_is_validation_only(self):
+        with tempfile.TemporaryDirectory() as td:
+            root=Path(td); src=root/'objects.jsonl'; dst=root/'current.jsonl'
+            src.write_text(json.dumps({
+                "object_id":"repo-1", "kind":"repository", "locator":"github://repo-1",
+                "observed_at":"2026-09-09T10:00:00+00:00",
+            })+'\n')
+
+            result=inventory('github', src)
+
+            self.assertEqual(result['objects'], 1)
+            self.assertIn('sha256', result)
+            self.assertFalse(dst.exists())
 
     def test_inventory_cli_records_traceable_current_projection_receipt(self):
         with tempfile.TemporaryDirectory() as td:
@@ -156,6 +192,17 @@ class FederationV3Tests(unittest.TestCase):
                 "observed_at": "2026-09-09T10:00:00+00:00",
             }) + "\n")
             target.write_text("previous\n")
+            os.chmod(target, 0o640)
+            xattr_supported = False
+            if hasattr(os, "setxattr"):
+                try:
+                    os.setxattr(target, "user.serveros-test", b"preserve-me")
+                    xattr_supported = True
+                except OSError:
+                    pass
+            original_mtime_ns = 1_700_000_000_123_456_789
+            os.utime(target, ns=(original_mtime_ns, original_mtime_ns))
+            original_stat = target.stat()
             with store.connection() as conn:
                 conn.execute(
                     """CREATE TRIGGER fail_publication_receipt
@@ -172,6 +219,13 @@ class FederationV3Tests(unittest.TestCase):
 
             self.assertNotEqual(failed.returncode, 0)
             self.assertEqual(target.read_text(), "previous\n")
+            restored_stat = target.stat()
+            self.assertEqual(stat.S_IMODE(restored_stat.st_mode), stat.S_IMODE(original_stat.st_mode))
+            self.assertEqual(restored_stat.st_mtime_ns, original_stat.st_mtime_ns)
+            self.assertEqual((restored_stat.st_uid, restored_stat.st_gid),
+                             (original_stat.st_uid, original_stat.st_gid))
+            if xattr_supported:
+                self.assertEqual(os.getxattr(target, "user.serveros-test"), b"preserve-me")
             with store.connection() as conn:
                 self.assertEqual(conn.execute("SELECT count(*) FROM publication_receipts").fetchone()[0], 0)
 
@@ -259,7 +313,7 @@ class FederationV3Tests(unittest.TestCase):
 
             published_hash = hashlib.sha256(target.read_bytes()).hexdigest()
             self.assertTrue(target.with_name(f".{target.name}.publish.json").exists())
-            self.assertEqual(len(list(root.glob(f".{target.name}.backup.*"))), 1)
+            self.assertEqual(len(list(root.glob(f".{target.name}.publish.*.backup"))), 1)
             receipt = {
                 "domain": "github", "locator": str(target), "sha256": published_hash,
                 "evidence_run": "SRV-0003/RUN-0006",
@@ -271,7 +325,128 @@ class FederationV3Tests(unittest.TestCase):
             self.assertEqual(completed["receipt"], receipt)
             self.assertEqual(completed["sha256"], published_hash)
             self.assertFalse(target.with_name(f".{target.name}.publish.json").exists())
-            self.assertEqual(list(root.glob(f".{target.name}.backup.*")), [])
+            self.assertEqual(list(root.glob(f".{target.name}.publish.*.backup")), [])
+
+    def test_recovery_rejects_absolute_victim_backup_without_touching_files(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            source, target, journal, pending, _ = self.create_interrupted_publication(root)
+            victim = root / "victim.txt"
+            victim.write_text("victim\n")
+            current = target.read_bytes()
+            pending["backup"] = str(victim)
+            journal.write_text(json.dumps(pending) + "\n")
+
+            with self.assertRaises(ValueError):
+                publish_inventory(
+                    "github", source, target, "SRV-0003/RUN-0006", lambda *_: {},
+                )
+
+            self.assertEqual(target.read_bytes(), current)
+            self.assertEqual(victim.read_text(), "victim\n")
+
+    def test_recovery_rejects_traversal_and_wrong_stage_without_touching_target(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            source, target, journal, pending, _ = self.create_interrupted_publication(root)
+            current = target.read_bytes()
+            pending["backup"] = "../victim"
+            pending["stage"] = "../victim"
+            journal.write_text(json.dumps(pending) + "\n")
+
+            with self.assertRaises(ValueError):
+                publish_inventory(
+                    "github", source, target, "SRV-0003/RUN-0006", lambda *_: {},
+                )
+
+            self.assertEqual(target.read_bytes(), current)
+
+    def test_recovery_rejects_symlink_backup_without_touching_victim(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            source, target, _, _, backup = self.create_interrupted_publication(root)
+            victim = root / "victim.txt"
+            victim.write_text("victim\n")
+            current = target.read_bytes()
+            backup.unlink()
+            backup.symlink_to(victim)
+
+            with self.assertRaises(ValueError):
+                publish_inventory(
+                    "github", source, target, "SRV-0003/RUN-0006", lambda *_: {},
+                )
+
+            self.assertEqual(target.read_bytes(), current)
+            self.assertEqual(victim.read_text(), "victim\n")
+            self.assertTrue(backup.is_symlink())
+
+    def test_recovery_rejects_symlink_or_corrupt_journal_without_touching_target(self):
+        cases = ("symlink", "corrupt")
+        for case in cases:
+            with self.subTest(case=case), tempfile.TemporaryDirectory() as td:
+                root = Path(td)
+                source = root / "evidence.jsonl"
+                target = root / "current.jsonl"
+                victim = root / "victim.txt"
+                source.write_text(json.dumps({
+                    "object_id": "repo-1", "kind": "repository", "locator": "github://repo-1",
+                    "observed_at": "2026-09-09T10:00:00+00:00",
+                }) + "\n")
+                target.write_text("previous\n")
+                victim.write_text("victim\n")
+                journal = target.with_name(f".{target.name}.publish.json")
+                if case == "symlink":
+                    journal.symlink_to(victim)
+                else:
+                    journal.write_text("not-json\n")
+
+                with self.assertRaises(ValueError):
+                    publish_inventory(
+                        "github", source, target, "SRV-0003/RUN-0006", lambda *_: {},
+                    )
+
+                self.assertEqual(target.read_text(), "previous\n")
+                self.assertEqual(victim.read_text(), "victim\n")
+
+    def test_recovery_rejects_backup_hash_mismatch_without_touching_target(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            source, target, _, _, backup = self.create_interrupted_publication(root)
+            current = target.read_bytes()
+            backup.write_text("tampered\n")
+
+            with self.assertRaises(ValueError):
+                publish_inventory(
+                    "github", source, target, "SRV-0003/RUN-0006", lambda *_: {},
+                )
+
+            self.assertEqual(target.read_bytes(), current)
+
+    def test_recovery_rejects_wrong_identity_fields_without_touching_victim(self):
+        mutations = {
+            "version": lambda pending, victim: pending.__setitem__("version", 999),
+            "domain": lambda pending, victim: pending.__setitem__("domain", "feishu"),
+            "target": lambda pending, victim: pending.__setitem__("target", str(victim)),
+            "nonce": lambda pending, victim: pending.__setitem__("nonce", "../victim"),
+            "new_hash": lambda pending, victim: pending.__setitem__("new_sha256", "0" * 64),
+        }
+        for name, mutate in mutations.items():
+            with self.subTest(name=name), tempfile.TemporaryDirectory() as td:
+                root = Path(td)
+                source, target, journal, pending, _ = self.create_interrupted_publication(root)
+                victim = root / "victim.txt"
+                victim.write_text("victim\n")
+                current = target.read_bytes()
+                mutate(pending, victim)
+                journal.write_text(json.dumps(pending) + "\n")
+
+                with self.assertRaises(ValueError):
+                    publish_inventory(
+                        "github", source, target, "SRV-0003/RUN-0006", lambda *_: {},
+                    )
+
+                self.assertEqual(target.read_bytes(), current)
+                self.assertEqual(victim.read_text(), "victim\n")
 
     def test_drift_envelopes_match_cross_repo_schema_contract(self):
         evidence_run = "SRV-0003/RUN-0006"

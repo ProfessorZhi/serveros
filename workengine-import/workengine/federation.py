@@ -1,5 +1,6 @@
 """Validation and recoverable publication of metadata-only inventories."""
 from __future__ import annotations
+import base64
 from contextlib import contextmanager
 from datetime import datetime
 import fcntl
@@ -7,11 +8,17 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import re
+import secrets
+import stat
 import tempfile
 
 _OBJECT_SCHEMA = json.loads(
     (Path(__file__).with_name('schemas') / 'federation-object.schema.json').read_text(encoding='utf-8')
 )
+_JOURNAL_VERSION = 1
+_HASH_RE = re.compile(r'^[0-9a-f]{64}$')
+_NONCE_RE = re.compile(r'^[0-9a-f]{32}$')
 
 def _validate_type(value, expected):
     choices = expected if isinstance(expected, list) else [expected]
@@ -76,6 +83,124 @@ def _write_staged(directory, prefix, payload):
         raise
     return Path(name)
 
+def _write_transaction_file(directory, name, payload):
+    path=directory / name
+    flags=os.O_WRONLY | os.O_CREAT | os.O_EXCL
+    if hasattr(os, 'O_NOFOLLOW'):
+        flags |= os.O_NOFOLLOW
+    descriptor=os.open(path, flags, 0o600)
+    try:
+        with os.fdopen(descriptor, 'wb') as stream:
+            stream.write(payload)
+            stream.flush()
+            os.fsync(stream.fileno())
+    except BaseException:
+        path.unlink(missing_ok=True)
+        raise
+    return path
+
+def _canonical_target(target):
+    target=Path(target)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    parent=target.parent.resolve(strict=True)
+    canonical=parent / target.name
+    if canonical.is_symlink():
+        raise ValueError('publication target must not be a symlink')
+    return canonical
+
+def _read_regular_file(path):
+    path=Path(path)
+    try:
+        before=os.lstat(path)
+    except FileNotFoundError as exc:
+        raise ValueError(f'publication transaction file is missing: {path.name}') from exc
+    if stat.S_ISLNK(before.st_mode):
+        raise ValueError(f'publication transaction file is a symlink: {path.name}')
+    if not stat.S_ISREG(before.st_mode):
+        raise ValueError(f'publication transaction file is not regular: {path.name}')
+    flags=os.O_RDONLY
+    if hasattr(os, 'O_NOFOLLOW'):
+        flags |= os.O_NOFOLLOW
+    try:
+        descriptor=os.open(path, flags)
+    except FileNotFoundError as exc:
+        raise ValueError(f'publication transaction file is missing: {path.name}') from exc
+    try:
+        details=os.fstat(descriptor)
+        if not stat.S_ISREG(details.st_mode):
+            raise ValueError(f'publication transaction file is not regular: {path.name}')
+        with os.fdopen(descriptor, 'rb') as stream:
+            descriptor=None
+            return stream.read()
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
+
+def _file_hash(path):
+    return hashlib.sha256(_read_regular_file(path)).hexdigest()
+
+def _capture_metadata(path):
+    details=os.stat(path, follow_symlinks=False)
+    attributes={}
+    if hasattr(os, 'listxattr'):
+        for name in os.listxattr(path, follow_symlinks=False):
+            value=os.getxattr(path, name, follow_symlinks=False)
+            attributes[name]=base64.b64encode(value).decode('ascii')
+    return {
+        'mode':stat.S_IMODE(details.st_mode),
+        'atime_ns':details.st_atime_ns,
+        'mtime_ns':details.st_mtime_ns,
+        'uid':details.st_uid,
+        'gid':details.st_gid,
+        'xattrs':attributes,
+    }
+
+def _apply_metadata(path, metadata):
+    details=os.stat(path, follow_symlinks=False)
+    if (details.st_uid, details.st_gid) != (metadata['uid'], metadata['gid']):
+        os.chown(path, metadata['uid'], metadata['gid'], follow_symlinks=False)
+    os.chmod(path, metadata['mode'], follow_symlinks=False)
+    if hasattr(os, 'listxattr'):
+        expected=metadata['xattrs']
+        for name in os.listxattr(path, follow_symlinks=False):
+            if name not in expected:
+                os.removexattr(path, name, follow_symlinks=False)
+        for name, value in expected.items():
+            os.setxattr(path, name, base64.b64decode(value, validate=True), follow_symlinks=False)
+    os.utime(path, ns=(metadata['atime_ns'], metadata['mtime_ns']), follow_symlinks=False)
+
+def _validate_metadata(metadata):
+    required={'mode','atime_ns','mtime_ns','uid','gid','xattrs'}
+    if not isinstance(metadata, dict) or set(metadata) != required:
+        raise ValueError('publication journal has invalid old metadata')
+    if any(not isinstance(metadata[name], int) for name in required - {'xattrs'}):
+        raise ValueError('publication journal has invalid old metadata values')
+    if not isinstance(metadata['xattrs'], dict):
+        raise ValueError('publication journal has invalid xattrs')
+    try:
+        for name, value in metadata['xattrs'].items():
+            if not isinstance(name, str) or not isinstance(value, str):
+                raise ValueError
+            base64.b64decode(value, validate=True)
+    except (ValueError, TypeError) as exc:
+        raise ValueError('publication journal has invalid xattrs') from exc
+
+def _validate_backup_metadata(path, metadata):
+    details=os.stat(path, follow_symlinks=False)
+    if stat.S_IMODE(details.st_mode) != metadata['mode']:
+        raise ValueError('publication recovery backup mode does not match journal')
+    if details.st_mtime_ns != metadata['mtime_ns']:
+        raise ValueError('publication recovery backup mtime does not match journal')
+    if (details.st_uid, details.st_gid) != (metadata['uid'], metadata['gid']):
+        raise ValueError('publication recovery backup owner does not match journal')
+    if hasattr(os, 'listxattr'):
+        actual={
+            name:base64.b64encode(os.getxattr(path, name, follow_symlinks=False)).decode('ascii')
+            for name in os.listxattr(path, follow_symlinks=False)
+        }
+        if actual != metadata['xattrs']:
+            raise ValueError('publication recovery backup xattrs do not match journal')
+
 def _sync_directory(directory):
     descriptor=os.open(directory, os.O_RDONLY)
     try:
@@ -86,21 +211,29 @@ def _sync_directory(directory):
 @contextmanager
 def _publication_lock(target):
     lock_path = target.with_name(f'.{target.name}.publish.lock')
-    with lock_path.open('a+b') as lock:
+    flags=os.O_RDWR | os.O_CREAT
+    if hasattr(os, 'O_NOFOLLOW'):
+        flags |= os.O_NOFOLLOW
+    try:
+        descriptor=os.open(lock_path, flags, 0o600)
+    except OSError as exc:
+        raise ValueError('publication lock must be a regular non-symlink file') from exc
+    details=os.fstat(descriptor)
+    if not stat.S_ISREG(details.st_mode):
+        os.close(descriptor)
+        raise ValueError('publication lock must be a regular non-symlink file')
+    with os.fdopen(descriptor, 'a+b') as lock:
         fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
         yield
 
-def _publish(target, payload):
-    target=Path(target); target.parent.mkdir(parents=True, exist_ok=True)
-    staged=_write_staged(target.parent, f'.{target.name}.stage.', payload)
-    try:
-        staged.replace(target)
-        _sync_directory(target.parent)
-    finally:
-        staged.unlink(missing_ok=True)
-
 def _journal_path(target):
     return target.with_name(f'.{target.name}.publish.json')
+
+def _transaction_names(target, nonce):
+    return (
+        f'.{target.name}.publish.{nonce}.stage',
+        f'.{target.name}.publish.{nonce}.backup',
+    )
 
 def _write_journal(target, record):
     journal=_journal_path(target)
@@ -115,22 +248,88 @@ def _write_journal(target, record):
         staged.unlink(missing_ok=True)
     return journal
 
-def _remove_pending(journal, backup):
+def _remove_pending(journal, stage, backup):
     journal.unlink(missing_ok=True)
+    if stage is not None:
+        stage.unlink(missing_ok=True)
     if backup is not None:
         backup.unlink(missing_ok=True)
     _sync_directory(journal.parent)
 
-def _restore_pending(target, journal, pending):
-    backup=Path(pending['backup']) if pending.get('backup') else None
+def _load_pending(target, domain):
+    journal=_journal_path(target)
+    if journal.is_symlink():
+        raise ValueError('publication journal must not be a symlink')
+    try:
+        pending=json.loads(_read_regular_file(journal))
+    except json.JSONDecodeError as exc:
+        raise ValueError('publication journal is not valid JSON') from exc
+    required={
+        'version','domain','target','evidence_run','nonce','stage','backup',
+        'had_current','old_sha256','new_sha256','old_metadata',
+    }
+    if not isinstance(pending, dict) or set(pending) != required:
+        raise ValueError('publication journal has invalid fields')
+    if pending['version'] != _JOURNAL_VERSION:
+        raise ValueError('publication journal has unsupported version')
+    if pending['domain'] != domain or not isinstance(pending['evidence_run'], str) or not pending['evidence_run']:
+        raise ValueError('publication journal identity does not match request')
+    if pending['target'] != str(target):
+        raise ValueError('publication journal target does not match request')
+    nonce=pending['nonce']
+    if not isinstance(nonce, str) or not _NONCE_RE.fullmatch(nonce):
+        raise ValueError('publication journal has invalid nonce')
+    stage_name, backup_name=_transaction_names(target, nonce)
+    if pending['stage'] != stage_name:
+        raise ValueError('publication journal has invalid stage path')
+    had_current=pending['had_current']
+    if not isinstance(had_current, bool):
+        raise ValueError('publication journal has invalid current state')
+    expected_backup=backup_name if had_current else None
+    if pending['backup'] != expected_backup:
+        raise ValueError('publication journal has invalid backup path')
+    if not isinstance(pending['new_sha256'], str) or not _HASH_RE.fullmatch(pending['new_sha256']):
+        raise ValueError('publication journal has invalid new hash')
+    if had_current:
+        if not isinstance(pending['old_sha256'], str) or not _HASH_RE.fullmatch(pending['old_sha256']):
+            raise ValueError('publication journal has invalid old hash')
+        _validate_metadata(pending['old_metadata'])
+    elif pending['old_sha256'] is not None or pending['old_metadata'] is not None:
+        raise ValueError('publication journal has unexpected old state')
+    stage=target.parent / stage_name
+    backup=target.parent / backup_name if had_current else None
+    for path in (stage, backup):
+        if path is not None and path.is_symlink():
+            raise ValueError('publication transaction paths must not be symlinks')
+    if stage.exists() and _file_hash(stage) != pending['new_sha256']:
+        raise ValueError('publication stage hash does not match journal')
+    if backup is not None:
+        if _file_hash(backup) != pending['old_sha256']:
+            raise ValueError('publication recovery backup hash does not match journal')
+        _validate_backup_metadata(backup, pending['old_metadata'])
+    if target.exists():
+        current_hash=_file_hash(target)
+        allowed={pending['new_sha256']}
+        if pending['old_sha256'] is not None:
+            allowed.add(pending['old_sha256'])
+        if current_hash not in allowed:
+            raise ValueError('current projection hash does not match publication journal')
+    return pending, stage, backup
+
+def _restore_pending(target, journal, pending, stage, backup):
     if pending.get('had_current'):
-        if backup is None or not backup.is_file():
-            raise RuntimeError('publication recovery backup is missing')
+        if backup is None:
+            raise ValueError('publication recovery backup is missing')
+        # Hashing during validation may update atime; restore all recorded metadata last.
+        _apply_metadata(backup, pending['old_metadata'])
         backup.replace(target)
     else:
-        target.unlink(missing_ok=True)
+        if target.exists():
+            if _file_hash(target) != pending['new_sha256']:
+                raise ValueError('refusing to remove an unrecognized current projection')
+            target.unlink()
     _sync_directory(target.parent)
-    _remove_pending(journal, backup)
+    _remove_pending(journal, stage, backup)
 
 def _drift(domain, object_id, observed, desired, drift_class, risk, proposed_action, approval, evidence_run):
     return {
@@ -166,57 +365,55 @@ def check_inventory(observed, desired, *, evidence_run=''):
             out.append(_drift(obj.get('domain'), obj.get('object_id'), {}, obj, 'MISSING_OBJECT', 'medium', 'create or reconcile object', 'proposal-only', evidence_run))
     return out
 
-def inventory(domain, source, target):
-    rows, payload, digest = _prepare_inventory(domain, source)
-    target=Path(target)
-    _publish(target, payload)
-    return {'domain':domain,'objects':len(rows),'locator':str(target),'sha256':digest}
+def inventory(domain, source):
+    """Validate and hash an inventory without publishing a current projection."""
+    rows, _, digest = _prepare_inventory(domain, source)
+    return {'domain':domain,'objects':len(rows),'sha256':digest}
 
 def publish_inventory(domain, source, target, evidence_run, receipt_recorder, receipt_lookup=None):
     rows, payload, digest = _prepare_inventory(domain, source)
-    target=Path(target); target.parent.mkdir(parents=True, exist_ok=True)
+    target=_canonical_target(target)
     with _publication_lock(target):
         journal=_journal_path(target)
-        if journal.exists():
-            pending=json.loads(journal.read_text(encoding='utf-8'))
+        if os.path.lexists(journal):
+            pending, pending_stage, pending_backup=_load_pending(target, domain)
             same_identity=(
                 pending.get('domain') == domain
                 and pending.get('evidence_run') == evidence_run
-                and pending.get('locator') == str(target)
+                and pending.get('target') == str(target)
             )
             same_attempt=(
                 same_identity
-                and pending.get('sha256') == digest
+                and pending.get('new_sha256') == digest
             )
             target_matches=(
                 target.is_file()
-                and hashlib.sha256(target.read_bytes()).hexdigest() == pending.get('sha256')
+                and _file_hash(target) == pending.get('new_sha256')
             )
             existing=(
                 receipt_lookup(
-                    pending.get('domain'), pending.get('locator'), pending.get('evidence_run'),
+                    pending.get('domain'), pending.get('target'), pending.get('evidence_run'),
                 )
                 if receipt_lookup else None
             )
             if existing is not None:
-                if existing.get('sha256') != pending.get('sha256') or not target_matches:
+                if existing.get('sha256') != pending.get('new_sha256') or not target_matches:
                     raise RuntimeError('committed publication receipt does not match pending current projection')
                 receipt=existing
             elif target_matches:
                 try:
                     receipt=receipt_recorder(
-                        pending.get('domain'), pending.get('locator'),
-                        pending.get('sha256'), pending.get('evidence_run'),
+                        pending.get('domain'), pending.get('target'),
+                        pending.get('new_sha256'), pending.get('evidence_run'),
                     )
                 except Exception:
-                    _restore_pending(target, journal, pending)
+                    _restore_pending(target, journal, pending, pending_stage, pending_backup)
                     raise
             else:
-                _restore_pending(target, journal, pending)
+                _restore_pending(target, journal, pending, pending_stage, pending_backup)
                 receipt=None
             if receipt is not None:
-                backup=Path(pending['backup']) if pending.get('backup') else None
-                _remove_pending(journal, backup)
+                _remove_pending(journal, pending_stage, pending_backup)
                 if same_attempt:
                     return {
                         'domain':domain, 'objects':len(rows), 'locator':str(target),
@@ -225,14 +422,33 @@ def publish_inventory(domain, source, target, evidence_run, receipt_recorder, re
                 if same_identity:
                     raise ValueError('publication identity already has a different projection')
 
-        staged=_write_staged(target.parent, f'.{target.name}.stage.', payload)
+        nonce=secrets.token_hex(16)
+        stage_name, backup_name=_transaction_names(target, nonce)
+        staged=_write_transaction_file(target.parent, stage_name, payload)
         backup=None
+        old_sha256=None
+        old_metadata=None
         if target.exists():
-            backup=_write_staged(target.parent, f'.{target.name}.backup.', target.read_bytes())
+            if target.is_symlink():
+                staged.unlink(missing_ok=True)
+                raise ValueError('publication target must not be a symlink')
+            old_metadata=_capture_metadata(target)
+            previous=_read_regular_file(target)
+            old_sha256=hashlib.sha256(previous).hexdigest()
+            try:
+                backup=_write_transaction_file(target.parent, backup_name, previous)
+                _apply_metadata(backup, old_metadata)
+            except BaseException:
+                staged.unlink(missing_ok=True)
+                if backup is not None:
+                    backup.unlink(missing_ok=True)
+                raise
         pending={
-            'domain':domain, 'locator':str(target), 'sha256':digest,
-            'evidence_run':evidence_run, 'had_current':backup is not None,
-            'backup':str(backup) if backup is not None else None,
+            'version':_JOURNAL_VERSION, 'domain':domain, 'target':str(target),
+            'evidence_run':evidence_run, 'nonce':nonce, 'stage':stage_name,
+            'backup':backup_name if backup is not None else None,
+            'had_current':backup is not None, 'old_sha256':old_sha256,
+            'new_sha256':digest, 'old_metadata':old_metadata,
         }
         try:
             journal=_write_journal(target, pending)
@@ -241,14 +457,15 @@ def publish_inventory(domain, source, target, evidence_run, receipt_recorder, re
             try:
                 receipt=receipt_recorder(domain, str(target), digest, evidence_run)
             except Exception:
-                _restore_pending(target, journal, pending)
+                pending, pending_stage, pending_backup=_load_pending(target, domain)
+                _restore_pending(target, journal, pending, pending_stage, pending_backup)
                 raise
         except BaseException:
             staged.unlink(missing_ok=True)
             if not _journal_path(target).exists() and backup is not None:
                 backup.unlink(missing_ok=True)
             raise
-        _remove_pending(journal, backup)
+        _remove_pending(journal, staged, backup)
     return {
         'domain':domain, 'objects':len(rows), 'locator':str(target),
         'sha256':digest, 'evidence_run':evidence_run, 'receipt':receipt,

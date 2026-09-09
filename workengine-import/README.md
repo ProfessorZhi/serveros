@@ -72,9 +72,15 @@ commands emit schema-valid proposals rather than changing Feishu or GitHub.
 Inventory rows are validated against the bundled copy of the hwz-ops
 `federation-object.v1` contract before the current projection is touched.
 Publication uses a same-directory stage, process lock, backup, and recovery
-journal. A receipt failure restores the previous current file; an interrupted
-publication can only resume with the same evidence Run and hash, while a
-different payload for an existing publication identity fails closed.
+journal. The journal binds a versioned transaction nonce, canonical target,
+restricted same-directory stage/backup names, old/new hashes, and the previous
+file metadata. Recovery rejects corrupt or forged journals without modifying
+the current file. A receipt failure restores the previous bytes, mode, times,
+owner/group, and extended attributes; an interrupted publication can only
+resume with the same evidence Run and hash, while a different payload for an
+existing publication identity fails closed. The Python `inventory()` helper is
+validation-and-hashing only; safe publication is exposed through the managed
+CLI path, which supplies the durable receipt callbacks.
 
 Execution-context revisions remain authoritative per repo. The revision passed
 to `run finalize` describes the aggregate Run evidence and does not rewrite the
