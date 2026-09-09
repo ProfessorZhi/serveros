@@ -145,8 +145,13 @@ def _cmd_candidate(args):
     if args.action == 'create': return s.create_candidate(args.id,args.project,args.title,args.kind,dedupe_key=args.dedupe_key,claim_ids=args.claim)
     if args.action == 'match': return s.match_candidate(args.id,args.item)
     if args.action == 'promote':
-        if not args.item: raise ValueError('promotion requires explicit --item mapping')
-        return s.promote_candidate(args.id,args.item)
+        if args.item: return s.promote_candidate(args.id,args.item)
+        if args.create_new:
+            if not all((args.project,args.prefix,args.title,args.kind)): raise ValueError('create-new promotion requires project, prefix, title, kind')
+            server=ServerOS(state_dir=_state_dir(args), artifacts_root=None); server.register_project(args.project,args.prefix)
+            item=server.create_item(args.project,args.title,args.kind)
+            return s.promote_candidate(args.id,item.id)
+        raise ValueError('promotion requires explicit --item or --create-new approval')
     state={'merge':'MERGED','reject':'REJECTED','defer':'DEFERRED'}[args.action]
     with s.transaction(immediate=True) as c:
         c.execute('UPDATE item_candidates SET state=? WHERE candidate_id=?',(state,args.id))
@@ -233,7 +238,7 @@ def build_parser() -> argparse.ArgumentParser:
     candidate=groups.add_parser("candidate", parents=[_common()]); ca=candidate.add_subparsers(dest="action",required=True)
     cc=ca.add_parser("create"); cc.add_argument("id"); cc.add_argument("--project",required=True); cc.add_argument("--title",required=True); cc.add_argument("--kind",required=True); cc.add_argument("--dedupe-key",required=True); cc.add_argument("--claim",action="append",required=True)
     cm=ca.add_parser("match"); cm.add_argument("id"); cm.add_argument("--item",required=True)
-    cp=ca.add_parser("promote"); cp.add_argument("id"); cp.add_argument("--item")
+    cp=ca.add_parser("promote"); cp.add_argument("id"); cp.add_argument("--item"); cp.add_argument("--create-new",action="store_true"); cp.add_argument("--project"); cp.add_argument("--prefix"); cp.add_argument("--title"); cp.add_argument("--kind")
     for action in ("merge","reject","defer"):
         x=ca.add_parser(action); x.add_argument("id")
     federation=groups.add_parser("federation",parents=[_common()]); federation.add_argument("domain"); fa=federation.add_subparsers(dest="action",required=True)
