@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import re
 import sqlite3
 from contextlib import contextmanager
@@ -21,6 +22,7 @@ from .model import (
     now_iso,
 )
 from .state_machine import reopen, transition, transition_run
+from .migrations import migrate
 
 
 _PREFIX = re.compile(r"^[A-Z][A-Z0-9]{1,9}$")
@@ -37,6 +39,7 @@ class ServerOSStore:
         schema = (Path(__file__).with_name("schema.sql")).read_text(encoding="utf-8")
         with self.connection() as conn:
             conn.executescript(schema)
+            migrate(conn)
 
     def connection(self) -> sqlite3.Connection:
         conn = sqlite3.connect(self.db_path, timeout=30, isolation_level=None)
@@ -213,6 +216,95 @@ class ServerOSStore:
             self._event(conn, item_id, "deliverable_added", {"kind": kind, "locator": locator})
             deliverable_id = cursor.lastrowid
         return {"id": deliverable_id, "item": item_id, "kind": kind, "locator": locator, "created_at": at}
+
+    def register_source(self, domain, stable_id, *, revision, locator):
+        if not all(str(x).strip() for x in (domain, stable_id, revision, locator)): raise ValueError("source requires provenance")
+        with self.transaction(immediate=True) as c:
+            c.execute("INSERT OR IGNORE INTO source_objects VALUES (?,?,?,?,?,?)", (f"{domain}:{stable_id}:{revision}",domain,stable_id,revision,locator,now_iso()))
+            r=c.execute("SELECT * FROM source_objects WHERE domain=? AND stable_id=? AND revision=?",(domain,stable_id,revision)).fetchone()
+        return dict(r)
+
+    def record_observation(self, source_id, observation_id, *, semantic_type, content_hash, source_origin="online", carrier="other", information_form="curated"):
+        if not source_id or not observation_id or not semantic_type or not re.fullmatch(r"[0-9a-fA-F]{64}", content_hash): raise ValueError("observation requires provenance and SHA-256")
+        with self.transaction(immediate=True) as c:
+            if not c.execute("SELECT 1 FROM source_objects WHERE source_id=?",(source_id,)).fetchone(): raise KeyError(source_id)
+            c.execute("INSERT OR IGNORE INTO observations VALUES (?,?,?,?,?,?,?,?)",(observation_id,source_id,semantic_type,source_origin,carrier,information_form,content_hash,now_iso()))
+            return dict(c.execute("SELECT * FROM observations WHERE observation_id=?",(observation_id,)).fetchone())
+
+    def record_claim(self, claim_id, locator, observation_ids, *, status="ACTIVE"):
+        if not observation_ids: raise ValueError("claim requires observations")
+        with self.transaction(immediate=True) as c:
+            if any(not c.execute("SELECT 1 FROM observations WHERE observation_id=?",(x,)).fetchone() for x in observation_ids): raise KeyError("unknown observation")
+            c.execute("INSERT OR IGNORE INTO claims VALUES (?,?,?,?)",(claim_id,locator,status,now_iso()))
+            for x in observation_ids: c.execute("INSERT OR IGNORE INTO claim_observations VALUES (?,?)",(claim_id,x))
+            return dict(c.execute("SELECT * FROM claims WHERE claim_id=?",(claim_id,)).fetchone())
+
+    def create_candidate(self, candidate_id, project, title, kind, *, dedupe_key, claim_ids=(), external_id=None, external_revision=None):
+        if not claim_ids: raise ValueError("candidate requires claim provenance")
+        with self.transaction(immediate=True) as c:
+            if any(not c.execute("SELECT 1 FROM claims WHERE claim_id=?",(x,)).fetchone() for x in claim_ids): raise KeyError("unknown claim")
+            c.execute("INSERT OR IGNORE INTO item_candidates VALUES (?,?,?,?,?,?,?,?,?,?)",(candidate_id,project,title,kind,"NEW",dedupe_key,external_id,external_revision,None,now_iso()))
+            for x in claim_ids: c.execute("INSERT OR IGNORE INTO candidate_claims VALUES (?,?)",(candidate_id,x))
+            return dict(c.execute("SELECT * FROM item_candidates WHERE candidate_id=?",(candidate_id,)).fetchone())
+
+    def match_candidate(self, candidate_id, item_id):
+        with self.transaction(immediate=True) as c:
+            if not c.execute("SELECT 1 FROM items_index WHERE item_id=?",(item_id,)).fetchone(): raise KeyError(item_id)
+            c.execute("UPDATE item_candidates SET state='MATCHED',approved_item_id=? WHERE candidate_id=?",(item_id,candidate_id))
+            return dict(c.execute("SELECT * FROM item_candidates WHERE candidate_id=?",(candidate_id,)).fetchone())
+
+    def promote_candidate(self, candidate_id, item_id=None):
+        with self.transaction(immediate=True) as c:
+            r=c.execute("SELECT * FROM item_candidates WHERE candidate_id=?",(candidate_id,)).fetchone()
+            if not r: raise KeyError(candidate_id)
+            if r['state']=='PROMOTED': return self.get_item(r['approved_item_id'])
+            if not item_id or not r['approved_item_id'] and not item_id: raise ValueError("promotion requires approved Item mapping")
+            target=item_id or r['approved_item_id']
+            if not c.execute("SELECT 1 FROM items_index WHERE item_id=?",(target,)).fetchone(): raise ValueError("approved Item mapping required")
+            c.execute("UPDATE item_candidates SET state='PROMOTED',approved_item_id=? WHERE candidate_id=?",(target,candidate_id))
+        return self.get_item(target)
+
+    def transition_activity(self, item_id, activity_id, target):
+        allowed={ActivityState.PENDING:{ActivityState.READY,ActivityState.CANCELLED},ActivityState.READY:{ActivityState.RUNNING,ActivityState.CANCELLED},ActivityState.RUNNING:{ActivityState.SUCCEEDED,ActivityState.FAILED,ActivityState.BLOCKED,ActivityState.CANCELLED},ActivityState.BLOCKED:{ActivityState.READY,ActivityState.CANCELLED}}
+        with self.transaction(immediate=True) as c:
+            r=c.execute("SELECT * FROM activities WHERE item_id=? AND activity_id=?",(item_id,activity_id)).fetchone()
+            if not r: raise KeyError(activity_id)
+            target=ActivityState(target); current=ActivityState(r['state'])
+            if target not in allowed.get(current,set()): raise ValueError(f"illegal activity transition {current} -> {target}")
+            c.execute("UPDATE activities SET state=? WHERE item_id=? AND activity_id=?",(target.value,item_id,activity_id))
+        return Activity(item_id,activity_id,r['kind'],target,r['graph_revision'])
+
+    def upsert_context(self, context):
+        with self.transaction(immediate=True) as c:
+            c.execute("INSERT INTO execution_contexts(item_id,activity_id,repo,mode,revision,worktree,dirty) VALUES(?,?,?,?,?,?,?) ON CONFLICT(item_id,activity_id,repo) DO UPDATE SET mode=excluded.mode,revision=excluded.revision,worktree=excluded.worktree,dirty=excluded.dirty",(context.item_id,context.activity_id,context.repo,context.mode.value,context.revision,context.worktree,int(context.dirty)))
+        return context
+
+    def record_evidence(self, item_id, run_id, *, kind, locator, command, cases, exit_code, revision, dirty, verdict):
+        if not Path(locator).is_absolute(): raise ValueError("evidence locator must be absolute")
+        digest=hashlib.sha256(Path(locator).read_bytes()).hexdigest() if Path(locator).is_file() else ""
+        with self.transaction(immediate=True) as c:
+            c.execute("INSERT OR IGNORE INTO evidence(item_id,run_id,kind,locator,sha256,command,cases_json,exit_code,revision,dirty,verdict,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",(item_id,run_id,kind,locator,digest,command,json.dumps(cases),exit_code,revision,int(dirty),verdict,now_iso()))
+            return dict(c.execute("SELECT * FROM evidence WHERE item_id=? AND run_id=? AND locator=?",(item_id,run_id,locator)).fetchone())
+
+    def finalize_run(self, item_id, run_id, *, verdict, exit_code, command, cases, revision, dirty):
+        with self.transaction(immediate=True) as c:
+            r=c.execute("SELECT * FROM runs WHERE item_id=? AND run_id=?",(item_id,run_id)).fetchone()
+            if not r: raise KeyError(run_id)
+            if r['state'] in ('SUCCEEDED','FAILED','CANCELLED','INVALID'):
+                e=c.execute("SELECT * FROM evidence WHERE item_id=? AND run_id=? ORDER BY evidence_id DESC LIMIT 1",(item_id,run_id)).fetchone(); return {"state":r['state'],"verdict":e['verdict'] if e else verdict}
+            if r['state']!='FINALIZING': raise ValueError("run must be FINALIZING")
+            c.execute("UPDATE execution_contexts SET revision=?,dirty=? WHERE item_id=? AND activity_id=?",(revision,int(dirty),item_id,r['activity_id']))
+            locator=str(Path(r['artifact_dir'])/'finalize.json'); Path(r['artifact_dir']).mkdir(parents=True,exist_ok=True); Path(locator).write_text(json.dumps({"command":command,"cases":cases,"exit_code":exit_code,"revision":revision,"dirty":dirty,"verdict":verdict})+'\n')
+            digest=hashlib.sha256(Path(locator).read_bytes()).hexdigest()
+            c.execute("INSERT INTO evidence(item_id,run_id,kind,locator,sha256,command,cases_json,exit_code,revision,dirty,verdict,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",(item_id,run_id,'finalize',locator,digest,command,json.dumps(cases),exit_code,revision,int(dirty),verdict,now_iso()))
+            state='SUCCEEDED' if verdict=='PASS' and exit_code==0 else 'FAILED'
+            c.execute("UPDATE runs SET state=?,ended_at=? WHERE item_id=? AND run_id=?",(state,now_iso(),item_id,run_id))
+            return {"state":state,"verdict":verdict}
+
+    def record_feedback(self,item_id,locator,kind):
+        with self.transaction(immediate=True) as c:
+            c.execute("INSERT INTO feedback(item_id,locator,kind,created_at) VALUES(?,?,?,?)",(item_id,locator,kind,now_iso()))
+            return dict(c.execute("SELECT * FROM feedback WHERE feedback_id=last_insert_rowid()").fetchone())
 
     def list_deliverables(self, item_id: str) -> list[dict]:
         with self.connection() as conn:

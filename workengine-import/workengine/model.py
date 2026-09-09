@@ -65,6 +65,14 @@ class ContextMode(StrEnum):
     DEVELOP = "develop"
     RELEASE = "release"
 
+class CandidateState(StrEnum):
+    NEW = "NEW"
+    MATCHED = "MATCHED"
+    PROMOTED = "PROMOTED"
+    MERGED = "MERGED"
+    REJECTED = "REJECTED"
+    DEFERRED = "DEFERRED"
+
 
 @dataclass
 class WorkItem:

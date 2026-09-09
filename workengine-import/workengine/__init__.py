@@ -8,6 +8,7 @@ from .model import (
     Activity,
     ActivityState,
     ContextMode,
+    CandidateState,
     ExecutionContext,
     ItemState,
     Outcome,

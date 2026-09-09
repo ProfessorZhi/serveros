@@ -1,0 +1,23 @@
+"""Additive, versioned SQLite migrations for the v3 control plane."""
+from __future__ import annotations
+import json
+from .model import now_iso
+
+V3_SQL = """
+CREATE TABLE IF NOT EXISTS source_objects (source_id TEXT PRIMARY KEY, domain TEXT NOT NULL, stable_id TEXT NOT NULL, revision TEXT NOT NULL, locator TEXT NOT NULL, created_at TEXT NOT NULL, UNIQUE(domain,stable_id,revision));
+CREATE TABLE IF NOT EXISTS observations (observation_id TEXT PRIMARY KEY, source_id TEXT NOT NULL REFERENCES source_objects(source_id), semantic_type TEXT NOT NULL, source_origin TEXT NOT NULL DEFAULT 'online', carrier TEXT NOT NULL DEFAULT 'other', information_form TEXT NOT NULL DEFAULT 'curated', content_hash TEXT NOT NULL, created_at TEXT NOT NULL, UNIQUE(source_id,observation_id));
+CREATE TABLE IF NOT EXISTS claims (claim_id TEXT PRIMARY KEY, locator TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'ACTIVE', created_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS claim_observations (claim_id TEXT NOT NULL REFERENCES claims(claim_id), observation_id TEXT NOT NULL REFERENCES observations(observation_id), PRIMARY KEY(claim_id,observation_id));
+CREATE TABLE IF NOT EXISTS item_candidates (candidate_id TEXT PRIMARY KEY, project TEXT NOT NULL, title TEXT NOT NULL, kind TEXT NOT NULL, state TEXT NOT NULL DEFAULT 'NEW', dedupe_key TEXT NOT NULL UNIQUE, external_id TEXT, external_revision TEXT, approved_item_id TEXT, created_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS candidate_claims (candidate_id TEXT NOT NULL REFERENCES item_candidates(candidate_id), claim_id TEXT NOT NULL REFERENCES claims(claim_id), PRIMARY KEY(candidate_id,claim_id));
+CREATE TABLE IF NOT EXISTS external_item_mappings (domain TEXT NOT NULL, external_id TEXT NOT NULL, revision TEXT NOT NULL, item_id TEXT NOT NULL REFERENCES items_index(item_id), PRIMARY KEY(domain,external_id,revision));
+CREATE TABLE IF NOT EXISTS evidence (evidence_id INTEGER PRIMARY KEY AUTOINCREMENT, item_id TEXT NOT NULL, run_id TEXT NOT NULL, kind TEXT NOT NULL, locator TEXT NOT NULL, sha256 TEXT NOT NULL, command TEXT NOT NULL, cases_json TEXT NOT NULL, exit_code INTEGER NOT NULL, revision TEXT NOT NULL, dirty INTEGER NOT NULL, verdict TEXT NOT NULL, created_at TEXT NOT NULL, UNIQUE(item_id,run_id,locator));
+CREATE TABLE IF NOT EXISTS feedback (feedback_id INTEGER PRIMARY KEY AUTOINCREMENT, item_id TEXT NOT NULL REFERENCES items_index(item_id), locator TEXT NOT NULL, kind TEXT NOT NULL, created_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS publication_receipts (receipt_id INTEGER PRIMARY KEY AUTOINCREMENT, domain TEXT NOT NULL, object_id TEXT NOT NULL, revision TEXT NOT NULL, locator TEXT NOT NULL, created_at TEXT NOT NULL, UNIQUE(domain,object_id,revision));
+"""
+
+def migrate(conn) -> None:
+    conn.execute("CREATE TABLE IF NOT EXISTS schema_migrations (version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL)")
+    if conn.execute("SELECT 1 FROM schema_migrations WHERE version=3").fetchone() is None:
+        conn.executescript(V3_SQL)
+        conn.execute("INSERT INTO schema_migrations(version,applied_at) VALUES(3,?)", (now_iso(),))

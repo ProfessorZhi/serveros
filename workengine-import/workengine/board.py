@@ -33,6 +33,15 @@ def snapshot(store: ServerOSStore, project: str) -> dict:
                     "SELECT run_id,state,worker,artifact_dir,attempt FROM runs WHERE item_id=? AND activity_id=? ORDER BY run_id",
                     (item.id, activity["activity_id"]),
                 ).fetchall()
+                for run in runs:
+                    evidence = conn.execute("SELECT verdict,revision,dirty FROM evidence WHERE item_id=? AND run_id=? ORDER BY evidence_id DESC LIMIT 1", (item.id, run["run_id"])).fetchone()
+                    run = dict(run)
+                    run["verdict"] = evidence["verdict"] if evidence else None
+                    run["revision"] = evidence["revision"] if evidence else None
+                    run["dirty"] = bool(evidence["dirty"]) if evidence else None
+                    run["evidence_count"] = conn.execute("SELECT count(*) FROM evidence WHERE item_id=? AND run_id=?", (item.id, run["run_id"])).fetchone()[0]
+                    runs = [dict(x) if not isinstance(x, dict) else x for x in runs]
+                    runs[runs.index(next(x for x in runs if x["run_id"] == run["run_id"]))] = run
                 activities.append(
                     {
                         "id": activity["activity_id"],

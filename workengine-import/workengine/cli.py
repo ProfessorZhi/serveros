@@ -78,6 +78,8 @@ def _cmd_activity(args):
     server = _server(args)
     if args.action == "add":
         return server.add_activity(args.item, args.activity, args.kind, args.needs)
+    if args.action == "transition":
+        return server.store.transition_activity(args.item, args.activity, args.to)
     raise ValueError("unsupported activity action")
 
 
@@ -127,6 +129,15 @@ def _cmd_deliverable(args):
     if args.action == "list":
         return store.list_deliverables(args.item)
     raise ValueError("unsupported deliverable action")
+
+def _cmd_source(args):
+    return ServerOSStore(_state_dir(args)).register_source(args.domain, args.stable_id, revision=args.revision, locator=args.locator)
+def _cmd_observation(args):
+    return ServerOSStore(_state_dir(args)).record_observation(args.source_id, args.id, semantic_type=args.semantic_type, content_hash=args.content_hash)
+def _cmd_claim(args):
+    return ServerOSStore(_state_dir(args)).record_claim(args.id, args.locator, args.observation)
+def _cmd_feedback(args):
+    return ServerOSStore(_state_dir(args)).record_feedback(args.item, args.locator, args.kind)
 
 
 def _cmd_board(args):
@@ -187,6 +198,17 @@ def build_parser() -> argparse.ArgumentParser:
     add = activity_actions.add_parser("add", parents=[_common()])
     add.add_argument("item"); add.add_argument("activity"); add.add_argument("--kind", required=True)
     add.add_argument("--needs", action="append", default=[])
+    at = activity_actions.add_parser("transition", parents=[_common()])
+    at.add_argument("item"); at.add_argument("activity"); at.add_argument("--to", required=True)
+
+    source = groups.add_parser("source", parents=[_common()])
+    source.add_argument("domain"); source.add_argument("stable_id"); source.add_argument("--revision", required=True); source.add_argument("--locator", required=True)
+    obs = groups.add_parser("observation", parents=[_common()])
+    obs.add_argument("source_id"); obs.add_argument("id"); obs.add_argument("--semantic-type", required=True); obs.add_argument("--content-hash", required=True)
+    claim = groups.add_parser("claim", parents=[_common()])
+    claim.add_argument("id"); claim.add_argument("--locator", required=True); claim.add_argument("--observation", action="append", required=True)
+    feedback = groups.add_parser("feedback", parents=[_common()])
+    feedback.add_argument("item"); feedback.add_argument("--locator", required=True); feedback.add_argument("--kind", required=True)
 
     run = groups.add_parser("run", parents=[_common()])
     run_actions = run.add_subparsers(dest="action", required=True)
@@ -233,6 +255,7 @@ def main(argv: list[str] | None = None) -> int:
             "run": _cmd_run,
             "context": _cmd_context,
             "deliverable": _cmd_deliverable,
+            "source": _cmd_source, "observation": _cmd_observation, "claim": _cmd_claim, "feedback": _cmd_feedback,
             "board": _cmd_board,
             "migrate": _cmd_migrate,
         }[args.group]
