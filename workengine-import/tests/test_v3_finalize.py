@@ -5,6 +5,7 @@ from pathlib import Path
 
 from workengine.model import Activity, ActivityState, ContextMode, RunState
 from workengine.store import ServerOSStore
+from workengine.cli import build_parser
 
 
 class FinalizeV3Tests(unittest.TestCase):
@@ -41,3 +42,11 @@ class FinalizeV3Tests(unittest.TestCase):
 
     def test_evidence_requires_existing_hashable_file_and_rejects_secrets(self):
         with self.assertRaises(ValueError): self.s.record_evidence(self.item.id,self.run.id,kind='x',locator='/nope',command='x',cases=[],exit_code=0,revision='r',dirty=False,verdict='PASS')
+        p=Path(self.td.name)/'evidence.txt'; p.write_text('evidence')
+        with self.assertRaises(ValueError): self.s.record_evidence(self.item.id,self.run.id,kind='x',locator=str(p),command='--token=secret',cases=[],exit_code=0,revision='r',dirty=False,verdict='PASS')
+        with self.assertRaises(ValueError): self.s.record_evidence(self.item.id,self.run.id,kind='x',locator=str(p),command='pytest',cases=[],exit_code=0,revision='token-revision',dirty=False,verdict='PASS')
+
+    def test_run_evidence_and_finalize_cli_shapes_are_available(self):
+        a=build_parser().parse_args(['run','evidence','DEM-0001','RUN-0001','--kind','report','--locator','/tmp/report','--command','pytest','--exit-code','0','--revision','r','--verdict','PASS'])
+        b=build_parser().parse_args(['run','finalize','DEM-0001','RUN-0001','--verdict','PASS','--exit-code','0','--command','pytest','--revision','r'])
+        self.assertEqual((a.action,b.action),('evidence','finalize'))

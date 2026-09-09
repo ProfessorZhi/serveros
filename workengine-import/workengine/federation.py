@@ -13,8 +13,9 @@ def check_inventory(observed, desired):
         if oid: seen.add(oid)
         if obj.get('error') in {'AUTH_EXPIRED','PERMISSION_DENIED','RATE_LIMIT_TRANSIENT'}:
             out.append({'domain':obj.get('domain'),'object_id':oid,'observed':obj,'desired':None,'class':obj['error'],'risk':'high','proposed_action':'reauthenticate or retry','approval':'explicit','evidence_run':obj.get('evidence_run')}); continue
-        if obj.get('parent_id') and obj['parent_id'] not in desired_ids:
-            out.append({'domain':obj.get('domain'),'object_id':oid,'observed':obj,'desired':None,'class':'PLACEMENT_DRIFT','risk':'medium','proposed_action':'propose placement','approval':'proposal','evidence_run':obj.get('evidence_run')})
+        desired_obj=next((x for x in desired if x.get('object_id')==oid),None)
+        if desired_obj is not None and obj.get('parent_id') != desired_obj.get('parent_id'):
+            out.append({'domain':obj.get('domain'),'object_id':oid,'observed':obj,'desired':desired_obj,'class':'PLACEMENT_DRIFT','risk':'medium','proposed_action':'propose placement','approval':'proposal','evidence_run':obj.get('evidence_run')})
         if oid and oid not in desired_ids:
             out.append({'domain':obj.get('domain'),'object_id':oid,'observed':obj,'desired':None,'class':'UNEXPECTED_OBJECT','risk':'medium','proposed_action':'review object','approval':'proposal','evidence_run':obj.get('evidence_run')})
     observed_ids={x.get('object_id') for x in observed}

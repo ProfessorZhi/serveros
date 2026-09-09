@@ -267,6 +267,8 @@ class ServerOSStore:
             target=item_id or r['approved_item_id']
             if not c.execute("SELECT 1 FROM items_index WHERE item_id=?",(target,)).fetchone(): raise ValueError("approved Item mapping required")
             c.execute("UPDATE item_candidates SET state='PROMOTED',approved_item_id=? WHERE candidate_id=?",(target,candidate_id))
+            if r['domain'] and r['external_id'] and r['external_revision']:
+                c.execute("INSERT OR IGNORE INTO external_item_mappings(domain,external_id,revision,item_id) VALUES(?,?,?,?)",(r['domain'],r['external_id'],r['external_revision'],target))
         return self.get_item(target)
 
     def transition_activity(self, item_id, activity_id, target):
@@ -288,7 +290,7 @@ class ServerOSStore:
         if not Path(locator).is_absolute() or not Path(locator).is_file(): raise ValueError("evidence must be an existing absolute file")
         digest=hashlib.sha256(Path(locator).read_bytes()).hexdigest()
         if not digest: raise ValueError("evidence requires SHA-256")
-        _reject_secrets({'kind':kind,'locator':locator,'command':command,'cases':cases,'verdict':verdict})
+        _reject_secrets({'kind':kind,'locator':locator,'command':command,'cases':cases,'revision':revision,'verdict':verdict,'exit_code':exit_code,'dirty':dirty})
         with self.transaction(immediate=True) as c:
             c.execute("INSERT OR IGNORE INTO evidence(item_id,run_id,kind,locator,sha256,command,cases_json,exit_code,revision,dirty,verdict,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",(item_id,run_id,kind,locator,digest,command,json.dumps(cases),exit_code,revision,int(dirty),verdict,now_iso()))
             return dict(c.execute("SELECT * FROM evidence WHERE item_id=? AND run_id=? AND locator=?",(item_id,run_id,locator)).fetchone())
