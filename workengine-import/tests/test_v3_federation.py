@@ -97,6 +97,30 @@ class FederationV3Tests(unittest.TestCase):
             self.assertIn('sha256', result)
             self.assertFalse(dst.exists())
 
+    def test_pre_journal_target_failure_leaves_no_stage_or_receipt(self):
+        with tempfile.TemporaryDirectory() as td:
+            root=Path(td); src=root/'objects.jsonl'; target=root/'current.jsonl'
+            src.write_text(json.dumps({
+                "object_id":"repo-1", "kind":"repository", "locator":"github://repo-1",
+                "observed_at":"2026-09-09T10:00:00+00:00",
+            })+'\n')
+            target.mkdir()
+            marker=target/'keep.txt'
+            marker.write_text('untouched\n')
+            receipts=[]
+
+            with self.assertRaises(ValueError):
+                publish_inventory(
+                    'github', src, target, 'SRV-0003/RUN-0006',
+                    lambda *values: receipts.append(values),
+                )
+
+            self.assertTrue(target.is_dir())
+            self.assertEqual(marker.read_text(), 'untouched\n')
+            self.assertEqual(receipts, [])
+            self.assertEqual(list(root.glob(f'.{target.name}.publish.*.stage')), [])
+            self.assertFalse(target.with_name(f'.{target.name}.publish.json').exists())
+
     def test_inventory_cli_records_traceable_current_projection_receipt(self):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)

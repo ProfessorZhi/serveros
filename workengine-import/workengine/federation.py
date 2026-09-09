@@ -428,29 +428,22 @@ def publish_inventory(domain, source, target, evidence_run, receipt_recorder, re
         backup=None
         old_sha256=None
         old_metadata=None
-        if target.exists():
-            if target.is_symlink():
-                staged.unlink(missing_ok=True)
-                raise ValueError('publication target must not be a symlink')
-            old_metadata=_capture_metadata(target)
-            previous=_read_regular_file(target)
-            old_sha256=hashlib.sha256(previous).hexdigest()
-            try:
+        try:
+            if target.exists():
+                if target.is_symlink():
+                    raise ValueError('publication target must not be a symlink')
+                old_metadata=_capture_metadata(target)
+                previous=_read_regular_file(target)
+                old_sha256=hashlib.sha256(previous).hexdigest()
                 backup=_write_transaction_file(target.parent, backup_name, previous)
                 _apply_metadata(backup, old_metadata)
-            except BaseException:
-                staged.unlink(missing_ok=True)
-                if backup is not None:
-                    backup.unlink(missing_ok=True)
-                raise
-        pending={
-            'version':_JOURNAL_VERSION, 'domain':domain, 'target':str(target),
-            'evidence_run':evidence_run, 'nonce':nonce, 'stage':stage_name,
-            'backup':backup_name if backup is not None else None,
-            'had_current':backup is not None, 'old_sha256':old_sha256,
-            'new_sha256':digest, 'old_metadata':old_metadata,
-        }
-        try:
+            pending={
+                'version':_JOURNAL_VERSION, 'domain':domain, 'target':str(target),
+                'evidence_run':evidence_run, 'nonce':nonce, 'stage':stage_name,
+                'backup':backup_name if backup is not None else None,
+                'had_current':backup is not None, 'old_sha256':old_sha256,
+                'new_sha256':digest, 'old_metadata':old_metadata,
+            }
             journal=_write_journal(target, pending)
             staged.replace(target)
             _sync_directory(target.parent)
