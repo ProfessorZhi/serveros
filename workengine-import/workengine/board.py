@@ -51,7 +51,7 @@ def snapshot(store: ServerOSStore, project: str) -> dict:
                         "runs": [dict(row) for row in runs],
                     }
                 )
-            candidates=[dict(x) for x in conn.execute("SELECT c.candidate_id,c.state,c.domain,c.external_id,c.external_revision,c.approved_item_id, m.revision AS source_revision FROM item_candidates c LEFT JOIN external_item_mappings m ON m.domain=c.domain AND m.external_id=c.external_id AND m.revision=c.external_revision WHERE c.approved_item_id=? ORDER BY c.candidate_id",(item.id,)).fetchall()]
+            candidates=[dict(x) for x in conn.execute("SELECT c.candidate_id,c.state,c.domain,c.external_id,c.external_revision,c.approved_item_id, m.revision AS source_revision FROM item_candidates c LEFT JOIN external_item_mappings m ON m.domain=c.domain AND m.external_id=c.external_id AND m.revision=c.external_revision WHERE c.approved_item_id=? AND c.state='PROMOTED' ORDER BY c.candidate_id",(item.id,)).fetchall()]
             items.append(item.to_dict() | {"activities": activities, "deliverables": store.list_deliverables(item.id), "candidate_mappings": candidates})
     revisions=[c['source_revision'] for i in items for c in i['candidate_mappings'] if c.get('source_revision')]
     return {"schema": "serveros/board.v3", "project": project, "generated_at": now_iso(), "generation_source_revision": max(revisions) if revisions else None, "items": items}

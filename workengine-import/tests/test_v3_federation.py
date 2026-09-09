@@ -1,7 +1,7 @@
 import tempfile
 import unittest
 from pathlib import Path
-from workengine.federation import check_inventory, inventory
+from workengine.federation import check_inventory, inventory, proposal
 
 
 class FederationV3Tests(unittest.TestCase):
@@ -28,3 +28,7 @@ class FederationV3Tests(unittest.TestCase):
             src.write_text('{"error":"RATE_LIMIT_TRANSIENT"}\n')
             with self.assertRaises(ValueError): inventory('github',src,dst)
             self.assertEqual(dst.read_text(),'old\n')
+
+    def test_proposal_order_is_stable(self):
+        rows=[{'risk':'medium','action':'z','object_id':'2'},{'risk':'high','action':'b','object_id':'3'},{'risk':'high','action':'a','object_id':'1'}]
+        self.assertEqual([x['object_id'] for x in proposal(rows)],['1','3','2'])

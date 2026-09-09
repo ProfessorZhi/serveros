@@ -1,12 +1,16 @@
 import sqlite3
+import json
 import tempfile
 import unittest
+from contextlib import redirect_stdout
+import io
 from pathlib import Path
 
 from workengine.model import WorkItem
 from workengine.store import ServerOSStore
 from workengine.migrations import V3_SQL
 from workengine.board import snapshot
+from workengine.cli import main
 
 
 class InformationV3Tests(unittest.TestCase):
@@ -33,10 +37,13 @@ class InformationV3Tests(unittest.TestCase):
             state=Path(td)/'state'; state.mkdir(); db=state/'serveros.db'; c=sqlite3.connect(db)
             c.executescript((Path(__file__).parents[1]/'workengine/schema.sql').read_text()); c.executescript(V3_SQL.replace("domain TEXT NOT NULL DEFAULT '', ",""))
             c.execute("CREATE TABLE schema_migrations(version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL)"); c.execute("INSERT INTO schema_migrations VALUES(3,'t')")
-            c.execute("INSERT INTO item_candidates(candidate_id,project,title,kind,state,dedupe_key,external_id,external_revision,approved_item_id,created_at) VALUES('x','p','t','bug','NEW','d','e','r',NULL,'t')"); c.commit(); c.close()
+            c.execute("INSERT INTO projects VALUES('p','PFX')"); c.execute("INSERT INTO item_candidates(candidate_id,project,title,kind,state,dedupe_key,external_id,external_revision,approved_item_id,created_at) VALUES('x','p','t','bug','NEW','d','e','r',NULL,'t')")
+            c.execute("INSERT INTO source_objects VALUES('s','github','e','r','https://x','t')"); c.execute("INSERT INTO observations VALUES(?,?,?,?,?,?,?,?)",('o','s','bug','online','github','curated','a'*64,'t'))
+            c.execute("INSERT INTO claims VALUES('cl','/claim','ACTIVE','t')"); c.execute("INSERT INTO claim_observations VALUES('cl','o')"); c.execute("INSERT INTO candidate_claims VALUES('x','cl')"); c.commit(); c.close()
             s=ServerOSStore(state)
             with s.connection() as dbconn:
                 self.assertEqual(dbconn.execute('select max(version) from schema_migrations').fetchone()[0],4); self.assertEqual(dbconn.execute("select external_id from item_candidates where candidate_id='x'").fetchone()[0],'e')
+                self.assertEqual(dbconn.execute('select count(*) from candidate_claims where candidate_id="x" and claim_id="cl"').fetchone()[0],1); self.assertEqual(list(dbconn.execute('pragma foreign_key_check')),[])
 
     def test_information_records_require_provenance_and_are_idempotent(self):
         with tempfile.TemporaryDirectory() as td:
@@ -67,3 +74,14 @@ class InformationV3Tests(unittest.TestCase):
             s.create_candidate('cand','demo','one','bug',dedupe_key='d',claim_ids=['c'],domain='github',external_id='issue',external_revision='rev-9'); s.match_candidate('cand',item1.id); s.promote_candidate('cand',item1.id)
             data=snapshot(s,'demo'); by={x['id']:x for x in data['items']}
             self.assertEqual(len(by[item1.id]['candidate_mappings']),1); self.assertEqual(by[item2.id]['candidate_mappings'],[]); self.assertEqual(data['generation_source_revision'],'rev-9')
+            s.create_candidate('matched','demo','two','bug',dedupe_key='d2',claim_ids=['c']); s.match_candidate('matched',item2.id)
+            self.assertEqual(snapshot(s,'demo')['items'][1]['candidate_mappings'],[])
+
+    def test_candidate_cli_create_and_explicit_new_promotion_are_idempotent(self):
+        with tempfile.TemporaryDirectory() as td:
+            state=Path(td)/'state'; s=ServerOSStore(state); s.register_project('demo','DEM'); src=s.register_source('github','i',revision='r',locator='https://x'); o=s.record_observation(src['source_id'],'o',semantic_type='bug',content_hash='a'*64); s.record_claim('cl','/claim',['o'])
+            def run(*args):
+                self.assertEqual(main(['--state-dir',str(state),*args]),0)
+            run('candidate','create','cand','--project','demo','--title','x','--kind','bug','--dedupe-key','d','--claim','cl','--domain','github','--external-id','i','--external-revision','r')
+            run('candidate','promote','cand','--create-new','--project','demo','--prefix','DEM','--title','x','--kind','bug'); first=s.list_items('demo')[0].id
+            run('candidate','promote','cand','--create-new','--project','demo','--prefix','DEM','--title','x','--kind','bug'); self.assertEqual(first,s.list_items('demo')[0].id); self.assertEqual(len(s.list_items('demo')),1)

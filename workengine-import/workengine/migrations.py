@@ -32,14 +32,14 @@ def migrate(conn) -> None:
         try:
             cols={r[1] for r in conn.execute("PRAGMA table_info(item_candidates)")}
             if 'domain' not in cols:
-                conn.execute("ALTER TABLE candidate_claims RENAME TO candidate_claims_v3")
-                conn.execute("ALTER TABLE item_candidates RENAME TO item_candidates_v3")
-                conn.execute("CREATE TABLE item_candidates (candidate_id TEXT PRIMARY KEY, project TEXT NOT NULL, title TEXT NOT NULL, kind TEXT NOT NULL, state TEXT NOT NULL DEFAULT 'NEW', dedupe_key TEXT NOT NULL UNIQUE, domain TEXT NOT NULL DEFAULT '', external_id TEXT, external_revision TEXT, approved_item_id TEXT, created_at TEXT NOT NULL, UNIQUE(domain,external_id,external_revision))")
-                conn.execute("INSERT INTO item_candidates(candidate_id,project,title,kind,state,dedupe_key,domain,external_id,external_revision,approved_item_id,created_at) SELECT candidate_id,project,title,kind,state,dedupe_key,'',external_id,external_revision,approved_item_id,created_at FROM item_candidates_v3")
-                conn.execute("DROP TABLE item_candidates_v3")
-                conn.execute("CREATE TABLE candidate_claims (candidate_id TEXT NOT NULL REFERENCES item_candidates(candidate_id), claim_id TEXT NOT NULL REFERENCES claims(claim_id), PRIMARY KEY(candidate_id,claim_id))")
-                conn.execute("INSERT INTO candidate_claims SELECT * FROM candidate_claims_v3")
-                conn.execute("DROP TABLE candidate_claims_v3")
+                conn.execute("CREATE TABLE item_candidates_v4 (candidate_id TEXT PRIMARY KEY, project TEXT NOT NULL, title TEXT NOT NULL, kind TEXT NOT NULL, state TEXT NOT NULL DEFAULT 'NEW', dedupe_key TEXT NOT NULL UNIQUE, domain TEXT NOT NULL DEFAULT '', external_id TEXT, external_revision TEXT, approved_item_id TEXT, created_at TEXT NOT NULL, UNIQUE(domain,external_id,external_revision))")
+                conn.execute("INSERT INTO item_candidates_v4(candidate_id,project,title,kind,state,dedupe_key,domain,external_id,external_revision,approved_item_id,created_at) SELECT candidate_id,project,title,kind,state,dedupe_key,'',external_id,external_revision,approved_item_id,created_at FROM item_candidates")
+                conn.execute("CREATE TABLE candidate_claims_v4 (candidate_id TEXT NOT NULL REFERENCES item_candidates_v4(candidate_id), claim_id TEXT NOT NULL REFERENCES claims(claim_id), PRIMARY KEY(candidate_id,claim_id))")
+                conn.execute("INSERT INTO candidate_claims_v4 SELECT * FROM candidate_claims")
+                conn.execute("DROP TABLE candidate_claims")
+                conn.execute("DROP TABLE item_candidates")
+                conn.execute("ALTER TABLE item_candidates_v4 RENAME TO item_candidates")
+                conn.execute("ALTER TABLE candidate_claims_v4 RENAME TO candidate_claims")
             else:
                 conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS candidate_external_identity ON item_candidates(domain,external_id,external_revision)")
             conn.execute("INSERT INTO schema_migrations(version,applied_at) VALUES(4,?)", (now_iso(),))
