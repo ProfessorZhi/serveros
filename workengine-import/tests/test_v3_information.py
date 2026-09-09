@@ -1,5 +1,6 @@
 import sqlite3
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -50,25 +51,31 @@ class InformationV3Tests(unittest.TestCase):
             conn.commit(); conn.close()
             store = ServerOSStore(state)
             with store.connection() as c:
-                self.assertEqual(c.execute("select version from schema_migrations order by version desc limit 1").fetchone()[0], 5)
+                self.assertEqual(c.execute("select version from schema_migrations order by version desc limit 1").fetchone()[0], 6)
                 self.assertEqual(c.execute("select count(*) from items_index").fetchone()[0], 1)
                 for table in ("source_objects", "observations", "claims", "item_candidates", "evidence", "feedback", "publication_receipts"):
                     self.assertIsNotNone(c.execute("select name from sqlite_master where name=?", (table,)).fetchone())
                 receipt_columns = {row[1] for row in c.execute("pragma table_info(publication_receipts)")}
                 self.assertTrue({"sha256", "evidence_run", "item_id", "run_id"} <= receipt_columns)
+                feedback_columns = {row[1] for row in c.execute("pragma table_info(feedback)")}
+                self.assertIn("observation_id", feedback_columns)
 
-    def test_v3_fixture_upgrades_to_v4_without_losing_candidate_rows(self):
+    def test_v3_fixture_upgrades_through_v6_without_losing_candidate_rows(self):
         with tempfile.TemporaryDirectory() as td:
             state=Path(td)/'state'; state.mkdir(); db=state/'serveros.db'; c=sqlite3.connect(db)
             c.executescript((Path(__file__).parents[1]/'workengine/schema.sql').read_text()); c.executescript(V3_SQL.replace("domain TEXT NOT NULL DEFAULT '', ",""))
             c.execute("CREATE TABLE schema_migrations(version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL)"); c.execute("INSERT INTO schema_migrations VALUES(3,'t')")
             c.execute("INSERT INTO projects VALUES('p','PFX')"); c.execute("INSERT INTO item_candidates(candidate_id,project,title,kind,state,dedupe_key,external_id,external_revision,approved_item_id,created_at) VALUES('x','p','t','bug','NEW','d','e','r',NULL,'t')")
+            c.execute("INSERT INTO items_index VALUES('PFX-0001','p','old','ops','/card','INBOX',NULL,'t','t')")
+            c.execute("INSERT INTO feedback(item_id,locator,kind,created_at) VALUES('PFX-0001','/legacy','review','t')")
             c.execute("INSERT INTO source_objects VALUES('s','github','e','r','https://x','t')"); c.execute("INSERT INTO observations VALUES(?,?,?,?,?,?,?,?)",('o','s','bug','online','github','curated','a'*64,'t'))
             c.execute("INSERT INTO claims VALUES('cl','/claim','ACTIVE','t')"); c.execute("INSERT INTO claim_observations VALUES('cl','o')"); c.execute("INSERT INTO candidate_claims VALUES('x','cl')"); c.commit(); c.close()
             s=ServerOSStore(state)
             with s.connection() as dbconn:
-                self.assertEqual(dbconn.execute('select max(version) from schema_migrations').fetchone()[0],5); self.assertEqual(dbconn.execute("select external_id from item_candidates where candidate_id='x'").fetchone()[0],'e')
+                self.assertEqual(dbconn.execute('select max(version) from schema_migrations').fetchone()[0],6); self.assertEqual(dbconn.execute("select external_id from item_candidates where candidate_id='x'").fetchone()[0],'e')
                 self.assertEqual(dbconn.execute('select count(*) from candidate_claims where candidate_id="x" and claim_id="cl"').fetchone()[0],1); self.assertEqual(list(dbconn.execute('pragma foreign_key_check')),[])
+                legacy_feedback = dbconn.execute("select locator,observation_id from feedback").fetchone()
+                self.assertEqual(tuple(legacy_feedback), ('/legacy', None))
 
     def test_information_records_require_provenance_and_are_idempotent(self):
         with tempfile.TemporaryDirectory() as td:
@@ -80,6 +87,61 @@ class InformationV3Tests(unittest.TestCase):
             self.assertEqual(claim["claim_id"], "claim-1")
             with self.assertRaises(ValueError):
                 s.record_claim("bad", "x", [])
+
+    def test_feedback_links_to_observation_and_is_idempotent(self):
+        with tempfile.TemporaryDirectory() as td:
+            store = ServerOSStore(Path(td) / "state")
+            store.register_project("demo", "DEM")
+            item = store.create_item(WorkItem("DEM-0001", "demo", "feedback", "test", "/card"))
+            source = store.register_source("file", "report", revision="r1", locator="/report")
+            observation = store.record_observation(
+                source["source_id"], "obs-feedback", semantic_type="feedback", content_hash="b" * 64,
+            )
+
+            first = store.record_feedback(
+                item.id, "/feedback/codex.json", "agent-verification", observation["observation_id"],
+            )
+            repeated = store.record_feedback(
+                item.id, "/feedback/codex.json", "agent-verification", observation["observation_id"],
+            )
+
+            self.assertEqual(repeated, first)
+            self.assertEqual(first["observation_id"], observation["observation_id"])
+            with store.connection() as conn:
+                self.assertEqual(conn.execute("SELECT count(*) FROM feedback").fetchone()[0], 1)
+            with self.assertRaises(KeyError):
+                store.record_feedback(item.id, "/feedback/missing.json", "agent-verification", "missing")
+
+    def test_feedback_record_cli_links_observation_and_retries_idempotently(self):
+        with tempfile.TemporaryDirectory() as td:
+            state = Path(td) / "state"
+            store = ServerOSStore(state)
+            store.register_project("demo", "DEM")
+            item = store.create_item(WorkItem("DEM-0001", "demo", "feedback", "test", "/card"))
+            source = store.register_source("file", "claude-run", revision="r1", locator="/run")
+            observation = store.record_observation(
+                source["source_id"], "obs-claude", semantic_type="feedback", content_hash="c" * 64,
+            )
+            argv = [
+                "--state-dir", str(state), "feedback", "record", item.id,
+                "--observation", observation["observation_id"],
+                "--locator", "/feedback/claude.json", "--kind", "agent-verification",
+            ]
+
+            env = os.environ.copy()
+            outputs = []
+            for _ in range(2):
+                result = subprocess.run(
+                    [sys.executable, "-m", "workengine", "--json", *argv],
+                    text=True, capture_output=True, env=env, check=False,
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+                outputs.append(json.loads(result.stdout))
+
+            self.assertEqual(outputs[0], outputs[1])
+            self.assertEqual(outputs[0]["observation_id"], observation["observation_id"])
+            with store.connection() as conn:
+                self.assertEqual(conn.execute("SELECT count(*) FROM feedback").fetchone()[0], 1)
 
     def test_external_identity_is_unique_across_dedupe_keys(self):
         with tempfile.TemporaryDirectory() as td:

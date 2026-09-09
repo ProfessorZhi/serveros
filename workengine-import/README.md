@@ -46,6 +46,9 @@ serverosctl --json run begin SRV-0001 implement \
 serverosctl --json item outcome SRV-0001 --set SUCCESS
 serverosctl --json deliverable add SRV-0001 \
   --kind report --locator /absolute/path/report.md
+serverosctl --json feedback record SRV-0001 \
+  --observation obs-codex-run-0001 \
+  --kind agent-verification --locator /absolute/path/feedback.json
 serverosctl --json board render --project serveros \
   --output-dir /absolute/path/records/projects/serveros/board
 

@@ -397,10 +397,25 @@ class ServerOSStore:
         temporary.replace(locator)
         return {"state":state,"verdict":verdict}
 
-    def record_feedback(self,item_id,locator,kind):
+    def record_feedback(self,item_id,locator,kind,observation_id):
+        if not all(str(value).strip() for value in (item_id, locator, kind, observation_id)):
+            raise ValueError("feedback requires Item, Observation, kind, and locator")
         with self.transaction(immediate=True) as c:
-            c.execute("INSERT INTO feedback(item_id,locator,kind,created_at) VALUES(?,?,?,?)",(item_id,locator,kind,now_iso()))
-            return dict(c.execute("SELECT * FROM feedback WHERE feedback_id=last_insert_rowid()").fetchone())
+            if not c.execute("SELECT 1 FROM items_index WHERE item_id=?", (item_id,)).fetchone():
+                raise KeyError(item_id)
+            if not c.execute("SELECT 1 FROM observations WHERE observation_id=?", (observation_id,)).fetchone():
+                raise KeyError(observation_id)
+            c.execute(
+                """INSERT OR IGNORE INTO feedback(item_id,observation_id,locator,kind,created_at)
+                   VALUES(?,?,?,?,?)""",
+                (item_id,observation_id,locator,kind,now_iso()),
+            )
+            row = c.execute(
+                """SELECT * FROM feedback
+                   WHERE item_id=? AND observation_id=? AND locator=? AND kind=?""",
+                (item_id,observation_id,locator,kind),
+            ).fetchone()
+            return dict(row)
 
     def resolve_evidence_run(self, evidence_run):
         parts = str(evidence_run).split('/', 1)

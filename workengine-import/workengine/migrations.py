@@ -39,6 +39,22 @@ DROP TABLE publication_receipts;
 ALTER TABLE publication_receipts_v5 RENAME TO publication_receipts;
 """
 
+V6_SQL = """
+CREATE TABLE feedback_v6 (
+    feedback_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    item_id TEXT NOT NULL REFERENCES items_index(item_id),
+    observation_id TEXT REFERENCES observations(observation_id),
+    locator TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    UNIQUE(item_id,observation_id,locator,kind)
+);
+INSERT INTO feedback_v6 (feedback_id,item_id,locator,kind,created_at)
+    SELECT feedback_id,item_id,locator,kind,created_at FROM feedback;
+DROP TABLE feedback;
+ALTER TABLE feedback_v6 RENAME TO feedback;
+"""
+
 def migrate(conn) -> None:
     conn.execute("CREATE TABLE IF NOT EXISTS schema_migrations (version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL)")
     if conn.execute("SELECT 1 FROM schema_migrations WHERE version=3").fetchone() is None:
@@ -75,6 +91,15 @@ def migrate(conn) -> None:
             for statement in V5_SQL.split(';'):
                 if statement.strip(): conn.execute(statement)
             conn.execute("INSERT INTO schema_migrations(version,applied_at) VALUES(5,?)", (now_iso(),))
+            conn.commit()
+        except Exception:
+            conn.rollback(); raise
+    if conn.execute("SELECT 1 FROM schema_migrations WHERE version=6").fetchone() is None:
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            for statement in V6_SQL.split(';'):
+                if statement.strip(): conn.execute(statement)
+            conn.execute("INSERT INTO schema_migrations(version,applied_at) VALUES(6,?)", (now_iso(),))
             conn.commit()
         except Exception:
             conn.rollback(); raise

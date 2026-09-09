@@ -142,7 +142,11 @@ def _cmd_observation(args):
 def _cmd_claim(args):
     return ServerOSStore(_state_dir(args)).record_claim(args.id, args.locator, args.observation)
 def _cmd_feedback(args):
-    return ServerOSStore(_state_dir(args)).record_feedback(args.item, args.locator, args.kind)
+    if args.action == 'record':
+        return ServerOSStore(_state_dir(args)).record_feedback(
+            args.item, args.locator, args.kind, args.observation,
+        )
+    raise ValueError("unsupported feedback action")
 
 def _cmd_candidate(args):
     s=ServerOSStore(_state_dir(args))
@@ -246,7 +250,10 @@ def build_parser() -> argparse.ArgumentParser:
     claim = groups.add_parser("claim", parents=[_common()])
     claim.add_argument("id"); claim.add_argument("--locator", required=True); claim.add_argument("--observation", action="append", required=True)
     feedback = groups.add_parser("feedback", parents=[_common()])
-    feedback.add_argument("item"); feedback.add_argument("--locator", required=True); feedback.add_argument("--kind", required=True)
+    feedback_actions = feedback.add_subparsers(dest="action", required=True)
+    feedback_record = feedback_actions.add_parser("record", parents=[_common()])
+    feedback_record.add_argument("item"); feedback_record.add_argument("--observation", required=True)
+    feedback_record.add_argument("--locator", required=True); feedback_record.add_argument("--kind", required=True)
 
     candidate=groups.add_parser("candidate", parents=[_common()]); ca=candidate.add_subparsers(dest="action",required=True)
     cc=ca.add_parser("create"); cc.add_argument("id"); cc.add_argument("--project",required=True); cc.add_argument("--title",required=True); cc.add_argument("--kind",required=True); cc.add_argument("--dedupe-key",required=True); cc.add_argument("--claim",action="append",required=True); cc.add_argument("--domain",default=""); cc.add_argument("--external-id"); cc.add_argument("--external-revision")
