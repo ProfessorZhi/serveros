@@ -430,21 +430,7 @@ class ServerOSStore:
     def attach_context(self, context: ExecutionContext) -> ExecutionContext:
         if context.worktree and not Path(context.worktree).is_absolute():
             raise ValueError("worktree path must be absolute")
-        with self.transaction(immediate=True) as conn:
-            conn.execute(
-                """INSERT INTO execution_contexts
-                   (item_id,activity_id,repo,mode,revision,worktree,dirty) VALUES (?,?,?,?,?,?,?)""",
-                (
-                    context.item_id,
-                    context.activity_id,
-                    context.repo,
-                    context.mode.value,
-                    context.revision,
-                    context.worktree,
-                    int(context.dirty),
-                ),
-            )
-        return context
+        return self.upsert_context(context)
 
     def execution_contexts(self, item_id: str, activity_id: str) -> list[ExecutionContext]:
         with self.connection() as conn:

@@ -76,6 +76,52 @@ class ServerOSCliTest(unittest.TestCase):
         self.assertEqual(result.returncode, 2)
         self.assertEqual(json.loads(result.stderr)["error"]["code"], "INVALID_INPUT")
 
+    def test_context_attach_retry_and_change_updates_one_repo_context(self):
+        with tempfile.TemporaryDirectory() as td:
+            artifacts = str(Path(td) / "artifacts")
+            created = self.run_cli(
+                td, artifacts, "item", "create", "--project", "serveros", "--prefix", "SRV",
+                "--title", "context update", "--kind", "ops",
+            )
+            self.assertEqual(created.returncode, 0, created.stderr)
+            added = self.run_cli(td, artifacts, "activity", "add", "SRV-0001", "verify", "--kind", "test")
+            self.assertEqual(added.returncode, 0, added.stderr)
+            first_worktree = str(Path(td) / "first")
+            final_worktree = str(Path(td) / "final")
+
+            for args in (
+                ("--mode", "develop", "--revision", "old", "--worktree", first_worktree),
+                ("--mode", "develop", "--revision", "old", "--worktree", first_worktree),
+                ("--mode", "test", "--revision", "new", "--worktree", final_worktree, "--dirty"),
+            ):
+                attached = self.run_cli(
+                    td, artifacts, "context", "attach", "SRV-0001", "verify",
+                    "--repo", "work-engine", *args,
+                )
+                self.assertEqual(attached.returncode, 0, attached.stderr)
+
+            second_repo = self.run_cli(
+                td, artifacts, "context", "attach", "SRV-0001", "verify",
+                "--repo", "hwz-ops", "--mode", "inspect", "--revision", "ops",
+            )
+            self.assertEqual(second_repo.returncode, 0, second_repo.stderr)
+            begun = self.run_cli(
+                td, artifacts, "run", "begin", "SRV-0001", "verify",
+                "--worker", "codex", "--idempotency-key", "context-update",
+            )
+            self.assertEqual(begun.returncode, 0, begun.stderr)
+            contexts = json.loads(begun.stdout)["contexts"]
+            self.assertEqual(len(contexts), 2)
+            by_repo = {context["repo"]: context for context in contexts}
+            self.assertEqual(
+                by_repo["work-engine"],
+                {
+                    "item_id": "SRV-0001", "activity_id": "verify", "repo": "work-engine",
+                    "mode": "test", "revision": "new", "worktree": final_worktree, "dirty": True,
+                },
+            )
+            self.assertEqual(by_repo["hwz-ops"]["revision"], "ops")
+
     def test_outcome_deliverable_and_board_projection(self):
         with tempfile.TemporaryDirectory() as td:
             artifacts = str(Path(td) / "artifacts")

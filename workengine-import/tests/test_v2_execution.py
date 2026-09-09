@@ -5,7 +5,7 @@ from pathlib import Path
 from workengine.activity import ActivityGraph, GraphError
 from workengine.artifacts import ArtifactBoundaryError, artifact_dir
 from workengine.engine import ServerOS
-from workengine.model import ContextMode, RunState
+from workengine.model import ContextMode, ExecutionContext, RunState
 from workengine.store import ServerOSStore
 
 
@@ -43,6 +43,42 @@ class ServerOSExecutionTest(unittest.TestCase):
             self.assertEqual(first.state, RunState.ALLOCATED)
             self.assertEqual(len(store.execution_contexts(item.id, "implement")), 2)
             self.assertTrue(Path(first.artifact_dir).is_absolute())
+
+    def test_attaching_same_repo_is_idempotent_and_updates_its_context(self):
+        with tempfile.TemporaryDirectory() as td:
+            store = ServerOSStore(td)
+            osctl = ServerOS(store=store, artifacts_root=Path(td) / "artifacts")
+            osctl.register_project("serveros", "SRV")
+            item = osctl.create_item("serveros", "refresh context", "ops")
+            osctl.add_activity(item.id, "implement", "develop")
+            first_worktree = str(Path(td) / "first")
+            final_worktree = str(Path(td) / "final")
+
+            store.attach_context(ExecutionContext(
+                item.id, "implement", "work-engine", ContextMode.DEVELOP,
+                "old", first_worktree,
+            ))
+            store.attach_context(ExecutionContext(
+                item.id, "implement", "work-engine", ContextMode.DEVELOP,
+                "old", first_worktree,
+            ))
+            store.attach_context(ExecutionContext(
+                item.id, "implement", "work-engine", ContextMode.TEST,
+                "new", final_worktree, True,
+            ))
+            store.attach_context(ExecutionContext(
+                item.id, "implement", "hwz-ops", ContextMode.INSPECT,
+                "ops", str(Path(td) / "ops"),
+            ))
+
+            contexts = store.execution_contexts(item.id, "implement")
+            self.assertEqual(len(contexts), 2)
+            by_repo = {context.repo: context for context in contexts}
+            self.assertEqual(by_repo["work-engine"].mode, ContextMode.TEST)
+            self.assertEqual(by_repo["work-engine"].revision, "new")
+            self.assertEqual(by_repo["work-engine"].worktree, final_worktree)
+            self.assertTrue(by_repo["work-engine"].dirty)
+            self.assertEqual(by_repo["hwz-ops"].revision, "ops")
 
     def test_run_lifecycle_is_linear_and_resumable(self):
         with tempfile.TemporaryDirectory() as td:
