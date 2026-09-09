@@ -6,13 +6,17 @@ from workengine.federation import check_inventory, inventory, proposal
 
 class FederationV3Tests(unittest.TestCase):
     def test_missing_parent_is_placement_drift_and_auth_is_not_topology(self):
-        rows = [{"domain":"feishu","object_id":"doc-1","parent_id":"missing","kind":"doc"}]
+        rows = [{"domain":"feishu","object_id":"doc-1","parent":"missing","kind":"doc"}]
         drift = check_inventory(rows, [{"domain":"feishu","object_id":"root","kind":"folder"}])
         self.assertEqual(drift[0]["class"], "UNEXPECTED_OBJECT")
         self.assertEqual(check_inventory([{"domain":"feishu","error":"AUTH_EXPIRED"}], [])[0]["class"], "AUTH_EXPIRED")
 
-    def test_same_object_wrong_parent_is_placement_drift(self):
-        d=check_inventory([{"domain":"feishu","object_id":"doc","parent_id":"wrong"}], [{"domain":"feishu","object_id":"doc","parent_id":"right"}])
+    def test_schema_parent_match_has_no_placement_drift(self):
+        d=check_inventory([{"domain":"feishu","object_id":"doc","parent":"root"}], [{"domain":"feishu","object_id":"doc","parent":"root"}])
+        self.assertEqual(d, [])
+
+    def test_schema_parent_mismatch_is_placement_drift(self):
+        d=check_inventory([{"domain":"feishu","object_id":"doc","parent":"wrong"}], [{"domain":"feishu","object_id":"doc","parent":"right"}])
         self.assertEqual([x['class'] for x in d],['PLACEMENT_DRIFT'])
 
     def test_inventory_preserves_previous_projection_on_error(self):
