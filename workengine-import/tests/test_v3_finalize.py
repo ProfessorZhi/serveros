@@ -37,11 +37,51 @@ class FinalizeV3Tests(unittest.TestCase):
         metadata.update(overrides)
         return self.s.record_evidence(self.item.id, self.run.id, **metadata)
 
-    def test_finalize_replaces_context_and_is_idempotent(self):
+    def test_finalize_preserves_context_and_is_idempotent(self):
         result = self.s.finalize_run(self.item.id, self.run.id, verdict="PASS", exit_code=0, command="pytest", cases=["one"], revision="final", dirty=False)
         self.assertEqual(result["state"], "SUCCEEDED"); self.assertEqual(result["verdict"], "PASS")
-        self.assertEqual(self.s.execution_contexts(self.item.id, "test")[0].revision, "final")
+        self.assertEqual(self.s.execution_contexts(self.item.id, "test")[0].revision, "base")
         self.assertEqual(self.s.finalize_run(self.item.id, self.run.id, verdict="PASS", exit_code=0, command="pytest", cases=["one"], revision="final", dirty=False), result)
+
+    def test_finalize_preserves_distinct_repo_contexts_and_records_aggregate_revision(self):
+        self.s.attach_context(__import__('workengine').ExecutionContext(
+            self.item.id, "test", "repo", ContextMode.TEST, "repo-sha", "/tmp/repo", True,
+        ))
+        self.s.attach_context(__import__('workengine').ExecutionContext(
+            self.item.id, "test", "ops", ContextMode.INSPECT, "ops-sha", "/tmp/ops", False,
+        ))
+
+        result = self.s.finalize_run(
+            self.item.id, self.run.id, verdict="PASS", exit_code=0,
+            command="pytest", cases=["integration"],
+            revision="repo=repo-sha,ops=ops-sha", dirty=True,
+        )
+        contexts = {
+            context.repo: (context.revision, context.dirty)
+            for context in self.s.execution_contexts(self.item.id, "test")
+        }
+        self.assertEqual(contexts, {"ops": ("ops-sha", False), "repo": ("repo-sha", True)})
+        with self.s.connection() as conn:
+            evidence = conn.execute(
+                "SELECT revision,dirty FROM evidence WHERE item_id=? AND run_id=?",
+                (self.item.id, self.run.id),
+            ).fetchone()
+        self.assertEqual((evidence["revision"], evidence["dirty"]), ("repo=repo-sha,ops=ops-sha", 1))
+        self.assertEqual(
+            self.s.finalize_run(
+                self.item.id, self.run.id, verdict="PASS", exit_code=0,
+                command="pytest", cases=["integration"],
+                revision="repo=repo-sha,ops=ops-sha", dirty=True,
+            ),
+            result,
+        )
+        self.assertEqual(
+            {
+                context.repo: (context.revision, context.dirty)
+                for context in self.s.execution_contexts(self.item.id, "test")
+            },
+            contexts,
+        )
 
     def test_activity_transition_validates(self):
         self.s.transition_activity(self.item.id, "test", ActivityState.READY)

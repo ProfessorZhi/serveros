@@ -64,6 +64,10 @@ rejection, or deferral before an Item is created. `federation` accepts only
 metadata and locators, writes a latest successful projection atomically, and
 emits proposals rather than changing Feishu or GitHub.
 
+Execution-context revisions remain authoritative per repo. The revision passed
+to `run finalize` describes the aggregate Run evidence and does not rewrite the
+0..N attached repo contexts.
+
 Item states are:
 
 ```text

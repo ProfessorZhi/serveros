@@ -387,7 +387,6 @@ class ServerOSStore:
                     else: Path(e['locator']).write_text(json.dumps({"command":e['command'],"cases":json.loads(e['cases_json']),"exit_code":e['exit_code'],"revision":e['revision'],"dirty":bool(e['dirty']),"verdict":e['verdict']})+'\n')
                 return {"state":r['state'],"verdict":e['verdict'] if e else verdict}
             if r['state']!='FINALIZING': raise ValueError("run must be FINALIZING")
-            c.execute("UPDATE execution_contexts SET revision=?,dirty=? WHERE item_id=? AND activity_id=?",(revision,int(dirty),item_id,r['activity_id']))
             locator=str(Path(r['artifact_dir'])/'finalize.json'); Path(r['artifact_dir']).mkdir(parents=True,exist_ok=True)
             temporary=Path(locator+'.tmp'); payload=json.dumps({"command":command,"cases":cases,"exit_code":exit_code,"revision":revision,"dirty":dirty,"verdict":verdict})+'\n'; temporary.write_text(payload)
             _reject_secrets(json.loads(payload))
