@@ -14,7 +14,7 @@ from .engine import ServerOS, default_state_dir
 from .migration import MigrationManager
 from .model import ItemState, Outcome, RunState
 from .store import ServerOSStore
-from .federation import inventory as federation_inventory, check_inventory, proposal as federation_proposal
+from .federation import publish_inventory, check_inventory, proposal as federation_proposal
 
 
 def _json_value(value):
@@ -173,9 +173,10 @@ def _cmd_federation(args):
     store=ServerOSStore(_state_dir(args))
     store.resolve_evidence_run(args.evidence_run)
     if args.action=='inventory':
-        result=federation_inventory(args.domain,args.source,args.target)
-        receipt=store.record_publication_receipt(args.domain,result['locator'],result['sha256'],args.evidence_run)
-        return {**result,'evidence_run':args.evidence_run,'receipt':receipt}
+        return publish_inventory(
+            args.domain,args.source,args.target,args.evidence_run,
+            store.record_publication_receipt,store.get_publication_receipt,
+        )
     observed=[json.loads(x) for x in Path(args.observed).read_text().splitlines() if x.strip()]
     desired=[json.loads(x) for x in Path(args.desired).read_text().splitlines() if x.strip()]
     d=check_inventory(observed,desired,evidence_run=args.evidence_run)

@@ -9,7 +9,7 @@ from pathlib import Path
 
 from workengine import Activity, WorkItem
 from workengine.store import ServerOSStore
-from workengine.federation import check_inventory, inventory, proposal
+from workengine.federation import check_inventory, inventory, proposal, publish_inventory
 
 
 class FederationV3Tests(unittest.TestCase):
@@ -67,7 +67,10 @@ class FederationV3Tests(unittest.TestCase):
             store, item, run = self.create_run(root)
             source = root / "evidence.jsonl"
             target = root / "federation" / "feishu" / "current.jsonl"
-            source.write_text(json.dumps({"object_id": "doc-1", "kind": "doc"}) + "\n")
+            source.write_text(json.dumps({
+                "object_id": "doc-1", "kind": "doc", "locator": "feishu://doc/doc-1",
+                "observed_at": "2026-09-09T10:00:00+00:00",
+            }) + "\n")
 
             published = self.run_cli(
                 root / "state", root / "artifacts",
@@ -141,6 +144,134 @@ class FederationV3Tests(unittest.TestCase):
             self.assertEqual(target.read_text(), "previous\n")
             with store.connection() as conn:
                 self.assertEqual(conn.execute("SELECT count(*) FROM publication_receipts").fetchone()[0], 0)
+
+    def test_receipt_failure_restores_previous_current_without_fake_receipt(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            store, item, run = self.create_run(root)
+            source = root / "evidence.jsonl"
+            target = root / "current.jsonl"
+            source.write_text(json.dumps({
+                "object_id": "repo-1", "kind": "repository", "locator": "github://repo-1",
+                "observed_at": "2026-09-09T10:00:00+00:00",
+            }) + "\n")
+            target.write_text("previous\n")
+            with store.connection() as conn:
+                conn.execute(
+                    """CREATE TRIGGER fail_publication_receipt
+                       BEFORE INSERT ON publication_receipts
+                       BEGIN SELECT RAISE(ABORT, 'injected receipt failure'); END"""
+                )
+
+            failed = self.run_cli(
+                root / "state", root / "artifacts",
+                "federation", "github", "inventory",
+                "--source", str(source), "--target", str(target),
+                "--evidence-run", f"{item.id}/{run.id}",
+            )
+
+            self.assertNotEqual(failed.returncode, 0)
+            self.assertEqual(target.read_text(), "previous\n")
+            with store.connection() as conn:
+                self.assertEqual(conn.execute("SELECT count(*) FROM publication_receipts").fetchone()[0], 0)
+
+    def test_same_run_cannot_replace_current_with_different_inventory(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            store, item, run = self.create_run(root)
+            source = root / "evidence.jsonl"
+            target = root / "current.jsonl"
+            evidence_run = f"{item.id}/{run.id}"
+
+            def write_source(object_id):
+                source.write_text(json.dumps({
+                    "object_id": object_id, "kind": "repository", "locator": f"github://{object_id}",
+                    "observed_at": "2026-09-09T10:00:00+00:00",
+                }) + "\n")
+
+            write_source("repo-1")
+            first = self.run_cli(
+                root / "state", root / "artifacts",
+                "federation", "github", "inventory",
+                "--source", str(source), "--target", str(target),
+                "--evidence-run", evidence_run,
+            )
+            self.assertEqual(first.returncode, 0, first.stderr)
+            first_bytes = target.read_bytes()
+
+            write_source("repo-2")
+            conflicting = self.run_cli(
+                root / "state", root / "artifacts",
+                "federation", "github", "inventory",
+                "--source", str(source), "--target", str(target),
+                "--evidence-run", evidence_run,
+            )
+
+            self.assertEqual(conflicting.returncode, 2, conflicting.stderr)
+            self.assertEqual(target.read_bytes(), first_bytes)
+            with store.connection() as conn:
+                receipts = conn.execute("SELECT sha256 FROM publication_receipts").fetchall()
+            self.assertEqual(len(receipts), 1)
+            self.assertEqual(receipts[0]["sha256"], hashlib.sha256(target.read_bytes()).hexdigest())
+
+    def test_schema_invalid_inventory_does_not_replace_current_or_record_receipt(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            store, item, run = self.create_run(root)
+            source = root / "invalid.jsonl"
+            target = root / "current.jsonl"
+            source.write_text(json.dumps({"object_id": "doc-1", "kind": "doc"}) + "\n")
+            target.write_text("previous\n")
+
+            failed = self.run_cli(
+                root / "state", root / "artifacts",
+                "federation", "feishu", "inventory",
+                "--source", str(source), "--target", str(target),
+                "--evidence-run", f"{item.id}/{run.id}",
+            )
+
+            self.assertEqual(failed.returncode, 2, failed.stderr)
+            self.assertEqual(target.read_text(), "previous\n")
+            with store.connection() as conn:
+                self.assertEqual(conn.execute("SELECT count(*) FROM publication_receipts").fetchone()[0], 0)
+
+    def test_retry_completes_interrupted_publication_with_same_hash(self):
+        class SimulatedCrash(BaseException):
+            pass
+
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            source = root / "evidence.jsonl"
+            target = root / "current.jsonl"
+            source.write_text(json.dumps({
+                "object_id": "repo-1", "kind": "repository", "locator": "github://repo-1",
+                "observed_at": "2026-09-09T10:00:00+00:00",
+            }) + "\n")
+            target.write_text("previous\n")
+
+            def crash_after_publish(*_):
+                raise SimulatedCrash()
+
+            with self.assertRaises(SimulatedCrash):
+                publish_inventory(
+                    "github", source, target, "SRV-0003/RUN-0006", crash_after_publish,
+                )
+
+            published_hash = hashlib.sha256(target.read_bytes()).hexdigest()
+            self.assertTrue(target.with_name(f".{target.name}.publish.json").exists())
+            self.assertEqual(len(list(root.glob(f".{target.name}.backup.*"))), 1)
+            receipt = {
+                "domain": "github", "locator": str(target), "sha256": published_hash,
+                "evidence_run": "SRV-0003/RUN-0006",
+            }
+            completed = publish_inventory(
+                "github", source, target, "SRV-0003/RUN-0006", lambda *_: receipt,
+            )
+
+            self.assertEqual(completed["receipt"], receipt)
+            self.assertEqual(completed["sha256"], published_hash)
+            self.assertFalse(target.with_name(f".{target.name}.publish.json").exists())
+            self.assertEqual(list(root.glob(f".{target.name}.backup.*")), [])
 
     def test_drift_envelopes_match_cross_repo_schema_contract(self):
         evidence_run = "SRV-0003/RUN-0006"

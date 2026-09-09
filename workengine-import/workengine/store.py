@@ -436,8 +436,16 @@ class ServerOSStore:
             raise ValueError("publication receipt hash does not match current projection")
         item_id, run_id = self.resolve_evidence_run(evidence_run)
         with self.transaction(immediate=True) as c:
+            existing = c.execute(
+                "SELECT * FROM publication_receipts WHERE domain=? AND locator=? AND evidence_run=?",
+                (domain, str(target), evidence_run),
+            ).fetchone()
+            if existing is not None:
+                if existing['sha256'] != sha256 or existing['item_id'] != item_id or existing['run_id'] != run_id:
+                    raise ValueError("publication identity already has a different projection")
+                return dict(existing)
             c.execute(
-                """INSERT OR IGNORE INTO publication_receipts
+                """INSERT INTO publication_receipts
                    (domain,object_id,revision,locator,sha256,evidence_run,item_id,run_id,created_at)
                    VALUES (?,?,?,?,?,?,?,?,?)""",
                 (domain, 'current', sha256, str(target), sha256, evidence_run, item_id, run_id, now_iso()),
@@ -447,6 +455,14 @@ class ServerOSStore:
                 (domain, str(target), evidence_run),
             ).fetchone()
         return dict(row)
+
+    def get_publication_receipt(self, domain, locator, evidence_run):
+        with self.connection() as c:
+            row = c.execute(
+                "SELECT * FROM publication_receipts WHERE domain=? AND locator=? AND evidence_run=?",
+                (domain, locator, evidence_run),
+            ).fetchone()
+        return dict(row) if row is not None else None
 
     def list_deliverables(self, item_id: str) -> list[dict]:
         with self.connection() as conn:

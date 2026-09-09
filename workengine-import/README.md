@@ -69,6 +69,12 @@ rejection, or deferral before an Item is created. `federation` accepts only
 metadata and locators, writes a latest successful projection atomically, and
 records its projection hash and evidence Run in a publication receipt. Drift
 commands emit schema-valid proposals rather than changing Feishu or GitHub.
+Inventory rows are validated against the bundled copy of the hwz-ops
+`federation-object.v1` contract before the current projection is touched.
+Publication uses a same-directory stage, process lock, backup, and recovery
+journal. A receipt failure restores the previous current file; an interrupted
+publication can only resume with the same evidence Run and hash, while a
+different payload for an existing publication identity fails closed.
 
 Execution-context revisions remain authoritative per repo. The revision passed
 to `run finalize` describes the aggregate Run evidence and does not rewrite the

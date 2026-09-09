@@ -18,4 +18,4 @@ build-backend = "setuptools.build_meta"
 include = ["workengine*"]
 
 [tool.setuptools.package-data]
-workengine = ["schema.sql"]
+workengine = ["schema.sql", "schemas/*.json"]
