@@ -1,7 +1,7 @@
 [project]
 name = "workengine"
-version = "0.2.0"
-description = "ServerOS v2 Item, Activity, Run, context, evidence, and migration control plane."
+version = "0.3.0"
+description = "ServerOS v3 federated workflow control plane for information, Items, Runs, evidence, and feedback."
 requires-python = ">=3.11"
 license = { text = "PROPRIETARY" }
 dependencies = []

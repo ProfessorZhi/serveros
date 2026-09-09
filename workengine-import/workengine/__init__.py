@@ -1,4 +1,4 @@
-"""ServerOS v2 control-plane public API."""
+"""ServerOS v3 federated control-plane public API."""
 
 from .activity import ActivityGraph, GraphError
 from .artifacts import ArtifactBoundaryError, artifact_dir
@@ -23,7 +23,7 @@ from .request import WorkRequest
 from .state_machine import IllegalTransition, allowed_transitions, can_transition, reopen, transition
 from .store import ServerOSStore, WorkItemStore
 
-__version__ = "0.2.0"
+__version__ = "0.3.0"
 
 __all__ = [
     "Activity",

@@ -1,18 +1,13 @@
 # ServerOS work engine
 
-`work-engine` is the ServerOS v2 runtime control plane. It tracks execution,
-not business prose:
+`work-engine` is the ServerOS v3 runtime control plane. It joins information
+intake, executable work, execution evidence, and feedback without taking over
+the native facts owned by Git, GitHub, Feishu, or local execution systems:
 
 ```text
-Observation / Claim (records information)
-            ↓
-Item card (records project)
-            ↓
-Activity DAG (declared plan + runtime projection)
-            ↓
-Run (SQLite lease, attempt, context, evidence path)
-            ↓
-Deliverable locator and feedback
+Source → Observation → Claim → Candidate Item → Item
+       → Activity → Run → Evidence → Deliverable → Feedback
+                                                └→ new Observation
 ```
 
 An Item is not a PR and does not require a worktree. One Item may own zero or
@@ -33,7 +28,7 @@ journal only.
 
 ## CLI
 
-Both entry points invoke the v2 CLI; `serverosctl` is canonical.
+Both entry points invoke the v3 CLI; `serverosctl` is canonical.
 
 ```bash
 serverosctl --json item create \
@@ -53,7 +48,21 @@ serverosctl --json deliverable add SRV-0001 \
   --kind report --locator /absolute/path/report.md
 serverosctl --json board render --project serveros \
   --output-dir /absolute/path/records/projects/serveros/board
+
+# Register a metadata-only Feishu or GitHub inventory and generate drift proposals.
+serverosctl --json federation feishu inventory \
+  --source /absolute/path/inventory/feishu-objects.jsonl \
+  --target /opt/applications/data/home-hwz/state/serveros/federation/feishu/current.jsonl
+serverosctl --json federation feishu proposal \
+  --observed /absolute/path/inventory/feishu-objects.jsonl \
+  --desired /absolute/path/feishu-desired.jsonl
 ```
+
+The information-to-work handoff is explicit: `source`, `observation`, and
+`claim` preserve provenance; `candidate` records matching, promotion, merge,
+rejection, or deferral before an Item is created. `federation` accepts only
+metadata and locators, writes a latest successful projection atomically, and
+emits proposals rather than changing Feishu or GitHub.
 
 Item states are:
 

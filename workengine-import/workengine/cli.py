@@ -1,4 +1,4 @@
-"""JSON-first command line interface for ServerOS v2."""
+"""JSON-first command line interface for the ServerOS v3 control plane."""
 
 from __future__ import annotations
 
@@ -203,7 +203,7 @@ def _common() -> argparse.ArgumentParser:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="serverosctl", description="ServerOS v2 control plane", parents=[_common()])
+    parser = argparse.ArgumentParser(prog="serverosctl", description="ServerOS v3 control plane", parents=[_common()])
     groups = parser.add_subparsers(dest="group", required=True)
 
     item = groups.add_parser("item", parents=[_common()])
