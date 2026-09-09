@@ -294,12 +294,14 @@ class ServerOSStore:
                 e=c.execute("SELECT * FROM evidence WHERE item_id=? AND run_id=? ORDER BY evidence_id DESC LIMIT 1",(item_id,run_id)).fetchone(); return {"state":r['state'],"verdict":e['verdict'] if e else verdict}
             if r['state']!='FINALIZING': raise ValueError("run must be FINALIZING")
             c.execute("UPDATE execution_contexts SET revision=?,dirty=? WHERE item_id=? AND activity_id=?",(revision,int(dirty),item_id,r['activity_id']))
-            locator=str(Path(r['artifact_dir'])/'finalize.json'); Path(r['artifact_dir']).mkdir(parents=True,exist_ok=True); Path(locator).write_text(json.dumps({"command":command,"cases":cases,"exit_code":exit_code,"revision":revision,"dirty":dirty,"verdict":verdict})+'\n')
-            digest=hashlib.sha256(Path(locator).read_bytes()).hexdigest()
+            locator=str(Path(r['artifact_dir'])/'finalize.json'); Path(r['artifact_dir']).mkdir(parents=True,exist_ok=True)
+            temporary=Path(locator+'.tmp'); payload=json.dumps({"command":command,"cases":cases,"exit_code":exit_code,"revision":revision,"dirty":dirty,"verdict":verdict})+'\n'; temporary.write_text(payload)
+            digest=hashlib.sha256(payload.encode()).hexdigest()
             c.execute("INSERT INTO evidence(item_id,run_id,kind,locator,sha256,command,cases_json,exit_code,revision,dirty,verdict,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",(item_id,run_id,'finalize',locator,digest,command,json.dumps(cases),exit_code,revision,int(dirty),verdict,now_iso()))
             state='SUCCEEDED' if verdict=='PASS' and exit_code==0 else 'FAILED'
             c.execute("UPDATE runs SET state=?,ended_at=? WHERE item_id=? AND run_id=?",(state,now_iso(),item_id,run_id))
-            return {"state":state,"verdict":verdict}
+        temporary.replace(locator)
+        return {"state":state,"verdict":verdict}
 
     def record_feedback(self,item_id,locator,kind):
         with self.transaction(immediate=True) as c:

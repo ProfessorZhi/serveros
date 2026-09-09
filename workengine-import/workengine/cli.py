@@ -14,6 +14,7 @@ from .engine import ServerOS, default_state_dir
 from .migration import MigrationManager
 from .model import ItemState, Outcome, RunState
 from .store import ServerOSStore
+from .federation import inventory as federation_inventory, check_inventory, proposal as federation_proposal
 
 
 def _json_value(value):
@@ -139,6 +140,25 @@ def _cmd_claim(args):
 def _cmd_feedback(args):
     return ServerOSStore(_state_dir(args)).record_feedback(args.item, args.locator, args.kind)
 
+def _cmd_candidate(args):
+    s=ServerOSStore(_state_dir(args))
+    if args.action == 'create': return s.create_candidate(args.id,args.project,args.title,args.kind,dedupe_key=args.dedupe_key,claim_ids=args.claim)
+    if args.action == 'match': return s.match_candidate(args.id,args.item)
+    if args.action == 'promote':
+        if not args.item: raise ValueError('promotion requires explicit --item mapping')
+        return s.promote_candidate(args.id,args.item)
+    state={'merge':'MERGED','reject':'REJECTED','defer':'DEFERRED'}[args.action]
+    with s.transaction(immediate=True) as c:
+        c.execute('UPDATE item_candidates SET state=? WHERE candidate_id=?',(state,args.id))
+        return dict(c.execute('SELECT * FROM item_candidates WHERE candidate_id=?',(args.id,)).fetchone())
+
+def _cmd_federation(args):
+    if args.action=='inventory': return federation_inventory(args.domain,args.source,args.target)
+    observed=[json.loads(x) for x in Path(args.observed).read_text().splitlines() if x.strip()]
+    desired=[json.loads(x) for x in Path(args.desired).read_text().splitlines() if x.strip()]
+    d=check_inventory(observed,desired)
+    return federation_proposal(d) if args.action=='proposal' else d
+
 
 def _cmd_board(args):
     if args.action == "render":
@@ -210,6 +230,17 @@ def build_parser() -> argparse.ArgumentParser:
     feedback = groups.add_parser("feedback", parents=[_common()])
     feedback.add_argument("item"); feedback.add_argument("--locator", required=True); feedback.add_argument("--kind", required=True)
 
+    candidate=groups.add_parser("candidate", parents=[_common()]); ca=candidate.add_subparsers(dest="action",required=True)
+    cc=ca.add_parser("create"); cc.add_argument("id"); cc.add_argument("--project",required=True); cc.add_argument("--title",required=True); cc.add_argument("--kind",required=True); cc.add_argument("--dedupe-key",required=True); cc.add_argument("--claim",action="append",required=True)
+    cm=ca.add_parser("match"); cm.add_argument("id"); cm.add_argument("--item",required=True)
+    cp=ca.add_parser("promote"); cp.add_argument("id"); cp.add_argument("--item")
+    for action in ("merge","reject","defer"):
+        x=ca.add_parser(action); x.add_argument("id")
+    federation=groups.add_parser("federation",parents=[_common()]); federation.add_argument("domain"); fa=federation.add_subparsers(dest="action",required=True)
+    fi=fa.add_parser("inventory"); fi.add_argument("--source",required=True); fi.add_argument("--target",required=True)
+    for action in ("check","proposal"):
+        fx=fa.add_parser(action); fx.add_argument("--observed",required=True); fx.add_argument("--desired",required=True)
+
     run = groups.add_parser("run", parents=[_common()])
     run_actions = run.add_subparsers(dest="action", required=True)
     begin = run_actions.add_parser("begin", parents=[_common()])
@@ -256,6 +287,7 @@ def main(argv: list[str] | None = None) -> int:
             "context": _cmd_context,
             "deliverable": _cmd_deliverable,
             "source": _cmd_source, "observation": _cmd_observation, "claim": _cmd_claim, "feedback": _cmd_feedback,
+            "candidate": _cmd_candidate, "federation": _cmd_federation,
             "board": _cmd_board,
             "migrate": _cmd_migrate,
         }[args.group]
