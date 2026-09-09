@@ -37,3 +37,12 @@ class InformationV3Tests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 s.record_claim("bad", "x", [])
 
+    def test_external_identity_is_unique_across_dedupe_keys(self):
+        with tempfile.TemporaryDirectory() as td:
+            s=ServerOSStore(Path(td)/"state"); s.register_project("demo","DEM")
+            src=s.register_source("github","issue-1",revision="r1",locator="https://x")
+            o=s.record_observation(src['source_id'],'o',semantic_type='bug',content_hash='a'*64)
+            c=s.record_claim('c','/claim',[o['observation_id']])
+            s.create_candidate('c1','demo','one','bug',dedupe_key='d1',claim_ids=['c'],external_id='issue-1',external_revision='r1',domain='github')
+            with self.assertRaises((ValueError,sqlite3.IntegrityError)):
+                s.create_candidate('c2','demo','two','bug',dedupe_key='d2',claim_ids=['c'],external_id='issue-1',external_revision='r1',domain='github')

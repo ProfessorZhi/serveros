@@ -51,8 +51,10 @@ def snapshot(store: ServerOSStore, project: str) -> dict:
                         "runs": [dict(row) for row in runs],
                     }
                 )
-            items.append(item.to_dict() | {"activities": activities, "deliverables": store.list_deliverables(item.id)})
-    return {"schema": "serveros/board.v2", "project": project, "generated_at": now_iso(), "items": items}
+            candidates=[dict(x) for x in conn.execute("SELECT candidate_id,state,domain,external_id,external_revision,approved_item_id FROM item_candidates WHERE approved_item_id=? OR project=? ORDER BY candidate_id",(item.id,project)).fetchall()]
+            items.append(item.to_dict() | {"activities": activities, "deliverables": store.list_deliverables(item.id), "candidate_mappings": candidates})
+    revisions=[c['revision'] for i in items for a in i['activities'] for c in a['contexts'] if c.get('revision')]
+    return {"schema": "serveros/board.v3", "project": project, "generated_at": now_iso(), "generation_source_revision": max(revisions) if revisions else None, "items": items}
 
 
 def render(store: ServerOSStore, project: str, output_dir: str | Path) -> dict:

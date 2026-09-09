@@ -107,6 +107,10 @@ def _cmd_run(args):
         return _run_payload(server, server.resume_run(args.item, args.run))
     if args.action == "advance":
         return _run_payload(server, server.advance_run(args.item, args.run, args.to))
+    if args.action == "evidence":
+        return server.store.record_evidence(args.item,args.run,kind=args.kind,locator=args.locator,command=args.command,cases=args.case,exit_code=args.exit_code,revision=args.revision,dirty=args.dirty,verdict=args.verdict)
+    if args.action == "finalize":
+        return server.store.finalize_run(args.item,args.run,verdict=args.verdict,exit_code=args.exit_code,command=args.command,cases=args.case,revision=args.revision,dirty=args.dirty)
     raise ValueError("unsupported run action")
 
 
@@ -142,7 +146,7 @@ def _cmd_feedback(args):
 
 def _cmd_candidate(args):
     s=ServerOSStore(_state_dir(args))
-    if args.action == 'create': return s.create_candidate(args.id,args.project,args.title,args.kind,dedupe_key=args.dedupe_key,claim_ids=args.claim)
+    if args.action == 'create': return s.create_candidate(args.id,args.project,args.title,args.kind,dedupe_key=args.dedupe_key,claim_ids=args.claim,domain=args.domain,external_id=args.external_id,external_revision=args.external_revision)
     if args.action == 'match': return s.match_candidate(args.id,args.item)
     if args.action == 'promote':
         if args.item: return s.promote_candidate(args.id,args.item)
@@ -236,7 +240,7 @@ def build_parser() -> argparse.ArgumentParser:
     feedback.add_argument("item"); feedback.add_argument("--locator", required=True); feedback.add_argument("--kind", required=True)
 
     candidate=groups.add_parser("candidate", parents=[_common()]); ca=candidate.add_subparsers(dest="action",required=True)
-    cc=ca.add_parser("create"); cc.add_argument("id"); cc.add_argument("--project",required=True); cc.add_argument("--title",required=True); cc.add_argument("--kind",required=True); cc.add_argument("--dedupe-key",required=True); cc.add_argument("--claim",action="append",required=True)
+    cc=ca.add_parser("create"); cc.add_argument("id"); cc.add_argument("--project",required=True); cc.add_argument("--title",required=True); cc.add_argument("--kind",required=True); cc.add_argument("--dedupe-key",required=True); cc.add_argument("--claim",action="append",required=True); cc.add_argument("--domain",default=""); cc.add_argument("--external-id"); cc.add_argument("--external-revision")
     cm=ca.add_parser("match"); cm.add_argument("id"); cm.add_argument("--item",required=True)
     cp=ca.add_parser("promote"); cp.add_argument("id"); cp.add_argument("--item"); cp.add_argument("--create-new",action="store_true"); cp.add_argument("--project"); cp.add_argument("--prefix"); cp.add_argument("--title"); cp.add_argument("--kind")
     for action in ("merge","reject","defer"):
@@ -254,6 +258,8 @@ def build_parser() -> argparse.ArgumentParser:
     show_run = run_actions.add_parser("show", parents=[_common()]); show_run.add_argument("item"); show_run.add_argument("run")
     advance = run_actions.add_parser("advance", parents=[_common()]); advance.add_argument("item"); advance.add_argument("run")
     advance.add_argument("--to", required=True, choices=[state.value for state in RunState])
+    evidence = run_actions.add_parser("evidence", parents=[_common()]); evidence.add_argument("item"); evidence.add_argument("run"); evidence.add_argument("--kind",required=True); evidence.add_argument("--locator",required=True); evidence.add_argument("--command",required=True); evidence.add_argument("--case",action="append",default=[]); evidence.add_argument("--exit-code",type=int,required=True); evidence.add_argument("--revision",required=True); evidence.add_argument("--verdict",required=True); evidence.add_argument("--dirty",action="store_true")
+    finalize = run_actions.add_parser("finalize", parents=[_common()]); finalize.add_argument("item"); finalize.add_argument("run"); finalize.add_argument("--verdict",required=True); finalize.add_argument("--exit-code",type=int,required=True); finalize.add_argument("--command",required=True); finalize.add_argument("--case",action="append",default=[]); finalize.add_argument("--revision",required=True); finalize.add_argument("--dirty",action="store_true")
 
     context = groups.add_parser("context", parents=[_common()])
     context_actions = context.add_subparsers(dest="action", required=True)

@@ -1,5 +1,6 @@
 import tempfile
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 
 from workengine.model import Activity, ActivityState, ContextMode, RunState
@@ -25,3 +26,18 @@ class FinalizeV3Tests(unittest.TestCase):
     def test_activity_transition_validates(self):
         self.s.transition_activity(self.item.id, "test", ActivityState.READY)
         self.assertEqual(self.s.transition_activity(self.item.id, "test", ActivityState.RUNNING).state, ActivityState.RUNNING)
+
+    def test_finalize_repairs_manifest_after_publish_failure(self):
+        original=Path.replace
+        failed=[True]
+        def flaky(self, target):
+            if failed[0] and str(self).endswith('.tmp'):
+                failed[0]=False; raise OSError('injected replace failure')
+            return original(self,target)
+        with patch.object(Path,'replace',flaky):
+            with self.assertRaises(OSError): self.s.finalize_run(self.item.id,self.run.id,verdict='PASS',exit_code=0,command='pytest',cases=['one'],revision='final',dirty=False)
+        result=self.s.finalize_run(self.item.id,self.run.id,verdict='PASS',exit_code=0,command='pytest',cases=['one'],revision='final',dirty=False)
+        self.assertTrue(Path(self.run.artifact_dir,'finalize.json').exists()); self.assertEqual(result['state'],'SUCCEEDED')
+
+    def test_evidence_requires_existing_hashable_file_and_rejects_secrets(self):
+        with self.assertRaises(ValueError): self.s.record_evidence(self.item.id,self.run.id,kind='x',locator='/nope',command='x',cases=[],exit_code=0,revision='r',dirty=False,verdict='PASS')

@@ -26,6 +26,11 @@ from .migrations import migrate
 
 
 _PREFIX = re.compile(r"^[A-Z][A-Z0-9]{1,9}$")
+_SECRET = re.compile(r"(token|secret|cookie|password|api[_-]?key)", re.I)
+
+def _reject_secrets(value):
+    text=json.dumps(value, ensure_ascii=False)
+    if _SECRET.search(text): raise ValueError("secret-like evidence metadata is forbidden")
 
 
 class ServerOSStore:
@@ -239,11 +244,11 @@ class ServerOSStore:
             for x in observation_ids: c.execute("INSERT OR IGNORE INTO claim_observations VALUES (?,?)",(claim_id,x))
             return dict(c.execute("SELECT * FROM claims WHERE claim_id=?",(claim_id,)).fetchone())
 
-    def create_candidate(self, candidate_id, project, title, kind, *, dedupe_key, claim_ids=(), external_id=None, external_revision=None):
+    def create_candidate(self, candidate_id, project, title, kind, *, dedupe_key, claim_ids=(), domain="", external_id=None, external_revision=None):
         if not claim_ids: raise ValueError("candidate requires claim provenance")
         with self.transaction(immediate=True) as c:
             if any(not c.execute("SELECT 1 FROM claims WHERE claim_id=?",(x,)).fetchone() for x in claim_ids): raise KeyError("unknown claim")
-            c.execute("INSERT OR IGNORE INTO item_candidates VALUES (?,?,?,?,?,?,?,?,?,?)",(candidate_id,project,title,kind,"NEW",dedupe_key,external_id,external_revision,None,now_iso()))
+            c.execute("INSERT OR IGNORE INTO item_candidates(candidate_id,project,title,kind,state,dedupe_key,domain,external_id,external_revision,approved_item_id,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)",(candidate_id,project,title,kind,"NEW",dedupe_key,domain,external_id,external_revision,None,now_iso()))
             for x in claim_ids: c.execute("INSERT OR IGNORE INTO candidate_claims VALUES (?,?)",(candidate_id,x))
             return dict(c.execute("SELECT * FROM item_candidates WHERE candidate_id=?",(candidate_id,)).fetchone())
 
@@ -280,8 +285,10 @@ class ServerOSStore:
         return context
 
     def record_evidence(self, item_id, run_id, *, kind, locator, command, cases, exit_code, revision, dirty, verdict):
-        if not Path(locator).is_absolute(): raise ValueError("evidence locator must be absolute")
-        digest=hashlib.sha256(Path(locator).read_bytes()).hexdigest() if Path(locator).is_file() else ""
+        if not Path(locator).is_absolute() or not Path(locator).is_file(): raise ValueError("evidence must be an existing absolute file")
+        digest=hashlib.sha256(Path(locator).read_bytes()).hexdigest()
+        if not digest: raise ValueError("evidence requires SHA-256")
+        _reject_secrets({'kind':kind,'locator':locator,'command':command,'cases':cases,'verdict':verdict})
         with self.transaction(immediate=True) as c:
             c.execute("INSERT OR IGNORE INTO evidence(item_id,run_id,kind,locator,sha256,command,cases_json,exit_code,revision,dirty,verdict,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",(item_id,run_id,kind,locator,digest,command,json.dumps(cases),exit_code,revision,int(dirty),verdict,now_iso()))
             return dict(c.execute("SELECT * FROM evidence WHERE item_id=? AND run_id=? AND locator=?",(item_id,run_id,locator)).fetchone())
@@ -291,11 +298,17 @@ class ServerOSStore:
             r=c.execute("SELECT * FROM runs WHERE item_id=? AND run_id=?",(item_id,run_id)).fetchone()
             if not r: raise KeyError(run_id)
             if r['state'] in ('SUCCEEDED','FAILED','CANCELLED','INVALID'):
-                e=c.execute("SELECT * FROM evidence WHERE item_id=? AND run_id=? ORDER BY evidence_id DESC LIMIT 1",(item_id,run_id)).fetchone(); return {"state":r['state'],"verdict":e['verdict'] if e else verdict}
+                e=c.execute("SELECT * FROM evidence WHERE item_id=? AND run_id=? ORDER BY evidence_id DESC LIMIT 1",(item_id,run_id)).fetchone()
+                if e and not Path(e['locator']).exists():
+                    tmp=Path(e['locator']+'.tmp')
+                    if tmp.exists(): tmp.replace(e['locator'])
+                    else: Path(e['locator']).write_text(json.dumps({"command":e['command'],"cases":json.loads(e['cases_json']),"exit_code":e['exit_code'],"revision":e['revision'],"dirty":bool(e['dirty']),"verdict":e['verdict']})+'\n')
+                return {"state":r['state'],"verdict":e['verdict'] if e else verdict}
             if r['state']!='FINALIZING': raise ValueError("run must be FINALIZING")
             c.execute("UPDATE execution_contexts SET revision=?,dirty=? WHERE item_id=? AND activity_id=?",(revision,int(dirty),item_id,r['activity_id']))
             locator=str(Path(r['artifact_dir'])/'finalize.json'); Path(r['artifact_dir']).mkdir(parents=True,exist_ok=True)
             temporary=Path(locator+'.tmp'); payload=json.dumps({"command":command,"cases":cases,"exit_code":exit_code,"revision":revision,"dirty":dirty,"verdict":verdict})+'\n'; temporary.write_text(payload)
+            _reject_secrets(json.loads(payload))
             digest=hashlib.sha256(payload.encode()).hexdigest()
             c.execute("INSERT INTO evidence(item_id,run_id,kind,locator,sha256,command,cases_json,exit_code,revision,dirty,verdict,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",(item_id,run_id,'finalize',locator,digest,command,json.dumps(cases),exit_code,revision,int(dirty),verdict,now_iso()))
             state='SUCCEEDED' if verdict=='PASS' and exit_code==0 else 'FAILED'
