@@ -6,6 +6,12 @@ __pycache__/
 *.pyc
 *.pyo
 
+# built plugin payload. The runtime artifact has exactly one home —
+# $DATA_ROOT/runtime-assets/hwz-server-os — and must never be committed here,
+# so that this repository stays the single plugin canonical source.
+plugin/build/
+.agents/
+
 # secrets — never commit
 .env
 .env.*

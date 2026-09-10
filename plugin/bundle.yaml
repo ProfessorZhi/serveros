@@ -1,0 +1,73 @@
+# hwz-server-os bundle definition.
+#
+# This file is the COMPOSITION contract. It declares which capabilities make up
+# the ServerOS plugin, and nothing else.
+#
+#   serveros            owns this file, the plugin manifests, the Claude/Codex
+#                       adapters, its own bootstrap Skill, the Context Capsule,
+#                       and the deterministic build entry.
+#   ability-management  owns the reusable Skill source and the Ability Registry
+#                       (revision / compatibility / installation / discovery /
+#                       reconcile).
+#
+# Reusable Skills are NEVER copied into this repository. The build reads them
+# from an explicitly pinned ability-management revision, so a stale or dirty
+# checkout on this machine cannot silently downgrade the distribution.
+schema: serveros/bundle.v1
+
+name: hwz-server-os
+display_name: HWZ ServerOS
+description: ServerOS Agent Engineering Workbench
+short_description: Agent Engineering Workbench for traceable work
+long_description: >-
+  A flexible Agent Engineering Workbench with a top-level dispatcher and
+  on-demand specialist skills for information, work, tests, local and Feishu
+  space, reports, and ability distribution.
+author: ProfessorZhi
+category: Productivity
+license: MIT
+brand_color: "#315C92"
+
+version: "3.1.0"
+
+# Cache identity of the generated payload. Bump this once whenever a
+# regenerated payload must invalidate an already-installed plugin cache. Leave
+# it unchanged otherwise, so that rebuilding from unchanged inputs stays
+# byte-identical.
+cachebuster: srv0003.20260910f
+
+# Skills composed into the plugin, in bundle order.
+#
+#   source: local             canonical in this repository, at skills/<name>/
+#   source: ability-management canonical in ability-management, payload at
+#                             skills/<name>/payload on the pinned revision
+skills:
+  - name: serveros
+    source: local
+
+  - name: ability-management
+    source: ability-management
+  - name: workspace-management
+    source: ability-management
+  - name: information-management
+    source: ability-management
+  - name: work-management
+    source: ability-management
+  - name: test-management
+    source: ability-management
+  - name: feishu-space-management
+    source: ability-management
+  - name: feishu-report
+    source: ability-management
+
+# Shipped inside the runtime artifact so that `serverosctl context resolve` can
+# load the resolver from the installed bundle rather than from a movable source
+# checkout.
+context:
+  path: context
+
+# Default prompts surfaced by the runtime plugin UI.
+default_prompt:
+  - Turn this information into a traceable ServerOS work item.
+  - Check ServerOS workspace and cloud-space drift.
+  - Plan an isolated run with evidence and deliverables.

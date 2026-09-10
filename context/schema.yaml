@@ -1,0 +1,100 @@
+# Context Capsule schema.
+#
+# The Capsule is the contract between ServerOS and any agent runtime. Its job is
+# to let a new Claude Code or Codex session start working in tens of seconds,
+# without a human re-explaining project history.
+#
+# Design rule: carry the MINIMUM CORRECT CONTEXT REQUIRED TO START, plus
+# locators. Never bodies, never full history, never secrets.
+schema: serveros/context-capsule.v1
+
+fields:
+  project:            # business/governance unit
+    type: string
+  item:
+    id:               # stable Item identity
+      type: string
+    title:
+      type: string
+    kind:
+      type: string
+  objective:
+    summary:          # condensed goal, from brief/card
+      type: string
+    acceptance:       # verbatim acceptance criteria from the card
+      type: list[string]
+  development:        # the repo that owns this Item's development worktree
+    repo:
+      type: string
+    worktree:         # absolute path, or null when the Item has no worktree
+      type: string|null
+    branch:           # null when the worktree is detached
+      type: string|null
+    revision:         # current HEAD of the worktree
+      type: string|null
+    detached:         # detached HEAD (normal for test/investigation Items)
+      type: boolean|null
+    dirty:            # uncommitted entries present?
+      type: boolean|null
+  test:
+    environment:      # absolute test-env path, or null when none is registered
+      type: string|null
+  evidence:
+    root:             # absolute artifacts root for this Item
+      type: string
+  runs:               # Run safety. See the run-safety rules below.
+    latest:           # newest Run by id order — NOT a writable target
+      id:
+        type: string
+      state:          # null when only the artifact directory is known
+        type: string|null
+      locator:        # absolute Run directory
+        type: string|null
+      nullable: true
+    active:           # every Run still in flight: protected context, not a target
+      type: list[{id: string, state: string, locator: string|null}]
+    writable:         # this Capsule grants no writable Run; always false
+      type: boolean
+  delivery:
+    repo:             # delivery-target repo (enterprise/upstream source)
+      type: string|null
+    target_branch:    # integration branch, or null when it is not determinable
+      type: string|null
+  current:
+    state:            # Item lifecycle state, from ServerOS machine state
+      type: string
+    outcome:          # recorded outcome, or null
+      type: string|null
+    latest_deliverable:
+      type: string|null
+  relevant_sources:   # locators worth reading — never inlined bodies
+    type: list[string]
+  protected:          # concurrent resources resolved from CURRENT state
+    type: list[string]
+  capability_hints:   # advisory only; never an allowlist
+    type: list[string]
+
+rules:
+  - "`protected` is resolved from current state at resolve time (active Items
+     and held leases). It is never hardcoded into a global CLAUDE.md / AGENTS.md,
+     because a hardcoded list goes stale silently and then lies to the agent."
+  - "`capability_hints` is advisory. Native Claude/Codex skill discovery is
+     always retained; ServerOS never forces a skill router."
+  - "`delivery.target_branch` is filled only when it is determinable (an
+     explicit `delivery_branch` in projects.yaml, or exactly one `update/*`
+     integration branch in the delivery repo). Otherwise it is null. The
+     Capsule does not guess."
+  - "A Capsule resolve must not trigger a full filesystem scan, a full GitHub or
+     Feishu inventory, or a map regeneration."
+  - "`runs.latest` is ordering, not ownership. The newest Run is routinely one
+     that another agent is still executing, so treating it as the place to
+     write is exactly the collision this field exists to prevent."
+  - "A Run is writable only to the execution that explicitly attached to it via
+     `serverosctl context attach`. Every Run still in flight appears under
+     `runs.active` and is protected context. `runs.writable` is false because a
+     read-only resolve cannot know the caller's execution identity, and must
+     therefore grant nothing."
+  - "Roots come from explicit arguments first, then the environment, then the
+     canonical defaults. A caller that already resolved its own roots passes
+     them in, so that the CLI and this resolver cannot read two different
+     worlds."

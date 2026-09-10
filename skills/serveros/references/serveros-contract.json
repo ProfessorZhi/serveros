@@ -1,0 +1,27 @@
+{
+  "schema": "serveros/ability-contract.v1",
+  "product": "Agent Engineering Workbench",
+  "dispatcher": "serveros",
+  "common_path_is_mandatory": false,
+  "normal_task_full_scan": false,
+  "serverosd_status": "future-interface",
+  "milestone_history": "immutable",
+  "current_view": "mutable-projection",
+  "item_path": "records/projects/<project>/items/<ITEM>",
+  "artifact_path": "artifacts/work-items/<project>/<ITEM>/<RUN>",
+  "worktrees_per_item": "0..N",
+  "routes": {
+    "information.capture": "information-management",
+    "work.item": "work-management",
+    "test.environment": "test-management",
+    "workspace.reconcile": "workspace-management",
+    "ability.distribute": "ability-management",
+    "federation.feishu": "feishu-space-management",
+    "report.publish": "feishu-report"
+  },
+  "forbidden_roots": [
+    "workspace/artifacts",
+    "workspace/toolchains",
+    "~/files"
+  ]
+}
