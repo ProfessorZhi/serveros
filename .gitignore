@@ -1,0 +1,22 @@
+# ServerOS is documentation + component registry. No runtime state, maps,
+# generated payloads, secrets or evidence may enter this repository.
+
+# runtime state / generated artifacts
+__pycache__/
+*.pyc
+*.pyo
+
+# secrets — never commit
+.env
+.env.*
+*.pem
+*.key
+secrets/
+.secrets/
+
+# editor / OS noise
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp

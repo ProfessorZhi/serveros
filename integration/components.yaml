@@ -1,0 +1,66 @@
+# ServerOS component registry — relationship and canonical locator only.
+#
+# This file does NOT carry state, maps, or Item data. It records which component
+# owns what, so a reader can find the canonical source of each concern.
+# Do not duplicate runtime state, maps, or an Item database here.
+
+schema: serveros/components.v1
+
+components:
+  serveros:
+    role: product-entry
+    locator: https://github.com/ProfessorZhi/serveros
+    owns: [architecture, context-contract, component-boundaries, release-pointers]
+    does_not_own: [skill-source, runtime-state, topology, item-state]
+
+  ability-management:
+    role: capability-canonical
+    locator: https://github.com/ProfessorZhi/ability-management
+    owns: [skill-canonical-source, plugin-canonical-source, ability-registry, revisions, compatibility, installation]
+    does_not_own: [runtime-state, topology, item-state]
+    note: >
+      The only canonical source for the hwz-server-os plugin and its Skills.
+      Runtime copies are derived installations and never reverse-write canonical.
+
+  work-engine:
+    role: deterministic-control-plane
+    locator: https://github.com/ProfessorZhi/work-engine
+    owns: [serverosctl, item-activity-run-state, lease, board-projection]
+    does_not_own: [skill-content, topology, cloud-objects]
+
+  hwz-ops:
+    role: environment-topology
+    locator: https://github.com/ProfessorZhi/hwz-ops
+    owns: [maps, policies, governance, authority-boundary]
+    does_not_own: [skill-content, runtime-installation]
+
+  records:
+    role: human-readable-work-records
+    locator: https://github.com/ProfessorZhi/hwz-records
+    owns: [cards, briefs, board-views, reports]
+    does_not_own: [machine-state, cloud-bodies]
+
+  feishu-space-management:
+    role: capability-owner
+    owns: [feishu-placement, feishu-maps, feishu-drift, feishu-lifecycle]
+    does_not_own: [semantic-interpretation]
+
+  information-management:
+    role: capability-owner
+    owns: [raw-observations, traceable-claims, understanding]
+    does_not_own: [item-lifecycle, test-environments]
+
+distribution:
+  # One-way only. Nothing here may be edited in place and synced back.
+  from: ability-management
+  to: runtime-installation
+  generated_notice: "GENERATED — DO NOT EDIT"
+
+non_goals:
+  - global-workflow-engine
+  - forced-activity-pipeline
+  - new-daemon
+  - new-lease-system
+  - new-approval-layer
+  - new-directory-layer
+  - second-source-of-truth
