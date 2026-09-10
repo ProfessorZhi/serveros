@@ -10,6 +10,7 @@ from enum import Enum
 from pathlib import Path
 
 from .board import render as render_board
+from .context import resolve_capsule
 from .engine import ServerOS, default_state_dir
 from .migration import MigrationManager
 from .model import ItemState, Outcome, RunState
@@ -115,6 +116,13 @@ def _cmd_run(args):
 
 
 def _cmd_context(args):
+    if args.action == "resolve":
+        # The Capsule itself is a ServerOS product component; this only delegates.
+        # Roots are resolved here and handed over, so that `run show` and
+        # `context resolve` can never end up reading two different worlds.
+        return resolve_capsule(
+            getattr(args, "item", None), getattr(args, "cwd", "") or None, args
+        )
     server = _server(args)
     return server.attach_context(
         args.item,
@@ -285,6 +293,9 @@ def build_parser() -> argparse.ArgumentParser:
     attach.add_argument("--mode", required=True, choices=["inspect", "test", "develop", "release"])
     attach.add_argument("--revision", required=True); attach.add_argument("--worktree", default="")
     attach.add_argument("--dirty", action="store_true")
+    resolve = context_actions.add_parser("resolve", parents=[_common()])
+    resolve.add_argument("item", nargs="?", help="Item id; inferred from --cwd or the current directory when omitted")
+    resolve.add_argument("--cwd", default="", help="directory to infer the Item from")
 
     deliverable = groups.add_parser("deliverable", parents=[_common()])
     deliverable_actions = deliverable.add_subparsers(dest="action", required=True)
