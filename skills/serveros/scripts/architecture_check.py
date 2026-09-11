@@ -540,6 +540,64 @@ def collect(args) -> dict:
              "status": "transitional — not a second canonical, not deleted this round"},
             "plugin ownership ruling (Phase 1.1 A2)", "MEDIUM", status="OBSERVED"))
 
+    # ---- §12: the artifact template is declared once, and it is the ruled one
+    #
+    # Two templates, two shapes, and they are not interchangeable:
+    #   with an Item   work-items/<project>/<ITEM>/<RUN>   three levels
+    #   without one    skills/<skill>/<RUN>                two levels
+    # The cancelled template skills/<skill>/<project>/<RUN> inserts a project
+    # directory into the no-Item case. It is asserted here rather than trusted,
+    # because the resolver that consumed it also declared it correctly -- the
+    # declaration and the behaviour disagreed and nothing noticed.
+    roles_decl = (topology or {}).get("roles") or {}
+    for role_name, want_template, want_requires, forbidden_tokens in (
+        ("run-output", "work-items/<project>/<ITEM>/<RUN>",
+         ["project", "item", "run"], []),
+        ("skill-run-output", "skills/<skill>/<RUN>",
+         ["skill", "run"], ["<project>", "<ITEM>"]),
+    ):
+        entry = roles_decl.get(role_name) or {}
+        got_template = entry.get("template")
+        got_requires = entry.get("requires")
+        token_violations = [t for t in forbidden_tokens if t in (got_template or "")]
+        if got_template != want_template or got_requires != want_requires \
+                or token_violations:
+            findings.append(finding(
+                "ARTIFACT_TEMPLATE_DRIFT", "contract-vs-authority",
+                f"role {role_name!r} declares template {want_template!r} "
+                f"requires {want_requires}",
+                {"template": got_template, "requires": got_requires,
+                 "forbidden_tokens_present": token_violations},
+                "artifact layout ruling (§12)",
+                "HIGH",
+                observation_provenance={"topology": _prov(topology_obs)}))
+
+    # ---- §12 observed side: runs on disk that the cancelled template would
+    # have produced. One exists. It is reported, not moved: a read of an
+    # existing Run is never denied, and retirement needs its owner, not a sweep.
+    artifacts_skills = Path(args.data_root) / "artifacts" / "skills"
+    if artifacts_skills.is_dir():
+        project_level = []
+        for skill_dir in sorted(artifacts_skills.iterdir()):
+            if not skill_dir.is_dir():
+                continue
+            for inner in sorted(skill_dir.iterdir()):
+                if inner.is_dir() and any(
+                        g.is_dir() for g in inner.glob("RUN-*")):
+                    project_level.append(str(inner.relative_to(artifacts_skills)))
+        if project_level:
+            findings.append(finding(
+                "PROJECT_LEVEL_SKILL_RUN_PRESENT", "topology",
+                "no-Item Skill Run sits at skills/<skill>/<RUN>",
+                project_level,
+                "artifact layout ruling (§12)",
+                "MEDIUM", status="OBSERVED",
+                why_not_denied="A read of an existing Run is never denied. These "
+                               "are pre-ruling paths; retirement is a proposal to "
+                               "their owner, not a sweep.",
+                retire_condition="owner review; the corrected template is already "
+                                 "in force for new runs"))
+
     # ---- runtime side (separate question, separate verdict) ---------------
     rt = run_reused(serveros_repo / "scripts" / "runtime_truth.py", ["--json"])
     runtime_status = "UNKNOWN"

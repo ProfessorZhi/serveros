@@ -62,6 +62,29 @@ would be a vocabulary entry with no implementation behind it, which is the
 failure this checkpoint keeps finding, so it is written down as absent rather
 than shipped as a word.
 
+Two drift classes, kept apart on purpose
+----------------------------------------
+`INSTALL_RECORD_PROVENANCE_DRIFT` and `PIN_SUPERSEDED` are both "a revision in
+this report is not the revision you expected", and they are not the same thing.
+Merging them would make one word cover two different repairs.
+
+  INSTALL_RECORD_PROVENANCE_DRIFT   the platform's install record disagrees with
+                                    the artifact. The artifact is authority; the
+                                    record is an observation of it. IMPLEMENTED,
+                                    and it never blocks: the release is measured
+                                    from the bytes, and the platform record is
+                                    one of the things being measured.
+
+  PIN_SUPERSEDED                    the bundle pins a revision that canonical has
+                                    since superseded. NOT IMPLEMENTED, and no
+                                    detector is invented for it -- it needs a
+                                    registry-side declaration of which revisions
+                                    are superseded, which does not exist.
+
+The asymmetry is the point. One is a disagreement between an authority and a
+record of it, decided by reading the artifact. The other is a disagreement
+between two authorities, neither of which exists yet in machine-readable form.
+
 What it does NOT do
 -------------------
 No network. No LLM. No database. No full-disk scan. No mutation of any kind —
@@ -510,14 +533,31 @@ def collect(args) -> dict:
     ability_rev = args.ability_rev or declared or recorded_pin
     pinned = ability_rev if len(ability_rev) == 40 else ""
     record_note = ""
+    record_class = None
+    record_why = ""
     if declared and recorded_pin and declared != recorded_pin:
         # Named, not blocking: this is the install record being wrong about the
         # artifact, which nothing in this repository can repair (a `local`
         # marketplace source gives Claude no revision to record). Making it
         # block would leave RELEASE_COMPLETE unreachable on a machine that is
         # in fact correct, and a gate that can never pass gets ignored.
+        record_class = "INSTALL_RECORD_PROVENANCE_DRIFT"
         record_note = (f"install record claims {recorded_pin[:12]} but the artifact was "
                        f"built from {declared[:12]} — the record is stale, the bytes are not")
+        # Why the record lags, established by reading what the platform was
+        # given rather than by assuming: the marketplace source is a directory,
+        # so there is no revision for it to re-read on update. Claude carries
+        # the first-install value forward. Nothing in this control plane writes
+        # `gitCommitSha` -- it is read here and nowhere written -- so this is
+        # platform record semantics, and the repair is in the reading, not in
+        # the file. Editing installed_plugins.json by hand would make the record
+        # agree with the artifact while destroying its value as an independent
+        # observation of what the platform actually recorded.
+        record_why = (
+            "marketplace source is a directory (source: directory); an update "
+            "installs new bytes but has no git revision to re-read, so the "
+            "platform carries the first-install value forward. Nothing in the "
+            "ServerOS control plane writes this field.")
     provenance = canonical_provenance(
         args.ability_repo, pinned, getattr(args, "canonical_ref", DEFAULT_CANONICAL_REF))
     # The pin row used to read OK whenever a 40-hex revision was present, which
@@ -653,7 +693,22 @@ def collect(args) -> dict:
                 "axes": axes, "blocking": blocking,
                 "materialization": materialization,
                 "pin": {"used": pinned, "declared": declared, "recorded": recorded_pin,
-                        "record_agrees": declared == recorded_pin if declared else None},
+                        "record_agrees": declared == recorded_pin if declared else None,
+                        # The artifact is authority; the platform's install
+                        # record is an observation OF the artifact. When they
+                        # disagree, the observation is what is wrong -- and it is
+                        # still worth reporting, because a record that silently
+                        # disagrees with reality is how a future reader gets
+                        # misled.
+                        "record_authority": "artifact",
+                        "record_is_observation": True,
+                        "record_class": record_class,
+                        "record_why": record_why,
+                        "not_to_be_confused_with": {
+                            "PIN_SUPERSEDED":
+                                "a bundle pin that canonical has superseded — an "
+                                "authority-vs-authority question, not implemented "
+                                "and deliberately not detected here"}},
             },
             "codex": {"enabled": codex.get("enabled"),
                       "marketplace_source": codex.get("marketplace_source")}}

@@ -21,7 +21,23 @@
   "naming": {
     "segment_pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*$",
     "item_pattern": "^[A-Z][A-Z0-9]*-[0-9]{4,}$",
-    "run_pattern": "^RUN-[0-9]{4,}$",
+    "run_pattern": "^RUN-[0-9]{8,12}(?:-[a-z0-9][a-z0-9-]*)?$",
+    "_run_pattern_note": [
+      "DERIVED FROM THE MACHINE, not invented. Every Run directory under",
+      "ARTIFACTS_ROOT/skills/ was read: 24 of 25 are RUN-<yyyymmdd>-<slug>",
+      "(e.g. RUN-20260911-ability-fleet-semantic-audit), and one legacy outlier",
+      "is RUN-2026090901.",
+      "",
+      "The previous value was '^RUN-[0-9]{4,}$'. On this machine it matched",
+      "exactly one directory -- the legacy outlier sitting at the CANCELLED",
+      "skills/<skill>/<project>/<RUN> level -- and rejected all 24 real ones.",
+      "A declared pattern that describes the accident and not the practice is",
+      "worse than no pattern: a resolver following it would have refused every",
+      "Run an agent actually has.",
+      "",
+      "Both shapes are accepted so that a read of an existing Run is never",
+      "denied. New Runs use the date-slug form."
+    ],
     "note": "Lexical rules for path segments. Declared here so the resolver and the artifact_workdir helper cannot drift apart on what a legal segment is."
   },
 
@@ -66,14 +82,24 @@
       "template": "work-items/<project>/<ITEM>/<RUN>",
       "mutable": true,
       "requires": ["project", "item", "run"],
-      "kind": "data"
+      "kind": "data",
+      "note": "A run WITH an Item. project/ITEM/RUN are all path levels."
     },
     "skill-run-output": {
       "root": "ARTIFACTS_ROOT",
-      "template": "skills/<skill>/<project>/<RUN>",
+      "template": "skills/<skill>/<RUN>",
       "mutable": true,
-      "requires": ["skill", "project", "run"],
-      "kind": "data"
+      "requires": ["skill", "run"],
+      "optional_scope": ["project"],
+      "kind": "data",
+      "note": [
+        "A Skill run with NO Item: skills/<skill>/<RUN>, two levels.",
+        "project is run metadata/scope, NOT a directory level. The previous",
+        "template skills/<skill>/<project>/<RUN> was cancelled because it",
+        "inserted a project directory the machine's actual runs do not have.",
+        "The 17 existing runs already match the corrected layout; nothing is",
+        "migrated, because nothing was wrong on disk -- the template was."
+      ]
     },
     "dynamic-state": {
       "root": "STATE_ROOT",
