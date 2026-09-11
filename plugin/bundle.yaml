@@ -60,11 +60,16 @@ skills:
   - name: feishu-report
     source: ability-management
 
-# Shipped inside the runtime artifact so that `serverosctl context resolve` can
-# load the resolver from the installed bundle rather than from a movable source
-# checkout.
+# ServerOS Core modules, shipped inside the runtime artifact so that a delegating
+# CLI can load the canonical implementation from the installed bundle rather than
+# from a movable source checkout. Both are read-only decision kernels: they are
+# given inputs and return a record, so shipping them is the whole integration.
 context:
   path: context
+space:
+  path: space
+relations:
+  path: relations
 
 # Default prompts surfaced by the runtime plugin UI.
 default_prompt:

@@ -1,0 +1,77 @@
+# Relations sidecar schema and its rules.
+#
+# An object can belong to a project AND an Item; a report can discuss an Item AND
+# be published as a deliverable. Those are many-to-many, and the federation
+# object schema is `additionalProperties: false`, so they have nowhere to live in
+# the object itself. The sidecar is where they go.
+#
+# The sidecar is the most dangerous artifact in this design, because "a file full
+# of relationships" is one short step from "a second database". The rules below
+# exist to keep it from becoming one.
+schema: serveros/relations.v1
+index_schema: serveros/relations-index.v1
+
+file:
+  locator: state/serveros/relations/current.jsonl
+  format: jsonl                    # one row per line, no envelope, no nesting
+  regenerated_by: relations/project.py
+
+row:
+  from:                            # typed locator of the subject
+    type: string
+  rel:                             # closed set, see predicates below
+    type: string
+  to:                              # typed locator of the object
+    type: string
+  derived_from:                    # canonical locators this row was computed from
+    type: list[string]             # minItems: 1 — see "not a source of truth"
+
+predicates:
+  # All eight are expressible. Only the ones with a producer are populated.
+  implemented:
+    belongs_to:    "the subject is contained by the object (item → project)"
+    derived_from:  "the subject was produced out of the object (item → source)"
+  declared_only:
+    supports:      "the subject is evidence for the object"
+    discussed_in:  "the subject was discussed in the object (item → meeting)"
+    attached_to:   "the subject is an attachment of the object"
+    published_as:  "the subject was published as the object"
+    verified_by:   "the subject was verified by the object"
+    canonical_for: "the subject is the canonical source for the object"
+
+rules:
+  - "**The sidecar is an INDEX, not a source of truth.** It can be deleted and
+     rebuilt at any time, and it must never be the only place a relation is
+     stored. `derived_from` is how that is enforced rather than merely stated: a
+     row that cannot name a canonical object already carrying the relation is
+     invalid, so a relation that exists nowhere else cannot be written here."
+
+  - "**Rebuildable means byte-identical.** `python3 relations/project.py
+     --verify` recomputes from the records and compares. A hand-added row, a
+     stale row, or a row whose derivation changed all surface as a named
+     difference. An index that can silently diverge from its sources is a second
+     database wearing an index's name."
+
+  - "**No bodies.** Locators only: no document text, no message content, no
+     transcript, no media, no secret. A locator is a pointer, and a pointer can
+     be reviewed; a body cannot."
+
+  - "**Absent is not guessed.** A relation with no producer is not written.
+     Six of the eight predicates have no producer yet, which is stated here and
+     in `relations/project.py::PRODUCED` rather than filled in with
+     plausible-looking rows. A wrong locator is worse than a missing row: a
+     missing row is visible, a wrong locator is not."
+
+  - "**Deterministic.** No clock, no network, no database, no randomness. Rows
+     are sorted by (from, rel, to) and keys are serialised sorted, so the same
+     records always produce the same bytes and a diff shows real change only."
+
+  - "**Not a filesystem, and not a graph database.** One flat row per edge. A
+     query language, a schema per predicate, or a nesting model would make this
+     the second database it must not become."
+
+verification:
+  - "relations/relations.schema.json holds the machine-readable row contract;
+     tests/test_relations.py asserts it agrees with `project.PREDICATES`."
+  - "`--verify` is the acceptance test for the whole file: deleting it and
+     rebuilding must reproduce it exactly."

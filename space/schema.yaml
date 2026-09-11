@@ -1,0 +1,108 @@
+# Space Resolver schema.
+#
+# The Space Resolver is the placement counterpart of the Context Capsule. Context
+# answers "what is my working environment"; Space answers "where does this object
+# canonically belong, and does it need to move".
+#
+# Like the Capsule it is a READ-ONLY DECISION KERNEL. It is given inputs and
+# returns a record. It opens no socket, mutates no database, scans no tree, and
+# knows nothing about any one cloud provider. Applying its decision is somebody
+# else's job — the surface adapters.
+schema: serveros/space-decision.v1
+
+request:
+  object:                      # WHAT is being placed
+    surface:                   # one of vocabulary.dimensions.surface
+      type: string
+    object_type:               # one of vocabulary.dimensions.object_type
+      type: string
+    semantic_role:             # one of vocabulary.dimensions.semantic_role
+      type: string
+  context:                     # the logical scope the object belongs to
+    project:
+      type: string|null
+    repo:
+      type: string|null
+    item:
+      type: string|null
+    run:
+      type: string|null
+    owner:
+      type: string|null
+  observed:                    # what the adapter saw — never a role, never a target
+    locator:                   # current locator, echoed back only
+      type: string|null
+    indexed:                   # is the logical index entry present?
+      type: boolean|null
+  policy:
+    target_template:           # OPTIONAL caller-supplied locator template
+      type: string|null
+
+response:
+  schema:
+    type: string               # always serveros/space-decision.v1
+  decision:                    # KEEP | MOVE | INDEX | PROPOSAL_REQUIRED | REJECTED
+    type: string
+  canonical_surface:           # where the object belongs, or null when unanswerable
+    type: string|null
+  canonical_role:              # the role the decision was made under
+    type: string
+  target_locator:              # concrete target, or null
+    type: string|null
+  logical_target:              # surface-neutral placement: {surface, semantic_role, <context>}
+    type: object|null
+  index:                       # logical index that should reference this object
+    type: string|null
+  reason:                      # why, as a list of statements — never empty
+    type: list[string]
+  confidence:                  # high | medium | low
+    type: string
+  approval:                    # none-required | proposal-only | explicit
+    type: string
+
+rules:
+  - "The canonical target is reported as a LOGICAL placement, not a cloud path.
+     Concrete locators are an adapter concern: a path this kernel invented would
+     be a policy for one tenant's current folder layout, frozen into the
+     control plane and silently wrong the moment a human reorganises."
+
+  - "`target_locator` is null unless the caller supplied a `target_template`.
+     The resolver never synthesises a locator from a pattern of its own, and it
+     returns null rather than a half-filled string when a template slot is
+     missing. An incomplete identity must produce no target at all."
+
+  - "A (surface, semantic_role) pair with no rule yields PROPOSAL_REQUIRED, not
+     a default to the observed surface. The absence of a rule cannot justify a
+     move, and 'we did not find anything wrong' is not the same as 'this is
+     right'."
+
+  - "`semantic_role: unclassified` yields PROPOSAL_REQUIRED. Classifying is a
+     judgement about meaning; a lookup table must not make it."
+
+  - "A cross-surface decision always carries `approval: proposal-only`. On
+     Feishu, 'add to wiki' is a real MOVE that removes the object from its
+     previous surface, so it stays behind an explicit human gate."
+
+  - "The resolver is deterministic: the same request returns the same record.
+     It takes no network, no LLM, no clock, and no filesystem scan. Nothing in
+     this module may import a cloud SDK or shell out to a CLI."
+
+  - "Validation failures (unknown surface, object type, role, or a
+     (surface, object_type) pair that is structurally impossible) are REJECTED,
+     not PROPOSAL_REQUIRED. A malformed request is a bug in the caller; a rule
+     gap is a question for a human. Conflating them hides caller bugs."
+
+  - "Sources and evidence are frequently declined rather than placed. An object
+     whose canon depends on information the request does not carry is a proposal,
+     not a guess."
+
+verification:
+  # Every rule above that can be checked by machine should be, because a rule
+  # that is only prose drifts. See tests/test_space_resolver.py.
+  - "vocabulary.json is a closed set: every rule's (surface, role) is a declared
+     pair, every canonical_surface is a declared surface or null, and no two
+     rules share a (surface, role) key."
+  - "No placement rule may name a cloud path, a token, or an observed count."
+  - "resolver.py imports only argparse, json and pathlib."
+  - "Every decision record has a non-empty reason and a decision drawn from the
+     five-value set."

@@ -1,0 +1,152 @@
+{
+  "schema": "serveros/space-vocabulary.v1",
+
+  "_comment": [
+    "Controlled vocabulary for the ServerOS Space Resolver.",
+    "This file is DATA. It declares three orthogonal dimensions and a deliberately",
+    "small placement policy. It carries no observed state, no counts, no hashes,",
+    "and no cloud paths: a concrete locator is an ADAPTER concern, never a",
+    "resolver concern. See space/schema.yaml for the reasoning."
+  ],
+
+  "dimensions": {
+    "surface": {
+      "_comment": "WHERE an object physically lives. Stable across reorganisations.",
+      "values": {
+        "local": "local filesystem under WORKSPACE_ROOT or DATA_ROOT",
+        "git": "a local Git working tree or worktree",
+        "github": "a GitHub-hosted remote object",
+        "wiki": "a curated Feishu Wiki space tree",
+        "drive": "a Feishu Drive file/folder tree",
+        "minutes": "a Feishu Minutes object (no folder hierarchy exists)",
+        "mydocs": "the Feishu personal document library (space_type=my_library)"
+      }
+    },
+    "object_type": {
+      "_comment": "WHAT the object physically is. Never a placement policy.",
+      "values": [
+        "directory", "folder", "repo", "worktree", "document", "file",
+        "minute", "transcript", "recording", "summary", "pr", "issue", "attachment"
+      ]
+    },
+    "semantic_role": {
+      "_comment": [
+        "WHY the object exists. Surface-neutral by construction: a physical surface",
+        "name must never appear in a role. `drive-project`, `drive-meeting`,",
+        "`drive-staging` and `minute-sidecar` were retired for exactly that reason.",
+        "`unclassified` is a real value: it means a human or Agent must decide, and",
+        "the resolver must not guess on its behalf."
+      ],
+      "values": {
+        "workbench": "an operating surface a human works in day to day",
+        "project": "a project-level container or index",
+        "work-item": "one ServerOS Item's durable material",
+        "knowledge": "durable architecture / method knowledge worth keeping",
+        "report": "a report, published or publishable",
+        "meeting": "the logical entity of one meeting across surfaces",
+        "method": "a reusable method, convention or procedure",
+        "source": "an authoritative source object, including raw or external",
+        "evidence": "run evidence backing a claim",
+        "deliverable": "a formal acceptance or handover artifact",
+        "inbox": "loose personal authoring not yet classified",
+        "staging": "a short-lived working area",
+        "archive": "retained but no longer active",
+        "residue": "leftover output awaiting a human cleanup decision",
+        "unclassified": "no role has been decided yet"
+      }
+    }
+  },
+
+  "surface_object_types": {
+    "_comment": "A (surface, object_type) pair outside this table is structurally invalid.",
+    "local": ["directory", "worktree", "file"],
+    "git": ["repo", "worktree", "file"],
+    "github": ["repo", "pr", "issue", "file"],
+    "wiki": ["document", "folder"],
+    "drive": ["document", "file", "folder", "attachment"],
+    "minutes": ["minute", "transcript", "recording", "summary"],
+    "mydocs": ["document", "folder"]
+  },
+
+  "placement": {
+    "_comment": [
+      "One rule per (surface, semantic_role). Absence of a rule is NOT a default to",
+      "the observed surface: it yields PROPOSAL_REQUIRED, because a rule that does",
+      "not exist cannot justify a move. Rules carry a LOGICAL target only.",
+      "`strength: canonical` means the rule follows from the surface contract;",
+      "`strength: default` means it is a convention that a human may override."
+    ],
+    "rules": [
+      {"surface": "mydocs", "role": "inbox", "canonical_surface": "mydocs", "strength": "canonical",
+       "note": "My Docs is the loose authoring / inbox surface. Staying is correct."},
+      {"surface": "mydocs", "role": "staging", "canonical_surface": "mydocs", "strength": "default",
+       "note": "A short-lived note may stay personal; a human may still promote it."},
+      {"surface": "mydocs", "role": "unclassified", "canonical_surface": null, "strength": "none",
+       "note": "Aged-unclassified objects are proposed for classification, never auto-moved."},
+      {"surface": "mydocs", "role": "report", "canonical_surface": "wiki", "strength": "canonical",
+       "index": "deliverable-index"},
+      {"surface": "mydocs", "role": "deliverable", "canonical_surface": "wiki", "strength": "canonical",
+       "index": "deliverable-index"},
+      {"surface": "mydocs", "role": "knowledge", "canonical_surface": "wiki", "strength": "canonical"},
+      {"surface": "mydocs", "role": "method", "canonical_surface": "wiki", "strength": "canonical"},
+      {"surface": "mydocs", "role": "work-item", "canonical_surface": "wiki", "strength": "canonical"},
+      {"surface": "mydocs", "role": "project", "canonical_surface": "wiki", "strength": "canonical"},
+      {"surface": "mydocs", "role": "meeting", "canonical_surface": "wiki", "strength": "canonical",
+       "index": "meeting-entry"},
+      {"surface": "mydocs", "role": "source", "canonical_surface": null, "strength": "none",
+       "note": "A source may belong in Wiki or Drive; the resolver refuses to choose alone."},
+      {"surface": "mydocs", "role": "evidence", "canonical_surface": null, "strength": "none",
+       "note": "Evidence normally belongs to a Run under DATA_ROOT, not to Feishu."},
+
+      {"surface": "minutes", "role": "source", "canonical_surface": "minutes", "strength": "canonical",
+       "index": "meeting-entry",
+       "note": "Minutes keeps the native object and gets a logical index; it is never a Drive file."},
+      {"surface": "minutes", "role": "meeting", "canonical_surface": "minutes", "strength": "canonical",
+       "index": "meeting-entry"},
+
+      {"surface": "wiki", "role": "knowledge", "canonical_surface": "wiki", "strength": "canonical"},
+      {"surface": "wiki", "role": "deliverable", "canonical_surface": "wiki", "strength": "canonical",
+       "index": "deliverable-index"},
+      {"surface": "wiki", "role": "report", "canonical_surface": "wiki", "strength": "canonical"},
+      {"surface": "wiki", "role": "source", "canonical_surface": "wiki", "strength": "canonical"},
+
+      {"surface": "drive", "role": "deliverable", "canonical_surface": "drive", "strength": "canonical"},
+      {"surface": "drive", "role": "source", "canonical_surface": "drive", "strength": "canonical"},
+      {"surface": "drive", "role": "staging", "canonical_surface": "drive", "strength": "default"},
+      {"surface": "drive", "role": "residue", "canonical_surface": null, "strength": "none",
+       "note": "Deleting or adopting residue is a human decision. Propose, do not move."},
+
+      {"surface": "github", "role": "project", "canonical_surface": "github", "strength": "canonical"},
+      {"surface": "github", "role": "work-item", "canonical_surface": "github", "strength": "canonical"},
+
+      {"surface": "local", "role": "workbench", "canonical_surface": "local", "strength": "canonical"},
+      {"surface": "local", "role": "source", "canonical_surface": "local", "strength": "canonical"},
+      {"surface": "local", "role": "staging", "canonical_surface": "local", "strength": "default"},
+      {"surface": "local", "role": "residue", "canonical_surface": null, "strength": "none",
+       "note": "Local cleanup is a human decision and is never auto-applied."},
+
+      {"surface": "git", "role": "project", "canonical_surface": "git", "strength": "canonical"},
+      {"surface": "git", "role": "work-item", "canonical_surface": "git", "strength": "canonical"},
+      {"surface": "git", "role": "staging", "canonical_surface": "git", "strength": "default"}
+    ]
+  },
+
+  "index_kinds": {
+    "_comment": [
+      "A logical index is a locator-only entry, never a second copy of a body.",
+      "`index` is reported when the object is already canonical but unindexed."
+    ],
+    "deliverable-index": "a project's delivery index entry pointing at the canonical object",
+    "meeting-entry": "a curated meeting entry pointing at the Minute and its sidecars"
+  },
+
+  "approval": {
+    "_comment": [
+      "The resolver never grants a write. Cross-surface moves are always proposals:",
+      "on Feishu 'add to wiki' is a MOVE with no automatic undo, so it stays behind",
+      "an explicit human gate."
+    ],
+    "cross_surface": "proposal-only",
+    "same_surface": "none-required"
+  }
+}

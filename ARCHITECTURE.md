@@ -107,14 +107,23 @@ That hand-off — in **both** directions — is the real acceptance criterion.
 | Component | Owns | Does not own |
 |---|---|---|
 | `ability-management` | Skill/plugin canonical source, ability registry, revisions, compatibility, installation | runtime state, topology, Item state |
-| `work-engine` | `serverosctl`: deterministic control plane — Item/Activity/Run/lease state, board projection | Skill content, topology, cloud objects |
-| `hwz-ops` | this server's topology, maps, policies | Skill content, runtime installation |
+| `work-engine` | `serverosctl`: deterministic control plane — Item/Activity/Run/lease state, board projection | Skill content, topology, cloud objects, **placement policy** |
+| `hwz-ops` | this server's topology, maps, policies | Skill content, runtime installation, placement decisions |
 | `records` | human-readable work records (cards, briefs, board views) | machine state, cloud bodies |
 | `feishu-space-management` | Feishu placement, maps, drift, lifecycle | semantic interpretation of Feishu content |
 | `information-management` | raw observations, traceable claims, understanding | Item lifecycle, test environments |
 
 `serveros` itself is a **router/orchestrator**: it owns relations and hand-offs,
 not the leaf objects of any single domain.
+
+### Two decision kernels, one ownership rule
+
+`context/` (what is my working environment) and `space/` (where does this object
+canonically belong) are the same kind of thing: deterministic, read-only
+resolvers that ship inside the runtime artifact and are invoked through a thin
+delegation in `work-engine`. Neither may hold a tenant-specific path or call a
+cloud API — that is an **adapter** concern, and adapters live with the capability
+that owns the surface. See [`docs/space-resolver.md`](docs/space-resolver.md).
 
 ## Two planes, kept apart
 

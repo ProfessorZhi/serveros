@@ -129,6 +129,30 @@ class BuildTests(unittest.TestCase):
         self.assertTrue((self.out / "context/schema.yaml").is_file())
         self.assertTrue((self.out / "context/resolver.py").is_file())
 
+    def test_space_ships_inside_the_artifact(self):
+        """A Core module the bundle declares must actually be in the artifact.
+
+        A bundle key with no matching directory is exactly the silent
+        false-declaration this whole closure exists to remove, so it is asserted
+        rather than assumed.
+        """
+        self.assertEqual(run_build(self.args("--write")).returncode, 0)
+        self.assertTrue((self.out / "space/schema.yaml").is_file())
+        self.assertTrue((self.out / "space/resolver.py").is_file())
+        self.assertTrue((self.out / "space/vocabulary.json").is_file())
+
+    def test_relations_ships_inside_the_artifact(self):
+        self.assertEqual(run_build(self.args("--write")).returncode, 0)
+        self.assertTrue((self.out / "relations/project.py").is_file())
+        self.assertTrue((self.out / "relations/schema.yaml").is_file())
+        self.assertTrue((self.out / "relations/relations.schema.json").is_file())
+
+    def test_every_declared_core_module_is_present(self):
+        self.assertEqual(run_build(self.args("--write")).returncode, 0)
+        for module in build.CORE_MODULES:
+            self.assertTrue((self.out / module).is_dir(),
+                            f"bundle declares {module} but the artifact lacks it")
+
     def test_plugin_manifests_list_every_bundled_skill(self):
         self.assertEqual(run_build(self.args("--write")).returncode, 0)
         claude = json.loads((self.out / ".claude-plugin/plugin.json").read_text())

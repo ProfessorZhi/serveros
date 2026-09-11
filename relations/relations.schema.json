@@ -1,0 +1,52 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "serveros/relations.v1",
+  "title": "ServerOS relations sidecar row",
+  "description": [
+    "One line of the derived relations index. The index is a PROJECTION: it can",
+    "be deleted and rebuilt from canonical objects at any time, and it is never",
+    "the only place a relation is stored. The `derived_from` field is what makes",
+    "that checkable — every row must name the canonical object that already",
+    "carries the relation, so a row whose source disappears is detectable as a",
+    "row that should not exist."
+  ],
+  "type": "object",
+  "required": ["from", "rel", "to", "derived_from"],
+  "additionalProperties": false,
+  "properties": {
+    "from": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Typed locator of the subject object, e.g. item:LIT-0101"
+    },
+    "rel": {
+      "enum": [
+        "belongs_to",
+        "derived_from",
+        "supports",
+        "discussed_in",
+        "attached_to",
+        "published_as",
+        "verified_by",
+        "canonical_for"
+      ],
+      "description": "Closed set. A relation outside it is not expressible here."
+    },
+    "to": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Typed locator of the object, e.g. project:litellm"
+    },
+    "derived_from": {
+      "type": "array",
+      "minItems": 1,
+      "items": {"type": "string", "minLength": 1},
+      "description": [
+        "Canonical locators this row was computed from. NOT a provenance nicety:",
+        "it is the assertion that the relation already exists somewhere other",
+        "than this file. A row with no derivable source must not be written."
+      ]
+    }
+  }
+}
+

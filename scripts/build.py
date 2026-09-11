@@ -59,6 +59,12 @@ def _git(repo: Path, *args: str) -> bytes:
     return proc.stdout
 
 
+# ServerOS Core modules that ship as plain code next to the skills. Each is
+# declared in bundle.yaml under its own key; this tuple only fixes the order and
+# the set of module names the builder is willing to look for.
+CORE_MODULES = ("context", "space", "relations")
+
+
 def resolve_ability_rev(repo: Path, rev: str) -> str:
     """Resolve a revision to a full commit SHA, rejecting unknown or ambiguous input."""
     out = _git(repo, "rev-parse", "--verify", f"{rev}^{{commit}}").decode().strip()
@@ -216,10 +222,17 @@ def plan(bundle_path: Path, ability_repo: Path, ability_rev: str, output: Path, 
         else:
             raise ValueError(f"unknown skill source for {name}: {source!r}")
 
-    context_rel = bundle.get("context", {}).get("path")
-    if context_rel:
-        for src, rel in local_skill_files(repo_root() / context_rel):
-            files.append((src.read_bytes(), Path(context_rel) / rel))
+    # ServerOS Core modules ship verbatim. Each declares its own path under
+    # bundle.yaml, so adding a module is one bundle key plus one directory —
+    # never a second vocabulary of module names hardcoded here.
+    for module in CORE_MODULES:
+        module_rel = bundle.get(module, {}).get("path")
+        if not module_rel:
+            continue
+        if module_rel != module:
+            raise ValueError(f"{module}: bundle path must be {module!r}, got {module_rel!r}")
+        for src, rel in local_skill_files(repo_root() / module_rel):
+            files.append((src.read_bytes(), Path(module_rel) / rel))
 
     manifests = {
         Path(".claude-plugin/plugin.json"): claude_plugin_manifest(bundle, version, skills),

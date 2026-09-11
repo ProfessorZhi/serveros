@@ -95,6 +95,16 @@ small, stable schema — not a dump of maps, history, or Skill documentation.
 
 → [`docs/context-capsule.md`](docs/context-capsule.md)
 
+## 4b. Space Resolver
+
+Where the Capsule answers *"what is my working environment"*, the Space Resolver
+answers *"where does this object canonically belong, and does it need to move"*.
+It is a deterministic, read-only kernel: it reads no network, no database and no
+map, and it invents no cloud path. Applying its decision — the actual MOVE, the
+actual index write — is an adapter's job.
+
+→ [`docs/space-resolver.md`](docs/space-resolver.md)
+
 ## 5. Native-first Skill Discovery
 
 ServerOS **strengthens** each runtime's native Skill discovery. It never
