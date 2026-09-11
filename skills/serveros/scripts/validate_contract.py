@@ -18,6 +18,29 @@ EXPECTED_ROUTES = {
     "report.publish": "feishu-report",
 }
 
+# The minimum the contract must forbid. This was a set-EQUALITY test against the
+# same three literals, which failed in both directions:
+#
+#   * it could not notice the contract was INCOMPLETE, because the literal was
+#     incomplete in exactly the same way -- authority.md forbids four fallbacks
+#     (the fourth being the cwd fallback) and neither side said so;
+#   * it rejected a contract that was MORE correct. Adding the missing fourth
+#     entry turned this validator red.
+#
+# Both are the same defect: the validator's own snapshot was behaving as the
+# authority. A subset test keeps the useful half (a required entry removed ->
+# FAIL) and drops the half that made correctness look like breakage.
+#
+# This validator still cannot decide completeness -- it has no access to
+# authority.md. That comparison lives in architecture_check.py A3
+# (FORBIDDEN_ROOTS_INCOMPLETE). Stated here so a green run is not over-read.
+REQUIRED_FORBIDDEN_ROOTS = {
+    "workspace/artifacts",
+    "workspace/toolchains",
+    "~/files",
+    "cwd-fallback",
+}
+
 
 def validate_contract(contract: dict) -> list[str]:
     errors: list[str] = []
@@ -47,8 +70,9 @@ def validate_contract(contract: dict) -> list[str]:
     if isinstance(routes, dict) and len(set(routes.values())) != len(routes):
         errors.append("each routed domain must have one distinct owner")
     forbidden = set(contract.get("forbidden_roots") or ())
-    if forbidden != {"workspace/artifacts", "workspace/toolchains", "~/files"}:
-        errors.append("forbidden fallback roots are incomplete")
+    missing = sorted(REQUIRED_FORBIDDEN_ROOTS - forbidden)
+    if missing:
+        errors.append(f"forbidden fallback roots missing: {missing}")
     return errors
 
 
