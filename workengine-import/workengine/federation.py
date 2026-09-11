@@ -20,6 +20,52 @@ _JOURNAL_VERSION = 1
 _HASH_RE = re.compile(r'^[0-9a-f]{64}$')
 _NONCE_RE = re.compile(r'^[0-9a-f]{32}$')
 
+# The allowed domains are NOT restated here — they are read from the object
+# schema, which has declared them all along. Two lists of one thing is how the
+# CLI and the schema came to disagree: the enum was enforced against each row's
+# injected `domain` field, while the `domain` ARGUMENT was never checked.
+_DOMAIN_ENUM = tuple(_OBJECT_SCHEMA['properties']['domain']['enum'])
+
+
+def _validate_domain(domain):
+    """Reject a domain outside the schema enum before any other work.
+
+    This is called at the ENTRY of every federation operation, not only where a
+    row happens to be validated. The earlier placement — enum-checked only
+    inside `_validate_inventory_row` — meant a zero-row source skipped
+    validation entirely and published a projection under an invented domain.
+    An empty inventory is still a claim about a domain.
+    """
+    if domain not in _DOMAIN_ENUM:
+        raise ValueError(
+            f"unknown federation domain {domain!r}; allowed: {', '.join(_DOMAIN_ENUM)}"
+        )
+
+
+def _assert_domain_scope(collections, domain):
+    """Every row must belong to the domain the caller says it is checking.
+
+    This is what makes `domain` load-bearing on the check path. Previously the
+    argument was accepted, passed nowhere, and discarded: `check` produced a
+    byte-identical report for `feishu`, `github` and `bogusdomain` alike, so the
+    command could not fail on a domain that does not exist.
+
+    A row carrying a foreign domain is a caller error, not a drift finding —
+    silently comparing it would report placement drift between two objects that
+    were never in the same namespace.
+    """
+    for rows in collections:
+        for row in rows:
+            if not isinstance(row, dict):
+                raise ValueError('inventory row must be an object')
+            found = row.get('domain')
+            if found is not None and found != domain:
+                raise ValueError(
+                    f"row for object {row.get('object_id')!r} declares domain "
+                    f"{found!r} but this operation is scoped to {domain!r}"
+                )
+
+
 def _validate_type(value, expected):
     choices = expected if isinstance(expected, list) else [expected]
     return any(
@@ -56,6 +102,7 @@ def _validate_inventory_row(row, row_number):
                 raise ValueError(f'inventory row {row_number} field {name} must include a timezone')
 
 def _prepare_inventory(domain, source):
+    _validate_domain(domain)
     rows=[]
     for number, line in enumerate(Path(source).read_text(encoding='utf-8').splitlines(), 1):
         if not line.strip():
@@ -67,7 +114,7 @@ def _prepare_inventory(domain, source):
     if any(r.get('error') or r.get('validation_error') for r in rows): raise ValueError('inventory contains failure envelope')
     for number, row in enumerate(rows, 1):
         _validate_inventory_row(row, number)
-    check_inventory(rows, rows)
+    check_inventory(rows, rows, domain=domain)
     payload=''.join(json.dumps(r,ensure_ascii=False)+'\n' for r in rows).encode()
     return rows, payload, hashlib.sha256(payload).hexdigest()
 
@@ -344,7 +391,10 @@ def _drift(domain, object_id, observed, desired, drift_class, risk, proposed_act
         'evidence_run': str(evidence_run or ''),
     }
 
-def check_inventory(observed, desired, *, evidence_run=''):
+def check_inventory(observed, desired, *, domain=None, evidence_run=''):
+    if domain is not None:
+        _validate_domain(domain)
+        _assert_domain_scope((observed, desired), domain)
     desired_ids={x.get('object_id') for x in desired}
     seen=set(); out=[]
     if len(desired_ids) != len(desired): raise ValueError('duplicate desired object id')

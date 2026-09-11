@@ -187,7 +187,7 @@ def _cmd_federation(args):
         )
     observed=[json.loads(x) for x in Path(args.observed).read_text().splitlines() if x.strip()]
     desired=[json.loads(x) for x in Path(args.desired).read_text().splitlines() if x.strip()]
-    d=check_inventory(observed,desired,evidence_run=args.evidence_run)
+    d=check_inventory(observed,desired,domain=args.domain,evidence_run=args.evidence_run)
     return federation_proposal(d) if args.action=='proposal' else d
 
 

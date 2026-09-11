@@ -533,3 +533,148 @@ class FederationV3Tests(unittest.TestCase):
     def test_proposal_order_is_stable(self):
         rows=[{'risk':'medium','proposed_action':'z','object_id':'2'},{'risk':'high','proposed_action':'b','object_id':'3'},{'risk':'high','proposed_action':'a','object_id':'1'}]
         self.assertEqual([x['object_id'] for x in proposal(rows)],['1','3','2'])
+
+
+    # ---- the `domain` argument must be enforced, not merely accepted -------
+    #
+    # These live in this class rather than a subclass so the suite does not run
+    # every inherited test twice. Before they existed, `federation <domain>
+    # check` never passed `domain` to `check_inventory`: the argument was
+    # parsed, dropped, and the command produced a byte-identical report for
+    # `feishu`, `github` and `bogusdomain` alike — while exiting 0. It could
+    # not fail on a domain that does not exist, which is what these pin.
+
+    def write_pair(self, root, domain="feishu"):
+        row = {
+            "domain": domain, "object_id": "doc-1", "kind": "doc",
+            "locator": "feishu://doc/doc-1", "observed_at": "2026-09-11T00:00:00Z",
+            "parent": None,
+        }
+        observed = root / "observed.jsonl"
+        desired = root / "desired.jsonl"
+        observed.write_text(json.dumps(row) + "\n")
+        desired.write_text(json.dumps(dict(row, object_id="root", kind="folder")) + "\n")
+        return observed, desired
+
+    # ---- the vocabulary has exactly one definition -----------------------
+
+    def test_domain_enum_is_read_from_the_object_schema(self):
+        """No second list of domains.
+
+        The enum was already declared in federation-object.schema.json and
+        enforced against each row's injected `domain` field. Re-hardcoding a
+        parallel list here is what let the argument and the schema disagree, so
+        this asserts the two are literally the same object.
+        """
+        from workengine import federation
+        schema = json.loads(
+            (Path(federation.__file__).with_name("schemas")
+             / "federation-object.schema.json").read_text()
+        )
+        self.assertEqual(list(federation._DOMAIN_ENUM),
+                         schema["properties"]["domain"]["enum"])
+
+    # ---- library level ---------------------------------------------------
+
+    def test_unknown_domain_is_rejected_by_check(self):
+        with self.assertRaises(ValueError) as caught:
+            check_inventory([{"domain": "feishu", "object_id": "a"}], [], domain="bogusdomain")
+        self.assertIn("unknown federation domain", str(caught.exception))
+
+    def test_unknown_domain_is_rejected_by_inventory_when_there_are_no_rows(self):
+        """An empty source is still a claim about a domain.
+
+        Domain validation used to live only inside row validation, so a
+        zero-row source skipped it entirely and published a projection under an
+        invented domain. The failure was invisible because there was nothing to
+        fail on.
+        """
+        with tempfile.TemporaryDirectory() as td:
+            source = Path(td) / "empty.jsonl"
+            source.write_text("")
+            with self.assertRaises(ValueError) as caught:
+                inventory("bogusdomain", source)
+            self.assertIn("unknown federation domain", str(caught.exception))
+
+    def test_check_rejects_rows_belonging_to_another_domain(self):
+        """`domain` must scope the comparison, not just be syntax-checked.
+
+        `local` and `github` are both legal domains, so validating the argument
+        alone would let this through and report placement drift between objects
+        that were never in the same namespace.
+        """
+        rows = [{"domain": "feishu", "object_id": "doc-1"}]
+        with self.assertRaises(ValueError) as caught:
+            check_inventory(rows, [], domain="github")
+        self.assertIn("scoped to 'github'", str(caught.exception))
+
+    def test_check_without_a_domain_keeps_its_previous_contract(self):
+        rows = [{"domain": "feishu", "object_id": "doc-1"}]
+        self.assertEqual(check_inventory(rows, [])[0]["class"], "UNEXPECTED_OBJECT")
+
+    def test_a_non_object_row_is_rejected_rather_than_crashing(self):
+        """A JSONL file of arrays used to die with AttributeError inside the
+        comparison, which reads as a crash rather than as bad input."""
+        with self.assertRaises(ValueError) as caught:
+            check_inventory([["not", "a", "row"]], [], domain="feishu")
+        self.assertIn("must be an object", str(caught.exception))
+
+    # ---- real execution, not --help --------------------------------------
+    #
+    # `--help` is not a probe: argparse prints usage and exits 0 before any
+    # argument validation runs, so it reports success for every domain. These
+    # run the command and assert on the payload.
+
+    def test_cli_rejects_an_unknown_domain_on_check(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            store, item, run = self.create_run(root)
+            observed, desired = self.write_pair(root)
+            result = self.run_cli(
+                root / "state", root / "artifacts",
+                "federation", "bogusdomain", "check",
+                "--observed", str(observed), "--desired", str(desired),
+                "--evidence-run", f"{item.id}/{run.id}",
+            )
+            # rc 2 and the envelope on stderr, matching the other failure
+            # tests here. `python3 -m workengine` and the `serverosctl` wrapper
+            # disagree about which stream carries the error envelope, so this
+            # asserts the stream that is stable for this entry point.
+            self.assertEqual(result.returncode, 2, result.stderr)
+            self.assertIn("unknown federation domain", result.stderr)
+
+    def test_cli_rejects_an_unknown_domain_on_an_empty_inventory(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            store, item, run = self.create_run(root)
+            source = root / "empty.jsonl"
+            source.write_text("")
+            target = root / "federation" / "bogusdomain" / "current.jsonl"
+            result = self.run_cli(
+                root / "state", root / "artifacts",
+                "federation", "bogusdomain", "inventory",
+                "--source", str(source), "--target", str(target),
+                "--evidence-run", f"{item.id}/{run.id}",
+            )
+            self.assertEqual(result.returncode, 2, result.stderr)
+            self.assertIn("unknown federation domain", result.stderr)
+            self.assertFalse(target.exists(), "a rejected domain must not publish")
+
+    def test_cli_accepts_every_domain_the_schema_allows(self):
+        """The three legal domains must all work — the fix rejects nonsense,
+        not the vocabulary it is supposed to enforce."""
+        for domain in ("feishu", "github", "local"):
+            with self.subTest(domain=domain), tempfile.TemporaryDirectory() as td:
+                root = Path(td)
+                store, item, run = self.create_run(root)
+                source = root / "empty.jsonl"
+                source.write_text("")
+                target = root / "federation" / domain / "current.jsonl"
+                result = self.run_cli(
+                    root / "state", root / "artifacts",
+                    "federation", domain, "inventory",
+                    "--source", str(source), "--target", str(target),
+                    "--evidence-run", f"{item.id}/{run.id}",
+                )
+                self.assertEqual(result.returncode, 0, result.stdout)
+                self.assertEqual(json.loads(result.stdout)["domain"], domain)
