@@ -178,12 +178,16 @@ def run_reused(script: Path, argv: list[str], timeout: int = 300) -> dict:
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
         return {"available": False, "reason": f"{type(exc).__name__}: {exc}"}
-    report = None
-    if "--json" in argv:
-        try:
-            report = json.loads(proc.stdout)
-        except json.JSONDecodeError:
-            report = None
+    # Parsed unconditionally. This used to be gated on ``"--json" in argv``, and
+    # the one caller did not pass that flag -- so ``report`` was always None,
+    # ``validator["status"]`` was always None, and CONTRACT_SELFCHECK_FAIL fired
+    # on every run regardless of the contract's real state. A gate that always
+    # fails is as broken as one that never runs; both are silent about which.
+    # The validator emits JSON on stdout whether or not it is asked to.
+    try:
+        report = json.loads(proc.stdout)
+    except json.JSONDecodeError:
+        report = None
     return {
         "available": True,
         "script": str(script),
@@ -246,6 +250,153 @@ def manifest_members(manifest: dict, plugin_id: str = "ProfessorZhi/hwz-server-o
         "names": sorted(names),
         "unresolved_identities": unresolved,
     }
+
+
+# --------------------------------------------------------------------------
+# contract-driven root resolution
+# --------------------------------------------------------------------------
+
+# Roles in ``topology-contract.json`` name a root **token**, never a path:
+#   ``{"root": "ARTIFACTS_ROOT", "template": "skills/<skill>/<RUN>"}``
+# The instance lives in hwz-ops, and the contract says so in ``roots_source``
+# ("Machine instance. Never duplicated here. If this file grew absolute paths,
+# the ownership split would be violated."). So a consumer that concatenates
+# ``<data_root>/artifacts/skills`` by hand is not reading the contract at all --
+# it is reading its own assumption about the contract, and it will keep doing so
+# after the contract changes. That is the same declared-vs-actual gap this
+# checker exists to find, so the checker must not manufacture it.
+#
+# Resolution order, and the mode is always reported so a fallback is visible
+# rather than silent:
+#   declared   token -> ops/workspace/environment.yaml:roots
+#   fallback   token -> --data-root / --workspace-root derived defaults
+#
+# STATE_ROOT is not in environment.yaml's ``roots``: it is contract-derived
+# (``state_root.rule`` == ``<DATA_ROOT>/state/serveros``) and checked separately
+# by the A4 block, so it is always computed here and never read from disk.
+
+def _ops_roots(ops_repo: Path, ref: str) -> tuple[dict, dict]:
+    """Read the machine root instance from hwz-ops, as a git object only."""
+    obs = observe_object(ops_repo, ref, "workspace/environment.yaml")
+    if not obs.get("found"):
+        return {}, _prov(obs)
+    doc = _load(obs.get("content"), "yaml")
+    roots = (doc or {}).get("roots") if isinstance(doc, dict) else None
+    return (roots if isinstance(roots, dict) else {}), _prov(obs)
+
+
+def root_tokens(topology: dict | None, args) -> dict:
+    """Resolve every root token a role may name, plus the mode that resolved it.
+
+    Three sources, checked in this order, and the mode is reported per token:
+      declared     the machine instance (hwz-ops environment.yaml#roots)
+      derived      ``roots_source.derivations`` -- a RELATIVE rule over
+                   DATA_ROOT / WORKSPACE_ROOT, so no absolute path is duplicated
+      unresolved   neither; reported as a finding, never guessed
+    """
+    ops_repo, ref = args.ops_repo.resolve(), args.ops_ref
+    declared_roots, ops_prov = _ops_roots(ops_repo, ref)
+
+    source = (topology or {}).get("roots_source") or {}
+    data_root = Path(args.data_root)
+    workspace_root = Path(args.workspace_root)
+
+    # ``environment.yaml`` is the machine instance; the two roots below are the
+    # only ones the contract marks as required, so they are the resolution base
+    # if the instance could not be read at all.
+    base = {"DATA_ROOT": data_root, "WORKSPACE_ROOT": workspace_root}
+    for key in source.get("required_keys") or ():
+        raw = declared_roots.get(key)
+        if isinstance(raw, str) and raw:
+            base[key] = Path(raw)
+
+    # STATE_ROOT is a contract assertion, not a machine fact: ``state_root.rule``
+    # already says ``<DATA_ROOT>/state/serveros`` and A4 checks it separately.
+    # Read it from there so the two cannot disagree; derivations is the fallback.
+    root_rules = dict(source.get("derivations") or {})
+    state_rule = ((topology or {}).get("state_root") or {}).get("rule")
+    if state_rule:
+        root_rules["STATE_ROOT"] = state_rule
+
+    resolvable = set(base) | set(root_rules)
+    for key in source.get("required_keys") or ():
+        resolvable.add(key)
+    # Every token actually named by a role counts, so a NEW role introducing a
+    # NEW token is resolved (or reported) instead of being silently skipped.
+    for entry in ((topology or {}).get("roles") or {}).values():
+        if isinstance(entry, dict) and entry.get("root"):
+            resolvable.add(str(entry["root"]))
+
+    def _expand(expr: str) -> Path | None:
+        text = str(expr)
+        for name, value in base.items():
+            text = text.replace(f"<{name}>", str(value)).replace(f"${name}", str(value))
+        if "<" in text or "$" in text:
+            return None            # an unexpanded placeholder is not a path
+        return Path(text)
+
+    resolved, mode = {}, {}
+    for token in sorted(resolvable):
+        raw = declared_roots.get(token)
+        if isinstance(raw, str) and raw:
+            resolved[token] = _expand(raw)
+            mode[token] = "declared" if resolved[token] is not None else "unresolved"
+            continue
+        if token in base:
+            resolved[token] = base[token]
+            mode[token] = "declared" if token in declared_roots else "fallback"
+            continue
+        if token in root_rules:
+            resolved[token] = _expand(root_rules[token])
+            mode[token] = "derived" if resolved[token] is not None else "unresolved"
+            continue
+        # ``TOKEN/segment`` names a sub-root of TOKEN. Split rather than treat
+        # the whole string as an unknown token -- ``DATA_ROOT/caches`` is not a
+        # root, it is a directory inside one.
+        head, _, rest = token.partition("/")
+        if rest and resolved.get(head) is not None:
+            resolved[token] = resolved[head] / rest
+            mode[token] = mode.get(head, "unresolved")
+            continue
+        resolved[token] = None
+        mode[token] = "unresolved"
+
+    return {
+        "paths": resolved,
+        "mode": mode,
+        "declared_roots": sorted(declared_roots),
+        "roots_source": source.get("locator") or "ops/workspace/environment.yaml",
+        "provenance": ops_prov,
+    }
+
+
+def role_path(roots: dict, topology: dict | None, role: str, *,
+              substitutions: dict | None = None) -> tuple[Path | None, str]:
+    """Expand a role's template from the contract. Returns (path, why).
+
+    This is the only place that turns a role into a filesystem location. A role
+    whose token is unresolvable returns ``None`` and a reason -- it never falls
+    back to a guessed path.
+    """
+    entry = ((topology or {}).get("roles") or {}).get(role) or {}
+    token, template = entry.get("root"), entry.get("template")
+    if not token or not template:
+        return None, f"role {role!r} not declared in the topology contract"
+    base = (roots.get("paths") or {}).get(token)
+    if base is None:
+        return None, (f"role {role!r} names root token {token!r}, which is neither in "
+                      f"{roots.get('roots_source')} nor derivable from --data-root")
+    relative = str(template)
+    for name, (want, value) in (substitutions or {}).items():
+        relative = relative.replace(f"<{name}>", str(value))
+    # For a root-level query the caller wants the *parent* of the templated
+    # leaves: strip trailing placeholders (skills/<skill>/<RUN> -> skills).
+    parts = []
+    for segment in relative.split("/"):
+        if segment.startswith("<") and segment.endswith(">"):
+            break
+        parts.append(segment)
+    return base.joinpath(*parts), "ok"
 
 
 # --------------------------------------------------------------------------
@@ -393,7 +544,13 @@ def collect(args) -> dict:
     # its own body, so it can only detect "the JSON was edited wrong". It is
     # still worth running: it is the gate that exists. What it CANNOT do is
     # recorded as a coverage limit below rather than silently trusted.
-    vc = run_reused(serveros_repo / "scripts" / "validate_contract.py",
+    # Path fixed 2026-09-11: this used to point at ``<serveros_repo>/scripts/``,
+    # where no such file exists -- the validator is a skill script, at
+    # ``skills/serveros/scripts/``. ``run_reused`` reports ``available: False``
+    # rather than raising, so the check had been a silent no-op: it never ran,
+    # and nothing said so. The finding below is emitted on ``available`` too, so
+    # a future path move degrades loudly instead of quietly.
+    vc = run_reused(serveros_repo / "skills" / "serveros" / "scripts" / "validate_contract.py",
                     [str(CONTRACT_JSON)])
     validator = {
         "available": vc["available"],
@@ -409,6 +566,17 @@ def collect(args) -> dict:
         findings.append(finding(
             "CONTRACT_SELFCHECK_FAIL", "contract", "serveros-contract.json validates",
             validator["errors"], "skills/serveros/scripts/validate_contract.py", "HIGH"))
+    elif not vc["available"]:
+        findings.append(finding(
+            "CONTRACT_SELFCHECK_UNAVAILABLE", "contract",
+            "skills/serveros/scripts/validate_contract.py is reachable and runs",
+            "validate_contract.py could not be executed; the contract self-check "
+            "did NOT run, so its silence must not be read as a pass",
+            "architecture_check.py A2", "MEDIUM",
+            why_not_denied="The validator is a skill script whose path is derived "
+                           "from --serveros-repo. Moving it without updating the "
+                           "caller turns this gate off silently.",
+            retire_condition="removed once the path is contract-derived"))
 
     # ---- A3: contract vs the machine declaration (authority.md) -----------
     # forbidden_roots is the field with a known history: the contract lists 3,
@@ -433,7 +601,22 @@ def collect(args) -> dict:
     if topology_obs["found"]:
         topology = _load(topology_obs["content"], "json")
     topology_state_root = ((topology or {}).get("state_root") or {}).get("rule")
-    expected_state_root = f"{args.data_root}/state/serveros"
+
+    # Resolve every root token the contract's roles may name. Done once, here,
+    # and every path below that used to be concatenated by hand comes from this.
+    roots = root_tokens(topology, args)
+    unresolved = sorted(t for t, m in roots["mode"].items() if m == "unresolved")
+    if unresolved:
+        findings.append(finding(
+            "ROOT_TOKEN_UNRESOLVED", "topology",
+            "every root token named by a topology role resolves",
+            {"unresolved": unresolved, "declared": roots["declared_roots"],
+             "roots_source": roots["roots_source"]},
+            "topology-contract.json roots_source", "HIGH",
+            observation_provenance={"roots": roots["provenance"]}))
+
+    state_root = (roots["paths"].get("STATE_ROOT") or Path(args.data_root) / "state/serveros")
+    expected_state_root = str(state_root)
     if declared_state_root and declared_state_root.replace("$DATA_ROOT", str(args.data_root)) != expected_state_root:
         findings.append(finding(
             "STATE_ROOT_DECLARATION_DRIFT", "topology",
@@ -575,8 +758,19 @@ def collect(args) -> dict:
     # ---- §12 observed side: runs on disk that the cancelled template would
     # have produced. One exists. It is reported, not moved: a read of an
     # existing Run is never denied, and retirement needs its owner, not a sweep.
-    artifacts_skills = Path(args.data_root) / "artifacts" / "skills"
-    if artifacts_skills.is_dir():
+    # §13: derived from the contract's ``skill-run-output`` role, not concatenated.
+    # The old literal ``<data_root>/artifacts/skills`` was a second, independent
+    # copy of the same fact -- if the role's root or template moved, the literal
+    # would keep scanning the old tree and report "no project-level runs" forever.
+    artifacts_skills, artifacts_skills_why = role_path(roots, topology, "skill-run-output")
+    if artifacts_skills is None:
+        findings.append(finding(
+            "SKILL_RUN_SCAN_UNAVAILABLE", "topology",
+            "the skill-run-output role resolves to a directory that can be scanned",
+            artifacts_skills_why, "topology-contract.json roles.skill-run-output",
+            "MEDIUM", why_not_denied="An unresolvable role means this scan cannot "
+                                     "run; it does not mean the tree is clean."))
+    elif artifacts_skills.is_dir():
         project_level = []
         for skill_dir in sorted(artifacts_skills.iterdir()):
             if not skill_dir.is_dir():

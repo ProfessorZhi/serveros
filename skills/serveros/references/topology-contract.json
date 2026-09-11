@@ -15,7 +15,37 @@
     "locator": "ops/workspace/environment.yaml",
     "key": "roots",
     "required_keys": ["DATA_ROOT", "WORKSPACE_ROOT"],
-    "note": "Machine instance. Never duplicated here. If this file grew absolute paths, the ownership split would be violated."
+    "note": "Machine instance. Never duplicated here. If this file grew absolute paths, the ownership split would be violated.",
+
+    "derivations": {
+      "ARTIFACTS_ROOT": "<DATA_ROOT>/artifacts",
+      "TOOLCHAINS_ROOT": "<DATA_ROOT>/toolchains",
+      "WORKTREES_ROOT": "<WORKSPACE_ROOT>/worktrees",
+      "STATE_ROOT": "<DATA_ROOT>/state/serveros",
+      "DATA_ROOT/data": "<DATA_ROOT>/data",
+      "DATA_ROOT/caches": "<DATA_ROOT>/caches",
+      "DATA_ROOT/envs": "<DATA_ROOT>/envs",
+      "DATA_ROOT/runtime-assets": "<DATA_ROOT>/runtime-assets"
+    },
+    "_derivations_note": [
+      "RELATIVE derivations, not paths. They express 'this root is <this parent>",
+      "plus this segment' -- the absolute value still comes from the machine",
+      "instance, so nothing is duplicated and the ownership split holds.",
+      "",
+      "Why this block exists (2026-09-11): the 14 roles below name 14 root tokens,",
+      "but the machine instance declares only 9 keys (DATA_ROOT, WORKSPACE_ROOT,",
+      "SRC_ROOT, OPS_ROOT, KNOWLEDGE_ROOT, RECORDS_ROOT, TEST_ENVS_ROOT,",
+      "DATA_PLANE_ROOT, LOCAL_DATA_ROOT). The remaining tokens -- ARTIFACTS_ROOT,",
+      "TOOLCHAINS_ROOT, WORKTREES_ROOT, STATE_ROOT and the four DATA_ROOT/<x>",
+      "sub-roots -- had NO machine-readable definition anywhere. Every consumer",
+      "therefore re-derived them by concatenating strings, each in its own way,",
+      "which is exactly how a 'role' drifts from a path without anyone editing",
+      "the contract. STATE_ROOT additionally duplicates state_root.rule below;",
+      "the resolver reads state_root.rule first and this entry is the fallback.",
+      "",
+      "A role whose token is in neither the machine instance nor this block is",
+      "reported as unresolved, never guessed."
+    ]
   },
 
   "naming": {
