@@ -64,27 +64,34 @@ See [`ARCHITECTURE.md`](ARCHITECTURE.md).
 
 ## 3. Architecture
 
-One canonical capability system, two runtime adapters.
+ServerOS has a **Core-2**, and then specialist capabilities discovered on demand:
 
 ```text
-                 ServerOS Canonical
-        ┌────────────────────────────────┐
-        │ ability-management             │
-        │ workspace / maps / policies    │
-        │ serverosctl                    │
-        │ Skill canonical source         │
-        │ project / Item context contract│
-        └───────────────┬────────────────┘
-                        │ build / install
-              ┌─────────┴─────────┐
-              ▼                   ▼
-        Claude Code             Codex
-        adapter/runtime         adapter/runtime
-              │                   │
-              └─────────┬─────────┘
-                        ▼
-               同一个工作环境
+                 ServerOS Core-2
+        ┌──────────────────────────────────────────────┐
+        │ serveros                                     │
+        │ Environment / Context contract               │
+        │ bootstrap Skill                              │
+        │ Context / Space / Relations kernels          │
+        │ hwz-server-os composition + deterministic build│
+        ├──────────────────────────────────────────────┤
+        │ ability-management                           │
+        │ Capability / Ability registry                │
+        │ reusable Skill canonical source              │
+        │ revision / compatibility / discovery         │
+        │ reconcile / installation / distribution      │
+        └──────────────────────┬───────────────────────┘
+                               │ pinned build / install
+                    ┌──────────┴──────────┐
+                    ▼                     ▼
+              Claude Code               Codex
+              adapter/runtime           adapter/runtime
 ```
+
+`workspace-management` is an important specialist capability, not a third Core
+module. `serveros` decides **what composes the product**; `ability-management`
+owns the reusable implementations that are composed into it. Generated runtime
+payloads never become a reverse authority.
 
 Full component boundaries: [`integration/components.yaml`](integration/components.yaml).
 
@@ -139,9 +146,11 @@ STATE_ROOT=$DATA_ROOT/state/serveros
 
 `HWZ-MAP` (structure) · `TREE-MAP` (semantics) · `FEISHU-MAP` · `GITHUB-MAP`.
 
-Maps are **queryable index / authority**, not prompt material. A normal session
-does not load them wholesale; the Context Capsule projects only what the current
-task needs.
+Maps are **generated projection views**, not independent authorities. Their
+inputs are machine contracts / semantic registries / observed inventory; the
+projection compiler renders the human map regions from those inputs. A normal
+session does not load maps wholesale: the Context Capsule projects only the
+small slice relevant to the current task.
 
 ## 9. Safety and concurrency
 
@@ -153,10 +162,13 @@ The server is shared by concurrent agents and Items.
 
 | Repository | Role |
 |---|---|
-| `ProfessorZhi/serveros` | **this repo** — product entry, architecture, context contract, release pointers |
-| `ProfessorZhi/ability-management` | **the only canonical source** for the `hwz-server-os` plugin and its Skills |
-| `ProfessorZhi/work-engine` | `serverosctl` — thin deterministic control plane |
-| `ProfessorZhi/hwz-ops` | this server's topology, maps and policy |
+| `ProfessorZhi/serveros` | product entry; **hwz-server-os composition canonical** (`plugin/bundle.yaml`); bootstrap Skill; Context/Space/Relations kernels; deterministic build |
+| `ProfessorZhi/ability-management` | Capability/Ability registry; **reusable Skill canonical source**; revision/compatibility/discovery/reconcile/installation/distribution |
+| `ProfessorZhi/work-engine` | `serverosctl` deterministic control plane for Item/Activity/Run state and projections |
+| `ProfessorZhi/hwz-ops` | this machine's topology/policy instance and map projection targets |
+
+`ability-management/plugins/hwz-server-os` is only a transitional/generated
+compatibility surface. It is not a second plugin canonical.
 
 Repo *relationships* are not workspace *ownership* — see
 [`docs/repository-roles.md`](docs/repository-roles.md).

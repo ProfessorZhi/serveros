@@ -627,14 +627,12 @@ def collect(args) -> dict:
     # its own body, so it can only detect "the JSON was edited wrong". It is
     # still worth running: it is the gate that exists. What it CANNOT do is
     # recorded as a coverage limit below rather than silently trusted.
-    # Path fixed 2026-09-11: this used to point at ``<serveros_repo>/scripts/``,
-    # where no such file exists -- the validator is a skill script, at
-    # ``skills/serveros/scripts/``. ``run_reused`` reports ``available: False``
-    # rather than raising, so the check had been a silent no-op: it never ran,
-    # and nothing said so. The finding below is emitted on ``available`` too, so
-    # a future path move degrades loudly instead of quietly.
-    vc = run_reused(serveros_repo / "skills" / "serveros" / "scripts" / "validate_contract.py",
-                    [str(CONTRACT_JSON)])
+    # Pair reused checker code with this architecture-check revision. Declaration
+    # files are read through explicit Git objects, but checker code is executable
+    # machinery: calling <serveros_repo>/... would silently mix a candidate
+    # contract/checker with the validator from a stale canonical checkout. That
+    # produced a false HIGH finding during convergence dogfood.
+    vc = run_reused(HERE / "validate_contract.py", [str(CONTRACT_JSON)])
     validator = {
         "available": vc["available"],
         "status": (vc.get("report") or {}).get("status") if vc.get("report") else None,

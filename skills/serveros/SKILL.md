@@ -24,7 +24,7 @@ TOOLCHAINS_ROOT=$DATA_ROOT/toolchains
 - 禁止创建 `workspace/artifacts`、`workspace/toolchains`、`~/files` 等替代根。
 - `project` 用于 records/artifacts/state；`repo` 用于 src/worktrees/test-envs。
 - 证据路径：Item → `$ARTIFACTS_ROOT/work-items/<project>/<ITEM>/<RUN>/`；
-  无业务 Item 的 skill 产物 → `$ARTIFACTS_ROOT/skills/<skill>/`。
+  无业务 Item 的 skill 产物 → `$ARTIFACTS_ROOT/skills/<skill>/<RUN>/`。
 - 越界、`../` 或 symlink 逃逸、目标冲突必须**显式失败**，不得静默回落 HOME/cwd。
 
 ## 2. Context — 第一件事永远是 resolve

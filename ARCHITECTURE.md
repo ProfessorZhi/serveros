@@ -11,26 +11,28 @@ report` describes a *common* route, not a state machine. An agent may skip
 steps, go back, work in parallel, re-analyze after testing, or ship a Milestone
 and keep developing.
 
-## One capability system, two runtime adapters
+## Core-2, one capability system, two runtime adapters
 
 ```text
-                 ServerOS Canonical
-        ┌────────────────────────────────┐
-        │ ability-management             │
-        │ workspace / maps / policies    │
-        │ serverosctl                    │
-        │ Skill canonical source         │
-        │ project / Item context contract│
-        └───────────────┬────────────────┘
-                        │ build / install
-              ┌─────────┴─────────┐
-              ▼                   ▼
-        Claude Code             Codex
-        adapter/runtime         adapter/runtime
-              │                   │
-              └─────────┬─────────┘
-                        ▼
-               同一个工作环境
+                 ServerOS Core-2
+        ┌──────────────────────────────────────────────┐
+        │ serveros                                     │
+        │ Environment / Context                        │
+        │ bootstrap Skill                              │
+        │ Context / Space / Relations kernels          │
+        │ plugin composition + deterministic build     │
+        ├──────────────────────────────────────────────┤
+        │ ability-management                           │
+        │ Capability / Ability registry                │
+        │ reusable Skill canonical source              │
+        │ revision / compatibility / discovery         │
+        │ reconcile / installation / distribution      │
+        └──────────────────────┬───────────────────────┘
+                               │ pinned build / install
+                    ┌──────────┴──────────┐
+                    ▼                     ▼
+              Claude Code               Codex
+              adapter/runtime           adapter/runtime
 ```
 
 > **Same capability, same semantics, same context; different runtime adapter
@@ -45,7 +47,7 @@ same repo role
 same worktree placement
 same test-env placement
 same artifacts / evidence contract
-same Local / Feishu / GitHub maps
+same generated map projections
 same serverosctl
 same Skill semantics
 same concurrency protection
@@ -55,21 +57,24 @@ The only permitted differences are runtime adapters — e.g. `.claude-plugin/`
 and `CLAUDE.md` for Claude Code; `.codex-plugin/` and `AGENTS.md` for Codex.
 Adapters must never evolve into two copies of business logic.
 
-We do **not** hand-maintain a "Claude version" and a "Codex version" of a Skill.
-There is one canonical source, and a builder fans it out:
+Canonical ownership is split by concern, not duplicated:
 
 ```text
-ability-management/skills/<skill>/
-                 ↓
-          canonical source
-                 ↓
-             builder
-          ┌──────┴──────┐
-          ▼             ▼
-       Claude          Codex
+serveros/skills/serveros/                 bootstrap Skill canonical
+serveros/plugin/bundle.yaml               plugin composition canonical
+ability-management/skills/<skill>/payload reusable Skill canonical
+
+              serveros deterministic builder
+                         │
+                pinned ability revision
+                         │
+                  ┌──────┴──────┐
+                  ▼             ▼
+               Claude          Codex
 ```
 
-Change a directory rule once, regenerate and install both sides.
+A reusable Skill changes once in `ability-management`; composition changes once
+in `serveros`; the deterministic builder then regenerates both runtime adapters.
 
 ## Dual-line ≠ run everything twice
 
@@ -106,24 +111,26 @@ That hand-off — in **both** directions — is the real acceptance criterion.
 
 | Component | Owns | Does not own |
 |---|---|---|
-| `ability-management` | Skill/plugin canonical source, ability registry, revisions, compatibility, installation | runtime state, topology, Item state |
-| `work-engine` | `serverosctl`: deterministic control plane — Item/Activity/Run/lease state, board projection | Skill content, topology, cloud objects, **placement policy** |
-| `hwz-ops` | this server's topology, maps, policies | Skill content, runtime installation, placement decisions |
+| `serveros` | architecture contract; hwz-server-os composition; bootstrap Skill; Context/Space/Relations kernels; deterministic build | reusable Skill source, runtime state, machine topology instance, Item state |
+| `ability-management` | Capability/Ability registry; reusable Skill source; revisions; compatibility; discovery; reconcile; installation/distribution; Foundry | plugin composition, bootstrap Skill source, runtime state, machine topology instance, Item state |
+| `workspace-management` | workspace governance/reconcile specialist capability | Core membership, plugin composition |
+| `work-engine` | `serverosctl`: deterministic control plane — Item/Activity/Run/lease state, board projection | Skill content, topology, cloud objects, placement policy |
+| `hwz-ops` | this machine's topology/policies and projection targets | Skill content, runtime installation, plugin composition |
 | `records` | human-readable work records (cards, briefs, board views) | machine state, cloud bodies |
 | `feishu-space-management` | Feishu placement, maps, drift, lifecycle | semantic interpretation of Feishu content |
 | `information-management` | raw observations, traceable claims, understanding | Item lifecycle, test environments |
 
-`serveros` itself is a **router/orchestrator**: it owns relations and hand-offs,
-not the leaf objects of any single domain.
+The Core is exactly `serveros + ability-management`. Specialist Skills remain
+native-discoverable capabilities rather than being promoted into Core merely
+because they are important.
 
 ### Two decision kernels, one ownership rule
 
 `context/` (what is my working environment) and `space/` (where does this object
-canonically belong) are the same kind of thing: deterministic, read-only
-resolvers that ship inside the runtime artifact and are invoked through a thin
-delegation in `work-engine`. Neither may hold a tenant-specific path or call a
-cloud API — that is an **adapter** concern, and adapters live with the capability
-that owns the surface. See [`docs/space-resolver.md`](docs/space-resolver.md).
+canonically belong) are deterministic, read-only resolvers shipped inside the
+runtime artifact. Neither may hold a tenant-specific path or call a cloud API —
+that is an **adapter** concern, and adapters live with the capability that owns
+the surface. See [`docs/space-resolver.md`](docs/space-resolver.md).
 
 ## Two planes, kept apart
 
@@ -140,14 +147,27 @@ never a second state database.
 ## Distribution
 
 ```text
-ability-management  (canonical)
-        ↓ deterministic build
-serveros release artifact
+serveros/plugin/bundle.yaml                     composition authority
+serveros bootstrap + Context/Space/Relations   local Core payload
+ability-management@<full SHA>                  reusable Skill payloads
+                    │
+                    ▼
+        serveros deterministic builder
+                    │
+                    ▼
+           hwz-server-os release artifact
+                    │
+              ┌─────┴─────┐
+              ▼           ▼
+            Claude       Codex
 ```
 
-Generation is one-way. Any generated payload carries
+Generation is one-way. `ability-management/plugins/hwz-server-os` may exist
+only as a transitional/generated compatibility surface; it cannot become a
+second composition authority. Any generated payload carries
 `GENERATED — DO NOT EDIT`. Nothing in a distribution artifact may be edited in
-place and synced back; the fix always goes to canonical and is rebuilt.
+place and synced back; the fix always goes to the owning canonical concern and
+is rebuilt.
 
 ## Non-goals
 
