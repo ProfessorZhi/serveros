@@ -22,6 +22,16 @@
   "forbidden_roots": [
     "workspace/artifacts",
     "workspace/toolchains",
-    "~/files"
+    "~/files",
+    "cwd-fallback"
+  ],
+  "_forbidden_roots_note": [
+    "This list was 3 entries while topology-contract.json carried 4 -- the two",
+    "contracts disagreed about the same fact, and the checker reported it as",
+    "FORBIDDEN_ROOTS_INCOMPLETE (MEDIUM/OPEN) until 2026-09-11.",
+    "The fourth is not a path: 'cwd-fallback' forbids RESOLVING a durable path",
+    "relative to the process CWD when no explicit root is supplied. It is a rule",
+    "about behaviour, not about a location, which is why it reads oddly in a list",
+    "of roots -- and why it is the one that kept getting dropped."
   ]
 }

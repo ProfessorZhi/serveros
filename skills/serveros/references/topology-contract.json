@@ -147,6 +147,38 @@
       "mutable": false,
       "write_via": "build",
       "kind": "data"
+    },
+    "operational-log": {
+      "root": "DATA_ROOT/logs",
+      "mutable": true,
+      "kind": "data",
+      "note": [
+        "Machine-emitted operational output (e.g. logs/litellm). It was on disk",
+        "and undeclared until 2026-09-11, so every consumer that wanted it built",
+        "the path itself. Distinct from dynamic-state: state/ is control-plane",
+        "state that is READ; logs/ is output that is only ever appended."
+      ]
+    },
+    "software-install": {
+      "root": "DATA_ROOT/software",
+      "mutable": false,
+      "kind": "data",
+      "note": [
+        "Software that no package manager owns (apps/ + cli/). Distinct from",
+        "toolchain: a toolchain is version-managed per language (nvm/gopath/npm);",
+        "software/ is the root for standalone binaries that have no such manager.",
+        "environment.yaml records it as present-and-empty by design -- a reserved",
+        "root, declared here so its emptiness is a fact rather than a surprise."
+      ]
+    },
+    "scratch": {
+      "root": "DATA_ROOT/tmp",
+      "mutable": true,
+      "kind": "data",
+      "note": [
+        "Regenerable scratch space. Nothing durable may live here; a consumer",
+        "that finds a durable artefact under tmp/ has found a placement bug."
+      ]
     }
   },
 
@@ -167,8 +199,27 @@
     "envs": "runtime-env",
     "toolchains": "toolchain",
     "downloads": "acquired-data",
-    "runtime-assets": "generated-runtime"
+    "runtime-assets": "generated-runtime",
+    "logs": "operational-log",
+    "software": "software-install",
+    "tmp": "scratch"
   },
+
+  "data_root_children_note": [
+    "The previous list had 8 entries against 12 directories on disk. §10 says a",
+    "stable root is not deleted for being rare, so the CONTRACT gained",
+    "logs/ software/ tmp/ rather than the machine losing them.",
+    "",
+    "checked by UNREGISTERED_DATA_ROOT in architecture_check.py. Before that the",
+    "block was decorative: nothing read it, so nothing could notice it was wrong.",
+    "",
+    "not entries here, on purpose:",
+    "  .vscode-server    platform-owned (VS Code remote server), not a ServerOS",
+    "                    root; excluded by the leading-dot rule in the checker",
+    "  workspace         IS the WORKSPACE_ROOT -- a declared root, not a child of",
+    "                    one; it appears under DATA_ROOT physically and is",
+    "                    skipped by name in the checker"
+  ],
 
   "record_roles": {
     "_comment": [

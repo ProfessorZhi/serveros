@@ -604,18 +604,18 @@ def collect(args) -> dict:
 
     # Resolve every root token the contract's roles may name. Done once, here,
     # and every path below that used to be concatenated by hand comes from this.
-    roots = root_tokens(topology, args)
-    unresolved = sorted(t for t, m in roots["mode"].items() if m == "unresolved")
+    root_map = root_tokens(topology, args)
+    unresolved = sorted(t for t, m in root_map["mode"].items() if m == "unresolved")
     if unresolved:
         findings.append(finding(
             "ROOT_TOKEN_UNRESOLVED", "topology",
             "every root token named by a topology role resolves",
-            {"unresolved": unresolved, "declared": roots["declared_roots"],
-             "roots_source": roots["roots_source"]},
+            {"unresolved": unresolved, "declared": root_map["declared_roots"],
+             "roots_source": root_map["roots_source"]},
             "topology-contract.json roots_source", "HIGH",
-            observation_provenance={"roots": roots["provenance"]}))
+            observation_provenance={"roots": root_map["provenance"]}))
 
-    state_root = (roots["paths"].get("STATE_ROOT") or Path(args.data_root) / "state/serveros")
+    state_root = (root_map["paths"].get("STATE_ROOT") or Path(args.data_root) / "state/serveros")
     expected_state_root = str(state_root)
     if declared_state_root and declared_state_root.replace("$DATA_ROOT", str(args.data_root)) != expected_state_root:
         findings.append(finding(
@@ -762,7 +762,7 @@ def collect(args) -> dict:
     # The old literal ``<data_root>/artifacts/skills`` was a second, independent
     # copy of the same fact -- if the role's root or template moved, the literal
     # would keep scanning the old tree and report "no project-level runs" forever.
-    artifacts_skills, artifacts_skills_why = role_path(roots, topology, "skill-run-output")
+    artifacts_skills, artifacts_skills_why = role_path(root_map, topology, "skill-run-output")
     if artifacts_skills is None:
         findings.append(finding(
             "SKILL_RUN_SCAN_UNAVAILABLE", "topology",
@@ -823,6 +823,38 @@ def collect(args) -> dict:
                 "MEDIUM", status="LEGACY_COMPAT",
                 why_not_denied="Pre-existing paths are LEGACY_COMPAT / DEFER. "
                                "NO NEW DEBT does not mean DELETE OLD DEBT."))
+
+    # ---- topology side: DATA_ROOT stable roots ---------------------------
+    # Was missing entirely, which is why four stable machine roots (logs/
+    # software/ tmp/, plus the platform's .vscode-server) went undeclared and
+    # unnoticed: the checker enforced the WORKSPACE declaration and left the
+    # DATA_ROOT one decorative. A declaration nothing checks is a comment.
+    dr_children = sorted(p.name for p in Path(args.data_root).iterdir() if p.is_dir()) \
+        if Path(args.data_root).is_dir() else []
+    declared_dr_children = sorted(k for k in (topology or {}).get("data_root_children", {})
+                                  if not k.startswith("_"))
+    if declared_dr_children:
+        # WORKSPACE_ROOT physically sits under DATA_ROOT, so it shows up as a
+        # child here while being a declared root in its own right. Skipped by
+        # name, and the skip is stated rather than filtered silently.
+        known_roots = {Path(args.workspace_root).name}
+        unregistered_dr = [c for c in dr_children
+                           if c not in declared_dr_children and c not in known_roots
+                           and not c.startswith(".")]
+        if unregistered_dr:
+            findings.append(finding(
+                "UNREGISTERED_DATA_ROOT", "topology",
+                f"DATA_ROOT children are declared in {declared_dr_children}",
+                unregistered_dr, "serveros topology contract §data_root_children",
+                "MEDIUM", status="LEGACY_COMPAT",
+                why_not_denied="§10: a stable root is not deleted because it is "
+                               "rare. Declare it, do not remove it.",
+                retire_condition="the contract gains the entry, or the root is "
+                                 "retired by its owner"))
+    # Platform-owned dot-directories (VS Code remote server and friends) are
+    # not ServerOS roots and are excluded above by the leading dot. Named here
+    # so the exclusion is deliberate rather than an accident of the filter.
+    platform_owned = sorted(c for c in dr_children if c.startswith("."))
 
     # ---- forbidden substitute roots --------------------------------------
     substitute_probes = {
