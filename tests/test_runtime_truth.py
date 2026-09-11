@@ -14,6 +14,7 @@ version" failure this module exists to catch.
 import argparse
 import importlib.util
 import json
+import shutil
 import subprocess
 import tempfile
 import unittest
@@ -34,6 +35,7 @@ _bspec.loader.exec_module(build)
 import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+from test_build import _git as git  # noqa: E402
 from test_build import make_ability_repo  # noqa: E402  (shares the synthetic fixture)
 
 
@@ -52,6 +54,13 @@ def rows_by(report: dict) -> dict[str, dict]:
 # reports.
 HOST_ROWS = {"serveros (bundle source)", "work-engine (canonical)"}
 
+# Both of those rows used to describe the machine the suite happened to run on,
+# which is why the original assertion had to exclude them. They are now
+# synthesized too — the fixture commits a copy of this bundle and a stub engine
+# — so the chain axis is assertable in full. The set is kept because the two
+# rows still describe *checkouts* rather than the delivery chain, which is a
+# distinction the release axes care about.
+
 
 def chain_rows(report: dict) -> list[dict]:
     return [r for r in report["rows"] if r["component"] not in HOST_ROWS]
@@ -64,10 +73,37 @@ class RuntimeTruthTests(unittest.TestCase):
         self.ability, self.rev = make_ability_repo(self.base)
         self.out = self.base / "dist/current"
         self.marketplace = self.base / "dist/.agents/plugins/marketplace.json"
+        # A committed copy of this repository's bundle, so that the two rows
+        # about the *source checkouts* are facts this fixture controls rather
+        # than facts about whatever machine runs the suite. Before this, the
+        # chain axis inherited the real worktree's dirtiness and could not be
+        # asserted at all — the same "asserting a pristine machine" problem the
+        # HOST_ROWS note below was written about, one axis further out.
+        self.serveros = self.base / "serveros"
+        (self.serveros / "scripts").mkdir(parents=True)
+        shutil.copy2(ROOT / "scripts/build.py", self.serveros / "scripts/build.py")
+        for rel in ("plugin", "skills/serveros", "context", "space", "relations"):
+            shutil.copytree(ROOT / rel, self.serveros / rel)
+        # Importing build.py writes scripts/__pycache__, which would make the
+        # synthetic checkout permanently dirty the moment the inspector loads
+        # the builder it is inspecting.
+        (self.serveros / ".gitignore").write_text("__pycache__/\n*.pyc\n")
+        git(self.serveros, "init", "--quiet", "-b", "main")
+        git(self.serveros, "config", "user.email", "test@example.invalid")
+        git(self.serveros, "config", "user.name", "test")
+        git(self.serveros, "add", "-A")
+        git(self.serveros, "commit", "--quiet", "-m", "synthetic serveros")
+
         self.engine_repo = self.base / "engine"
         (self.engine_repo / "workengine").mkdir(parents=True)
         (self.engine_repo / "workengine" / "cli.py").write_text("# engine\n")
         (self.engine_repo / "workengine" / "federation.py").write_text("# fed\n")
+        git(self.engine_repo, "init", "--quiet", "-b", "main")
+        git(self.engine_repo, "config", "user.email", "test@example.invalid")
+        git(self.engine_repo, "config", "user.name", "test")
+        git(self.engine_repo, "add", "-A")
+        git(self.engine_repo, "commit", "--quiet", "-m", "synthetic engine")
+
         self.engine_installed = self.base / "site-packages/workengine"
         self.engine_installed.mkdir(parents=True)
         (self.engine_installed / "cli.py").write_text("# engine\n")
@@ -75,21 +111,46 @@ class RuntimeTruthTests(unittest.TestCase):
         self.claude_json = self.base / "installed_plugins.json"
         self.codex_config = self.base / "config.toml"
         self.codex_cache = self.base / "codex-cache"
+        # Runtime skill roots are pointed INSIDE the fixture, at paths that do
+        # not exist. Defaulting them to the real ~/.claude/skills would make
+        # this suite assert facts about the machine it happens to run on — the
+        # same mistake that made "every row is OK" fail on the first run.
+        self.claude_skills = self.base / "claude-skills"
+        self.codex_skills = self.base / "codex-skills"
 
     def tearDown(self):
         self._tmp.cleanup()
 
     def build_artifact(self):
-        rc = build.build(ROOT / "plugin/bundle.yaml", self.ability, self.rev,
+        rc = build.build(self.serveros / "plugin/bundle.yaml", self.ability, self.rev,
                          self.out, self.marketplace, write=True)
         self.assertEqual(rc, 0)
         version = json.loads((self.out / ".claude-plugin/plugin.json").read_text())["version"]
         return version
 
-    def install_claude(self, version: str, path: Path):
+    def install_claude(self, version: str, path: Path, rev: str | None = None):
         self.claude_json.write_text(json.dumps({"version": 2, "plugins": {
             truth.CLAUDE_PLUGIN_KEY: [{"scope": "user", "installPath": str(path),
-                                       "version": version, "gitCommitSha": self.rev}]}}))
+                                       "version": version,
+                                       "gitCommitSha": rev or self.rev}]}}))
+
+    def build_and_install(self, rev: str | None = None) -> str:
+        """Build the artifact from `rev` and install it as that revision.
+
+        The pin is not decoration: `build_readme` embeds the ability revision
+        in the payload, so an artifact built from one revision and recorded
+        against another can never be chain-consistent. Building and pinning
+        together is the only way to reach the interesting case — a chain that
+        agrees with itself *and* a revision canonical does not contain.
+        """
+        rev = rev or self.rev
+        rc = build.build(self.serveros / "plugin/bundle.yaml", self.ability, rev,
+                         self.out, self.marketplace, write=True)
+        self.assertEqual(rc, 0)
+        version = json.loads((self.out / ".claude-plugin/plugin.json").read_text())["version"]
+        self.install_claude(version, self.out, rev)
+        self.install_codex(version, self.out)
+        return version
 
     def install_codex(self, version: str, payload_src: Path):
         leaf = self.codex_cache / truth.CODEX_MARKETPLACE / truth.BUNDLE_NAME / version
@@ -103,14 +164,41 @@ class RuntimeTruthTests(unittest.TestCase):
 
     def args(self, **over):
         base = dict(
-            serveros_repo=ROOT, ability_repo=self.ability, ability_rev=self.rev,
+            serveros_repo=self.serveros, ability_repo=self.ability, ability_rev=self.rev,
             output=self.out, marketplace_path=self.marketplace,
             engine_repo=self.engine_repo, engine_installed=self.engine_installed,
             claude_plugins_json=self.claude_json, codex_config=self.codex_config,
             codex_cache=self.codex_cache,
+            canonical_ref=truth.DEFAULT_CANONICAL_REF,
+            claude_skills_root=self.claude_skills,
+            codex_skills_root=self.codex_skills,
         )
         base.update(over)
         return argparse.Namespace(**base)
+
+    def side_branch_commit(self, branch: str = "side") -> str:
+        """A commit reachable from a branch but NOT from main.
+
+        Empty on purpose: the point of these tests is that the *chain* stays
+        intact while provenance fails, and an ability-repo commit that touched
+        any tracked file would change the artifact and break the chain too,
+        which is a different scenario.
+        """
+        git(self.ability, "checkout", "--quiet", "-b", branch)
+        git(self.ability, "commit", "--quiet", "--allow-empty", "-m", "side work")
+        sha = git(self.ability, "rev-parse", "HEAD")
+        git(self.ability, "checkout", "--quiet", "main")
+        return sha
+
+    def flatten(self, root: Path, member: str, source: Path | None = None):
+        """Copy a bundle member into a runtime skill root, as the pre-F4
+        control plane did."""
+        import shutil
+        src = source or (self.out / "skills" / member)
+        dst = root / member
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copytree(src, dst)
+        return dst
 
     # ---- the clean case -------------------------------------------------
 
@@ -263,6 +351,128 @@ class RuntimeTruthTests(unittest.TestCase):
         row = rows_by(report)["hwz-server-os @ Codex plugin cache"]
         self.assertEqual(row["verdict"], truth.OK)
         self.assertEqual(row["installed"], f"sha256={truth.tree_hash(self.out)}")
+
+
+    # ---- release axes: the chain can be perfect and the release still wrong
+
+    def faithful_runtime(self) -> str:
+        version = self.build_artifact()
+        self.install_claude(version, self.out)
+        self.install_codex(version, self.out)
+        return version
+
+    def axis(self, report, name):
+        return report["release"]["axes"][name]
+
+    def test_a_faithful_runtime_is_release_complete(self):
+        self.faithful_runtime()
+        report = truth.collect(self.args())
+        axes = {n: self.axis(report, n)["verdict"] for n in truth.AXES}
+        self.assertEqual(axes, {n: truth.PASS for n in truth.AXES})
+        self.assertEqual(report["release"]["verdict"], truth.RELEASE_COMPLETE)
+        self.assertEqual(report["release"]["blocking"], [])
+
+    def test_chain_can_be_consistent_while_provenance_fails(self):
+        """The failure this axis exists for.
+
+        The artifact is built from, installed from, and byte-identical to a
+        revision on a branch main does not contain. Every byte agrees, so the
+        chain verdict stays OK — and the release is still not reproducible,
+        because nothing canonical contains the revision it came from.
+        """
+        sha = self.side_branch_commit()
+        self.build_and_install(sha)
+        report = truth.collect(self.args(ability_rev=sha))
+        self.assertEqual(report["verdict"], truth.OK)          # chain: fine
+        provenance = self.axis(report, truth.AXIS_PROVENANCE)
+        self.assertEqual(provenance["verdict"], truth.FAIL)
+        self.assertEqual(provenance["drift"], truth.PIN_NOT_CANONICAL)
+        self.assertEqual(report["release"]["verdict"], truth.RELEASE_INCOMPLETE)
+        self.assertEqual(report["release"]["blocking"], [truth.AXIS_PROVENANCE])
+
+    def test_an_unreachable_pin_is_named_in_the_row_too(self):
+        self.faithful_runtime()
+        report = truth.collect(self.args(ability_rev=self.side_branch_commit()))
+        row = rows_by(report)["ability-management (build pin)"]
+        self.assertEqual(row["verdict"], truth.PIN_NOT_CANONICAL)
+        self.assertEqual(row["axis"], truth.AXIS_PROVENANCE)
+
+    def test_a_nonexistent_pin_is_not_canonical_not_unknown(self):
+        self.faithful_runtime()
+        report = truth.collect(self.args(ability_rev="0" * 40))
+        axis = self.axis(report, truth.AXIS_PROVENANCE)
+        self.assertEqual(axis["verdict"], truth.FAIL)
+        self.assertEqual(axis["drift"], truth.PIN_NOT_CANONICAL)
+
+    def test_a_pin_behind_canonical_head_is_not_a_defect(self):
+        """Pinning an older revision is a legitimate release.
+
+        Flagging this would make the check fire on a correct machine, and a
+        check that fires on correct machines gets ignored by the third time it
+        does it. This is the distinction that split PIN_NOT_CANONICAL away from
+        the PIN_SUPERSEDED name that is deliberately NOT implemented.
+        """
+        self.faithful_runtime()
+        git(self.ability, "commit", "--quiet", "--allow-empty", "-m", "later work")
+        report = truth.collect(self.args())     # pin = the revision before it
+        axis = self.axis(report, truth.AXIS_PROVENANCE)
+        self.assertEqual(axis["verdict"], truth.PASS)
+        self.assertEqual(axis["drift"], "")
+        self.assertIn("behind", axis["detail"])
+
+    # ---- materialization uniqueness -------------------------------------
+
+    def test_flattening_a_member_fails_materialization_uniqueness(self):
+        self.faithful_runtime()
+        members = sorted(p.name for p in (self.out / "skills").iterdir())
+        self.flatten(self.claude_skills, members[0])
+        report = truth.collect(self.args())
+        axis = self.axis(report, truth.AXIS_MATERIALIZATION)
+        self.assertEqual(axis["verdict"], truth.FAIL)
+        materialization = report["release"]["materialization"]
+        self.assertEqual([d["member"] for d in materialization["duplicates"]], [members[0]])
+        self.assertEqual(report["release"]["verdict"], truth.RELEASE_INCOMPLETE)
+        self.assertEqual(report["release"]["blocking"], [truth.AXIS_MATERIALIZATION])
+
+    def test_a_different_skill_of_the_same_name_is_a_collision_not_a_duplicate(self):
+        """Two artifacts sharing one name is worth naming, but it is not this
+        contract's violation — nothing was duplicated.
+
+        Without this split the axis is either permanently red on the deferred
+        feishu-report item, or someone exempts that item by hardcoding its
+        name. Both turn a real check into a decoration.
+        """
+        self.faithful_runtime()
+        members = sorted(p.name for p in (self.out / "skills").iterdir())
+        flat = self.flatten(self.claude_skills, members[0])
+        (flat / "SKILL.md").write_text("---\nname: local\n---\n\nlocal revision\n")
+        report = truth.collect(self.args())
+        materialization = report["release"]["materialization"]
+        self.assertEqual(materialization["duplicates"], [])
+        self.assertEqual([c["member"] for c in materialization["collisions"]], [members[0]])
+        self.assertEqual(self.axis(report, truth.AXIS_MATERIALIZATION)["verdict"], truth.PASS)
+        self.assertEqual(report["release"]["verdict"], truth.RELEASE_COMPLETE)
+
+    def test_an_empty_runtime_root_is_not_a_materialization(self):
+        """A member reaching a runtime only through the plugin is exactly one
+        materialization, and the absent runtime root must not read as drift."""
+        self.faithful_runtime()
+        report = truth.collect(self.args())
+        materialization = report["release"]["materialization"]
+        self.assertTrue(materialization["members"])
+        self.assertEqual(self.axis(report, truth.AXIS_MATERIALIZATION)["verdict"], truth.PASS)
+
+    # ---- the axes are or-ed into one verdict, not averaged --------------
+
+    def test_any_failing_axis_blocks_the_release(self):
+        sha = self.side_branch_commit()
+        self.build_and_install(sha)
+        members = sorted(p.name for p in (self.out / "skills").iterdir())
+        self.flatten(self.claude_skills, members[0])
+        report = truth.collect(self.args(ability_rev=sha))
+        self.assertEqual(report["release"]["verdict"], truth.RELEASE_INCOMPLETE)
+        self.assertEqual(set(report["release"]["blocking"]),
+                         {truth.AXIS_PROVENANCE, truth.AXIS_MATERIALIZATION})
 
 
 if __name__ == "__main__":

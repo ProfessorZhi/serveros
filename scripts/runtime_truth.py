@@ -25,6 +25,43 @@ shipped inside it would have reported its own stale opinion of itself. A verifie
 has to stand outside the thing it verifies, which is why this file lives in the
 source tree and reads the installed state as data.
 
+Three questions, not one
+------------------------
+On 2026-09-11 the same checkpoint found a second failure of the same shape, one
+level up. The installed artifact matched its declared build pin byte for byte
+and this file reported `OK` — correctly, because there was no drift. But the
+pin itself pointed at a revision that predated the fix being shipped, so the
+runtime was faithfully running code we had already replaced. "Internally
+consistent" and "the right release" are different questions, and a checker that
+only answers the first will report OK through the second.
+
+So a release has to answer all three:
+
+    CHAIN_CONSISTENT        source == built == installed, at every hop.
+                            The bytes agree with each other. (`verdict` above.)
+
+    CANONICAL_PROVENANCE    the pinned revision is contained in the canonical
+                            branch, so the artifact is reproducible from
+                            something that will still exist. A pin that no
+                            branch contains is `PIN_NOT_CANONICAL`. A pin that
+                            is merely OLDER than canonical head is NOT a defect
+                            — a release may legitimately pin a superseded
+                            revision, and flagging that would make this check
+                            fire on a correct machine until it was ignored.
+
+    MATERIALIZATION_UNIQUE  each bundle member reaches each runtime exactly
+                            once. A member present both through plugin-native
+                            discovery and flattened into the runtime skill root
+                            is two active materializations of one thing.
+
+`RELEASE_COMPLETE` requires all three. `PIN_NOT_CANONICAL` is deliberately the
+only new drift class implemented: `PIN_SUPERSEDED` is a real distinction but it
+needs a registry-side declaration of which revisions are superseded, and that
+declaration does not exist yet. Naming it here without the data to decide it
+would be a vocabulary entry with no implementation behind it, which is the
+failure this checkpoint keeps finding, so it is written down as absent rather
+than shipped as a word.
+
 What it does NOT do
 -------------------
 No network. No LLM. No database. No full-disk scan. No mutation of any kind —
@@ -50,11 +87,34 @@ BUNDLE_NAME = "hwz-server-os"
 CLAUDE_PLUGIN_KEY = "hwz-server-os@hwz-server-os"
 CODEX_MARKETPLACE = "hwz-server-os-local"
 
+# The branch a build pin must be reachable from. Named here rather than
+# inlined so the fixture can point it at its own synthetic repository.
+DEFAULT_CANONICAL_REF = "refs/heads/main"
+
 OK = "OK"
 SOURCE_RUNTIME_DRIFT = "SOURCE_RUNTIME_DRIFT"
 BUILT_RUNTIME_DRIFT = "BUILT_RUNTIME_DRIFT"
 MISSING = "MISSING"
 UNKNOWN = "UNKNOWN"
+
+# Drift classes that are NOT about the bytes on disk agreeing with each other.
+# A chain can be internally perfect and still be the wrong release; these name
+# the ways that happens.
+PIN_NOT_CANONICAL = "PIN_NOT_CANONICAL"
+NAME_COLLISION = "NAME_COLLISION"
+
+# The three questions a release has to answer. Every one of them must PASS
+# before this tool will say RELEASE_COMPLETE — "the bytes match" is only the
+# first.
+AXIS_CHAIN = "CHAIN_CONSISTENT"
+AXIS_PROVENANCE = "CANONICAL_PROVENANCE"
+AXIS_MATERIALIZATION = "MATERIALIZATION_UNIQUE"
+AXES = (AXIS_CHAIN, AXIS_PROVENANCE, AXIS_MATERIALIZATION)
+
+PASS = "PASS"
+FAIL = "FAIL"
+RELEASE_COMPLETE = "RELEASE_COMPLETE"
+RELEASE_INCOMPLETE = "RELEASE_INCOMPLETE"
 
 
 # --------------------------------------------------------------------------
@@ -221,6 +281,127 @@ def expected_artifact(build, ability_repo: Path, ability_rev: str, output: Path,
     return payload, version
 
 
+def canonical_provenance(ability_repo: Path, pin: str, canonical_ref: str) -> dict:
+    """Is the pinned build revision contained in the canonical branch?
+
+    Reachability, not equality. `pin == canonical head` and `pin == an older
+    commit on canonical` are both legitimate releases; only a pin that canonical
+    does not contain at all means the artifact was built from something that
+    will not survive a branch being rebased or retired.
+
+    `reachable` is a tri-state on purpose. `None` means "could not determine",
+    and the axis treats that as NOT passing — an unverifiable pin is not a
+    verified one, and defaulting an unknown to PASS is how a checker starts
+    lying.
+    """
+    out = {"pin": pin, "canonical_ref": canonical_ref, "reachable": None,
+           "drift": "", "detail": ""}
+    if not pin:
+        out["drift"] = PIN_NOT_CANONICAL
+        out["detail"] = ("no full 40-hex pin recorded, so the revision the artifact "
+                         "was built from is unknown")
+        return out
+    if not (ability_repo / ".git").exists():
+        out["detail"] = f"not a git checkout: {ability_repo}"
+        return out
+    head = _git(ability_repo, "rev-parse", canonical_ref)
+    if head is None:
+        out["detail"] = f"no such ref in {ability_repo}: {canonical_ref}"
+        return out
+    out["canonical_head"] = head
+    if _git(ability_repo, "cat-file", "-t", pin) is None:
+        out["reachable"] = False
+        out["drift"] = PIN_NOT_CANONICAL
+        out["detail"] = f"pinned revision {pin[:12]} does not exist in {ability_repo}"
+        return out
+    try:
+        proc = subprocess.run(
+            ["git", "-C", str(ability_repo), "merge-base", "--is-ancestor", pin, canonical_ref],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except OSError:
+        out["detail"] = "git merge-base could not be run"
+        return out
+    if proc.returncode == 0:
+        out["reachable"] = True
+        if head == pin:
+            out["detail"] = f"pin is exactly {canonical_ref}"
+        else:
+            behind = _git(ability_repo, "rev-list", "--count", f"{pin}..{canonical_ref}") or "?"
+            out["detail"] = (f"pin is on {canonical_ref}, {behind} commit(s) behind its head "
+                             "— a release may pin an older revision; not a defect")
+        return out
+    if proc.returncode == 1:
+        out["reachable"] = False
+        out["drift"] = PIN_NOT_CANONICAL
+        ahead = _git(ability_repo, "rev-list", "--count", f"{canonical_ref}..{pin}") or "?"
+        out["detail"] = (f"pinned revision {pin[:12]} is NOT reachable from {canonical_ref} "
+                         f"({ahead} commit(s) outside canonical) — the artifact was built "
+                         "from a revision canonical does not contain")
+        return out
+    out["detail"] = f"git merge-base exited {proc.returncode}"
+    return out
+
+
+def materialization_audit(artifact: Path, runtimes: list[tuple[str, Path | None, Path | None]]) -> dict:
+    """How many times does each bundle member reach each runtime?
+
+    Ground truth is the filesystem, not any planner. Asking the installed
+    control plane what it *would* do would reproduce its contract — including
+    the bug — rather than test it; the pre-fix planner cheerfully reported
+    `INSTALL` for members it was about to flatten, which is exactly the plan
+    that was wrong.
+
+    A flat copy that is byte-identical to the plugin member is a genuine second
+    materialization and fails the axis. A flat skill of the same NAME with
+    different content is reported as `NAME_COLLISION` instead: the name resolves
+    to two different artifacts, which is worth naming, but it is not this
+    contract's violation — nothing was duplicated. Conflating the two would
+    either force this axis permanently red on a known deferred item, or tempt
+    someone to exempt that item by hardcoding its name.
+    """
+    members_dir = artifact / "skills"
+    if not members_dir.is_dir():
+        return {"verdict": UNKNOWN, "members": [], "duplicates": [], "collisions": [],
+                "notes": [f"no skills/ directory in the artifact at {artifact}"],
+                "detail": "cannot enumerate bundle members"}
+    members = sorted(p.name for p in members_dir.iterdir() if p.is_dir())
+    duplicates: list[dict] = []
+    collisions: list[dict] = []
+    notes: list[str] = []
+    for label, payload, flat_root in runtimes:
+        if payload is None or not Path(payload).is_dir():
+            notes.append(f"{label}: plugin payload not installed, so no member can "
+                         "be materialized a second time there")
+            continue
+        flat_root = Path(flat_root) if flat_root else None
+        if flat_root is None or not flat_root.is_dir():
+            notes.append(f"{label}: no runtime skill root at {flat_root}")
+            continue
+        for member in members:
+            flat = flat_root / member
+            if not (flat / "SKILL.md").is_file():
+                continue
+            plugin_copy = Path(payload) / "skills" / member
+            record = {"runtime": label, "member": member, "path": str(flat)}
+            if tree_hash(flat) == tree_hash(plugin_copy):
+                record["detail"] = ("flat copy is byte-identical to the plugin member — "
+                                    "a second active materialization of the same thing")
+                duplicates.append(record)
+            else:
+                record["detail"] = ("a skill of this name sits at the runtime root with "
+                                    "DIFFERENT content; the name resolves to two artifacts "
+                                    "(not a duplicate, so not counted against this axis)")
+                collisions.append(record)
+    if duplicates:
+        detail = (f"{len(duplicates)} member(s) materialized twice: "
+                  + ", ".join(f"{d['member']}@{d['runtime']}" for d in duplicates[:4]))
+    else:
+        detail = f"{len(members)} member(s), each reaching every installed runtime once"
+    return {"verdict": PASS if not duplicates else FAIL, "members": members,
+            "duplicates": duplicates, "collisions": collisions, "notes": notes,
+            "detail": detail}
+
+
 # --------------------------------------------------------------------------
 # report
 # --------------------------------------------------------------------------
@@ -229,10 +410,10 @@ def collect(args) -> dict:
     build = _load_build(args.serveros_repo)
     rows: list[dict] = []
 
-    def row(component, canonical, built, installed, verdict, detail="", note=""):
+    def row(component, canonical, built, installed, verdict, detail="", note="", axis=None):
         rows.append({"component": component, "canonical": canonical,
                      "built": built, "installed": installed,
-                     "verdict": verdict, "detail": detail, "note": note})
+                     "verdict": verdict, "detail": detail, "note": note, "axis": axis})
 
     # --- 1. the bundle source repository --------------------------------
     serveros_head = _git(build.repo_root(), "rev-parse", "HEAD") or UNKNOWN
@@ -294,10 +475,21 @@ def collect(args) -> dict:
 
     ability_rev = args.ability_rev or claude.get("gitCommitSha") or ""
     pinned = ability_rev if len(ability_rev) == 40 else ""
+    provenance = canonical_provenance(
+        args.ability_repo, pinned, getattr(args, "canonical_ref", DEFAULT_CANONICAL_REF))
+    # The pin row used to read OK whenever a 40-hex revision was present, which
+    # is a statement about the FORMAT of the pin, not about the pin. It now
+    # carries the reachability answer, because "the pin is well-formed" and
+    # "the pin points into canonical" were being read as the same row.
+    if provenance["reachable"] is None:
+        pin_verdict, pin_detail = UNKNOWN, provenance["detail"]
+    elif provenance["reachable"]:
+        pin_verdict, pin_detail = OK, provenance["detail"]
+    else:
+        pin_verdict, pin_detail = PIN_NOT_CANONICAL, provenance["detail"]
     row("ability-management (build pin)", pinned[:12] or UNKNOWN, pinned[:12],
         (claude.get("gitCommitSha") or "")[:12] or UNKNOWN,
-        OK if pinned else UNKNOWN,
-        "" if pinned else "no full 40-hex pin recorded; cannot recompute the artifact")
+        pin_verdict, pin_detail, axis=AXIS_PROVENANCE)
 
     built_ver = installed_ver = UNKNOWN
     manifest_path = args.output / ".claude-plugin/plugin.json"
@@ -372,17 +564,52 @@ def collect(args) -> dict:
         row(f"{BUNDLE_NAME} @ {label}", "", "", f"sha256={tree_hash(root) or 'NONE'}",
             verdict, detail, note)
 
-    verdicts = {r["verdict"] for r in rows}
-    if SOURCE_RUNTIME_DRIFT in verdicts:
+    # The chain verdict answers only "do the bytes agree at every hop". The pin
+    # row is excluded because reachability is a different question, answered on
+    # its own axis below; letting it leak into the chain verdict would make a
+    # perfectly consistent chain read as UNKNOWN for a reason that has nothing
+    # to do with consistency.
+    chain_verdicts = {r["verdict"] for r in rows if r["axis"] != AXIS_PROVENANCE}
+    if SOURCE_RUNTIME_DRIFT in chain_verdicts:
         overall = SOURCE_RUNTIME_DRIFT
-    elif verdicts <= {OK}:
+    elif chain_verdicts <= {OK}:
         overall = OK
-    elif MISSING in verdicts:
+    elif MISSING in chain_verdicts:
         overall = MISSING
     else:
         overall = UNKNOWN
 
-    return {"schema": "serveros/runtime-truth.v1", "verdict": overall, "rows": rows,
+    claude_skills = getattr(args, "claude_skills_root", None)
+    codex_skills = getattr(args, "codex_skills_root", None)
+    materialization = materialization_audit(args.output, [
+        ("Claude", claude.get("installPath") or None, claude_skills),
+        ("Codex", codex_leaf, codex_skills),
+    ])
+
+    axes = {
+        AXIS_CHAIN: {
+            "verdict": PASS if overall == OK else FAIL,
+            "detail": ("source, built and installed bytes agree at every hop"
+                       if overall == OK else f"chain verdict is {overall}"),
+        },
+        AXIS_PROVENANCE: {
+            "verdict": PASS if provenance["reachable"] else FAIL,
+            "detail": provenance["detail"] or "pin reachability undetermined",
+            "drift": provenance["drift"],
+        },
+        AXIS_MATERIALIZATION: {
+            "verdict": materialization["verdict"],
+            "detail": materialization["detail"],
+        },
+    }
+    blocking = [name for name in AXES if axes[name]["verdict"] != PASS]
+
+    return {"schema": "serveros/runtime-truth.v2", "verdict": overall, "rows": rows,
+            "release": {
+                "verdict": RELEASE_COMPLETE if not blocking else RELEASE_INCOMPLETE,
+                "axes": axes, "blocking": blocking,
+                "materialization": materialization,
+            },
             "codex": {"enabled": codex.get("enabled"),
                       "marketplace_source": codex.get("marketplace_source")}}
 
@@ -399,6 +626,22 @@ def render(report: dict) -> None:
             print(f"{'':<{width}}  -- {r['note']}")
     print()
     print(f"VERDICT: {report['verdict']}")
+
+    release = report.get("release")
+    if not release:
+        return
+    print()
+    for name in AXES:
+        axis = release["axes"][name]
+        print(f"  {name:<22} {axis['verdict']:<5} {axis['detail']}")
+    for entry in release["materialization"]["collisions"]:
+        # Not a materialization failure, but the name resolves to two different
+        # artifacts and that should never scroll past unread.
+        print(f"  -- {NAME_COLLISION}: {entry['member']} @ {entry['runtime']} "
+              f"({entry['path']}) differs from the plugin member")
+    print()
+    print(f"RELEASE: {release['verdict']}"
+          + (f"  (blocking: {', '.join(release['blocking'])})" if release["blocking"] else ""))
 
 
 def main() -> int:
@@ -434,6 +677,18 @@ def main() -> int:
                     default=Path(os.environ.get("SERVEROS_CODEX_CONFIG") or home / ".codex/config.toml"))
     ap.add_argument("--codex-cache", type=Path,
                     default=Path(os.environ.get("SERVEROS_CODEX_CACHE") or home / ".codex/plugins/cache"))
+    ap.add_argument("--canonical-ref", default=os.environ.get("SERVEROS_CANONICAL_REF")
+                    or DEFAULT_CANONICAL_REF,
+                    help="the branch the build pin must be reachable from for the "
+                         "release to be reproducible; reachability, not equality")
+    ap.add_argument("--claude-skills-root", type=Path,
+                    default=Path(os.environ.get("SERVEROS_CLAUDE_SKILLS")
+                                 or home / ".claude/skills"),
+                    help="runtime skill root that plugin-native discovery makes "
+                         "redundant; a bundle member here is a second materialization")
+    ap.add_argument("--codex-skills-root", type=Path,
+                    default=Path(os.environ.get("SERVEROS_CODEX_SKILLS")
+                                 or home / ".codex/skills"))
     args = ap.parse_args()
 
     report = collect(args)
@@ -441,7 +696,10 @@ def main() -> int:
         print(json.dumps(report, indent=2, ensure_ascii=False))
     else:
         render(report)
-    return 0 if report["verdict"] == OK else 1
+    # Exit reflects RELEASE_COMPLETE, not merely "the chain agrees". The two
+    # differed on 2026-09-11 and the difference was the whole point: a
+    # chain-consistent, correctly-noncanonical release must not exit 0.
+    return 0 if report["release"]["verdict"] == RELEASE_COMPLETE else 1
 
 
 if __name__ == "__main__":
