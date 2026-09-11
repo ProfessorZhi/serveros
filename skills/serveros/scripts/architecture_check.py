@@ -347,22 +347,38 @@ def collect(args) -> dict:
             "HIGH",
             observation_provenance={"bundle": _prov(bundle_obs), "manifest": _prov(manifest_obs)}))
 
-    # The local/remote split is where the ownership conflict actually shows up,
-    # machine-detectably: a member the bundle claims to own locally while the
-    # registry also claims to provide it. This is REPORTED, not decided.
+    # A member the bundle sources locally that the registry also lists in
+    # `provides`.
+    #
+    # Phase 1 raised this as a HIGH authority conflict and deferred it. The
+    # ownership ruling removed the premise: `source: local` in the bundle is a
+    # claim about COMPOSITION (which serveros owns), while `provides` in the
+    # registry is a record of IDENTITY and DISCOVERY (which ability-management
+    # owns). A member can legitimately appear in both, because they are answers
+    # to two different questions -- the old check compared them as though they
+    # answered the same one.
+    #
+    # It is kept, at OBSERVED, rather than deleted. What remains genuinely open
+    # is narrower and belongs to the registry's owner: whether the bootstrap
+    # `serveros` Skill is a *reusable* ability at all, and so whether it belongs
+    # in a registry of reusable abilities. That is a question about the registry's
+    # scope, not a contest over who owns the composition.
     contested = sorted(set(local_members) & set(provides["names"]))
     if contested:
         findings.append(finding(
-            "COMPOSITION_SOURCE_CONTESTED", "authority-conflict",
-            "a member is sourced from exactly one place",
+            "BOOTSTRAP_ABILITY_REGISTERED", "registry-scope",
+            "the reusable-ability registry is scoped to reusable abilities",
             {"bundle.source=local": contested,
-             "also_in_registry_provides": contested},
-            "plugin/bundle.yaml header vs ability-management/abilities-manifest.yaml#provides",
-            "HIGH", status="DEFER",
-            why_not_decided=(
-                "Whether the registry's claim on these members is compatible with "
-                "the bundle's local claim is the plugin/skill-source ownership "
-                "question. Phase 1 reports it and does not pick a side."),
+             "also_in_registry_provides": contested,
+             "bundle_says": "local (composition decision, owned by serveros)",
+             "registry_says": "provided (identity/discovery record, owned by "
+                              "ability-management)",
+             "not_a_canonical_conflict_because":
+                "composition and discovery are different questions with "
+                "different owners"},
+            "plugin ownership ruling (Phase 1.1 A); registry scope belongs to "
+            "ability-management",
+            "LOW", status="OBSERVED",
             observation_provenance={"bundle": _prov(bundle_obs), "manifest": _prov(manifest_obs)}))
 
     if set(ability_members) & set(local_members):
@@ -447,39 +463,82 @@ def collect(args) -> dict:
             "DISPATCHER_DRIFT", "core", "serveros is the single dispatcher",
             dispatcher, "serveros-contract.json", "HIGH"))
 
-    # ---- A6: unresolved authority conflict (reported, NOT decided) --------
+    # ---- A6: plugin ownership (RULED, so asserted, not deferred) ----------
+    # Phase 1 could only report this conflict. The owner has since ruled, so the
+    # ruled invariants are now asserted: the composition of the plugin belongs to
+    # serveros, and the identity/version/discovery/distribution of reusable
+    # abilities belongs to ability-management. One owner each, no overlap.
+    #
+    # The old detector keyed on the string `plugin-canonical-source`. That string
+    # is gone now, and a detector that stops firing because a word vanished is
+    # not a check — it is the same "declared but absent" shape this project keeps
+    # finding. So the assertion is on the ruled ownership predicate itself.
     so = (comps.get("components") or {}).get("serveros") or {}
     am = (comps.get("components") or {}).get("ability-management") or {}
-    # Structured signal, not prose matching: the bundle *physically carries* a
-    # local skill source (source: local), which is a skill-source claim; the
-    # component registry says serveros does not own skill-source and grants the
-    # plugin canonical source to ability-management.
-    bundle_claims_skill_ownership = bool(local_members)
-    bundle_claims_plugin_ownership = bool(bundle.get("skill_ownership") or local_members)
-    components_denies_skill = "skill-source" in (so.get("does_not_own") or [])
-    components_grants_plugin = "plugin-canonical-source" in (am.get("owns") or [])
-    if (bundle_claims_skill_ownership or bundle_claims_plugin_ownership) and (
-            components_denies_skill or components_grants_plugin):
+
+    def owners_of(concern):
+        return sorted(
+            name for name, comp in (comps.get("components") or {}).items()
+            if concern in (comp.get("owns") or []))
+
+    components_by_name = {
+        "serveros": so, "ability-management": am,
+    }
+    ruled_owners = {
+        # concern                          owner                 who may not claim it
+        "plugin-composition-canonical":    ("serveros", "ability-management"),
+        "plugin-bundle":                   ("serveros", "ability-management"),
+        "bootstrap-skill-source":          ("serveros", "ability-management"),
+        "reusable-skill-canonical-source": ("ability-management", "serveros"),
+    }
+    for concern, (want, must_not) in sorted(ruled_owners.items()):
+        got = owners_of(concern)
+        if got != [want]:
+            findings.append(finding(
+                "OWNERSHIP_DRIFT", "authority",
+                f"{concern} is owned by exactly [{want}]",
+                {"owners": got, "ruled": want},
+                "plugin ownership ruling (Phase 1.1 A)",
+                "HIGH",
+                observation_provenance={"components": _prov(components_obs)}))
+        # the exclusion is half the point: one owner each, no overlap
+        if concern in (components_by_name[must_not].get("owns") or []):
+            findings.append(finding(
+                "OWNERSHIP_DRIFT", "authority",
+                f"{must_not} must not claim {concern}",
+                {"claimed_by": must_not},
+                "plugin ownership ruling (Phase 1.1 A)", "HIGH"))
+
+    # The ruling retired a word, not just a claim. `skill-source` did not say
+    # whether it meant the bootstrap Skill or the reusable ones, and the two have
+    # different owners -- that ambiguity is what produced the original conflict.
+    retired = "skill-source"
+    if any(retired in (comp.get(field) or [])
+           for comp in (comps.get("components") or {}).values()
+           for field in ("owns", "does_not_own")):
         findings.append(finding(
-            "AUTHORITY_CONFLICT_PLUGIN_OWNERSHIP", "authority-conflict",
-            "one authority decides who owns plugin/skill-source",
-            {
-                "bundle.yaml carries local skill source": local_members,
-                "bundle.yaml header claims ownership of": [
-                    "the plugin manifests", "the Claude/Codex adapters",
-                    "its own bootstrap Skill", "the deterministic build entry"],
-                "components.yaml serveros.does_not_own": so.get("does_not_own"),
-                "components.yaml ability-management.owns": am.get("owns"),
-            },
-            "serveros/plugin/bundle.yaml vs serveros/integration/components.yaml",
-            "HIGH", status="DEFER",
-            why_not_decided=(
-                "Phase 1 does not settle plugin/skill-source ownership. Both "
-                "declarations are in the same commit; the C1 ruling in "
-                "ops/maps/GITHUB-MAP.md supports the bundle side, but its wording "
-                "('does not carry reusable Skill source') may be compatible with "
-                "components.yaml. Requires the owner's decision."),
-            observation_provenance={"bundle": _prov(bundle_obs), "components": _prov(components_obs)}))
+            "RETIRED_OWNERSHIP_TERM", "authority",
+            f"{retired!r} is retired in favour of bootstrap-skill-source / "
+            "reusable-skill-canonical-source",
+            {name: {f: (comp.get(f) or []) for f in ("owns", "does_not_own")}
+             for name, comp in (comps.get("components") or {}).items()
+             if retired in (comp.get("owns") or []) + (comp.get("does_not_own") or [])},
+            "plugin ownership ruling (Phase 1.1 A)", "HIGH"))
+
+    # ---- A2: exactly one canonical composition, and the transitional surface
+    # named as such. ability-management/plugins/hwz-server-os/ is a generated
+    # compatibility path that still exists on disk; it must be legible as
+    # non-canonical rather than silently countable as a second plugin source.
+    bundle_name = bundle.get("name") or "hwz-server-os"
+    transitional = ability_repo / "plugins" / bundle_name
+    if transitional.is_dir():
+        findings.append(finding(
+            "TRANSITIONAL_GENERATED_SURFACE", "authority",
+            "generated/transitional plugin surfaces are named and are not canonical",
+            {"path": str(transitional),
+             "canonical_composition": "ProfessorZhi/serveros",
+             "status": "transitional — not a second canonical, not deleted this round"},
+            "plugin ownership ruling (Phase 1.1 A2)", "MEDIUM", status="OBSERVED"))
 
     # ---- runtime side (separate question, separate verdict) ---------------
     rt = run_reused(serveros_repo / "scripts" / "runtime_truth.py", ["--json"])

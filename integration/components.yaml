@@ -10,16 +10,62 @@ components:
   serveros:
     role: product-entry
     locator: https://github.com/ProfessorZhi/serveros
-    owns: [architecture, context-contract, component-boundaries, release-pointers]
-    does_not_own: [skill-source, runtime-state, topology, item-state]
+    owns:
+      # what the plugin IS, and how it is built deterministically
+      - architecture
+      - plugin-composition-canonical      # the decision of which capabilities compose it
+      - plugin-bundle                     # plugin/bundle.yaml
+      - plugin-manifests-and-adapters     # .claude-plugin / .codex-plugin
+      - bootstrap-skill-source            # the `serveros` Skill itself
+      - context-kernel
+      - space-kernel
+      - relations-kernel
+      - deterministic-bundle-build
+      - context-contract
+      - component-boundaries
+      - release-pointers
+    does_not_own:
+      - reusable-skill-canonical-source
+      - runtime-state
+      - topology
+      - item-state
 
   ability-management:
     role: capability-canonical
     locator: https://github.com/ProfessorZhi/ability-management
-    owns: [skill-canonical-source, plugin-canonical-source, ability-registry, revisions, compatibility, installation]
-    does_not_own: [runtime-state, topology, item-state]
+    owns:
+      # identity / version / discovery / distribution of REUSABLE abilities
+      - reusable-skill-canonical-source
+      - ability-registry
+      - revisions
+      - compatibility
+      - discovery
+      - reconcile
+      - installation
+      - distribution
+    does_not_own:
+      - plugin-composition-canonical
+      - bootstrap-skill-source
+      - plugin-bundle
+      - runtime-state
+      - topology
+      - item-state
     note: >
-      The only canonical source for the hwz-server-os plugin and its Skills.
+      The canonical source for the reusable Skills that are composed INTO the
+      plugin. It does not own the composition itself: which skills the plugin
+      contains, and how the bundle is built from them, belongs to serveros.
+
+      The former claim — "the only canonical source for the hwz-server-os plugin
+      and its Skills", carried as `plugin-canonical-source` — was stale. It
+      conflated two different things under one ambiguous word, `skill-source`:
+
+        bootstrap-skill-source            serveros            the `serveros` Skill
+        reusable-skill-canonical-source   ability-management  the composed Skills
+
+      One owner for each, no overlap. Use the qualified names; the bare
+      `skill-source` is retired because it does not say which of the two it
+      means.
+
       Runtime copies are derived installations and never reverse-write canonical.
 
   work-engine:
@@ -52,6 +98,10 @@ components:
 
 distribution:
   # One-way only. Nothing here may be edited in place and synced back.
+  #
+  # This is the payload flow for REUSABLE skills, and its owner is named above
+  # as `distribution`. It is not the plugin composition: the bundle decides what
+  # is composed, and ability-management supplies the reusable parts of it.
   from: ability-management
   to: runtime-installation
   generated_notice: "GENERATED — DO NOT EDIT"
