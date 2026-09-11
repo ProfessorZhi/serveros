@@ -1,0 +1,146 @@
+{
+  "schema": "serveros/topology-contract.v1",
+  "revision": 1,
+  "_comment": [
+    "Generic architecture contract for governed path placement.",
+    "This file owns the SCHEMA and the ROLE VOCABULARY only.",
+    "It deliberately contains NO absolute machine paths: the machine instance is",
+    "owned by hwz-ops (ops/workspace/environment.yaml#roots) and is supplied by",
+    "the caller. Servers, hosts and checkouts differ; roles do not.",
+    "See 11-topology-authority-ownership: serveros owns schema, hwz-ops owns instance."
+  ],
+
+  "roots_source": {
+    "owner": "hwz-ops",
+    "locator": "ops/workspace/environment.yaml",
+    "key": "roots",
+    "required_keys": ["DATA_ROOT", "WORKSPACE_ROOT"],
+    "note": "Machine instance. Never duplicated here. If this file grew absolute paths, the ownership split would be violated."
+  },
+
+  "state_root": {
+    "rule": "<DATA_ROOT>/state/serveros",
+    "namespace_parent": "serveros",
+    "authority": "ops/workspace/serveros/policies/authority.md",
+    "authority_declaration": "STATE_ROOT=$DATA_ROOT/state/serveros",
+    "required_requirements": ["owner", "namespace"],
+    "note": "Ability/Skill state namespaces live UNDER state/serveros/<namespace>, never at state/<namespace>. The srv-0003 C1 correction."
+  },
+
+  "roles": {
+    "canonical-source": {
+      "root": "SRC_ROOT",
+      "mutable": false,
+      "write_via": "isolated-work",
+      "kind": "workspace"
+    },
+    "governance": { "root": "OPS_ROOT", "mutable": true, "kind": "workspace" },
+    "distilled-knowledge": { "root": "KNOWLEDGE_ROOT", "mutable": true, "kind": "workspace" },
+    "isolated-work": {
+      "root": "WORKTREES_ROOT",
+      "mutable": true,
+      "requires": ["repo", "item"],
+      "kind": "workspace"
+    },
+    "test-environment": {
+      "root": "TEST_ENVS_ROOT",
+      "mutable": true,
+      "requires": ["repo", "item"],
+      "kind": "workspace"
+    },
+    "durable-record": {
+      "root": "RECORDS_ROOT",
+      "mutable": true,
+      "requires_by_role": true,
+      "kind": "workspace"
+    },
+    "run-output": {
+      "root": "ARTIFACTS_ROOT",
+      "template": "work-items/<project>/<ITEM>/<RUN>",
+      "mutable": true,
+      "requires": ["project", "item", "run"],
+      "kind": "data"
+    },
+    "skill-run-output": {
+      "root": "ARTIFACTS_ROOT",
+      "template": "skills/<skill>/<project>/<RUN>",
+      "mutable": true,
+      "requires": ["skill", "project", "run"],
+      "kind": "data"
+    },
+    "dynamic-state": {
+      "root": "STATE_ROOT",
+      "template": "<namespace>",
+      "mutable": true,
+      "requires": ["owner", "namespace"],
+      "kind": "data"
+    },
+    "acquired-data": { "root": "DATA_ROOT/data", "mutable": true, "kind": "data" },
+    "cache": { "root": "DATA_ROOT/caches", "mutable": true, "kind": "data" },
+    "toolchain": { "root": "TOOLCHAINS_ROOT", "mutable": false, "kind": "data" },
+    "runtime-env": { "root": "DATA_ROOT/envs", "mutable": false, "kind": "data" },
+    "generated-runtime": {
+      "root": "DATA_ROOT/runtime-assets",
+      "mutable": false,
+      "write_via": "build",
+      "kind": "data"
+    }
+  },
+
+  "workspace_root_children": {
+    "src": "canonical-source",
+    "worktrees": "isolated-work",
+    "test-envs": "test-environment",
+    "records": "durable-record",
+    "knowledge": "distilled-knowledge",
+    "ops": "governance"
+  },
+
+  "data_root_children": {
+    "artifacts": "run-output",
+    "state": "dynamic-state",
+    "data": "acquired-data",
+    "caches": "cache",
+    "envs": "runtime-env",
+    "toolchains": "toolchain",
+    "downloads": "acquired-data",
+    "runtime-assets": "generated-runtime"
+  },
+
+  "record_roles": {
+    "_comment": [
+      "C2: record requirements are driven by the record's SEMANTIC ROLE, not by the",
+      "records root. A flat records.requires=[project,item] would wrongly reject",
+      "records/managed-documents/. This map is illustrative and open-ended: the",
+      "resolution rule is 'look up the role', not 'enumerate every record type'."
+    ],
+    "project-item-record": { "requires": ["project", "item"] },
+    "managed-document-registry": { "requires": ["owner"] },
+    "global-governance-record": { "requires": ["role"] }
+  },
+
+  "forbidden_roots": [
+    "workspace/artifacts",
+    "workspace/toolchains",
+    "~/files",
+    "cwd-fallback"
+  ],
+
+  "forbidden_patterns": [
+    {
+      "id": "FORBIDDEN_SUBSTITUTE_ROOT",
+      "match": "workspace/(artifacts|toolchains)|^~/files|^files$",
+      "note": "Substitute roots that shadow DATA_ROOT buckets."
+    },
+    {
+      "id": "FORBIDDEN_UNREGISTERED_WORKSPACE_ROOT",
+      "match": "workspace/<child> where child not in workspace_root_children",
+      "note": "NO NEW DEBT. Additions are rejected before creation; existing legacy paths are LEGACY_COMPAT, never retro-DENY."
+    },
+    {
+      "id": "FORBIDDEN_LEGACY_STATE_ROOT",
+      "match": "state/<namespace> where namespace not in {serveros, personal}",
+      "note": "state/ is a DATA_ROOT root whose ServerOS-owned child is state/serveros. state/<ns> is the pre-C1 shape."
+    }
+  ]
+}
