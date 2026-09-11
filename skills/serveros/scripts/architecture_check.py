@@ -54,10 +54,19 @@ ARCH_STATUS_VALUES = ("CONFORMANT", "NONCONFORMANT", "INCONCLUSIVE")
 
 
 def _git(repo: Path, *args: str) -> str | None:
+    """Run a read-only git query without letting git write anything.
+
+    ``GIT_OPTIONAL_LOCKS=0`` is what makes the "observational read" claim true
+    rather than aspirational: ``git status`` otherwise refreshes the index in
+    place when stat data looks stale, which rewrites ``.git/index`` and bumps
+    the mtime of ``.git`` itself. Caught by the dogfood mutation counter -- a
+    checker that changes the thing it checks is not a checker.
+    """
+    env = {**os.environ, "GIT_OPTIONAL_LOCKS": "0", "GIT_TERMINAL_PROMPT": "0"}
     try:
         out = subprocess.run(
             ["git", "-C", str(repo), *args],
-            capture_output=True, text=True, timeout=60,
+            capture_output=True, text=True, timeout=60, env=env,
         )
     except (OSError, subprocess.TimeoutExpired):
         return None
@@ -211,6 +220,34 @@ def skill_names(root: Path) -> list[str]:
                   if p.is_dir() and (p / "SKILL.md").exists())
 
 
+def manifest_members(manifest: dict, plugin_id: str = "ProfessorZhi/hwz-server-os") -> dict:
+    """Resolve ``provides`` to skill *names*.
+
+    ``provides`` carries stable identities (``ProfessorZhi/workspace-maintainer``),
+    while ``bundle.yaml`` carries skill names (``workspace-management``). They are
+    not the same namespace and a naive set comparison between them produces a
+    fake drift -- the rename is recorded in ``repository_aliases`` and the
+    ``name``/``aliases`` fields. Resolution goes identity -> ability -> name.
+    """
+    abilities = {a.get("id"): a for a in (manifest.get("abilities") or [])}
+    plugin = abilities.get(plugin_id) or {}
+    names, unresolved, identities = [], [], []
+    for entry in plugin.get("provides") or []:
+        ident = entry.get("id")
+        identities.append(ident)
+        ability = abilities.get(ident)
+        if ability is None:
+            unresolved.append(ident)
+        else:
+            names.append(ability.get("name") or str(ident).split("/")[-1])
+    return {
+        "plugin_entry_found": bool(plugin),
+        "identities": identities,
+        "names": sorted(names),
+        "unresolved_identities": unresolved,
+    }
+
+
 # --------------------------------------------------------------------------
 # the check
 # --------------------------------------------------------------------------
@@ -280,10 +317,12 @@ def collect(args) -> dict:
     # whose source is ability-management must be exactly the manifest's
     # provides list; bundle members with source: local are local-only.
     bundle_skills = bundle.get("skills") or []
-    ability_members = [s["name"] for s in bundle_skills if s.get("source") == "ability-management"]
-    local_members = [s["name"] for s in bundle_skills if s.get("source") == "local"]
-    other_members = [s for s in bundle_skills if s.get("source") not in ("local", "ability-management")]
-    provides = manifest.get("provides") or []
+    bundle_members = sorted(s["name"] for s in bundle_skills)
+    ability_members = sorted(s["name"] for s in bundle_skills if s.get("source") == "ability-management")
+    local_members = sorted(s["name"] for s in bundle_skills if s.get("source") == "local")
+    other_members = [s for s in bundle_skills
+                     if s.get("source") not in ("local", "ability-management")]
+    provides = manifest_members(manifest)
 
     if other_members:
         findings.append(finding(
@@ -291,14 +330,39 @@ def collect(args) -> dict:
             [s.get("name") for s in other_members],
             "plugin/bundle.yaml", "HIGH"))
 
-    if sorted(ability_members) != sorted(provides):
+    if provides["unresolved_identities"]:
+        findings.append(finding(
+            "PROVIDES_IDENTITY_UNRESOLVED", "registry",
+            "every provides[].id resolves to an ability entry",
+            provides["unresolved_identities"],
+            "ability-management/abilities-manifest.yaml", "MEDIUM"))
+
+    if bundle_members != provides["names"]:
         findings.append(finding(
             "BUNDLE_MANIFEST_DRIFT", "composition-vs-registry",
-            f"bundle ability-management members == manifest.provides == {sorted(provides)}",
-            f"bundle-only={sorted(set(ability_members) - set(provides))} "
-            f"manifest-only={sorted(set(provides) - set(ability_members))}",
+            "bundle members == manifest.provides resolved to skill names",
+            f"bundle-only={sorted(set(bundle_members) - set(provides['names']))} "
+            f"manifest-only={sorted(set(provides['names']) - set(bundle_members))}",
             "serveros owns the composition contract; ability-management owns the registry",
             "HIGH",
+            observation_provenance={"bundle": _prov(bundle_obs), "manifest": _prov(manifest_obs)}))
+
+    # The local/remote split is where the ownership conflict actually shows up,
+    # machine-detectably: a member the bundle claims to own locally while the
+    # registry also claims to provide it. This is REPORTED, not decided.
+    contested = sorted(set(local_members) & set(provides["names"]))
+    if contested:
+        findings.append(finding(
+            "COMPOSITION_SOURCE_CONTESTED", "authority-conflict",
+            "a member is sourced from exactly one place",
+            {"bundle.source=local": contested,
+             "also_in_registry_provides": contested},
+            "plugin/bundle.yaml header vs ability-management/abilities-manifest.yaml#provides",
+            "HIGH", status="DEFER",
+            why_not_decided=(
+                "Whether the registry's claim on these members is compatible with "
+                "the bundle's local claim is the plugin/skill-source ownership "
+                "question. Phase 1 reports it and does not pick a side."),
             observation_provenance={"bundle": _prov(bundle_obs), "manifest": _prov(manifest_obs)}))
 
     if set(ability_members) & set(local_members):
@@ -386,8 +450,12 @@ def collect(args) -> dict:
     # ---- A6: unresolved authority conflict (reported, NOT decided) --------
     so = (comps.get("components") or {}).get("serveros") or {}
     am = (comps.get("components") or {}).get("ability-management") or {}
-    bundle_claims_skill_ownership = "bootstrap Skill" in (bundle_obs["content"] or "")
-    bundle_claims_plugin_ownership = "plugin manifests" in (bundle_obs["content"] or "")
+    # Structured signal, not prose matching: the bundle *physically carries* a
+    # local skill source (source: local), which is a skill-source claim; the
+    # component registry says serveros does not own skill-source and grants the
+    # plugin canonical source to ability-management.
+    bundle_claims_skill_ownership = bool(local_members)
+    bundle_claims_plugin_ownership = bool(bundle.get("skill_ownership") or local_members)
     components_denies_skill = "skill-source" in (so.get("does_not_own") or [])
     components_grants_plugin = "plugin-canonical-source" in (am.get("owns") or [])
     if (bundle_claims_skill_ownership or bundle_claims_plugin_ownership) and (
@@ -396,14 +464,12 @@ def collect(args) -> dict:
             "AUTHORITY_CONFLICT_PLUGIN_OWNERSHIP", "authority-conflict",
             "one authority decides who owns plugin/skill-source",
             {
-                "bundle.yaml claims": {
-                    "owns_bootstrap_skill": bundle_claims_skill_ownership,
-                    "owns_plugin_manifests": bundle_claims_plugin_ownership,
-                },
-                "components.yaml claims": {
-                    "serveros.does_not_own": so.get("does_not_own"),
-                    "ability-management.owns": am.get("owns"),
-                },
+                "bundle.yaml carries local skill source": local_members,
+                "bundle.yaml header claims ownership of": [
+                    "the plugin manifests", "the Claude/Codex adapters",
+                    "its own bootstrap Skill", "the deterministic build entry"],
+                "components.yaml serveros.does_not_own": so.get("does_not_own"),
+                "components.yaml ability-management.owns": am.get("owns"),
             },
             "serveros/plugin/bundle.yaml vs serveros/integration/components.yaml",
             "HIGH", status="DEFER",
@@ -464,15 +530,25 @@ def collect(args) -> dict:
     # ---- name collisions, reported separately ----------------------------
     roots = {name: Path(p) for name, p in args.runtime_root}
     members_by_root = {name: skill_names(p) for name, p in roots.items()}
-    seen: dict[str, list[str]] = {}
-    for root_name, names in members_by_root.items():
-        for n in names:
-            seen.setdefault(n, []).append(root_name)
-    collisions = {n: r for n, r in sorted(seen.items()) if len(r) > 1}
+    # A name in both the Claude cache and the Codex cache is NORMAL: two
+    # runtimes, one plugin. A collision means the same runtime can reach the
+    # same name through two roots. Roots are therefore grouped per runtime
+    # (the part of the root label before the first "-").
+    collisions: dict[str, dict[str, list[str]]] = {}
+    for runtime in sorted({name.split("-")[0] for name in roots}):
+        seen: dict[str, list[str]] = {}
+        for root_name, names in members_by_root.items():
+            if not root_name.startswith(runtime + "-"):
+                continue
+            for n in names:
+                seen.setdefault(n, []).append(root_name)
+        dupes = {n: r for n, r in sorted(seen.items()) if len(r) > 1}
+        if dupes:
+            collisions[runtime] = dupes
     if collisions:
         findings.append(finding(
             "NAME_COLLISION", "materialization",
-            "each skill name resolves to exactly one root",
+            "within one runtime, each skill name resolves to exactly one root",
             collisions,
             "reported separately from MATERIALIZATION_UNIQUE by design: the "
             "existing axis passes while a name is present in two roots",
@@ -515,10 +591,12 @@ def collect(args) -> dict:
         "namespace_collisions": collisions,
         "members_by_runtime_root": members_by_root,
         "bundle": {
-            "members": [s.get("name") for s in bundle_skills],
-            "ability_management_members": sorted(ability_members),
-            "local_members": sorted(local_members),
-            "manifest_provides": sorted(provides),
+            "members": bundle_members,
+            "ability_management_members": ability_members,
+            "local_members": local_members,
+            "manifest_provides_identities": provides["identities"],
+            "manifest_provides_names": provides["names"],
+            "registry_claims_local_members": contested,
         },
         "observations": observations,
         "coverage_limits": [
