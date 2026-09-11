@@ -76,6 +76,7 @@ import hashlib
 import importlib.util
 import json
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -281,6 +282,37 @@ def expected_artifact(build, ability_repo: Path, ability_rev: str, output: Path,
     return payload, version
 
 
+PIN_PATTERN = re.compile(r"ability-management@([0-9a-f]{40})")
+
+
+def declared_pin(artifact: Path) -> str:
+    """The pin the artifact itself says it was built from.
+
+    The install record is NOT a reliable source for this. Claude's
+    `gitCommitSha` is carried forward from the previous install when the
+    marketplace source is a local path, because there is no git revision for it
+    to re-read. On 2026-09-11 that record still named `972a872` after an update
+    that had installed `82777ad` bytes — the machine's own account of itself
+    being wrong, which is the same pathology this file exists to catch, one
+    level further in. Worse, it made the pin row accuse a correct artifact of
+    drifting from a revision it had never claimed.
+
+    `build.py` writes the pin into the generated README, so the claim travels
+    with the bytes it describes. Using it is not circular: the pin is then
+    verified twice over — rebuilding from it must reproduce these exact bytes
+    (CHAIN_CONSISTENT), and it must be reachable from canonical
+    (CANONICAL_PROVENANCE).
+    """
+    readme = artifact / "README.md"
+    if not readme.is_file():
+        return ""
+    try:
+        found = PIN_PATTERN.search(readme.read_text(errors="replace"))
+    except OSError:
+        return ""
+    return found.group(1) if found else ""
+
+
 def canonical_provenance(ability_repo: Path, pin: str, canonical_ref: str) -> dict:
     """Is the pinned build revision contained in the canonical branch?
 
@@ -473,8 +505,19 @@ def collect(args) -> dict:
     claude = read_claude_install(args.claude_plugins_json)
     codex = read_codex_install(args.codex_config)
 
-    ability_rev = args.ability_rev or claude.get("gitCommitSha") or ""
+    recorded_pin = claude.get("gitCommitSha") or ""
+    declared = declared_pin(args.output)
+    ability_rev = args.ability_rev or declared or recorded_pin
     pinned = ability_rev if len(ability_rev) == 40 else ""
+    record_note = ""
+    if declared and recorded_pin and declared != recorded_pin:
+        # Named, not blocking: this is the install record being wrong about the
+        # artifact, which nothing in this repository can repair (a `local`
+        # marketplace source gives Claude no revision to record). Making it
+        # block would leave RELEASE_COMPLETE unreachable on a machine that is
+        # in fact correct, and a gate that can never pass gets ignored.
+        record_note = (f"install record claims {recorded_pin[:12]} but the artifact was "
+                       f"built from {declared[:12]} — the record is stale, the bytes are not")
     provenance = canonical_provenance(
         args.ability_repo, pinned, getattr(args, "canonical_ref", DEFAULT_CANONICAL_REF))
     # The pin row used to read OK whenever a 40-hex revision was present, which
@@ -487,9 +530,9 @@ def collect(args) -> dict:
         pin_verdict, pin_detail = OK, provenance["detail"]
     else:
         pin_verdict, pin_detail = PIN_NOT_CANONICAL, provenance["detail"]
-    row("ability-management (build pin)", pinned[:12] or UNKNOWN, pinned[:12],
-        (claude.get("gitCommitSha") or "")[:12] or UNKNOWN,
-        pin_verdict, pin_detail, axis=AXIS_PROVENANCE)
+    row("ability-management (build pin)", pinned[:12] or UNKNOWN, declared[:12] or pinned[:12],
+        recorded_pin[:12] or UNKNOWN,
+        pin_verdict, pin_detail, note=record_note, axis=AXIS_PROVENANCE)
 
     built_ver = installed_ver = UNKNOWN
     manifest_path = args.output / ".claude-plugin/plugin.json"
@@ -609,6 +652,8 @@ def collect(args) -> dict:
                 "verdict": RELEASE_COMPLETE if not blocking else RELEASE_INCOMPLETE,
                 "axes": axes, "blocking": blocking,
                 "materialization": materialization,
+                "pin": {"used": pinned, "declared": declared, "recorded": recorded_pin,
+                        "record_agrees": declared == recorded_pin if declared else None},
             },
             "codex": {"enabled": codex.get("enabled"),
                       "marketplace_source": codex.get("marketplace_source")}}

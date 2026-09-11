@@ -155,7 +155,10 @@ class RuntimeTruthTests(unittest.TestCase):
     def install_codex(self, version: str, payload_src: Path):
         leaf = self.codex_cache / truth.CODEX_MARKETPLACE / truth.BUNDLE_NAME / version
         leaf.parent.mkdir(parents=True, exist_ok=True)
-        import shutil
+        # Codex is single-slot: installing over an existing version replaces it,
+        # which is what `codex plugin add` does on the real machine.
+        if leaf.exists():
+            shutil.rmtree(leaf)
         shutil.copytree(payload_src, leaf)
         self.codex_config.write_text(
             "[marketplaces.%s]\nsource = \"/somewhere\"\n\n"
@@ -403,6 +406,36 @@ class RuntimeTruthTests(unittest.TestCase):
         axis = self.axis(report, truth.AXIS_PROVENANCE)
         self.assertEqual(axis["verdict"], truth.FAIL)
         self.assertEqual(axis["drift"], truth.PIN_NOT_CANONICAL)
+
+    def test_the_pin_comes_from_the_artifact_not_a_stale_install_record(self):
+        """Claude's gitCommitSha is carried forward when the marketplace source
+        is a local path, so it can name a revision the installed bytes never
+        came from. Trusting it made the pin row accuse a correct artifact."""
+        self.build_and_install()
+        # Rewrite the installed bytes from a different revision WITHOUT
+        # touching the install record — which is what `claude plugin update`
+        # does when the marketplace source is a local path.
+        sha = self.side_branch_commit()
+        rc = build.build(self.serveros / "plugin/bundle.yaml", self.ability, sha,
+                         self.out, self.marketplace, write=True)
+        self.assertEqual(rc, 0)
+        version = json.loads((self.out / ".claude-plugin/plugin.json").read_text())["version"]
+        self.install_codex(version, self.out)
+        report = truth.collect(self.args(ability_rev=""))
+        pin = report["release"]["pin"]
+        self.assertEqual(pin["declared"], sha)
+        self.assertFalse(pin["record_agrees"])
+        self.assertEqual(pin["used"], sha)
+        self.assertEqual(report["verdict"], truth.OK)   # bytes agree with sha
+        row = rows_by(report)["ability-management (build pin)"]
+        self.assertIn("record is stale", row["note"])
+
+    def test_an_explicit_pin_overrides_the_artifact_declaration(self):
+        """The flag stays authoritative — it is how a release is asked about a
+        revision other than the one currently installed."""
+        self.build_and_install()
+        report = truth.collect(self.args(ability_rev=self.rev))
+        self.assertEqual(report["release"]["pin"]["used"], self.rev)
 
     def test_a_pin_behind_canonical_head_is_not_a_defect(self):
         """Pinning an older revision is a legitimate release.
