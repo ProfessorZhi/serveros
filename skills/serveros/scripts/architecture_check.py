@@ -404,6 +404,89 @@ def role_path(roots: dict, topology: dict | None, role: str, *,
 # --------------------------------------------------------------------------
 
 
+def map_projection_axis(args, findings: list[dict]) -> dict:
+    """§15: maps are PROJECTIONS of the registries, so they are checked, not trusted.
+
+    Until this axis existed, the check's own `coverage_limits` said in as many
+    words: "This check does not read MAP files ... Phase 1 does not compile
+    them." A declared limit is honest, but it also means the three maps that
+    hand-copy machine facts had no reader anywhere. The compiler now supplies
+    one, so the limit is replaced by an assertion.
+
+    Grading, and why it is not uniform:
+      MAP_VIEW_UNBOUND        MEDIUM/OBSERVED -- the map restates a machine fact
+                              with no generated anchor. Real, but a map is not an
+                              authority in this system; it does not deny.
+      MAP_VIEW_DRIFT          MEDIUM/OPEN     -- the map states something the
+                              registry contradicts. Still not an authority, so
+                              still not blocking -- but it is wrong, not merely
+                              unanchored.
+      MAP_VIEW_SOURCE_*       HIGH/OPEN       -- the registry itself could not be
+                              read, so drift CANNOT be assessed. This one blocks:
+                              "could not look" must never read as "nothing found".
+    """
+    import argparse as _argparse
+    import importlib.util
+
+    ops_repo = getattr(args, "ops_repo", None)
+    if ops_repo is None:
+        return {"status": "SKIPPED", "why": "--ops-repo not supplied; maps are a machine-instance fact"}
+
+    here = Path(__file__).resolve().parent
+    script = here / "map_projection.py"
+    config_path = here.parent / "references" / "map-projections.json"
+    if not script.is_file() or not config_path.is_file():
+        findings.append(finding(
+            "MAP_VIEW_CHECK_UNAVAILABLE", "map-projection",
+            "the map projection compiler and its config are present",
+            {"script": str(script), "config": str(config_path)},
+            "§15 requires regenerate -> diff -> MAP_VIEW_DRIFT; without the "
+            "compiler that contract is unenforceable and maps go unread",
+            "HIGH", status="OPEN"))
+        return {"status": "UNAVAILABLE"}
+
+    spec = importlib.util.spec_from_file_location("_serveros_map_projection", script)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    config = json.loads(config_path.read_text(encoding="utf-8"))
+    config["_args"] = _argparse.Namespace(
+        serveros_repo=getattr(args, "serveros_repo", None),
+        ability_repo=getattr(args, "ability_repo", None),
+        ops_repo=ops_repo,
+        canonical_ref=getattr(args, "canonical_ref", "HEAD"),
+        ability_ref=getattr(args, "ability_ref", None),
+        ops_ref=getattr(args, "ops_ref", None),
+    )
+    try:
+        report = mod.check(config)
+    except Exception as exc:  # a compiler crash must not look like a clean run
+        findings.append(finding(
+            "MAP_VIEW_CHECK_FAILED", "map-projection",
+            "the map projection compiler runs to completion",
+            f"{type(exc).__name__}: {exc}",
+            "§15", "HIGH", status="OPEN"))
+        return {"status": "FAILED", "error": f"{type(exc).__name__}: {exc}"}
+
+    for f in report["findings"]:
+        unbound = f["code"] == "MAP_VIEW_UNBOUND"
+        findings.append(finding(
+            f["code"], "map-projection",
+            "a map region a registry owns is generated and current",
+            {"map": f["detail"], "probe": f.get("probe") or {}},
+            "§15 machine contract/registries -> compiler -> human maps",
+            f["severity"],
+            status="OBSERVED" if unbound else "OPEN",
+            subject=f.get("detail", ""),
+            **({"why_not_denied": "a human map is a projection, not an authority; "
+                                   "an unanchored region is reported so its owner "
+                                   "can paste the generated block"} if unbound else {}),
+            worktree_state=f.get("worktree_state") or {},
+            proposed_action=f.get("proposed_action"),
+            refresh_via="serverosctl architecture project --out <dir>"))
+    return {"status": "CHECKED", "targets": report["targets"],
+            "sources": report["sources"]}
+
+
 def collect(args) -> dict:
     findings: list[dict] = []
     observations: dict[str, dict] = {}
@@ -901,6 +984,9 @@ def collect(args) -> dict:
                  "MATERIALIZATION_UNIQUE axis, which answers a different question "
                  "(each member reaches every runtime once)."))
 
+    # ---- §15 map projection drift -----------------------------------------
+    map_projection = map_projection_axis(args, findings)
+
     # ---- verdicts ---------------------------------------------------------
     arch_findings = [f for f in findings if f["class"] != "materialization"]
     blocking = [f for f in arch_findings
@@ -942,12 +1028,19 @@ def collect(args) -> dict:
             "registry_claims_local_members": contested,
         },
         "observations": observations,
+        "map_projection": map_projection,
         "coverage_limits": [
             "validate_contract.py compares the contract against literals in its "
             "own body (expected values written twice); running it proves the "
             "file was not corrupted, not that the world matches it.",
-            "This check does not read MAP files (TREE-MAP / HWZ-MAP / PLUGIN-MAP). "
-            "Maps are not an authority here and Phase 1 does not compile them.",
+            "MAP files (TREE-MAP / HWZ-MAP / PLUGIN-MAP) ARE read, since §15 -- "
+            "but only inside declared generated blocks, and only against the "
+            "registries those blocks project. Map PROSE is not checked and is "
+            "not an authority. A map region with no block marker is reported as "
+            "MAP_VIEW_UNBOUND, which says 'unanchored', not 'wrong'.",
+            "The map axis is a machine-instance check: with no --ops-repo it "
+            "reports SKIPPED rather than passing, because there are no maps to "
+            "read. Do not read SKIPPED as clean.",
             "Names outside the composed bundle (native ~/.claude/skills, "
             "~/.codex/skills) are reported as collisions only; ownership of a "
             "native-root skill is not decided.",
@@ -973,7 +1066,13 @@ def render(report: dict) -> None:
     print(f"findings            : {report['summary']['findings']} "
           f"(blocking HIGH/open: {report['summary']['blocking_high_open']})")
     for f in report["findings"]:
-        print(f"  [{f['severity']:<6}] {f['status']:<12} {f['id']}")
+        line = f"  [{f['severity']:<6}] {f['status']:<12} {f['id']}"
+        if f.get("subject"):
+            # Several findings share a code once a check runs per-object (three
+            # maps, three hits). Without the subject the render shows the same
+            # line three times and the reader cannot tell them apart.
+            line += f"  <- {f['subject']}"
+        print(line)
     if report["namespace_collisions"]:
         print("name collisions:")
         for name, roots in report["namespace_collisions"].items():

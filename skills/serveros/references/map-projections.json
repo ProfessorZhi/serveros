@@ -1,0 +1,103 @@
+{
+  "schema": "serveros/map-projections.v1",
+  "revision": 1,
+
+  "_comment": [
+    "§15: machine contract/registries -> compiler -> human maps.",
+    "",
+    "Direction is the whole point. A human map that RESTATES a machine fact is a",
+    "second copy of that fact, and a second copy drifts. The fix is not 'write the",
+    "map more carefully' -- it is to stop hand-copying the part a machine already",
+    "knows, and let a compiler emit that region.",
+    "",
+    "Division of labour:",
+    "  human map      owns prose, judgement, WHY an entry exists",
+    "  generated block owns ONLY what a registry already says",
+    "The generated block is delimited by markers and is regenerated, never edited.",
+    "Prose outside the markers is untouched by the compiler, always.",
+    "",
+    "The compiler never writes a map in place. It emits a candidate and reports",
+    "drift; applying it is a separate, deliberate act by whoever owns that map.",
+    "This is required, not cautious: these maps have concurrent writers."
+  ],
+
+  "markers": {
+    "begin": "<!-- BEGIN GENERATED: {id} (serveros:map-projection) -->",
+    "end": "<!-- END GENERATED: {id} -->",
+    "note": [
+      "The end marker deliberately carries no generator tag. A reader looking for",
+      "the end of a block should not have to match the generator's exact spelling",
+      "-- and if the two spellings ever diverged, an unmatched BEGIN would swallow",
+      "the rest of the file."
+    ]
+  },
+
+  "sources": {
+    "bundle": {
+      "repo": "serveros",
+      "path": "plugin/bundle.yaml",
+      "kind": "yaml",
+      "owns": "which Skills are composed into the plugin, and at what version"
+    },
+    "abilities": {
+      "repo": "ability-management",
+      "path": "abilities-manifest.yaml",
+      "kind": "yaml",
+      "owns": "what abilities exist and what type each one is"
+    },
+    "topology": {
+      "repo": "serveros",
+      "path": "skills/serveros/references/topology-contract.json",
+      "kind": "json",
+      "owns": "which children each declared root may hold, and in what role"
+    }
+  },
+
+  "projections": {
+    "plugin-composition": {
+      "source": "bundle",
+      "title": "Plugin composition",
+      "renderer": "plugin_composition"
+    },
+    "topology-children": {
+      "source": "topology",
+      "title": "Registered root children",
+      "renderer": "topology_children"
+    }
+  },
+
+  "_targets_note": [
+    "TARGETS ARE A MACHINE INSTANCE FACT, and this default table is a known",
+    "ownership wart, stated rather than hidden: serveros owns the schema and the",
+    "projections, hwz-ops owns which map files exist on THIS machine. Ideally the",
+    "table moves to hwz-ops (ops/workspace/environment.yaml or a sibling) and this",
+    "file keeps only the schema. It is not moved in this round because hwz-ops has",
+    "concurrent writers and a second placement authority is exactly the defect §14",
+    "is closing. Override with --targets-file until then; the compiler takes either.",
+    "",
+    "Each target asserts: this map carries this machine fact. That assertion is",
+    "what makes MAP_VIEW_UNBOUND possible -- without it, a map with no markers is",
+    "indistinguishable from a map that was never supposed to have any."
+  ],
+
+  "targets": [
+    {
+      "repo": "hwz-ops",
+      "path": "maps/PLUGIN-MAP.md",
+      "blocks": ["plugin-composition"],
+      "why": "It hand-copies the plugin version (v2.0.1) and member count. Both are machine facts."
+    },
+    {
+      "repo": "hwz-ops",
+      "path": "maps/HWZ-MAP.md",
+      "blocks": ["topology-children"],
+      "why": "It hand-draws the DATA_ROOT child tree that topology-contract.json declares."
+    },
+    {
+      "repo": "hwz-ops",
+      "path": "maps/TREE-MAP.md",
+      "blocks": ["topology-children"],
+      "why": "Its DATA_ROOT / Workspace controlled-vocabulary sections are the same list again."
+    }
+  ]
+}
