@@ -224,6 +224,32 @@ def test_the_serveros_allowlist_admits_identity_files(paths, roots):
     assert result["admitted"] is True
 
 
+def test_the_allowlist_covers_every_file_the_node_root_contract_names(paths, roots):
+    """The whole vocabulary, not the one name two versions of it agreed on.
+
+    The allow-list used to read `("identity.yaml", "targets.yaml",
+    "profile.yaml", "config.yaml")` while `fleet/node-root-contract.yaml`,
+    `fleet/node.py` and the disk all said `node.yaml`. `node.yaml` is the file
+    that answers "which device is this host"; `admit()` refused it, and the test
+    above passed anyway because it asserted `targets.yaml` — the single entry
+    both lists contained.
+
+    Testing the intersection of two disagreeing declarations is how the
+    disagreement survives, so this asserts the whole set and both refusals
+    around it: the names the authority declares are admitted, and the invented
+    ones are not.
+    """
+    for declared in ("node.yaml", "targets.yaml", "controller.yaml"):
+        result = paths.admit(str(Path(roots["home"]) / ".serveros" / declared))
+        assert result["admitted"] is True, declared
+
+    # The phantom names are refused rather than quietly allowed to accumulate:
+    # a list widened to accept everything stops being a closed vocabulary.
+    for invented in ("identity.yaml", "profile.yaml", "config.yaml"):
+        with pytest.raises(PathRefused, match="identity and binding"):
+            paths.admit(str(Path(roots["home"]) / ".serveros" / invented))
+
+
 def test_admission_classifies_canonical_from_merely_permitted(paths, roots):
     canonical = paths.admit(str(Path(roots["artifacts_root"]) / "work-items/litellm/LIT-1/RUN-1"))
     assert canonical["canonical"] == "CANONICAL_WORK_ITEM_RUN"
@@ -240,6 +266,57 @@ def test_admit_writes_nothing(paths, roots):
     target = Path(roots["artifacts_root"]) / "skills/x/RUN-1"
     paths.admit(str(target))
     assert not target.exists()
+
+
+# ---------------------------------------------------------------------------
+# §31–§42 · `path conformance`
+# ---------------------------------------------------------------------------
+
+
+def test_path_conformance_exit_codes_separate_three_facts(monkeypatch, capsys):
+    """Clean, open-and-blocking, and could-not-answer are three answers.
+
+    Collapsing the third into the first is the expensive mistake: a checker
+    that could not read the authority it compares against would report the
+    same exit status as a node that conforms, and the run that says "all
+    clear" is exactly the run nobody re-reads.
+    """
+    # The summary keys are the module's contract with this command, so the
+    # fixture spells out all of them rather than only the two the exit code
+    # reads. A stub that carried just the fields under test would let the
+    # renderer and the collector drift apart without either noticing.
+    def report(findings):
+        counts = {}
+        for name, fid in (("undeclared", "UNDECLARED_ENTRY"),
+                          ("exempt", "EXEMPT_ENTRY"),
+                          ("absent", "DECLARED_ENTRY_ABSENT")):
+            counts[name] = sum(1 for f in findings if f["id"] == fid)
+        return {"schema": "serveros/directory-conformance.v1",
+                "summary": {"findings": len(findings), "blocking_open": sum(
+                    1 for f in findings
+                    if f["severity"] == "HIGH" and f["status"] == "OPEN"), **counts},
+                "findings": findings}
+
+    high_open = [{"id": "DECLARATION_CONFLICT", "severity": "HIGH", "status": "OPEN",
+                  "class": "~/.serveros", "entry": ""}]
+    unreadable = [{"id": "DECLARATION_AUTHORITY_UNREADABLE", "severity": "MEDIUM",
+                   "status": "OPEN", "class": "~/.serveros", "entry": ""}]
+
+    for findings, expected in (([], cli_mod.EXIT_OK),
+                               (high_open, cli_mod.EXIT_FAULT),
+                               (unreadable, cli_mod.EXIT_COULD_NOT_ANSWER)):
+        monkeypatch.setattr(cli_mod.conformance_mod, "collect",
+                            lambda *a, _f=findings, **k: report(_f))
+        code = cli_mod.main(["path", "conformance"])
+        assert code == expected, (findings, code, expected)
+        capsys.readouterr()
+
+
+def test_path_conformance_is_a_read_only_verb():
+    """It inspects and reports; it is not a lifecycle verb, and it does not
+    repair anything it finds missing."""
+    verbs = _all_subcommands(cli_mod.build_parser())
+    assert "conformance" in verbs
 
 
 # ---------------------------------------------------------------------------
