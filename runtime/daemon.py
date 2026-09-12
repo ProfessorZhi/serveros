@@ -230,6 +230,50 @@ class Actuator:
         self.dry_run = dry_run
         self.performed: list[dict] = []
 
+    def perform(self, operation: str, resource) -> dict:
+        """Dispatch one §8 operation.
+
+        This method is the whole of what the runtime can do to the machine.
+        The vocabulary is closed by `managed-runtime-contract.yaml` and the
+        mode→operation mapping is read from the same file, so adding a sixth
+        operation is an edit to a reviewed document rather than a new branch
+        somebody adds here.
+
+        An operation with no actuator returns NO_ACTUATOR — the same answer
+        the restart path already gives for a resource kind nobody wrote an
+        actuator for. `RECONNECT` and `STOP` are declared and unimplemented
+        on purpose: a declared operation with no implementation has to be
+        visible, or the next person infers it works from its absence in a
+        list of failures.
+        """
+        if operation == "RESTART":
+            return self.restart(resource)
+        if operation in ("RECONNECT", "STOP"):
+            return {
+                "performed": False,
+                "reason": "NO_ACTUATOR",
+                "operation": operation,
+                "note": (
+                    f"{operation} is declared in the operation vocabulary and "
+                    f"has no actuator. It is not a lesser RESTART: for a "
+                    f"transport-endpoint or a tunnel the channel is the thing "
+                    f"that failed, and running the restart path against it "
+                    f"would be acting on a different object and reporting it "
+                    f"as this one."
+                ),
+            }
+        return {
+            "performed": False,
+            "reason": "UNKNOWN_OPERATION",
+            "operation": operation,
+            "note": (
+                "not in the declared operation vocabulary. Refused rather than "
+                "defaulted, because the one thing a control plane must never "
+                "do is turn an unrecognised instruction into the nearest "
+                "recognised one."
+            ),
+        }
+
     def restart(self, resource) -> dict:
         unit = resource.record.get("unit") or next(
             (p.get("unit") for p in resource.probes if p.get("unit")), None)
@@ -269,6 +313,30 @@ class Actuator:
                   "stderr": (outcome.get("stderr") or "").strip()[:300]}
         self.performed.append(result)
         return result
+
+
+def _operation_for_mode(mode: str) -> str:
+    """The §8 operation a reconcile mode authorises.
+
+    Read from `managed-runtime-contract.yaml` so the mapping is declared once.
+    An unknown mode raises rather than falling back: the registry validates
+    modes at registration, so reaching here with one means the contract and
+    the validator have diverged, and the safe response to that is to stop
+    rather than to perform the nearest recognised operation.
+    """
+    mapping = registry_mod.contract()["reconcile_policy"]["mode_operations"]
+    if mode not in mapping:
+        raise registry_mod.RegistryError(
+            f"reconcile mode {mode!r} has no declared operation; the contract's "
+            f"modes and its mode_operations disagree"
+        )
+    operation = mapping[mode]
+    if operation is None:
+        # `observe` authorises nothing. Returning a name here would be the
+        # exact defect this whole block exists to prevent, so it is answered
+        # as a refusal.
+        return "NONE"
+    return operation
 
 
 def _container_name(resource) -> str | None:
@@ -441,16 +509,44 @@ class Daemon:
             action = (observed.get("action") or {}).get("action")
             if action != "RECONCILE":
                 continue
+            # §8/§11. The operation is derived from the resource's own policy,
+            # never from the caller. Recorded even when the decision is
+            # "recommendation only", because a recommendation that does not
+            # name the operation it recommends is not actionable by the person
+            # it is addressed to.
+            #
+            # Recording the mode alongside the operation is what makes the
+            # decision auditable: "RESTART" alone cannot distinguish a resource
+            # whose policy says restart from one whose policy was bypassed.
+            policy = resource.reconcile
+            operation = _operation_for_mode(policy["mode"])
+            split = resource.automatability()
             entry = {
                 "resource": resource.id,
                 "action": "RECONCILE",
-                "automatable": resource.is_automatable,
+                "automatable": split["automatable"],
+                "recommendation_only": split["recommendation_only"],
+                "reconcile_mode": policy["mode"],
+                "operation": operation,
             }
             if not resource.is_automatable:
                 entry.update({
                     "performed": False,
-                    "blocked_by": resource.why_not_automatable(),
-                    "note": "the health model said RECONCILE; the registry says no",
+                    # `blocked_by` keeps its one meaning across the tree: these
+                    # are reasons that FORBID the action. A resource whose
+                    # policy is merely `observe` is not forbidden — it is
+                    # permitted-and-not-enabled, which is a different fact and
+                    # is reported as `blocked_by_policy` so that a reader is
+                    # not told a policy question is a permission question.
+                    "blocked_by": split["permission"],
+                    "blocked_by_policy": split["policy"],
+                    "note": (
+                        "§9: recommendation only. The health model says this "
+                        "is a candidate and nothing here authorises ServerOS "
+                        "to carry the operation out by itself."
+                    ) if split["recommendation_only"] else (
+                        "the health model said RECONCILE; the registry says no"
+                    ),
                 })
                 decisions.append(entry)
                 continue
@@ -469,22 +565,31 @@ class Daemon:
                 decisions.append(entry)
                 continue
             if not self.enable_reconcile:
+                # The process-level interlock. Note what it does NOT do: it is
+                # not what authorises a resource. Every resource whose policy
+                # is `observe` has already been filtered out above, so this
+                # switch can only ever *withhold* an action a resource already
+                # permitted. §11 forbids one switch that turns recovery on for
+                # everything; this is the opposite shape — it grants nothing on
+                # its own.
+                dry = self.actuator.perform(operation, resource)
                 entry.update({
                     "performed": False,
                     "dry_run": True,
-                    "would_run": self.actuator.restart(resource).get("would_run"),
+                    "would_run": dry.get("would_run"),
+                    "dry_run_reason": dry.get("reason"),
                     "note": (
-                        "reconcile is implemented and gated off. This round "
-                        "runs observe-only: no registered resource on this "
-                        "host is automatable anyway, and enabling it without "
-                        "a resource that needs it would be a switch nobody "
-                        "could test."
+                        "the resource's policy permits this operation and the "
+                        "process interlock withholds it. --enable-reconcile "
+                        "clears the interlock; it does not clear "
+                        "reconcile.mode=observe, which is the gate that applies "
+                        "to every resource registered on this host."
                     ),
                 })
                 decisions.append(entry)
                 continue
-            result = self.actuator.restart(resource)
-            self.budget.record(resource.id, "restart")
+            result = self.actuator.perform(operation, resource)
+            self.budget.record(resource.id, operation.lower())
             entry["result"] = result
             entry["performed"] = bool(result.get("performed"))
             # Re-probe immediately: "did the restart fix it" is a question

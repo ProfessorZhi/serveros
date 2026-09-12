@@ -139,6 +139,19 @@ REASONS = {
         "The resource declares a callable surface and the probe that would "
         "exercise it cannot run here. Reported instead of a fabricated OK."
     ),
+    "CREDENTIAL_MISSING": (
+        "The credential the resource needs is not present at all — not "
+        "expired, not consumed, absent. §12 names this as human-required: no "
+        "restart conjures a credential, and a resource that retries without "
+        "one produces the same failure at a higher rate."
+    ),
+    "POLICY_DENIED": (
+        "The resource was refused by a policy outside this process — a "
+        "provider's quota, a permissions model, a remote authorisation. §12 "
+        "names this as human-required. Distinct from CREDENTIAL_MISSING: the "
+        "credential is fine and the answer is still no, so retrying is not "
+        "merely useless, it is a request to be refused again."
+    ),
 }
 
 
@@ -343,6 +356,47 @@ class Health:
 
 AUTH_REASONS = frozenset({"AUTH_REAUTH_REQUIRED", "AUTH_FAILURE_SUSPECTED"})
 
+# §12. Failures no restart can resolve, because what is missing is an
+# authorisation rather than a process. A superset of AUTH_REASONS: the two
+# below are not authorization *flow* failures, so they are not in that set —
+# but they share its disposition, and the disposition is what this frozenset
+# is for.
+#
+# The distinction is kept because the *reason* is different and an operator
+# reading the report needs the right one: reauthorizing a device flow,
+# supplying a missing credential and appealing a policy denial are three
+# different actions for three different people.
+HUMAN_REQUIRED_REASONS = AUTH_REASONS | frozenset(
+    {"CREDENTIAL_MISSING", "POLICY_DENIED"}
+)
+
+# The sentence an operator reads. One per reason rather than one per set,
+# because "complete the device flow", "install the credential" and "get the
+# policy changed" are three different pieces of work and a shared message
+# would send all three to the same person.
+_HUMAN_REQUIRED_BECAUSE = {
+    "AUTH_REAUTH_REQUIRED": (
+        "the failure is a consumed or expired authorization. A restart policy "
+        "supervises a process; it cannot renew a session. Only a person "
+        "completing the authorization changes this."
+    ),
+    "AUTH_FAILURE_SUSPECTED": (
+        "the same situation as AUTH_REAUTH_REQUIRED, held on weaker evidence. "
+        "A restart policy supervises a process; it cannot renew a session — "
+        "and restarting on a hypothesis is how the 2026-09-12 outage was "
+        "extended. It is held for a person either way."
+    ),
+    "CREDENTIAL_MISSING": (
+        "the credential the resource needs is not present. A restart "
+        "reproduces the same absence; the fix is for a person to supply it."
+    ),
+    "POLICY_DENIED": (
+        "a policy outside this process refused the resource. A restart is "
+        "another request to be refused, and enough of them will be read as "
+        "abuse rather than as recovery."
+    ),
+}
+
 HEALTHY_STATES = frozenset({"HEALTHY", "STOPPED"})
 FAULT_STATES = frozenset(
     {"FUNCTIONALLY_FAILED", "NOT_RUNNING", "DEGRADED", "NOT_READY"}
@@ -372,41 +426,76 @@ def action_for(resource, health: Health) -> dict:
             "because": f"state={state}, and an unobserved resource is not a healthy one",
         }
 
-    blockers = resource.why_not_automatable()
     # Either the model concluded it, or the log corroborates it. Both must
     # route to NEEDS_HUMAN, and the record says which of the two it was — a
     # person acting on `AUTH_FAILURE_SUSPECTED` is acting on a hypothesis and
     # is entitled to know that.
-    auth_reason = health.reason if health.reason in AUTH_REASONS else None
+    auth_reason = (
+        health.reason if health.reason in HUMAN_REQUIRED_REASONS else None
+    )
     source = "reason" if auth_reason else None
-    if auth_reason is None and health.diagnostic_reason in AUTH_REASONS:
+    if auth_reason is None and health.diagnostic_reason in HUMAN_REQUIRED_REASONS:
         auth_reason = health.diagnostic_reason
         source = "diagnostic"
     if auth_reason:
         return {
             "action": "NEEDS_HUMAN",
             "because": (
-                "the failure is a consumed or expired authorization. A restart "
-                "policy supervises a process; it cannot renew a session. Only "
-                "a person completing the authorization changes this."
+                _HUMAN_REQUIRED_BECAUSE.get(auth_reason)
+                or "the failure is one no restart resolves."
             ),
             "reason": auth_reason,
+            # §12's category, so a consumer can group these without
+            # re-deriving it from the reason string.
+            "human_required": True,
             "held_on": source,
             "authoritative": source == "reason" and health.reason_is_authoritative,
             "restarting_is_the_wrong_response": (
                 "this host's endpoint restarted 5 times in ~2 hours as each "
                 "device code expired; each restart issued a new code nobody "
                 "could authorize"
+            )
+            if auth_reason in AUTH_REASONS
+            else (
+                "§12: AUTH_REAUTH_REQUIRED, CREDENTIAL_MISSING and "
+                "POLICY_DENIED are all NEEDS_HUMAN. A restart loop against any "
+                "of them spends the retry budget on a question a process "
+                "cannot answer"
             ),
         }
-    if blockers:
+    # The blockers are split by what they block. A permission block means the
+    # disposition itself is "a person decides". A policy block means the
+    # disposition is a recommendation and the automatic action is what is
+    # withheld — §9's "recommendation only", which is a different answer from
+    # "needs a human" and used to be collapsed into it.
+    split = resource.automatability()
+    if split["permission"]:
         return {
             "action": "NEEDS_HUMAN",
             "because": "fault present and automatic action is not permitted",
-            "blocked_by": blockers,
+            "blocked_by": split["permission"],
+            "automatic": False,
+        }
+    if split["policy"]:
+        return {
+            "action": "RECONCILE",
+            "because": (
+                f"registered and owned, and its desired state "
+                f"({resource.desired}) is not met. §9: a recommendation only — "
+                f"nothing here authorises ServerOS to act on it by itself."
+            ),
+            "automatic": False,
+            "recommendation_only": True,
+            # Named so that the person reading the recommendation can see
+            # exactly which §10 conjunct is missing, rather than being told
+            # that "policy" prevents it.
+            "would_act_if": split["policy"],
+            "budget": resource.record.get("reconcile", {}),
         }
     return {
         "action": "RECONCILE",
         "because": f"registered, owned, policy-allowed, desired={resource.desired}",
+        "automatic": True,
+        "recommendation_only": False,
         "budget": resource.record.get("reconcile", {}),
     }
