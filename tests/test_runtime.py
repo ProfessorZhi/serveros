@@ -445,6 +445,43 @@ def test_an_uncovered_combination_raises_rather_than_returning_a_nearby_word(mon
 # ---------------------------------------------------------------------------
 
 
+def test_a_resource_with_no_transport_probe_has_no_reason():
+    """Measured on 2026-09-13 during the §53 acceptance run, on a HEALTHY
+    resource: `reason: NOT_DECLARED`.
+
+    It is the wrong field for that word. `NOT_DECLARED` says the axis is
+    outside what the resource declares it can be asked — which the derived
+    state rules already ignore, which is why the state came out HEALTHY while
+    the reason said something was wrong. Two fields disagreeing about the same
+    resource is how a reader learns to trust neither.
+    """
+    h = build_health(
+        liveness=ok("liveness", "RUNNING"),
+        transport=unknown("transport", why="NOT_DECLARED"),
+        functional=ok("functional", "OK"),
+        readiness=unknown("readiness", why="NOT_DECLARED"),
+    )
+    assert h.state == "HEALTHY"
+    assert h.reason is None
+    assert h.reason_is_authoritative is False
+    # The word is still on the axis it belongs to, so nothing was lost — the
+    # distinction "never asked" vs "asked and got nothing" is intact.
+    assert h.transport.reason == "NOT_DECLARED"
+    assert h.readiness.reason == "NOT_DECLARED"
+
+
+def test_a_reason_on_a_faulty_axis_still_surfaces():
+    """The positive control. Without it the test above would pass against a
+    `reason` that returned None unconditionally."""
+    h = build_health(
+        liveness=ok("liveness", "RUNNING"),
+        transport=unknown("transport", why="NOT_DECLARED"),
+        functional=ok("functional", "FAILED", reason="CHANNEL_DISCONNECTED"),
+        readiness=unknown("readiness", why="NOT_DECLARED"),
+    )
+    assert h.reason == "CHANNEL_DISCONNECTED"
+
+
 def test_an_observation_without_an_observer_is_refused_at_construction():
     with pytest.raises(UnprovenancedObservation):
         Observation(axis="liveness", state="RUNNING", observed_by={},
