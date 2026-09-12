@@ -1,0 +1,286 @@
+# state/serveros — what this root owns, and what "authority" means inside it.
+#
+# Two claims, kept apart on purpose
+# ---------------------------------
+# OWNERSHIP: `DATA_ROOT/state/serveros` is the ServerOS-owned mutable durable
+# state root. Anything ServerOS must remember between runs and cannot re-derive
+# from the machine belongs here, and nothing else may claim to be this root.
+#
+# AUTHORITY: being under this root does NOT make a path authoritative.
+# Authority is a property of a NAMESPACE, not of a prefix. Two namespaces do
+# not have it at all: `locks/` records that a lease is held, and
+# `projections/` holds derived material that can be regenerated and may never
+# be read back as the thing it was derived from.
+#
+# The failure this contract exists to prevent is the one-sentence version:
+# "it is under state/serveros, so it is the truth." That sentence is how a
+# generated view becomes a source, how a cache becomes a record, and how an
+# external snapshot of the machine becomes the machine.
+#
+# What this root is NOT
+# ---------------------
+# It is not the machine's single state authority. Other domains keep their own
+# state at the same level — `state/personal`, `state/litellm-image-build` — and
+# neither is migrated here to make a diagram look closed. A domain that owns
+# its state owns it; consolidating unrelated state under one root would
+# manufacture exactly the cross-domain coupling this project spends its time
+# removing. `~/.serveros` is likewise not a state authority: it is a small,
+# disposable node binding root (see `node-root-contract.yaml`).
+schema: serveros/state-root.v1
+
+root:
+  ref: DATA_ROOT/state/serveros
+  resolved_by: paths.py#ROOTS.state
+  claim: ServerOS-owned mutable durable state root
+  not_a_claim: >
+    not "the entire machine's state authority", and not a requirement that
+    other domain-owned state roots move here.
+
+# ---------------------------------------------------------------------------
+# Namespace-level authority (§22/§23)
+# ---------------------------------------------------------------------------
+#
+# Every namespace below states who produces it and whether its absence is a
+# fault. The distinction matters because the obvious check — "is the directory
+# there" — cannot tell the three cases apart, and the obvious fix — create it —
+# converts a finding into a fact about an empty directory.
+#
+#   PRESENT         a producer exists and has written
+#   EXPECTED_ABSENT no producer yet; absence is the correct state
+#   MISSING_REQUIRED a producer is declared and its output is not there
+#
+# `required: false` is not a weaker declaration. It says a directory whose
+# existence nothing depends on must not be conjured into existence to make a
+# conformance run green.
+namespaces:
+  node:
+    class: authority
+    holds: the local binding of this host to a device
+    producer: fleet/node.py
+    required: false
+    absent_means: NODE_UNBOUND
+  context:
+    class: authority
+    holds: the resolved working-environment context
+    producer: context/
+    required: false
+    absent_means: CONTEXT_UNRESOLVED
+  abilities:
+    class: projection
+    holds: the last-observed LOCAL capability projection
+    producer: ability-management (writes), this node (observes)
+    required: false
+    authority: false
+    # Deliberately classed as a projection even though it sits in the
+    # authority root: ability-management is the authority for abilities and
+    # always has been. A file here is what this node last SAW, and every
+    # reader is told so.
+    absent_means: NOT_MATERIALIZED
+  runtime:
+    class: authority
+    holds: the managed-runtime registry and its observed/derived state
+    producer: runtime/
+    required: false
+    children:
+      registry:
+        class: authority
+        holds: declared managed runtimes
+        producer: runtime/registry.py
+        required: false
+        absent_means: NO_REGISTRY
+      observed:
+        class: authority
+        holds: what the last observation tick saw
+        producer: runtime/inventory.py
+        required: false
+      health:
+        class: authority
+        holds: four-axis health and reconcile bookkeeping
+        producer: runtime/health.py
+        required: false
+      hygiene:
+        class: projection
+        holds: container classification for a tick
+        producer: runtime/containers.py
+        required: false
+        authority: false
+      resources:
+        class: authority
+        holds: machine resource pressure
+        producer: runtime/inventory.py
+        required: false
+      attribution:
+        class: authority
+        holds: process → agent/task/group attribution as measured
+        producer: runtime/attribution.py
+        required: false
+        absent_means: NOT_YET_WRITTEN
+      graph:
+        class: authority
+        holds: the runtime groups derived from the process table
+        producer: runtime/graph.py
+        required: false
+        absent_means: NOT_YET_WRITTEN
+      anomalies:
+        class: projection
+        holds: anomaly classifications, including the combinations that did not fire
+        producer: runtime/anomaly.py
+        required: false
+        authority: false
+  fleet:
+    class: projection
+    holds: fleet-level observed state as seen from this node
+    producer: fleet/
+    required: false
+    authority: false
+  source-index:
+    class: projection
+    holds: an index over source locations
+    producer: workspace-management
+    required: false
+    authority: false
+  locks:
+    class: non_authority
+    holds: lease intent — that a holder believes it holds something
+    producer: runtime/
+    required: false
+    # A lock file is evidence that someone CLAIMED a lease. It is not the
+    # lease, and it must never be the only record that a resource is in use,
+    # because a lock that outlives its holder then reads as an occupied
+    # resource forever.
+    authority: false
+  projections:
+    class: projection
+    holds: generated, derived, non-authoritative views of anything
+    producer: see each projection's manifest
+    required: false
+    authority: false
+    absent_means: NO_PROJECTIONS
+
+# ---------------------------------------------------------------------------
+# Preexisting entries with no producer declaration
+# ---------------------------------------------------------------------------
+#
+# These are HERE, and not in a second table in the checker, because two tables
+# listing the same directories is the failure this project has already paid for
+# three times: they agree on the day they are written and diverge silently
+# after. `runtime/conformance.py` owns the exception table with its classes and
+# dispositions; this section names the same entries so that the state-root
+# report does not call a known directory "foreign", and a test asserts the two
+# agree.
+#
+# `environment` is deliberately NOT listed: it is being retired into the
+# projections namespace (§24), and an exception for a directory that no longer
+# exists is how an exception table stops describing anything.
+preexisting:
+  source_of_truth: runtime/conformance.py#EXCEPTIONS
+  class: UNKNOWN_OWNER
+  entries:
+    - README.md
+    - boards
+    - document-stewardship
+    - federation
+    - migrations
+    - resource-leases
+    - serveros.db
+    - serveros.db-shm
+    - serveros.db-wal
+    - work-items
+  note: >
+    UNKNOWN_OWNER is a disposition, not a verdict. Each of these is referenced
+    by at least one other document as if it were an authority — which makes the
+    reference a conflict between declarations, and a conflict between
+    declarations has an owner who is not this contract. None of them is created
+    or moved by anything here.
+
+# ---------------------------------------------------------------------------
+# Projections (§24)
+# ---------------------------------------------------------------------------
+projections:
+  # `state/serveros/projections/` is the ONLY projections namespace. It is not
+  # `DATA_ROOT/projections`: a second top-level root for derived material would
+  # itself become a durable-looking location, and the whole point is that this
+  # namespace's contents are disposable.
+  ref: state/serveros/projections
+  no_top_level_root: DATA_ROOT/projections
+
+  # Each projection directory carries this manifest, and a projection without
+  # one is not a projection — it is undeclared material that happens to sit in
+  # a directory with a promising name.
+  manifest:
+    name: projection.yaml
+    required_fields: [authority, generated, generator, generated_at, source_refs]
+    # The literal `false`. Not "false or absent" — absence is what every
+    # undeclared file already has, and accepting it here would make the
+    # manifest additive rather than load-bearing.
+    authority_must_be: false
+    generated_must_be: true
+    source_refs: "what this was derived FROM. Never this namespace."
+    generator: "what wrote it. A foreign generator is allowed; see below."
+    generated_at: "when, so staleness is a fact rather than a guess."
+
+  invariants:
+    - id: NO_SOURCE_AUTHORITY
+      means: >
+        a projection may not become the source authority for anything. Nothing
+        reads a projection to decide what is true; it reads it to see what was
+        last derived.
+    - id: NO_OVERWRITE_AUTHORITY
+      means: >
+        regenerating a projection may not write into an authority namespace.
+        A generator that can only express its result by overwriting the
+        authority has made the authority derived, whatever the manifest says.
+    - id: DRIFT_REGENERATES
+      means: >
+        when a projection disagrees with its source, the fix is to regenerate
+        the projection. Editing the projection to match is the reverse
+        direction and is how derived material becomes a second source.
+    - id: LOSS_REPRODUCIBLE
+      means: >
+        deleting a projection must be recoverable by regenerating it. An
+        artifact whose loss is not recoverable is NOT a projection, whatever
+        directory it is in — it is evidence, and evidence belongs in the
+        evidence plane with a retention rule.
+    - id: NO_SELF_REFERENCE
+      means: >
+        a projection's source_refs may not name projections/ itself. A
+        projection derived from a projection is a chain with no authority at
+        its root, and the chain looks stable for as long as nobody regenerates
+        the middle link.
+
+  foreign_generators:
+    allowed: true
+    # A generator that is not ServerOS — a machine baseline probe, an external
+    # scanner, another domain's tool — may write a projection here.
+    gains_authority: false
+    # Writing into this namespace never makes the writer an authority for the
+    # content. That is the whole point of putting it here rather than in an
+    # authority namespace: the placement is the statement.
+    must_declare: generator
+    # Naming the generator is what lets a reader decide how much to trust it,
+    # and lets a later check find every projection one tool wrote.
+
+# ---------------------------------------------------------------------------
+# The check this contract asks for
+# ---------------------------------------------------------------------------
+authority_conflict:
+  # One semantic fact declared authoritative in an authority namespace AND in
+  # projections/ is two answers to one question, and the second one will win
+  # eventually because it is easier to read.
+  id: AUTHORITY_CONFLICT
+  severity: HIGH
+  enforcement: WARN          # Phase-1: reported, does not block
+  promotable_to: BLOCK
+  detects:
+    - "a projection whose source_refs resolve inside an authority namespace that also declares the same fact"
+    - "a projection file whose path mirrors an authority path (projections/runtime/health/current.json vs runtime/health/current.json)"
+  does_not_detect:
+    - "a projection that merely CONTAINS a value the authority also contains. Agreement is not conflict, and a check that flagged it would flag every correct projection."
+
+# ---------------------------------------------------------------------------
+# What this contract does not say
+# ---------------------------------------------------------------------------
+not_claimed:
+  - "that every namespace above exists. Most do not, and their absence is a valid state."
+  - "that a namespace may not gain a child. A child appears when a producer exists; it is declared here at the same time."
+  - "that other DATA_ROOT top-level roots are not authorities. `artifacts/`, `records/` and `workspace/` are authorities for what they own — this contract is about one root, not about the machine."

@@ -182,14 +182,15 @@ EXCEPTIONS: dict[str, dict[str, dict]] = {
                          "resources.yaml reads lease state from here",
             "disposition": "CONTRACT_GAP",
         },
-        "environment": {
-            "class": "OWNER_CHECK",
-            "reason": "dated environment captures written by another domain's "
-                      "producer under this root",
-            "authority": "ops/inventory files record generated_by "
-                         "= workspace-management",
-            "disposition": "OWNER_CHECK",
-        },
+        # `environment` was here and is gone deliberately. The 2026-08-19
+        # capture moved to `projections/environment/2026-08-19/` with a
+        # manifest that declares its generator and its `authority: false`, and
+        # `projections/` is now a declared namespace — so the exemption has
+        # nothing left to exempt. Keeping it would leave the table describing a
+        # directory that no longer exists, which is how an exception table
+        # stops being a description of anything. A test asserts this table and
+        # `fleet/state-root-contract.yaml#preexisting` list exactly the same
+        # entries.
         "migrations": {
             "class": "UNKNOWN_OWNER",
             "reason": "holds a single dated directory; nothing on this node "
@@ -208,7 +209,107 @@ EXCEPTIONS: dict[str, dict[str, dict]] = {
 }
 
 
+# ---------------------------------------------------------------------------
+# Severity and enforcement: two dimensions, and only one of them blocks (§26)
+# ---------------------------------------------------------------------------
+#
+# The defect this replaces was not a wrong value, it was a missing distinction.
+# Findings were emitted as `severity: HIGH` and the process exited 0, and there
+# was no field anywhere that said why — so the same row meant "this is serious
+# and we are ignoring it" and "this is serious and it stops the line", and a
+# reader could not tell which without opening the source.
+#
+#   severity     how bad the problem IS. A property of the finding, and of
+#                nothing else. It does not vary by rollout phase.
+#   enforcement  what this phase DOES about it. A property of the phase.
+#
+# They are independent on purpose, and `blocking` is DERIVED from ENFORCEMENT
+# rather than carried as its own field. A field that can disagree with the
+# thing it summarizes eventually will; deriving it makes the disagreement
+# unrepresentable.
+SEVERITIES = ("INFO", "LOW", "MEDIUM", "HIGH", "CRITICAL")
+ENFORCEMENTS = ("OBSERVE", "WARN", "BLOCK")
+
+BLOCKING_BY_ENFORCEMENT = {
+    "OBSERVE": False,
+    "WARN": False,
+    "BLOCK": True,
+}
+# One entry, so a caller asking "does this block" does not get to answer it
+# with its own opinion about severity, which is the mistake being removed.
+
+# Which enforcement each check gets in Phase 1, and why. Kept beside the
+# severity table so that "severity HIGH, enforcement WARN" is a declared
+# decision with a reason rather than a contradiction somebody has to explain.
+PHASE_1_ENFORCEMENT = {
+    "UNDECLARED_ENTRY": "WARN",
+    "DECLARED_ENTRY_ABSENT": "OBSERVE",
+    "EXEMPT_ENTRY": "OBSERVE",
+    "DECLARATION_CONFLICT": "WARN",
+    "AUTHORITY_CONFLICT": "WARN",
+    "CHECK_UNAVAILABLE": "WARN",
+}
+ENFORCEMENT_REASONS = {
+    "UNDECLARED_ENTRY": (
+        "Phase 1 is a directory-governance rollout. Several namespaces carry "
+        "unknown-owner or preexisting content that no producer has claimed "
+        "yet; blocking on them would stop every run until a decision that is "
+        "not this check's to make. Promotable to BLOCK once owners are known."
+    ),
+    "DECLARED_ENTRY_ABSENT": (
+        "A declared namespace with no producer is the EXPECTED_ABSENT state, "
+        "not a fault. Observed so the shape of the disk is visible."
+    ),
+    "EXEMPT_ENTRY": (
+        "An exempted entry is reported so the exception table stays visible. "
+        "Nothing is enforced about an entry that was already classified."
+    ),
+    "DECLARATION_CONFLICT": (
+        "Two declarations disagreeing is a contract defect with an owner. "
+        "Warned rather than blocked while the second declaration is retired."
+    ),
+    "AUTHORITY_CONFLICT": (
+        "No projection has yet been observed contradicting an authority "
+        "namespace. The check runs from the day the namespace exists so that "
+        "the first one is caught by a check that has always been on, rather "
+        "than by a check added after the damage."
+    ),
+    "CHECK_UNAVAILABLE": (
+        "A check that could not run is not a check that passed, and saying so "
+        "is the whole point of emitting this finding. Warned rather than "
+        "blocked because the usual cause is a transient import or read "
+        "failure, and blocking would stop unrelated work for it."
+    ),
+}
+
+
+def enforcement_for(fid: str, *, phase: str = "phase-1") -> str:
+    """The declared enforcement for one check. Never inferred from severity."""
+    if phase != "phase-1":  # pragma: no cover - only one phase exists
+        raise ValueError(f"unknown rollout phase {phase!r}")
+    return PHASE_1_ENFORCEMENT.get(fid, "OBSERVE")
+
+
+def blocking(enforcement: str) -> bool:
+    """The ONLY way `blocking` is produced. See BLOCKING_BY_ENFORCEMENT."""
+    try:
+        return BLOCKING_BY_ENFORCEMENT[enforcement]
+    except KeyError:
+        raise ValueError(
+            f"{enforcement!r} is not a declared enforcement "
+            f"{list(ENFORCEMENTS)}. An unknown enforcement is not treated as "
+            f"non-blocking, because a typo would then silently disable a gate."
+        ) from None
+
+
 def finding(fid, cls, desired, observed, authority, severity, status="OPEN", **extra) -> dict:
+    if severity not in SEVERITIES:
+        raise ValueError(f"{severity!r} is not a declared severity {list(SEVERITIES)}")
+    enforcement = extra.pop("enforcement", None) or enforcement_for(fid)
+    # Named `enforcement_reason`, not `reason`: `EXEMPT_ENTRY` already carries a
+    # `reason` describing the exemption, and one key holding two different
+    # explanations is how a row ends up explaining the wrong thing.
+    reason = extra.pop("enforcement_reason", None) or ENFORCEMENT_REASONS.get(fid, "")
     row = {
         "id": fid,
         "class": cls,
@@ -216,6 +317,12 @@ def finding(fid, cls, desired, observed, authority, severity, status="OPEN", **e
         "observed": observed,
         "authority": authority,
         "severity": severity,
+        # Both dimensions, always, plus the derived field and the reason the
+        # pair is what it is. A row that printed `HIGH` and nothing else is
+        # the row that could not be argued with.
+        "enforcement": enforcement,
+        "blocking": blocking(enforcement),
+        "enforcement_reason": reason,
         "status": status,
     }
     row.update(extra)
@@ -421,9 +528,50 @@ def collect(paths, *, repo_root: Path, home: str | None = None) -> dict:
                             {k: v for k, v in (means or {}).items() if v}))
     rows.extend(declaration_conflicts(paths, repo_root))
 
+    # The projections namespace is checked HERE rather than in a separate
+    # command, so that "is this node's state root telling one story" is one
+    # run with one exit code. A second checker with its own severity table is
+    # the second table this file's own docstring warns about.
+    try:
+        import importlib.util as _ilu
+
+        _spec = _ilu.spec_from_file_location(
+            "serveros_runtime_state_root", Path(__file__).resolve().parent / "state_root.py")
+        _state_root = _ilu.module_from_spec(_spec)
+        sys.modules["serveros_runtime_state_root"] = _state_root
+        _spec.loader.exec_module(_state_root)
+        rows.extend(_state_root.authority_conflicts(root=paths.root("state")))
+    except Exception as exc:  # noqa: BLE001 - an unreadable contract is a finding
+        # NOT swallowed. If the authority check cannot run, that is the fact
+        # the reader most needs, because a check that silently does not run
+        # reports exactly what a check that found nothing reports.
+        rows.append(finding(
+            "CHECK_UNAVAILABLE", "state/serveros",
+            "the projections namespace is checked for AUTHORITY_CONFLICT",
+            f"the check could not run: {type(exc).__name__}: {exc}",
+            "fleet/state-root-contract.yaml",
+            "HIGH", "OPEN",
+            enforcement="WARN",
+            enforcement_reason=(
+                "an unavailable check is not a pass. Warned rather than "
+                "blocked because the cause is usually a transient import or "
+                "read failure, and blocked would stop unrelated work."
+            ),
+        ))
+
     summary = {
         "findings": len(rows),
-        "blocking_open": sum(1 for r in rows if r["severity"] == "HIGH" and r["status"] == "OPEN"),
+        # Derived from `enforcement`, NOT from `severity`. The previous version
+        # counted severity==HIGH as blocking while exiting 0, which is the
+        # contradiction §26 names: a run that says "3 blocking findings" and
+        # returns success teaches its reader to ignore the number.
+        "blocking_open": sum(1 for r in rows
+                             if r["blocking"] and r["status"] == "OPEN"),
+        "high_open_nonblocking": sum(
+            1 for r in rows
+            if r["severity"] == "HIGH" and r["status"] == "OPEN" and not r["blocking"]),
+        "by_enforcement": {name: sum(1 for r in rows if r["enforcement"] == name)
+                           for name in ENFORCEMENTS},
         "undeclared": sum(1 for r in rows if r["id"] == "UNDECLARED_ENTRY"),
         "exempt": sum(1 for r in rows if r["id"] == "EXEMPT_ENTRY"),
         "absent": sum(1 for r in rows if r["id"] == "DECLARED_ENTRY_ABSENT"),
@@ -461,9 +609,16 @@ def main(argv: list[str] | None = None) -> int:
         print(f"schema: {report['schema']}")
         print(f"findings: {s['findings']} (undeclared {s['undeclared']}, "
               f"exempt {s['exempt']}, declared-absent {s['absent']})")
+        if s["high_open_nonblocking"]:
+            print(f"  note: {s['high_open_nonblocking']} HIGH finding(s) are "
+                  f"non-blocking this phase (enforcement WARN/OBSERVE)")
         for row in report["findings"]:
-            print(f"  [{row['severity']:<6}] {row['status']:<10} {row['id']:<28} "
-                  f"{row['class']}/{row.get('entry', '')}")
+            # severity AND enforcement AND whether it blocks. Printing the
+            # severity alone is what produced the row a reader could not
+            # interpret: `[HIGH] OPEN` with a successful exit.
+            print(f"  [{row['severity']:<8} {row['enforcement']:<7} "
+                  f"blocking={str(row['blocking']):<5}] {row['status']:<10} "
+                  f"{row['id']:<28} {row['class']}/{row.get('entry', '')}")
     return 1 if report["summary"]["blocking_open"] else 0
 
 
