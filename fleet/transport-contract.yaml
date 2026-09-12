@@ -233,6 +233,11 @@ provenance_sources:
   - server_local_agent               # this agent runtime, locally
   - device_scanner                   # a scanner executed ON the device
   - user_reported                    # a human stated it; not machine-verified
+  # Added this round. The controller plane is a distinct observer: it reaches
+  # devices this runtime cannot, so its observations are admissible — and it is
+  # still not a local observation, which is why it is a separate source rather
+  # than a flag on `server_local_agent`.
+  - serveros-fleet-controller
 
 rules:
   - "An observation records its source. Downstream consumers may filter by
