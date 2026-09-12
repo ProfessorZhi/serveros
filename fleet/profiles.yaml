@@ -141,8 +141,12 @@ profiles:
         state: BOUND
         provenance: user_reported
         note: >-
-          Corporate knowledge source. NOT a control plane — see
-          docs/authority-model.md. Ownership here is knowledge, not fleet.
+          Corporate knowledge source. NOT a control plane — see the Authority
+          section of ARCHITECTURE.md, which names it directly. Ownership here
+          is knowledge, not fleet. (This cited a `docs/authority-model.md` that
+          never existed, while the statement it wanted was in ARCHITECTURE.md
+          all along. Repointed, not written: ARCHITECTURE.md's own closing line
+          forbids "documentation manufactured merely to close a schema".)
       artifacts:
         path: 'D:\artifacts'
         state: BOUND
