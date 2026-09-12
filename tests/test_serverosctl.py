@@ -320,6 +320,62 @@ def test_path_conformance_is_a_read_only_verb():
 
 
 # ---------------------------------------------------------------------------
+# §47 · the probe verb, rendered end to end
+# ---------------------------------------------------------------------------
+
+
+def test_the_probe_verb_renders_a_probe_that_succeeded(tmp_path, capsys, monkeypatch):
+    """A verb is not covered because it parses; it is covered when its happy
+    path renders.
+
+    `serverosctl probe <id>` raised `KeyError: 'axis'` for every probe that
+    answered — the shape of the record was asserted nowhere, and no test called
+    this verb at all, so a broken verb sat in `--help` looking shipped. The
+    renderer reads `result['axis']` directly, which is why an arm that omits it
+    is a crash rather than a blank column.
+    """
+
+    class Host:
+        def now(self):
+            return "2026-09-12T00:00:00Z"
+
+        def docker_inspect(self, name):
+            return {"State": {"Status": "running", "StartedAt": "2026-09-12T00:00:00Z",
+                              "OOMKilled": False},
+                    "RestartCount": 0}
+
+    monkeypatch.setattr(cli_mod.probes_mod, "LiveHost", Host)
+
+    registry_file = tmp_path / "resources.yaml"
+    registry_file.write_text(
+        "schema: serveros/managed-runtime-registry.v1\n"
+        "device_ref: device:test\n"
+        "resources:\n"
+        "  - id: thing\n"
+        "    kind: container\n"
+        "    owner: {type: project, ref: 'project:x'}\n"
+        "    scope: user\n"
+        "    lifecycle: {class: persistent}\n"
+        "    desired: {state: running}\n"
+        "    protection: {level: protected}\n"
+        "    probes:\n"
+        "      - {id: p-liveness, kind: container-state, axis: liveness, container: c}\n"
+    )
+    code = cli_mod.main(["--registry", str(registry_file), "probe", "thing"])
+    assert code == cli_mod.EXIT_OK
+    out = capsys.readouterr().out
+    assert "p-liveness" in out
+    assert "liveness" in out
+    assert "RUNNING" in out
+
+
+def test_the_probe_verb_reports_an_unknown_resource_rather_than_crashing(tmp_path, capsys):
+    code = cli_mod.main(["--registry", str(tmp_path / "absent.yaml"), "probe", "nope"])
+    assert code == cli_mod.EXIT_COULD_NOT_ANSWER
+    assert "no discovery fallback" in capsys.readouterr().err
+
+
+# ---------------------------------------------------------------------------
 # the CLI contract
 # ---------------------------------------------------------------------------
 
