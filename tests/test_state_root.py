@@ -148,11 +148,23 @@ def test_the_root_itself_is_the_ownership_boundary():
 # ---------------------------------------------------------------------------
 
 
-def test_the_declared_namespaces_match_the_frozen_target_shape():
+def test_the_declared_namespaces_agree_and_the_shape_is_pinned():
+    """The invariant is that the two declarations agree; the literal is pinned
+    so that changing the shape is a deliberate edit rather than drift.
+
+    §38 widened the literal by four. Those four were on disk and cited by other
+    SSOT documents (HWZ-MAP, FEISHU-MAP, GITHUB-MAP) while this vocabulary
+    omitted them, so each was being excused by an exemption instead of declared
+    — and CONTRACT_GAP's own definition is that the fix is to widen the
+    vocabulary rather than move the directory. They are NOT folded into
+    `projections/`: that namespace holds disposable manifest-bearing views,
+    while these are stable named namespaces with fixed layouts.
+    """
     contract = state_root.load_contract()
     top = set(contract["namespaces"])
     assert top == {"node", "context", "abilities", "runtime", "fleet",
-                   "source-index", "locks", "projections"}
+                   "source-index", "locks", "projections",
+                   "boards", "federation", "work-items", "resource-leases"}
     # And the tuple the resolver actually enforces is the same set — two
     # declarations of one shape is the defect this whole round is about.
     assert top == set(paths_mod.STATE_SERVEROS_TOP_LEVEL)

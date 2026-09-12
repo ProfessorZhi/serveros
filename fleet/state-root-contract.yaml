@@ -156,6 +156,48 @@ namespaces:
     required: false
     authority: false
     absent_means: NO_PROJECTIONS
+  # §38: these four existed on disk while this vocabulary omitted them, so the
+  # conformance check reported each as an exemption rather than a declaration.
+  # Their exception entries classified them CONTRACT_GAP, defined there as "the
+  # vocabulary is behind reality and the fix is a ruling that widens it, not a
+  # move". Declaring them here is that ruling, and it is the same treatment
+  # `abilities` already gets: a namespace can belong to this root's shape while
+  # still not being an authority.
+  boards:
+    class: projection
+    holds: the derived Board current view, per project
+    producer: serverosctl board render
+    required: false
+    authority: false
+    absent_means: NO_BOARDS
+  federation:
+    class: projection
+    holds: locator-only observed projections for external domains (feishu, github)
+    producer: the federation collectors
+    required: false
+    authority: false
+    # HWZ-MAP.md, FEISHU-MAP.md and GITHUB-MAP.md name
+    # `federation/<domain>/current.jsonl` as the L3 observed SSOT. Being a
+    # projection here and the SSOT there is not a contradiction: what this
+    # root regenerates is what those documents point at.
+    absent_means: NO_FEDERATION_OBSERVATION
+  work-items:
+    class: authority
+    holds: runtime stage and liveness for one Work Item
+    producer: work-management, through the control plane
+    required: false
+    # Explicitly not stored in Git. state/serveros/README.md and DEV-OS-SPEC
+    # name `work-items/<project>/<WI>.json` as the work-state authority.
+    absent_means: NO_WORK_ITEM_STATE
+  resource-leases:
+    class: authority
+    holds: current resource occupancy
+    producer: runtime/
+    required: false
+    # Empty is a state, not an absence: it means nothing is leased, which is
+    # the ordinary reading on an idle node. Read by
+    # ops/workspace/serveros/resources.yaml.
+    absent_means: NO_LEASES_HELD
 
 # ---------------------------------------------------------------------------
 # Preexisting entries with no producer declaration
@@ -175,23 +217,24 @@ namespaces:
 # describing anything.
 preexisting:
   source_of_truth: runtime/conformance.py#EXCEPTIONS
-  class: UNKNOWN_OWNER
   entries:
     - README.md
-    - boards
     - document-stewardship
-    - federation
     - migrations
-    - resource-leases
     - serveros.db
     - serveros.db-shm
     - serveros.db-wal
-    - work-items
   note: >
-    UNKNOWN_OWNER is a disposition, not a verdict. Each of these is referenced
-    by at least one other document as if it were an authority — which makes the
-    reference a conflict between declarations, and a conflict between
-    declarations has an owner who is not this contract. None of them is created
+    §38 shrank this list from ten to six by ruling on the four that were
+    classified CONTRACT_GAP — `boards`, `federation`, `work-items` and
+    `resource-leases`. CONTRACT_GAP means the vocabulary is behind reality and
+    the fix is to widen it rather than move anything, so all four are now in
+    `paths.STATE_SERVEROS_TOP_LEVEL` and are declarations instead of
+    exemptions. The four above that are FILES (README.md and the three SQLite
+    WAL artefacts) cannot be namespaces and stay listed; the two directories
+    that remain are unresolved rather than designed, and are kept out of the
+    vocabulary deliberately so the question stays open. See
+    conformance.EXCEPTIONS for why each is unresolved. None of them is created
     or moved by anything here.
 
 # ---------------------------------------------------------------------------
