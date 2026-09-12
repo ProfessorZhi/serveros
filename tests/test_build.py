@@ -73,6 +73,16 @@ def make_ability_repo(base: Path, pycache_in: str | None = None) -> tuple[Path, 
         cache = repo / "skills" / pycache_in / "payload" / "__pycache__"
         cache.mkdir(parents=True)
         (cache / "stale.cpython-312.pyc").write_bytes(b"\x00compiled")
+    # The registry, committed with the payload. Without it a pin cannot be
+    # compared against canonical at all, and every provenance case silently
+    # falls into the "could not determine" branch — which passes the tests that
+    # assert nothing blocks while never exercising the detector.
+    (repo / "abilities-manifest.yaml").write_text(yaml.safe_dump({
+        "schema_version": 3, "authors": [],
+        "abilities": [{"type": "skill", "id": "ProfessorZhi/ability-management",
+                       "name": "ability-management", "path": "skills/ability-management",
+                       "artifact_mode": "vendored", "revisions": []}],
+    }, sort_keys=False, allow_unicode=True))
     _git(repo, "add", "-A")
     _git(repo, "commit", "--quiet", "-m", "synthetic")
     return repo, _git(repo, "rev-parse", "HEAD")
