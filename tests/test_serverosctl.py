@@ -655,3 +655,104 @@ def test_runtime_tree_without_a_ref_draws_one_and_says_it_was_chosen(
     assert code == cli_mod.EXIT_OK
     assert calls and calls[0].startswith("runtime-group:")
     assert "no ref given" in out
+
+
+# ---------------------------------------------------------------------------
+# §55 item 14 · ability discovery
+# ---------------------------------------------------------------------------
+
+
+def _ability_reply(**overrides):
+    payload = {
+        "authority": "ability-management",
+        "registry_status": "FRESH",
+        "projection_path": "/state/serveros/abilities/effective.json",
+        # The projection's real row shape, copied from a live
+        # `state/serveros/abilities/effective.json`. The first version of this
+        # reply used `revision`/`state`, which no projection emits — so it
+        # agreed with a reader that printed `?` for every column.
+        "abilities": [
+            {"id": "ProfessorZhi/ability-management", "name": "workspace-management",
+             "type": "skill", "path": "skills/workspace-management",
+             "version": None, "revisions_installed": 1,
+             "agents": ["claude-code", "codex"], "fingerprint": "sha256:aaaa"},
+            {"id": "ProfessorZhi/ability-management", "name": "test-management",
+             "type": "skill", "path": "skills/test-management",
+             "version": None, "revisions_installed": 1,
+             "agents": ["codex"], "fingerprint": "sha256:bbbb"},
+        ],
+        "note": "local observed projection",
+    }
+    payload.update(overrides)
+    return {"ok": True, "method": "ability.list", "result": payload}
+
+
+def test_ability_list_asks_the_daemon_for_the_projection(tmp_path, monkeypatch, capsys):
+    """§55 item 14 was implemented and unreachable: `ability.list` existed on
+    the socket and there was no way to ask for it but to write JSON by hand."""
+    seen = []
+    thread = _fake_daemon(tmp_path, monkeypatch, _ability_reply(), method_seen=seen)
+    code = cli_mod.main(["ability", "list"])
+    thread.join(timeout=5)
+    assert code == cli_mod.EXIT_OK
+    assert seen == ["ability.list"]
+    out = capsys.readouterr().out
+    assert "workspace-management" in out
+    assert "FRESH" in out
+    # A reader that names columns the projection does not carry prints a
+    # table of question marks and reads as an empty registry.
+    assert "?" not in out
+    assert "claude-code,codex" in out
+
+
+def test_an_unreadable_projection_is_not_an_empty_installation(
+        tmp_path, monkeypatch, capsys):
+    """Three states used to print as one empty list.
+
+    `registry_status: STALE` means there is a projection and it is old;
+    an empty `abilities` list means nothing is installed. A CLI that read the
+    file itself could not tell those apart, which is why this one asks.
+    """
+    reply = _ability_reply(registry_status="STALE", abilities=[],
+                           note="the projection is 2 days old")
+    thread = _fake_daemon(tmp_path, monkeypatch, reply)
+    code = cli_mod.main(["ability", "list"])
+    thread.join(timeout=5)
+    out = capsys.readouterr().out
+    assert code == cli_mod.EXIT_OK
+    assert "STALE" in out
+    assert "2 days old" in out
+
+
+def test_ability_status_for_an_ability_the_projection_does_not_carry(
+        tmp_path, monkeypatch, capsys):
+    """Exit 1, not 2: the node answered. Absence from a local projection is
+    not proof of absence on the authority, so this is a state to distinguish
+    rather than a failure to report."""
+    reply = {"ok": True, "method": "ability.status",
+             "result": _ability_reply()["result"] | {
+                 "name": "document-stewardship", "installed": None,
+                 "note": "'document-stewardship' is not in the local projection."}}
+    thread = _fake_daemon(tmp_path, monkeypatch, reply)
+    code = cli_mod.main(["ability", "status", "document-stewardship"])
+    thread.join(timeout=5)
+    assert code == cli_mod.EXIT_FAULT
+    assert "not in the local projection" in capsys.readouterr().out
+
+
+def test_ability_without_a_daemon_says_so_rather_than_listing_nothing(
+        tmp_path, monkeypatch, capsys):
+    """No daemon is 'could not answer'. An empty list would read as 'no
+    abilities are installed', which is the opposite finding.
+
+    The socket path is redirected even though nothing is listening there: on a
+    node where `serverosd` IS running, a test that used the real path would
+    pass by talking to the daemon and prove nothing about the no-daemon case.
+    """
+    monkeypatch.setattr(cli_mod, "daemon_socket_path",
+                        lambda: tmp_path / "nothing-here.sock")
+    code = cli_mod.main(["ability", "list"])
+    captured = capsys.readouterr()
+    assert code == cli_mod.EXIT_COULD_NOT_ANSWER
+    assert "daemon" in captured.err
+    assert captured.out == ""

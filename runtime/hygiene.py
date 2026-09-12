@@ -53,6 +53,7 @@ def _load(name: str, filename: str):
 registry = _load("serveros_runtime_registry", "registry.py")
 inventory_mod = _load("serveros_runtime_inventory", "inventory.py")
 attribution_mod = _load("serveros_runtime_attribution", "attribution.py")
+paths_mod = _load("serveros_runtime_paths", "paths.py")
 
 RegistryError = registry.RegistryError
 Inventory = inventory_mod.Inventory
@@ -245,7 +246,16 @@ class Hygiene:
         # injected rather than discovered, because deciding whether a work item
         # is closed is work-management's authority and not this module's.
         self.known_work_items = known_work_items
-        self.worktree_root = worktree_root
+        # Defaults to the root contract's `workspace/worktrees`. It used to
+        # default to None and be read by nobody, which made it look like an
+        # integration that existed; see `_placement` for what it is now used
+        # for. Resolved from the contract rather than spelled out here, so a
+        # relocated workspace does not leave this pointing at a path that no
+        # longer exists.
+        self.worktree_root = (
+            worktree_root if worktree_root is not None
+            else (paths_mod.Paths().root("workspace") / "worktrees")
+        )
 
     # -- containers --------------------------------------------------------
 
@@ -320,6 +330,11 @@ class Hygiene:
             "running": running,
             "registered_as": registered.id if registered else None,
             "owner": owner,
+            # §55 workspace lifecycle. Named separately from `owner` on
+            # purpose: this line is what ties a runtime resource to the
+            # workspace that produced it, and it must not be read as a
+            # statement about who owns the container.
+            "workspace_placement": self._placement(owner["working_dir"]),
             "classification": classification,
             "reason": reason,
             # Reported for every container so a reader can see what the
@@ -383,6 +398,44 @@ class Hygiene:
         if resource.owner_type == "work-item":
             return resource.owner_ref.split(":", 1)[-1] not in self.known_work_items
         return False
+
+    def _placement(self, working_dir):
+        """Which worktree — and therefore which work item — a container's
+        compose file lives in, when it lives in one.
+
+        This is §55's workspace-lifecycle link, and it is deliberately
+        **evidence, not ownership**. `_owner_evidence` below already
+        establishes that a compose working directory is provenance; treating it
+        as ownership is the exact mistake that put a protected parallel
+        workstream in a reclaim bucket. What this adds is the *checkable* half:
+        `workspace/worktrees/<repo>/<ITEM>/` is a placement fact, and the
+        worktree either is on disk or is not. Before this, nothing in
+        `runtime/` could say which worktree a running container came from.
+
+        Returns None when the directory is not inside the worktree root. A
+        container built from a compose file somewhere else has no placement,
+        and saying so is the answer.
+        """
+        if not working_dir:
+            return None
+        root = self.worktree_root
+        if root is None:
+            return None
+        try:
+            relative = Path(working_dir).resolve().relative_to(Path(root).resolve())
+        except (ValueError, OSError):
+            return None
+        parts = relative.parts
+        if not parts:
+            return None
+        item = parts[1] if len(parts) > 1 else None
+        return {
+            "root": str(root),
+            "relative": str(relative),
+            "repo": parts[0],
+            "work_item": f"work-item:{item}" if item else None,
+            "worktree_exists": (Path(root) / parts[0] / item).is_dir() if item else False,
+        }
 
     def _registry_lookup(self, container_name: str):
         for resource in self.registry.all():

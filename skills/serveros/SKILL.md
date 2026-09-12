@@ -5,7 +5,9 @@ description: Use when an agent starts work on this node and needs to know where 
 
 # serveros — ServerOS bootstrap
 
-**ServerOS = Environment + Context + Capabilities.** 本 skill 只做三件事：让 Agent 先确定自己在哪个
+**ServerOS = 一个 user-space Agent control plane**，它交付给 Agent 的是 Environment / Context /
+Capabilities 三件事。完整定义只有一份：仓库根的 `ARCHITECTURE.md`；本 skill 不复述架构。
+本 skill 只做三件事：让 Agent 先确定自己在哪个
 project / repo / Item / worktree / evidence 环境里、先确认要写的路径是否被契约允许、先查要碰的资源
 属于谁。然后把专业工作交给对应的 owner skill。
 

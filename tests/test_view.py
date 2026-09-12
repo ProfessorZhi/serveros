@@ -913,3 +913,33 @@ def test_a_duration_is_not_the_raw_seconds_with_a_unit_glued_on():
     assert cli._duration(16397) != "16397h"
     assert cli._duration(20550) == "5h"
     assert 16397 / 3600 == pytest.approx(4.55, abs=0.01)
+
+
+def test_the_daemon_answers_which_device_this_is_from_the_registry():
+    """`_r_device_show` used to answer `device:server-beijing` from a literal.
+
+    On this host the registry declares that same string, so the bug was
+    invisible in live output — the daemon and the registry agreed by
+    coincidence, and would have kept agreeing right up until someone renamed
+    the node, which is the moment the identity starts mattering. The registry
+    here names a different device, which is the only way to see which of the
+    two answers the daemon is giving.
+    """
+    document = {
+        "schema": "serveros/managed-runtime-registry.v1",
+        "device_ref": "device:somewhere-else",
+        "resources": [resource("res-r")],
+    }
+    instance = daemon.Daemon(registry.Registry(document=document),
+                             state_dir=Path("/tmp/x"))
+
+    response = instance.handle({"method": "device.show", "params": {}})
+    assert response["ok"] is True
+    assert response["result"]["device_ref"] == "device:somewhere-else"
+
+
+def test_a_registry_that_names_no_device_reports_none_rather_than_a_default():
+    """No device_ref is a fact about the document, and inventing one here
+    would be the same defect in the other direction."""
+    instance = daemon.Daemon(registry_of(resource("res-r")), state_dir=Path("/tmp/x"))
+    assert instance.handle({"method": "device.show", "params": {}})["result"]["device_ref"] is None
