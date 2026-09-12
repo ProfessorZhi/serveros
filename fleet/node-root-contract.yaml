@@ -33,6 +33,21 @@ root:
   # then it becomes an authority by accident.
   large_state_lives_in: DATA_ROOT/state/serveros
 
+# The files this root BINDS. These are the names `fleet/node.py` opens
+# (`NODE_FILE`, `TARGETS_FILE`, and `controller.yaml` via
+# `local_controller_declaration`), and the same list is transcribed into
+# `paths.HOME_DOT_SERVEROS_ALLOWED`, which is what `admit()` refuses stray
+# writes against. `conformance.declaration_conflicts` asserts the two lists are
+# equal, so a name added here is not a comment — it is the claim "node.py opens
+# this file", and a name that is not true makes that check report HIGH drift.
+#
+# `README.md` is deliberately NOT in this list, and must not be added to it. A
+# file of that name does exist: a human wrote it, and it restates this contract
+# in prose. But it is an entry document beside the bindings, not a binding —
+# `node.py` never opens it, and listing it here would both falsify the claim
+# above and desynchronise this list from `paths.py`. Its classification lives
+# in `conformance.EXCEPTIONS["home"]`, which is the READ list and is a
+# different set from the WRITE list above for exactly this reason.
 files:
   node.yaml:
     # The whole file, in the general case:

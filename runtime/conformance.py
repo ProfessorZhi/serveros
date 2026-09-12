@@ -91,6 +91,28 @@ EXCEPTIONS: dict[str, dict[str, dict]] = {
             "disposition": "KEEP",
         },
     },
+    "home": {
+        # §38. This file is NOT in `HOME_DOT_SERVEROS_ALLOWED`, and it stays
+        # out: that tuple is the write vocabulary, `admit()` reads it directly,
+        # and nothing mechanical may create a file here. This entry answers the
+        # other question — how a file that a human placed is classified — and
+        # the two are separate sets. The distinction was invisible while this
+        # table had no `home` key at all, so the reader fell back to `{}` and a
+        # designed state printed as `UNDECLARED_ENTRY / MEDIUM / OPEN` on every
+        # run. A finding that cannot clear is not vigilance; it is noise that
+        # teaches its readers to skim. Nothing here widens the write list, so
+        # `admit()` still refuses `~/.serveros/README.md` exactly as before.
+        "README.md": {
+            "class": "ENTRY_DOCUMENT",
+            "reason": "the entry document for this root, written by a human; it "
+                      "restates `node-root-contract.yaml` for a reader and is "
+                      "not a binding, not state, and not read by `node.py`",
+            "authority": "fleet/node-root-contract.yaml — its `files:` block "
+                         "names what the root binds, and a document beside them "
+                         "is not one of those files",
+            "disposition": "KEEP",
+        },
+    },
     "workspace": {
         "CLAUDE.md": {
             "class": "ENTRY_DOCUMENT",
@@ -143,39 +165,18 @@ EXCEPTIONS: dict[str, dict[str, dict]] = {
             "authority": "as `serveros.db`",
             "disposition": "CONTRACT_GAP",
         },
-        "federation": {
-            "class": "CITED_CANONICAL",
-            "reason": "locator-only observed projections for external domains "
-                      "(feishu, github)",
-            "authority": "HWZ-MAP.md and FEISHU-MAP.md name "
-                         "`federation/<domain>/current.jsonl` as the L3 observed "
-                         "SSOT; GITHUB-MAP.md likewise",
-            "disposition": "CONTRACT_GAP",
-        },
-        "boards": {
-            "class": "DERIVED_REGENERABLE",
-            "reason": "derived Board current view; regenerated wholesale by "
-                      "`serverosctl board render`, never authoritative",
-            "authority": "HWZ-MAP.md — derived, rebuildable, not the state DB",
-            "disposition": "CONTRACT_GAP",
-        },
-        "work-items": {
-            "class": "CITED_CANONICAL",
-            "reason": "runtime stage / liveness for one Work Item, explicitly "
-                      "not stored in Git",
-            "authority": "state/serveros/README.md and DEV-OS-SPEC name "
-                         "`work-items/<project>/<WI>.json` as the work-state "
-                         "authority",
-            "disposition": "CONTRACT_GAP",
-        },
-        "resource-leases": {
-            "class": "CITED_CANONICAL",
-            "reason": "current resource occupancy; empty at the time of this "
-                      "observation, which is a state and not an absence",
-            "authority": "state/serveros/README.md; ops/workspace/serveros/"
-                         "resources.yaml reads lease state from here",
-            "disposition": "CONTRACT_GAP",
-        },
+        # `federation`, `boards`, `work-items` and `resource-leases` were listed
+        # here as CONTRACT_GAP — which this file defines as "the vocabulary is
+        # behind reality and the fix is a ruling that widens it, not a move".
+        # §38 made that ruling: all four are now in
+        # `paths.STATE_SERVEROS_TOP_LEVEL`, so they are declarations rather than
+        # exemptions, and there is nothing left to exempt. Their authority
+        # arguments moved into the vocabulary with them.
+        #
+        # The two below did NOT move, and the difference is the point: widening
+        # the vocabulary asserts a namespace belongs to this root's design.
+        # These two are unresolved, and declaring them would settle the question
+        # by fiat instead of answering it.
         # `environment` was here and is gone deliberately, and it went further
         # than the projections namespace: the 2026-08-19 capture turned out to
         # be non-reproducible, which makes it evidence rather than a
@@ -188,16 +189,43 @@ EXCEPTIONS: dict[str, dict[str, dict]] = {
         # entries.
         "migrations": {
             "class": "UNKNOWN_OWNER",
-            "reason": "holds a single dated directory; nothing on this node "
-                      "declares who writes it or what reads it",
-            "authority": "none found — referenced only by the inventory scan",
+            # This said "nothing on this node declares who writes it". That was
+            # wrong: THREE declarations name this directory, and they disagree,
+            # which is a different and harder problem than silence. Recorded
+            # rather than tidied, because the disagreement is the finding.
+            #   its own `20260824-home-finalize/EXPIRY.md` — TTL 14 days from
+            #     2026-08-24, so expired 2026-09-07, and then "删除本目录",
+            #     conditioned on a clean report having been archived to
+            #     records/archive/migrations/
+            #   ops/reports/2026-09-06-serveros-directory-convergence.md — move
+            #     it to artifacts/evidence/migrations-20260824-home-finalize/,
+            #     marked done
+            #   §0 of the standing safety policy — preserve historical evidence
+            #     regardless of old naming
+            # The expiry's own precondition is not met: nothing is archived at
+            # records/archive/migrations/, and no README claims the extension
+            # EXPIRY.md provides for. Deleting on an unmet precondition is the
+            # one action no declaration supports, so nothing was deleted. The
+            # snapshots (before/after git-status, docker-ps, docker-mounts,
+            # worktrees, remotes) are not reproducible.
+            "reason": "expired rollback snapshots from the 2026-08-24 home "
+                      "finalize; three declarations disagree on delete / move / "
+                      "preserve, and the expiry's precondition is unmet",
+            "authority": "self-refuting: EXPIRY.md, the 2026-09-06 convergence "
+                         "report, and §0 each claim it",
             "disposition": "UNKNOWN_OWNER",
         },
         "document-stewardship": {
             "class": "UNKNOWN_OWNER",
-            "reason": "holds a single per-project JSON document; no declaration "
-                      "of producer or consumer",
-            "authority": "none found — referenced only by the inventory scan",
+            # Also changed from "no declaration of producer or consumer": a
+            # producer exists, it just has not landed. DEFERRED_PARALLEL_WIP
+            # rather than unknown — an unmerged worktree writing here is a
+            # reason to wait, not a reason to guess.
+            "reason": "holds one per-project JSON document; the producer exists "
+                      "only in an unmerged worktree, so this is deferred "
+                      "parallel WIP rather than unknown material",
+            "authority": "producer present in a worktree; no merged declaration "
+                         "yet",
             "disposition": "UNKNOWN_OWNER",
         },
     },

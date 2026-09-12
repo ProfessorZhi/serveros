@@ -306,3 +306,56 @@ def test_every_vocabulary_is_addressable_by_name():
         assert paths_mod.Paths().vocabulary(area)
     with pytest.raises(paths_mod.PathRefused):
         paths_mod.Paths().vocabulary("not-an-area")
+
+
+# ---------------------------------------------------------------------------
+# the write list and the read table are two sets (§38)
+# ---------------------------------------------------------------------------
+
+
+def test_no_exemption_shadows_a_declared_entry():
+    """An exemption for an already-declared name can never be reached.
+
+    `compare()` consults the table only for `present - vocabulary`, so a key
+    that is also a vocabulary member is dead weight that reads as live. Same
+    shape as a declaration with no producer: the entry looks like it is doing
+    something and the branch that would use it cannot be taken. The two sets are
+    allowed to differ — that is the point of having two — but they must not
+    overlap, or the difference stops meaning anything.
+    """
+    for area in ("data", "workspace", "state", "home"):
+        vocabulary = set(paths_mod.Paths().vocabulary(area))
+        shadows = sorted(set(conformance.EXCEPTIONS.get(area, {})) & vocabulary)
+        assert not shadows, f"{area}: exemption for a declared entry {shadows}"
+
+
+def test_the_home_readme_is_classified_and_still_refused_a_write(world, tmp_path):
+    """§38: the two halves of the `~/.serveros/README.md` ruling, held together.
+
+    The file is a human-placed entry document, so the READ side classifies it
+    rather than printing it as `UNDECLARED_ENTRY / MEDIUM / OPEN` on every run
+    forever — an alarm that cannot clear is how a report teaches its readers to
+    skim. The WRITE side is untouched: the allow-list is a different tuple,
+    `admit()` reads that tuple directly, and it still refuses. Asserting only
+    one half is how this drifts back — classifying it would be wrong if it
+    blessed the write, and refusing it was never a reason to leave it
+    unclassified.
+    """
+    report = world(home=("README.md",))
+    found = of(report, "EXEMPT_ENTRY", "README.md")
+    assert len(found) == 1
+    assert found[0]["exemption_class"] == "ENTRY_DOCUMENT"
+    assert found[0]["disposition"] == "KEEP"
+    assert found[0]["status"] == "OBSERVED"
+    assert of(report, "UNDECLARED_ENTRY") == []
+
+    home = tmp_path / "home"
+    paths = paths_mod.Paths({"home": str(home), "data_root": str(tmp_path / "data"),
+                             "workspace_root": str(tmp_path / "data/workspace")})
+    with pytest.raises(paths_mod.PathRefused):
+        paths.admit(str(home / ".serveros" / "README.md"))
+    # Positive control: all three of the list, not the intersection. A test that
+    # asserted one shared name is what hid the A1 defect in architecture_check.py
+    # and the disagreeing allow-list here.
+    for name in paths_mod.HOME_DOT_SERVEROS_ALLOWED:
+        paths.admit(str(home / ".serveros" / name))

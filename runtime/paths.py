@@ -56,6 +56,36 @@ WORKSPACE_TOP_LEVEL = ("src", "worktrees", "test-envs", "ops", "knowledge", "rec
 STATE_SERVEROS_TOP_LEVEL = (
     "node", "context", "abilities", "runtime", "fleet",
     "source-index", "locks", "projections",
+    # §38: six children of this root existed on disk while this tuple omitted
+    # them, so the conformance check reported each as an exemption rather than a
+    # declaration. Four are added below; the other two are named and rejected at
+    # the end of this comment. Their exemption entries classified them
+    # CONTRACT_GAP, whose
+    # definition in conformance.py is "the vocabulary is behind reality and the
+    # fix is a ruling that widens it, not a move". This is that ruling. Each is
+    # named by a document outside this tuple, which is why it was never free to
+    # move in the first place:
+    #   boards                derived Board current view, regenerated wholesale
+    #                         by `serverosctl board render`, never authoritative
+    #                         (HWZ-MAP.md)
+    #   federation            locator-only observed projections for external
+    #                         domains (feishu, github) — the L3 observed SSOT in
+    #                         HWZ-MAP / FEISHU-MAP / GITHUB-MAP
+    #   work-items            runtime stage / liveness for one Work Item,
+    #                         explicitly not stored in Git (state README,
+    #                         DEV-OS-SPEC)
+    #   resource-leases       current resource occupancy, read by
+    #                         ops/workspace/serveros/resources.yaml; being empty
+    #                         is a state, not an absence
+    #
+    # Two neighbours are deliberately NOT here, because widening the vocabulary
+    # is a claim that a namespace belongs to this root's design, and these two
+    # are unresolved rather than designed: `migrations/` is expired evidence
+    # that two declarations disagree about (see conformance.EXCEPTIONS), and
+    # `document-stewardship/` has a producer that only exists in an unmerged
+    # worktree. Declaring them would end the question by fiat instead of
+    # answering it.
+    "boards", "federation", "resource-leases", "work-items",
 )
 STATE_SERVEROS_RUNTIME = (
     "registry", "observed", "health", "hygiene", "resources",
@@ -143,9 +173,24 @@ FORBIDDEN_SUFFIXES = ("legacy", "legacy-artifacts", "old-artifacts",
 # that picks the intersection of two disagreeing vocabularies passes for as
 # long as the disagreement is not the thing being tested.
 #
-# `README.md` is deliberately absent, and stays refused. Nothing mechanical
-# should write one, and the conformance check reports the existing file as
-# undeclared rather than this list being widened to bless it.
+# `README.md` is deliberately absent, and stays refused — this tuple is the
+# WRITE vocabulary, and `admit()` reads this name directly rather than the
+# exception table, so no mechanical producer can create one here.
+#
+# §38 corrects one thing this comment used to claim. It said the conformance
+# check "reports the existing file as undeclared rather than this list being
+# widened to bless it", presenting the refusal and the report as one decision.
+# They are two sets answering two questions, and only one of them was decided:
+#
+#   this tuple                         what may be WRITTEN here
+#   conformance.EXCEPTIONS["home"]     how an existing child is CLASSIFIED
+#
+# Leaving the second one undeclared made a designed state render as
+# `UNDECLARED_ENTRY / MEDIUM / OPEN` on every run, forever — a finding that can
+# never clear, which is how a report trains its readers to stop reading it. The
+# file is a human-placed entry document, the same class as
+# `state/serveros/README.md` and `WORKSPACE_ROOT/README.md`. §38 classifies it
+# as one; the write refusal above is untouched, so nothing was blessed.
 HOME_DOT_SERVEROS_ALLOWED = ("node.yaml", "targets.yaml", "controller.yaml")
 HOME_DOT_SERVEROS_FORBIDDEN = ("reports", "observations", "registry", "proposals", "artifacts")
 
