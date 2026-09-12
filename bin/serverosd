@@ -1,0 +1,16 @@
+#!/usr/bin/env python3
+"""serverosd — executable entry point.
+
+Same three-line shim as `serverosctl`, for the same reason: the unit file and
+any symlink on PATH must point at one program with one location, and the
+module behind it must stay importable by the tests without running `main`.
+"""
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "runtime"))
+
+import daemon  # noqa: E402
+
+if __name__ == "__main__":
+    sys.exit(daemon.main())

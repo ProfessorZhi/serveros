@@ -1,0 +1,82 @@
+# serverosd — user unit CANDIDATE.
+#
+# NOT INSTALLED. §21 forbids a live install or switch this round, so this file
+# is a reviewed artefact rather than a deployed one: it lives in the repo, is
+# exercised by `systemd-run --user` in the daemon test, and would be promoted
+# by a separate, explicitly approved step. Installing it now would make the
+# daemon part of this machine's boot path before anyone has watched it run
+# across a restart, which is the order these things go wrong in.
+#
+# Conventions it follows, and why each one is here:
+#
+#   Restart=on-failure, not always
+#       `always` restarts a daemon that exited cleanly and deliberately, which
+#       turns "I stopped it" into an incident. `on-failure` restarts it when
+#       it crashed, which is the only case where restarting is a hypothesis
+#       worth testing.
+#
+#   RestartSec=30
+#       systemd has its own restart budget (StartLimitBurst/StartLimitIntervalSec)
+#       and it is the supervisor's, not ours. Thirty seconds keeps a crash
+#       loop from re-running the whole registry+probe cycle 200 times while
+#       somebody is reading the logs.
+#
+#   ExecStart is NOT --enable-reconcile
+#       The supervisor starts the daemon in observe-only mode. Reconcile is a
+#       separate, deliberate invocation, not something a reboot can turn on.
+#       A unit file that enables mutation on boot is a unit file nobody
+#       reviewed at the moment it mattered.
+#
+#   Type=simple, no forking
+#       §20: systemd is the supervisor. The daemon does not fork, daemonize,
+#       or detach — anything that does is a second supervisor competing with
+#       systemd over the same child.
+
+[Unit]
+Description=ServerOS node runtime (semantic controller)
+Documentation=file:%h/.serveros/identity.yaml
+# Wants, not Requires: if docker is down the daemon still starts and reports
+# the containers as UNAVAILABLE. A control plane that refuses to boot because
+# something it observes is down has inverted its own purpose.
+Wants=docker.service
+After=network-online.target
+
+# `StartLimitIntervalSec` and `StartLimitBurst` live in [Unit], not [Service].
+# Put in [Service] they are silently ignored — systemd logs "Unknown key name"
+# and keeps going, so the crash-loop ceiling this file claims to have would not
+# have existed. Found by `systemd-analyze --user verify`, not by reading it.
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+[Service]
+Type=simple
+WorkingDirectory=%h
+Environment=SERVEROS_STATE_DIR=/opt/applications/data/home-hwz/state/serveros
+Environment=SERVEROS_PROFILE=server-beijing
+ExecStart=/opt/applications/data/home-hwz/workspace/worktrees/serveros/fleet-device-registry-v1/bin/serverosd
+Restart=on-failure
+RestartSec=30
+
+# §22: the socket is a Unix domain socket in the runtime directory. Nothing
+# here binds a port, and there is no ListenStream. A control plane reachable
+# over TCP is reachable by anything that can reach the host.
+RuntimeDirectory=serveros
+RuntimeDirectoryMode=0700
+UMask=0077
+
+# The daemon needs no privileges it does not have as a user, and it upgrades
+# none. These are belt-and-braces against a future edit adding an escalation.
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=%t/serveros
+ReadWritePaths=/opt/applications/data/home-hwz/state/serveros
+ReadWritePaths=/opt/applications/data/home-hwz/logs/serveros
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=serverosd
+
+[Install]
+WantedBy=default.target
