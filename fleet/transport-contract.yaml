@@ -1,0 +1,161 @@
+# ServerOS Fleet Transport contract.
+#
+# Why this file exists
+# --------------------
+# ServerOS owns *semantic* device identity. Reachability is a separate,
+# disposable fact. The two are routinely conflated because a transport's
+# own name for a machine (a hostname, a computer name, a relay UUID) is the
+# first thing an operator sees — and therefore the first thing that gets
+# copied into a registry, a policy, or a Skill.
+#
+# That conflation has a specific failure mode: reorganising the network
+# silently renames the fleet, and two machines that happen to look alike
+# (same OS, same installed skills) get merged into one identity.
+#
+# So the separation below is not stylistic. `device_ref` is authored, stable
+# and public. A transport binding is observed, disposable and local-only.
+schema: serveros/fleet-transport.v1
+
+# ---------------------------------------------------------------------------
+# Identity
+# ---------------------------------------------------------------------------
+
+identity:
+  # A device reference is a TYPED ref, the same shape AbilityRef uses:
+  #   device:work-fj   ·   skill:ProfessorZhi/serveros   ·   mcp:ProfessorZhi/meta-cc
+  # One relation vocabulary, one primary key shape. `{type, id}`.
+  ref_pattern: '^device:[a-z0-9][a-z0-9-]{1,62}$'
+  id_pattern: '^[a-z0-9][a-z0-9-]{1,62}$'
+
+  # A transport's name for a device is NEVER its identity. These fields may
+  # be observed and recorded, but they may not be used to key, join, match or
+  # deduplicate a device.
+  never_identity:
+    - hostname
+    - computer_name
+    - transport_locator
+    - transport_uuid
+    - ip
+    - ssh_alias
+    - display_name
+    - os_family
+    - installed_abilities
+
+  rule: >-
+    Two devices that present identical ability scans are still two devices.
+    Merging identities requires enrollment evidence, never resemblance.
+
+# ---------------------------------------------------------------------------
+# Transport
+# ---------------------------------------------------------------------------
+
+transport:
+  # Adapters are replaceable. Swapping one for another must not change any
+  # device_ref, any profile, or any policy.
+  kinds:
+    - local
+    - remote-desktop-commander
+    - ssh
+    - winrm
+    - mcp
+    - a2a
+
+  # A binding answers "how may this runtime reach that device", nothing else.
+  binding_fields:
+    - device_ref
+    - kind
+    - locator        # opaque transport-side handle; carry no meaning upward
+    - observed_name  # what the transport calls it, for human debugging
+    - notes
+
+  # Credentials are held by the transport, not described by the contract.
+  # A binding that carries any of these is malformed, not merely unwise.
+  forbidden_binding_fields:
+    - token
+    - access_token
+    - refresh_token
+    - password
+    - secret
+    - private_key
+    - credential
+    - cookie
+    - authorization
+
+  # Bindings are local-only: they describe one machine's route to another and
+  # go stale the moment the network changes. They are never committed.
+  binding_location: '~/.serveros/targets.yaml'
+
+  # When a transport cannot serve a call, the call fails. It does not try a
+  # different transport. A silent fallback changes the trust boundary without
+  # anyone deciding to.
+  no_silent_fallback: true
+
+# ---------------------------------------------------------------------------
+# Availability
+# ---------------------------------------------------------------------------
+#
+# Three independent questions, three independent answers. Collapsing them into
+# one "unobserved" flag is what makes an unreachable-controller condition look
+# like a missing device — and then a missing device looks like a reason to
+# re-enrol or delete it.
+
+availability:
+  fields:
+    fleet_presence:
+      values: [KNOWN_ONLINE, KNOWN_OFFLINE, UNKNOWN]
+      meaning: whether the fleet plane currently sees the device at all
+      # Evidence for this is routinely produced by another plane entirely
+      # (a relay, an operator console). It is not a local observation.
+      typical_provenance: [chatgpt_remote_device_control, fleet_relay]
+
+    local_agent_controller:
+      values: [AVAILABLE, NOT_EXPOSED, UNKNOWN]
+      meaning: whether THIS agent runtime holds a callable controller surface
+      # An endpoint process running locally is not a controller surface.
+      # A process that dials outbound and listens on nothing cannot be called.
+
+    remote_inventory_from_this_runtime:
+      values: [AVAILABLE, UNAVAILABLE]
+      meaning: whether this runtime can currently enumerate the device's tree
+
+  # The derived single state, for consumers that want one word. Ordered:
+  # the first matching row wins.
+  derived_states:
+    - state: CONTROLLER_AVAILABLE
+      when: {local_agent_controller: AVAILABLE, fleet_presence: KNOWN_ONLINE}
+    - state: DEVICE_UNREACHABLE
+      when: {local_agent_controller: AVAILABLE, fleet_presence: KNOWN_OFFLINE}
+    - state: REMOTE_CONTROLLER_NOT_EXPOSED
+      when: {local_agent_controller: NOT_EXPOSED, fleet_presence: KNOWN_ONLINE}
+    - state: CONTROLLER_NOT_EXPOSED_AND_PRESENCE_UNKNOWN
+      when: {local_agent_controller: NOT_EXPOSED, fleet_presence: UNKNOWN}
+    - state: DEVICE_UNOBSERVED
+      when: {fleet_presence: UNKNOWN, local_agent_controller: UNKNOWN}
+
+  rule: >-
+    REMOTE_CONTROLLER_NOT_EXPOSED is a statement about THIS runtime's
+    integration, not about the device. It must never be recorded as, reported
+    as, or acted upon as DEVICE_UNOBSERVED.
+
+# ---------------------------------------------------------------------------
+# Provenance
+# ---------------------------------------------------------------------------
+#
+# Every observed fact carries who observed it. A fact learned from a remote
+# control plane is not a local observation, even when it is correct.
+
+provenance_sources:
+  - chatgpt_remote_device_control   # remote plane; correct but not local
+  - fleet_relay                      # relay-side presence
+  - local_endpoint                   # this host's transport endpoint
+  - server_local_agent               # this agent runtime, locally
+  - device_scanner                   # a scanner executed ON the device
+  - user_reported                    # a human stated it; not machine-verified
+
+rules:
+  - "An observation records its source. Downstream consumers may filter by
+     source; none may silently promote a remote or human claim to a local one."
+  - "`device_scanner` outranks every other source for filesystem facts,
+     because it is the only one that ran on the device."
+  - "A fact with source `user_reported` is admissible for design work and
+     inadmissible as evidence that a device was inspected."

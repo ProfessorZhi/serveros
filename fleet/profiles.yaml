@@ -1,0 +1,164 @@
+# ServerOS Fleet environment profiles.
+#
+# Why a role vocabulary instead of "the paths we happen to have"
+# --------------------------------------------------------------
+# The three machines are not meant to converge on the same directories. They
+# are meant to converge on the same *questions*: where does source live, where
+# do toolchains live, where does evidence live, what is corporate knowledge.
+#
+# A profile answers those questions with physical paths that differ per device.
+# Anything that consumes a path asks for the ROLE. Nothing above this layer is
+# allowed to know that source is `D:\projects` on one machine and
+# `/opt/applications/data/home-hwz/workspace/src` on another.
+#
+# Binding state is explicit, because "we have not looked" and "this role does
+# not exist here" are different facts and only one of them is a gap.
+schema: serveros/fleet-profiles.v1
+
+path_roles:
+  workspace.src:        source checkouts (read-mostly)
+  workspace.worktrees:  per-Item development worktrees
+  artifacts:            Item and Skill run evidence
+  state:                ServerOS machine state
+  toolchains:           language/runtime toolchains
+  runtime-assets:       materialized agent runtime artifacts
+  downloads:            acquired archives and installers
+  software.gui:         installed GUI applications
+  knowledge.corporate:  corporate knowledge / onboarding source
+
+# BOUND            — path known, and the source of that knowledge is recorded
+# UNBOUND          — role applies here but no path is known yet (a real gap)
+# NOT_APPLICABLE   — role has no meaning on this device (not a gap)
+binding_states: [BOUND, UNBOUND, NOT_APPLICABLE]
+
+profiles:
+  linux-server:
+    device_ref: device:server-beijing
+    platform: linux
+    paths:
+      workspace.src:
+        path: /opt/applications/data/home-hwz/workspace/src
+        state: BOUND
+        provenance: server_local_agent
+      workspace.worktrees:
+        path: /opt/applications/data/home-hwz/workspace/worktrees
+        state: BOUND
+        provenance: server_local_agent
+      artifacts:
+        path: /opt/applications/data/home-hwz/artifacts
+        state: BOUND
+        provenance: server_local_agent
+      state:
+        path: /opt/applications/data/home-hwz/state/serveros
+        state: BOUND
+        provenance: server_local_agent
+      toolchains:
+        path: /opt/applications/data/home-hwz/toolchains
+        state: BOUND
+        provenance: server_local_agent
+      runtime-assets:
+        path: /opt/applications/data/home-hwz/runtime-assets
+        state: BOUND
+        provenance: server_local_agent
+      downloads:
+        state: UNBOUND
+        provenance: server_local_agent
+      software.gui:
+        state: NOT_APPLICABLE
+        provenance: server_local_agent
+      knowledge.corporate:
+        state: UNBOUND
+        provenance: user_reported
+
+  windows-corporate:
+    device_ref: device:work-fj
+    platform: windows
+    paths:
+      workspace.src:
+        path: 'D:\projects'
+        state: BOUND
+        provenance: user_reported
+      software.gui:
+        path: 'D:\apps'
+        state: BOUND
+        provenance: user_reported
+      toolchains:
+        path: 'D:\develop'
+        state: BOUND
+        provenance: user_reported
+      downloads:
+        path: 'D:\download'
+        state: BOUND
+        provenance: user_reported
+      knowledge.corporate:
+        path: 'D:\onboard'
+        state: BOUND
+        provenance: user_reported
+        note: >-
+          Corporate knowledge source. NOT a control plane — see
+          docs/authority-model.md. Ownership here is knowledge, not fleet.
+      artifacts:
+        path: 'D:\artifacts'
+        state: BOUND
+        provenance: user_reported
+      workspace.worktrees:
+        state: UNBOUND
+        provenance: user_reported
+      state:
+        state: UNBOUND
+        provenance: user_reported
+      runtime-assets:
+        state: UNBOUND
+        provenance: user_reported
+
+  windows-personal:
+    device_ref: device:personal-dell
+    platform: windows
+    paths:
+      workspace.src:
+        path: 'F:\'
+        state: BOUND
+        provenance: user_reported
+        note: >-
+          Reported as holding projects, data and experiments. Its interior is
+          explicitly un-converged; this binding records the volume, not an
+          endorsed layout.
+      toolchains:
+        path: 'E:\develop'
+        state: BOUND
+        provenance: user_reported
+      software.gui:
+        path: 'D:\'
+        state: BOUND
+        provenance: user_reported
+      downloads:
+        path: 'D:\'
+        state: BOUND
+        provenance: user_reported
+      artifacts:
+        state: UNBOUND
+        provenance: user_reported
+      state:
+        state: UNBOUND
+        provenance: user_reported
+      runtime-assets:
+        state: UNBOUND
+        provenance: user_reported
+      knowledge.corporate:
+        state: NOT_APPLICABLE
+        provenance: user_reported
+      workspace.worktrees:
+        state: UNBOUND
+        provenance: user_reported
+
+rules:
+  - "A profile is selected by the device, not by the caller. Asking for a path
+     role resolves through the profile of the device holding the work."
+  - "Profiles are not required to be isomorphic. Two profiles may bind
+     different roles, and the same role to unrelated physical paths."
+  - "`provenance` is required on every binding. `user_reported` bindings are
+     design inputs until a device-local scan replaces them; they are never
+     evidence that a device was inspected."
+  - "Windows volumes observed on one device are not transferred to another.
+     In particular, the absence of E: and F: on one Windows machine says
+     nothing about their presence on another."

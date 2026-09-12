@@ -169,6 +169,80 @@ second composition authority. Any generated payload carries
 place and synced back; the fix always goes to the owning canonical concern and
 is rebuilt.
 
+## The fleet: one product, one node per device, no forks
+
+```text
+ServerOS
+├── Environment   Device Identity · Storage / Path Semantics ·
+│                 Connectivity / Transport · Protected Resources
+├── Context
+└── Capabilities
+    └── Ability Management
+```
+
+ServerOS owns the questions "which machine is this", "where does its source,
+toolchain and evidence live", "how may another authorized agent reach it", and
+"what is protected". Ability Management references a stable `device:<id>` and
+owns capability desired/observed state. It does not keep a second device list.
+
+```text
+One ServerOS product
+One ServerOS node per device
+One device profile per node
+Different physical directories
+Different desired ability graphs
+Same semantic contracts
+```
+
+**Stable boundaries, adaptive interiors.** The three machines are not meant to
+converge on the same directories. They converge on the same *questions*:
+`fleet/profiles.yaml` binds one closed role vocabulary to unrelated physical
+paths per device, so a consumer asks for `workspace.src` and never learns
+whether that is a POSIX path or a drive letter. `docs/fleet-controller-adapter.md`
+covers the transport boundary.
+
+Device identity is **authored, not discovered**. A hostname, computer name or
+relay UUID is a route, not a name — it is recorded as an observation and never
+used to key, join or deduplicate a device. Two Windows laptops with the same
+installed skills are still two laptops, and merging them is unrecoverable.
+Rename adds an alias so earlier Installation and Revision evidence keeps
+resolving.
+
+## Vocabulary boundaries (frozen)
+
+```text
+ServerOS    product / control model   decides identity, policy, desired state
+Skill       procedural knowledge      decides when and how
+MCP         typed tool/context boundary   an interface, never an authority
+Plugin      packaging / distribution  carries the others to a runtime
+Transport   execution backend         moves bytes, decides nothing
+A2A         Agent ↔ Agent delegation  preferred over remote shell
+```
+
+Two rules make this enforceable rather than aspirational:
+
+- **MCP carries no policy of its own.** A rule that exists only inside an MCP
+  server is not a ServerOS rule, because no other consumer will honor it.
+- **Remote execution is admitted by intent level**, not by raw command. There
+  is no default `remote.shell(device, arbitrary_command)` agent API; a
+  transport may support shell internally, but the semantic layer above it
+  admits calls whose intent can be named and therefore governed.
+
+## Authority
+
+```text
+ServerOS              top-level product and control model
+ability-management    capability control plane
+onboard knowledge     corporate knowledge source — not a control plane
+agent runtimes        materialization only — they execute, they do not decide
+maps                  generated projections — never authority
+```
+
+There is no second MASTER CONTROL PLANE. A document, a directory or a server
+that describes the fleet is a source, an observation or a projection; none of
+them acquires authority by being written down. When a projection and its
+source disagree, the projection is regenerated — never hand-corrected.
+
 ## Non-goals
 
 No global workflow engine. No forced Activity pipeline. No new daemon, lease

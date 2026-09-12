@@ -1,0 +1,63 @@
+# ServerOS Fleet device registry — the stable identity layer.
+#
+# This file answers "who is in the fleet". It does not answer "where is it",
+# "how do I reach it", or "is it up right now" — see transport-contract.yaml
+# and the local-only bindings it points at.
+#
+# Not present here, by contract: hostnames, computer names, transport
+# locators/uuids, addresses, SSH aliases, tokens, machine ids, MACs, asset
+# tags, hardware serials. A device is enrolled here by a human decision; it is
+# never auto-derived from a discovered endpoint.
+schema: serveros/fleet-registry.v1
+
+# Environment profiles are declared in fleet/profiles.yaml. A device names one;
+# it does not carry the profile inline, so a profile cannot fork per device.
+devices:
+  - device_ref: device:server-beijing
+    device_id: server-beijing
+    display_name: Beijing-Server
+    platform: linux
+    ownership: personal
+    roles: [server]
+    environment_profile: linux-server
+    agents: [claude-code, codex]
+    # Historical ids remain resolvable. They renamed; they did not disappear.
+    # Preserving them keeps earlier Installation and Revision evidence attached
+    # to a stable identity instead of stranding it under a dead key.
+    legacy_ids: [linux-server]
+    enrollment: enrolled
+
+  - device_ref: device:work-fj
+    device_id: work-fj
+    display_name: FJPCOS
+    platform: windows
+    os_family: windows-10
+    ownership: company
+    roles: [corporate-workstation]
+    environment_profile: windows-corporate
+    agents: [claude-code, codex]
+    legacy_ids: []
+    enrollment: enrolled
+
+  - device_ref: device:personal-dell
+    device_id: personal-dell
+    display_name: DellPCOS
+    platform: windows
+    os_family: windows-11
+    ownership: personal
+    roles: [personal-workstation]
+    environment_profile: windows-personal
+    agents: [claude-code, codex]
+    # `dell-work` was this machine's earlier registration. It migrates here by
+    # alias; its Installation and Revision history stays attached.
+    # It was NOT migrated into work-fj: two Windows laptops that look alike are
+    # still two machines, and merging them would have been unrecoverable.
+    legacy_ids: [dell-work]
+    enrollment: enrolled
+
+rules:
+  - "device_id is stable. Renaming a device is an alias addition, not a
+     replacement, so that historical evidence keeps resolving."
+  - "platform is recorded because profiles are platform-shaped, not because it
+     is an identity. Two devices sharing a platform are not one device."
+  - "This registry is authored. It is never rewritten by a scanner."

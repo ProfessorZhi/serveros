@@ -1,0 +1,133 @@
+# ServerOS MCP surfaces — what each one owns, and what it must not.
+#
+# An MCP server is a typed tool/context boundary. It is not the product, and
+# it is not an authority. ServerOS decides identity, policy and desired state;
+# an MCP surface is one way an agent asks about them.
+#
+# Two surfaces, because "this machine" and "the fleet" are different questions
+# with different blast radii. Merging them produces a server that can both
+# answer "where am I" and "run this on any machine", which is a server whose
+# permission model cannot be stated in one sentence.
+schema: serveros/mcp-surfaces.v1
+
+principle: >-
+  MCP carries Agent → Tool / Context. It does not carry Agent → Agent
+  delegation (that is A2A), and it does not carry fleet lifecycle state
+  (heartbeat, presence, leases — those belong to the fleet transport plane,
+  which is request/response-free by nature).
+
+surfaces:
+  serveros-node-mcp:
+    scope: one device — the node it runs on
+    ownership: current node
+    resources:
+      - serveros://device
+      - serveros://environment
+      - serveros://context/current
+      - serveros://abilities
+      - serveros://paths
+      - serveros://protected-resources
+    tools:
+      - context.resolve
+      - path.resolve
+      - path.admit
+      - environment.inspect
+      - ability.list
+      - ability.resolve
+      - ability.status
+      - workspace.inspect
+      - git.inspect
+      - task.run
+    owns:
+      - current-node environment facts
+      - current-node path role resolution
+      - current-node ability materialization status
+      - current-node protected resources
+    does_not_own:
+      - other devices
+      - fleet device identity
+      - cross-device routing
+      - desired state for any device
+    explicitly_absent:
+      - remote.shell
+    note: >-
+      A node surface has no verb for acting on another machine. Not a
+      restricted one — none at all, so that an agent cannot express the
+      intention and then argue about the permission.
+
+  serveros-fleet-mcp:
+    scope: the fleet
+    ownership: fleet semantic layer
+    tools:
+      - fleet.devices
+      - fleet.device.inspect
+      - fleet.capability.find
+      - fleet.ability.diff
+      - fleet.context.resolve
+      - fleet.task.route
+      - fleet.task.status
+    owns:
+      - fleet device identity (read)
+      - capability resolution across devices
+      - ability diff across devices
+      - task routing and status
+    does_not_own:
+      - device-local path resolution
+      - device-local protected resources
+      - device identity mutation
+      - transport credentials
+    explicitly_absent:
+      - remote.shell
+    note: >-
+      fleet.device.inspect reports what the fleet KNOWS about a device,
+      including that it cannot currently be reached. It is not a synonym for
+      "connect and enumerate", and it must be able to answer successfully
+      while a device is unreachable.
+
+# ---------------------------------------------------------------------------
+# Remote execution, when it is added
+# ---------------------------------------------------------------------------
+
+remote_execution:
+  # Not an API level. An admission model.
+  levels:
+    - inspect
+    - read
+    - execute-safe
+    - write-workspace
+    - install-ability
+    - system-change
+    - admin
+
+  default_level: inspect
+
+  rules:
+    - "A call states its intent level. The level is admitted by BOTH the fleet
+       policy and the target node's local policy. Fleet approval alone does not
+       execute anything."
+    - "There is no default `remote.shell(device, arbitrary_command)` agent API.
+       A transport may support shell internally; the semantic layer above it
+       admits calls by nameable intent."
+    - "An agent reaching a device directly over a shell is not equivalent to
+       delegating a task to the agent on that device. Delegation (A2A) is
+       preferred: the remote agent executes under its own local policy, so the
+       trust boundary stays where the device is."
+
+# ---------------------------------------------------------------------------
+# Boundaries with the other words
+# ---------------------------------------------------------------------------
+
+vocabulary:
+  ServerOS: product / control model — decides identity, policy, desired state
+  Skill: procedural / semantic / policy knowledge — decides "when and how"
+  MCP: typed tool / context boundary — the only one of these that is an interface
+  Plugin: packaging / distribution — carries the others to a runtime
+  Transport: execution backend — moves bytes, decides nothing
+
+boundary_rules:
+  - "An MCP surface contains no policy of its own. If a rule exists only in an
+     MCP server, it is not a ServerOS rule and no other consumer will honor it."
+  - "A Skill may describe how to use an MCP surface. It may not re-implement
+     the authority that surface reads from."
+  - "A Plugin distributes MCP configuration. It is not a second place where
+     MCP ownership is declared."
