@@ -255,6 +255,16 @@ def not_applicable(axis: str, *, why: str) -> Observation:
 
 AXES = ("liveness", "transport", "functional", "readiness")
 
+# Read in failure-first order, so a caller who reads one field gets the
+# actionable one rather than the alphabetically first.
+_REASON_ORDER = ("functional", "transport", "liveness", "readiness")
+
+# Reasons that describe the *absence of a measurement* rather than a
+# measurement result. They stay in REASONS — each is the right word for its
+# axis — but they are not the resource's reason, and `Health.reason` skips
+# them. See the note there for the measurement that put this here.
+NOT_A_FAULT_REASONS = frozenset({"NOT_DECLARED"})
+
 
 @dataclass(frozen=True)
 class Health:
@@ -315,18 +325,28 @@ class Health:
         Ordered by axis severity rather than by declaration order, because a
         resource that is up-but-broken and also not-ready should report the
         first, and a caller reading one field should get the actionable one.
+
+        `NOT_DECLARED` is skipped. It describes the absence of a measurement
+        rather than a measurement result — the axis is outside what the
+        resource declares it can be asked, which the derived-state rules
+        already ignore and which is not a fact about the resource. Measured on
+        2026-09-13: a resource with no transport probe and `state: HEALTHY`
+        reported `reason: NOT_DECLARED`, which reads as a fault and is the
+        opposite of one. The others — `NOT_OBSERVED` included — are only ever
+        attached to an axis that did not come back healthy, so they cannot
+        reach here on a healthy resource.
         """
-        for axis in ("functional", "transport", "liveness", "readiness"):
+        for axis in _REASON_ORDER:
             obs = self.axis(axis)
-            if obs.reason:
+            if obs.reason and obs.reason not in NOT_A_FAULT_REASONS:
                 return obs.reason
         return None
 
     @property
     def reason_is_authoritative(self) -> bool:
-        for axis in ("functional", "transport", "liveness", "readiness"):
+        for axis in _REASON_ORDER:
             obs = self.axis(axis)
-            if obs.reason:
+            if obs.reason and obs.reason not in NOT_A_FAULT_REASONS:
                 return obs.authoritative
         return False
 

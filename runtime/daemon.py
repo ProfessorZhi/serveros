@@ -135,21 +135,34 @@ class Budget:
         self._state[resource_id] = entry
         return entry
 
-    def may_act(self, resource_id: str) -> dict:
+    def may_act(self, resource_id: str, *, max_attempts: int | None = None,
+                backoff: list | tuple | None = None) -> dict:
+        """§11: the bounds come from the resource when it declares them.
+
+        The module constants are the fallback, not the authority. A resource
+        that says `max_attempts: 1` and is given three is a resource whose
+        declaration nothing read — and a per-resource policy block that no
+        code consults is the exact defect this round keeps finding, one layer
+        down from where it was found last time.
+        """
+        limit = MAX_ATTEMPTS if max_attempts is None else int(max_attempts)
+        ladder = tuple(backoff) if backoff else BACKOFF_SECONDS
         entry = self._entry(resource_id)
         used = len(entry["attempts"])
-        if used >= MAX_ATTEMPTS:
+        if used >= limit:
             oldest = min(entry["attempts"])
             return {
                 "allowed": False,
                 "reason": "BUDGET_EXHAUSTED",
                 "attempts_in_window": used,
+                "max_attempts": limit,
                 "window_seconds": WINDOW_SECONDS,
                 "retry_after_seconds": int(WINDOW_SECONDS - (self._now() - oldest)),
                 "note": (
-                    f"{used} attempts within {WINDOW_SECONDS}s. A {used + 1}th "
-                    f"would not be a new attempt at a fix, it would be the "
-                    f"loop. Report DEGRADED and ask a person."
+                    f"{used} attempts within {WINDOW_SECONDS}s and this "
+                    f"resource permits {limit}. One more would not be a new "
+                    f"attempt at a fix, it would be the loop. Report "
+                    f"DEGRADED and ask a person."
                 ),
             }
         # The waiting period belongs to the attempt ABOUT to be made, so it is
@@ -158,9 +171,9 @@ class Budget:
         # would silently skip the shortest interval — the one that matters
         # most, because it is the one that runs while a person is still
         # looking at the screen.
-        wait = BACKOFF_SECONDS[min(used, len(BACKOFF_SECONDS) - 1)] if used else 0
+        wait = ladder[min(used, len(ladder) - 1)] if used else 0
         if entry["attempts"] and used:
-            wait = BACKOFF_SECONDS[min(used - 1, len(BACKOFF_SECONDS) - 1)]
+            wait = ladder[min(used - 1, len(ladder) - 1)]
             since = self._now() - max(entry["attempts"])
             if since < wait:
                 return {
@@ -360,7 +373,7 @@ class Daemon:
 
     def __init__(self, registry, *, state_dir: Path, socket_path: Path | None = None,
                  host=None, inventory=None, enable_reconcile: bool = False,
-                 runner=None, now=None, log=None) -> None:
+                 runner=None, now=None, sleep=None, log=None) -> None:
         self.registry = registry
         self.state_dir = Path(state_dir)
         self.socket_path = Path(socket_path) if socket_path else default_socket_path()
@@ -371,6 +384,11 @@ class Daemon:
         self.inventory = inventory or inventory_mod.Inventory()
         self.enable_reconcile = enable_reconcile
         self._now = now or time.time
+        # Injectable alongside `now`, because the settle window below is a
+        # real wait and a test that cannot compress it either sleeps for
+        # seconds or does not test the window at all. Tests pass a clock and
+        # a sleep that advance each other; the daemon passes neither.
+        self._sleep = sleep or time.sleep
         self._log = log or (lambda message: None)
 
         self.budget = Budget(self.state_dir / "health/reconcile-state.json", now=self._now)
@@ -550,12 +568,34 @@ class Daemon:
                 })
                 decisions.append(entry)
                 continue
-            budget = self.budget.may_act(resource.id)
+            budget = self.budget.may_act(resource.id,
+                                         max_attempts=policy["max_attempts"],
+                                         backoff=policy["backoff"])
             entry["budget"] = budget
             if not budget["allowed"]:
+                # §54: an exhausted budget is NEEDS_HUMAN, and it has to say
+                # so in the field a reader filters on. Leaving `action` at
+                # RECONCILE with a prose `escalate_to` beside it produces a
+                # decision record that goes on naming a reconcile candidate
+                # every tick, forever, for a resource nothing will reconcile —
+                # which is the restart loop reported instead of run.
                 entry.update({
+                    "action": "NEEDS_HUMAN",
                     "performed": False,
+                    "budget_exhausted": True,
                     "escalate_to": "DEGRADED/NEEDS_HUMAN",
+                    "because": (
+                        f"the {policy['mode']} budget is spent: "
+                        f"{budget['attempts_in_window']} attempt(s) in the "
+                        f"window against max_attempts={policy['max_attempts']}"
+                        + (
+                            f", next permitted in "
+                            f"{budget['backoff_before_next_attempt_seconds']}s"
+                            if budget.get("backoff_before_next_attempt_seconds")
+                            else ""
+                        ) + ". Nothing here will act again until a person "
+                        "does."
+                    ),
                     "note": (
                         "the budget is the §19 guard. Repeatedly restarting a "
                         "resource that keeps failing is not recovery, it is the "
@@ -563,6 +603,13 @@ class Daemon:
                     ),
                 })
                 decisions.append(entry)
+                # And the observation says the same thing. `observe_all` ran
+                # before this point and could only ask the health model, which
+                # does not know the budget — so without this, `observations[id]
+                # .action.action` went on reading RECONCILE while the decision
+                # beside it read NEEDS_HUMAN. Two fields disagreeing about one
+                # resource is how a reader learns to trust neither.
+                self._escalate_observation(observations, resource.id, entry)
                 continue
             if not self.enable_reconcile:
                 # The process-level interlock. Note what it does NOT do: it is
@@ -592,19 +639,92 @@ class Daemon:
             self.budget.record(resource.id, operation.lower())
             entry["result"] = result
             entry["performed"] = bool(result.get("performed"))
-            # Re-probe immediately: "did the restart fix it" is a question
-            # only a probe can answer, and assuming yes is how a restart loop
-            # reports success.
-            entry["reprobe"] = self._reprobe(resource)
+            # Re-probe, letting the resource settle: "did the restart fix it"
+            # is a question only a probe can answer, and assuming yes is how a
+            # restart loop reports success.
+            entry["reprobe"] = self._reprobe(resource, settle=True)
+            # Whether the operation worked is a separate fact from whether it
+            # was carried out, and the two are reported separately so that
+            # "performed: true" cannot be read as "fixed".
+            entry["recovered"] = entry["reprobe"]["settled"]
             decisions.append(entry)
         return decisions
 
-    def _reprobe(self, resource) -> dict:
-        try:
-            health = probes_mod.observe(resource, self.host)
-        except registry_mod.RegistryError as exc:
-            return {"state": "UNKNOWN", "error": str(exc)}
-        return {"state": health.state, "reason": health.reason}
+    def _escalate_observation(self, observations: dict, resource_id: str,
+                              entry: dict) -> None:
+        """Keep `observations[id].action` and the reconcile decision in step.
+
+        The observation is built before the budget is consulted, so on its own
+        it can only ever report the health model's verdict. The budget is the
+        other half of "may this be acted on", and it belongs to the same
+        report.
+        """
+        row = observations.get(resource_id)
+        if not isinstance(row, dict) or not isinstance(row.get("action"), dict):
+            return
+        row["action"] = {
+            **row["action"],
+            "action": entry["action"],
+            "budget_exhausted": entry["budget_exhausted"],
+            "because": entry["because"],
+        }
+
+    # How long a restarted resource is given to become answerable again, and
+    # how often to ask in the meantime. Measured, not guessed: the §53
+    # acceptance fixture is a trivial HTTP responder and still needed ~1s
+    # after `systemctl restart` returned before it accepted a connection.
+    SETTLE_SECONDS = 10.0
+    SETTLE_INTERVAL = 0.5
+
+    def _reprobe(self, resource, *, settle: bool = False) -> dict:
+        """Ask the resource whether the operation worked.
+
+        Measured on 2026-09-13: a `systemctl --user restart` that returned
+        exit 0 on a trivial HTTP responder was recorded as `FUNCTIONALLY_FAILED`,
+        because the re-probe ran in the window between the supervisor returning
+        and the service listening. That is the restart's *latency* being
+        reported as the restart's *effect*. §53 asks for a re-probe that is OK,
+        so a resource that is not yet answering is asked again, for a bounded
+        time, until it answers.
+
+        It is deliberately not "sleep N, then ask once": a restart that did not
+        help must be reported as not helping, and the budget must count it. The
+        loop leaves as soon as the resource answers, and a resource that never
+        answers returns its last real observation with `settled: false`. It
+        never manufactures a success and never waits indefinitely.
+
+        `settle=False` takes a single sample, which is the honest answer when
+        no operation was performed and there is nothing to settle from.
+        """
+        started = self._now()
+        deadline = started + self.SETTLE_SECONDS if settle else None
+        samples = 0
+        while True:
+            try:
+                health = probes_mod.observe(resource, self.host)
+            except registry_mod.RegistryError as exc:
+                return {"state": "UNKNOWN", "error": str(exc), "settled": False}
+            samples += 1
+            state = health.state
+            answered = state in health_mod.HEALTHY_STATES
+            if answered or deadline is None or self._now() >= deadline:
+                result = {
+                    "state": state,
+                    "reason": health.reason,
+                    "settled": answered,
+                    "samples": samples,
+                    "waited_seconds": round(self._now() - started, 2),
+                }
+                if not answered:
+                    result["note"] = (
+                        f"the resource did not answer within "
+                        f"{self.SETTLE_SECONDS:g}s of the operation. Reported as "
+                        "the last real observation rather than retried further: "
+                        "the budget counts attempts, and a longer wait here "
+                        "would be the restart loop wearing a timeout."
+                    )
+                return result
+            self._sleep(self.SETTLE_INTERVAL)
 
     # -- persistence -------------------------------------------------------
 

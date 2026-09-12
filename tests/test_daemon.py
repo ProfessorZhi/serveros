@@ -144,6 +144,27 @@ def running_container(name="thing"):
                    "RestartCount": 0, "State.OOMKilled": False}}
 
 
+class FakeClock:
+    """A clock and a sleep that advance each other.
+
+    The daemon's re-probe waits for a restarted resource to settle (see
+    `Daemon._reprobe`), which is a real wait. A test that exercises a real
+    reconcile therefore either sleeps for the whole settle window or does not
+    test it at all. Passing this as both `now` and `sleep` compresses the
+    window to nothing while keeping the loop's *logic* — including the fact
+    that it terminates — under test.
+    """
+
+    def __init__(self, start=1_000_000.0):
+        self.t = start
+
+    def __call__(self):
+        return self.t
+
+    def sleep(self, seconds):
+        self.t += seconds
+
+
 class FakeInventory:
     def __init__(self, containers=None):
         self._containers = containers or []
@@ -182,7 +203,7 @@ class FakeRunner:
 @pytest.fixture
 def daemon_factory(tmp_path):
     def build(*resources, containers=None, inventory=None, enable_reconcile=False,
-              runner=None, clock=None, registry=None):
+              runner=None, clock=None, sleep=None, registry=None):
         if registry is None:
             registry = a_registry(*resources)
         if containers is None:
@@ -202,6 +223,7 @@ def daemon_factory(tmp_path):
             enable_reconcile=enable_reconcile,
             runner=runner,
             now=clock,
+            sleep=sleep,
             log=lambda message: None,
         )
 
@@ -554,11 +576,14 @@ def test_observe_only_by_default_acts_on_nothing(daemon_factory):
 def test_enabling_reconcile_actually_reaches_the_actuator(daemon_factory):
     """The gate is real in both directions: the previous test would also pass
     if reconcile were simply broken."""
+    clock = FakeClock()
     runner = FakeRunner()
     daemon = daemon_factory(
         an_automatable_resource("down"),
         containers={"down": {"State": {"Status": "exited"}}},
         runner=runner,
+        clock=clock,
+        sleep=clock.sleep,
         enable_reconcile=True,
     )
     report = daemon.tick()
@@ -567,7 +592,81 @@ def test_enabling_reconcile_actually_reaches_the_actuator(daemon_factory):
     assert runner.commands == [["docker", "restart", "down"]]
     # And it re-probes, because "did the restart work" is a question only a
     # probe answers. Assuming yes is how a restart loop reports success.
-    assert decision["reprobe"]["state"] in ("NOT_RUNNING", "FUNCTIONALLY_FAILED", "DEGRADED")
+    reprobe = decision["reprobe"]
+    assert reprobe["state"] in ("NOT_RUNNING", "FUNCTIONALLY_FAILED", "DEGRADED")
+    # This container stays down no matter how long the settle window is, so the
+    # window is the thing being measured here: it must expire, report the last
+    # real observation as unsettled, and stop.
+    assert reprobe["settled"] is False
+    assert reprobe["waited_seconds"] >= daemon_mod.Daemon.SETTLE_SECONDS
+    assert reprobe["samples"] == int(
+        daemon_mod.Daemon.SETTLE_SECONDS / daemon_mod.Daemon.SETTLE_INTERVAL) + 1
+
+
+def test_a_resource_that_answers_after_the_operation_is_reported_as_settled(daemon_factory):
+    """The measured §53 race, as a test.
+
+    A restart returns before the restarted service is listening. Sampling once
+    reports the restart's latency as its effect, and does it in the direction
+    that looks like a failure. The re-probe waits for the answer instead —
+    bounded, so a resource that never answers is still reported promptly.
+    """
+    def declaring_healthcheck(info, status):
+        info["Config"] = {"Healthcheck": {"Test": ["CMD", "true"]}}
+        info["State"]["Health"] = {"Status": status, "Log": [{"Output": status}]}
+        return info
+
+    clock = FakeClock()
+    containers = {"slow": declaring_healthcheck(
+        {"State": {"Status": "exited"}}, "unhealthy")}
+    returned_at = {"t": None}
+
+    class SlowRunner:
+        """A restart that returns before the service is listening.
+
+        The one-second lag is modelled against the clock rather than a call
+        count, because that is what the real thing is: time passing between the
+        supervisor's exit 0 and the socket being bound.
+        """
+
+        def __init__(self):
+            self.commands = []
+
+        def run(self, args, timeout):
+            self.commands.append(list(args))
+            returned_at["t"] = clock.t
+            return {"exit_code": 0, "stdout": "", "stderr": ""}
+
+    real_observe = daemon_mod.probes_mod.observe
+
+    def observe(resource, host):
+        if returned_at["t"] is not None and clock.t - returned_at["t"] >= 1.0:
+            containers["slow"] = declaring_healthcheck(
+                running_container("slow")["slow"], "healthy")
+        return real_observe(resource, host)
+
+    daemon = daemon_factory(
+        an_automatable_resource("slow"),
+        containers=containers,
+        runner=SlowRunner(),
+        clock=clock,
+        sleep=clock.sleep,
+        enable_reconcile=True,
+    )
+    daemon_mod.probes_mod.observe = observe
+    try:
+        report = daemon.tick()
+    finally:
+        daemon_mod.probes_mod.observe = real_observe
+
+    decision = next(d for d in report["decisions"] if d["resource"] == "slow")
+    assert decision["performed"] is True
+    assert decision["reprobe"]["settled"] is True, decision["reprobe"]
+    assert decision["reprobe"]["state"] == "HEALTHY"
+    # And it waited for the answer rather than getting lucky: a single sample
+    # taken at the moment the restart returned would have said NOT_RUNNING.
+    assert decision["reprobe"]["samples"] > 1
+    assert decision["reprobe"]["waited_seconds"] >= 1.0
 
 
 def test_a_protected_resource_that_is_down_is_never_a_reconcile_candidate(daemon_factory):
@@ -731,6 +830,82 @@ def test_an_exhausted_budget_escalates_rather_than_acting(daemon_factory):
     assert decision["performed"] is False
     assert decision["escalate_to"] == "DEGRADED/NEEDS_HUMAN"
     assert runner.commands == []
+    # §54 names the outcome, and it is not "RECONCILE, once more". A decision
+    # record that keeps naming the action it has already decided not to take
+    # is the restart loop written down rather than executed.
+    assert decision["action"] == "NEEDS_HUMAN"
+    assert decision["budget_exhausted"] is True
+    assert "max_attempts=3" in decision["because"]
+    # The observation says the same thing. It is built before the budget is
+    # consulted, so left alone it reports the health model's RECONCILE while
+    # the decision beside it reports NEEDS_HUMAN.
+    observation = report["observations"]["flappy"]
+    assert observation["action"]["action"] == "NEEDS_HUMAN"
+    assert observation["action"]["budget_exhausted"] is True
+    # And the health model's own verdict is preserved under it rather than
+    # overwritten — the escalation is recorded, not the state relabelled.
+    assert observation["state"] == "NOT_RUNNING"
+
+
+def test_no_restart_loop_on_a_resource_that_cannot_be_fixed(daemon_factory):
+    """§54's acceptance, as a test: retry budget exhausted → NEEDS_HUMAN.
+
+    The distinction §54 is really about is between a resource that is restarted
+    and recovers, and one that is restarted and does not. Only the second can
+    loop, and what stops it is the budget — so this drives the whole sequence
+    through `tick()` rather than asserting on the budget alone: restart once,
+    fail the re-probe, and then check that every subsequent tick is inert.
+    """
+    class NeverRecovers:
+        """Stands in for a service that exits immediately, every time.
+
+        The §54 fixture uses a systemd unit with `Restart=no` running
+        `--mode broken`; the shape being modelled is that no number of restarts
+        changes the answer.
+        """
+
+        def __init__(self):
+            self.commands = []
+
+        def run(self, args, timeout):
+            self.commands.append(list(args))
+            return {"exit_code": 0, "stdout": "", "stderr": ""}
+
+    clock = FakeClock()
+    runner = NeverRecovers()
+    daemon = daemon_factory(
+        an_automatable_resource("permanent"),
+        containers={"permanent": {"State": {"Status": "exited"}}},
+        runner=runner,
+        clock=clock,
+        sleep=clock.sleep,
+        enable_reconcile=True,
+    )
+
+    def tick():
+        return next(d for d in daemon.tick()["decisions"]
+                    if d["resource"] == "permanent")
+
+    first = tick()
+    assert first["performed"] is True
+    assert first["recovered"] is False, first["reprobe"]
+
+    # Eight ticks at 100s: past the 60s backoff, never past the 3600s window,
+    # so what is being measured is the budget rather than the window's pruning.
+    observed = []
+    for _ in range(8):
+        clock.t += 100
+        observed.append(tick())
+
+    # Three restarts, which is max_attempts — not eight, and not one per tick.
+    assert len(runner.commands) == daemon_mod.MAX_ATTEMPTS, runner.commands
+    # And once the budget is spent, every later tick says so in the field a
+    # reader filters on, having done nothing.
+    inert = [d for d in observed if d["action"] == "NEEDS_HUMAN"]
+    assert inert, [d["action"] for d in observed]
+    for decision in inert:
+        assert decision["performed"] is False
+        assert decision["budget_exhausted"] is True
 
 
 # ---------------------------------------------------------------------------
