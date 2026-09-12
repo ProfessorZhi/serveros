@@ -137,6 +137,34 @@ class BuildTests(unittest.TestCase):
         # The sibling SKILL.md must still be present, so the exclusion is precise.
         self.assertTrue((self.out / "skills/runtime-management/SKILL.md").is_file())
 
+    def test_a_recommended_ability_never_reaches_the_payload(self):
+        """§5: `recommended` is a claim about the node, not a member of the artifact.
+
+        The profile names four abilities it does not ship. Each of them resolves
+        at the pinned revision, so a builder that merged `skills` and
+        `recommended` — or that copied everything the registry can resolve —
+        would put them in the payload and nothing would look wrong: the artifact
+        would be a superset, the manifests would list them, and the profile
+        would still say they are on demand.
+
+        The core composition is asserted alongside it, so this is a statement
+        about the recommendation rather than about the fixture being empty.
+        """
+        profile = ROOT / "plugin/profiles/linux-work.yaml"
+        recommended = {e["name"] for e in
+                       (yaml.safe_load(profile.read_text()) or {}).get("recommended") or []}
+        self.assertTrue(recommended, "the profile must recommend something for this to mean anything")
+        self.assertEqual(run_build(self.args("--write") + ["--bundle", str(profile)]).returncode, 0)
+        shipped = json.loads((self.out / ".claude-plugin/plugin.json").read_text())["skills"]
+        for name in sorted(recommended):
+            self.assertFalse((self.out / f"skills/{name}").exists(),
+                             f"{name} is recommended, not composed, and must not ship")
+            self.assertNotIn(f"./skills/{name}", shipped)
+        # The members the same profile DOES compose are present, so the absence
+        # above is about the recommendation.
+        for name in ("workspace-management", "test-management"):
+            self.assertTrue((self.out / f"skills/{name}").is_dir())
+
     def test_reusable_skills_come_from_the_pinned_revision(self):
         self.assertEqual(run_build(self.args("--write")).returncode, 0)
         content = (self.out / "skills/runtime-management/SKILL.md").read_text()

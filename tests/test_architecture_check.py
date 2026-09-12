@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -80,6 +81,58 @@ def _load(name: str, filename: str):
 
 
 check = _load("serveros_architecture_check", "architecture_check.py")
+
+
+# ---------------------------------------------------------------------------
+# where the composition rule is read from
+# ---------------------------------------------------------------------------
+
+# The path the pin names, relative to the ability-management repository root.
+EVALUATOR_REL = "skills/ability-management/payload/composition.py"
+
+
+def _workspace_roots(start: Path) -> list[Path]:
+    """Ancestors that look like a workspace: they hold both `src/` and `worktrees/`."""
+    found = []
+    for parent in [start, *start.parents]:
+        if (parent / "src").is_dir() and (parent / "worktrees").is_dir():
+            found.append(parent)
+            break
+    return found
+
+
+def evaluator_source() -> Path:
+    """The real `composition.py`, read from the ability-management side.
+
+    NOT hand-written into this fixture. The rule is implemented once, in
+    ability-management, and serveros executes it out of the pinned ability
+    revision; a fixture carrying its own copy would be testing a stand-in that
+    agrees with the real rule only until the first edit of either one, which is
+    exactly the divergence this design exists to make impossible.
+
+    The search order is explicit and the absence of a hit is a failure rather
+    than a skip: a test that quietly stops comparing is indistinguishable from
+    one that found nothing to compare.
+    """
+    explicit = os.environ.get("SERVEROS_COMPOSITION_EVALUATOR")
+    candidates: list[Path] = [Path(explicit)] if explicit else []
+    for ws in _workspace_roots(REPO):
+        # The canonical checkout first: once the rule is merged there, the
+        # fixture stops depending on which worktree happens to exist.
+        candidates.append(ws / "src" / "ability-management" / EVALUATOR_REL)
+        candidates.extend(sorted(
+            (ws / "worktrees" / "ability-management").glob(f"*/{EVALUATOR_REL}")))
+    for candidate in candidates:
+        if candidate.is_file():
+            return candidate
+    raise AssertionError(
+        "the composition evaluator was not found; this suite cannot exercise "
+        "the composition rule without it. Set SERVEROS_COMPOSITION_EVALUATOR "
+        f"to a `composition.py`. Looked in:\n  "
+        + "\n  ".join(str(c) for c in candidates))
+
+
+PAYLOAD = evaluator_source().parent
 
 
 def _commit(repo: Path) -> None:
@@ -143,6 +196,13 @@ def world(tmp_path):
         ability = _init(root / "ability-management")
         (ability / "abilities-manifest.yaml").write_text(
             yaml.safe_dump(_registry(provides, extra=extra), sort_keys=False))
+        # The composition rule itself, at the path the pin names. The checker
+        # executes it out of the ability revision rather than importing a local
+        # copy, so a fixture that omitted it would exercise only the
+        # COMPOSITION_EVALUATOR_ABSENT branch and never the comparison.
+        payload = ability / "skills/ability-management/payload"
+        payload.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(PAYLOAD / "composition.py", payload / "composition.py")
         _commit(ability)
 
         ops = _init(root / "ops")

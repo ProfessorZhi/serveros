@@ -32,6 +32,7 @@ import json
 import os
 import subprocess
 import sys
+import types
 from pathlib import Path
 
 try:
@@ -197,6 +198,38 @@ def run_reused(script: Path, argv: list[str], timeout: int = 300) -> dict:
     }
 
 
+def load_evaluator(obs: dict):
+    """Execute the shared composition evaluator out of a pinned git object.
+
+    Returns ``(module, None)`` or ``(None, reason)``. It is executed rather
+    than imported because the file lives in another repository and is named by
+    a *ref*: importing it would mean reading whatever checkout happens to be on
+    disk, which is the failure design rule 1 exists to prevent.
+
+    The reason it ships at all is the dependency direction. ``serveros ->
+    ability-management``, never the reverse, so the one implementation of the
+    composition rule can only live there. This function is the read side of
+    that edge; it is deliberately the only way this checker can reach the rule,
+    so that "serveros grew its own copy again" is not a state the code can
+    quietly arrive at.
+    """
+    if not obs.get("found") or obs.get("content") is None:
+        return None, (f"not present at {obs.get('requested_ref')}: "
+                      f"{obs.get('path')} (repository "
+                      f"{obs.get('repo')}, resolved "
+                      f"{obs.get('resolved_sha')})")
+    module = types.ModuleType("ability_composition_evaluator")
+    module.__file__ = f"{obs['repo']}@{obs['requested_ref']}:{obs['path']}"
+    try:
+        exec(compile(obs["content"], module.__file__, "exec"), module.__dict__)
+    except Exception as exc:  # a pin that cannot be executed is a finding, not a traceback
+        return None, f"{type(exc).__name__}: {exc} (at {module.__file__})"
+    if not hasattr(module, "CompositionError") or not hasattr(module, "judge"):
+        return None, (f"executed, but it is not the composition evaluator "
+                      f"(no `judge`/`CompositionError`): {module.__file__}")
+    return module, None
+
+
 # --------------------------------------------------------------------------
 # assertion helpers
 # --------------------------------------------------------------------------
@@ -246,6 +279,11 @@ def manifest_members(manifest: dict, plugin_id: str = "ProfessorZhi/hwz-server-o
             names.append(ability.get("name") or str(ident).split("/")[-1])
     return {
         "plugin_entry_found": bool(plugin),
+        # The plugin's OWN name. Passed to the evaluator so it can exclude a
+        # plugin that provides itself: that is a statement about the plugin,
+        # not about an ability it composes, and counting it would force every
+        # composition to list itself as a member.
+        "plugin_name": plugin.get("name") or str(plugin_id).split("/")[-1],
         "identities": identities,
         "names": sorted(names),
         "unresolved_identities": unresolved,
@@ -545,44 +583,48 @@ def collect(args) -> dict:
                 observation_provenance=_prov(obs),
             ))
 
-    # ---- A1: composition (bundle) vs registry (manifest.provides) ---------
-    # The ownership question is under an AUTHORITY_CONFLICT and is NOT decided
-    # here. The *sets* are comparable without taking a side: bundle members
-    # whose source is ability-management must be exactly the registry's
-    # provides list, minus the members the bundle sources locally. A member the
-    # bundle sources locally is a composition claim (serveros owns it), and
-    # whether the registry should ALSO carry an identity record for it is
-    # reported at registry scope below — not asserted here.
+    # ---- A1: composition vs registry --------------------------------------
+    # The rule enforced below is NOT implemented here. It is implemented once,
+    # in `ability-management`, as `composition.py` -- and this checker EXECUTES
+    # THAT FILE READ OUT OF THE PINNED ABILITY REVISION. Two reasons, and the
+    # first is the whole point of §2:
     #
-    # `minus local_members` is load-bearing and was missing. Without it the
-    # check is unsatisfiable in both directions for any local member:
-    #   registered   -> BOOTSTRAP_ABILITY_REGISTERED asks whether it belongs
-    #   unregistered -> BUNDLE_MANIFEST_DRIFT fails it for not being there
-    # so there is no state in which a locally-sourced member is correct. That
-    # went unnoticed while `serveros` was the only one, because `serveros`
-    # happens to appear in `provides` and the set equality held by coincidence.
-    # `runtime-management` was the second local member and the coincidence
-    # ended. See `633324d5`, which widened this comparison from `ability_members`
-    # to `bundle_members` and left the comment below describing the old rule.
+    #   * There were two implementations of one rule. This one unioned the
+    #     profile files as written; `control_plane.plugin_composition_drift`
+    #     read a single file and compared with set equality. They disagreed
+    #     about the same inputs, and from inside either one there was no way to
+    #     tell which was the rule. A rule stated twice is a rule that will
+    #     eventually be stated two ways.
+    #   * The dependency direction is serveros -> ability-management, so the
+    #     shared implementation can only live in ability-management and be read
+    #     from here. Vendoring a copy would rebuild the first problem on a
+    #     slower clock; that is what design rule 2 of this file forbids.
     #
-    # §24 has since removed the second member: `runtime-management` is a reusable
-    # Ability and now composes from ability-management, so the bundle is back to
-    # one local member. The `- set(local_members)` below stays — it is what makes
-    # the check correct for the one that remains, not a workaround for the one
-    # that left.
-    # ---- the composition SET, not one file -------------------------------
-    # §27/§28 split the product into compositions: `plugin/bundle.yaml` is
-    # `serveros-core`, and `plugin/profiles/` holds the wider ones that extend
-    # it. A registry `provides` list is a statement about the *product*, so
-    # comparing it against core alone would report every specialist a profile
-    # composes as drift — a false HIGH produced by looking at one file and
-    # calling it the product.
-    #
-    # The union is taken over the profile files as written, not over their
-    # `extends`-resolved forms. Those are the same set: a profile's own `skills`
-    # list is additive by construction (the builder refuses a member re-stated
-    # with a different source), and everything a profile inherits is already in
-    # the parent that this union also reads.
+    # Reading it from the revision rather than a checkout is what keeps design
+    # rule 1 true: a working tree is not an authority. It also means a verdict
+    # can name WHICH evaluator produced it, because the revision is recorded in
+    # the observation provenance.
+    evaluator_obs = observe_object(
+        ability_repo, args.ability_ref,
+        "skills/ability-management/payload/composition.py")
+    observations["declarations"][
+        "ability-management/skills/ability-management/payload/composition.py"] = evaluator_obs
+    evaluator, evaluator_error = load_evaluator(evaluator_obs)
+    if evaluator is None:
+        # No fallback to a local copy and no skipping the check. A checker that
+        # cannot reach its rule has not thereby found the system correct, and a
+        # silent fallback would let the two implementations diverge again the
+        # first time this file moved.
+        findings.append(finding(
+            "COMPOSITION_EVALUATOR_ABSENT", "composition",
+            "the pinned ability revision carries "
+            "skills/ability-management/payload/composition.py",
+            evaluator_error,
+            "the composition rule is implemented once, in ability-management; "
+            "serveros reads it from the pin and never vendors a copy",
+            "HIGH",
+            observation_provenance=_prov(evaluator_obs)))
+
     # `ls-tree` yields paths relative to the repository, not basenames.
     profile_obs: dict[str, dict] = {}
     profile_listing = (_git(serveros_repo, "ls-tree", "-r", "--name-only", ref,
@@ -595,31 +637,57 @@ def collect(args) -> dict:
         profile_obs[rel] = obs
         observations["declarations"][f"serveros/{rel}"] = obs
 
-    profile_skills: list[dict] = []
+    # The virtual filesystem the evaluator reads. It is built from the SAME
+    # git-object reads the rest of this report uses, so the judgment and the
+    # provenance cannot be about different bytes.
+    composition_files: dict[str, str] = {}
+    if bundle_obs["found"] and bundle_obs["content"] is not None:
+        composition_files["plugin/bundle.yaml"] = bundle_obs["content"]
     for rel, obs in sorted(profile_obs.items()):
-        loaded = _load(obs["content"], "yaml") or {}
-        for entry in loaded.get("skills") or []:
-            profile_skills.append({**entry, "composition": rel})
+        if obs["found"] and obs["content"] is not None:
+            composition_files[rel] = obs["content"]
 
-    bundle_skills = bundle.get("skills") or []
-    # Every member, tagged with the file that names it, so a drift message can
-    # say WHICH composition disagrees with the registry rather than only that
-    # the product does.
-    all_skills = [{**s, "composition": "plugin/bundle.yaml"} for s in bundle_skills]
-    all_skills += profile_skills
-    bundle_members = sorted({s["name"] for s in all_skills})
-    ability_members = sorted({s["name"] for s in all_skills
-                              if s.get("source") == "ability-management"})
-    local_members = sorted({s["name"] for s in all_skills if s.get("source") == "local"})
-    other_members = [s for s in all_skills
-                     if s.get("source") not in ("local", "ability-management")]
-    provides = manifest_members(manifest)
+    resolved_compositions: list[dict] = []
+    composition_errors: list[str] = []
+    if evaluator is not None and composition_files:
+        for rel in sorted(composition_files):
+            try:
+                resolved_compositions.append(
+                    evaluator.resolve(rel, composition_files))
+            except evaluator.CompositionError as exc:
+                composition_errors.append(f"{rel}: {exc}")
 
-    if other_members:
+    if composition_errors:
+        # Resolution refusing is not a problem with the registry, and it is not
+        # reported as one: an unresolved composition means the question cannot
+        # be answered at all, which is a different and louder statement.
         findings.append(finding(
-            "BUNDLE_SOURCE_UNKNOWN", "composition", "every member has a known source",
-            [s.get("name") for s in other_members],
-            "plugin/bundle.yaml", "HIGH"))
+            "COMPOSITION_ILLFORMED", "composition",
+            "every composition resolves: supported schema, a declared "
+            "identity, a present parent, no cycle, one source per member, "
+            "valid recommended statuses, a profile cachebuster",
+            composition_errors,
+            "serveros owns the composition contract",
+            "HIGH",
+            observation_provenance={"bundle": _prov(bundle_obs),
+                                    "manifest": _prov(manifest_obs)}))
+
+    # Flattened for the report and for the findings below that are NOT part of
+    # the shared rule (unknown source, registry scope). Derived from the
+    # evaluator's output rather than recomputed, so there is still one place
+    # that decides what a composition contains.
+    all_skills = [{**s, "composition": c["chain"][0] if c.get("chain") else "?"}
+                  for c in resolved_compositions for s in c["skills"]]
+    bundle_members = sorted({s["name"] for s in all_skills})
+    # `shipped` / `local` are already name lists; `skills` carries the entries.
+    ability_members = sorted({n for c in resolved_compositions for n in c["shipped"]})
+    local_members = sorted({n for c in resolved_compositions for n in c["local"]})
+    # `recommended_members` / `promised_members` are deliberately NOT recomputed
+    # here. The evaluator computes both to decide the unreachable and
+    # resolvability directions; restating them would be the second
+    # implementation this section exists to delete.
+
+    provides = manifest_members(manifest)
 
     if provides["unresolved_identities"]:
         findings.append(finding(
@@ -628,70 +696,29 @@ def collect(args) -> dict:
             provides["unresolved_identities"],
             "ability-management/abilities-manifest.yaml", "MEDIUM"))
 
-    # On-demand members: named by a composition as resolvable-per-node rather
-    # than shipped. They are part of what the product can reach without being
-    # part of what any artifact contains.
-    recommended_entries = [
-        entry
-        for loaded in [bundle] + [_load(obs["content"], "yaml") or {}
-                                  for obs in profile_obs.values()]
-        for entry in loaded.get("recommended") or []
-        if entry.get("name")
-    ]
-    recommended_members = sorted({entry["name"] for entry in recommended_entries})
-    # `missing` is a recorded gap, not a promise. Only a recommendation that
-    # claims the ability can be resolved has to be resolvable, or the profile
-    # could not honestly record a gap it knows about.
-    promised_members = sorted({entry["name"] for entry in recommended_entries
-                               if entry.get("status") != "missing"})
-
-    # The registry side, with the locally-sourced members removed.
-    #
-    # The rule is containment, not equality, and the difference is what §28's
-    # on-demand layer means. A registry entry is a record that an ability CAN be
-    # resolved and installed; a composition member is a record that it ships in
-    # an artifact. Equality held while the bundle was the whole product and the
-    # registry described exactly it. Splitting the product into compositions
-    # ends that: the registry legitimately describes abilities no artifact
-    # carries, because that is where an on-demand resolution finds them.
-    #
-    # Both directions keep their teeth:
-    #   shipped but unregistered   -> the registry cannot expand the install
-    #   registered but unreachable -> an ability no composition ships and no
-    #                                 composition recommends, i.e. a registry
-    #                                 entry describing a product that is not
-    #                                 this one
-    registry_members = sorted(set(provides["names"]) - set(local_members))
-    unreachable = sorted(set(registry_members) - set(ability_members) - set(recommended_members))
-    unregistered = sorted(set(ability_members) - set(registry_members))
-    if unregistered or unreachable:
-        findings.append(finding(
-            "BUNDLE_MANIFEST_DRIFT", "composition-vs-registry",
-            "every ability a composition ships is registered, and every "
-            "registered ability is either shipped by a composition or "
-            "recommended on demand by one",
-            f"shipped-but-unregistered={unregistered} "
-            f"registered-but-unreachable={unreachable}",
-            "serveros owns the composition contract; ability-management owns the registry",
-            "HIGH",
-            observation_provenance={"bundle": _prov(bundle_obs), "manifest": _prov(manifest_obs)}))
-
-    # A recommendation marked `available` or `provisional` is a claim that a
-    # node can resolve it on demand, and the registry is what a node resolves it
-    # against. Recommending something the registry does not provide is a promise
-    # with nothing behind it. `missing` is exempt on purpose: it is the profile
-    # recording a gap it knows about, and a gap that cannot be written down is a
-    # gap that gets papered over.
-    recommended_unprovided = sorted(set(promised_members) - set(provides["names"]))
-    if recommended_unprovided:
-        findings.append(finding(
-            "RECOMMENDATION_UNRESOLVABLE", "composition-vs-registry",
-            "every recommended ability that is not marked `missing` is provided "
-            "by the registry",
-            recommended_unprovided,
-            "serveros owns the composition contract; ability-management owns the registry",
-            "MEDIUM",
-            observation_provenance={"bundle": _prov(bundle_obs), "manifest": _prov(manifest_obs)}))
+    # The verdict itself, from the one implementation. Each finding the
+    # evaluator returns is rendered with the identifier this report has always
+    # used, so a reader (and the tests) keep the same handle on it.
+    _JUDGMENT_IDS = {
+        "COMPOSITION_MEMBER_UNREGISTERED": ("BUNDLE_MANIFEST_DRIFT", "HIGH"),
+        "COMPOSITION_MEMBER_UNREACHABLE": ("BUNDLE_MANIFEST_DRIFT", "HIGH"),
+        "COMPOSITION_EXACT_MEMBER_MISMATCH": ("BUNDLE_MANIFEST_DRIFT", "HIGH"),
+        "RECOMMENDATION_UNRESOLVABLE": ("RECOMMENDATION_UNRESOLVABLE", "MEDIUM"),
+    }
+    if evaluator is not None and resolved_compositions:
+        for judged in evaluator.judge(
+                resolved_compositions,
+                registry_members=provides["names"],
+                plugin_members=[provides["plugin_name"]]):
+            fid, severity = _JUDGMENT_IDS.get(
+                judged["id"], (judged["id"], judged["severity"]))
+            findings.append(finding(
+                fid, "composition-vs-registry", judged["rule"],
+                f"{judged['id']}={judged['observed']}",
+                judged["owner"], severity,
+                observation_provenance={"bundle": _prov(bundle_obs),
+                                        "manifest": _prov(manifest_obs),
+                                        "evaluator": _prov(evaluator_obs)}))
 
     # A member the bundle sources locally that the registry also lists in
     # `provides`.
@@ -727,13 +754,11 @@ def collect(args) -> dict:
             "LOW", status="OBSERVED",
             observation_provenance={"bundle": _prov(bundle_obs), "manifest": _prov(manifest_obs)}))
 
-    if set(ability_members) & set(local_members):
-        findings.append(finding(
-            "BUNDLE_DOUBLE_SOURCE", "composition",
-            "a member is either local or ability-management, never both",
-            sorted(set(ability_members) & set(local_members)),
-            "plugin/bundle.yaml", "HIGH"))
-
+    # BUNDLE_DOUBLE_SOURCE used to be asserted here as well. The evaluator
+    # raises on it during resolution (`one ability cannot have two sources`),
+    # so it arrives above as COMPOSITION_ILLFORMED. Asserting it a second time
+    # from a second computation is how the two implementations started to
+    # differ in the first place.
     # ---- A2: contract self-consistency (reuse validate_contract) ----------
     # The existing validator compares the contract against hardcoded literals in
     # its own body, so it can only detect "the JSON was edited wrong". It is
