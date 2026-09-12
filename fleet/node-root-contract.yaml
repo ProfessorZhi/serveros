@@ -41,13 +41,15 @@ root:
 # equal, so a name added here is not a comment — it is the claim "node.py opens
 # this file", and a name that is not true makes that check report HIGH drift.
 #
-# `README.md` is deliberately NOT in this list, and must not be added to it. A
-# file of that name does exist: a human wrote it, and it restates this contract
-# in prose. But it is an entry document beside the bindings, not a binding —
-# `node.py` never opens it, and listing it here would both falsify the claim
-# above and desynchronise this list from `paths.py`. Its classification lives
-# in `conformance.EXCEPTIONS["home"]`, which is the READ list and is a
-# different set from the WRITE list above for exactly this reason.
+# `README.md` is NOT in this list, and must not be added to it — and it is not
+# merely unwritten, it is gone. A file of that name used to sit here; it was
+# retired on 2026-09-13 with its bytes preserved in
+# artifacts/work-items/serveros/SRV-0007/RUN-0001/. §41 allows bindings only in
+# `~/.serveros` and gives documentation the disposition "repo/docs or
+# artifacts", so this file is the authority for the root and there is
+# deliberately no second document beside it restating what is written here.
+# Listing it would also falsify the claim above and desynchronise this list from
+# `paths.py`, which `conformance.declaration_conflicts` reports as HIGH drift.
 files:
   node.yaml:
     # The whole file, in the general case:

@@ -91,28 +91,18 @@ EXCEPTIONS: dict[str, dict[str, dict]] = {
             "disposition": "KEEP",
         },
     },
-    "home": {
-        # §38. This file is NOT in `HOME_DOT_SERVEROS_ALLOWED`, and it stays
-        # out: that tuple is the write vocabulary, `admit()` reads it directly,
-        # and nothing mechanical may create a file here. This entry answers the
-        # other question — how a file that a human placed is classified — and
-        # the two are separate sets. The distinction was invisible while this
-        # table had no `home` key at all, so the reader fell back to `{}` and a
-        # designed state printed as `UNDECLARED_ENTRY / MEDIUM / OPEN` on every
-        # run. A finding that cannot clear is not vigilance; it is noise that
-        # teaches its readers to skim. Nothing here widens the write list, so
-        # `admit()` still refuses `~/.serveros/README.md` exactly as before.
-        "README.md": {
-            "class": "ENTRY_DOCUMENT",
-            "reason": "the entry document for this root, written by a human; it "
-                      "restates `node-root-contract.yaml` for a reader and is "
-                      "not a binding, not state, and not read by `node.py`",
-            "authority": "fleet/node-root-contract.yaml — its `files:` block "
-                         "names what the root binds, and a document beside them "
-                         "is not one of those files",
-            "disposition": "KEEP",
-        },
-    },
+    # No `home` entry, and the absence is a ruling rather than an omission.
+    # `~/.serveros/README.md` was briefly classified here as an ENTRY_DOCUMENT.
+    # §41 reversed that: the node root holds bindings only, and it gives
+    # documentation the disposition "repo/docs or artifacts" — because a
+    # document inside that root is a second statement of what
+    # `node-root-contract.yaml` already states, in a root whose whole design
+    # principle is that a thing has one answer. The file was retired on
+    # 2026-09-13 with its bytes preserved in
+    # artifacts/work-items/serveros/SRV-0007/RUN-0001/, so an exemption here
+    # would have no subject left to exempt — the same reason the `artifacts`
+    # block above is gone. A README reappearing there is now reported as
+    # UNDECLARED_ENTRY, and that report is correct rather than a false alarm.
     "workspace": {
         "CLAUDE.md": {
             "class": "ENTRY_DOCUMENT",

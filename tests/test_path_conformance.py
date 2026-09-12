@@ -329,31 +329,33 @@ def test_no_exemption_shadows_a_declared_entry():
         assert not shadows, f"{area}: exemption for a declared entry {shadows}"
 
 
-def test_the_home_readme_is_classified_and_still_refused_a_write(world, tmp_path):
-    """§38: the two halves of the `~/.serveros/README.md` ruling, held together.
+def test_the_node_root_holds_bindings_only(world, tmp_path):
+    """§41: a document in `~/.serveros` is reported, and refused by name.
 
-    The file is a human-placed entry document, so the READ side classifies it
-    rather than printing it as `UNDECLARED_ENTRY / MEDIUM / OPEN` on every run
-    forever — an alarm that cannot clear is how a report teaches its readers to
-    skim. The WRITE side is untouched: the allow-list is a different tuple,
-    `admit()` reads that tuple directly, and it still refuses. Asserting only
-    one half is how this drifts back — classifying it would be wrong if it
-    blessed the write, and refusing it was never a reason to leave it
-    unclassified.
+    §38 first read this finding as a false alarm and exempted the file as an
+    entry document. It was not a false alarm: the root is for bindings,
+    documentation's disposition is "repo/docs or artifacts", and a second
+    document beside `node-root-contract.yaml` is a second statement of the same
+    facts inside the one root whose design principle is that a thing has one
+    answer. The file was retired rather than exempted, so the report is quiet
+    for the right reason — and if one reappears, reporting it is correct.
+    Asserting the *exemption* here is what would let the bad ruling back in.
     """
     report = world(home=("README.md",))
-    found = of(report, "EXEMPT_ENTRY", "README.md")
-    assert len(found) == 1
-    assert found[0]["exemption_class"] == "ENTRY_DOCUMENT"
-    assert found[0]["disposition"] == "KEEP"
-    assert found[0]["status"] == "OBSERVED"
-    assert of(report, "UNDECLARED_ENTRY") == []
+    assert of(report, "UNDECLARED_ENTRY", "README.md")
+    assert of(report, "EXEMPT_ENTRY", "README.md") == []
 
     home = tmp_path / "home"
     paths = paths_mod.Paths({"home": str(home), "data_root": str(tmp_path / "data"),
                              "workspace_root": str(tmp_path / "data/workspace")})
-    with pytest.raises(paths_mod.PathRefused):
-        paths.admit(str(home / ".serveros" / "README.md"))
+    # The named refusals: previously declared in `HOME_DOT_SERVEROS_FORBIDDEN`
+    # with no consumer anywhere, so these names were refused without the message
+    # ever saying why. Each is asserted individually rather than by membership,
+    # because a tuple read by nobody and a tuple read by `admit()` are only the
+    # same thing if the call actually happens.
+    for name in ("README.md", *paths_mod.HOME_DOT_SERVEROS_FORBIDDEN):
+        with pytest.raises(paths_mod.PathRefused):
+            paths.admit(str(home / ".serveros" / name))
     # Positive control: all three of the list, not the intersection. A test that
     # asserted one shared name is what hid the A1 defect in architecture_check.py
     # and the disagreeing allow-list here.
