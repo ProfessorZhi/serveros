@@ -202,7 +202,7 @@ def test_controller_gap_raises_instead_of_returning_an_empty_fleet(tmp_path):
 def test_declared_controller_flips_only_the_controller_fields(tmp_path):
     decl = tmp_path / "controller.yaml"
     decl.write_text(
-        "kind: remote-desktop-commander\nsurface: {transport: unix, path: /run/rdc.sock}\n",
+        "kind: mcp-http\nsurface: {resource: 'https://example.invalid'}\n",
         encoding="utf-8",
     )
     adapter = rdc.RemoteDesktopCommanderTransport(declaration_path=decl)
@@ -315,9 +315,44 @@ def test_no_surface_exposes_a_generic_remote_shell():
         assert not any("shell" in tool for tool in surface["tools"]), name
 
     # Remote execution, when added, is admitted by level — never by raw command.
-    levels = c["remote_execution"]["levels"]
-    assert c["remote_execution"]["default_level"] == "inspect"
-    assert levels[0] == "inspect" and "admin" in levels
+    levels = transport.CAPABILITY_LEVELS
+    default = c["remote_execution"]["default_level"]
+    assert default in levels
+    # The default must not be the weakest level. `discover` lists that devices
+    # exist; defaulting to it would let an unnamed read be admitted as a listing.
+    assert levels[0] == "discover" and default != levels[0]
+    assert "admin" in levels and "read" in levels
+
+
+def test_the_capability_vocabulary_is_declared_exactly_once():
+    """Two declarations of one closed vocabulary drift, and drift silently.
+
+    This was a real defect: the levels lived in `transport.py` AND in
+    `mcp-contract.yaml`, agreeing by inspection. Admission would have kept
+    accepting a level the transport contract no longer named.
+    """
+    mcp = contract("mcp-contract.yaml")
+    assert "levels" not in mcp["remote_execution"], "the list came back"
+    assert mcp["remote_execution"]["levels_source"].startswith("fleet/transport-contract.yaml")
+
+    tc = contract("transport-contract.yaml")
+    declared = tc["capability_levels"]["order"]
+    assert list(transport.CAPABILITY_LEVELS) == declared
+
+    # The brief's spelling maps onto the same list rather than extending it.
+    for alias, canonical in tc["capability_levels"]["alias_of"].items():
+        assert canonical in declared, f"{alias} maps to unknown level {canonical!r}"
+        assert alias not in declared, f"{alias} is a second spelling in the canonical list"
+
+
+def test_both_requested_capability_names_are_present():
+    """`DISCOVER` and `GUI_CONTROL` were genuinely missing, not merely renamed."""
+    for requested in ("DISCOVER", "INSPECT", "READ_FS", "WRITE_FS", "EXECUTE", "GUI_CONTROL", "ADMIN"):
+        assert transport.canonical_level(requested) in transport.CAPABILITY_LEVELS, requested
+    assert transport.canonical_level("READ_FS") == "read"
+    assert transport.canonical_level("GUI_CONTROL") == "gui-control"
+    # A level that was never requested keeps its name unchanged.
+    assert transport.canonical_level("inspect") == "inspect"
 
 
 # ---------------------------------------------------------------------------

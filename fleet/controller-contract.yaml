@@ -1,0 +1,242 @@
+# ServerOS Fleet Controller contract.
+#
+# Where the controller actually is
+# --------------------------------
+# This file exists because "the controller" was, until Phase 1 of this round,
+# an unexamined assumption. The fleet's three devices were known to be online
+# on a relay, one endpoint process was known to be running on this host, and
+# the gap was described as "no controller". That description was correct and
+# useless: it did not say whether the controller was missing, uninstalled,
+# undocumented, or simply somewhere else.
+#
+# It is somewhere else, and it is not private. The npm package
+# `@wonderwhy-er/desktop-commander` ships exactly ONE remote role — the
+# device/endpoint (`MCPDevice`, started by `desktop-commander remote`). There
+# is no controller CLI, no controller library and no controller credential in
+# the package. The controller is a **remote MCP service** on another plane,
+# consumed by external MCP clients, and it speaks the published MCP and OAuth
+# 2.0 standards rather than a protocol anyone here would have to reverse.
+#
+# That difference decides the whole design. A private protocol would have to
+# be left alone; a public standards surface may be integrated against
+# legitimately. ServerOS integrates with the second kind only.
+schema: serveros/fleet-controller.v1
+
+# ---------------------------------------------------------------------------
+# Roles
+# ---------------------------------------------------------------------------
+#
+# Naming the roles separately is what makes `REMOTE_CONTROLLER_NOT_EXPOSED`
+# expressible at all. One word "controller" covering both ends is how a
+# running endpoint gets mistaken for a callable one.
+
+roles:
+  endpoint:
+    meaning: >-
+      This machine is controllable BY the controller plane. It dials out and
+      listens on nothing.
+    shipped_in_package: true
+    command: 'desktop-commander remote'
+    evidence_of_presence: [process_argv, outbound_connection]
+    # The point of the whole file: this role being present is NOT evidence
+    # that the other role is.
+    implies_controller: false
+
+  controller:
+    meaning: >-
+      A surface through which an agent runtime can act on devices. Lives on
+      the control plane, not in the package.
+    shipped_in_package: false
+    kinds: [mcp-http, mcp-stdio]
+    # Consumed by external MCP clients. Claude Code and Codex are MCP clients
+    # natively, which is precisely why the legitimate integration path is a
+    # client, not a bridge that re-implements the protocol.
+    consumers: [external_mcp_client]
+    implies_endpoint: false
+
+  discovery:
+    meaning: The fleet plane's own device list (presence, names, relay ids).
+    reachable_from: control_plane
+    # A device being listed here says nothing about this runtime's access.
+    implies_controller: false
+
+# ---------------------------------------------------------------------------
+# The declaration
+# ---------------------------------------------------------------------------
+#
+# How this runtime records that a controller surface is callable BY IT. The
+# file is local-only, like a transport binding, and for the same reason: it
+# describes one machine's route and goes stale the moment that changes.
+#
+# Note the field that is absent. There is no field for a token. A declaration
+# is a statement about configuration; the authorization lives with the MCP
+# client that performed it, and a schema with nowhere to put a credential
+# cannot leak one.
+
+declaration:
+  location: '~/.serveros/controller.yaml'
+  kinds: [mcp-http, mcp-stdio]
+  required_fields: [kind, surface]
+  forbidden_fields:
+    - token
+    - access_token
+    - refresh_token
+    - client_secret
+    - code_verifier
+    - device_code
+    - session
+    - password
+    - private_key
+  absent_means: >-
+    No callable controller surface for this runtime — reported as
+    REMOTE_CONTROLLER_NOT_EXPOSED, never as a device that does not exist.
+
+# ---------------------------------------------------------------------------
+# The external controller surface
+# ---------------------------------------------------------------------------
+#
+# Recorded as advertised by the service's own published metadata. No
+# credential, token or client secret appears anywhere in this file, and none
+# may be added: the contract describes the surface, the client holds the
+# credential.
+
+external_controller:
+  kind: mcp-http
+  transport: streamable-http
+  resource: 'https://mcp.desktopcommander.app'
+  mcp_endpoint: 'https://mcp.desktopcommander.app/mcp'
+  protocol_version: '2024-11-05'
+
+  auth:
+    scheme: oauth2
+    # Authorization Code + PKCE. Not a client secret: a public client proves
+    # possession with a code verifier, which is why this integration does not
+    # need a long-lived shared secret to exist in a repo or an env file.
+    flow: authorization_code
+    pkce: S256
+    bearer_in_header: true
+    discovery: 'https://mcp.desktopcommander.app/.well-known/oauth-authorization-server'
+    dynamic_client_registration: 'https://mcp.desktopcommander.app/register'
+    standards: [rfc8414, rfc9728, rfc7591, rfc7636, rfc8707]
+    # A consent step with a human in it. ServerOS cannot and must not
+    # self-authorize; it can only declare that the step is outstanding.
+    requires_human_consent: true
+
+  # What this runtime may do with the surface once a client is authorized.
+  # Read-only until a human says otherwise — the capability grant is a
+  # decision, and this file does not make it.
+  granted_to_this_runtime: []
+
+# ---------------------------------------------------------------------------
+# The boundary
+# ---------------------------------------------------------------------------
+#
+# Three prohibitions. Each one is a way of getting access that would work and
+# must not be taken, so each is stated rather than left to judgement.
+
+boundary:
+  allowed:
+    - "A standard MCP client that a human has authorized, configured through \
+       its own documented MCP configuration mechanism."
+    - "Read-only queries at the levels the surface grants, once authorized."
+  forbidden:
+    - id: relay_reverse_engineering
+      rule: >-
+        Do not talk to the relay's realtime channel, its tables, or its
+        database directly. Reaching devices through the transport's internal
+        wire contract would bind ServerOS to an unpublished implementation
+        that can change without notice.
+    - id: credential_capture
+      rule: >-
+        Do not read, copy, print, persist or reuse a token, refresh token,
+        session blob or client secret. Authorization belongs to the client
+        that obtained it.
+    - id: identity_impersonation
+      rule: >-
+        Do not present as, proxy for, or spoof the first-party connector.
+        ServerOS integrates as an MCP client, under its own authorization.
+    - id: silent_transport_substitution
+      rule: >-
+        Do not reach a device over SSH, WinRM, SMB or RDP because the
+        controller is not exposed. That is not a workaround; it is a
+        different trust boundary entered without a decision.
+
+  # The test that this boundary is real rather than aspirational: the adapter
+  # may name exactly these call surfaces, and a test reads its source to
+  # confirm nothing else is referenced.
+  adapter_may_call:
+    - mcp-http
+    - local_mcp_stdio
+
+# ---------------------------------------------------------------------------
+# Identity
+# ---------------------------------------------------------------------------
+#
+# The controller names devices too, and those names are exactly as
+# untrustworthy as any other transport's — a relay device id and a device
+# name are observations about a route, not identities.
+
+identity_mapping:
+  may_key: [device_ref]
+  never_infer_identity_from:
+    - device_name      # os.hostname() on the device side
+    - device_uuid      # a relay-assigned handle; changes with re-registration
+    - hostname
+    - computer_name
+    - ip
+  rule: >-
+    A device observed through the controller is matched to a `device:<id>` by
+    enrollment, and when no enrolled device matches, the observation is
+    recorded as unresolved rather than attached to the nearest lookalike.
+
+# ---------------------------------------------------------------------------
+# Availability, per capability
+# ---------------------------------------------------------------------------
+#
+# The failure this section prevents is a single boolean. "Is the controller
+# available" has an answer for the endpoint and a different answer for reading
+# a file, and reporting one word for both produces either a claim of control
+# that does not exist or a claim of impossibility that is false.
+
+availability:
+  # The shape a controller-backed transport reports on this fleet TODAY:
+  #
+  #   transport: remote-desktop-commander
+  #   availability:
+  #     endpoint: AVAILABLE          the endpoint role is running on this host
+  #     discover: EXTERNAL_ONLY      a controller surface exists; not callable here
+  #     inspect: EXTERNAL_ONLY
+  #     read: EXTERNAL_ONLY
+  #     execute-safe: EXTERNAL_ONLY
+  #
+  # `endpoint: AVAILABLE` beside `discover: EXTERNAL_ONLY` is not a
+  # contradiction. It is the single most important fact this round
+  # established, and flattening either field destroys it.
+  endpoint_field: endpoint
+  capability_field_values_source: fleet/transport-contract.yaml#capability_availability
+  rule: >-
+    EXTERNAL_ONLY must survive to the consumer. A layer that renders it as
+    "unavailable", or as "unsupported", has discarded the fact that the
+    capability exists and that a specific, nameable step would make it
+    reachable.
+
+# ---------------------------------------------------------------------------
+# The connector boundary
+# ---------------------------------------------------------------------------
+#
+# If a ServerOS-local controller is ever wanted, this is the shape it takes.
+# It is written down now, and NOT implemented, because implementing it before
+# a human authorizes a client would be implementing an unused surface.
+
+connector:
+  name: serveros-fleet-controller-connector
+  status: NOT_IMPLEMENTED
+  role: >-
+    Injected by an authorized external controller. It presents the controller
+    as a DeviceTransport to the semantic layer above, and holds no credential
+    of its own — the client that owns the authorization holds them.
+  must_not:
+    - hold or copy credentials
+    - reimplement the relay protocol
+    - become the place device identity is decided
+  blocked_on: human OAuth consent to an MCP client

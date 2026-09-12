@@ -90,15 +90,17 @@ surfaces:
 
 remote_execution:
   # Not an API level. An admission model.
-  levels:
-    - inspect
-    - read
-    - execute-safe
-    - write-workspace
-    - install-ability
-    - system-change
-    - admin
+  #
+  # The level vocabulary is NOT restated here. It is declared once, in
+  # `transport-contract.yaml`, and this file references it — because a second
+  # copy of a closed vocabulary is a copy that will disagree eventually, and
+  # the disagreement will be that admission accepts a level the transport
+  # contract has never heard of.
+  levels_source: fleet/transport-contract.yaml#capability_levels.order
 
+  # Admission default. Deliberately not the weakest level: `discover` only
+  # lists that devices exist, so defaulting to it would make every unnamed
+  # call a listing call and let a read slip through under a weaker name.
   default_level: inspect
 
   rules:

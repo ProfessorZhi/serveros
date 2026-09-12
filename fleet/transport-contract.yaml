@@ -35,6 +35,13 @@ identity:
     - computer_name
     - transport_locator
     - transport_uuid
+    # The controller plane's names for the same two things. Listed separately
+    # because they arrive in a different shape and would otherwise read as
+    # product-level identifiers rather than as a route's name for a machine —
+    # `device_uuid` is assigned at registration and changes when a device
+    # re-enrols, which is the opposite of an identity.
+    - device_name
+    - device_uuid
     - ip
     - ssh_alias
     - display_name
@@ -89,6 +96,81 @@ transport:
   # different transport. A silent fallback changes the trust boundary without
   # anyone deciding to.
   no_silent_fallback: true
+
+# ---------------------------------------------------------------------------
+# Capability levels
+# ---------------------------------------------------------------------------
+#
+# Declared ONCE, weakest first. A transport is granted a subset; nothing above
+# this layer may assume a level it was not granted.
+#
+# This list previously existed in two files (`transport.py` as a constant and
+# `mcp-contract.yaml` as `remote_execution.levels`). Two declarations of one
+# closed vocabulary agree until the day someone edits one of them, and then
+# the disagreement is silent — the code grants what the contract does not.
+
+capability_levels:
+  order:
+    - discover          # list what devices exist at all
+    - inspect           # environment facts about one device
+    - read              # read a file's bytes
+    - execute-safe      # run a command admitted as side-effect-free
+    - write-workspace   # write inside a workspace root
+    - install-ability   # materialize or remove an ability
+    - system-change     # mutate host configuration
+    - gui-control       # drive a graphical session
+    - admin             # unrestricted
+
+  # The same levels under the names used by the Fleet brief. Kept as a mapping
+  # rather than a second list, so there is one vocabulary with two spellings
+  # instead of two vocabularies that drift.
+  alias_of:
+    DISCOVER: discover
+    INSPECT: inspect
+    READ_FS: read
+    WRITE_FS: write-workspace
+    EXECUTE: execute-safe
+    GUI_CONTROL: gui-control
+    ADMIN: admin
+
+  rule: >-
+    Absence from a transport's granted set is a denial, not a hint. A caller
+    that needs a level the transport was not granted fails at the boundary; it
+    does not discover the gap by attempting the operation.
+
+# ---------------------------------------------------------------------------
+# Per-capability availability
+# ---------------------------------------------------------------------------
+#
+# Availability is NOT one boolean. "Can this runtime reach that machine at
+# all" and "can this runtime, right now, read a file there" are different
+# questions, and a transport can answer yes to the first and no to the second.
+#
+# The distinction that matters here is EXTERNAL_ONLY: a controller surface
+# genuinely exists and genuinely works — it is simply on another plane, so
+# this runtime cannot call it. That is not the same as the capability being
+# absent from the product, and collapsing the two produces either a false
+# claim of control or a false claim of impossibility.
+
+capability_availability:
+  values:
+    AVAILABLE: this runtime can exercise the capability now
+    EXTERNAL_ONLY: a controller surface exists on another plane, not callable here
+    NOT_GRANTED: the transport does not offer this capability at all
+    UNKNOWN: not established; must not be read as either yes or no
+
+  endpoint:
+    # Reported alongside, because it is the field most often mistaken for
+    # controller availability: an endpoint process can be running and healthy
+    # on this host while nothing here can call it.
+    values: [AVAILABLE, ABSENT, UNKNOWN]
+    meaning: the transport's own endpoint is present on this host
+
+  rule: >-
+    Reporting EXTERNAL_ONLY is a statement about this runtime's reach, not
+    about the capability's existence. A consumer that summarizes
+    EXTERNAL_ONLY as "unavailable" and then as "unsupported" has destroyed the
+    only fact that makes the gap actionable.
 
 # ---------------------------------------------------------------------------
 # Availability

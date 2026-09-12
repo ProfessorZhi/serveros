@@ -407,21 +407,106 @@ class Availability:
         return self.remote_inventory_from_this_runtime == "AVAILABLE"
 
 
+@dataclass(frozen=True)
+class CapabilityAvailability:
+    """Per-capability availability for one transport on one device.
+
+    The single boolean this replaces had one failure mode, and it is the
+    failure this round exists to correct: `endpoint: AVAILABLE` on this host
+    is true while every capability is unreachable from this host, so any
+    consumer handed one bit has to choose which truth to discard.
+
+    Reporting EXTERNAL_ONLY is a claim about this runtime's reach. It is NOT a
+    claim that the capability is absent from the product, and a consumer that
+    folds it into "unavailable → unsupported" has thrown away the only fact
+    that makes the gap actionable: that a specific, nameable step closes it.
+    """
+
+    device_ref: DeviceRef
+    transport_kind: str
+    endpoint: str = "UNKNOWN"
+    # Sparse on purpose: a level nobody established is UNKNOWN, which is not
+    # the same as a level someone checked and found NOT_GRANTED.
+    capabilities: tuple[tuple[str, str], ...] = ()
+    evidence_source: str = "server_local_agent"
+
+    def __post_init__(self) -> None:
+        if self.endpoint not in ENDPOINT_STATES:
+            raise ValueError(
+                f"bad endpoint state {self.endpoint!r}; expected one of {list(ENDPOINT_STATES)}"
+            )
+        for level, state in self.capabilities:
+            if level not in CAPABILITY_LEVELS:
+                raise ValueError(f"unknown capability level {level!r}")
+            if state not in CAPABILITY_STATES:
+                raise ValueError(
+                    f"bad availability {state!r} for {level!r}; "
+                    f"expected one of {list(CAPABILITY_STATES)}"
+                )
+
+    @property
+    def _map(self) -> dict[str, str]:
+        return dict(self.capabilities)
+
+    def state(self, level: str) -> str:
+        """One level's availability. An unstated level is UNKNOWN, not a no.
+
+        Defaulting to a negative would make "we did not check" read as "it is
+        not possible", which is the exact substitution this whole contract
+        exists to prevent.
+        """
+        return self._map.get(canonical_level(level), "UNKNOWN")
+
+    def states(self) -> dict[str, str]:
+        """Every level, in contract order, with gaps filled as UNKNOWN."""
+        present = self._map
+        return {level: present.get(level, "UNKNOWN") for level in CAPABILITY_LEVELS}
+
+    def available_here(self) -> tuple[str, ...]:
+        """Levels this runtime can exercise right now."""
+        return tuple(lv for lv in CAPABILITY_LEVELS if self.state(lv) == "AVAILABLE")
+
+    def external_only(self) -> tuple[str, ...]:
+        """Levels that exist, but not on a plane this runtime can call."""
+        return tuple(lv for lv in CAPABILITY_LEVELS if self.state(lv) == "EXTERNAL_ONLY")
+
+    def reachable_from_this_runtime(self) -> bool:
+        """Whether ANY capability is actually callable here.
+
+        Distinct from `endpoint == "AVAILABLE"`, and that distinction is the
+        one that was missing.
+        """
+        return bool(self.available_here())
+
+
 # ---------------------------------------------------------------------------
 # The transport boundary
 # ---------------------------------------------------------------------------
 
-# Capability levels, weakest first. A transport is granted a set of them, and
-# nothing above this layer may assume a level it was not granted.
-CAPABILITY_LEVELS = (
-    "inspect",
-    "read",
-    "execute-safe",
-    "write-workspace",
-    "install-ability",
-    "system-change",
-    "admin",
+# Capability levels, weakest first, read from the contract rather than kept
+# here. The list previously existed in this module AND in `mcp-contract.yaml`
+# as `remote_execution.levels`; two declarations of one closed vocabulary
+# agree exactly until the day someone edits one of them, and then the code
+# grants a level the contract does not describe.
+CAPABILITY_LEVELS = tuple(transport_contract()["capability_levels"]["order"])
+
+# The brief's spelling of the same levels. Kept as an alias map rather than a
+# second list, so there is one vocabulary with two spellings.
+CAPABILITY_ALIASES = dict(transport_contract()["capability_levels"]["alias_of"])
+
+# Per-capability availability. Not one boolean: "can this runtime reach that
+# machine" and "can this runtime read a file there" have different answers,
+# and EXTERNAL_ONLY is the value that keeps a real, reachable-from-elsewhere
+# capability from being reported as a missing one.
+CAPABILITY_STATES = tuple(transport_contract()["capability_availability"]["values"])
+ENDPOINT_STATES = tuple(
+    transport_contract()["capability_availability"]["endpoint"]["values"]
 )
+
+
+def canonical_level(level: str) -> str:
+    """Map either spelling of a capability level onto the canonical one."""
+    return CAPABILITY_ALIASES.get(level, level)
 
 
 class DeviceTransport(abc.ABC):
@@ -440,16 +525,21 @@ class DeviceTransport(abc.ABC):
     kind: str = "abstract"
 
     def __init__(self, *, granted_levels: tuple[str, ...] = ()) -> None:
-        unknown = set(granted_levels) - set(CAPABILITY_LEVELS)
+        # Either spelling is accepted and stored canonically, so a caller that
+        # grants "READ_FS" and a caller that checks "read" cannot disagree
+        # about what was granted.
+        normalized = tuple(canonical_level(lv) for lv in granted_levels)
+        unknown = set(normalized) - set(CAPABILITY_LEVELS)
         if unknown:
             raise ValueError(f"unknown capability levels: {sorted(unknown)}")
-        self._granted = tuple(granted_levels)
+        self._granted = normalized
 
     @property
     def granted_levels(self) -> tuple[str, ...]:
         return self._granted
 
     def require(self, level: str) -> None:
+        level = canonical_level(level)
         if level not in CAPABILITY_LEVELS:
             raise ValueError(f"unknown capability level {level!r}")
         if level not in self._granted:
@@ -485,6 +575,22 @@ class DeviceTransport(abc.ABC):
             fleet_presence="KNOWN_ONLINE",
             local_agent_controller="AVAILABLE",
             remote_inventory_from_this_runtime="AVAILABLE",
+        )
+
+    def capability_availability(self, device_ref: DeviceRef) -> "CapabilityAvailability":
+        """Per-capability availability, defaulting to "not established".
+
+        The base class deliberately answers UNKNOWN for every level and claims
+        nothing about EXTERNAL_ONLY. Only a transport that has actually located
+        a controller surface on another plane may say EXTERNAL_ONLY, because
+        saying it asserts that the capability exists somewhere — and a base
+        class has no way to know that.
+        """
+        endpoint = "AVAILABLE" if self.controller_available() else "UNKNOWN"
+        return CapabilityAvailability(
+            device_ref=device_ref,
+            transport_kind=self.kind,
+            endpoint=endpoint,
         )
 
     # -- operations --------------------------------------------------------

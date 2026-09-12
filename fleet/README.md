@@ -9,12 +9,39 @@ Ability Management does not duplicate this registry. It references `device_ref` 
 ```text
 serveros/fleet device registry        stable identity / role / public environment facts
 ~/.serveros/targets.yaml              local-only connection locator / credential references
+~/.serveros/controller.yaml           local-only statement that a controller is callable here
 state/serveros/fleet/<device>/        dynamic reachability / heartbeat / observations
 ability-management fleet policy       desired capability packages/profiles
 state/serveros/ability-management/    current ability materialization snapshot
 ```
 
 No hostname, IP, SSH user/key path, token, machine-id, MAC, asset tag or hardware serial belongs in the public device registry.
+
+## Files
+
+```text
+registry.yaml             device identity — authored, stable, public
+profiles.yaml             semantic path roles, bound per device profile
+transport-contract.yaml   identity rules, transport kinds, capability levels,
+                          per-capability availability, provenance sources
+mcp-contract.yaml         what each MCP surface owns, and what it must not
+controller-contract.yaml   where the fleet controller actually is, the boundary
+                          ServerOS keeps to it, and the connector shape if one
+                          is ever wanted
+transport.py              identity, availability, DeviceTransport
+controller.py             controller declaration + external-surface description
+remote_desktop_commander.py  first transport adapter
+device-contract.yaml      what may not appear in the public registry
+```
+
+## Endpoint and controller are different roles
+
+`desktop-commander remote` starts the **endpoint**: this machine becomes
+controllable *by* the control plane. It dials out and listens on nothing. The
+**controller** lives on the control plane and is consumed by external MCP
+clients. A device can be online fleet-wide, with a healthy endpoint, while
+this runtime has no route to it at all — that state is
+`REMOTE_CONTROLLER_NOT_EXPOSED` and it is never `DEVICE_UNOBSERVED`.
 
 ## Enrollment
 

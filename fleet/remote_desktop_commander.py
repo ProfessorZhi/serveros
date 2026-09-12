@@ -47,50 +47,29 @@ def _load(name: str, filename: str):
 
 
 transport = _load("serveros_fleet_transport", "transport.py")
+controller = _load("serveros_fleet_controller", "controller.py")
 
 DeviceRef = transport.DeviceRef
 DeviceTransport = transport.DeviceTransport
 ControllerNotExposed = transport.ControllerNotExposed
 
-# Where a local controller surface would be declared. Absent means absent:
-# the contract does not let us infer a controller from an installed binary.
-CONTROLLER_DECLARATION = "~/.serveros/controller.yaml"
+# Where a local controller surface would be declared. Absent means absent: the
+# contract does not let us infer a controller from an installed binary.
+CONTROLLER_DECLARATION = controller.CONTROLLER_DECLARATION
+
+# Re-exported so existing callers keep working; the implementation is
+# transport-agnostic and lives with the controller boundary.
+declared_controller = controller.declared_controller
 
 # The process name of the endpoint, used only by the diagnostic below.
 ENDPOINT_MARKER = "desktop-commander"
 
 
-def declared_controller(path: Path | None = None) -> dict | None:
-    """Return the locally declared controller surface, if one is declared.
-
-    A declaration is a positive statement that something on THIS machine can
-    be called. Installing a package, or leaving a daemon running, is not a
-    declaration.
-    """
-    target = Path(os.path.expanduser(CONTROLLER_DECLARATION)) if path is None else Path(path)
-    if not target.exists():
-        return None
-    data = transport.load_yaml(target) or {}
-    if data.get("kind") != "remote-desktop-commander":
-        return None
-    if not data.get("surface"):
-        return None
-    return data
-
-
-def diagnose_local_endpoint() -> dict:
-    """Report what is observable about the endpoint process on this host.
-
-    Diagnostic only. Its output is deliberately NOT shaped like a controller
-    handle, so it cannot be mistaken for one and passed to the adapter. It
-    answers "what is running here", not "what can I call".
-
-    Matches on argv contents rather than a process-name pattern, and skips
-    this process and its ancestors, so the probe cannot observe itself.
-    """
+def _ancestors() -> set[int]:
+    """This process and its ancestors, so a probe cannot observe itself."""
     mine = {os.getpid()}
     pid = os.getpid()
-    for _ in range(8):  # walk up a bounded number of ancestors
+    for _ in range(8):  # a bounded walk; a corrupt tree must not hang a check
         try:
             stat = Path(f"/proc/{pid}/stat").read_text()
             ppid = int(stat.rsplit(")", 1)[1].split()[1])
@@ -100,7 +79,89 @@ def diagnose_local_endpoint() -> dict:
             break
         mine.add(ppid)
         pid = ppid
+    return mine
 
+
+def classify_argv(argv: list[str]) -> tuple[bool, str | None]:
+    """Whether an argv is an endpoint invocation, and in which role.
+
+    Matching the marker as a substring anywhere in argv is wrong, and wrong in
+    the direction that matters: a shell whose *command text* mentions the
+    package path matches, and the diagnostic then reports an endpoint process
+    that does not exist. That false positive was observed live — an old
+    `bash -c "... desktop-commander ..."` from an earlier session was counted
+    as a fourth endpoint.
+
+    An endpoint invocation names the binary as an argument of its own: no
+    whitespace, and the role comes from the arguments AFTER it, not from
+    anywhere in the string.
+    """
+    for index, arg in enumerate(argv):
+        if ENDPOINT_MARKER not in arg or any(ch.isspace() for ch in arg):
+            continue
+        # `desktop-commander`, the resolved `.bin` shim, or `dist/index.js`
+        # reached through the package directory. A shell payload mentioning the
+        # path is excluded by the whitespace test above.
+        tail = arg.rstrip("/").rsplit("/", 1)[-1]
+        if tail not in ("desktop-commander", "index.js"):
+            continue
+        rest = argv[index + 1:]
+        if not rest:
+            return True, "local"
+        if "remote" in rest:
+            return True, "remote"
+        return True, "local"
+    return False, None
+
+
+def _listening_sockets(pid: int) -> int:
+    """How many LISTEN sockets this process holds.
+
+    This is the measurement that separates the two roles. An endpoint dials
+    out; a controller listens. A process can be running for days, healthy and
+    connected, while holding zero listening sockets — at which point nothing
+    on this machine can call it, however present it looks in `ps`.
+    """
+    inodes: set[str] = set()
+    try:
+        for fd in (Path(f"/proc/{pid}/fd")).iterdir():
+            try:
+                target = os.readlink(fd)
+            except OSError:
+                continue
+            if target.startswith("socket:["):
+                inodes.add(target[len("socket:["):-1])
+    except OSError:
+        return 0  # not ours to inspect; report nothing rather than a guess
+    if not inodes:
+        return 0
+
+    listening = 0
+    for table in ("/proc/net/tcp", "/proc/net/tcp6"):
+        try:
+            rows = Path(table).read_text().splitlines()[1:]
+        except OSError:
+            continue
+        for row in rows:
+            parts = row.split()
+            if len(parts) < 10 or parts[3] != "0A":  # 0A == TCP_LISTEN
+                continue
+            if parts[9] in inodes:
+                listening += 1
+    return listening
+
+
+def observe_local_endpoint() -> dict:
+    """What is observable about the endpoint process on this host.
+
+    Diagnostic only. Its output is deliberately NOT shaped like a controller
+    handle, so it cannot be mistaken for one and passed to the adapter. It
+    answers "what is running here", not "what can I call".
+
+    Matches on argv contents rather than a process-name pattern, and skips
+    this process and its ancestors, so the probe cannot observe itself.
+    """
+    mine = _ancestors()
     endpoints: list[dict] = []
     proc = Path("/proc")
     if proc.is_dir():
@@ -112,18 +173,21 @@ def diagnose_local_endpoint() -> dict:
             except OSError:
                 continue
             argv = [a.decode(errors="replace") for a in argv if a]
-            if not argv or not any(ENDPOINT_MARKER in a for a in argv):
+            is_endpoint, mode = classify_argv(argv)
+            if not is_endpoint:
                 continue
             endpoints.append(
                 {
                     "pid": int(entry.name),
-                    "argv_head": [a for a in argv if ENDPOINT_MARKER in a][:2],
-                    "mode": "remote" if "remote" in argv else "local",
+                    "argv_head": [a for a in argv if ENDPOINT_MARKER in a and not any(c.isspace() for c in a)][:2],
+                    "mode": mode,
+                    "listening_sockets": _listening_sockets(int(entry.name)),
                 }
             )
     return {
         "endpoint_present": bool(endpoints),
         "endpoints": endpoints,
+        "listening_sockets": sum(e["listening_sockets"] for e in endpoints),
         "controller_declaration": str(Path(os.path.expanduser(CONTROLLER_DECLARATION))),
         "controller_declared": declared_controller() is not None,
         "note": (
@@ -131,6 +195,11 @@ def diagnose_local_endpoint() -> dict:
             "device may be reachable fleet-wide while this runtime has no route to it."
         ),
     }
+
+
+# The richer name is the one the docs and callers use; the shorter form is
+# kept because it is what the previous round's tooling called.
+diagnose_local_endpoint = observe_local_endpoint
 
 
 class RemoteDesktopCommanderTransport(DeviceTransport):
@@ -145,12 +214,18 @@ class RemoteDesktopCommanderTransport(DeviceTransport):
     def __init__(
         self,
         *,
-        controller: dict | None = None,
+        declaration: dict | None = None,
         declaration_path: Path | None = None,
         granted_levels: tuple[str, ...] = (),
+        endpoint_present: bool | None = None,
     ) -> None:
         super().__init__(granted_levels=granted_levels)
-        self._declared = controller if controller is not None else declared_controller(declaration_path)
+        self._declared = declaration if declaration is not None else declared_controller(declaration_path)
+        # Whether the endpoint process is running is an OBSERVATION about this
+        # host, and it is injectable so a test can pin it. Probing /proc from a
+        # constructor would make every test's result depend on whatever happens
+        # to be running on the machine that ran it.
+        self._endpoint_present = endpoint_present
 
     # -- availability ------------------------------------------------------
 
@@ -180,6 +255,59 @@ class RemoteDesktopCommanderTransport(DeviceTransport):
             remote_inventory_from_this_runtime="AVAILABLE",
             evidence_source="local_endpoint",
         )
+
+    def endpoint_present(self) -> bool:
+        """Whether the endpoint role is running on this host.
+
+        Note what this is NOT: `controller_available()`. The endpoint and the
+        controller are different roles, shipped by different parties, and the
+        entire point of this adapter is that one can be true while the other
+        is false.
+        """
+        if self._endpoint_present is None:
+            self._endpoint_present = observe_local_endpoint()["endpoint_present"]
+        return self._endpoint_present
+
+    def capability_availability(self, device_ref: DeviceRef) -> transport.CapabilityAvailability:
+        """One answer per capability, because one answer is not enough.
+
+        Three distinct situations, three distinct values:
+
+          no declaration          EXTERNAL_ONLY — the surface exists; this
+                                  runtime cannot call it. Not "unsupported".
+          declared, level granted AVAILABLE     — callable here, now.
+          declared, not granted   NOT_GRANTED   — callable surface, withheld
+                                  from ServerOS by decision.
+
+        Folding the first into NOT_GRANTED would erase the step that closes
+        the gap; folding it into AVAILABLE would be a lie about this runtime.
+        """
+        if self._declared is None:
+            capabilities = tuple(
+                (level, "EXTERNAL_ONLY") for level in transport.CAPABILITY_LEVELS
+            )
+        else:
+            granted = set(self.granted_levels)
+            capabilities = tuple(
+                (level, "AVAILABLE" if level in granted else "NOT_GRANTED")
+                for level in transport.CAPABILITY_LEVELS
+            )
+        return transport.CapabilityAvailability(
+            device_ref=device_ref,
+            transport_kind=self.kind,
+            endpoint="AVAILABLE" if self.endpoint_present() else "ABSENT",
+            capabilities=capabilities,
+            evidence_source="local_endpoint",
+        )
+
+    def external_surface(self) -> dict:
+        """The published description of the controller plane, or a refusal.
+
+        Returns a description, never a handle. It exists so that the layer
+        above can explain WHERE the capability went without this adapter
+        becoming something that talks to the controller itself.
+        """
+        return controller.external_controller()
 
     def _require_controller(self) -> dict:
         if self._declared is None:
