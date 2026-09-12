@@ -54,13 +54,34 @@ So a release has to answer all three:
                             discovery and flattened into the runtime skill root
                             is two active materializations of one thing.
 
-`RELEASE_COMPLETE` requires all three. `PIN_NOT_CANONICAL` is deliberately the
-only new drift class implemented: `PIN_SUPERSEDED` is a real distinction but it
-needs a registry-side declaration of which revisions are superseded, and that
-declaration does not exist yet. Naming it here without the data to decide it
-would be a vocabulary entry with no implementation behind it, which is the
-failure this checkpoint keeps finding, so it is written down as absent rather
-than shipped as a word.
+`RELEASE_COMPLETE` requires all three.
+
+An earlier revision of this file declared `PIN_SUPERSEDED` deliberately
+unimplemented, on the grounds that deciding it "needs a registry-side
+declaration of which revisions are superseded, and that declaration does not
+exist". That reasoning was wrong, and the way it was wrong is worth keeping:
+the declaration does exist. The registry's `revisions` list is append-only and
+ordered, and every append is made by `control_plane.py sync-self` when the
+artifact's bytes actually change — so an artifact whose payload no longer
+matches canonical head's has, by construction, been superseded. The missing
+data was never missing; it was one `git diff` away, and the entry stayed
+unimplemented because a sentence said it had to. That is the failure mode this
+checkpoint keeps finding, committed by this file about this file.
+
+Supersession is decided on CONTENT, not on commit order: `git diff --quiet
+<pin> <canonical_head> -- <payload>` over the ability's payload root — the exact
+directory the registry fingerprints. A pin that is merely an older commit with
+the same payload is `VALID_HISTORICAL`, not superseded; a release may
+legitimately be built from an older commit, and saying otherwise would make
+this axis fire on correct machines until someone turned it off.
+
+Which of the four states a pin is in — `CURRENT`, `VALID_HISTORICAL`,
+`SUPERSEDED`, `INVALID` — is reported as `state`. `revision exists` and `the
+release is current` are different questions: a pin can name a revision canonical
+genuinely contains, that rebuilds byte-for-byte, and still not be the release
+anyone should be running. Only `INVALID` (and a pin that was never recorded at
+all, `PIN_MISSING`) blocks; `SUPERSEDED` is reported and does not.
+
 
 Two drift classes, kept apart on purpose
 ----------------------------------------
@@ -76,14 +97,18 @@ Merging them would make one word cover two different repairs.
                                     one of the things being measured.
 
   PIN_SUPERSEDED                    the bundle pins a revision that canonical has
-                                    since superseded. NOT IMPLEMENTED, and no
-                                    detector is invented for it -- it needs a
-                                    registry-side declaration of which revisions
-                                    are superseded, which does not exist.
+                                    since superseded. IMPLEMENTED -- and, like
+                                    the record class, it never blocks. It is
+                                    decided by comparing the pinned payload
+                                    against canonical head's, which is a
+                                    disagreement between two real authorities
+                                    (a past release and the current source),
+                                    not a guess about either.
 
 The asymmetry is the point. One is a disagreement between an authority and a
-record of it, decided by reading the artifact. The other is a disagreement
-between two authorities, neither of which exists yet in machine-readable form.
+record of it; the other is a disagreement between two authorities. Neither
+blocks, because neither is a byte-level lie: the bytes are what they claim, and
+what changed is whether they are still the ones to ship.
 
 What it does NOT do
 -------------------
@@ -127,7 +152,24 @@ UNKNOWN = "UNKNOWN"
 # A chain can be internally perfect and still be the wrong release; these name
 # the ways that happens.
 PIN_NOT_CANONICAL = "PIN_NOT_CANONICAL"
+PIN_MISSING = "PIN_MISSING"
+PIN_SUPERSEDED = "PIN_SUPERSEDED"
 NAME_COLLISION = "NAME_COLLISION"
+
+# The four states a pin can be in. NOT the same question as "is the pin valid":
+# a revision can be real, canonical, and reproducible while the release built
+# from it is no longer the one to ship. Only INVALID and MISSING block.
+PIN_STATE_CURRENT = "CURRENT"
+PIN_STATE_HISTORICAL = "VALID_HISTORICAL"
+PIN_STATE_SUPERSEDED = "SUPERSEDED"
+PIN_STATE_INVALID = "INVALID"
+PIN_STATE_MISSING = "MISSING"
+
+# The ability whose revisions the bundle pins, and the file it declares its
+# payload path in. Named rather than inlined so the fixture can point it at its
+# own synthetic registry.
+PINNED_ABILITY = "ProfessorZhi/ability-management"
+ABILITY_MANIFEST = "abilities-manifest.yaml"
 
 # The three questions a release has to answer. Every one of them must PASS
 # before this tool will say RELEASE_COMPLETE — "the bytes match" is only the
@@ -399,6 +441,73 @@ def declared_pin(artifact: Path) -> str:
     return found.group(1) if found else ""
 
 
+def _git_object_at(ability_repo: Path, ref: str, path: str):
+    """`<ref>:<path>` 的对象类型, 不存在则 None。读的是 git 对象, 不是工作树 ——
+    工作树可能脏、可能在别的分支, 用它会得到"此刻磁盘上恰好是什么"而不是"那个 revision
+    是什么"。判定 provenance 的每一步都以 ref 为准。"""
+    try:
+        proc = subprocess.run(
+            ["git", "-C", str(ability_repo), "cat-file", "-t", f"{ref}:{path}"],
+            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+    except OSError:
+        return None
+    if proc.returncode != 0:
+        return None
+    return proc.stdout.decode(errors="replace").strip() or None
+
+
+def _ability_payload_root(ability_repo: Path, ref: str, ability_id: str):
+    """canonical 在 `ref` 上给这个 ability 的 payload 根(与 registry 的 `_payload_root` 同规则:
+    优先 `<path>/payload`, 否则整个 `<path>`)。找不到该 ability 返回 None。"""
+    try:
+        proc = subprocess.run(
+            ["git", "-C", str(ability_repo), "show", f"{ref}:{ABILITY_MANIFEST}"],
+            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+    except OSError:
+        return None
+    if proc.returncode != 0:
+        return None
+    try:
+        doc = yaml.safe_load(proc.stdout.decode("utf-8", "replace")) or {}
+    except yaml.YAMLError:
+        return None
+    for entry in doc.get("abilities") or []:
+        if (entry.get("id") or entry.get("name")) != ability_id:
+            continue
+        base = (entry.get("path") or "").strip("/")
+        if not base:
+            return None
+        return f"{base}/payload" if _git_object_at(ability_repo, ref, f"{base}/payload") == "tree" else base
+    return None
+
+
+def pin_superseded(ability_repo: Path, pin: str, canonical_head: str,
+                   ability_id: str = PINNED_ABILITY):
+    """canonical head 上这个 ability 的 payload 是否已经和 pin 里的不是同一份?
+
+    True  = 变了(superseded)/ False = 没变; None = 判不了。三态的理由和别处一致:
+    判不了不是"没问题", 默认 unknown -> not superseded 会让检查器开始撒谎。
+
+    判据是内容不是提交序: `git diff --quiet` 覆盖的正是 registry 做指纹的那个目录。
+    只比 commit 先后会把"更早的提交、同样的内容"报成 superseded —— 那是一次完全
+    合法的发布, 而一个会在正确机器上报警的检查, 第三次就会被关掉。
+    """
+    root = _ability_payload_root(ability_repo, canonical_head, ability_id)
+    if root is None:
+        return None
+    try:
+        proc = subprocess.run(
+            ["git", "-C", str(ability_repo), "diff", "--quiet", pin, canonical_head, "--", root],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except OSError:
+        return None
+    if proc.returncode == 0:
+        return False
+    if proc.returncode == 1:
+        return True
+    return None
+
+
 def canonical_provenance(ability_repo: Path, pin: str, canonical_ref: str) -> dict:
     """Is the pinned build revision contained in the canonical branch?
 
@@ -413,9 +522,11 @@ def canonical_provenance(ability_repo: Path, pin: str, canonical_ref: str) -> di
     lying.
     """
     out = {"pin": pin, "canonical_ref": canonical_ref, "reachable": None,
-           "drift": "", "detail": ""}
+           "state": PIN_STATE_MISSING, "drift": "", "detail": ""}
     if not pin:
-        out["drift"] = PIN_NOT_CANONICAL
+        # 没有 pin 和"pin 指向 canonical 之外"是两件事: 前者是没记, 后者是记错了。
+        # 混成一个词会让一句"artifact 与 canonical 不符"覆盖一个"artifact 什么都没说"。
+        out["drift"] = PIN_MISSING
         out["detail"] = ("no full 40-hex pin recorded, so the revision the artifact "
                          "was built from is unknown")
         return out
@@ -429,6 +540,7 @@ def canonical_provenance(ability_repo: Path, pin: str, canonical_ref: str) -> di
     out["canonical_head"] = head
     if _git(ability_repo, "cat-file", "-t", pin) is None:
         out["reachable"] = False
+        out["state"] = PIN_STATE_INVALID
         out["drift"] = PIN_NOT_CANONICAL
         out["detail"] = f"pinned revision {pin[:12]} does not exist in {ability_repo}"
         return out
@@ -442,14 +554,35 @@ def canonical_provenance(ability_repo: Path, pin: str, canonical_ref: str) -> di
     if proc.returncode == 0:
         out["reachable"] = True
         if head == pin:
+            out["state"] = PIN_STATE_CURRENT
             out["detail"] = f"pin is exactly {canonical_ref}"
+            return out
+        behind = _git(ability_repo, "rev-list", "--count", f"{pin}..{canonical_ref}") or "?"
+        # pin 比 head 老不是缺陷 —— 但那不等于"这个发布就是当前发布"。两个问题分开问:
+        # 老提交 + 同样的 payload = 一次合法的、内容仍然当前的发布;
+        # 老提交 + 变了的 payload = canonical 已经发布过更新的 revision。
+        moved = pin_superseded(ability_repo, pin, head)
+        if moved is None:
+            out["state"] = PIN_STATE_HISTORICAL
+            out["detail"] = (f"pin is on {canonical_ref}, {behind} commit(s) behind its head; "
+                             "the ability's payload could not be compared against head, so "
+                             "whether it is still current was NOT established")
+        elif moved:
+            out["state"] = PIN_STATE_SUPERSEDED
+            out["drift"] = PIN_SUPERSEDED
+            out["detail"] = (f"pin is on {canonical_ref}, {behind} commit(s) behind its head, "
+                             "and the ability's payload has changed since — canonical has "
+                             "published a newer revision. The pinned bytes are real and "
+                             "reproducible; they are just not the ones to ship")
         else:
-            behind = _git(ability_repo, "rev-list", "--count", f"{pin}..{canonical_ref}") or "?"
-            out["detail"] = (f"pin is on {canonical_ref}, {behind} commit(s) behind its head "
-                             "— a release may pin an older revision; not a defect")
+            out["state"] = PIN_STATE_HISTORICAL
+            out["detail"] = (f"pin is on {canonical_ref}, {behind} commit(s) behind its head, "
+                             "but the ability's payload is unchanged since the pin — an older "
+                             "commit carrying the current content; not a defect")
         return out
     if proc.returncode == 1:
         out["reachable"] = False
+        out["state"] = PIN_STATE_INVALID
         out["drift"] = PIN_NOT_CANONICAL
         ahead = _git(ability_repo, "rev-list", "--count", f"{canonical_ref}..{pin}") or "?"
         out["detail"] = (f"pinned revision {pin[:12]} is NOT reachable from {canonical_ref} "
@@ -627,12 +760,17 @@ def collect(args) -> dict:
     # is a statement about the FORMAT of the pin, not about the pin. It now
     # carries the reachability answer, because "the pin is well-formed" and
     # "the pin points into canonical" were being read as the same row.
+    # 行的 verdict 说"这个 pin 本身是不是有效的 canonical revision"; superseded 是一个
+    # 有效的 revision, 所以它在行里仍是 OK, 由 note 和 axis 的 state 说出来。把 superseded
+    # 降级成失败会让一次完全可复现的发布看起来像坏了。
     if provenance["reachable"] is None:
         pin_verdict, pin_detail = UNKNOWN, provenance["detail"]
     elif provenance["reachable"]:
         pin_verdict, pin_detail = OK, provenance["detail"]
     else:
         pin_verdict, pin_detail = PIN_NOT_CANONICAL, provenance["detail"]
+    if provenance.get("state") == PIN_STATE_SUPERSEDED:
+        pin_detail = f"[{PIN_STATE_SUPERSEDED}] " + pin_detail
     row("ability-management (build pin)", pinned[:12] or UNKNOWN, declared[:12] or pinned[:12],
         recorded_pin[:12] or UNKNOWN,
         pin_verdict, pin_detail, note=record_note, axis=AXIS_PROVENANCE)
@@ -739,7 +877,11 @@ def collect(args) -> dict:
                        if overall == OK else f"chain verdict is {overall}"),
         },
         AXIS_PROVENANCE: {
+            # reachable=True 覆盖 CURRENT / VALID_HISTORICAL / SUPERSEDED 三态:
+            # 三者都指向 canonical 里真实存在、可重建的 revision。区别在于"是不是
+            # 当前该发的那个", 那是 state 的问题, 不是这个轴成败的问题。
             "verdict": PASS if provenance["reachable"] else FAIL,
+            "state": provenance.get("state", PIN_STATE_MISSING),
             "detail": provenance["detail"] or "pin reachability undetermined",
             "drift": provenance["drift"],
         },
@@ -756,6 +898,7 @@ def collect(args) -> dict:
                 "axes": axes, "blocking": blocking,
                 "materialization": materialization,
                 "pin": {"used": pinned, "declared": declared, "recorded": recorded_pin,
+                        "state": provenance.get("state", PIN_STATE_MISSING),
                         "record_agrees": declared == recorded_pin if declared else None,
                         # The artifact is authority; the platform's install
                         # record is an observation OF the artifact. When they
@@ -769,9 +912,10 @@ def collect(args) -> dict:
                         "record_why": record_why,
                         "not_to_be_confused_with": {
                             "PIN_SUPERSEDED":
-                                "a bundle pin that canonical has superseded — an "
-                                "authority-vs-authority question, not implemented "
-                                "and deliberately not detected here"}},
+                                "reported separately, in `state`: a pin that is a real, "
+                                "canonical, reproducible revision which canonical has "
+                                "since superseded. It is not a disagreement between the "
+                                "artifact and this record — both can be right"}},
             },
             "codex": {"enabled": codex.get("enabled"),
                       "marketplace_source": codex.get("marketplace_source")}}

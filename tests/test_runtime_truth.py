@@ -455,7 +455,13 @@ class RuntimeTruthTests(unittest.TestCase):
         Flagging this would make the check fire on a correct machine, and a
         check that fires on correct machines gets ignored by the third time it
         does it. This is the distinction that split PIN_NOT_CANONICAL away from
-        the PIN_SUPERSEDED name that is deliberately NOT implemented.
+        the PIN_SUPERSEDED name.
+
+        The assertion that the payload comparison actually RAN is the point of
+        the second half. `pin_superseded` is tri-state, and a fixture whose
+        registry the comparison cannot read makes every case return None — the
+        test would still see PASS and still see "behind", while the detector it
+        names was never entered.
         """
         self.faithful_runtime()
         git(self.ability, "commit", "--quiet", "--allow-empty", "-m", "later work")
@@ -463,7 +469,70 @@ class RuntimeTruthTests(unittest.TestCase):
         axis = self.axis(report, truth.AXIS_PROVENANCE)
         self.assertEqual(axis["verdict"], truth.PASS)
         self.assertEqual(axis["drift"], "")
+        self.assertEqual(axis["state"], truth.PIN_STATE_HISTORICAL)
         self.assertIn("behind", axis["detail"])
+        self.assertNotIn("could not be compared", axis["detail"],
+                         "the payload comparison must have run, not fallen through")
+
+    def test_a_superseded_pin_is_reported_and_does_not_block(self):
+        """The release is real, reproducible, and no longer the one to ship.
+
+        This is the failure that produced this axis in the first place, and it
+        is NOT the same as an unreachable pin: every byte agrees, the revision
+        exists on canonical, and a rebuild from it reproduces the artifact. What
+        is wrong is only that canonical has published a newer revision of the
+        ability since. Failing the axis for this would make a correct machine
+        report RELEASE_INCOMPLETE, which is how this check would get ignored.
+        """
+        self.faithful_runtime()
+        pinned = self.rev
+        # A real change to the ability's payload, the way a released revision
+        # changes: content, not an empty commit.
+        payload = self.ability / "skills/ability-management/payload/SKILL.md"
+        payload.write_text(payload.read_text() + "\nnew instruction\n")
+        git(self.ability, "add", "-A")
+        git(self.ability, "commit", "--quiet", "-m", "publish a newer revision")
+        self.assertTrue(truth.pin_superseded(self.ability, pinned,
+                                             git(self.ability, "rev-parse", "HEAD")),
+                        "fixture must actually produce a superseded pin")
+        report = truth.collect(self.args(ability_rev=pinned))
+        axis = self.axis(report, truth.AXIS_PROVENANCE)
+        self.assertEqual(axis["state"], truth.PIN_STATE_SUPERSEDED)
+        self.assertEqual(axis["drift"], truth.PIN_SUPERSEDED)
+        self.assertEqual(axis["verdict"], truth.PASS, "a superseded pin is not a byte-level lie")
+        self.assertEqual(report["release"]["blocking"], [])
+        self.assertEqual(report["release"]["verdict"], truth.RELEASE_COMPLETE)
+        self.assertEqual(report["release"]["pin"]["state"], truth.PIN_STATE_SUPERSEDED)
+
+    def test_a_pin_whose_payload_is_unchanged_is_current_content(self):
+        """Older commit, same bytes => the same revision. Not superseded."""
+        self.faithful_runtime()
+        git(self.ability, "commit", "--quiet", "--allow-empty", "-m", "unrelated")
+        head = git(self.ability, "rev-parse", "HEAD")
+        self.assertIs(truth.pin_superseded(self.ability, self.rev, head), False)
+
+    def test_an_unrecorded_pin_is_missing_not_not_canonical(self):
+        """`nothing recorded` and `recorded wrong` are different repairs.
+
+        Both used to come out as PIN_NOT_CANONICAL, which says the artifact
+        disagrees with canonical — but an artifact that declares no revision at
+        all is not disagreeing with anything; it is declining to say.
+        """
+        self.faithful_runtime()
+        (self.out / "README.md").write_text("# built artifact\n")   # no pin line
+        # The install record is a second, independent source for the same
+        # claim, so it has to be silenced too — otherwise the effective pin
+        # comes from there and this tests nothing about a missing declaration.
+        doc = json.loads(self.claude_json.read_text())
+        doc["plugins"][truth.CLAUDE_PLUGIN_KEY][0].pop("gitCommitSha", None)
+        self.claude_json.write_text(json.dumps(doc))
+        report = truth.collect(self.args(ability_rev=""))
+        pin = report["release"]["pin"]
+        self.assertEqual(pin["used"], "", "precondition: nothing anywhere declares a revision")
+        axis = self.axis(report, truth.AXIS_PROVENANCE)
+        self.assertEqual(axis["drift"], truth.PIN_MISSING)
+        self.assertEqual(axis["state"], truth.PIN_STATE_MISSING)
+        self.assertEqual(axis["verdict"], truth.FAIL, "an unverifiable pin is not a verified one")
 
     # ---- materialization uniqueness -------------------------------------
 
