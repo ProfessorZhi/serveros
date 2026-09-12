@@ -20,7 +20,7 @@ The other half is what a checker is allowed to do about an absence. There are
 three shapes and only one of them is a fault:
 
     PRESENT           a producer exists and has written
-    EXPECTED_ABSENT   no producer exists yet; this is the correct state
+    EXPECTED_ABSENT   nothing has been written and nothing requires it
     MISSING_REQUIRED  a producer is declared and its output is not there
 
 The obvious implementation — `if not path.exists(): create it` — destroys the
@@ -267,8 +267,13 @@ def _state_note(state: str, spec: dict) -> str:
         return f"present; holds {spec['holds']}" if spec.get("holds") else "present"
     if state == EXPECTED_ABSENT:
         means = f" Its absence is the defined state {spec['absent_means']}." if spec.get("absent_means") else ""
+        # Not "has not written it YET". That promises a write is coming, and
+        # four of these namespaces — `runtime/resources`, `attribution`,
+        # `graph`, `anomalies` — compute on demand over IPC and never persist,
+        # so the promise would be false forever. What is true for all of them
+        # is that nothing has been written and nothing requires it to be.
         return (
-            f"no producer has written it yet, and nothing requires one to."
+            f"nothing has been written here, and nothing requires it."
             f"{means} Declared so the name is reserved; NOT created so the "
             f"report looks complete."
         )

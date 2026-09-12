@@ -109,36 +109,56 @@ namespaces:
         holds: machine resource pressure
         producer: runtime/inventory.py
         required: false
+        # Measured live on 2026-09-13: `runtime/` holds `health/`, `hygiene/`,
+        # `observed/` and `registry/`, and nothing else. These four namespaces
+        # declare producers that exist and are reachable, but that **compute on
+        # demand and never persist** — `grep` for a state write in
+        # `attribution.py`, `graph.py` and `anomaly.py` returns nothing, because
+        # the daemon answers these over IPC and keeps no file.
+        #
+        # `NOT_YET_WRITTEN` was the wrong word for that. It promises a write
+        # that is coming, so a reader waits for one; `COMPUTED_ON_DEMAND` says
+        # the absence is the steady state, which is what is true. Both were
+        # `required: false`, so nothing depended on either — which is exactly
+        # why the wording could sit here being subtly wrong without anything
+        # failing.
+        absent_means: COMPUTED_ON_DEMAND
       attribution:
         class: authority
         holds: process → agent/task/group attribution as measured
         producer: runtime/attribution.py
         required: false
-        absent_means: NOT_YET_WRITTEN
+        absent_means: COMPUTED_ON_DEMAND
       graph:
         class: authority
         holds: the runtime groups derived from the process table
         producer: runtime/graph.py
         required: false
-        absent_means: NOT_YET_WRITTEN
+        absent_means: COMPUTED_ON_DEMAND
       anomalies:
         class: projection
         holds: anomaly classifications, including the combinations that did not fire
         producer: runtime/anomaly.py
         required: false
         authority: false
+        absent_means: COMPUTED_ON_DEMAND
   fleet:
     class: projection
     holds: fleet-level observed state as seen from this node
     producer: fleet/
     required: false
     authority: false
+    # §51: Fleet is optional per device. A node that declares no fleet
+    # participation has no fleet state to observe, and that is the defined
+    # state, not a missing one.
+    absent_means: FLEET_NOT_DECLARED
   source-index:
     class: projection
     holds: an index over source locations
     producer: workspace-management
     required: false
     authority: false
+    absent_means: NO_SOURCE_INDEX
   locks:
     class: non_authority
     holds: lease intent — that a holder believes it holds something
@@ -149,6 +169,10 @@ namespaces:
     # because a lock that outlives its holder then reads as an occupied
     # resource forever.
     authority: false
+    # An empty lock directory is the ordinary state of an idle node. It is not
+    # a producer that has not run yet: there is no periodic lock writer, and
+    # there never will be one.
+    absent_means: NO_LOCKS_HELD
   projections:
     class: projection
     holds: generated, derived, reproducible, non-authoritative views of anything
