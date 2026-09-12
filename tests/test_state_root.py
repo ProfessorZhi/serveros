@@ -66,6 +66,7 @@ def manifest(**overrides):
         "schema": "serveros/projection.v1",
         "authority": False,
         "generated": True,
+        "reproducible": True,
         "generator": "workspace-management",
         "generated_at": "2026-08-19T10:58:00+08:00",
         "source_refs": ["device:server-beijing"],
@@ -390,75 +391,154 @@ def test_the_projections_namespace_is_inside_the_state_root():
     assert state_root.classify("projections")["authority"] is False
 
 
-def test_the_environment_baseline_is_where_the_decision_says_it_is():
+def test_non_reproducible_snapshot_cannot_be_projection(tmp_path):
+    """The negative test §2 asks for, stated as the rule it enforces.
+
+    A manifest that says `reproducible: false` is not a broken manifest. It is
+    a correct description of evidence sitting in the wrong namespace, and the
+    repair is to move the artifact, not to quiet the check. This test exists
+    because the tempting fix — deleting the line, or relaxing the invariant —
+    is one edit away and leaves everything green.
+    """
+    directory = projection(tmp_path, "2026-08-19", reproducible=False)
+    result = state_root.read_manifest(directory)
+    assert result["present"] is True
+    assert any("reproducible must be the literal true" in p for p in result["problems"])
+    assert any("EVIDENCE, not a projection" in p for p in result["problems"])
+    # And the message must not read as "add a field to make this pass": the
+    # artifact does not belong here at all.
+    assert any("Removing this field is not the fix" in p for p in result["problems"])
+
+
+def test_a_manifest_that_omits_reproducible_is_refused(tmp_path):
+    """Absence is what every undeclared file already has. A manifest field that
+    may be absent is a field that may be ignored."""
+    document = manifest()
+    del document["reproducible"]
+    directory = tmp_path / "projections/environment/x"
+    directory.mkdir(parents=True)
+    (directory / "projection.yaml").write_text(yaml.safe_dump(document))
+    problems = state_root.read_manifest(directory)["problems"]
+    assert any("declares no 'reproducible'" in p for p in problems)
+
+
+def test_a_reproducible_true_manifest_is_accepted():
+    """The gate must not be a wall. An ordinary projection still passes."""
+    import tempfile
+
+    directory = Path(tempfile.mkdtemp())
+    (directory / "projection.yaml").write_text(yaml.safe_dump(manifest()))
+    result = state_root.read_manifest(directory)
+    assert result["problems"] == [], result["problems"]
+
+
+def test_the_environment_baseline_left_the_state_root():
+    """§1: the capture is evidence, and evidence does not live in a namespace
+    whose defining promise is that you may delete it."""
     state = paths_mod.Paths().root("state")
-    moved = state / "projections/environment/2026-08-19"
-    assert moved.is_dir(), "the migration the brief froze did not happen"
-    assert not (state / "environment").exists(), (
-        "the old path still exists. A rename within one filesystem leaves no "
-        "residue, and a leftover copy is what `environment-old` would be."
-    )
-    # No residue of any of the three shapes the brief forbids.
+    assert not (state / "projections/environment/2026-08-19").exists()
+    assert not (state / "environment").exists()
+    # No residue of any of the shapes that would make this a copy rather than
+    # a move.
     assert not (state / "environment-old").exists()
     assert not (state / "legacy-environment").exists()
     assert not (state / "environment").is_symlink()
-    assert not (moved.parent.parent / "environment").is_symlink()
-
-
-def test_the_migrated_baseline_declares_itself_non_authoritative():
-    state = paths_mod.Paths().root("state")
-    result = state_root.read_manifest(state / "projections/environment/2026-08-19")
-    assert result["present"] is True
-    assert result["problems"] == [], result["problems"]
-    document = result["manifest"]
-    assert document["authority"] is False
-    assert document["generated"] is True
-    assert document["generator"]
-    assert document["generated_at"]
-    assert document["source_refs"]
-    assert all("projections" not in ref for ref in document["source_refs"])
-
-
-def test_the_migrated_baseline_carries_its_retention_rather_than_losing_it():
-    """The move put a TTL'd evidence capture inside the state root. It must
-    not have silently become durable by moving, and it must not have silently
-    become reproducible by being called a projection."""
-    state = paths_mod.Paths().root("state")
-    document = state_root.read_manifest(state / "projections/environment/2026-08-19")["manifest"]
-    assert document["retention"] == "TTL_DELETE"
-    assert document["expires_at"]
-    assert document["reproducible"] is False
-    assert "point-in-time" in document["not_reproducible_because"]
-    assert document["supersedes"] == "state/serveros/environment/2026-08-19"
-
-
-def test_the_old_environment_path_has_no_authority_consumer():
-    """The check the brief required BEFORE the move, kept as a test so the
-    claim is re-checkable rather than remembered.
-
-    Only the regenerable inventory mentions the old path. If a real consumer
-    ever appears, this test fails and the migration is reconsidered instead of
-    the consumer being quietly broken.
-    """
-    result = subprocess.run(
-        ["grep", "-rIl", "state/serveros/environment",
-         str(REPO / "runtime"), str(REPO / "fleet"), str(REPO / "mcp"),
-         str(REPO / "skills"), str(REPO / "docs")],
-        capture_output=True, text=True,
+    assert not (state / "projections/environment").exists(), (
+        "an empty grouping directory left behind. It is not a declaration, and "
+        "the directory contract says a namespace with no producer is "
+        "EXPECTED_ABSENT — which is the absent directory, not an empty one."
     )
-    hits = [line for line in result.stdout.splitlines() if line.strip()]
-    # The manifest's `supersedes:` line is the one intentional mention.
-    assert hits == [str(paths_mod.Paths().root("state")
-                        / "projections/environment/2026-08-19/projection.yaml")] or hits == [], hits
 
 
-def test_the_projections_inventory_reports_the_live_baseline():
+def test_the_projections_namespace_is_empty_and_the_environment_kind_is_absent():
+    """No environment projection producer exists, so there is no environment
+    projection.
+
+    The namespace itself is PRESENT — it exists, it is declared, and it is
+    legitimately empty. The KIND is what is absent, and asserting the namespace
+    was EXPECTED_ABSENT would have been asserting a more flattering fact than
+    the true one. An empty declared namespace and a missing declared namespace
+    are different states, and this test says which one this is.
+    """
     state = paths_mod.Paths().root("state")
     inventory = state_root.projection_inventory(root=state)
     assert inventory["exists"] is True
-    refs = {p["ref"] for p in inventory["projections"]}
-    assert "projections/environment/2026-08-19" in refs
+    assert inventory["count"] == 0
     assert inventory["unlabelled"] == []
+    report = state_root.namespace_report(root=state)
+    rows = {r["namespace"]: r for r in report["namespaces"]}
+    assert rows["projections"]["state"] == state_root.PRESENT
+    # The kind that used to hold the capture is gone, and gone means absent —
+    # not present-and-empty, which is the residue shape that makes a retired
+    # path look like a live one.
+    assert not (state / "projections" / "environment").exists()
+    # And no empty scaffolding was left where the capture's parent used to be.
+    assert list((state / "projections").iterdir()) == []
+
+
+def test_the_evidence_migration_preserved_content_and_provenance():
+    """§1.2: original timestamps, producer, source refs, retention and a hash
+    inventory survive the move.
+
+    Checked against the live artifact rather than described, because "the move
+    preserved everything" is exactly the claim that is never rechecked.
+    """
+    run = (DATA_ROOT / "artifacts/skills/workspace-management"
+           / "RUN-20260819-environment-baseline")
+    assert run.is_dir(), "the evidence migration did not happen"
+    manifest_doc = yaml.safe_load((run / "RUN.yaml").read_text())
+
+    # It says what it is, and what it is not.
+    assert manifest_doc["kind"] == "evidence"
+    assert manifest_doc["reproducible"] is False
+
+    # Provenance survived.
+    assert manifest_doc["producer"]
+    assert manifest_doc["generated_at"]
+    assert manifest_doc["source_refs"]
+    assert manifest_doc["previous_locations"]
+
+    # Retention survived, and was not extended by moving.
+    assert manifest_doc["retention"] == "TTL_DELETE"
+    assert manifest_doc["expires_at"] == "2026-09-23"
+    assert (run / "EXPIRY.md").is_file(), "the retention source must travel with it"
+
+    # Hash inventory survives and still verifies.
+    sums = run / "SHA256SUMS"
+    assert sums.is_file()
+    verify = subprocess.run(["sha256sum", "-c", "SHA256SUMS"], cwd=run,
+                            capture_output=True, text=True)
+    assert verify.returncode == 0, verify.stdout + verify.stderr
+
+    # No projection manifest came along. Leaving one would re-assert, in the
+    # evidence plane, the classification that was wrong.
+    assert not (run / "projection.yaml").exists()
+
+
+def test_no_new_top_level_namespace_was_created_for_the_evidence():
+    """§1.2: no `evidence/`, `snapshots/`, `legacy/`, `archive-old/` — the
+    artifact contract already had a home for a skill run."""
+    data_root = DATA_ROOT
+    for invented in ("evidence", "snapshots", "archive-old"):
+        assert not (data_root / invented).exists(), invented
+    assert not (data_root / "artifacts" / "evidence").exists()
+    assert not (data_root / "artifacts" / "snapshots").exists()
+
+
+def test_no_code_path_still_reads_the_retired_projection_path():
+    """The consumer recheck, kept as a test rather than a memory.
+
+    `inventory/files.jsonl` is a regenerable filesystem projection and is
+    expected to mention the old path until its next pass; anything under
+    runtime/ referencing it would be a live consumer of a path that is gone.
+    """
+    result = subprocess.run(
+        ["grep", "-rIn", "projections/environment",
+         str(REPO / "runtime"), str(REPO / "fleet"), str(REPO / "mcp")],
+        capture_output=True, text=True,
+    )
+    hits = [line for line in result.stdout.splitlines() if line.strip()]
+    assert hits == [], hits
 
 
 # ---------------------------------------------------------------------------
