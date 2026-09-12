@@ -920,7 +920,19 @@ def run_probe(resource, spec: dict, host) -> dict:
             "error": str(exc), "authoritative": False,
         }
     shown = observation.show()
+    # `axis` is carried here, not in `show()`. Everywhere else an observation is
+    # rendered it is already the key it hangs under (`{"liveness": obs.show()}`),
+    # so `show()` deliberately leaves the axis out. This function is the one
+    # caller that returns a flat list, so it is the one caller that has to put
+    # it back — as both of the error arms above already do.
+    #
+    # They were the reason this went unnoticed: a probe that failed returned a
+    # complete record and a probe that succeeded returned one missing its axis,
+    # so `serverosctl probe <id>` crashed on the good path and worked on the bad
+    # one. Nothing caught it because nothing called this function: `probe` was
+    # one of six advertised verbs with no test behind it.
     shown["id"] = spec.get("id")
+    shown["axis"] = spec.get("axis")
     shown["kind"] = spec.get("kind")
     shown["authoritative"] = observation.authoritative
     return shown

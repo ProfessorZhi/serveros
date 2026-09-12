@@ -996,3 +996,105 @@ def test_an_unobserved_resource_defers_rather_than_reporting_nothing_to_do():
     decision = action_for(resource, h)
     assert decision["action"] == "DEFER"
     assert "an unobserved resource is not a healthy one" in decision["because"]
+
+
+# ---------------------------------------------------------------------------
+# §47 · `run_probe`, the record the CLI renders
+# ---------------------------------------------------------------------------
+
+
+class ProbeHost:
+    """A host that answers exactly what `container-state` asks for."""
+
+    def __init__(self, status="running", unavailable=False):
+        self.status = status
+        self.unavailable = unavailable
+
+    def now(self):
+        return "2026-09-12T00:00:00Z"
+
+    def docker_inspect(self, name):
+        if self.unavailable:
+            raise probes_mod.ProbeUnavailable(f"no container {name!r}")
+        return {
+            "State": {"Status": self.status, "StartedAt": "2026-09-12T00:00:00Z",
+                      "OOMKilled": False},
+            "RestartCount": 0,
+        }
+
+
+# The keys `cmd_probe` indexes rather than `.get()`s. Everything else in the
+# record is optional by design — the renderer asks for it defensively — but
+# these three it reads directly, so an arm that omits one crashes the verb.
+RENDERER_INDEXES = ("id", "axis", "state")
+
+
+@pytest.mark.parametrize("arm", ["succeeded", "unavailable", "raised", "unknown-kind"])
+def test_every_arm_of_run_probe_carries_what_the_renderer_indexes(arm, monkeypatch):
+    """`serverosctl probe <id>` crashed on every probe that answered.
+
+    `Observation.show()` leaves `axis` out on purpose — everywhere else an
+    observation is rendered it is already the key it hangs under
+    (`{"liveness": obs.show()}`). `run_probe` is the one caller that returns a
+    flat list, so it is the one caller that has to put the axis back, and it did
+    — on both of its error arms. The success arm did not, so the failure path
+    rendered and the happy path raised `KeyError: 'axis'`.
+
+    A defect that only shows up when the probe WORKS is invisible to a suite
+    that only exercises failures, so this asserts every arm at once: the shape
+    has to be the same one whether the probe answered, was unavailable, raised,
+    or was never known.
+    """
+
+    class Exploding(probes_mod.Probe):
+        kind = "exploding-test"
+
+        def run(self, resource, host):
+            raise registry_mod.RegistryError("this probe cannot answer")
+
+    monkeypatch.setitem(probes_mod.PROBE_KINDS, "exploding-test", Exploding)
+
+    specs = {
+        "succeeded": ({"id": "p", "kind": "container-state", "axis": "liveness",
+                       "container": "c"}, ProbeHost()),
+        "unavailable": ({"id": "p", "kind": "container-state", "axis": "liveness",
+                         "container": "c"}, ProbeHost(unavailable=True)),
+        "raised": ({"id": "p", "kind": "exploding-test", "axis": "liveness"}, ProbeHost()),
+        "unknown-kind": ({"id": "p", "kind": "no-such-kind", "axis": "liveness"}, ProbeHost()),
+    }
+    spec, host = specs[arm]
+    resource = Registry(document=resource_document(a_resource())).get("thing")
+
+    record = probes_mod.run_probe(resource, spec, host)
+    for key in RENDERER_INDEXES:
+        assert key in record, f"{arm}: {key!r} missing from {sorted(record)}"
+
+
+def test_a_probe_that_answered_is_marked_authoritative_and_reports_its_axis():
+    """The success arm, asserted positively rather than only for shape."""
+    resource = Registry(document=resource_document(a_resource())).get("thing")
+    record = probes_mod.run_probe(
+        resource,
+        {"id": "p", "kind": "container-state", "axis": "liveness", "container": "c"},
+        ProbeHost(),
+    )
+    assert record["axis"] == "liveness"
+    assert record["id"] == "p"
+    assert record["kind"] == "container-state"
+    assert record["state"] == "RUNNING"
+    # Measured, not inferred: this is what separates it from the journal line.
+    assert record["authoritative"] is True
+    assert record["evidence"]["type"] == "host-measurement"
+
+
+def test_a_probe_that_could_not_run_is_not_authoritative():
+    """The other half of the distinction. `UNAVAILABLE` is a real answer about
+    the probe, and it must never read as a measurement of the resource."""
+    resource = Registry(document=resource_document(a_resource())).get("thing")
+    record = probes_mod.run_probe(
+        resource,
+        {"id": "p", "kind": "container-state", "axis": "liveness", "container": "c"},
+        ProbeHost(unavailable=True),
+    )
+    assert record["state"] == "UNAVAILABLE"
+    assert record["reason"] == "NOT_OBSERVABLE"
