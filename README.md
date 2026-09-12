@@ -112,6 +112,14 @@ actual index write — is an adapter's job.
 
 → [`docs/space-resolver.md`](docs/space-resolver.md)
 
+## 4c. Fleet
+
+ServerOS owns stable device identity and fleet topology. Device connection locators
+and credentials stay local-only; capabilities installed on each device are owned
+by `ability-management` observations and projected back into the Fleet view.
+
+→ [`fleet/README.md`](fleet/README.md)
+
 ## 5. Native-first Skill Discovery
 
 ServerOS **strengthens** each runtime's native Skill discovery. It never

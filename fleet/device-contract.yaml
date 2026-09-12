@@ -1,0 +1,56 @@
+schema: serveros/fleet-device-contract.v1
+
+identity:
+  id_pattern: '^[a-z0-9][a-z0-9-]{1,62}$'
+  required:
+    - device_id
+    - display_name
+    - platform
+    - roles
+  public_fields:
+    - device_id
+    - display_name
+    - platform
+    - roles
+    - environment_profile
+    - ability_profiles
+    - agents
+    - auth_public_ref
+
+forbidden_public_fields:
+  - hostname
+  - ip
+  - address
+  - ssh_host
+  - ssh_user
+  - ssh_key_path
+  - token
+  - password
+  - machine_id
+  - machine_guid
+  - mac
+  - asset_tag
+  - hardware_serial
+dynamic_state:
+  current_template: '<STATE_ROOT>/fleet/devices/<device_id>/current.json'
+  ability_snapshot_template: '<STATE_ROOT>/ability-management/devices/<device_id>/current.json'
+  note: current state is disposable/recomputable and never committed as device identity
+
+connection:
+  local_only_targets: '~/.serveros/targets.yaml'
+  adapters:
+    - local
+    - ssh
+    - remote-desktop
+    - mcp
+  note: adapters are replaceable transport; connection details do not participate in identity
+
+projection:
+  fleet_map: FLEET-MAP.md
+  authority: generated
+  device_tree_sections:
+    - environment
+    - agents
+    - capabilities
+    - connectivity
+    - drift
