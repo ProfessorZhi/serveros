@@ -44,9 +44,14 @@ cachebuster: srv0003.20260912a
 skills:
   - name: serveros
     source: local
-  - name: runtime-management
-    source: local
 
+  # §24: runtime-management is a REUSABLE Ability, not a bootstrap one, so its
+  # canonical source is ability-management and this repository composes it from
+  # the pinned revision like every other reusable Skill. It was `source: local`,
+  # which made the serveros repo a second source of truth for it. The position
+  # here is unchanged so the composed payload order does not move.
+  - name: runtime-management
+    source: ability-management
   - name: ability-management
     source: ability-management
   - name: workspace-management

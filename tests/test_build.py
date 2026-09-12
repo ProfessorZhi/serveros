@@ -23,12 +23,15 @@ _spec = importlib.util.spec_from_file_location("serveros_build", BUILDER)
 build = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(build)
 
-# Skills canonical in this repository, in bundle order.
-LOCAL_SKILLS = ("serveros", "runtime-management")
+# Skills canonical in this repository, in bundle order. §24 left exactly one:
+# runtime-management became an ability-management source, so a second entry
+# here would be a second source of truth rather than a composition choice.
+LOCAL_SKILLS = ("serveros",)
 
 # Skills the real bundle sources from ability-management. The synthetic source
 # repo must provide all of them.
 ABILITY_SKILLS = (
+    "runtime-management",
     "ability-management",
     "workspace-management",
     "information-management",
