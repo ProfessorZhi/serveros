@@ -1,0 +1,85 @@
+# serveros-linux-work — the working set for a Linux node that does real work.
+#
+# §28: this is a composition, not a fork. It EXTENDS `serveros-core` and adds
+# the specialists such a node needs; it carries no payload of its own and no
+# copy of what it inherits, so it cannot drift from core about the members they
+# share. Nothing here is a second source of truth for an ability — a profile
+# chooses what to compose, and ability-management remains the canonical source
+# of every reusable Skill named below.
+#
+# The rule for what belongs here: the node's ordinary day. Runtime, workspace
+# and test are the three a Linux workstation exercises without deciding to.
+# Everything else is recommended rather than bundled, so that a node pays for a
+# specialist when it reaches for one — see §27's "do not eagerly bundle the
+# catalogue".
+# Declared here even though it is inherited, because a composition file that
+# can only be identified through the file it points at has no meaning of its
+# own — and the point of a profile is that its contents are readable on their
+# own terms.
+schema: serveros/bundle.v1
+
+extends: ../bundle.yaml
+
+composition: serveros-linux-work
+
+# The plugin identity this composition builds. Core keeps `hwz-server-os`, which
+# is the distribution's existing name; a profile builds a different artifact and
+# so must not claim the same name, or the two would be distinguishable only by
+# the version string.
+name: hwz-server-os-linux-work
+display_name: HWZ ServerOS (Linux Work)
+short_description: Agent Engineering Workbench for a Linux work node
+
+# A profile's payload differs from its parent's, so it declares its own cache
+# identity. The builder refuses a profile that inherits this one — a shared
+# cachebuster would let two different payloads claim one version string.
+cachebuster: srv0003.20260913a
+
+skills:
+  - name: runtime-management
+    source: ability-management
+  - name: workspace-management
+    source: ability-management
+  - name: test-management
+    source: ability-management
+
+# On demand, NOT bundled. These are resolved per node at the moment a node
+# reaches for them, and `status` records whether that resolution can succeed
+# today. The build checks the claim against the pinned revision in both
+# directions, so a stale `missing` is as much an error as a broken `available`.
+#
+# This list is deliberately "the registry, minus what this composition ships".
+# The registry is the catalogue of abilities a node MAY resolve; a profile
+# declares which of them this node's product actually offers and why the rest
+# are not carried. Leaving a registry ability unnamed here would mean the
+# registry describes a product that is not this one, which is the drift A1
+# exists to catch — and it is caught as a HIGH finding rather than tolerated, so
+# a newly registered ability forces a decision (ship it, recommend it, or fix
+# the registry) instead of silently widening the gap.
+recommended:
+  - name: information-management
+    source: ability-management
+    status: available
+    reason: Raw observation and understanding work is real but occasional, so it
+      is installed when a node begins it rather than carried by every node.
+  - name: work-management
+    source: ability-management
+    status: available
+    reason: Item and Run lifecycle is driven by the work a node is handed, not
+      by the node being present, so it is resolved when work arrives.
+  - name: feishu-space-management
+    source: ability-management
+    status: available
+    reason: Only a node that owns Feishu objects needs it; a Linux work node
+      reaches for it when it does.
+  - name: feishu-report
+    source: ability-management
+    status: available
+    reason: Reporting is an output of finished work, not a precondition for
+      starting it.
+  - name: document-stewardship
+    source: ability-management
+    status: missing
+    reason: §26 baseline member with no implementation yet. Recorded here with
+      its status rather than omitted, because a profile that silently drops it
+      reads as a complete recommendation set.

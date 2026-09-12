@@ -104,6 +104,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import yaml
+
 EXCLUDED_DIRS = {"__pycache__", ".git"}
 EXCLUDED_SUFFIXES = {".pyc", ".pyo"}
 
@@ -284,6 +286,22 @@ def read_codex_install(config_toml: Path) -> dict:
     return out
 
 
+def composition_files(build) -> dict[str, Path]:
+    """Every composition this repository declares, by composition name."""
+    root = build.repo_root()
+    found: dict[str, Path] = {}
+    candidates = [root / "plugin/bundle.yaml"]
+    candidates += sorted((root / "plugin/profiles").glob("*.yaml"))
+    for path in candidates:
+        if not path.is_file():
+            continue
+        loaded = yaml.safe_load(path.read_text()) or {}
+        name = loaded.get("composition")
+        if name:
+            found[name] = path
+    return found
+
+
 def expected_artifact(build, ability_repo: Path, ability_rev: str, output: Path,
                       marketplace_path: Path) -> tuple[dict[Path, bytes], str] | None:
     """Recompute the artifact from current canonical source + the recorded pin.
@@ -292,17 +310,62 @@ def expected_artifact(build, ability_repo: Path, ability_rev: str, output: Path,
     own source revision. If the recomputed bytes equal the installed bytes, the
     installed runtime *is* current canonical; if they differ, the difference is
     named path by path. Either way the answer is derived, not asserted.
+
+    The composition is read from the artifact rather than assumed to be core.
+    Once the product has more than one composition, recomputing every artifact
+    against `plugin/bundle.yaml` would accuse a correctly-built profile of
+    drifting from a composition it never claimed — a false report produced by
+    the checker, in the same shape as the false report it exists to catch.
     """
+    composition = declared_composition(output)
+    if not composition:
+        return None
+    path = composition_files(build).get(composition)
+    if path is None:
+        return None
     try:
         files, manifests, readme, marketplace, version = build.plan(
-            build.repo_root() / "plugin/bundle.yaml", ability_repo, ability_rev,
-            output, marketplace_path)
+            path, ability_repo, ability_rev, output, marketplace_path)
     except (OSError, ValueError) as exc:
         return None
     payload = {rel: content for content, rel in files}
     payload.update({rel: build._json_bytes(value) for rel, value in manifests.items()})
     payload[Path("README.md")] = readme.encode()
     return payload, version
+
+
+def recompute_blocker(build, output: Path) -> str:
+    """Why the artifact could not be recomputed, named rather than generalized.
+
+    "Cannot verify" is true but not actionable. Every reason this function can
+    name is a specific missing or unreadable declaration, so the report says
+    which one instead of leaving the reader to guess.
+    """
+    if not (output / "README.md").is_file():
+        return "missing README.md (it carries the composition declaration)"
+    composition = declared_composition(output)
+    if not composition:
+        return "README.md declares no composition"
+    if composition not in composition_files(build):
+        return f"no composition file declares `{composition}`"
+    return "artifact not recomputable"
+
+
+COMPOSITION_PATTERN = re.compile(r"^Composition: `([^`]+)`\.", re.MULTILINE)
+
+
+def declared_composition(artifact: Path) -> str | None:
+    """The composition the artifact itself says it is.
+
+    Read from the generated README for the same reason the pin is: the claim
+    travels with the bytes it describes, so recomputing against it is a check of
+    the artifact rather than a restatement of the checker's own assumption.
+    """
+    readme = artifact / "README.md"
+    if not readme.is_file():
+        return None
+    match = COMPOSITION_PATTERN.search(readme.read_text(errors="replace"))
+    return match.group(1) if match else None
 
 
 PIN_PATTERN = re.compile(r"ability-management@([0-9a-f]{40})")
@@ -630,7 +693,7 @@ def collect(args) -> dict:
         root = Path(root)
         if expected is None:
             row(f"{BUNDLE_NAME} @ {label}", "", "", f"sha256={tree_hash(root) or 'NONE'}",
-                UNKNOWN, "cannot verify: artifact not recomputable")
+                UNKNOWN, "cannot verify: " + recompute_blocker(build, args.output))
             continue
         drift = tree_drift(expected, root)
         # Core modules are named separately because they are the specific thing

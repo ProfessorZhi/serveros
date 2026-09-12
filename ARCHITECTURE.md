@@ -61,7 +61,8 @@ Canonical ownership is split by concern, not duplicated:
 
 ```text
 serveros/skills/serveros/                 bootstrap Skill canonical
-serveros/plugin/bundle.yaml               plugin composition canonical
+serveros/plugin/bundle.yaml               serveros-core composition canonical
+serveros/plugin/profiles/*.yaml           wider compositions, each `extends:` core
 ability-management/skills/<skill>/payload reusable Skill canonical
 
               serveros deterministic builder
@@ -147,7 +148,8 @@ never a second state database.
 ## Distribution
 
 ```text
-serveros/plugin/bundle.yaml                     composition authority
+serveros/plugin/bundle.yaml                     serveros-core composition
+serveros/plugin/profiles/<name>.yaml            profile composition (extends core)
 serveros bootstrap + Context/Space/Relations   local Core payload
 ability-management@<full SHA>                  reusable Skill payloads
                     │
@@ -155,12 +157,21 @@ ability-management@<full SHA>                  reusable Skill payloads
         serveros deterministic builder
                     │
                     ▼
-           hwz-server-os release artifact
+   hwz-server-os / hwz-server-os-linux-work
+                release artifacts (one per composition)
                     │
               ┌─────┴─────┐
               ▼           ▼
             Claude       Codex
 ```
+
+A composition is what the builder reads, and an artifact names the composition
+it was built from in its `README.md` (`Composition: \`<name>\`.`). A profile is
+a composition, not a fork: it `extends:` core, carries no payload of its own,
+and copies nothing it inherits — so the two cannot disagree about a member they
+share. Members a composition does not ship are listed under `recommended` and
+resolved per node; the builder refuses both a recommendation that cannot be
+resolved and a `missing` marker on something that now exists.
 
 Generation is one-way. `ability-management/plugins/hwz-server-os` may exist
 only as a transitional/generated compatibility surface; it cannot become a

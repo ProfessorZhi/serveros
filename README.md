@@ -170,7 +170,7 @@ The server is shared by concurrent agents and Items.
 
 | Repository | Role |
 |---|---|
-| `ProfessorZhi/serveros` | product entry; **hwz-server-os composition canonical** (`plugin/bundle.yaml`); bootstrap Skill; Context/Space/Relations kernels; deterministic build |
+| `ProfessorZhi/serveros` | product entry; **composition canonical** (`plugin/bundle.yaml` = `serveros-core`, `plugin/profiles/*.yaml` = wider sets that `extends:` it); bootstrap Skill; Context/Space/Relations kernels; deterministic build |
 | `ProfessorZhi/ability-management` | Capability/Ability registry; **reusable Skill canonical source**; revision/compatibility/discovery/reconcile/installation/distribution |
 | `ProfessorZhi/work-engine` | `serverosctl` deterministic control plane for Item/Activity/Run state and projections |
 | `ProfessorZhi/hwz-ops` | this machine's topology/policy instance and map projection targets |
