@@ -641,6 +641,13 @@ class Registry:
     """
 
     def __init__(self, document: dict | None = None, *, path: str | Path | None = None):
+        # Kept, not just read. Two other modules need the SAME document this
+        # object was validated from — container attribution needs an index built
+        # from it, and re-reading the file by a remembered path is how a
+        # registry this object refused to load gets loaded anyway on the side.
+        # `None` when constructed from a document, which is the honest answer to
+        # "which file is this" and not a default that silently points somewhere.
+        self.path = Path(path) if path is not None else None
         if document is None:
             if path is None:
                 raise RegistryError("either `document` or `path` is required")

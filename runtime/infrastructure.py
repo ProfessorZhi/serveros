@@ -373,7 +373,7 @@ def tunnel_health(resource, observations: dict | None = None):
     return health.Health(desired=resource.desired, **axes)
 
 
-def _readable_host(host=None):
+def readable_host(host=None):
     """A host that can answer the questions THIS module asks.
 
     There are two `LiveHost` classes in this codebase — `attribution.LiveHost`
@@ -387,6 +387,10 @@ def _readable_host(host=None):
     to pass. It is the same rule as everywhere else in this round: a
     capability that is assumed rather than declared fails somewhere nobody is
     looking.
+
+    Public because `view.py` asks the same questions and must ask them through
+    the same guard. A second copy of a capability check is how one of the two
+    ends up missing the capability somebody added last week.
     """
     if host is None:
         return attribution.LiveHost()
@@ -410,7 +414,7 @@ def observe_forwarders(host=None, *, table=None) -> list[dict]:
     processes are forwarding", which is strictly less than "which tunnels
     exist" on this host — see `tunnel_blind_spots`.
     """
-    host = _readable_host(host)
+    host = readable_host(host)
     if table is None:
         table = attribution.process_table(host)
     out = []
@@ -444,7 +448,7 @@ def unreadable_listeners(host=None, *, table=None) -> dict:
     like from here. Reporting them as unattributed is correct; reporting them
     as nothing is the `docker ps` mistake in a new place.
     """
-    host = _readable_host(host)
+    host = readable_host(host)
     if table is None:
         table = attribution.process_table(host)
 
@@ -480,7 +484,7 @@ def tunnel_blind_spots(host=None, *, table=None) -> list[dict]:
     the reader knows the inventory was CAPABLE of finding one. These entries
     are how it knows.
     """
-    host = _readable_host(host)
+    host = readable_host(host)
     if table is None:
         table = attribution.process_table(host)
 
@@ -526,7 +530,7 @@ def tunnel_blind_spots(host=None, *, table=None) -> list[dict]:
 
 def tunnel_inventory(host=None, *, registry_doc) -> dict:
     """Declared tunnels, visible forwarders, and what could not be measured."""
-    host = _readable_host(host)
+    host = readable_host(host)
     table = attribution.process_table(host)
 
     declared = declared_tunnels(registry_doc)

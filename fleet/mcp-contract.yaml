@@ -55,22 +55,50 @@ surfaces:
       - observation.get
       - ability.list
       - ability.status
+      # From §3/§5/§6/§10/§14 of the runtime-attribution brief. Every one is
+      # read-only, and every one answers the question a pid cannot: whose work
+      # is this, is it still valid, and what does it not justify.
+      - runtime.groups
+      - runtime.group
+      - runtime.tree
+      - runtime.budget
+      - process.top
+      - process.trace
+      - anomaly.list
+      - anomaly.explain
+      - container.attribution
     owns:
       - current-node environment facts
       - current-node path role resolution
       - current-node ability materialization status
       - current-node protected resources
+      - current-node runtime groups, their lineage and their chains
+      - current-node anomalies, their combinations and their blind spots
+      - current-node container attribution from evidence
     does_not_own:
       - other devices
       - fleet device identity
       - cross-device routing
       - desired state for any device
+      - process lifecycle — no tool here stops, restarts or signals anything
+      - container lifecycle — no tool here removes, stops or prunes anything
     explicitly_absent:
       - remote.shell
+      - process.stop
+      - process.kill
+      - container.remove
+      - container.prune
+      - runtime.reconcile
     note: >-
       A node surface has no verb for acting on another machine. Not a
       restricted one — none at all, so that an agent cannot express the
       intention and then argue about the permission.
+
+      The same rule is applied one level down to this node's OWN processes and
+      containers: the lifecycle verbs are absent rather than present-and-
+      refusing. `anomaly.explain` returns a recommendation, and a
+      recommendation is a proposal that travels to a human — there is no tool
+      that carries it back as an action.
 
   serveros-fleet-mcp:
     scope: the fleet
