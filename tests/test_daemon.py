@@ -771,16 +771,114 @@ def test_an_unknown_method_is_refused_and_lists_the_known_ones(daemon_factory):
     assert "runtime.status" in response["error"]["message"]
 
 
-def test_ability_questions_are_refused_with_the_authority_named(daemon_factory):
-    """§27/§29: ability-management owns capabilities. A control plane that
-    answers outside its authority is worse than one with no answer, because
-    the caller cannot tell the difference."""
+def test_ability_questions_are_answered_but_never_on_the_authoritys_behalf(
+        daemon_factory):
+    """§24 asks for `ability.list`; §27/§29 put that namespace under
+    ability-management; §28 requires the node to keep working while the
+    authority is unreachable.
+
+    The first version of this refused `ability.*` outright. That is
+    defensible and wrong: it makes every node surface depend on
+    ability-management being reachable, which is exactly the coupling §28
+    exists to remove. The reconciliation is that the ANSWER names its own
+    status — the authority, and whether this view is fresh, stale, or has
+    never been materialized. Then "nothing is installed" and "nobody has
+    asked in three days" stop being the same empty list.
+    """
     daemon = daemon_factory(a_resource("thing-one"))
     for method in ("ability.list", "ability.status"):
-        response = daemon.handle({"method": method})
-        assert response["ok"] is False
-        assert response["error"]["code"] == "NOT_THIS_AUTHORITY"
-        assert "ability-management" in response["error"]["message"]
+        response = daemon.handle({"method": method, "params": {"name": "serveros"}})
+        assert response["ok"] is True
+        result = response["result"]
+        assert result["authority"] == "ability-management"
+        assert result["this_is"] == "a local observed projection, not the authority"
+        assert result["registry_status"] == "NOT_MATERIALIZED"
+        assert result["stale"] is True
+
+    listing = daemon.handle({"method": "ability.list"})["result"]
+    assert "nobody has asked" in listing["note"]
+
+    # A named lookup says something narrower and must not claim the listing's
+    # wording: absence from a projection is not absence on the authority.
+    named = daemon.handle({"method": "ability.status",
+                           "params": {"name": "serveros"}})["result"]
+    assert "not proof of absence" in named["note"]
+    assert named["installed"] is None
+
+
+def test_an_absent_projection_is_not_reported_as_no_abilities_installed(
+        daemon_factory):
+    """The distinction the whole §28 bootstrap path turns on."""
+    daemon = daemon_factory(a_resource("thing-one"))
+    result = daemon.handle({"method": "ability.list"})["result"]
+    assert result["registry_status"] == "NOT_MATERIALIZED"
+    assert "NOT the same as" in result["note"]
+
+
+def test_a_fresh_projection_is_reported_as_fresh_and_a_stale_one_as_stale(
+        daemon_factory, tmp_path, monkeypatch):
+    import json as jsonlib
+
+    abilities = tmp_path / "state" / "abilities"
+    abilities.mkdir(parents=True)
+
+    class Paths:
+        def root(self, name):
+            assert name == "state"
+            return tmp_path / "state"
+
+    monkeypatch.setattr(daemon_mod.paths_mod, "Paths", Paths)
+    now = 1_800_000_000.0
+    daemon = daemon_factory(a_resource("thing-one"), clock=lambda: now)
+
+    fresh = {"generated_at": "2027-01-15T07:00:00+00:00", "registry_status": "FRESH",
+             "source_revision": "abc123", "abilities": [{"name": "serveros"}]}
+    (abilities / "effective.json").write_text(jsonlib.dumps(fresh))
+    result = daemon.handle({"method": "ability.list"})["result"]
+    assert result["registry_status"] == "FRESH" and result["stale"] is False
+    assert result["abilities"] == [{"name": "serveros"}]
+
+    # The file still says FRESH; the clock says otherwise. The clock wins,
+    # because `registry_status` is what the writer believed at the time.
+    stale = dict(fresh, generated_at="2020-01-01T00:00:00+00:00")
+    (abilities / "effective.json").write_text(jsonlib.dumps(stale))
+    result = daemon.handle({"method": "ability.list"})["result"]
+    assert result["registry_status"] == "STALE"
+    assert result["age_seconds"] > daemon_mod.MAX_PROJECTION_AGE_SECONDS
+
+
+def test_an_undated_projection_is_not_treated_as_fresh(daemon_factory, tmp_path,
+                                                       monkeypatch):
+    """A missing timestamp defaulting to "just now" is how a three-day-old
+    capability list gets read as current."""
+    abilities = tmp_path / "state" / "abilities"
+    abilities.mkdir(parents=True)
+    (abilities / "effective.json").write_text('{"abilities": []}')
+
+    class Paths:
+        def root(self, name):
+            return tmp_path / "state"
+
+    monkeypatch.setattr(daemon_mod.paths_mod, "Paths", Paths)
+    result = daemon_factory(a_resource("thing-one")).handle({"method": "ability.list"})["result"]
+    assert result["age_seconds"] is None
+    assert result["stale"] is True
+
+
+def test_a_corrupt_projection_is_unreadable_not_empty(daemon_factory, tmp_path,
+                                                      monkeypatch):
+    abilities = tmp_path / "state" / "abilities"
+    abilities.mkdir(parents=True)
+    (abilities / "effective.json").write_text("{ this is not json")
+
+    class Paths:
+        def root(self, name):
+            return tmp_path / "state"
+
+    monkeypatch.setattr(daemon_mod.paths_mod, "Paths", Paths)
+    result = daemon_factory(a_resource("thing-one")).handle({"method": "ability.list"})["result"]
+    assert result["registry_status"] == "UNREADABLE"
+    assert "much more confident claim" in result["note"]
 
 
 def test_observation_get_before_a_tick_is_not_an_empty_healthy_answer(daemon_factory):

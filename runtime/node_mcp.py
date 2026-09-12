@@ -1,0 +1,432 @@
+#!/usr/bin/env python3
+"""serveros-node-mcp — the thin adapter.
+
+    Claude / Codex  ->  serveros-node-mcp  ->  local IPC  ->  serverosd
+
+It is a transport and nothing else. It holds no registry, computes no health,
+classifies no container and writes no file. Every question is forwarded to the
+daemon over the Unix socket and the answer is returned unchanged.
+
+Why it is worth stating that so plainly: the temptation is to let the adapter
+"help" — cache a registry read, fall back to reading the state files, classify
+a container inline when the daemon is slow. Each of those makes the adapter a
+second implementation of a policy that exists in one place. Two
+implementations of one policy is not redundancy; it is an eventual
+disagreement, and the caller has no way to know which one it just talked to.
+
+What it does instead when the daemon is unavailable is REFUSE, by name. Not an
+empty list, not a cached answer, not a degraded-but-plausible one. `serverosd
+is not listening on <path>` is a fact the caller can act on; `[]` is a fact
+that gets read as "nothing is wrong".
+
+**No side-effecting tools are declared.** §24 says that if restart / stop /
+reconcile exist they must go through admission. They do not exist yet, so they
+are not declared — an absent tool is a clearer fact than one that exists and
+refuses, and the caller cannot accidentally build a workflow on something that
+was never going to work. When they are added they will need an admission
+record, not just a tool entry.
+
+**Protocol.** JSON-RPC 2.0 over stdio, implemented directly rather than via a
+client library. The surface is four methods and the framing is one object per
+line; a dependency here would put a package resolution between an agent and
+the control plane on a host that is already swapping, and would fail closed in
+a way that looks like "the node has nothing to say".
+"""
+from __future__ import annotations
+
+import json
+import os
+import socket
+import sys
+from pathlib import Path
+
+PROTOCOL_VERSION = "2024-11-05"
+SERVER_NAME = "serveros-node-mcp"
+SERVER_VERSION = "0.1.0"
+
+# §23: the adapter reaches the daemon over a Unix socket and never over TCP.
+DEFAULT_TIMEOUT_SECONDS = 20.0
+
+
+class DaemonUnavailable(Exception):
+    """The control plane did not answer. Refused, not approximated."""
+
+
+# ---------------------------------------------------------------------------
+# The tool surface (§24). Each entry names the daemon method it forwards to.
+# ---------------------------------------------------------------------------
+
+TOOLS: tuple[dict, ...] = (
+    {
+        "name": "device.show",
+        "description": (
+            "Identity and measured resource facts for this node: CPU, memory, "
+            "load, GPU, disk, and how many managed runtimes it holds."
+        ),
+        "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False},
+    },
+    {
+        "name": "context.current",
+        "description": (
+            "The ServerOS roots and the current project / item / run context "
+            "for this node, resolved from the root contract."
+        ),
+        "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False},
+    },
+    {
+        "name": "path.resolve",
+        "description": (
+            "Resolve a NAMED path reference to an absolute path. Deterministic "
+            "and independent of the working directory. Use this instead of "
+            "composing a durable path from string parts."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {"ref": {"type": "string",
+                                   "description": "e.g. 'state/runtime/observed' or 'workspace/src'"},
+                         "writing": {"type": "boolean", "default": True}},
+            "required": ["ref"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "path.admit",
+        "description": (
+            "Check an absolute path against the root contract and classify it, "
+            "or refuse it. Returns a decision; it writes nothing. Call this "
+            "before producing output somewhere you chose yourself."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {"path": {"type": "string"},
+                           "writing": {"type": "boolean", "default": True}},
+            "required": ["path"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "runtime.list",
+        "description": "Every resource registered as a managed runtime on this node.",
+        "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False},
+    },
+    {
+        "name": "runtime.status",
+        "description": (
+            "The four-axis health of one managed runtime — liveness, transport, "
+            "functional, readiness — plus what may be done about it. A running "
+            "process is not a healthy one; read `functional`."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {"id": {"type": "string"}},
+            "required": ["id"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "runtime.explain",
+        "description": (
+            "Why a runtime is or is not automatable, what its registration says, "
+            "and the state of its restart budget."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {"id": {"type": "string"}},
+            "required": ["id"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "resource.summary",
+        "description": (
+            "Host resource pressure: CPU, memory, swap, GPU, and disk by role "
+            "(root versus data). Advisory only — this surface never reclaims "
+            "anything."
+        ),
+        "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False},
+    },
+    {
+        "name": "resource.hygiene",
+        "description": (
+            "Container classification: protected, active, stale candidate, "
+            "orphaned, unknown owner, stopped-reclaim candidate. Reports "
+            "candidates; never acts on them, and a protected resource is never "
+            "a candidate."
+        ),
+        "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False},
+    },
+    {
+        "name": "observation.get",
+        "description": "The most recent observation tick, what it saw, and any drift.",
+        "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False},
+    },
+    {
+        "name": "ability.list",
+        "description": (
+            "The LOCAL capability projection for this node. NOT the authority: "
+            "ability-management owns the Ability Registry. The response says "
+            "which authority it is and whether this view is fresh or stale, so "
+            "an empty answer is never confused with a current one."
+        ),
+        "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False},
+    },
+    {
+        "name": "ability.status",
+        "description": (
+            "One ability as this node last observed it. May be stale; the "
+            "response says so."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {"name": {"type": "string"}},
+            "required": ["name"],
+            "additionalProperties": False,
+        },
+    },
+)
+
+
+def tool_names() -> tuple[str, ...]:
+    return tuple(tool["name"] for tool in TOOLS)
+
+
+# ---------------------------------------------------------------------------
+# The transport
+# ---------------------------------------------------------------------------
+
+
+def default_socket_path() -> Path:
+    runtime_dir = os.environ.get("XDG_RUNTIME_DIR") or f"/run/user/{os.getuid()}"
+    return Path(runtime_dir) / "serveros/serveros.sock"
+
+
+class DaemonClient:
+    """One request per connection over the daemon's Unix socket."""
+
+    def __init__(self, socket_path: Path | None = None,
+                 timeout: float = DEFAULT_TIMEOUT_SECONDS) -> None:
+        self.socket_path = Path(socket_path) if socket_path else default_socket_path()
+        self.timeout = timeout
+
+    def call(self, method: str, params: dict | None = None) -> dict:
+        if not self.socket_path.exists():
+            raise DaemonUnavailable(
+                f"serverosd is not listening: {self.socket_path} does not exist. "
+                f"Start it with `serverosd`, or check `systemctl --user status "
+                f"serverosd`. This surface has no cached answer and will not "
+                f"invent one."
+            )
+        connection = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        connection.settimeout(self.timeout)
+        try:
+            connection.connect(str(self.socket_path))
+            connection.sendall(
+                json.dumps({"method": method, "params": params or {}}).encode() + b"\n"
+            )
+            buffer = b""
+            while b"\n" not in buffer:
+                chunk = connection.recv(65536)
+                if not chunk:
+                    break
+                buffer += chunk
+        except (OSError, socket.timeout) as exc:
+            raise DaemonUnavailable(
+                f"serverosd did not answer {method!r} on {self.socket_path}: "
+                f"{type(exc).__name__}: {exc}"
+            ) from exc
+        finally:
+            connection.close()
+
+        if not buffer.strip():
+            raise DaemonUnavailable(
+                f"serverosd closed the connection without answering {method!r}."
+            )
+        try:
+            response = json.loads(buffer.decode())
+        except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+            raise DaemonUnavailable(
+                f"serverosd returned something that is not JSON: {buffer[:200]!r}"
+            ) from exc
+        if not response.get("ok"):
+            error = response.get("error") or {}
+            raise DaemonUnavailable(
+                f"serverosd refused {method!r}: {error.get('code')}: "
+                f"{error.get('message')}"
+            )
+        return response.get("result")
+
+
+# ---------------------------------------------------------------------------
+# JSON-RPC over stdio
+# ---------------------------------------------------------------------------
+
+
+def _result(request_id, result) -> dict:
+    return {"jsonrpc": "2.0", "id": request_id, "result": result}
+
+
+def _error(request_id, code: int, message: str) -> dict:
+    return {"jsonrpc": "2.0", "id": request_id,
+            "error": {"code": code, "message": message}}
+
+
+class NodeMcpServer:
+    """The MCP surface. Every tool is one forwarded call, with no local logic.
+
+    `client` is injectable so the tests can exercise the protocol against a
+    fake daemon instead of a live one. That is the whole reason there is no
+    inline socket code in the handlers: a surface that can only be tested
+    against a running control plane is a surface that gets tested by hand.
+    """
+
+    def __init__(self, client=None) -> None:
+        self.client = client or DaemonClient()
+
+    # -- MCP lifecycle -----------------------------------------------------
+
+    def handle(self, request: dict) -> dict | None:
+        method = request.get("method")
+        request_id = request.get("id")
+        params = request.get("params") or {}
+
+        if method == "initialize":
+            return _result(request_id, {
+                "protocolVersion": params.get("protocolVersion", PROTOCOL_VERSION),
+                "capabilities": {"tools": {"listChanged": False}},
+                "serverInfo": {"name": SERVER_NAME, "version": SERVER_VERSION},
+                # Said once, up front, so a client does not have to infer it
+                # from an error message later.
+                "instructions": (
+                    "This surface reports what this node has observed. It "
+                    "holds no state and changes nothing. Paths it returns come "
+                    "from the node's root contract; do not compose durable "
+                    "paths yourself — call path.resolve and path.admit. "
+                    "Ability data is a LOCAL projection: ability-management is "
+                    "the authority, and every ability response says whether "
+                    "what you are looking at is fresh or stale."
+                ),
+            })
+        if method in ("notifications/initialized", "initialized"):
+            return None  # a notification: no response, ever
+        if method == "tools/list":
+            return _result(request_id, {"tools": [dict(t) for t in TOOLS]})
+        if method == "tools/call":
+            return self._call_tool(request_id, params)
+        if method == "ping":
+            return _result(request_id, {})
+        if str(method).startswith("notifications/"):
+            return None
+        # `resources/list` and `prompts/list` are intentionally not implemented:
+        # this surface declares no resources and no prompts, and an empty list
+        # for a capability that was never offered is a claim that it is empty
+        # rather than that it does not exist.
+        return _error(request_id, -32601, f"Method not found: {method!r}")
+
+    def _call_tool(self, request_id, params: dict) -> dict:
+        name = params.get("name")
+        arguments = params.get("arguments") or {}
+
+        if name not in tool_names():
+            # Named, not silently empty. A misspelled tool must not look like a
+            # tool that returned nothing.
+            return _result(request_id, {
+                "isError": True,
+                "content": [{"type": "text", "text":
+                             f"Unknown tool {name!r}. Available: {list(tool_names())}"}],
+            })
+
+        allowed = set(TOOLS[tool_names().index(name)]["inputSchema"]["properties"])
+        unexpected = set(arguments) - allowed
+        if unexpected:
+            return _result(request_id, {
+                "isError": True,
+                "content": [{"type": "text", "text":
+                             f"{name} got unexpected argument(s) {sorted(unexpected)}. "
+                             f"Accepted: {sorted(allowed)}"}],
+            })
+
+        try:
+            result = self.client.call(name, arguments)
+        except DaemonUnavailable as exc:
+            # isError, with the reason intact. The alternative — returning an
+            # empty result — would tell the caller the node is healthy and
+            # unremarkable, which is the failure this whole architecture is
+            # about.
+            return _result(request_id, {
+                "isError": True,
+                "content": [{"type": "text", "text":
+                             f"ServerOS node surface unavailable: {exc}"}],
+            })
+
+        return _result(request_id, {
+            "content": [{"type": "text",
+                         "text": json.dumps(result, indent=2, sort_keys=True,
+                                            default=str)}],
+            "isError": False,
+        })
+
+
+# ---------------------------------------------------------------------------
+# Entry point
+# ---------------------------------------------------------------------------
+
+
+def serve(instream=None, outstream=None, server=None) -> int:
+    """One JSON-RPC object per line. Returns when stdin closes."""
+    instream = instream or sys.stdin
+    outstream = outstream or sys.stdout
+    server = server or NodeMcpServer()
+
+    for line in instream:
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            request = json.loads(line)
+        except json.JSONDecodeError as exc:
+            # No id is recoverable from unparseable input, so id is null. The
+            # spec allows it, and silence here would hang the client.
+            _write(outstream, _error(None, -32700, f"Parse error: {exc}"))
+            continue
+        if not isinstance(request, dict):
+            _write(outstream, _error(None, -32600, "Request must be an object"))
+            continue
+        try:
+            response = server.handle(request)
+        except Exception as exc:  # noqa: BLE001 - the client must not hang
+            response = _error(request.get("id"), -32603,
+                              f"Internal error: {type(exc).__name__}: {exc}")
+        if response is not None:  # notifications get no reply
+            _write(outstream, response)
+    return 0
+
+
+def _write(outstream, payload: dict) -> None:
+    outstream.write(json.dumps(payload, default=str) + "\n")
+    outstream.flush()
+
+
+def main(argv: list[str] | None = None) -> int:
+    import argparse
+
+    parser = argparse.ArgumentParser(
+        prog="serveros-node-mcp",
+        description="ServerOS node MCP surface. A thin adapter over serverosd; "
+                    "holds no state and changes nothing.",
+    )
+    parser.add_argument("--socket", help="serverosd Unix socket path")
+    parser.add_argument("--list-tools", action="store_true",
+                       help="print the tool surface and exit")
+    args = parser.parse_args(argv)
+
+    if args.list_tools:
+        for tool in TOOLS:
+            print(f"{tool['name']:<20} {tool['description'].splitlines()[0]}")
+        return 0
+
+    server = NodeMcpServer(DaemonClient(Path(args.socket) if args.socket else None))
+    return serve(server=server)
+
+
+if __name__ == "__main__":
+    sys.exit(main())

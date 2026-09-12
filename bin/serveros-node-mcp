@@ -1,0 +1,17 @@
+#!/usr/bin/env python3
+"""serveros-node-mcp — executable entry point.
+
+The adapter is started once per agent session and speaks JSON-RPC on stdio, so
+this shim is what a plugin manifest points at. It is also the file whose path
+appears in `mcpServers`, which is why it must be executable in the repository
+rather than generated into the payload with a mode the build has to remember.
+"""
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "runtime"))
+
+import node_mcp  # noqa: E402
+
+if __name__ == "__main__":
+    sys.exit(node_mcp.main())
