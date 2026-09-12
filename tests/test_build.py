@@ -28,18 +28,28 @@ _spec.loader.exec_module(build)
 # here would be a second source of truth rather than a composition choice.
 LOCAL_SKILLS = ("serveros",)
 
-# Skills the real bundle sources from ability-management. The synthetic source
-# repo must provide all of them.
+# Everything any real composition references — shipped by core, added by a
+# profile, or recommended on demand. One synthetic source builds them all, so a
+# profile test does not need a second fixture.
+#
+# `document-stewardship` is deliberately ABSENT: `serveros-linux-work` marks it
+# `missing`, and the builder treats a `missing` entry that resolves as an error,
+# so a fixture that provided it would make the profile unbuildable and hide the
+# reason.
 ABILITY_SKILLS = (
     "runtime-management",
     "ability-management",
     "workspace-management",
+    "test-management",
     "information-management",
     "work-management",
-    "test-management",
     "feishu-space-management",
     "feishu-report",
 )
+
+# What `serveros-core` itself composes from ability-management. A subset of the
+# above, and asserted as such rather than restated independently.
+CORE_ABILITY_SKILLS = ("runtime-management", "ability-management")
 
 
 def _git(repo: Path, *args: str) -> str:
@@ -116,7 +126,7 @@ class BuildTests(unittest.TestCase):
         self.assertEqual(first, second)
 
     def test_bytecode_caches_never_reach_the_artifact(self):
-        repo, rev = make_ability_repo(self.base / "withcache", pycache_in="feishu-report")
+        repo, rev = make_ability_repo(self.base / "withcache", pycache_in="runtime-management")
         args = [
             "--ability-repo", str(repo), "--ability-rev", rev,
             "--output", str(self.out), "--marketplace-path", str(self.marketplace),
@@ -125,12 +135,12 @@ class BuildTests(unittest.TestCase):
         stale = [p for p in self.out.rglob("*") if p.suffix == ".pyc" or p.name == "__pycache__"]
         self.assertEqual(stale, [])
         # The sibling SKILL.md must still be present, so the exclusion is precise.
-        self.assertTrue((self.out / "skills/feishu-report/SKILL.md").is_file())
+        self.assertTrue((self.out / "skills/runtime-management/SKILL.md").is_file())
 
     def test_reusable_skills_come_from_the_pinned_revision(self):
         self.assertEqual(run_build(self.args("--write")).returncode, 0)
-        content = (self.out / "skills/feishu-report/SKILL.md").read_text()
-        self.assertIn("name: feishu-report", content)
+        content = (self.out / "skills/runtime-management/SKILL.md").read_text()
+        self.assertIn("name: runtime-management", content)
 
     def test_context_ships_inside_the_artifact(self):
         self.assertEqual(run_build(self.args("--write")).returncode, 0)
@@ -164,9 +174,9 @@ class BuildTests(unittest.TestCase):
     def test_plugin_manifests_list_every_bundled_skill(self):
         self.assertEqual(run_build(self.args("--write")).returncode, 0)
         claude = json.loads((self.out / ".claude-plugin/plugin.json").read_text())
-        self.assertEqual(len(claude["skills"]), 9)
+        self.assertEqual(len(claude["skills"]), len(LOCAL_SKILLS) + len(CORE_ABILITY_SKILLS))
         self.assertEqual(set(claude["skills"]),
-                         {f"./skills/{n}" for n in LOCAL_SKILLS + ABILITY_SKILLS})
+                         {f"./skills/{n}" for n in LOCAL_SKILLS + CORE_ABILITY_SKILLS})
         codex = json.loads((self.out / ".codex-plugin/plugin.json").read_text())
         self.assertEqual(codex["version"], claude["version"])
 
@@ -213,7 +223,7 @@ class BuildTests(unittest.TestCase):
         local = [s for s in bundle["skills"] if s["source"] == "local"]
         self.assertEqual([s["name"] for s in local], list(LOCAL_SKILLS))
         external = {s["name"] for s in bundle["skills"] if s["source"] == "ability-management"}
-        self.assertEqual(external, set(ABILITY_SKILLS))
+        self.assertEqual(external, set(CORE_ABILITY_SKILLS))
 
     # -----------------------------------------------------------------------
     # §26 · the node surface is declared, in the shape each runtime reads

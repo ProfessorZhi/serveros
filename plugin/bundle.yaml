@@ -1,7 +1,8 @@
-# hwz-server-os bundle definition.
+# hwz-server-os core composition.
 #
-# This file is the COMPOSITION contract. It declares which capabilities make up
-# the ServerOS plugin, and nothing else.
+# This file is a COMPOSITION contract. It declares which capabilities make up
+# one composition, and nothing else. Wider compositions live in
+# `plugin/profiles/`, each `extends:`ing this one.
 #
 #   serveros            owns this file, the plugin manifests, the Claude/Codex
 #                       adapters, its own bootstrap Skill, the Context Capsule,
@@ -14,6 +15,17 @@
 # from an explicitly pinned ability-management revision, so a stale or dirty
 # checkout on this machine cannot silently downgrade the distribution.
 schema: serveros/bundle.v1
+
+# §27: this file is the `serveros-core` composition — the bootstrap Skill, the
+# node surface, the Core modules, and the ability dependencies the bootstrap
+# itself calls. It is deliberately NOT the whole product.
+#
+# A composition is not a fork and not a checkout. Everything a wider set adds is
+# declared in a profile that `extends:` this file (`plugin/profiles/`), so the
+# members named here exist once, in one file, and a profile cannot disagree with
+# this one about what they are. Specialists are composed by the profile that
+# needs them; nothing here eagerly bundles the catalogue.
+composition: serveros-core
 
 name: hwz-server-os
 display_name: HWZ ServerOS
@@ -48,23 +60,22 @@ skills:
   # §24: runtime-management is a REUSABLE Ability, not a bootstrap one, so its
   # canonical source is ability-management and this repository composes it from
   # the pinned revision like every other reusable Skill. It was `source: local`,
-  # which made the serveros repo a second source of truth for it. The position
-  # here is unchanged so the composed payload order does not move.
+  # which made the serveros repo a second source of truth for it.
+  #
+  # §27 names it as THE ability dependency of core, and it is the one the
+  # bootstrap reaches for by name: `runtime status` is §25's third
+  # responsibility, and a node with no runtime-management cannot answer it.
   - name: runtime-management
     source: ability-management
+
+  # `ability-management` is here for the other half of §25 — `capability
+  # resolve` — and §20 already classes it as Core rather than Operations, as a
+  # sibling of `serveros` rather than a specialist. §27's tree shows only
+  # runtime-management because it enumerates the runtime dependency; the
+  # capability-resolution dependency belongs to core for the same reason and by
+  # the same rule, and without it `capability resolve` has no implementation to
+  # resolve with.
   - name: ability-management
-    source: ability-management
-  - name: workspace-management
-    source: ability-management
-  - name: information-management
-    source: ability-management
-  - name: work-management
-    source: ability-management
-  - name: test-management
-    source: ability-management
-  - name: feishu-space-management
-    source: ability-management
-  - name: feishu-report
     source: ability-management
 
 # ServerOS Core modules, shipped inside the runtime artifact so that a delegating

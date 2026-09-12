@@ -1,15 +1,18 @@
 #!/usr/bin/env python3
-"""Deterministically build the hwz-server-os runtime artifact from the bundle.
+"""Deterministically build a hwz-server-os runtime artifact from a composition.
 
-The bundle (`plugin/bundle.yaml`) declares the composition. This script
-materializes it into a self-contained runtime artifact:
+`plugin/bundle.yaml` is the `serveros-core` composition; `plugin/profiles/`
+holds the wider ones, each `extends:`ing core. A profile is a composition, not a
+fork: it adds members and carries no payload of its own. This script
+materializes one composition into a self-contained runtime artifact:
 
-    serveros bundle definition          (this repository, pinned here)
+    composition declaration             (this repository, pinned here)
   + ability-management reusable Skills  (read at an explicit pinned revision)
-  + serveros Context Capsule            (this repository)
+  + ability-management on-demand names  (declared, validated, NOT bundled)
+  + serveros Core modules               (this repository)
                   |
                   v
-    runtime artifact  ->  runtime-assets/hwz-server-os  ->  Claude / Codex
+    runtime artifact  ->  runtime-assets/<composition>  ->  Claude / Codex
 
 Two properties matter and are enforced below:
 
@@ -76,6 +79,149 @@ def resolve_ability_rev(repo: Path, rev: str) -> str:
     if not out:
         raise ValueError(f"cannot resolve ability revision: {rev}")
     return out
+
+
+COMPOSITION_SCHEMA = "serveros/bundle.v1"
+
+# What the build is allowed to say about an ability the composition recommends
+# but does not ship. There is deliberately no "unknown": the point of naming a
+# status is that someone checked.
+RECOMMENDED_STATUS = ("available", "provisional", "missing")
+
+
+def _inside(path: Path, root: Path) -> Path:
+    resolved = path.resolve()
+    if resolved != root and root not in resolved.parents:
+        raise ValueError(f"composition escapes the repository root: {path}")
+    return resolved
+
+
+def _merge_recommended(parent: list, child: list, *, child_name: str) -> list[dict]:
+    ordered: dict[str, dict] = {}
+    for entry in list(parent) + list(child):
+        name = (entry or {}).get("name")
+        if not name:
+            raise ValueError(f"{child_name}: a recommended entry must declare a `name`")
+        ordered[name] = dict(entry)
+    return list(ordered.values())
+
+
+def _merge_composition(parent: dict, child: dict, *, child_name: str) -> dict:
+    """A profile layered on the composition it extends."""
+    merged = dict(parent)
+    merged.update({k: v for k, v in child.items() if k not in ("skills", "recommended")})
+
+    # `cachebuster` is the cache identity of a generated payload, and a profile's
+    # payload is not its parent's. Inheriting it would let two different
+    # payloads claim one version string, which is the one thing an installed
+    # cache cannot recover from.
+    if not child.get("cachebuster"):
+        raise ValueError(f"{child_name}: a profile must declare its own `cachebuster`")
+
+    skills: list[dict] = [dict(entry) for entry in parent.get("skills") or []]
+    index = {entry["name"]: entry for entry in skills}
+    for entry in child.get("skills") or []:
+        name, source = entry.get("name"), entry.get("source")
+        if not name:
+            raise ValueError(f"{child_name}: a skill entry must declare a `name`")
+        if name in index:
+            if index[name]["source"] != source:
+                raise ValueError(
+                    f"{child_name}: {name} is `{index[name]['source']}` in the composition it "
+                    f"extends and `{source}` here; one ability cannot have two sources")
+            # Re-stating an inherited member is not an error: a profile that
+            # enumerates its full set reads better than one that only lists the
+            # delta, and the two must not be able to disagree.
+            continue
+        index[name] = dict(entry)
+        skills.append(dict(entry))
+    merged["skills"] = skills
+    merged["recommended"] = _merge_recommended(
+        parent.get("recommended") or [], child.get("recommended") or [], child_name=child_name)
+    return merged
+
+
+def load_composition(path: Path) -> dict:
+    """Read a composition, resolving `extends` into one effective bundle.
+
+    A profile is a composition that ADDS to another one. That it is not a fork
+    is mechanical rather than editorial: a profile file carries no skill payload
+    and no copy of its parent's declarations, so there is only one copy of every
+    shared fact and the two cannot drift apart.
+    """
+    root = repo_root()
+    stack: list[Path] = []
+
+    def walk(current: Path, *, via_extends: bool) -> dict:
+        # The root constraint applies to files reached THROUGH an `extends`
+        # edge, not to the path the caller passed. `--bundle` has always been
+        # the caller's decision about which file to read — tests write temp
+        # compositions outside the repository on purpose. What must not escape
+        # is a composition file naming somewhere else to read from, because
+        # that is the file deciding, and the repository is its only legitimate
+        # neighbourhood.
+        resolved = _inside(current, root) if via_extends else current.resolve()
+        if resolved in stack:
+            chain = " -> ".join(p.name for p in stack + [resolved])
+            raise ValueError(f"composition extends itself: {chain}")
+        stack.append(resolved)
+        try:
+            raw = yaml.safe_load(resolved.read_text()) or {}
+            if not isinstance(raw, dict):
+                raise ValueError(f"{resolved.name}: a composition must be a mapping")
+            if raw.get("schema") != COMPOSITION_SCHEMA:
+                raise ValueError(
+                    f"unsupported bundle schema: {raw.get('schema')!r} in {resolved.name}")
+            parent_ref = raw.pop("extends", None)
+            if parent_ref is None:
+                if not raw.get("composition"):
+                    raise ValueError(f"{resolved.name}: a composition must declare `composition`")
+                return raw
+            parent = walk(resolved.parent / str(parent_ref), via_extends=True)
+            return _merge_composition(parent, raw, child_name=resolved.name)
+        finally:
+            stack.pop()
+
+    return walk(path, via_extends=False)
+
+
+def _has_ability_payload(repo: Path, rev: str, name: str) -> bool:
+    listing = _git(repo, "ls-tree", "-r", "--name-only", rev, "--", f"skills/{name}/payload")
+    return bool(listing.strip())
+
+
+def validate_recommended(bundle: dict, local_root: Path, ability_repo: Path,
+                         ability_rev: str) -> None:
+    """Check that a recommendation matches the world it describes.
+
+    A `recommended` entry is a claim about an ability's existence, and the claim
+    is checkable, so it is checked in both directions. An entry marked
+    `available` that resolves to nothing is a promise the node cannot keep; an
+    entry marked `missing` that resolves is a stale note that outlives the gap
+    it records. Neither is visible unless the build looks.
+    """
+    bundled = {entry["name"] for entry in bundle.get("skills") or []}
+    for entry in bundle.get("recommended") or []:
+        name = entry["name"]
+        status = entry.get("status")
+        if status not in RECOMMENDED_STATUS:
+            raise ValueError(
+                f"recommended {name}: status must be one of {list(RECOMMENDED_STATUS)}, "
+                f"got {status!r}")
+        if name in bundled:
+            raise ValueError(
+                f"recommended {name} is also composed into `skills`; an ability that ships "
+                "cannot be recommended on demand — the declaration would say the round trip "
+                "is optional while the payload says it is not")
+        resolves = (local_root / name).is_dir() or _has_ability_payload(
+            ability_repo, ability_rev, name)
+        if status == "missing" and resolves:
+            raise ValueError(
+                f"recommended {name} is marked `missing` but resolves at {ability_rev[:12]}")
+        if status != "missing" and not resolves:
+            raise ValueError(
+                f"recommended {name} is marked `{status}` but does not resolve at "
+                f"{ability_rev[:12]}")
 
 
 def local_skill_files(root: Path) -> list[tuple[Path, Path]]:
@@ -291,12 +437,25 @@ def build_readme(bundle: dict, version: str, skills: list[str], ability_rev: str
             "the local `serverosd` socket, holding no state of its own; when the daemon is not "
             "running it reports that rather than answering with an empty result.\n\n"
         )
+    recommended = bundle.get("recommended") or []
+    on_demand = ""
+    if recommended:
+        on_demand = (
+            "Recommended, not shipped: "
+            + ", ".join(f"`{e['name']}` ({e['status']})" for e in recommended)
+            + ". These are resolved per node rather than bundled, so this artifact does not "
+            "contain them; an entry marked `missing` is a gap the composition records rather "
+            "than papers over.\n\n"
+        )
     return (
         f"# ProfessorZhi/{bundle['name']}\n\n"
         "Generated by `src/serveros/scripts/build.py`. Do not edit by hand.\n\n"
-        f"Bundle definition: `{bundle['name']}` (`plugin/bundle.yaml`).\n\n"
+        f"Composition: `{bundle['composition']}`. The composition file is the authority for "
+        "what this artifact contains; the pin below is the authority for what it was read "
+        "from.\n\n"
         "Provided skills: " + ", ".join(skills) + "\n\n"
         + surface
+        + on_demand
         + f"Generated version: `{version}` (cachebuster suffix `{bundle['cachebuster']}`).\n\n"
         f"Reusable skills read from `ability-management@{ability_rev}`. "
         "Canonical identity alias: `ProfessorZhi/workspace-maintainer` is presented as the "
@@ -307,12 +466,11 @@ def build_readme(bundle: dict, version: str, skills: list[str], ability_rev: str
 
 
 def plan(bundle_path: Path, ability_repo: Path, ability_rev: str, output: Path, marketplace_path: Path):
-    bundle = yaml.safe_load(bundle_path.read_text())
-    if bundle.get("schema") != "serveros/bundle.v1":
-        raise ValueError(f"unsupported bundle schema: {bundle.get('schema')!r}")
+    bundle = load_composition(bundle_path)
     version = f"{bundle['version']}+{bundle['cachebuster']}"
 
     local_root = repo_root() / "skills"
+    validate_recommended(bundle, local_root, ability_repo, ability_rev)
     files: list[tuple[bytes, Path]] = []
     skills: list[str] = []
     for entry in bundle["skills"]:

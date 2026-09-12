@@ -41,17 +41,31 @@ REPO = Path(__file__).resolve().parent.parent
 SCRIPTS = REPO / "skills/serveros/scripts"
 OPS_SOURCE = Path("/opt/applications/data/home-hwz/workspace/ops")
 
-# What the real bundle composes from ability-management. Held as a literal so
-# that a change to `plugin/bundle.yaml` shows up here as a decision rather than
-# silently redefining what these tests assert.
+# What the real compositions ship from ability-management, held as a literal so
+# that a change to `plugin/bundle.yaml` or `plugin/profiles/` shows up here as a
+# decision rather than silently redefining what these tests assert.
 #
 # `runtime-management` joined on §24. It was a serveros-local member before, and
 # the fixtures below still exercise that shape deliberately — they pass
-# `local=(...)` explicitly — so this literal tracks the real bundle without
-# removing the case that made the A1 contradiction visible.
-DISTRIBUTED = ("ability-management", "feishu-report", "feishu-space-management",
-               "information-management", "test-management", "work-management",
-               "workspace-management", "runtime-management")
+# `local=(...)` explicitly — so this literal tracks the real compositions
+# without removing the case that made the A1 contradiction visible.
+SHIPPED = ("ability-management", "runtime-management", "test-management",
+           "workspace-management")
+
+# Recommended on demand by `serveros-linux-work`, and deliberately NOT shipped
+# by any composition. The registry provides these too, and that asymmetry is the
+# point of §28's on-demand layer: the registry says what a node can resolve, not
+# what an artifact carries.
+#
+# The set is "the registry, minus what is shipped", so it grows when the
+# registry does and the profile has to answer for it. That is the intended
+# coupling: a newly registered ability that no composition ships and no
+# composition recommends is the A1 drift this list exists to make visible.
+RECOMMENDED = ("information-management", "work-management",
+               "feishu-space-management", "feishu-report")
+
+# Everything the registry lists in `provides` for the plugin.
+DISTRIBUTED = SHIPPED + RECOMMENDED
 PLUGIN_ID = "ProfessorZhi/hwz-server-os"
 
 
@@ -108,7 +122,13 @@ def world(tmp_path):
     def build(*, provides=DISTRIBUTED, extra=()):
         root = tmp_path / "world"
         serveros = _init(root / "serveros")
-        for rel in ("plugin/bundle.yaml", "integration/components.yaml"):
+        # `plugin/profiles/` is copied too: the checker compares the registry
+        # against the whole composition SET, so a fixture that carried only the
+        # core file would be measuring a product that ships less than this one.
+        rels = ["plugin/bundle.yaml", "integration/components.yaml"]
+        rels += [str(p.relative_to(REPO))
+                 for p in sorted((REPO / "plugin" / "profiles").glob("*.yaml"))]
+        for rel in rels:
             dst = serveros / rel
             dst.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(REPO / rel, dst)
@@ -231,3 +251,39 @@ def test_the_registry_scope_question_is_still_reported_at_observed(world):
     assert len(observed) == 1
     assert observed[0]["severity"] == "LOW"
     assert observed[0]["status"] == "OBSERVED"
+
+
+# ---------------------------------------------------------------------------
+# §28 · on-demand members are reachable without being shipped
+# ---------------------------------------------------------------------------
+
+
+def test_a_recommended_ability_the_registry_provides_is_not_drift(world):
+    """What makes the containment rule necessary rather than a loosening.
+
+    `information-management` is recommended by `serveros-linux-work` and shipped
+    by no composition. Under the old set-equality rule that asymmetry was
+    reported as HIGH drift against a product that is behaving exactly as §28
+    describes. The registry says what a node can RESOLVE; a composition says
+    what an artifact CARRIES. Those are different questions, and the old rule
+    compared them as though they were the same one.
+    """
+    assert drifts(world()) == [], [f["observed"] for f in drifts(world())]
+
+
+def test_a_recommended_ability_the_registry_does_not_provide_is_medium(world):
+    """The other half: containment must not become "anything goes".
+
+    A recommendation is a promise that a node can resolve the ability on demand,
+    and the registry is what it resolves against. Dropping the registry entry
+    leaves the promise with nothing behind it, so it is reported — at MEDIUM,
+    because the product is still coherent, one door is just missing."""
+    report = world(provides=[n for n in DISTRIBUTED if n != "information-management"])
+    found = [f for f in report["findings"] if f.get("id") == "RECOMMENDATION_UNRESOLVABLE"]
+    assert len(found) == 1, [f["id"] for f in report["findings"]]
+    assert found[0]["severity"] == "MEDIUM"
+    assert "information-management" in str(found[0]["observed"])
+    # The registry no longer listing it is exactly the case this finding is for;
+    # it must not ALSO be reported as composition drift, or one cause is billed
+    # twice and the second bill is the one a reader acts on.
+    assert drifts(report) == []

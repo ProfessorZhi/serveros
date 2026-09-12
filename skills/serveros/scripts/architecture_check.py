@@ -570,11 +570,48 @@ def collect(args) -> dict:
     # one local member. The `- set(local_members)` below stays — it is what makes
     # the check correct for the one that remains, not a workaround for the one
     # that left.
+    # ---- the composition SET, not one file -------------------------------
+    # §27/§28 split the product into compositions: `plugin/bundle.yaml` is
+    # `serveros-core`, and `plugin/profiles/` holds the wider ones that extend
+    # it. A registry `provides` list is a statement about the *product*, so
+    # comparing it against core alone would report every specialist a profile
+    # composes as drift — a false HIGH produced by looking at one file and
+    # calling it the product.
+    #
+    # The union is taken over the profile files as written, not over their
+    # `extends`-resolved forms. Those are the same set: a profile's own `skills`
+    # list is additive by construction (the builder refuses a member re-stated
+    # with a different source), and everything a profile inherits is already in
+    # the parent that this union also reads.
+    # `ls-tree` yields paths relative to the repository, not basenames.
+    profile_obs: dict[str, dict] = {}
+    profile_listing = (_git(serveros_repo, "ls-tree", "-r", "--name-only", ref,
+                            "plugin/profiles/") or "")
+    for line in sorted(profile_listing.splitlines()):
+        rel = line.strip()
+        if not rel.endswith(".yaml"):
+            continue
+        obs = observe_object(serveros_repo, ref, rel)
+        profile_obs[rel] = obs
+        observations["declarations"][f"serveros/{rel}"] = obs
+
+    profile_skills: list[dict] = []
+    for rel, obs in sorted(profile_obs.items()):
+        loaded = _load(obs["content"], "yaml") or {}
+        for entry in loaded.get("skills") or []:
+            profile_skills.append({**entry, "composition": rel})
+
     bundle_skills = bundle.get("skills") or []
-    bundle_members = sorted(s["name"] for s in bundle_skills)
-    ability_members = sorted(s["name"] for s in bundle_skills if s.get("source") == "ability-management")
-    local_members = sorted(s["name"] for s in bundle_skills if s.get("source") == "local")
-    other_members = [s for s in bundle_skills
+    # Every member, tagged with the file that names it, so a drift message can
+    # say WHICH composition disagrees with the registry rather than only that
+    # the product does.
+    all_skills = [{**s, "composition": "plugin/bundle.yaml"} for s in bundle_skills]
+    all_skills += profile_skills
+    bundle_members = sorted({s["name"] for s in all_skills})
+    ability_members = sorted({s["name"] for s in all_skills
+                              if s.get("source") == "ability-management"})
+    local_members = sorted({s["name"] for s in all_skills if s.get("source") == "local"})
+    other_members = [s for s in all_skills
                      if s.get("source") not in ("local", "ability-management")]
     provides = manifest_members(manifest)
 
@@ -591,21 +628,69 @@ def collect(args) -> dict:
             provides["unresolved_identities"],
             "ability-management/abilities-manifest.yaml", "MEDIUM"))
 
-    # The registry side, with the locally-sourced members removed. What remains
-    # must equal what the bundle composes from ability-management: a member in
-    # one and not the other means either that a distributed ability is
-    # invisible to the registry's install expansion, or that the registry
-    # lists an ability no composition ships.
+    # On-demand members: named by a composition as resolvable-per-node rather
+    # than shipped. They are part of what the product can reach without being
+    # part of what any artifact contains.
+    recommended_entries = [
+        entry
+        for loaded in [bundle] + [_load(obs["content"], "yaml") or {}
+                                  for obs in profile_obs.values()]
+        for entry in loaded.get("recommended") or []
+        if entry.get("name")
+    ]
+    recommended_members = sorted({entry["name"] for entry in recommended_entries})
+    # `missing` is a recorded gap, not a promise. Only a recommendation that
+    # claims the ability can be resolved has to be resolvable, or the profile
+    # could not honestly record a gap it knows about.
+    promised_members = sorted({entry["name"] for entry in recommended_entries
+                               if entry.get("status") != "missing"})
+
+    # The registry side, with the locally-sourced members removed.
+    #
+    # The rule is containment, not equality, and the difference is what §28's
+    # on-demand layer means. A registry entry is a record that an ability CAN be
+    # resolved and installed; a composition member is a record that it ships in
+    # an artifact. Equality held while the bundle was the whole product and the
+    # registry described exactly it. Splitting the product into compositions
+    # ends that: the registry legitimately describes abilities no artifact
+    # carries, because that is where an on-demand resolution finds them.
+    #
+    # Both directions keep their teeth:
+    #   shipped but unregistered   -> the registry cannot expand the install
+    #   registered but unreachable -> an ability no composition ships and no
+    #                                 composition recommends, i.e. a registry
+    #                                 entry describing a product that is not
+    #                                 this one
     registry_members = sorted(set(provides["names"]) - set(local_members))
-    if ability_members != registry_members:
+    unreachable = sorted(set(registry_members) - set(ability_members) - set(recommended_members))
+    unregistered = sorted(set(ability_members) - set(registry_members))
+    if unregistered or unreachable:
         findings.append(finding(
             "BUNDLE_MANIFEST_DRIFT", "composition-vs-registry",
-            "bundle ability-management members == manifest.provides resolved to "
-            "skill names, minus the members the bundle sources locally",
-            f"bundle-only={sorted(set(ability_members) - set(registry_members))} "
-            f"manifest-only={sorted(set(registry_members) - set(ability_members))}",
+            "every ability a composition ships is registered, and every "
+            "registered ability is either shipped by a composition or "
+            "recommended on demand by one",
+            f"shipped-but-unregistered={unregistered} "
+            f"registered-but-unreachable={unreachable}",
             "serveros owns the composition contract; ability-management owns the registry",
             "HIGH",
+            observation_provenance={"bundle": _prov(bundle_obs), "manifest": _prov(manifest_obs)}))
+
+    # A recommendation marked `available` or `provisional` is a claim that a
+    # node can resolve it on demand, and the registry is what a node resolves it
+    # against. Recommending something the registry does not provide is a promise
+    # with nothing behind it. `missing` is exempt on purpose: it is the profile
+    # recording a gap it knows about, and a gap that cannot be written down is a
+    # gap that gets papered over.
+    recommended_unprovided = sorted(set(promised_members) - set(provides["names"]))
+    if recommended_unprovided:
+        findings.append(finding(
+            "RECOMMENDATION_UNRESOLVABLE", "composition-vs-registry",
+            "every recommended ability that is not marked `missing` is provided "
+            "by the registry",
+            recommended_unprovided,
+            "serveros owns the composition contract; ability-management owns the registry",
+            "MEDIUM",
             observation_provenance={"bundle": _prov(bundle_obs), "manifest": _prov(manifest_obs)}))
 
     # A member the bundle sources locally that the registry also lists in
