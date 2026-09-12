@@ -548,8 +548,22 @@ def collect(args) -> dict:
     # ---- A1: composition (bundle) vs registry (manifest.provides) ---------
     # The ownership question is under an AUTHORITY_CONFLICT and is NOT decided
     # here. The *sets* are comparable without taking a side: bundle members
-    # whose source is ability-management must be exactly the manifest's
-    # provides list; bundle members with source: local are local-only.
+    # whose source is ability-management must be exactly the registry's
+    # provides list, minus the members the bundle sources locally. A member the
+    # bundle sources locally is a composition claim (serveros owns it), and
+    # whether the registry should ALSO carry an identity record for it is
+    # reported at registry scope below — not asserted here.
+    #
+    # `minus local_members` is load-bearing and was missing. Without it the
+    # check is unsatisfiable in both directions for any local member:
+    #   registered   -> BOOTSTRAP_ABILITY_REGISTERED asks whether it belongs
+    #   unregistered -> BUNDLE_MANIFEST_DRIFT fails it for not being there
+    # so there is no state in which a locally-sourced member is correct. That
+    # went unnoticed while `serveros` was the only one, because `serveros`
+    # happens to appear in `provides` and the set equality held by coincidence.
+    # `runtime-management` is the second local member, and the coincidence
+    # ended. See `633324d5`, which widened this comparison from `ability_members`
+    # to `bundle_members` and left the comment below describing the old rule.
     bundle_skills = bundle.get("skills") or []
     bundle_members = sorted(s["name"] for s in bundle_skills)
     ability_members = sorted(s["name"] for s in bundle_skills if s.get("source") == "ability-management")
@@ -571,12 +585,19 @@ def collect(args) -> dict:
             provides["unresolved_identities"],
             "ability-management/abilities-manifest.yaml", "MEDIUM"))
 
-    if bundle_members != provides["names"]:
+    # The registry side, with the locally-sourced members removed. What remains
+    # must equal what the bundle composes from ability-management: a member in
+    # one and not the other means either that a distributed ability is
+    # invisible to the registry's install expansion, or that the registry
+    # lists an ability no composition ships.
+    registry_members = sorted(set(provides["names"]) - set(local_members))
+    if ability_members != registry_members:
         findings.append(finding(
             "BUNDLE_MANIFEST_DRIFT", "composition-vs-registry",
-            "bundle members == manifest.provides resolved to skill names",
-            f"bundle-only={sorted(set(bundle_members) - set(provides['names']))} "
-            f"manifest-only={sorted(set(provides['names']) - set(bundle_members))}",
+            "bundle ability-management members == manifest.provides resolved to "
+            "skill names, minus the members the bundle sources locally",
+            f"bundle-only={sorted(set(ability_members) - set(registry_members))} "
+            f"manifest-only={sorted(set(registry_members) - set(ability_members))}",
             "serveros owns the composition contract; ability-management owns the registry",
             "HIGH",
             observation_provenance={"bundle": _prov(bundle_obs), "manifest": _prov(manifest_obs)}))
