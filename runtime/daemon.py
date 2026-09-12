@@ -296,6 +296,9 @@ class Daemon:
         self.registry = registry
         self.state_dir = Path(state_dir)
         self.socket_path = Path(socket_path) if socket_path else default_socket_path()
+        # Set by `_open_socket`; the identity of the socket file this daemon
+        # bound, so that teardown cannot act on a socket that is not ours.
+        self._socket_ino: int | None = None
         self.host = host or probes_mod.LiveHost()
         self.inventory = inventory or inventory_mod.Inventory()
         self.enable_reconcile = enable_reconcile
@@ -720,10 +723,11 @@ class Daemon:
                 "note": "ServerOS roots are derived from the root contract, not from cwd"}
 
     def _r_path_resolve(self, params) -> dict:
-        return paths_mod.Paths().resolve(params["ref"])
+        return paths_mod.Paths().resolve(_required(params, "ref"))
 
     def _r_path_admit(self, params) -> dict:
-        return paths_mod.Paths().admit(params["path"], writing=params.get("writing", True))
+        return paths_mod.Paths().admit(_required(params, "path"),
+                                       writing=params.get("writing", True))
 
     def _r_runtime_list(self, params) -> dict:
         return {"count": len(self.registry), "resources": [
@@ -734,13 +738,13 @@ class Daemon:
         ]}
 
     def _r_runtime_status(self, params) -> dict:
-        resource = self.registry.get(params["id"])
+        resource = self.registry.get(_required(params, "id"))
         health = probes_mod.observe(resource, self.host)
         return {"id": resource.id, "health": health.show(),
                 "action": health_mod.action_for(resource, health)}
 
     def _r_runtime_explain(self, params) -> dict:
-        resource = self.registry.get(params["id"])
+        resource = self.registry.get(_required(params, "id"))
         return {"id": resource.id, "record": resource.record,
                 "automatable": resource.is_automatable,
                 "why_not_automatable": resource.why_not_automatable(),
@@ -814,12 +818,7 @@ class Daemon:
         thread, so an IPC answer can never be computed against a half-updated
         observation set.
         """
-        self._prepare_socket()
-        server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        server.bind(str(self.socket_path))
-        os.chmod(self.socket_path, 0o600)
-        server.listen(8)
-        server.settimeout(1.0)
+        server = self._open_socket()
         self._log(f"serverosd listening on {self.socket_path}")
 
         deadline = self._now() + interval
@@ -847,6 +846,8 @@ class Daemon:
                 try:
                     connection, _ = server.accept()
                 except socket.timeout:
+                    if not self._endpoint_live():
+                        server = self._rebind(server)
                     continue
                 except OSError:
                     continue
@@ -856,10 +857,7 @@ class Daemon:
                     connection.close()
         finally:
             server.close()
-            try:
-                self.socket_path.unlink()
-            except OSError:
-                pass
+            self._release_socket()
 
     def _serve_connection(self, connection: socket.socket) -> None:
         connection.settimeout(10.0)
@@ -896,6 +894,81 @@ class Daemon:
             # with ECONNREFUSED, which reads as "the daemon is down" — and it
             # IS down, so removing the file it left behind is not destructive.
             self.socket_path.unlink()
+
+    def _open_socket(self) -> socket.socket:
+        """Bind the listener and remember which socket file is ours.
+
+        The inode is kept because the path alone does not identify a socket:
+        a restart can leave two daemons naming the same file in sequence, and
+        "remove the file at my path" is then an operation on somebody else's
+        socket.
+        """
+        self._prepare_socket()
+        server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        server.bind(str(self.socket_path))
+        os.chmod(self.socket_path, 0o600)
+        server.listen(8)
+        server.settimeout(1.0)
+        try:
+            self._socket_ino = self.socket_path.stat().st_ino
+        except OSError:
+            self._socket_ino = None
+        return server
+
+    def _endpoint_live(self) -> bool:
+        """Is the file this daemon bound still the file at that path?
+
+        Asked between accepts, on the one-second timeout — a stat, once a
+        second, on a daemon measured at 4 file descriptors and ~25 ms of CPU
+        per minute-long tick.
+        """
+        if self._socket_ino is None:
+            return True
+        try:
+            return self.socket_path.stat().st_ino == self._socket_ino
+        except OSError:
+            return False
+
+    def _rebind(self, server: socket.socket) -> socket.socket:
+        """Put the endpoint back after something removed it.
+
+        MEASURED 2026-09-13: this happened for real. A piloted daemon logged
+        `listening on /run/user/1006/serveros/serveros.sock`, ticked happily
+        for minutes, and held an UNLINKED socket the whole time — `fd 3 ->
+        socket:[69123718]` with no file to reach it by. Every client got
+        ENOENT. The daemon had not noticed, had no reason to notice, and
+        reported itself well while serving nobody.
+
+        A control plane that cannot be reached must not be the last to know.
+        Re-binding is safe precisely because we checked: the file at our path
+        is gone, so there is nothing of anyone else's to overwrite.
+        """
+        server.close()
+        server = self._open_socket()
+        self._log(
+            f"serverosd re-bound {self.socket_path}: the socket file was removed "
+            f"while this daemon was running, so the previous endpoint was "
+            f"unreachable and nothing could have said so"
+        )
+        return server
+
+    def _release_socket(self) -> None:
+        """Remove our socket file on the way out — only if it is still ours.
+
+        During a restart the old daemon's teardown and the new daemon's bind
+        meet on the same path. An unconditional unlink there deletes the
+        SOCKET OF THE DAEMON THAT JUST STARTED, which is how a freshly
+        restarted service comes up healthy and unreachable at the same time.
+        The inode is the identity; the path is only an address.
+        """
+        if self._socket_ino is None:
+            return
+        try:
+            if self.socket_path.stat().st_ino != self._socket_ino:
+                return
+            self.socket_path.unlink()
+        except OSError:
+            pass
 
 
 def _error(method, code: str, message: str) -> dict:

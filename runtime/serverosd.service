@@ -1,11 +1,21 @@
-# serverosd — user unit CANDIDATE.
+# serverosd — user unit.
 #
-# NOT INSTALLED. §21 forbids a live install or switch this round, so this file
-# is a reviewed artefact rather than a deployed one: it lives in the repo, is
-# exercised by `systemd-run --user` in the daemon test, and would be promoted
-# by a separate, explicitly approved step. Installing it now would make the
-# daemon part of this machine's boot path before anyone has watched it run
-# across a restart, which is the order these things go wrong in.
+# INSTALLED on this node as a PILOT (2026-09-13). The previous revision of this
+# header said "NOT INSTALLED, §21 forbids a live install this round"; this
+# round authorises the user-scope pilot, and a header that kept saying NOT
+# INSTALLED over a running service would be the exact stale-declaration defect
+# this project spends its time removing.
+#
+# What the pilot measured before installing (see the §11-§17 report):
+#   21 MB RSS, 1 thread, 4 fds, ~25 ms CPU per tick, state dir 49 KB and not
+#   growing. `automatable()` is EMPTY on this host — all seven registrations
+#   are protected — so even with --enable-reconcile there is nothing here the
+#   daemon may act on.
+#
+# ExecStart points at this worktree, and that is a PILOT CONDITION, not a
+# design. A worktree is per-Item and may be retired; the productised unit must
+# point at a stable installation path (§27-§32). Recorded here rather than
+# discovered later as a service that stopped starting.
 #
 # Conventions it follows, and why each one is here:
 #
@@ -34,7 +44,10 @@
 
 [Unit]
 Description=ServerOS node runtime (semantic controller)
-Documentation=file:%h/.serveros/identity.yaml
+# `identity.yaml` was named here and does not exist — the node root holds
+# `node.yaml`, `targets.yaml` and `controller.yaml`. A Documentation= pointer
+# to a file nobody can open is a small lie that costs a reader a minute.
+Documentation=file:%h/.serveros/node.yaml
 # Wants, not Requires: if docker is down the daemon still starts and reports
 # the containers as UNAVAILABLE. A control plane that refuses to boot because
 # something it observes is down has inverted its own purpose.
@@ -52,7 +65,10 @@ StartLimitBurst=5
 Type=simple
 WorkingDirectory=%h
 Environment=SERVEROS_STATE_DIR=/opt/applications/data/home-hwz/state/serveros
-Environment=SERVEROS_PROFILE=server-beijing
+# `SERVEROS_PROFILE=server-beijing` used to sit here and is read by NOTHING in
+# the tree — the profile registry (`fleet/profiles.yaml`) selects a profile by
+# DEVICE, not by an environment variable. It was removed rather than kept as
+# decoration; when a consumer exists, it comes back with one.
 ExecStart=/opt/applications/data/home-hwz/workspace/worktrees/serveros/fleet-device-registry-v1/bin/serverosd
 Restart=on-failure
 RestartSec=30
@@ -65,14 +81,97 @@ RuntimeDirectoryMode=0700
 UMask=0077
 
 # The daemon needs no privileges it does not have as a user, and it upgrades
-# none. These are belt-and-braces against a future edit adding an escalation.
+# none.
+#
+# WHY THE SANDBOXING PROPERTIES ARE ABSENT — MEASURED 2026-09-13
+# -------------------------------------------------------------
+# READ THE `ReadWritePaths` SECTION BELOW FIRST. This table is real but it was
+# not the whole cause, and for a while it was read as if it were: these three
+# properties were removed and the symptom did not move. The property that was
+# actually blinding the daemon is documented further down.
+#
+# This block used to carry `ProtectSystem=strict`, `ProtectHome=read-only` and
+# `PrivateTmp=yes`. All three were removed, and the reason is not taste.
+#
+# Each of them, ALONE, puts the user service in a mount namespace where /proc
+# shows FOUR processes instead of sixty-three, and pid 1833 — a healthy
+# `botmux __supervisor` with two days of uptime — cannot be seen at all:
+#
+#     property                    visible  sees_1833  pgrep_matches
+#     (none)                         63       yes          5
+#     NoNewPrivileges=yes            63       yes          5
+#     UMask=0077                     63       yes          5
+#     PrivateTmp=yes                  4        no          2
+#     ProtectHome=read-only           4        no          2
+#     ProtectSystem=strict            4        no          2
+#
+# This daemon's entire job is to observe. A `process-exists` probe underneath
+# one of them runs, succeeds, finds nothing, and reports STOPPED — and
+# "I cannot see it" must never render the same as "it is not running". It
+# fired on the first live tick after the install: `botmux-host` reported
+# NOT_RUNNING with action NEEDS_HUMAN against a process that had been up for
+# two days.
+#
+# And the protection half is not merely unnecessary, it is absent. Under
+# `ProtectSystem=strict` the namespace IS created — that is the very thing
+# observed above — but the write protection is NOT applied: a unit with the
+# property set wrote successfully to /opt/applications/data. So the property
+# costs an observer its sight and buys nothing. `kernel.apparmor_restrict_
+# unprivileged_userns=1` (Ubuntu 24.04's default) is the likely reason the
+# remount does not land while the namespace does.
+#
+# `NoNewPrivileges=yes` stays: it is measured harmless to /proc visibility,
+# and it is the one that stops a future edit from adding an escalation.
+#
+# What actually bounds this process is its own restraint — the socket, and
+# four files under the state directory, measured at 11 MB RSS and 4 fds.
+# Not systemd. A reader who wants a sandbox here should first re-run the
+# table above and see which side of it they land on.
+#
+# `ReadWritePaths=` IS GONE, AND IT WAS THE ACTUAL CULPRIT — MEASURED 2026-09-13
+# ---------------------------------------------------------------------------
+# The block above blamed `ProtectSystem=strict`, `ProtectHome=read-only` and
+# `PrivateTmp=yes` for the observer going blind, removed all three, reinstalled,
+# restarted — and `botmux-host` STILL reported STOPPED with match_count 0. The
+# removal had changed nothing. That was the correct symptom: the table above
+# measured the properties I happened to think of, not the one that was doing it.
+#
+# Bisected afterwards, one property per transient unit, reading
+# `readlink /proc/self/ns/user` and `pgrep -f 'botmux __supervisor'` from
+# inside — because "I cannot see it" and "it is not running" are the two
+# answers this daemon exists to keep apart:
+#
+#     property                      userns                visible  sees_1833
+#     (none)                        user:[4026531837]         63      yes
+#     NoNewPrivileges=yes           user:[4026531837]         66      yes
+#     UMask=0077                    user:[4026531837]         64      yes
+#     RuntimeDirectory=x            user:[4026531837]         67      yes
+#     ProtectProc=invisible         user:[4026531837]         65      yes
+#     ReadWritePaths=/tmp           user:[4026533473]          4       NO
+#     ReadWritePaths=<state dir>    user:[4026533473]          4       NO
+#     PrivateUsers=yes              user:[4026533473]          4       NO
+#
+# `ReadWritePaths=` ALONE puts the unit in a private user namespace — the same
+# namespace `PrivateUsers=yes` produces on this host, which is why the two rows
+# are identical. The daemon's uid_map read `1006 1006 1`; a process whose
+# namespace maps only its own uid cannot pass the `hidepid=invisible` check
+# against this user's other processes. Inside that namespace `pgrep` runs,
+# exits 0, and matches nothing.
+#
+# It is also pure cost. `ReadWritePaths=` modifies a filesystem that no
+# `Protect*` option restricts — with none of them set, the whole filesystem is
+# writable and the option grants nothing. It blinded the observer and bought
+# nothing, twice over: once as a declaration, once as a belief.
+#
+# So: an observing daemon carries NO path, user, or mount isolation, and the
+# test suite asserts it (`test_the_unit_does_not_isolate_the_observer`). A
+# future reader who wants a sandbox here should re-run the table first — the
+# probe answers are the product, and a sandbox that hides them is a service
+# that lies.
+#
+# `ReadWritePaths` also used to name `.../logs/serveros`, a directory that does
+# not exist and that nothing writes to (the daemon logs to the journal).
 NoNewPrivileges=yes
-PrivateTmp=yes
-ProtectSystem=strict
-ProtectHome=read-only
-ReadWritePaths=%t/serveros
-ReadWritePaths=/opt/applications/data/home-hwz/state/serveros
-ReadWritePaths=/opt/applications/data/home-hwz/logs/serveros
 
 StandardOutput=journal
 StandardError=journal
