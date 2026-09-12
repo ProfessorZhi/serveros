@@ -519,3 +519,139 @@ def test_json_output_is_a_view_of_the_same_facts(tmp_path, capsys):
     assert payload["workspace_top_level"] == list(paths_mod.WORKSPACE_TOP_LEVEL)
     assert payload["artifact_namespaces"] == ["work-items", "skills"]
     assert "no default root" in payload["note"]
+
+
+# ---------------------------------------------------------------------------
+# §52 · `serverosctl status` — the one verb that asks the daemon
+# ---------------------------------------------------------------------------
+
+
+def _fake_daemon(tmp_path, monkeypatch, reply, *, method_seen=None):
+    """A one-shot Unix socket that answers the way `serverosd` does."""
+    import json
+    import socket as socketlib
+    import threading
+
+    sock_path = tmp_path / "serveros.sock"
+    server = socketlib.socket(socketlib.AF_UNIX, socketlib.SOCK_STREAM)
+    server.bind(str(sock_path))
+    server.listen(1)
+
+    def serve():
+        connection, _ = server.accept()
+        try:
+            buffer = b""
+            while b"\n" not in buffer:
+                chunk = connection.recv(1 << 20)
+                if not chunk:
+                    break
+                buffer += chunk
+            request = json.loads(buffer.split(b"\n")[0])
+            if method_seen is not None:
+                method_seen.append(request["method"])
+            connection.sendall((json.dumps(reply) + "\n").encode())
+        finally:
+            connection.close()
+            server.close()
+
+    thread = threading.Thread(target=serve, daemon=True)
+    thread.start()
+    monkeypatch.setattr(cli_mod, "daemon_socket_path", lambda: sock_path)
+    return thread
+
+
+def _status_reply(**overrides):
+    payload = {
+        "device_ref": "device:server-beijing", "pid": 4242,
+        "started_at": "2026-09-13T00:00:00+00:00", "uptime_seconds": 3600.0,
+        "ticks": 60, "tick_interval_seconds": 60.0,
+        "last_tick_at": "2026-09-13T01:00:00+00:00",
+        "seconds_since_last_tick": 1.0, "stale_after_seconds": 180.0,
+        "answer_is_stale": False, "tick_failures": [], "tick_failure_count": 0,
+        "registry_count": 7, "reconcile_enabled": False,
+        "state_dir": "/state", "socket": "/run/serveros.sock", "note": "…",
+    }
+    payload.update(overrides)
+    return {"ok": True, "method": "node.status", "result": payload}
+
+
+def test_the_status_verb_asks_the_daemon_rather_than_computing_locally(
+        tmp_path, monkeypatch, capsys):
+    """A status command that answers from somewhere else reports a healthy
+    node while the daemon is dead."""
+    seen = []
+    thread = _fake_daemon(tmp_path, monkeypatch, _status_reply(), method_seen=seen)
+    code = cli_mod.main(["status"])
+    thread.join(timeout=5)
+    assert code == cli_mod.EXIT_OK, capsys.readouterr().err
+    out = capsys.readouterr().out
+    assert seen == ["node.status"]
+    assert "RUNNING" in out and "4242" in out
+    assert "reconcile   disabled" in out
+
+
+def test_the_status_verb_cannot_answer_without_a_daemon_and_does_not_guess(
+        tmp_path, monkeypatch, capsys):
+    """Exit 2, not 0 and not 1. "Could not look" is its own answer.
+
+    The failure this prevents is the one the CLI's exit contract exists for: a
+    monitor that reports "everything is fine" during its own outage.
+    """
+    monkeypatch.setattr(cli_mod, "daemon_socket_path",
+                        lambda: tmp_path / "absent.sock")
+    code = cli_mod.main(["status"])
+    assert code == cli_mod.EXIT_COULD_NOT_ANSWER
+    assert "no node runtime at" in capsys.readouterr().err
+
+
+def test_the_status_verb_cannot_answer_when_the_daemon_refuses(
+        tmp_path, monkeypatch, capsys):
+    """A daemon that is up and does not know the method is still not an answer."""
+    reply = {"ok": False, "method": "node.status",
+             "error": {"code": "UNKNOWN_METHOD", "message": "not served"}}
+    thread = _fake_daemon(tmp_path, monkeypatch, reply)
+    code = cli_mod.main(["status"])
+    thread.join(timeout=5)
+    assert code == cli_mod.EXIT_COULD_NOT_ANSWER
+    assert "UNKNOWN_METHOD" in capsys.readouterr().err
+
+
+def test_a_runtime_that_stopped_looking_is_a_fault_not_a_success(
+        tmp_path, monkeypatch, capsys):
+    """The daemon is answering; its answer is about a node it stopped looking
+    at. Exit 1 so a shell can tell that from a healthy run."""
+    thread = _fake_daemon(tmp_path, monkeypatch,
+                          _status_reply(answer_is_stale=True,
+                                        seconds_since_last_tick=900.0))
+    import json
+
+    code = cli_mod.main(["status", "--json"])
+    thread.join(timeout=5)
+    assert code == cli_mod.EXIT_FAULT
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["answer_is_stale"] is True
+
+
+def test_runtime_tree_without_a_ref_draws_one_and_says_it_was_chosen(
+        monkeypatch, capsys):
+    """§52 lists `runtime tree` with no ref.
+
+    A subject picked for the reader is acceptable only if the reader can see
+    it was picked, so the default is drawn from the same ordering `runtime
+    groups` already uses and named in the output.
+    """
+    calls = []
+    real = cli_mod.view_mod.runtime_tree
+
+    def fake_tree(ref, **kw):
+        calls.append(ref)
+        return real(ref, **kw)
+
+    monkeypatch.setattr(cli_mod.view_mod, "runtime_tree", fake_tree)
+    code = cli_mod.main(["runtime", "tree"])
+    out = capsys.readouterr().out
+    if code == cli_mod.EXIT_COULD_NOT_ANSWER:
+        pytest.skip("no runtime group is visible to this uid")
+    assert code == cli_mod.EXIT_OK
+    assert calls and calls[0].startswith("runtime-group:")
+    assert "no ref given" in out

@@ -397,11 +397,24 @@ class Daemon:
         self.actuator = Actuator(runner=runner, dry_run=not enable_reconcile)
         self.last_tick: dict | None = None
         self.drift: list[dict] = []
+        # The node runtime's own facts, for `node.status`. A control plane that
+        # cannot say how long it has been up and when it last looked is asking
+        # a reader to trust an answer without being able to date it.
+        self.started_at = self._now()
+        self.interval: float | None = None
+        self.ticks = 0
+        self.last_tick_monotonic: float | None = None
+        self.tick_failures: list[dict] = []
 
         # Register the daemon's own directories through the path contract,
         # rather than mkdir-ing a path that looks right. A daemon that invents
         # its own state location is the exact drift §40 is about.
         self._paths = paths_mod.Paths()
+
+    # A status answer older than this many tick intervals is labelled stale.
+    # Three, not one: a single missed deadline is a slow machine, and calling
+    # that stale would make the field useless on a busy host.
+    STALE_TICKS = 3
 
     # -- one pass ----------------------------------------------------------
 
@@ -421,6 +434,7 @@ class Daemon:
             "budget": self.budget.snapshot(),
         }
         self.last_tick = report
+        self.last_tick_monotonic = self._now()
         self.drift = drift
         self.persist(report)
         return report
@@ -765,11 +779,15 @@ class Daemon:
 
     # -- the served interface ----------------------------------------------
 
-    def handle(self, request: dict) -> dict:
-        """Answer one IPC request. Unknown methods are refused by name."""
-        method = request.get("method")
-        params = request.get("params") or {}
-        handler = {
+    def handler_map(self) -> dict:
+        """The served methods, as one object.
+
+        Separate from `handle` so that the map and `_methods()` can be
+        compared. While this was a literal inside `handle`, nothing could
+        enumerate it, and the docstring on the coverage test described a drift
+        the test was structurally unable to detect.
+        """
+        return {
             "device.show": self._r_device_show,
             "context.current": self._r_context_current,
             "path.resolve": self._r_path_resolve,
@@ -795,7 +813,14 @@ class Daemon:
             "anomaly.list": self._r_anomaly_list,
             "anomaly.explain": self._r_anomaly_explain,
             "container.attribution": self._r_container_attribution,
-        }.get(method)
+            "node.status": self._r_node_status,
+        }
+
+    def handle(self, request: dict) -> dict:
+        """Answer one IPC request. Unknown methods are refused by name."""
+        method = request.get("method")
+        params = request.get("params") or {}
+        handler = self.handler_map().get(method)
 
         if handler is None:
             return _error(
@@ -814,7 +839,8 @@ class Daemon:
                 "ability.list", "ability.status",
                 "runtime.groups", "runtime.group", "runtime.tree",
                 "runtime.budget", "process.top", "process.trace",
-                "anomaly.list", "anomaly.explain", "container.attribution")
+                "anomaly.list", "anomaly.explain", "container.attribution",
+                "node.status")
 
     # -- the local capability view (§27/§28) --------------------------------
 
@@ -932,6 +958,54 @@ class Daemon:
                             f"authority."}
         return {**view, "name": name, "installed": True, "ability": match}
 
+    def _r_node_status(self, params) -> dict:
+        """The node runtime, describing itself.
+
+        The one method on this surface that is NOT a forward to `view.py`,
+        because it is the only question `view.py` cannot answer: `view` reads
+        the world from the calling process, and this is a fact about *this*
+        process — how long it has been up, how many times it has looked, and
+        whether any of those looks failed.
+
+        `answer_is_stale` is the field that makes the rest readable. A status
+        query answered by a daemon that stopped ticking ten minutes ago is not
+        the same answer as one from a daemon that ticked a second ago, and the
+        caller cannot tell them apart from `ticks` alone.
+        """
+        now = self._now()
+        age = (None if self.last_tick_monotonic is None
+               else round(now - self.last_tick_monotonic, 1))
+        stale_after = (self.interval or 60.0) * self.STALE_TICKS
+        return {
+            "device_ref": self.registry.device_ref,
+            "pid": os.getpid(),
+            "started_at": _iso(self.started_at),
+            "uptime_seconds": round(now - self.started_at, 1),
+            "ticks": self.ticks,
+            "tick_interval_seconds": self.interval,
+            "last_tick_at": (self.last_tick or {}).get("tick_started_at"),
+            "seconds_since_last_tick": age,
+            "stale_after_seconds": stale_after,
+            # A daemon that has not ticked yet is not stale — it is new. The
+            # distinction matters because `--once` never enters this loop, and
+            # reporting a fresh one-shot run as stale would be a false alarm
+            # in the one place a false alarm costs the most.
+            "answer_is_stale": bool(age is not None and age > stale_after),
+            "tick_failures": list(self.tick_failures[-5:]),
+            "tick_failure_count": len(self.tick_failures),
+            "registry_count": len(self.registry),
+            "reconcile_enabled": self.enable_reconcile,
+            "state_dir": str(self.state_dir),
+            "socket": str(self.socket_path),
+            "note": (
+                "`reconcile_enabled` is this process's interlock, not a "
+                "resource's permission: every resource whose `reconcile.mode` "
+                "is the default `observe` is filtered out before the interlock "
+                "is consulted. A `false` here means this process would not "
+                "act; it does not mean anything would otherwise."
+            ),
+        }
+
     def _r_device_show(self, params) -> dict:
         host = self.inventory.host_summary()
         return {
@@ -1046,17 +1120,17 @@ class Daemon:
         server = self._open_socket()
         self._log(f"serverosd listening on {self.socket_path}")
 
+        self.interval = interval
         deadline = self._now() + interval
-        ticks = 0
         try:
             while True:
                 now = self._now()
                 if now >= deadline:
                     try:
                         report = self.tick()
-                        ticks += 1
+                        self.ticks += 1
                         self._log(
-                            f"tick {ticks}: {len(report['observations'])} observed, "
+                            f"tick {self.ticks}: {len(report['observations'])} observed, "
                             f"{len(report['drift'])} drift, "
                             f"{len(report['decisions'])} decisions"
                         )
@@ -1064,9 +1138,15 @@ class Daemon:
                         # A failing tick must not kill the daemon: the next
                         # one may succeed, and a control plane that exits on
                         # the first bad measurement is an outage generator.
+                        # Recorded as well as logged, because a log line is
+                        # not something a status query can read.
+                        self.tick_failures.append({
+                            "at": _iso(now), "error": type(exc).__name__,
+                            "message": str(exc),
+                        })
                         self._log(f"tick failed: {type(exc).__name__}: {exc}")
                     deadline = now + interval
-                    if stop_after is not None and ticks >= stop_after:
+                    if stop_after is not None and self.ticks >= stop_after:
                         return
                 try:
                     connection, _ = server.accept()

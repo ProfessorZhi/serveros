@@ -836,6 +836,15 @@ class Registry:
                 f"unexpected registry schema {document.get('schema')!r}; expected "
                 f"'serveros/managed-runtime-registry.v1'"
             )
+        # The node this registry describes. Kept, and NOT made a validation
+        # requirement: the live document carries it and describes one host, but
+        # a document built to exercise one resource's probes has no business
+        # being refused for naming no device. `serverosctl device show` used to
+        # hold a hard-coded copy of this string, which is the defect worth
+        # fixing here — one fact, one place — not a new gate.
+        device_ref = document.get("device_ref")
+        self.device_ref = device_ref if isinstance(device_ref, str) and device_ref else None
+
         seen: dict[str, Resource] = {}
         for i, record in enumerate(document.get("resources") or ()):
             resource = validate(record, where=f"resources[{i}]")

@@ -34,6 +34,7 @@ import argparse
 import importlib.util
 import json
 import os
+import socket
 import sys
 from pathlib import Path
 
@@ -94,6 +95,65 @@ def load_registry(path: str | None):
 # ---------------------------------------------------------------------------
 
 
+def daemon_socket_path() -> Path:
+    runtime = os.environ.get("XDG_RUNTIME_DIR") or f"/run/user/{os.getuid()}"
+    return Path(runtime) / "serveros/serveros.sock"
+
+
+def ask_daemon(method: str, params: dict | None = None,
+               *, timeout: float = 5.0) -> dict:
+    """One request to the running node runtime.
+
+    Every other command in this file computes its answer in-process from
+    `view.py`, and that is deliberate — an answer you can reproduce by running
+    a thing is an answer you can check. This is the exception, and only for
+    the questions that are *about the daemon*: whether it is up, how long it
+    has been up, when it last looked. Computing those locally would be
+    answering a question about one process from inside another.
+
+    Raises `DaemonUnavailable` rather than falling back to a local
+    computation, because a status command that quietly answers from somewhere
+    else is worse than one that says it cannot answer.
+    """
+    path = daemon_socket_path()
+    if not path.exists():
+        raise DaemonUnavailable(
+            f"no node runtime at {path}. The socket is created by "
+            f"`serverosd`; without it there is no running control plane to "
+            f"ask, and this command will not answer from a different source."
+        )
+    connection = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    connection.settimeout(timeout)
+    try:
+        connection.connect(str(path))
+        connection.sendall(
+            (json.dumps({"method": method, "params": params or {}}) + "\n").encode())
+        buffer = b""
+        while b"\n" not in buffer:
+            chunk = connection.recv(1 << 20)
+            if not chunk:
+                break
+            buffer += chunk
+    except OSError as exc:
+        raise DaemonUnavailable(f"{path}: {exc}") from exc
+    finally:
+        connection.close()
+    if not buffer.strip():
+        raise DaemonUnavailable(
+            f"{path} accepted the connection and closed it without answering.")
+    reply = json.loads(buffer.split(b"\n")[0])
+    if not reply.get("ok"):
+        error = reply.get("error") or {}
+        raise DaemonUnavailable(
+            f"serverosd refused {method}: {error.get('code')}: "
+            f"{error.get('message')}")
+    return reply["result"]
+
+
+class DaemonUnavailable(RuntimeError):
+    """The node runtime could not answer. Not a fault — a missing measurement."""
+
+
 def emit(payload: dict, *, as_json: bool, lines: list[str] | None = None) -> None:
     if as_json:
         json.dump(payload, sys.stdout, indent=2, sort_keys=True, default=str)
@@ -123,7 +183,10 @@ def cmd_device_show(args) -> int:
     inv = inventory_mod.Inventory()
     host = inv.host_summary()
     payload = {
-        "device_ref": "device:server-beijing",
+        # Read from the registry, not repeated here. This was a hard-coded
+        # copy of a fact the registry document already states, and two places
+        # declaring one node's identity is exactly how they come to disagree.
+        "device_ref": reg.device_ref,
         "role": "fleet-controller-primary (reference node)",
         "host": host,
         "managed_resources": {
@@ -135,7 +198,7 @@ def cmd_device_show(args) -> int:
         "registry_path": str(Path(args.registry) if args.registry else default_registry_path()),
     }
     lines = [
-        f"device      device:server-beijing",
+        f"device      {reg.device_ref}",
         f"cpu         {host['cpu']['model']} · {host['cpu']['logical_cpus']} logical CPUs",
         f"memory      {human_bytes(host['memory']['total_bytes'])} total · "
         f"{human_bytes(host['memory']['available_bytes'])} available",
@@ -146,6 +209,60 @@ def cmd_device_show(args) -> int:
     ]
     emit(payload, as_json=args.json, lines=lines)
     return EXIT_OK
+
+
+def cmd_status(args) -> int:
+    """The node runtime, as it describes itself. §52.
+
+    Every other command here answers about the world. This one answers about
+    the control plane — whether it is running, how long it has been up, when
+    it last looked — which is why it asks the daemon instead of computing the
+    answer locally. A status command that falls back to a local computation
+    reports a healthy node while the daemon is dead.
+
+    Exit 2 when the daemon cannot be reached: that is "could not answer", not
+    "the node is broken", and the CLI's exit contract keeps those apart.
+    """
+    try:
+        payload = ask_daemon("node.status")
+    except DaemonUnavailable as exc:
+        sys.stderr.write(f"serverosctl: {exc}\n")
+        if args.json:
+            json.dump({"ok": False, "runtime": "NOT_RUNNING", "detail": str(exc)},
+                      sys.stdout, indent=2, sort_keys=True)
+            sys.stdout.write("\n")
+        return EXIT_COULD_NOT_ANSWER
+
+    stale = payload["answer_is_stale"]
+    lines = [
+        f"runtime     {'STALE' if stale else 'RUNNING'}"
+        + (f" · last tick {payload['seconds_since_last_tick']}s ago"
+           if payload["seconds_since_last_tick"] is not None else " · no tick yet"),
+        f"device      {payload['device_ref']}",
+        f"pid         {payload['pid']}  (up {_human_seconds(payload['uptime_seconds'])})",
+        f"ticks       {payload['ticks']} at {payload['tick_interval_seconds']}s"
+        f" · failures {payload['tick_failure_count']}",
+        f"registry    {payload['registry_count']} registered",
+        f"reconcile   {'enabled' if payload['reconcile_enabled'] else 'disabled'}"
+        f" (process interlock)",
+        f"state       {payload['state_dir']}",
+        f"socket      {payload['socket']}",
+        "",
+        payload["note"],
+    ]
+    emit(payload, as_json=args.json, lines=lines)
+    # Stale is a fault: the daemon is answering, and its answer is about a
+    # node it stopped looking at. Exit 1 so a shell can tell it from a
+    # healthy run without parsing the text.
+    return EXIT_FAULT if stale else EXIT_OK
+
+
+def _human_seconds(seconds: float) -> str:
+    seconds = int(seconds)
+    for unit, size in (("d", 86400), ("h", 3600), ("m", 60)):
+        if seconds >= size:
+            return f"{seconds // size}{unit}{seconds % size // 60 if unit == 'd' else ''}"
+    return f"{seconds}s"
 
 
 def cmd_context_current(args) -> int:
@@ -727,13 +844,40 @@ def cmd_runtime_group(args) -> int:
 
 
 def cmd_runtime_tree(args) -> int:
-    """§3 — the whole graph for one group, drawn."""
+    """§3 — the whole graph for one group, drawn.
+
+    With no ref, the largest group is drawn: the same group `runtime groups`
+    already puts first, by the same ordering, so the two commands cannot
+    disagree about which one that is. It is labelled as defaulted in the
+    answer rather than chosen quietly — a subject picked for the reader is
+    only acceptable if the reader can see it was picked.
+    """
+    ref = args.ref
+    defaulted = ref is None
+    if defaulted:
+        groups = view_mod.runtime_groups()["groups"]
+        if not groups:
+            sys.stderr.write("serverosctl: no runtime group is visible to this "
+                             "uid, so there is no tree to draw.\n")
+            return EXIT_COULD_NOT_ANSWER
+        ref = groups[0]["ref"]
     try:
-        payload = view_mod.runtime_tree(args.ref)
+        payload = view_mod.runtime_tree(ref)
     except view_mod.UnknownSubject as exc:
         return _unknown_subject(exc, args)
+    if defaulted:
+        payload["ref_defaulted"] = True
+        payload["ref_defaulted_because"] = (
+            "no ref was given. The largest group by summed lifetime CPU was "
+            "drawn, which is the same group `runtime groups` lists first. "
+            "Pass a ref — a group ref, its id, or any member pid — to choose."
+        )
     group = payload["group"]
-    lines = [
+    lines = []
+    if defaulted:
+        lines.append("no ref given: drawing the largest group. Pass a ref to choose.")
+        lines.append("")
+    lines += [
         f"group      {group['ref']}",
         _aggregate_line(group["aggregate"]),
         "",
@@ -1197,6 +1341,11 @@ def build_parser() -> argparse.ArgumentParser:
     sub = parser.add_subparsers(dest="command", required=True)
     _COMMON = {"parents": [common]}
 
+    status = sub.add_parser(
+        "status", help="the node runtime itself: up, ticking, when it last looked",
+        **_COMMON)
+    status.set_defaults(func=cmd_status)
+
     device = sub.add_parser("device", help="this node", **_COMMON)
     device_sub = device.add_subparsers(dest="subcommand", required=True)
     device_show = device_sub.add_parser("show", help="identity, host summary, managed count", **_COMMON)
@@ -1277,7 +1426,10 @@ def build_parser() -> argparse.ArgumentParser:
     rt_group.set_defaults(func=cmd_runtime_group)
     rt_tree = runtime_sub.add_parser(
         "tree", help="one runtime group, drawn: chain, lineage, processes (§3)", **_COMMON)
-    rt_tree.add_argument("ref", help="a group ref, its id, or any member pid")
+    rt_tree.add_argument(
+        "ref", nargs="?", default=None,
+        help="a group ref, its id, or any member pid. Defaults to the largest "
+             "group, and says so when it does.")
     rt_tree.set_defaults(func=cmd_runtime_tree)
     rt_budget = runtime_sub.add_parser(
         "budget", help="what the daemon has retried, and what it may not (§19)",
@@ -1350,6 +1502,12 @@ def main(argv: list[str] | None = None) -> int:
     except paths_mod.PathRefused as exc:
         sys.stderr.write(f"serverosctl: refused: {exc}\n")
         return EXIT_FAULT
+    except DaemonUnavailable as exc:
+        # Only `status` asks the daemon, and it catches this itself so that it
+        # can emit JSON. Reaching here means a command that should not have
+        # needed the daemon did — which is a defect, not a missing runtime.
+        sys.stderr.write(f"serverosctl: {exc}\n")
+        return EXIT_COULD_NOT_ANSWER
     except BrokenPipeError:  # pragma: no cover - piping into `head`
         return EXIT_OK
 
