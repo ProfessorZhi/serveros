@@ -1,0 +1,336 @@
+# ServerOS Runtime Attribution Model — the schema.
+#
+# What this file is for
+# ---------------------
+# `managed-runtime.v1` answers "which runtimes does this node manage, and are
+# they working". This file answers the question that has to come first and that
+# registry never asked:
+#
+#     who is using this CPU, this RAM, this disk, THIS CONTAINER — and why
+#     does it exist?
+#
+# On 2026-09-13 this host had a `codex app-server` tree burning 407% CPU for
+# one day and eleven hours with no user in front of it. Every fact needed to
+# explain it was on the machine — /proc held the parent chain, the cgroup named
+# the login session, `loginctl` named the sshd peer — and none of it was
+# reachable, because nothing joined those sources together. `ps` showed PIDs.
+# It could not show *whose work* those PIDs were.
+#
+# Three rules follow, and they are the whole design.
+#
+# 1. ATTRIBUTION IS A CLAIM ABOUT PROVENANCE, AND IT HAS AN EPISTEMIC STATUS.
+#    "This process belongs to task X" is not one kind of statement. It is
+#    either something the machine recorded (the cgroup says so), something
+#    inferred from evidence that could be wrong (the command line mentions a
+#    task id), or not known. Those three must never render the same way, so
+#    every field here carries its status. This is the same rule as
+#    `UNKNOWN` health and it is broken by the same temptation.
+#
+# 2. NEVER GUESS A NAME INTO AN OWNER. A container called `redis-cache-2` is a
+#    container called that. The name is a string; it is not an owner, exactly
+#    as a compose project label names a compose run and not a person. If the
+#    evidence does not reach an owner, the answer is UNKNOWN_OWNER and the
+#    resource is DEFER — never a reclaim candidate.
+#
+# 3. THE DAEMON REPORTS FACTS. IT DOES NOT DIAGNOSE. `serverosd` may say
+#    "the cgroup of PID 178978 is session-2382 and session-2382 is closing".
+#    It may NOT say "this is a Codex bug". The first is a measurement the
+#    machine can defend; the second is a conclusion, and conclusions belong to
+#    an agent that can be asked to justify them. Enforced by construction:
+#    nothing in this schema has a field for a cause.
+schema: serveros/attribution.v1
+version: 1
+
+# ---------------------------------------------------------------------------
+# What kind of thing is being attributed.
+#
+# Wider than `managed-runtime.v1`'s kinds on purpose. That file describes
+# things this node MANAGES — an unregistered container is not in it at all.
+# This file describes things that EXIST, whether or not anyone registered
+# them, because "who owns this process" has to be answerable before you can
+# decide whether to manage it.
+# ---------------------------------------------------------------------------
+kinds:
+  - process
+  - systemd-user-service
+  - container
+  - mcp-server
+  - transport-endpoint
+  # A long-lived forwarding path between two machines. First-class because it
+  # is the join between a runtime here and the device it belongs to: without
+  # it, a remote agent's processes are orphans with no visible origin.
+  - tunnel
+  # An agent's own supervisor process (app-server, proxy, session broker).
+  - agent-runtime
+  # Several runtimes that belong to ONE piece of work and must be reasoned
+  # about as a unit. See `runtime_groups` below.
+  - runtime-group
+
+# ---------------------------------------------------------------------------
+# Epistemic status. Every attributed field carries exactly one of these.
+#
+# This is the vocabulary that stops a plausible story from becoming a fact.
+# ---------------------------------------------------------------------------
+epistemic:
+  # The machine recorded it. Read from a source of record: /proc, a cgroup
+  # string, systemd, Docker's own metadata. Not deduced.
+  FACT:
+    means: "read from a source of record; nothing was inferred"
+  # Derived by a rule from facts. The rule is named in `provenance` so the
+  # inference can be checked and argued with. An inference is never silently
+  # promoted to a fact.
+  INFERRED:
+    means: "derived from facts by a named rule; the rule is in provenance"
+  # Not established. This is a RESULT, not an absence of one — it is what
+  # stops an empty field from reading as "nothing to see here".
+  UNKNOWN:
+    means: "not established; may not be used as if it were"
+
+# ---------------------------------------------------------------------------
+# How strongly the evidence supports an owner.
+#
+# `high` is not "we are fairly sure". It is a named evidence class that
+# genuinely decides the question.
+# ---------------------------------------------------------------------------
+confidence:
+  - high
+  - medium
+  - low
+  - unknown
+
+# ---------------------------------------------------------------------------
+# Where an attribution came from. A closed list, because "we got it from
+# somewhere" is how an inference becomes indistinguishable from a measurement.
+#
+# Listed strongest first. A consumer that needs a decision-grade owner must
+# require one of the first four.
+# ---------------------------------------------------------------------------
+provenance:
+  # Sources of record. These can decide an owner.
+  - docker-label          # a `serveros.owner=` label the owner wrote
+  - registry-match        # the resource is explicitly registered here
+  - cgroup                # the kernel says which unit/session owns the tree
+  - systemd-unit          # the supervisor says which unit it is
+  # Strong evidence that still needs a rule to become an owner.
+  - bind-mount            # the mounts point at a project path
+  - working-directory     # cwd resolves under a project tree
+  - process-tree          # inherited from an ancestor's attribution
+  - session-origin        # the login session names the remote peer
+  # Weak. Never sufficient alone to name an owner.
+  - container-name
+  - image-name
+  - command-line
+  - created-time
+  - port-binding
+  - network-membership
+
+# Sources that may decide an owner on their own. Everything else may only
+# corroborate, and a record whose only evidence is below this line is
+# UNKNOWN_OWNER no matter how plausible it looks.
+decisive_provenance: [docker-label, registry-match, cgroup, systemd-unit]
+
+# ---------------------------------------------------------------------------
+# Runtime groups (§5).
+#
+# The unit of reasoning here is not the PID. One agent task routinely owns a
+# dozen processes across a proxy, a supervisor, several MCP servers and a
+# browser helper, and every one of them is meaningless in isolation. Judging
+# them separately is how a live task gets half-reclaimed.
+# ---------------------------------------------------------------------------
+runtime_groups:
+  # How a group is named. The id is the thing that endures; the label is for
+  # humans and may change without anything else moving.
+  ref_format: "runtime-group:<kind>:<id>"
+  kinds:
+    - codex-task        # a Codex remote task and everything serving it
+    - agent-session     # one agent login session's whole runtime
+    - work-item         # everything serving one work item
+    - device-origin     # everything reachable from one remote device
+  # A group is judged as a unit, so it carries the aggregate of its members.
+  aggregates: [cpu_percent, memory_rss_bytes, process_count, age_seconds, task_state]
+
+# ---------------------------------------------------------------------------
+# Tunnels (§8).
+#
+# A tunnel is the one runtime kind whose failure is routinely reported as
+# success. `ssh` alive and TCP ESTABLISHED are both true of a tunnel that is
+# forwarding nothing — the same shape as the 2026-09-12 endpoint that held an
+# ESTABLISHED socket through a 54-minute outage.
+#
+# So a tunnel declares BOTH endpoints, and its health is measured on the
+# transport and functional axes rather than on the process existing.
+# ---------------------------------------------------------------------------
+tunnels:
+  transports: [ssh, reverse-ssh, socks, other]
+  endpoints:
+    local: "the address this node listens on or dials from"
+    remote: "the address on the far side"
+  criticality_default: critical
+  note: >
+    `liveness: RUNNING` for a tunnel means the forwarding process exists. It
+    never means traffic flows. The transport axis asks whether the channel
+    carries anything and the functional axis asks whether the far side
+    answers; a tunnel with liveness RUNNING and functional UNKNOWN is DEGRADED
+    and must never render as healthy.
+
+# ---------------------------------------------------------------------------
+# Criticality (§9). Ranks what to look at first when the host is under
+# pressure. It confers NOTHING.
+#
+# Spelled out because the failure mode is obvious: an operator reads
+# `critical` as "may do more", and a resource management layer that escalates
+# its own authority based on a label it set is a privilege escalation with
+# extra steps.
+# ---------------------------------------------------------------------------
+criticality:
+  values: [critical, important, normal]
+  meaning:
+    critical: >
+      its absence degrades the node's ability to observe or control itself, or
+      cuts the path back to the device that owns the work. RDC endpoint,
+      serverosd, control tunnels.
+    important: >
+      long-lived references other work depends on. LiteLLM reference,
+      persistent MCP servers.
+    normal: "everything else, including every temporary helper"
+  confers: >
+    PRIORITY OF ATTENTION ONLY. It does not grant authority to act, it does
+    not relax the retry budget, and it does not exempt a resource from the
+    protected/normal/disposable protection rules. A `critical` resource with
+    `protection: protected` is still never restarted by ServerOS.
+
+# ---------------------------------------------------------------------------
+# Anomaly codes (§10). Deterministic. Every one is a statement about a
+# MEASUREMENT — what was seen and over what window — never about a cause.
+#
+# `severity` ranks the signal. `implies_stale` says whether this code, alone,
+# justifies calling a runtime stale — and it is false for every single-signal
+# rule, which is the point of §11.
+# ---------------------------------------------------------------------------
+anomalies:
+  - code: HIGH_CPU_SUSTAINED
+    severity: medium
+    implies_stale: false
+    note: >
+      alone this means "something is busy". Legitimate work is busy. A build
+      is busy. Marking a busy runtime stale is how you kill the build.
+  - code: HIGH_MEMORY_SUSTAINED
+    severity: medium
+    implies_stale: false
+  - code: ROOT_FS_PRESSURE
+    severity: high
+    implies_stale: false
+  - code: DATA_FS_PRESSURE
+    severity: high
+    implies_stale: false
+  - code: TASK_IDLE_PROCESS_ACTIVE
+    severity: high
+    implies_stale: false
+    note: >
+      the task says idle and its runtime is still consuming. Strong, and still
+      not sufficient on its own: a task can be idle between turns of a
+      conversation that is very much alive.
+  - code: TASK_CLOSED_RESOURCE_RUNNING
+    severity: high
+    implies_stale: false
+  - code: ORPHAN_PROCESS_TREE
+    severity: high
+    implies_stale: false
+    note: >
+      the tree's parent is init and the session that started it is not coming
+      back. Evidence about lineage, not about whether the work matters.
+  - code: UNKNOWN_OWNER_LONG_RUNNING
+    severity: medium
+    implies_stale: false
+  - code: REPEATED_ERROR_LOOP
+    severity: medium
+    implies_stale: false
+  - code: FUNCTIONAL_PROBE_FAILED
+    severity: high
+    implies_stale: false
+  - code: MCP_PROCESS_ALIVE_BUT_UNAVAILABLE
+    severity: high
+    implies_stale: false
+    note: >
+      process exists, handshake fails. Exactly the class this whole
+      architecture exists for, one layer down.
+  - code: STALE_CONTAINER
+    severity: medium
+    implies_stale: false
+  - code: STOPPED_RECLAIM_CANDIDATE
+    severity: low
+    implies_stale: false
+  - code: AGE_WITHOUT_ACTIVITY
+    severity: low
+    implies_stale: false
+
+# ---------------------------------------------------------------------------
+# Combinations (§11).
+#
+# A single signal never marks anything stale. A named COMBINATION can, and the
+# combination is written down here rather than emerging from the agent's mood,
+# so that the same facts produce the same classification every time.
+#
+# The rule that makes this safe: a combination may upgrade the CLASSIFICATION.
+# It may never delete the underlying signals from the record.
+# ---------------------------------------------------------------------------
+combinations:
+  - classification: STALE_AGENT_RUNTIME_HIGH_CONFIDENCE
+    requires_all: [TASK_IDLE_PROCESS_ACTIVE, HIGH_CPU_SUSTAINED, REPEATED_ERROR_LOOP]
+    note: >
+      idle task + real consumption + a loop that keeps failing. Three
+      independent facts pointing the same way, none of which is sufficient
+      alone. This is the codex case of 2026-09-13.
+  - classification: STALE_AGENT_RUNTIME_HIGH_CONFIDENCE
+    requires_all: [ORPHAN_PROCESS_TREE, TASK_CLOSED_RESOURCE_RUNNING]
+    note: "the session that owned it is gone and the work it served is closed"
+  - classification: STALE_CANDIDATE
+    requires_all: [TASK_IDLE_PROCESS_ACTIVE, HIGH_CPU_SUSTAINED]
+    note: "worth a look; not yet a confident call"
+  - classification: BROKEN_NOT_STALE
+    requires_all: [MCP_PROCESS_ALIVE_BUT_UNAVAILABLE]
+    note: >
+      a process that is up and cannot answer is broken, and broken is not the
+      same as unused. Restarting may be right; reclaiming is not.
+  - classification: INFRASTRUCTURE_AT_RISK
+    requires_all: [FUNCTIONAL_PROBE_FAILED]
+    note: >
+      only applies to criticality: critical. A failed critical resource is an
+      incident, not a cleanup.
+
+# ---------------------------------------------------------------------------
+# What a recommendation may say, and the blast radius that must accompany it.
+#
+# Every recommendation is a PROPOSAL. Nothing here executes. §18 forbids the
+# daemon from removing, pruning, killing or cleaning anything, and §31 requires
+# this host's real case to be diagnosed and then left alone.
+# ---------------------------------------------------------------------------
+recommendations:
+  values:
+    - NONE
+    - STOP_RUNTIME_GROUP
+    - RESTART_RESOURCE
+    - REQUEST_CLEANUP_APPROVAL
+    - NEEDS_HUMAN
+  every_recommendation_requires:
+    - blast_radius          # what else stops if this is done
+    - affected_processes    # exactly which PIDs, listed
+    - affected_runtime_refs
+    - protected_excluded    # which protected things were deliberately left out
+  note: >
+    A recommendation without a blast radius is not a recommendation. The
+    operator cannot consent to a consequence nobody described.
+
+rules:
+  - "Every attributed field carries a status. A field with no status is not
+     attributable and must be reported as UNKNOWN."
+  - "Decisive provenance or UNKNOWN_OWNER. There is no third answer, and
+     plausibility is not a provenance class."
+  - "A single signal never marks a runtime stale. §11 requires a named
+     combination, and the combination is evaluated in code rather than
+     described in a report."
+  - "A classification never replaces its signals. The facts stay in the
+     record after the conclusion is drawn from them."
+  - "The daemon reports measurements, never causes. There is no field here
+     for a diagnosis, and adding one would be the whole failure mode."
+  - "Unknown owner fails safe: DEFER, never reclaim."
