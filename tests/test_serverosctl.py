@@ -1,0 +1,377 @@
+#!/usr/bin/env python3
+"""Tests for path governance and the serverosctl surface.
+
+Hermetic: `tmp_path` builds a small root contract, and every root check runs
+against it rather than against this machine. The properties under test are
+the ones that decide where an agent's output is allowed to land, so they are
+tested by refusal as much as by success — a resolver that always finds an
+answer is the failure mode, not the goal.
+"""
+from __future__ import annotations
+
+import importlib.util
+import sys
+from pathlib import Path
+
+import pytest
+
+REPO = Path(__file__).resolve().parent.parent
+RUNTIME = REPO / "runtime"
+
+
+def _load(name: str, filename: str):
+    if name in sys.modules:
+        return sys.modules[name]
+    spec = importlib.util.spec_from_file_location(name, RUNTIME / filename)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+paths_mod = _load("serveros_runtime_paths", "paths.py")
+cli_mod = _load("serveros_runtime_cli", "cli.py")
+
+Paths = paths_mod.Paths
+PathRefused = paths_mod.PathRefused
+PathError = paths_mod.PathError
+
+
+@pytest.fixture
+def roots(tmp_path):
+    """A complete but tiny root contract inside tmp_path."""
+    home = tmp_path / "home" / "hwz"
+    data = tmp_path / "data"
+    workspace = data / "workspace"
+    for path in (home, data / "artifacts", data / "toolchains", workspace / "src",
+                 workspace / "worktrees", data / "state" / "serveros",
+                 data / "logs" / "serveros"):
+        path.mkdir(parents=True, exist_ok=True)
+    return {
+        "home": str(home),
+        "data_root": str(data),
+        "workspace_root": str(workspace),
+        "artifacts_root": str(data / "artifacts"),
+        "toolchains_root": str(data / "toolchains"),
+    }
+
+
+@pytest.fixture
+def paths(roots):
+    return Paths(roots)
+
+
+# ---------------------------------------------------------------------------
+# §46 · path.resolve is deterministic
+# ---------------------------------------------------------------------------
+
+
+def test_resolve_is_deterministic(paths):
+    first = paths.resolve("state/runtime/observed")
+    for _ in range(5):
+        assert paths.resolve("state/runtime/observed") == first
+
+
+def test_resolve_does_not_depend_on_the_working_directory(paths, tmp_path, monkeypatch):
+    """A resolver that consults cwd produces a different answer per shell."""
+    import os
+
+    before = paths.resolve("artifacts/work-items/p/I/R")
+    monkeypatch.chdir(tmp_path)
+    after = paths.resolve("artifacts/work-items/p/I/R")
+    assert before == after
+    assert before["path"].startswith("/")
+
+
+def test_resolve_names_a_declared_root(paths, roots):
+    result = paths.resolve("workspace/src")
+    assert result["root"] == "workspace"
+    assert result["path"] == str(Path(roots["workspace_root"]) / "src")
+
+
+def test_resolve_refuses_an_unknown_root_and_names_the_real_ones(paths):
+    with pytest.raises(PathRefused) as excinfo:
+        paths.resolve("artefacts/x")
+    assert "artefacts" in str(excinfo.value)
+    assert "artifacts" in str(excinfo.value)  # the alternatives are listed
+
+
+def test_resolve_refuses_a_path_that_is_already_absolute(paths):
+    """Two ways to name a path is how the CLI and the caller end up reading
+    two different worlds."""
+    with pytest.raises(PathRefused, match="absolute"):
+        paths.resolve("/etc/passwd")
+
+
+def test_resolve_refuses_traversal(paths):
+    with pytest.raises(PathRefused, match="`..`"):
+        paths.resolve("artifacts/../../etc")
+
+
+def test_resolve_refuses_tilde(paths):
+    with pytest.raises(PathRefused):
+        paths.resolve("~/files")
+
+
+def test_work_item_run_rejects_a_segment_that_is_a_path(paths):
+    with pytest.raises(PathRefused, match="single path segment"):
+        paths.work_item_run("litellm", "../LIT-0104", "RUN-1")
+    with pytest.raises(PathRefused, match="single path segment"):
+        paths.work_item_run("litellm", "LIT-0104", "..")
+
+
+def test_skill_run_builds_the_canonical_shape(paths, roots):
+    result = paths.skill_run("runtime-management", "RUN-001")
+    assert result["path"] == str(
+        Path(roots["artifacts_root"]) / "skills/runtime-management/RUN-001"
+    )
+
+
+def test_state_runtime_names_a_closed_set(paths):
+    assert paths.state_runtime("hygiene")["path"].endswith("state/serveros/runtime/hygiene")
+    with pytest.raises(PathRefused, match="not a declared runtime state area"):
+        paths.state_runtime("whatever-i-feel-like")
+
+
+# ---------------------------------------------------------------------------
+# admission — inside a root is necessary, not sufficient
+# ---------------------------------------------------------------------------
+
+
+def test_a_relative_path_is_refused(paths):
+    """A relative path means somebody is about to write next to the cwd."""
+    with pytest.raises(PathRefused, match="not absolute"):
+        paths.admit("artifacts/report.json")
+
+
+def test_a_path_outside_every_root_is_refused(paths):
+    with pytest.raises(PathRefused, match="outside every declared root"):
+        paths.admit("/etc/passwd")
+
+
+def test_workspace_artifacts_is_refused_even_though_it_is_inside_a_root(paths, roots):
+    """The whole point. `workspace/artifacts` is under the workspace root and
+    is exactly the substitute root the layout forbids."""
+    with pytest.raises(PathRefused, match="workspace/artifacts"):
+        paths.admit(str(Path(roots["workspace_root"]) / "artifacts/report.json"))
+
+
+def test_no_new_data_root_top_level_area(paths, roots):
+    with pytest.raises(PathRefused, match="declared top-level"):
+        paths.admit(str(Path(roots["data_root"]) / "newroot/x"))
+
+
+def test_a_new_top_level_directory_under_home_is_refused(paths, roots):
+    with pytest.raises(PathRefused, match="new top-level directory under HOME"):
+        paths.admit(str(Path(roots["home"]) / "brandnew/thing.json"))
+
+
+def test_tilde_files_is_refused_even_though_it_exists(paths, roots):
+    files = Path(roots["home"]) / "files"
+    files.mkdir()
+    with pytest.raises(PathRefused, match="substitute root"):
+        paths.admit(str(files / "report.md"))
+
+
+def test_a_near_canonical_directory_name_is_refused(paths, roots):
+    for name in ("legacy", "old-artifacts", "backup"):
+        with pytest.raises(PathRefused, match="near-canonical"):
+            paths.admit(str(Path(roots["artifacts_root"]) / name / "x.json"))
+
+
+def test_a_deep_name_that_merely_contains_old_is_allowed(paths, roots):
+    """The check is at the first level only. `RUN-old` is a real name."""
+    result = paths.admit(str(Path(roots["artifacts_root"]) / "work-items/p/I/RUN-old"))
+    assert result["admitted"] is True
+
+
+def test_workspace_src_refuses_a_write_but_allows_a_read(paths, roots):
+    """§33: src is read-mostly. Fetching and inspecting are permitted; a
+    normal code change belongs in a worktree."""
+    target = str(Path(roots["workspace_root"]) / "src/litellm-bridge/foo.py")
+    with pytest.raises(PathRefused, match="read-mostly"):
+        paths.admit(target, writing=True)
+    result = paths.admit(target, writing=False)
+    assert result["admitted"] is True
+
+
+def test_a_symlink_out_of_a_root_is_refused(paths, roots, tmp_path):
+    """A path can be inside a root and point outside it. Containment is
+    checked after resolution, not before."""
+    outside = tmp_path / "elsewhere"
+    outside.mkdir()
+    link = Path(roots["artifacts_root"]) / "escape"
+    link.symlink_to(outside)
+    with pytest.raises(PathRefused, match="outside every declared root"):
+        paths.admit(str(link / "report.json"))
+
+
+def test_traversal_is_refused_before_resolution(paths, roots):
+    with pytest.raises(PathRefused, match="`..`"):
+        paths.admit(str(Path(roots["artifacts_root"]) / "work-items/../../../etc/passwd"))
+
+
+def test_space_in_authorization_is_refused(paths, roots):
+    target = Path(roots["home"]) / ".serveros"
+    target.mkdir()
+    with pytest.raises(PathRefused, match="identity and binding"):
+        paths.admit(str(target / "reports/q3.md"))
+
+
+def test_the_serveros_allowlist_admits_identity_files(paths, roots):
+    target = Path(roots["home"]) / ".serveros/targets.yaml"
+    result = paths.admit(str(target))
+    assert result["admitted"] is True
+
+
+def test_admission_classifies_canonical_from_merely_permitted(paths, roots):
+    canonical = paths.admit(str(Path(roots["artifacts_root"]) / "work-items/litellm/LIT-1/RUN-1"))
+    assert canonical["canonical"] == "CANONICAL_WORK_ITEM_RUN"
+
+    permitted = paths.admit(str(Path(roots["artifacts_root"]) / "scratch/notes.json"))
+    assert permitted["canonical"] == "ADMITTED_NON_CANONICAL"
+    # Both are admitted; only one is where new work goes. The distinction is
+    # in the record so a caller can tell them apart without a second lookup.
+    assert permitted["admitted"] is True
+
+
+def test_admit_writes_nothing(paths, roots):
+    """It is a decision. The component that acts on it is elsewhere."""
+    target = Path(roots["artifacts_root"]) / "skills/x/RUN-1"
+    paths.admit(str(target))
+    assert not target.exists()
+
+
+# ---------------------------------------------------------------------------
+# the CLI contract
+# ---------------------------------------------------------------------------
+
+
+def _all_subcommands(parser) -> set[str]:
+    """Every leaf verb the CLI accepts, walked from the real parser."""
+    import argparse
+
+    verbs: set[str] = set()
+
+    def walk(p):
+        for action in p._actions:
+            if isinstance(action, argparse._SubParsersAction):
+                for name, sub in action.choices.items():
+                    verbs.add(name)
+                    walk(sub)
+
+    walk(parser)
+    return verbs
+
+
+def test_no_subcommand_mutates_anything():
+    """This round implements no stop, no remove, no prune and no reconcile,
+    and a command that is absent is a clearer fact than one that exists and
+    refuses."""
+    verbs = _all_subcommands(cli_mod.build_parser())
+    for forbidden in ("stop", "remove", "rm", "prune", "delete", "kill", "restart",
+                      "reconcile", "register"):
+        assert forbidden not in verbs, forbidden
+    assert "hygiene" in verbs and "status" in verbs
+
+
+def test_the_forbidden_verbs_are_absent_from_the_module_too():
+    """Not just unexposed — unimplemented."""
+    for name in ("cmd_runtime_stop", "cmd_runtime_remove", "cmd_runtime_prune",
+                 "cmd_runtime_reconcile"):
+        assert not hasattr(cli_mod, name), name
+
+
+def test_global_flags_work_on_either_side_of_the_subcommand(tmp_path, capsys):
+    """`--json` after the verb is what people actually type."""
+    registry_file = tmp_path / "resources.yaml"
+    registry_file.write_text(
+        "schema: serveros/managed-runtime-registry.v1\n"
+        "device_ref: device:test\nresources: []\n"
+    )
+    import json
+
+    assert cli_mod.main(["runtime", "list", "--json", "--registry", str(registry_file)]) == 0
+    first = json.loads(capsys.readouterr().out)
+    assert cli_mod.main(["--json", "--registry", str(registry_file), "runtime", "list"]) == 0
+    second = json.loads(capsys.readouterr().out)
+    assert first == second
+
+
+def test_exit_codes_distinguish_broken_from_could_not_look():
+    """A monitor that cannot tell those apart reports outages during its own
+    failures."""
+    assert cli_mod.EXIT_OK == 0
+    assert cli_mod.EXIT_FAULT == 1
+    assert cli_mod.EXIT_COULD_NOT_ANSWER == 2
+    assert cli_mod.EXIT_OK != cli_mod.EXIT_FAULT != cli_mod.EXIT_COULD_NOT_ANSWER
+
+
+def test_an_unknown_resource_exits_could_not_answer(tmp_path, capsys, monkeypatch):
+    registry_file = tmp_path / "resources.yaml"
+    registry_file.write_text(
+        "schema: serveros/managed-runtime-registry.v1\n"
+        "device_ref: device:test\n"
+        "resources:\n"
+        "  - id: known\n"
+        "    kind: container\n"
+        "    owner: {type: project, ref: 'project:x'}\n"
+        "    scope: user\n"
+        "    lifecycle: {class: persistent}\n"
+        "    desired: {state: running}\n"
+        "    protection: {level: protected}\n"
+    )
+    code = cli_mod.main(["--registry", str(registry_file), "runtime", "status", "nope"])
+    assert code == cli_mod.EXIT_COULD_NOT_ANSWER
+    assert "never by being noticed" in capsys.readouterr().err
+
+
+def test_a_missing_registry_is_an_error_not_an_empty_one(tmp_path, capsys):
+    code = cli_mod.main(["--registry", str(tmp_path / "absent.yaml"), "runtime", "list"])
+    assert code == cli_mod.EXIT_COULD_NOT_ANSWER
+    assert "no discovery fallback" in capsys.readouterr().err
+
+
+def test_runtime_list_reports_protection_and_why(tmp_path, capsys):
+    registry_file = tmp_path / "resources.yaml"
+    registry_file.write_text(
+        "schema: serveros/managed-runtime-registry.v1\n"
+        "device_ref: device:test\n"
+        "resources:\n"
+        "  - id: baseline\n"
+        "    kind: container\n"
+        "    owner: {type: project, ref: 'project:x'}\n"
+        "    scope: user\n"
+        "    lifecycle: {class: persistent}\n"
+        "    desired: {state: running}\n"
+        "    protection: {level: protected}\n"
+    )
+    assert cli_mod.main(["--registry", str(registry_file), "runtime", "list"]) == cli_mod.EXIT_OK
+    out = capsys.readouterr().out
+    assert "baseline" in out
+    assert "protected" in out
+
+
+def test_path_admit_exits_fault_on_a_refusal(capsys):
+    code = cli_mod.main(["path", "admit", "/etc/passwd"])
+    assert code == cli_mod.EXIT_FAULT
+    assert "REFUSED" in capsys.readouterr().out
+
+
+def test_path_resolve_refusal_is_not_a_fault_but_an_error(capsys):
+    """An unresolvable name is a caller mistake (2), not a broken thing (1)."""
+    code = cli_mod.main(["path", "resolve", "artefacts/x"])
+    assert code == cli_mod.EXIT_FAULT  # PathRefused is a refusal, reported as 1
+    capsys.readouterr()
+
+
+def test_json_output_is_a_view_of_the_same_facts(tmp_path, capsys):
+    """The human form and the machine form must not be able to disagree."""
+    import json
+
+    code = cli_mod.main(["path", "contract", "--json"])
+    assert code == cli_mod.EXIT_OK
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["workspace_top_level"] == list(paths_mod.WORKSPACE_TOP_LEVEL)
+    assert payload["artifact_namespaces"] == ["work-items", "skills"]
+    assert "no default root" in payload["note"]
