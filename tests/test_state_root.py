@@ -700,3 +700,30 @@ def test_the_rendered_row_shows_all_three_fields():
     source = (RUNTIME / "conformance.py").read_text()
     assert "blocking={str(row['blocking']):<5}" in source
     assert "row['enforcement']" in source
+
+
+def test_a_computed_on_demand_namespace_does_not_promise_a_future_write():
+    """§61: four namespaces declare producers that never persist.
+
+    `runtime/resources`, `attribution`, `graph` and `anomalies` are answered
+    over IPC and written to no file — measured live, `state/serveros/runtime/`
+    holds `health/`, `hygiene/`, `observed/` and `registry/` and nothing else.
+    The note used to read "no producer has written it yet", which promises the
+    write is coming; for these it never is, so a reader waits for a state that
+    is not in the design.
+    """
+    contract = state_root.load_contract()
+    flat = state_root.namespace_classes(contract)
+    for ref in ("runtime/resources", "runtime/attribution",
+                "runtime/graph", "runtime/anomalies"):
+        assert flat[ref]["absent_means"] == "COMPUTED_ON_DEMAND", ref
+
+    report = state_root.namespace_report()
+    for row in report["namespaces"]:
+        if row["state"] != state_root.EXPECTED_ABSENT:
+            continue
+        assert "yet" not in row["note"], row
+        assert row["absent_means"], (
+            f"{row['namespace']} is expected-absent with no statement of what "
+            f"its absence means, so a reader has to guess"
+        )
