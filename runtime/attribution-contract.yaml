@@ -338,6 +338,29 @@ anomalies:
     implies_stale: false
 
 # ---------------------------------------------------------------------------
+# Thresholds (§10). Declared here, read by the detector, never hard-coded.
+#
+# A threshold is a POLICY, and a policy that lives in a function's default
+# argument is a policy nobody can review or change. Every code below reports
+# the threshold it used alongside the value it measured, so a reading can be
+# argued with rather than merely believed.
+# ---------------------------------------------------------------------------
+thresholds:
+  # One full core, sustained over the process's whole life. Not an
+  # instantaneous sample: "sustained" is the claim, so the measurement has to
+  # be able to carry it (see attribution.lifetime_cpu_percent).
+  cpu_percent_high: 100.0
+  # Below this, "busy" is a build or a test run and means nothing.
+  cpu_sustained_seconds: 3600
+  memory_rss_high_bytes: 1073741824      # 1 GiB
+  age_long_seconds: 86400                # one day
+  filesystem_percent_high: 85.0
+  error_repeats_high: 10
+  error_window_seconds: 3600
+  # A runtime whose task went idle this long ago and is still consuming.
+  idle_grace_seconds: 1800
+
+# ---------------------------------------------------------------------------
 # Combinations (§11).
 #
 # A single signal never marks anything stale. A named COMBINATION can, and the
@@ -360,6 +383,25 @@ combinations:
   - classification: STALE_CANDIDATE
     requires_all: [TASK_IDLE_PROCESS_ACTIVE, HIGH_CPU_SUSTAINED]
     note: "worth a look; not yet a confident call"
+  - classification: STALE_CANDIDATE
+    requires_all: [ORPHAN_PROCESS_TREE, HIGH_CPU_SUSTAINED, REPEATED_ERROR_LOOP]
+    note: >
+      the same three-way shape as the task-idle combination, with lineage
+      standing in for task state: the origin session is not coming back, the
+      runtime is consuming real CPU, and it is failing in a loop.
+
+      Deliberately a CANDIDATE and not high confidence, because it cannot show
+      the WORK is finished — only that its origin is gone and it is failing.
+      That is a weaker claim than the task-idle version makes, and the weaker
+      claim is the one the evidence supports.
+
+      This exists because TASK_IDLE_PROCESS_ACTIVE is structurally unreachable
+      on a host with no task-to-process mapping, which includes this one. With
+      only the task-idle combinations declared, the 2026-09-13 codex case —
+      405% CPU, orphaned, 85 repeats of a failing loop, all three measured —
+      would classify as nothing at all. Fail-safe is not the same as
+      uninformative, and a detector that can never classify anything is one
+      nobody will consult.
   - classification: BROKEN_NOT_STALE
     requires_all: [MCP_PROCESS_ALIVE_BUT_UNAVAILABLE]
     note: >
