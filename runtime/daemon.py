@@ -546,23 +546,11 @@ class Daemon:
             "resource.summary": self._r_resource_summary,
             "resource.hygiene": self._r_resource_hygiene,
             "observation.get": self._r_observation_get,
+            "ability.list": self._r_ability_list,
+            "ability.status": self._r_ability_status,
         }.get(method)
 
         if handler is None:
-            # `ability.*` is called out specifically. ServerOS does not own
-            # abilities (§27/§29) and a control plane that answers a question
-            # outside its authority is worse than one that has no answer:
-            # the caller has no way to tell the difference.
-            if str(method).startswith("ability."):
-                return _error(
-                    method, "NOT_THIS_AUTHORITY",
-                    "ability.list and ability.status belong to "
-                    "ability-management, which is the Capability/Ability "
-                    "Authority. ServerOS owns a local observed Node Capability "
-                    "View at state/serveros/abilities/effective.*, which may "
-                    "be stale, and it will not answer on that authority's "
-                    "behalf.",
-                )
             return _error(
                 method, "UNKNOWN_METHOD",
                 f"{method!r} is not served. Known: {sorted(self._methods())}",
@@ -575,7 +563,124 @@ class Daemon:
     def _methods(self) -> tuple[str, ...]:
         return ("device.show", "context.current", "path.resolve", "path.admit",
                 "runtime.list", "runtime.status", "runtime.explain",
-                "resource.summary", "resource.hygiene", "observation.get")
+                "resource.summary", "resource.hygiene", "observation.get",
+                "ability.list", "ability.status")
+
+    # -- the local capability view (§27/§28) --------------------------------
+
+    def _capability_view(self) -> dict:
+        """The last-known local projection. Never the authority, always labelled.
+
+        §27 freezes the Capability/Ability Authority as ability-management, and
+        §29 puts `ability:*` in that authority's namespace. §24 nevertheless
+        lists `ability.list` / `ability.status` on the node surface, and §28
+        says the node must keep working — with a projection it is told may be
+        stale — while the authority is unreachable.
+
+        Those three are only compatible if the ANSWER says which of the two it
+        is. So it does, in a field that cannot be missed: every response names
+        `ability-management` as the authority, says this is a local observed
+        projection, and carries `registry_status` with an age. A caller can
+        then tell "the authority said nothing is installed" from "nobody has
+        asked the authority in three days", which are the same empty list and
+        completely different facts.
+
+        Deliberately NOT a refusal. The first version of this refused
+        `ability.*` outright, which is defensible and wrong: it makes every
+        node surface depend on ability-management being reachable, which is
+        the coupling §28 exists to remove.
+        """
+        state = paths_mod.Paths().root("state") / "abilities"
+        for name in ("effective.json", "effective.yaml"):
+            candidate = state / name
+            try:
+                raw = candidate.read_text()
+            except OSError:
+                continue
+            try:
+                if candidate.suffix == ".json":
+                    document = json.loads(raw)
+                else:
+                    import yaml
+
+                    document = yaml.safe_load(raw)
+            except Exception as exc:  # noqa: BLE001 - a corrupt projection is a fact
+                return {
+                    "authority": "ability-management",
+                    "this_is": "a local observed projection, not the authority",
+                    "registry_status": "UNREADABLE",
+                    "source": str(candidate),
+                    "error": f"{type(exc).__name__}: {exc}",
+                    "note": (
+                        "the projection exists and cannot be parsed. Reporting "
+                        "it as empty would say 'nothing is installed', which "
+                        "is a different and much more confident claim."
+                    ),
+                }
+            document = document or {}
+            age = _age_seconds(document.get("generated_at"), self._now())
+            status = str(document.get("registry_status") or "UNKNOWN")
+            if status == "FRESH" and age is not None and age > MAX_PROJECTION_AGE_SECONDS:
+                # The file says FRESH; the clock disagrees. The clock wins,
+                # because `registry_status` is what the writer believed when it
+                # wrote, and time has passed since.
+                status = "STALE"
+            return {
+                "authority": "ability-management",
+                "this_is": "a local observed projection, not the authority",
+                "registry_status": status,
+                "generated_at": document.get("generated_at"),
+                "age_seconds": age,
+                "stale_after_seconds": MAX_PROJECTION_AGE_SECONDS,
+                "source_revision": document.get("source_revision"),
+                "stale": status != "FRESH",
+                "source": str(candidate),
+                # Carried through so `ability.list` can return it. Dropping it
+                # here and re-deriving it downstream is how a projection ends
+                # up reported as FRESH with nothing in it.
+                "abilities": document.get("abilities") or [],
+                "note": (
+                    "readable while ability-management is unreachable, which is "
+                    "the point (§28). A stale projection is usable and is not "
+                    "an installation authority: do not install from it."
+                ),
+            }
+        return {
+            "authority": "ability-management",
+            "this_is": "a local observed projection, not the authority",
+            "registry_status": "NOT_MATERIALIZED",
+            "source": str(state / "effective.json"),
+            "stale": True,
+            "abilities": None,
+            "note": (
+                "no local capability projection has been materialized at "
+                "state/serveros/abilities/effective.*. This is NOT the same as "
+                "'no abilities are installed' — nobody has asked. The node "
+                "still works; the answer is that it does not have one."
+            ),
+        }
+
+    def _r_ability_list(self, params) -> dict:
+        # No re-derivation: whatever `_capability_view` established about
+        # whether a projection exists is the answer, and filling in `[]` for
+        # the two states that mean "there is nothing to read" would collapse
+        # them back into "there is nothing installed".
+        return self._capability_view()
+
+    def _r_ability_status(self, params) -> dict:
+        view = self._capability_view()
+        name = params.get("name")
+        if name is None:
+            return view
+        abilities = view.get("abilities") or []
+        match = next((a for a in abilities
+                      if isinstance(a, dict) and a.get("name") == name), None)
+        if match is None:
+            return {**view, "name": name, "installed": None,
+                    "note": f"{name!r} is not in the local projection. Absence "
+                            f"from a projection is not proof of absence on the "
+                            f"authority."}
+        return {**view, "name": name, "installed": True, "ability": match}
 
     def _r_device_show(self, params) -> dict:
         host = self.inventory.host_summary()
@@ -735,6 +840,29 @@ class Daemon:
 
 def _error(method, code: str, message: str) -> dict:
     return {"ok": False, "method": method, "error": {"code": code, "message": message}}
+
+
+MAX_PROJECTION_AGE_SECONDS = 24 * 3600
+
+
+def _age_seconds(generated_at, now: float) -> int | None:
+    """How old a projection is, or None if it never said when it was made.
+
+    `None` rather than 0: an undated projection is not a fresh one, and a
+    missing timestamp defaulting to "just now" is how a three-day-old
+    capability list gets read as current.
+    """
+    if not generated_at:
+        return None
+    import datetime
+
+    try:
+        stamp = datetime.datetime.fromisoformat(str(generated_at).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if stamp.tzinfo is None:
+        stamp = stamp.replace(tzinfo=datetime.timezone.utc)
+    return int(now - stamp.timestamp())
 
 
 def _iso(epoch: float) -> str:
