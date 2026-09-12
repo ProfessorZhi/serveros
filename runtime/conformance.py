@@ -77,17 +77,11 @@ NODE_ROOT_CONTRACT = "fleet/node-root-contract.yaml"
 # ---------------------------------------------------------------------------
 
 EXCEPTIONS: dict[str, dict[str, dict]] = {
-    "artifacts": {
-        namespace: {
-            "class": "PREEXISTING_NAMESPACE",
-            "reason": f"`{namespace}` predates the two-namespace rule and holds "
-                      f"artifacts that were written before it",
-            "authority": "§34 constrains where NEW writes go; it does not "
-                         "retroactively relocate what is already there",
-            "disposition": "CONTRACT_GAP",
-        }
-        for namespace in ("builds", "e2e", "exports", "packages")
-    },
+    # No `artifacts` entry. It used to exempt four pre-two-namespace buckets
+    # (builds/exports/packages/e2e) as CONTRACT_GAP. All four were retired on
+    # 2026-09-13 — three were measurably empty, and `e2e/` moved byte-identical
+    # into the Items that own it — so an exemption with nothing left to exempt
+    # would be a declaration that outlives its subject.
     "data": {
         ".vscode-server": {
             "class": "FOREIGN_TOOL",
