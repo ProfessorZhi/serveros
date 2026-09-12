@@ -586,3 +586,98 @@ def test_a_container_that_vanishes_mid_walk_does_not_abort_the_report(registry):
     )
     assert report["count"] == 1
     assert report["containers"][0]["container"] == "here"
+
+
+# ---------------------------------------------------------------------------
+# §8 · another actor's resource is not an unknown one
+# ---------------------------------------------------------------------------
+
+
+def test_a_mount_under_another_users_home_is_positive_evidence_of_another_actor(registry):
+    """The live case: `new-api` mounts /home/szj/gpt-img-2/data.
+
+    The owner is still not known — and must not be — but "nobody can say who
+    owns this" and "this is demonstrably not this node's" are different
+    states, and collapsing them loses the distinction a cleanup pass needs.
+    """
+    record = inspect_record("new-api", mounts=[
+        {"Type": "bind", "Source": "/home/szj/gpt-img-2/data", "Destination": "/data"},
+    ])
+    result = cont.attribute(cont.evidence(record), registry=registry, roots=ROOTS)
+
+    assert result["foreign_actor"] is True
+    assert result["foreign_actor_evidence"] == [
+        {"path": "/home/szj/gpt-img-2/data", "from": "bind-mount"},
+    ]
+    # ... and the owner field is untouched by it.
+    assert result["owner"]["ref"] is None
+    assert result["unknown_owner"] is True
+    assert result["disposition"] == "DEFER"
+
+
+def test_foreign_evidence_does_not_change_the_unknown_owner_count(registry):
+    """The count is deliberately not flattered by the new field.
+
+    Reclassifying containers out of UNKNOWN_OWNER would make a report that
+    knows exactly as much as before look like one that had learned something.
+    Both containers here are unknown-owned; one of them also carries
+    non-ownership evidence, and that is the only difference the output shows.
+    """
+    def unknown(name, **kw):
+        return cont.attribute(cont.evidence(inspect_record(name, **kw)),
+                              registry=registry, roots=ROOTS)
+
+    foreign = unknown("new-api", mounts=[
+        {"Type": "bind", "Source": "/home/szj/gpt-img-2/data", "Destination": "/data"}])
+    plain = unknown("xpra-gui-hwz", mounts=[
+        {"Type": "bind", "Source": "/", "Destination": "/host"}])
+
+    assert foreign["unknown_owner"] is True
+    assert plain["unknown_owner"] is True
+    assert foreign["disposition"] == plain["disposition"] == "DEFER"
+    assert (foreign["foreign_actor"], plain["foreign_actor"]) == (True, False)
+
+
+def test_a_whole_serveros_root_mount_is_not_foreign_evidence(registry):
+    """`xpra-gui-hwz` mounts /home/hwz — THIS user's home, wholesale.
+
+    It is a locator and a host-exposure finding. It is not evidence that the
+    container belongs to someone else, and a rule that read `/home/hwz` as a
+    foreign home would have said the node's own work is a stranger's.
+    """
+    result = cont.attribute(
+        cont.evidence(inspect_record("xpra-gui-hwz", mounts=[
+            {"Type": "bind", "Source": "/home/hwz", "Destination": "/host"}])),
+        registry=registry, roots=ROOTS,
+    )
+    assert result["foreign_actor"] is False
+    assert result["foreign_actor_evidence"] == []
+
+
+def test_the_foreign_home_rule_does_not_invert_when_USER_is_unset(monkeypatch):
+    """A regression test for a defect that shipped and was never caught.
+
+    The rule read `os.environ['USER']`, which is empty under a systemd unit —
+    the exact conditions the serverosd pilot runs in. With it empty, every
+    `/home/<anything>` that is not the empty string compares unequal, so
+    `/home/hwz` was called another user's directory: this node's own work
+    classified as a stranger's, in the report an operator reads before
+    deciding what is safe to touch.
+    """
+    import os as _os
+    monkeypatch.delenv("USER", raising=False)
+    attribution = _load("serveros_runtime_attribution", "attribution.py")
+
+    assert _os.environ.get("USER") is None          # the condition is real
+    assert attribution.foreign_home("/home/hwz/workspace") is False
+    assert attribution.foreign_home(
+        "/opt/applications/data/home-hwz/workspace") is False
+    assert attribution.foreign_home("/home/szj/gpt-img-2/data") is True
+
+
+def test_an_undeterminable_current_user_makes_nothing_foreign(monkeypatch):
+    """Fails toward False. Both readings end in DEFER, so the safe branch is
+    also the honest one: no user, no claim that a directory is somebody
+    else's."""
+    attribution = _load("serveros_runtime_attribution", "attribution.py")
+    assert attribution.foreign_home("/home/szj/x", user="") is False

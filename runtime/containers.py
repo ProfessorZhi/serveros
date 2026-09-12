@@ -58,6 +58,12 @@ Every claim below was read off the live machine, not assumed.
     correct output is UNKNOWN_OWNER with a recorded blast radius — not a
     guess, and not silence.
 
+  * Some of those nine are unattributed for a reason sharper than "we cannot
+    tell": `new-api` and `new-api-postgres` mount `/home/szj/gpt-img-2/data`,
+    which is another user's tree. They get `foreign_actor: true` beside an
+    unchanged `unknown_owner: true` — evidence about who does NOT own a
+    container is not an owner, and is not the same as having no evidence.
+
 What this module will not do
 ----------------------------
 It does not read `.Config.Env` values. It reads the variable NAMES, which
@@ -554,6 +560,34 @@ def attribute(evidence_record: dict, *, registry: dict | None = None,
             "it is recorded as an unconfirmed locator"
         )
 
+    # -- whose directory is this, anyway -------------------------------------
+    #
+    # A container whose working directory or bind-mount source sits under
+    # ANOTHER user's home is not "unknown". Something is known: whatever it
+    # is, it is not this node's to classify.
+    #
+    # It is reported in its own field and it changes NOTHING else. The owner
+    # stays None and `unknown_owner` stays true, because this evidence says
+    # who the owner is NOT, and an owner field that accepts "probably
+    # somebody else's" is the failure the whole ladder exists to prevent.
+    #
+    # The count is kept out of the headline on purpose. Moving containers
+    # from UNKNOWN_OWNER to FOREIGN_ACTOR would make a report that knows
+    # exactly as much as before look like one that had learned something.
+    foreign_paths = [
+        {"path": p, "from": src}
+        for p, src in _paths_in(evidence_record)
+        if attribution.foreign_home(p)
+    ]
+    foreign_actor = bool(foreign_paths)
+    if foreign_actor:
+        for item in foreign_paths:
+            notes.append(
+                f"the {item['from']} {item['path']} is under a different "
+                f"user's home; that is evidence about who does NOT own this "
+                f"container, not about who does"
+            )
+
     # -- the answer when nothing fired --------------------------------------
     unknown_owner = owner_ref is None
     if unknown_owner:
@@ -638,6 +672,12 @@ def attribute(evidence_record: dict, *, registry: dict | None = None,
             "status": INFERRED if owner_ref else UNKNOWN,
         },
         "unknown_owner": unknown_owner,
+        # Positive evidence that this is somebody ELSE's resource. It sits
+        # beside `unknown_owner` and does not replace it: this says the
+        # evidence identifies a non-owner, and a non-owner is still not an
+        # owner. Both stay true, and both are DEFER.
+        "foreign_actor": foreign_actor,
+        "foreign_actor_evidence": foreign_paths,
         # What the evidence points at, when it does not reach an owner. Kept
         # beside `owner` rather than merged into it, because a locator that a
         # reader mistakes for an owner is the whole failure this module exists
@@ -679,17 +719,19 @@ def attribute(evidence_record: dict, *, registry: dict | None = None,
     }
 
 
-def _first_under_root(evidence_record: dict, roots: dict) -> dict | None:
-    """The first path in this container's evidence that sits under a known root.
+def _paths_in(evidence_record: dict) -> list[tuple[str, str]]:
+    """Every path this container's evidence offers, and which class it is.
 
     Working directory first, then bind-mount sources, in the order the
     contract lists them. Returns both the path and WHICH piece of evidence it
     came from, because `working-directory` and `bind-mount` are different
     provenance classes and a report that blurs them cannot be argued with.
-    """
-    if not roots:
-        return None
 
+    Split out from `_first_under_root` so that the foreign-home check reads
+    the same list. Two collectors would eventually disagree about what counts
+    as a path, and the disagreement would show up as one rule seeing a
+    directory the other called unowned.
+    """
     candidates: list[tuple[str, str]] = []
     working_dir = (evidence_record.get("compose") or {}).get("working_dir")
     if working_dir:
@@ -697,8 +739,15 @@ def _first_under_root(evidence_record: dict, roots: dict) -> dict | None:
     for mount in evidence_record.get("mounts") or []:
         if mount.get("type") == "bind" and mount.get("source"):
             candidates.append((mount["source"], "bind-mount"))
+    return candidates
 
-    for path, source in candidates:
+
+def _first_under_root(evidence_record: dict, roots: dict) -> dict | None:
+    """The first path in this container's evidence that sits under a known root."""
+    if not roots:
+        return None
+
+    for path, source in _paths_in(evidence_record):
         # The MOST SPECIFIC root wins, not the first one in iteration order.
         # These roots nest: `/…/workspace/src/x` is under both `data` and
         # `workspace`, and reporting it as `data` throws away the only part

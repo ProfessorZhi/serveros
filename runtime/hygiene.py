@@ -52,6 +52,7 @@ def _load(name: str, filename: str):
 
 registry = _load("serveros_runtime_registry", "registry.py")
 inventory_mod = _load("serveros_runtime_inventory", "inventory.py")
+attribution_mod = _load("serveros_runtime_attribution", "attribution.py")
 
 RegistryError = registry.RegistryError
 Inventory = inventory_mod.Inventory
@@ -596,20 +597,9 @@ def _parse_labels(raw) -> dict:
 def _foreign_home(path: str) -> bool:
     """A path under someone else's home is not ours to classify.
 
-    Read from the path rather than from a hardcoded username list: any
-    `/home/<user>` that is not the current user, or the parallel
-    `/opt/applications/data/home-<user>` layout this machine uses.
+    Delegates to `attribution.foreign_home`. The rule used to live here and
+    was going to be copied for container attribution; one copy in the shared
+    vocabulary module means the classification ladder and the container
+    classifier cannot drift into disagreeing about whose directory this is.
     """
-    import os
-
-    me = os.environ.get("USER") or ""
-    parts = Path(path).parts
-    for i, part in enumerate(parts):
-        # /home/<user>/...
-        if part == "home" and i + 1 < len(parts) and parts[i + 1] != me:
-            return True
-        # /opt/applications/data/home-<user>/... — this machine's parallel
-        # per-user data roots.
-        if part.startswith("home-") and part.removeprefix("home-") != me:
-            return True
-    return False
+    return attribution_mod.foreign_home(path)
