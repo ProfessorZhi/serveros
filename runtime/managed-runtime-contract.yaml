@@ -1,0 +1,296 @@
+# ServerOS Managed Runtime Registry — the schema.
+#
+# Why this file exists
+# --------------------
+# On 2026-09-12 this host's Remote Desktop Commander endpoint was functionally
+# offline for 54 minutes. Every process-level indicator said otherwise:
+#
+#     process_running       true       the PID existed the whole time
+#     active (running)      true       systemd agreed
+#     transport_connected   true       ESTABLISHED to 142.251.33.211:443
+#     service_healthy       ???        it could not serve one single request
+#
+# The endpoint was in a device-authorization wait loop, restarting every ~24
+# minutes as each device code expired, and systemd's `Restart=always` dutifully
+# brought it back each time. That is the shape of failure this registry exists
+# to make reportable. Nothing about it is exotic — it is what "a long-running
+# user-space thing" does when the thing it depends on is a *session* rather than
+# a *process*, and process supervision cannot renew a session.
+#
+# Three consequences are written into the schema below.
+#
+# 1. NEVER call these things `service`. A process, a user systemd unit, a
+#    container, an MCP server, a relay endpoint and a test runtime have
+#    different lifetimes, different owners and different kill semantics. One
+#    word for all of them is how "stop the dev container" becomes "stop the
+#    baseline".
+#
+# 2. Health is FOUR axes, not one boolean. `process running = HEALTHY` is the
+#    single most expensive simplification available here, and this machine has
+#    already paid for it once.
+#
+# 3. `observe` and `probe` are different questions with different answers.
+#    `observe` finds the thing. `probe` asks whether it can do what it claims.
+#    Collapsing them is exactly how `endpoint_present: true` came to sit beside
+#    a service that could not serve a request: it was a true report from a
+#    probe that measured the wrong thing.
+schema: serveros/managed-runtime.v1
+version: 1
+
+# ---------------------------------------------------------------------------
+# Vocabulary. Closed sets; a value outside one is a validation failure, not a
+# guess. Adding a value means editing this file, which is the point.
+# ---------------------------------------------------------------------------
+
+kinds:
+  # A bare user-space process this node started or adopted.
+  - process
+  # A systemd --user unit. Lifecycle is systemd's; ServerOS only asks.
+  - systemd-user-service
+  # A container. Docker is the supervisor; ServerOS never forks it.
+  - container
+  # An MCP server process serving tools over stdio or a socket.
+  - mcp-server
+  # A long-lived outbound connection that makes this machine reachable by a
+  # control plane. It LISTENS on nothing; it dials out. See fleet/README.md.
+  - transport-endpoint
+  # A helper an agent runtime depends on (bridge, proxy, sidecar).
+  - agent-helper
+  # A test runtime stood up for a bounded purpose. Usually reclaimable.
+  - test-runtime
+
+owner_types:
+  # A named project (litellm, multi-user-claw, ...). Owner is the project.
+  - project
+  # A specific work item. The resource dies with the item.
+  - work-item
+  # ServerOS itself — this node's own control plane.
+  - serveros
+  # An ability/skill's own runtime dependency.
+  - ability
+
+scopes:
+  # Runs as the invoking user. Everything on this node, for now.
+  - user
+  # Would require elevation. DECLARED ONLY — ServerOS performs no system-scope
+  # action in v1 and will report NEEDS_HUMAN rather than escalate.
+  - system
+
+
+lifecycle_classes:
+  # Expected to be up continuously and to survive a reboot of the user session.
+  - persistent
+  # Bound to one work item or task; reclaimable when that closes.
+  - task-scoped
+  # Bound to an agent/login session; expected to disappear with it.
+  - session-scoped
+  # Nobody should depend on it; safe to reclaim by policy.
+  - disposable
+
+desired_states:
+  - running
+  - stopped
+
+protection_levels:
+  # Not reclaimable by any automatic action, ever. Removal is a human decision.
+  - protected
+  # Reclaimable only by an explicit admission decision with evidence.
+  - normal
+  # Reclaimable by policy when its owner says so.
+  - disposable
+
+health_axes:
+  # Does the thing exist and is it up? The WEAKEST axis, and the only one a
+  # process table can answer.
+  liveness:
+    values: [RUNNING, STOPPED, UNKNOWN, UNAVAILABLE]
+    means_unknown: "no observation has been recorded for this resource"
+  # Is the channel it depends on actually carrying anything? Measured, not
+  # inferred from the existence of a socket.
+  transport:
+    values: [CONNECTED, DISCONNECTED, NOT_APPLICABLE, UNKNOWN]
+  # Can it serve a request it claims to serve? Asked by calling, not by
+  # looking. `NOT_APPLICABLE` when the resource declares no callable surface.
+  functional:
+    values: [OK, FAILED, NOT_APPLICABLE, UNKNOWN]
+  # Is it in the state its desired state says it should be in?
+  readiness:
+    values: [READY, NOT_READY, NOT_APPLICABLE, UNKNOWN]
+  # NOT a health axis. This is the slot a diagnostic-backed probe contributes
+  # a refined `reason` to, and it holds no state of its own — every value is
+  # UNKNOWN, which is what `Observation` enforces. It is declared here so that
+  # the same validation applies to it as to the real axes, rather than it
+  # being a special case the validator has to be told about.
+  reason:
+    values: [UNKNOWN]
+    pseudo_axis: true
+
+# ---------------------------------------------------------------------------
+# The derived state, and why it is a rule list rather than a lookup table.
+#
+# The fleet availability table is a full cross-product because it has two
+# three-valued axes. This one has four axes with four values each: 256 rows is
+# a table nobody reads and nobody maintains. So it is ordered rules instead.
+#
+# The safety property is preserved by a different mechanism: rules are
+# evaluated in order, and if NONE matches, `state()` RAISES. There is no
+# fallback value. A test enumerates every combination of the declared value
+# lists and asserts each one matches at least one rule, so an uncovered
+# combination is a test failure rather than a word that looks like an answer.
+#
+# This is the same defect the fleet table had — a partial table with a silent
+# fallback that emitted the one forbidden word — caught one layer up.
+# ---------------------------------------------------------------------------
+derived_states:
+  rule_table_complete: true
+  # ORDER IS SEMANTIC. The first matching rule wins, so the most specific and
+  # most informative fault is listed first. The last rule is an explicit
+  # catch-all rather than an implicit fallback, so that "no rule matched
+  # this" stays distinguishable from "this rule is the general case".
+  rules:
+    # -- nothing was measured. Before anything is assumed. ------------------
+    - state: UNAVAILABLE
+      when: {liveness: UNAVAILABLE}
+      meaning: "nothing on this host can observe it at all"
+    - state: UNKNOWN
+      when: {liveness: UNKNOWN}
+      meaning: "nothing has observed it. Not the same as healthy."
+    # -- at rest, or should not be -----------------------------------------
+    - state: STOPPED
+      when: {liveness: STOPPED, desired: stopped}
+      meaning: "at rest; this is the desired state, not a fault"
+    - state: NOT_RUNNING
+      when: {liveness: STOPPED}
+      meaning: "desired running, is not. A reconcile candidate if policy allows."
+    # -- desired state expressed on the readiness axis ---------------------
+    - state: NOT_READY
+      when: {readiness: NOT_READY}
+      meaning: "up, and not in the state its desired state calls for"
+    # -- the failure this registry exists for ------------------------------
+    - state: FUNCTIONALLY_FAILED
+      when: {functional: FAILED}
+      meaning: >
+        the process is up and may be connected; it cannot do its job. Listed
+        ahead of the liveness-derived states because a resource in this
+        condition would otherwise read as healthy.
+    # -- up, and something it needs is missing -----------------------------
+    - state: DEGRADED
+      when: {liveness: RUNNING, transport: DISCONNECTED}
+      meaning: "up, but the channel it depends on is carrying nothing"
+    - state: DEGRADED
+      when: {functional: UNKNOWN}
+      meaning: >
+        up, and whether it works has not been established. Deliberately NOT
+        HEALTHY: not having asked is not the same as having found it fine.
+        This is the state the 2026-09-12 endpoint would have been reported in
+        had anyone thought to ask, and it is why the fix is a probe rather
+        than a patch.
+    # -- healthy requires the functional axis, not just liveness -----------
+    - state: HEALTHY
+      when: {liveness: RUNNING, functional: OK}
+      meaning: "up and answering"
+    # -- the explicit general case -----------------------------------------
+    - state: DEGRADED
+      when: {liveness: RUNNING}
+      meaning: >
+        up, with no functional surface to ask (NOT_APPLICABLE) or an axis
+        nobody measured. Catches everything the rules above do not, and is
+        named rather than implied so that a future uncovered combination
+        fails the totality test instead of landing here by accident.
+
+# ---------------------------------------------------------------------------
+# Actions. Deliberately tiny, and deliberately not the same axis as state.
+# ---------------------------------------------------------------------------
+actions:
+  values: [NONE, RECONCILE, NEEDS_HUMAN, DEFER]
+  guidance:
+    NONE: nothing is wrong; or something is wrong and automatic action is not permitted
+    RECONCILE: >
+      a registered, owned, policy-allowed resource whose desired state is not
+      met. Restart budget applies. Never a human-only failure.
+    NEEDS_HUMAN: >
+      the failure is outside this process's authority. On 2026-09-12 this was
+      a consumed OAuth refresh token: `Restart=always` supervises a process,
+      it cannot renew an authorization. No number of restarts substitutes for
+      a person completing a device flow.
+    DEFER: "unknown owner, unknown identity, or an active writer may exist"
+
+# ---------------------------------------------------------------------------
+# Probe kinds. `observe` finds; `probe` asks. Both are declared per resource.
+# ---------------------------------------------------------------------------
+probe_kinds:
+  process-exists:
+    answers: liveness
+    formal: true
+    note: "the weakest probe. Finding a PID says nothing about capability."
+  systemd-unit-state:
+    answers: liveness
+    formal: true
+    note: "asks systemd, not the process table. Prefers the supervisor's view."
+  container-state:
+    answers: liveness
+    formal: true
+    note: >
+      `docker ps` reports what the runtime thinks. NOT functional: a container
+      can be `Up (healthy)` while the app behind it rejects every request.
+  container-healthcheck:
+    answers: functional
+    formal: true
+    note: "the image's own healthcheck, if it declares one. Otherwise absent."
+  http-health:
+    answers: functional
+    formal: true
+    note: >
+      a real request to a real endpoint. Preferred over any inspection,
+      because it exercises the thing rather than describing it.
+  mcp-tools-list:
+    answers: functional
+    formal: true
+    note: "MCP initialize + tools/list. Proves the server can answer an agent."
+  socket-connect:
+    answers: transport
+    formal: true
+    note: >
+      connects to the local IPC socket and issues a request. A socket FILE
+      existing is not a connection; a stale socket outlives its daemon.
+  relay-socket:
+    answers: transport
+    formal: true
+    note: >
+      resolves the resource's declared peer host and measures whether the
+      process holds an ESTABLISHED connection to it. Reports a MEASUREMENT,
+      and on 2026-09-12 this measurement was CONNECTED for the entire
+      outage: the endpoint opens the socket before authorizing and keeps it
+      while it waits. So this probe is declared `formal` and still never
+      sufficient — only `functional: OK` reaches HEALTHY.
+  relay-presence:
+    answers: transport
+    formal: true
+    needs_provider: true
+    note: >
+      asks the provider whether this endpoint is present. The only probe that
+      answers the real question for a transport-endpoint, and it needs an API
+      this runtime may not have. Absent it, the axis stays UNKNOWN.
+  journal-diagnostic:
+    answers: reason
+    formal: false
+    note: >
+      reads the journal for a corroborating line. NEVER authority: it is a
+      diagnostic, and a diagnostic regex promoted to a health contract is a
+      log format away from silently reporting the wrong thing forever. It may
+      only REFINE a reason on a resource whose functional axis is already
+      FAILED by another probe.
+
+rules:
+  - "Every managed resource is explicitly registered. Nothing is managed by
+     being noticed — a discovered container is an observation, not a claim."
+  - "`protection: protected` resources are never stopped, removed, pruned or
+     restarted by ServerOS. Not on a timeout, not on a low-disk trigger."
+  - "No health observation without provenance. An axis with no `observed_by`
+     is UNKNOWN, and UNKNOWN is never rendered as the healthy value."
+  - "A journal line is a diagnostic and never a health authority."
+  - "ServerOS supervises nothing. systemd, Docker and the provider own the
+     lifecycle; ServerOS observes, asks, and reports. That is why this file
+     has `desired` and not `restart_policy`."
+  - "Unknown owner fails safe. A resource whose owner cannot be confirmed is
+     DEFER, never a reclaim candidate."
