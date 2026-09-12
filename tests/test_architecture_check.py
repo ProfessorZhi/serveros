@@ -44,9 +44,14 @@ OPS_SOURCE = Path("/opt/applications/data/home-hwz/workspace/ops")
 # What the real bundle composes from ability-management. Held as a literal so
 # that a change to `plugin/bundle.yaml` shows up here as a decision rather than
 # silently redefining what these tests assert.
+#
+# `runtime-management` joined on §24. It was a serveros-local member before, and
+# the fixtures below still exercise that shape deliberately — they pass
+# `local=(...)` explicitly — so this literal tracks the real bundle without
+# removing the case that made the A1 contradiction visible.
 DISTRIBUTED = ("ability-management", "feishu-report", "feishu-space-management",
                "information-management", "test-management", "work-management",
-               "workspace-management")
+               "workspace-management", "runtime-management")
 PLUGIN_ID = "ProfessorZhi/hwz-server-os"
 
 

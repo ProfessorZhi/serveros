@@ -18,10 +18,12 @@ components:
       - plugin-manifests-and-adapters     # .claude-plugin / .codex-plugin
       # `bootstrap-skill-source` is a ruled term (Phase 1.1 A) and is kept
       # verbatim. It means the skills whose canonical source is THIS repository
-      # — today `serveros` and `runtime-management` — as opposed to the
-      # reusable ones composed in from ability-management. The name says
-      # "bootstrap" because there was one of them when it was ruled; the
-      # distinction it encodes is source-of-truth, not count.
+      # — today `serveros` alone — as opposed to the reusable ones composed in
+      # from ability-management. The name says "bootstrap" because there was one
+      # of them when it was ruled; the distinction it encodes is source-of-truth,
+      # not count. `runtime-management` was briefly a second one and was moved to
+      # its canonical home in ability-management (§24), which is why the list is
+      # back to a single member without the term changing meaning.
       - bootstrap-skill-source
       - node-mcp-surface                  # mcp/ — the adapter and its .mcp.json
       - context-kernel

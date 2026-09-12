@@ -561,9 +561,15 @@ def collect(args) -> dict:
     # so there is no state in which a locally-sourced member is correct. That
     # went unnoticed while `serveros` was the only one, because `serveros`
     # happens to appear in `provides` and the set equality held by coincidence.
-    # `runtime-management` is the second local member, and the coincidence
+    # `runtime-management` was the second local member and the coincidence
     # ended. See `633324d5`, which widened this comparison from `ability_members`
     # to `bundle_members` and left the comment below describing the old rule.
+    #
+    # §24 has since removed the second member: `runtime-management` is a reusable
+    # Ability and now composes from ability-management, so the bundle is back to
+    # one local member. The `- set(local_members)` below stays — it is what makes
+    # the check correct for the one that remains, not a workaround for the one
+    # that left.
     bundle_skills = bundle.get("skills") or []
     bundle_members = sorted(s["name"] for s in bundle_skills)
     ability_members = sorted(s["name"] for s in bundle_skills if s.get("source") == "ability-management")
