@@ -57,7 +57,15 @@ STATE_SERVEROS_TOP_LEVEL = (
     "node", "context", "abilities", "runtime", "fleet",
     "source-index", "locks", "projections",
 )
-STATE_SERVEROS_RUNTIME = ("registry", "observed", "health", "hygiene", "resources")
+STATE_SERVEROS_RUNTIME = (
+    "registry", "observed", "health", "hygiene", "resources",
+    # §23 adds the three namespaces the runtime-attribution work writes:
+    # attribution (who a process belongs to), graph (the runtime groups) and
+    # anomalies (the classifications, including the combinations that did NOT
+    # fire). Declared here so `resolve` can name them before a producer
+    # exists — the namespace is the contract, the directory is the state.
+    "attribution", "graph", "anomalies",
+)
 
 # Artifacts has exactly two canonical namespaces for NEW writes (§34).
 ARTIFACT_NAMESPACES = ("work-items", "skills")
@@ -74,6 +82,34 @@ ROOTS = {
     "runtime-assets": "{DATA_ROOT}/runtime-assets/serveros",
     "tmp": "{DATA_ROOT}/tmp",
     "caches": "{DATA_ROOT}/caches",
+}
+
+# A semantic role is a name for WHAT something is; a root is where it is. They
+# are declared apart because the two come apart — and when they do, the role is
+# the stable one and the path is the fact that moves (§25).
+#
+# `runtime-assets/serveros` above is the role's DECLARED path, and nothing on
+# this node has ever been there. The distribution that actually exists is
+# `runtime-assets/hwz-server-os`, it has live consumers (the plugin cache and
+# `workengine/context.py` both name it), and it must not be relocated while
+# they do. So the role resolves to where the artifact IS, and the day the
+# physical move happens this table changes and no consumer does.
+#
+# The alternative — leaving `runtime-assets` pointing at a directory that does
+# not exist — is the standing defect of this codebase: a declared path with no
+# producer, which reports as "nothing here" and is indistinguishable from an
+# empty directory.
+SEMANTIC_ROLES = {
+    # The ServerOS distribution root: what `build.py` publishes and what a
+    # runtime installs from.
+    "runtime.serveros-distribution": "{DATA_ROOT}/runtime-assets/hwz-server-os",
+    # Browser distributions: chromium + ffmpeg for Playwright, and the
+    # chrome-for-testing bundle. ~1.7 GB. Classified in §25 as a tool runtime
+    # asset rather than a ServerOS distribution, and NOT relocated this round:
+    # the producer/consumer contract for it is not yet declared, and moving a
+    # 1.7 GB tree out from under an undeclared consumer set is how a test
+    # environment stops working for reasons nobody connects to a move.
+    "runtime.browser-distribution": "{DATA_ROOT}/runtime-assets/browsers",
 }
 
 # Suffixes that must never be created under DATA_ROOT (§34, §42): a
@@ -148,7 +184,13 @@ def _expand(roots: dict | None = None) -> dict:
         "HOME": home, "DATA_ROOT": data_root, "WORKSPACE_ROOT": workspace,
         "ARTIFACTS_ROOT": artifacts, "TOOLCHAINS_ROOT": toolchains,
     }
-    return {name: template.format(**values) for name, template in ROOTS.items()}
+    # Roles are addressable through `resolve` too, so that a caller holding a
+    # role name can use one code path. They are kept in their own table
+    # because a role and a root are different claims: a root says where
+    # something lives, a role says what it is, and a check that had to read
+    # them out of one dictionary could not report a role whose path has moved.
+    return {name: template.format(**values)
+            for name, template in {**ROOTS, **SEMANTIC_ROLES}.items()}
 
 
 class Paths:
@@ -176,6 +218,33 @@ class Paths:
                 f"unresolved path must not fall back to the working directory."
             )
         return Path(self.roots[name])
+
+    def role(self, name: str) -> dict:
+        """A semantic role resolves to wherever its artifact currently is.
+
+        Same shape as `resolve`, plus `role` and `is_role`, so a caller can
+        always tell which of the two it used. A role that resolved to a bare
+        path would be a role nobody could audit.
+        """
+        if name not in SEMANTIC_ROLES:
+            raise PathRefused(
+                f"{name!r} is not a declared semantic role. Known: "
+                f"{list(SEMANTIC_ROLES)}. A role is what something IS; a root "
+                f"is where it is, and asking for a role this node does not "
+                f"declare must not fall back to a path."
+            )
+        resolved = self.resolve(name)
+        return {
+            **resolved,
+            "role": name,
+            "is_role": True,
+            "note": (
+                "a semantic role resolves to the CURRENT physical location of "
+                "the artifact. The role is the stable name; the path is the "
+                "fact that moves, and a consumer that hardcodes the path has "
+                "chosen the unstable half."
+            ),
+        }
 
     def resolve(self, ref: str) -> dict:
         """A NAMED reference becomes an absolute path.
@@ -404,6 +473,15 @@ class Paths:
             return "ADMITTED_NON_CANONICAL"
         if root_name == "state":
             if parts and parts[0] in STATE_SERVEROS_TOP_LEVEL:
+                # Being under the state root is not the same as being
+                # authoritative. Authority is a namespace-level property (§22),
+                # and the projections namespace is the one place inside this
+                # root where a path is admitted and explicitly NOT an authority.
+                # A classifier that returned CANONICAL_STATE for both would make
+                # the two indistinguishable at exactly the seam where the
+                # distinction is load-bearing.
+                if parts[0] == "projections":
+                    return "PROJECTION_NON_AUTHORITATIVE"
                 return "CANONICAL_STATE"
             return "ADMITTED_NON_CANONICAL"
         if root_name == "workspace":
