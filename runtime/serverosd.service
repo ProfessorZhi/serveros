@@ -6,10 +6,16 @@
 # INSTALLED over a running service would be the exact stale-declaration defect
 # this project spends its time removing.
 #
-# What the pilot measured before installing (see the §11-§17 report):
-#   21 MB RSS, 1 thread, 4 fds, ~25 ms CPU per tick, state dir 49 KB and not
-#   growing. `automatable()` is EMPTY on this host — all seven registrations
-#   are protected — so even with --enable-reconcile there is nothing here the
+# What the pilot measured (see the §11-§17 report):
+#   18-21 MB RSS, 1 thread, 4 fds, ~25 ms CPU per tick. Its OWN state is
+#   `state/serveros/runtime/` — 60 KB, and unchanged across ticks (638576 ->
+#   638572 bytes over one). The rest of that state root is not this daemon's:
+#   a 356 KB `serveros.db` and the boards/federation projections predate it,
+#   and quoting the whole root as the daemon's footprint would be a number
+#   that flatters nobody and misleads everybody.
+#
+#   `automatable()` is EMPTY on this host — all seven registrations are
+#   protected — so even with --enable-reconcile there is nothing here the
 #   daemon may act on.
 #
 # ExecStart points at this worktree, and that is a PILOT CONDITION, not a
