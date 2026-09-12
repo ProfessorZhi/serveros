@@ -211,11 +211,22 @@ def test_traversal_is_refused_before_resolution(paths, roots):
         paths.admit(str(Path(roots["artifacts_root"]) / "work-items/../../../etc/passwd"))
 
 
-def test_space_in_authorization_is_refused(paths, roots):
+def test_a_write_beyond_the_node_root_allowlist_is_refused(paths, roots):
+    """Both refusal branches, because they carry different messages.
+
+    `HOME_DOT_SERVEROS_FORBIDDEN` was declared with no consumer anywhere, so the
+    names it lists were refused without the message ever naming the rule they
+    broke — and a caller who is told "outside the allow-list" edits the list,
+    while a caller told "this is a known second-state-root landing spot" moves
+    the directory. `reports/` takes the named branch; `README.md` takes the
+    general one.
+    """
     target = Path(roots["home"]) / ".serveros"
     target.mkdir()
-    with pytest.raises(PathRefused, match="identity and binding"):
+    with pytest.raises(PathRefused, match="refused by name"):
         paths.admit(str(target / "reports/q3.md"))
+    with pytest.raises(PathRefused, match="identity and binding"):
+        paths.admit(str(target / "README.md"))
 
 
 def test_the_serveros_allowlist_admits_identity_files(paths, roots):

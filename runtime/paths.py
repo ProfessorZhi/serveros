@@ -173,25 +173,27 @@ FORBIDDEN_SUFFIXES = ("legacy", "legacy-artifacts", "old-artifacts",
 # that picks the intersection of two disagreeing vocabularies passes for as
 # long as the disagreement is not the thing being tested.
 #
-# `README.md` is deliberately absent, and stays refused — this tuple is the
-# WRITE vocabulary, and `admit()` reads this name directly rather than the
-# exception table, so no mechanical producer can create one here.
+# `README.md` is not here and does not belong here. This tuple is the write
+# vocabulary AND the shape of the root: §41 allows bindings only, and gives
+# documentation the disposition "repo/docs or artifacts", so a document beside
+# these files is a second statement of what `node-root-contract.yaml` already
+# states — inside the one root whose design principle is that a thing has one
+# answer.
 #
-# §38 corrects one thing this comment used to claim. It said the conformance
-# check "reports the existing file as undeclared rather than this list being
-# widened to bless it", presenting the refusal and the report as one decision.
-# They are two sets answering two questions, and only one of them was decided:
-#
-#   this tuple                         what may be WRITTEN here
-#   conformance.EXCEPTIONS["home"]     how an existing child is CLASSIFIED
-#
-# Leaving the second one undeclared made a designed state render as
-# `UNDECLARED_ENTRY / MEDIUM / OPEN` on every run, forever — a finding that can
-# never clear, which is how a report trains its readers to stop reading it. The
-# file is a human-placed entry document, the same class as
-# `state/serveros/README.md` and `WORKSPACE_ROOT/README.md`. §38 classifies it
-# as one; the write refusal above is untouched, so nothing was blessed.
+# §38 first read the standing `UNDECLARED_ENTRY / MEDIUM / OPEN` finding as a
+# false alarm and classified the file as an entry document instead. That was
+# wrong, and §41 is why: the finding was telling the truth. The file has since
+# been retired (bytes preserved in
+# artifacts/work-items/serveros/SRV-0007/RUN-0001/), so the report is quiet for
+# the right reason rather than by exemption. `admit()` refuses the name in
+# either case — it reads this tuple directly, never the exception table — so the
+# write side needed no change to make the read side honest.
 HOME_DOT_SERVEROS_ALLOWED = ("node.yaml", "targets.yaml", "controller.yaml")
+# Names that are known landing spots for a root drifting into a second state
+# root, and the reason this tuple is read rather than decorative: it existed
+# from an earlier round with no consumer anywhere, so `admit()` refused these
+# names without ever saying why. It is consulted below to name the specific
+# rule, which is what the refusal message was already trying to do in prose.
 HOME_DOT_SERVEROS_FORBIDDEN = ("reports", "observations", "registry", "proposals", "artifacts")
 
 # The tuples above, addressed by the name of the area they govern, so that a
@@ -484,9 +486,18 @@ class Paths:
             if parts[0] == ".serveros":
                 leaf = parts[1] if len(parts) > 1 else ""
                 if leaf and leaf not in HOME_DOT_SERVEROS_ALLOWED:
+                    if leaf in HOME_DOT_SERVEROS_FORBIDDEN:
+                        raise PathRefused(
+                            f"{path!r}: {leaf!r} is a known second-state-root "
+                            f"landing spot and is refused by name (§41), not "
+                            f"merely as a name outside the allow-list. Machine "
+                            f"state belongs under DATA_ROOT/state/serveros; a "
+                            f"durable document belongs in the repository, not "
+                            f"beside a host binding."
+                        )
                     raise PathRefused(
                         f"{path!r}: `~/.serveros` holds identity and binding "
-                        f"only (§38). Allowed: {list(HOME_DOT_SERVEROS_ALLOWED)}. "
+                        f"only (§41). Allowed: {list(HOME_DOT_SERVEROS_ALLOWED)}. "
                         f"Reports, proposals, large observations and machine "
                         f"state belong under DATA_ROOT/state/serveros. If this "
                         f"is drifting into a second state root, that is the "
