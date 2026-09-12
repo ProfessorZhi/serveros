@@ -76,6 +76,12 @@ probes_mod = _load("serveros_runtime_probes", "probes.py")
 inventory_mod = _load("serveros_runtime_inventory", "inventory.py")
 hygiene_mod = _load("serveros_runtime_hygiene", "hygiene.py")
 paths_mod = _load("serveros_runtime_paths", "paths.py")
+# The shared answer layer (§3/§6/§10/§14). The daemon computes NOTHING of its
+# own for these: it forwards to the same functions `serverosctl` calls, so the
+# CLI answer and the socket answer can differ only in the moment they were
+# taken — which `answered_by` and `measured_at` make visible rather than
+# something a caller has to assume.
+view_mod = _load("serveros_runtime_view", "view.py")
 
 
 class DaemonError(Exception):
@@ -548,6 +554,19 @@ class Daemon:
             "observation.get": self._r_observation_get,
             "ability.list": self._r_ability_list,
             "ability.status": self._r_ability_status,
+            # §3/§5/§6/§10/§14. Read-only, and every one of them is a forward
+            # to `view.py` — the daemon adds no logic of its own here, because
+            # a daemon that answers a question differently from the CLI is a
+            # daemon whose answer cannot be checked by running the CLI.
+            "runtime.groups": self._r_runtime_groups,
+            "runtime.group": self._r_runtime_group,
+            "runtime.tree": self._r_runtime_tree,
+            "runtime.budget": self._r_runtime_budget,
+            "process.top": self._r_process_top,
+            "process.trace": self._r_process_trace,
+            "anomaly.list": self._r_anomaly_list,
+            "anomaly.explain": self._r_anomaly_explain,
+            "container.attribution": self._r_container_attribution,
         }.get(method)
 
         if handler is None:
@@ -564,7 +583,10 @@ class Daemon:
         return ("device.show", "context.current", "path.resolve", "path.admit",
                 "runtime.list", "runtime.status", "runtime.explain",
                 "resource.summary", "resource.hygiene", "observation.get",
-                "ability.list", "ability.status")
+                "ability.list", "ability.status",
+                "runtime.groups", "runtime.group", "runtime.tree",
+                "runtime.budget", "process.top", "process.trace",
+                "anomaly.list", "anomaly.explain", "container.attribution")
 
     # -- the local capability view (§27/§28) --------------------------------
 
@@ -734,6 +756,44 @@ class Daemon:
         hygiene = hygiene_mod.Hygiene(self.registry, self.inventory)
         return hygiene.report()
 
+    # -- the shared answer layer (§3/§5/§6/§10/§14) --------------------------
+
+    def _r_runtime_groups(self, params) -> dict:
+        return view_mod.runtime_groups(answered_by=ANSWERED_BY)
+
+    def _r_runtime_group(self, params) -> dict:
+        return view_mod.runtime_group(_required(params, "ref"),
+                                      answered_by=ANSWERED_BY)
+
+    def _r_runtime_tree(self, params) -> dict:
+        return view_mod.runtime_tree(_required(params, "ref"),
+                                     answered_by=ANSWERED_BY)
+
+    def _r_runtime_budget(self, params) -> dict:
+        return view_mod.retry_budget(state_dir=self.state_dir, registry=self.registry,
+                                     answered_by=ANSWERED_BY)
+
+    def _r_process_top(self, params) -> dict:
+        return view_mod.process_top(limit=int(params.get("limit", 10)),
+                                    by=params.get("by", "cpu"),
+                                    answered_by=ANSWERED_BY)
+
+    def _r_process_trace(self, params) -> dict:
+        return view_mod.process_trace(int(_required(params, "pid")),
+                                      answered_by=ANSWERED_BY)
+
+    def _r_anomaly_list(self, params) -> dict:
+        return view_mod.anomaly_list(registry=self.registry, answered_by=ANSWERED_BY)
+
+    def _r_anomaly_explain(self, params) -> dict:
+        return view_mod.anomaly_explain(_required(params, "subject"),
+                                        registry=self.registry,
+                                        answered_by=ANSWERED_BY)
+
+    def _r_container_attribution(self, params) -> dict:
+        return view_mod.container_attribution(registry=self.registry,
+                                              answered_by=ANSWERED_BY)
+
     def _r_observation_get(self, params) -> dict:
         if self.last_tick is None:
             return {"tick": None,
@@ -840,6 +900,28 @@ class Daemon:
 
 def _error(method, code: str, message: str) -> dict:
     return {"ok": False, "method": method, "error": {"code": code, "message": message}}
+
+
+# What every daemon-served answer says about itself, so that a caller reading a
+# socket answer and one reading `serverosctl` output can tell which they have.
+ANSWERED_BY = "serverosd"
+
+
+def _required(params: dict, name: str):
+    """A parameter the method cannot answer without, refused by name.
+
+    `params["ref"]` raises a bare `KeyError` which `handle()` turns into an
+    error whose message is `'ref'` — a code, not a sentence. The caller of a
+    control plane should be told which argument is missing and what a valid one
+    looks like.
+    """
+    if name not in params or params[name] in (None, ""):
+        raise ValueError(
+            f"missing required parameter {name!r}. This method cannot answer "
+            f"without it, and answering with an empty result would read as "
+            f"'nothing to report'."
+        )
+    return params[name]
 
 
 MAX_PROJECTION_AGE_SECONDS = 24 * 3600

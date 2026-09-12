@@ -110,6 +110,16 @@ SEVERITY = {
 }
 
 
+# Resource kinds that ARE an MCP server. The contract declares `mcp-server`;
+# `mcp` is accepted because it is the shorter name a caller naturally writes,
+# and a rule that only matches one spelling of a thing is a rule that silently
+# stops applying the first time somebody registers it under the other. The
+# check below used to compare against the literal "mcp" alone, which no kind in
+# the contract's own list can ever equal — so the branch was unreachable and
+# reported nothing forever, which reads exactly like a rule that found nothing.
+MCP_KINDS = ("mcp", "mcp-server")
+
+
 def load_thresholds(path=None) -> dict:
     """Thresholds from the contract, over the built-in defaults.
 
@@ -311,7 +321,7 @@ def detect(*, groups=None, containers=None, task_states=None, host_facts=None,
                      "functional one — the shape that reads as healthy in every "
                      "process-, port- and container-based check"),
             ))
-        if axes and axes.get("kind") == "mcp" and functional == "FAILED":
+        if axes and axes.get("kind") in MCP_KINDS and functional == "FAILED":
             signals.append(signal(
                 "MCP_PROCESS_ALIVE_BUT_UNAVAILABLE", ref,
                 {"handshake": "FAILED", "process_state": liveness},

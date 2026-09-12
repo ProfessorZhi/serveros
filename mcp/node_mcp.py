@@ -183,6 +183,130 @@ TOOLS: tuple[dict, ...] = (
             "additionalProperties": False,
         },
     },
+    # -- §3/§5: the runtime graph -------------------------------------------
+    {
+        "name": "runtime.groups",
+        "description": (
+            "Every runtime group on this node — the unit of reasoning is the "
+            "group, never the pid, because one agent task routinely owns a "
+            "proxy, a supervisor, several MCP servers and a browser helper. "
+            "Judging them one at a time is how a live task gets half-reclaimed."
+        ),
+        "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False},
+    },
+    {
+        "name": "runtime.group",
+        "description": (
+            "One runtime group: its members, what it costs, and the chain "
+            "Device -> Transport -> Agent -> Task -> Processes -> MCP -> "
+            "Container. Every hop is FACT, INFERRED or UNKNOWN, and the "
+            "unknown ones are listed with their reason."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "ref": {"type": "string",
+                        "description": "a group ref, its id, or any member pid"},
+            },
+            "required": ["ref"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "runtime.tree",
+        "description": (
+            "One runtime group drawn out: the chain above plus the process "
+            "tree beneath, including whether the root is reparented to init. "
+            "Three processes that look like three harmless rows in `ps` are one "
+            "thing when the lineage is drawn."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {"ref": {"type": "string"}},
+            "required": ["ref"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "runtime.budget",
+        "description": (
+            "The retry budget: what this node has restarted, how many attempts "
+            "remain in the window, and what is blocked. A resource with no "
+            "entry has never been acted on — which is NOT the same as healthy."
+        ),
+        "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False},
+    },
+    # -- §14: the process view ----------------------------------------------
+    {
+        "name": "process.top",
+        "description": (
+            "The busiest processes, each with what it belongs to: group, "
+            "session, container and role. A process list cannot answer 'whose "
+            "is this'; this can, and says UNKNOWN where it cannot."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "limit": {"type": "integer", "default": 10},
+                "by": {"type": "string", "enum": ["cpu", "mem"], "default": "cpu"},
+            },
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "process.trace",
+        "description": (
+            "One pid, attributed: its lineage to the visibility boundary, its "
+            "cgroup scope, its session, container and unit, and the fields that "
+            "could not be established. `cpu_percent_lifetime` is an average, "
+            "not a sample."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {"pid": {"type": "integer"}},
+            "required": ["pid"],
+            "additionalProperties": False,
+        },
+    },
+    # -- §10/§11: anomalies --------------------------------------------------
+    {
+        "name": "anomaly.list",
+        "description": (
+            "Every anomaly this node can support, with its named combination "
+            "classification and — separately — the inputs the detector could "
+            "NOT evaluate. Read `unchecked` before concluding anything: two of "
+            "the fourteen codes are structurally unreachable on this host, and "
+            "their absence is not evidence. Every recommendation is a proposal."
+        ),
+        "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False},
+    },
+    {
+        "name": "anomaly.explain",
+        "description": (
+            "Why one subject classified as it did, INCLUDING which declared "
+            "combinations did not fire and which signal each was missing. The "
+            "negative half is the point: a classification without it cannot be "
+            "argued with."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {"subject": {"type": "string",
+                                       "description": "a subject ref, e.g. a runtime-group ref"}},
+            "required": ["subject"],
+            "additionalProperties": False,
+        },
+    },
+    # -- §6: containers ------------------------------------------------------
+    {
+        "name": "container.attribution",
+        "description": (
+            "Every container, attributed from evidence with the evidence kept "
+            "beside the decision. An unknown owner is DEFER and is never a "
+            "reclaim candidate. This surface can report; it cannot remove, "
+            "stop or prune."
+        ),
+        "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False},
+    },
 )
 
 

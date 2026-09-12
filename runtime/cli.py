@@ -58,6 +58,11 @@ hygiene_mod = _load("serveros_runtime_hygiene", "hygiene.py")
 paths_mod = _load("serveros_runtime_paths", "paths.py")
 conformance_mod = _load("serveros_runtime_conformance", "conformance.py")
 infra_mod = _load("serveros_runtime_infrastructure", "infrastructure.py")
+# The shared answer layer. `serverosd` and the MCP adapter call the SAME
+# functions, so a question asked here and the same question asked over the
+# socket cannot produce two different answers — only two measurements taken at
+# two moments, which is what `answered_by` and `measured_at` are for.
+view_mod = _load("serveros_runtime_view", "view.py")
 
 EXIT_OK = 0
 EXIT_FAULT = 1
@@ -672,6 +677,455 @@ def cmd_runtime_tunnels(args) -> int:
     return EXIT_OK
 
 
+def cmd_runtime_groups(args) -> int:
+    """§3/§5 — every runtime group, largest by summed lifetime CPU first."""
+    payload = view_mod.runtime_groups()
+    lines = [
+        f"{'GROUP':<58} {'N':>3} {'CPU%':>8} {'RSS':>10} {'AGE':>9} AGENT",
+    ]
+    for row in payload["groups"]:
+        agg = row["aggregate"]
+        agent = (row["agent"] or {}).get("value") or "-"
+        lines.append(
+            f"{row['ref'][:58]:<58} {row['member_count']:>3} "
+            f"{agg['cpu_percent']:>8.1f} "
+            f"{human_bytes(agg['memory_rss_bytes']):>10} "
+            f"{_duration(agg['age_seconds']):>9} {agent}"
+        )
+    lines.append("")
+    lines.append(_coverage_line(payload["coverage"]))
+    lines.append(payload["note"])
+    emit(payload, as_json=args.json, lines=lines)
+    return EXIT_OK
+
+
+def cmd_runtime_group(args) -> int:
+    """§5 — one group: membership, cost, and the chain that explains it."""
+    try:
+        payload = view_mod.runtime_group(args.ref)
+    except view_mod.UnknownSubject as exc:
+        return _unknown_subject(exc, args)
+    group = payload["group"]
+    lines = [
+        f"group      {group['ref']}",
+        f"           {group['member_count']} member(s) · kind {group['kind']} · "
+        f"root pid {group['root_pid']}",
+        f"scope      {group['scope']}",
+        f"session    {group['session_ref'] or '—'}",
+        f"container  {group['container_ref'] or '—'}",
+        _aggregate_line(group["aggregate"]),
+        "",
+        "chain",
+    ]
+    for name, value, status in view_mod.chain_rows(payload["chain"]):
+        lines.append(f"  {name:<22} {value[:46]:<48} {status}")
+    _append_unknown_lines(lines, payload["unknown_links"])
+    lines.append("")
+    lines.append(_coverage_line(payload["coverage"]))
+    emit(payload, as_json=args.json, lines=lines)
+    return EXIT_OK
+
+
+def cmd_runtime_tree(args) -> int:
+    """§3 — the whole graph for one group, drawn."""
+    try:
+        payload = view_mod.runtime_tree(args.ref)
+    except view_mod.UnknownSubject as exc:
+        return _unknown_subject(exc, args)
+    group = payload["group"]
+    lines = [
+        f"group      {group['ref']}",
+        _aggregate_line(group["aggregate"]),
+        "",
+        "chain",
+    ]
+    for name, value, status in view_mod.chain_rows(payload["chain"]):
+        lines.append(f"  {name:<22} {value[:46]:<48} {status}")
+    _append_unknown_lines(lines, payload["unknown_links"])
+    lines.append("")
+    tree = payload.get("tree") or {}
+    lineage_note = (
+        "root is reparented to init — its actual parent is gone"
+        if tree.get("reparented_to_init")
+        else f"root is parented to {tree.get('root_ppid')}"
+    )
+    lines.append(f"process tree ({lineage_note})")
+    lines.extend(_render_tree(tree.get("tree")))
+    stopped = (
+        "the top of the process table was reached"
+        if tree.get("chain_terminated_because") == "reached_pid_1"
+        else "that ancestor is not readable to this uid, so the walk stopped "
+             "there and the tree above it is unknown rather than absent"
+    )
+    lines.append(f"  lineage read as far as pid {tree.get('chain_terminated_at')} — "
+                 f"{stopped}")
+    lines.append("")
+    lines.append(_coverage_line(payload["coverage"]))
+    emit(payload, as_json=args.json, lines=lines)
+    return EXIT_OK
+
+
+def cmd_runtime_budget(args) -> int:
+    """§19 — what the daemon has retried, and what it may not retry again."""
+    reg = load_registry(args.registry)
+    payload = view_mod.retry_budget(registry=reg)
+    lines = [
+        f"budget     {payload['max_attempts']} attempts per "
+        f"{payload['window_seconds']}s, backoff {payload['backoff_seconds']}",
+        f"state      {payload['budget_file']}",
+        "",
+    ]
+    if not payload["resources"]:
+        lines.append("no resource has ever been acted on.")
+    else:
+        lines.append(f"{'RESOURCE':<28} {'USED':>4} {'MAY ACT':<8} {'LAST':<10} BLOCKED BY")
+        for row in payload["resources"]:
+            lines.append(
+                f"{row['resource']:<28} {row['attempts_in_window']:>4} "
+                f"{'yes' if row['may_act_now'] else 'no':<8} "
+                f"{str(row['last_action'] or '—'):<10} {row['blocked_by'] or ''}"
+            )
+    if payload["unregistered_with_history"]:
+        lines.append("")
+        lines.append("acted on, and no longer registered: "
+                     + ", ".join(payload["unregistered_with_history"]))
+    lines.append("")
+    lines.append(payload["note"])
+    emit(payload, as_json=args.json, lines=lines)
+    return EXIT_OK
+
+
+# ---------------------------------------------------------------------------
+# process (§14)
+# ---------------------------------------------------------------------------
+
+
+def cmd_process_top(args) -> int:
+    """§14 — the busiest processes, each with what it belongs to."""
+    payload = view_mod.process_top(limit=args.limit, by=args.by)
+    lines = [
+        f"{'PID':>8} {'CPU%':>7} {'RSS':>10} {'AGE':>9} {'USER':<10} "
+        f"{'ROLE':<16} {'SESSION':<12} COMMAND"
+    ]
+    for row in payload["rows"]:
+        lines.append(
+            f"{row['pid']:>8} {row['cpu_percent']:>7.1f} "
+            f"{human_bytes(row['rss_bytes']):>10} "
+            f"{_duration(row['age_seconds']):>9} {str(row['user']):<10} "
+            f"{row['role']:<16} {str(row['session_ref'] or '—'):<12} "
+            f"{row['comm']}"
+        )
+    lines.append("")
+    lines.append(_coverage_line(payload["coverage"]))
+    lines.append(payload["note"])
+    emit(payload, as_json=args.json, lines=lines)
+    return EXIT_OK
+
+
+def cmd_process_trace(args) -> int:
+    """§14 — one pid, attributed, with its lineage and its scope."""
+    try:
+        pid = int(args.pid)
+    except ValueError:
+        sys.stderr.write(
+            f"serverosctl: {args.pid!r} is not a pid. This command traces a "
+            f"single process; use `runtime groups` to find one.\n"
+        )
+        return EXIT_COULD_NOT_ANSWER
+    payload = view_mod.process_trace(pid)
+    process = payload["process"]
+    if not payload["readable"]:
+        lines = [
+            f"pid        {pid}",
+            f"readable   no",
+            f"why        {process.get('why')}",
+            "",
+            _coverage_line(payload["coverage"]),
+        ]
+        emit(payload, as_json=args.json, lines=lines)
+        # An unreadable pid is a COMPLETE answer — "not readable, and here is
+        # why" — so it exits 0 unless the caller asked for strictness. Exiting 1
+        # by default would report another user's process as this node's fault.
+        return EXIT_FAULT if args.strict else EXIT_OK
+
+    runtime = process["runtime"]
+    origin = process.get("origin") or {}
+    lines = [
+        f"pid        {runtime['pid']}  ({runtime['comm']})  ppid {runtime['ppid']}",
+        f"command    {runtime.get('command', {}).get('executable')}",
+        f"user       {runtime.get('user')} · threads {runtime.get('num_threads')} "
+        f"· age {_duration(runtime.get('age_seconds'))}",
+        f"cpu        {runtime.get('cpu_percent_lifetime')}% "
+        f"({runtime.get('cpu_metric')})",
+        f"rss        {human_bytes(runtime.get('rss_bytes'))}",
+        f"cgroup     {runtime.get('cgroup') or '—'}",
+        "",
+        f"session    {process.get('session_ref') or '—'}",
+        f"unit       {process.get('systemd_unit_ref') or '—'}",
+        f"container  {process.get('container_ref') or '—'}",
+        f"origin     device={_link_value(origin.get('device_ref'))} "
+        f"transport={_link_value(origin.get('transport'))} "
+        f"task={_link_value(origin.get('task_ref'))}",
+        f"owner      {(process.get('owner') or {}).get('ref')} "
+        f"({(process.get('owner') or {}).get('status')})",
+        "",
+        "lineage",
+    ]
+    for entry in payload["ancestry"]:
+        marker = "*" if entry["is_self"] else " "
+        lines.append(f"  {marker} {entry['pid']:>8} {str(entry['role'] or ''):<16} "
+                     f"{entry['comm']}")
+    lines.append(f"  {payload['descendant_count']} descendant(s), "
+                 f"{len(payload['children'])} direct child(ren)")
+    if payload.get("group"):
+        lines.append("")
+        lines.append(f"group      {payload['group']['ref']}")
+    lines.append("")
+    lines.append(process.get("attribution", {}).get("note", ""))
+    lines.append(_coverage_line(payload["coverage"]))
+    emit(payload, as_json=args.json, lines=lines)
+    return EXIT_OK
+
+
+# ---------------------------------------------------------------------------
+# anomaly (§10/§11)
+# ---------------------------------------------------------------------------
+
+
+def cmd_anomaly_list(args) -> int:
+    """§10 — every anomaly the node can support, and every input it lacked."""
+    reg = load_registry(args.registry)
+    payload = view_mod.anomaly_list(registry=reg)
+    lines = []
+    if not payload["signals"]:
+        lines.append("no anomaly fired.")
+    else:
+        lines.append(f"{'CODE':<34} {'SEV':<7} SUBJECT")
+        for entry in payload["signals"]:
+            lines.append(
+                f"{entry['code']:<34} {entry['severity']:<7} {entry['subject']}"
+            )
+    lines.append("")
+    lines.append("classifications")
+    if not payload["classifications"]:
+        lines.append("  (none — nothing had a signal)")
+    for item in payload["classifications"]:
+        lines.append(
+            f"  {item['classification']:<38} {item['subject']}"
+        )
+        lines.append(
+            f"    → {item['recommendation']} · criticality {item['criticality']} · "
+            f"protection {item['protection']}"
+        )
+    lines.append("")
+    lines.append("inputs the detector could NOT evaluate")
+    for entry in payload["unchecked"]:
+        lines.append(f"  {entry['input']:<14} {entry['state']:<8} {entry['why']}")
+    lines.append("")
+    lines.append(_coverage_line(payload["coverage"]))
+    lines.append(payload["note"])
+    emit(payload, as_json=args.json, lines=lines)
+
+    if args.strict:
+        # Anything other than "no anomaly fired" or "signals with no declared
+        # combination" is worth a non-zero exit for a monitor. It is still not
+        # an action: every recommendation on this surface is a proposal.
+        interesting = {
+            c["classification"] for c in payload["classifications"]
+        } - {"HEALTHY_OBSERVED", "SIGNALS_PRESENT"}
+        if interesting:
+            return EXIT_FAULT
+    return EXIT_OK
+
+
+def cmd_anomaly_explain(args) -> int:
+    """§10 — why one subject classified the way it did, including what did not."""
+    reg = load_registry(args.registry)
+    payload = view_mod.anomaly_explain(args.subject, registry=reg)
+    if not payload["found"]:
+        lines = [
+            f"subject    {payload['subject']}",
+            "found      no",
+            payload["because"],
+        ]
+        if payload["subjects_with_signals"]:
+            lines.append("")
+            lines.append("subjects that DID have signals:")
+            for subject in payload["subjects_with_signals"]:
+                lines.append(f"  {subject}")
+        lines.append("")
+        lines.append("inputs the detector could NOT evaluate")
+        for entry in payload["unchecked"]:
+            lines.append(f"  {entry['input']:<14} {entry['why']}")
+        emit(payload, as_json=args.json, lines=lines)
+        return EXIT_OK
+
+    lines = [
+        f"subject        {payload['subject']}",
+        f"classification {payload['classification']}",
+        f"because        {payload['because']}",
+        f"criticality    {payload['criticality']} · protection {payload['protection']}",
+        "",
+        f"recommendation {payload['recommendation']}",
+    ]
+    if payload["recommendation_because"]:
+        lines.append(f"  because      {payload['recommendation_because']}")
+    blast = payload["blast_radius"]
+    lines.append(f"  affects      {', '.join(blast['affected_subjects'])}")
+    if blast["protected_excluded"]:
+        lines.append(f"  excluded     {'; '.join(blast['protected_excluded'])}")
+    lines.append("")
+    lines.append("signals (every one, unchanged)")
+    for entry in payload["signals"]:
+        measured = ", ".join(f"{k}={v}" for k, v in entry["measured"].items())
+        lines.append(f"  {entry['code']:<34} {entry['severity']:<7} {measured}")
+        lines.append(f"    window {entry['window']}")
+        lines.append(f"    {entry['why']}")
+    lines.append("")
+    lines.append("combinations that did NOT fire")
+    if not payload["combinations_not_met"]:
+        lines.append("  (every declared combination was satisfied)")
+    for entry in payload["combinations_not_met"]:
+        lines.append(
+            f"  {entry['combination']:<38} missing {', '.join(entry['missing'])}"
+        )
+    lines.append("")
+    lines.append(payload["note"])
+    emit(payload, as_json=args.json, lines=lines)
+    return EXIT_OK
+
+
+# ---------------------------------------------------------------------------
+# container (§6)
+# ---------------------------------------------------------------------------
+
+
+def cmd_container_attribution(args) -> int:
+    """§6 — every container, attributed from evidence, with the evidence kept."""
+    reg = load_registry(args.registry)
+    payload = view_mod.container_attribution(registry=reg)
+    lines = [
+        f"{'DISPOSITION':<12} {'STATE':<10} {'CONF':<7} OWNER / LOCATOR",
+    ]
+    for row in payload["containers"]:
+        owner = (row.get("owner") or {})
+        where = owner.get("ref")
+        if not where:
+            locator = row.get("locator") or {}
+            where = (f"no owner — locator {locator.get('path')}"
+                     f" ({locator.get('root')}, from {locator.get('from')})"
+                     if locator.get("path") else "no owner, and no locator either")
+        lines.append(
+            f"{row['disposition']:<12} {str(row.get('state')):<10} "
+            f"{row['attribution']['confidence']:<7} {where}"
+        )
+        if row.get("unknown_owner"):
+            lines.append(f"    {row['disposition_because']}")
+    lines.append("")
+    lines.append(f"{payload['count']} container(s) · "
+                 f"{payload['unknown_owner_count']} unknown owner · "
+                 f"by disposition {payload['by_disposition']}")
+    lines.append("")
+    lines.append(payload["note"])
+    emit(payload, as_json=args.json, lines=lines)
+    return EXIT_OK
+
+
+# ---------------------------------------------------------------------------
+# rendering helpers for the commands above
+# ---------------------------------------------------------------------------
+
+
+def _duration(seconds) -> str:
+    """A compact duration. Each unit divides, which the first version did not.
+
+    It printed `16397h` for four and a half hours — the seconds value with an
+    `h` glued on. The rendering was the only thing wrong and it was wrong in
+    the direction that looks plausible, which is the kind of wrong a reader
+    does not check.
+    """
+    if seconds is None:
+        return "UNKNOWN"
+    seconds = int(seconds)
+    if seconds < 60:
+        return f"{seconds}s"
+    if seconds < 3600:
+        return f"{seconds // 60}m"
+    if seconds < 86400:
+        return f"{seconds // 3600}h"
+    return f"{seconds // 86400}d"
+
+
+def _aggregate_line(aggregate: dict) -> str:
+    return (
+        f"aggregate  cpu {aggregate['cpu_percent']}% (summed lifetime average, "
+        f"so 400% is four cores) · rss {human_bytes(aggregate['memory_rss_bytes'])} "
+        f"· age {_duration(aggregate['age_seconds'])} · "
+        f"{aggregate['process_count']} process(es)"
+    )
+
+
+def _coverage_line(coverage: dict) -> str:
+    state = "hidepid=invisible" if coverage.get("hidepid_invisible") else "no hidepid"
+    return (
+        f"coverage   {coverage['visible_processes']} process(es) visible to "
+        f"{coverage['scope']} of {coverage['proc_pids_present']} pids in /proc "
+        f"({state})"
+    )
+
+
+def _append_unknown_lines(lines: list[str], unknown: list[dict]) -> None:
+    if not unknown:
+        return
+    lines.append("")
+    lines.append("this node did NOT establish")
+    for entry in unknown:
+        lines.append(f"  {entry['link']:<22} {entry['why']}")
+
+
+def _link_value(link) -> str:
+    if not isinstance(link, dict):
+        return "—"
+    value = link.get("value")
+    if value is None:
+        return f"UNKNOWN ({link.get('status')})"
+    return f"{value} ({link.get('status')})"
+
+
+def _render_tree(node) -> list[str]:
+    """An ASCII tree. `node` is `attribution.process_tree`'s nested form.
+
+    No depth limit of its own: the tree comes from `descendants()`, which is
+    already cycle-safe, and a second guard here would be a limit nobody could
+    reach and nobody would test.
+    """
+    if not node:
+        return []
+    lines: list[str] = []
+
+    def walk(current: dict, prefix: str, last: bool, root: bool) -> None:
+        branch = "" if root else ("└── " if last else "├── ")
+        lines.append(f"  {prefix}{branch}{current['pid']} {current.get('comm') or ''}".rstrip())
+        children = current.get("children") or []
+        # The vertical bar is carried down only while there are siblings still
+        # to come, so the drawing stays a tree rather than a ladder.
+        child_prefix = prefix + ("" if root else ("    " if last else "│   "))
+        for index, child in enumerate(children):
+            walk(child, child_prefix, index == len(children) - 1, False)
+
+    walk(node, "", True, True)
+    return lines
+
+
+def _unknown_subject(exc, args) -> int:
+    sys.stderr.write(f"serverosctl: {exc}\n")
+    if not args.json:
+        sys.stderr.write(
+            "serverosctl: run `runtime groups` for the refs this node can see.\n"
+        )
+    return EXIT_COULD_NOT_ANSWER
+
+
 def cmd_probe(args) -> int:
     reg = load_registry(args.registry)
     resource = reg.get(args.id)
@@ -814,6 +1268,60 @@ def build_parser() -> argparse.ArgumentParser:
         **_COMMON,
     )
     rt_tun.set_defaults(func=cmd_runtime_tunnels)
+    rt_groups = runtime_sub.add_parser(
+        "groups", help="every runtime group on this host (§3/§5)", **_COMMON)
+    rt_groups.set_defaults(func=cmd_runtime_groups)
+    rt_group = runtime_sub.add_parser(
+        "group", help="one runtime group, its members and its chain (§5)", **_COMMON)
+    rt_group.add_argument("ref", help="a group ref, its id, or any member pid")
+    rt_group.set_defaults(func=cmd_runtime_group)
+    rt_tree = runtime_sub.add_parser(
+        "tree", help="one runtime group, drawn: chain, lineage, processes (§3)", **_COMMON)
+    rt_tree.add_argument("ref", help="a group ref, its id, or any member pid")
+    rt_tree.set_defaults(func=cmd_runtime_tree)
+    rt_budget = runtime_sub.add_parser(
+        "budget", help="what the daemon has retried, and what it may not (§19)",
+        **_COMMON)
+    rt_budget.set_defaults(func=cmd_runtime_budget)
+
+    process = sub.add_parser(
+        "process", help="processes, attributed (§14)", **_COMMON)
+    process_sub = process.add_subparsers(dest="subcommand", required=True)
+    pr_top = process_sub.add_parser(
+        "top", help="the busiest processes, each with what it belongs to", **_COMMON)
+    pr_top.add_argument("--limit", type=int, default=10)
+    pr_top.add_argument("--by", choices=("cpu", "mem"), default="cpu")
+    pr_top.set_defaults(func=cmd_process_top)
+    pr_trace = process_sub.add_parser(
+        "trace", help="one pid: lineage, scope, owner, and what was unreadable",
+        **_COMMON)
+    pr_trace.add_argument("pid")
+    pr_trace.add_argument("--strict", action="store_true",
+                          help="exit 1 when the pid could not be read")
+    pr_trace.set_defaults(func=cmd_process_trace)
+
+    anomaly = sub.add_parser(
+        "anomaly", help="anomalies and what they do NOT justify (§10/§11)", **_COMMON)
+    anomaly_sub = anomaly.add_subparsers(dest="subcommand", required=True)
+    an_list = anomaly_sub.add_parser(
+        "list", help="every anomaly this node can support, and its blind spots",
+        **_COMMON)
+    an_list.add_argument("--strict", action="store_true",
+                         help="exit 1 when anything classified beyond "
+                              "'no anomaly' or 'signals present'")
+    an_list.set_defaults(func=cmd_anomaly_list)
+    an_explain = anomaly_sub.add_parser(
+        "explain", help="why a subject classified as it did, and what did not fire",
+        **_COMMON)
+    an_explain.add_argument("subject", help="a subject ref, e.g. a runtime-group ref")
+    an_explain.set_defaults(func=cmd_anomaly_explain)
+
+    container = sub.add_parser(
+        "container", help="containers, attributed from evidence (§6)", **_COMMON)
+    container_sub = container.add_subparsers(dest="subcommand", required=True)
+    c_attr = container_sub.add_parser(
+        "attribution", help="who each container belongs to, and the evidence", **_COMMON)
+    c_attr.set_defaults(func=cmd_container_attribution)
 
     probe = sub.add_parser("probe", help="run one resource's declared probes", **_COMMON)
     probe.add_argument("id")
