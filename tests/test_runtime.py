@@ -54,6 +54,7 @@ health_mod = _load("serveros_runtime_health", "health.py")
 probes_mod = _load("serveros_runtime_probes", "probes.py")
 inventory_mod = _load("serveros_runtime_inventory", "inventory.py")
 hygiene_mod = _load("serveros_runtime_hygiene", "hygiene.py")
+paths_mod = _load("serveros_runtime_paths", "paths.py")
 
 Registry = registry_mod.Registry
 RegistryInvalid = registry_mod.RegistryInvalid
@@ -730,14 +731,15 @@ class FakeInventory:
         return {"sorted_by": by, "rows": [], "scope_note": "fake"}
 
 
-def hygiene_for(containers, *, reg=None, known_work_items=None):
+def hygiene_for(containers, *, reg=None, known_work_items=None, worktree_root=None):
     # `reg is None`, not `reg or ...`. `Registry.__len__` counts RESOURCES, so
     # a registry that declares only `protected_refs` is falsy — and `or` would
     # silently substitute an empty registry, which is exactly the kind of
     # quiet default that makes a protection test pass for the wrong reason.
     if reg is None:
         reg = Registry(document=resource_document())
-    return Hygiene(reg, FakeInventory(containers), known_work_items=known_work_items)
+    return Hygiene(reg, FakeInventory(containers), known_work_items=known_work_items,
+                   worktree_root=worktree_root)
 
 
 def test_a_compose_label_is_not_an_owner():
@@ -756,6 +758,76 @@ def test_a_compose_label_is_not_an_owner():
     assert row["classification"] == "UNKNOWN_OWNER"
     assert row["evidence"]["compose_project"] == "lit-0101"
     assert row["evidence"]["compose_working_dir"].endswith("litellm-e2e")
+    # §55 workspace lifecycle: the compose dir is under `test-envs/`, not under
+    # `worktrees/`, so there IS no worktree placement and the answer says so
+    # rather than guessing one.
+    assert row["workspace_placement"] is None
+
+
+def a_worktree(root, repo, item, *, exists=True):
+    """A compose working_dir inside `root`, plus the directory itself when the
+    worktree is meant to be on disk."""
+    worktree = Path(root) / repo / item
+    if exists:
+        worktree.mkdir(parents=True, exist_ok=True)
+    return (
+        f"com.docker.compose.project={repo},"
+        f"com.docker.compose.project.working_dir={worktree}"
+    )
+
+
+def test_a_container_built_in_a_worktree_reports_which_one(tmp_path):
+    """`Hygiene.worktree_root` was a constructor argument read by nobody.
+
+    It is now the §55 workspace-lifecycle link: a container whose compose file
+    lives in `<worktree_root>/<repo>/<ITEM>/` can be traced back to that
+    worktree, which is a fact nothing in `runtime/` could state before.
+    """
+    root = tmp_path / "worktrees"
+    row = hygiene_for([a_container("x", labels=a_worktree(root, "litellm-bridge", "LIT-0101"))],
+                      worktree_root=root).containers()["containers"][0]
+    placement = row["workspace_placement"]
+    assert placement["repo"] == "litellm-bridge"
+    assert placement["relative"] == "litellm-bridge/LIT-0101"
+    assert placement["work_item"] == "work-item:LIT-0101"
+    assert placement["worktree_exists"] is True
+
+
+def test_a_container_outliving_its_worktree_is_visible(tmp_path):
+    """The failure case this link exists for: the worktree was retired, the
+    container was not. `worktree_exists` is False and the placement still
+    names the item, so a reader can go ask whether that item is closed."""
+    root = tmp_path / "worktrees"
+    labels = a_worktree(root, "litellm-bridge", "LIT-0101", exists=False)
+    row = hygiene_for([a_container("x", labels=labels)],
+                      worktree_root=root).containers()["containers"][0]
+    assert row["workspace_placement"]["worktree_exists"] is False
+    assert row["workspace_placement"]["work_item"] == "work-item:LIT-0101"
+
+
+def test_the_default_worktree_root_comes_from_the_root_contract():
+    """A hard-coded default would keep pointing at a directory that moved."""
+    assert hygiene_for([]).worktree_root == paths_mod.Paths().root("workspace") / "worktrees"
+
+
+def test_worktree_placement_is_evidence_and_moves_no_classification(tmp_path):
+    """Placement must not become ownership.
+
+    Same failure mode as the compose-label regression above, one level up: a
+    container that can be traced to a worktree is still classified entirely by
+    its registry declaration, its protection refs and its labels. The
+    placement line is added to the row; nothing reads it to decide.
+    """
+    root = tmp_path / "worktrees"
+    with_placement = hygiene_for([a_container("x", labels=a_worktree(root, "litellm-bridge", "LIT-0101"))],
+                                 worktree_root=root).containers()
+    without = hygiene_for([a_container("y", labels=COMPOSE_LABELS)],
+                          worktree_root=root).containers()
+    assert with_placement["by_classification"] == without["by_classification"]
+    assert with_placement["actionable"] == without["actionable"] == []
+    row = with_placement["containers"][0]
+    assert row["classification"] == "UNKNOWN_OWNER"
+    assert row["actionable"] is False
 
 
 def test_a_typed_label_is_an_owner_and_a_malformed_one_is_not():

@@ -1,7 +1,7 @@
 # ServerOS
 
-ServerOS is a lightweight **Agent Engineering Workbench** for Claude Code,
-Codex, and future coding agents.
+ServerOS is a lightweight **user-space Agent control plane** for Claude Code,
+Codex, and future coding agents — an Agent Engineering Workbench built on it.
 
 Its job is not to prescribe how an agent works.
 
@@ -64,36 +64,17 @@ See [`ARCHITECTURE.md`](ARCHITECTURE.md).
 
 ## 3. Architecture
 
-ServerOS has a **Core-2**, and then specialist capabilities discovered on demand:
+→ **[`ARCHITECTURE.md`](ARCHITECTURE.md) is the single canonical architecture
+statement.** This README does not restate it; a second statement that is "also
+correct" is the drift that document exists to prevent.
 
-```text
-                 ServerOS Core-2
-        ┌──────────────────────────────────────────────┐
-        │ serveros                                     │
-        │ Environment / Context contract               │
-        │ bootstrap Skill                              │
-        │ Context / Space / Relations kernels          │
-        │ hwz-server-os composition + deterministic build│
-        ├──────────────────────────────────────────────┤
-        │ ability-management                           │
-        │ Capability / Ability registry                │
-        │ reusable Skill canonical source              │
-        │ revision / compatibility / discovery         │
-        │ reconcile / installation / distribution      │
-        └──────────────────────┬───────────────────────┘
-                               │ pinned build / install
-                    ┌──────────┴──────────┐
-                    ▼                     ▼
-              Claude Code               Codex
-              adapter/runtime           adapter/runtime
-```
+In one line: ServerOS is a user-space Agent control plane — a small node runtime
+(`serverosd`), semantic services, an Agent-facing MCP, a bootstrap Skill,
+on-demand Ability-driven procedures, plugin composition, and an optional Fleet.
+Availability is **per-device declared**, not a product-global always-on promise.
 
-`workspace-management` is an important specialist capability, not a third Core
-module. `serveros` decides **what composes the product**; `ability-management`
-owns the reusable implementations that are composed into it. Generated runtime
-payloads never become a reverse authority.
-
-Full component boundaries: [`integration/components.yaml`](integration/components.yaml).
+Component boundaries are also machine-readable in
+[`integration/components.yaml`](integration/components.yaml).
 
 ## 4. Context Capsule
 
@@ -112,11 +93,15 @@ actual index write — is an adapter's job.
 
 → [`docs/space-resolver.md`](docs/space-resolver.md)
 
-## 4c. Fleet
+## 4c. Fleet (optional)
 
-ServerOS owns stable device identity and fleet topology. Device connection locators
-and credentials stay local-only; capabilities installed on each device are owned
-by `ability-management` observations and projected back into the Fleet view.
+Fleet is **optional per device**. A device that declares no fleet participation
+is a normal ServerOS node with no topology neighbours, not a broken one.
+
+Where a device does participate, ServerOS owns stable device identity and fleet
+topology. Device connection locators and credentials stay local-only;
+capabilities installed on each device are owned by `ability-management`
+observations and projected back into the Fleet view.
 
 → [`fleet/README.md`](fleet/README.md)
 
@@ -183,13 +168,10 @@ Repo *relationships* are not workspace *ownership* — see
 
 ## 11. Non-goals
 
-ServerOS is not, and must not become:
-
-- a global workflow engine or a forced Activity pipeline
-- a daemon, a lease system, an approval layer, or a new directory layer
-- a second source of truth for Skills, maps, or Item state
-- a document generator that manufactures artifacts to close a schema
-- a mechanism that slows an agent down in order to be thorough
+The closed list lives in [`ARCHITECTURE.md`](ARCHITECTURE.md) under
+**NOT SERVEROS RESPONSIBILITY**, and is not restated here. It exists so these
+do not grow back.
 
 Before adding anything, ask: **does this improve Environment, Context, or
-Capabilities?** If none of the three, it is probably not ServerOS core.
+Capabilities — and which real failure case fails without it?** If neither has an
+answer, it is not ServerOS.

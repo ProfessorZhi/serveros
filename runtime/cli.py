@@ -257,6 +257,88 @@ def cmd_status(args) -> int:
     return EXIT_FAULT if stale else EXIT_OK
 
 
+def cmd_ability_list(args) -> int:
+    """§55 item 14 — what capabilities this node can actually resolve.
+
+    The daemon has served `ability.list` since §24, but the only way to reach
+    it was to write a newline-delimited JSON request onto the socket by hand,
+    so "Ability discovery" was implemented and unreachable. This asks the
+    same question over IPC.
+
+    It asks the daemon rather than reading the projection file directly, and
+    that is the point: the daemon grades the projection (FRESH / STALE /
+    UNREADABLE / NOT_MATERIALIZED). A CLI that opened `effective.json` itself
+    would report an empty answer for all four states, and "the projection is
+    two days old" is not the same finding as "nothing is installed".
+    """
+    try:
+        payload = ask_daemon("ability.list")
+    except DaemonUnavailable as exc:
+        sys.stderr.write(f"serverosctl: {exc}\n")
+        if args.json:
+            json.dump({"ok": False, "registry_status": "UNREADABLE", "detail": str(exc)},
+                      sys.stdout, indent=2, sort_keys=True)
+            sys.stdout.write("\n")
+        return EXIT_COULD_NOT_ANSWER
+
+    abilities = payload.get("abilities")
+    age = payload.get("age_seconds")
+    lines = [f"authority   {payload.get('authority')}",
+             f"projection  {payload.get('registry_status')}"
+             + (f" · {_human_seconds(age)} old" if age is not None else "")
+             + (f" · {payload['source']}" if payload.get("source") else "")]
+    if not abilities:
+        # Three different facts print as the same empty list unless they are
+        # told apart here, and they mean opposite things.
+        lines.append(f"abilities   none readable — {payload.get('note', 'no note')}")
+    else:
+        lines.append(f"{'NAME':<28} {'TYPE':<7} {'REVS':<5} AGENTS")
+        for ability in abilities:
+            agents = ability.get("agents") or []
+            lines.append(f"{str(ability.get('name', '?')):<28} "
+                         f"{str(ability.get('type', '?')):<7} "
+                         f"{str(ability.get('revisions_installed', '?')):<5} "
+                         f"{','.join(agents) if agents else '-'}")
+    emit(payload, as_json=args.json, lines=lines)
+    return EXIT_OK
+
+
+def cmd_ability_status(args) -> int:
+    """One ability, by name. Exit 1 when the projection does not carry it.
+
+    Not an error — absence from a local projection is not proof of absence on
+    the authority, and the daemon's answer says so — but it is a state a shell
+    needs to distinguish, so it gets its own exit code.
+    """
+    try:
+        payload = ask_daemon("ability.status", {"name": args.name})
+    except DaemonUnavailable as exc:
+        sys.stderr.write(f"serverosctl: {exc}\n")
+        if args.json:
+            json.dump({"ok": False, "registry_status": "UNREADABLE", "detail": str(exc)},
+                      sys.stdout, indent=2, sort_keys=True)
+            sys.stdout.write("\n")
+        return EXIT_COULD_NOT_ANSWER
+
+    installed = payload.get("installed")
+    lines = [f"ability     {payload.get('name')}",
+             f"projection  {payload.get('registry_status')}",
+             f"installed   {installed}"]
+    if installed:
+        # The projection's own field names, not a guess at them. Rendering
+        # `revision`/`state` columns for a row that carries `version`/
+        # `revisions_installed` printed a table of `?` and looked like an
+        # empty registry rather than a wrong reader.
+        for key in ("id", "type", "path", "version", "revisions_installed",
+                    "fingerprint", "agents"):
+            if payload["ability"].get(key) is not None:
+                lines.append(f"{key:<19} {payload['ability'][key]}")
+    else:
+        lines.append(payload.get("note", ""))
+    emit(payload, as_json=args.json, lines=lines)
+    return EXIT_OK if installed else EXIT_FAULT
+
+
 def _human_seconds(seconds: float) -> str:
     seconds = int(seconds)
     for unit, size in (("d", 86400), ("h", 3600), ("m", 60)):
@@ -1474,6 +1556,19 @@ def build_parser() -> argparse.ArgumentParser:
     c_attr = container_sub.add_parser(
         "attribution", help="who each container belongs to, and the evidence", **_COMMON)
     c_attr.set_defaults(func=cmd_container_attribution)
+
+    ability = sub.add_parser(
+        "ability", help="what capabilities this node can resolve (§55)",
+        **_COMMON)
+    ability_sub = ability.add_subparsers(dest="subcommand", required=True)
+    ab_list = ability_sub.add_parser(
+        "list", help="every ability in the local projection, and how fresh it is",
+        **_COMMON)
+    ab_list.set_defaults(func=cmd_ability_list)
+    ab_status = ability_sub.add_parser(
+        "status", help="one ability by name", **_COMMON)
+    ab_status.add_argument("name")
+    ab_status.set_defaults(func=cmd_ability_status)
 
     probe = sub.add_parser("probe", help="run one resource's declared probes", **_COMMON)
     probe.add_argument("id")

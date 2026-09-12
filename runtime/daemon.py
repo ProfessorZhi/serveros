@@ -1009,7 +1009,13 @@ class Daemon:
     def _r_device_show(self, params) -> dict:
         host = self.inventory.host_summary()
         return {
-            "device_ref": "device:server-beijing",
+            # Read from the registry. This was a hard-coded string, so the
+            # daemon answered "which device is this" from a literal while
+            # `serverosctl device show` answered it from the registry — two
+            # answers to one question, and the daemon's was the one an agent
+            # over IPC would believe. They agreed only while nobody renamed
+            # the node, which is precisely when an identity is load-bearing.
+            "device_ref": self.registry.device_ref,
             "host": host,
             "managed": {"count": len(self.registry),
                         "protected": len(self.registry.protected()),
