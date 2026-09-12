@@ -468,6 +468,159 @@ probe_requirements:
   # considered.
   relay-presence: []
 
+# ---------------------------------------------------------------------------
+# The operation vocabulary (§8).
+#
+# DISTINCT FROM `actions.values` ABOVE, and the two are not alternatives. An
+# `action` is a *disposition* — what this observation implies. An `operation`
+# is a *thing that gets done*. `RECONCILE` appears in both lists and means
+# different things: as an action it says "this resource is a candidate"; as an
+# operation it says "bring it back to its desired state". Collapsing the two
+# axes is how "the model recommends a restart" becomes "a restart happened".
+#
+# Five values, closed. An operation outside this set is a validation failure,
+# which is the point: this list is the whole of what the runtime may do to the
+# machine, and a sixth entry has to be written down here before any code can
+# reach it.
+# ---------------------------------------------------------------------------
+operations:
+  values: [PROBE, RECONCILE, RESTART, RECONNECT, STOP]
+  guidance:
+    PROBE: >
+      ask the resource a question. Changes no state and is always permitted;
+      it is listed anyway because a probe is the only operation that runs
+      against a `protected` resource, and leaving it out would make the
+      vocabulary look smaller than the runtime's actual reach.
+    RECONCILE: >
+      the umbrella operation: bring a resource back to its declared desired
+      state by whatever means the resource's own `reconcile.mode` names.
+      Never issued directly; it is the name of the decision, not of a command.
+    RESTART: >
+      ask the supervisor to restart it. `systemctl --user restart` for a unit,
+      `docker restart` for a container. The only operation with an actuator
+      today.
+    RECONNECT: >
+      re-establish a channel that dropped. Declared here because `tunnel` and
+      `transport-endpoint` are first-class kinds whose failure is not a
+      process failure and whose recovery is not a restart — but NOT
+      implemented, and a `reconcile.mode: reconnect` resource therefore gets
+      `NO_ACTUATOR` rather than a guessed command.
+    STOP: >
+      bring it to its declared `desired: stopped` state. Declared and NOT
+      implemented. Stopping is the operation whose blast radius is easiest to
+      underestimate: a stopped container may be the only copy of its own
+      state, and this host's baseline containers are the reason the
+      protection rules exist.
+  rules:
+    - "An operation must satisfy the resource contract before it is issued.
+       `restart` against a resource that forbids it is not a lesser
+       operation, it is the wrong one."
+    - "Every operation names the resource it targets and the mode that
+       authorised it. An operation with no declared authoriser is a bug in
+       the caller, not a default."
+    - "NOT implemented is a state this file is allowed to be in. A declared
+       operation with no actuator reports NO_ACTUATOR — the same answer the
+       actuator already gives for a kind nobody wrote an actuator for."
+
+# ---------------------------------------------------------------------------
+# Per-resource reconcile policy (§11).
+#
+# WHY THIS IS PER-RESOURCE AND NOT A DAEMON FLAG
+# ----------------------------------------------
+# A single switch that turns on automatic recovery for everything is the thing
+# this block exists to replace. It reads as "recovery: on" and it means "every
+# registered resource is now restartable by a component that has never been
+# tested against any of them" — and the resources it reaches include the two
+# containers behind the production-parity baseline.
+#
+# So the authority is here, on the resource, where the person who knows what
+# the resource is for is the person writing the block. The default is
+# `observe`: a resource that says nothing about reconcile is never acted on.
+# Silence is the safe value, and it is the value every registration on this
+# host currently has.
+# ---------------------------------------------------------------------------
+reconcile_policy:
+  modes:
+    # Report the candidate and change nothing. The default.
+    - observe
+    # Restart the resource. Requires a budget; see `budget_requirements`.
+    - restart
+    # Re-establish a dropped channel. No actuator exists (see `operations`).
+    - reconnect
+  default: observe
+  # Which operation each mode authorises. Declared here rather than compiled
+  # into the reconciler, because a mapping in code is a second copy of this
+  # vocabulary and this project has already paid for having two copies of one
+  # rule. `null` is a decision, not an omission: `observe` authorises no
+  # operation at all.
+  mode_operations:
+    observe: null
+    restart: RESTART
+    reconnect: RECONNECT
+  # Mode names are the vocabulary; this is the shape every mode shares.
+  block_shape:
+    mode: observe
+    # Required for any mode other than `observe`. A mode that permits an
+    # operation without bounding it is a retry loop with a policy name.
+    max_attempts: 1
+    # The per-attempt wait. Same units and same intent as the daemon's own
+    # backoff ladder; declared here so the budget is a property of the
+    # resource rather than a constant compiled into the reconciler.
+    backoff: [60, 300, 900]
+  budget_requirements:
+    # §10's last two conjuncts. Both are about the same thing — that an
+    # automatic action is bounded — from two directions: `max_attempts` bounds
+    # how many times, `backoff` bounds how often.
+    - field: max_attempts
+      because: >
+        an unbounded restart policy is indistinguishable from a crash loop
+        with a comment above it. This host has already paid for that once: the
+        endpoint restarted five times in two hours and every restart issued a
+        device code nobody could authorize.
+    - field: backoff
+      because: >
+        without it the budget is a count with no rate, and a resource that
+        fails fast can exhaust its attempts inside one tick interval.
+  # A mode this file does not implement, declared so that the unimplemented
+  # half is visible rather than inferred from an absent actuator.
+  declared_not_implemented:
+    - reconnect
+
+# ---------------------------------------------------------------------------
+# §9's default action rules, as a table rather than as prose in three files.
+#
+# Each row is checked before any operation is considered. They are ordered
+# most-specific first, and the last row is the general case.
+# ---------------------------------------------------------------------------
+default_action_rules:
+  - condition: "owner.type is unknown, or the resource is not registered"
+    action: "no action"
+    because: "fails safe. An unowned resource is DEFER, never a candidate."
+  - condition: "the resource is observed but not registered"
+    action: "no action"
+    because: "nothing is managed by being noticed."
+  - condition: "lifecycle.class is task-scoped or session-scoped"
+    action: "recommendation only"
+    because: >
+      it is bounded to a work item or a login session. A restart re-establishes
+      it inside a lifetime that is about to end, and the recomputation is
+      wasted on an object whose owner is already closing it.
+  - condition: "the operation is container cleanup, of any tier"
+    action: "recommendation only"
+    because: >
+      §17. ServerOS emits candidate, reason, estimated reclaim and blast
+      radius. Removal is a person's decision at every tier, including STOP.
+  - condition: "protection.level is protected"
+    action: "no cleanup, no restart, ever"
+    because: >
+      not a hint and not configurable from a call site. Checked independently
+      of criticality and independently of any budget.
+  - condition: "lifecycle.class is persistent AND protection is not protected
+     AND reconcile.mode is not observe AND a budget is configured AND a
+     functional probe exists"
+    action: "the operation named by reconcile.mode"
+    because: "§10's seven conjuncts, all of which must hold. See `why_not_automatable`."
+
 rules:
   - "Every managed resource is explicitly registered. Nothing is managed by
      being noticed — a discovered container is an observation, not a claim."

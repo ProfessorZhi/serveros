@@ -526,9 +526,39 @@ class Hygiene:
         by_class = containers.get("by_classification", {})
         actionable = containers.get("actionable", [])
         unowned = by_class.get("UNKNOWN_OWNER", 0)
+        # §9/§16/§17, and the wire that gives `admission()` a caller.
+        #
+        # The note below used to say "the tier policy decides" while nothing
+        # ever asked it: `admission()` was a complete, tested policy function
+        # with no consumer anywhere in the repo, so the sentence was a
+        # declaration the code did not honour. It is asked here, for every
+        # candidate, so that the report states what the policy actually
+        # permits rather than what the reader is told to assume about it.
+        #
+        # Tier STOP is the one asked about because it is the lowest tier in
+        # RISK_TIERS and every higher tier's requirements include it: a
+        # candidate that cannot be stopped certainly cannot be removed. Asking
+        # about REMOVE_CONTAINER here would manufacture a denial that says
+        # nothing the STOP answer has not already said.
+        rows_by_name = {row["name"]: row for row in containers.get("containers", [])}
+        candidate_admission = [
+            {
+                "name": name,
+                "tier": "STOP",
+                "classification": (rows_by_name.get(name) or {}).get("classification"),
+                "decision": admission("STOP", (rows_by_name.get(name) or {}).get("classification")),
+            }
+            for name in actionable
+        ]
         return {
             "actionable_count": len(actionable),
             "actionable": actionable,
+            # Attached rather than folded into `actionable`, because
+            # `actionable` is a list of names and callers compare it as one.
+            "candidate_admission": candidate_admission,
+            "permitted_count": sum(
+                1 for entry in candidate_admission if entry["decision"]["allowed"]
+            ),
             "note": (
                 "Nothing is removed by this command. Anything listed as "
                 "actionable is a candidate only; the tier policy decides, and "

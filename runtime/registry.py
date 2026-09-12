@@ -179,6 +179,14 @@ def _recovery_models() -> tuple[str, ...]:
     return tuple(m["id"] for m in contract()["recovery_models"])
 
 
+def _reconcile_modes() -> tuple[str, ...]:
+    return tuple(contract()["reconcile_policy"]["modes"])
+
+
+def _reconcile_default() -> str:
+    return contract()["reconcile_policy"]["default"]
+
+
 def _axis_values(axis: str) -> tuple[str, ...]:
     return tuple(contract()["health_axes"][axis]["values"])
 
@@ -294,6 +302,48 @@ class Resource:
         return ((self._r.get("recovery") or {}).get("model")) or "restart"
 
     @property
+    def reconcile(self) -> dict:
+        """The per-resource reconcile policy (§11), normalised.
+
+        Always returns a `mode`, and the mode is `observe` when the
+        registration said nothing. That default is the whole design: silence
+        is not "use the global setting", silence is "change nothing", so a
+        resource nobody wrote a policy for can never be acted on by a
+        component that read the absence as permission.
+
+        `authorises_action` is the single question the reconciler asks, kept
+        here rather than spelled out at the call site so that the call site
+        cannot get it subtly wrong in one branch.
+        """
+        block = self._r.get("reconcile") or {}
+        mode = block.get("mode") or _reconcile_default()
+        return {
+            "mode": mode,
+            "max_attempts": block.get("max_attempts"),
+            "backoff": block.get("backoff"),
+            "declared": bool(block),
+            "authorises_action": mode != _reconcile_default(),
+        }
+
+    @property
+    def functional_probe_available(self) -> bool:
+        """Whether anything here can ask this resource whether it works.
+
+        §10 requires a functional probe before an automatic recovery, and the
+        reason is not procedural: a restart whose effect cannot be measured is
+        a restart that reports success because nothing was able to report
+        failure. This is the same distinction `managed-runtime-contract.yaml`
+        draws between `observe` and `probe`, applied as a gate rather than as
+        a definition.
+        """
+        if self.not_applicable.get("functional"):
+            # Explicitly declared as having no callable surface. That is a
+            # decision, and it still does not give the reconciler anything to
+            # check afterwards — so it does not satisfy the conjunct.
+            return False
+        return any(p.get("axis") == "functional" for p in self.probes)
+
+    @property
     def not_applicable(self) -> dict:
         return self._r.get("not_applicable") or {}
 
@@ -319,28 +369,109 @@ class Resource:
     def is_automatable(self) -> bool:
         """May the reconcile path touch this at all?
 
-        Four independent reasons a resource is hands-off, and each is checked
-        separately so the report can say *which* one applied. A single
-        `if protected` would collapse "we must not" into "we chose not to".
+        Defined as "no reason blocks it", rather than as a parallel list of
+        conditions. The two used to be written twice — a boolean expression
+        here and a list of reasons below — which is the same shape as every
+        other defect this project has had to fix: two copies of one rule that
+        agree until somebody edits one of them. There is now one rule, and the
+        boolean is a read of it.
+
+        Each conjunct is checked separately so the report can say *which* one
+        applied. A single `if protected` would collapse "we must not" into
+        "we chose not to".
         """
-        return (
-            self.protection != "protected"
-            and self.scope == "user"
-            and self.owner_type != "unknown"
-            and self.desired == "running"
-        )
+        return not self.why_not_automatable()
+
+    def automatability(self) -> dict:
+        """§10, with each failing conjunct assigned to what it actually blocks.
+
+        §10 lists seven conditions that must ALL hold before an automatic
+        restart or reconnect. They are not all the same kind of condition, and
+        treating them as one set collapses §9's distinctions:
+
+          * PERMISSION blocks say ServerOS must not act and nobody may act
+            automatically — the resource is protected, system-scoped, or
+            unowned. §9: "no action".
+          * POLICY blocks say ServerOS may not act *automatically* and nothing
+            is wrong with saying so out loud — the resource is task-scoped, or
+            its policy is `observe`, or nothing can verify a recovery. §9:
+            "recommendation only".
+
+        Both make `is_automatable` False. Only the first makes the fault a
+        NEEDS_HUMAN: a task-scoped container that is down is not a situation
+        requiring a person, it is one ServerOS may report and not fix. Folding
+        the two together is how a recommendation gets escalated into an alarm,
+        and after that nobody reads the alarms.
+
+        "Explicitly registered" is not checked: this method is reachable only
+        through a `Resource`, and a `Resource` exists only if it was
+        registered. The conjunct is satisfied by the type rather than by a test
+        that could be forgotten.
+        """
+        permission, policy = [], []
+        if self.owner_type == "unknown":
+            # §10's "ServerOS-managed". An owner type that is not one of the
+            # declared ServerOS owner types is not a resource ServerOS
+            # manages; it is one it noticed.
+            permission.append("owner=unknown (fails safe)")
+        if self.protection == "protected":
+            permission.append("protection=protected")
+        if self.scope != "user":
+            permission.append(f"scope={self.scope} (ServerOS does not elevate)")
+        if self.desired != "running":
+            permission.append(f"desired={self.desired}")
+        if self.lifecycle != "persistent":
+            # §10, and §9's "task-scoped → recommendation only". A restart
+            # re-establishes something inside a lifetime that is already
+            # ending; the recoverable thing is the work item, not the process.
+            policy.append(
+                f"lifecycle={self.lifecycle} (automatic recovery is admitted "
+                f"for persistent resources only)"
+            )
+        if not self.reconcile["authorises_action"]:
+            # §11. The default, and the reason no resource on this host is
+            # automatable today: every registration predates the block, so
+            # every one of them is `observe`.
+            policy.append(
+                "reconcile.mode=observe (no automatic recovery is enabled for "
+                "this resource; §11 puts that decision on the resource, not on "
+                "a daemon flag)"
+            )
+        elif not (self.reconcile.get("max_attempts") and self.reconcile.get("backoff")):
+            # §10's last conjunct. A mode that permits an action without
+            # bounding it is a retry loop wearing a policy's name.
+            policy.append(
+                "reconcile budget is incomplete (mode permits an action but "
+                "max_attempts and backoff are not both declared)"
+            )
+        if not self.functional_probe_available:
+            # §10. Not procedural: a restart whose effect cannot be measured
+            # afterwards reports success because nothing could report failure.
+            policy.append(
+                "no functional probe (a restart that cannot be verified "
+                "afterwards is not recovery)"
+            )
+        return {
+            "permission": permission,
+            "policy": policy,
+            "automatable": not (permission or policy),
+            # §9's "recommendation only", stated as a property rather than
+            # left for each caller to re-derive from two lists.
+            "recommendation_only": bool(policy) and not permission,
+        }
 
     def why_not_automatable(self) -> list[str]:
-        reasons = []
-        if self.protection == "protected":
-            reasons.append("protection=protected")
-        if self.scope != "user":
-            reasons.append(f"scope={self.scope} (ServerOS does not elevate)")
-        if self.owner_type == "unknown":
-            reasons.append("owner=unknown (fails safe)")
-        if self.desired != "running":
-            reasons.append(f"desired={self.desired}")
-        return reasons
+        """Every §10 conjunct this resource fails, named.
+
+        Complete rather than first-match, because an operator fixing one
+        blocker needs to know whether it was the only one. Reporting the first
+        would make clearing it look like progress and then fail again — and the
+        two groups are concatenated in one list rather than merged, so the
+        existing callers that read this as "reasons this is hands-off" keep
+        seeing every reason.
+        """
+        split = self.automatability()
+        return split["permission"] + split["policy"]
 
     def show(self) -> dict:
         return {
@@ -354,6 +485,8 @@ class Resource:
             "criticality": self.criticality,
             "criticality_declared": self.criticality_is_declared,
             "recovery": self.recovery,
+            "reconcile": self.reconcile,
+            "functional_probe": self.functional_probe_available,
             "automatable": self.is_automatable,
             "not_automatable_because": self.why_not_automatable(),
             "probes": [p.get("id") for p in self.probes],
@@ -630,8 +763,54 @@ def validate(record: dict, where: str = "resource") -> Resource:
                 f"otherwise restart it is the reader."
             )
 
+    # Reconcile policy (§11). Absent is the normal case and means `observe`;
+    # present is a decision to permit an operation, so it is validated the way
+    # a permission is validated rather than the way a preference is.
+    reconcile_block = record.get("reconcile")
+    if reconcile_block is not None:
+        if not isinstance(reconcile_block, dict):
+            raise RegistryInvalid(
+                f"{where} ({rid}): `reconcile` must be a mapping. A bare string "
+                f"reads as a mode and is a mode nobody validated."
+            )
+        mode = reconcile_block.get("mode")
+        if mode not in _reconcile_modes():
+            raise RegistryInvalid(
+                f"{where} ({rid}): unknown reconcile mode {mode!r}. Known: "
+                f"{list(_reconcile_modes())}. An unrecognised mode is not a "
+                f"reason to fall back to the default: the author wrote "
+                f"something, and quietly running `observe` instead would make "
+                f"a typo look like a policy."
+            )
+        if mode != _reconcile_default():
+            # Any mode that permits an action must be bounded. Checked here,
+            # where the author is still present, rather than at the moment the
+            # action is due.
+            budget = registry_contract_budget_requirements()
+            missing = [f["field"] for f in budget if not reconcile_block.get(f["field"])]
+            if missing:
+                raise RegistryInvalid(
+                    f"{where} ({rid}): reconcile.mode={mode!r} permits an "
+                    f"operation and is missing {missing}. §10 admits automatic "
+                    f"recovery only with a retry budget configured; an "
+                    f"unbounded restart policy is a crash loop with a policy "
+                    f"name."
+                )
+            if not record.get("recovery"):
+                raise RegistryInvalid(
+                    f"{where} ({rid}): reconcile.mode={mode!r} with no "
+                    f"`recovery` block. The recovery model says what restarting "
+                    f"would achieve; a resource that permits a restart without "
+                    f"saying what it is for is the 2026-09-12 reflex "
+                    f"re-instituted by omission."
+                )
+
     _check_kind_requirements(record, kind, where)
     return Resource(record)
+
+
+def registry_contract_budget_requirements() -> list[dict]:
+    return list(contract()["reconcile_policy"]["budget_requirements"])
 
 
 class Registry:

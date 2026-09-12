@@ -62,7 +62,7 @@ AT_CONTRACT = yaml.safe_load((RUNTIME / "attribution-contract.yaml").read_text()
 
 def resource(rid="res-r", *, kind="process", lifecycle="persistent", protection="normal",
              criticality=None, desired="running", probes=None, transport=None,
-             not_applicable=None, recovery=None, owner_ref="project:demo"):
+             not_applicable=None, recovery=None, reconcile=None, owner_ref="project:demo"):
     record = {
         "id": rid,
         "kind": kind,
@@ -82,6 +82,8 @@ def resource(rid="res-r", *, kind="process", lifecycle="persistent", protection=
         record["not_applicable"] = not_applicable
     if recovery is not None:
         record["recovery"] = recovery
+    if reconcile is not None:
+        record["reconcile"] = reconcile
     return record
 
 
@@ -252,8 +254,20 @@ def test_the_criticality_report_orders_by_rank_and_carries_the_prohibition():
 def test_the_criticality_report_shows_automatability_beside_the_rank():
     """A reader has to be able to see that `critical` changed nothing about
     what may be done, without taking anyone's word for it."""
+    # `norm-open` now has to satisfy §10 to be automatable at all: persistent
+    # (its default), an explicitly enabled reconcile policy, a budget, and a
+    # functional probe. Under the pre-§10 definition the first two lines below
+    # would have been enough, and the test would have kept passing while
+    # asserting a gate wider than the contract.
     reg = registry_of(resource("crit-prot", criticality="critical", protection="protected"),
-                      resource("norm-open", criticality="normal"))
+                      resource("norm-open", criticality="normal",
+                               probes=[{"id": "p", "kind": "process-exists",
+                                        "axis": "liveness", "pattern": "demo"},
+                                       {"id": "f", "kind": "http-health",
+                                        "axis": "functional", "url": "https://demo.invalid/"}],
+                               recovery={"model": "restart"},
+                               reconcile={"mode": "restart", "max_attempts": 1,
+                                          "backoff": [60]}))
     rows = {r["id"]: r for r in infra.criticality_report(reg)["order"]}
     assert rows["crit-prot"]["automatable"] is False
     assert rows["norm-open"]["automatable"] is True

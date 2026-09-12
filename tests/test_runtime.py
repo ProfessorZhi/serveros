@@ -241,12 +241,27 @@ def test_task_scoped_but_protected_is_still_not_automatable():
     assert not r.get("lane").is_automatable
 
 
-def test_a_disposable_unprotected_user_resource_is_automatable():
-    """The one combination the automatic path may reach."""
+def test_a_disposable_resource_is_a_recommendation_and_never_an_action():
+    """This test used to assert the opposite, and the change is §10.
+
+    The one combination the automatic path may reach used to be "unprotected,
+    user-scoped, owned, desired-running" — and a disposable scratch container
+    satisfied it. §10 requires `persistent` as well, plus an explicit
+    `reconcile` policy, a budget and a functional probe, so a disposable
+    resource is now *recommendation only*: §9's category, distinct from
+    NEEDS_HUMAN.
+
+    Recording the change here rather than deleting the test, because the old
+    assertion is the evidence that the gate was wider than the brief allows.
+    """
     r = Registry(document=resource_document(a_resource(
         "scratch", lifecycle={"class": "disposable"}, protection={"level": "disposable"},
     )))
-    assert r.get("scratch").is_automatable
+    split = r.get("scratch").automatability()
+    assert split["automatable"] is False
+    assert split["permission"] == [], "nothing forbids it outright"
+    assert split["recommendation_only"] is True
+    assert any("lifecycle=disposable" in reason for reason in split["policy"])
 
 
 def test_system_scope_is_declared_only_and_never_automatable():

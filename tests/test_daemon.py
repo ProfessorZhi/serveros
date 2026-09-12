@@ -74,6 +74,34 @@ def a_resource(resource_id="thing", **overrides):
     return record
 
 
+def an_automatable_resource(resource_id="down", **overrides):
+    """A resource that satisfies all seven of §10's conjuncts.
+
+    `a_resource`'s defaults deliberately do not: they are task-scoped, have no
+    functional probe, declare no reconcile policy and carry no budget. The old
+    definition of `is_automatable` (protected? scoped? owned? desired?) called
+    such a thing automatable; §10 does not, and it now takes four more
+    declarations to reach the actuator.
+
+    That is the change, and it is why this helper exists rather than the
+    defaults being widened: a test that wants to reach an actuator has to say
+    what the resource is for, how its recovery would be verified and what
+    bounds it. Widening `a_resource` would have kept the old tests passing
+    while quietly meaning something else.
+    """
+    overrides.setdefault("lifecycle", {"class": "persistent"})
+    overrides.setdefault("probes", [
+        {"id": "state", "kind": "container-state", "axis": "liveness",
+         "container": resource_id},
+        {"id": "health", "kind": "container-healthcheck", "axis": "functional",
+         "container": resource_id},
+    ])
+    overrides.setdefault("recovery", {"model": "restart"})
+    overrides.setdefault("reconcile", {"mode": "restart", "max_attempts": 3,
+                                       "backoff": [60, 300, 900]})
+    return a_resource(resource_id, **overrides)
+
+
 def a_registry(*resources, **kw):
     return Registry(document={
         "schema": "serveros/managed-runtime-registry.v1",
@@ -509,7 +537,7 @@ def test_observe_only_by_default_acts_on_nothing(daemon_factory):
     is fully automatable."""
     runner = FakeRunner()
     daemon = daemon_factory(
-        a_resource("down"),
+        an_automatable_resource("down"),
         containers={"down": {"State": {"Status": "exited"}}},
         runner=runner,
     )
@@ -528,7 +556,7 @@ def test_enabling_reconcile_actually_reaches_the_actuator(daemon_factory):
     if reconcile were simply broken."""
     runner = FakeRunner()
     daemon = daemon_factory(
-        a_resource("down"),
+        an_automatable_resource("down"),
         containers={"down": {"State": {"Status": "exited"}}},
         runner=runner,
         enable_reconcile=True,
@@ -690,7 +718,7 @@ def test_attempts_outside_the_window_are_pruned(tmp_path):
 def test_an_exhausted_budget_escalates_rather_than_acting(daemon_factory):
     runner = FakeRunner()
     daemon = daemon_factory(
-        a_resource("flappy"),
+        an_automatable_resource("flappy"),
         containers={"flappy": {"State": {"Status": "exited"}}},
         runner=runner,
         enable_reconcile=True,
@@ -720,7 +748,17 @@ def test_the_endpoint_is_never_an_automatable_resource():
     ))
     resource = registry.get("remote-device-endpoint")
     assert resource.is_automatable is False
-    assert resource.why_not_automatable() == ["protection=protected"]
+    # Asserted as the PERMISSION block rather than as the whole list. The whole
+    # list now also carries §10's policy conjuncts (`observe`, no functional
+    # probe), which are true of almost every resource on this host and say
+    # nothing about the endpoint in particular. What the endpoint's §43 ruling
+    # is about is that no permission block permits an action — and a test that
+    # pinned the full list would fail every time a conjunct was added, while
+    # still not testing this.
+    split = resource.automatability()
+    assert split["permission"] == ["protection=protected"]
+    assert split["recommendation_only"] is False
+    assert split["automatable"] is False
 
 
 def test_the_endpoint_fault_routes_to_needs_human_not_to_a_restart(daemon_factory):
@@ -1201,7 +1239,11 @@ def test_every_served_method_answers_after_a_tick(daemon_factory):
 def test_runtime_explain_shows_the_budget_and_the_reason(daemon_factory):
     daemon = daemon_factory(a_resource("protected-one", protection={"level": "protected"}))
     result = daemon.handle({"method": "runtime.explain", "params": {"id": "protected-one"}})["result"]
-    assert result["why_not_automatable"] == ["protection=protected"]
+    # The permission reason is what makes this a NEEDS_HUMAN rather than a
+    # recommendation; it must be present. Asserting membership rather than
+    # equality because the list also carries §10's policy conjuncts, and the
+    # point of this test is the budget and the last action, not the list.
+    assert "protection=protected" in result["why_not_automatable"]
     assert result["budget"]["allowed"] is True
     assert result["last_action"] is None
 
