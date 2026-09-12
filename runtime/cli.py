@@ -57,6 +57,7 @@ inventory_mod = _load("serveros_runtime_inventory", "inventory.py")
 hygiene_mod = _load("serveros_runtime_hygiene", "hygiene.py")
 paths_mod = _load("serveros_runtime_paths", "paths.py")
 conformance_mod = _load("serveros_runtime_conformance", "conformance.py")
+infra_mod = _load("serveros_runtime_infrastructure", "infrastructure.py")
 
 EXIT_OK = 0
 EXIT_FAULT = 1
@@ -568,6 +569,109 @@ def _known_work_items(args):
     return {item.strip() for item in args.open_items.split(",") if item.strip()}
 
 
+def cmd_runtime_infrastructure(args) -> int:
+    """§7/§9/§20/§21 — what outlives the work, what outranks what, and what
+    restarting would achieve.
+
+    Read-only, and it says so in its own output: every registration this host
+    has is `protected`, so the honest report is a list of things nothing may
+    touch plus the reason each one is on it.
+    """
+    reg = load_registry(args.registry)
+    part = infra_mod.partition(reg)
+    crit = infra_mod.criticality_report(reg)
+    never = infra_mod.never_reclaim(reg)
+    recovery = infra_mod.recovery_report(reg)
+    payload = {
+        "partition": part,
+        "criticality": crit,
+        "never_reclaim": never,
+        "recovery": recovery,
+    }
+    lines = ["permanent infrastructure"]
+    for row in part["permanent"]:
+        lines.append(
+            f"  {row['id']:<26} {row['kind']:<20} {row['criticality']:<9} "
+            f"{row['protection']}"
+        )
+    lines.append("")
+    lines.append("transient (outlives nothing — and not thereby reclaimable)")
+    for row in part["transient"]:
+        lines.append(
+            f"  {row['id']:<26} {row['kind']:<20} {row['criticality']:<9} "
+            f"{row['protection']}"
+        )
+    if part["contradictions"]:
+        lines.append("")
+        lines.append("contradictions")
+        for row in part["contradictions"]:
+            lines.append(f"  {row['id']}: {row['contradiction']}")
+    lines.append("")
+    lines.append(f"no automatic path reaches {never['count']} resource(s):")
+    for entry in never["entries"]:
+        lines.append(f"  {entry['id']:<26} {entry['lane']:<22} {entry['because']}")
+    lines.append("")
+    lines.append("recovery models")
+    for row in recovery["models"]:
+        auto = "automatic" if row["automatic"] else "never automatic"
+        lines.append(f"  {row['id']:<26} {row['recovery']:<12} {auto}")
+    lines.append("")
+    lines.append(crit["confers"])
+    if crit["defaulted"]:
+        lines.append("")
+        lines.append(
+            "criticality not declared (derived from lifecycle): "
+            + ", ".join(crit["defaulted"])
+        )
+    emit(payload, as_json=args.json, lines=lines)
+    return EXIT_OK
+
+
+def cmd_runtime_tunnels(args) -> int:
+    """§8 — declared tunnels, visible forwarders, and what could not be seen.
+
+    The blind-spot list is part of the answer, not a footnote. An inventory
+    that reports "0 tunnels" without saying whether it was capable of finding
+    one is a number somebody will act on.
+    """
+    reg = load_registry(args.registry)
+    # No host is passed. `tunnel_inventory` defaults to `attribution.LiveHost`,
+    # which is the one that can read /proc — `probes.LiveHost` is a different
+    # class without a process table, and passing it here raised an
+    # `AttributeError` three frames down the first time it was tried.
+    inventory = infra_mod.tunnel_inventory(registry_doc=reg)
+    payload = inventory
+    lines = [
+        f"declared tunnels     {inventory['declared_count']}",
+        f"visible forwarders   {inventory['observed_count']}",
+    ]
+    for row in inventory["declared"]:
+        lines.append(
+            f"  {row['id']:<24} {row['local']} -> {row['remote']} "
+            f"({row['transport_class']})"
+        )
+    for row in inventory["observed_forwarders"]:
+        lines.append(
+            f"  pid {row['pid']:<8} {row['transport_class']:<12} "
+            f"age {row['age_seconds']}s"
+        )
+    if inventory["undeclared_forwarders"]:
+        lines.append("")
+        lines.append(
+            "forwarding, and not declared by anyone — candidates, not owners:"
+        )
+        for row in inventory["undeclared_forwarders"]:
+            lines.append(f"  pid {row['pid']:<8} {row['transport_class']}")
+    lines.append("")
+    lines.append("what this node cannot see about tunnels")
+    for spot in inventory["blind_spots"]:
+        measured = ", ".join(f"{k}={v}" for k, v in spot["measured"].items())
+        lines.append(f"  {spot['what']}: {spot['state']} ({measured})")
+        lines.append(f"    {spot['why']}")
+    emit(payload, as_json=args.json, lines=lines)
+    return EXIT_OK
+
+
 def cmd_probe(args) -> int:
     reg = load_registry(args.registry)
     resource = reg.get(args.id)
@@ -699,6 +803,17 @@ def build_parser() -> argparse.ArgumentParser:
                                  "Omit and nothing becomes a stale candidate: "
                                  "not knowing is not permission.")
     rt_hygiene.set_defaults(func=cmd_runtime_hygiene)
+    rt_infra = runtime_sub.add_parser(
+        "infrastructure",
+        help="permanent vs transient, criticality, recovery models (§7/§9/§20)",
+        **_COMMON,
+    )
+    rt_infra.set_defaults(func=cmd_runtime_infrastructure)
+    rt_tun = runtime_sub.add_parser(
+        "tunnels", help="declared tunnels, visible forwarders, blind spots (§8)",
+        **_COMMON,
+    )
+    rt_tun.set_defaults(func=cmd_runtime_tunnels)
 
     probe = sub.add_parser("probe", help="run one resource's declared probes", **_COMMON)
     probe.add_argument("id")

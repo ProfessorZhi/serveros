@@ -165,6 +165,20 @@ def _axis_names() -> tuple[str, ...]:
     return tuple(contract()["health_axes"])
 
 
+def _criticality_values() -> tuple[str, ...]:
+    """`criticality` is a section, not a plain list, so `_values` would return
+    its KEYS. Named accessors keep that mistake from being available."""
+    return tuple(contract()["criticality"]["values"])
+
+
+def _criticality_defaults() -> dict[str, str]:
+    return dict(contract()["criticality"]["default_by_lifecycle"])
+
+
+def _recovery_models() -> tuple[str, ...]:
+    return tuple(m["id"] for m in contract()["recovery_models"])
+
+
 def _axis_values(axis: str) -> tuple[str, ...]:
     return tuple(contract()["health_axes"][axis]["values"])
 
@@ -251,6 +265,39 @@ class Resource:
         return self._r["protection"]["level"]
 
     @property
+    def criticality(self) -> str:
+        """Declared, or the lifecycle-derived default.
+
+        Never UNKNOWN. An unranked resource would sort last, which is the one
+        wrong answer available: something nobody ranked is not thereby
+        unimportant.
+        """
+        declared = self._r.get("criticality")
+        if declared:
+            return declared
+        return _criticality_defaults().get(self.lifecycle, "normal")
+
+    @property
+    def criticality_is_declared(self) -> bool:
+        """Whether the rank was written down or derived.
+
+        A derived rank is still a rank, but a report that cannot tell the two
+        apart cannot say which resources anybody actually made a judgement
+        about.
+        """
+        return bool(self._r.get("criticality"))
+
+    @property
+    def recovery(self) -> str:
+        """What restarting this would achieve. Defaults to `restart` — the
+        reflex — and that default is only reached when nobody said otherwise."""
+        return ((self._r.get("recovery") or {}).get("model")) or "restart"
+
+    @property
+    def not_applicable(self) -> dict:
+        return self._r.get("not_applicable") or {}
+
+    @property
     def observe(self) -> dict:
         return self._r.get("observe") or {}
 
@@ -304,11 +351,127 @@ class Resource:
             "lifecycle": self.lifecycle,
             "desired": self.desired,
             "protection": self.protection,
+            "criticality": self.criticality,
+            "criticality_declared": self.criticality_is_declared,
+            "recovery": self.recovery,
             "automatable": self.is_automatable,
             "not_automatable_because": self.why_not_automatable(),
             "probes": [p.get("id") for p in self.probes],
             "note": self.note,
         }
+
+
+def _dig(record: dict, dotted: str):
+    """Walk a dotted path. Returns (found, value)."""
+    node = record
+    for part in dotted.split("."):
+        if not isinstance(node, dict) or part not in node:
+            return False, None
+        node = node[part]
+    return True, node
+
+
+def _not_applicable_reason(record: dict, axis: str) -> str | None:
+    """The reason an axis is declared not-applicable, if it was.
+
+    Returns None when the axis is NOT declared, and "" when it is declared
+    without a reason — the caller distinguishes those, because "we decided this
+    axis does not apply" and "we did not think about it" are different answers
+    and only one of them is a decision.
+    """
+    block = record.get("not_applicable") or {}
+    if axis not in block:
+        return None
+    entry = block[axis]
+    if isinstance(entry, dict):
+        return str(entry.get("because") or "")
+    return ""
+
+
+def _check_kind_requirements(record: dict, kind: str, where: str) -> None:
+    """Registration-time gates for a kind, from `kind_requirements`.
+
+    A kind may be declared in `kinds` and then registered by someone who never
+    provides the one thing that kind exists for, and every subsequent run
+    reports clean. This is where that stops being possible: the author is still
+    present when this runs, so the missing field is a question they can answer
+    rather than a footnote in an output nobody reads.
+
+    Nothing here is inferred. Where a requirement genuinely does not apply, the
+    contract's escape hatch is an explicit `not_applicable` block WITH A
+    REASON — a written decision, not an omission.
+    """
+    reqs = (contract().get("kind_requirements") or {}).get(kind)
+    if not reqs:
+        return
+
+    def fail(requirement, why):
+        raise RegistryInvalid(
+            f"{where} ({record.get('id')}): kind {kind!r} requires {requirement} "
+            f"— {why}"
+        )
+
+    for req in reqs.get("requires") or ():
+        if "field" in req:
+            found, value = _dig(record, req["field"])
+            if not found or value in (None, "", [], {}):
+                fail(f"`{req['field']}`", req.get("because") or "missing")
+        elif "probe_axis" in req:
+            axis = req["probe_axis"]
+            have = any(p.get("axis") == axis for p in record.get("probes") or ())
+            if have:
+                continue
+            excuse = req.get("unless_not_applicable")
+            if excuse is not None:
+                reason = _not_applicable_reason(record, excuse)
+                if reason:
+                    continue
+                if reason == "":
+                    fail(
+                        f"a probe on the `{axis}` axis",
+                        f"`not_applicable.{excuse}` is declared with no "
+                        f"`because`. An axis nobody measures and nobody "
+                        f"explains is indistinguishable from an oversight, and "
+                        f"it is the axis whose absence caused the 2026-09-12 "
+                        f"outage.",
+                    )
+            fail(f"a probe on the `{axis}` axis", req.get("because") or "missing")
+        elif "decisive_owner" in req:
+            owner = record.get("owner") or {}
+            if not str(owner.get("because") or "").strip():
+                fail(
+                    "`owner.because`",
+                    req.get("because")
+                    or "an asserted owner with no stated evidence is a name",
+                )
+        else:
+            raise RegistryInvalid(
+                f"{where} ({record.get('id')}): contract declares an unknown "
+                f"kind requirement {sorted(req)}. A requirement nothing "
+                f"understands is a requirement nothing enforces."
+            )
+
+    one_of = reqs.get("requires_one_of") or ()
+    if one_of:
+        satisfied = []
+        for req in one_of:
+            if "probe_axis" in req:
+                satisfied.append(
+                    any(p.get("axis") == req["probe_axis"] for p in record.get("probes") or ())
+                )
+            elif "not_applicable" in req:
+                satisfied.append(
+                    bool(_not_applicable_reason(record, req["not_applicable"]))
+                )
+        if not any(satisfied):
+            options = " or ".join(
+                f"a probe on `{r['probe_axis']}`" if "probe_axis" in r
+                else f"`not_applicable.{r['not_applicable']}` with a `because`"
+                for r in one_of
+            )
+            fail(f"one of: {options}",
+                 "neither was provided, so this resource could never be "
+                 "reported healthy and could never be reported broken either")
 
 
 def validate(record: dict, where: str = "resource") -> Resource:
@@ -371,6 +534,16 @@ def validate(record: dict, where: str = "resource") -> Resource:
             f"{list(_values('protection_levels'))}"
         )
 
+    # Credentials are scanned FIRST, before any other structural check.
+    #
+    # A registration with a credential-shaped key is wrong in a way the others
+    # are not — it is the one defect that leaks the moment the file is committed
+    # or pasted — so it is the one that must be reported even when the
+    # registration is also malformed. Running this last meant a probe missing a
+    # field could mask a stored secret, which is a worse error hiding a better
+    # one.
+    _reject_credentials(record, f"{where} ({rid})")
+
     claimed: dict[str, str] = {}
     for probe in record.get("probes") or ():
         if not isinstance(probe, dict):
@@ -402,9 +575,62 @@ def validate(record: dict, where: str = "resource") -> Resource:
                 f"them is discarded, and which one is not a decision this "
                 f"registry makes by accident."
             )
+        # A probe kind needs certain fields to run at all. Checked here, at
+        # registration, because two of the probe classes index their spec
+        # directly and a missing field is a KeyError or a TypeError inside the
+        # runner rather than a clean report — and because a probe that cannot
+        # run is a declared-but-absent measurement, which is the one failure
+        # this whole file exists to make impossible.
+        required_fields = (contract().get("probe_requirements") or {}).get(
+            probe.get("kind"), ()
+        )
+        for field_name in required_fields:
+            value = probe.get(field_name)
+            if value in (None, "", [], {}):
+                raise RegistryInvalid(
+                    f"{where} ({rid}): probe {probe.get('id')!r} of kind "
+                    f"{probe.get('kind')!r} needs `{field_name}`. Without it the "
+                    f"probe is declared and cannot run, which reads as coverage "
+                    f"and is the opposite of it."
+                )
         claimed[probe.get("axis")] = probe.get("id")
 
-    _reject_credentials(record, f"{where} ({rid})")
+    # Criticality. Declared or defaulted, and the default is READ from the
+    # contract rather than pinned here, so that changing the policy is a one
+    # line edit to a file people review.
+    declared_criticality = record.get("criticality")
+    if declared_criticality is not None and declared_criticality not in _criticality_values():
+        raise RegistryInvalid(
+            f"{where} ({rid}): unknown criticality {declared_criticality!r}. "
+            f"Known: {list(_criticality_values())}. Criticality ranks attention "
+            f"and grants nothing; a value outside this list is a word, not a rank."
+        )
+
+    # Recovery model (§20). A resource whose failure restarting cannot fix has
+    # to say so, because restarting it is the default reflex and, on
+    # 2026-09-12, the thing that lengthened the outage.
+    recovery = record.get("recovery")
+    if recovery is not None:
+        if not isinstance(recovery, dict) or not recovery.get("model"):
+            raise RegistryInvalid(
+                f"{where} ({rid}): `recovery` needs a `model`. An empty recovery "
+                f"block reads as `restart`, which is the assumption this field "
+                f"exists to stop being the default."
+            )
+        if recovery["model"] not in _recovery_models():
+            raise RegistryInvalid(
+                f"{where} ({rid}): unknown recovery model {recovery['model']!r}. "
+                f"Known: {list(_recovery_models())}"
+            )
+        if recovery["model"] != "restart" and not str(recovery.get("because") or "").strip():
+            raise RegistryInvalid(
+                f"{where} ({rid}): recovery {recovery['model']!r} needs a "
+                f"`because`. Declaring that a resource cannot be fixed by "
+                f"restarting is a claim about why, and the operator who would "
+                f"otherwise restart it is the reader."
+            )
+
+    _check_kind_requirements(record, kind, where)
     return Resource(record)
 
 

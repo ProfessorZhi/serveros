@@ -58,6 +58,21 @@ kinds:
   - agent-helper
   # A test runtime stood up for a bounded purpose. Usually reclaimable.
   - test-runtime
+  # An agent's own supervisor process: app-server, proxy, session broker. The
+  # thing that keeps running when the task that started it does not. See
+  # `kind_requirements` — this kind may NOT be registered without a decisive
+  # owner, because an unowned one is precisely the 2026-09-13 case.
+  - agent-runtime
+  # A forwarding path between two machines. First-class for the same reason
+  # `attribution-contract.yaml` makes it first-class: it is the join between a
+  # runtime here and the device that owns it, and it is the runtime kind whose
+  # failure is most often reported as success. `liveness: RUNNING` for a tunnel
+  # means a forwarding process exists; it never means traffic flows.
+  - tunnel
+  # Several runtimes that belong to ONE piece of work and are meaningless
+  # judged apart. Registered rarely and deliberately: this is what stops a
+  # half-reclaim of a live task.
+  - runtime-group
 
 owner_types:
   # A named project (litellm, multi-user-claw, ...). Owner is the project.
@@ -98,6 +113,51 @@ protection_levels:
   - normal
   # Reclaimable by policy when its owner says so.
   - disposable
+
+# ---------------------------------------------------------------------------
+# Criticality. Ranks what to look at first when the host is under pressure.
+# It confers NOTHING.
+#
+# Spelled out here, in the registration contract, because the failure mode is
+# obvious and it is not exotic: an operator reads `critical` as "may do more",
+# and a resource management layer that escalates its own authority on the
+# strength of a label it set itself is a privilege escalation with extra steps.
+#
+# The values are shared with `attribution-contract.yaml`, which assigns
+# criticality to things that were never registered. Two files, one vocabulary,
+# and `tests/test_infrastructure.py` asserts the two lists are identical rather
+# than trusting that they stay so.
+# ---------------------------------------------------------------------------
+criticality:
+  values: [critical, important, normal]
+  # Applied when a registration declares none. Taken from the lifecycle class
+  # rather than from the kind, because lifetime is what the ranking is about:
+  # something expected to be up across reboots outranks something that dies
+  # with the task. `disposable` is the one class that defaults DOWN, and it is
+  # the only default that can be wrong in the direction of ignoring something.
+  default_by_lifecycle:
+    persistent: important
+    task-scoped: normal
+    session-scoped: normal
+    disposable: normal
+  # Ranks attention only. Every clause here is a prohibition against reading
+  # the field as authority, because that is the only way it can be misused.
+  confers: >
+    PRIORITY OF ATTENTION ONLY. It does not grant authority to act, it does not
+    relax the retry budget, it does not change `is_automatable`, and it does not
+    exempt a resource from the protection rules. A `critical` resource with
+    `protection: protected` is still never restarted, never stopped and never
+    removed by ServerOS — the two fields are checked independently and the
+    stricter one wins, always.
+  meaning:
+    critical: >
+      its absence degrades the node's ability to observe or control itself, or
+      cuts the path back to the device that owns the work: the RDC endpoint,
+      serverosd, control tunnels.
+    important: >
+      long-lived references other work depends on: the LiteLLM baseline,
+      persistent MCP servers.
+    normal: "everything else, including every temporary helper"
 
 health_axes:
   # Does the thing exist and is it up? The WEAKEST axis, and the only one a
@@ -281,6 +341,133 @@ probe_kinds:
       only REFINE a reason on a resource whose functional axis is already
       FAILED by another probe.
 
+# ---------------------------------------------------------------------------
+# Per-kind registration requirements.
+#
+# These exist because of a specific, repeating pathology in this codebase: a
+# declaration layer that runs ahead of the execution layer, with nothing in
+# between that fails when the execution side is missing. A kind may be added to
+# `kinds` and then registered by someone who never provides the one thing that
+# kind is for, and every subsequent run reports clean.
+#
+# A `tunnel` is the clearest instance. Its entire reason for existing is that
+# `liveness: RUNNING` does not mean traffic flows. Register one without a probe
+# on the transport or functional axis and the registry will dutifully report
+# DEGRADED forever — technically correct, completely useless — or, worse, with
+# a functional probe the operator assumed was implied, report HEALTHY on the
+# strength of a PID.
+#
+# So the requirements are enforced at REGISTRATION time, in `validate()`, where
+# the author is still present to answer. Where a requirement genuinely cannot
+# be met, the contract offers an explicit `not_applicable` declaration with a
+# reason rather than a silent omission: the gap has to be a written decision.
+# ---------------------------------------------------------------------------
+kind_requirements:
+  tunnel:
+    requires:
+      # Both endpoints, because "a tunnel is up" is not a statement anyone can
+      # act on without knowing which two things it joins.
+      - field: transport.local
+        because: "a tunnel that does not name where it starts cannot be attributed"
+      - field: transport.remote
+        because: "a tunnel that does not name where it ends cannot be checked"
+      # A probe that measures the CHANNEL. Without it the transport axis is
+      # UNKNOWN forever and the tunnel is permanently DEGRADED.
+      - probe_axis: transport
+        unless_not_applicable: transport
+        because: >
+          `liveness: RUNNING` means a forwarding process exists. The channel is
+          a different question and it is the one that matters.
+    # Not satisfiable by a `not_applicable`: a tunnel either has a functional
+    # probe or an explicit, reasoned statement that it has no callable surface.
+    requires_one_of:
+      - probe_axis: functional
+      - not_applicable: functional
+    forbids_healthy_without: functional
+    note: >
+      the registry cannot make a tunnel healthy. It can only refuse to accept a
+      tunnel registration whose health could never be established either way.
+  agent-runtime:
+    requires:
+      - probe_axis: liveness
+      - decisive_owner: true
+        because: >
+          an agent runtime is long-lived and consumes real resources, so an
+          unowned one is exactly the 2026-09-13 case: 407% CPU for a day and
+          eleven hours, no user, and nothing on the machine able to say whose
+          work it was. An owner that cannot be confirmed is DEFER, and DEFER
+          registrations belong in `defer_refs` rather than in `resources`.
+  runtime-group:
+    requires:
+      - field: members
+        because: >
+          a group with no members is a name. The whole reason to register one is
+          that its members must be reasoned about together.
+
+# ---------------------------------------------------------------------------
+# Recovery models (§20).
+#
+# A resource whose failure cannot be fixed by restarting must SAY SO, because
+# the default reflex — and, on 2026-09-12, systemd's — is to restart it. That
+# reflex restarted the RDC endpoint every ~24 minutes for 54 minutes, and every
+# restart produced a fresh device code that expired. The supervisor was working
+# exactly as configured and made the outage longer.
+#
+# This is a declaration, not an action: ServerOS still performs none of these.
+# ---------------------------------------------------------------------------
+recovery_models:
+  - id: restart
+    meaning: "the process can be restarted and that is expected to help"
+    automatic: allowed_unless_protected
+  - id: reauthorize
+    meaning: >
+      the credential or authorization behind the resource was consumed and a
+      HUMAN must renew it. Restarting produces a new attempt at the same wall
+      and, where the authorisation flow issues one-shot codes, actively extends
+      the outage.
+    automatic: never
+  - id: reconnect
+    meaning: "the channel dropped and re-establishing it is expected to help"
+    automatic: allowed_unless_protected
+  - id: redeclare
+    meaning: >
+      the resource is running correctly and its DECLARATION is what is stale.
+      Acting on the resource would be acting on the wrong object.
+    automatic: never
+  - id: none
+    meaning: "no automatic path exists; a person decides"
+    automatic: never
+
+# ---------------------------------------------------------------------------
+# Per-probe required fields.
+#
+# Found by writing a registration, not by reading the code: a `process-exists`
+# probe with no `pattern` reached `pgrep -f None` and raised TypeError inside
+# the probe runner. The registration validated, the probe was declared, and the
+# only thing standing between that and a crash was nobody having run it yet.
+#
+# Two of the probe classes index their spec directly (`self.spec["url"]`,
+# `self.spec["path"]`), so a missing field is a KeyError at probe time rather
+# than a clean UNAVAILABLE. That is the same declared-but-absent shape the
+# `kind_requirements` block above exists for, one layer down — and it is
+# cheaper to refuse the registration than to make every probe defensive.
+# ---------------------------------------------------------------------------
+probe_requirements:
+  systemd-unit-state: [unit]
+  process-exists: [pattern]
+  container-state: [container]
+  container-healthcheck: [container]
+  http-health: [url]
+  mcp-tools-list: [url]
+  socket-connect: [path]
+  relay-socket: [pattern, peer_host]
+  journal-diagnostic: [unit, patterns]
+  # Empty on purpose rather than absent: `relay-presence` genuinely needs
+  # nothing (`provider_api` is optional and its absence is the finding the
+  # live registration reports), and an empty list is a decision that it was
+  # considered.
+  relay-presence: []
+
 rules:
   - "Every managed resource is explicitly registered. Nothing is managed by
      being noticed — a discovered container is an observation, not a claim."
@@ -294,3 +481,14 @@ rules:
      has `desired` and not `restart_policy`."
   - "Unknown owner fails safe. A resource whose owner cannot be confirmed is
      DEFER, never a reclaim candidate."
+  - "Criticality confers attention and nothing else. `critical` and
+     `protected` are checked independently and the stricter one wins; there is
+     no combination of fields that makes ServerOS act on a protected resource."
+  - "A resource with `recovery.reauthorize` is never restarted by ServerOS.
+     The restart is what lengthened the 2026-09-12 outage, and a supervisor
+     that cannot tell a consumed token from a crashed process will do it
+     again."
+  - "A tunnel is never HEALTHY on liveness. `liveness: RUNNING` with an
+     unmeasured or FAILED functional axis is DEGRADED, and a tunnel
+     registration that provides no way to measure that axis is rejected rather
+     than accepted and quietly reported DEGRADED forever."
