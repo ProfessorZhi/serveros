@@ -56,6 +56,7 @@ probes_mod = _load("serveros_runtime_probes", "probes.py")
 inventory_mod = _load("serveros_runtime_inventory", "inventory.py")
 hygiene_mod = _load("serveros_runtime_hygiene", "hygiene.py")
 paths_mod = _load("serveros_runtime_paths", "paths.py")
+conformance_mod = _load("serveros_runtime_conformance", "conformance.py")
 
 EXIT_OK = 0
 EXIT_FAULT = 1
@@ -240,6 +241,33 @@ def cmd_path_contract(args) -> int:
         for name, path in payload["roots"].items():
             sys.stdout.write(f"{name:<16} {path}\n")
     return EXIT_OK
+
+
+def cmd_path_conformance(args) -> int:
+    """The contract against the disk. Read-only, and it creates nothing."""
+    report = conformance_mod.collect(paths_mod.Paths(), repo_root=REPO_ROOT)
+    if args.json:
+        emit(report, as_json=True)
+    else:
+        summary = report["summary"]
+        sys.stdout.write(
+            f"{report['schema']}\n"
+            f"findings {summary['findings']} "
+            f"(undeclared {summary['undeclared']}, exempt {summary['exempt']}, "
+            f"declared-absent {summary['absent']}, "
+            f"blocking {summary['blocking_open']})\n")
+        for row in report["findings"]:
+            entry = row.get("entry") or ""
+            sys.stdout.write(f"  [{row['severity']:<6}] {row['status']:<9} "
+                             f"{row['id']:<22} {row['class']}/{entry}\n")
+    # The exit code distinguishes the three things a caller can do something
+    # about: everything is accounted for (0), something is undeclared and open
+    # (1), or the check could not answer because the authority it compares
+    # against was unreadable (2). Collapsing the last two into "0, no problems"
+    # is how an unreadable contract becomes a clean bill of health.
+    if any(row["id"] == "DECLARATION_AUTHORITY_UNREADABLE" for row in report["findings"]):
+        return EXIT_COULD_NOT_ANSWER
+    return EXIT_FAULT if report["summary"]["blocking_open"] else EXIT_OK
 
 
 # ---------------------------------------------------------------------------
@@ -635,6 +663,9 @@ def build_parser() -> argparse.ArgumentParser:
     p_admit.set_defaults(func=cmd_path_admit)
     p_contract = path_sub.add_parser("contract", help="the declared root contract", **_COMMON)
     p_contract.set_defaults(func=cmd_path_contract)
+    p_conform = path_sub.add_parser(
+        "conformance", help="the declared contract against the directories on disk", **_COMMON)
+    p_conform.set_defaults(func=cmd_path_conformance)
 
     resource = sub.add_parser("resource", help="host resource facts (§12)", **_COMMON)
     resource_sub = resource.add_subparsers(dest="subcommand", required=True)

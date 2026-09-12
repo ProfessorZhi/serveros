@@ -86,8 +86,47 @@ FORBIDDEN_SUFFIXES = ("legacy", "legacy-artifacts", "old-artifacts",
                       "backup", "backups", "compat")
 
 # `.serveros` in HOME stays small (§38): identity and binding only.
-HOME_DOT_SERVEROS_ALLOWED = ("identity.yaml", "targets.yaml", "profile.yaml", "config.yaml")
+#
+# The vocabulary is NOT invented here. `fleet/node-root-contract.yaml` is the
+# authority for this root — it is the file that says what may live in
+# `~/.serveros/` and what may never, `fleet/node.py` reads it (`NODE_FILE`,
+# `TARGETS_FILE`), and `fleet/README.md` and `docs/fleet-controller-adapter.md`
+# both name the same three files. This tuple is a transcription of that
+# contract, and a transcription is exactly the thing that goes stale: it said
+# `identity.yaml` and `profile.yaml`, neither of which exists anywhere on this
+# node or in any contract, while omitting `node.yaml` — the file that is there,
+# that `node.py` opens to answer "which device is this host", and whose absence
+# is the defined NODE_UNBOUND state.
+#
+# The consequence was not cosmetic: `admit()` REFUSED a write to
+# `~/.serveros/node.yaml`, so the contract's own answer to a canonical path was
+# wrong, and no test noticed because the one test covering this branch
+# (`test_the_serveros_allowlist_admits_identity_files`) asserts `targets.yaml`,
+# the single name both versions of the list happened to agree on. That is the
+# same coincidence that hid the `A1` defect in `architecture_check.py`: a test
+# that picks the intersection of two disagreeing vocabularies passes for as
+# long as the disagreement is not the thing being tested.
+#
+# `README.md` is deliberately absent, and stays refused. Nothing mechanical
+# should write one, and the conformance check reports the existing file as
+# undeclared rather than this list being widened to bless it.
+HOME_DOT_SERVEROS_ALLOWED = ("node.yaml", "targets.yaml", "controller.yaml")
 HOME_DOT_SERVEROS_FORBIDDEN = ("reports", "observations", "registry", "proposals", "artifacts")
+
+# The tuples above, addressed by the name of the area they govern, so that a
+# caller reporting against them does not have to build its own mapping. `home`
+# and `runtime` are not top-level areas of a root — they are the closed
+# vocabularies of `~/.serveros/` and of `state/serveros/runtime/` — and they are
+# here because both are closed sets that get checked the same way. This map sits
+# below all six on purpose: a map that names them has to be defined after them.
+VOCABULARIES = {
+    "data": DATA_ROOT_TOP_LEVEL,
+    "workspace": WORKSPACE_TOP_LEVEL,
+    "state": STATE_SERVEROS_TOP_LEVEL,
+    "runtime": STATE_SERVEROS_RUNTIME,
+    "artifacts": ARTIFACT_NAMESPACES,
+    "home": HOME_DOT_SERVEROS_ALLOWED,
+}
 
 
 class PathError(Exception):
@@ -282,19 +321,14 @@ class Paths:
                 f"ref discovery are the permitted operations on src."
             )
 
-        if writing and root_name == "home":
-            dot = Path(os.path.realpath(Path.home() / ".serveros"))
-            if resolved == dot or dot in resolved.parents:
-                leaf = resolved.relative_to(dot).parts[0] if resolved != dot else ""
-                if leaf and leaf not in HOME_DOT_SERVEROS_ALLOWED:
-                    raise PathRefused(
-                        f"{path!r}: `~/.serveros` holds identity and binding "
-                        f"only (§38). Allowed: {list(HOME_DOT_SERVEROS_ALLOWED)}. "
-                        f"Reports, proposals, large observations and machine "
-                        f"state belong under DATA_ROOT/state/serveros. If this "
-                        f"is drifting into a second state root, that is the "
-                        f"signal to move it rather than to widen this list."
-                    )
+        # The `~/.serveros` allow-list is enforced in `_check_top_level`, which
+        # is the only place it is checked. It used to be checked here as well,
+        # against `Path.home()` rather than against `self.roots["home"]` — the
+        # same rule, two copies, resolving the control root two different ways.
+        # They agreed on the day they were written and would have had to be
+        # changed together forever after; the copy here was also unreachable
+        # for any injected root, so a test could not have caught the divergence.
+        # One rule, one root, one place.
 
         return {
             "path": str(raw),
@@ -333,7 +367,6 @@ class Paths:
                     f"because the fix is to move what is in it, not to keep "
                     f"writing to it."
                 )
-            dot_serveros = Path(self.roots["home"]) / ".serveros"
             if parts[0] == ".serveros":
                 leaf = parts[1] if len(parts) > 1 else ""
                 if leaf and leaf not in HOME_DOT_SERVEROS_ALLOWED:
@@ -380,6 +413,25 @@ class Paths:
         return "ADMITTED"
 
     # -- the whole contract, for inspection --------------------------------
+
+    def vocabulary(self, area: str) -> tuple[str, ...]:
+        """The closed vocabulary for one area, by the name the area is known by.
+
+        `admit()` and `_classify()` reach for these tuples directly, which is
+        fine inside this module. A caller that also has to name them — the
+        conformance check, which reports against the same lists — would
+        otherwise re-derive the mapping, and a second mapping is a second thing
+        that can disagree with the first. That is the failure this module exists
+        to prevent, so it is not repeated at the seam where it would be most
+        expensive.
+        """
+        try:
+            return VOCABULARIES[area]
+        except KeyError:
+            raise PathRefused(
+                f"{area!r} is not an area with a declared vocabulary. Known: "
+                f"{sorted(VOCABULARIES)}."
+            ) from None
 
     def contract(self) -> dict:
         return {
