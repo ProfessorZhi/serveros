@@ -130,6 +130,79 @@ provenance:
 decisive_provenance: [docker-label, registry-match, cgroup, systemd-unit]
 
 # ---------------------------------------------------------------------------
+# Container attribution (§6). How a container reaches an owner, and the two
+# ways it is allowed to stay unattributed.
+# ---------------------------------------------------------------------------
+container_attribution:
+  # A container may declare its own owner. Strongest evidence there is, because
+  # the owner wrote it. Measured 2026-09-13: ZERO instances of this label on
+  # this node. Implemented anyway, so the day one appears it is decisive
+  # without a code change — and implemented FIRST, so that it is not the only
+  # path. A design that works only when owners cooperate does nothing today.
+  owner_label: serveros.owner
+
+  # A label whose KEY is inside a declared namespace delegates ownership to
+  # that namespace's ref. THE VALUE IS NEVER READ: a runtime-config label's
+  # value is configuration, and configuration is where credentials live. The
+  # key namespace is the ownership signal; the value is data.
+  #
+  # Empty. Declaring a namespace asserts who owns a set of running containers,
+  # and on a shared host that assertion changes what may be reclaimed, so it
+  # is a human decision and not one this run makes on its own.
+  owner_label_namespaces: {}
+
+  # Observed on this host and deliberately NOT declared. Recorded here so the
+  # gap is a visible one-line decision rather than something rediscovered by
+  # the next reader of the output.
+  undeclared_owner_namespaces:
+    - namespace: com.multiuserclaw
+      label: com.multiuserclaw.hermes-runtime-config
+      containers: 4
+      observed: "2026-09-13"
+      note: >
+        the only label on these containers. An ownership declaration in all but
+        name. Declaring it here would resolve all four; leaving it undeclared
+        keeps them UNKNOWN_OWNER and therefore DEFER, which is the safe
+        default for a decision this run has no mandate to make.
+
+  # Evidence classes that may put a NAME IN THE OWNER FIELD, strongest first.
+  # Anything below the line may only produce a `locator`, which is reported
+  # separately and never reaches the owner field — because a locator a reader
+  # mistakes for an owner is the exact failure this contract exists to stop.
+  decisive_evidence:
+    - owner-label                 # the owner wrote serveros.owner=
+    - owner-label-namespace       # a declared namespace delegates
+    - registry-match              # the registry names this container or its owner
+  locator_evidence:
+    - working-directory           # resolves under a known root; informative, not decisive
+    - bind-mount                  # same, and it can be a whole root
+    - compose-project-name        # a string somebody typed
+
+  # Compose project names are normalised to a work-item candidate by a narrow
+  # rule — the second hyphen-separated part must be ALL digits — and the
+  # REGISTRY then confirms it. Measured against the live host because a rule
+  # loose enough to match everything is a guess wearing a rule's clothing:
+  #   lit-0104-dev100 -> LIT-0104 (registered, protected)   MATCH
+  #   lit-0103-r3     -> LIT-0103 (registered, protected)   MATCH
+  #   fjd-req1-e2e    -> `req1` is not all digits           NO MATCH
+  #   openclaw        -> no second part                     NO MATCH
+  #   litellm-container0 -> `container0` is not all digits  NO MATCH
+  project_name_normalisation: "^(?P<prefix>[A-Za-z]+)-(?P<number>\\d{2,5})(?:-|$)"
+
+  # A path EQUAL to a known root is not path evidence. `xpra-gui-hwz`
+  # bind-mounts the whole of /home/hwz, which equals ROOTS['home']; accepting
+  # it reported a container that mounts a directory wholesale as owned by
+  # `path:/home/hwz`. Only a path STRICTLY BELOW a root counts.
+  root_match: strictly_below
+
+  # Bind mounts worth reporting regardless of who owns the container, so that
+  # any recommendation carries the blast radius it would have.
+  host_exposure:
+    - /                      # the whole host filesystem
+    - /var/run/docker.sock   # control of the Docker daemon itself
+    - any known root         # a whole ServerOS root mounted into a container
+
+# ---------------------------------------------------------------------------
 # Runtime groups (§5).
 #
 # The unit of reasoning here is not the PID. One agent task routinely owns a
