@@ -772,7 +772,7 @@ def test_an_unknown_method_is_refused_and_lists_the_known_ones(daemon_factory):
 
 
 def test_ability_questions_are_answered_but_never_on_the_authoritys_behalf(
-        daemon_factory):
+        daemon_factory, tmp_path, monkeypatch):
     """§24 asks for `ability.list`; §27/§29 put that namespace under
     ability-management; §28 requires the node to keep working while the
     authority is unreachable.
@@ -785,6 +785,18 @@ def test_ability_questions_are_answered_but_never_on_the_authoritys_behalf(
     never been materialized. Then "nothing is installed" and "nobody has
     asked in three days" stop being the same empty list.
     """
+    # Hermetic for the same reason as the absent-projection test below: the
+    # unpatched path is the live node, and this test's whole subject is which
+    # state the node is in.
+    empty = tmp_path / "state"
+    empty.mkdir()
+
+    class Paths:
+        def root(self, name):
+            assert name == "state"
+            return empty
+
+    monkeypatch.setattr(daemon_mod.paths_mod, "Paths", Paths)
     daemon = daemon_factory(a_resource("thing-one"))
     for method in ("ability.list", "ability.status"):
         response = daemon.handle({"method": method, "params": {"name": "serveros"}})
@@ -807,10 +819,27 @@ def test_ability_questions_are_answered_but_never_on_the_authoritys_behalf(
 
 
 def test_an_absent_projection_is_not_reported_as_no_abilities_installed(
-        daemon_factory):
-    """The distinction the whole §28 bootstrap path turns on."""
-    daemon = daemon_factory(a_resource("thing-one"))
-    result = daemon.handle({"method": "ability.list"})["result"]
+        daemon_factory, tmp_path, monkeypatch):
+    """The distinction the whole §28 bootstrap path turns on.
+
+    Hermetic, and it was not. This test asserted NOT_MATERIALIZED while reading
+    `Paths().root("state")` unpatched — the live node. It passed for exactly as
+    long as no projection had been materialized, and failed the moment one was,
+    which is to say it was testing this machine and reporting the answer as if
+    it were a property of the code. A directory that is empty by construction
+    is the only thing that can mean "absent" here.
+    """
+    empty = tmp_path / "state"
+    empty.mkdir()
+
+    class Paths:
+        def root(self, name):
+            assert name == "state"
+            return empty
+
+    monkeypatch.setattr(daemon_mod.paths_mod, "Paths", Paths)
+    result = daemon_factory(a_resource("thing-one")).handle(
+        {"method": "ability.list"})["result"]
     assert result["registry_status"] == "NOT_MATERIALIZED"
     assert "NOT the same as" in result["note"]
 
@@ -879,6 +908,52 @@ def test_a_corrupt_projection_is_unreadable_not_empty(daemon_factory, tmp_path,
     result = daemon_factory(a_resource("thing-one")).handle({"method": "ability.list"})["result"]
     assert result["registry_status"] == "UNREADABLE"
     assert "much more confident claim" in result["note"]
+
+
+def test_the_daemon_reads_the_projection_the_writer_actually_writes(
+        daemon_factory, tmp_path, monkeypatch):
+    """The join between the two halves of §28.
+
+    Each side is tested on its own — the reader above, the writer in
+    `test_ability_projection.py` — and both can be green while disagreeing on
+    the directory, the filename, or a field name. That is the failure a pair of
+    isolated unit tests is structurally unable to catch, so it is asserted once,
+    end to end, by writing through the real writer and reading through the real
+    daemon.
+
+    A deliberately minimal projection: this test is about the contract between
+    the two processes, not about how abilities get derived.
+    """
+    projection = _load("serveros_runtime_ability_projection", "ability_projection.py")
+    state = tmp_path / "state"
+    (state / "abilities").mkdir(parents=True)
+    projection.write_atomic(state / "abilities" / "effective.json", {
+        "schema": "serveros/ability-projection.v1",
+        "authority": "ability-management",
+        "this_is": "a local observed projection, not the authority",
+        "registry_status": "FRESH",
+        "generated_at": "2027-01-15T07:00:00+00:00",
+        "source_revision": "deadbeef",
+        "abilities": [{"name": "session-manager"}],
+    })
+
+    class Paths:
+        def root(self, name):
+            assert name == "state"
+            return state
+
+    monkeypatch.setattr(daemon_mod.paths_mod, "Paths", Paths)
+    # One hour after `generated_at`, and well inside the reader's limit — the
+    # same instant the neighbouring staleness tests use.
+    now = 1_800_000_000.0
+    result = daemon_factory(a_resource("thing-one"), clock=lambda: now).handle(
+        {"method": "ability.list"})["result"]
+
+    assert result["registry_status"] == "FRESH"
+    assert result["stale"] is False
+    assert result["source_revision"] == "deadbeef"
+    assert result["abilities"] == [{"name": "session-manager"}]
+    assert result["generated_at"] == "2027-01-15T07:00:00+00:00"
 
 
 def test_observation_get_before_a_tick_is_not_an_empty_healthy_answer(daemon_factory):
