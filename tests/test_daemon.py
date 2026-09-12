@@ -21,6 +21,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import socket
+import subprocess
 import sys
 from pathlib import Path
 
@@ -243,15 +244,39 @@ def test_a_kind_with_no_actuator_is_refused_rather_than_guessed():
 
 
 # ---------------------------------------------------------------------------
-# §21 · the unit is a candidate, and it does not open the gate
+# §21 · the unit reaches the gate deliberately, and the deployed copy is the
+# reviewed copy
 # ---------------------------------------------------------------------------
 
 
-def test_the_unit_file_is_a_candidate_not_an_installed_service():
+def test_the_unit_file_stays_promotable_and_says_it_is_installed():
     unit = (RUNTIME / "serverosd.service").read_text()
-    assert "NOT INSTALLED" in unit
-    assert "[Install]" in unit  # promotable ...
-    assert not Path("/home/hwz/.config/systemd/user/serverosd.service").exists()
+    assert "[Install]" in unit  # promotable by `systemctl --user enable`
+    # This used to read `assert "NOT INSTALLED" in unit`, which was true of a
+    # candidate and false of a running service. The replacement asserts the
+    # POSITIVE fact rather than banning the old string: the header now quotes
+    # the retired wording to explain the change, and a substring ban would
+    # fail on the explanation instead of on the thing explained — the same
+    # trap the TCP assertion below documents.
+    assert "INSTALLED on this node as a PILOT" in unit
+
+
+def test_an_installed_unit_is_byte_identical_to_the_reviewed_artefact():
+    """The deployed copy must be the reviewed copy.
+
+    Skipped when the pilot is not installed on this host — the invariant is
+    about the RELATIONSHIP, not about this machine having a service. But when
+    a copy IS installed, a difference means somebody's node is running a unit
+    that no review covers, which is worth failing over.
+    """
+    installed = Path.home() / ".config/systemd/user/serverosd.service"
+    if not installed.exists():
+        pytest.skip("the serverosd pilot is not installed on this host")
+    assert installed.read_bytes() == (RUNTIME / "serverosd.service").read_bytes(), (
+        "the installed unit has drifted from runtime/serverosd.service; reinstall "
+        "with `install -m 0644 runtime/serverosd.service "
+        "~/.config/systemd/user/serverosd.service`"
+    )
 
 
 def test_the_unit_does_not_turn_on_reconcile_or_listen_on_tcp():
@@ -271,6 +296,199 @@ def test_the_unit_does_not_turn_on_reconcile_or_listen_on_tcp():
             assert forbidden not in line, line
         assert not line.startswith("ExecStartPre="), line
     assert "Restart=on-failure" in unit  # `always` restarts a deliberate stop
+
+
+def test_the_unit_does_not_isolate_the_observer():
+    """The daemon's product is its answer about the host.
+
+    Measured on 2026-09-13, one property per transient unit, reading
+    `readlink /proc/self/ns/user` and `pgrep -f 'botmux __supervisor'` from
+    inside:
+
+        property                    userns                visible  sees_1833
+        (none)                      user:[4026531837]         63      yes
+        NoNewPrivileges=yes         user:[4026531837]         66      yes
+        UMask=0077                  user:[4026531837]         64      yes
+        RuntimeDirectory=x          user:[4026531837]         67      yes
+        ProtectProc=invisible       user:[4026531837]         65      yes
+        ReadWritePaths=/tmp         user:[4026533473]          4       NO
+        PrivateUsers=yes            user:[4026533473]          4       NO
+
+    `ReadWritePaths=` alone put the unit in a private user namespace whose
+    uid_map was `1006 1006 1`; from in there `pgrep` ran, exited 0, and matched
+    nothing. The probe underneath reported STOPPED — a live process with two
+    days of uptime, described as down, by a daemon that had not gone blind but
+    had been blinded, and could not tell the difference.
+
+    The first three directives below are the ones measured; the rest are the
+    same family (user- and mount-namespace isolation) and fail the same silent
+    way, so they are gated rather than re-measured one at a time. This asserts
+    the FILE; `test_the_running_daemon_is_not_in_a_private_user_namespace`
+    asserts the RUNNING thing, because a file that is right and a service that
+    was started before the fix look identical from here.
+    """
+    directives = [line for line in (RUNTIME / "serverosd.service").read_text().splitlines()
+                  if line.strip() and not line.lstrip().startswith("#")]
+    isolating = (
+        "ReadWritePaths=", "ReadOnlyPaths=", "InaccessiblePaths=",
+        "BindPaths=", "BindReadOnlyPaths=",
+        "PrivateUsers=", "PrivateTmp=", "PrivateMounts=", "PrivateDevices=",
+        "ProtectSystem=", "ProtectHome=", "ProtectProc=", "ProcSubset=",
+        "ProtectKernelTunables=", "ProtectKernelModules=", "ProtectKernelLogs=",
+        "ProtectControlGroups=", "ProtectClock=", "ProtectHostname=",
+        "RestrictNamespaces=",
+    )
+    for line in directives:
+        for directive in isolating:
+            assert not line.startswith(directive), (
+                f"`{line}` isolates the observer from the host it exists to "
+                f"report on; see the measurement table in this test"
+            )
+
+
+def test_the_running_daemon_is_not_in_a_private_user_namespace():
+    """The live half of the gate above.
+
+    A private user namespace always has a narrow uid_map — the one measured
+    for `ReadWritePaths=` was `1006 1006 1`, a single uid. The initial
+    namespace maps the whole 32-bit range. Asserting on the map rather than on
+    `/proc/<pid>/ns/user` keeps this honest when the test itself runs inside a
+    namespace: what matters is whether the daemon can see this user's other
+    processes, and a one-uid map is exactly the thing that stops it.
+
+    Skipped when the pilot is not running on this host.
+    """
+    main_pid = _serverosd_main_pid()
+    if main_pid is None:
+        pytest.skip("the serverosd pilot is not running on this host")
+    uid_map = Path(f"/proc/{main_pid}/uid_map").read_text().strip()
+    mapped = int(uid_map.split()[2])
+    assert mapped > 1, (
+        f"serverosd runs in a private user namespace (uid_map {uid_map!r}); its "
+        f"process probes cannot see this user's other processes and will report "
+        f"live things as STOPPED"
+    )
+
+
+def _serverosd_main_pid() -> int | None:
+    """The pilot's main pid, or None when it is not installed or not running.
+
+    `systemctl --user show` is deliberately tolerated to fail: a test that
+    errors because systemd is absent from the sandbox is a test that reports
+    its environment as a product defect.
+    """
+    try:
+        out = subprocess.run(
+            ["systemctl", "--user", "show", "serverosd.service", "-p", "MainPID", "--value"],
+            capture_output=True, text=True, timeout=15,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    pid = out.stdout.strip()
+    if out.returncode != 0 or not pid.isdigit() or pid == "0":
+        return None
+    return int(pid) if Path(f"/proc/{pid}").exists() else None
+
+
+def test_the_daemon_re_binds_a_socket_file_that_was_removed_underneath_it(daemon_factory):
+    """Measured live on 2026-09-13: a running daemon held an unlinked socket.
+
+    It had logged `listening on ...`, ticked for minutes, and served nobody —
+    `fd 3 -> socket:[69123718]` with no file to reach it by. Every client got
+    ENOENT and the daemon had no reason ever to find out.
+    """
+    import threading
+
+    daemon = daemon_factory()
+    thread = threading.Thread(
+        target=daemon.serve_forever, kwargs={"interval": 0.05, "stop_after": 60},
+        daemon=True,
+    )
+    thread.start()
+    try:
+        _wait_for(lambda: daemon.socket_path.exists())
+        _round_trip(daemon.socket_path)  # reachable before the removal
+
+        daemon.socket_path.unlink()
+        assert not daemon.socket_path.exists()
+
+        _wait_for(lambda: daemon.socket_path.exists())
+        assert _round_trip(daemon.socket_path)["ok"] is True, (
+            "the daemon did not restore its endpoint after the socket file "
+            "was removed; it would go on reporting itself healthy and "
+            "unreachable"
+        )
+    finally:
+        thread.join(timeout=10)  # `stop_after` ends it; nothing to signal
+
+
+def test_a_daemon_does_not_unlink_a_socket_that_is_not_its_own(daemon_factory):
+    """A restart puts two daemons on one path in sequence.
+
+    The old one's teardown must not delete the new one's socket — that is a
+    service that comes up healthy and unreachable at once, which is exactly
+    what was observed on this host.
+    """
+    daemon = daemon_factory()
+    # The listener must stay referenced. Dropping it closes the fd, frees the
+    # socket inode, and lets the next file at that path be handed the SAME
+    # inode number — which silently turns this test into a tautology. That is
+    # not a hypothetical: it is how the first version of this test failed.
+    server = daemon._open_socket()
+
+    # Somebody else takes the path: the socket file is replaced.
+    daemon.socket_path.unlink()
+    daemon.socket_path.write_bytes(b"")  # a new file, a new inode
+    replacement_ino = daemon.socket_path.stat().st_ino
+    assert replacement_ino != daemon._socket_ino, (
+        "the filesystem reused the socket's inode number; this test cannot "
+        "distinguish the two files and must not be trusted as written"
+    )
+
+    daemon._release_socket()
+
+    assert daemon.socket_path.exists(), (
+        "teardown removed a socket this daemon no longer owned"
+    )
+    assert daemon.socket_path.stat().st_ino == replacement_ino
+
+
+def test_a_daemon_does_release_its_own_socket(daemon_factory):
+    """The other half of the guard, so that it cannot pass by doing nothing."""
+    daemon = daemon_factory()
+    server = daemon._open_socket()  # kept referenced, as in `serve_forever`
+    assert daemon.socket_path.exists()
+    daemon._release_socket()
+    assert not daemon.socket_path.exists()
+    server.close()
+
+
+def _wait_for(predicate, timeout: float = 5.0) -> None:
+    import time
+
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if predicate():
+            return
+        time.sleep(0.02)
+    raise AssertionError("condition never became true")
+
+
+def _round_trip(path) -> dict:
+    client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    client.settimeout(5)
+    try:
+        client.connect(str(path))
+        client.sendall(json.dumps({"method": "runtime.list", "params": {}}).encode() + b"\n")
+        buffer = b""
+        while b"\n" not in buffer:
+            chunk = client.recv(65536)
+            if not chunk:
+                break
+            buffer += chunk
+        return json.loads(buffer.split(b"\n")[0].decode())
+    finally:
+        client.close()
 
 
 def test_linger_is_reported_not_changed():
@@ -1042,3 +1260,49 @@ def test_the_daemon_does_not_import_a_git_or_feishu_client(daemon_factory):
     methods = daemon_factory(a_resource("thing-one"))._methods()
     for forbidden in ("git.", "feishu.", "knowledge.", "ability.author"):
         assert not any(m.startswith(forbidden) for m in methods), forbidden
+
+
+# ---------------------------------------------------------------------------
+# §14 · a missing parameter is refused by name, not by KeyError
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("method,param", [
+    ("runtime.status", "id"),
+    ("runtime.explain", "id"),
+    ("path.resolve", "ref"),
+    ("path.admit", "path"),
+])
+def test_a_missing_parameter_is_refused_in_a_sentence(daemon_factory, method, param):
+    """Found by calling the live socket by hand.
+
+    `runtime.status` with no `id` answered `KeyError: 'id'` — a code where a
+    sentence belongs, and the same shape for `path.resolve` with no `ref`,
+    which `_required`'s own docstring names as the case it exists for. Four
+    handlers were still indexing `params` directly while the rest went
+    through the helper, so the refusal a caller got depended on which method
+    they happened to call.
+    """
+    daemon = daemon_factory(a_resource("thing-one"))
+    response = daemon.handle({"method": method, "params": {}})
+
+    assert response["ok"] is False
+    assert response["error"]["code"] == "ValueError", response["error"]
+    assert param in response["error"]["message"]
+    assert "missing required parameter" in response["error"]["message"]
+    # And the refusal says WHY an empty answer would have been worse.
+    assert "nothing to report" in response["error"]["message"]
+
+
+@pytest.mark.parametrize("method,param", [
+    ("runtime.status", "id"),
+    ("runtime.explain", "id"),
+    ("path.resolve", "ref"),
+    ("path.admit", "path"),
+])
+def test_an_empty_string_parameter_is_refused_the_same_way(daemon_factory, method, param):
+    """`""` is not an id. A falsy value that reaches the registry produces the
+    same bare error one layer down, so it is refused at the boundary."""
+    daemon = daemon_factory(a_resource("thing-one"))
+    response = daemon.handle({"method": method, "params": {param: ""}})
+    assert response["ok"] is False
+    assert "missing required parameter" in response["error"]["message"]
