@@ -322,7 +322,8 @@ def read_manifest(directory: Path) -> dict:
                 "problems": ["projection.yaml is not a mapping"],
                 "authority": None}
 
-    for field in ("authority", "generated", "generator", "generated_at", "source_refs"):
+    for field in ("authority", "generated", "generator", "generated_at",
+                  "source_refs", "reproducible"):
         if field not in document:
             problems.append(f"manifest declares no {field!r}")
     if document.get("authority") is not False:
@@ -336,6 +337,22 @@ def read_manifest(directory: Path) -> dict:
     if document.get("generated") is not True:
         problems.append(
             f"generated must be the literal true; found {document.get('generated')!r}"
+        )
+    if document.get("reproducible") is not True:
+        # The gate the namespace is actually about. A capture of one moment is
+        # generated — a tool wrote it — and still cannot be regenerated, so
+        # `generated` alone does not keep evidence out of here.
+        #
+        # Declaring `reproducible: false` is not a defect in the manifest. It is
+        # a correct description of the artifact, in the wrong namespace: the
+        # member invariant here is LOSS_REPRODUCIBLE, and the repair is to move
+        # the artifact to the evidence plane, not to relax the invariant. The
+        # message says so, because the tempting fix is to delete the line.
+        problems.append(
+            f"reproducible must be the literal true; found {document.get('reproducible')!r}. "
+            f"An artifact whose loss is not recoverable is EVIDENCE, not a "
+            f"projection, and belongs in the evidence plane with a retention "
+            f"rule. Removing this field is not the fix."
         )
     refs = document.get("source_refs")
     if refs is not None and not isinstance(refs, list):
@@ -363,7 +380,7 @@ def projection_inventory(*, root: Path | None = None) -> dict:
     A directory under `projections/` is a projection when it carries a
     manifest. When it does not, it may still be a GROUPING directory — one
     whose children are each a projection — which is how a kind with several
-    dated instances is laid out (`projections/environment/2026-08-19/`).
+    dated instances is laid out (`projections/<kind>/<instance>/`).
 
     Grouping is permitted only when every child is a projection. A directory
     that neither carries a manifest nor holds projections is undeclared
@@ -434,8 +451,8 @@ def authority_conflicts(*, root: Path | None = None, contract: dict | None = Non
     for child in sorted(namespace.iterdir()):
         if not child.is_dir():
             continue
-        # `projections/environment/2026-08-19` has no authority counterpart.
-        # `projections/runtime/health` would.
+        # `projections/<kind>/<instance>` has no authority counterpart unless
+        # `<kind>` names one. `projections/runtime/health` would.
         #
         # The depth matters and it is not the top segment. `projections/runtime`
         # mirrors the authority namespace `runtime` on its own, so stopping there
@@ -476,7 +493,7 @@ def _deepest_mirror(child: Path, namespace: Path, flat: dict) -> str | None:
     one message a reader gets about this conflict.
 
     Returns None when nothing in the subtree is an authority, which is the
-    common and correct case: `projections/environment/2026-08-19` has no
+    common and correct case: `projections/<kind>/<instance>` has no
     authority counterpart, and a check that flagged it would flag every correct
     projection and be switched off within a week.
     """

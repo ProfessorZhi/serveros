@@ -182,13 +182,14 @@ EXCEPTIONS: dict[str, dict[str, dict]] = {
                          "resources.yaml reads lease state from here",
             "disposition": "CONTRACT_GAP",
         },
-        # `environment` was here and is gone deliberately. The 2026-08-19
-        # capture moved to `projections/environment/2026-08-19/` with a
-        # manifest that declares its generator and its `authority: false`, and
-        # `projections/` is now a declared namespace — so the exemption has
-        # nothing left to exempt. Keeping it would leave the table describing a
-        # directory that no longer exists, which is how an exception table
-        # stops being a description of anything. A test asserts this table and
+        # `environment` was here and is gone deliberately, and it went further
+        # than the projections namespace: the 2026-08-19 capture turned out to
+        # be non-reproducible, which makes it evidence rather than a
+        # projection, and it now lives in the evidence plane
+        # (artifacts/skills/workspace-management/RUN-20260819-environment-baseline).
+        # The exemption has nothing left to exempt, and an exception for a
+        # directory that no longer exists is how an exception table stops
+        # describing anything. A test asserts this table and
         # `fleet/state-root-contract.yaml#preexisting` list exactly the same
         # entries.
         "migrations": {
