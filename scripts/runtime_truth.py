@@ -638,7 +638,7 @@ def collect(args) -> dict:
         # absence is a defect depends on whether canonical has them at all, and
         # that is `drift`'s job. Conflating the two made a matching install read
         # as a failure on the first run of this file.
-        absent = [m for m in ("context", "space", "relations") if not (root / m).is_dir()]
+        absent = [m for m in build.CORE_MODULES if not (root / m).is_dir()]
         note = f"core module(s) absent: {', '.join(absent)}" if absent else ""
         if codex_note and label.startswith("Codex"):
             note = f"{note}; {codex_note}" if note else codex_note

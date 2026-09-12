@@ -16,7 +16,14 @@ components:
       - plugin-composition-canonical      # the decision of which capabilities compose it
       - plugin-bundle                     # plugin/bundle.yaml
       - plugin-manifests-and-adapters     # .claude-plugin / .codex-plugin
-      - bootstrap-skill-source            # the `serveros` Skill itself
+      # `bootstrap-skill-source` is a ruled term (Phase 1.1 A) and is kept
+      # verbatim. It means the skills whose canonical source is THIS repository
+      # — today `serveros` and `runtime-management` — as opposed to the
+      # reusable ones composed in from ability-management. The name says
+      # "bootstrap" because there was one of them when it was ruled; the
+      # distinction it encodes is source-of-truth, not count.
+      - bootstrap-skill-source
+      - node-mcp-surface                  # mcp/ — the adapter and its .mcp.json
       - context-kernel
       - space-kernel
       - relations-kernel

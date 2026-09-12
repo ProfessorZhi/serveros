@@ -27,19 +27,20 @@ import pytest
 
 REPO = Path(__file__).resolve().parent.parent
 RUNTIME = REPO / "runtime"
+MCP = REPO / "mcp"
 
 
-def _load(name: str, filename: str):
+def _load(name: str, filename: str, root: Path | None = None):
     if name in sys.modules:
         return sys.modules[name]
-    spec = importlib.util.spec_from_file_location(name, RUNTIME / filename)
+    spec = importlib.util.spec_from_file_location(name, (root or RUNTIME) / filename)
     module = importlib.util.module_from_spec(spec)
     sys.modules[name] = module
     spec.loader.exec_module(module)
     return module
 
 
-mcp_mod = _load("serveros_runtime_node_mcp", "node_mcp.py")
+mcp_mod = _load("serveros_mcp_node_mcp", "node_mcp.py", MCP)
 NodeMcpServer = mcp_mod.NodeMcpServer
 DaemonUnavailable = mcp_mod.DaemonUnavailable
 
@@ -92,7 +93,7 @@ def test_the_adapter_cannot_execute_anything():
     """
     import ast
 
-    tree = ast.parse((RUNTIME / "node_mcp.py").read_text())
+    tree = ast.parse((MCP / "node_mcp.py").read_text())
     imported: set[str] = set()
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
@@ -117,7 +118,7 @@ def test_the_adapter_cannot_execute_anything():
 def test_the_adapter_writes_nothing():
     """No file is opened for writing, and the only file it opens at all is
     the daemon's socket, whose existence it checks."""
-    source = (RUNTIME / "node_mcp.py").read_text()
+    source = (MCP / "node_mcp.py").read_text()
     for forbidden in ('open(', '"w"', "'w'", "write_text", "mkdir", "unlink"):
         assert forbidden not in source, forbidden
 
@@ -330,6 +331,29 @@ def test_an_internal_error_does_not_close_the_stream(server):
 # ---------------------------------------------------------------------------
 # the socket the adapter will actually use
 # ---------------------------------------------------------------------------
+
+
+def test_the_declared_contract_lists_exactly_these_tools():
+    """The contract is a declaration, and a declaration nobody checks is prose.
+
+    `fleet/mcp-contract.yaml` previously listed ten tools for this surface: six
+    that were never implemented, including `task.run` — a side-effecting verb
+    this adapter deliberately does not offer — and only four of the ones that
+    are. It also listed six `serveros://` resources, and this surface answers
+    `resources/list` with a method-not-found error. Every one of those was
+    invisible, because nothing compared the two.
+
+    So the comparison is the test. Adding a tool to the adapter now fails here
+    until the contract says so too, which is the only way the contract can stay
+    worth reading.
+    """
+    import yaml
+
+    contract = yaml.safe_load((REPO / "fleet/mcp-contract.yaml").read_text())
+    surface = contract["surfaces"]["serveros-node-mcp"]
+    assert tuple(surface["tools"]) == mcp_mod.tool_names()
+    assert surface["resources"] == [], "this surface serves no resources"
+    assert surface["implementation"] == "mcp/node_mcp.py"
 
 
 def test_the_default_socket_matches_the_daemons(tmp_path):

@@ -1,0 +1,21 @@
+#!/usr/bin/env python3
+"""serveros-node-mcp — executable entry point.
+
+The adapter is started once per agent session and speaks JSON-RPC on stdio, so
+this shim is what a plugin manifest points at.
+
+The manifest does not invoke it directly. It runs `python3 <this file>`, because
+the artifact writer restores an executable bit only for `.sh` and `.py`, and
+this file has no suffix — so a manifest naming it as `command` would depend on a
+mode the build has to remember to set. The shebang above is kept for running it
+straight out of a checkout, which is how it is used during development.
+"""
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+import node_mcp  # noqa: E402
+
+if __name__ == "__main__":
+    sys.exit(node_mcp.main())
