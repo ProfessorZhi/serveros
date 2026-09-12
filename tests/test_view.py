@@ -684,6 +684,27 @@ def test_every_new_daemon_method_is_registered_in_both_places():
             assert response["error"]["code"].startswith(("ValueError", "Unknown"))
 
 
+def test_the_served_methods_and_the_handler_map_are_the_same_set():
+    """The drift the test above describes but cannot see.
+
+    `handle` looks up one map; the unknown-method error prints `_methods()`.
+    When the map was a literal inside `handle`, nothing could enumerate it, so
+    a method added to one place and not the other was undetectable by
+    construction — and the two failure modes are opposite: a handler with no
+    entry in `_methods()` is reachable but undiscoverable, and an entry with
+    no handler is discoverable and refuses the caller who believed it.
+    """
+    instance = daemon.Daemon(registry_of(resource("res-r")), state_dir=Path("/tmp/x"))
+    served = set(instance._methods())
+    implemented = set(instance.handler_map())
+    assert served == implemented, {
+        "announced but not implemented": sorted(served - implemented),
+        "implemented but not announced": sorted(implemented - served),
+    }
+    for method, handler in instance.handler_map().items():
+        assert callable(handler), method
+
+
 def test_a_missing_parameter_is_refused_in_a_sentence_not_a_code():
     instance = daemon.Daemon(registry_of(resource("res-r")), state_dir=Path("/tmp/x"))
     response = instance.handle({"method": "runtime.group", "params": {}})
