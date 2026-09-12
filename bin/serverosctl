@@ -1,0 +1,17 @@
+#!/usr/bin/env python3
+"""serverosctl — executable entry point.
+
+Kept as a three-line shim so that the module it runs stays importable and
+testable. This is also the file a systemd unit or a symlink on PATH points
+at, so that `serverosctl` is one program with one location rather than a
+re-export of the module's internals.
+"""
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "runtime"))
+
+import cli  # noqa: E402
+
+if __name__ == "__main__":
+    sys.exit(cli.main())
