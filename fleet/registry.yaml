@@ -18,7 +18,15 @@ devices:
     display_name: Beijing-Server
     platform: linux
     ownership: personal
-    roles: [server]
+    # `server` was this device's earlier role. It restated `platform: linux`,
+    # which is the one thing a role must not do: a role that duplicates a
+    # field next to it hides the role that carries information. The role that
+    # carries information here is the one below — that this host is the node
+    # the fleet is controlled FROM.
+    #
+    # Roles are not identities and not aliases: nothing resolves by role, and
+    # changing this line renames nothing and strands no evidence.
+    roles: [fleet-controller-primary]
     environment_profile: linux-server
     agents: [claude-code, codex]
     # Historical ids remain resolvable. They renamed; they did not disappear.

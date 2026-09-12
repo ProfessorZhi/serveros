@@ -120,7 +120,7 @@ def test_fleet_visibility_is_not_local_controller_availability(tmp_path):
     "available", then filing the resulting empty inventory as a real one.
     """
     adapter = _no_controller(tmp_path, endpoint_present=True)
-    av = adapter.availability(DeviceRef("work-fj"))
+    av = adapter.availability(DeviceRef("work-fj"), fleet_presence="KNOWN_ONLINE")
 
     assert av.fleet_presence == "KNOWN_ONLINE"
     assert av.local_agent_controller == "NOT_EXPOSED"

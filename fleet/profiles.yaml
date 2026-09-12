@@ -31,6 +31,13 @@ path_roles:
 # NOT_APPLICABLE   — role has no meaning on this device (not a gap)
 binding_states: [BOUND, UNBOUND, NOT_APPLICABLE]
 
+# Volume states answer a different question from binding states, so they get
+# their own vocabulary rather than being squeezed into the one above.
+# BOUND         — the volume exists and something is known about it
+# NOT_ASSERTED  — nobody has looked; neither presence nor absence is claimed
+# ABSENT        — looked, and it is not there
+volume_states: [BOUND, NOT_ASSERTED, ABSENT]
+
 profiles:
   linux-server:
     device_ref: device:server-beijing
@@ -73,6 +80,45 @@ profiles:
   windows-corporate:
     device_ref: device:work-fj
     platform: windows
+    # Physical volumes, as reported. NOT a path-role binding — this block says
+    # which volumes exist and roughly what they hold; the `paths:` block below
+    # says which semantic role resolves to which directory.
+    #
+    # Why it is written down at all: `volume` and `path role` are different
+    # questions, and answering only the second lets a reader conclude the
+    # machine has exactly the directories this file happens to name. It does
+    # not; it has three volumes, most of whose interior is unrecorded.
+    #
+    # The E:/F: line is the important one. Dell's profile binds F:\ and E:\
+    # because those are Dell's volumes. They are NOT this machine's, and a
+    # Windows filesystem that resembles another Windows filesystem is still a
+    # different machine. Recording the absence here makes "we did not check"
+    # distinguishable from "we checked and they are not there" — neither of
+    # which is the same as "they are there".
+    volumes:
+      'C:':
+        state: BOUND
+        provenance: user_reported
+        holds: Windows OS and the user runtime (Claude / Codex installation surface)
+      'D:':
+        state: BOUND
+        provenance: user_reported
+        holds: >-
+          apps · develop · download · projects · onboard · artifacts-temp-legacy
+      'Z:':
+        state: BOUND
+        provenance: user_reported
+        holds: mapped filesystem (network volume; not locally owned storage)
+      'E:':
+        state: NOT_ASSERTED
+        provenance: UNRECORDED
+      'F:':
+        state: NOT_ASSERTED
+        provenance: UNRECORDED
+    volumes_note: >-
+      E: and F: are NOT_ASSERTED, not NOT_APPLICABLE and not UNBOUND. Nobody
+      has looked, so neither presence nor absence is claimed. Dell binds F:\
+      and E:\ — that is a fact about Dell and it stays there.
     paths:
       workspace.src:
         path: 'D:\projects'
@@ -101,6 +147,15 @@ profiles:
         path: 'D:\artifacts'
         state: BOUND
         provenance: user_reported
+        note: >-
+          UNVERIFIED PATH, flagged rather than smoothed over. The device's D:
+          volume was reported as holding `artifacts-temp-legacy`, which may be
+          this directory under a different name, a different directory, or the
+          same directory at an earlier time. The two have not been reconciled
+          and this binding keeps the value it already had rather than adopting
+          the newer string: a path silently rewritten to match a description
+          is indistinguishable from a path that was checked. Resolving it needs
+          a device-local read, and there is no route from here to take one.
       workspace.worktrees:
         state: UNBOUND
         provenance: user_reported

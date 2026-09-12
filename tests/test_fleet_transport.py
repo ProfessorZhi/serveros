@@ -171,14 +171,85 @@ def test_missing_controller_reports_not_exposed_not_unobserved(tmp_path):
     adapter = rdc.RemoteDesktopCommanderTransport(declaration_path=tmp_path / "absent.yaml")
     assert adapter.controller_available() is False
 
-    av = adapter.availability(DeviceRef("work-fj"))
+    av = adapter.availability(DeviceRef("work-fj"), fleet_presence="KNOWN_ONLINE")
     assert av.local_agent_controller == "NOT_EXPOSED"
     assert av.remote_inventory_from_this_runtime == "UNAVAILABLE"
-    # Presence is a fleet-plane fact; this runtime does not get to erase it.
     assert av.fleet_presence == "KNOWN_ONLINE"
     assert av.state == "REMOTE_CONTROLLER_NOT_EXPOSED"
     assert av.state != "DEVICE_UNOBSERVED"
     assert av.observed is False
+
+
+def test_presence_is_an_input_and_is_never_assumed(tmp_path):
+    """A transport may not assert that a device is up.
+
+    This adapter used to default `fleet_presence` to KNOWN_ONLINE whenever it
+    found a local endpoint, and this test used to assert that. It was the same
+    error one level up from the one the module exists to catch: a healthy
+    endpoint says a device *might* be reachable, and on 2026-09-12 on this very
+    host the endpoint process was alive, connected to its relay, and
+    functionally offline for 35 minutes because its session could not be
+    renewed. Nothing local distinguishes those cases.
+
+    So presence has no default. A caller that knows supplies it and says how it
+    knows; a caller that does not gets UNKNOWN.
+    """
+    adapter = rdc.RemoteDesktopCommanderTransport(declaration_path=tmp_path / "absent.yaml")
+    default = adapter.availability(DeviceRef("work-fj"))
+    assert default.fleet_presence == "UNKNOWN"
+    assert default.state == "CONTROLLER_NOT_EXPOSED_AND_PRESENCE_UNKNOWN"
+    assert default.state != "DEVICE_UNOBSERVED"
+
+    # Offline + no controller is its own state. Before the table was made
+    # total this combination matched no row and fell through to
+    # DEVICE_UNOBSERVED — the forbidden word, produced silently, for a device
+    # that was merely offline.
+    offline = adapter.availability(DeviceRef("work-fj"), fleet_presence="KNOWN_OFFLINE")
+    assert offline.state == "CONTROLLER_NOT_EXPOSED_AND_DEVICE_OFFLINE"
+    assert offline.fleet_presence == "KNOWN_OFFLINE"
+    assert offline.state != "DEVICE_UNOBSERVED"
+
+
+def test_the_availability_table_classifies_every_combination():
+    """A partial table has an implicit fallback, and this one's was forbidden.
+
+    Enumerated from the contract's own value lists rather than from a written-
+    out list here, so adding a value to either axis fails this test instead of
+    silently reintroducing an uncovered row.
+    """
+    c = contract("transport-contract.yaml")
+    fields = c["availability"]["fields"]
+    table = c["availability"]["derived_states"]
+    assert c["availability"]["rule_table_complete"] is True
+
+    controllers = fields["local_agent_controller"]["values"]
+    presences = fields["fleet_presence"]["values"]
+    covered = 0
+    for ctrl in controllers:
+        for pres in presences:
+            matches = [r for r in table if r["when"] == {
+                "local_agent_controller": ctrl, "fleet_presence": pres}]
+            assert len(matches) == 1, (
+                f"{ctrl}+{pres} matches {len(matches)} rows; every combination "
+                f"must be classified exactly once"
+            )
+            covered += 1
+    assert covered == len(controllers) * len(presences)
+    assert len(table) == covered, "no row may classify more than one combination"
+
+    # And the forbidden word stays narrow: exactly one combination reaches it.
+    unobserved = [r for r in table if r["state"] == "DEVICE_UNOBSERVED"]
+    assert len(unobserved) == 1
+    assert unobserved[0]["when"] == {
+        "local_agent_controller": "UNKNOWN", "fleet_presence": "UNKNOWN"}
+
+
+def test_no_device_is_reported_unobserved_by_a_controller_less_runtime():
+    """The specific claim: NOT_EXPOSED never renders as DEVICE_UNOBSERVED."""
+    adapter = rdc.RemoteDesktopCommanderTransport(declaration_path=Path("/nonexistent"))
+    for presence in ("KNOWN_ONLINE", "KNOWN_OFFLINE", "UNKNOWN"):
+        av = adapter.availability(DeviceRef("work-fj"), fleet_presence=presence)
+        assert av.state != "DEVICE_UNOBSERVED", presence
 
 
 def test_controller_gap_raises_instead_of_returning_an_empty_fleet(tmp_path):
@@ -207,9 +278,14 @@ def test_declared_controller_flips_only_the_controller_fields(tmp_path):
     )
     adapter = rdc.RemoteDesktopCommanderTransport(declaration_path=decl)
     assert adapter.controller_available() is True
-    av = adapter.availability(DeviceRef("work-fj"))
+    av = adapter.availability(DeviceRef("work-fj"), fleet_presence="KNOWN_ONLINE")
     assert av.state == "CONTROLLER_AVAILABLE"
     assert av.observed is True
+    # Without presence evidence the same adapter reports the controller, and
+    # declines to claim the device is up.
+    assert adapter.availability(DeviceRef("work-fj")).state == (
+        "CONTROLLER_AVAILABLE_PRESENCE_UNKNOWN"
+    )
 
 
 def test_transport_never_silently_falls_back_to_another_kind():

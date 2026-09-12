@@ -202,22 +202,47 @@ availability:
 
   # The derived single state, for consumers that want one word. Ordered:
   # the first matching row wins.
+  #
+  # COMPLETE BY CONSTRUCTION: there is one row for every combination of
+  # local_agent_controller × fleet_presence. That is not tidiness — an
+  # incomplete table has an implicit fallback, and the fallback that used to
+  # sit here returned DEVICE_UNOBSERVED, the one word this contract forbids
+  # for every case a controller-less runtime can actually be in. A missing row
+  # therefore produced the forbidden answer silently, on a combination nobody
+  # had thought about, for a device that was merely offline.
+  #
+  # `availability.rule_table_complete` asserts the table stays total, and
+  # `Availability.state` raises rather than guessing if it ever stops being so.
   derived_states:
     - state: CONTROLLER_AVAILABLE
       when: {local_agent_controller: AVAILABLE, fleet_presence: KNOWN_ONLINE}
     - state: DEVICE_UNREACHABLE
       when: {local_agent_controller: AVAILABLE, fleet_presence: KNOWN_OFFLINE}
+    - state: CONTROLLER_AVAILABLE_PRESENCE_UNKNOWN
+      when: {local_agent_controller: AVAILABLE, fleet_presence: UNKNOWN}
     - state: REMOTE_CONTROLLER_NOT_EXPOSED
       when: {local_agent_controller: NOT_EXPOSED, fleet_presence: KNOWN_ONLINE}
+    - state: CONTROLLER_NOT_EXPOSED_AND_DEVICE_OFFLINE
+      when: {local_agent_controller: NOT_EXPOSED, fleet_presence: KNOWN_OFFLINE}
     - state: CONTROLLER_NOT_EXPOSED_AND_PRESENCE_UNKNOWN
       when: {local_agent_controller: NOT_EXPOSED, fleet_presence: UNKNOWN}
+    - state: PRESENCE_KNOWN_CONTROLLER_UNKNOWN
+      when: {local_agent_controller: UNKNOWN, fleet_presence: KNOWN_ONLINE}
+    - state: DEVICE_OFFLINE_CONTROLLER_UNKNOWN
+      when: {local_agent_controller: UNKNOWN, fleet_presence: KNOWN_OFFLINE}
     - state: DEVICE_UNOBSERVED
-      when: {fleet_presence: UNKNOWN, local_agent_controller: UNKNOWN}
+      when: {local_agent_controller: UNKNOWN, fleet_presence: UNKNOWN}
+
+  # Consumers are told this explicitly because it is the assumption the
+  # previous, incomplete table silently violated.
+  rule_table_complete: true
 
   rule: >-
     REMOTE_CONTROLLER_NOT_EXPOSED is a statement about THIS runtime's
     integration, not about the device. It must never be recorded as, reported
-    as, or acted upon as DEVICE_UNOBSERVED.
+    as, or acted upon as DEVICE_UNOBSERVED. DEVICE_UNOBSERVED has exactly one
+    meaning — nobody has observed the device and nothing here has a route to
+    it — and it is reachable from exactly one combination of the three axes.
 
 # ---------------------------------------------------------------------------
 # Provenance

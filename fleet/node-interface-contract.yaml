@@ -1,0 +1,161 @@
+# ServerOS node / fleet read-only interfaces.
+#
+# Why this file exists
+# --------------------
+# A node that is "READY" has to mean something a machine can check. These are
+# the calls that establish it, and every one of them is answerable **with no
+# controller at all** — which is the point. Readiness of the local node must
+# not depend on reaching another machine, or the two questions collapse into
+# one and a broken relay reads as an unprepared host.
+#
+# The split is deliberate:
+#
+#   node.*    about THIS host — which device it is, what its profile binds,
+#             what abilities are installed here
+#   fleet.*   about the fleet — every enrolled device, with its availability
+#
+# Levels are drawn from `transport-contract.yaml#capability_levels.order`; the
+# names are never restated here. Every interface below is read-only.
+schema: serveros/node-interface.v1
+
+levels_source: transport-contract.yaml#capability_levels.order
+
+# What each interface is allowed to read. Declared so that "this call touches
+# nothing but the local filesystem" is a checkable property rather than a
+# comment: an interface whose source is not in this list cannot be registered.
+# Where observation records are looked for, in order. Configured here rather
+# than hardcoded in the module so that a machine with a different checkout
+# layout changes one file, and so that "abilities could not be listed because
+# nothing was found" is a visible configuration fact instead of a silent empty
+# result. `$SERVEROS_ABILITY_OBSERVATIONS` overrides this list entirely.
+observation_roots:
+  - /opt/applications/data/home-hwz/workspace/worktrees/ability-management/registry-v3-layout-fleet/observations
+  - /opt/applications/data/home-hwz/workspace/src/ability-management/observations
+
+sources:
+  fleet_registry:      fleet/registry.yaml — enrolled devices; stable identity
+  fleet_profiles:      fleet/profiles.yaml — path roles per environment profile
+  local_control_root:  "~/.serveros/ — this host's binding, routes, controller"
+  ability_observations: >
+    ability-management observation records. The DECLARED ability set is not
+    readable from here and is not guessed at: only what some run actually
+    observed on a device is reportable, and a device nobody scanned has no
+    ability list rather than an empty one.
+
+interfaces:
+  # -- node: about this host -------------------------------------------------
+  device.show:
+    level: discover
+    sources: [local_control_root, fleet_registry]
+    returns: the enrolled device this host is bound to, without any transport name
+    absent_means: NODE_UNBOUND
+
+  environment.inspect:
+    level: inspect
+    sources: [local_control_root, fleet_registry, fleet_profiles]
+    returns: >
+      the DECLARED environment of this host's device — every path role, its
+      binding state (BOUND / UNBOUND / NOT_APPLICABLE) and its provenance.
+    not_the_same_as: a live scan. Every entry is labelled with where it came
+      from; `user_reported` bindings are design inputs and are never evidence
+      that the device was inspected.
+
+  context.resolve:
+    level: inspect
+    sources: [local_control_root, fleet_registry, fleet_profiles]
+    returns: >
+      one capsule — device identity, profile, the resolved path for one role,
+      and the full bound/absent map — so a caller never has to assemble a
+      context from three reads that may disagree.
+
+  path.resolve:
+    level: inspect
+    sources: [fleet_registry, fleet_profiles]
+    returns: the physical path a role resolves to on a device
+    absent_means: >
+      PathRoleUnbound or PathRoleNotApplicable, raised separately. "We have
+      not bound it" and "it does not exist here" are different facts and a
+      caller that receives one where it expected the other will act wrongly.
+
+  ability.list:
+    level: inspect
+    sources: [fleet_registry, ability_observations]
+    returns: abilities observed on the device, grouped by agent runtime
+    absent_means: >
+      OBSERVATION_UNAVAILABLE when no run has observed the device. Never an
+      empty list — an empty list reads as "this device has no abilities",
+      which is a different and much stronger claim.
+
+  ability.status:
+    level: inspect
+    sources: [fleet_registry, ability_observations]
+    returns: which observed groups contain a named ability
+    absent_means: UNKNOWN_NOT_OBSERVED
+
+  # -- fleet: about all devices ---------------------------------------------
+  fleet.devices:
+    level: discover
+    sources: [fleet_registry]
+    returns: every enrolled device with its ref, profile and availability
+    absent_means: >
+      never empty. A runtime with no controller lists the same devices with
+      `local_agent_controller: NOT_EXPOSED`; it does not list none.
+    rule: >
+      An unavailable controller must never render as an empty device list.
+      "I cannot see them" and "there are none" are different, and the second
+      one is how a fleet gets re-enrolled or deleted by mistake.
+
+  fleet.device.inspect:
+    level: inspect
+    sources: [fleet_registry, fleet_profiles, local_control_root]
+    returns: >
+      one device — identity, declared paths, the three-axis availability, and
+      per-capability availability for each transport kind used to reach it.
+
+  fleet.capability.find:
+    level: discover
+    sources: [fleet_registry, local_control_root]
+    returns: >
+      for one capability level, each device with that level's availability
+      state. A level that is EXTERNAL_ONLY everywhere is reported as
+      EXTERNAL_ONLY — not filtered out, and not folded into "unavailable".
+    rule: >
+      EXTERNAL_ONLY answers "where can this be done" with "not from here, but
+      it is reachable from the control plane". Dropping it from the result
+      turns an actionable integration gap into an apparent impossibility.
+
+# ---------------------------------------------------------------------------
+# Declared and deliberately NOT implemented, this round.
+#
+# Named here so the gap is a checked fact rather than an absence nobody
+# noticed. `interfaces.py` raises `InterfaceNotImplemented` for exactly these
+# names, and a test asserts the two sets are equal in both directions — so
+# adding one here without implementing it, or implementing one that is still
+# listed here, both fail.
+# ---------------------------------------------------------------------------
+not_implemented:
+  # Remote mutation. Not blocked on design — blocked on there being no
+  # callable controller surface to execute it through. Implementing these
+  # against a controller that does not exist would be implementing an unused
+  # path, and wiring one to a fallback transport would change the trust
+  # boundary without anyone deciding to.
+  - remote.write
+  - remote.execute
+  - remote.install-ability
+  - remote.admin
+  # Local mutation of the binding layer. A human authorizes; an agent does not
+  # write its own control surface.
+  - node.bind
+  - node.unbind
+  - controller.declare
+
+rules:
+  - "Read-only discovery must be correct before anything is writable. Every
+     interface above is answerable with no controller and no other machine."
+  - "No interface returns a transport name, a device uuid or a hostname. Those
+     are routes; a caller handed one in a result will key on it."
+  - "No interface returns an empty collection to mean 'unknown'. Absence has a
+     name and the name is returned."
+  - "Every result is deterministic: no clock, no pid, no hostname, no ordering
+     that depends on the filesystem. Two readings of an unchanged host compare
+     equal, so a difference between two readings means something."

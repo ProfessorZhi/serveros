@@ -245,3 +245,118 @@ Two properties it must keep, both learned the hard way:
   across argv. Substring matching counted a stale `bash -c ".../desktop-
   commander..."` from an earlier session as a fourth endpoint — a false
   positive in precisely the direction this module exists to prevent.
+
+## What the 2026-09-12 incident changed
+
+The endpoint on this host was functionally offline for 35 minutes while every
+process-level indicator said it was fine. `systemctl --user status` was
+`active (running)`, `NRestarts` was non-zero (so the restart path had fired
+before), and the process held an established TCP connection to its relay. The
+journal is what told the truth:
+
+```text
+💾 Found persisted session for device b1ba25a9-…
+[DEBUG] Failed to set session: Invalid Refresh Token: Already Used
+   - ⚠️ Persisted session invalid: Invalid Refresh Token: Already Used
+🔐 Starting device authorization flow...
+   - ⏳ Waiting for authorization...
+```
+
+A refresh-token rotation race: the persisted refresh token had already been
+consumed, so the chain could not be renewed. The endpoint could not serve a
+single request, and **nothing measurable from this host distinguished it from a
+healthy one**.
+
+Three corrections came out of it.
+
+**1. `fleet_presence` has no default.** `RemoteDesktopCommanderTransport.availability()`
+used to return `KNOWN_ONLINE` whenever it found a local endpoint, and a test
+asserted it. That is the module's own error one level up: presence is a
+fleet-plane fact, and this host's endpoint being alive says nothing about
+whether a device is up. It is now an input, defaulting to `UNKNOWN`; a caller
+that knows supplies it and names its provenance.
+
+**2. The availability table is now total.** It had no row for
+`NOT_EXPOSED + KNOWN_OFFLINE`, so that combination missed every row and fell
+through to `return "DEVICE_UNOBSERVED"` — the one word the contract forbids for
+every state a controller-less runtime can be in, produced silently, for a
+device that was merely offline. There is now one row per combination of the
+three axes, `rule_table_complete: true` in the contract, a test that enumerates
+the combinations from the contract's own value lists, and a fallback that
+**raises** rather than borrowing a word with a narrower meaning.
+
+**3. Process supervision is not session renewal.** The unit has
+`Restart=always`, is `enabled`, and is `WantedBy=default.target`. All three
+supervise the *process*; none of them can renew an *authorization*. This is the
+boundary between what automation here can fix and what it cannot, and it is why
+the endpoint's status is `NEEDS_HUMAN` rather than `CLOSED` with a caveat.
+
+One risk was ruled out empirically rather than by argument: a restart does
+**not** orphan the relay-side registration. `deviceId` is persisted outside the
+session (verified by hash before and after — the value is deliberately not
+recorded here), so restarting to obtain a fresh device code is safe and
+repeatable.
+
+## The local control root
+
+`~/.serveros/` is where this host answers two questions about itself: which
+enrolled device it is (`node.yaml`) and where its transports point
+(`targets.yaml`). `controller.yaml` is the third file and is **absent**, which
+is a finding, not an omission — it is written by a human after an MCP client is
+authorized, never by an agent, because an agent that could write it could claim
+a control surface it does not have.
+
+The rule `node.py` enforces is that this root **binds, it never declares**.
+`node.yaml` in full, in the general case:
+
+```yaml
+schema: serveros/node.v1
+device_ref: device:server-beijing
+```
+
+Display name, platform, roles, profile and agents are device attributes owned by
+`fleet/registry.yaml` and are read from there. A copy in the control root would
+agree with the registry on the day it was written and diverge silently
+afterwards — and would be undetectable, because each layer stays
+self-consistent. So unknown keys are **rejected at load**, not ignored: an
+ignored attribute looks exactly like one that took effect.
+
+Absence is reported as absence at every level:
+`NODE_UNBOUND` · `NO_BINDINGS` · `REMOTE_CONTROLLER_NOT_EXPOSED`. A caller that
+renders any of these as an error will eventually render them as an empty fleet.
+
+## Read-only readiness, answerable with no controller
+
+Nine interfaces in `node-interface-contract.yaml`, implemented in
+`interfaces.py`. All are read-only and **none requires another machine** — which
+is the property that keeps "the relay is down" and "this host is not prepared"
+from being debugged as one problem.
+
+```text
+node    device.show · environment.inspect · context.resolve · path.resolve
+        ability.list · ability.status
+fleet   fleet.devices · fleet.device.inspect · fleet.capability.find
+```
+
+Seven mutations are declared and deliberately **not implemented**
+(`remote.write`, `remote.execute`, `remote.install-ability`, `remote.admin`,
+`node.bind`, `node.unbind`, `controller.declare`). Listing them by name turns
+"we did not build that" into a checked fact: a test asserts the declared set and
+the raising set are equal in **both** directions, so adding a name without
+handling it and handling one still listed are both failures.
+
+Two rules hold across every interface, and both exist because the opposite is
+the tempting default:
+
+- **No result is empty to mean "unknown".** A device nobody scanned has no
+  ability list (`OBSERVATION_UNAVAILABLE`), and a runtime with no controller
+  lists the same fleet it always had with `local_agent_controller:
+  NOT_EXPOSED`. An empty list is itself an answer — a wrong one that looks
+  right, and the one a reader will act on.
+- **No result carries a transport name.** Not a hostname, not a relay name, not
+  a device uuid. A caller handed one in a result will key on it.
+
+Determinism is tested rather than asserted: every interface is called twice and
+the results compared, with no clock, pid, hostname or mtime in any output. Two
+readings of an unchanged host compare equal, so a difference between two
+readings means something.

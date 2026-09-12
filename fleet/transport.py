@@ -394,12 +394,28 @@ class Availability:
         Reading the rules from the contract keeps one authority. A second copy
         of the ordering here would agree with the YAML until the day someone
         edits one of them.
+
+        The contract's table is total — one row per combination of the three
+        axes — so this lookup should never miss. It used to miss, though, and
+        the miss was returned as `DEVICE_UNOBSERVED`: a runtime with no
+        controller, looking at a device it had been told was offline, was
+        reported as never having observed it. The fallback is now a raised
+        error naming the combination, because an unclassified row is a defect
+        in the table and must not be able to borrow the one word the contract
+        reserves for a specific meaning.
         """
         for row in transport_contract()["availability"]["derived_states"]:
             when = row["when"]
             if all(getattr(self, k) == v for k, v in when.items()):
                 return row["state"]
-        return "DEVICE_UNOBSERVED"
+        raise FleetError(
+            f"availability table is incomplete for "
+            f"local_agent_controller={self.local_agent_controller!r} + "
+            f"fleet_presence={self.fleet_presence!r} + "
+            f"remote_inventory={self.remote_inventory_from_this_runtime!r}. "
+            f"Every combination must be classified; an unclassified one must "
+            f"not fall back to DEVICE_UNOBSERVED, which has a narrower meaning."
+        )
 
     @property
     def observed(self) -> bool:

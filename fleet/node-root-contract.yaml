@@ -1,0 +1,106 @@
+# ServerOS node root — the small local control root at `~/.serveros/`.
+#
+# What this root is
+# -----------------
+# It is the *binding* layer for one host: which enrolled device this machine
+# is, and where its transports actually point. It is small, local-only, and
+# disposable — every file in it can be deleted and re-derived from the machine
+# itself plus a human decision.
+#
+# What this root is NOT
+# ---------------------
+# It is not an authority, and it is not a second registry. The failure it is
+# shaped to prevent is a machine carrying its own copy of its identity: once
+# `~/.serveros/node.yaml` can say `display_name:` or `platform:` or `roles:`,
+# there are two answers to "what is this device", they agree on the day they
+# are written, and they diverge silently afterwards. So this root records only
+# the *claim* "this host is device:X" — every attribute of that device is read
+# from the fleet registry, at read time, by whoever asks.
+#
+# The same reasoning already governs transport bindings: a binding says where
+# a transport points, never what a device is, and never carries a credential.
+schema: serveros/node-root.v1
+
+root:
+  default: '~/.serveros'
+  # Absolute, expanded, and never inside a repository. A control root that
+  # lives in a checkout becomes a committed artifact the first time someone
+  # runs `git add .`, which is how a machine-local binding turns into a
+  # claim about every machine.
+  inside_a_repository: forbidden
+  # Large state does not live here. A control root that accumulates runtime
+  # state stops being disposable, and then it stops being safe to delete, and
+  # then it becomes an authority by accident.
+  large_state_lives_in: DATA_ROOT/state/serveros
+
+files:
+  node.yaml:
+    # The whole file, in the general case:
+    #
+    #   schema: serveros/node.v1
+    #   device_ref: device:server-beijing
+    #
+    # Deliberately this short. `display_name`, `platform`, `os_family`,
+    # `roles`, `environment_profile`, `agents` and `legacy_ids` are all
+    # attributes of the device and are all owned by `fleet/registry.yaml`.
+    # A device that is not in the registry is not bound by editing this file;
+    # it is not bound at all.
+    required_fields: [schema, device_ref]
+    optional_fields: [note]
+    # Anything else is rejected at load time rather than ignored. An ignored
+    # attribute here is the fork this whole contract exists to prevent, and a
+    # silently ignored one is worse than a rejected one because it looks like
+    # it took effect.
+    unknown_fields: reject
+    absent_means: NODE_UNBOUND
+    # Absent is a legitimate state, not an error: a freshly imaged host, or a
+    # host that has not been enrolled yet, is a real thing to be. It is not
+    # "the fleet is empty" and it is not "this device does not exist".
+
+  targets.yaml:
+    # Local-only transport bindings: where a transport points, for THIS host.
+    # Read by `transport.load_bindings()`, which validates every entry against
+    # `transport.forbidden_binding_fields` before returning it.
+    #
+    #   bindings:
+    #     device:work-fj:
+    #       kind: remote-desktop-commander
+    #       observed_name: <what the relay calls that machine>
+    #
+    # `observed_name` is how a transport names a device. It is not an
+    # identity, it is not stable, and it is never committed — see
+    # `identity.never_identity` in transport-contract.yaml, which lists
+    # `hostname`, `computer_name` and `device_name` as non-identities.
+    required_fields: []
+    schema_key: serveros/transport-bindings.v1
+    absent_means: NO_BINDINGS
+    forbidden_fields_source: transport-contract.yaml#transport.forbidden_binding_fields
+
+  controller.yaml:
+    # Whether THIS runtime holds a callable controller surface. Written by a
+    # human after authorizing an MCP client, never by an agent — an agent that
+    # could write this file could claim a control surface it does not have.
+    absent_means: REMOTE_CONTROLLER_NOT_EXPOSED
+    required_fields: [kind, surface]
+    kinds_source: controller-contract.yaml#declaration.kinds
+    forbidden_fields_source: controller-contract.yaml#declaration.forbidden_fields
+    # No field of this file can hold a token. That is not an oversight: a
+    # declaration records *that* a surface was authorized, and the authorized
+    # client holds its own credential in its own credential store.
+
+never_in_this_root:
+  - credentials, tokens, refresh tokens, cookies, private keys, code verifiers
+  - device uuids or transport uuids          # assigned at enrolment; change on re-enrolment
+  - hostnames or computer names as keys      # a route, not an identity
+  - display names, platforms, roles          # owned by the fleet registry
+  - item, run or artifact state              # owned by DATA_ROOT/state/serveros
+
+rules:
+  - "This root is read by the host it describes. A copy of it is a claim about
+     the wrong machine, so it is gitignored and never travels."
+  - "Absence is reported as absence. NODE_UNBOUND, NO_BINDINGS and
+     REMOTE_CONTROLLER_NOT_EXPOSED are states, not failures, and a caller that
+     renders any of them as an error will eventually render them as an empty
+     fleet instead."
+  - "Nothing here may be the only record of anything. Deleting this directory
+     loses one host's local binding, and nothing that is not re-derivable."

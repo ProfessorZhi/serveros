@@ -232,27 +232,30 @@ class RemoteDesktopCommanderTransport(DeviceTransport):
     def controller_available(self) -> bool:
         return self._declared is not None
 
-    def availability(self, device_ref: DeviceRef) -> transport.Availability:
-        """Presence and control are separate answers.
+    def availability(
+        self, device_ref: DeviceRef, *, fleet_presence: str = "UNKNOWN"
+    ) -> transport.Availability:
+        """Presence and control are separate answers, from separate sources.
 
-        `fleet_presence` is left as KNOWN_ONLINE when the fleet plane has told
-        us so — including through a caller that learned it elsewhere. Only the
-        controller and inventory fields are this runtime's to report, and in
-        the common case they are NOT_EXPOSED / UNAVAILABLE.
+        `fleet_presence` is a fleet-plane fact and is therefore an INPUT. This
+        adapter previously defaulted it to KNOWN_ONLINE, which was the same
+        error one level up from the one it exists to catch: it asserted that a
+        device was up because this host had an endpoint, and the two are
+        unrelated. A relay can see a device this host cannot reach, and — as
+        this host's own endpoint demonstrated — a device can hold an
+        established connection to its relay while being functionally offline.
+        Neither is derivable from the other, so neither is defaulted.
+
+        Only the controller and inventory fields are this runtime's to report.
         """
-        if self._declared is None:
-            return transport.Availability(
-                device_ref=device_ref,
-                fleet_presence="KNOWN_ONLINE",
-                local_agent_controller="NOT_EXPOSED",
-                remote_inventory_from_this_runtime="UNAVAILABLE",
-                evidence_source="local_endpoint",
-            )
+        controller = "AVAILABLE" if self._declared is not None else "NOT_EXPOSED"
         return transport.Availability(
             device_ref=device_ref,
-            fleet_presence="KNOWN_ONLINE",
-            local_agent_controller="AVAILABLE",
-            remote_inventory_from_this_runtime="AVAILABLE",
+            fleet_presence=fleet_presence,
+            local_agent_controller=controller,
+            remote_inventory_from_this_runtime=(
+                "AVAILABLE" if controller == "AVAILABLE" else "UNAVAILABLE"
+            ),
             evidence_source="local_endpoint",
         )
 
