@@ -165,6 +165,35 @@ container_attribution:
         keeps them UNKNOWN_OWNER and therefore DEFER, which is the safe
         default for a decision this run has no mandate to make.
 
+  # A container whose paths sit under ANOTHER user's home.
+  #
+  # This is evidence about who does NOT own the container, so it never reaches
+  # the owner field — and it does NOT move the container out of
+  # UNKNOWN_OWNER. It is a third state beside "owned" and "unattributed":
+  #
+  #   owner known            the ladder found a source of record
+  #   foreign_actor: true    positively somebody else's; owner still unknown
+  #   neither                unattributed, and nothing says whose it is
+  #
+  # Collapsing the middle into the third throws away the one thing a cleanup
+  # pass needs to know, and collapsing it into the first invents an owner.
+  # Measured on this host 2026-09-13: `new-api` and `new-api-postgres` mount
+  # `/home/szj/gpt-img-2/data`, a different user's tree; `openclaw`'s five
+  # containers name `/opt/applications/data/home-ubuntu/...` among their
+  # working directories, with a sibling value that does not exist at all.
+  #
+  # Read from the path, in one implementation (`attribution.foreign_home`),
+  # because the identity of "me" is the part that gets this wrong: the first
+  # version read `$USER`, which systemd leaves empty, and under which this
+  # node's own `/home/hwz` reads as a stranger's directory.
+  foreign_actor:
+    decides_owner: false
+    changes_unknown_owner: false
+    disposition: DEFER
+    evidence: [working-directory, bind-mount]
+    fails_toward: not_foreign
+    layout: ["/home/<other>/...", "/opt/applications/data/home-<other>/..."]
+
   # Evidence classes that may put a NAME IN THE OWNER FIELD, strongest first.
   # Anything below the line may only produce a `locator`, which is reported
   # separately and never reaches the owner field — because a locator a reader

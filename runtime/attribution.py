@@ -324,6 +324,67 @@ def _decode_addr(field: str) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Whose home is this path under?
+#
+# One implementation, in the module both callers already load. Two copies of
+# this rule would agree on the day they were written and diverge after, which
+# is the failure this codebase has already paid for three times.
+# ---------------------------------------------------------------------------
+def current_user() -> str | None:
+    """The name of the user this process runs as, or None if it cannot be had.
+
+    Deliberately NOT `os.environ['USER']`. The first version of this rule read
+    that variable, and it is empty under exactly the conditions that matter:
+    a systemd unit, a stripped environment, a `sudo -i` shell. Measured on
+    this host, with `USER` unset, the old rule called `/home/hwz` — this
+    node's OWN home — a foreign user's directory. A rule that inverts on an
+    empty environment variable is a rule that inverts in production.
+
+    `getuid()` is a system call and is always there; the passwd lookup is the
+    only part that can fail, and a uid that has no passwd entry is still a
+    fact worth returning.
+    """
+    try:
+        import pwd
+        return pwd.getpwuid(os.getuid()).pw_name
+    except Exception:
+        return None
+
+
+def foreign_home(path: str | None, *, user: str | None = None) -> bool:
+    """Is this path under some OTHER user's home?
+
+    Another actor's directory is another actor's resource. That is positive
+    evidence about who does NOT own it — not a guess about who does.
+
+    Fails toward False. If the current user cannot be established, no path is
+    called foreign: asserting that a directory belongs to somebody else is a
+    claim, and a claim nobody can support is how this node's own work gets
+    written off as a stranger's. Both readings end in DEFER, so the safe
+    branch is also the honest one.
+
+    Read from the path rather than a hardcoded username list, so it covers
+    both layouts this machine uses:
+
+        /home/<user>/...                          the conventional layout
+        /opt/applications/data/home-<user>/...    the per-user data roots
+    """
+    if not path:
+        return False
+    me = user if user is not None else current_user()
+    if not me:
+        return False
+
+    parts = Path(path).parts
+    for i, part in enumerate(parts):
+        if part == "home" and i + 1 < len(parts) and parts[i + 1] != me:
+            return True
+        if part.startswith("home-") and part.removeprefix("home-") != me:
+            return True
+    return False
+
+
+# ---------------------------------------------------------------------------
 # The host. Every read is here and nowhere else.
 # ---------------------------------------------------------------------------
 
