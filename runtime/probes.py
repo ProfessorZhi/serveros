@@ -893,6 +893,39 @@ def observe(resource, host) -> health.Health:
     )
 
 
+def run_probe(resource, spec: dict, host) -> dict:
+    """Run one declared probe and render it. For `serverosctl probe <id>`.
+
+    Returns a dict rather than an `Observation` because the CLI has to show
+    the ones that FAILED too, and a failed probe has no valid observation to
+    return — reporting it as an UNKNOWN observation would be true but would
+    hide that the probe itself is broken, which is a different fix.
+    """
+    cls = PROBE_KINDS.get(spec.get("kind"))
+    if cls is None:  # pragma: no cover - registry validation prevents this
+        return {
+            "id": spec.get("id"), "axis": spec.get("axis"),
+            "kind": spec.get("kind"), "state": "UNKNOWN",
+            "evidence": {"type": "none"},
+            "error": f"unknown probe kind {spec.get('kind')!r}",
+            "authoritative": False,
+        }
+    try:
+        observation = cls(spec).run(resource, host)
+    except RegistryError as exc:
+        return {
+            "id": spec.get("id"), "axis": spec.get("axis"), "kind": spec.get("kind"),
+            "state": "UNKNOWN", "observed_by": {"type": "none", "id": spec.get("id")},
+            "observed_at": None, "evidence": {"type": "none"},
+            "error": str(exc), "authoritative": False,
+        }
+    shown = observation.show()
+    shown["id"] = spec.get("id")
+    shown["kind"] = spec.get("kind")
+    shown["authoritative"] = observation.authoritative
+    return shown
+
+
 def probe_one(resource, probe_id: str, host) -> Observation:
     """Run exactly one declared probe. Used by `serverosctl probe <id> --one`."""
     for spec in resource.probes:
