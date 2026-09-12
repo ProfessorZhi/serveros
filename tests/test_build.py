@@ -6,6 +6,8 @@ read by revision. Nothing here depends on this machine's checkouts.
 """
 import importlib.util
 import json
+import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -20,6 +22,9 @@ BUILDER = ROOT / "scripts" / "build.py"
 _spec = importlib.util.spec_from_file_location("serveros_build", BUILDER)
 build = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(build)
+
+# Skills canonical in this repository, in bundle order.
+LOCAL_SKILLS = ("serveros", "runtime-management")
 
 # Skills the real bundle sources from ability-management. The synthetic source
 # repo must provide all of them.
@@ -156,9 +161,9 @@ class BuildTests(unittest.TestCase):
     def test_plugin_manifests_list_every_bundled_skill(self):
         self.assertEqual(run_build(self.args("--write")).returncode, 0)
         claude = json.loads((self.out / ".claude-plugin/plugin.json").read_text())
-        self.assertEqual(len(claude["skills"]), 8)
+        self.assertEqual(len(claude["skills"]), 9)
         self.assertEqual(set(claude["skills"]),
-                         {f"./skills/{n}" for n in ("serveros",) + ABILITY_SKILLS})
+                         {f"./skills/{n}" for n in LOCAL_SKILLS + ABILITY_SKILLS})
         codex = json.loads((self.out / ".codex-plugin/plugin.json").read_text())
         self.assertEqual(codex["version"], claude["version"])
 
@@ -203,9 +208,154 @@ class BuildTests(unittest.TestCase):
         bundle = yaml.safe_load((ROOT / "plugin/bundle.yaml").read_text())
         self.assertEqual(bundle["schema"], "serveros/bundle.v1")
         local = [s for s in bundle["skills"] if s["source"] == "local"]
-        self.assertEqual([s["name"] for s in local], ["serveros"])
+        self.assertEqual([s["name"] for s in local], list(LOCAL_SKILLS))
         external = {s["name"] for s in bundle["skills"] if s["source"] == "ability-management"}
         self.assertEqual(external, set(ABILITY_SKILLS))
+
+    # -----------------------------------------------------------------------
+    # §26 · the node surface is declared, in the shape each runtime reads
+    # -----------------------------------------------------------------------
+
+    def test_the_node_surface_ships_and_is_declared(self):
+        self.assertEqual(run_build(self.args("--write")).returncode, 0)
+        claude = json.loads((self.out / ".claude-plugin/plugin.json").read_text())
+        codex = json.loads((self.out / ".codex-plugin/plugin.json").read_text())
+        self.assertEqual(claude["mcpServers"], "./.mcp.json")
+        self.assertEqual(codex["mcpServers"], "./.codex-mcp.json")
+        self.assertTrue((self.out / ".mcp.json").is_file())
+        self.assertTrue((self.out / ".codex-mcp.json").is_file())
+        # The payload the manifest points at must actually be in the artifact.
+        self.assertTrue((self.out / "mcp/bin/serveros-node-mcp").is_file())
+        self.assertTrue((self.out / "mcp/node_mcp.py").is_file())
+
+    def test_the_claude_mcp_file_uses_the_documented_wrapper(self):
+        """The plugin-root loader is `document.mcpServers || document`, so the
+        bare map and the wrapped one both load. We ship the wrapped one, and
+        this test exists so that a future "simplification" to the bare form —
+        which the official plugins happen to use — has to argue with the
+        documented schema and with `claude plugin validate` before it lands."""
+        self.assertEqual(run_build(self.args("--write")).returncode, 0)
+        document = json.loads((self.out / ".mcp.json").read_text())
+        self.assertEqual(list(document), ["mcpServers"])
+        server = document["mcpServers"]["serveros-node"]
+        self.assertIn("command", server)          # stdio, not http
+        self.assertNotIn("url", server)
+        self.assertIn("${CLAUDE_PLUGIN_ROOT}/mcp/bin/serveros-node-mcp", server["args"])
+
+    def test_running_the_adapter_does_not_write_into_the_installed_plugin(self):
+        """Observed, not theorised: starting the adapter from a built artifact
+        leaves a `__pycache__` in the directory it was started from. Inside an
+        installed plugin that directory is replaced on the next update, so the
+        cache is discarded by the event it was meant to speed up — and until
+        then the artifact holds files the build did not produce. The env entry
+        that prevents this is part of the declaration, so it is asserted here
+        rather than trusted to survive the next edit of bundle.yaml."""
+        self.assertEqual(run_build(self.args("--write")).returncode, 0)
+        for name in (".mcp.json", ".codex-mcp.json"):
+            server = json.loads((self.out / name).read_text())["mcpServers"]["serveros-node"]
+            self.assertEqual(server["env"], {"PYTHONDONTWRITEBYTECODE": "1"})
+
+    def test_starting_the_declared_server_writes_nothing(self):
+        """The same property end-to-end: run the entry point the manifest names,
+        in the exact directory it would run from, and check that the file tree
+        is unchanged afterwards."""
+        self.assertEqual(run_build(self.args("--write")).returncode, 0)
+        document = json.loads((self.out / ".mcp.json").read_text())
+        server = document["mcpServers"]["serveros-node"]
+        argv = [server["command"]] + [
+            a.replace("${CLAUDE_PLUGIN_ROOT}", str(self.out)) for a in server["args"]
+        ]
+        before = {p for p in self.out.rglob("*")}
+        subprocess.run(
+            argv, input='{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}\n',
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            text=True, timeout=60, cwd=self.out, env={**os.environ, **server["env"]},
+        )
+        self.assertEqual({p for p in self.out.rglob("*")} - before, set())
+
+    def test_the_codex_mcp_file_is_reachable_only_through_its_manifest_field(self):
+        """`.codex-mcp.json` is not a filename Codex looks for — the string does
+        not occur in the codex binary. It resolves only because the manifest
+        names it. So the manifest field and the file are one artefact in two
+        halves, and the test that matters is that both halves are present."""
+        self.assertEqual(run_build(self.args("--write")).returncode, 0)
+        manifest = json.loads((self.out / ".codex-plugin/plugin.json").read_text())
+        # removeprefix, not lstrip: lstrip("./") strips characters, not a
+        # prefix, and eats the leading dot of a dotfile.
+        document = json.loads((self.out / manifest["mcpServers"].removeprefix("./")).read_text())
+        server = document["mcpServers"]["serveros-node"]
+        self.assertEqual(server["cwd"], ".")
+        self.assertEqual(server["args"], ["./mcp/bin/serveros-node-mcp"])
+
+    def test_a_manifest_pointing_at_a_missing_entry_is_refused(self):
+        """Declared-but-absent, caught at build time. Without this the artifact
+        would ship a server declaration naming a file it does not contain, and
+        the failure would surface as a runtime fault nobody could trace to the
+        bundle."""
+        bundle = yaml.safe_load((ROOT / "plugin/bundle.yaml").read_text())
+        bundle["mcp"]["servers"][0]["entry"] = "bin/no-such-entry"
+        path = self.base / "bundle.yaml"
+        path.write_text(yaml.safe_dump(bundle, allow_unicode=True))
+        result = run_build(["--check", "--bundle", str(path)] + self.args())
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("does not exist", result.stderr)
+
+    def test_an_mcp_entry_may_not_escape_its_module(self):
+        bundle = yaml.safe_load((ROOT / "plugin/bundle.yaml").read_text())
+        bundle["mcp"]["servers"][0]["entry"] = "../runtime/daemon.py"
+        path = self.base / "bundle.yaml"
+        path.write_text(yaml.safe_dump(bundle, allow_unicode=True))
+        result = run_build(["--check", "--bundle", str(path)] + self.args())
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("inside", result.stderr)
+
+    def test_the_declared_mcp_file_is_the_one_that_was_written(self):
+        """The builder emits the pointer and the file, so they cannot disagree
+        today. This asserts the invariant rather than the mechanism, because the
+        runtime's own validator does NOT check it: `mcpServers: "./nope.json"`
+        passes `claude plugin validate --strict` in silence (verified — a typo
+        in the field *name* is caught, a typo in its *value* is not). A dangling
+        pointer is the declared-but-absent shape, and nothing but this test
+        would notice one."""
+        self.assertEqual(run_build(self.args("--write")).returncode, 0)
+        for manifest_path, expected in ((".claude-plugin/plugin.json", ".mcp.json"),
+                                        (".codex-plugin/plugin.json", ".codex-mcp.json")):
+            manifest = json.loads((self.out / manifest_path).read_text())
+            target = self.out / manifest["mcpServers"].removeprefix("./")
+            self.assertEqual(target.name, expected)
+            self.assertTrue(target.is_file(), f"{manifest_path} points at a file that is not there")
+
+    def test_the_generated_artifact_passes_the_runtimes_own_validator(self):
+        """`claude plugin validate --strict` is the strongest available check on
+        the manifests, and it is not a formality: it was confirmed to fail on a
+        misspelled `mcpservers` and on a wrong-typed `mcpServers`, which are the
+        two ways this file can be present and inert. Skipped rather than failed
+        when the CLI is absent, so the suite stays hermetic on a machine that
+        does not have it."""
+        cli = shutil.which("claude")
+        if cli is None:
+            self.skipTest("claude CLI is not on PATH")
+        self.assertEqual(run_build(self.args("--write")).returncode, 0)
+        result = subprocess.run([cli, "plugin", "validate", "--strict", str(self.out)],
+                                stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+        self.assertEqual(result.returncode, 0, result.stdout)
+
+    def test_a_bundle_without_servers_declares_no_mcp_surface(self):
+        """A plugin with no node surface must not advertise an empty one — an
+        empty `mcpServers` reads as "there are none" rather than "not offered",
+        which is the same mistake as returning `[]` for an unavailable daemon."""
+        bundle = yaml.safe_load((ROOT / "plugin/bundle.yaml").read_text())
+        del bundle["mcp"]["servers"]
+        path = self.base / "bundle.yaml"
+        path.write_text(yaml.safe_dump(bundle, allow_unicode=True))
+        self.assertEqual(
+            run_build(["--write", "--bundle", str(path)] + self.args()).returncode, 0)
+        claude = json.loads((self.out / ".claude-plugin/plugin.json").read_text())
+        self.assertNotIn("mcpServers", claude)
+        self.assertFalse((self.out / ".mcp.json").exists())
+        self.assertFalse((self.out / ".codex-mcp.json").exists())
+        # The module itself still ships: the adapter is usable without a plugin.
+        self.assertTrue((self.out / "mcp/bin/serveros-node-mcp").is_file())
 
 
 if __name__ == "__main__":

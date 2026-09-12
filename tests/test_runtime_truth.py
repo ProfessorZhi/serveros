@@ -20,6 +20,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
+import yaml
+
 ROOT = Path(__file__).resolve().parents[1]
 INSPECTOR = ROOT / "scripts" / "runtime_truth.py"
 BUILDER = ROOT / "scripts" / "build.py"
@@ -82,7 +84,17 @@ class RuntimeTruthTests(unittest.TestCase):
         self.serveros = self.base / "serveros"
         (self.serveros / "scripts").mkdir(parents=True)
         shutil.copy2(ROOT / "scripts/build.py", self.serveros / "scripts/build.py")
-        for rel in ("plugin", "skills/serveros", "context", "space", "relations"):
+        # The composition is read from the bundle, not restated here. As a
+        # literal tuple it was a second copy of a vocabulary the bundle already
+        # owns, and it silently fell behind the moment a member was added: the
+        # synthetic checkout had no `skills/runtime-management` and no `mcp/`,
+        # so the artifact stopped being recomputable and the chain axis went red
+        # for a reason that had nothing to do with the chain.
+        bundle = yaml.safe_load((ROOT / "plugin/bundle.yaml").read_text())
+        members = ["plugin"] + [f"skills/{s['name']}" for s in bundle["skills"]
+                                if s["source"] == "local"]
+        members += [m for m in build.CORE_MODULES if bundle.get(m, {}).get("path")]
+        for rel in members:
             shutil.copytree(ROOT / rel, self.serveros / rel)
         # Importing build.py writes scripts/__pycache__, which would make the
         # synthetic checkout permanently dirty the moment the inspector loads

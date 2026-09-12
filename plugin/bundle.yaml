@@ -34,7 +34,7 @@ version: "3.1.0"
 # regenerated payload must invalidate an already-installed plugin cache. Leave
 # it unchanged otherwise, so that rebuilding from unchanged inputs stays
 # byte-identical.
-cachebuster: srv0003.20260911c
+cachebuster: srv0003.20260912a
 
 # Skills composed into the plugin, in bundle order.
 #
@@ -43,6 +43,8 @@ cachebuster: srv0003.20260911c
 #                             skills/<name>/payload on the pinned revision
 skills:
   - name: serveros
+    source: local
+  - name: runtime-management
     source: local
 
   - name: ability-management
@@ -70,6 +72,34 @@ space:
   path: space
 relations:
   path: relations
+
+# The node MCP surface. `path` is the payload directory copied into the
+# artifact; `servers` is what gets declared at the plugin root.
+#
+# §23: this is a thin stdio adapter over serverosd's Unix socket. It holds no
+# state, reaches no shell, and when the daemon is down it refuses by name rather
+# than answering with an empty list — the failure mode this whole architecture
+# exists to prevent. The server name appears in an agent's tool namespace, so it
+# is declared once, here, and the builder renders it rather than keeping a second
+# list of server names of its own.
+mcp:
+  path: mcp
+  servers:
+    - name: serveros-node
+      # `python3` rather than the entry point itself: the artifact writer
+      # restores an executable bit only for `.sh`/`.py`, so naming the
+      # interpreter is what makes this entry work regardless of the mode the
+      # file lands with. A manifest that depends on a mode the build has to
+      # remember is a manifest that works only where it was built.
+      command: python3
+      entry: bin/serveros-node-mcp
+      # Without this, starting the adapter writes a `__pycache__` into the
+      # plugin install directory — observed doing exactly that. That directory
+      # is replaced wholesale on the next plugin update, so the cache is thrown
+      # away by the very event it was meant to speed up, and in the meantime the
+      # artifact contains files the build did not put there.
+      env:
+        PYTHONDONTWRITEBYTECODE: "1"
 
 # Default prompts surfaced by the runtime plugin UI.
 default_prompt:

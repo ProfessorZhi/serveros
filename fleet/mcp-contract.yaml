@@ -20,24 +20,41 @@ surfaces:
   serveros-node-mcp:
     scope: one device — the node it runs on
     ownership: current node
-    resources:
-      - serveros://device
-      - serveros://environment
-      - serveros://context/current
-      - serveros://abilities
-      - serveros://paths
-      - serveros://protected-resources
+    # Where this surface's implementation lives, so the declaration above and
+    # the code below cannot drift apart unobserved. `tool_names()` in that file
+    # is asserted equal to the `tools:` list below.
+    implementation: mcp/node_mcp.py
+
+    # Deliberately empty, and deliberately not `resources: []` alone.
+    #
+    # An earlier revision listed six `serveros://…` URIs here. None was ever
+    # served: the adapter answers `resources/list` with a method-not-found
+    # error, on purpose, because an empty list from a surface that was never
+    # asked is a claim that the set is empty rather than that it does not
+    # exist. A declared-but-unserved capability list is the same error one
+    # level up — it tells a reader the surface has something it does not.
+    #
+    # §24 lists this surface's interface as tools only. State is reachable
+    # through a tool, which carries provenance; a bare URI does not.
+    resources: []
+    resources_declined: >-
+      No resources are offered, by design rather than by omission.
+
     tools:
-      - context.resolve
+      # The order and spelling below are the adapter's own; it is the
+      # implementation, and this list is checked against it.
+      - device.show
+      - context.current
       - path.resolve
       - path.admit
-      - environment.inspect
+      - runtime.list
+      - runtime.status
+      - runtime.explain
+      - resource.summary
+      - resource.hygiene
+      - observation.get
       - ability.list
-      - ability.resolve
       - ability.status
-      - workspace.inspect
-      - git.inspect
-      - task.run
     owns:
       - current-node environment facts
       - current-node path role resolution

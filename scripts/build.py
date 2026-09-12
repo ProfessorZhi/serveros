@@ -62,7 +62,12 @@ def _git(repo: Path, *args: str) -> bytes:
 # ServerOS Core modules that ship as plain code next to the skills. Each is
 # declared in bundle.yaml under its own key; this tuple only fixes the order and
 # the set of module names the builder is willing to look for.
-CORE_MODULES = ("context", "space", "relations")
+#
+# `mcp` is here for the same reason as the other three: a delegating CLI must be
+# able to load it from the installed bundle instead of from a source checkout
+# that moves. It differs in one respect — it is not a decision kernel but an
+# entry point, so it additionally gets declared to the runtime as a server.
+CORE_MODULES = ("context", "space", "relations", "mcp")
 
 
 def resolve_ability_rev(repo: Path, rev: str) -> str:
@@ -117,7 +122,7 @@ def ability_skill_files(repo: Path, rev: str, name: str) -> list[tuple[bytes, Pa
 
 
 def claude_plugin_manifest(bundle: dict, version: str, skills: list[str]) -> dict:
-    return {
+    manifest = {
         "name": bundle["name"],
         "version": version,
         "description": bundle["description"],
@@ -125,10 +130,17 @@ def claude_plugin_manifest(bundle: dict, version: str, skills: list[str]) -> dic
         "skills": [f"./skills/{n}" for n in skills],
         "license": bundle["license"],
     }
+    # Named explicitly rather than left to convention. A plugin-root `.mcp.json`
+    # is discovered by default, so this field is redundant today — and it is the
+    # one line that says, in the manifest itself, that this plugin owns a node
+    # surface. A convention is not a declaration.
+    if _declared_servers(bundle):
+        manifest["mcpServers"] = "./.mcp.json"
+    return manifest
 
 
 def codex_plugin_manifest(bundle: dict, version: str) -> dict:
-    return {
+    manifest = {
         "name": bundle["name"],
         "version": version,
         "description": bundle["description"],
@@ -146,6 +158,9 @@ def codex_plugin_manifest(bundle: dict, version: str) -> dict:
             "brandColor": bundle["brand_color"],
         },
     }
+    if _declared_servers(bundle):
+        manifest["mcpServers"] = "./.codex-mcp.json"
+    return manifest
 
 
 def claude_marketplace_manifest(bundle: dict, version: str) -> dict:
@@ -185,13 +200,104 @@ def codex_marketplace(bundle: dict, output: Path, marketplace_path: Path) -> dic
     }
 
 
+def _declared_servers(bundle: dict) -> list[dict]:
+    module = bundle.get("mcp", {}).get("path")
+    servers = bundle.get("mcp", {}).get("servers") or []
+    if servers and not module:
+        raise ValueError("bundle declares mcp servers but no mcp module path")
+    for entry in servers:
+        for key in ("name", "command", "entry"):
+            if not entry.get(key):
+                raise ValueError(f"mcp server entry is missing {key!r}: {entry!r}")
+        # The entry is joined onto the module path, so a `..` in it would name a
+        # path the artifact does not contain: the server would be declared and
+        # unable to start, which reads as a runtime fault rather than a typo.
+        parts = Path(entry["entry"]).parts
+        if Path(entry["entry"]).is_absolute() or ".." in parts:
+            raise ValueError(f"mcp entry must stay inside {module}/: {entry['entry']!r}")
+        if not (repo_root() / module / entry["entry"]).is_file():
+            raise ValueError(f"mcp entry does not exist: {module}/{entry['entry']}")
+    return servers
+
+
+def claude_mcp_manifest(bundle: dict) -> dict:
+    """The plugin-root `.mcp.json`, in the `{"mcpServers": {...}}` shape.
+
+    A plugin-root `.mcp.json` is not the same file as a project `.mcp.json`, but
+    the runtime loader accepts the same two encodings, because it starts by
+    taking `document.mcpServers || document` and only then iterates entries.
+    Both therefore load identically, and every first-party plugin in the
+    official marketplace ships the bare map. We emit the wrapped form anyway:
+
+      * it is the documented one, so it is what a reader and `claude plugin
+        validate` expect;
+      * the bare form silently changes meaning if a server is ever named
+        `mcpServers`, and "works until someone picks the wrong name" is not a
+        property worth shipping.
+
+    The difference is invisible at runtime, which is exactly why it is written
+    down here rather than rediscovered later.
+    """
+    module = bundle.get("mcp", {}).get("path")
+    servers = {}
+    for entry in _declared_servers(bundle):
+        server = {
+            "command": entry["command"],
+            "args": [f"${{CLAUDE_PLUGIN_ROOT}}/{module}/{entry['entry']}"],
+        }
+        if entry.get("env"):
+            server["env"] = dict(entry["env"])
+        servers[entry["name"]] = server
+    return {"mcpServers": servers}
+
+
+def codex_mcp_manifest(bundle: dict) -> dict:
+    """The Codex equivalent.
+
+    Two things differ from the Claude side and both are load-bearing:
+
+      * Codex has no plugin-root placeholder, so `command`/`args` are relative
+        and `cwd` is the plugin root.
+      * `.codex-mcp.json` is NOT a filename Codex looks for. It appears nowhere
+        in the codex binary. It is just a filename one installed plugin happens
+        to use, and that plugin only reaches its servers because its manifest
+        points at the file explicitly. The manifest below does the same, so the
+        name is an arbitrary local choice rather than an assumed convention.
+
+    Field order and the presence of `env` are kept identical to the Claude file
+    so that the diff between the two is exactly the two differences above.
+    """
+    module = bundle.get("mcp", {}).get("path")
+    servers = {}
+    for entry in _declared_servers(bundle):
+        server = {
+            "command": entry["command"],
+            "args": [f"./{module}/{entry['entry']}"],
+        }
+        if entry.get("env"):
+            server["env"] = dict(entry["env"])
+        server["cwd"] = "."
+        servers[entry["name"]] = server
+    return {"mcpServers": servers}
+
+
 def build_readme(bundle: dict, version: str, skills: list[str], ability_rev: str) -> str:
+    servers = _declared_servers(bundle)
+    surface = ""
+    if servers:
+        surface = (
+            "Node surface: " + ", ".join(e["name"] for e in servers) + "\n"
+            "(`.mcp.json` for Claude, `.codex-mcp.json` for Codex). A thin stdio adapter over "
+            "the local `serverosd` socket, holding no state of its own; when the daemon is not "
+            "running it reports that rather than answering with an empty result.\n\n"
+        )
     return (
         f"# ProfessorZhi/{bundle['name']}\n\n"
         "Generated by `src/serveros/scripts/build.py`. Do not edit by hand.\n\n"
         f"Bundle definition: `{bundle['name']}` (`plugin/bundle.yaml`).\n\n"
         "Provided skills: " + ", ".join(skills) + "\n\n"
-        f"Generated version: `{version}` (cachebuster suffix `{bundle['cachebuster']}`).\n\n"
+        + surface
+        + f"Generated version: `{version}` (cachebuster suffix `{bundle['cachebuster']}`).\n\n"
         f"Reusable skills read from `ability-management@{ability_rev}`. "
         "Canonical identity alias: `ProfessorZhi/workspace-maintainer` is presented as the "
         "`workspace-management` runtime name/path.\n\n"
@@ -239,6 +345,11 @@ def plan(bundle_path: Path, ability_repo: Path, ability_rev: str, output: Path, 
         Path(".claude-plugin/marketplace.json"): claude_marketplace_manifest(bundle, version),
         Path(".codex-plugin/plugin.json"): codex_plugin_manifest(bundle, version),
     }
+    if _declared_servers(bundle):
+        # Two files, two shapes. Emitted together so that neither runtime can
+        # drift into being the only one this plugin actually reaches.
+        manifests[Path(".mcp.json")] = claude_mcp_manifest(bundle)
+        manifests[Path(".codex-mcp.json")] = codex_mcp_manifest(bundle)
     readme = build_readme(bundle, version, skills, ability_rev)
     marketplace = codex_marketplace(bundle, output, marketplace_path)
     return files, manifests, readme, marketplace, version
