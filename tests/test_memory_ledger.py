@@ -591,6 +591,38 @@ class StalenessTests(unittest.TestCase):
         self.assertEqual(result["status"], "STALE")
         self.assertIn("regenerate", result["because"])
 
+    def test_the_two_revisions_are_told_apart_in_the_message(self):
+        """The live case that produced this: the ledger was committed, edited,
+        and the projection rebuilt, so the two names were
+        `2092223277ebeecf…+content:57c9d929` and `2092223277ebeecf…`. Both were
+        printed truncated to 12 characters, so the report said STALE and gave
+        "built from 2092223277eb, ledger is at 2092223277eb" as its reason —
+        a message whose entire content is that two things differ, showing them
+        identically.
+
+        Asserted as a property of the rendered sentence rather than of the
+        format string: whatever the two revisions are, a reader must be able
+        to see where they differ.
+        """
+        same_prefix = "2092223277ebeecfba17d2391b0b9b405514b8e8"
+        manifest = {"source_refs": [f"records/x@{same_prefix}"]}
+        result = projection.staleness(
+            manifest, ledger_revision=f"{same_prefix}+content:57c9d929")
+        self.assertEqual(result["status"], "STALE")
+        self.assertIn("content:57c9d929", result["because"],
+                      "the distinguishing part of the revision was truncated "
+                      "away, leaving a staleness report that shows the two "
+                      "revisions as identical")
+        # Both names in full, so neither is elided where they differ. The
+        # projected one carries its own `content:` suffix and the assertion
+        # above would pass with only the ledger's — an earlier draft of this
+        # test asserted on a substring and could not tell the two apart.
+        built = result["ledger_revision"]
+        self.assertEqual(built, same_prefix)
+        self.assertTrue(result["because"].startswith(f"built from {built}"))
+        self.assertIn(f"ledger is at {same_prefix}+content:57c9d929",
+                      result["because"])
+
     def test_a_projection_that_cannot_name_its_revision_is_stale(self):
         """The contract's own words: "a projection that cannot name its
         revision is reported STALE". Not a third state — a caller acts the same
