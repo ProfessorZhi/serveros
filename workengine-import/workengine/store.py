@@ -34,6 +34,22 @@ def _reject_secrets(value):
     if _SECRET.search(text): raise ValueError("secret-like evidence metadata is forbidden")
 
 
+class ActiveWorkerAckRequired(ValueError):
+    """A RUNNING Run was terminated without anyone saying they meant to.
+
+    Its own type because the caller has to be able to tell this refusal from
+    every other refusal in the same call path and to act on it — an MCP tool
+    that reported it as a generic failure would leave an agent re-reading a
+    message to find out whether to retry, and the answer here is not "retry",
+    it is "a human has to say the worker may still be running".
+
+    A subclass of `ValueError` so that callers written against the older,
+    untyped refusal keep working.
+    """
+
+    reason_code = "ACTIVE_WORKER_ACK_REQUIRED"
+
+
 class ServerOSStore:
     def __init__(self, state_dir: str | Path) -> None:
         state_dir = Path(state_dir)
@@ -545,6 +561,83 @@ class ServerOSStore:
             row = conn.execute("SELECT * FROM runs WHERE item_id=? AND run_id=?", (item_id, run_id)).fetchone()
         return self._run(row) if row else None
 
+    def list_runs(self, item_id: str | None = None, *, state: RunState | str | None = None) -> list[Run]:
+        """Runs, newest first, optionally narrowed to one Item or one state.
+
+        No default state filter. A caller that asked for "the runs" and got only
+        the live ones would read the list as the whole history, and a finished
+        Run is exactly the one somebody is usually asking about.
+        """
+        query = "SELECT * FROM runs"
+        clauses: list[str] = []
+        params: list = []
+        if item_id is not None:
+            clauses.append("item_id=?")
+            params.append(item_id)
+        if state is not None:
+            clauses.append("state=?")
+            params.append(RunState(state).value)
+        if clauses:
+            query += " WHERE " + " AND ".join(clauses)
+        query += " ORDER BY started_at DESC, run_id DESC"
+        with self.connection() as conn:
+            rows = conn.execute(query, params).fetchall()
+        return [self._run(row) for row in rows]
+
+    def run_events(self, item_id: str, run_id: str) -> list[dict]:
+        """The Item's events that are about this Run, oldest first.
+
+        Read from `item_events` rather than from a run-scoped table, because
+        there is one event ledger and a second one would be a second history of
+        the same work that disagrees with the first.
+
+        `run_terminated` is the only run-scoped event type the ledger records
+        today. That is a real limit of the evidence, not of this query: a Run's
+        forward transitions live in `runs.state` and were never evented, so an
+        empty list here means "nothing was recorded about this Run" and not
+        "nothing happened to it". `run_events_summary` states the difference for
+        callers that would otherwise read the empty list as the second thing.
+        """
+        return [
+            record
+            for record in self.item_events(item_id)
+            if str((record.get("payload") or {}).get("run") or "") == str(run_id)
+        ]
+
+    def run_events_summary(self, item_id: str, run_id: str) -> dict:
+        """`run_events`, wrapped with what the empty case does and does not mean.
+
+        The extra keys exist so that a caller cannot read `events: []` as "this
+        Run did nothing". An unknown Run is refused rather than answered with an
+        empty history, because a Run that does not exist and a Run that nothing
+        was recorded about are different findings.
+        """
+        run = self.get_run(item_id, run_id)
+        if run is None:
+            raise KeyError(f"unknown Run: {item_id}/{run_id}")
+        events = self.run_events(item_id, run_id)
+        return {
+            "item": item_id,
+            "run": run_id,
+            "state": run.state.value,
+            "events": events,
+            "count": len(events),
+            "recorded_event_types": sorted({record["event_type"] for record in events}),
+            # Stated in the answer rather than left to the caller's memory of the
+            # schema, because the wrong reading — "nothing happened" — is the one
+            # an empty list invites.
+            "ledger_covers": [
+                "operator terminations (event_type run_terminated)",
+            ],
+            "not_recorded": (
+                "Forward Run transitions are not evented. This Run's current "
+                "state is authoritative in runs.state; its history through "
+                "ALLOCATED/PREPARING/RUNNING/FINALIZING was never written to the "
+                "event ledger, so an empty list here does not mean the Run did "
+                "nothing."
+            ),
+        }
+
     def advance_run(self, item_id: str, run_id: str, target: RunState | str) -> Run:
         target = RunState(target)
         if target in {RunState.CANCELLED, RunState.INVALID}:
@@ -663,7 +756,7 @@ class ServerOSStore:
             # still have a worker executing, so require an explicit extra action.
             active = current == RunState.RUNNING
             if active and not acknowledge_active_worker:
-                raise ValueError(
+                raise ActiveWorkerAckRequired(
                     f"Run {item_id}/{run_id} is {current.value}: the control plane cannot observe or "
                     "stop a worker process, so terminating here would not end one. Re-run with "
                     "--acknowledge-active-worker to record the control-plane fact anyway."

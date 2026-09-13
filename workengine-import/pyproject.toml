@@ -9,6 +9,9 @@ dependencies = []
 [project.scripts]
 workengine = "workengine.cli:main"
 serverosctl = "workengine.cli:main"
+# The MCP adapter is a separate process from the CLI on purpose: an agent that
+# holds the control surface must not thereby hold the maintenance one.
+serveros-work-mcp = "workengine.mcp:main"
 
 [build-system]
 requires = ["setuptools>=61.0"]
