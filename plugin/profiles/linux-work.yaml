@@ -77,6 +77,19 @@ recommended:
     status: available
     reason: Reporting is an output of finished work, not a precondition for
       starting it.
+  - name: inventory-publishing
+    source: ability-management
+    status: available
+    reason: The frequency judgment, on data rather than on plausibility. L3
+      inventory refreshes in hwz-ops run in bursts tied to topology change —
+      17 events across 09-03..09-10, five of them on one day, and one in the
+      six days after the convergence work stopped. That is an operation a node
+      performs when the machine materially changes, not one it exercises
+      without deciding to, so it is resolved at the moment it is reached for
+      rather than carried by every node. Bundling it would ship the channel,
+      compression and conflict logic to nodes that never publish; the payload
+      is small, but a member that is present is a member the node maintains,
+      and §18's rule is that the catalogue is not eagerly bundled.
   - name: document-stewardship
     source: ability-management
     status: missing

@@ -45,6 +45,7 @@ ABILITY_SKILLS = (
     "work-management",
     "feishu-space-management",
     "feishu-report",
+    "inventory-publishing",
 )
 
 # What `serveros-core` itself composes from ability-management. A subset of the
