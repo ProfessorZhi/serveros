@@ -84,11 +84,12 @@ class CompositionTests(unittest.TestCase):
         self._tmp = tempfile.TemporaryDirectory()
         self.base = Path(self._tmp.name)
         self.repo, self.rev = make_ability_repo(self.base)
-        # The build validates the pack contract, and this repository's own contract
-        # pins a real ability-management commit that the synthetic catalogue
-        # cannot answer for. Injecting one pinned to the fixture's revision keeps
-        # the closure check in the path of every composition build here.
-        self.contract = write_pack_contract(self.base, self.rev)
+        # The build validates the pack contract, and this repository's own pins
+        # a real ability-management commit the synthetic catalogue cannot answer
+        # for. The schema is injected from the fixture and the packs come from
+        # the fixture's own git object, so the closure check stays in the path
+        # of every composition build here rather than being skipped.
+        self.contract = write_pack_contract(self.base)
 
     def tearDown(self):
         self._tmp.cleanup()

@@ -80,7 +80,7 @@ class RuntimeTruthTests(unittest.TestCase):
         # contract is injected rather than the check being skipped: skipping it
         # when the file is absent is exactly the silent pass the check exists
         # to remove.
-        self.contract = write_pack_contract(self.base, self.rev)
+        self.contract = write_pack_contract(self.base)
         self.out = self.base / "dist/current"
         self.marketplace = self.base / "dist/.agents/plugins/marketplace.json"
         # A committed copy of this repository's bundle, so that the two rows
@@ -150,16 +150,21 @@ class RuntimeTruthTests(unittest.TestCase):
         return version
 
     def contract_at(self, rev: str) -> Path:
-        """A pack contract pinned to `rev`.
+        """The pack contract to build `rev` against.
 
-        `validate_packs` refuses a pack whose pin names a revision other than
-        the one being built against, which is the pin doing its job. Building
-        the artifact from a side-branch commit therefore needs a contract that
-        names that commit. The fixture produces one; it does not relax the
-        check, because a check that can be relaxed from the caller is not a
-        check.
+        One file for every revision, and that IS the change worth naming. This
+        used to be written per revision, because the packs were declared inside
+        the contract and the pin had to name the revision being built from.
+        The packs are published in the ability-management repository now, so a
+        per-revision contract would be a SECOND source for them — precisely
+        what the split removed — and the pin travels with the declarations
+        instead. What this still does is refuse to hand back a path for a
+        revision that cannot answer for its own declarations, because a check
+        that a caller can relax is not a check, and the reader is a worse place
+        to discover a missing file than here.
         """
-        return write_pack_contract(self.base / f"rev-{rev[:12]}", rev)
+        git(self.ability, "show", f"{rev}:ability-packs.yaml")
+        return self.contract
 
     def install_claude(self, version: str, path: Path, rev: str | None = None):
         self.claude_json.write_text(json.dumps({"version": 2, "plugins": {

@@ -253,6 +253,14 @@ def validate_recommended(bundle: dict, local_root: Path, ability_repo: Path,
                 f"{ability_rev[:12]}")
 
 
+# Where the published pack declarations live inside ability-management. Named
+# here rather than defaulted at each call site: `publishing.location` in
+# `abilities/pack-contract.yaml` says "beside the manifest it names members
+# from", and a reader that guessed a different filename would be reading a
+# different contract from the one that was declared.
+PACK_DECLARATIONS_FILE = "ability-packs.yaml"
+
+
 def catalogued_abilities(ability_repo: Path, ability_rev: str) -> list[str]:
     """Every ability name in the manifest AT THE PINNED REVISION.
 
@@ -281,6 +289,43 @@ def catalogued_abilities(ability_repo: Path, ability_rev: str) -> list[str]:
             "A closure check against an empty catalogue must not be reported as "
             "a set of pack failures")
     return names
+
+
+def published_packs(ability_repo: Path, ability_rev: str) -> list[dict]:
+    """The pack declarations published in ability-management, at that revision.
+
+    The declaration half of `serveros/ability-pack.v1`. `abilities/pack-contract.yaml`
+    holds the schema half — the record shape, the member roles, the pin rule,
+    what refuses — and its `publishing.location` has said since it was written
+    that the packs themselves belong in ability-management, "beside the manifest
+    it names members from". That sentence was carried as
+    `location_status: DECLARED_NOT_IMPLEMENTED` for as long as it was untrue.
+
+    Read from the git object and not from the checkout, exactly as
+    `catalogued_abilities()` reads the manifest and for exactly the same
+    reason: a dirty working copy must not be able to answer a question about
+    what has been published. The two readers are deliberately symmetric — one
+    reads the catalogue, one reads the packs that name members of it, and they
+    must agree about which revision they are talking about or the closure
+    answer is about two different worlds.
+    """
+    raw = _git(ability_repo, "show", f"{ability_rev}:{PACK_DECLARATIONS_FILE}")
+    document = yaml.safe_load(raw.decode())
+    if not isinstance(document, dict):
+        raise ValueError(
+            f"{PACK_DECLARATIONS_FILE} at {ability_rev[:12]} is not a mapping")
+    packs = document.get("packs")
+    if not isinstance(packs, list) or not packs:
+        # Refusing rather than returning an empty list. An empty declaration
+        # set would make every pack vanish and the build would report success
+        # over a product with no packs at all — which is the failure mode this
+        # whole reader exists to make impossible, arriving through the one door
+        # left open: a file that parses and says nothing.
+        raise ValueError(
+            f"{PACK_DECLARATIONS_FILE} at {ability_rev[:12]} declares no packs. "
+            "A build against an empty pack catalogue must not be reported as a "
+            "product with nothing to check")
+    return packs
 
 
 def _packs_module():
@@ -320,12 +365,17 @@ def validate_packs(contract_path: Path, ability_repo: Path, ability_rev: str) ->
     """
     contract = yaml.safe_load(contract_path.read_text(encoding="utf-8"))
     packs = _packs_module()
-    report = packs.resolve(contract, catalogued_abilities(ability_repo, ability_rev),
-                           catalogue_revision=ability_rev, catalogue_repo=str(ability_repo))
 
-    line = packs.summarize(report)
-    if line:
-        print(line)
+    # Two sources, deliberately. The contract supplies the RULES and the
+    # declarations supply the PACKS, and they now live in two repositories —
+    # which is the point of `publishing.location`, and also the thing that
+    # makes the assembly worth doing explicitly instead of letting `resolve()`
+    # read `contract["packs"]` and quietly get whatever the local file had.
+    # `resolve()` is unchanged: it still asks whether the packs a contract
+    # declares close against a catalogue. This is where those packs come from.
+    assembled = dict(contract, packs=published_packs(ability_repo, ability_rev))
+    report = packs.resolve(assembled, catalogued_abilities(ability_repo, ability_rev),
+                           catalogue_revision=ability_rev, catalogue_repo=str(ability_repo))
 
     if report["refused"]:
         # The MEMBER is named, not just the pack. "pack:0 does not exist" reads
@@ -340,11 +390,30 @@ def validate_packs(contract_path: Path, ability_repo: Path, ability_rev: str) ->
             f"ability-management@{ability_rev[:12]}: {'; '.join(missing)}. A pack "
             "is names, and a name that resolves to nothing is installed happily "
             "and planned around")
-    superseded = [v for v in report["pins"]["packs"] if v["status"] == "PIN_MISMATCH"]
-    if superseded:
+    # The pin verdict is finished here rather than inside `resolve()`, and it is
+    # finished by a call and not by a loop. It was a loop here for one revision
+    # and that is exactly how this repository produced two answers to one
+    # question: `abilities/packs.py` has a command-line entry point, and with
+    # the ancestor rule living only in this file that entry point printed
+    # `FAIL ... PIN_MISMATCH` over the very same files this function built
+    # successfully. `settle_pins()` is the one implementation, and it lives
+    # beside the verdict vocabulary it writes into.
+    drifted = packs.settle_pins(report, revision=ability_rev, repo=ability_repo)
+
+    # Summarized AFTER the pin upgrade, not before it. It was printed before
+    # for one revision, and the build log then carried five `FAIL ...
+    # PIN_MISMATCH` lines that the block above immediately upgraded and
+    # accepted. A log that prints FAIL over a build that succeeds is worse than
+    # a quiet one: it teaches whoever reads it that FAIL is noise, which is the
+    # cost the whole pin mechanism was added to avoid paying.
+    line = packs.summarize(report)
+    if line:
+        print(line)
+
+    if drifted:
         raise ValueError(
             "packs pin a catalogue revision other than the one being built "
-            f"against: {['%s=%s' % (v['pack'], str(v['pinned'])[:12]) for v in superseded]} "
+            f"against: {['%s=%s' % (v['pack'], str(v['pinned'])[:12]) for v in drifted]} "
             f"vs {ability_rev[:12]}. Revalidate and repin, or the closure above "
             "is about a catalogue nobody can produce")
     return report
