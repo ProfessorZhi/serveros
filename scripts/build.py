@@ -44,6 +44,24 @@ except ImportError:  # pragma: no cover - environment guarantee
 EXCLUDED_DIRS = {"__pycache__", ".git"}
 EXCLUDED_SUFFIXES = {".pyc", ".pyo"}
 
+# git's two executable tree modes. `100755` is an ordinary executable file;
+# `100775` is a setgid one, which git can hold and which is executable too.
+EXECUTABLE_GIT_MODES = {"100755", "100775"}
+
+
+def is_executable(path: Path) -> bool:
+    """Whether a source file is a program.
+
+    The executable bit is part of what a file IS, not decoration, so the
+    artifact reproduces it from the source instead of inferring it from a
+    suffix. Inferring is what broke: the writer restored a mode only for `.sh`
+    and `.py`, and `bin/serverosd` has no suffix, so it landed 0644 and systemd
+    answered `status=203/EXEC`. Both entry points in the composition are
+    extensionless, so the rule was wrong for exactly the files whose mode
+    matters most.
+    """
+    return bool(path.stat().st_mode & 0o111)
+
 
 def repo_root() -> Path:
     return Path(__file__).resolve().parent.parent
@@ -254,26 +272,37 @@ def local_skill_files(root: Path) -> list[tuple[Path, Path]]:
     return pairs
 
 
-def ability_skill_files(repo: Path, rev: str, name: str) -> list[tuple[bytes, Path]]:
-    """(content, path relative to the skill directory) at a pinned revision.
+def ability_skill_files(repo: Path, rev: str, name: str) -> list[tuple[bytes, Path, bool]]:
+    """(content, path relative to the skill directory, executable) at a pinned revision.
 
     Reads objects directly, so the state of any working tree is irrelevant.
+
+    The mode is read from the tree rather than guessed from the filename. git
+    already tracks whether a path is a program, so a payload entry that is
+    executable upstream arrives executable here; the suffix heuristic this
+    replaces got the extensionless ones wrong, which is every entry point.
     """
     prefix = f"skills/{name}/payload/"
-    listing = _git(repo, "ls-tree", "-r", "--name-only", rev, "--", f"skills/{name}/payload")
+    listing = _git(repo, "ls-tree", "-r", rev, "--", f"skills/{name}/payload")
     if not listing.strip():
         raise ValueError(f"ability-management@{rev[:12]} has no payload for skill: {name}")
-    pairs: list[tuple[bytes, Path]] = []
-    for entry in sorted(listing.decode().splitlines()):
-        if not entry:
+    pairs: list[tuple[bytes, Path, bool]] = []
+    for line in sorted(listing.decode().splitlines()):
+        if not line:
             continue
+        # `<mode> SP <type> SP <object> TAB <path>`
+        meta, _, entry = line.partition("\t")
+        if not entry:
+            raise ValueError(f"unparsable ls-tree entry: {line!r}")
         rel = entry[len(prefix):] if entry.startswith(prefix) else None
         if rel is None:
             raise ValueError(f"unexpected payload entry outside {prefix}: {entry}")
         parts = Path(rel).parts
         if any(part in EXCLUDED_DIRS for part in parts) or Path(rel).suffix in EXCLUDED_SUFFIXES:
             continue
-        pairs.append((_git(repo, "show", f"{rev}:{entry}"), Path(rel)))
+        mode = meta.split(" ", 1)[0]
+        pairs.append((_git(repo, "show", f"{rev}:{entry}"), Path(rel),
+                      mode in EXECUTABLE_GIT_MODES))
     return pairs
 
 
@@ -481,7 +510,7 @@ def plan(bundle_path: Path, ability_repo: Path, ability_rev: str, output: Path, 
 
     local_root = repo_root() / "skills"
     validate_recommended(bundle, local_root, ability_repo, ability_rev)
-    files: list[tuple[bytes, Path]] = []
+    files: list[tuple[bytes, Path, bool]] = []
     skills: list[str] = []
     for entry in bundle["skills"]:
         name = entry["name"]
@@ -489,10 +518,11 @@ def plan(bundle_path: Path, ability_repo: Path, ability_rev: str, output: Path, 
         skills.append(name)
         if source == "local":
             for src, rel in local_skill_files(local_root / name):
-                files.append((src.read_bytes(), Path("skills") / name / rel))
+                files.append((src.read_bytes(), Path("skills") / name / rel,
+                              is_executable(src)))
         elif source == "ability-management":
-            for content, rel in ability_skill_files(ability_repo, ability_rev, name):
-                files.append((content, Path("skills") / name / rel))
+            for content, rel, executable in ability_skill_files(ability_repo, ability_rev, name):
+                files.append((content, Path("skills") / name / rel, executable))
         else:
             raise ValueError(f"unknown skill source for {name}: {source!r}")
 
@@ -506,7 +536,7 @@ def plan(bundle_path: Path, ability_repo: Path, ability_rev: str, output: Path, 
         if module_rel != module:
             raise ValueError(f"{module}: bundle path must be {module!r}, got {module_rel!r}")
         for src, rel in local_skill_files(repo_root() / module_rel):
-            files.append((src.read_bytes(), Path(module_rel) / rel))
+            files.append((src.read_bytes(), Path(module_rel) / rel, is_executable(src)))
 
     manifests = {
         Path(".claude-plugin/plugin.json"): claude_plugin_manifest(bundle, version, skills),
@@ -533,7 +563,7 @@ def build(bundle_path: Path, ability_repo: Path, ability_rev: str, output: Path,
         bundle_path, ability_repo, ability_rev, output, marketplace_path
     )
 
-    expected_files = {rel for _, rel in files} | set(manifests) | {Path("README.md")}
+    expected_files = {rel for _content, rel, _executable in files} | set(manifests) | {Path("README.md")}
 
     if not write:
         # A bare exit code is not actionable. Name every drifted path, so that a
@@ -542,9 +572,14 @@ def build(bundle_path: Path, ability_repo: Path, ability_rev: str, output: Path,
         actual = {p.relative_to(output) for p in output.rglob("*") if p.is_file()} if output.exists() else set()
         drifted |= {f"unexpected {rel}" for rel in actual - expected_files}
         drifted |= {f"missing {rel}" for rel in expected_files - actual}
-        for content, rel in files:
+        for content, rel, executable in files:
             if (output / rel).is_file() and (output / rel).read_bytes() != content:
                 drifted.add(f"content {rel}")
+            # Mode is checked, not just written. An artifact whose entry point
+            # lost its executable bit has the right bytes and cannot run, and
+            # `--check` reporting it clean is how that reaches a promoted node.
+            elif executable and (output / rel).is_file() and not is_executable(output / rel):
+                drifted.add(f"mode {rel} (not executable)")
         for rel, value in manifests.items():
             if (output / rel).is_file() and (output / rel).read_bytes() != _json_bytes(value):
                 drifted.add(f"content {rel}")
@@ -569,11 +604,15 @@ def build(bundle_path: Path, ability_repo: Path, ability_rev: str, output: Path,
             if not any(path.iterdir()):
                 path.rmdir()
 
-    for content, rel in files:
+    for content, rel, executable in files:
         dst = output / rel
         dst.parent.mkdir(parents=True, exist_ok=True)
         dst.write_bytes(content)
-        if dst.suffix in (".sh", ".py"):
+        # `.sh`/`.py` keeps its executable bit because those are scripts nobody
+        # runs any other way; everything else follows the source. The previous
+        # rule applied the bit only to those two suffixes, which excluded every
+        # entry point in the composition.
+        if executable or dst.suffix in (".sh", ".py"):
             dst.chmod(0o755)
     for rel, value in manifests.items():
         dst = output / rel
