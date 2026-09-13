@@ -128,6 +128,9 @@ rules:
      discover on its own — see the non-regression contract in
      `docs/capability-discovery.md`."
   - "Every disclosed line names its level. A line whose level cannot be stated
-     is a line nobody can reason about the cost of."
+     is a line nobody can reason about the cost of. The presence preamble and
+     the closing pointer line are exempt and carry `axis: null`, because they
+     disclose no axis and are the same at every level — the exemption is a
+     value in the record, not an unstated exception."
   - "Memory is queried, never preloaded. Opening a session with everything the
      last one learned is not context, it is a transcript."

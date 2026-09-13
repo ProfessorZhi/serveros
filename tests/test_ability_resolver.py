@@ -107,14 +107,62 @@ class IntersectionTests(unittest.TestCase):
         self.assertEqual(record["reason"], "PROVIDER_NOT_INSTALLED")
         self.assertIn("device_profile", record["inputs_missing"])
 
-    def test_when_nothing_refuses_and_an_input_is_unreadable_the_answer_is_unknown(self):
-        """The other half. No provider refused and no provider qualified —
-        that is UNKNOWN, and it names what was missing."""
+    def test_a_provider_for_another_ability_is_not_a_provider_for_this_one(self):
+        """The empty-provider case, which is a definite no and not an unknown:
+        nothing here was unreadable, there is simply no provider for this
+        ability on this device."""
         record = resolver.resolve(request(
             providers=[provider(id="provider:other", ability="ability:something-else")],
         ))
         self.assertEqual(record["status"], "UNAVAILABLE")
         self.assertEqual(record["reason"], "PROVIDER_NOT_INSTALLED")
+
+    def test_when_nothing_refuses_and_an_input_is_unreadable_the_answer_is_unknown(self):
+        """The other half, and the one this test used to get wrong: its name
+        said UNKNOWN while its assertion said UNAVAILABLE, because the request
+        it built filtered its own provider away before any candidate existed.
+
+        Nothing is supplied that could refuse — the provider matches, the path
+        role is bound, the runtime can consume the kind — and the instance list
+        is absent, which is the one input that answers "is it installed here".
+        """
+        request_without_instances = request()
+        del request_without_instances["instances"]
+        record = resolver.resolve(request_without_instances)
+        self.assertEqual(record["status"], "UNKNOWN")
+        self.assertIn("device_binding", record["candidates"][0]["unevaluated"])
+        self.assertIn("device_binding", record["detail"])
+
+    def test_a_catalogue_entry_and_a_provider_are_not_an_available_ability(self):
+        """The defect this module exists to prevent, reintroduced one level
+        down and caught by probe rather than by argument.
+
+        A request carrying only a catalogue entry and a provider used to come
+        back `AVAILABLE`, `summarize` rendered it "available via p1", and
+        `inputs_missing` listed seven of the eight inputs — the module's own
+        docstring, contradicted by the module. The intersection was being
+        enforced only between whichever inputs happened to be present.
+
+        Asserted on `inputs_seen` as well as the status, because a future
+        change that returns UNKNOWN for some other reason would satisfy the
+        status assertion while leaving this defect in place.
+
+        The provider declares no on-disk footprint, which is what makes this
+        the defect's exact shape: a provider needing a bound path would be
+        refused outright at device_profile, and a definite refusal is the
+        right answer there. Nothing here can refuse.
+        """
+        record = resolver.resolve({
+            "ability": ABILITY,
+            "device_ref": "device:server-beijing",
+            "runtime": "claude-code",
+            "abilities": CATALOGUE,
+            "providers": [provider(materialization={"path_role": "none"})],
+        })
+        self.assertNotEqual(record["status"], "AVAILABLE")
+        self.assertEqual(record["status"], "UNKNOWN")
+        self.assertEqual(record["inputs_seen"], ["ability"])
+        self.assertNotIn("available via", resolver.summarize(record))
 
     def test_the_record_always_says_which_inputs_it_could_see(self):
         """A confident answer computed from whichever inputs happened to be

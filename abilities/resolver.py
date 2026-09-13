@@ -210,12 +210,45 @@ def _evaluate_one(request: dict, ability: str, provider: dict) -> dict:
     `resolve()` settles it once before any provider is considered. The loop
     still names it, because the ORDER is the contract and skipping a name in
     the loop is how a future edit reorders the rest without noticing.
+
+    An input nobody supplied is not an input that agreed
+    ----------------------------------------------------
+    This function used to `continue` past every absent input and then, finding
+    no refusal, return AVAILABLE. The consequence was measured rather than
+    argued: a request carrying only a catalogue entry and a provider declaring
+    the ability came back `AVAILABLE` with `inputs_missing` listing seven of
+    the eight inputs. `summarize` rendered it as "available via p1".
+
+    That is verbatim the defect this module's own docstring says it was written
+    to fix — "a capability reported as available because one input mentioned it
+    while seven others were never consulted" — reintroduced one level down. The
+    intersection was enforced between the inputs that happened to be present.
+
+    So the inputs that could have refused are now tracked. If none refused and
+    any DECISIVE input was never consulted, the honest answer is UNKNOWN: not
+    "yes", and not a fabricated "no", but a statement that this could not be
+    decided and a naming of what to go and supply.
+
+    UNKNOWN was previously unreachable — declared in `STATUSES`, rendered by
+    `summarize`, counted by `count_abilities` as `undecided`, and produced by
+    no input at all, because a candidate could only be a refusal or a yes. It
+    is now the answer for the case that has no answer.
     """
+    unevaluated = []
+
     for name in INPUT_ORDER:
         if name == "ability":
             continue
         if name == "device_capability":
+            # Decisive only when the provider declares requirements. A provider
+            # that requires nothing of the device has nothing to check here, so
+            # an absent capability record is agreement rather than ignorance —
+            # and marking it unevaluated would make every provider that names
+            # no dependencies permanently UNKNOWN, which is its own way of
+            # saying nothing.
             if not request.get("device_capabilities"):
+                if provider.get("requirements"):
+                    unevaluated.append(name)
                 continue
             refusal = _input_device_capability(request, provider)
         elif name == "device_profile":
@@ -223,9 +256,16 @@ def _evaluate_one(request: dict, ability: str, provider: dict) -> dict:
             refusal = None if ok else _refusal(
                 "UNAVAILABLE", "PROVIDER_NOT_INSTALLED", detail)
         elif name == "device_binding":
+            if request.get("instances") is None:
+                # The sharpest of the six. Not supplying the instance list is
+                # not a statement that the provider is installed here, and
+                # reading it as one is how a device claims a capability on the
+                # strength of a provider catalogue entry.
+                unevaluated.append(name)
+                continue
             instance = _instance_for(request.get("instances"), provider["id"],
                                      request.get("device_ref"))
-            if instance is None and request.get("instances") is not None:
+            if instance is None:
                 refusal = _refusal(
                     "UNAVAILABLE", "PROVIDER_NOT_INSTALLED",
                     "no instance of this provider is registered on this device")
@@ -233,20 +273,46 @@ def _evaluate_one(request: dict, ability: str, provider: dict) -> dict:
                 refusal = None
         elif name == "agent_runtime":
             if request.get("runtime_record") is None:
+                unevaluated.append(name)
                 continue
             refusal = _input_agent_runtime(request, provider)
         elif name == "runtime_health":
+            # NOT decisive, and the contract says why: `costs.capability.L0` is
+            # "one manifest read, no probes". Health is a probe. If absence
+            # here made a candidate UNKNOWN, capability resolution would
+            # require live health on every call — and the first caller to hit
+            # that would pass `{}` to make it stop, which is worse than the
+            # original defect: agreement that was never asked for, wearing the
+            # shape of an input that was consulted.
             refusal = _input_runtime_health(request, provider)
         elif name == "policy":
+            # Same argument. Policy is a filter over an answer, not a
+            # capability input, and the contract prices authority L0 at
+            # "none". A resolver that could not answer without it would have
+            # made policy a prerequisite for knowing anything.
             refusal = _input_policy(request, ability)
         else:  # task_context
+            # Declared in the contract and not yet implemented: there is no
+            # evaluator, so this input can never refuse and must not be
+            # counted as unevaluated either — counting it would make every
+            # resolution UNKNOWN and the status would stop meaning anything.
+            # Named here so the gap is visible rather than implied.
             refusal = None
 
         if refusal is not None:
             refusal["refused_by"] = name
             return refusal
 
-    # -- no input refused. Green, or green-with-a-caveat. -------------------
+    preferred = provider.get("preference", 100)
+
+    if unevaluated:
+        return _refusal(
+            "UNKNOWN", None,
+            "no input refused, and these were never consulted: "
+            + ", ".join(unevaluated),
+            unevaluated=unevaluated, preference=preferred)
+
+    # -- every decisive input was consulted and none refused. ----------------
     caveats = []
     instance = _instance_for(request.get("instances"), provider["id"],
                              request.get("device_ref"))
@@ -257,7 +323,6 @@ def _evaluate_one(request: dict, ability: str, provider: dict) -> dict:
             "not the same provider tomorrow",
             finding="PERSISTENT_RUNTIME_FLOATING_DEPENDENCY"))
 
-    preferred = provider.get("preference", 100)
     if caveats:
         return {**caveats[0], "preference": preferred}
     return {"status": "AVAILABLE", "reason": None, "detail": None,
@@ -331,6 +396,7 @@ def resolve(request: dict) -> dict:
             "reason": outcome.get("reason"),
             "detail": outcome.get("detail"),
             "refused_by": outcome.get("refused_by"),
+            "unevaluated": outcome.get("unevaluated", []),
             "finding": outcome.get("finding"),
             "preference": outcome.get("preference", provider.get("preference", 100)),
         })
@@ -357,9 +423,14 @@ def resolve(request: dict) -> dict:
                 "detail": chosen["detail"],
                 "candidates": candidates}
 
+    # Every candidate was undecidable and none refused. The detail names the
+    # inputs the PROVIDERS could not see, which is narrower and more useful
+    # than the record's `inputs_missing`: the latter is about the request, and
+    # this is about what stood in the way of a decision.
+    unconsulted = sorted({name for c in candidates for name in c["unevaluated"]})
     return {**record, "status": "UNKNOWN", "reason": None,
-            "detail": ("no provider could be resolved and none refused: "
-                       + ", ".join(record["inputs_missing"]) + " unavailable"),
+            "detail": ("no provider could be resolved and none refused; "
+                       "unconsulted inputs: " + (", ".join(unconsulted) or "none")),
             "candidates": candidates}
 
 
