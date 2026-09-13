@@ -1,0 +1,248 @@
+# Agent Session is a Node Runtime object: a live logical Agent instance, not a PID.
+# Provider-native session truth stays with the provider; ServerOS owns identity,
+# normalization and admission. Nothing here adds a fifth architecture plane.
+schema: serveros/agent-session.v1
+version: 1
+
+identity:
+  session_ref: "agent-session:<urlencoded-device-ref>/<provider-id>/<provider-session-id>"
+  agent_ref: "agent:<urlencoded-device-ref>/<provider-id>/<provider-agent-id>"
+  runtime_ref: "agent-runtime:<runtime-id>"
+  rules:
+    - "device_ref is authored Fleet identity, never hostname, relay UUID or address."
+    - "provider_session_id is provider-owned and never becomes device identity."
+    - "PID, tmux pane, chat id and thread id are locators/evidence, never session keys."
+
+# ---------------------------------------------------------------------------
+# Three layers, three lifetimes. They are declared together because the way
+# this went wrong was not that one of them was missing — it was that one of
+# them was standing in for another.
+#
+#   session lifecycle  the logical Agent instance, alive across many turns
+#   turn lifecycle     ONE accepted instruction, alive until it settles
+#   request acceptance that the provider took the request at all
+#
+# Merged, they produce three sentences that are each false in a way nobody
+# notices until something depends on them:
+#
+#   "the turn is running, so the session is running"  — a session is not its turn
+#   "the turn failed, so the session failed"          — a failed turn is news
+#                                                        about the turn
+#   "the request was accepted, so the session queued" — acceptance is not a state
+#                                                        the provider ever reported
+# ---------------------------------------------------------------------------
+layers:
+  session_lifecycle:
+    field: status
+    answers: "what is this Agent instance doing across turns"
+  turn_lifecycle:
+    field: turn_state
+    answers: "what happened to the one instruction that was accepted"
+    carried_by: [session.create, session.send, session.result]
+  request_acceptance:
+    # The field is named after what actually carries it, which is the provider's
+    # own async status copied verbatim — not a synthesised `accepted: true`.
+    #
+    # This read `accepted` for one revision, and no record in the repo had a
+    # field by that name: `create` and `send` carry `provider_async_status`,
+    # and the assertion that "the contract names a field" was satisfied by a
+    # word the contract had invented. A declaration naming a field that does not
+    # exist is the defect this repository keeps finding, so the name moved to
+    # the field rather than the other way round. Collapsing it to a boolean
+    # would have been the same error with better manners: it would discard the
+    # provider's word (`pending`, `queued`) for a ServerOS-shaped summary of it.
+    field: provider_async_status
+    answers: "did the provider take the request, in the provider's own word"
+    is_not: "a session state, a turn state, or a promise that either will change"
+    rule: >-
+      a provider that accepts a request and reports nothing else has told us it
+      accepted a request. That is the whole of what it said, and it is what gets
+      recorded. ServerOS synthesising a state from it — `QUEUED`, `PENDING`,
+      `SCHEDULED` — manufactures a claim no provider made, and one that will be
+      wrong on the first request that is accepted and never runs.
+  cross_layer_rules:
+    - >-
+      a turn state never overwrites a session lifecycle. They are separate
+      fields because they have separate sources, and a provider that reports
+      only a turn outcome has said nothing about the session.
+    - >-
+      a session lifecycle value is set from provider session-level evidence or
+      not at all. Where a provider reports a turn outcome and no session state,
+      the session is UNKNOWN — which is a real answer and the correct one.
+    - >-
+      request acceptance is recorded as acceptance and carried beside the turn
+      state, never translated into a lifecycle value by the layer that
+      translates.
+
+status:
+  values: [STARTING, RUNNING, BUSY, WAITING_INPUT, IDLE, DETACHED, PAUSED,
+           FAILED, CLOSED, UNKNOWN]
+  provenance: [FACT, INFERRED, UNKNOWN]
+  rule: >-
+    every normalized state keeps the provider's raw state and provenance. UNKNOWN
+    is not flattened into IDLE, CLOSED or false.
+  evidence_rule: >-
+    FAILED and CLOSED require session-level provider evidence, because both make
+    a claim about the instance and not about one turn. A provider that reports
+    only that a turn failed has not established either, and a mapping that
+    inferred FAILED from TURN_FAILED would report a session as dead while it is
+    still accepting turns — which is the normal case, not an edge one.
+  not_a_value: >-
+    no state is synthesised by ServerOS. The vocabulary is closed and every
+    value in it is reachable from provider evidence; a value that only ServerOS
+    could produce is by definition not a state this contract can carry.
+
+support:
+  values: [SUPPORTED, UNSUPPORTED, UNKNOWN]
+  actions:
+    - agent.list
+    - agent.inspect
+    - session.list
+    - session.inspect
+    - session.create
+    - session.resume
+    - session.send
+    - session.result
+    - session.interrupt
+    - session.stop
+    - session.handoff
+  rule: >-
+    provider support is resolved per action. A stronger provider verb never
+    satisfies a narrower ServerOS verb; close-whole-session is not interrupt-turn.
+  control_order: >-
+    session control resolves provider support, then provider readiness, then
+    admission; each is checked only so that it can narrow, and none of them is
+    reported as either of the others. UNSUPPORTED and UNKNOWN support are both
+    refused; neither is reported as a pending human approval, because no
+    approval can grant a capability the provider does not have. A SUPPORTED verb
+    still requires its own admission decision — advertising a capability
+    authorizes nothing.
+
+    Readiness was added between the two and its position is deliberate. It is a
+    dynamic runtime fact rather than a capability fact or a policy decision, and
+    it can only refuse — it can never allow something admission would have
+    denied — so placing it first cannot weaken authorization. It is placed
+    before admission so that a person is not asked to approve an action the
+    provider is already known to be unable to carry out.
+
+# ---------------------------------------------------------------------------
+# Readiness. The three-way separation, stated where a reader will look for it:
+#
+#   support     a CAPABILITY fact    can this provider do this at all
+#   readiness   a RUNTIME fact       would it work if asked right now
+#   admission   a POLICY decision    is it permitted
+#
+# They are separate because they fail separately and are repaired differently:
+# support by choosing another provider, readiness by waiting or repairing the
+# machine, admission by asking a person. A system that reports all three as one
+# refusal has three different problems and one word for them.
+# ---------------------------------------------------------------------------
+readiness:
+  source: "abilities/provider-contract.yaml#instance.readiness"
+  vocabulary: [AVAILABLE, DEGRADED, UNAVAILABLE, INCOMPATIBLE, UNKNOWN]
+  per: "provider instance — one provider, one device, one moment"
+  not_per_session: >-
+    readiness belongs to the provider instance and not to a session. A session
+    inherits its provider's readiness because that is the thing that would do
+    the work, and duplicating it per session would create two answers to one
+    question that could disagree.
+  rule: >-
+    a SUPPORTED action on an UNAVAILABLE provider is a real and expected state,
+    not a contradiction. Support is what the provider can do; readiness is
+    whether it can do it now. Reporting the second as a reason to change the
+    first is how a working capability gets withdrawn because a machine was
+    briefly broken.
+  refusal: ProviderNotReady
+  refusal_is_not: [ActionNotSupported, ActionNotAdmitted]
+
+availability:
+  values: [AVAILABLE, OFFLINE, UNKNOWN]
+  rule: >-
+    an explicitly false provider availability field is OFFLINE, not UNKNOWN.
+    Only an absent field is unknown.
+
+turn:
+  lifetime: >-
+    a turn state describes one accepted instruction, never the session. A session
+    whose current turn completed is still a session, and still accepts turns.
+  values: [TURN_RUNNING, TURN_COMPLETED, TURN_FAILED, TURN_NOT_FOUND, TURN_UNKNOWN]
+
+session_fields:
+  required:
+    - session_ref
+    - device_ref
+    - provider
+    - provider_session_id
+    - agent_runtime
+    - status
+    - status_provenance
+    - action_support
+  optional:
+    - title
+    - workspace
+    - cwd
+    - work_item
+    - owner
+    - created_at
+    - last_activity
+    - can_accept_input
+    - parent_session
+    - memory_ref
+    - transport
+    - provider_status
+    - status_reason
+    - provider_evidence
+
+# The evidence record. `status_reason` is a sentence; this is not. Keeping the
+# two distinguishable is the point: a reader has to be able to tell what was
+# observed from what somebody concluded about it.
+evidence:
+  required_keys: [source, observed_at, provenance, evidence_type, authoritative, fields]
+  source: "the provider call that produced it, e.g. botmux:/api/sessions"
+  observed_at: "when, and required — an evidence record with no clock cannot be aged"
+  provenance: [FACT, INFERRED, UNKNOWN]
+  evidence_type: >-
+    a strength key from runtime/health.py's EVIDENCE_STRENGTH, reused rather than
+    redeclared so that "is this authoritative" has exactly one answer in exactly
+    one place
+  fields: "the provider's own fields, copied verbatim and never interpreted"
+  rule: >-
+    evidence is never a prose reason and a prose reason is never evidence. The
+    field named `provider_evidence` held a normalisation sentence for one
+    revision because a helper that was written was never called — a name that
+    promised one thing and delivered another, in the record whose whole job is
+    to not overstate.
+
+admission:
+  read_only: [agent.list, agent.inspect, session.list, session.inspect, session.result]
+  delegation: [session.create, session.resume, session.send]
+  human_gated: [session.interrupt, session.stop, session.handoff]
+  rules:
+    - >-
+      delegation hands an instruction to an Agent runtime; it grants no new host
+      privilege and downstream ServerOS/tool policy remains in force.
+    - >-
+      human-gated session control is never inferred from a delegation grant.
+      Provider support and a separate admission decision are both required.
+    - "MCPs and providers enforce decisions; they do not author them."
+
+projection:
+  authority: provider-native-session-store
+  serveros_role: normalized live registry/projection
+  persistence: none-by-default
+  rule: >-
+    ServerOS may cache observation metadata, but a cached provider row never
+    becomes session authority and never turns provider-unreachable into closed.
+
+provider_boundary:
+  HumanControlProvider:
+    owns: [message_ingress, card_rendering, human_identity, notifications, human_approval]
+    does_not_own: [device_truth, runtime_truth, policy, ability_registry, fleet]
+  AgentSessionProvider:
+    owns: [session_transport, provider_session_lifecycle, provider_status]
+    does_not_own: [device_identity, serveros_policy, ability_authority]
+
+rules:
+  - "Agent Session belongs to the Node Runtime Plane; provider selection belongs to the Ability Fabric."
+  - "A session may cause a durable resource to be created; invariant 6 forbids that session from owning it."
+  - "No provider-private state file is read when a supported provider API can answer the question."

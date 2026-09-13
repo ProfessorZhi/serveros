@@ -95,6 +95,13 @@ STATE_SERVEROS_RUNTIME = (
     # fire). Declared here so `resolve` can name them before a producer
     # exists — the namespace is the contract, the directory is the state.
     "attribution", "graph", "anomalies",
+    # §5/§6 adds one: the trusted actor contexts and human approvals this node
+    # minted and decided. Declared before the directory exists, because the
+    # namespace is the contract and the directory is the state — and declared as
+    # a CHILD of runtime rather than a top-level sibling because the daemon is
+    # its only producer and `state_dir` is the one root every daemon write is
+    # resolved through. A second root would be a second thing to keep correct.
+    "agent-control",
 )
 
 # Artifacts has exactly two canonical namespaces for NEW writes (§34).
@@ -350,6 +357,36 @@ class Paths:
             if not value or "/" in value or value in (".", ".."):
                 raise PathRefused(f"{label} must be a single path segment, not {value!r}")
         return self.resolve(f"artifacts/skills/{skill}/{run}")
+
+    def memory_ledger(self, project: str) -> dict:
+        """`records/projects/<project>/memory/` — the Layer B ledger.
+
+        A work Item's memory is filed under the project it is about, which is
+        the shape `subject` already has ("project/repo/Item"), so the ledger is
+        a child of a tree that exists rather than a new root beside it. The
+        records tree is the `hwz-records` Git repository, and that is the whole
+        reason it is the substrate: the ledger inherits `blame`, `diff`,
+        `revert` and a history nobody has to be trusted to maintain, and
+        cross-device sync is a `git pull` with no ServerOS-specific merge logic.
+
+        Deliberately not a new root under DATA_ROOT. `records/` is already
+        declared, already versioned and already synced; a parallel store would
+        be a second answer to "where is this work's memory".
+        """
+        if not project or "/" in project or project in (".", ".."):
+            raise PathRefused(f"project must be a single path segment, not {project!r}")
+        return self.resolve(f"workspace/records/projects/{project}/memory")
+
+    def memory_projection(self) -> dict:
+        """`state/serveros/projections/memory/` — the Layer A projection.
+
+        Under the one projections namespace, not beside it: see
+        `fleet/state-root-contract.yaml#projections`, which is the authority
+        here and forbids a second one. This replaces the path the memory
+        contract originally declared (`state/serveros/memory/`), which was
+        written without checking whether that root had an owner.
+        """
+        return self.resolve("state/projections/memory")
 
     # -- admission ---------------------------------------------------------
 

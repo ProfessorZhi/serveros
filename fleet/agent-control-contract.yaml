@@ -1,0 +1,217 @@
+# Agent Control Router contract.
+#
+# The control plane names one machine and one verb. This file is the closed list
+# of both, plus the words a refusal may use and the honest statement of what this
+# release can and cannot deliver.
+#
+# `abilities/target-contract.yaml` declares that the router lives at
+# `fleet/agent_control_router.py` and that the reason vocabulary is owned there.
+# This file does not restate that vocabulary. It points at it, because a second
+# copy is a second list, and the second list is the one that falls behind.
+schema: serveros/agent-control-router.v1
+module: fleet/agent_control_router.py
+
+# ---------------------------------------------------------------------------
+# Actions. `control` is what a caller writes; `verb` is what the resolver and
+# the providers speak. §7 names the control spelling `agent.session.*` — the
+# session contract, which is older and is what providers implement, spells the
+# same eight verbs `session.*`.
+#
+# The mapping is a translation, not a second vocabulary: every control name here
+# has exactly one verb behind it and every verb exists in
+# `runtime/agent-session-contract.yaml#actions`. A test asserts that, so a verb
+# cannot be renamed on one side and quietly route to nothing on the other.
+#
+# `params` is the required set and `optional` is everything else the action
+# accepts; nothing outside the two may be passed. An open parameter bag is how a
+# command string arrives: a caller with a free-form field eventually puts an argv
+# in it and the transport carries it faithfully. A parameter a caller cannot pass
+# is a parameter that cannot become a shell.
+#
+# The split is per action rather than global because "required" and "allowed"
+# are different claims: `trigger_id` is an allowed parameter of `result` and a
+# missing one is not an error, while a missing `instruction` on `send` is.
+# ---------------------------------------------------------------------------
+actions:
+  values:
+    - control: agent.session.create
+      verb: session.create
+      params: [agent_id, instruction, idempotency_key]
+      optional: []
+      derived: [provider_id]
+      why: >-
+        provider_id comes from the resolved target rather than from the caller.
+        A create that named its own provider would use a resolution it did not
+        ask for and cannot see.
+
+    - control: agent.session.send
+      verb: session.send
+      params: [instruction, turn_idempotency_key]
+      optional: []
+
+    - control: agent.session.inspect
+      verb: session.inspect
+      params: []
+      optional: []
+
+    - control: agent.session.result
+      verb: session.result
+      params: []
+      optional: [trigger_id]
+
+    - control: agent.session.resume
+      verb: session.resume
+      params: []
+      optional: []
+
+    - control: agent.session.interrupt
+      verb: session.interrupt
+      params: []
+      optional: []
+
+    - control: agent.session.stop
+      verb: session.stop
+      params: []
+      optional: []
+
+    - control: agent.session.handoff
+      verb: session.handoff
+      params: []
+      optional: [checkpoint, to_device_ref, to_session_ref, target_action,
+                 target_params, release_source]
+      server_side: true
+      why: >-
+        The one compound action, and the only one whose parameters are about a
+        second device. It is a control-plane verb: `session.handoff` has no
+        provider implementation anywhere, and reserving it in the session
+        contract while implementing it here is the honest split. A provider that
+        claimed it would be claiming to move a session between machines.
+
+        `server_side: true` means `route()` does NOT dispatch this action to a
+        provider. It names a six-step server-side procedure (§9) whose first
+        step is a checkpoint and whose last may stop a session, and a procedure
+        is not a verb a provider can be asked to perform. `route()` refuses it
+        and names the entry point, rather than forwarding it and collecting an
+        ACTION_UNSUPPORTED that would be true for the wrong reason.
+
+        No parameter is required at the envelope. A handoff with no checkpoint
+        is a well-formed request that the procedure refuses with
+        INVALID_CONTEXT, which is where the rule and its reason live — a parse
+        error carries no reason a caller can act on.
+
+  forbidden: [remote.shell, remote.exec, remote.command, session.spawn,
+              device.reboot, file.write, docker.run]
+  forbidden_because: >-
+    §7 forbids `remote.shell` and arbitrary command strings. They are named here
+    rather than merely absent so that the refusal says why, and so that a reader
+    looking for the shell finds the sentence that says there is not one instead
+    of concluding it was overlooked.
+
+# ---------------------------------------------------------------------------
+# Transports. Only one is deployable in this release.
+# ---------------------------------------------------------------------------
+transports:
+  local-loopback:
+    class: LocalLoopbackTransport
+    serves: the device this process runs on
+    deployed: true
+    why: >-
+      Drives the same SessionService the node's own MCP surface calls, so a
+      locally routed request and an MCP request take the identical path through
+      support, readiness and admission. A loopback that shortcut those would
+      make the local case the one case the §22 guarantees were never exercised
+      against.
+
+  node-control:
+    class: NodeControlTransport
+    serves: a remote device reached through an injected wire call
+    deployed: false
+    connector: null
+    why: >-
+      No ServerOS node runtime exists on `device:work-fj` or `device:personal-dell`
+      as of this release. With no connector the transport does not pretend: it
+      refuses with NODE_RUNTIME_UNAVAILABLE, which is the true statement about
+      this deployment and replaces §7's forbidden "unknown device" with a typed
+      unavailability. `fleet/transport-contract.yaml` forbids silent
+      substitution, and this is the one place substituting would be tempting.
+
+  remote_desktop_commander:
+    role: not-a-control-transport
+    why: >-
+      RDC is a screen-and-input transport for a human, not a control channel for
+      an Agent Session. Routing an Agent Control request through it would make a
+      GUI session into a session transport, and its identity (a machine id) is
+      not a stable ServerOS device id. It is excluded here rather than in prose.
+
+# ---------------------------------------------------------------------------
+# Idempotency, scoped honestly.
+# ---------------------------------------------------------------------------
+idempotency:
+  scope: in-process, per router instance
+  applies_to: mutating actions only
+  why_not_reads: >-
+    Replaying a read from memory answers with an observation that has aged since
+    it was taken. A stale answer is worse than a slow one, and the caller asked
+    for a fact about now.
+  durability: >-
+    NOT durable across a restart. This is a guard against a caller retrying a
+    mutation within one router lifetime, not an exactly-once guarantee. A
+    durable form needs a store the provider owns, and inventing one here would
+    create a second record of what the provider did.
+  conflict: >-
+    The same key on a different action or device is a caller bug and is refused,
+    not answered with the other call's result. Answering it would report an
+    effect that never happened for this request.
+
+# ---------------------------------------------------------------------------
+# Handoff order. The order is the safety property.
+# ---------------------------------------------------------------------------
+handoff:
+  steps: [checkpoint, resolve_target, target_available, target_ready,
+          context_handed_off, source_released]
+  rule: >-
+    The source session is not stopped unless the target answered. §9 states this
+    and the implementation states it as control flow rather than as a comment,
+    because a rule a reader has to remember survives only until the first
+    refactor.
+  why_this_order: >-
+    The failure modes are not symmetric. A handoff that stops the source and
+    then cannot start the target has lost the session. A handoff that starts the
+    target and then cannot stop the source has two sessions — visible,
+    recoverable, and far cheaper.
+  release_default: false
+  release_default_because: >-
+    A handoff that stops the source by default is a handoff that loses it
+    whenever the target turns out to be unsuitable an hour later.
+
+# ---------------------------------------------------------------------------
+# Failure semantics. Three different failures, three different words.
+# ---------------------------------------------------------------------------
+failures:
+  transport_failure_is_not_a_session_state: >-
+    A transport that could not deliver has learned nothing about the session on
+    the other side. A route result therefore never carries a session state it
+    did not receive, and in particular never reports a delivery failure as
+    CLOSED. §8 names this and it is the failure this release is about one plane
+    over: a claim wider than its evidence.
+  provider_refusal_is_not_a_policy_decision: >-
+    ACTION_UNSUPPORTED and READINESS_UNKNOWN come from the provider. POLICY_DENIED
+    comes from admission. Reporting the first as the second tells a person to
+    request permission for something permission cannot grant.
+  vocabulary: abilities/target-contract.yaml#reasons.values
+  vocabulary_owner: abilities/target.py#reason_vocabulary
+  why_borrowed: >-
+    A transport refusing in a word of its own is refusing outside the one list,
+    and a caller cannot branch on a vocabulary it does not have. `TransportFailure`
+    validates its reason against the owner at construction, so a new word is a
+    test failure rather than a string in a log.
+
+not_claimed:
+  - No remote transport is deployed. Every `device:work-fj` and
+    `device:personal-dell` request is answered with a typed unavailability.
+  - Idempotency is not durable across a restart.
+  - The handoff verb moves an Agent Session between ServerOS devices. It does not
+    move a Codex thread, and it does not move provider-native state that a
+    provider gives no way to export.
+  - This file does not define what a device is. `fleet/transport.py` does, and a
+    second definition would be a second fleet.

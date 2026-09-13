@@ -1,0 +1,150 @@
+# ServerOS semantic events, and what may be said about them.
+#
+# §10: ServerOS decides what happened; the HumanControlProvider decides how a
+# person is told. This file is the first half of that split — the closed list of
+# things that can happen, the sentence each one gets, and which refusals are
+# worth waking somebody up for.
+#
+# The list is closed because an open one degrades. A caller that can invent an
+# event name will eventually emit `error` or `session.thing` and the vocabulary
+# stops being something a consumer can branch on; it becomes prose.
+schema: serveros/notification.v1
+module: runtime/notifications.py
+
+events:
+  # The nine §10 names, and no others.
+  values:
+    - session.created
+    - session.waiting_input
+    - turn.completed
+    - turn.failed
+    - approval.required
+    - device.unavailable
+    - provider.degraded
+    - handoff.completed
+    - run.terminated
+
+  # Severity is a property of the event, not of the site that raises it. A
+  # `turn.failed` raised from a handoff is not more urgent than one raised from
+  # an MCP call, and letting the caller choose would make two identical events
+  # arrive at different volumes depending on which code path produced them.
+  #
+  #   INFO       — happened, is now part of the record, no action implied
+  #   ATTENTION  — a person should look at this when they next look
+  #   ACTION     — something is stopped and will stay stopped until a person acts
+  severity:
+    session.created: INFO
+    session.waiting_input: ACTION
+    turn.completed: INFO
+    turn.failed: ATTENTION
+    approval.required: ACTION
+    device.unavailable: ATTENTION
+    provider.degraded: ATTENTION
+    handoff.completed: INFO
+    run.terminated: ATTENTION
+
+  # The sentence a person reads. Written here, in the ServerOS repository,
+  # because the claim in the sentence is a ServerOS claim.
+  #
+  # `{subject}` is the most specific stable reference the event has — the session
+  # for a turn, the run for a termination, the device when there is nothing
+  # narrower. `{reason}` is a word from the closed reason vocabulary owned by
+  # `abilities/target.py`; it is never a raw provider string, because a
+  # notification leaves this machine and a provider error body can carry
+  # anything at all.
+  templates:
+    session.created: "Agent session created: {subject} on {device}."
+    session.waiting_input: "Agent session {subject} on {device} needs a person."
+    turn.completed: "Turn completed on {subject} ({device})."
+    turn.failed: "Turn failed on {subject} ({device}): {reason}."
+    approval.required: "Approval required for {subject} on {device}."
+    device.unavailable: "Device {device} is unavailable: {reason}."
+    provider.degraded: "A provider on {device} is degraded: {reason}."
+    handoff.completed: "Handoff completed for {subject} ({device})."
+    run.terminated: "Run {subject} terminated on {device}: {reason}."
+
+  # Who authors the text. Stated explicitly because §10 states it explicitly:
+  # a provider that composed these sentences would be writing the claim, and a
+  # provider that rendered "turn failed" as "the agent is still working" would be
+  # editing ServerOS truth at the last hop, where no ServerOS test would see it.
+  author: serveros
+  rendering_owner: HumanControlProvider
+
+  # Where each event comes from. Two producers, and they are different kinds of
+  # thing: a refusal reason is a word the router returned, while a producer is a
+  # point in ServerOS that observed the event directly — a session service that
+  # created a session, a supervisor that saw a run terminate.
+  #
+  # The split is declared so that `from_reason` and `producers` together must
+  # cover the vocabulary and must not overlap. An event in neither list is a
+  # sentence nobody will ever read; an event in both is raised by two paths that
+  # could disagree about when it happens.
+  producers:
+    - session.created
+    - session.waiting_input
+    - turn.completed
+    - approval.required
+    - handoff.completed
+    - run.terminated
+
+# ---------------------------------------------------------------------------
+# Capability states. All three are ordinary answers; none is an exception.
+# ---------------------------------------------------------------------------
+support:
+  values: [SUPPORTED, UNSUPPORTED, UNKNOWN]
+  queried: human.notification.transport
+  why_not_assumed: >-
+    A transport that cannot deliver is not a ServerOS failure, and §21 requires
+    the release to ship with an UNSUPPORTED capability as long as it is reported
+    honestly. The failure this rule exists to prevent is the opposite one: an
+    event silently dropped, so that "nobody was told" reads as "nothing
+    happened". Every delivery returns delivered:false with the state that
+    stopped it.
+  unsupported_is_not_unknown: >-
+    UNSUPPORTED means the transport asked and was told no. UNKNOWN means nobody
+    established it — typically a provider that raised while being probed.
+    Collapsing them would report an untested transport as a permanent
+    limitation, and would hide the one case where the repair is a test rather
+    than a new transport.
+
+# ---------------------------------------------------------------------------
+# Refusals worth telling a person about.
+#
+# The bridge from `abilities/target.py#reason_vocabulary` to this file. It is
+# one-directional and partial on purpose: a reason maps to the events it can
+# raise, and an unmapped reason maps to nothing. That is not an oversight to be
+# filled in later — a refusal nobody wrote a notification for is a refusal
+# nobody is told about, and the alternative, a generic "something went wrong",
+# delivers a sentence with the only useful half removed.
+#
+# Note which reasons are absent. POLICY_DENIED and APPROVAL_REQUIRED are absent
+# because those are decisions a caller is already waiting on, answered in-band;
+# telling a person about them out-of-band would be a second answer to a question
+# that already had one. TIMEOUT is absent for the same reason at a smaller
+# scale: a timeout is a transport fact the caller owns.
+# ---------------------------------------------------------------------------
+from_reason:
+  DEVICE_UNREACHABLE: [device.unavailable]
+  NODE_RUNTIME_UNAVAILABLE: [device.unavailable]
+  AGENT_RUNTIME_UNAVAILABLE: [device.unavailable]
+  PROVIDER_UNAVAILABLE: [provider.degraded]
+  PROVIDER_ERROR: [provider.degraded, turn.failed]
+  TURN_FAILED: [turn.failed]
+  SESSION_NOT_FOUND: [turn.failed]
+  READINESS_UNKNOWN: [provider.degraded]
+  INVALID_CONTEXT: [turn.failed]
+  UNTRUSTED_ACTOR: [turn.failed]
+
+not_claimed:
+  - >-
+    No queue, no retry and no scheduler. A notification that failed is reported
+    as failed; a caller wanting another attempt asks for one. A retry loop here
+    would be a second delivery path with its own opinion about how often a
+    person should be told the same thing.
+  - >-
+    This module does not decide whether an event should have happened. It
+    carries an event a producer established, renders it, and reports delivery.
+  - >-
+    Delivery is not confirmed by the transport. A true `delivered` means the
+    provider accepted the call; no provider in this release reports read
+    receipts, and claiming one would be claiming an observation nobody made.

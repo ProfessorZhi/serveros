@@ -1,0 +1,25 @@
+id: mem:fixture-beijing-checkpoint-1
+kind: checkpoint
+subject: project/serveros/SRV-0007
+at: 2026-09-13T01:00:00Z
+by: claude-code
+source: memory/fixtures/cross_device_handoff/
+revision: 19652da
+device_ref: device:server-beijing
+body: |
+  Where the work stopped, written for a device that is not this one.
+
+  Done: the tunnel `tunnel:lit-0104-api` is registered on this node with the
+  work item as its owner and `task-scoped` as its lifecycle, so the registration
+  itself survives any Agent session ending.
+
+  Not done: nothing on this node can observe the far side of that tunnel. The
+  Windows endpoint is on the other device, and a probe that runs here measures
+  this end of a channel whose other end is what actually broke.
+
+  Next, and this is the whole reason for the handoff: run the two probes that
+  need to execute on `device:work-fj` — one against the forward's listening
+  port, one that completes a round trip through it — and write the result back
+  as a checkpoint that names `mem:fixture-beijing-handoff-1` in `related`.
+
+  If the forward is not there at all, that is the answer. Do not start one.

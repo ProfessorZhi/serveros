@@ -365,6 +365,38 @@ anomalies:
   - code: AGE_WITHOUT_ACTIVITY
     severity: low
     implies_stale: false
+  # -- added by the runtime-resource round (§38) ---------------------------
+  - code: PERSISTENT_RUNTIME_FLOATING_DEPENDENCY
+    severity: medium
+    implies_stale: false
+    note: >
+      the resource works and cannot be said to be the same resource tomorrow.
+      Recorded as an ANOMALY rather than only as an admission finding because
+      the two answer different questions and this one is asked later: admission
+      asks "should this be registered", this asks "is what is registered still
+      what is running". A resource admitted pinned and restarted from a
+      floating source appears here and nowhere else. Never implies stale —
+      acting on a working resource because its version is unknown would be
+      acting on the wrong object, and the correct disposition is `redeclare`.
+  - code: SESSION_OWNED_DURABLE_RESOURCE
+    severity: high
+    implies_stale: false
+    note: >
+      a resource whose declared lifecycle class outlives every owner that can
+      be confirmed for it. Case A, and the reason this is an anomaly at all: at
+      every moment before the retirement the resource is healthy, so this is
+      the one finding that must be raised early and never acted on
+      automatically. Disposition is `redeclare`, never `restart` — restarting
+      it re-creates the same defect with a fresh clock.
+  - code: UNDECLARED_DURABLE_RESOURCE
+    severity: medium
+    implies_stale: false
+    note: >
+      a resource in service that some durable artifact names as required, and
+      that no reconcilable store declares. Case B: `127.0.0.1:17890` in a
+      shell comment. The capability it backs resolves to PROVIDER_NOT_INSTALLED
+      rather than UNKNOWN, because "we are not sure whether this node has it"
+      is false comfort when the answer is that it has no provider at all.
 
 # ---------------------------------------------------------------------------
 # Thresholds (§10). Declared here, read by the detector, never hard-coded.
@@ -456,6 +488,14 @@ recommendations:
     - RESTART_RESOURCE
     - REQUEST_CLEANUP_APPROVAL
     - NEEDS_HUMAN
+    # Added by the runtime-resource round (§40). The resource is running
+    # correctly and its DECLARATION is what is stale — a session owns a
+    # durable resource, or a required resource has no declaration at all.
+    # Distinct from every value above because acting on the resource would be
+    # acting on the wrong object: restarting a session-owned tunnel re-creates
+    # the same defect with a fresh clock, and starting an undeclared tunnel
+    # changes nothing that made it undeclared.
+    - REDECLARE_RESOURCE
   every_recommendation_requires:
     - blast_radius          # what else stops if this is done
     - affected_processes    # exactly which PIDs, listed

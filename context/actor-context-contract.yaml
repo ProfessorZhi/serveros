@@ -1,0 +1,140 @@
+# Trusted actor context — who is behind this request, and what established it.
+#
+# Why this file exists
+# --------------------
+# The forbidden model, stated once so no later reader has to guess whether it
+# was considered:
+#
+#     {"human": "hwz", "approved": true}     <- the Agent said so
+#
+# An Agent runtime that can declare its own human can approve its own
+# mutations. Every admission gate downstream of that is decoration, because the
+# one thing the gate exists to establish — that a person asked for this — is
+# the thing the caller gets to assert.
+#
+# So identity is not an argument. It is a lookup: the caller presents a
+# `context_ref`, and ServerOS resolves it against evidence it received from a
+# HumanControlProvider. A caller that has no such ref has no actor. A caller
+# that invents one gets a miss, which is not an error to be smoothed over — it
+# is the answer.
+#
+# This is NOT a HumanIdentity DB
+# ------------------------------
+# It does not answer "who is hwz". It answers "what did provider P report about
+# the human behind conversation C at time T, and is that still fresh". Every
+# field below is dated, every record expires, and a record with no provider
+# behind it is not a record. An identity database would be a place to look
+# somebody up; this is a place to check evidence that was pushed in.
+schema: serveros/trusted-actor-context.v1
+version: 1
+
+identity:
+  context_ref: "human-context:<urlencoded-provider-id>/<digest>"
+  actor_ref: "human:<actor-id>"
+  digest_because: >-
+    the digest is computed by ServerOS over the provider's own evidence
+    identity — it is not chosen by the caller and not derived from anything the
+    caller supplies. A caller cannot construct a ref that resolves unless the
+    provider reported the event that produced it.
+
+# ---------------------------------------------------------------------------
+# Required fields. §5's list, in §5's words, plus what the list implies.
+# ---------------------------------------------------------------------------
+fields:
+  context_ref:
+    required: true
+    producer: serverosd
+    means: "the handle a caller presents; the caller never supplies the rest"
+  actor_ref:
+    required: true
+    producer: human-control-provider
+    means: "a typed human ref; never an open_id, an email, a chat id or a pane"
+  human_control_provider:
+    required: true
+    producer: serverosd
+    means: "which provider vouched, by id — a context with no provider is not evidence"
+  transport:
+    required: true
+    producer: human-control-provider
+    means: "the ingress the event arrived over, e.g. feishu"
+  transport_identity:
+    required: true
+    producer: human-control-provider
+    means: >-
+      what the TRANSPORT verified about the sender. This is the field that
+      makes the record evidence rather than hearsay, and it is why a caller
+      cannot supply it: only the transport can say what the transport checked.
+  conversation_ref:
+    required: true
+    producer: human-control-provider
+    means: "the conversation the event belongs to; a context is not transferable between them"
+  message_ref:
+    required: true
+    producer: human-control-provider
+    means: "the single event this context is about, so one message cannot authorize two actions"
+  observed_at:
+    required: true
+    producer: human-control-provider
+    means: "when the provider observed it — required, because evidence with no clock cannot be aged"
+  provenance:
+    required: true
+    values: [FACT, INFERRED, UNKNOWN]
+    rule: >-
+      FACT only when the provider verified the sender. UNKNOWN is what a
+      provider that ran and could not verify reports, and it is a real answer:
+      the live BotMux surface answers exactly this way for a process tree that
+      is not inside a turn.
+  provider_status:
+    required: true
+    values: [VERIFIED, BLOCKED, UNSUPPORTED]
+    producer: human-control-provider
+    means: >-
+      the provider's own word for what it did, kept verbatim. A provider that
+      is installed, callable and unable to verify answers BLOCKED; one that has
+      no such surface at all answers UNSUPPORTED. Collapsing the two would make
+      "this deployment cannot verify people" read as "this deployment has no
+      opinion about people".
+  expires_at:
+    required: true
+    producer: serverosd
+    means: "computed at attach time from the contract's window; never supplied by the caller"
+
+freshness:
+  # Computed at READ time and never stored as a verdict. A stored
+  # `freshness: FRESH` is a claim that was true when it was written, and the
+  # whole reason this plane exists is that such claims get read later.
+  states: [FRESH, STALE, EXPIRED]
+  window_seconds: 900
+  stale_after_seconds: 300
+  rule: >-
+    FRESH authorizes. STALE may be shown to a human and may not authorize a
+    mutation. EXPIRED is refused by name. The two thresholds are separate
+    because "ask the person again" and "this evidence is dead" are different
+    instructions.
+  never_stored_because: >-
+    freshness is a function of the clock, and the clock is not a field. Writing
+    it down produces a record that says FRESH forever.
+
+forgery:
+  # The tests for this are named `test_*forged*` in tests/test_actor_context.py.
+  rules:
+    - "A payload carrying `human`, `actor`, `actor_ref` or `approved` from the
+       request side is REFUSED BY NAME. It is not ignored: silently dropping it
+       teaches the caller that the field was read and accepted."
+    - "A context_ref that ServerOS did not mint does not resolve. There is no
+       fallback and no default context."
+    - "A context is single-conversation. Presenting one against a different
+       conversation's session is refused."
+    - "An approval names the context it was decided from. Replaying an approval
+       under a different context is refused."
+  because: >-
+    each of these is a different way for the same sentence — "a person agreed"
+    — to become true without a person. They are listed together because they
+    are repaired in one place: the resolution step, not four call sites.
+
+not_this:
+  - "not a directory of people: nothing here enumerates actors"
+  - "not a permission: a FRESH context says who asked, never what they may do"
+  - "not durable authority: an expired context authorizes nothing at all"
+  - "not a second Context Capsule: `context/schema.yaml` describes the working
+     environment of a session; this describes the human behind one request"

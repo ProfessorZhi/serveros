@@ -4,17 +4,25 @@
 # it is not an authority. ServerOS decides identity, policy and desired state;
 # an MCP surface is one way an agent asks about them.
 #
-# Two surfaces, because "this machine" and "the fleet" are different questions
-# with different blast radii. Merging them produces a server that can both
-# answer "where am I" and "run this on any machine", which is a server whose
-# permission model cannot be stated in one sentence.
+# Three surfaces, because node observation, Agent Session control and Item/Run
+# lifecycle have different authorities and blast radii. Keeping them separate
+# prevents a read-only node adapter from acquiring provider/network side
+# effects merely because Agent control also needs an MCP surface, and it keeps
+# the Workengine's truth in the repository that owns it.
+#
+# There were four declared here until this revision. `serveros-fleet-mcp` had
+# no implementation and no tool that resolved to any code; its names are
+# accounted for under `surfaces.serveros-agent-mcp.supersedes`. A surface
+# declaration with nothing behind it is worse than no declaration, because it
+# is read as coverage.
 schema: serveros/mcp-surfaces.v1
 
 principle: >-
-  MCP carries Agent → Tool / Context. It does not carry Agent → Agent
-  delegation (that is A2A), and it does not carry fleet lifecycle state
-  (heartbeat, presence, leases — those belong to the fleet transport plane,
-  which is request/response-free by nature).
+  MCP carries typed Tool / Context calls and never becomes authority. The
+  dedicated Agent Session surface may submit local typed session intents to an
+  AgentSessionProvider; that is a control facade, not the A2A wire protocol.
+  Cross-device Agent-to-Agent delegation remains an A2A/Fleet concern. MCP also
+  does not own fleet lifecycle state (heartbeat, presence or leases).
 
 surfaces:
   serveros-node-mcp:
@@ -100,34 +108,196 @@ surfaces:
       recommendation is a proposal that travels to a human — there is no tool
       that carries it back as an action.
 
-  serveros-fleet-mcp:
-    scope: the fleet
-    ownership: fleet semantic layer
+  serveros-agent-mcp:
+    scope: the Agent Runtimes this runtime can name, and the sessions on them
+    ownership: typed Agent Session control facade and fleet control surface
+    implementation: mcp/agent_mcp.py
+    resources: []
     tools:
-      - fleet.devices
-      - fleet.device.inspect
-      - fleet.capability.find
-      - fleet.ability.diff
-      - fleet.context.resolve
-      - fleet.task.route
-      - fleet.task.status
+      - device.list
+      - device.inspect
+      - agent.runtime.list
+      - agent.runtime.inspect
+      - agent.provider.list
+      - agent.provider.inspect
+      - agent.session.list
+      - agent.session.inspect
+      - agent.session.result
+      - agent.session.create
+      - agent.session.send
+      - agent.session.resume
+      - agent.session.stop
+      - agent.session.handoff
     owns:
-      - fleet device identity (read)
-      - capability resolution across devices
-      - ability diff across devices
-      - task routing and status
+      - the fleet read model, at a disclosure level the caller names (§12/§13)
+      - Agent Runtime declarations and what each can consume
+      - provider inventory and readiness observations, per device
+      - typed normalization of provider-backed Agent/session operations
+      - forwarding a control action to the §7 router, which resolves, admits and
+        routes before any provider sees it
     does_not_own:
-      - device-local path resolution
-      - device-local protected resources
-      - device identity mutation
-      - transport credentials
+      - device identity — authored in `fleet/registry.yaml`, never derived
+      - reachability — observed by a transport for one call, never cached here
+      - Agent Runtime definitions
+      - provider-native session truth
+      - admission policy — serverosd decides it
+      - Ability authority
+      - the actor behind a call — resolved from `context_ref`, never accepted
     explicitly_absent:
       - remote.shell
+      - remote.exec
+      - agent.session.interrupt
     note: >-
-      fleet.device.inspect reports what the fleet KNOWS about a device,
-      including that it cannot currently be reached. It is not a synonym for
-      "connect and enumerate", and it must be able to answer successfully
-      while a device is unreachable.
+      Unsupported or not-yet-adapted verbs remain visible through each session's
+      `action_support` field rather than being translated to a stronger
+      operation. In particular BotMux close is not exposed as turn interrupt,
+      which is also why `agent.session.interrupt` is absent while
+      `agent.session.stop` is served: `stop` is the ServerOS lifecycle verb with
+      a typed outcome, and `interrupt` is a provider-flavoured verb whose meaning
+      is the provider's. The router contract declares both; this surface serves
+      the semantic one.
+
+      The four control verbs that were absent in v1 — `session.resume`,
+      `session.stop`, `session.handoff`, `session.interrupt` — are named in
+      `explicitly_absent` above only where they are still absent. The other
+      three are served now because §22 landed: admission returns REQUIRE_HUMAN
+      for a human_gated verb, a caller presents a `context_ref` and an approval
+      bound to the action, device and target, and the router refuses with
+      APPROVAL_REQUIRED or APPROVAL_BINDING_MISMATCH when either is missing. A
+      tool that always failed would have taught a caller the operation was
+      broken; the operation is reachable, so it is reachable through a tool.
+
+      `SessionService` resolves provider support, then provider readiness, then
+      admission. Checking either of the first two first is not a way around the
+      gate: both can only narrow, and a SUPPORTED verb on a READY provider still
+      needs its own ALLOW.
+
+      Readiness still has no tool of its own, and now for a stronger reason than
+      the surface being narrow: it is a provider-INSTANCE fact and it arrives
+      inside `agent.provider.list`, with the observation time on each entry. A
+      `readiness.list` tool would be a second name for one fact, and the second
+      name is the one that drifts.
+
+      The device and provider reads are answered by `fleet/view.py`, so this
+      surface serves the disclosure contract rather than a second rendering of
+      it. `level` is a parameter here because §12 makes the cost of a question
+      the caller's decision, and the envelope always says which level answered.
+
+    supersedes:
+      surface: serveros-fleet-mcp
+      why: >-
+        `serveros-fleet-mcp` was declared here for two revisions with no
+        `implementation:` key and no adapter file. It was the shape of a
+        surface, not a surface: nothing loaded it, nothing asserted it, and
+        its seven tool names resolved to no code. Building it would have meant
+        a fourth server answering `device.list` alongside this one, which is
+        the overlap §11 forbids. Its names are accounted for below instead, so
+        that a reader searching for `fleet.devices` finds where it went rather
+        than an absence.
+      moved:
+        fleet.devices: device.list
+        fleet.device.inspect: device.inspect
+        fleet.task.route: agent.session.create
+        fleet.task.status: agent.session.inspect
+        fleet.context.resolve: >-
+          not a tool, and deliberately: `serverosd agent.context.resolve` is a
+          NODE method. An agent presents a context; it never mints or resolves
+          one for itself, and a tool that resolved refs would be the second
+          reading of what a context ref is.
+      dropped:
+        fleet.capability.find: >-
+          nothing serves it. Capability resolution is the target resolver's job
+          and it answers per request with a verdict, not as a searchable index.
+        fleet.ability.diff: >-
+          nothing serves it. Ability materialization status is node-local and is
+          served by `ability.list` / `ability.status` on the node surface; a
+          diff across devices needs a per-device projection this release does
+          not build, and inventing one here would be the declared-but-absent
+          pattern this file just removed.
+
+  serveros-work-mcp:
+    scope: Item and Run lifecycle, wherever it is read from
+    ownership: Workengine — Item and Run lifecycle truth lives there and nowhere else
+    # Repo-qualified: the implementation is NOT in this tree. The tool list is
+    # therefore not restated here either — a second copy of it in this file
+    # would be a copy that falls behind, and the copy is what a reader would
+    # trust. This file declares the boundary and points at the owner.
+    implementation: work-engine:workengine/mcp.py
+    tools_source: workengine.mcp.TOOLS
+    resources: []
+    owns:
+      - Item state, outcome and activities
+      - Run state, its ledger, and the one control-plane termination
+    does_not_own:
+      - worker processes — terminating a Run is a control-plane fact and stops
+        nothing
+      - artifacts, worktrees or containers
+      - anything outside the Workengine store
+    explicitly_absent:
+      - remote.shell
+      - work.run.kill
+      - work.run.stop
+    note: >-
+      A separate process from the CLI on purpose: an agent that holds the
+      control surface must not thereby hold the maintenance one. The actor on
+      every mutation is resolved from `context_ref` and is never taken from the
+      caller, and `work.run.abandon` is a reason code on the same entry point as
+      `work.run.cancel` rather than a second one.
+
+# ---------------------------------------------------------------------------
+# §11's release set, mapped to the surface that serves each name.
+#
+# §11 names what an agent must be able to READ and what it must be able to
+# CHANGE. It does not name one server for all of it, and it says so twice: the
+# Workengine owns Item/Run truth, and `ability.*` is node-local materialization
+# status. Collecting those names onto whichever surface was edited first would
+# be an overlap, and the release's own rule is that §11's read set is answered
+# by the surface that owns the fact.
+#
+# So this is a table rather than a paragraph, and a test reads it: for every
+# name below, the surface named must actually serve it. A §11 name with no
+# server is the `serveros-fleet-mcp` failure again, one level up.
+# ---------------------------------------------------------------------------
+section_11:
+  read:
+    device.list: serveros-agent-mcp
+    device.inspect: serveros-agent-mcp
+    agent.runtime.list: serveros-agent-mcp
+    agent.runtime.inspect: serveros-agent-mcp
+    agent.provider.list: serveros-agent-mcp
+    agent.provider.inspect: serveros-agent-mcp
+    agent.session.list: serveros-agent-mcp
+    agent.session.inspect: serveros-agent-mcp
+    # Served on the node surface, where the fact lives: materialization status
+    # is a property of the node the abilities were installed on. The spelling
+    # differs by one character — `ability.status` is that surface's own name
+    # for the single-ability read, and it is the name it has always had.
+    ability.list: {surface: serveros-node-mcp, as: ability.list}
+    ability.inspect: {surface: serveros-node-mcp, as: ability.status}
+    work.item.get: {surface: serveros-work-mcp, as: work.item.get}
+    work.run.get: {surface: serveros-work-mcp, as: work.run.get}
+    work.run.list: {surface: serveros-work-mcp, as: work.run.list}
+    work.run.events: {surface: serveros-work-mcp, as: work.run.events}
+
+  write:
+    # Every one of these requires a `context_ref`; the router refuses a
+    # mutating action without one, so the requirement is enforced below the
+    # surface rather than restated as a convention at it.
+    agent.session.create: serveros-agent-mcp
+    agent.session.send: serveros-agent-mcp
+    agent.session.resume: serveros-agent-mcp
+    agent.session.stop: serveros-agent-mcp
+    agent.session.handoff: serveros-agent-mcp
+    work.run.cancel: {surface: serveros-work-mcp, as: work.run.cancel}
+    work.run.abandon: {surface: serveros-work-mcp, as: work.run.abandon}
+
+  disjointness: >-
+    No name above is served by two surfaces, which is why there is no
+    `shared_names` exemption in this file. `ability.list` is the near miss: the
+    agent surface is fleet-width and could plausibly answer it, and §11 lists it
+    beside names the agent surface does own. Mapping it to the node surface is
+    the decision not to have two answers to "what abilities are installed"
+    differing only in which machine the caller happened to ask.
 
 # ---------------------------------------------------------------------------
 # Remote execution, when it is added

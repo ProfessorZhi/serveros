@@ -1,7 +1,11 @@
 # ServerOS
 
-ServerOS is a lightweight **user-space Agent control plane** for Claude Code,
+ServerOS is a lightweight **user-space Agent Operating Fabric** for Claude Code,
 Codex, and future coding agents — an Agent Engineering Workbench built on it.
+
+The full definition is in [`ARCHITECTURE.md`](ARCHITECTURE.md) and is stated
+once. The earlier phrasing "Agent control plane" was not wrong — the control
+plane is now precisely the Node Runtime Plane, one of four.
 
 Its job is not to prescribe how an agent works.
 
@@ -68,10 +72,12 @@ See [`ARCHITECTURE.md`](ARCHITECTURE.md).
 statement.** This README does not restate it; a second statement that is "also
 correct" is the drift that document exists to prevent.
 
-In one line: ServerOS is a user-space Agent control plane — a small node runtime
-(`serverosd`), semantic services, an Agent-facing MCP, a bootstrap Skill,
-on-demand Ability-driven procedures, plugin composition, and an optional Fleet.
-Availability is **per-device declared**, not a product-global always-on promise.
+In one line: ServerOS is a user-space Agent Operating Fabric — a small node
+runtime (`serverosd`), semantic services, an Agent-facing MCP, a bootstrap
+Skill, on-demand Ability-driven procedures, plugin composition, and an optional
+Fleet. Availability is **per-device declared**, not a product-global always-on
+promise. The four planes are the Node Runtime Plane, the Ability Fabric, the
+Memory-Context Fabric and the Coordination Fabric.
 
 Component boundaries are also machine-readable in
 [`integration/components.yaml`](integration/components.yaml).

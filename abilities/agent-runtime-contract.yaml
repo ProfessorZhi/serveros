@@ -1,0 +1,196 @@
+# ServerOS Agent Runtime contract.
+#
+# Why this file exists
+# --------------------
+# ServerOS has shipped two runtime adapters since before it had a name for what
+# they adapt to. `docs/claude-codex-parity.md` says what Claude Code and Codex
+# must share and which files may differ, and it says it in prose, in a document
+# that no code reads. The result is the standing risk that document names and
+# cannot prevent: an adapter quietly becoming a second implementation of a rule,
+# so that "same capability, different adapter" is a claim rather than a finding.
+#
+# This file makes the runtime a first-class object with declared capabilities,
+# so that the parity claim becomes a comparison between two records instead of
+# a sentence two people agreed on.
+#
+# It is NOT a second definition of what a runtime is. An agent runtime is
+# already a kind in `runtime/managed-runtime-contract.yaml`, where it may not be
+# registered without a decisive owner. This file describes what it can consume.
+schema: serveros/agent-runtime.v1
+version: 1
+
+# ---------------------------------------------------------------------------
+# A runtime record is DEVICE-INDEPENDENT. Which runtimes exist on a machine is
+# a device fact and lives in `fleet/registry.yaml` under `agents`. Keeping the
+# two apart is what lets one runtime be described once and installed on three
+# machines with three different versions of it.
+# ---------------------------------------------------------------------------
+record:
+  required_fields: [id, name, version_observed_by, capability_probe]
+  optional_fields: [aliases, note]
+  forbidden_fields:
+    - "an install path"
+    - "a device_ref"
+    - "a credential"
+  because: >
+    the moment a runtime record names a path or a machine it becomes an
+    installation record, and installations are already modelled — one per
+    device, in the registry, with an owner.
+
+# ---------------------------------------------------------------------------
+# Identifiers. Closed, and the growth rule is stated because this list will be
+# asked to grow and the answer has to be the same every time.
+# ---------------------------------------------------------------------------
+ids: [claude-code, codex]
+
+# ---------------------------------------------------------------------------
+# What a runtime can consume. These are the inputs to `AGENT_UNSUPPORTED`: a
+# provider whose kind or surface is not in the runtime's consumable set is not
+# "missing", it is incompatible-by-design, and the two must not be conflated.
+# ---------------------------------------------------------------------------
+capabilities:
+  consumable_provider_kinds: [skill, mcp-server, cli, local-service, remote-service, builtin]
+  # How the runtime discovers a Skill. NATIVE, always — see
+  # `docs/capability-discovery.md`. A runtime that has no native discovery
+  # cannot be supported by writing one, because the non-regression contract
+  # ("a ServerOS hint must never shrink the set of capabilities the native
+  # agent could otherwise discover") is unsatisfiable without a native surface
+  # to strengthen.
+  skill_discovery: native
+  # Where instructions are read from at session start.
+  #
+  # These four values were written from the shape of the convention rather than
+  # from the disk, and two of them were wrong. `runtime_parity.py` found it on
+  # its first run against the live host, which is the entire argument for the
+  # file existing: a declaration nobody executes cannot be wrong, it can only
+  # be believed.
+  #
+  #   `.codex/AGENTS.md`  — no such file, and none ever was. `/home/hwz/.codex/`
+  #                         contains no Markdown at all. The Codex home entry
+  #                         is `/home/hwz/AGENTS.md`, a 3409-byte standalone
+  #                         file, which `SRV-0003` records as one of the three
+  #                         files verified to converge on one invariant.
+  #   `.claude/CLAUDE.md` — correct, and it is the whole file: 49 bytes whose
+  #                         only content is `@/home/hwz/CLAUDE.md`. So the
+  #                         content lives in `/home/hwz/CLAUDE.md`, which is
+  #                         now listed too. Three files converge on one
+  #                         invariant and the middle one is an importer; both
+  #                         are surfaces, because deleting either changes what
+  #                         the session reads.
+  #   the workspace pair  — `workspace/CLAUDE.md` exists (2330 bytes).
+  #                         `workspace/AGENTS.md` does not, so a Codex session
+  #                         started under the workspace root does not receive
+  #                         the ServerOS workspace entry that a Claude session
+  #                         does. That is an asymmetry between the two runtimes
+  #                         and it is recorded here rather than corrected:
+  #                         creating it means writing into the user's Agent
+  #                         configuration, which this contract may not do.
+  instruction_surfaces:
+    claude-code: [{path_role: workspace, relative: "CLAUDE.md"},
+                  {path_role: home, relative: ".claude/CLAUDE.md"},
+                  {path_role: home, relative: "CLAUDE.md"}]
+    codex: [{path_role: workspace, relative: "AGENTS.md"},
+            {path_role: home, relative: "AGENTS.md"}]
+  # What the runtime parity check cannot see. Kept beside the data it is about,
+  # because a known gap recorded away from its subject is a gap nobody reads.
+  known_gaps:
+    - surface: "codex workspace AGENTS.md"
+      state: ABSENT_ON_THIS_HOST
+      because: >
+        the file does not exist. Codex sessions under the workspace root get no
+        ServerOS workspace entry; Claude sessions do.
+      closing_action: NEEDS_HUMAN — writing it modifies the user's Agent
+        configuration, which §42 places outside this round's authority.
+  # Where MCP servers are declared, per runtime. One key, one file.
+  mcp_surfaces:
+    claude-code: {path_role: home, relative: ".claude.json", key: "mcpServers"}
+    codex: {path_role: home, relative: ".codex/config.toml", key: "mcp_servers"}
+  # A runtime that can hold a session open across a task boundary can own a
+  # session-scoped resource. None can own a persistent one; see
+  # `ownership` below.
+  session_lifecycle: true
+
+# ---------------------------------------------------------------------------
+# The ownership rule, applied to runtimes.
+#
+# ARCHITECTURE.md invariant 6: anything that must outlive the Agent session that
+# caused it requires an explicit durable owner. An agent runtime IS a session
+# boundary, so it is exactly the thing that may not be the owner of a durable
+# resource — and it is also the thing most likely to be proposed as one, because
+# it is present, it is running, and it already supervises processes.
+# ---------------------------------------------------------------------------
+ownership:
+  may_own_lifecycle_classes: [session-scoped, disposable]
+  may_not_own_lifecycle_classes: [persistent, task-scoped]
+  because: >
+    Case A. A tunnel a task depended on was registered with session lifetime and
+    was retired, on time and by design, when an unrelated Agent session ended.
+    Nothing was broken; every observation up to that moment said the tunnel was
+    healthy. The runtime was the natural owner and it was the wrong one.
+  consequence:
+    - "A persistent resource whose only candidate owner is an agent runtime is
+       refused at registration, or downgraded to `disposable` with a note."
+    - "A task-scoped resource is owned by the work item, never by the session
+       that is working on it."
+
+# ---------------------------------------------------------------------------
+# version_observed_by — how the runtime's version is established.
+#
+# Stated as a probe reference rather than as a field a caller may fill in,
+# because "the version is 2.1.0" written from memory is indistinguishable in
+# the record from "the version is 2.1.0" measured a minute ago, and the two
+# have opposite consequences when a provider turns out to be incompatible.
+# ---------------------------------------------------------------------------
+version_observation:
+  required: [probe, observed_at]
+  accepted_probes: [cli-version, package-manifest, service-handshake]
+  rule: >
+    a version with no `observed_at` is refused. An unversioned fact about a
+    runtime is how "it worked yesterday" and "it works today" become statements
+    about two different programs.
+
+# ---------------------------------------------------------------------------
+# Parity. The claim in `docs/claude-codex-parity.md` is that the two runtimes
+# differ only in adapter files. This block is what turns that into a check: the
+# two records are compared field by field, and any difference outside
+# `allowed_differences` is a finding, not a judgement call.
+# ---------------------------------------------------------------------------
+parity:
+  compared_fields:
+    - consumable_provider_kinds
+    - skill_discovery
+    - session_lifecycle
+  # The ONLY fields two runtimes may differ in. Named explicitly, so growing
+  # this list is an edit to this file rather than a quiet adapter change.
+  allowed_differences:
+    - instruction_surfaces
+    - mcp_surfaces
+    - name
+    - version_observed_by
+  rule: >
+    a difference in a compared field is a defect in the canonical source, not a
+    legitimate runtime difference. It is reported as such and never resolved by
+    editing the adapter.
+
+# ---------------------------------------------------------------------------
+# A runtime is not a provider and never becomes one. Collapsing them would let
+# "Codex can do it" stand in for "this machine can do it", which is the union
+# error the Ability Fabric is an intersection to prevent.
+# ---------------------------------------------------------------------------
+not_a_provider:
+  because: >
+    a runtime is where work happens, not a way of doing a named kind of work.
+    "Which agent can run this" and "how is this done here" are different
+    questions asked at different times by different consumers.
+
+rules:
+  - "A runtime executes and materializes. It decides nothing. See the Authority
+     block in ARCHITECTURE.md."
+  - "No runtime-specific fact lives outside an adapter. If a rule needs to be
+     true for Claude Code and not for Codex, it is an adapter fact or it is a
+     bug."
+  - "A runtime record carries no path and no device. Those are installation
+     facts and installations are per device, in the registry, with an owner."
+  - "Adding a runtime means adding an `instruction_surfaces` and an
+     `mcp_surfaces` entry and nothing else, or the parity comparison will fail
+     and name the field that disagreed."

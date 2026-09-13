@@ -90,6 +90,18 @@ BROKEN_CODES = frozenset({
     "FUNCTIONAL_PROBE_FAILED",
 })
 
+# Codes that describe the DECLARATION being wrong rather than the resource
+# being wrong. A third outcome beside "stale" and "broken", because the correct
+# response is neither: restarting a session-owned tunnel re-creates the same
+# defect with a fresh clock, and starting an undeclared tunnel does nothing
+# about what made it undeclared. The resource is fine. What is wrong is the
+# record of it.
+DECLARATION_CODES = frozenset({
+    "SESSION_OWNED_DURABLE_RESOURCE",
+    "PERSISTENT_RUNTIME_FLOATING_DEPENDENCY",
+    "UNDECLARED_DURABLE_RESOURCE",
+})
+
 # Severity per code. Transcribed from the contract, and a test asserts the two
 # agree — a severity that lives only in code is a severity nobody reviews.
 SEVERITY = {
@@ -107,7 +119,51 @@ SEVERITY = {
     "STALE_CONTAINER": "medium",
     "STOPPED_RECLAIM_CANDIDATE": "low",
     "AGE_WITHOUT_ACTIVITY": "low",
+    "PERSISTENT_RUNTIME_FLOATING_DEPENDENCY": "medium",
+    "SESSION_OWNED_DURABLE_RESOURCE": "high",
+    "UNDECLARED_DURABLE_RESOURCE": "medium",
 }
+
+# ---------------------------------------------------------------------------
+# Owner references that denote a SESSION lifetime. ARCHITECTURE.md invariant 6:
+# an Agent session may cause creation, it may not be the owner of record for
+# anything that must outlive it. Case A — a tunnel a task depended on carried
+# `session:*` as its owner and `persistent` as its lifecycle, was retired on
+# time when an unrelated session ended, and reported healthy for the whole
+# period that mattered. Nothing downstream could catch it; nothing is wrong
+# until the exact instant it is wrong.
+#
+# Matched by prefix because a session id carries the session. The list is short
+# on purpose: an owner kind that is not a session must not land here, or the
+# check starts refusing legitimate registrations and gets switched off.
+# ---------------------------------------------------------------------------
+SESSION_OWNER_PREFIXES = ("session:", "agent-runtime:", "agent-session:")
+
+# Lifecycle classes that outlive a session. `session-scoped` and `disposable`
+# are absent because they are the two a session may legitimately own.
+DURABLE_LIFECYCLE_CLASSES = ("persistent", "task-scoped")
+
+# ---------------------------------------------------------------------------
+# Floating dependency markers. These are TEXT patterns, and text patterns are
+# a weak instrument — `@latest` inside a comment would match. It is still the
+# right instrument here: the alternative is a resolver that decides what a
+# command actually resolves to, which is a network call and a cache read, and
+# this detector is pure and runs in the daemon's tick.
+#
+# Case C: one node reached Playwright through `npx @playwright/mcp@latest`,
+# the other through an absolute path to a versioned artifact. Both worked. The
+# two ran "the same" toolchain and did not, and nothing in the catalogue could
+# have said so.
+# ---------------------------------------------------------------------------
+FLOATING_DEPENDENCY_PATTERNS = (
+    ("npx-npm-latest", "npx "),
+    ("floating-branch", "@main"),
+    ("floating-branch", "@master"),
+    ("floating-branch", "@HEAD"),
+    ("install-on-start", "npm install "),
+    ("install-on-start", "pip install "),
+    ("install-on-start", "docker pull "),
+)
 
 
 # Resource kinds that ARE an MCP server. The contract declares `mcp-server`;
@@ -168,8 +224,8 @@ def signal(code: str, subject: str, measured: dict, *, window: str,
 
 
 def detect(*, groups=None, containers=None, task_states=None, host_facts=None,
-           probe_results=None, error_windows=None, coverage_update=None,
-           thresholds=None, criticality=None) -> list[dict]:
+           probe_results=None, error_windows=None, resources=None,
+           coverage_update=None, thresholds=None, criticality=None) -> list[dict]:
     """Every anomaly the supplied facts support. Nothing is inferred here.
 
     Each block below is skipped when its input is absent, and skipped inputs
@@ -329,6 +385,63 @@ def detect(*, groups=None, containers=None, task_states=None, host_facts=None,
                 why="the MCP server process exists and does not complete a handshake",
             ))
 
+    # -- resource declarations (§40) -----------------------------------------
+    # Three findings that are about the DECLARATION rather than about the
+    # resource. Every one of them describes a resource that is working, which
+    # is why none of them implies stale and why none of them is a health axis.
+    for resource in resources or []:
+        ref = resource.get("id") or "?"
+        owner = (resource.get("owner") or {}).get("ref") or ""
+        lifecycle = (resource.get("lifecycle") or {}).get("class") or ""
+
+        # Case A. The resource is healthy; the ownership is what is wrong.
+        if (owner.startswith(SESSION_OWNER_PREFIXES)
+                and lifecycle in DURABLE_LIFECYCLE_CLASSES):
+            signals.append(signal(
+                "SESSION_OWNED_DURABLE_RESOURCE", ref,
+                {"owner": owner, "lifecycle": lifecycle,
+                 "declared": lifecycle, "permits": ["session-scoped", "disposable"]},
+                window="current registration",
+                why=("the declared lifecycle outlives every owner that can be "
+                     "confirmed for it. The resource is not misconfigured — it "
+                     "is exactly what its class says, and every observation "
+                     "before its retirement will report it healthy."),
+            ))
+
+        # Case C. It works, and it cannot be said to be the same thing tomorrow.
+        text = " ".join(str(resource.get(k) or "") for k in
+                        ("command", "observe", "materialization", "note"))
+        if text.strip():
+            hits = sorted({name for name, needle in FLOATING_DEPENDENCY_PATTERNS
+                           if needle in text})
+            # A pinned absolute path is the repair, and a resource that names
+            # one is not floating even if the surrounding note mentions npx.
+            pinned = ("/" in text or "\\" in text) and "@latest" not in text
+            if hits and not pinned:
+                signals.append(signal(
+                    "PERSISTENT_RUNTIME_FLOATING_DEPENDENCY", ref,
+                    {"patterns": hits, "lifecycle": lifecycle,
+                     "criticality": criticality.get(ref, "normal"),
+                     "protection": resource.get("protection", {}).get("level", "normal")},
+                    window="current registration",
+                    why=("the resource resolves through something that moves. "
+                         "'It worked yesterday' and 'it works today' are then "
+                         "statements about two different programs."),
+                ))
+
+        # Case B. Required by something durable, declared by nothing.
+        if resource.get("required_by") and not resource.get("declared_by"):
+            signals.append(signal(
+                "UNDECLARED_DURABLE_RESOURCE", ref,
+                {"required_by": resource.get("required_by"),
+                 "declared_by": None},
+                window="current registration",
+                why=("a durable artifact names this as required and no "
+                     "reconcilable store declares it. There is nothing to "
+                     "compare against, so nothing that can ever be found "
+                     "wrong."),
+            ))
+
     # -- error loops ---------------------------------------------------------
     for ref, window in (error_windows or {}).items():
         count = window.get("count")
@@ -349,7 +462,7 @@ def detect(*, groups=None, containers=None, task_states=None, host_facts=None,
 
 
 def unchecked(*, groups=None, containers=None, task_states=None, host_facts=None,
-              probe_results=None, error_windows=None) -> list[dict]:
+              probe_results=None, error_windows=None, resources=None) -> list[dict]:
     """Which inputs the detector could NOT evaluate, and why.
 
     This exists so that an empty signal list can be read correctly. On this
@@ -378,6 +491,16 @@ def unchecked(*, groups=None, containers=None, task_states=None, host_facts=None
         out.append({"input": "probe_results", "state": UNKNOWN, "why": "no probe results were supplied"})
     if not error_windows:
         out.append({"input": "error_windows", "state": UNKNOWN, "why": "no error windows were supplied"})
+    if not resources:
+        out.append({
+            "input": "resources",
+            "state": UNKNOWN,
+            "why": ("no registered resources were supplied, so neither "
+                    "SESSION_OWNED_DURABLE_RESOURCE, PERSISTENT_RUNTIME_FLOATING_"
+                    "DEPENDENCY nor UNDECLARED_DURABLE_RESOURCE could be "
+                    "evaluated. Their absence is NOT evidence that every "
+                    "registration is well-formed."),
+        })
     return out
 
 
@@ -442,6 +565,15 @@ def classify(signals: list[dict], *, subject: str, criticality: str = "normal",
             # is different: restart, do not reclaim.
             classification = "BROKEN_NOT_STALE"
             because = "the only signals present describe a failure to function, not disuse"
+        elif all(c in DECLARATION_CODES for c in codes):
+            # The declaration is stale, not the resource. Checked AFTER the
+            # combination table and after BROKEN, so a resource that is both
+            # broken and badly declared is classified by its breakage and
+            # carries the declaration findings alongside it.
+            classification = "DECLARATION_STALE"
+            because = ("every signal present describes the record rather than "
+                       "the resource: the thing is working and what is written "
+                       "about it is wrong")
         else:
             classification = "SIGNALS_PRESENT"
             because = (
@@ -480,6 +612,7 @@ def _recommend(classification: str, signals: list[dict], *, protection: str,
         "STALE_AGENT_RUNTIME_HIGH_CONFIDENCE": "REQUEST_CLEANUP_APPROVAL",
         "STALE_CANDIDATE": "REQUEST_CLEANUP_APPROVAL",
         "BROKEN_NOT_STALE": "RESTART_RESOURCE",
+        "DECLARATION_STALE": "REDECLARE_RESOURCE",
         "INFRASTRUCTURE_AT_RISK": "NEEDS_HUMAN",
         "SIGNALS_PRESENT": "NONE",
         "HEALTHY_OBSERVED": "NONE",
@@ -495,6 +628,14 @@ def _recommend(classification: str, signals: list[dict], *, protection: str,
         )
     elif classification == "BROKEN_NOT_STALE":
         because = "a process that is up and cannot answer is broken, not unused; restarting may be right and reclaiming is not"
+    elif classification == "DECLARATION_STALE":
+        because = (
+            "the resource is working and the record of it is wrong. Acting on "
+            "the resource would be acting on the wrong object — restarting a "
+            "session-owned resource re-creates the defect with a fresh clock, "
+            "and starting an undeclared one changes nothing that made it "
+            "undeclared"
+        )
 
     affected = [s["subject"] for s in signals]
     blast = {

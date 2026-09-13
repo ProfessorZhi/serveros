@@ -339,12 +339,258 @@ def cmd_ability_status(args) -> int:
     return EXIT_OK if installed else EXIT_FAULT
 
 
+def cmd_device_agents(args) -> int:
+    """§9/§18 — the agent runtimes this node has, and whether parity holds.
+
+    The observation half is read-only: whether each declared adapter surface
+    exists on this device. Nothing is created, and a surface that cannot be
+    resolved is reported as unobserved rather than as absent — a path role
+    that is not bound means nobody has looked, which is not the same finding
+    as a file that is not there.
+    """
+    parity_mod = _load_module_from(REPO_ROOT / "abilities/runtime_parity.py",
+                                   "serveros_runtime_parity")
+    contract_path = REPO_ROOT / "abilities/agent-runtime-contract.yaml"
+    registry_path = REPO_ROOT / "fleet/registry.yaml"
+
+    import yaml
+    contract = yaml.safe_load(contract_path.read_text(encoding="utf-8"))
+    registry = (yaml.safe_load(registry_path.read_text(encoding="utf-8"))
+                if registry_path.is_file() else None)
+
+    # Observe what is actually on this disk, per runtime per surface.
+    paths = paths_mod.Paths()
+    observed: dict[str, dict] = {}
+    for runtime in contract.get("ids") or ():
+        entry = {}
+        for field in parity_mod.OBSERVABLE_SURFACES:
+            specs = ((contract.get("capabilities") or {}).get(field) or {}).get(runtime)
+            if specs is None:
+                continue
+            if isinstance(specs, dict):
+                specs = [specs]
+            measured = []
+            for spec in specs:
+                try:
+                    base = paths.root(spec["path_role"])
+                except Exception:  # noqa: BLE001 - an unbound role is a finding
+                    continue
+                target = base / spec["relative"]
+                measured.append({"path": str(target), "present": target.exists()})
+            entry[field] = measured
+        observed[runtime] = entry
+
+    result = parity_mod.report(contract, registry, observed)
+
+    lines = [f"runtimes    {', '.join(result['runtimes'])}",
+             f"compared    {', '.join(result['compared_fields'])}",
+             f"may differ  {', '.join(result['allowed_differences'])}"]
+    for runtime in result["runtimes"]:
+        for field in parity_mod.OBSERVABLE_SURFACES:
+            for surface in (observed.get(runtime) or {}).get(field) or []:
+                mark = "present" if surface["present"] else "MISSING"
+                lines.append(f"  {runtime:<12} {field:<20} {mark}  {surface['path']}")
+    lines.append(f"verdict     {result['verdict']}")
+    for finding in result["findings"]:
+        lines.append(f"  finding   {finding['code']}: {finding['detail']}")
+    # Acknowledged defects are printed, not hidden. Moving them out of
+    # `findings` is what stops the check being permanently red; printing them
+    # is what stops that from becoming a way to stop looking.
+    for item in result["acknowledged"]:
+        lines.append(f"  known     {item['code']}: {item['detail']} "
+                     f"[{item['declared_gap'].get('state')}, "
+                     f"{item['declared_gap'].get('closing_action')}]")
+    for unknown in result["unknowns"]:
+        lines.append(f"  unknown   {unknown['code']}: {unknown['detail']}")
+    for surface in result["unobserved_declared_gaps"]:
+        lines.append(f"  stale gap {surface}: recorded but not observed; "
+                     "either it was fixed or the record is wrong")
+    emit(result, as_json=args.json, lines=lines)
+    return EXIT_OK if result["verdict"] == "CONFORMANT" else EXIT_FAULT
+
+
+def cmd_ability_resolve(args) -> int:
+    """§45/§46 — can THIS device do THIS thing, now, and if not why not.
+
+    The distinction from `ability status` is the reason both exist and is worth
+    stating, because they read like the same question. `ability status` reads
+    the projection: what the authority says is installed, and how fresh that
+    answer is. This runs the resolver: it intersects the eight inputs for one
+    device, one runtime and one moment. A thing can be listed and not
+    resolvable — installed nowhere this runtime can reach is the ordinary case,
+    and reporting it as available because the authority lists it is the defect
+    `abilities/resolver.py` was written to prevent.
+
+    Until this command existed the kernel had no caller at all outside its own
+    tests. It was complete, correct, thirty-odd green tests, and unreachable —
+    the same shape as `admission()`, and the reason the test for this asserts
+    the wiring rather than the logic.
+
+    The inputs come from `--request`, and deliberately from nowhere else yet.
+    Assembling them from live state is the next stage; a version of this that
+    guessed at them would produce a confident `AVAILABLE` computed from inputs
+    nobody supplied, which is precisely what the kernel now refuses to do.
+    """
+    resolver_mod = _load_module_from(REPO_ROOT / "abilities" / "resolver.py",
+                                     "serveros_ability_resolver")
+    request = json.loads(Path(args.request).read_text(encoding="utf-8"))
+    if args.ability:
+        request["ability"] = args.ability
+    if args.device:
+        request["device_ref"] = args.device
+    if args.runtime:
+        request["runtime"] = args.runtime
+
+    try:
+        record = resolver_mod.resolve(request)
+    except resolver_mod.Rejected as exc:
+        sys.stderr.write(f"serverosctl: {exc}\n")
+        return EXIT_COULD_NOT_ANSWER
+
+    lines = [
+        f"ability     {record['ability']}",
+        f"device      {record['device_ref']}",
+        f"runtime     {record['runtime']}",
+        f"status      {record['status']}"
+        + (f" · {record['reason']}" if record.get("reason") else ""),
+    ]
+    if record.get("provider"):
+        lines.append(f"provider    {record['provider']}")
+    if record.get("detail"):
+        lines.append(f"detail      {record['detail']}")
+    # What it could see, always. A status computed from whichever inputs
+    # happened to be readable is the finding this line exists to expose, and
+    # printing it only when something is missing would hide it exactly when a
+    # caller has stopped reading.
+    lines.append(f"inputs seen {', '.join(record['inputs_seen']) or 'none'}")
+    lines.append(f"missing     {', '.join(record['inputs_missing']) or 'none'}")
+    for candidate in record.get("candidates", []):
+        lines.append(f"  candidate {candidate['provider']} → {candidate['status']}"
+                     + (f" ({candidate['reason']})" if candidate.get("reason") else "")
+                     + (f" refused_by={candidate['refused_by']}"
+                        if candidate.get("refused_by") else ""))
+    emit(record, as_json=args.json, lines=lines)
+
+    # Three answers, three exit codes, because a shell has to tell them apart:
+    # it can go and use it, it must go and fix something, or it must go and
+    # supply an input. UNKNOWN is not a failure of this command.
+    if record["status"] in ("AVAILABLE", "DEGRADED"):
+        return EXIT_OK
+    if record["status"] == "UNKNOWN":
+        return EXIT_COULD_NOT_ANSWER
+    return EXIT_FAULT
+
+
 def _human_seconds(seconds: float) -> str:
     seconds = int(seconds)
     for unit, size in (("d", 86400), ("h", 3600), ("m", 60)):
         if seconds >= size:
             return f"{seconds // size}{unit}{seconds % size // 60 if unit == 'd' else ''}"
     return f"{seconds}s"
+
+
+def cmd_context_startup(args) -> int:
+    """§29–§32 — the whole of what a session is told before it asks anything.
+
+    This exists so the disclosure kernel has a caller. Built the same day as
+    `ability resolve`, which was added because `abilities/resolver.py` turned
+    out to have no caller outside its own tests — and a second kernel written
+    in the same round with the same defect would have been a poor showing.
+
+    Every input here is either read cheaply or reported missing:
+
+      item            inferred, never guessed, by the same resolver
+                      `context current` uses
+      capability      ONE projection read, matching `costs.capability.L0` =
+                      "one manifest read, no probes". It is therefore a
+                      CATALOGUE count and it is rendered as one. The resolved
+                      count needs the eight-input intersection and is not
+                      claimed here.
+      authority       the bound roots from the path contract
+
+    A daemon that will not answer degrades the line to `unknown` rather than
+    dropping it. Three lines are not smaller than five; they are five with two
+    missing, and a reader cannot tell which.
+    """
+    disclosure_mod = _load_module_from(REPO_ROOT / "context/disclosure.py",
+                                       "serveros_disclosure")
+
+    item = None
+    item_why = "no item inferred from this directory"
+    try:
+        context_resolver = _load_module_from(REPO_ROOT / "context/resolver.py",
+                                             "serveros_context_resolver")
+        item = context_resolver.infer_item(context_resolver.Roots.from_env(),
+                                           Path.cwd())
+    except Exception as exc:  # noqa: BLE001 - reported, never hidden
+        # SHORT, and this is the disclosure rule rather than a lost detail.
+        # The first version interpolated `str(exc)`, whose text runs to a full
+        # sentence naming the cwd and the three directory shapes an Item can
+        # live in — and that one line took the startup view from inside its
+        # budget to 160 tokens against a declared 120. Measured on the live
+        # node, minutes after the budget was declared.
+        #
+        # The long form is not deleted. It is what `serverosctl context current`
+        # prints, which the pointer line at the bottom of this view names. L0
+        # says that it does not know; L1 says why. That is the whole of §29.
+        item_why = f"{type(exc).__name__}; `serverosctl context current` explains"
+
+    # The catalogue count, over IPC, because the daemon grades its own
+    # projection and a CLI opening the file itself would report an empty
+    # answer for FRESH, STALE, UNREADABLE and NOT_MATERIALIZED alike.
+    capability_count = None
+    capability_why = None
+    try:
+        payload = ask_daemon("ability.list")
+        abilities = payload.get("abilities")
+        if abilities is None:
+            capability_why = (f"the daemon could not read its projection "
+                              f"({payload.get('registry_status')})")
+        else:
+            capability_count = len(abilities)
+    except DaemonUnavailable as exc:
+        capability_why = str(exc)
+
+    # A COUNT, not the list, for the same reason capability L0 is a count:
+    # naming all twelve bound roots costs about 60 of the 120 tokens and is
+    # the sentence a reader skips. The first version of this line did name
+    # them, and the budget refused it — the same mutation as capability L0
+    # growing a list, in the axis next door, which the mutation tests had not
+    # covered because they only imagined it happening to capability.
+    contract = paths_mod.Paths().contract()
+    authority_line = (f"authority: writes under {len(contract['roots'])} bound "
+                      "roots are admitted; everything else asks "
+                      "(`serverosctl path contract` lists them)")
+
+    if args.json:
+        record = disclosure_mod.startup_view(
+            item=item, capability_count=capability_count,
+            authority_line=authority_line,
+            context_why=item_why if item is None else None,
+            authority_why=None)
+        emit(record, as_json=True)
+        return EXIT_OK
+
+    # The rendered view is the output. Printing the record as well would double
+    # the text and make `within_budget` a statement about the wrong number.
+    record = disclosure_mod.startup_view(
+        item=item, capability_count=capability_count,
+        authority_line=authority_line,
+        context_why=item_why if item is None else None,
+        authority_why=None)
+    sys.stdout.write(record["text"] + "\n")
+    if not record["within_budget"]:
+        # Not an error, and not silent either. A budget nobody is told about
+        # being exceeded is a style guide.
+        sys.stderr.write(
+            f"serverosctl: startup view is {len(record['lines'])} lines / "
+            f"~{sum(len(l['text']) for l in record['lines']) // 4} tokens, "
+            f"over the declared {record['budget']['lines']}/"
+            f"{record['budget']['tokens']}\n")
+    if capability_why:
+        sys.stderr.write(f"serverosctl: capabilities line is a catalogue "
+                         f"count unavailable — {capability_why}\n")
+    return EXIT_OK
 
 
 def cmd_context_current(args) -> int:
@@ -786,11 +1032,18 @@ def cmd_runtime_infrastructure(args) -> int:
     crit = infra_mod.criticality_report(reg)
     never = infra_mod.never_reclaim(reg)
     recovery = infra_mod.recovery_report(reg)
+    # §17. No owner states are passed, and that is the honest default rather
+    # than an oversight: whether a work item is open is `work-management`'s
+    # authority, so every task-scoped resource comes back DEFER until somebody
+    # who knows supplies it. A CLI that guessed "closed" here would be
+    # proposing removals on the strength of not having asked.
+    reclaim = infra_mod.reclaim_report(reg)
     payload = {
         "partition": part,
         "criticality": crit,
         "never_reclaim": never,
         "recovery": recovery,
+        "reclaim": reclaim,
     }
     lines = ["permanent infrastructure"]
     for row in part["permanent"]:
@@ -874,6 +1127,56 @@ def cmd_runtime_tunnels(args) -> int:
         lines.append(f"    {spot['why']}")
     emit(payload, as_json=args.json, lines=lines)
     return EXIT_OK
+
+
+def cmd_runtime_egress(args) -> int:
+    """§58 — why the local Agent cannot reach out, in four answers.
+
+    The default requirement is the one this node actually has: `.bashrc` sends
+    every outbound model call through `127.0.0.1:17890`. Defaulting to it is a
+    judgement worth stating — it is the only outbound dependency on this host
+    that is DECLARED anywhere, and a command that made the operator retype the
+    endpoint would be answering a question nobody had.
+    """
+    reg = load_registry(args.registry)
+    requirement = {
+        "runtime": args.runtime,
+        "kind": args.kind,
+        "endpoint": args.endpoint,
+        "named_by": egress_named_by(args.endpoint),
+        "because": args.because,
+    }
+    doc = infra_mod.egress_answer(reg, requirement)
+    answers = doc["answers"]
+
+    lines = [
+        f"endpoint             {requirement['endpoint']}",
+        f"runtime              {requirement['runtime']}",
+        f"declared by          "
+        + (", ".join(d["where"] for d in requirement["named_by"]) or "nobody"),
+        "",
+        f"reachable            {answers['reachable']['value']}",
+        f"  {answers['reachable']['claim']}",
+        "",
+        f"missing              {answers['which_runtime_is_missing']['state']}",
+        f"  {answers['which_runtime_is_missing']['because']}",
+        "",
+        f"owner                {answers['who_owns_it']['state']}",
+        f"  {answers['who_owns_it']['because']}",
+        "",
+        f"auto recovery        "
+        f"{'permitted' if answers['auto_recovery_permitted']['permitted'] else 'NOT permitted'}",
+        f"  {answers['auto_recovery_permitted']['because']}",
+        "",
+        f"action               {doc['action']}",
+    ]
+    emit(doc, as_json=args.json, lines=lines)
+    return EXIT_OK
+
+
+def egress_named_by(endpoint: str) -> list[dict]:
+    """The declarations for an endpoint, measured on this node."""
+    return infra_mod.egress_declarations(endpoint)
 
 
 def cmd_runtime_groups(args) -> int:
@@ -1374,6 +1677,215 @@ def cmd_probe(args) -> int:
 
 
 # ---------------------------------------------------------------------------
+# memory (§20–§28)
+# ---------------------------------------------------------------------------
+
+
+def _memory_modules():
+    return (
+        _load_module_from(REPO_ROOT / "memory" / "record.py",
+                          "serveros_memory_record"),
+        _load_module_from(REPO_ROOT / "memory" / "projection.py",
+                          "serveros_memory_projection"),
+    )
+
+
+def _ledger_revision(directory: Path) -> dict:
+    """What revision the ledger ON DISK is at, and how that was decided.
+
+    Not `git rev-parse HEAD`, which is the answer to a different question. The
+    ledger's files may have been edited since the last commit, and a projection
+    stamped with HEAD while the working tree has moved is exactly the failure
+    this round has already recorded once under another name: a pin that matches
+    the declaration it was copied from, and not the content it is supposed to
+    identify.
+
+    So the revision names the content. Clean tree: the commit, which is what a
+    reader can `git show`. Dirty tree, or no repository at all: a hash of the
+    ledger files themselves, prefixed so that the two are never confused —
+    `sha+content:abcd1234` says "commit sha, modified by local content".
+    """
+    import hashlib
+    import subprocess
+
+    files = sorted(p for p in Path(directory).glob("*") if p.is_file())
+    digest = hashlib.sha256()
+    for path in files:
+        digest.update(path.name.encode())
+        digest.update(b"\0")
+        digest.update(path.read_bytes())
+        digest.update(b"\0")
+    content = digest.hexdigest()[:8]
+
+    head = None
+    try:
+        proc = subprocess.run(
+            ["git", "-C", str(directory), "rev-parse", "HEAD"],
+            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True,
+            timeout=10)
+        if proc.returncode == 0:
+            head = proc.stdout.strip()
+    except (OSError, subprocess.SubprocessError):
+        head = None
+
+    dirty = False
+    if head:
+        try:
+            proc = subprocess.run(
+                ["git", "-C", str(directory), "status", "--porcelain", "--",
+                 str(directory), *[str(p) for p in files]],
+                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True,
+                timeout=10)
+            dirty = bool(proc.stdout.strip())
+        except (OSError, subprocess.SubprocessError):
+            dirty = True
+
+    if head and not dirty:
+        revision = head
+    elif head:
+        revision = f"{head}+content:{content}"
+    else:
+        revision = f"content:{content}"
+    return {"revision": revision, "head": head, "dirty": dirty,
+            "files": len(files), "content": content}
+
+
+def _ledger_dir(args) -> Path:
+    paths = paths_mod.Paths()
+    if getattr(args, "ledger_dir", None):
+        return Path(args.ledger_dir)
+    return Path(paths.memory_ledger(args.project)["path"])
+
+
+def cmd_memory_audit(args) -> int:
+    """The whole-ledger check the record contract declares and nothing ran."""
+    record_mod, _ = _memory_modules()
+    directory = _ledger_dir(args)
+    files = sorted(p for p in directory.glob("*")
+                   if p.is_file() and p.suffix in (".yaml", ".yml", ".json"))
+    records = record_mod.load(files) if files else []
+    report = {**record_mod.audit(records), "directory": str(directory)}
+    lines = [
+        f"ledger      {directory}",
+        f"files       {len(files)}",
+        f"records     {report['records']}  valid {report['valid']}",
+        f"verdict     {report['verdict']}",
+    ]
+    for finding in report["findings"]:
+        lines.append(f"  {finding['code']}  {finding.get('id') or ''}")
+        for reason in finding["reasons"]:
+            lines.append(f"      {reason}")
+    if not files:
+        # Not a defect. A project with no memory has no memory, which is the
+        # state every project starts in and most stay in.
+        lines.append("  (no ledger yet — an empty ledger is the starting state, "
+                     "not a failure)")
+    for note in report["not_checked"]:
+        lines.append(f"  not checked: {note}")
+    emit(report, as_json=args.json, lines=lines)
+    return EXIT_OK if report["verdict"] == "CONFORMANT" else EXIT_FAULT
+
+
+def cmd_memory_project(args) -> int:
+    """Build the Layer A projection. The write side `projections/` never had."""
+    record_mod, projection_mod = _memory_modules()
+    directory = _ledger_dir(args)
+    files = sorted(p for p in directory.glob("*")
+                   if p.is_file() and p.suffix in (".yaml", ".yml", ".json"))
+    records = record_mod.load(files) if files else []
+
+    # Refuse before writing. A projection built from a ledger with a broken
+    # record in it is a derived copy of a defect, and the defect is much easier
+    # to see in the ledger than in a projection of it.
+    report = record_mod.audit(records)
+    if report["verdict"] != "CONFORMANT":
+        emit({**report, "directory": str(directory), "written": []},
+             as_json=args.json,
+             lines=[f"refused     ledger has {len(report['findings'])} finding(s)",
+                    "            `serverosctl memory audit` names them"])
+        return EXIT_FAULT
+
+    revision = _ledger_revision(directory)
+    generated_at = args.generated_at or _utc_now()
+    ledger_ref = args.ledger_ref or f"records/projects/{args.project}/memory"
+    document = projection_mod.build(
+        records, ledger_ref=ledger_ref, ledger_revision=revision["revision"],
+        generated_at=generated_at,
+        generator="serverosctl memory project")
+    manifest = projection_mod.manifest_for(document, generated_at=generated_at,
+                                           generator="serverosctl memory project")
+    out = Path(args.out) if args.out else Path(
+        paths_mod.Paths().memory_projection()["path"])
+    written = projection_mod.write(document, manifest, out)
+    payload = {"written": [str(p) for p in written], "records": len(records),
+               "subjects": len(document["subjects"]), "ledger": revision,
+               "generated_at": generated_at}
+    emit(payload, as_json=args.json,
+         lines=[f"wrote       {', '.join(str(p) for p in written)}",
+                f"records     {len(records)}  subjects {len(document['subjects'])}",
+                f"ledger      {revision['revision']}"
+                + ("  (dirty: the revision names the content, not HEAD)"
+                   if revision["dirty"] else "")])
+    return EXIT_OK
+
+
+def cmd_memory_status(args) -> int:
+    """Is the projection current, and if not, against what?"""
+    _, projection_mod = _memory_modules()
+    directory = _ledger_dir(args)
+    revision = _ledger_revision(directory)
+    out = Path(args.projection_dir) if args.projection_dir else Path(
+        paths_mod.Paths().memory_projection()["path"])
+    result = projection_mod.status(out, ledger_revision=revision["revision"])
+    payload = {**result, "ledger": revision, "ledger_dir": str(directory),
+               "records": None}
+    lines = [f"projection  {result['directory']}",
+             f"ledger      {revision['revision']}",
+             f"status      {result['status']}",
+             f"            {result['because']}"]
+    emit(payload, as_json=args.json, lines=lines)
+    return EXIT_OK if result["status"] == "CURRENT" else EXIT_FAULT
+
+
+def cmd_memory_subject(args) -> int:
+    """What this work currently remembers about one subject."""
+    record_mod, _ = _memory_modules()
+    directory = _ledger_dir(args)
+    files = sorted(p for p in directory.glob("*")
+                   if p.is_file() and p.suffix in (".yaml", ".yml", ".json"))
+    records = record_mod.load(files) if files else []
+    value = record_mod.current_value(records, args.subject)
+    if value is None:
+        emit({"subject": args.subject, "current": None}, as_json=args.json,
+             lines=[f"subject     {args.subject}",
+                    "            no records. Not an error — most subjects "
+                    "have no memory."])
+        return EXIT_COULD_NOT_ANSWER
+    lines = [f"subject     {args.subject}",
+             f"current     {value.get('id')}  {value.get('kind')}  {value.get('at')}"]
+    for field in ("by", "source", "revision"):
+        if value.get(field):
+            lines.append(f"{field:<12}{value[field]}")
+    chain = record_mod.chain(records, value["id"])
+    if len(chain) > 1:
+        lines.append(f"supersedes  {' <- '.join(r['id'] for r in chain[1:])}")
+    if value.get("body"):
+        lines.append("")
+        lines.append(str(value["body"]).strip())
+    elif value.get("note"):
+        lines.append("")
+        lines.append(str(value["note"]).strip())
+    emit({"subject": args.subject, "current": value, "chain": chain},
+         as_json=args.json, lines=lines)
+    return EXIT_OK
+
+
+def _utc_now() -> str:
+    from datetime import datetime, timezone
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+# ---------------------------------------------------------------------------
 # parser
 # ---------------------------------------------------------------------------
 
@@ -1432,11 +1944,18 @@ def build_parser() -> argparse.ArgumentParser:
     device_sub = device.add_subparsers(dest="subcommand", required=True)
     device_show = device_sub.add_parser("show", help="identity, host summary, managed count", **_COMMON)
     device_show.set_defaults(func=cmd_device_show)
+    device_agents = device_sub.add_parser(
+        "agents", help="the agent runtimes here, and whether parity holds (§18)",
+        **_COMMON)
+    device_agents.set_defaults(func=cmd_device_agents)
 
     context = sub.add_parser("context", help="what this shell is inside", **_COMMON)
     context_sub = context.add_subparsers(dest="subcommand", required=True)
     context_current = context_sub.add_parser("current", help="cwd, item, roots", **_COMMON)
     context_current.set_defaults(func=cmd_context_current)
+    context_startup = context_sub.add_parser(
+        "startup", help="the startup view: one line per axis, L0 only (§29)", **_COMMON)
+    context_startup.set_defaults(func=cmd_context_startup)
 
     path = sub.add_parser("path", help="path governance (§40)", **_COMMON)
     path_sub = path.add_subparsers(dest="subcommand", required=True)
@@ -1499,6 +2018,21 @@ def build_parser() -> argparse.ArgumentParser:
         **_COMMON,
     )
     rt_tun.set_defaults(func=cmd_runtime_tunnels)
+    rt_egress = runtime_sub.add_parser(
+        "egress",
+        help="why the local Agent cannot reach out (§58): which runtime is "
+             "missing, who owns it, may anything recover it",
+        **_COMMON,
+    )
+    rt_egress.add_argument("--endpoint", default="127.0.0.1:17890",
+                           help="host:port the Agent's traffic is sent to")
+    rt_egress.add_argument("--runtime", default="tunnel:agent-openai-outbound",
+                           help="the runtime id this endpoint is supposed to have")
+    rt_egress.add_argument("--kind", default="tunnel")
+    rt_egress.add_argument("--because", default=(
+        "the Codex/OpenAI path on this node is routed through this proxy, so "
+        "every outbound model call depends on it"))
+    rt_egress.set_defaults(func=cmd_runtime_egress)
     rt_groups = runtime_sub.add_parser(
         "groups", help="every runtime group on this host (§3/§5)", **_COMMON)
     rt_groups.set_defaults(func=cmd_runtime_groups)
@@ -1569,6 +2103,63 @@ def build_parser() -> argparse.ArgumentParser:
         "status", help="one ability by name", **_COMMON)
     ab_status.add_argument("name")
     ab_status.set_defaults(func=cmd_ability_status)
+    ab_resolve = ability_sub.add_parser(
+        "resolve",
+        help="intersect the eight inputs for one device and runtime (§45)",
+        **_COMMON)
+    ab_resolve.add_argument("--request", required=True,
+                            help="a JSON file holding the resolver's inputs")
+    ab_resolve.add_argument("--ability", help="override request.ability")
+    ab_resolve.add_argument("--device", help="override request.device_ref")
+    ab_resolve.add_argument("--runtime", help="override request.runtime")
+    ab_resolve.set_defaults(func=cmd_ability_resolve)
+
+    memory = sub.add_parser(
+        "memory", help="Layer B the ledger, Layer A the projection (§20–§28)",
+        **_COMMON)
+    memory_sub = memory.add_subparsers(dest="subcommand", required=True)
+
+    def _ledger_args(parser):
+        # The same three flags on all four subcommands, because they all read
+        # the same ledger and a reader that had to be told the path twice would
+        # eventually be told two paths.
+        parser.add_argument("--project", default="serveros",
+                            help="the project the ledger belongs to (default: serveros)")
+        parser.add_argument("--ledger-dir",
+                            help="override the resolved ledger directory")
+
+    mem_audit = memory_sub.add_parser(
+        "audit", help="the whole-ledger check: invalid records, cycles, dangling "
+                      "supersedes (§26)", **_COMMON)
+    _ledger_args(mem_audit)
+    mem_audit.set_defaults(func=cmd_memory_audit)
+
+    mem_project = memory_sub.add_parser(
+        "project", help="build the Layer A projection from the ledger (§27)",
+        **_COMMON)
+    _ledger_args(mem_project)
+    mem_project.add_argument("--out", help="override the projection directory")
+    mem_project.add_argument("--ledger-ref",
+                             help="the ref a reader uses to find the ledger")
+    mem_project.add_argument("--generated-at",
+                             help="ISO-8601 UTC. Defaults to now; fixed so that "
+                                  "rebuilding the same ledger is byte-identical")
+    mem_project.set_defaults(func=cmd_memory_project)
+
+    mem_status = memory_sub.add_parser(
+        "status", help="CURRENT, STALE or MISSING, and against what (§27)",
+        **_COMMON)
+    _ledger_args(mem_status)
+    mem_status.add_argument("--projection-dir",
+                            help="override the resolved projection directory")
+    mem_status.set_defaults(func=cmd_memory_status)
+
+    mem_subject = memory_sub.add_parser(
+        "subject", help="what this work currently remembers about one subject",
+        **_COMMON)
+    _ledger_args(mem_subject)
+    mem_subject.add_argument("subject", help="e.g. project/serveros/SRV-0007")
+    mem_subject.set_defaults(func=cmd_memory_subject)
 
     probe = sub.add_parser("probe", help="run one resource's declared probes", **_COMMON)
     probe.add_argument("id")

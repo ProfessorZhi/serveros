@@ -38,6 +38,12 @@ LOCAL_SKILLS = ("serveros",)
 # reason.
 ABILITY_SKILLS = (
     "runtime-management",
+    # §35: named by `pack:cross-device-collaboration` in the repository's own
+    # pack contract. They are here so the fixture catalogue can satisfy that
+    # contract, and their absence would otherwise surface as a pack failure
+    # with nothing to do with the code under test.
+    "fleet-coordination",
+    "shared-memory",
     "ability-management",
     "workspace-management",
     "test-management",
@@ -59,8 +65,20 @@ def _git(repo: Path, *args: str) -> str:
     return proc.stdout.decode().strip()
 
 
-def make_ability_repo(base: Path, pycache_in: str | None = None) -> tuple[Path, str]:
-    """A minimal ability-management stand-in, committed, returning (repo, sha)."""
+def make_ability_repo(base: Path, pycache_in: str | None = None,
+                      packs: tuple[str, ...] = ("runtime-management",),
+                      pin: str | None = None) -> tuple[Path, str]:
+    """A minimal ability-management stand-in, committed, returning (repo, sha).
+
+    TWO commits, because that is what the real repository does and because it
+    is what makes the pin rule exercisable here. The first carries the
+    catalogue; the second publishes the pack declarations, which name abilities
+    from the first. So the pin is a revision whose manifest is unchanged and
+    which is nevertheless not the revision being read — `scripts/build.py`
+    accepts exactly that (an ancestor with an identical manifest) and refuses
+    anything else, and a fixture with a single commit could not tell the two
+    apart. `pin=` overrides it for the case that must be refused.
+    """
     repo = base / "ability-management"
     repo.mkdir(parents=True)
     _git(repo, "init", "--quiet", "-b", "main")
@@ -78,15 +96,64 @@ def make_ability_repo(base: Path, pycache_in: str | None = None) -> tuple[Path, 
     # compared against canonical at all, and every provenance case silently
     # falls into the "could not determine" branch — which passes the tests that
     # assert nothing blocks while never exercising the detector.
+    #
+    # Every skill directory above is DECLARED here, not just the one the
+    # provenance check reads. A manifest that created sixteen payloads and
+    # named one of them was a catalogue that disagreed with its own disk, and
+    # the pack closure check is what found it: the packs name abilities by
+    # name, and a fixture whose manifest lists one ability can satisfy no pack
+    # at all.
     (repo / "abilities-manifest.yaml").write_text(yaml.safe_dump({
         "schema_version": 3, "authors": [],
-        "abilities": [{"type": "skill", "id": "ProfessorZhi/ability-management",
-                       "name": "ability-management", "path": "skills/ability-management",
-                       "artifact_mode": "vendored", "revisions": []}],
+        "abilities": [
+            {"type": "skill", "id": f"ProfessorZhi/{name}", "name": name,
+             "path": f"skills/{name}", "artifact_mode": "vendored", "revisions": []}
+            for name in ABILITY_SKILLS
+        ],
     }, sort_keys=False, allow_unicode=True))
     _git(repo, "add", "-A")
     _git(repo, "commit", "--quiet", "-m", "synthetic")
+    catalogue = _git(repo, "rev-parse", "HEAD")
+
+    # The declarations, published in the same repository as the catalogue they
+    # name — the shape `publishing.location` asks for, and the one the real
+    # repository now has. The pin names `catalogue`, the commit below, so this
+    # second commit is the case the ancestor rule exists for: same catalogue,
+    # different revision.
+    (repo / "ability-packs.yaml").write_text(yaml.safe_dump({
+        "schema": "serveros/ability-pack.v1", "version": 1,
+        "packs": [{"id": f"pack:{i}", "name": f"Pack {i}", "purpose": "to exist",
+                   "authority": {"repo": "ProfessorZhi/ability-management",
+                                 "revision": pin or catalogue},
+                   "members": [{"ability": f"ability:{name}", "role": "required"}],
+                   } for i, name in enumerate(packs)],
+    }, sort_keys=False, allow_unicode=True), encoding="utf-8")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "--quiet", "-m", "declarations")
     return repo, _git(repo, "rev-parse", "HEAD")
+
+
+def write_pack_contract(base: Path) -> Path:
+    """The SCHEMA half of the pack contract, which is all this repository owns.
+
+    The packs themselves are published in ability-management and read from the
+    git object at the pinned revision. So a hermetic build needs a hermetic
+    CATALOGUE REPOSITORY and not merely a hermetic contract file, and
+    `make_ability_repo()` is that: it writes the catalogue AND the declarations
+    into one commit history, which is how the real one is laid out.
+
+    Writing the packs into an injectable contract would have been the smaller
+    change and the wrong one. It would have kept a second source for the packs
+    alive in the one place nobody thinks to look for one — the fixture — so the
+    tests would have been exercising a code path that no build in production
+    has. The file this writes is what is left after the split: the rules.
+    """
+    path = base / "pack-contract.yaml"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(yaml.safe_dump(
+        {"schema": "serveros/ability-pack.v1", "version": 1},
+        sort_keys=False), encoding="utf-8")
+    return path
 
 
 def run_build(args: list[str]) -> subprocess.CompletedProcess:
@@ -99,20 +166,32 @@ class BuildTests(unittest.TestCase):
         self._tmp = tempfile.TemporaryDirectory()
         self.base = Path(self._tmp.name)
         self.repo, self.rev = make_ability_repo(self.base)
+        self.contract = write_pack_contract(self.base)
         self.out = self.base / "dist/current"
         self.marketplace = self.base / "dist/.agents/plugins/marketplace.json"
 
     def tearDown(self):
         self._tmp.cleanup()
 
-    def args(self, *extra: str) -> list[str]:
+    def args_for(self, repo: Path, rev: str, *extra: str) -> list[str]:
+        """Build arguments against any ability-management repository.
+
+        Parameterised because the pack fixtures now need their own REPOSITORY
+        rather than their own contract file: the declarations live in the
+        catalogue repository and are read from its git object, so a test that
+        wants different declarations has to publish a different repository.
+        """
         return [
-            "--ability-repo", str(self.repo),
-            "--ability-rev", self.rev,
+            "--ability-repo", str(repo),
+            "--ability-rev", rev,
             "--output", str(self.out),
             "--marketplace-path", str(self.marketplace),
+            "--pack-contract", str(self.contract),
             *extra,
         ]
+
+    def args(self, *extra: str) -> list[str]:
+        return self.args_for(self.repo, self.rev, *extra)
 
     def test_write_then_check_is_idempotent(self):
         self.assertNotEqual(run_build(self.args("--check")).returncode, 0)
@@ -141,6 +220,7 @@ class BuildTests(unittest.TestCase):
         args = [
             "--ability-repo", str(repo), "--ability-rev", rev,
             "--output", str(self.out), "--marketplace-path", str(self.marketplace),
+            "--pack-contract", str(write_pack_contract(self.base)),
         ]
         self.assertEqual(run_build(args + ["--write"]).returncode, 0)
         stale = [p for p in self.out.rglob("*") if p.suffix == ".pyc" or p.name == "__pycache__"]
@@ -175,6 +255,36 @@ class BuildTests(unittest.TestCase):
         # above is about the recommendation.
         for name in ("workspace-management", "test-management"):
             self.assertTrue((self.out / f"skills/{name}").is_dir())
+
+    def test_a_pack_naming_an_absent_ability_fails_the_build(self):
+        """The contract says "refused at build time, not carried with a marker
+        beside it". This is the build saying it.
+
+        `tests/test_packs.py` tests `packs.py`; this tests that the builder
+        calls it. Both matter, and only this one can catch the call site going
+        away — which is how the rule survived unimplemented for as long as it
+        did.
+        """
+        repo, rev = make_ability_repo(self.base / "absent",
+                                      packs=("document-stewardship",))
+        result = run_build(self.args_for(repo, rev, "--write"))
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("document-stewardship", result.stderr)
+        self.assertIn("does not exist", result.stderr)
+
+    def test_a_pack_pinned_to_another_revision_fails_the_build(self):
+        """The case that goes green: every member resolves, and the answer is
+        about a catalogue that is not the one being built against."""
+        repo, rev = make_ability_repo(self.base / "badpin", pin="0" * 40)
+        result = run_build(self.args_for(repo, rev, "--write"))
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("pin", result.stderr.lower())
+
+    def test_a_closed_pack_does_not_block_the_build(self):
+        """The gate has to be able to say yes, or the two tests above pass on a
+        builder that refuses everything."""
+        result = run_build(self.args("--write"))
+        self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_reusable_skills_come_from_the_pinned_revision(self):
         self.assertEqual(run_build(self.args("--write")).returncode, 0)

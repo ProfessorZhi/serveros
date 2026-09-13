@@ -223,7 +223,7 @@ class Interfaces:
             return {
                 "state": "NODE_UNBOUND",
                 "device_ref": None,
-                "identity_source": "fleet/registry.yaml",
+                "identity_source": str(transport.REGISTRY_PATH.relative_to(transport.ROOT)),
                 "note": (
                     "This host is not bound to an enrolled device. That is a "
                     "state, not a failure, and not an empty fleet."

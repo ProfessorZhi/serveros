@@ -1,0 +1,556 @@
+#!/usr/bin/env python3
+"""HumanControlProvider V1 — `provider:botmux-human-control`, transport Feishu.
+
+§4 draws the line and this module holds it:
+
+    owns   transport ingress · human identity evidence · conversation context ·
+           approval transport · notification transport · interactive rendering
+    not    policy · Agent Session truth · Fleet truth · runtime selection ·
+           Ability resolution · business orchestration
+
+Everything here is transport. Where the transport cannot do something, the
+answer is UNSUPPORTED or UNKNOWN with a reason — never a private implementation
+that reaches around the provider. §4 is explicit that filling a gap by reading
+`~/.botmux/data/*`, a private state file, or a tmux pane is the failure mode,
+not the fallback.
+
+What was measured on this device before any of it was written
+------------------------------------------------------------
+Not assumed, and not remembered — asked, from this process tree:
+
+    GET  /api/sessions   -> 200, sessions with sessionId/chatId/chatType/status
+    GET  /api/bots       -> 200 with the dashboard cookie, bots with `online`
+    GET  /api/events     -> 404 not_found_yet
+    GET  /api/messages   -> 404 not_found_yet
+    GET  /api/approvals  -> 404 not_found_yet
+
+    botmux actor current --json
+        -> {"schema":"botmux.current-actor.v2",
+            "status":"blocked","error":"current_actor_unverified"}
+
+The blocked answer is the interesting one, and it is why identity is the only
+capability here whose live state is UNKNOWN rather than UNSUPPORTED. The
+surface exists and is documented; BotMux declined to verify the sender of THIS
+process, correctly, because this process is not inside a BotMux turn. Whether
+it verifies inside one is not something this module may claim to know, so it
+does not claim it. A provider status of BLOCKED produces no actor and no
+context — see `Report.as_report()` below, which has no field in which to put an
+actor it did not get.
+"""
+from __future__ import annotations
+
+import importlib.util
+import json
+import os
+import subprocess
+import sys
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any, Protocol
+from urllib.error import HTTPError, URLError
+from urllib.request import Request, urlopen
+
+_REPO = Path(__file__).resolve().parent.parent
+
+
+def _load(name: str, path: Path):
+    if name in sys.modules:
+        return sys.modules[name]
+    spec = importlib.util.spec_from_file_location(name, path)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+_PROVIDER_ID = "provider:botmux-human-control"
+
+# The four states a HumanControl capability can be in — the Agent Session
+# vocabulary, reused rather than given a second spelling. `UNKNOWN` is a real
+# answer and the one that matters most here: it is what an installed, callable,
+# answering surface produces when it declines to verify.
+SUPPORT_STATES = ("SUPPORTED", "UNSUPPORTED", "UNKNOWN")
+
+
+class HumanControlError(RuntimeError):
+    pass
+
+
+class HumanControlUnsupported(HumanControlError):
+    """The transport has no way to do this. Not a missing implementation."""
+
+
+def support(state: str, reason: str | None = None) -> dict:
+    if state not in SUPPORT_STATES:
+        raise HumanControlError(f"unknown support state {state!r}")
+    return {"state": state, "reason": reason}
+
+
+# ---------------------------------------------------------------------------
+# The report a provider gives back. This is the only shape that can become a
+# trusted actor context, and it has no field for an actor the provider did not
+# establish — which is a structural refusal, not a checked one.
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class ActorReport:
+    """What a HumanControlProvider established about the human behind an event.
+
+    `actor_id` is None whenever `status` is not VERIFIED, and
+    `context/actor.py` refuses to build a context from a report with no
+    actor_ref. So a provider that could not verify produces no context, and the
+    refusal happens at the constructor of the record rather than at each of the
+    call sites that would have to remember to check.
+    """
+
+    provider_id: str
+    transport: str
+    status: str                      # VERIFIED | BLOCKED | UNSUPPORTED
+    actor_id: str | None = None
+    transport_identity: str | None = None
+    conversation_ref: str | None = None
+    message_ref: str | None = None
+    observed_at: str | None = None
+    detail: str | None = None
+    raw: dict = field(default_factory=dict)
+
+    @property
+    def provenance(self) -> str:
+        return "FACT" if self.status == "VERIFIED" else "UNKNOWN"
+
+    def as_report(self) -> dict:
+        """The provider-report shape `context/actor.py` consumes.
+
+        Deliberately NOT tolerant. A BLOCKED report that carried an actor
+        anyway — because the caller filled in a default, or because a client
+        kept the last known name handy — would be exactly the forged-identity
+        model §5 forbids, arriving through the one door that is supposed to be
+        trustworthy. There is no branch here that supplies an actor; the
+        downstream builder raises instead.
+        """
+        return {
+            "human_control_provider": self.provider_id,
+            "transport": self.transport,
+            "transport_identity": self.transport_identity,
+            "conversation_ref": self.conversation_ref,
+            "message_ref": self.message_ref,
+            "observed_at": self.observed_at,
+            "provider_status": self.status,
+            "provenance": self.provenance,
+            "actor_ref": f"human:{self.actor_id}" if self.actor_id else None,
+        }
+
+
+class HumanControlProvider(Protocol):
+    """§4's interface. Six responsibilities, one of them optional in v1."""
+
+    provider_id: str
+
+    def capabilities(self) -> dict: ...
+    def observe(self, *, device_ref: str) -> dict: ...
+    def conversations(self, *, device_ref: str) -> list[dict]: ...
+    def identify(self, *, conversation_ref: str | None = None,
+                 message_ref: str | None = None) -> ActorReport: ...
+    def notify(self, *, conversation_ref: str, text: str,
+               idempotency_key: str) -> dict: ...
+    def request_approval(self, *, conversation_ref: str, question: dict,
+                         idempotency_key: str) -> dict: ...
+
+
+# ---------------------------------------------------------------------------
+# BotMux / Feishu
+# ---------------------------------------------------------------------------
+
+DEFAULT_BASE_URL = "http://127.0.0.1:7891"
+ACTOR_SCHEMA = "botmux.current-actor.v2"
+
+
+@dataclass(frozen=True)
+class BotMuxHumanControlConfig:
+    base_url: str = DEFAULT_BASE_URL
+    dashboard_token: str | None = None
+    timeout: float = 5.0
+    actor_command: tuple[str, ...] = ("botmux", "actor", "current", "--json")
+
+    @classmethod
+    def from_env(cls) -> "BotMuxHumanControlConfig":
+        return cls(
+            base_url=os.environ.get("SERVEROS_BOTMUX_URL", cls.base_url).rstrip("/"),
+            dashboard_token=os.environ.get("SERVEROS_BOTMUX_DASHBOARD_TOKEN") or None,
+            timeout=float(os.environ.get("SERVEROS_BOTMUX_TIMEOUT", "5")),
+        )
+
+
+class BotMuxHumanControlProvider:
+    """HumanControlProvider over BotMux's documented surfaces.
+
+    Two of them, and they are different kinds of thing:
+
+      * the Dashboard HTTP API, for what the transport KNOWS — conversations,
+        sessions, bots — and for carrying a message back out;
+      * `botmux actor current --json`, for what the transport VERIFIED about
+        the sender. This one is a CLI, deliberately: it is bound to the process
+        tree of the turn it is asked from, and it refuses outside one. That
+        refusal is the security property, not an inconvenience to route around.
+    """
+
+    provider_id = _PROVIDER_ID
+    transport = "feishu"
+
+    def __init__(self, config: BotMuxHumanControlConfig | None = None, *,
+                 clock=None, runner=None) -> None:
+        self.config = config or BotMuxHumanControlConfig.from_env()
+        self._clock = clock
+        # Injected so the identity path is testable without a BotMux turn.
+        # A default that shelled out at import time would make every test of
+        # this class depend on the host's BotMux version.
+        self._runner = runner or self._run_actor_command
+
+    def _now(self) -> str:
+        if self._clock is not None:
+            return self._clock()
+        from datetime import datetime, timezone
+        return datetime.now(timezone.utc).isoformat()
+
+    # -- HTTP --------------------------------------------------------------
+
+    def _request(self, method: str, path: str, *, body: dict | None = None,
+                 require_auth: bool = False) -> dict:
+        token = self.config.dashboard_token
+        if require_auth and not token:
+            raise HumanControlError(
+                "BotMux Dashboard authentication is required to carry a message out; "
+                "inject SERVEROS_BOTMUX_DASHBOARD_TOKEN into the provider process")
+        headers = {"Accept": "application/json"}
+        payload = None
+        if body is not None:
+            payload = json.dumps(body).encode()
+            headers["Content-Type"] = "application/json"
+        if token:
+            headers["Cookie"] = f"botmux_dashboard_token={token}"
+        request = Request(self.config.base_url + path, data=payload,
+                          headers=headers, method=method.upper())
+        try:
+            with urlopen(request, timeout=self.config.timeout) as response:
+                data = json.loads(response.read().decode() or "{}")
+        except HTTPError as exc:
+            try:
+                detail = json.loads(exc.read().decode() or "{}")
+            except Exception:
+                detail = {}
+            reason = detail.get("errorCode") or detail.get("error") or exc.reason
+            raise HumanControlError(
+                f"BotMux {method} {path} refused ({exc.code}): {reason}") from exc
+        except (URLError, TimeoutError, OSError, json.JSONDecodeError) as exc:
+            raise HumanControlError(
+                f"BotMux {method} {path} unavailable: {type(exc).__name__}: {exc}") from exc
+        if not isinstance(data, dict):
+            raise HumanControlError(f"BotMux {method} {path} returned a non-object")
+        return data
+
+    # -- identity ----------------------------------------------------------
+
+    def _run_actor_command(self) -> dict:
+        """Ask BotMux who the sender of this turn is. Never guess.
+
+        The command is documented and bound to the caller's process tree. Its
+        output is JSON with its own schema, and the schema is checked before
+        the payload is read: a changed shape is a refusal, because reading
+        `user` out of a document that no longer has one yields None, and None
+        at the call site looks exactly like "no user" rather than "this is not
+        the document I think it is".
+        """
+        try:
+            completed = subprocess.run(
+                list(self.config.actor_command), capture_output=True, text=True,
+                timeout=self.config.timeout, stdin=subprocess.DEVNULL)
+        except (OSError, subprocess.SubprocessError) as exc:
+            return {"schema": None, "status": "unsupported",
+                    "error": f"{type(exc).__name__}: {exc}"}
+        text = (completed.stdout or "").strip()
+        if not text:
+            return {"schema": None, "status": "blocked",
+                    "error": "botmux actor current produced no output",
+                    "stderr": (completed.stderr or "").strip()[:300]}
+        try:
+            data = json.loads(text)
+        except ValueError:
+            return {"schema": None, "status": "blocked",
+                    "error": "botmux actor current produced non-JSON output"}
+        if not isinstance(data, dict):
+            return {"schema": None, "status": "blocked",
+                    "error": "botmux actor current produced a non-object"}
+        return data
+
+    def identify(self, *, conversation_ref: str | None = None,
+                 message_ref: str | None = None) -> ActorReport:
+        """What the transport verified about the human behind this turn.
+
+        Three outcomes, kept apart:
+
+          VERIFIED     BotMux named an enterprise user it verified
+          BLOCKED      the surface answered and declined to verify this process
+          UNSUPPORTED  the surface is not there at all
+
+        Note that `status: blocked` arrives with exit code 0. A caller that
+        read the exit code — or that read the absence of a `user` field — would
+        have recorded a successful verification of nobody, which is the exact
+        failure this repo keeps finding: a declaration layer reading a field
+        that the data layer never produced.
+        """
+        raw = self._runner()
+        observed_at = self._now()
+        schema = raw.get("schema")
+        status = str(raw.get("status") or "").lower()
+
+        if schema is None:
+            return ActorReport(
+                provider_id=self.provider_id, transport=self.transport,
+                status="UNSUPPORTED", observed_at=observed_at,
+                conversation_ref=conversation_ref, message_ref=message_ref,
+                detail=str(raw.get("error") or "the actor surface is unavailable"),
+                raw=raw)
+
+        if schema != ACTOR_SCHEMA:
+            return ActorReport(
+                provider_id=self.provider_id, transport=self.transport,
+                status="BLOCKED", observed_at=observed_at,
+                conversation_ref=conversation_ref, message_ref=message_ref,
+                detail=(f"botmux actor current answered schema {schema!r}, not "
+                        f"{ACTOR_SCHEMA!r}; refusing to read identity out of a "
+                        "document whose shape has changed"),
+                raw=raw)
+
+        if status != "ok":
+            return ActorReport(
+                provider_id=self.provider_id, transport=self.transport,
+                status="BLOCKED", observed_at=observed_at,
+                conversation_ref=conversation_ref, message_ref=message_ref,
+                detail=(f"BotMux reports status {status or 'unknown'!r}"
+                        + (f" ({raw.get('error')})" if raw.get("error") else "")),
+                raw=raw)
+
+        # Only reached when BotMux itself said `ok`. The username is required
+        # at this point: `ok` without a name is a contradiction, and resolving
+        # it in favour of "no actor" here would make a broken provider look
+        # like a private turn.
+        actor_id = str(raw.get("user") or raw.get("username") or "").strip()
+        if not actor_id:
+            return ActorReport(
+                provider_id=self.provider_id, transport=self.transport,
+                status="BLOCKED", observed_at=observed_at,
+                conversation_ref=conversation_ref, message_ref=message_ref,
+                detail="BotMux reported ok with no verified user name",
+                raw=raw)
+
+        return ActorReport(
+            provider_id=self.provider_id, transport=self.transport,
+            status="VERIFIED", actor_id=actor_id,
+            transport_identity="botmux-verified-enterprise-user",
+            conversation_ref=conversation_ref or raw.get("chatId"),
+            message_ref=message_ref or raw.get("messageId"),
+            observed_at=observed_at, raw=raw)
+
+    # -- transport ingress -------------------------------------------------
+
+    def conversations(self, *, device_ref: str) -> list[dict]:
+        """Conversations BotMux knows about, from its sessions.
+
+        A conversation here is a chat, and it is read from `/api/sessions`
+        because that is the only documented surface that names one. Nothing
+        about message CONTENT is read — §24 forbids message bodies in tool
+        results, and no transcript is fetched anywhere in this module.
+        """
+        rows = self._request("GET", "/api/sessions").get("sessions") or []
+        if not isinstance(rows, list):
+            raise HumanControlError("/api/sessions has no list-valued sessions field")
+        seen: dict[str, dict] = {}
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            chat_id = str(row.get("chatId") or "").strip()
+            if not chat_id:
+                continue
+            entry = seen.setdefault(chat_id, {
+                "conversation_ref": chat_id,
+                "transport": self.transport,
+                "chat_type": row.get("chatType"),
+                "bot_ids": [],
+                "session_refs": [],
+            })
+            bot_id = str(row.get("larkAppId") or "").strip()
+            if bot_id and bot_id not in entry["bot_ids"]:
+                entry["bot_ids"].append(bot_id)
+            session_id = str(row.get("sessionId") or "").strip()
+            if session_id:
+                entry["session_refs"].append(session_id)
+        return [seen[k] for k in sorted(seen)]
+
+    # -- transport egress --------------------------------------------------
+
+    def notify(self, *, conversation_ref: str, text: str,
+               idempotency_key: str, bot_id: str | None = None) -> dict:
+        """Carry a ServerOS sentence into the conversation.
+
+        Reuses `/api/trigger` — the documented way to put an instruction into a
+        BotMux session — rather than any BotMux-internal send path. The text is
+        ServerOS's; how it is rendered is BotMux's. That split is §19: ServerOS
+        produces semantic events, the provider decides what they look like.
+
+        `envelope.trusted` is False and stays False. This message is ServerOS
+        speaking to a human, not a human speaking to ServerOS, and a transport
+        that marked its own outbound traffic trusted would let a notification
+        be quoted back as evidence of what a person said.
+        """
+        target_bot = bot_id
+        if not target_bot:
+            bots = self._request("GET", "/api/bots", require_auth=True).get("bots") or []
+            online = [b for b in bots if isinstance(b, dict) and b.get("online") is True]
+            if not online:
+                raise HumanControlError(
+                    "no online bot to carry a notification; a notification to "
+                    "nobody is not a notification")
+            target_bot = online[0].get("larkAppId")
+        body = {
+            "source": {"type": "webhook"},
+            "target": {"kind": "turn", "botId": target_bot},
+            "instruction": text,
+            "envelope": {"format": "text", "sourceName": "serveros",
+                         "trusted": False,
+                         "conversationId": conversation_ref},
+            "options": {"asyncReturnSessionId": True,
+                        "idempotencyKey": idempotency_key},
+        }
+        data = self._request("POST", "/api/trigger", require_auth=True, body=body)
+        return {
+            "provider": self.provider_id,
+            "transport": self.transport,
+            "conversation_ref": conversation_ref,
+            "delivered": bool(data.get("triggerId") or data.get("async")),
+            "trigger_id": data.get("triggerId"),
+            "idempotent": bool(data.get("idempotent")),
+            "note": ("BotMux renders this; ServerOS supplied a sentence and a "
+                     "semantic event, not a card"),
+        }
+
+    def request_approval(self, *, conversation_ref: str, question: dict,
+                         idempotency_key: str) -> dict:
+        """Ask a person to approve something.
+
+        UNSUPPORTED, and this is a capability limitation rather than a missing
+        implementation — §6 says to mark it as one and not to improvise.
+
+        The reason is specific and checkable: the approval needs an ANSWER
+        bound to the question, and BotMux's documented surface has no way to
+        deliver one. `/api/sessions` is read-only; `/api/events`,
+        `/api/messages` and `/api/approvals` are 404. The only inbound path is
+        a human typing into the chat, and ServerOS has no documented way to
+        receive that as a machine-readable event. What it can do is read the
+        question out of the conversation, which is not an approval transport —
+        it is a person hoping the agent notices.
+
+        A plain-text question CAN be delivered (see `notify`). What cannot be
+        delivered is the binding: an answer that names the request fingerprint
+        it is about. Sending the question while calling the capability
+        SUPPORTED is exactly the shape §6 forbids — a live approval that is not
+        one — so the two are separated here: the notification is real, the
+        approval channel is not.
+        """
+        raise HumanControlUnsupported(
+            "BotMux v3.18 exposes no documented callback surface for a human "
+            "decision: /api/events, /api/messages and /api/approvals all answer "
+            "404 not_found_yet, and /api/sessions is read-only. The question can "
+            "be delivered as a notification; an answer BOUND to a request "
+            "fingerprint cannot be received, so this provider does not claim to "
+            "carry approvals. ServerOS's approval contract is implemented and "
+            "tested independently of this transport.")
+
+    # -- what this provider can do ----------------------------------------
+
+    def capabilities(self) -> dict:
+        """The six responsibilities, each with its own state and its own reason.
+
+        Read this as the honest answer to "how much of Human Control V1 is
+        live", with the two UNKNOWNs distinguished from the two UNSUPPORTEDs:
+        an UNSUPPORTED transport has no way to do it, and an UNKNOWN one might
+        and this process cannot establish it.
+        """
+        return {
+            "provider": self.provider_id,
+            "transport": self.transport,
+            "capabilities": {
+                "human.identity.verify": support(
+                    "UNKNOWN",
+                    "`botmux actor current --json` (schema botmux.current-actor.v2) is "
+                    "documented and callable, and verifies only inside the process tree "
+                    "of a BotMux turn. Measured from a non-turn process on this device it "
+                    "answers status=blocked, error=current_actor_unverified. Whether it "
+                    "verifies inside a turn is unverified from here, so it is not claimed."),
+                "human.conversation.context": support(
+                    "SUPPORTED",
+                    "BotMux /api/sessions reports chatId, chatType and sessionId per session"),
+                "human.transport.ingress": support(
+                    "UNKNOWN",
+                    "BotMux ingests Feishu messages, and no documented surface delivers them "
+                    "to a consumer: /api/events and /api/messages answer 404 not_found_yet. "
+                    "Inbound content is not read by this provider at all"),
+                "human.approval.transport": support(
+                    "UNSUPPORTED",
+                    "no documented callback surface for a human decision; see request_approval"),
+                "human.notification.transport": support(
+                    "SUPPORTED",
+                    "POST /api/trigger carries a ServerOS sentence into the conversation"),
+                "human.interactive.rendering": support(
+                    "UNSUPPORTED",
+                    "BotMux renders its own cards; ServerOS authors none through this surface"),
+            },
+            "measured_by": "mcp/human_control.py — see the module docstring for the probes",
+        }
+
+    def observe(self, *, device_ref: str) -> dict:
+        """What this transport is right now, from calling it."""
+        observed_at = self._now()
+        try:
+            self._request("GET", "/api/sessions")
+        except HumanControlError as exc:
+            return {"provider": self.provider_id, "device_ref": device_ref,
+                    "transport": self.transport, "status": "STOPPED",
+                    "observed_at": observed_at,
+                    "reason": f"{type(exc).__name__}: {exc}"[:300]}
+        report = self.identify()
+        return {
+            "provider": self.provider_id, "device_ref": device_ref,
+            "transport": self.transport, "status": "RUNNING",
+            "observed_at": observed_at,
+            "identity_status": report.status,
+            "identity_detail": report.detail,
+            "identity_surface": " ".join(self.config.actor_command),
+        }
+
+
+def main(argv: list[str] | None = None) -> int:
+    import argparse
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser.add_argument("--capabilities", action="store_true")
+    parser.add_argument("--observe", action="store_true")
+    parser.add_argument("--identify", action="store_true")
+    parser.add_argument("--device", default="device:server-beijing")
+    args = parser.parse_args(argv)
+
+    provider = BotMuxHumanControlProvider()
+    if args.identify:
+        report = provider.identify()
+        json.dump({**report.as_report(), "detail": report.detail},
+                  sys.stdout, indent=2, sort_keys=True)
+    elif args.observe:
+        json.dump(provider.observe(device_ref=args.device), sys.stdout,
+                  indent=2, sort_keys=True)
+    else:
+        json.dump(provider.capabilities(), sys.stdout, indent=2, sort_keys=True)
+    sys.stdout.write("\n")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

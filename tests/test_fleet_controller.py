@@ -24,6 +24,15 @@ FLEET = ROOT / "fleet"
 
 
 def _load(name: str, path: Path):
+    # Registered under the module name the module itself uses, and returned from
+    # the cache on a second call. Re-executing the file would hand this suite a
+    # second `DeviceRegistry` — a different class object with the same
+    # `__qualname__` — and every `is` comparison against the instance another
+    # test file holds would start failing depending on which file pytest
+    # happened to collect first. The cache check is what the rest of the suite
+    # already does; this file was the exception.
+    if name in sys.modules:
+        return sys.modules[name]
     spec = importlib.util.spec_from_file_location(name, path)
     module = importlib.util.module_from_spec(spec)
     sys.modules[name] = module

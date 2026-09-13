@@ -1,0 +1,108 @@
+# The fleet view, and what each disclosure level is allowed to say.
+#
+# §12 asks for progressive disclosure and for a test proving the levels return
+# different fields. §13 names what a device row must carry. This file is both:
+# the levels, and the exact field set each one serves.
+#
+# The field sets are declared rather than assembled in code because "L1 is a
+# summary of L2" is a claim that decays. A level implemented as a filter over a
+# bigger dict grows a field every time the bigger dict does, nobody notices, and
+# the cheap call quietly becomes the expensive one. A declared set is checked
+# against the served envelope, so adding a field to L0 is an edit to this file
+# where a reader can see the cost.
+schema: serveros/fleet-view.v1
+module: fleet/view.py
+
+levels:
+  order: [L0, L1, L2, L3]
+  rationale: >-
+    The levels are ordered by what they cost, and the cost is not incidental.
+    L0 answers from the authored registry alone. L1 adds one observation per
+    device. L2 reaches each device for its provider inventory. L3 carries the
+    provenance of every field, which is a second copy of the evidence graph.
+    A caller that wanted "everything" and got L0 is not missing detail — it
+    asked a cheaper question, and the envelope says which one.
+
+  # Keys the envelope carries at every level, separate from the device rows.
+  # They are listed apart because `count` and `state` describe the ANSWER while
+  # `device_ref` and `platform` describe a MACHINE, and a reader who finds both
+  # in one list will conclude a device row has a `count`. The checked set is
+  # the envelope's, exactly — an envelope that grows a key without a line here
+  # stops being the shape the CLI and the MCP surface agreed on.
+  envelope:
+    - state
+    - level
+    - fields
+    - count
+    - devices
+    - note
+
+  fields:
+    L0:
+      # Identity and enrollment. No observation, no contact, no clock.
+      - device_ref
+      - display_name
+      - platform
+      - environment_profile
+      - enrollment
+      - registered
+
+    L1:
+      # L0 plus what this runtime has observed about reachability. Still no
+      # contact with any other machine.
+      - reachability
+      - last_seen
+      - presence_provenance
+      - node_runtime
+      - declared_agents
+      - agent_runtimes
+      - runtime_summary
+
+    L2:
+      # L1 plus per-device provider inventory and readiness. This is the first
+      # level that can require reaching the device, and the first that can
+      # answer "could this device run Claude right now".
+      - providers
+      - provider_instances
+      - provider_readiness
+      - active_sessions
+
+    L3:
+      # L2 plus provenance for every claim above. Every field here answers
+      # "how do you know", not "what is true".
+      - field_provenance
+      - declared_paths
+      - legacy_ids
+      - roles
+      - ownership
+      - os_family
+      - availability_axes
+      - observation_sources
+      - routing
+
+rules:
+  never_empty_means_unknown: >-
+    A field this runtime did not establish is never served as an empty list or
+    an empty dict. `providers: []` reads as "this device has no providers",
+    which is a claim, and one the runtime cannot make about a device it could
+    not reach. Unestablished fields carry a state word and a reason instead.
+
+  declared_is_not_runnable: >-
+    `fleet/registry.yaml` declares that every device has `claude-code` and
+    `codex` agents. That is an authoring statement about what the device is
+    FOR, not a measurement. §13 names the exact error this prevents: a registry
+    entry for `device:work-fj` must not make this view claim Claude is
+    runnable there. Declared agents appear under `declared_agents`; only
+    measured ones ever appear under a readiness field.
+
+  unreachable_is_typed: >-
+    A device with no node runtime answers with NODE_RUNTIME_UNAVAILABLE rather
+    than a lighter version of a working device's row. The row still exists —
+    §13 asks for the device, not for a reachable device — and the absence is
+    named in the place the missing fact would have been.
+
+  l0_has_no_clock: >-
+    L0 contains no timestamp of any kind, including for the devices this
+    runtime is running on. A level that is documented as costing nothing must
+    not silently acquire an observation, and the cheapest place for one to
+    creep in is a `last_seen` that defaults to now.
