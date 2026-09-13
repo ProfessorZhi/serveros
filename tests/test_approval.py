@@ -547,17 +547,24 @@ def test_the_control_agent_mcp_surface_has_no_approval_granting_tool():
     the actual tool list rather than over the source of the module.
     """
     agent_mcp = _load("serveros_mcp_agent_mcp", MCP / "agent_mcp.py")
-    client = agent_mcp.AgentControlClient()
-    tools = client._tool_names() if hasattr(client, "_tool_names") else None
-    if tools is None:
-        source = (MCP / "agent_mcp.py").read_text()
-        import re
-        tools = set(re.findall(r'"(agent\.[a-z_.]+|session\.[a-z_.]+|fleet\.[a-z_.]+)"', source))
-    granting = [t for t in tools if "approv" in t.lower() and "inspect" not in t.lower()]
+    tools = list(agent_mcp.tool_names())
+    assert tools, "the surface declares no tools, so this test proves nothing"
+
+    # Not even a read. The earlier version of this test exempted `inspect`,
+    # which would have let `approval.inspect` through on the argument that it
+    # grants nothing — and the argument is true, right up until somebody adds
+    # a field to the answer or a second verb beside it.
+    granting = [t for t in tools if "approv" in t.lower()]
     assert granting == [], (
         f"the control-agent surface exposes {granting}. An approval is a human "
         "decision; a tool an agent can call to record one is a tool an agent "
         "can use to approve itself.")
+
+    # And the daemon methods the surface can reach are a closed set, so a
+    # granting verb cannot become reachable by adding a call site.
+    source = (MCP / "agent_mcp.py").read_text()
+    for method in ("agent.approval.record", "agent.approval.grant"):
+        assert method not in source, method
 
 
 def test_the_daemon_refuses_to_record_an_approval_from_a_caller(daemon):

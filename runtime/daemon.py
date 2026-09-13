@@ -846,6 +846,7 @@ class Daemon:
             # identity behind one.
             "agent.context.attach": self._r_agent_context_attach,
             "agent.context.inspect": self._r_agent_context_inspect,
+            "agent.context.resolve": self._r_agent_context_resolve,
             "agent.approval.inspect": self._r_agent_approval_inspect,
             "agent.approval.record": self._r_agent_approval_record,
             "agent.control.status": self._r_agent_control_status,
@@ -894,6 +895,7 @@ class Daemon:
                 # §5/§6. Trusted actor contexts and approvals. `agent.approval.record`
                 # is deliberately NOT in the MCP surface — see `mcp/agent_mcp.py`.
                 "agent.context.attach", "agent.context.inspect",
+                "agent.context.resolve",
                 "agent.approval.inspect", "agent.approval.record",
                 "agent.control.status")
 
@@ -1263,6 +1265,25 @@ class Daemon:
                 "expires_at": record["expires_at"],
                 "freshness": actor_mod.freshness(record, now),
                 "authorizes": actor_mod.authorizes(record, now)}
+
+    def _r_agent_context_resolve(self, params) -> dict:
+        """The stored record itself, for a caller that has to act on it.
+
+        `agent.context.inspect` is the curated view — a person reading it wants
+        `freshness` and `authorizes`, already decided. The Agent Control router
+        is not a person reading: it hands the record to the resolver, which is
+        what does the deciding, and a curated view would make the daemon and
+        the resolver two places that decide the same thing.
+
+        Still keyed by a ref and never by an actor. The caller can ask about a
+        ref it was given; it cannot ask who somebody is.
+        """
+        ref = _required(params, "context_ref")
+        resolved = actor_mod.resolve(ref, self.control_store().contexts())
+        if not resolved["found"]:
+            return {"found": False, "context_ref": ref,
+                    "because": resolved["because"]}
+        return {"found": True, "context_ref": ref, "context": resolved["context"]}
 
     # -- §6: approvals ------------------------------------------------------
 
