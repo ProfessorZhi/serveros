@@ -118,11 +118,27 @@ def _capability_l0(value, source: str | None) -> dict:
     The native agent already has its own Skill discovery and does not need a
     second, worse one.
 
-    An integer is accepted; so is the record `resolver.count_abilities`
-    returns, of which only the counts are read. Anything else is refused
-    rather than summarised, because the first caller to pass a list would
-    otherwise get a truncated one back and never learn that it had been
-    truncated.
+    Two numbers, and they are not the same number
+    ---------------------------------------------
+    A catalogue count and a resolved count answer different questions, and
+    the contract prices them differently: `costs.capability.L0` is "one
+    manifest read, no probes", which is a catalogue read. Counting what this
+    device can actually RESOLVE is the eight-input intersection — it needs
+    records a cheap startup read does not have, and at L2 it may run a probe.
+
+    Rendering a catalogue count as "N resolvable" is the union wearing the
+    intersection's name, and it is the same defect as the resolver returning
+    AVAILABLE for an ability nothing had checked — one layer up, in the
+    presentation. So the two are carried as different values and rendered
+    with different words. A caller that does not say which it has does not
+    get the stronger claim.
+
+    A plain integer is a CATALOGUE count: it is the cheap read, and the only
+    one a caller that passes a bare number can have performed.
+
+    Anything else is refused rather than summarised, because the first caller
+    to pass a list would otherwise get a truncated one back and never learn
+    that it had been truncated.
     """
     if isinstance(value, bool) or not isinstance(value, (int, dict)):
         raise Rejected(
@@ -133,18 +149,45 @@ def _capability_l0(value, source: str | None) -> dict:
         )
     if isinstance(value, dict):
         total = value.get("total")
-        usable = value.get("usable")
-        undecided = value.get("undecided", 0)
         if not isinstance(total, int):
             raise Rejected("capability L0 record has no integer `total`")
+        if "usable" not in value:
+            usable = undecided = None
+            basis = "catalogue"
+        else:
+            usable = value.get("usable")
+            undecided = value.get("undecided", 0)
+            if not isinstance(usable, int):
+                raise Rejected("capability L0 record has a non-integer `usable`")
+            basis = "resolved"
     else:
-        total, usable, undecided = value, value, 0
+        total, usable, undecided, basis = value, None, None, "catalogue"
 
     return {
         "axis": "capability", "state": "DISCLOSED", "level": "L0",
-        "value": {"total": total, "usable": usable, "undecided": undecided},
+        "value": {"total": total, "usable": usable, "undecided": undecided,
+                  "basis": basis},
         "source": source,
     }
+
+
+def _capability_line(counts: dict) -> str:
+    """The words, which are the part that must not overclaim.
+
+    "known to this authority" and "resolvable here" are different facts. The
+    first is what a catalogue read earns; the second costs the intersection
+    and is the one a session would act on.
+    """
+    if counts["basis"] == "catalogue":
+        return (f"capabilities: {counts['total']} known to this authority; "
+                "resolve one with `serverosctl ability resolve`")
+    text = f"capabilities: {counts['usable']} resolvable"
+    if counts["undecided"]:
+        # Named separately and never folded into the usable count. A session
+        # that reads one number will act on a false negative, and "we could
+        # not tell" is the one thing it must not read as "no".
+        text += f", {counts['undecided']} undecided"
+    return text
 
 
 # ---------------------------------------------------------------------------
@@ -184,14 +227,8 @@ def startup_view(*, item: str | None = None, capability_count=None,
                       "text": "capabilities: unknown (not counted)"})
     else:
         capability = _capability_l0(capability_count, None)
-        counts = capability["value"]
-        text = f"capabilities: {counts['usable']} resolvable"
-        if counts["undecided"]:
-            # Named separately and never folded into the usable count. A
-            # session that reads one number will act on a false negative, and
-            # "we could not tell" is the one thing it must not read as "no".
-            text += f", {counts['undecided']} undecided"
-        lines.append({"axis": "capability", "level": "L0", "text": text})
+        lines.append({"axis": "capability", "level": "L0",
+                      "text": _capability_line(capability["value"])})
 
     if authority_line is None:
         lines.append({"axis": "authority", "level": "L0",
@@ -201,7 +238,7 @@ def startup_view(*, item: str | None = None, capability_count=None,
 
     lines.append({"axis": None, "level": None, "text":
                   "details on request: `serverosctl context current | "
-                  "capability list | capability resolve <id>`"})
+                  "ability list | ability resolve --request <file>`"})
 
     return {
         "schema": SCHEMA,

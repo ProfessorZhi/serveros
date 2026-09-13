@@ -64,6 +64,13 @@ def a_startup(**over):
     return disclosure.startup_view(**base)
 
 
+def a_resolved(usable, undecided=0, total=None):
+    """The `resolver.count_abilities` record — the shape that may say
+    "resolvable", because the intersection was actually run."""
+    return {"total": total if total is not None else usable + undecided,
+            "usable": usable, "undecided": undecided}
+
+
 # ---------------------------------------------------------------------------
 # §30/§32 — what the startup view is
 # ---------------------------------------------------------------------------
@@ -174,10 +181,36 @@ class MutationOneCapabilityL0StaysANumber(unittest.TestCase):
         view = a_startup(capability_count=counted)
         self.assertIn("undecided", view["text"])
 
+    def test_a_catalogue_count_may_not_be_rendered_as_a_resolved_one(self):
+        """The union wearing the intersection's name, one layer up from where
+        the resolver refuses to do it.
+
+        `costs.capability.L0` is "one manifest read, no probes". A probe-free
+        read produces a catalogue count and cannot produce a resolved one, so
+        a bare integer must not be rendered under the word "resolvable" — a
+        session reading "12 resolvable" acts on twelve, and the number it was
+        actually given was "twelve are listed somewhere".
+        """
+        catalogue = a_startup(capability_count=12)["text"]
+        self.assertNotIn("resolvable", catalogue)
+        self.assertIn("known to this authority", catalogue)
+
+        resolved = a_startup(capability_count=a_resolved(9, 3))["text"]
+        self.assertIn("9 resolvable", resolved)
+        self.assertIn("3 undecided", resolved)
+        self.assertNotIn("known to this authority", resolved)
+
     def test_a_true_zero_is_not_rendered_as_unknown(self):
         """0 and None are different answers and the L0 shape keeps them so."""
-        self.assertIn("0 resolvable", a_startup(capability_count=0)["text"])
+        self.assertIn("0 known", a_startup(capability_count=0)["text"])
         self.assertIn("unknown", a_startup(capability_count=None)["text"])
+
+    def test_a_bare_integer_does_not_buy_the_stronger_claim(self):
+        """The default that keeps the previous test honest. A caller passing
+        an int has performed the cheap read, whatever it believes it has."""
+        record = disclosure.disclose("capability", "L0", 7)
+        self.assertEqual(record["value"]["basis"], "catalogue")
+        self.assertIsNone(record["value"]["usable"])
 
 
 # ---------------------------------------------------------------------------
@@ -259,6 +292,75 @@ class MutationThreeCapabilitiesDoNotLeakAcrossRuntimes(unittest.TestCase):
         self.assertEqual(record["status"], "INCOMPATIBLE")
         self.assertNotIn("available", line)
         self.assertIn("incompatible", line.lower())
+
+
+# ---------------------------------------------------------------------------
+# MUTATION 3b — the same mutation on a different axis
+# ---------------------------------------------------------------------------
+#
+# The four mutations above were written from the design, one per axis-ish, and
+# were all about capability. The first live run of `serverosctl context
+# startup` failed the budget on the AUTHORITY line and the CONTEXT line — the
+# two axes nobody had imagined it happening to. Both were the same mutation as
+# mutation 1, in the axis next door. This class exists so that the next person
+# to extend the startup view finds the general rule rather than one axis's
+# instance of it.
+
+
+class MutationThreeBNoL0LineEnumerates(unittest.TestCase):
+    def test_the_declared_rule_covers_every_axis_not_just_capability(self):
+        """The contract states it once, for all axes. If this ever grows an
+        `axis:` key, the rule has been quietly narrowed to the axis it was
+        first noticed on."""
+        import yaml
+        contract = yaml.safe_load(
+            (CONTEXT / "disclosure-contract.yaml").read_text(encoding="utf-8"))
+        rule = contract["l0_never_enumerates"]
+        self.assertNotIn("axis", rule)
+        self.assertIn("no L0 line enumerates a collection", rule["rule"])
+
+    def test_a_startup_view_over_budget_says_so_in_its_record(self):
+        """The budget is enforced by a measurement, not by review. An
+        authority line naming twelve roots and a context line carrying an
+        exception sentence measured 160 tokens against 120."""
+        long_authority = "authority: writes under " + ", ".join(
+            f"/opt/applications/data/home-hwz/root{i}" for i in range(12)
+        ) + " are admitted; everything else asks"
+        view = a_startup(authority_line=long_authority)
+        self.assertFalse(view["within_budget"],
+                         "an enumerating L0 line passed the budget")
+
+    def test_the_live_command_renders_within_budget(self):
+        """End to end, on this host, through the surface a session hook would
+        call. The module test above can pass while the CLI assembles something
+        long — which is exactly what happened."""
+        import json as _json
+        proc = subprocess.run(
+            [sys.executable, str(REPO / "bin" / "serverosctl"),
+             "context", "startup", "--json"],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        record = _json.loads(proc.stdout)
+        self.assertTrue(record["within_budget"],
+                        f"{len(record['lines'])} lines: {record['text']}")
+        self.assertEqual(proc.stderr, "",
+                         "the live view is over budget and said so on stderr")
+
+    def test_the_authority_line_is_a_count_and_not_a_list(self):
+        """The specific regression. Twelve absolute paths is not a disclosure
+        of the boundary, it is the boundary's contents — and it is the line a
+        reader skips, at half the budget."""
+        import json as _json
+        proc = subprocess.run(
+            [sys.executable, str(REPO / "bin" / "serverosctl"),
+             "context", "startup", "--json"],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        record = _json.loads(proc.stdout)
+        authority = [l["text"] for l in record["lines"] if l["axis"] == "authority"]
+        self.assertEqual(len(authority), 1)
+        self.assertNotIn("/opt/applications", authority[0],
+                         "the authority line enumerates roots")
+        self.assertIn("bound roots", authority[0])
 
 
 # ---------------------------------------------------------------------------
