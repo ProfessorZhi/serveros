@@ -7,7 +7,7 @@
   },
   "artifact": {
     "tree_hash": "f8ee075b149b2ac945d488492608d16455821ff94a0904cd5cd6ff3d62d79bb7",
-    "tree_hash_recipe": "find . -type f -print0 | sort -z | xargs -0 sha256sum | sha256sum"
+    "tree_hash_recipe": "export LC_ALL=C; find . -type f -print0 | sort -z | xargs -0 sha256sum | sha256sum"
   },
   "archive": {
     "name": "hwz-server-os-linux-work-3.1.0-srv0003.20260913b.tar.zst",
@@ -43,5 +43,6 @@
       "size": 320174,
       "sha256": "6553ff269afa6574a400c1644589a21a7ed589dcc3140340ddc22d335c6905c2"
     }
-  ]
+  ],
+  "notes": "tree_hash_recipe corrected 2026-09-13 to name its locale. It was published without one, and a recipe without a locale does not pin a tree; it pins a tree and whatever locale the reader happens to have. Under en_US.UTF-8 the documented command yields 12a34ecb57ff16ac..., under the C locale f8ee075b149b2ac9... \u2014 different answers to the same question, because GNU sort ignores punctuation at the primary collation level there, so './bin/...' precedes './.claude-plugin/...' while the C locale orders the leading '.' (0x2E) first. Two orders, two permutations of the same sha256sum lines, two digests.\n\nThe asset bytes and artifact.tree_hash are unchanged and were never affected. f8ee075b149b2ac9... is what the product's own fingerprint() computes; the corrected recipe reproduces it under both locales, which is what makes it a recipe rather than a locale-specific observation.\n\nThe correction is on main only. Commit 7a74183 \u2014 the commit tag serveros-v1 names \u2014 still carries the locale-free text, because moving a tag is a force operation and this round does not do those. A reader at the tag should take the recipe from here or from the release body.\n\nFound by running the documented command instead of trusting it: the publisher's own verify step passed the whole time, because it was running the recipe with LC_ALL=C injected \u2014 handing itself an environment the reader does not have."
 }
