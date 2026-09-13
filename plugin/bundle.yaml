@@ -89,6 +89,31 @@ space:
 relations:
   path: relations
 
+# The node runtime, shipped for the reason the `mcp` block below states and for
+# one more that the artifact was getting wrong.
+#
+# The `mcp` block declares a stdio adapter whose entire purpose is to call
+# `serverosd` over its Unix socket. `runtime/` is `serverosd`, `bin/` is its
+# entry point, and until now neither was in the artifact: the build shipped an
+# adapter for a daemon the distribution could not start, and the node's only
+# working unit pointed `ExecStart` at a per-Item worktree because there was no
+# other location that contained one. That is the whole of the split brain this
+# composition closes — not a missing install step, a missing member.
+#
+# `runtime` and `bin` are declared here rather than in the `mcp` block because
+# the dependency runs the other way: the adapter depends on the runtime, not the
+# runtime on the adapter, and a composition that carried one without the other
+# would be describing an adapter with nothing behind it.
+#
+# `bin/` ships alongside because both entry points resolve the runtime through
+# `Path(__file__).resolve().parent.parent / "runtime"`. Keeping that pair
+# adjacent is what lets the shim in the artifact be the same file as the shim in
+# the source tree, rather than a second, subtly different one.
+runtime:
+  path: runtime
+bin:
+  path: bin
+
 # The node MCP surface. `path` is the payload directory copied into the
 # artifact; `servers` is what gets declared at the plugin root.
 #

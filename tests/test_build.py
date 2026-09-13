@@ -209,6 +209,70 @@ class BuildTests(unittest.TestCase):
             self.assertTrue((self.out / module).is_dir(),
                             f"bundle declares {module} but the artifact lacks it")
 
+    def test_the_artifact_ships_the_daemon_its_adapter_calls(self):
+        """The composition ships an MCP adapter whose only job is to call
+        `serverosd`. Shipping the caller without the callee describes a node
+        that cannot exist from the distribution alone, which is why an operator
+        had to point a unit at a source checkout. So the adapter's dependency is
+        asserted as a file in the artifact, not assumed from the bundle text.
+        """
+        self.assertEqual(run_build(self.args("--write")).returncode, 0)
+        self.assertTrue((self.out / "mcp/node_mcp.py").is_file())
+        self.assertTrue((self.out / "bin/serverosd").is_file(),
+                        "the artifact ships the adapter but not the daemon")
+        self.assertTrue((self.out / "bin/serverosctl").is_file())
+        self.assertTrue((self.out / "runtime/daemon.py").is_file())
+        self.assertTrue((self.out / "runtime/cli.py").is_file())
+
+    def test_the_shipped_entry_point_resolves_the_shipped_runtime(self):
+        """`bin/` and `runtime/` are one unit, not two directories.
+
+        Both entry points find the runtime as `parent.parent / "runtime"`, so
+        shipping either without the other yields a shim that cannot import what
+        it names. Executing the shim from the artifact is the only assertion
+        that catches that; checking both paths exist would not, because the bug
+        is in the relationship between them.
+        """
+        self.assertEqual(run_build(self.args("--write")).returncode, 0)
+        proc = subprocess.run(
+            [sys.executable, str(self.out / "bin" / "serverosctl"), "--help"],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+            cwd=str(self.base),
+        )
+        self.assertNotIn("ModuleNotFoundError", proc.stderr)
+        self.assertNotIn("ImportError", proc.stderr)
+        self.assertEqual(proc.returncode, 0,
+                         f"shipped entry point could not run:\n{proc.stderr}")
+
+    def test_the_shipped_unit_declares_no_build_machine_path(self):
+        """The unit template travels inside the artifact, so it must not name
+        the machine that built it.
+
+        The builder promises that no generated artifact references this
+        machine's build paths. A template carrying one worktree's absolute
+        ExecStart would have broken that promise in the one file whose whole
+        purpose is to be read by a supervisor on another day — and the failure
+        would be a service that stops starting when the worktree is retired.
+        """
+        self.assertEqual(run_build(self.args("--write")).returncode, 0)
+        unit = (self.out / "runtime/serverosd.service").read_text()
+        self.assertIn("@SERVEROS_RUNTIME@/bin/serverosd", unit)
+        self.assertIn("@SERVEROS_STATE_DIR@", unit)
+
+        # Directives only. The unit's comments record measurements taken on a
+        # named machine, and a path in prose reaches no supervisor; what must
+        # not survive is a path in an assignment, because that is the one a
+        # systemd on another node would try to honour.
+        directives = [
+            line for line in unit.splitlines()
+            if line.strip() and not line.lstrip().startswith(("#", ";"))
+        ]
+        for line in directives:
+            for machine_path in ("/opt/applications/", "/home/hwz", "/workspace/worktrees"):
+                self.assertNotIn(
+                    machine_path, line,
+                    f"the shipped unit names the build machine in a directive: {line.strip()}")
+
     def test_plugin_manifests_list_every_bundled_skill(self):
         self.assertEqual(run_build(self.args("--write")).returncode, 0)
         claude = json.loads((self.out / ".claude-plugin/plugin.json").read_text())
