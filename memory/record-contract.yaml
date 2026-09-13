@@ -1,0 +1,140 @@
+# ServerOS memory records — Layer B, the durable ledger.
+#
+# Why this file exists
+# --------------------
+# A work Item's memory today lives in four places that were never designed to
+# agree: Git history, `records/` cards, `artifacts/` evidence, and whatever a
+# given Agent session still happens to be holding. The fourth is the problem.
+# It is the only one that is not durable, it is the one an Agent consults first,
+# and it is the one that disappears at the worst moment — mid-Item, on the
+# device that is no longer the one the work started on.
+#
+# The fix is not a new store. It is a record type with a named authority, so
+# that the durable copy is identifiable and the session copy is a cache of it.
+#
+# Read `docs/memory-fabric.md` for the three layers. This file is the record.
+schema: serveros/memory-record.v1
+version: 1
+
+# ---------------------------------------------------------------------------
+# Layer B is the only authority. This is stated in the schema because
+# everything else here follows from it.
+# ---------------------------------------------------------------------------
+layer: B
+authority: true
+substrate: git
+because: >
+  the ledger inherits `blame`, `diff`, `revert` and a history nobody has to be
+  trusted to maintain. A purpose-built store would have to re-implement all
+  four, and the one it would get wrong is `revert`.
+
+kinds:
+  decision:   "a choice was made, and what it rules out"
+  observation: "something was measured or seen, with its provenance"
+  revision:   "a pinned artifact, revision, or hash this work is now bound to"
+  handoff:    "the work moved to another device, session or agent"
+  finding:    "a defect, a risk, or a gap, with its evidence"
+  question:   "an open question with the person who can answer it"
+
+required_fields:
+  - id            # "mem:<kebab>", stable, never reused
+  - kind
+  - subject       # "project/repo/Item" or "device:<id>" — what this is about
+  - at            # ISO-8601 UTC. When the fact became true, not when written.
+  - by            # who or what recorded it: an agent runtime, a person, a node
+  - source        # where it came from: a revision, a Run id, a file, a URL
+  - revision      # the repository revision the fact is about
+optional_fields:
+  - body
+  - supersedes    # "mem:<id>" — the record this one corrects
+  - related       # ["mem:<id>"]
+  - device_ref
+  - confidence    # high | medium | low — for observations only
+  - note
+
+forbidden_fields:
+  - "any credential, token, cookie, key, or private key"
+  - "a raw transcript body"
+  - "a message body from a chat or meeting"
+  - "a raw hardware identifier"
+because: >
+  the ledger is versioned, shared, and synced to a second device, and every one
+  of those properties makes a leaked secret worse rather than better. A record
+  points at a protected object; it does not contain one.
+
+# ---------------------------------------------------------------------------
+# `at` and `by` and `source` are the three fields that make a record citable.
+# Each is here because of a specific way a record without it is useless.
+# ---------------------------------------------------------------------------
+required_because:
+  at: >
+    without it, ordering two records about the same subject is guesswork and
+    "which came first" — the only question a ledger answers better than a wiki
+    — becomes unanswerable.
+  by: >
+    a fact recorded by an agent and a fact recorded by a person carry different
+    weight when they disagree, and a record that does not say which is not
+    weighable.
+  source: >
+    a record with no source is an assertion. It cannot be checked, only
+    believed or ignored, and both are wrong.
+  revision: >
+    a claim about a repository that may have moved. `docs/../ARCHITECTURE.md`
+    at one revision is not the same document as at another, and this product
+    has already shipped a release note describing a file that never existed.
+
+# ---------------------------------------------------------------------------
+# Supersession, not mutation. A ledger that edits is a ledger that cannot be
+# diffed against its own past.
+# ---------------------------------------------------------------------------
+supersession:
+  rule: >
+    a record is never edited to say something different. A corrected record
+    names the one it supersedes and states what changed.
+  because: >
+    the corrected release note in SRV-0007 is the precedent: the sentence was
+    wrong, the correction was more useful than the original, and both are now
+    legible. Editing the original would have destroyed the finding.
+  resolution: >
+    the current value of a subject is the newest record in its supersession
+    chain, and the chain is the history.
+
+# ---------------------------------------------------------------------------
+# What a memory record is NOT. Each line names an object that already has an
+# owner, and the failure mode is always the same: a second copy becomes a
+# second authority.
+# ---------------------------------------------------------------------------
+not_memory:
+  - "an Item's lifecycle state          → work-management, via serverosctl"
+  - "a running resource's health        → the Node Runtime Plane"
+  - "an evidence artifact               → the Evidence plane; this points at it"
+  - "a card, brief or board view        → the Human plane; those are projections"
+  - "another system's object body       → that system's authority"
+
+# ---------------------------------------------------------------------------
+# Projection. Layer A keeps what this node needs without a network round trip,
+# and a projection is derived in the strict sense used everywhere else here.
+# ---------------------------------------------------------------------------
+projection:
+  location: "state/serveros/memory/"
+  derived_from: ledger
+  regenerable: true
+  hand_edit: forbidden
+  because: >
+    if the projection and the ledger disagree, exactly one repair is correct
+    and it is not reconciliation. The projection is rebuilt.
+  staleness:
+    recorded: "the ledger revision the projection was built from"
+    visible: "a projection that cannot name its revision is reported STALE"
+
+rules:
+  - "A record names its authority. A fact that lives only in a session's
+     context window is not a record, and no design may treat summarization as
+     persistence."
+  - "Retention is by kind and is explicit. Nothing is deleted by age alone;
+     `question` resolves, `decision` and `revision` do not."
+  - "An observation without confidence is refused. `confidence: high` on a
+     guess is a lie the schema cannot detect, but a missing field forces the
+     author to make the claim out loud, which is all a schema can do."
+  - "Cross-device sync is a git operation and carries no ServerOS-specific
+     merge logic. A conflict is a conflict; it is never auto-resolved."

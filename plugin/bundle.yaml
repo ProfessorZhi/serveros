@@ -89,6 +89,21 @@ space:
 relations:
   path: relations
 
+# The Ability Fabric and the Memory-Context Fabric ship for the same reason the
+# three kernels above do: their contracts are what a node validates against and
+# their resolvers are read-only functions of records. Shipping the resolver
+# without the contract it validates against would put a rule in code and its
+# statement nowhere, which is the shape this product keeps finding.
+#
+# Neither adds a service. `abilities/` is a resolver and four contract files;
+# `memory/` is two contracts and a projection reader. The daemon does not import
+# either — see `memory/provider-contract.yaml#daemon_boundary`, which is
+# enforced by a test rather than asserted here.
+abilities:
+  path: abilities
+memory:
+  path: memory
+
 # The node runtime, shipped for the reason the `mcp` block below states and for
 # one more that the artifact was getting wrong.
 #

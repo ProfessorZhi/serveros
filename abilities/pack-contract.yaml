@@ -1,0 +1,138 @@
+# ServerOS ability packs.
+#
+# Why this file exists
+# --------------------
+# `plugin/profiles/linux-work.yaml` carries a `recommended:` list that names
+# `document-stewardship` with a `status: missing` marker written beside it. The
+# marker is honest and the list is still a pack naming an ability that is not
+# there. Nothing failed, because nothing was checking.
+#
+# A pack answers "which abilities, together, for this purpose". It is not a
+# composition (`plugin/bundle.yaml` decides what is packaged) and it is not a
+# profile (`fleet/profiles.yaml` decides where things live). Keeping it a third,
+# smaller thing is what stops it acquiring a payload and becoming a second
+# composition.
+schema: serveros/ability-pack.v1
+version: 1
+
+record:
+  required_fields: [id, name, purpose, members]
+  optional_fields: [description, domain, note]
+  forbidden_fields:
+    - "a payload, a path, or a file"
+    - "a version of its own"
+  because: >
+    a pack with a payload is a composition, and this product already has one
+    composition authority. A pack with a version of its own would need to be
+    released, and the abilities inside it already carry revisions.
+
+member:
+  shape:
+    ability: "ability:<kebab-id>"
+    # Whether this member is required or optional is the ONLY thing a pack may
+    # say about criticality. A pack does not rank its members.
+    role: required | optional
+  resolution:
+    # What it means when a member is not resolvable on the target device.
+    required_unresolved: PARTIAL          # the pack is usable and incomplete
+    all_required_unresolved: UNAVAILABLE
+    never: "silently dropped"
+  because: >
+    dropping an unresolved member turns "this pack has nine of its ten members
+    on this machine" into a support ticket. Reporting it turns it into a status,
+    which is what the Ability Fabric is for.
+
+# ---------------------------------------------------------------------------
+# The closure rule. This is the one that was being violated.
+# ---------------------------------------------------------------------------
+closure:
+  rule: >
+    every member id must exist in the pinned ability-management manifest at the
+    revision the pack declares. A pack naming an ability that does not exist is
+    refused at build time, not carried with a marker beside it.
+  scope:
+    members: enforced
+    referenced_but_optional: reported
+  because: >
+    a `missing` marker is a comment. It is written by the person who already
+    knows, read by nobody, and it does not stop the pack from being installed
+    and a session from planning around a capability that is not there. The
+    marker was accurate for as long as it existed; accuracy was never the
+    problem.
+  cost_note: >
+    this makes a pack unbuildable when the catalogue moves under it, which is
+    the intended failure. The repair is to fix the pack or fix the catalogue,
+    and both are visible.
+
+# ---------------------------------------------------------------------------
+# Packs are declarative and carry no payload, so publishing one is publishing
+# names. That is what makes a pack safe to publish while the abilities inside it
+# remain versioned elsewhere.
+# ---------------------------------------------------------------------------
+publishing:
+  location: "ability-management, beside the manifest it names members from"
+  substrate: git
+  rule: >
+    a published pack pins the ability-management revision its member ids were
+    validated against. Without that pin the pack's closure was true of a
+    catalogue that no longer exists.
+
+# ---------------------------------------------------------------------------
+# Intent packs, as declared. Each names abilities that EXIST at the pinned
+# revision; the closure check is what keeps that sentence true.
+#
+# Note the members deliberately NOT included. `document-stewardship` and
+# `reporting` are named by prose in several places and exist in no manifest, so
+# they appear in no pack. An intent that needs them is a NEEDS_HUMAN finding
+# against the catalogue, not a pack member with a marker.
+# ---------------------------------------------------------------------------
+packs:
+  - id: pack:autonomous-quality-loop
+    name: Autonomous quality loop
+    purpose: >
+      a work item that develops, tests itself, reacts to the result, and does
+      not need a person to notice that it stopped.
+    members:
+      - {ability: "ability:work-management", role: required}
+      - {ability: "ability:runtime-management", role: required}
+      - {ability: "ability:test-management", role: required}
+      - {ability: "ability:quality-feedback-and-iteration", role: required}
+      - {ability: "ability:implementation-delivery", role: required}
+
+  - id: pack:litellm-development
+    name: LiteLLM development
+    purpose: "plan, build, image, test and report a LiteLLM-side change."
+    members:
+      - {ability: "ability:technical-architecture-and-planning", role: required}
+      - {ability: "ability:backend-solution-design", role: required}
+      - {ability: "ability:implementation-delivery", role: required}
+      - {ability: "ability:test-management", role: required}
+      - {ability: "ability:quality-feedback-and-iteration", role: optional}
+
+  - id: pack:cross-device-collaboration
+    name: Cross-device collaboration
+    purpose: >
+      the same work item picked up on a second device, with the memory and the
+      running resources it needs, and without re-establishing either.
+    members:
+      - {ability: "ability:work-management", role: required}
+      - {ability: "ability:runtime-management", role: required}
+      - {ability: "ability:shared-memory", role: required}
+      - {ability: "ability:fleet-coordination", role: required}
+
+  - id: pack:quality-delivery
+    name: Quality and delivery
+    purpose: "the abilities a node needs to test, react, and report."
+    members:
+      - {ability: "ability:test-management", role: required}
+      - {ability: "ability:quality-feedback-and-iteration", role: required}
+      - {ability: "ability:feishu-report", role: optional}
+
+rules:
+  - "A pack names abilities. It never names a provider, a device or a runtime —
+     those are resolved, and a pack that names one has decided something it
+     cannot know."
+  - "A pack is not a composition. Composing a pack means composing its members,
+     through the composition mechanism that already exists."
+  - "Two packs may share a member. That is not a conflict; there is one copy of
+     every ability and a pack holds names."

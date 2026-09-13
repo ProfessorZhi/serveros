@@ -405,6 +405,52 @@ kind_requirements:
           that its members must be reasoned about together.
 
 # ---------------------------------------------------------------------------
+# Ownership (§36, §37). ARCHITECTURE.md invariant 6, enforced at registration.
+#
+# The defect this closes was never a wrong answer. Every observation of the
+# tunnel in Case A was correct — RUNNING, far side healthy, no failed probe —
+# right up to the moment an unrelated Agent session ended and took it with it,
+# on time and by design. There is nothing to detect afterwards: between
+# creation and retirement the resource is genuinely fine, and a monitor
+# watching it reports success for the entire period that matters. The only
+# moment the question can be asked is registration, where the author is still
+# present to answer it.
+# ---------------------------------------------------------------------------
+ownership:
+  rule: >
+    anything that must outlive the Agent session that caused it requires an
+    explicit durable owner and an explicit lifecycle. An Agent session may
+    cause creation; it may not be the owner of record.
+  session_owner_ids:
+    # Ids that denote a session lifetime. A registration owned by one of these
+    # may not be registered with a lifecycle class outside this list.
+    - "session:*"
+    - "agent-runtime:*"
+  permitted:
+    session_owner_lifecycle: [session-scoped, disposable]
+    forbidden:
+      persistent: >
+        a persistent resource owned by a session is destroyed exactly on
+        schedule, and every observation up to that moment says it is fine.
+        This is Case A, verbatim.
+      task-scoped: >
+        a task-scoped resource is owned by the work item, never by the session
+        working on it. Two sessions working one Item is a normal case, and the
+        second one ending must not reclaim the first one's resources.
+  on_violation:
+    disposition: REFUSE
+    alternative: >
+      register it as `disposable` with a `note` recording the downgrade. A
+      deliberately disposable resource is a legitimate thing; a persistent one
+      that is actually session-scoped is not, because it lies to every consumer
+      that reads its class.
+  because_case: >
+    the tunnel a task depended on was registered with session lifetime. It was
+    retired when an unrelated Agent session ended, the task lost its transport
+    mid-flight, and the far side was healthy throughout — which is why this
+    took a real incident to find rather than a code review.
+
+# ---------------------------------------------------------------------------
 # Recovery models (§20).
 #
 # A resource whose failure cannot be fixed by restarting must SAY SO, because
@@ -621,6 +667,79 @@ default_action_rules:
     action: "the operation named by reconcile.mode"
     because: "§10's seven conjuncts, all of which must hold. See `why_not_automatable`."
 
+# ---------------------------------------------------------------------------
+# Admission findings (§38, §39, §40, §41). Case C.
+#
+# A finding is not a rule and not a state. It is something registration NOTICED
+# and declined to accept silently. The three severities do different things on
+# purpose: the asymmetry is the whole design, because a floating dependency on a
+# scratch helper and a floating dependency on the browser automation a safety
+# check depends on are the same text and not the same risk.
+# ---------------------------------------------------------------------------
+admission:
+  findings:
+    - code: PERSISTENT_RUNTIME_FLOATING_DEPENDENCY
+      detects:
+        # Ids, commands and note text are scanned. `@latest` and a bare `npx`
+        # are the two forms seen in this fleet; the third is a floating branch.
+        patterns:
+          - "npx <pkg>@latest"
+          - "npx <pkg> with no version specifier"
+          - "a floating branch: main, HEAD, or a tag expected to move"
+          - "install-on-start over a network"
+          - "a cache directory not pinned by content"
+      severity:
+        default: WARN
+        HIGH: "criticality is critical, or protection is protected"
+      effect:
+        WARN: "registered; the finding is reported with the resource"
+        HIGH: >
+          blocking for registration and for promotion of a critical managed
+          persistent runtime. It is not blocking for a task-scoped or
+          disposable resource, where the lifetime is short enough that the
+          version is not the variable.
+      because_case: >
+        one node reached Playwright through `npx @playwright/mcp@latest` and
+        the other had it pinned to an absolute path to a versioned artifact.
+        The two ran "the same" toolchain and did not, and nothing in the
+        catalogue could have told you so. "It worked yesterday" and "it works
+        today" were then statements about two different programs.
+      is_not: >
+        a claim that `@latest` is bad practice. It is a claim that an unpinned
+        dependency makes a device's capability set unknown, which makes every
+        answer the Ability Fabric gives about that device provisional without
+        saying so. The finding is what makes it say so.
+      repair:
+        - "pin to an absolute path to a versioned artifact"
+        - "or record the resolved revision alongside the resource, and accept
+           DEGRADED in the capability resolution"
+
+    - code: UNDECLARED_DURABLE_RESOURCE
+      detects: "a resource in service with no declaration in a reconcilable store"
+      severity: WARN
+      because_case: >
+        the Linux node's outbound tunnel exists as `127.0.0.1:17890` in a
+        comment in `~/.bashrc`. Not disabled, not behind a flag — a comment.
+        There is no listener and no service owns it. A comment cannot drift,
+        because it never claimed anything, which is what makes it worse than no
+        declaration: a reader finds the number, believes it, and the belief is
+        not checkable.
+      is_not: >
+        a demand that every process be registered. It fires for a resource a
+        durable artifact NAMES as required, which is a much smaller set and one
+        that can be enumerated.
+      capability_effect: "PROVIDER_NOT_INSTALLED, never UNKNOWN"
+
+  rules:
+    - "A finding never blocks a registration silently. It either registers
+       with the finding attached, or refuses and names the finding."
+    - "Severity is derived from the resource's own criticality and protection,
+       never from the caller's. A caller that could choose its own severity
+       would choose the one that lets it proceed."
+    - "A finding is not a state. It is recorded on the registration and does
+       not appear in the health axes; conflating the two is how a policy
+       judgement becomes a probe result."
+
 rules:
   - "Every managed resource is explicitly registered. Nothing is managed by
      being noticed — a discovered container is an observation, not a claim."
@@ -645,3 +764,17 @@ rules:
      unmeasured or FAILED functional axis is DEGRADED, and a tunnel
      registration that provides no way to measure that axis is rejected rather
      than accepted and quietly reported DEGRADED forever."
+  - "A resource whose declared lifecycle class outlives every owner that can be
+     confirmed is refused at registration. Case A is the whole of the
+     justification: the resource was healthy for the entire period that
+     mattered, so nothing downstream could have caught it."
+  - "A resource some durable artifact names as required, and that no
+     reconcilable store declares, is an admission finding. Case B — a port
+     number in a shell comment is a requirement that cannot be reconciled,
+     probed, or found stale."
+  - "A managed persistent runtime may not depend on a moving target. A
+     floating dependency on a `critical` or `protected` resource blocks
+     registration and promotion; elsewhere it is a WARN carried with the
+     resource. Case C — `npx @playwright/mcp@latest` on one node, an absolute
+     versioned path on the other, and no record anywhere that could say the two
+     were different."

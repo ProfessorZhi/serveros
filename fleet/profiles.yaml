@@ -25,6 +25,18 @@ path_roles:
   downloads:            acquired archives and installers
   software.gui:         installed GUI applications
   knowledge.corporate:  corporate knowledge / onboarding source
+  # Added when the Agent Runtime contract needed to say where a runtime reads
+  # its own configuration without naming a home directory. `~/.claude.json`,
+  # `~/.codex/config.toml` and `~/.serveros` are all this role's business, and
+  # three devices have three different answers that are not a matter of taste:
+  # HOME on Linux, %USERPROFILE% on Windows, and on this fleet an actual
+  # difference in where the agent runtimes keep their config.
+  #
+  # UNBOUND on both Windows profiles is the honest value and it is a finding,
+  # not an omission: nobody has asserted where those machines keep it. A
+  # capability resolved through this role on either of them is therefore
+  # UNKNOWN, which is correct — see `abilities/agent-runtime-contract.yaml`.
+  home:                 user home directory; agent runtime config roots
 
 # BOUND            — path known, and the source of that knowledge is recorded
 # UNBOUND          — role applies here but no path is known yet (a real gap)
@@ -76,6 +88,10 @@ profiles:
       knowledge.corporate:
         state: UNBOUND
         provenance: user_reported
+      home:
+        path: /home/hwz
+        state: BOUND
+        provenance: server_local_agent
 
   windows-corporate:
     device_ref: device:work-fj
@@ -169,6 +185,16 @@ profiles:
       runtime-assets:
         state: UNBOUND
         provenance: user_reported
+      home:
+        state: UNBOUND
+        provenance: user_reported
+        note: >-
+          The role applies and no path has been asserted. Deliberately left
+          UNBOUND rather than filled with a plausible `%USERPROFILE%`: a
+          guessed path here resolves an agent runtime's config surface to a
+          location nobody checked, and every capability resolved through it
+          would read AVAILABLE on the strength of a guess. UNBOUND produces
+          UNKNOWN, which is the answer that is actually true from here.
 
   windows-personal:
     device_ref: device:personal-dell
@@ -209,6 +235,16 @@ profiles:
       workspace.worktrees:
         state: UNBOUND
         provenance: user_reported
+      home:
+        state: UNBOUND
+        provenance: user_reported
+        note: >-
+          See `windows-corporate`. UNBOUND, not NOT_APPLICABLE: the role has
+          meaning on this device and no path has been asserted for it. The one
+          fact this round established about Dell's runtime surfaces is that
+          Playwright was reached through `npx @playwright/mcp@latest` — which
+          is a floating dependency and is recorded as an admission finding, not
+          as a path.
 
 rules:
   - "A profile is selected by the device, not by the caller. Asking for a path
