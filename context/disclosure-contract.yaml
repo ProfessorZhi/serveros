@@ -45,7 +45,7 @@ levels:
     L2: "a specific ability's provider, status and reason"
     L3: "the full resolved capability set with every input"
   authority:
-    L0: "the boundary in one line: what needs approval"
+    L0: "the boundary in one line: what needs approval, and how many places it covers"
     L1: "the policy set that applies to this project"
     L2: "a specific denial and its reason"
     L3: "the full authority statement"
@@ -54,13 +54,35 @@ levels:
 # Why the capability L0 is a NUMBER and not a list.
 # ---------------------------------------------------------------------------
 capability_l0:
-  shape: "N abilities resolvable on this device; query with `serverosctl capability list`"
   because: >
     a list is a menu, a menu invites browsing, and browsing is how a session
     spends its first thousand tokens reading a catalogue instead of working.
     The number exists to tell the agent that ServerOS has something to say,
     not to say it. The native agent already has its own Skill discovery and
     does not need a second, worse one.
+
+  # TWO numbers, and they are not the same number. This section used to
+  # declare one shape — "N abilities resolvable on this device" — while
+  # `costs.capability.L0` prices the level at "one manifest read, no probes".
+  # A probe-free read cannot produce a resolved count: resolution is the
+  # eight-input intersection. So the declaration asked for a number its own
+  # cost model could not pay for, and the cheap read would have been rendered
+  # under the expensive word. That is the union wearing the intersection's
+  # name, one layer above where `abilities/resolver.py` refuses to do it.
+  shapes:
+    catalogue:
+      renders: "N known to this authority; resolve one with `serverosctl ability resolve`"
+      produced_by: "one projection read — the count of abilities the authority carries"
+      means: "ServerOS has a catalogue. It does NOT mean this device can use them."
+    resolved:
+      renders: "N resolvable[, M undecided]"
+      produced_by: "`abilities/resolver.py` over the eight inputs; `count_abilities`"
+      means: "the intersection agreed for these. M is the number nobody could decide."
+  default: catalogue
+  because_two_shapes: >
+    a caller that does not say which number it has does not get the stronger
+    claim. A bare integer is a catalogue count, because that is the only read
+    a bare integer can have come from.
   forbidden_at_l0:
     - "any ability list longer than a count"
     - "per-device resolution of anything"
@@ -101,9 +123,9 @@ startup_view:
   lines:
     - "ServerOS is present on this device"
     - "context: <project>/<Item>/<Run>          (context L0)"
-    - "capabilities: <N> resolvable              (capability L0)"
+    - "capabilities: <N> known to this authority; resolve one with `serverosctl ability resolve`  (capability L0)"
     - "authority: writes to <bound roots> are admitted; everything else asks  (authority L0)"
-    - "details on request: `serverosctl context current | capability list | capability resolve <id>`"
+    - "details on request: `serverosctl context current | ability list | ability resolve --request <file>`"
   budget_lines: 6
   budget_tokens: 120
   because: >
@@ -122,6 +144,33 @@ degradation:
   because: >
     an absent line reads as "nothing to report", which is the same defect the
     board view has: a projection that renders an unknown as an empty.
+
+# ---------------------------------------------------------------------------
+# The rule behind "capability L0 is a number", stated once for all three axes.
+# ---------------------------------------------------------------------------
+l0_never_enumerates:
+  rule: >
+    no L0 line enumerates a collection. A count, a boundary and a pointer,
+    never the members.
+  because: >
+    this was learned twice in one afternoon, which is why it is written down
+    once rather than beside the axis it was first noticed on. Capability L0
+    was designed as a number and stayed one. Authority L0 was written as
+    "writes under <bound roots> are admitted" and the first live run rendered
+    it as twelve absolute paths — about half the entire budget on the one line
+    a reader skips — together with a context line carrying a full exception
+    sentence. A five-line view measured 160 tokens against a budget of 120.
+  found_by: >
+    running the command. Not by review, and not by the mutation tests, which
+    had imagined the failure only on the axis where it was already refused.
+    A budget with a number is what turned it from a matter of taste into a
+    failing measurement.
+  corollary: >
+    when a level cannot be produced, the L0 line says so in a few words and
+    names the command that has the long answer. The detail is not discarded,
+    it is one level down — `context: unknown (ValueError; `serverosctl
+    context current` explains)` is a disclosure; a pasted stack message is a
+    transcript.
 
 rules:
   - "Disclosure is a floor. It never restricts what the native agent may

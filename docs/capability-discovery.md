@@ -79,10 +79,15 @@ bootstrap stays tiny — on the order of tens of lines, not hundreds:
 ```text
 ServerOS exists
 current context query
-native Skills available
-serverosctl available
+capabilities known, resolved on request
+authority boundary
 load details on demand
 ```
+
+This block used to name `serverosctl available`, which was never a command.
+The surface that renders it is `serverosctl context startup`; the rule it
+follows is `context/disclosure-contract.yaml`, and this section is the
+explanation of that file rather than a second copy of the rule.
 
 ## Progressive disclosure
 

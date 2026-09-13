@@ -339,12 +339,188 @@ def cmd_ability_status(args) -> int:
     return EXIT_OK if installed else EXIT_FAULT
 
 
+def cmd_ability_resolve(args) -> int:
+    """§45/§46 — can THIS device do THIS thing, now, and if not why not.
+
+    The distinction from `ability status` is the reason both exist and is worth
+    stating, because they read like the same question. `ability status` reads
+    the projection: what the authority says is installed, and how fresh that
+    answer is. This runs the resolver: it intersects the eight inputs for one
+    device, one runtime and one moment. A thing can be listed and not
+    resolvable — installed nowhere this runtime can reach is the ordinary case,
+    and reporting it as available because the authority lists it is the defect
+    `abilities/resolver.py` was written to prevent.
+
+    Until this command existed the kernel had no caller at all outside its own
+    tests. It was complete, correct, thirty-odd green tests, and unreachable —
+    the same shape as `admission()`, and the reason the test for this asserts
+    the wiring rather than the logic.
+
+    The inputs come from `--request`, and deliberately from nowhere else yet.
+    Assembling them from live state is the next stage; a version of this that
+    guessed at them would produce a confident `AVAILABLE` computed from inputs
+    nobody supplied, which is precisely what the kernel now refuses to do.
+    """
+    resolver_mod = _load_module_from(REPO_ROOT / "abilities" / "resolver.py",
+                                     "serveros_ability_resolver")
+    request = json.loads(Path(args.request).read_text(encoding="utf-8"))
+    if args.ability:
+        request["ability"] = args.ability
+    if args.device:
+        request["device_ref"] = args.device
+    if args.runtime:
+        request["runtime"] = args.runtime
+
+    try:
+        record = resolver_mod.resolve(request)
+    except resolver_mod.Rejected as exc:
+        sys.stderr.write(f"serverosctl: {exc}\n")
+        return EXIT_COULD_NOT_ANSWER
+
+    lines = [
+        f"ability     {record['ability']}",
+        f"device      {record['device_ref']}",
+        f"runtime     {record['runtime']}",
+        f"status      {record['status']}"
+        + (f" · {record['reason']}" if record.get("reason") else ""),
+    ]
+    if record.get("provider"):
+        lines.append(f"provider    {record['provider']}")
+    if record.get("detail"):
+        lines.append(f"detail      {record['detail']}")
+    # What it could see, always. A status computed from whichever inputs
+    # happened to be readable is the finding this line exists to expose, and
+    # printing it only when something is missing would hide it exactly when a
+    # caller has stopped reading.
+    lines.append(f"inputs seen {', '.join(record['inputs_seen']) or 'none'}")
+    lines.append(f"missing     {', '.join(record['inputs_missing']) or 'none'}")
+    for candidate in record.get("candidates", []):
+        lines.append(f"  candidate {candidate['provider']} → {candidate['status']}"
+                     + (f" ({candidate['reason']})" if candidate.get("reason") else "")
+                     + (f" refused_by={candidate['refused_by']}"
+                        if candidate.get("refused_by") else ""))
+    emit(record, as_json=args.json, lines=lines)
+
+    # Three answers, three exit codes, because a shell has to tell them apart:
+    # it can go and use it, it must go and fix something, or it must go and
+    # supply an input. UNKNOWN is not a failure of this command.
+    if record["status"] in ("AVAILABLE", "DEGRADED"):
+        return EXIT_OK
+    if record["status"] == "UNKNOWN":
+        return EXIT_COULD_NOT_ANSWER
+    return EXIT_FAULT
+
+
 def _human_seconds(seconds: float) -> str:
     seconds = int(seconds)
     for unit, size in (("d", 86400), ("h", 3600), ("m", 60)):
         if seconds >= size:
             return f"{seconds // size}{unit}{seconds % size // 60 if unit == 'd' else ''}"
     return f"{seconds}s"
+
+
+def cmd_context_startup(args) -> int:
+    """§29–§32 — the whole of what a session is told before it asks anything.
+
+    This exists so the disclosure kernel has a caller. Built the same day as
+    `ability resolve`, which was added because `abilities/resolver.py` turned
+    out to have no caller outside its own tests — and a second kernel written
+    in the same round with the same defect would have been a poor showing.
+
+    Every input here is either read cheaply or reported missing:
+
+      item            inferred, never guessed, by the same resolver
+                      `context current` uses
+      capability      ONE projection read, matching `costs.capability.L0` =
+                      "one manifest read, no probes". It is therefore a
+                      CATALOGUE count and it is rendered as one. The resolved
+                      count needs the eight-input intersection and is not
+                      claimed here.
+      authority       the bound roots from the path contract
+
+    A daemon that will not answer degrades the line to `unknown` rather than
+    dropping it. Three lines are not smaller than five; they are five with two
+    missing, and a reader cannot tell which.
+    """
+    disclosure_mod = _load_module_from(REPO_ROOT / "context/disclosure.py",
+                                       "serveros_disclosure")
+
+    item = None
+    item_why = "no item inferred from this directory"
+    try:
+        context_resolver = _load_module_from(REPO_ROOT / "context/resolver.py",
+                                             "serveros_context_resolver")
+        item = context_resolver.infer_item(context_resolver.Roots.from_env(),
+                                           Path.cwd())
+    except Exception as exc:  # noqa: BLE001 - reported, never hidden
+        # SHORT, and this is the disclosure rule rather than a lost detail.
+        # The first version interpolated `str(exc)`, whose text runs to a full
+        # sentence naming the cwd and the three directory shapes an Item can
+        # live in — and that one line took the startup view from inside its
+        # budget to 160 tokens against a declared 120. Measured on the live
+        # node, minutes after the budget was declared.
+        #
+        # The long form is not deleted. It is what `serverosctl context current`
+        # prints, which the pointer line at the bottom of this view names. L0
+        # says that it does not know; L1 says why. That is the whole of §29.
+        item_why = f"{type(exc).__name__}; `serverosctl context current` explains"
+
+    # The catalogue count, over IPC, because the daemon grades its own
+    # projection and a CLI opening the file itself would report an empty
+    # answer for FRESH, STALE, UNREADABLE and NOT_MATERIALIZED alike.
+    capability_count = None
+    capability_why = None
+    try:
+        payload = ask_daemon("ability.list")
+        abilities = payload.get("abilities")
+        if abilities is None:
+            capability_why = (f"the daemon could not read its projection "
+                              f"({payload.get('registry_status')})")
+        else:
+            capability_count = len(abilities)
+    except DaemonUnavailable as exc:
+        capability_why = str(exc)
+
+    # A COUNT, not the list, for the same reason capability L0 is a count:
+    # naming all twelve bound roots costs about 60 of the 120 tokens and is
+    # the sentence a reader skips. The first version of this line did name
+    # them, and the budget refused it — the same mutation as capability L0
+    # growing a list, in the axis next door, which the mutation tests had not
+    # covered because they only imagined it happening to capability.
+    contract = paths_mod.Paths().contract()
+    authority_line = (f"authority: writes under {len(contract['roots'])} bound "
+                      "roots are admitted; everything else asks "
+                      "(`serverosctl path contract` lists them)")
+
+    if args.json:
+        record = disclosure_mod.startup_view(
+            item=item, capability_count=capability_count,
+            authority_line=authority_line,
+            context_why=item_why if item is None else None,
+            authority_why=None)
+        emit(record, as_json=True)
+        return EXIT_OK
+
+    # The rendered view is the output. Printing the record as well would double
+    # the text and make `within_budget` a statement about the wrong number.
+    record = disclosure_mod.startup_view(
+        item=item, capability_count=capability_count,
+        authority_line=authority_line,
+        context_why=item_why if item is None else None,
+        authority_why=None)
+    sys.stdout.write(record["text"] + "\n")
+    if not record["within_budget"]:
+        # Not an error, and not silent either. A budget nobody is told about
+        # being exceeded is a style guide.
+        sys.stderr.write(
+            f"serverosctl: startup view is {len(record['lines'])} lines / "
+            f"~{sum(len(l['text']) for l in record['lines']) // 4} tokens, "
+            f"over the declared {record['budget']['lines']}/"
+            f"{record['budget']['tokens']}\n")
+    if capability_why:
+        sys.stderr.write(f"serverosctl: capabilities line is a catalogue "
+                         f"count unavailable — {capability_why}\n")
+    return EXIT_OK
 
 
 def cmd_context_current(args) -> int:
@@ -1444,6 +1620,9 @@ def build_parser() -> argparse.ArgumentParser:
     context_sub = context.add_subparsers(dest="subcommand", required=True)
     context_current = context_sub.add_parser("current", help="cwd, item, roots", **_COMMON)
     context_current.set_defaults(func=cmd_context_current)
+    context_startup = context_sub.add_parser(
+        "startup", help="the startup view: one line per axis, L0 only (§29)", **_COMMON)
+    context_startup.set_defaults(func=cmd_context_startup)
 
     path = sub.add_parser("path", help="path governance (§40)", **_COMMON)
     path_sub = path.add_subparsers(dest="subcommand", required=True)
@@ -1576,6 +1755,16 @@ def build_parser() -> argparse.ArgumentParser:
         "status", help="one ability by name", **_COMMON)
     ab_status.add_argument("name")
     ab_status.set_defaults(func=cmd_ability_status)
+    ab_resolve = ability_sub.add_parser(
+        "resolve",
+        help="intersect the eight inputs for one device and runtime (§45)",
+        **_COMMON)
+    ab_resolve.add_argument("--request", required=True,
+                            help="a JSON file holding the resolver's inputs")
+    ab_resolve.add_argument("--ability", help="override request.ability")
+    ab_resolve.add_argument("--device", help="override request.device_ref")
+    ab_resolve.add_argument("--runtime", help="override request.runtime")
+    ab_resolve.set_defaults(func=cmd_ability_resolve)
 
     probe = sub.add_parser("probe", help="run one resource's declared probes", **_COMMON)
     probe.add_argument("id")
