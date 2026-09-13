@@ -1,0 +1,201 @@
+# ServerOS Ability Provider contract.
+#
+# Why this file exists
+# --------------------
+# The product could already name every Ability and could not say what any given
+# device could DO. Three devices share one catalogue and three different
+# realities. The symptom that forced this file was mundane and expensive: a
+# device was reported as able to do something, and the command failed.
+#
+# The cause was that "an Ability exists" and "this machine can exercise it" had
+# never been separated, so nothing was ever asked to bridge them. This contract
+# separates them. An Ability is WHAT. A Provider is HOW. They are different
+# objects with different owners and different lifetimes, and every failure in
+# this area so far has been one of them standing in for the other.
+#
+# Read `docs/ability-fabric.md` for the philosophy. This file is the schema.
+schema: serveros/ability-provider.v1
+version: 1
+
+# ---------------------------------------------------------------------------
+# The five words, kept apart. Each is a separate record with a separate id
+# space, because collapsing any two of them produces a sentence that is true on
+# one machine and false on the next.
+#
+#   Ability   WHAT     named once, device-free, owned by ability-management
+#   Provider  HOW      a concrete way to do it                 (this file)
+#   Profile   WHERE    a reusable class of machine             (fleet/profiles.yaml)
+#   Binding   WHICH    one concrete machine                    (fleet/registry.yaml)
+#   Adapter   HOW an Agent runtime consumes a provider
+# ---------------------------------------------------------------------------
+objects:
+  Ability:
+    id_pattern: "ability:<kebab-id>"
+    owner: ability-management
+    holds: "the name, the domain, the taxonomy refs, the procedure"
+    never_holds: "a path, a version, a device, a runtime"
+  Provider:
+    id_pattern: "provider:<kebab-id>"
+    owner: serveros
+    holds: "how the work is done, what it needs, and what proves it works"
+    never_holds: "a device, a user, a credential"
+  Adapter:
+    id_pattern: "adapter:<runtime>/<provider>"
+    owner: serveros
+    holds: "the runtime-specific materialization: one file, one key, one entry"
+    never_holds: "business logic, a second copy of the provider's rules"
+
+# ---------------------------------------------------------------------------
+# Provider kinds. Closed. Each names the *materialization* — the thing that
+# would have to exist on the machine for this provider to be reachable — since
+# that is the question a resolver can actually answer.
+# ---------------------------------------------------------------------------
+provider_kinds:
+  # A Skill the Agent reads and follows. The cheapest provider and the only one
+  # that needs nothing installed beyond the Skill itself.
+  - skill
+  # An MCP server. Reachable over stdio or a socket, and therefore probeable by
+  # `mcp-tools-list` rather than by "is the file there".
+  - mcp-server
+  # An executable on PATH or at an absolute path.
+  - cli
+  # A local HTTP service. Probeable by `http-health`.
+  - local-service
+  # A remote service this node reaches over the network. Reachability is a
+  # capability input (`NETWORK_UNAVAILABLE`), not an assumption.
+  - remote-service
+  # A procedure this node performs with no external artifact at all. Declared
+  # so that "the runtime already does this" is a provider rather than an
+  # absence, and the resolver has something to return AVAILABLE about.
+  - builtin
+
+# ---------------------------------------------------------------------------
+# What a provider declares about itself. Every field here is an INPUT to
+# resolution; none of them is a status. A provider that stores its own status
+# is storing a memory of a past resolution and reading it as a current one.
+# ---------------------------------------------------------------------------
+required_fields:
+  - id
+  - ability            # ability:<kebab-id> — what this is a way of doing
+  - kind
+  - materialization    # see `materialization` below: how to find it
+  - probe              # how to ask whether it works; see `probe_required`
+optional_fields:
+  - preference         # integer; lower wins when several providers are AVAILABLE
+  - requirements       # device capabilities this provider needs
+  - adapters           # runtime → adapter id
+  - revision           # the pinned revision of the thing that was materialized
+  - note
+
+# ---------------------------------------------------------------------------
+# materialization — the answer to "where would it be".
+#
+# Deliberately NOT a path. A path is a device fact, and a provider record that
+# contains one cannot be shared between two devices with different layouts. The
+# `path_role` is resolved per device through `fleet/profiles.yaml`, which is the
+# mechanism that already exists for exactly this and does not need a second one.
+# ---------------------------------------------------------------------------
+materialization:
+  shape:
+    # Which of the device's declared path roles this lives under, or `none`
+    # for a provider with no on-disk footprint (builtin, remote-service).
+    path_role: toolchains | none
+    # Relative to the role. For `kind: skill` this is `skills/<ability-id>`.
+    relative: "npm-global/lib/node_modules/@playwright/mcp/cli.js"
+  forbidden:
+    - "an absolute path"
+    - "a home directory"
+    - "an environment variable name"
+    - "a credential, token or key"
+  because: >
+    an absolute path in a provider record is this machine's layout promoted to a
+    product fact, and it makes the record unusable on the other two devices.
+    Fleet exists precisely so that `toolchains` resolves differently on each.
+
+# ---------------------------------------------------------------------------
+# probe — how the resolver asks whether the provider works, and WHICH question
+# it answers. Reuses the managed-runtime probe vocabulary rather than declaring
+# a second one; a provider whose probe kind does not exist there is refused.
+#
+# `probe.kind: none` is permitted and is a real answer: it means this provider
+# cannot be asked, and the resolver returns UNKNOWN for it rather than
+# AVAILABLE. That is the honest value and it is why `none` is in the list.
+# ---------------------------------------------------------------------------
+probe:
+  kinds: [process-exists, systemd-unit-state, container-state,
+          container-healthcheck, http-health, mcp-tools-list, socket-connect,
+          relay-socket, relay-presence, file-executable, none]
+  required: [kind]
+  # A provider that declares a probe kind this runtime cannot run resolves to
+  # UNKNOWN, never to AVAILABLE. Silence is not evidence of health.
+  unknown_when_unrunnable: true
+
+# ---------------------------------------------------------------------------
+# Status. Five values, and the reason vocabulary is closed and shared with the
+# resolver so that a status without a reason cannot be constructed.
+# ---------------------------------------------------------------------------
+status:
+  values: [AVAILABLE, DEGRADED, UNAVAILABLE, INCOMPATIBLE, UNKNOWN]
+  reasons:
+    AGENT_UNSUPPORTED: "the agent runtime cannot consume this provider kind"
+    DEVICE_DEPENDENCY_MISSING: "a declared requirement is absent on this device"
+    RUNTIME_UNHEALTHY: "it exists and its probe fails or is failing"
+    POLICY_DENIED: "a policy refuses it on this device or for this Item"
+    NETWORK_UNAVAILABLE: "a remote provider this node cannot reach"
+    PROVIDER_NOT_INSTALLED: "the materialization is not there"
+  rules:
+    - "A status is always accompanied by exactly one reason, except AVAILABLE."
+    - "UNKNOWN is a real answer and is never flattened into UNAVAILABLE. They
+       call for opposite actions: UNAVAILABLE means find another provider,
+       UNKNOWN means go and resolve the missing input."
+    - "A provider whose materialization is absent is PROVIDER_NOT_INSTALLED.
+       It is never UNKNOWN: 'we are not sure whether this node has it' is
+       false comfort when the answer is that it does not."
+    - "DEGRADED is for a provider that works but not as intended — a
+       non-preferred substitute, one failing axis, or an unpinned dependency
+       (see `runtime/managed-runtime-contract.yaml#admission`)."
+
+# ---------------------------------------------------------------------------
+# Adapters. One provider may be consumed differently by each agent runtime, and
+# this is the only place a runtime-specific fact is allowed to live.
+#
+# The bound is deliberate: an adapter writes ONE file and declares ONE entry.
+# An adapter that needs a second file is a provider with a second
+# materialization, and it should say so.
+# ---------------------------------------------------------------------------
+adapters:
+  runtimes: [claude-code, codex]
+  shape:
+    runtime: claude-code
+    # Where the runtime reads its configuration, as a path role + relative.
+    surface: {path_role: home, relative: ".mcp.json"}
+    # The single key this adapter owns inside that surface.
+    key: "mcpServers.playwright"
+  rules:
+    - "An adapter never restates a provider's rules. It says where and how one
+       runtime reads them, and nothing else."
+    - "A runtime with no adapter for a provider is AGENT_UNSUPPORTED for that
+       provider — a real status, not a missing record."
+
+# ---------------------------------------------------------------------------
+# Provider instances. A provider is device-free; an instance is one device's
+# answer for it. The instance is where observed facts live, and it is the only
+# record allowed to name a device.
+# ---------------------------------------------------------------------------
+instance:
+  required_fields: [provider, device_ref, observed_at, status]
+  forbidden_fields:
+    - "any credential, token, cookie, or key"
+    - "a raw hardware identifier"
+  because: >
+    the instance is written to node state and may be surfaced to an agent.
+    Nothing that would be a secret anywhere else becomes safe by being small.
+
+rules:
+  - "An Ability is not available because a provider exists for it somewhere.
+     Availability is resolved for one device, one runtime, one moment."
+  - "A provider record contains no device fact. A device fact in a provider
+     record makes the catalogue unusable on the second device, which is how
+     this file came to be written."
+  - "Names are stable ids, never display strings. `provider:playwright-mcp`
+     survives a rename; the string 'Playwright MCP' does not."

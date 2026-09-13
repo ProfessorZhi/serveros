@@ -1,0 +1,133 @@
+# ServerOS progressive disclosure.
+#
+# Why this file exists
+# --------------------
+# `docs/capability-discovery.md` already states the principle — "big package,
+# small context" — and states it about packaging. It does not say what a session
+# is told at startup, in what order, or what it must never be told. So the
+# startup view grew the way such views do: every round added one true and useful
+# line, and no round removed any, because each line was individually justified.
+#
+# The result is the failure this file prevents: a startup context that is read
+# once, believed generally, and used specifically — which is to say, not used.
+#
+# Disclosure is three separate things disclosed separately, because they are
+# needed at different moments and one of them is needed before any action.
+schema: serveros/disclosure.v1
+version: 1
+
+axes:
+  context:
+    question: "what is this session working on"
+    needed: first
+    owner: context/
+  capability:
+    question: "what can this machine do about it"
+    needed: when choosing an approach
+    owner: abilities/
+  authority:
+    question: "what may I do without asking"
+    needed: before acting
+    owner: policies
+
+# ---------------------------------------------------------------------------
+# Levels. L0 is unconditional; everything above it is requested.
+# ---------------------------------------------------------------------------
+levels:
+  context:
+    L0: "project · Item id · Run id"
+    L1: "the Item's current state, milestone, and open blockers"
+    L2: "the Run's evidence locator and recent Activity"
+    L3: "the full Context Capsule, claims and provenance"
+  capability:
+    L0: "the count of available abilities, and that a query exists"
+    L1: "names of abilities likely relevant to this Item"
+    L2: "a specific ability's provider, status and reason"
+    L3: "the full resolved capability set with every input"
+  authority:
+    L0: "the boundary in one line: what needs approval"
+    L1: "the policy set that applies to this project"
+    L2: "a specific denial and its reason"
+    L3: "the full authority statement"
+
+# ---------------------------------------------------------------------------
+# Why the capability L0 is a NUMBER and not a list.
+# ---------------------------------------------------------------------------
+capability_l0:
+  shape: "N abilities resolvable on this device; query with `serverosctl capability list`"
+  because: >
+    a list is a menu, a menu invites browsing, and browsing is how a session
+    spends its first thousand tokens reading a catalogue instead of working.
+    The number exists to tell the agent that ServerOS has something to say,
+    not to say it. The native agent already has its own Skill discovery and
+    does not need a second, worse one.
+  forbidden_at_l0:
+    - "any ability list longer than a count"
+    - "per-device resolution of anything"
+    - "a file tree, a map, or a generated projection"
+    - "anything a previous session learned that this one has not asked for"
+
+# ---------------------------------------------------------------------------
+# The contract between levels. Three rules, all testable.
+# ---------------------------------------------------------------------------
+contract:
+  implicit_disclosure: forbidden
+  monotonicity: >
+    a higher level never contradicts a lower one. If it does, the lower level
+    was wrong and the defect is there, not in the higher one.
+  skipping: allowed
+  because: >
+    this describes what ServerOS OFFERS, not a protocol an agent must walk. An
+    agent that already knows what it needs asks for exactly that, and the
+    honest response is the answer plus which level it came from.
+
+# ---------------------------------------------------------------------------
+# Cost, stated per level, because a level that costs a probe is a level a
+# session will stop requesting and then stop trusting.
+# ---------------------------------------------------------------------------
+costs:
+  context: {L0: "none", L1: "one state read", L2: "one state read", L3: "one state read"}
+  capability: {L0: "one manifest read, no probes", L1: "one manifest read, no probes",
+               L2: "may run one probe", L3: "runs every probe"}
+  authority: {L0: "none", L1: "one policy read", L2: "none — it is already known",
+              L3: "one policy read"}
+  rule: "a level that runs a probe is never disclosed at startup"
+
+# ---------------------------------------------------------------------------
+# The startup view, declared exactly. This is the whole of what is rendered
+# before the agent has asked for anything.
+# ---------------------------------------------------------------------------
+startup_view:
+  lines:
+    - "ServerOS is present on this device"
+    - "context: <project>/<Item>/<Run>          (context L0)"
+    - "capabilities: <N> resolvable              (capability L0)"
+    - "authority: writes to <bound roots> are admitted; everything else asks  (authority L0)"
+    - "details on request: `serverosctl context current | capability list | capability resolve <id>`"
+  budget_lines: 6
+  budget_tokens: 120
+  because: >
+    a budget with a number is the only version of "keep it small" that survives
+    contact with a round that has one more useful thing to add. When a future
+    line does not fit, the choice is which line to remove, made explicitly.
+
+# ---------------------------------------------------------------------------
+# Degradation. What is disclosed when an input is missing.
+# ---------------------------------------------------------------------------
+degradation:
+  rule: >
+    a level that cannot be produced says so at its own level, and never falls
+    back to a lower level's silence. "capabilities: unknown (device profile
+    incompletely bound)" is a disclosure. Omitting the line is not.
+  because: >
+    an absent line reads as "nothing to report", which is the same defect the
+    board view has: a projection that renders an unknown as an empty.
+
+rules:
+  - "Disclosure is a floor. It never restricts what the native agent may
+     discover on its own — see the non-regression contract in
+     `docs/capability-discovery.md`."
+  - "Every disclosed line names its level. A line whose level cannot be stated
+     is a line nobody can reason about the cost of."
+  - "Memory is queried, never preloaded. Opening a session with everything the
+     last one learned is not context, it is a transcript."

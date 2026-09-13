@@ -98,7 +98,8 @@ def _git(repo: Path, *args: str) -> bytes:
 # `runtime` rather than for symmetry: the entry points resolve the runtime
 # relative to themselves, so the pair is one unit and shipping either alone
 # produces a shim that cannot import what it names.
-CORE_MODULES = ("context", "space", "relations", "mcp", "runtime", "bin")
+CORE_MODULES = ("context", "space", "relations", "mcp", "runtime", "bin",
+                "abilities", "memory")
 
 
 def resolve_ability_rev(repo: Path, rev: str) -> str:

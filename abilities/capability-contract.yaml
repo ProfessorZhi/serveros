@@ -1,0 +1,168 @@
+# ServerOS capability resolution — the record a query returns.
+#
+# Why this file exists
+# --------------------
+# The resolver is pure and the record is its only output, so the record is where
+# the honesty has to live. A resolver that returns a bare boolean cannot say why,
+# and "why" is the entire product: UNKNOWN and UNAVAILABLE call for opposite
+# actions, and a caller that cannot tell them apart does the wrong one.
+#
+# The shape below is also the reason the resolver can be tested without a
+# machine: every input is a record, so a fixture is a set of records and the
+# resolution of a three-device fleet can be asserted in a unit test.
+#
+# Read `docs/ability-fabric.md` for the intersection and why it is one.
+schema: serveros/capability-resolution.v1
+version: 1
+
+# ---------------------------------------------------------------------------
+# The eight inputs, in evaluation order. Order matters for the REASON, not for
+# the answer: the result is an intersection, so any input may refuse, and the
+# first one that refuses names the reason. Evaluation stops at the first
+# refusal, which is why the cheap, local, unambiguous inputs come first.
+# ---------------------------------------------------------------------------
+inputs:
+  - name: ability
+    source: "ability-management manifest, pinned revision"
+    refuses_when: "no such ability at the pinned revision"
+    reason: PROVIDER_NOT_INSTALLED
+  - name: device_capability
+    source: "fleet/registry.yaml device record + observed facts"
+    refuses_when: "a declared requirement is absent"
+    reason: DEVICE_DEPENDENCY_MISSING
+  - name: device_profile
+    source: "fleet/profiles.yaml"
+    refuses_when: "a required path role is UNBOUND or NOT_APPLICABLE here"
+    reason: PROVIDER_NOT_INSTALLED
+  - name: device_binding
+    source: "the device's own state root + registry"
+    refuses_when: "no provider instance is registered on this device"
+    reason: PROVIDER_NOT_INSTALLED
+  - name: agent_runtime
+    source: "abilities/agent-runtime-contract.yaml + the calling runtime"
+    refuses_when: "the provider kind or surface is not consumable by this runtime"
+    reason: AGENT_UNSUPPORTED
+  - name: runtime_health
+    source: "runtime/probes.py observations"
+    refuses_when: "the provider's probe reports FAILED on a required axis"
+    reason: RUNTIME_UNHEALTHY
+  - name: policy
+    source: "the applicable policy set"
+    refuses_when: "a policy denies it for this device or Item"
+    reason: POLICY_DENIED
+  - name: task_context
+    source: "the Context Capsule for this run"
+    refuses_when: "the Item's context excludes it"
+    reason: POLICY_DENIED
+
+# ---------------------------------------------------------------------------
+# The record. Everything here is DERIVED; nothing is stored.
+#
+# This is the same rule the runtime registry states for health observations, and
+# it is here for the same reason: a stored resolution is a memory of a past
+# machine being read as a statement about the present one. The whole reason the
+# resolver is pure is that re-running it is cheap and always correct.
+# ---------------------------------------------------------------------------
+record:
+  required_fields:
+    - schema
+    - status
+    - ability
+    - device_ref
+    - resolved_at
+    - inputs_seen      # which of the eight were actually available to the resolver
+  optional_fields:
+    - reason
+    - provider         # chosen provider id, when one was chosen
+    - candidates       # providers considered, with their individual statuses
+    - note
+  forbidden_fields:
+    - "a credential, token, cookie, or key"
+    - "an absolute path"   # paths are resolved per device, never embedded
+  invariants:
+    - "status is never AVAILABLE without a chosen provider, except for a
+       `builtin` provider, where the provider is named `builtin`."
+    - "reason is present for every status other than AVAILABLE, and is exactly
+       one of the six values in the provider contract."
+    - "inputs_seen is always present. A resolution that could not see an input
+       is UNKNOWN with the missing input named, never a confident answer
+       computed from the inputs that happened to be readable."
+
+# ---------------------------------------------------------------------------
+# Degradation. The case that made this necessary: a device was reported as able
+# to do something because a provider existed for it somewhere in the catalogue,
+# while the provider actually reachable on that machine was a different one, or
+# a floating one. A union of evidence reads as AVAILABLE; an intersection with
+# a substitution rule reads as DEGRADED and says by what.
+# ---------------------------------------------------------------------------
+degradation:
+  DEGRADED:
+    - when: "the preferred provider is not available and a substitute is"
+      because: "the work can be done, and not the way it was intended"
+    - when: "the chosen provider has an unpinned dependency"
+      because: >
+        `npx @playwright/mcp@latest`. The provider exists, works, and cannot be
+        said to be the same one tomorrow. Reporting it AVAILABLE would make
+        "this machine can do browser automation" a claim about a registry's
+        current resolution rather than about this machine.
+    - when: "one health axis is UNKNOWN and no axis has failed"
+      because: "not having asked is not the same as having found it fine"
+  never:
+    - "DEGRADED may not be used for a missing materialization. That is
+       PROVIDER_NOT_INSTALLED, and it is UNAVAILABLE."
+
+# ---------------------------------------------------------------------------
+# Query surfaces. Two, with different costs, because the disclosure levels in
+# `context/disclosure-contract.yaml` are only meaningful if the cheap one is
+# genuinely cheap.
+# ---------------------------------------------------------------------------
+queries:
+  count:
+    answers: "how many abilities could this device exercise right now"
+    cost: "one pass, no probes"
+    discloses: L0
+  list:
+    answers: "which abilities, filtered by status or domain"
+    cost: "one pass, no probes"
+    discloses: L1
+  resolve:
+    answers: "one ability's full record"
+    cost: "may run probes; the only query that touches the machine"
+    discloses: L2
+  resolve_all:
+    answers: "the full resolved set with every input"
+    cost: "runs every probe"
+    discloses: L3
+  rules:
+    - "`count` never runs a probe. A number that costs a probe is a number a
+       session will stop asking for."
+    - "A query names the device it is about. There is no default device: the
+       machine you are on is a defensible default for `resolve` and a dangerous
+       one for `resolve_all`, and one shared default cannot be both."
+
+# ---------------------------------------------------------------------------
+# Uncertainty is propagated, never resolved by the resolver.
+# ---------------------------------------------------------------------------
+unknown_propagation:
+  rule: >
+    an input that cannot be read makes the result UNKNOWN, with the input
+    named, unless a LATER input refuses — in which case the refusal wins,
+    because a definite no outranks an indefinite yes.
+  example: >
+    device_profile UNBOUND (Windows, home role) and device_binding absent:
+    the answer is UNAVAILABLE / PROVIDER_NOT_INSTALLED, not UNKNOWN. The
+    binding is a definite no.
+  because: >
+    without this rule a device with nothing installed reports UNKNOWN for
+    everything, which reads as "we have not looked" and hides the finding
+    that nothing is there.
+
+rules:
+  - "The resolver is pure. Same records in, same record out, no clock, no
+     filesystem, no network. Everything that touches the machine is a probe
+     performed by the caller and passed in."
+  - "An answer is always about one device at one time. There is no fleet-wide
+     availability, only a fold over per-device answers that preserves UNKNOWN."
+  - "UNKNOWN is never collapsed to UNAVAILABLE by a caller. A caller that does
+     not handle UNKNOWN is a caller that will report a false negative as a
+     decision."
