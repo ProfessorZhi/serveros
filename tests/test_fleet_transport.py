@@ -14,6 +14,14 @@ FLEET = ROOT / "fleet"
 
 
 def _load(name: str, path: Path):
+    # Cached by module name, like every other loader in this suite. This file
+    # used to re-execute unconditionally, which meant whichever test file pytest
+    # collected first decided which `transport` module object was current — and
+    # the identity assertions in `test_target_resolver.py` compare class objects
+    # with `is`. The note below about two names producing two exception classes
+    # applies to one name loaded twice just as well.
+    if name in sys.modules:
+        return sys.modules[name]
     spec = importlib.util.spec_from_file_location(name, path)
     module = importlib.util.module_from_spec(spec)
     sys.modules[name] = module
