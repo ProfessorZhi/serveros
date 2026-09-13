@@ -98,8 +98,19 @@ def _git(repo: Path, *args: str) -> bytes:
 # `runtime` rather than for symmetry: the entry points resolve the runtime
 # relative to themselves, so the pair is one unit and shipping either alone
 # produces a shim that cannot import what it names.
+#
+# `fleet` is the same defect a second time, one layer up. `mcp/agent_mcp.py`
+# loads `fleet/agent_control_router.py` at module scope and the router loads
+# `fleet/transport.py` in turn, so the Agent MCP surface cannot start without
+# the directory. It went unnoticed because every test and every manual run
+# happened from a source checkout, where `fleet/` is simply present: the
+# composition shipped an entry point whose first act is to import a directory
+# the composition did not ship, and no test asked the artifact whether it could
+# start its own declared surfaces. It is named in CORE_MODULES rather than
+# only in the bundle so that `test_every_declared_core_module_is_present`
+# covers it and a future drop is a failure rather than a discovery.
 CORE_MODULES = ("context", "space", "relations", "mcp", "runtime", "bin",
-                "abilities", "memory")
+                "abilities", "memory", "fleet")
 
 
 def resolve_ability_rev(repo: Path, rev: str) -> str:

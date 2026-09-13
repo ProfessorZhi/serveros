@@ -355,6 +355,39 @@ class BuildTests(unittest.TestCase):
         self.assertEqual(proc.returncode, 0,
                          f"shipped entry point could not run:\n{proc.stderr}")
 
+    def test_every_declared_mcp_surface_starts_from_the_artifact(self):
+        """Every surface the artifact declares must import, from the artifact.
+
+        The check that would have caught the `fleet/` gap is not a file-exists
+        check on `fleet/`: the gap was that `mcp/agent_mcp.py` loads
+        `fleet/agent_control_router.py` at module scope, so the **entry point**
+        raises before it reads a byte of stdin. Nothing about the artifact's
+        own contents makes that visible unless something starts the entry
+        point the way an agent will.
+
+        Each surface is asked for its tool list rather than merely imported:
+        an import that succeeds and a surface that answers are different
+        claims, and the manifest in `.mcp.json` claims the second.
+        """
+        self.assertEqual(run_build(self.args("--write")).returncode, 0)
+        servers = json.loads((self.out / ".mcp.json").read_text())["mcpServers"]
+        self.assertTrue(servers, "the composition declares no MCP surface")
+        request = json.dumps({"jsonrpc": "2.0", "id": 1, "method": "tools/list"}) + "\n"
+        for name in sorted(servers):
+            entry = Path(servers[name]["args"][0].replace(
+                "${CLAUDE_PLUGIN_ROOT}", str(self.out)))
+            with self.subTest(surface=name):
+                proc = subprocess.run(
+                    [sys.executable, str(entry)], input=request,
+                    stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                    cwd=str(self.base), timeout=120)
+                self.assertEqual(
+                    proc.returncode, 0,
+                    f"{name} could not start from the artifact:\n{proc.stderr}")
+                answer = json.loads(proc.stdout.strip().splitlines()[0])
+                self.assertTrue(answer["result"]["tools"],
+                                f"{name} started but declared no tools")
+
     def test_the_shipped_entry_points_are_executable(self):
         """An artifact can have every byte right and still not run.
 
