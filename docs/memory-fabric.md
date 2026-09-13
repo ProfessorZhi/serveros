@@ -9,6 +9,20 @@ Git history, `records/` cards, `artifacts/` evidence, and whatever a given Agent
 session happens to still be holding. The fourth one is the problem: it is the
 only one that is not durable and it is the one an Agent consults first.
 
+## Who enforces this
+
+```text
+memory/record.py       validate() one record; audit() the whole ledger
+memory/projection.py   build() · manifest_for() · staleness()
+memory/layering.py     the caller-side filter for Layer C hits
+serverosctl memory     audit · project · status · subject
+```
+
+Every rule above is a rule a program checks, and until these existed none of
+them was. A contract with no reader is not a harmless placeholder — it is read
+by the next author, who believes it. That pathology has its own record in the
+ledger: `mem:a-declaration-with-no-reader-never-fails`.
+
 ## Three layers, one authority
 
 ```text
@@ -50,10 +64,20 @@ inherits `blame`, `diff`, `revert`, and a history nobody has to be trusted to
 maintain.
 
 ```text
-record kinds            decision · observation · revision · handoff · finding
+record kinds            decision · observation · revision · handoff · finding · question
 required on every record  id · kind · subject · at · by · source · revision
+required for some kinds   observation also requires confidence
 never                     a secret, a credential, a token, a raw transcript body
 ```
+
+This list said five kinds and omitted `question`, while the contract's `kinds`
+block declared six and its own retention rule referred to one ("`question`
+resolves, `decision` and `revision` do not"). Six is right: a question is the
+kind whose whole purpose is to be picked up by the person who can answer it,
+and a ledger of this shape with no way to record one is a ledger that loses
+its open questions to chat. `memory/record.py` now holds the closed list and a
+test asserts it against the contract, so the next disagreement fails rather
+than being read past.
 
 A record without a `source` is an assertion. A record without a `revision` is a
 claim about a repository that may have moved. Both are refused, for the same
@@ -66,6 +90,32 @@ Layer A keeps a *projection* of the ledger — what this node needs without a
 network round trip. It is a projection in the strict sense used everywhere else
 in this product: derived, regenerable, and never hand-edited. If the projection
 and the ledger disagree, the projection is rebuilt.
+
+```text
+ledger      records/projects/<project>/memory/       Git; the authority
+projection  state/serveros/projections/memory/       derived; carries projection.yaml
+build       serverosctl memory project
+staleness   serverosctl memory status   → CURRENT · STALE · MISSING
+```
+
+The projection lives under `state/serveros/projections/` because that is the
+only projections namespace and `fleet/state-root-contract.yaml` says so — it
+carries the manifest, the five invariants and the reader. This document's
+contract originally declared `state/serveros/memory/`, a second one; see
+`mem:the-projection-location-had-two-answers`.
+
+**It carries pointers, not content.** Every record reaches the projection as
+`id · kind · at · by · source · revision`, and never as `body`. A node offline
+with its projection can say *that* a decision exists and what it was about; it
+cannot say what the decision was. Carrying the text would put a second copy of
+the ledger in the one namespace declared to have no authority, which is the
+worst available place for it.
+
+The revision a projection names is the ledger's **content**, not its `HEAD`: a
+commit sha when the tree is clean, and `sha+content:<hash>` when it is not. A
+ledger with one uncommitted record has moved, and a projection stamped with
+`HEAD` would call itself current while the thing it summarises had changed —
+see `mem:a-revision-must-name-content-not-head`.
 
 ## Layer C, and OpenViking
 
