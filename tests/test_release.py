@@ -254,6 +254,33 @@ class ReleaseTests(unittest.TestCase):
         self.assertEqual(
             json.loads((staged / "RELEASE.json").read_text())["tree_hash"], before)
 
+    def test_the_recorded_hash_covers_the_artifact_not_the_record_of_it(self):
+        """Which tree the recorded number is a hash of, pinned.
+
+        `RELEASE.json` sits inside the revision it describes and carries the
+        tree hash, so it cannot be covered by that hash — it is written after
+        the hash is computed. Forced, not chosen. But the natural check gets it
+        wrong: hash the staged directory and you get a different number from
+        the one recorded in that same directory, which reads as tampering on a
+        revision that is perfectly correct. Found exactly that way.
+
+        So both halves are asserted: the artifact's hash is the recorded one,
+        and the staged directory's is not. If a later change moved the manifest
+        out of the revision, the second assertion fails and says so, which is
+        the moment to update the docstring rather than leave a reader misled.
+        """
+        art = make_artifact(self.base, "a")
+        before = release.fingerprint(art)
+        self.assertEqual(self.promote(art, "rev-a").returncode, 0)
+
+        staged = self.comp_root / "revisions" / "rev-a"
+        recorded = json.loads((staged / release.TREE_MANIFEST).read_text())["tree_hash"]
+        self.assertEqual(recorded, before,
+                         "the recorded hash is not the artifact's")
+        self.assertNotEqual(
+            release.fingerprint(staged), recorded,
+            "the tree hash covers its own record, which no file can do")
+
     def test_rollback_returns_both_entry_points_to_the_previous_revision(self):
         a, b = make_artifact(self.base, "a"), make_artifact(self.base, "b")
         self.assertEqual(self.promote(a, "rev-a").returncode, 0)
