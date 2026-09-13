@@ -44,6 +44,12 @@ except ImportError:  # pragma: no cover - environment guarantee
 FLEET_DIR = Path(__file__).resolve().parent
 ROOT = FLEET_DIR.parent
 
+# The one place the registry's location is written down. Anything that reports
+# where a declaration came from — a provenance block, an identity source — names
+# this path rather than re-typing it, so moving the file cannot leave a
+# confident-looking provenance line pointing at nothing.
+REGISTRY_PATH = FLEET_DIR / "registry.yaml"
+
 
 # ---------------------------------------------------------------------------
 # Errors
@@ -114,7 +120,7 @@ def transport_contract() -> dict:
 
 
 def registry_contract() -> dict:
-    return load_yaml(FLEET_DIR / "registry.yaml")
+    return load_yaml(REGISTRY_PATH)
 
 
 def profiles_contract() -> dict:
