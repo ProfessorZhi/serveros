@@ -144,10 +144,20 @@ surfaces:
       gate itself is implemented and tested in SessionService, so wiring the
       approval channel is what remains, not building the gate.
 
-      `SessionService` resolves provider support BEFORE admission and refuses
-      UNSUPPORTED and UNKNOWN alike. Checking support first is not a way around
-      the gate: it can only narrow, and a SUPPORTED verb still needs its own
-      ALLOW.
+      `SessionService` resolves provider support, then provider readiness, then
+      admission. Checking either of the first two first is not a way around the
+      gate: both can only narrow, and a SUPPORTED verb on a READY provider still
+      needs its own ALLOW.
+
+      Why readiness did NOT get a tool of its own. It is a provider-instance
+      fact, not an Agent Session verb, so a `readiness.list` tool would have been
+      a name in this surface that the Agent Session contract never declared —
+      and the gate that keeps this surface honest is `served <= declared`. It is
+      reported instead where the question is actually asked: as `providers[]` on
+      `agent.list`, beside the agents an operator is about to drive, and as
+      `provider_readiness` on the result of every mutation. The finding it
+      exists for — agents listed, every action SUPPORTED, provider unable to
+      execute — is visible in exactly that first place.
 
   serveros-fleet-mcp:
     scope: the fleet

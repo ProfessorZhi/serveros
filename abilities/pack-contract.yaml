@@ -169,6 +169,22 @@ publishing:
 # commit exists to fix. So the remaining step is to push `7bc7687`, not to
 # invent anything.
 #
+# The push is necessary and NOT sufficient, and the difference has now been
+# measured rather than reasoned about. `canonical_provenance()` runs
+# `git rev-parse refs/heads/main` against the LOCAL checkout and never fetches —
+# there is no `fetch` anywhere in `scripts/runtime_truth.py`. So a push moves
+# the remote and leaves the ref the check reads exactly where it was. Re-running
+# the check straight after a successful push reproduces PIN_NOT_CANONICAL, and
+# the output is indistinguishable from the push having failed. Somebody who
+# pushes, sees the same red, and pushes again is not being careless — the tool
+# gave them no way to tell the two apart. The repair is therefore push AND
+# advance the local `refs/heads/main` (fetch, or `git branch -f main
+# origin/main` in the canonical checkout), and whoever does it should confirm
+# `git rev-parse refs/heads/main` reads `7bc7687` before believing the check.
+# Measured 2026-09-13: pin `f97a43b` — already on `origin/main` — reports
+# `PIN_NOT_CANONICAL` against `refs/heads/main` and `CURRENT` against
+# `refs/remotes/origin/main`, which is the same defect visible before any push.
+#
 # One drift observed while checking this and NOT acted on: the local
 # `refs/heads/main` in both the canonical checkout and the Item worktree still
 # reads 95c31ed, while `origin/main` has moved to f97a43b. `canonical_provenance()`

@@ -27,7 +27,20 @@ def _load_semantics():
     return module
 
 
+def _load_readiness():
+    name = "serveros_ability_provider_instance"
+    if name in sys.modules:
+        return sys.modules[name]
+    spec = importlib.util.spec_from_file_location(
+        name, _REPO / "abilities" / "provider_instance.py")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
 semantics = _load_semantics()
+readiness = _load_readiness()
 
 
 class AgentSessionError(RuntimeError):
@@ -63,6 +76,42 @@ class ActionNotSupported(AgentSessionError):
         super().__init__(f"{action} unavailable: provider reports {state} — {reason or 'no reason supplied'}")
 
 
+class ProviderNotReady(AgentSessionError):
+    """The provider is known, right now, not to be able to carry this out.
+
+    The third refusal, and it is not either of the other two.
+
+    `ActionNotSupported` means the provider has no way to do this at all — the
+    instruction is meaningless over this transport and will stay meaningless.
+    `ActionNotAdmitted` means nobody has approved it — a person resolves it.
+    This one means the provider has the way, the caller may have the approval,
+    and the thing is not going to work at the moment it is asked: the execution
+    backend is gone, the credential is expired, the service is up and serving
+    nothing.
+
+    It is reported under its own name because a caller that is told
+    "unsupported" stops trying, a caller that is told "not approved" asks a
+    human, and a caller that is told "not ready" waits and asks the world what
+    changed. Only the last of those is true here.
+
+    Only a KNOWN NEGATIVE raises this. Readiness UNKNOWN does not: a provider
+    with no readiness surface is always UNKNOWN before it is called, and
+    refusing on that would make it permanently undrivable. The call is what
+    resolves UNKNOWN, which is why this check can narrow the field but never
+    become a reason not to work.
+    """
+
+    def __init__(self, provider_id: str, status: str, reason: str | None = None,
+                 reason_text: str | None = None) -> None:
+        self.provider_id = provider_id
+        self.status = status
+        self.reason = reason
+        self.reason_text = reason_text
+        super().__init__(
+            f"{provider_id} is not ready: {status} ({reason or 'no reason supplied'}) — "
+            f"{reason_text or 'no detail supplied'}")
+
+
 class AgentSessionProvider(Protocol):
     provider_id: str
 
@@ -90,6 +139,23 @@ CONTROL_VERBS: dict[str, str] = {
 Admission = Callable[[str, dict], dict]
 
 
+def _readiness_summary(record: dict | None) -> dict:
+    """The readiness part of a mutation result, without the evidence dump.
+
+    A caller that just drove a provider gets told what the provider was known
+    to be. The observations behind that verdict are not repeated here: a
+    mutation result is not the place to paste a record that can be arbitrarily
+    wide, and the full record already travels on `agent.list` under
+    `providers[]`, which is where the finding this exists for — agents listed,
+    provider unable to execute — is read.
+    """
+    if record is None:
+        return {}
+    return {key: record.get(key) for key in
+            ("provider", "status", "status_provenance", "reason", "observed_at")
+            if record.get(key) is not None}
+
+
 class SessionService:
     """One normalized session fabric over one device's provider set.
 
@@ -112,6 +178,76 @@ class SessionService:
                 f"provider {provider_id!r} is not configured; known={sorted(self.providers)}"
             ) from exc
 
+    def readiness(self, provider_id: str) -> dict:
+        """This device's readiness for one provider, with the evidence behind it.
+
+        A provider that cannot be asked is not a provider that is ready. This
+        returns a UNKNOWN record for one with no `observe`, and never an
+        AVAILABLE one — an unimplemented observer used to be spelled by an
+        absent method, and an absent method read as an absent problem.
+
+        Both branches return the record through `abilities/provider_instance.py`,
+        which is the one producer of the shape `abilities/provider-contract.yaml`
+        declares. An earlier revision assembled the no-observer record inline as
+        a dict literal, and it had already drifted: it was missing `observed_at`,
+        which that contract lists as required. A second producer of a closed
+        shape is a producer that disagrees with the first eventually, and the
+        field it had lost was the one that says when any of it was true.
+        """
+        provider = self._provider(provider_id)
+        observer = getattr(provider, "observe", None)
+        if observer is not None:
+            return observer(device_ref=self.device_ref)
+
+        observed_at = readiness.now_utc()
+        return readiness.instance(
+            provider=provider_id, device_ref=self.device_ref,
+            observations=[
+                # The control-plane axis is observed to be UNKNOWN rather than
+                # left out, so the record says which question went unasked
+                # rather than merely that the answer is unknown. `none` is a
+                # permitted observer type here precisely because the state is
+                # UNKNOWN: `runtime/health.py` refuses a definite state carried
+                # by an observer that did not observe anything.
+                readiness.observation(
+                    axis=readiness.AXIS_CONTROL_PLANE, state="UNKNOWN",
+                    observer_type="none", observer_id="no-observer-implemented",
+                    observed_at=observed_at, evidence_type="none",
+                    reason="NOT_DECLARED",
+                    extra={"why": (f"{provider_id} implements no observe(); "
+                                   "nothing has established that it can execute")},
+                ),
+                readiness.unknown_execution(observed_at=observed_at,
+                                            provider_id=provider_id),
+            ],
+            reference=observed_at,
+        )
+
+    def _preflight(self, provider_id: str) -> dict | None:
+        """Refuse a call the provider is known not to be able to carry out.
+
+        Ordered after support and before admission, on purpose:
+
+          support    a capability FACT      — can this provider do it at all
+          readiness  a runtime FACT         — would it work right now
+          admission  a POLICY decision      — is this permitted
+
+        Readiness sits before admission because it only ever narrows: it can
+        refuse a call admission would have allowed, and it can never allow one
+        admission would have refused. A check with that property cannot weaken
+        authorization, and putting it first means a human is not asked to
+        approve something that cannot run.
+
+        It does not merge with admission. A caller is told which of the three
+        stopped it, because the three have three different repairs.
+        """
+        record = self.readiness(provider_id)
+        refusal = readiness.refusal(record)
+        if refusal is None:
+            return record
+        raise ProviderNotReady(provider_id, refusal["status"], refusal.get("reason"),
+                               refusal.get("reason_text"))
+
     def _admit(self, action: str, context: dict) -> dict:
         if self.admission is None:
             raise ActionNotAdmitted(
@@ -128,6 +264,7 @@ class SessionService:
     def agent_list(self) -> dict:
         agents: list[dict] = []
         errors: list[dict] = []
+        providers: list[dict] = []
         for provider_id in sorted(self.providers):
             try:
                 agents.extend(self.providers[provider_id].list_agents(device_ref=self.device_ref))
@@ -136,9 +273,21 @@ class SessionService:
                     "provider": provider_id,
                     "error": f"{type(exc).__name__}: {exc}",
                 })
+            # Readiness travels with the agent inventory rather than behind a
+            # new tool, so that the surface stays exactly as wide as the
+            # semantic contract declares it. The reason to put it here is that
+            # this is the list an operator actually reads before driving
+            # something, and the failure this models — agents listed, provider
+            # unable to execute — is visible in exactly one place: here.
+            try:
+                providers.append(self.readiness(provider_id))
+            except Exception as exc:
+                errors.append({"provider": provider_id,
+                               "error": f"readiness: {type(exc).__name__}: {exc}"})
         return {
             "device_ref": self.device_ref,
             "agents": agents,
+            "providers": providers,
             "provider_errors": errors,
             "complete": not errors,
         }
@@ -184,13 +333,15 @@ class SessionService:
                idempotency_key: str, workspace: str | None = None) -> dict:
         context = {"provider": provider_id, "agent_id": agent_id,
                    "workspace": workspace, "device_ref": self.device_ref}
+        ready = self._preflight(provider_id)
         admission = self._admit("session.create", context)
         result = self._provider(provider_id).create(
             device_ref=self.device_ref, agent_id=agent_id,
             instruction=instruction, idempotency_key=idempotency_key,
             workspace=workspace,
         )
-        return {**result, "admission": admission}
+        return {**result, "admission": admission,
+                "provider_readiness": _readiness_summary(ready)}
 
     def send(self, *, session_ref_value: str, instruction: str,
              turn_idempotency_key: str) -> dict:
@@ -216,6 +367,7 @@ class SessionService:
         if declared.get("state") != "SUPPORTED":
             raise ActionNotSupported("session.send", str(declared.get("state") or "UNKNOWN"),
                                      declared.get("reason"))
+        ready = self._preflight(provider_id)
         admission = self._admit("session.send", {
             "provider": provider_id, "session_ref": session_ref_value,
             "device_ref": self.device_ref,
@@ -224,7 +376,8 @@ class SessionService:
             device_ref=self.device_ref, provider_session_id=native_id,
             instruction=instruction, turn_idempotency_key=turn_idempotency_key,
         )
-        return {**result, "admission": admission}
+        return {**result, "admission": admission,
+                "provider_readiness": _readiness_summary(ready)}
 
     def result(self, *, session_ref_value: str, trigger_id: str | None = None) -> dict:
         device_ref, provider_id, native_id = semantics.parse_session_ref(session_ref_value)
@@ -261,12 +414,14 @@ class SessionService:
             raise ActionNotSupported(action, "UNKNOWN",
                                      f"provider {provider_id!r} adapter implements no "
                                      f"{CONTROL_VERBS[action]}()")
+        ready = self._preflight(provider_id)
         admission = self._admit(action, {
             "provider": provider_id, "session_ref": session_ref_value,
             "device_ref": self.device_ref,
         })
         result = method(provider_session_id=native_id)
-        return {**result, "action": action, "admission": admission}
+        return {**result, "action": action, "admission": admission,
+                "provider_readiness": _readiness_summary(ready)}
 
     def _declared_support(self, provider, action: str, provider_session_id: str) -> dict:
         rows = provider.list_sessions(device_ref=self.device_ref)

@@ -152,6 +152,17 @@ REASONS = {
         "credential is fine and the answer is still no, so retrying is not "
         "merely useless, it is a request to be refused again."
     ),
+    "EXECUTION_FAILED": (
+        "Something answered the control-plane question and failed the "
+        "execution one: the request was accepted and the work it asked for did "
+        "not happen. This is the `functional` axis and it is the only reason "
+        "here that requires having CALLED the thing rather than looked at it. "
+        "It is deliberately not POLICY_DENIED — nothing refused the request — "
+        "and not PROCESS_DOWN, because the process is the part that still "
+        "answers. The 2026-09-12 endpoint in this module's docstring is the "
+        "same shape one plane over: everything local said RUNNING and the "
+        "service served nothing."
+    ),
 }
 
 

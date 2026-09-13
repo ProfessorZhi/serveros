@@ -143,6 +143,30 @@ status:
     POLICY_DENIED: "a policy refuses it on this device or for this Item"
     NETWORK_UNAVAILABLE: "a remote provider this node cannot reach"
     PROVIDER_NOT_INSTALLED: "the materialization is not there"
+    # ---------------------------------------------------------------------
+    # Two reasons about the question the six above cannot ask.
+    #
+    # Everything listed before them is about whether the provider is there and
+    # answers. BotMux answered everything — `/api/sessions` listed, `/api/bots`
+    # listed, `/api/trigger` accepted a real dispatch and returned a real
+    # sessionId — and no turn ever ran, because the execution backend under it
+    # was gone. A vocabulary whose worst word is RUNTIME_UNHEALTHY ("its probe
+    # fails") cannot say that, because the probe did not fail. It passed.
+    #
+    # So these two name a separate axis, and they are separate words because
+    # they call for opposite actions: UNVERIFIED is answered by calling it,
+    # FAILED is not answered by calling it again.
+    # ---------------------------------------------------------------------
+    EXECUTION_UNVERIFIED: >
+      the control plane answers and nothing that has been called yet settles
+      whether this provider can execute. Not reassurance and not a fault: it is
+      the state a provider is in when it has no readiness surface at all, and
+      it is why a fresh instance starts UNKNOWN rather than AVAILABLE
+    EXECUTION_FAILED: >
+      the provider accepted the action and the work did not happen, reported by
+      the provider itself and not read out of its private state. The control
+      plane is still up and still accepting — which is exactly the situation
+      that made this word necessary
   rules:
     - "A status is always accompanied by exactly one reason, except AVAILABLE."
     - "UNKNOWN is a real answer and is never flattened into UNAVAILABLE. They
@@ -183,13 +207,86 @@ adapters:
 # record allowed to name a device.
 # ---------------------------------------------------------------------------
 instance:
-  required_fields: [provider, device_ref, observed_at, status]
+  # `status_provenance` and `observations` are required and were not, which is
+  # the difference between an instance record and a status with a timestamp on
+  # it. A `status` alone cannot answer "measured, or assumed?" — and this file
+  # already argues, four sections up, that a provider storing its own status is
+  # storing a memory of a past resolution and reading it as a current one.
+  required_fields: [provider, device_ref, observed_at, status, status_provenance,
+                    reason, observations]
   forbidden_fields:
     - "any credential, token, cookie, or key"
     - "a raw hardware identifier"
   because: >
     the instance is written to node state and may be surfaced to an agent.
     Nothing that would be a secret anywhere else becomes safe by being small.
+
+  # -------------------------------------------------------------------------
+  # Readiness — the second axis, and the one this file could not previously
+  # express. Kept here rather than in a health module because a provider is
+  # not a managed runtime resource: `runtime/health.py` owns the OBSERVATION
+  # shape (provenance, freshness, evidence strength) and this contract owns
+  # the PROVIDER vocabulary. Neither is duplicated by the other.
+  # -------------------------------------------------------------------------
+  readiness:
+    # What `instance.status` MEANS. There is one field, not two: this block
+    # names the question that field answers on an instance, so that a reader
+    # does not go looking for an `execution_readiness` beside a `status` and
+    # have to decide which one a caller was supposed to believe.
+    is_the_field: instance.status
+    values: [AVAILABLE, DEGRADED, UNAVAILABLE, INCOMPATIBLE, UNKNOWN]
+    question: "would calling this provider right now work"
+    not_the_same_as: >
+      `required_fields` on a provider record, which say what a provider IS and
+      are the same on every device and every minute. This is the answer for one
+      device at one moment, which is why the instance is the record that
+      carries it and the provider record is not.
+    axes:
+      - control-plane-reachability: >
+          does the provider's own API answer at all. Reuses the managed-runtime
+          `liveness` axis, so its values are RUNNING / STOPPED / UNKNOWN /
+          UNAVAILABLE and not a new set.
+      - execution-readiness: >
+          the request the provider accepts is one it can actually carry out.
+          Reuses the managed-runtime `functional` axis, whose own comment is
+          already the definition of this: "Asked by calling, not by looking."
+    evidence_rule: >
+      every readiness value carries the observations it was derived from, each
+      with `observed_by` {type, id}, `observed_at`, and an evidence type whose
+      strength is declared by `runtime/health.py`. A readiness value with no
+      observation behind it is not AVAILABLE — it is UNKNOWN, because there is
+      nothing to have been optimistic about.
+    freshness:
+      window_seconds: 900
+      rule: >
+        an observation older than the window is reported, and is not counted.
+        It does not become a permanent verdict: readiness derived from it falls
+        back to UNKNOWN, never to AVAILABLE. Ageing a negative observation into
+        a positive one is the single way this mechanism could start lying.
+    persistence: none
+    persistence_because: >
+      readiness is a projection of the provider's own live read model plus the
+      outcomes this process observed. ServerOS does not write it down: a stored
+      readiness is a memory of a past resolution, which this file's provider
+      section already refuses for providers and which applies with more force
+      to a value that is wrong in the meantime. The cost is named rather than
+      hidden — a restarted process reports UNKNOWN until it has called the
+      provider again, and UNKNOWN is the honest value there, not a regression.
+
+  # What a caller may rely on when readiness is not AVAILABLE. Declared so that
+  # "we do not know" and "we know it is broken" do not collapse into the same
+  # refusal: the first is answered by calling, the second is not.
+  refusal:
+    known_negative: [UNAVAILABLE, INCOMPATIBLE]
+    unknown: [UNKNOWN, DEGRADED]
+    rule: >
+      a provider whose readiness is a known negative is refused before the call
+      with its own error type, distinct from a policy denial and from an
+      unsupported action. A provider whose readiness is UNKNOWN is NOT refused:
+      pre-action readiness is unknown for a provider with no readiness surface,
+      and refusing on UNKNOWN would make every such provider permanently
+      undrivable. The call is what resolves it.
+    never: "reported as POLICY_DENIED or as UNSUPPORTED — neither is what happened"
 
 rules:
   - "An Ability is not available because a provider exists for it somewhere.

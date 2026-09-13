@@ -55,7 +55,7 @@ class FakeProvider:
         # fixture row without one is a row no provider may return. Declaring it
         # here is not a loosened assertion; the alternative was a fake that
         # exercises the fail-closed path by accident.
-        return [{"session_id": ref, "session_ref": ref,
+        return [{"session_ref": ref,
                  "provider_session_id": "s1", "last_activity": "2026-01-01T00:00:00Z",
                  "action_support": {
                      "session.send": semantics.support("SUPPORTED"),
@@ -296,7 +296,41 @@ def test_queued_is_evidence_and_never_overrides_a_mapped_status():
     ]}})
     row = provider.list_sessions(device_ref="device:x")[0]
     assert row["status"] == "BUSY"
-    assert row["provider_evidence"]["queued"] is True
+    assert row["provider_evidence"]["fields"]["queued"] is True
+
+
+def test_evidence_is_a_record_and_a_reason_is_a_sentence():
+    """`reason`, `evidence`, `provenance` and `observed_at` are four things.
+
+    They were two: a normalisation sentence had been written into the field
+    named `provider_evidence`, because a helper that existed was never called.
+    A record whose evidence slot holds prose cannot be aged, cannot be compared
+    against another record, and cannot tell a reader what was observed versus
+    what somebody concluded about it.
+    """
+    provider, _ = _botmux_with({("GET", "/api/sessions"): {"sessions": [
+        {"sessionId": "s1", "larkAppId": "b1", "cliId": "claude-code",
+         "status": "limited", "queued": False, "locked": True},
+    ]}})
+    row = provider.list_sessions(device_ref="device:x")[0]
+
+    # reason: a sentence, and only that.
+    assert isinstance(row["status_reason"], str)
+    # evidence: a record, and not the sentence.
+    evidence = row["provider_evidence"]
+    assert isinstance(evidence, dict)
+    assert set(evidence) == {"source", "observed_at", "provenance",
+                             "evidence_type", "authoritative", "fields"}
+    assert evidence["source"] == "botmux:/api/sessions"
+    assert evidence["fields"] == {"queued": False, "locked": True}
+    # provenance and freshness are their own keys, not carried inside `fields`.
+    assert evidence["provenance"] == "FACT"
+    assert evidence["observed_at"].endswith("Z")
+    assert evidence["authoritative"] is True
+    # `status_provenance` (about the mapping) is not `evidence.provenance`
+    # (about the fields). Different subjects; both present; neither inferred
+    # from the other.
+    assert row["status_provenance"] == "INFERRED"
 
 
 def test_queued_alone_never_invents_a_session_state():
@@ -432,7 +466,7 @@ class _ControlProvider:
     def list_sessions(self, *, device_ref):
         ref = session_ref(device_ref, self.provider_id, "s1")
         return [{
-            "session_id": ref, "session_ref": ref, "provider_session_id": "s1",
+            "session_ref": ref, "provider_session_id": "s1",
             "status": "BUSY", "status_provenance": "FACT",
             "action_support": {a: semantics.support(s) for a, s in self._support.items()},
         }]
@@ -510,7 +544,7 @@ def test_provider_that_hides_its_support_behind_absence_is_refused():
 
         def list_sessions(self, *, device_ref):
             ref = session_ref(device_ref, self.provider_id, "s1")
-            return [{"session_id": ref, "session_ref": ref,
+            return [{"session_ref": ref,
                      "provider_session_id": "s1", "status": "BUSY"}]
 
         def stop(self, *, provider_session_id):
@@ -586,3 +620,263 @@ def test_worker_pid_and_chat_id_never_become_session_identity():
     assert "bmx-s1" not in row["session_ref"]
     assert row["device_ref"] == device
     assert parse_session_ref(row["session_ref"]) == (device, BotMuxProvider.provider_id, "s1")
+
+
+# ---------------------------------------------------------------------------
+# The three layers. Session lifecycle, turn lifecycle, request acceptance —
+# separately sourced, separately named, and never standing in for each other.
+#
+# These are not new behaviour; they are the assertions that were missing while
+# the behaviour was already load-bearing. Every one of them describes something
+# that was at some point reported as something else.
+# ---------------------------------------------------------------------------
+
+def test_the_contract_declares_three_layers_and_names_their_fields():
+    contract = semantics.contract()
+    layers = contract["layers"]
+    assert layers["session_lifecycle"]["field"] == "status"
+    assert layers["turn_lifecycle"]["field"] == "turn_state"
+    # The rule that ties them, present as a rule and not as prose about one.
+    assert any("never overwrites" in r for r in layers["cross_layer_rules"])
+
+    # And the named fields are really produced, per layer and at its own source.
+    #
+    # Asserting only that the contract NAMES a field is how `accepted` survived a
+    # revision: the contract said a field by that name carried request
+    # acceptance, no record in the repo had one, and the test agreed with the
+    # contract instead of with the code. Each layer is resolved through the call
+    # that produces it, so a rename on either side breaks this rather than
+    # passing quietly.
+    provider, _ = _botmux_with({
+        ("GET", "/api/sessions"): {"sessions": [{
+            "sessionId": "s1", "larkAppId": "bot1", "cliId": "claude-code",
+            "status": "working", "workingDir": "/work/x",
+            "spawnedAt": 1000, "lastMessageAt": 2000,
+        }]},
+        ("POST", "/api/trigger"): {"triggerId": "t1",
+                                   "async": {"status": "pending", "sessionId": "s1"}},
+    })
+    session = provider.list_sessions(device_ref="device:x")[0]
+    assert layers["session_lifecycle"]["field"] in session
+
+    created = provider.create(device_ref="device:x", agent_id="b1",
+                              instruction="hi", idempotency_key="k")
+    assert layers["turn_lifecycle"]["field"] in created, (
+        "session.create is declared a carrier of the turn layer and produced no "
+        f"{layers['turn_lifecycle']['field']!r}"
+    )
+    assert layers["request_acceptance"]["field"] in created, (
+        "the contract names "
+        f"{layers['request_acceptance']['field']!r} as the field that carries "
+        "request acceptance; create produced no such field"
+    )
+
+
+def test_an_accepted_request_is_never_reported_as_a_session_state():
+    """Acceptance is the weakest fact in the system and the easiest to inflate.
+
+    `{"async": {"status": "pending", "sessionId": "s1"}}` says BotMux took the
+    request. It does not say the session started, is queued, is running, or
+    will ever run — and this round exists because a ServerOS revision inferred
+    `QUEUED` from exactly this response.
+    """
+    provider, _ = _botmux_with({
+        ("POST", "/api/trigger"): {"triggerId": "t1",
+                                   "async": {"status": "pending", "sessionId": "s1"}},
+    })
+    out = provider.create(device_ref="device:x", agent_id="b1",
+                          instruction="hi", idempotency_key="k")
+    # The acceptance, carried as itself.
+    assert out["provider_async_status"] == "pending"
+    assert out["turn_state"] == "TURN_UNKNOWN"
+    # And no lifecycle value anywhere in the result.
+    assert "state" not in out
+    assert "status" not in out
+    # Compared as values and not as substrings: `TURN_UNKNOWN` contains the
+    # lifecycle word `UNKNOWN`, and a test that flagged that would be flagging
+    # the turn layer for being named honestly.
+    lifecycle = set(semantics.contract()["status"]["values"])
+    for key, value in out.items():
+        if key.startswith("turn_"):
+            continue
+        assert not (isinstance(value, str) and value in lifecycle), \
+            f"create reported lifecycle {value!r} in {key!r}"
+
+
+def test_no_session_lifecycle_word_is_reachable_from_a_trigger_response():
+    """Checked against the vocabulary rather than against one example.
+
+    A single example can only catch the one word somebody thought of. `QUEUED`
+    is gone from this codebase, and the reason it cannot come back is that
+    nothing in the create path maps anything to a lifecycle value at all.
+    """
+    provider, _ = _botmux_with({
+        ("POST", "/api/trigger"): {"triggerId": "t1",
+                                   "async": {"status": "queued", "sessionId": "s1"},
+                                   "state": "completed", "status": "queued"},
+    })
+    out = provider.create(device_ref="device:x", agent_id="b1",
+                          instruction="hi", idempotency_key="k")
+    for lifecycle in semantics.contract()["status"]["values"]:
+        assert out.get("status") != lifecycle
+    assert out["turn_state"] == "TURN_UNKNOWN"
+    assert out["turn_state_provenance"] == "UNKNOWN"
+
+
+def test_a_running_turn_does_not_make_the_session_run():
+    """The two are sourced independently and can disagree. They should.
+
+    BotMux reports the session as `dormant` — a logical session with no
+    resident worker — while a turn it accepted is `running`. Both are true. A
+    mapping that made the session RUNNING from the turn would be reporting a
+    resident worker that does not exist.
+    """
+    provider, _ = _botmux_with({
+        ("GET", "/api/sessions"): {"sessions": [
+            {"sessionId": "s1", "larkAppId": "b1", "cliId": "claude-code",
+             "status": "dormant"}]},
+        ("GET", "/api/sessions/s1/trigger-result"): {"state": "running"},
+    })
+    session = provider.list_sessions(device_ref="device:x")[0]
+    turn = provider.result(provider_session_id="s1")
+    assert session["status"] == "DETACHED"
+    assert turn["turn_state"] == "TURN_RUNNING"
+    assert session["status"] != "RUNNING"
+
+
+def test_a_failed_turn_does_not_make_the_session_fail():
+    """The expensive one. A failed turn is news about a turn.
+
+    BotMux reports this session as `idle` — the turn failed fast and the
+    session is still there, still accepting, `can_accept_input: true`. A
+    mapping that inferred FAILED from TURN_FAILED would report a live session
+    as dead, and every caller that trusted it would stop driving a session that
+    works.
+    """
+    provider, _ = _botmux_with({
+        ("GET", "/api/sessions"): {"sessions": [
+            {"sessionId": "s1", "larkAppId": "b1", "cliId": "claude-code",
+             "status": "idle"}]},
+        ("GET", "/api/sessions/s1/trigger-result"): {"state": "failed",
+                                                     "errorCode": "no_output"},
+    })
+    turn = provider.result(provider_session_id="s1")
+    session = provider.list_sessions(device_ref="device:x")[0]
+    assert turn["turn_state"] == "TURN_FAILED"
+    assert session["status"] == "IDLE"
+    assert session["can_accept_input"] is True
+
+
+def test_failed_requires_session_level_evidence_and_this_provider_never_manufactures_it():
+    """`FAILED` is declared, and no BotMux status maps to it.
+
+    The vocabulary is deliberately wider than one adapter's mapping: another
+    provider may say a session has failed. What matters is that the width is
+    not closed by this adapter inventing the missing values. So the assertion
+    is not "FAILED is unreachable" — it is "FAILED is reachable only from a
+    provider that said so", and BotMux's `/api/sessions` never does.
+    """
+    contract = semantics.contract()
+    assert "FAILED" in contract["status"]["values"]
+    assert "session-level provider evidence" in contract["status"]["evidence_rule"]
+    # Every raw status BotMux can report for a session, run through the mapping.
+    for raw in ("starting", "working", "analyzing", "idle", "dormant",
+                "limited", "stalled", "closed", "queued", "completed", "failed"):
+        provider, _ = _botmux_with({("GET", "/api/sessions"): {"sessions": [
+            {"sessionId": "s1", "larkAppId": "b1", "cliId": "claude-code",
+             "status": raw}]}})
+        assert provider.list_sessions(device_ref="device:x")[0]["status"] != "FAILED", raw
+
+
+def test_request_evidence_never_overrides_a_lifecycle_mapping():
+    """`queued` is evidence. It is never a state, and it is never applied.
+
+    Three shapes of the same rule: with a mapped status, with no status at all,
+    and with an unmappable status. In none of them does a provider request
+    field change the answer, because a field about a REQUEST is not a field
+    about a SESSION.
+    """
+    cases = [
+        ({"status": "working", "queued": True}, "BUSY"),
+        ({"queued": True}, "UNKNOWN"),
+        ({"status": "teleporting", "queued": True}, "UNKNOWN"),
+        ({"status": "dormant", "queued": True, "locked": True, "adopt": True}, "DETACHED"),
+    ]
+    for raw_row, expected in cases:
+        row_in = {"sessionId": "s1", "larkAppId": "b1", "cliId": "claude-code", **raw_row}
+        provider, _ = _botmux_with({("GET", "/api/sessions"): {"sessions": [row_in]}})
+        row = provider.list_sessions(device_ref="device:x")[0]
+        assert row["status"] == expected, raw_row
+        # ...and the evidence was still kept, because dropping it would be a
+        # different way of losing information.
+        assert row["provider_evidence"]["fields"]["queued"] is True
+
+
+def test_the_three_layers_are_three_fields_on_one_session_row():
+    """A reader gets all three at once and has to be able to tell them apart."""
+    provider, _ = _botmux_with({
+        ("GET", "/api/sessions"): {"sessions": [
+            {"sessionId": "s1", "larkAppId": "b1", "cliId": "claude-code",
+             "status": "idle", "queued": True}]},
+        ("GET", "/api/sessions/s1/trigger-result"): {"state": "running"},
+    })
+    row = provider.list_sessions(device_ref="device:x")[0]
+    assert row["status"] == "IDLE"                          # session lifecycle
+    assert row["status_provenance"] == "INFERRED"
+    assert "turn_state" not in row                          # not a session field
+    assert row["status_reason"]                             # a sentence
+    assert row["provider_evidence"]["fields"]["queued"]     # a fact
+    turn = provider.result(provider_session_id="s1")
+    assert turn["scope"] == "current-turn"
+    assert turn["turn_state"] == "TURN_RUNNING"
+    assert turn["turn_state_provenance"] == "FACT"
+    # The session row still says IDLE, because that is what the provider said
+    # about the SESSION, and the turn is not evidence about it.
+    assert row["status"] == "IDLE"
+
+
+def test_a_session_record_carries_exactly_one_identity_field():
+    """Two names for one identity is how a reader picks the wrong one.
+
+    The record carried `session_id` beside `session_ref`, always the same
+    string, and nothing in the repo read it. It is not declared in
+    `session_fields`, and its name invites exactly one wrong reading: that it is
+    the PROVIDER's id, which is what `provider_session_id` already means and is
+    a different value on every device. A field with no reader and a misleading
+    name is not harmless — it is a trap that costs a reader one wrong guess and
+    costs a maintainer nothing to keep, which is why it survives.
+
+    Asserted as a count rather than as an absence, so that replacing it with a
+    differently-spelled duplicate fails here too.
+    """
+    provider, _ = _botmux_with({
+        ("GET", "/api/sessions"): {"sessions": [{
+            "sessionId": "s1", "larkAppId": "bot1", "cliId": "claude-code",
+            "status": "working",
+        }]},
+    })
+    row = provider.list_sessions(device_ref="device:x")[0]
+
+    declared = semantics.contract()["session_fields"]["required"]
+    assert "session_ref" in declared, "the contract must name the identity field"
+
+    # Any ServerOS-side name for the session, matched by SHAPE rather than by a
+    # list of the two names seen so far — a list would only catch the duplicate
+    # somebody already thought of. `provider_session_id` is excluded because it
+    # names the provider's id, which is a different value on purpose.
+    #
+    # The first version of this used `endswith("_session_id")`, which is False
+    # for `session_id` — no leading underscore — so it could never have fired on
+    # the field it was written for. Caught by re-adding the field and watching
+    # the gate stay green.
+    identity_keys = [k for k in row
+                     if k.endswith(("_ref", "_id"))
+                     and "session" in k
+                     and k != "provider_session_id"]
+    assert identity_keys == ["session_ref"], (
+        f"a session record names its identity {len(identity_keys)} times: {identity_keys}. "
+        "One identity, one name — and the provider's id has its own field."
+    )
+    # The two that legitimately remain are the ServerOS identity and the
+    # provider's native id, and they are different strings.
+    assert row["session_ref"] != row["provider_session_id"]
