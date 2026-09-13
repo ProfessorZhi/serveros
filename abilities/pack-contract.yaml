@@ -137,17 +137,46 @@ publishing:
 # they appear in no pack. An intent that needs them is a NEEDS_HUMAN finding
 # against the catalogue, not a pack member with a marker.
 #
-# Every pack below carries `authority`. The revision is the same for all four
+# Every pack below carries `authority`. The revision is the same for all five
 # because they are validated against one catalogue; a pack validated against a
 # different one says so by carrying a different sha, and `packs.py` reports
 # that as PIN_MISMATCH rather than silently comparing two things.
 #
-# §62 status: PUBLISHED. The pinned revision was pushed to
+# §62 status: PUBLISHED for 95c31ed. That revision was pushed to
 # `ProfessorZhi/ability-management` on 2026-09-13, both as the branch
 # `serveros/srv-0007-ability-packs` and on `main` — the second of those is a
 # requirement and not a convention, because `scripts/runtime_truth.py` decides
 # provenance by reachability from `refs/heads/main`, so a revision that exists
 # only on a feature branch still yields PIN_NOT_CANONICAL.
+#
+# §63 status: NOT YET CANONICAL, and named rather than hidden. The pin above is
+# `7bc7687`, which is a descendant of 95c31ed and adds the two abilities this
+# round's pack needs. `git branch -r --contains 7bc7687` returns nothing, so the
+# pin exists on no remote and `canonical_provenance()` reports
+# PIN_NOT_CANONICAL for every pack in this file. That is a true statement about
+# the world and the correct output; the alternative — pinning the canonical
+# 95c31ed and leaving `human-control` out of the pack — would have produced a
+# green closure check about a catalogue that cannot serve the pack, which is the
+# exact failure this whole file was written to stop.
+#
+# The repair is smaller than "publish this work", and the difference matters to
+# whoever does it. The pin's PARENT `f97a43b` is already on `origin/main`, and
+# that revision's manifest already declares both abilities — so a reader who
+# fetched today would find the pack closed one commit behind the pin. What
+# `f97a43b` does not have is the regenerated manifest: `7bc7687` is exactly
+# `f97a43b` plus the canonical generator run this round's §5 required, and
+# pinning `f97a43b` instead would ship the un-regenerated fingerprints that
+# commit exists to fix. So the remaining step is to push `7bc7687`, not to
+# invent anything.
+#
+# One drift observed while checking this and NOT acted on: the local
+# `refs/heads/main` in both the canonical checkout and the Item worktree still
+# reads 95c31ed, while `origin/main` has moved to f97a43b. `canonical_provenance()`
+# reads the local ref, so it will keep answering PIN_NOT_CANONICAL for f97a43b
+# itself until somebody fetches. A verdict that a pin is non-canonical is
+# therefore only as current as the local clone, and in this state it says
+# nothing about what is on the remote. Updating a canonical checkout's refs is
+# not something this round does.
 #
 # Before the push this line said the revision had NOT been pushed, and the pin
 # named an unreadable commit. That was written down rather than omitted so the
@@ -163,7 +192,7 @@ packs:
       not need a person to notice that it stopped.
     authority:
       repo: ProfessorZhi/ability-management
-      revision: 95c31ed8a0a49f048ff0f89d3fabd0c6ba7fd2d5
+      revision: 7bc768709ec93c9264b078f5d72b9dbed735cb43
     members:
       - {ability: "ability:work-management", role: required}
       - {ability: "ability:runtime-management", role: required}
@@ -176,7 +205,7 @@ packs:
     purpose: "plan, build, image, test and report a LiteLLM-side change."
     authority:
       repo: ProfessorZhi/ability-management
-      revision: 95c31ed8a0a49f048ff0f89d3fabd0c6ba7fd2d5
+      revision: 7bc768709ec93c9264b078f5d72b9dbed735cb43
     members:
       - {ability: "ability:technical-architecture-and-planning", role: required}
       - {ability: "ability:backend-solution-design", role: required}
@@ -191,19 +220,53 @@ packs:
       running resources it needs, and without re-establishing either.
     authority:
       repo: ProfessorZhi/ability-management
-      revision: 95c31ed8a0a49f048ff0f89d3fabd0c6ba7fd2d5
+      revision: 7bc768709ec93c9264b078f5d72b9dbed735cb43
     members:
       - {ability: "ability:work-management", role: required}
       - {ability: "ability:runtime-management", role: required}
       - {ability: "ability:shared-memory", role: required}
       - {ability: "ability:fleet-coordination", role: required}
 
+  - id: pack:agent-orchestration
+    name: Agent orchestration
+    purpose: >
+      pick up a piece of work on a machine, hand it to an agent runtime, watch
+      the session that results, and keep enough memory that a second session
+      does not start from nothing.
+    description: >
+      The pack the HumanControlProvider vertical slice runs on. Two of its six
+      members did not exist as abilities until this round — `human-control` and
+      `agent-session-management` — which is why this pack and their first
+      revision land together. The other four were already here and are what
+      makes the slice a slice of THIS product rather than a new one: the
+      session it drives is a Work Item, the runtimes it chooses between are
+      described by `runtime-management`, and the memory a resumed session
+      inherits arrives through `shared-memory`.
+    note: >
+      `fleet-coordination` is a required member and is not yet exercisable: this
+      slice is explicitly the single-device path, and the cross-device verbs it
+      would supply are absent rather than stubbed. It is required anyway,
+      because the Session ref format already carries `device_ref` and the pack
+      that describes this work should say what the work is, not how far it has
+      been built. A pack that dropped the member until the feature landed would
+      report CLOSED for an intent it cannot yet serve.
+    authority:
+      repo: ProfessorZhi/ability-management
+      revision: 7bc768709ec93c9264b078f5d72b9dbed735cb43
+    members:
+      - {ability: "ability:agent-session-management", role: required}
+      - {ability: "ability:human-control", role: required}
+      - {ability: "ability:fleet-coordination", role: required}
+      - {ability: "ability:shared-memory", role: required}
+      - {ability: "ability:runtime-management", role: required}
+      - {ability: "ability:work-management", role: required}
+
   - id: pack:quality-delivery
     name: Quality and delivery
     purpose: "the abilities a node needs to test, react, and report."
     authority:
       repo: ProfessorZhi/ability-management
-      revision: 95c31ed8a0a49f048ff0f89d3fabd0c6ba7fd2d5
+      revision: 7bc768709ec93c9264b078f5d72b9dbed735cb43
     members:
       - {ability: "ability:test-management", role: required}
       - {ability: "ability:quality-feedback-and-iteration", role: required}
