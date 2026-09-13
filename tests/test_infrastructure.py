@@ -787,11 +787,22 @@ def test_the_kinds_the_new_code_handles_are_declared():
 def test_every_kind_requirement_names_a_requirement_the_checker_implements():
     """The `kind_requirements` block is data the checker executes. A key it
     does not know would be silently ignored, which is the declared-but-absent
-    pathology one more time — so the vocabulary is closed and asserted."""
-    known = {"field", "probe_axis", "decisive_owner", "because", "unless_not_applicable"}
+    pathology one more time — so the vocabulary is closed and asserted.
+
+    `in` was added for §40: `mcp-server` may name a lifetime of `persistent` or
+    `session-scoped` and nothing else, because the other two MCP modes have no
+    process for this node to observe and belong to the provider layer. A
+    presence check could not express that — the field would be there and wrong.
+    """
+    known = {"field", "probe_axis", "decisive_owner", "because",
+             "unless_not_applicable", "in"}
     for kind, spec in MR_CONTRACT["kind_requirements"].items():
         for req in spec.get("requires") or ():
             assert set(req) <= known, (kind, req)
+            # `in` qualifies a `field` and is meaningless without one; a
+            # membership check on an unnamed field is a constraint on nothing.
+            if "in" in req:
+                assert "field" in req, (kind, req)
         for req in spec.get("requires_one_of") or ():
             assert set(req) <= {"probe_axis", "not_applicable"}, (kind, req)
 

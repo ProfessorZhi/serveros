@@ -341,3 +341,67 @@ class ReclaimReportTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+# ---------------------------------------------------------------------------
+# §40 — MCP placement: which modes are runtimes and which are providers
+# ---------------------------------------------------------------------------
+
+
+class McpPlacementTests(unittest.TestCase):
+    def test_the_four_modes_are_declared_and_each_names_a_surface(self):
+        """§40's ask was "do not make every MCP persistent". The answer is not
+        a second lifetime vocabulary — only two of the four modes are
+        lifetimes. Each mode names which existing surface owns it, so there is
+        nowhere for the other two to be silently defaulted into this one."""
+        modes = registry_mod.contract()["mcp_placement"]["modes"]
+        by_id = {m["id"]: m for m in modes}
+        self.assertEqual(set(by_id),
+                         {"persistent", "session-scoped", "on-demand", "external"})
+        for mode in modes:
+            self.assertIn(mode["surface"], {"managed-runtime", "provider-layer"})
+            self.assertTrue(mode.get("because") or mode.get("lifecycle_class"),
+                            f"{mode['id']} names a surface without saying why")
+
+    def test_the_lifetime_modes_reuse_the_existing_lifecycle_vocabulary(self):
+        """No parallel vocabulary. If these ever stop being the same strings as
+        `lifecycle_classes`, there are two lifetime guesses in one file."""
+        modes = {m["id"]: m for m in registry_mod.contract()["mcp_placement"]["modes"]}
+        classes = set(registry_mod.contract()["lifecycle_classes"])
+        self.assertIn(modes["persistent"]["lifecycle_class"], classes)
+        self.assertIn(modes["session-scoped"]["lifecycle_class"], classes)
+
+    def test_a_persistent_mcp_server_registers(self):
+        record = a_tunnel(kind="mcp-server", tunnel_id="mcp-demo",
+                          lifecycle={"class": "persistent"})
+        record.pop("transport")
+        record.pop("origin_device")
+        record["probes"] = [{"id": "l", "kind": "process-exists",
+                             "axis": "liveness", "pattern": "demo"}]
+        self.assertEqual(resource_of(record).kind, "mcp-server")
+
+    def test_a_mcp_server_may_not_register_a_mode_with_no_process_behind_it(self):
+        """The §40 boundary, enforced. `on-demand` and `external` have no
+        process this node can see, so a registration would create a resource
+        whose liveness axis is UNKNOWN forever — the permanently-DEGRADED
+        shape the tunnel requirements already refuse. They are providers."""
+        for lifecycle in ("on-demand", "external"):
+            record = a_tunnel(kind="mcp-server", tunnel_id="mcp-demo",
+                              lifecycle={"class": lifecycle})
+            record.pop("transport")
+            record.pop("origin_device")
+            with self.assertRaises(RegistryInvalid) as caught:
+                a_registry(record)
+            self.assertIn("lifecycle.class", str(caught.exception))
+
+    def test_the_live_registry_still_loads(self):
+        """The change that would have been easy to miss. Tightening a kind's
+        requirements can invalidate authored state on the running host, and a
+        registry that will not load is worse than one with a missing rule.
+        This reads the real file rather than a fixture."""
+        path = Path("/opt/applications/data/home-hwz/state/serveros/runtime/"
+                    "registry/resources.yaml")
+        if not path.exists():
+            self.skipTest("no live registry on this host")
+        loaded = registry_mod.Registry(path=path)
+        self.assertGreater(len(loaded.all()), 0)

@@ -74,6 +74,63 @@ kinds:
   # half-reclaim of a live task.
   - runtime-group
 
+# ---------------------------------------------------------------------------
+# Where an MCP server lives, by how it is reached (§40).
+#
+# The request behind this section was to stop treating every MCP server as
+# `persistent`. The useful answer turned out not to be a second lifetime
+# vocabulary, because only two of the four modes are lifetimes at all:
+#
+#   persistent      a process that is up continuously   -> a MANAGED RUNTIME
+#   session-scoped  a process bound to an agent session -> a MANAGED RUNTIME
+#   on-demand       no long-lived process; spawned per   -> PROVIDER LAYER
+#                   call and gone
+#   external        not this node's process at all;      -> PROVIDER LAYER
+#                   reached over a network
+#
+# An on-demand server has no process to observe between calls, so registering
+# one here would create a resource whose liveness axis is UNKNOWN forever —
+# the permanently-DEGRADED shape `kind_requirements.tunnel` already refuses
+# for tunnels. What it IS is a way this device can realize an ability, which
+# is exactly what a provider describes, and `abilities/provider-contract.yaml`
+# is where it goes.
+#
+# The same argument covers `external`, one step further: ServerOS does not own
+# a process on another host, so a registration would be a claim about somebody
+# else's runtime. `materialization.path_role: none` already expresses it.
+#
+# So this section adds no value to `lifecycle_classes`. It names which of the
+# two existing surfaces owns each mode, and the test file asserts the mapping
+# is total — because "every MCP is persistent" was never a decision anybody
+# made, it was the absence of a place to say otherwise.
+# ---------------------------------------------------------------------------
+mcp_placement:
+  modes:
+    - id: persistent
+      surface: managed-runtime
+      lifecycle_class: persistent
+    - id: session-scoped
+      surface: managed-runtime
+      lifecycle_class: session-scoped
+    - id: on-demand
+      surface: provider-layer
+      because: >
+        spawned per call and gone. There is no process between calls, so there
+        is nothing for a managed runtime to observe — `liveness` would be
+        UNKNOWN forever. It is a way to realize an ability, which is a
+        provider.
+    - id: external
+      surface: provider-layer
+      because: >
+        another host's process. Registering it would be a claim about a runtime
+        this node does not own, and `path_role: none` already says it has no
+        on-disk footprint here.
+  rule: >
+    an MCP server registered as a managed runtime names a lifetime of
+    `persistent` or `session-scoped`. A server with no process between calls,
+    or one that belongs to another host, is a provider — and registering it
+    here would be the mistake of giving an ability a runtime identity.
+
 owner_types:
   # A named project (litellm, multi-user-claw, ...). Owner is the project.
   - project
@@ -403,6 +460,21 @@ kind_requirements:
         because: >
           a group with no members is a name. The whole reason to register one is
           that its members must be reasoned about together.
+  mcp-server:
+    requires:
+      # §40, and the enforcement of `mcp_placement` below. A server with no
+      # process between calls cannot be observed here, and one on another host
+      # is not this node's to claim — both belong to the provider layer, where
+      # "can this device do this" is the question being asked. This makes the
+      # boundary a registration failure rather than a paragraph.
+      - field: lifecycle.class
+        in: [persistent, session-scoped]
+        because: >
+          only these two are lifetimes of a process this node can see. An
+          on-demand server has nothing to observe between calls, and an
+          external one is another host's process; both are providers, and
+          registering them here would give an ability a runtime identity it
+          does not have.
 
 # ---------------------------------------------------------------------------
 # Ownership (§36, §37). ARCHITECTURE.md invariant 6, enforced at registration.

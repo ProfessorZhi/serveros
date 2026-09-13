@@ -588,6 +588,15 @@ def _check_kind_requirements(record: dict, kind: str, where: str) -> None:
             found, value = _dig(record, req["field"])
             if not found or value in (None, "", [], {}):
                 fail(f"`{req['field']}`", req.get("because") or "missing")
+            # A closed set for one field of one kind, so the constraint lives
+            # in the contract rather than in prose beside it. §40 needed this:
+            # "an MCP server registered here names a lifetime of persistent or
+            # session-scoped" is a rule about a value, not about presence, and
+            # without it the modes with no process behind them would be
+            # registrable as runtimes.
+            allowed = req.get("in")
+            if allowed is not None and value not in allowed:
+                fail(f"`{req['field']}` in {allowed}", req.get("because") or "out of range")
         elif "probe_axis" in req:
             axis = req["probe_axis"]
             have = any(p.get("axis") == axis for p in record.get("probes") or ())
