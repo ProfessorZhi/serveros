@@ -1129,6 +1129,56 @@ def cmd_runtime_tunnels(args) -> int:
     return EXIT_OK
 
 
+def cmd_runtime_egress(args) -> int:
+    """§58 — why the local Agent cannot reach out, in four answers.
+
+    The default requirement is the one this node actually has: `.bashrc` sends
+    every outbound model call through `127.0.0.1:17890`. Defaulting to it is a
+    judgement worth stating — it is the only outbound dependency on this host
+    that is DECLARED anywhere, and a command that made the operator retype the
+    endpoint would be answering a question nobody had.
+    """
+    reg = load_registry(args.registry)
+    requirement = {
+        "runtime": args.runtime,
+        "kind": args.kind,
+        "endpoint": args.endpoint,
+        "named_by": egress_named_by(args.endpoint),
+        "because": args.because,
+    }
+    doc = infra_mod.egress_answer(reg, requirement)
+    answers = doc["answers"]
+
+    lines = [
+        f"endpoint             {requirement['endpoint']}",
+        f"runtime              {requirement['runtime']}",
+        f"declared by          "
+        + (", ".join(d["where"] for d in requirement["named_by"]) or "nobody"),
+        "",
+        f"reachable            {answers['reachable']['value']}",
+        f"  {answers['reachable']['claim']}",
+        "",
+        f"missing              {answers['which_runtime_is_missing']['state']}",
+        f"  {answers['which_runtime_is_missing']['because']}",
+        "",
+        f"owner                {answers['who_owns_it']['state']}",
+        f"  {answers['who_owns_it']['because']}",
+        "",
+        f"auto recovery        "
+        f"{'permitted' if answers['auto_recovery_permitted']['permitted'] else 'NOT permitted'}",
+        f"  {answers['auto_recovery_permitted']['because']}",
+        "",
+        f"action               {doc['action']}",
+    ]
+    emit(doc, as_json=args.json, lines=lines)
+    return EXIT_OK
+
+
+def egress_named_by(endpoint: str) -> list[dict]:
+    """The declarations for an endpoint, measured on this node."""
+    return infra_mod.egress_declarations(endpoint)
+
+
 def cmd_runtime_groups(args) -> int:
     """§3/§5 — every runtime group, largest by summed lifetime CPU first."""
     payload = view_mod.runtime_groups()
@@ -1968,6 +2018,21 @@ def build_parser() -> argparse.ArgumentParser:
         **_COMMON,
     )
     rt_tun.set_defaults(func=cmd_runtime_tunnels)
+    rt_egress = runtime_sub.add_parser(
+        "egress",
+        help="why the local Agent cannot reach out (§58): which runtime is "
+             "missing, who owns it, may anything recover it",
+        **_COMMON,
+    )
+    rt_egress.add_argument("--endpoint", default="127.0.0.1:17890",
+                           help="host:port the Agent's traffic is sent to")
+    rt_egress.add_argument("--runtime", default="tunnel:agent-openai-outbound",
+                           help="the runtime id this endpoint is supposed to have")
+    rt_egress.add_argument("--kind", default="tunnel")
+    rt_egress.add_argument("--because", default=(
+        "the Codex/OpenAI path on this node is routed through this proxy, so "
+        "every outbound model call depends on it"))
+    rt_egress.set_defaults(func=cmd_runtime_egress)
     rt_groups = runtime_sub.add_parser(
         "groups", help="every runtime group on this host (§3/§5)", **_COMMON)
     rt_groups.set_defaults(func=cmd_runtime_groups)

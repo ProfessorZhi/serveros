@@ -1,0 +1,24 @@
+id: mem:fixture-beijing-handoff-1
+kind: handoff
+subject: project/serveros/SRV-0007
+at: 2026-09-13T01:05:00Z
+by: claude-code
+source: memory/fixtures/cross_device_handoff/
+revision: 19652da
+device_ref: device:server-beijing
+to_device_ref: device:work-fj
+related:
+  - mem:fixture-beijing-checkpoint-1
+body: |
+  The work moves to `device:work-fj`, and it moves because of a fact rather
+  than a preference: the half of this that is failing is on that side of the
+  channel, and no process on this node can measure it. A probe that runs here
+  can say the Linux end is up, and it has been saying exactly that throughout.
+
+  Read `mem:fixture-beijing-checkpoint-1` first. It says what to run and what
+  to write back; this record only says who is being asked.
+
+  The sender is not waiting. If the forward is gone, write that down and the
+  handoff is answered — the answer being "it is not there" is a result, and a
+  result that arrives in the ledger is worth more than a probe that could not
+  be run.

@@ -14,6 +14,7 @@ only one that is not durable and it is the one an Agent consults first.
 ```text
 memory/record.py       validate() one record; audit() the whole ledger
 memory/projection.py   build() · manifest_for() · staleness()
+memory/handoff.py      checkpoint() · handoff() · pending() · answers()
 memory/layering.py     the caller-side filter for Layer C hits
 serverosctl memory     audit · project · status · subject
 ```
@@ -64,9 +65,11 @@ inherits `blame`, `diff`, `revert`, and a history nobody has to be trusted to
 maintain.
 
 ```text
-record kinds            decision · observation · revision · handoff · finding · question
+record kinds            decision · observation · revision · handoff · finding
+                        · question · checkpoint · incident
 required on every record  id · kind · subject · at · by · source · revision
 required for some kinds   observation also requires confidence
+                          handoff also requires to_device_ref
 never                     a secret, a credential, a token, a raw transcript body
 ```
 
@@ -78,6 +81,18 @@ and a ledger of this shape with no way to record one is a ledger that loses
 its open questions to chat. `memory/record.py` now holds the closed list and a
 test asserts it against the contract, so the next disagreement fails rather
 than being read past.
+
+Two more kinds arrived with §59, and one of them is the kind the cross-device
+fixture is built on. `checkpoint` is **where the work stopped and what to do
+first**, written for a device that is not this one. `revision` binds an
+artifact and `observation` says what was measured; neither says where to
+resume, and a handoff with no checkpoint behind it moves the work without
+moving the state. `incident` is separate from `finding` because the two differ
+in who did the looking: a finding is a problem found by inspection, an incident
+is a problem that found us, and folding Case A into `finding` would lose its
+timeline and its cost. The brief's §21 list named seven things; the contract
+now resolves all seven, and `brief_vocabulary` in the contract writes down
+which of the five pre-existing kinds carries each name.
 
 A record without a `source` is an assertion. A record without a `revision` is a
 claim about a repository that may have moved. Both are refused, for the same
@@ -116,6 +131,48 @@ commit sha when the tree is clean, and `sha+content:<hash>` when it is not. A
 ledger with one uncommitted record has moved, and a projection stamped with
 `HEAD` would call itself current while the thing it summarises had changed —
 see `mem:a-revision-must-name-content-not-head`.
+
+## Handing work to another device
+
+Because Layer B is Git, a cross-device handoff needs no new transport. It needs
+one question answered, and nothing answered it before `memory/handoff.py`:
+
+> given a ledger and a device, which handoffs are addressed to **that** device
+> and have not been answered?
+
+```text
+Beijing   checkpoint + handoff      checkpoint() · handoff()
+FJ/Dell   reads the handoff         pending(records, device_ref)
+Windows   writes the result         result(..., handoff_id=...)
+Beijing   retrieves it              answers(records, handoff_id)
+```
+
+The sender is not waiting. That is the whole design, and it is why this works
+when the two devices are never awake together and why §59's fallback for an
+unavailable remote actuator is this rather than a queue.
+
+Two things make it correct rather than merely plausible:
+
+**A handoff names its addressee.** `to_device_ref` is required on `handoff`
+and refused on every other kind. A handoff nobody is addressed by is a record
+that says the work moved and not where it went: the receiving device cannot
+select it, so nothing arrives, and a record nobody read is byte-identical to
+one everybody read. This is the same requirement a tunnel has, for the same
+reason — a channel that does not name both its ends cannot be checked.
+
+**An answer is a link, not a timestamp.** The result is an ordinary
+`checkpoint`; what makes it an answer is `related`, naming the handoff.
+Without that link a handoff stays open forever, and with it two devices that
+independently pick up the same work both show up as answers rather than one
+silently replacing the other.
+
+The inbox is deliberately not `current_value(subject)`. The current value of a
+subject is the *newest* record about it — which, once the receiving device has
+replied, is the reply. A device that built its inbox that way would be handed
+back its own work and would never see the request. `pending()` and
+`round_trip()` both take an `at` bound for the same reason `heads()` does: the
+receiving device reads its inbox *before* the answer exists, and reading the
+ledger as of a moment is the only way to observe that without deleting from it.
 
 ## Layer C, and OpenViking
 
