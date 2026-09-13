@@ -79,6 +79,16 @@ AXIS_EXECUTION = "execution-readiness"
 # RUNNING/STOPPED/UNKNOWN/UNAVAILABLE and OK/FAILED/NOT_APPLICABLE/UNKNOWN live.
 MANAGED_AXIS = {AXIS_CONTROL_PLANE: "liveness", AXIS_EXECUTION: "functional"}
 
+# The reverse, so that an observation can be labelled with the provider-facing
+# name it was built under. `runtime/health.py` stores the managed-runtime name
+# and its `show()` does not carry it, which left an instance's observation list
+# as two unlabelled records — and the separation of these two axes is the whole
+# reason this module exists. A consumer that has to tell them apart by position,
+# or by noticing that RUNNING and OK look different, is one refactor away from
+# reading the execution axis as the control plane and reporting a provider that
+# answers as one that works.
+AXIS_OF = {managed: name for name, managed in MANAGED_AXIS.items()}
+
 # One status vocabulary, from the provider contract. Asserted against the file
 # by test, because two lists of status values is a defect this round has already
 # found four times.
@@ -308,7 +318,8 @@ def instance(*, provider: str, device_ref: str, observations,
         "status_provenance": "UNKNOWN" if status == "UNKNOWN" else "INFERRED",
         "reason": reason,
         "reason_text": why,
-        "observations": [record.show() for record in records],
+        "observations": [{"axis": AXIS_OF.get(record.axis, record.axis), **record.show()}
+                         for record in records],
         "stale_axes": stale_axes,
         "freshness_window_seconds": (window if window is not None
                                      else freshness_seconds()),

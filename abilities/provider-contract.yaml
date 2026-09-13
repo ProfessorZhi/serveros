@@ -256,6 +256,14 @@ instance:
       strength is declared by `runtime/health.py`. A readiness value with no
       observation behind it is not AVAILABLE — it is UNKNOWN, because there is
       nothing to have been optimistic about.
+    observation_shape:
+      axis: control-plane-reachability | execution-readiness
+      because: >
+        each observation in an instance names the axis it was made on. Two
+        unlabelled records is a list whose meaning depends on position, and the
+        one thing a reader of this block must never do is take the answer to
+        "does it answer" for the answer to "does it work" — which is the exact
+        substitution the second axis was added to make impossible.
     freshness:
       window_seconds: 900
       rule: >
