@@ -76,6 +76,7 @@ probes_mod = _load("serveros_runtime_probes", "probes.py")
 inventory_mod = _load("serveros_runtime_inventory", "inventory.py")
 hygiene_mod = _load("serveros_runtime_hygiene", "hygiene.py")
 paths_mod = _load("serveros_runtime_paths", "paths.py")
+agent_sessions_mod = _load("serveros_runtime_agent_sessions", "agent_sessions.py")
 # The shared answer layer (§3/§6/§10/§14). The daemon computes NOTHING of its
 # own for these: it forwards to the same functions `serverosctl` calls, so the
 # CLI answer and the socket answer can differ only in the moment they were
@@ -800,6 +801,9 @@ class Daemon:
             "observation.get": self._r_observation_get,
             "ability.list": self._r_ability_list,
             "ability.status": self._r_ability_status,
+            # Internal policy primitive used by the dedicated Agent Session MCP.
+            # The daemon decides intent only and never calls an Agent provider.
+            "agent.action.admit": self._r_agent_action_admit,
             # §3/§5/§6/§10/§14. Read-only, and every one of them is a forward
             # to `view.py` — the daemon adds no logic of its own here, because
             # a daemon that answers a question differently from the CLI is a
@@ -836,7 +840,7 @@ class Daemon:
         return ("device.show", "context.current", "path.resolve", "path.admit",
                 "runtime.list", "runtime.status", "runtime.explain",
                 "resource.summary", "resource.hygiene", "observation.get",
-                "ability.list", "ability.status",
+                "ability.list", "ability.status", "agent.action.admit",
                 "runtime.groups", "runtime.group", "runtime.tree",
                 "runtime.budget", "process.top", "process.trace",
                 "anomaly.list", "anomaly.explain", "container.attribution",
@@ -1033,6 +1037,16 @@ class Daemon:
     def _r_path_admit(self, params) -> dict:
         return paths_mod.Paths().admit(_required(params, "path"),
                                        writing=params.get("writing", True))
+
+    def _r_agent_action_admit(self, params) -> dict:
+        # `context` is required, not optional-with-a-default. An admission
+        # decision that silently ignores the subject it is adjudicating cannot
+        # become a context-sensitive one later without every existing caller
+        # having been wrong in the meantime; requiring it now means the callers
+        # that will need it already send it.
+        return agent_sessions_mod.admission(
+            _required(params, "action"), _required(params, "context")
+        )
 
     def _r_runtime_list(self, params) -> dict:
         return {"count": len(self.registry), "resources": [

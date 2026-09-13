@@ -1,0 +1,119 @@
+# Agent Session is a Node Runtime object: a live logical Agent instance, not a PID.
+# Provider-native session truth stays with the provider; ServerOS owns identity,
+# normalization and admission. Nothing here adds a fifth architecture plane.
+schema: serveros/agent-session.v1
+version: 1
+
+identity:
+  session_ref: "agent-session:<urlencoded-device-ref>/<provider-id>/<provider-session-id>"
+  agent_ref: "agent:<urlencoded-device-ref>/<provider-id>/<provider-agent-id>"
+  runtime_ref: "agent-runtime:<runtime-id>"
+  rules:
+    - "device_ref is authored Fleet identity, never hostname, relay UUID or address."
+    - "provider_session_id is provider-owned and never becomes device identity."
+    - "PID, tmux pane, chat id and thread id are locators/evidence, never session keys."
+
+status:
+  values: [STARTING, RUNNING, BUSY, WAITING_INPUT, IDLE, DETACHED, PAUSED,
+           FAILED, CLOSED, UNKNOWN]
+  provenance: [FACT, INFERRED, UNKNOWN]
+  rule: >-
+    every normalized state keeps the provider's raw state and provenance. UNKNOWN
+    is not flattened into IDLE, CLOSED or false.
+
+support:
+  values: [SUPPORTED, UNSUPPORTED, UNKNOWN]
+  actions:
+    - agent.list
+    - agent.inspect
+    - session.list
+    - session.inspect
+    - session.create
+    - session.resume
+    - session.send
+    - session.result
+    - session.interrupt
+    - session.stop
+    - session.handoff
+  rule: >-
+    provider support is resolved per action. A stronger provider verb never
+    satisfies a narrower ServerOS verb; close-whole-session is not interrupt-turn.
+  control_order: >-
+    session control resolves provider support before admission, and support is
+    checked only so that it can narrow. UNSUPPORTED and UNKNOWN are both refused;
+    neither is reported as a pending human approval, because no approval can
+    grant a capability the provider does not have. A SUPPORTED verb still
+    requires its own admission decision — advertising a capability authorizes
+    nothing.
+
+availability:
+  values: [AVAILABLE, OFFLINE, UNKNOWN]
+  rule: >-
+    an explicitly false provider availability field is OFFLINE, not UNKNOWN.
+    Only an absent field is unknown.
+
+turn:
+  lifetime: >-
+    a turn state describes one accepted instruction, never the session. A session
+    whose current turn completed is still a session, and still accepts turns.
+  values: [TURN_RUNNING, TURN_COMPLETED, TURN_FAILED, TURN_NOT_FOUND, TURN_UNKNOWN]
+
+session_fields:
+  required:
+    - session_ref
+    - device_ref
+    - provider
+    - provider_session_id
+    - agent_runtime
+    - status
+    - status_provenance
+    - action_support
+  optional:
+    - title
+    - workspace
+    - cwd
+    - work_item
+    - owner
+    - created_at
+    - last_activity
+    - can_accept_input
+    - parent_session
+    - memory_ref
+    - transport
+    - provider_status
+    - status_reason
+    - provider_evidence
+
+admission:
+  read_only: [agent.list, agent.inspect, session.list, session.inspect, session.result]
+  delegation: [session.create, session.resume, session.send]
+  human_gated: [session.interrupt, session.stop, session.handoff]
+  rules:
+    - >-
+      delegation hands an instruction to an Agent runtime; it grants no new host
+      privilege and downstream ServerOS/tool policy remains in force.
+    - >-
+      human-gated session control is never inferred from a delegation grant.
+      Provider support and a separate admission decision are both required.
+    - "MCPs and providers enforce decisions; they do not author them."
+
+projection:
+  authority: provider-native-session-store
+  serveros_role: normalized live registry/projection
+  persistence: none-by-default
+  rule: >-
+    ServerOS may cache observation metadata, but a cached provider row never
+    becomes session authority and never turns provider-unreachable into closed.
+
+provider_boundary:
+  HumanControlProvider:
+    owns: [message_ingress, card_rendering, human_identity, notifications, human_approval]
+    does_not_own: [device_truth, runtime_truth, policy, ability_registry, fleet]
+  AgentSessionProvider:
+    owns: [session_transport, provider_session_lifecycle, provider_status]
+    does_not_own: [device_identity, serveros_policy, ability_authority]
+
+rules:
+  - "Agent Session belongs to the Node Runtime Plane; provider selection belongs to the Ability Fabric."
+  - "A session may cause a durable resource to be created; invariant 6 forbids that session from owning it."
+  - "No provider-private state file is read when a supported provider API can answer the question."

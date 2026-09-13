@@ -430,3 +430,91 @@ class LiveContractTests(unittest.TestCase):
         self.assertTrue(names, "the pinned catalogue declares no abilities")
         report = packs.resolve(contract, names, catalogue_revision=revision)
         self.assertEqual(report["refused"], [], packs.summarize(report))
+
+
+class AgentOrchestrationPackTests(unittest.TestCase):
+    """§14: the pack closure gate, exercised in BOTH directions.
+
+    A gate that has only ever been shown to pass is a gate nobody has shown to
+    work. This checks the same pack against two catalogues and requires the two
+    answers to differ, in the direction the rule predicts — so that "the pack is
+    CLOSED" is a statement about the catalogue it was checked against rather
+    than about the checker having returned CLOSED.
+
+    The catalogue is read from git objects at the pinned revision, the same way
+    `scripts/build.py` reads it and for the same reason: a dirty checkout must
+    not be able to answer a question about what the catalogue contains.
+    """
+
+    NEW_REV = "7bc768709ec93c9264b078f5d72b9dbed735cb43"
+    OLD_REV = "95c31ed8a0a49f048ff0f89d3fabd0c6ba7fd2d5"
+
+    def contract(self) -> dict:
+        return yaml.safe_load((ABILITIES / "pack-contract.yaml").read_text(encoding="utf-8"))
+
+    @staticmethod
+    def _catalogue(revision: str) -> list[str] | None:
+        read = _manifest_at(revision)
+        return None if read is None else [a["name"] for a in read[0]["abilities"]]
+
+    def _pack(self, contract: dict, pack_id: str) -> dict:
+        return next(p for p in contract["packs"] if p["id"] == pack_id)
+
+    def test_the_pack_is_declared_with_the_members_the_brief_names(self):
+        pack = self._pack(self.contract(), "pack:agent-orchestration")
+        self.assertEqual(
+            sorted(m["ability"] for m in pack["members"]),
+            ["ability:agent-session-management", "ability:fleet-coordination",
+             "ability:human-control", "ability:runtime-management",
+             "ability:shared-memory", "ability:work-management"])
+        self.assertTrue(all(m["role"] == "required" for m in pack["members"]))
+
+    def test_the_new_pin_closes_and_the_old_pin_refuses_the_same_pack(self):
+        if not _ability_repos():
+            self.skipTest("no ability-management repository reachable; an absent "
+                          "catalogue is not a closed one")
+        contract = self.contract()
+        new, old = self._catalogue(self.NEW_REV), self._catalogue(self.OLD_REV)
+        if new is None or old is None:
+            self.fail(
+                f"one of {self.OLD_REV[:12]}/{self.NEW_REV[:12]} does not resolve "
+                "in any reachable ability-management repository, so the two "
+                "directions of this gate cannot both be exercised")
+
+        pack = self._pack(contract, "pack:agent-orchestration")
+
+        # Direction 1: pinned at the revision that has the members -> CLOSED.
+        pack["authority"]["revision"] = self.NEW_REV
+        report = packs.resolve(contract, new, catalogue_revision=self.NEW_REV)
+        verdict = next(p for p in report["packs"] if p["id"] == "pack:agent-orchestration")
+        self.assertEqual(verdict["status"], "CLOSED", packs.summarize(report))
+        self.assertEqual(report["refused"], [])
+        self.assertTrue(report["pins"]["all_match"])
+
+        # Direction 2: the SAME pack pinned at the older revision -> refused,
+        # and refused by name. The two members this round added are what the
+        # older catalogue is missing, and a verdict that said only "the pack is
+        # not closed" would not say which repair applies.
+        pack["authority"]["revision"] = self.OLD_REV
+        report = packs.resolve(contract, old, catalogue_revision=self.OLD_REV)
+        verdict = next(p for p in report["packs"] if p["id"] == "pack:agent-orchestration")
+        # PARTIAL, not UNAVAILABLE: the older catalogue still has four of the
+        # six required members, so the pack is usable and incomplete rather than
+        # absent. The distinction is the contract's, not this test's — getting
+        # it wrong in either direction would misreport a partially-serviceable
+        # intent as an unbuildable one.
+        self.assertEqual(verdict["status"], "PARTIAL")
+        self.assertIn("pack:agent-orchestration", report["refused"])
+        self.assertEqual(
+            sorted(m["ability"] for m in verdict["unresolved_required"]),
+            ["ability:agent-session-management", "ability:human-control"])
+
+    def test_the_two_abilities_this_round_added_are_in_the_new_catalogue(self):
+        if not _ability_repos():
+            self.skipTest("no ability-management repository reachable")
+        new = self._catalogue(self.NEW_REV)
+        if new is None:
+            self.fail(f"{self.NEW_REV[:12]} does not resolve in any reachable "
+                      "ability-management repository")
+        for name in ("agent-session-management", "human-control"):
+            self.assertIn(name, new)

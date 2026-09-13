@@ -4,17 +4,18 @@
 # it is not an authority. ServerOS decides identity, policy and desired state;
 # an MCP surface is one way an agent asks about them.
 #
-# Two surfaces, because "this machine" and "the fleet" are different questions
-# with different blast radii. Merging them produces a server that can both
-# answer "where am I" and "run this on any machine", which is a server whose
-# permission model cannot be stated in one sentence.
+# Three surfaces, because node observation, local Agent Session control and
+# fleet reasoning have different authorities and blast radii. Keeping them
+# separate prevents a read-only node adapter from acquiring provider/network
+# side effects merely because Agent control also needs an MCP surface.
 schema: serveros/mcp-surfaces.v1
 
 principle: >-
-  MCP carries Agent → Tool / Context. It does not carry Agent → Agent
-  delegation (that is A2A), and it does not carry fleet lifecycle state
-  (heartbeat, presence, leases — those belong to the fleet transport plane,
-  which is request/response-free by nature).
+  MCP carries typed Tool / Context calls and never becomes authority. The
+  dedicated Agent Session surface may submit local typed session intents to an
+  AgentSessionProvider; that is a control facade, not the A2A wire protocol.
+  Cross-device Agent-to-Agent delegation remains an A2A/Fleet concern. MCP also
+  does not own fleet lifecycle state (heartbeat, presence or leases).
 
 surfaces:
   serveros-node-mcp:
@@ -99,6 +100,54 @@ surfaces:
       refusing. `anomaly.explain` returns a recommendation, and a
       recommendation is a proposal that travels to a human — there is no tool
       that carries it back as an action.
+
+  serveros-agent-mcp:
+    scope: one device — Agent sessions exposed by providers on this node
+    ownership: typed Agent Session control facade
+    implementation: mcp/agent_mcp.py
+    resources: []
+    tools:
+      - agent.list
+      - agent.inspect
+      - session.list
+      - session.inspect
+      - session.create
+      - session.send
+      - session.result
+    owns:
+      - typed normalization of provider-backed Agent/session operations
+      - forwarding mutation intents through serverosd admission before providers
+    does_not_own:
+      - device identity
+      - Agent Runtime definitions
+      - provider-native session truth
+      - admission policy
+      - Ability authority
+      - cross-device routing
+    explicitly_absent:
+      - remote.shell
+      - session.interrupt
+      - session.stop
+      - session.handoff
+      - session.resume
+    note: >-
+      Unsupported or not-yet-adapted verbs remain visible through each session's
+      action_support field rather than being translated to a stronger operation.
+      In particular BotMux close is not exposed as turn interrupt.
+
+      Why the four control verbs are absent rather than present-and-refusing:
+      admission returns REQUIRE_HUMAN for every human_gated verb, and this
+      vertical slice has no human approval channel — HumanControlProvider owns
+      approvals and v1 does not yet route one back. A tool that always fails
+      teaches a caller that the operation is broken; an absent tool plus a
+      declared reason teaches it that the operation is not yet reachable. The
+      gate itself is implemented and tested in SessionService, so wiring the
+      approval channel is what remains, not building the gate.
+
+      `SessionService` resolves provider support BEFORE admission and refuses
+      UNSUPPORTED and UNKNOWN alike. Checking support first is not a way around
+      the gate: it can only narrow, and a SUPPORTED verb still needs its own
+      ALLOW.
 
   serveros-fleet-mcp:
     scope: the fleet

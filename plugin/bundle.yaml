@@ -129,8 +129,8 @@ runtime:
 bin:
   path: bin
 
-# The node MCP surface. `path` is the payload directory copied into the
-# artifact; `servers` is what gets declared at the plugin root.
+# The MCP payload. `path` is copied into the artifact; `servers` are declared
+# at the plugin root. Node observation and Agent Session control stay separate.
 #
 # §23: this is a thin stdio adapter over serverosd's Unix socket. It holds no
 # state, reaches no shell, and when the daemon is down it refuses by name rather
@@ -154,6 +154,14 @@ mcp:
       # is replaced wholesale on the next plugin update, so the cache is thrown
       # away by the very event it was meant to speed up, and in the meantime the
       # artifact contains files the build did not put there.
+      env:
+        PYTHONDONTWRITEBYTECODE: "1"
+
+    - name: serveros-agent
+      # Separate from serveros-node: this facade may call provider APIs after
+      # serverosd admission, while the node surface remains strictly read-only.
+      command: python3
+      entry: bin/serveros-agent-mcp
       env:
         PYTHONDONTWRITEBYTECODE: "1"
 
