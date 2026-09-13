@@ -170,6 +170,10 @@ def test_the_declared_namespaces_agree_and_the_shape_is_pinned():
     assert top == set(paths_mod.STATE_SERVEROS_TOP_LEVEL)
     assert set(contract["namespaces"]["runtime"]["children"]) == set(
         paths_mod.STATE_SERVEROS_RUNTIME)
+    # §5/§6 widened the runtime children by one. Declared before the directory
+    # exists, which is the point of declaring a namespace at all: the tuple is
+    # the contract and the directory is the state.
+    assert "agent-control" in paths_mod.STATE_SERVEROS_RUNTIME
 
 
 def test_a_namespace_with_no_producer_is_absent_not_missing(tmp_path):
@@ -462,21 +466,24 @@ def test_the_environment_baseline_left_the_state_root():
     )
 
 
-def test_the_projections_namespace_is_empty_and_the_environment_kind_is_absent():
+def test_the_environment_projection_kind_is_absent():
     """No environment projection producer exists, so there is no environment
     projection.
 
-    The namespace itself is PRESENT — it exists, it is declared, and it is
-    legitimately empty. The KIND is what is absent, and asserting the namespace
-    was EXPECTED_ABSENT would have been asserting a more flattering fact than
-    the true one. An empty declared namespace and a missing declared namespace
-    are different states, and this test says which one this is.
+    The namespace itself is PRESENT — it exists and it is declared — and the
+    KIND is what is absent. Asserting the namespace was EXPECTED_ABSENT would
+    have asserted a more flattering fact than the true one.
+
+    This test used to also assert that the namespace was EMPTY, which was a
+    snapshot of the day it was written rather than a property of the design. It
+    went red the first time any projection was legitimately produced, by
+    `serverosctl memory project` — and a test that fails on correct work is a
+    test that gets relaxed until it passes again, which would have taken the
+    invariant below with it.
     """
     state = paths_mod.Paths().root("state")
     inventory = state_root.projection_inventory(root=state)
     assert inventory["exists"] is True
-    assert inventory["count"] == 0
-    assert inventory["unlabelled"] == []
     report = state_root.namespace_report(root=state)
     rows = {r["namespace"]: r for r in report["namespaces"]}
     assert rows["projections"]["state"] == state_root.PRESENT
@@ -484,8 +491,34 @@ def test_the_projections_namespace_is_empty_and_the_environment_kind_is_absent()
     # not present-and-empty, which is the residue shape that makes a retired
     # path look like a live one.
     assert not (state / "projections" / "environment").exists()
-    # And no empty scaffolding was left where the capture's parent used to be.
-    assert list((state / "projections").iterdir()) == []
+    assert not any(p["ref"] == "projections/environment" for p in inventory["projections"])
+    # No empty scaffolding was left where the capture's parent used to be, and
+    # no child of this namespace is a bare grouping directory.
+    for child in (state / "projections").iterdir():
+        assert (child / "projection.yaml").is_file() or any(
+            (g / "projection.yaml").is_file() for g in child.iterdir() if g.is_dir()
+        ), f"{child} is neither a projection nor a grouping of them"
+
+
+def test_every_projection_in_the_namespace_is_labelled_and_reproducible():
+    """The invariant the emptiness assertion was standing in for.
+
+    The namespace's promise is that its contents are derived, labelled and
+    deletable — which is a property of each projection, not a property of there
+    being none. A projection without a manifest, or one whose manifest claims
+    authority or denies reproducibility, is undeclared material in the one
+    place that could be mistaken for an authority, and nothing says otherwise.
+    """
+    state = paths_mod.Paths().root("state")
+    inventory = state_root.projection_inventory(root=state)
+    assert inventory["unlabelled"] == [], inventory["unlabelled"]
+    for entry in inventory["projections"]:
+        assert entry["present"] is True, entry
+        assert entry["manifest"] is not None, entry
+        assert entry["authority"] is False, entry
+        assert entry["problems"] == [], (entry["ref"], entry["problems"])
+        assert entry["manifest"]["reproducible"] is True, entry
+        assert entry["manifest"]["source_refs"], entry
 
 
 def test_the_evidence_migration_preserved_content_and_provenance():

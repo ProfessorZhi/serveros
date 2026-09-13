@@ -52,6 +52,7 @@ import importlib.util
 import json
 import os
 import socket
+import struct
 import subprocess
 import sys
 import time
@@ -76,12 +77,26 @@ probes_mod = _load("serveros_runtime_probes", "probes.py")
 inventory_mod = _load("serveros_runtime_inventory", "inventory.py")
 hygiene_mod = _load("serveros_runtime_hygiene", "hygiene.py")
 paths_mod = _load("serveros_runtime_paths", "paths.py")
+agent_sessions_mod = _load("serveros_runtime_agent_sessions", "agent_sessions.py")
 # The shared answer layer (§3/§6/§10/§14). The daemon computes NOTHING of its
 # own for these: it forwards to the same functions `serverosctl` calls, so the
 # CLI answer and the socket answer can differ only in the moment they were
 # taken — which `answered_by` and `measured_at` make visible rather than
 # something a caller has to assume.
 view_mod = _load("serveros_runtime_view", "view.py")
+# §4/§5/§6. The trusted-actor and approval kernels, plus the store they rest on.
+# The kernels are pure and the store is not, which is the split that lets the
+# decision a security boundary rests on be tested without a filesystem.
+agent_control_store_mod = _load("serveros_runtime_agent_control_store",
+                                "agent_control_store.py")
+_ACTOR_PATH = _HERE.parent / "context" / "actor.py"
+if "_serveros_context_actor" not in sys.modules:
+    _spec = importlib.util.spec_from_file_location("_serveros_context_actor", _ACTOR_PATH)
+    _module = importlib.util.module_from_spec(_spec)
+    sys.modules["_serveros_context_actor"] = _module
+    _spec.loader.exec_module(_module)
+actor_mod = sys.modules["_serveros_context_actor"]
+approval_mod = _load("serveros_runtime_approval", "approval.py")
 
 
 class DaemonError(Exception):
@@ -410,6 +425,14 @@ class Daemon:
         # rather than mkdir-ing a path that looks right. A daemon that invents
         # its own state location is the exact drift §40 is about.
         self._paths = paths_mod.Paths()
+
+        # §5/§6, §23. Trusted contexts and approvals survive a restart, and the
+        # store is opened lazily so that `serverosd --check` and the many tests
+        # that never touch agent control do not create a file they do not use.
+        self._control_store: object | None = None
+        # Whose connection the request in flight arrived on. Cleared by
+        # `handle`; read only by `agent.context.attach`.
+        self._peer: dict | None = None
 
     # A status answer older than this many tick intervals is labelled stale.
     # Three, not one: a single missed deadline is a slow machine, and calling
@@ -800,6 +823,9 @@ class Daemon:
             "observation.get": self._r_observation_get,
             "ability.list": self._r_ability_list,
             "ability.status": self._r_ability_status,
+            # Internal policy primitive used by the dedicated Agent Session MCP.
+            # The daemon decides intent only and never calls an Agent provider.
+            "agent.action.admit": self._r_agent_action_admit,
             # §3/§5/§6/§10/§14. Read-only, and every one of them is a forward
             # to `view.py` — the daemon adds no logic of its own here, because
             # a daemon that answers a question differently from the CLI is a
@@ -814,10 +840,28 @@ class Daemon:
             "anomaly.explain": self._r_anomaly_explain,
             "container.attribution": self._r_container_attribution,
             "node.status": self._r_node_status,
+            # §5/§6. The trusted half of Agent Control. These are on the
+            # NODE runtime plane, not on the control-agent MCP surface: an
+            # Agent runtime is a caller of `agent.*`, never a source of the
+            # identity behind one.
+            "agent.context.attach": self._r_agent_context_attach,
+            "agent.context.inspect": self._r_agent_context_inspect,
+            "agent.context.resolve": self._r_agent_context_resolve,
+            "agent.approval.inspect": self._r_agent_approval_inspect,
+            "agent.approval.record": self._r_agent_approval_record,
+            "agent.control.status": self._r_agent_control_status,
         }
 
-    def handle(self, request: dict) -> dict:
-        """Answer one IPC request. Unknown methods are refused by name."""
+    def handle(self, request: dict, *, peer: dict | None = None) -> dict:
+        """Answer one IPC request. Unknown methods are refused by name.
+
+        `peer` is who is on the other end of the connection — pid, uid, gid,
+        from `SO_PEERCRED`. It is a parameter rather than something a handler
+        fetches, because a handler that can go looking for its caller's
+        identity can also go looking at the wrong moment. Only one method
+        reads it (`agent.context.attach`), and that method's whole job is to
+        bind an observation to the process that made it.
+        """
         method = request.get("method")
         params = request.get("params") or {}
         handler = self.handler_map().get(method)
@@ -827,20 +871,33 @@ class Daemon:
                 method, "UNKNOWN_METHOD",
                 f"{method!r} is not served. Known: {sorted(self._methods())}",
             )
+        # Set for the duration of the call and cleared after. Safe, and only
+        # safe, because this daemon serves one connection at a time on one
+        # thread: a thread pool here would turn this into a race and make the
+        # sentence above a lie.
+        self._peer = peer
         try:
             return {"ok": True, "method": method, "result": handler(params)}
         except Exception as exc:  # noqa: BLE001 - the caller needs the reason
             return _error(method, type(exc).__name__, str(exc))
+        finally:
+            self._peer = None
 
     def _methods(self) -> tuple[str, ...]:
         return ("device.show", "context.current", "path.resolve", "path.admit",
                 "runtime.list", "runtime.status", "runtime.explain",
                 "resource.summary", "resource.hygiene", "observation.get",
-                "ability.list", "ability.status",
+                "ability.list", "ability.status", "agent.action.admit",
                 "runtime.groups", "runtime.group", "runtime.tree",
                 "runtime.budget", "process.top", "process.trace",
                 "anomaly.list", "anomaly.explain", "container.attribution",
-                "node.status")
+                "node.status",
+                # §5/§6. Trusted actor contexts and approvals. `agent.approval.record`
+                # is deliberately NOT in the MCP surface — see `mcp/agent_mcp.py`.
+                "agent.context.attach", "agent.context.inspect",
+                "agent.context.resolve",
+                "agent.approval.inspect", "agent.approval.record",
+                "agent.control.status")
 
     # -- the local capability view (§27/§28) --------------------------------
 
@@ -1034,6 +1091,336 @@ class Daemon:
         return paths_mod.Paths().admit(_required(params, "path"),
                                        writing=params.get("writing", True))
 
+    def _r_agent_action_admit(self, params) -> dict:
+        # `context` is required, not optional-with-a-default. An admission
+        # decision that silently ignores the subject it is adjudicating cannot
+        # become a context-sensitive one later without every existing caller
+        # having been wrong in the meantime; requiring it now means the callers
+        # that will need it already send it.
+        #
+        # §5. The payload is refused if it carries identity. Not ignored —
+        # refused by name, with the offending keys listed. A caller that sends
+        # `{"actor": "hwz"}` and gets back a decision has learned the wrong
+        # lesson about which fields ServerOS reads.
+        actor_mod.refuse_if_forged(params)
+        action = _required(params, "action")
+        base = agent_sessions_mod.admission(action, _required(params, "context"))
+
+        if base["decision"] != "REQUIRE_HUMAN":
+            # Read-only and delegation actions are decided by the contract
+            # alone. Nothing about who asked changes that, and consulting the
+            # store here would make an ordinary observation depend on a
+            # control-plane file being readable.
+            return {**base, "approval": None}
+
+        # Human-gated. The verdict below is assembled from three separate
+        # facts, and every one of them is reported even when the answer is no:
+        # whether a trusted context was presented at all, whether it still
+        # authorizes, and whether an approval matches. Collapsing them into a
+        # bare DENY is what sends a requester to ask for something they
+        # already have.
+        context_ref = params.get("context_ref")
+        if not context_ref:
+            return {**base, "approval": {
+                "decision": "APPROVAL_REQUIRED", "class": "human_gated",
+                "reason": ("no trusted context was presented, so no approval can "
+                           "be matched to anyone"),
+                "repair": ("obtain a trusted context from a HumanControlProvider "
+                           "and present its context_ref"),
+            }}
+
+        resolved = actor_mod.resolve(context_ref, self.control_store().contexts())
+        if not resolved["found"]:
+            # A well-formed ref ServerOS never minted. Reported as MISS rather
+            # than raised, and never substituted: a caller that invented a
+            # handle learns that inventing one does not work.
+            return {**base, "approval": {
+                "decision": "APPROVAL_REQUIRED", "class": "human_gated",
+                "reason": resolved["because"],
+                "context_ref": context_ref, "context_found": False,
+            }}
+
+        record = resolved["context"]
+        authority = actor_mod.authorizes(record, _iso(self._now()))
+        if not authority["authorizes"]:
+            return {**base, "approval": {
+                "decision": "APPROVAL_REQUIRED", "class": "human_gated",
+                "reason": authority["because"],
+                "context_ref": context_ref, "context_found": True,
+                "context_freshness": authority["state"],
+            }}
+
+        held = self.control_store().for_actor_action(
+            actor_ref=record["actor_ref"], action=action)
+        verdict = approval_mod.decide(
+            approvals=held,
+            request={"action": action, "target": params.get("target") or {},
+                     "params": params.get("args") or {},
+                     "actor_ref": record["actor_ref"]},
+            context_ref=context_ref,
+            now=_iso(self._now()),
+        )
+        if verdict["decision"] != "ALLOW":
+            return {**base, "approval": verdict, "context_ref": context_ref}
+
+        # Approved. The decision is ALLOW, and the class changes from
+        # `human_gated` to `human_approved`: `human_gated` names the rule that
+        # applied, and leaving it on an allowed request would make an audit
+        # unable to tell a request that was gated from one that is still
+        # waiting. The approval is NOT consumed here — `consume` is a write
+        # that happens after the action runs, so a caller that fails to
+        # perform the action can retry without spending a person's decision.
+        return {"action": action, "decision": "ALLOW", "class": "human_approved",
+                "reason": verdict["reason"], "context": dict(params.get("context") or {}),
+                "approval": verdict, "context_ref": context_ref}
+
+    # -- §5: trusted actor contexts ----------------------------------------
+
+    def control_store(self):
+        """The persisted contexts and approvals. Opened on first use."""
+        if self._control_store is None:
+            self._control_store = agent_control_store_mod.AgentControlStore(
+                Path(self.state_dir) / "agent-control" / "store.json",
+                now=self._now)
+        return self._control_store
+
+    def _r_agent_context_attach(self, params) -> dict:
+        """Mint a trusted context from a provider report. §5's only doorway.
+
+        Three refusals stand between an Agent runtime and a context that names
+        a human, and this method is where all three are enforced:
+
+          forged payload   the call carried `human` / `actor` / `approved`
+          wrong observer   the report names a pid that is not this caller
+          no human         the provider reported BLOCKED, so there is nobody
+
+        The middle one is the one that makes this more than a schema check. A
+        report is produced by running a probe inside the process tree of the
+        turn being identified — that is the whole mechanism by which an
+        identity provider decides who somebody is. So the report carries the
+        pid that observed it, and
+        this method requires that pid to be the process on the other end of
+        this connection. An agent cannot present a report observed by somebody
+        else's turn, because it cannot change which process it is.
+        """
+        actor_mod.refuse_if_forged(params)
+        report = params.get("report")
+        if not isinstance(report, dict):
+            raise actor_mod.Rejected("agent.context.attach needs a `report` object "
+                                     "from a HumanControlProvider")
+
+        observed_by = report.get("provider_pid")
+        peer = self._peer or {}
+        peer_pid = peer.get("pid")
+        if observed_by is None:
+            raise actor_mod.Rejected(
+                "the provider report does not say which process observed the "
+                "actor. Without it ServerOS cannot tell an observation made in "
+                "a real turn from one assembled by the caller.")
+        if peer_pid is None:
+            raise actor_mod.Rejected(
+                "this request did not arrive on a socket, so there is no caller "
+                "process to bind the observation to")
+        if int(observed_by) != int(peer_pid):
+            raise actor_mod.Rejected(
+                f"the report was observed by pid {observed_by}, and this request "
+                f"arrived from pid {peer_pid}. A trusted context binds to the "
+                "process that established it; a report carried in from "
+                "elsewhere is not evidence about this caller.")
+
+        now = _iso(self._now())
+        record = actor_mod.build(report, now=now)
+        self.control_store().put_context(record)
+        return {
+            "context_ref": record["context_ref"],
+            "actor_ref": record["actor_ref"],
+            "observed_by_pid": int(observed_by),
+            "provenance": record["provenance"],
+            "provider_status": record["provider_status"],
+            "freshness": actor_mod.freshness(record, now),
+            "note": ("this ref is the caller's half of the protocol; ServerOS "
+                     "resolves the actor from it and never from a field the "
+                     "caller supplies"),
+        }
+
+    def _r_agent_context_inspect(self, params) -> dict:
+        """What ServerOS recorded for a presented ref, aged now.
+
+        Read-only, and it takes a REF rather than an actor. There is no method
+        here that answers "who is this", because that question has no
+        trustworthy answer outside the evidence that produced the ref.
+        """
+        ref = _required(params, "context_ref")
+        resolved = actor_mod.resolve(ref, self.control_store().contexts())
+        if not resolved["found"]:
+            return {"found": False, "context_ref": ref,
+                    "because": resolved["because"]}
+        record = resolved["context"]
+        now = _iso(self._now())
+        return {"found": True, "context_ref": ref,
+                "actor_ref": record["actor_ref"],
+                "human_control_provider": record["human_control_provider"],
+                "transport": record["transport"],
+                "observed_at": record["observed_at"],
+                "expires_at": record["expires_at"],
+                "freshness": actor_mod.freshness(record, now),
+                "authorizes": actor_mod.authorizes(record, now)}
+
+    def _r_agent_context_resolve(self, params) -> dict:
+        """The stored record itself, for a caller that has to act on it.
+
+        `agent.context.inspect` is the curated view — a person reading it wants
+        `freshness` and `authorizes`, already decided. The Agent Control router
+        is not a person reading: it hands the record to the resolver, which is
+        what does the deciding, and a curated view would make the daemon and
+        the resolver two places that decide the same thing.
+
+        Still keyed by a ref and never by an actor. The caller can ask about a
+        ref it was given; it cannot ask who somebody is.
+        """
+        ref = _required(params, "context_ref")
+        resolved = actor_mod.resolve(ref, self.control_store().contexts())
+        if not resolved["found"]:
+            return {"found": False, "context_ref": ref,
+                    "because": resolved["because"]}
+        return {"found": True, "context_ref": ref, "context": resolved["context"]}
+
+    # -- §6: approvals ------------------------------------------------------
+
+    def _r_agent_approval_inspect(self, params) -> dict:
+        """What a person has approved for this context, and whether it covers
+        the request in hand.
+
+        The actor comes from the context, never from the caller, and the
+        request fingerprint is computed here rather than accepted — a
+        caller-supplied fingerprint would let the requester choose what its
+        approval was for.
+        """
+        context_ref = _required(params, "context_ref")
+        resolved = actor_mod.resolve(context_ref, self.control_store().contexts())
+        if not resolved["found"]:
+            return {"found": False, "context_ref": context_ref,
+                    "because": resolved["because"]}
+        record = resolved["context"]
+        action = _required(params, "action")
+        target = params.get("target") or {}
+        args = params.get("args") or {}
+        held = self.control_store().for_actor_action(
+            actor_ref=record["actor_ref"], action=action)
+        out = {
+            "found": True, "context_ref": context_ref, "action": action,
+            "actor_ref": record["actor_ref"],
+            "request_fingerprint": approval_mod.fingerprint(
+                action=action, target=target, params=args),
+            "held": [{"approval_ref": a.get("approval_ref"),
+                      "state": a.get("state"),
+                      "request_fingerprint": a.get("request_fingerprint"),
+                      "expires_at": a.get("expires_at")} for a in held],
+        }
+        if action in approval_mod.human_gated_actions():
+            out["verdict"] = approval_mod.decide(
+                approvals=held,
+                request={"action": action, "target": target, "params": args,
+                         "actor_ref": record["actor_ref"]},
+                context_ref=context_ref, now=_iso(self._now()))
+        else:
+            out["verdict"] = {
+                "decision": "NOT_GATED", "action": action,
+                "reason": (f"{action!r} is not a human-gated action, so there is "
+                           "nothing for a person to approve"),
+            }
+        return out
+
+    def _r_agent_approval_record(self, params) -> dict:
+        """Record a human decision. Served, and not reachable by an Agent.
+
+        This method exists, is tested, and is deliberately absent from the
+        control-agent MCP surface. That absence is the enforcement, and it is
+        the honest limit of what a single-user host can do: agents and the
+        operator run as the same uid, so no permission bit separates them. What
+        separates them is that the interface an agent speaks has no verb for
+        granting approval, and a test asserts the tool list contains none.
+
+        It refuses a provider that cannot carry approvals rather than
+        recording a decision it did not receive. `human.approval.transport` is
+        UNSUPPORTED on the configured provider — there is no callback surface,
+        and §6 says to mark that as a limitation instead of improvising around
+        it. Accepting a "decision" here would be exactly the improvised path.
+        """
+        actor_mod.refuse_if_forged(params)
+        action = _required(params, "action")
+        if action not in approval_mod.human_gated_actions():
+            return {"recorded": False, "action": action,
+                    "decision": "NOT_GATED",
+                    "reason": (f"{action!r} is not a human-gated action; issuing "
+                               "an approval for it would create authority the "
+                               "contract never granted")}
+        # Always refused, with or without an `inbound_event_ref`. Accepting a
+        # reference to an event would be accepting the caller's word that the
+        # event happened, which is the same as accepting the caller's word
+        # about who approved — and that is what this whole section exists to
+        # not do. The field is named in the refusal anyway, so that a client
+        # which guessed at the shape learns why the shape does not exist yet.
+        supplied = bool(params.get("inbound_event_ref"))
+        return {"recorded": False, "action": action,
+                "decision": "APPROVAL_TRANSPORT_UNSUPPORTED",
+                "reason": (
+                    ("an inbound_event_ref was supplied, and no provider on this "
+                     "node can produce one: a reference is only evidence if "
+                     "ServerOS received the event, and it has no surface that "
+                     "could have. " if supplied else
+                     "an approval must come from an inbound event the "
+                     "HumanControlProvider attributed to a person and bound to "
+                     "this request's fingerprint. Nothing supplied one. ")
+                    + "The configured provider cannot: measured on 2026-09-14, "
+                      "its event, message and approval endpoints all answer 404 "
+                      "not_found_yet and its session list is read-only. ServerOS "
+                      "reports a transport limitation rather than recording a "
+                      "decision it did not receive (§6)."),
+                "repair": ("record the decision deliberately as the operator "
+                           "with `runtime/approval.py`, or wait for a provider "
+                           "that carries approvals"),
+                "implementation_status": ("the binding, the window, the "
+                                          "consumption and the five verdicts are "
+                                          "implemented and tested; what is "
+                                          "missing is a transport, not a rule")}
+
+    def _r_agent_control_status(self, params) -> dict:
+        """How much of Agent Control is live on THIS node, and what it cannot see.
+
+        Deliberately silent about which transport is in use, and about what that
+        transport can do. §18 forbids the daemon from growing into a client of
+        anything, and the first draft of this method broke that: it imported
+        `mcp/human_control.py` to ask the provider for its own capability list.
+        That import is a dependency, and a daemon that depends on a provider is
+        a daemon that cannot answer when the provider is broken — which is the
+        moment somebody needs the status.
+
+        So the split is: the daemon answers for the control plane it OWNS (the
+        store, the gated verbs, the decision it will make). The provider answers
+        for the transport, on a surface that is allowed to know about transports
+        — `python3 mcp/human_control.py --capabilities`. A caller that wants the
+        whole picture asks both, and each answer names which it is.
+        """
+        store = self.control_store()
+        return {
+            "authority": "serverosd",
+            "this_is": ("the node's own control-plane state. It says nothing "
+                        "about which HumanControlProvider is configured or what "
+                        "that provider can do; ask the provider surface for that."),
+            "store": store.summary(),
+            "human_gated_actions": list(approval_mod.human_gated_actions()),
+            "identity_source": (
+                "a trusted actor context can only be minted by "
+                "`agent.context.attach`, from a report produced by a process "
+                "the caller is. Nothing on this surface accepts an actor."),
+            "approval_issuance": (
+                "refused on every served method. Recording a human decision "
+                "needs a transport that carries one, and no transport reachable "
+                "from here does; see `agent.approval.record` for the reason."),
+            "provider_surface": "mcp/human_control.py",
+        }
+
     def _r_runtime_list(self, params) -> dict:
         return {"count": len(self.registry), "resources": [
             {"id": r.id, "kind": r.kind, "owner": r.owner_ref,
@@ -1192,7 +1579,7 @@ class Daemon:
         except (json.JSONDecodeError, UnicodeDecodeError) as exc:
             response = _error(None, "BAD_REQUEST", f"{type(exc).__name__}: {exc}")
         else:
-            response = self.handle(request)
+            response = self.handle(request, peer=_peer_credentials(connection))
         try:
             connection.sendall(json.dumps(response, default=str).encode() + b"\n")
         except OSError:
@@ -1280,6 +1667,32 @@ class Daemon:
             self.socket_path.unlink()
         except OSError:
             pass
+
+
+def _peer_credentials(connection) -> dict | None:
+    """Who is on the other end of an AF_UNIX connection, as the kernel tells it.
+
+    `SO_PEERCRED` is filled in by the kernel, not sent by the client, which is
+    the entire reason it is usable as evidence: a client cannot state its own
+    pid here any more than it can state its own uid. Anyone can write
+    `"pid": 1234` into a JSON body.
+
+    Returns None when the platform has no such option (macOS, where the
+    equivalent is `getpeereid` and the pid is not available at all). A caller
+    that cannot be identified is reported as unidentified rather than guessed
+    at — `agent.context.attach` refuses, by name, rather than proceeding on an
+    assumption that happens to hold on Linux.
+    """
+    option = getattr(socket, "SO_PEERCRED", None)
+    if option is None:  # pragma: no cover - Linux is the deployment target
+        return None
+    try:
+        size = struct.calcsize("3i")
+        raw = connection.getsockopt(socket.SOL_SOCKET, option, size)
+        pid, uid, gid = struct.unpack("3i", raw)
+    except OSError:  # pragma: no cover - the socket went away mid-request
+        return None
+    return {"pid": pid, "uid": uid, "gid": gid}
 
 
 def _error(method, code: str, message: str) -> dict:

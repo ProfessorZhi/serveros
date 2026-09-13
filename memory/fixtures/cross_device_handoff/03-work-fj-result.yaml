@@ -1,0 +1,27 @@
+id: mem:fixture-work-fj-result-1
+kind: checkpoint
+subject: project/serveros/SRV-0007
+at: 2026-09-13T03:30:00Z
+by: claude-code
+source: memory/fixtures/cross_device_handoff/
+revision: 19652da
+device_ref: device:work-fj
+related:
+  - mem:fixture-beijing-handoff-1
+body: |
+  Result, written on `device:work-fj` and answering
+  `mem:fixture-beijing-handoff-1`.
+
+  The forward is gone. Nothing is listening on the local port the handoff
+  named, and no process on this device holds a forward for that work item —
+  the session that created it ended, which is the registration defect recorded
+  as Case A.
+
+  What this device CAN say, and what the Linux side could not: the container on
+  the other end is reachable and healthy from here through the ordinary
+  transport, so the missing piece is exactly one object — the tunnel — and it
+  is missing on the Windows side, not on the Linux one.
+
+  Next: re-create the forward, or record that the task no longer needs it.
+  Nothing was started, because starting a forward the user did not ask for is
+  the same defect with the direction reversed.

@@ -50,6 +50,29 @@ ROOT = _HERE.parent
 
 CONTRACT = _HERE / "managed-runtime-contract.yaml"
 
+
+def _sibling(name: str, filename: str):
+    """Load a sibling module by path, the way the rest of this package does.
+
+    Used to reach `anomaly.py`'s two constant tables rather than restating
+    them. They are the SAME rule asserted at two moments — registration and
+    observation — and a second copy is how the two would come to disagree
+    about what "floating" means without either of them changing visibly.
+    """
+    if name in sys.modules:
+        return sys.modules[name]
+    spec = importlib.util.spec_from_file_location(name, _HERE / filename)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+_anomaly = _sibling("serveros_runtime_anomaly", "anomaly.py")
+SESSION_OWNER_PREFIXES = _anomaly.SESSION_OWNER_PREFIXES
+DURABLE_LIFECYCLE_CLASSES = _anomaly.DURABLE_LIFECYCLE_CLASSES
+FLOATING_DEPENDENCY_PATTERNS = _anomaly.FLOATING_DEPENDENCY_PATTERNS
+
 # The typed-ref shape used across ServerOS. Same convention as `skill:<id>`
 # and `device:<id>`; kept as a pattern rather than a parser because it must
 # agree with `fleet/transport.py`, not replace it.
@@ -175,6 +198,25 @@ def _criticality_defaults() -> dict[str, str]:
     return dict(contract()["criticality"]["default_by_lifecycle"])
 
 
+def _effective_criticality(record: dict) -> str:
+    """The rank, computable from a raw record before a `Resource` exists.
+
+    `criticality` is a plain string in this schema, not a `{"level": ...}`
+    block like `protection`. The first version of the floating-dependency gate
+    re-derived the default inline as `or "normal"`, which is wrong twice over:
+    it crashes on the declared form (`.get` on a `str`), and where it does not
+    crash it disagrees with the contract, which ranks an undeclared
+    `persistent` resource `important`. Both are the same mistake — a second
+    copy of a rule that lives in a file people review. So there is one lookup,
+    and `Resource.criticality` is a caller of it rather than a peer.
+    """
+    declared = record.get("criticality")
+    if declared:
+        return declared
+    lifecycle = (record.get("lifecycle") or {}).get("class") or ""
+    return _criticality_defaults().get(lifecycle, "normal")
+
+
 def _recovery_models() -> tuple[str, ...]:
     return tuple(m["id"] for m in contract()["recovery_models"])
 
@@ -280,10 +322,7 @@ class Resource:
         wrong answer available: something nobody ranked is not thereby
         unimportant.
         """
-        declared = self._r.get("criticality")
-        if declared:
-            return declared
-        return _criticality_defaults().get(self.lifecycle, "normal")
+        return _effective_criticality(self._r)
 
     @property
     def criticality_is_declared(self) -> bool:
@@ -549,6 +588,15 @@ def _check_kind_requirements(record: dict, kind: str, where: str) -> None:
             found, value = _dig(record, req["field"])
             if not found or value in (None, "", [], {}):
                 fail(f"`{req['field']}`", req.get("because") or "missing")
+            # A closed set for one field of one kind, so the constraint lives
+            # in the contract rather than in prose beside it. §40 needed this:
+            # "an MCP server registered here names a lifetime of persistent or
+            # session-scoped" is a rule about a value, not about presence, and
+            # without it the modes with no process behind them would be
+            # registrable as runtimes.
+            allowed = req.get("in")
+            if allowed is not None and value not in allowed:
+                fail(f"`{req['field']}` in {allowed}", req.get("because") or "out of range")
         elif "probe_axis" in req:
             axis = req["probe_axis"]
             have = any(p.get("axis") == axis for p in record.get("probes") or ())
@@ -605,6 +653,112 @@ def _check_kind_requirements(record: dict, kind: str, where: str) -> None:
             fail(f"one of: {options}",
                  "neither was provided, so this resource could never be "
                  "reported healthy and could never be reported broken either")
+
+
+def _check_ownership(record: dict, where: str) -> None:
+    """ARCHITECTURE.md invariant 6, at the only moment it can be checked.
+
+    Case A. A tunnel a task depended on was registered with `persistent`
+    lifecycle and `session:*` as its owner. It was retired, on time and by
+    design, when an unrelated Agent session ended. The far side stayed healthy
+    throughout, and so did the tunnel — every observation between creation and
+    retirement was correct. There is nothing to detect afterwards, which is why
+    the question is asked here, while the author is still present to answer it.
+
+    The repair is deliberately narrow: a caller that genuinely wants a
+    session-lifetime resource registers `disposable`. The rule refuses the
+    LIE, not the resource.
+    """
+    owner = (record.get("owner") or {}).get("ref") or ""
+    lifecycle = (record.get("lifecycle") or {}).get("class") or ""
+
+    if not any(owner.startswith(prefix) for prefix in SESSION_OWNER_PREFIXES):
+        return
+    if lifecycle not in DURABLE_LIFECYCLE_CLASSES:
+        return
+
+    raise RegistryInvalid(
+        f"{where} ({record.get('id')}): a resource owned by {owner!r} may not "
+        f"declare `lifecycle.class: {lifecycle}`. A session may cause creation; "
+        f"it may not be the owner of record for anything that must outlive it — "
+        f"this is the case where a required tunnel disappeared with an unrelated "
+        f"Agent session while reporting healthy the entire time. Register it "
+        f"`disposable` with a note, or give it an owner that outlives the "
+        f"session (`project:`, `work-item:`, `serveros:`, `ability:`)."
+    )
+
+
+def _names_an_absolute_path(text: str) -> bool:
+    """Whether the text names a real on-disk location, as opposed to merely
+    containing a slash.
+
+    The first version of the floating-dependency gate asked `"/" in text`.
+    That is true of `npx @playwright/mcp`, whose slash belongs to a scoped
+    package NAME, and the result was that a critical resource invoking a
+    versionless scoped package was admitted — the one form the contract
+    singles out ("npx <pkg> with no version specifier"), waved through by a
+    false positive about a punctuation character. A scoped package is not a
+    location, and the difference is exactly the difference this gate is for.
+
+    So the slash has to START a token: preceded by nothing, whitespace, or an
+    opening delimiter. `@playwright/mcp` fails that (the slash follows a
+    letter) and `/opt/toolchains/...` passes it. A Windows drive path is
+    accepted on the same grounds.
+    """
+    return bool(
+        re.search(r"(?:^|[\s\"'=(:,])/(?![/\s])", text)
+        or re.search(r"\b[A-Za-z]:\\", text)
+    )
+
+
+def _check_floating_dependency(record: dict, where: str) -> None:
+    """ARCHITECTURE.md invariant 8, at registration.
+
+    Case C. One node reached Playwright through `npx @playwright/mcp@latest`;
+    the other through an absolute path to a versioned artifact. Both worked,
+    the two ran "the same" toolchain and did not, and nothing in the catalogue
+    could have said so.
+
+    The severity is derived from the resource's OWN criticality and protection,
+    never from anything the caller passes — a caller that could choose its own
+    severity would choose the one that lets it proceed. A floating dependency
+    on a scratch helper is a finding; on a `critical` or `protected` resource
+    it blocks, because "it worked yesterday" and "it works today" are then
+    statements about two different programs.
+    """
+    text = " ".join(str(record.get(key) or "") for key in
+                    ("command", "observe", "materialization", "note"))
+    if not text.strip():
+        return
+
+    # A pinned absolute path is the repair, and an `@latest` elsewhere in the
+    # text does not un-pin it — without that, the detector fires on a resource
+    # whose own note explains that it used to float.
+    if _names_an_absolute_path(text) and "@latest" not in text:
+        return
+
+    hits = sorted({name for name, needle in FLOATING_DEPENDENCY_PATTERNS
+                   if needle in text})
+    if not hits:
+        return
+
+    # The severity threshold, from the contract's `admission.findings`:
+    # `criticality is critical, or protection is protected`. The rank comes
+    # from `_effective_criticality` rather than a `.get("level")` here —
+    # `criticality` is a plain string in this schema, and reading it as a block
+    # crashed on exactly the resource this gate exists to refuse.
+    criticality = _effective_criticality(record)
+    protection = (record.get("protection") or {}).get("level") or "normal"
+    if criticality != "critical" and protection != "protected":
+        return
+
+    raise RegistryInvalid(
+        f"{where} ({record.get('id')}): PERSISTENT_RUNTIME_FLOATING_DEPENDENCY "
+        f"at HIGH severity — this resource is {criticality}/{protection} and "
+        f"resolves through something that moves ({', '.join(hits)}). Pin it to "
+        f"an absolute path to a versioned artifact, or record the resolved "
+        f"revision alongside the resource."
+    )
 
 
 def validate(record: dict, where: str = "resource") -> Resource:
@@ -806,6 +960,8 @@ def validate(record: dict, where: str = "resource") -> Resource:
                 )
 
     _check_kind_requirements(record, kind, where)
+    _check_ownership(record, where)
+    _check_floating_dependency(record, where)
     return Resource(record)
 
 

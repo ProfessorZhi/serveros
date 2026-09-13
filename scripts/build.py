@@ -98,7 +98,8 @@ def _git(repo: Path, *args: str) -> bytes:
 # `runtime` rather than for symmetry: the entry points resolve the runtime
 # relative to themselves, so the pair is one unit and shipping either alone
 # produces a shim that cannot import what it names.
-CORE_MODULES = ("context", "space", "relations", "mcp", "runtime", "bin")
+CORE_MODULES = ("context", "space", "relations", "mcp", "runtime", "bin",
+                "abilities", "memory")
 
 
 def resolve_ability_rev(repo: Path, rev: str) -> str:
@@ -250,6 +251,172 @@ def validate_recommended(bundle: dict, local_root: Path, ability_repo: Path,
             raise ValueError(
                 f"recommended {name} is marked `{status}` but does not resolve at "
                 f"{ability_rev[:12]}")
+
+
+# Where the published pack declarations live inside ability-management. Named
+# here rather than defaulted at each call site: `publishing.location` in
+# `abilities/pack-contract.yaml` says "beside the manifest it names members
+# from", and a reader that guessed a different filename would be reading a
+# different contract from the one that was declared.
+PACK_DECLARATIONS_FILE = "ability-packs.yaml"
+
+
+def catalogued_abilities(ability_repo: Path, ability_rev: str) -> list[str]:
+    """Every ability name in the manifest AT THE PINNED REVISION.
+
+    Read from the git object, not from the checkout — the same discipline
+    `read_manifest()` uses, and for the same reason: a dirty ability-management
+    checkout must not be able to answer a question about what the catalogue
+    contains. The names come out of `abilities[]`, which is the list the
+    closure rule means by "the manifest". `authors[]` is not abilities, and a
+    projection that read it would answer a different question.
+    """
+    raw = _git(ability_repo, "show", f"{ability_rev}:abilities-manifest.yaml")
+    document = yaml.safe_load(raw.decode())
+    if not isinstance(document, dict):
+        raise ValueError(f"abilities-manifest.yaml at {ability_rev[:12]} is not a mapping")
+    names = []
+    for entry in document.get("abilities") or []:
+        if isinstance(entry, dict) and entry.get("name"):
+            names.append(str(entry["name"]))
+    if not names:
+        # An empty catalogue makes every pack fail rather than pass, which is
+        # the correct direction — but it is much more likely to mean the
+        # manifest moved than that every ability was deleted, and the two are
+        # worth telling apart before someone reads the wrong one.
+        raise ValueError(
+            f"abilities-manifest.yaml at {ability_rev[:12]} declares no abilities. "
+            "A closure check against an empty catalogue must not be reported as "
+            "a set of pack failures")
+    return names
+
+
+def published_packs(ability_repo: Path, ability_rev: str) -> list[dict]:
+    """The pack declarations published in ability-management, at that revision.
+
+    The declaration half of `serveros/ability-pack.v1`. `abilities/pack-contract.yaml`
+    holds the schema half — the record shape, the member roles, the pin rule,
+    what refuses — and its `publishing.location` has said since it was written
+    that the packs themselves belong in ability-management, "beside the manifest
+    it names members from". That sentence was carried as
+    `location_status: DECLARED_NOT_IMPLEMENTED` for as long as it was untrue.
+
+    Read from the git object and not from the checkout, exactly as
+    `catalogued_abilities()` reads the manifest and for exactly the same
+    reason: a dirty working copy must not be able to answer a question about
+    what has been published. The two readers are deliberately symmetric — one
+    reads the catalogue, one reads the packs that name members of it, and they
+    must agree about which revision they are talking about or the closure
+    answer is about two different worlds.
+    """
+    raw = _git(ability_repo, "show", f"{ability_rev}:{PACK_DECLARATIONS_FILE}")
+    document = yaml.safe_load(raw.decode())
+    if not isinstance(document, dict):
+        raise ValueError(
+            f"{PACK_DECLARATIONS_FILE} at {ability_rev[:12]} is not a mapping")
+    packs = document.get("packs")
+    if not isinstance(packs, list) or not packs:
+        # Refusing rather than returning an empty list. An empty declaration
+        # set would make every pack vanish and the build would report success
+        # over a product with no packs at all — which is the failure mode this
+        # whole reader exists to make impossible, arriving through the one door
+        # left open: a file that parses and says nothing.
+        raise ValueError(
+            f"{PACK_DECLARATIONS_FILE} at {ability_rev[:12]} declares no packs. "
+            "A build against an empty pack catalogue must not be reported as a "
+            "product with nothing to check")
+    return packs
+
+
+def _packs_module():
+    """`abilities/packs.py`, loaded by path.
+
+    By path and not by import, because `abilities/` is not a package and this
+    directory is not on `sys.path` — the same reason `runtime/cli.py` loads its
+    modules this way. An import that works from one entry point and not another
+    is how a check gets skipped without anybody noticing.
+    """
+    import importlib.util
+
+    name = "serveros_abilities_packs"
+    if name in sys.modules:
+        return sys.modules[name]
+    spec = importlib.util.spec_from_file_location(
+        name, repo_root() / "abilities" / "packs.py")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+def validate_packs(contract_path: Path, ability_repo: Path, ability_rev: str) -> dict:
+    """Refuse a pack that names an ability the catalogue does not have.
+
+    `abilities/pack-contract.yaml` declared this rule and nothing implemented
+    it. A `grep` for that filename over this repository returned one hit: the
+    contract itself. The rule said "refused at build time, not carried with a
+    marker beside it", and there was no build-time refusal anywhere — so three
+    of the four packs named a required member that resolved to nothing, and the
+    only place that surfaced was a reader who happened to look.
+
+    The pin is checked here too, and separately. A pack whose members all
+    resolve against the wrong catalogue is the case this cannot afford to miss:
+    it is the one that goes green.
+    """
+    contract = yaml.safe_load(contract_path.read_text(encoding="utf-8"))
+    packs = _packs_module()
+
+    # Two sources, deliberately. The contract supplies the RULES and the
+    # declarations supply the PACKS, and they now live in two repositories —
+    # which is the point of `publishing.location`, and also the thing that
+    # makes the assembly worth doing explicitly instead of letting `resolve()`
+    # read `contract["packs"]` and quietly get whatever the local file had.
+    # `resolve()` is unchanged: it still asks whether the packs a contract
+    # declares close against a catalogue. This is where those packs come from.
+    assembled = dict(contract, packs=published_packs(ability_repo, ability_rev))
+    report = packs.resolve(assembled, catalogued_abilities(ability_repo, ability_rev),
+                           catalogue_revision=ability_rev, catalogue_repo=str(ability_repo))
+
+    if report["refused"]:
+        # The MEMBER is named, not just the pack. "pack:0 does not exist" reads
+        # as a broken pack; the thing that is actually absent is an ability, and
+        # the two have different repairs — fix the pack, or add the ability.
+        # The same argument the pack's own `resolution` block makes about never
+        # dropping an unresolved member, applied to the message that reports it.
+        missing = ["%s -> %s" % (p["id"], ", ".join(m["ability"] for m in p["unresolved_required"]))
+                   for p in report["packs"] if p["refused"]]
+        raise ValueError(
+            f"pack(s) name a required ability that does not exist in "
+            f"ability-management@{ability_rev[:12]}: {'; '.join(missing)}. A pack "
+            "is names, and a name that resolves to nothing is installed happily "
+            "and planned around")
+    # The pin verdict is finished here rather than inside `resolve()`, and it is
+    # finished by a call and not by a loop. It was a loop here for one revision
+    # and that is exactly how this repository produced two answers to one
+    # question: `abilities/packs.py` has a command-line entry point, and with
+    # the ancestor rule living only in this file that entry point printed
+    # `FAIL ... PIN_MISMATCH` over the very same files this function built
+    # successfully. `settle_pins()` is the one implementation, and it lives
+    # beside the verdict vocabulary it writes into.
+    drifted = packs.settle_pins(report, revision=ability_rev, repo=ability_repo)
+
+    # Summarized AFTER the pin upgrade, not before it. It was printed before
+    # for one revision, and the build log then carried five `FAIL ...
+    # PIN_MISMATCH` lines that the block above immediately upgraded and
+    # accepted. A log that prints FAIL over a build that succeeds is worse than
+    # a quiet one: it teaches whoever reads it that FAIL is noise, which is the
+    # cost the whole pin mechanism was added to avoid paying.
+    line = packs.summarize(report)
+    if line:
+        print(line)
+
+    if drifted:
+        raise ValueError(
+            "packs pin a catalogue revision other than the one being built "
+            f"against: {['%s=%s' % (v['pack'], str(v['pinned'])[:12]) for v in drifted]} "
+            f"vs {ability_rev[:12]}. Revalidate and repin, or the closure above "
+            "is about a catalogue nobody can produce")
+    return report
 
 
 def local_skill_files(root: Path) -> list[tuple[Path, Path]]:
@@ -504,7 +671,8 @@ def build_readme(bundle: dict, version: str, skills: list[str], ability_rev: str
     )
 
 
-def plan(bundle_path: Path, ability_repo: Path, ability_rev: str, output: Path, marketplace_path: Path):
+def plan(bundle_path: Path, ability_repo: Path, ability_rev: str, output: Path,
+         marketplace_path: Path):
     bundle = load_composition(bundle_path)
     version = f"{bundle['version']}+{bundle['cachebuster']}"
 
@@ -558,7 +726,16 @@ def _json_bytes(value: dict) -> bytes:
 
 
 def build(bundle_path: Path, ability_repo: Path, ability_rev: str, output: Path,
-          marketplace_path: Path, write: bool) -> int:
+          marketplace_path: Path, write: bool, pack_contract_path: Path) -> int:
+    # Validated here and not in `plan()`. The two are used for different
+    # questions: `build()` produces the artifact, and `runtime_truth.py` calls
+    # `plan()` to RECOMPUTE an installed artifact from a recorded pin. A pack
+    # pin and the revision being built against are the same fact when a release
+    # is made, and two different facts when an old artifact is being re-derived
+    # — so putting the check in `plan()` made every recomputation of a
+    # historical artifact refuse for a reason that was about the release
+    # calendar rather than about the artifact.
+    validate_packs(pack_contract_path, ability_repo, ability_rev)
     files, manifests, readme, marketplace, _version = plan(
         bundle_path, ability_repo, ability_rev, output, marketplace_path
     )
@@ -640,6 +817,8 @@ def main() -> int:
     ap.add_argument("--output", type=Path, required=True,
                     help="runtime artifact destination, e.g. "
                          "$DATA_ROOT/runtime-assets/hwz-server-os/current")
+    ap.add_argument("--pack-contract", type=Path,
+                    help="the ability-pack contract to validate the catalogue against.\n                         Defaults to this repository's own. Injectable for the same\n                         reason --bundle is: a hermetic test builds a synthetic\n                         catalogue, and a contract pinning a real revision would\n                         refuse it for a reason that has nothing to do with the\n                         code under test.")
     ap.add_argument("--marketplace-path", type=Path, required=True,
                     help="Codex marketplace descriptor, e.g. "
                          "$DATA_ROOT/runtime-assets/hwz-server-os/.agents/plugins/marketplace.json")
@@ -655,7 +834,8 @@ def main() -> int:
                 f"--ability-rev must be a full commit SHA; {args.ability_rev} resolves to {rev}"
             )
         return build(args.bundle, args.ability_repo, rev, args.output,
-                     args.marketplace_path, args.write)
+                     args.marketplace_path, args.write,
+                     args.pack_contract or (root / "abilities" / "pack-contract.yaml"))
     except (OSError, ValueError) as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 2

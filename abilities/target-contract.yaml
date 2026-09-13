@@ -1,0 +1,297 @@
+# Agent Control Target Resolution — from a semantic request to one addressable target.
+#
+# Why this file exists
+# --------------------
+# Everything needed to answer "can this device run this Agent action" already
+# exists in ServerOS, in pieces that were each written for a different caller:
+#
+#   abilities/resolver.py         the eight-input intersection behind "can this
+#                                 device do this at all"
+#   abilities/provider_instance.py  one provider's readiness on one device, with
+#                                 its observations
+#   runtime/agent_sessions.py     the closed support vocabulary and the admission
+#                                 decision for an Agent Session action
+#   fleet/transport.py            device identity, profiles, and the availability
+#                                 axes behind "is there a route to it"
+#
+# What did not exist is the thing a caller actually holds: a request that names a
+# device and an action and nothing else, and a single record that says which
+# concrete provider instance on that device would carry it out, which adapter
+# would materialize it for that runtime, whether the action is supported there,
+# whether the provider could execute it right now, whether a person has to
+# approve it, and where the request would be sent.
+#
+# A caller that assembles that answer itself assembles it differently every time.
+# That is not a hypothetical: this repository's own history is a list of places
+# where two callers each resolved "available" from the inputs they happened to
+# have, and the two answers disagreed. So the chain is a kernel, in one file,
+# evaluated in a fixed order, with a test asserting the order.
+#
+# Not a second resolver
+# ---------------------
+# This module resolves a TARGET, not an ABILITY. It owns no capability rule of
+# its own and reads no new vocabulary: it calls `abilities/resolver.py` for the
+# capability intersection, `abilities/provider_instance.py` for readiness,
+# `runtime/agent_sessions.py` for support and admission, and `fleet/transport.py`
+# for device identity and route availability. Every one of those is imported, not
+# restated — a local copy of a closed vocabulary is a copy that disagrees
+# eventually, and the disagreement is always found by whichever caller trusts the
+# copy.
+#
+# The separation this file must not blur
+# --------------------------------------
+# Support, readiness, admission and route are four different facts about four
+# different subjects, they fail for four different reasons, and they are repaired
+# four different ways:
+#
+#   support     a CAPABILITY fact, per provider and action   repair: another provider
+#   readiness   a RUNTIME fact, per provider instance        repair: repair the machine
+#   admission   a POLICY decision, per request               repair: ask a person
+#   route       a TRANSPORT fact, per device                 repair: deploy a node
+#
+# Each is reported in its own field, in its own vocabulary, and the record carries
+# the FIRST one that refused rather than a summary of all of them. A record whose
+# answer is one word has four different problems and one word for them, which is
+# how "the provider is broken" comes to mean "a person has not clicked approve".
+schema: serveros/agent-control-target.v1
+version: 1
+
+# ---------------------------------------------------------------------------
+# The request. Small on purpose: a caller names what it wants, not how to get it.
+# ---------------------------------------------------------------------------
+request:
+  required:
+    - device_ref
+    - agent_runtime
+    - action
+  optional:
+    - provider_id          # pin one provider; omitted means "whichever is preferred"
+    - session_ref          # the session an action lands on, where one exists
+    - workspace
+    - work_item
+    - context_ref          # the trusted actor context; see context/actor.py
+    - params               # the action's parameters; participate in the fingerprint
+  evidence:
+    # The same names `abilities/resolver.py` uses, deliberately. One gathering
+    # step should be able to feed both kernels, and a second set of names for the
+    # same records is how two kernels end up reading two different snapshots of
+    # one machine.
+    - providers            # provider rows: id, kind, ability, preference, requirements, adapters
+    - instances            # provider instance records: provider, device_ref, status, observed_at
+    - abilities            # the pinned ability catalogue
+    - runtime_record       # the Agent Runtime record, from agent-runtime-contract.yaml
+    - profile              # the device's environment profile, for path-role binding
+    - device_capabilities  # what this device has
+    - policy               # denied abilities for this device or Item
+    - registry             # a DeviceRegistry; injected so a test need not edit the machine
+    - presence             # {device_ref: {state, provenance}} — fleet-plane reachability
+    - node_runtime         # {device_ref: {state, provenance}} — is a ServerOS node deployed there
+    - local_device_ref     # which device THIS process runs on; never inferred from a hostname
+    - approvals            # approval records, for the admission step
+  identity_rules:
+    - >-
+      `agent_runtime` is a canonical `agent-runtime:<id>` ref whose id is in
+      `abilities/agent-runtime-contract.yaml#ids`. A cliId, a container name, a
+      tmux pane, a pid, a binary path and a provider's own bot id are all things
+      ServerOS observes ABOUT a runtime and none of them is its identity. A ref
+      that is not canonical is refused as a malformed request rather than
+      resolved by resemblance — resemblance is how "codex" and "codex-app-server"
+      become one runtime in a record that then cannot be audited.
+    - >-
+      `local_device_ref` is supplied, never derived. `fleet/node.py` reads the
+      binding; a resolver that read a hostname to decide which machine it was on
+      would answer differently in a container.
+
+# ---------------------------------------------------------------------------
+# The steps, in order. Same discipline as `abilities/resolver.py#INPUT_ORDER`:
+# order is what the reason depends on, and the first step that refuses names why.
+# ---------------------------------------------------------------------------
+steps:
+  order:
+    - device             # is this an enrolled device, and is there a route to it
+    - agent_runtime      # does this device run that runtime
+    - provider_instance  # which provider instance on this device would carry it out
+    - adapter            # can that runtime consume that provider at all
+    - support            # does the provider declare this action
+    - readiness          # would it work if asked right now
+    - admission          # is it permitted, and does a person have to approve it
+    - route              # where does the request go
+  rule: >-
+    a step runs only after every step before it agreed. Substituting an earlier
+    answer for a later one is the defect this ordering exists to make visible:
+    "the provider is reachable" is not "the action is supported", an unsupported
+    verb is never reported as a pending approval, and a transport failure is
+    never reported as the provider having stopped.
+
+  # -- the steps that are allowed to be unevaluable -------------------------
+  unevaluable:
+    steps: [device, provider_instance, adapter, support, readiness, admission, route]
+    never: [agent_runtime]
+    why: >-
+      every step above but `agent_runtime` reads evidence a caller supplies, and
+      a caller may not have gathered it. An input nobody supplied is not an
+      input that agreed: where a step could not be evaluated AND nothing
+      refused, the target is UNKNOWN rather than available. UNKNOWN is a real
+      answer here and is never flattened into UNAVAILABLE — one means go and
+      resolve the missing input, the other means find another provider.
+    not_never_why: >-
+      `agent_runtime` is the one step with no unevaluable case, and that is a
+      property of what it asks rather than an omission. It compares a canonical
+      runtime id against the `agents` list `fleet/registry.yaml` declares for an
+      enrolled device: the list is authored, the id is already validated, and
+      there is therefore always an answer. A step that could be unevaluable and
+      never is would invite a reader to treat its silence as agreement.
+    chain_continues: >-
+      an unevaluable step does NOT stop the chain, and the target is UNKNOWN
+      only if no LATER step refused. A definite refusal outranks an indefinite
+      answer, so a request against a device whose reachability nobody has
+      reported can still be refused for a verb the provider does not have — and
+      that refusal is the one the caller can act on. The price of this rule is
+      that a step may run without the output of an earlier one, so each step
+      that depends on a provider instance first checks for one and reports
+      itself unevaluable with `unevaluable_because: provider_instance` rather
+      than reaching for a field nobody set.
+    record: >-
+      every step that could not be evaluated is named in `record.unevaluated`,
+      in chain order, and `record.reason` stays null because nothing refused.
+      A caller that read a null reason as "the provider is broken" would go and
+      repair a machine; the field that answers it is `unevaluated`.
+
+# ---------------------------------------------------------------------------
+# The record.
+# ---------------------------------------------------------------------------
+record:
+  required_fields:
+    - schema
+    - request
+    - target
+    - support
+    - readiness
+    - admission
+    - admission_required
+    - status
+    - reason
+    - provenance
+    - steps
+  target:
+    required_fields:
+      - device_ref
+      - agent_runtime
+      - provider_ref
+      - provider_instance_ref
+      - adapter_ref
+      - route
+    nullness: >-
+      every target field is null until the step that resolves it agrees. A null
+      is a step that did not run, and it is distinguishable from a step that ran
+      and found nothing, because the step's own entry in `steps` says which.
+  status:
+    # The provider-instance vocabulary, reused rather than re-cut. A target is
+    # addressable or it is not, and the words for that already exist.
+    values: [AVAILABLE, DEGRADED, UNAVAILABLE, INCOMPATIBLE, UNKNOWN]
+    source: abilities/provider-contract.yaml#status.values
+  provenance:
+    required_keys: [step, field, source, observed_at, strength]
+    rule: >-
+      every resolved field names the record it was read from. A target resolved
+      from an operator's fixture and a target resolved from a live provider call
+      produce the same shape, and only provenance tells them apart.
+
+# ---------------------------------------------------------------------------
+# Reasons — the refusal vocabulary.
+#
+# §8 of the release brief names fifteen words and this list is those fifteen,
+# plus three. The three are not an extension of the design; they are the
+# approval kernel reporting its own verdict instead of having it re-worded on
+# the way out. `runtime/approval.py#decide` has produced `APPROVAL_EXPIRED`,
+# `APPROVAL_ALREADY_CONSUMED` and `APPROVAL_CONTEXT_MISMATCH` since §67, and a
+# brief written before that kernel existed could not have named them. Folding
+# any of them into `APPROVAL_REQUIRED` would tell a person "ask again" when what
+# happened is "you already answered and the answer was spent" — the same
+# sentence with the useful half removed. A test asserts this list equals the
+# brief's fifteen plus exactly the verdicts `decide` can return, so the two
+# cannot drift.
+# ---------------------------------------------------------------------------
+reasons:
+  values:
+    - DEVICE_UNREACHABLE
+    - NODE_RUNTIME_UNAVAILABLE
+    - AGENT_RUNTIME_UNAVAILABLE
+    - PROVIDER_UNAVAILABLE
+    - ACTION_UNSUPPORTED
+    - READINESS_UNKNOWN
+    - POLICY_DENIED
+    - APPROVAL_REQUIRED
+    - APPROVAL_BINDING_MISMATCH
+    - APPROVAL_CONTEXT_MISMATCH
+    - APPROVAL_EXPIRED
+    - APPROVAL_ALREADY_CONSUMED
+    - SESSION_NOT_FOUND
+    - TURN_FAILED
+    - PROVIDER_ERROR
+    - TIMEOUT
+    - INVALID_CONTEXT
+    - UNTRUSTED_ACTOR
+  from_brief: 15
+  declared_here_only: [APPROVAL_CONTEXT_MISMATCH, APPROVAL_EXPIRED, APPROVAL_ALREADY_CONSUMED]
+  not_a_transport_vocabulary: >-
+    SESSION_NOT_FOUND, TURN_FAILED, PROVIDER_ERROR and TIMEOUT are declared here
+    because a resolution record and a transport result share one vocabulary, and
+    they are produced by the provider boundary rather than by this kernel. They
+    are named so that the router in `fleet/agent_control_router.py` has one list
+    to refuse outside of, not so that this module can invent one.
+
+  # Why the resolver refuses with ACTION_UNSUPPORTED for BOTH a definite
+  # UNSUPPORTED and an UNKNOWN support, and why that is not a collapse.
+  #
+  # It would be a collapse if the distinction were lost. It is not: `support.state`
+  # carries SUPPORTED / UNSUPPORTED / UNKNOWN verbatim from the provider, and the
+  # target `status` differs too — UNSUPPORTED is INCOMPATIBLE, UNKNOWN is UNKNOWN.
+  # The reason word is coarse because the reason vocabulary is closed and has no
+  # word for "nobody asked"; the record has a field for exactly that, one level up.
+  support_unknown_shares_a_reason_because: >-
+    the closed vocabulary above has no word for "nobody asked the provider", and
+    inventing one here would put a word in a released vocabulary that only this
+    module produces. The distinction is not lost — it lives in `support.state`
+    and in the target `status`, which are the fields a consumer should read. It
+    also does not reach `record.reason`: the support step's verdict is UNKNOWN,
+    so it is UNEVALUABLE rather than REFUSED, `record.reason` stays null, and
+    the word appears only on that step's own entry in `record.steps`. A reader
+    who wants the reason for the target being UNKNOWN reads `record.unevaluated`,
+    which names `support`.
+
+# ---------------------------------------------------------------------------
+# What this module composes, and therefore may not restate.
+# ---------------------------------------------------------------------------
+composes:
+  capability: abilities/resolver.py#resolve
+  readiness: abilities/provider_instance.py#instance, refusal, is_stale
+  support: runtime/agent_sessions.py#support
+  admission: runtime/agent_sessions.py#admission
+  approval: runtime/approval.py#decide
+  device: fleet/transport.py#DeviceRegistry, Profiles, Availability
+  session_identity: runtime/agent_sessions.py#session_ref, agent_ref
+
+refs:
+  # The three refs this kernel mints that did not exist before, declared here
+  # because a ref format invented at a call site is a ref format with two
+  # spellings by the second call site.
+  provider_instance_ref: "provider-instance:<urlencoded-device-ref>/<urlencoded-provider-id>"
+  adapter_ref: "adapter:<runtime-id>/<provider-id>"
+  adapter_ref_source: abilities/provider-contract.yaml#objects.Adapter.id_pattern
+  why_provider_instance_ref_is_needed: >-
+    `abilities/provider-instance.v1` is a record about (provider, device_ref), and
+    the contract lists no ref for it. A target has to name the instance it chose,
+    because "which provider" and "which provider measured on which machine" are
+    different questions and the second one is the one a reader audits. The ref is
+    derived from the two fields the record already requires, so it can never name
+    an instance the record could not have been about.
+
+not_claimed:
+  - "that a resolved target may be acted on. Resolution decides nothing; admission
+     does, and the caller performs it."
+  - "that a target exists only when AVAILABLE. An UNKNOWN target is the correct
+     answer to a request that could not be decided, and it is what a caller must
+     supply the missing input to."
+  - "that the router in §15 is built here. This file resolves an address; sending
+     something to it is a different module with a different failure vocabulary."

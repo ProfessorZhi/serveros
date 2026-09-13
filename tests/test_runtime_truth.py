@@ -38,7 +38,7 @@ import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from test_build import _git as git  # noqa: E402
-from test_build import make_ability_repo  # noqa: E402  (shares the synthetic fixture)
+from test_build import make_ability_repo, write_pack_contract  # noqa: E402
 
 
 def rows_by(report: dict) -> dict[str, dict]:
@@ -73,6 +73,14 @@ class RuntimeTruthTests(unittest.TestCase):
         self._tmp = tempfile.TemporaryDirectory()
         self.base = Path(self._tmp.name)
         self.ability, self.rev = make_ability_repo(self.base)
+        # The build validates the pack contract, and the repository's own pins
+        # a real ability-management commit. Against the synthetic catalogue
+        # that pin cannot match, so the builder would refuse for a reason that
+        # has nothing to do with the runtime truth this module asserts. The
+        # contract is injected rather than the check being skipped: skipping it
+        # when the file is absent is exactly the silent pass the check exists
+        # to remove.
+        self.contract = write_pack_contract(self.base)
         self.out = self.base / "dist/current"
         self.marketplace = self.base / "dist/.agents/plugins/marketplace.json"
         # A committed copy of this repository's bundle, so that the two rows
@@ -135,10 +143,28 @@ class RuntimeTruthTests(unittest.TestCase):
 
     def build_artifact(self):
         rc = build.build(self.serveros / "plugin/bundle.yaml", self.ability, self.rev,
-                         self.out, self.marketplace, write=True)
+                         self.out, self.marketplace, write=True,
+                         pack_contract_path=self.contract)
         self.assertEqual(rc, 0)
         version = json.loads((self.out / ".claude-plugin/plugin.json").read_text())["version"]
         return version
+
+    def contract_at(self, rev: str) -> Path:
+        """The pack contract to build `rev` against.
+
+        One file for every revision, and that IS the change worth naming. This
+        used to be written per revision, because the packs were declared inside
+        the contract and the pin had to name the revision being built from.
+        The packs are published in the ability-management repository now, so a
+        per-revision contract would be a SECOND source for them — precisely
+        what the split removed — and the pin travels with the declarations
+        instead. What this still does is refuse to hand back a path for a
+        revision that cannot answer for its own declarations, because a check
+        that a caller can relax is not a check, and the reader is a worse place
+        to discover a missing file than here.
+        """
+        git(self.ability, "show", f"{rev}:ability-packs.yaml")
+        return self.contract
 
     def install_claude(self, version: str, path: Path, rev: str | None = None):
         self.claude_json.write_text(json.dumps({"version": 2, "plugins": {
@@ -157,7 +183,9 @@ class RuntimeTruthTests(unittest.TestCase):
         """
         rev = rev or self.rev
         rc = build.build(self.serveros / "plugin/bundle.yaml", self.ability, rev,
-                         self.out, self.marketplace, write=True)
+                         self.out, self.marketplace, write=True,
+                         pack_contract_path=(self.contract if rev == self.rev
+                                             else self.contract_at(rev)))
         self.assertEqual(rc, 0)
         version = json.loads((self.out / ".claude-plugin/plugin.json").read_text())["version"]
         self.install_claude(version, self.out, rev)
@@ -429,7 +457,8 @@ class RuntimeTruthTests(unittest.TestCase):
         # does when the marketplace source is a local path.
         sha = self.side_branch_commit()
         rc = build.build(self.serveros / "plugin/bundle.yaml", self.ability, sha,
-                         self.out, self.marketplace, write=True)
+                         self.out, self.marketplace, write=True,
+                         pack_contract_path=self.contract_at(sha))
         self.assertEqual(rc, 0)
         version = json.loads((self.out / ".claude-plugin/plugin.json").read_text())["version"]
         self.install_codex(version, self.out)

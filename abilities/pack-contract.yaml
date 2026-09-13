@@ -1,0 +1,181 @@
+# ServerOS ability packs.
+#
+# Why this file exists
+# --------------------
+# `plugin/profiles/linux-work.yaml` carries a `recommended:` list that names
+# `document-stewardship` with a `status: missing` marker written beside it. The
+# marker is honest and the list is still a pack naming an ability that is not
+# there. Nothing failed, because nothing was checking.
+#
+# A pack answers "which abilities, together, for this purpose". It is not a
+# composition (`plugin/bundle.yaml` decides what is packaged) and it is not a
+# profile (`fleet/profiles.yaml` decides where things live). Keeping it a third,
+# smaller thing is what stops it acquiring a payload and becoming a second
+# composition.
+schema: serveros/ability-pack.v1
+version: 1
+
+record:
+  required_fields: [id, name, purpose, members, authority]
+  optional_fields: [description, domain, note]
+  forbidden_fields:
+    - "a payload, a path, or a file"
+    - "a version of its own"
+  because: >
+    a pack with a payload is a composition, and this product already has one
+    composition authority. A pack with a version of its own would need to be
+    released, and the abilities inside it already carry revisions.
+
+member:
+  shape:
+    ability: "ability:<kebab-id>"
+    # Whether this member is required or optional is the ONLY thing a pack may
+    # say about criticality. A pack does not rank its members.
+    role: required | optional
+  resolution:
+    # What it means when a member is not resolvable on the target device.
+    required_unresolved: PARTIAL          # the pack is usable and incomplete
+    all_required_unresolved: UNAVAILABLE
+    never: "silently dropped"
+  because: >
+    dropping an unresolved member turns "this pack has nine of its ten members
+    on this machine" into a support ticket. Reporting it turns it into a status,
+    which is what the Ability Fabric is for.
+
+# ---------------------------------------------------------------------------
+# `authority` — the field `publishing.rule` needs and the record shape had no
+# room for.
+#
+# It is REQUIRED, and that is a change. Until this round no pack carried one,
+# which meant `publishing.rule` required a pin that no pack had and nothing
+# compared the two. Making it required is not a new abstraction: it is the
+# field the rule below already demanded, made visible enough to be checked.
+# ---------------------------------------------------------------------------
+authority:
+  required_for_every_pack: true
+  shape:
+    repo: "ProfessorZhi/ability-management"
+    revision: "the full commit sha the member ids were validated against"
+  answers_as: [PIN_MATCH, PIN_MISMATCH, PIN_ABSENT]
+  because: >
+    the pin is what makes "every member exists" a claim about a catalogue
+    rather than about whatever happened to be on disk. The pin is answered as
+    a question of its OWN, reported for every pack including the ones whose
+    members all resolve — because those are exactly the packs whose stale pin
+    is invisible. A correct closure answer about the wrong catalogue reads
+    identically to a correct one about the right one.
+
+# ---------------------------------------------------------------------------
+# The closure rule. This is the one that was being violated.
+# ---------------------------------------------------------------------------
+closure:
+  rule: >
+    every member id must exist in the pinned ability-management manifest at the
+    revision the pack declares. A pack naming an ability that does not exist is
+    refused at build time, not carried with a marker beside it.
+  scope:
+    members: enforced
+    referenced_but_optional: reported
+  because: >
+    a `missing` marker is a comment. It is written by the person who already
+    knows, read by nobody, and it does not stop the pack from being installed
+    and a session from planning around a capability that is not there. The
+    marker was accurate for as long as it existed; accuracy was never the
+    problem.
+  cost_note: >
+    this makes a pack unbuildable when the catalogue moves under it, which is
+    the intended failure. The repair is to fix the pack or fix the catalogue,
+    and both are visible.
+  decided_by: >
+    `abilities/packs.py — resolve()`, called from `scripts/build.py`. This line
+    is not decoration: the rule above was written first and implemented in no
+    version of this product, and a `grep` for this filename over the ServerOS
+    tree returned exactly one hit — this file. The rule was accurate the whole
+    time; accuracy was never the problem.
+  found: >
+    run against the published catalogue, three of these four packs had a
+    required member that resolved to nothing. `pack:cross-device-collaboration`
+    named `shared-memory` and `fleet-coordination`, which existed in no
+    manifest and no checkout anywhere; `pack:autonomous-quality-loop` and
+    `pack:cross-device-collaboration` both named `runtime-management`, which
+    exists at the published revision but not at every revision that was checked
+    against it. That last one is the whole argument for the pin: the same pack,
+    the same members, two catalogues, two different answers, and no way to tell
+    which one a reader was looking at.
+
+# ---------------------------------------------------------------------------
+# Packs are declarative and carry no payload, so publishing one is publishing
+# names. That is what makes a pack safe to publish while the abilities inside it
+# remain versioned elsewhere.
+# ---------------------------------------------------------------------------
+publishing:
+  location: "ability-management, beside the manifest it names members from"
+  file: ability-packs.yaml
+  substrate: git
+  rule: >
+    a published pack pins the ability-management revision its member ids were
+    validated against. Without that pin the pack's closure was true of a
+    catalogue that no longer exists.
+  read_by: "`scripts/build.py` — `published_packs()`, from the git object at the
+    pinned revision, never from a checkout"
+  # This was `DECLARED_NOT_IMPLEMENTED` for as long as it was untrue, and the
+  # sentence above it — that the packs belong in ability-management — is now
+  # the sentence that describes where they are. The repair needed more than a
+  # file move, and the shape of it was written down here before it existed: a
+  # pack schema on the ability-management side, and a reader that reads the
+  # declarations from the pinned revision the same way the manifest is read.
+  # Both exist; `ability-management@7bc7687:ability-packs.yaml` is the file.
+  location_status: IMPLEMENTED
+  # ONE NEW RULE came with the move, and it is the kind that has to be stated
+  # where it is declared rather than discovered by whoever hits it:
+  #
+  #   A PIN MAY BE AN ANCESTOR OF THE REVISION IT IS READ FROM, provided
+  #   `abilities-manifest.yaml` is byte-identical across the two.
+  #
+  #   The declarations live in the repository whose catalogue they name, so
+  #   every edit to a pack moves that repository. The revision a reader reads
+  #   FROM is therefore never the revision the pins were validated AGAINST, and
+  #   under strict sha equality publishing a pack would break its own closure
+  #   check on the way out — a gate that fails exactly when it is exercised is
+  #   not a gate. The ancestor rule keeps the original purpose intact: the pin
+  #   must still be a claim about a catalogue that can be produced again.
+  #
+  #   Settling it needs git history, so exactly one function is impure:
+  #   `abilities/packs.py` — `pin_still_describes()`, called through
+  #   `settle_pins()`. `resolve()` beside it stays a pure function over a set of
+  #   names. A pin that is not an ancestor, or one across which the manifest HAS
+  #   moved, is still PIN_MISMATCH and still refuses the build.
+  #
+  #   It lived in `scripts/build.py` — `_pin_still_describes()` — for one
+  #   revision, and that is written down here because of what it cost: the rule
+  #   is half of the pin VERDICT, and with the other half in `packs.py` this
+  #   module's own command-line entry point (the usage line at the top of
+  #   `packs.py`, a documented way to run this check) printed `FAIL ...
+  #   PIN_MISMATCH` and exited 1 over the same files `scripts/build.py` built
+  #   successfully. Two answers to one question is the defect this round keeps
+  #   finding; the repair is one implementation, in the module that owns the
+  #   verdict vocabulary.
+  ancestor_rule_in: "`abilities/packs.py` — `pin_still_describes()`, via `settle_pins()`"
+  pin_status_values: [PIN_MATCH, PIN_EQUIVALENT, PIN_MISMATCH, PIN_ABSENT]
+
+# ---------------------------------------------------------------------------
+# THE PACKS ARE NOT HERE. They are published in ability-management as
+# `ability-packs.yaml`, beside the manifest whose members they name, and read
+# out of the git object at the revision being built against.
+#
+# Keeping the schema and the declarations in two repositories is only worth it
+# if the split is visible at the point of use, so it is: `scripts/build.py`
+# assembles them — rules from this file, packs from the pinned revision — and
+# hands the result to `packs.resolve()`, which is unchanged and still asks the
+# one question it always asked. A contract that kept a stale copy of the packs
+# "for convenience" would answer that question about the wrong revision, which
+# is the exact failure the pin was added to catch.
+# ---------------------------------------------------------------------------
+rules:
+  - "A pack names abilities. It never names a provider, a device or a runtime —
+     those are resolved, and a pack that names one has decided something it
+     cannot know."
+  - "A pack is not a composition. Composing a pack means composing its members,
+     through the composition mechanism that already exists."
+  - "Two packs may share a member. That is not a conflict; there is one copy of
+     every ability and a pack holds names."
