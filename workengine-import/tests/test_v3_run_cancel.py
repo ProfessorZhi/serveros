@@ -208,6 +208,50 @@ class RunCancelTests(unittest.TestCase):
             self.s.advance_run(self.item.id, run.id, RunState.FINALIZING).state, RunState.FINALIZING
         )
 
+    def test_advance_run_can_no_longer_pronounce_a_verdict(self):
+        """A Run must not reach SUCCEEDED with nothing recorded behind it.
+
+        `advance --to SUCCEEDED` used to be a legal way to end a FINALIZING Run:
+        the ledger said "succeeded" and no evidence row, verdict, exit code or
+        revision said on what basis. The state machine permits the transition —
+        FINALIZING is the only state that can reach SUCCEEDED — so the guard has
+        to live where the claim would be made, which is here.
+        """
+        run = self._run_at(RunState.FINALIZING, key="verdict")
+        with self.assertRaises(ValueError) as caught:
+            self.s.advance_run(self.item.id, run.id, RunState.SUCCEEDED)
+        self.assertIn("finalize_run", str(caught.exception))
+        # Nothing moved: a refused verdict is not a half-written one.
+        self.assertEqual(self.s.get_run(self.item.id, run.id).state, RunState.FINALIZING)
+        self.assertEqual(self._events(), [])
+
+    def test_a_finalizing_run_is_judged_by_finalize_not_by_advance(self):
+        run = self._run_at(RunState.FINALIZING, key="judge")
+        with self.assertRaises(ValueError):
+            self.s.advance_run(self.item.id, run.id, RunState.FAILED)
+        self.assertEqual(self.s.get_run(self.item.id, run.id).state, RunState.FINALIZING)
+        # finalize_run still reaches both verdicts, with the evidence attached.
+        self.assertEqual(
+            self.s.finalize_run(
+                self.item.id, run.id, verdict="FAIL", exit_code=1, command="pytest",
+                cases=["x"], revision="abc", dirty=False,
+            )["state"],
+            "FAILED",
+        )
+
+    def test_a_run_that_never_finalized_can_still_fail(self):
+        """The abort path keeps working; only the verdict was taken away.
+
+        A Run that dies in PREPARING or RUNNING is aborted, not judged.
+        `finalize_run` requires FINALIZING, so it has no route to this case —
+        refusing FAILED outright would have removed a capability rather than
+        redirecting one.
+        """
+        run = self._run_at(RunState.RUNNING, key="abort")
+        self.assertEqual(
+            self.s.advance_run(self.item.id, run.id, RunState.FAILED).state, RunState.FAILED
+        )
+
     def test_running_run_requires_explicit_acknowledgement(self):
         run = self._run_at(RunState.RUNNING, key="live")
         with self.assertRaises(ValueError) as caught:

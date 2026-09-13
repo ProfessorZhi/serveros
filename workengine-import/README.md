@@ -109,6 +109,13 @@ and `INVALID` are operator terminations and are reached only through
 `run_terminated` record to the Item's event history. `run advance` refuses them,
 so a termination can never be recorded without why and by whom.
 
+`run advance` refuses `SUCCEEDED` for the same reason in the other direction: a
+verdict is not a step. It also refuses `FAILED` from `FINALIZING`, where
+`finalize_run` is the producer and records the verdict, exit code and revision
+behind the claim. `FAILED` from `PREPARING` or `RUNNING` still works — that is an
+abort rather than a judgement, and `finalize_run` requires `FINALIZING`, so
+refusing it would remove a capability instead of redirecting one.
+
 `abandon` is not a state: it is the operation that lands in `CANCELLED` with
 `reason_code=ABANDONED`. Terminating a Run is a control-plane fact only — it
 never changes the Item, deletes artifacts or worktrees, or touches any runtime

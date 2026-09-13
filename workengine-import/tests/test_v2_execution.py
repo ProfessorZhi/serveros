@@ -87,8 +87,15 @@ class ServerOSExecutionTest(unittest.TestCase):
             item = osctl.create_item("serveros", "run test", "test")
             osctl.add_activity(item.id, "test", "test")
             run = osctl.begin_run(item.id, "test", "worker-a", "key")
-            for state in (RunState.PREPARING, RunState.RUNNING, RunState.FINALIZING, RunState.SUCCEEDED):
+            for state in (RunState.PREPARING, RunState.RUNNING, RunState.FINALIZING):
                 run = osctl.advance_run(item.id, run.id, state)
+            # SUCCEEDED is a verdict rather than a step, so it comes from
+            # finalize_run — which is also what makes the state resumable from
+            # an evidence record rather than from a bare transition.
+            osctl.store.finalize_run(
+                item.id, run.id, verdict="PASS", exit_code=0, command="pytest",
+                cases=["lifecycle"], revision="abc", dirty=False,
+            )
             resumed = ServerOS(store=ServerOSStore(td), artifacts_root=Path(td) / "artifacts").resume_run(item.id, run.id)
             self.assertEqual(resumed.state, RunState.SUCCEEDED)
             with self.assertRaises(ValueError):

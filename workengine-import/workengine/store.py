@@ -559,7 +559,30 @@ class ServerOSStore:
             row = conn.execute("SELECT * FROM runs WHERE item_id=? AND run_id=?", (item_id, run_id)).fetchone()
             if row is None:
                 raise KeyError(f"unknown Run: {item_id}/{run_id}")
-            target = transition_run(RunState(row["state"]), target)
+            current = RunState(row["state"])
+            # SUCCEEDED and FAILED are verdicts, not steps. A Run that reaches
+            # either one through here would carry a claim — "this run succeeded"
+            # — with no evidence row behind it: no verdict, no exit code, no
+            # revision. The ledger would say a thing happened and nothing would
+            # say on what basis, which is the failure this whole release is
+            # about one plane over.
+            #
+            # FAILED is only refused from FINALIZING, where finalize_run is the
+            # producer and records the verdict. From PREPARING or RUNNING it is
+            # an abort rather than a judgement, finalize_run has no route to it
+            # (it requires FINALIZING), and refusing it would remove a
+            # capability instead of redirecting one.
+            if target is RunState.SUCCEEDED or (
+                target is RunState.FAILED and current is RunState.FINALIZING
+            ):
+                raise ValueError(
+                    f"advance_run cannot conclude a Run as {target.value}; a verdict is "
+                    "not a transition. Use finalize_run (CLI: run finalize), which "
+                    "records the verdict, exit code and revision the claim rests on. "
+                    "If the Run is being abandoned rather than judged, use cancel_run "
+                    "(CLI: run abandon)."
+                )
+            target = transition_run(current, target)
             ended = now_iso() if target in RUN_TERMINAL else ""
             conn.execute(
                 "UPDATE runs SET state=?,ended_at=? WHERE item_id=? AND run_id=?",
