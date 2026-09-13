@@ -438,6 +438,40 @@ def test_an_invented_context_ref_does_not_get_a_context(daemon):
     assert result["approval"]["context_found"] is False
 
 
+def test_agent_context_resolve_answers_in_the_canonical_shape(daemon):
+    """The one method another repository reads an identity out of.
+
+    `serverosd agent.context.resolve` is the only trusted-context resolver in
+    the fleet, and the Workengine's control surface consumes it. This pins the
+    answer from the producing end, because the consuming end cannot: it is a
+    different repository, and its fixture would keep passing against a shape
+    this one stopped returning.
+
+    The nested `context` key is `actor.resolve`'s own shape. Flattening it here
+    would put the record's fields at the same level as `found`, and a caller
+    reading `actor_ref` off the top level is precisely the mistake the
+    Workengine surface shipped with.
+    """
+    ref = _mint(daemon)
+    result = _call(daemon, "agent.context.resolve", {"context_ref": ref})["result"]
+    assert result["found"] is True
+    assert result["context_ref"] == ref
+    assert isinstance(result["context"], dict), "the record must stay nested"
+    assert result["context"]["actor_ref"] == "human:hwz"
+    assert "actor_ref" not in {k: v for k, v in result.items() if k != "context"}
+
+
+def test_agent_context_resolve_returns_a_miss_rather_than_raising(daemon):
+    """A caller that invented a handle must not be able to catch an exception
+    and continue with a substitute record."""
+    result = _call(daemon, "agent.context.resolve",
+                   {"context_ref": "human-context:nobody/neverminted"})["result"]
+    assert result["found"] is False
+    assert result["context_ref"] == "human-context:nobody/neverminted"
+    assert "context" not in result
+    assert result["because"]
+
+
 def test_a_stale_context_cannot_authorize_a_mutation(daemon):
     ref = _mint(daemon, observed_at="2026-09-13T23:00:00+00:00")  # an hour old
     result = _call(daemon, "agent.action.admit",
