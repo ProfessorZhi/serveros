@@ -388,6 +388,31 @@ class BuildTests(unittest.TestCase):
                 self.assertTrue(answer["result"]["tools"],
                                 f"{name} started but declared no tools")
 
+    def test_the_built_artifact_carries_no_credential_shape(self):
+        """§28: the credential gate, pointed at the thing that actually ships.
+
+        `test_secret_scan.py` proves the scanner fires and does not cry wolf;
+        this proves it is wired to a release. Neither half is a gate alone — a
+        scanner that is never run on an artifact is one that would not have
+        caught one in an artifact.
+
+        The artifact is a strictly larger surface than the source tree here: it
+        carries the pinned ability-management skills, which this repository does
+        not contain and therefore cannot scan.
+        """
+        self.assertEqual(run_build(self.args("--write")).returncode, 0)
+        scanner = ROOT / "scripts" / "scan_secrets.py"
+        proc = subprocess.run([sys.executable, str(scanner), str(self.out), "--json"],
+                              capture_output=True, text=True, timeout=180)
+        report = json.loads(proc.stdout)
+        self.assertEqual(
+            proc.returncode, 0,
+            f"credential shape(s) in the built artifact: {report.get('findings')}")
+        self.assertEqual(report["verdict"], "CLEAN")
+        # A gate that scanned nothing also exits 0; assert it looked at something.
+        self.assertGreater(report["scanned_files"], 0,
+                           "the scanner read no files, so its CLEAN means nothing")
+
     def test_the_shipped_entry_points_are_executable(self):
         """An artifact can have every byte right and still not run.
 
