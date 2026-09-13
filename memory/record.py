@@ -5,7 +5,7 @@
     python3 record.py --validate ledger/*.yaml
     python3 record.py --subject project/serveros/SRV-0007 ledger/*.yaml
 
-`memory/record-contract.yaml` declares six kinds, seven required fields, a
+`memory/record-contract.yaml` declares eight kinds, seven required fields, a
 forbidden-content list, and a supersession rule that says a record "is never
 edited to say something different" and that "the current value of a subject is
 the newest record in its supersession chain". It also says, in `rules`, that
@@ -54,15 +54,23 @@ SCHEMA = "serveros/memory-record.v1"
 # Transcribed from `record-contract.yaml#kinds`. Asserted against the file by
 # test, because this round has now found the same closed vocabulary written
 # twice in five different places and disagreeing at least twice.
-KINDS = ("decision", "observation", "revision", "handoff", "finding", "question")
+KINDS = ("decision", "observation", "revision", "handoff", "finding", "question",
+         "checkpoint", "incident")
 
 REQUIRED = ("id", "kind", "subject", "at", "by", "source", "revision")
-OPTIONAL = ("body", "supersedes", "related", "device_ref", "confidence", "note")
+OPTIONAL = ("body", "supersedes", "related", "device_ref", "to_device_ref",
+            "confidence", "note")
 
 # Required only for some kinds. `confidence` is here rather than in `REQUIRED`
 # because the contract scopes it: "high | medium | low — for observations
 # only", and then makes it a refusal in `rules` rather than a suggestion.
-REQUIRED_FOR_KIND = {"observation": ("confidence",)}
+#
+# `to_device_ref` is required for `handoff` for the reason the contract gives:
+# a handoff nobody is addressed by is a handoff nobody receives, and nothing
+# downstream can tell an unread record from a read one. See
+# `memory/handoff.py` — `pending()` is the consumer that makes the field
+# load-bearing rather than decorative.
+REQUIRED_FOR_KIND = {"observation": ("confidence",), "handoff": ("to_device_ref",)}
 CONFIDENCE_VALUES = ("high", "medium", "low")
 
 ID_RE = re.compile(r"^mem:[a-z0-9]+(?:-[a-z0-9]+)*$")
@@ -217,8 +225,31 @@ def validate(record: dict) -> dict:
 
     subject = record.get("subject")
     if subject and not SUBJECT_RE.match(str(subject)):
-        reasons.append(f"subject {subject!r} is neither `project/repo/Item` "
-                       "nor `device:<id>`")
+        reasons.append(
+            f"subject {subject!r} is neither `project/<project>/<Item>` "
+            "(e.g. `project/serveros/SRV-0007`) nor `device:<id>`. Three "
+            "slash-separated parts, and the first two name a project rather "
+            "than being the literal words `project` and `repo` — the old "
+            "message said `project/repo/Item` and following it literally "
+            "produced a string that validated and identified nothing"
+        )
+
+    # An addressee is a device, and only a device. `device_ref` may point at
+    # anything the fleet registry enrolls; `to_device_ref` is what a receiving
+    # device matches against its own `device_ref`, so a value in any other
+    # shape is a handoff that no device can receive — which is the failure the
+    # field exists to make impossible.
+    to_device = record.get("to_device_ref")
+    if to_device is not None:
+        if not str(to_device).startswith("device:"):
+            reasons.append(f"to_device_ref {to_device!r} is not a `device:<id>`; "
+                           "a handoff is addressed to a device, because a device "
+                           "is the thing that can look for one")
+        elif kind != "handoff":
+            reasons.append(f"to_device_ref is set on a {kind} record; only a "
+                           "handoff has an addressee, and a field that looks "
+                           "like one elsewhere is how a reader starts believing "
+                           "an observation was sent to it")
 
     for field in ("supersedes", "related"):
         value = record.get(field)

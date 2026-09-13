@@ -35,11 +35,73 @@ kinds:
   handoff:    "the work moved to another device, session or agent"
   finding:    "a defect, a risk, or a gap, with its evidence"
   question:   "an open question with the person who can answer it"
+  checkpoint: "the state of work at a moment, written so another device can resume it"
+  incident:   "something happened, with a timeline, and what it cost"
+
+# ---------------------------------------------------------------------------
+# The vocabulary this contract was asked for, against the one it has.
+#
+# §21 named seven things a memory record should hold — checkpoint, handoff,
+# decision, incident, environment fact, experience, artifact ref — and §22
+# lists them as a `type` enum. This file has `kind`s, and the two lists did not
+# match. That is the same defect this round keeps finding, one layer down: two
+# closed vocabularies, one fact, and nothing comparing them. So the comparison
+# is written down, and a test asserts that every name below resolves.
+#
+# Two of the brief's seven had no home and are now kinds. The other five did
+# have one, and the interesting part is why:
+#
+#   environment fact  → observation. An environment fact IS a measurement with
+#                       provenance; what makes it durable is that it is in the
+#                       ledger, not that it is a different kind. A second kind
+#                       here would be a distinction about how long something
+#                       lives, which `retention` is for.
+#   experience        → finding. "A defect, a risk, or a gap, WITH ITS
+#                       EVIDENCE" is what a lesson is. A separate `experience`
+#                       kind would be the same claim with the evidence optional,
+#                       which is the one thing this contract refuses.
+#   artifact ref      → revision. The contract's wording already is the brief's
+#                       meaning: "a pinned artifact, revision, or hash this work
+#                       is now bound to".
+#   incident          → now a kind, and NOT folded into `finding`, because the
+#                       two differ in who did the looking. A `finding` is a
+#                       problem found by inspection; an `incident` is a problem
+#                       that found us. Case A and the 2026-09-12 restart loop
+#                       are incidents, and filing them as findings would lose
+#                       the timeline and the cost.
+#   checkpoint        → now a kind, and it is the one genuinely missing. A
+#                       `revision` binds an artifact; an `observation` says what
+#                       was measured; neither says where the WORK stopped and
+#                       what the next device should do first. That is what §59's
+#                       cross-device fixture turns on, and it had no kind.
+# ---------------------------------------------------------------------------
+brief_vocabulary:
+  checkpoint: checkpoint
+  handoff: handoff
+  decision: decision
+  incident: incident
+  environment_fact: observation
+  experience: finding
+  artifact_ref: revision
+  because: >
+    every name above resolves to exactly one kind. A name that resolved to two
+    would put the choice back on the author, silently, at write time.
 
 required_fields:
   - id            # "mem:<kebab>", stable, never reused
   - kind
-  - subject       # "project/repo/Item" or "device:<id>" — what this is about
+  - subject       # "project/repo/Item" or "device:<id>" — what this is about.
+                  # In practice `project/<project>/<Item>`, e.g.
+                  # `project/serveros/SRV-0007` — three slash-separated parts,
+                  # which is what `SUBJECT_RE` enforces. The template above
+                  # reads as if the first part were the literal word `project`
+                  # AND the second a repository name, and there is no such
+                  # string: following it produces `project/repo/SRV-0007`, which
+                  # validates and names nothing. Every record in the ledger
+                  # beside this contract says `project/serveros/…`, and the
+                  # fixture in `fixtures/cross_device_handoff/` was corrected to
+                  # match — two devices reading one work under two subject
+                  # strings is a handoff neither end can find.
   - at            # ISO-8601 UTC. When the fact became true, not when written.
   - by            # who or what recorded it: an agent runtime, a person, a node
   - source        # where it came from: a revision, a Run id, a file, a URL
@@ -48,9 +110,30 @@ optional_fields:
   - body
   - supersedes    # "mem:<id>" — the record this one corrects
   - related       # ["mem:<id>"]
-  - device_ref
+  - device_ref    # "device:<id>" — the device this fact is ON or FROM
+  - to_device_ref # "device:<id>" — the device a handoff was sent TO. Required
+                  # for `handoff`; see `required_for_kind` below.
   - confidence    # high | medium | low — for observations only
   - note
+
+# Required only for some kinds. `confidence` is here because the contract
+# scopes it ("for observations only") and then makes it a refusal in `rules`.
+#
+# `handoff` needs `to_device_ref` for the same reason a tunnel needs both its
+# endpoints, and the failure it prevents is quiet. A handoff with no addressee
+# is a record that says the work moved and does not say where; the receiving
+# device cannot select it, so nothing arrives, and nothing reports that nothing
+# arrived — the ledger is append-mostly and a record nobody reads looks
+# identical to a record everybody read. §59's whole fixture is the receiving
+# device asking "is there a handoff for me", and that question has no answer
+# unless the sender wrote one down.
+#
+# A movement the author genuinely cannot address is not a handoff. It is a
+# `revision` (the work moved to a new pinned state) or an `observation` (the
+# work is now on another device, seen from here), and both are cheap to write.
+required_for_kind:
+  observation: [confidence]
+  handoff: [to_device_ref]
 
 forbidden_fields:
   - "any credential, token, cookie, key, or private key"
@@ -173,7 +256,16 @@ rules:
      context window is not a record, and no design may treat summarization as
      persistence."
   - "Retention is by kind and is explicit. Nothing is deleted by age alone;
-     `question` resolves, `decision` and `revision` do not."
+     `question` resolves, `decision` and `revision` do not. A `checkpoint`
+     is superseded by the next checkpoint on the same subject — it describes
+     a moving state, and keeping every one of them turns the ledger into a
+     heartbeat log, which is the thing §21 excludes by name."
+  - "A `checkpoint` answers `where the work stopped` and `what to do first`.
+     It is not a status, not a heartbeat, and not a copy of the plan; it is
+     the shortest thing a different device needs in order to continue, and
+     the test for it is whether that device can continue from it alone."
+  - "A `handoff` names the device it is for. The receiving device finds it by
+     `to_device_ref`, which is the only way it can be found at all."
   - "An observation without confidence is refused. `confidence: high` on a
      guess is a lie the schema cannot detect, but a missing field forces the
      author to make the claim out loud, which is all a schema can do."
