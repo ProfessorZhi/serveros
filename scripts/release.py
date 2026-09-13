@@ -67,6 +67,36 @@ UNIT_NAME = "serverosd.service"
 TREE_MANIFEST = "RELEASE.json"
 
 
+def default_state_dir() -> Path:
+    """The node's state root, read from the project's own path contract.
+
+    This replaced `Path(os.environ.get("DATA_ROOT", home)) / "state/serveros"`,
+    which was wrong in a way nothing here could see. `DATA_ROOT` is a documented
+    root, not an ambient variable, so on an ordinary shell the lookup misses and
+    the expression falls back to `$HOME` — rendering a unit whose
+    `SERVEROS_STATE_DIR` is `$HOME/state/serveros`, a path that does not exist.
+    The daemon then exits 2 looking for a registry there, and the node is one
+    restart away from being down.
+
+    Nothing caught it when it happened. `promote` reloads units but does not
+    restart the service, so the node kept running the process it already had;
+    `status` reported `agreement AGREE` because it compares the symlink and the
+    unit, not whether the state root exists; and `verify_revision` only asked
+    that rendering succeed, which a wrong path does. So the defect was invisible
+    at promote time and surfaced much later as a service that would not start —
+    the worst shape for an installation bug to have.
+
+    `runtime/paths.py` is the qualified resolver for this: the same roots with
+    the correct literal fallback, and a refusal for an undeclared name instead
+    of an invented one. Asking it means a wrong root cannot be reached by asking
+    the environment a question it is permitted not to answer.
+    """
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "runtime"))
+    import paths  # noqa: PLC0415 - resolved from the repo, never installed
+
+    return paths.Paths().root("state")
+
+
 def fingerprint(root: Path) -> str:
     """Hash a directory's whole file tree.
 
@@ -158,6 +188,20 @@ def stage(artifact: Path, revisions_root: Path, revision: str,
 def verify_revision(rev_dir: Path, state_dir: Path) -> dict:
     """Check a staged revision is runnable before anything points at it."""
     problems: list[str] = []
+
+    # The revision is only half of "runnable". The rendered unit tells the
+    # daemon to read its registry from `state_dir`, and the daemon exits 2 when
+    # it is not there — so a promote onto a state root that does not exist
+    # produces a node that cannot start, and this function used to call that a
+    # success. Checking the revision and not the state root is precisely the gap
+    # that let a HOME-fallback default install a broken unit and report AGREE.
+    if not state_dir.is_dir():
+        problems.append(
+            f"state root does not exist: {state_dir}\n"
+            f"  The rendered unit sets SERVEROS_STATE_DIR to this path, and the "
+            f"daemon refuses to start without a registry under it. Seed the state "
+            f"root before promoting, or pass --state-dir with this node's real root."
+        )
 
     for rel in ("bin/serverosd", "bin/serverosctl", "runtime/daemon.py",
                 "runtime/cli.py", f"runtime/{UNIT_NAME}"):
@@ -348,11 +392,15 @@ def main() -> int:
                        help="distribution root, e.g. $DATA_ROOT/runtime-assets/hwz-server-os")
         p.add_argument("--composition", required=True,
                        help="composition name, e.g. serveros-linux-work")
-        p.add_argument("--state-dir", type=Path,
-                       default=Path(os.environ.get(
-                           "SERVEROS_STATE_DIR",
-                           Path(os.environ.get("DATA_ROOT", home)) / "state/serveros")),
-                       help="rendered into SERVEROS_STATE_DIR in the unit")
+        # No environment lookup here, deliberately. The previous default read
+        # `SERVEROS_STATE_DIR` then `DATA_ROOT` then `$HOME`, so the value an
+        # install produced depended on which of those happened to be exported —
+        # and the last of them is silently wrong rather than absent. A node's
+        # state root is a property of the node, so it comes from the node's own
+        # path contract, and an operator who wants a different one says so.
+        p.add_argument("--state-dir", type=Path, default=default_state_dir(),
+                       help="rendered into SERVEROS_STATE_DIR in the unit; "
+                            "defaults to the path contract's `state` root")
         p.add_argument("--unit-dir", type=Path, default=home / ".config/systemd/user")
         p.add_argument("--bin-dir", type=Path, default=home / ".local/bin")
         p.add_argument("--no-reload", action="store_true",
