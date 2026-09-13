@@ -398,6 +398,14 @@ class SessionService:
         Support is also not authorization: a SUPPORTED verb still has to pass
         admission, so a provider cannot authorize its own mutation by
         advertising a capability.
+
+        The result restates `session_ref` from the ref that was driven, rather
+        than taking whatever the adapter put there. A provider is handed a
+        provider-native session id and nothing else, so an adapter that returns
+        a ref at all is returning one it minted from a device it guessed at —
+        and identity is the one thing a control verb has no business
+        establishing. The layer that parsed and validated the ref is the layer
+        that names it.
         """
         if action not in CONTROL_VERBS:
             raise AgentSessionError(f"{action!r} is not a ServerOS session-control verb")
@@ -420,8 +428,8 @@ class SessionService:
             "device_ref": self.device_ref,
         })
         result = method(provider_session_id=native_id)
-        return {**result, "action": action, "admission": admission,
-                "provider_readiness": _readiness_summary(ready)}
+        return {**result, "session_ref": session_ref_value, "action": action,
+                "admission": admission, "provider_readiness": _readiness_summary(ready)}
 
     def _declared_support(self, provider, action: str, provider_session_id: str) -> dict:
         rows = provider.list_sessions(device_ref=self.device_ref)

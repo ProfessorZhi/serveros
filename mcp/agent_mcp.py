@@ -27,6 +27,7 @@ def _load(name: str, filename: str):
 node_mcp = _load("serveros_mcp_node_shared", "node_mcp.py")
 service_mod = _load("serveros_agent_session_service", "agent_session_service.py")
 botmux_mod = _load("serveros_botmux_provider", "botmux_provider.py")
+codex_mod = _load("serveros_codex_provider", "codex_app_server_provider.py")
 
 PROTOCOL_VERSION = node_mcp.PROTOCOL_VERSION
 SERVER_NAME = "serveros-agent-mcp"
@@ -97,7 +98,11 @@ class AgentControlClient:
     def _service(self):
         providers = self._providers
         if providers is None:
-            providers = [botmux_mod.BotMuxProvider()]
+            # Both real providers of this deployment, neither privileged over
+            # the other. A provider that is down lists itself in
+            # `provider_errors` rather than being omitted, so "the fleet is
+            # small" and "one member is unreachable" stay different answers.
+            providers = [botmux_mod.BotMuxProvider(), codex_mod.CodexAppServerProvider()]
 
         def admit(action: str, context: dict) -> dict:
             return self.daemon.call("agent.action.admit", {
