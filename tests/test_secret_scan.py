@@ -81,6 +81,22 @@ class RuleTests(unittest.TestCase):
             self.assertEqual(report["verdict"], "CLEAN")
             self.assertEqual(report["findings"], [])
 
+    def test_a_single_file_argument_is_scanned_not_silently_skipped(self):
+        """`os.walk` on a file yields nothing.
+
+        A file argument that fell through to the tree walk would read zero files
+        and print CLEAN — a checker passing because it examined nothing, which
+        is the failure this scanner exists to prevent one level up. A release
+        body is exactly the kind of file someone points this at.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            body = Path(tmp) / "body.md"
+            body.write_text("token = " + POSITIVE_SAMPLES["github-token"] + "\n")
+            rc, report = run_scanner(body)
+            self.assertEqual(rc, 1, "a file holding a credential must not exit 0")
+            self.assertEqual(report["scanned_files"], 1)
+            self.assertEqual([f["path"] for f in report["findings"]], ["body.md"])
+
     def test_a_clean_tree_exits_zero(self):
         with tempfile.TemporaryDirectory() as tmp:
             tree = Path(tmp)

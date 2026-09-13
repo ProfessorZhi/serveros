@@ -101,22 +101,38 @@ def scan_file(path: Path) -> list[dict]:
 PRUNED_DIRS = (".git", "__pycache__", "node_modules", ".venv", "venv")
 
 
-def scan(root: Path) -> dict:
-    roots = [root]
-    hits, scanned, skipped = [], 0, 0
+def candidate_files(root: Path):
+    """Every file a scan of `root` should consider.
+
+    A file is a legitimate argument — a release body, a manifest, a config — and
+    `os.walk` on a file yields nothing, which would report CLEAN after reading
+    zero files. That is the exact failure this whole class of checker exists to
+    prevent, so the single-file case is handled rather than inherited.
+    """
+    if root.is_file():
+        yield root
+        return
     for dirpath, dirnames, filenames in os.walk(root):
         dirnames[:] = sorted(d for d in dirnames if d not in PRUNED_DIRS)
         for name in sorted(filenames):
-            path = Path(dirpath) / name
-            if path.suffix not in TEXT_SUFFIXES:
-                skipped += 1
-                continue
-            if is_fixture(path, roots):
-                skipped += 1
-                continue
-            scanned += 1
-            for hit in scan_file(path):
-                hits.append({"path": path.relative_to(root).as_posix(), **hit})
+            yield Path(dirpath) / name
+
+
+def scan(root: Path) -> dict:
+    roots = [root]
+    single = root.is_file()
+    hits, scanned, skipped = [], 0, 0
+    for path in candidate_files(root):
+        if path.suffix not in TEXT_SUFFIXES:
+            skipped += 1
+            continue
+        if is_fixture(path, roots):
+            skipped += 1
+            continue
+        scanned += 1
+        rel = path.name if single else path.relative_to(root).as_posix()
+        for hit in scan_file(path):
+            hits.append({"path": rel, **hit})
     return {
         "root": str(root),
         "scanned_files": scanned,
