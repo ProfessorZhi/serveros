@@ -835,13 +835,21 @@ def anomaly_explain(subject: str, *, host=None, registry=None, docker_host=None,
 # ---------------------------------------------------------------------------
 
 
-def infrastructure_report(registry, *, answered_by: str = DEFAULT_MEASURER) -> dict:
-    """§7/§9/§20: what outlives the work, and what restarting would achieve."""
+def infrastructure_report(registry, owner_states: dict | None = None, *,
+                          answered_by: str = DEFAULT_MEASURER) -> dict:
+    """§7/§9/§17/§20: what outlives the work, what restarting would achieve,
+    and what may be proposed for reclaim.
+
+    `owner_states` is optional and defaults to nothing, which makes every
+    task-scoped resource DEFER. That is the correct reading of silence — see
+    `infrastructure.reclaim_report`.
+    """
     return _envelope({
         "partition": infra.partition(registry),
         "criticality": infra.criticality_report(registry),
         "never_reclaim": infra.never_reclaim(registry),
         "recovery": infra.recovery_report(registry),
+        "reclaim": infra.reclaim_report(registry, owner_states),
     }, answered_by=answered_by)
 
 

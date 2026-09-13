@@ -193,6 +193,181 @@ def partition(registry_doc) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# §17 · Reclaim candidacy
+#
+# `lifecycle_classes` has said since it was written that `task-scoped` is
+# "Bound to one work item or task; reclaimable when that closes." Nothing
+# implemented it, which meant the sentence had no consumer — the defect this
+# project keeps finding, and the reason it is worth checking for rather than
+# assuming. This is the implementation, and it exists because of Case A.
+#
+# Case A's tunnel was NOT a reclaim candidate at any point during the incident.
+# It was running, the far side was healthy, and its owner — a work item —
+# was still active. The task was mid-flight and its transport was live. What
+# went wrong is that the tunnel's lifetime had been attached to a *different*
+# thing entirely, an Agent session, which ended on schedule and took a healthy
+# resource with it.
+#
+# So this function is where the two are told apart. It is given the owner's
+# state, which is the fact the registry cannot observe for itself: whether a
+# work item is open is `work-management`'s authority, not this daemon's. Given
+# it, the answer for Case A is "not a candidate, the owning task is still
+# active" — which is the sentence nobody could say during the incident.
+# ---------------------------------------------------------------------------
+
+# The owner's own state, as supplied by whoever owns that fact. `UNKNOWN` is
+# not a synonym for `CLOSED`: it is the absence of the one input this function
+# needs, and it fails toward doing nothing.
+OWNER_ACTIVE = "ACTIVE"
+OWNER_CLOSED = "CLOSED"
+OWNER_UNKNOWN = "UNKNOWN"
+
+# Dispositions. `CANDIDATE` is the only one that proposes anything, and even it
+# proposes rather than acts — §17 and §18 make removal a person's decision at
+# every tier.
+CANDIDATE = "CANDIDATE"
+NOT_CANDIDATE = "NOT_CANDIDATE"
+DEFER = "DEFER"
+
+
+def _declared_owner_types() -> tuple[str, ...]:
+    """Read from the contract, so this check and `validate` cannot drift into
+    disagreeing about which owners exist — the failure this round has now
+    produced twice."""
+    return tuple(registry.contract()["owner_types"])
+
+
+def reclaim_candidacy(resource, owner_state: str = OWNER_UNKNOWN) -> dict:
+    """Whether a registered resource may be proposed for reclaim, and why.
+
+    Emits a finding. Removes nothing, stops nothing, and has no path to an
+    actuator — the answer is a sentence with a reason, which is what §17 asks
+    for and what a person needs in order to decide.
+
+    The order of the checks is the contract's, and it is not arbitrary: the
+    indefeasible answers come first. A protected resource is never a candidate
+    whatever its owner is doing, so asking about the owner first would produce
+    a "yes" that a later check has to take back, and a function that can say
+    yes and then no will eventually be read at the wrong moment.
+    """
+    base = {
+        "id": resource.id,
+        "kind": resource.kind,
+        "owner": resource.owner_ref,
+        "lifecycle": resource.lifecycle,
+        "protection": resource.protection,
+        "owner_state": owner_state,
+        # Nothing here acts, so this field is not a flag anyone can flip. It is
+        # the statement §17 requires: the finding is a proposal to a person.
+        "authority": "recommendation",
+    }
+
+    if resource.protection == "protected":
+        return {**base, "disposition": NOT_CANDIDATE,
+                "because": ("protection: protected — never reclaimed by an "
+                            "automatic path, independently of owner state")}
+
+    if resource.owner_type not in _declared_owner_types():
+        # Defence in depth, and honestly labelled: `validate` already refuses
+        # an `owner.type` outside the declared four, so no REGISTERED resource
+        # reaches this line. The rule it implements is real and lives
+        # elsewhere — for an unregistered thing, attribution is the whole
+        # question and `containers.py` answers it with `reclaim_candidate:
+        # false`. Keeping the check here costs nothing and means a `Resource`
+        # built by some future path that skips registration still cannot be
+        # proposed for removal on the strength of an owner nobody confirmed.
+        return {**base, "disposition": DEFER,
+                "because": ("the owner cannot be confirmed, and unknown owner "
+                            "fails safe: DEFER, never a reclaim candidate")}
+
+    # A persistent resource's owner is not the task. Case B is the shape: if
+    # the outbound tunnel is genuinely permanent infrastructure, then a work
+    # item closing says nothing about it, and reading the task's closure as its
+    # death warrant would remove something every session depends on.
+    if resource.lifecycle == "persistent":
+        return {**base, "disposition": NOT_CANDIDATE,
+                "because": ("lifecycle: persistent — its owner is not the task, "
+                            "so the task closing does not bear on it")}
+
+    if owner_state == OWNER_UNKNOWN:
+        return {**base, "disposition": DEFER,
+                "because": ("the owner's state was not supplied, and "
+                            "`task-scoped` is reclaimable *when the task "
+                            "closes* — which is not established")}
+
+    if resource.lifecycle != "task-scoped":
+        # session-scoped, disposable. Nothing to reclaim on a task closing:
+        # they are expected to disappear on their own, and proposing them would
+        # spend a person's attention on resources that need no decision.
+        return {**base, "disposition": NOT_CANDIDATE,
+                "because": (f"lifecycle: {resource.lifecycle} — expected to end "
+                            f"on its own, so no decision is owed")}
+
+    if owner_state == OWNER_ACTIVE:
+        # Case A, in the state it was actually in. This is the sentence that
+        # nobody could say during the incident, and the whole reason the owner
+        # is a work item rather than a session: a still-open task means the
+        # resource is still required, no matter which Agent sessions have come
+        # and gone.
+        return {**base, "disposition": NOT_CANDIDATE,
+                "because": (f"the owning task is still active, so "
+                            f"{resource.id} is still desired — its owner "
+                            f"outlives the session that created it")}
+
+    return {**base, "disposition": CANDIDATE,
+            "because": (f"the owning task has closed and {resource.id} is "
+                        f"task-scoped, which is the condition the lifecycle "
+                        f"class names. A proposal — removal is a person's "
+                        f"decision")}
+
+
+def reclaim_report(registry_doc, owner_states: dict | None = None) -> dict:
+    """Every registered resource, its reclaim disposition, and why.
+
+    `owner_states` maps an owner ref to `OWNER_ACTIVE` or `OWNER_CLOSED`. It is
+    supplied by whoever owns that fact — `work-management` — because this
+    daemon cannot observe whether a work item is open and must not guess.
+
+    Anything not in the mapping is `OWNER_UNKNOWN`, which is DEFER. That
+    default is the whole design: a report that quietly treated an unlisted
+    owner as closed would turn every omission into a removal proposal, and it
+    would look identical to a correct one until somebody read the list.
+
+    Read-only. Emits dispositions, never actions — §17 makes removal a
+    person's decision at every tier.
+    """
+    states = owner_states or {}
+    rows = []
+    for resource in registry_doc.all():
+        verdict = reclaim_candidacy(
+            resource, states.get(resource.owner_ref, OWNER_UNKNOWN))
+        rows.append(verdict)
+
+    by_disposition: dict[str, int] = {}
+    for row in rows:
+        by_disposition[row["disposition"]] = by_disposition.get(row["disposition"], 0) + 1
+
+    return {
+        "count": len(rows),
+        # Named in the order they matter to a reader: what is proposed, what
+        # was considered and refused, and what could not be decided. The third
+        # is not a footnote — it is the list of questions to go and answer.
+        "by_disposition": by_disposition,
+        "candidates": [r for r in rows if r["disposition"] == CANDIDATE],
+        "deferred": [r for r in rows if r["disposition"] == DEFER],
+        "not_candidates": [r for r in rows if r["disposition"] == NOT_CANDIDATE],
+        "owner_states_supplied": sorted(states),
+        "authority": "recommendation",
+        "note": (
+            "Nothing here removes anything. §18 forbids this daemon from "
+            "removing a resource at any tier, and §17 makes removal a person's "
+            "decision with a written reason. A resource whose owner state was "
+            "not supplied is DEFER rather than assumed closed."
+        ),
+    }
+
+
+# ---------------------------------------------------------------------------
 # §21 · What no automatic path may ever touch
 # ---------------------------------------------------------------------------
 
