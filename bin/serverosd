@@ -8,6 +8,12 @@ module behind it must stay importable by the tests without running `main`.
 import sys
 from pathlib import Path
 
+# Same reason as `serverosctl`: the daemon imports its whole runtime out of the
+# revision it was launched from, so running it writes `__pycache__` into a
+# directory whose recorded tree hash is supposed to identify it. A long-lived
+# daemon pays the import cost once.
+sys.dont_write_bytecode = True
+
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "runtime"))
 
 import daemon  # noqa: E402

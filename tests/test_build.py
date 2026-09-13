@@ -416,6 +416,43 @@ class BuildTests(unittest.TestCase):
         )
         self.assertEqual({p for p in self.out.rglob("*")} - before, set())
 
+    def test_running_the_entry_points_does_not_write_into_the_artifact(self):
+        """The same property as the server above, for the two entry points that
+        have no config file to carry it.
+
+        `serverosctl` and `serverosd` import their runtime out of the revision
+        they were launched from, so running either one wrote `__pycache__` into
+        it. Measured on the live node: 16 files from a single `serverosctl
+        --help`, after which the revision's recorded tree hash — which is the
+        node's identity for it — no longer matched anything on disk.
+
+        `release.py` cannot prevent this. It does force the variable for its own
+        verification probe, but the shim is also run from a plain shell, where
+        no unit file applies. So the fix lives in the shim, and the env is
+        deliberately NOT supplied here: a test that inherited
+        `PYTHONDONTWRITEBYTECODE` from the runner would pass against a shim
+        without it, which is exactly how the verifier's version of this bug
+        stayed hidden.
+        """
+        self.assertEqual(run_build(self.args("--write")).returncode, 0)
+        env = {k: v for k, v in os.environ.items()
+               if k != "PYTHONDONTWRITEBYTECODE"}
+        before = {p for p in self.out.rglob("*")}
+        proc = subprocess.run([str(self.out / "bin" / "serverosctl"), "--help"],
+                              stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
+                              text=True, timeout=60, cwd=self.out, env=env)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual({p for p in self.out.rglob("*")} - before, set(),
+                         "running the shipped CLI wrote into the artifact")
+
+        # `serverosd` gets the same line, but cannot be exercised this way — it
+        # would start the daemon's loop rather than return. So it is asserted
+        # structurally, which catches its removal and nothing subtler.
+        for name in ("serverosctl", "serverosd"):
+            self.assertIn("sys.dont_write_bytecode = True",
+                          (self.out / "bin" / name).read_text(),
+                          f"{name} does not suppress bytecode writing")
+
     def test_the_codex_mcp_file_is_reachable_only_through_its_manifest_field(self):
         """`.codex-mcp.json` is not a filename Codex looks for — the string does
         not occur in the codex binary. It resolves only because the manifest
