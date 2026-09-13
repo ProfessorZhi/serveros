@@ -1534,6 +1534,62 @@ def test_the_daemon_does_not_import_a_git_or_feishu_client(daemon_factory):
         assert not any(m.startswith(forbidden) for m in methods), forbidden
 
 
+def test_no_memory_provider_import_reaches_the_daemon():
+    """§61, and the enforcement `memory/provider-contract.yaml` names.
+
+    THAT FILE SAYS:
+
+        enforcement: "the daemon's imports are checked by test; a provider
+                      import in `runtime/daemon.py` fails the suite."
+
+    and nothing performed that check. The test above searches the source for
+    three substrings — `subprocess.run(["git"`, `feishu`, `shutil.rmtree` —
+    which is a check on text, not on imports. `import openviking` in
+    `runtime/daemon.py` would satisfy it, and so would any provider, because
+    none of their names appear in the list.
+
+    So the enforcement is written as what it was declared to be: parse the
+    module, look at what it actually imports, and refuse a provider.
+
+    Parsing rather than matching text matters in both directions here. A
+    substring search reports a false positive on the word "feishu" inside a
+    docstring — the module discusses Feishu in prose — and a false negative on
+    any import written in a form the list did not anticipate, such as
+    `from x import y` or `importlib.import_module`.
+    """
+    import ast
+
+    tree = ast.parse((RUNTIME / "daemon.py").read_text())
+
+    imported: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            imported |= {alias.name.split(".")[0] for alias in node.names}
+        elif isinstance(node, ast.ImportFrom) and node.module:
+            imported.add(node.module.split(".")[0])
+        elif (isinstance(node, ast.Call)
+              and isinstance(node.func, ast.Attribute)
+              and node.func.attr in ("import_module", "__import__")):
+            # A dynamic import is exactly how this rule would be evaded, by
+            # accident as easily as on purpose.
+            imported.add("<dynamic import>")
+
+    # The provider namespaces. A provider is a thing the daemon may ASK ABOUT
+    # over IPC, never a thing it may import: an embedding call inside the tick
+    # loop makes loop latency a function of a model and its availability.
+    forbidden = {"openviking", "memory", "numpy", "torch", "sentence_transformers"}
+    reached = sorted(imported & forbidden)
+    assert not reached, (
+        f"`runtime/daemon.py` imports {reached}. `memory/provider-contract.yaml` "
+        f"requires the daemon to reach a provider over IPC and never to import "
+        f"one.")
+
+    # And the positive control. This assert would pass on a parser that found
+    # nothing at all, which is how a purity test quietly stops testing.
+    assert imported, "the import scan found no imports in a module that has them"
+    assert "json" in imported or "argparse" in imported, sorted(imported)
+
+
 # ---------------------------------------------------------------------------
 # §14 · a missing parameter is refused by name, not by KeyError
 # ---------------------------------------------------------------------------

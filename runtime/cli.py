@@ -339,6 +339,76 @@ def cmd_ability_status(args) -> int:
     return EXIT_OK if installed else EXIT_FAULT
 
 
+def cmd_device_agents(args) -> int:
+    """§9/§18 — the agent runtimes this node has, and whether parity holds.
+
+    The observation half is read-only: whether each declared adapter surface
+    exists on this device. Nothing is created, and a surface that cannot be
+    resolved is reported as unobserved rather than as absent — a path role
+    that is not bound means nobody has looked, which is not the same finding
+    as a file that is not there.
+    """
+    parity_mod = _load_module_from(REPO_ROOT / "abilities/runtime_parity.py",
+                                   "serveros_runtime_parity")
+    contract_path = REPO_ROOT / "abilities/agent-runtime-contract.yaml"
+    registry_path = REPO_ROOT / "fleet/registry.yaml"
+
+    import yaml
+    contract = yaml.safe_load(contract_path.read_text(encoding="utf-8"))
+    registry = (yaml.safe_load(registry_path.read_text(encoding="utf-8"))
+                if registry_path.is_file() else None)
+
+    # Observe what is actually on this disk, per runtime per surface.
+    paths = paths_mod.Paths()
+    observed: dict[str, dict] = {}
+    for runtime in contract.get("ids") or ():
+        entry = {}
+        for field in parity_mod.OBSERVABLE_SURFACES:
+            specs = ((contract.get("capabilities") or {}).get(field) or {}).get(runtime)
+            if specs is None:
+                continue
+            if isinstance(specs, dict):
+                specs = [specs]
+            measured = []
+            for spec in specs:
+                try:
+                    base = paths.root(spec["path_role"])
+                except Exception:  # noqa: BLE001 - an unbound role is a finding
+                    continue
+                target = base / spec["relative"]
+                measured.append({"path": str(target), "present": target.exists()})
+            entry[field] = measured
+        observed[runtime] = entry
+
+    result = parity_mod.report(contract, registry, observed)
+
+    lines = [f"runtimes    {', '.join(result['runtimes'])}",
+             f"compared    {', '.join(result['compared_fields'])}",
+             f"may differ  {', '.join(result['allowed_differences'])}"]
+    for runtime in result["runtimes"]:
+        for field in parity_mod.OBSERVABLE_SURFACES:
+            for surface in (observed.get(runtime) or {}).get(field) or []:
+                mark = "present" if surface["present"] else "MISSING"
+                lines.append(f"  {runtime:<12} {field:<20} {mark}  {surface['path']}")
+    lines.append(f"verdict     {result['verdict']}")
+    for finding in result["findings"]:
+        lines.append(f"  finding   {finding['code']}: {finding['detail']}")
+    # Acknowledged defects are printed, not hidden. Moving them out of
+    # `findings` is what stops the check being permanently red; printing them
+    # is what stops that from becoming a way to stop looking.
+    for item in result["acknowledged"]:
+        lines.append(f"  known     {item['code']}: {item['detail']} "
+                     f"[{item['declared_gap'].get('state')}, "
+                     f"{item['declared_gap'].get('closing_action')}]")
+    for unknown in result["unknowns"]:
+        lines.append(f"  unknown   {unknown['code']}: {unknown['detail']}")
+    for surface in result["unobserved_declared_gaps"]:
+        lines.append(f"  stale gap {surface}: recorded but not observed; "
+                     "either it was fixed or the record is wrong")
+    emit(result, as_json=args.json, lines=lines)
+    return EXIT_OK if result["verdict"] == "CONFORMANT" else EXIT_FAULT
+
+
 def cmd_ability_resolve(args) -> int:
     """§45/§46 — can THIS device do THIS thing, now, and if not why not.
 
@@ -1615,6 +1685,10 @@ def build_parser() -> argparse.ArgumentParser:
     device_sub = device.add_subparsers(dest="subcommand", required=True)
     device_show = device_sub.add_parser("show", help="identity, host summary, managed count", **_COMMON)
     device_show.set_defaults(func=cmd_device_show)
+    device_agents = device_sub.add_parser(
+        "agents", help="the agent runtimes here, and whether parity holds (§18)",
+        **_COMMON)
+    device_agents.set_defaults(func=cmd_device_agents)
 
     context = sub.add_parser("context", help="what this shell is inside", **_COMMON)
     context_sub = context.add_subparsers(dest="subcommand", required=True)
