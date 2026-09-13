@@ -89,6 +89,18 @@ space:
 relations:
   path: relations
 
+# The fleet plane ships because the Agent MCP surface reads it at import time.
+# `mcp/agent_mcp.py` loads `fleet/agent_control_router.py`, which loads
+# `fleet/transport.py` in turn; the adapter therefore cannot start without the
+# directory, and an artifact that ships the adapter and not the fleet ships an
+# entry point that raises FileNotFoundError before it reads a byte of stdin.
+#
+# Named here rather than left to the `mcp` block because the dependency runs
+# adapter -> fleet -> abilities/runtime/context, and the module that has to be
+# present is the one nothing else in this file would have mentioned.
+fleet:
+  path: fleet
+
 # The Ability Fabric and the Memory-Context Fabric ship for the same reason the
 # three kernels above do: their contracts are what a node validates against and
 # their resolvers are read-only functions of records. Shipping the resolver
