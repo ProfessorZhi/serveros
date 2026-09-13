@@ -20,18 +20,24 @@ from pathlib import Path
 
 _REPO = Path(__file__).resolve().parent.parent
 _RUNTIME = _REPO / "runtime"
+_ABILITIES = _REPO / "abilities"
 
-def _load_semantics():
-    name = "serveros_runtime_agent_sessions"
+def _load(name: str, path: Path):
     if name in sys.modules:
         return sys.modules[name]
-    spec = importlib.util.spec_from_file_location(name, _RUNTIME / "agent_sessions.py")
+    spec = importlib.util.spec_from_file_location(name, path)
     module = importlib.util.module_from_spec(spec)
     sys.modules[name] = module
     spec.loader.exec_module(module)
     return module
 
-semantics = _load_semantics()
+semantics = _load("serveros_runtime_agent_sessions", _RUNTIME / "agent_sessions.py")
+# Readiness is derived in `abilities/provider_instance.py`, which is the
+# implementation of the `instance:` record `abilities/provider-contract.yaml`
+# declared. Loaded rather than reimplemented: this adapter's job is to produce
+# the observations, not to decide what they add up to.
+instances = _load("serveros_ability_provider_instance",
+                  _ABILITIES / "provider_instance.py")
 agent_ref = semantics.agent_ref
 session_ref = semantics.session_ref
 support = semantics.support
@@ -75,8 +81,22 @@ def _iso_from_ms(value: Any) -> str | None:
 class BotMuxProvider:
     provider_id = "provider:botmux-agent-session"
 
-    def __init__(self, config: BotMuxConfig | None = None) -> None:
+    def __init__(self, config: BotMuxConfig | None = None, clock=None) -> None:
         self.config = config or BotMuxConfig.from_env()
+        # The clock is injected, not read, so that freshness is testable without
+        # waiting 15 minutes and so that a record's `observed_at` is a property
+        # of the call rather than of whichever wall the host happens to have.
+        self._clock = clock
+        # Outcomes of turns this instance actually drove. In memory and
+        # deliberately not on disk: a persisted readiness is a memory of a past
+        # resolution read as a current one, and a persisted NEGATIVE keeps
+        # refusing a provider that has since been repaired. The cost is named
+        # rather than hidden — a restarted process reports UNKNOWN until it has
+        # called the provider again, which is the honest value there.
+        self._execution_log: list[dict] = []
+
+    def _now(self) -> str:
+        return instances.now_utc(self._clock)
 
     @staticmethod
     def _runtime_ref(native_runtime: str | None) -> str | None:
@@ -218,13 +238,41 @@ class BotMuxProvider:
             return cls._TURN_MAP[token], "FACT"
         return "TURN_UNKNOWN", "UNKNOWN"
 
-    @staticmethod
-    def _provider_evidence(row: dict) -> dict:
-        """Provider booleans kept verbatim, so a reader can see what was NOT used."""
-        return {key: row[key] for key in
-                ("queued", "locked", "adopt", "agentAttention", "tuiPromptActive",
-                 "pendingRepo", "hasHistory", "lastInputFromBot")
-                if key in row}
+    # The fields BotMux reports BESIDE `status`. Copied verbatim and never
+    # interpreted into a state — that rule has not changed. What has changed is
+    # the record around them.
+    _EVIDENCE_FIELDS = ("queued", "locked", "adopt", "agentAttention",
+                        "tuiPromptActive", "pendingRepo", "hasHistory",
+                        "lastInputFromBot")
+
+    def _provider_evidence(self, row: dict) -> dict:
+        """Structured evidence: what was read, from where, when, on what strength.
+
+        This used to be a bare mapping of field -> value, which is real evidence
+        with nothing around it. It could not answer which call produced it, when,
+        or whether the reader was looking at a provider fact or at this adapter's
+        interpretation — and the record it sat in carries `status_reason`, which
+        is a SENTENCE. Two fields that look alike and mean different things is
+        how "evidence" came to mean "whatever is in this slot".
+
+        So the four are now separate and separately typed:
+
+            status_reason      a sentence for a person
+            evidence.source    the call that produced it
+            evidence.observed_at   when, from an injectable clock
+            evidence.provenance/authoritative  how strong, in health.py's words
+
+        `evidence.type` is `runtime/health.py`'s EVIDENCE_STRENGTH key rather
+        than a new one, so "is this authoritative" has one answer in one place.
+        """
+        return {
+            "source": "botmux:/api/sessions",
+            "observed_at": self._now(),
+            "provenance": "FACT",
+            "evidence_type": "provider-response",
+            "authoritative": True,
+            "fields": {key: row[key] for key in self._EVIDENCE_FIELDS if key in row},
+        }
 
     def list_agents(self, *, device_ref: str) -> list[dict]:
         rows = self._request("GET", "/api/bots", require_auth=True).get("bots") or []
@@ -284,7 +332,6 @@ class BotMuxProvider:
             quarantined = bool(row.get("quarantined"))
             ref = session_ref(device_ref, self.provider_id, native_id)
             item = {
-                "session_id": ref,
                 "session_ref": ref,
                 "device_ref": device_ref,
                 "provider": self.provider_id,
@@ -313,6 +360,96 @@ class BotMuxProvider:
             item.update({k: v for k, v in optional.items() if v is not None})
             out.append(item)
         return out
+
+    # -----------------------------------------------------------------------
+    # Readiness — the second axis.
+    #
+    # Everything above answers "does it answer". This answers "does it work",
+    # and it is the question nothing in ServerOS could ask before the vertical
+    # slice: BotMux listed, listed, and accepted a trigger with a real
+    # sessionId, and every turn failed because the execution backend under it
+    # was gone. `action_support = SUPPORTED` was true and useless.
+    #
+    # No `~/.botmux/data/*` is read here. No tmux socket is inspected. No
+    # BotMux private state is opened. There is no second truth source: the two
+    # inputs are the provider's own documented API and the outcomes of turns
+    # this adapter actually drove, which BotMux itself reported.
+    # -----------------------------------------------------------------------
+
+    def _record_execution(self, *, outcome: str, error_code: str | None,
+                          detail: str | None, provider_session_id: str) -> None:
+        """Record a turn outcome this adapter observed, for readiness to derive from.
+
+        Called only from `result()`, and only with what the provider's own
+        `trigger-result` endpoint returned. This is the third of the three
+        permitted sources — a real action/result evidence — and it is the only
+        one available, because probing for a readiness endpoint found none.
+        """
+        self._execution_log.append({
+            "state": outcome,
+            "observed_at": self._now(),
+            "error_code": error_code,
+            "detail": detail,
+            "provider_session_id": provider_session_id,
+        })
+        # Bounded so a long-lived process does not accumulate one record per
+        # turn forever. The window keeps only what freshness could still use.
+        if len(self._execution_log) > 64:
+            del self._execution_log[:-64]
+
+    def _execution_observation(self, *, observed_at: str):
+        """The most recent execution outcome, or the honest absence of one."""
+        if not self._execution_log:
+            return instances.unknown_execution(observed_at=observed_at,
+                                               provider_id=self.provider_id)
+        latest = self._execution_log[-1]
+        state = "OK" if latest["state"] == "TURN_COMPLETED" else "FAILED"
+        reason = "EXECUTION_FAILED" if state == "FAILED" else None
+        extra = {"error_code": latest.get("error_code"),
+                 "provider_session_id": latest.get("provider_session_id"),
+                 "detail": (latest.get("detail") or "")[:400] or None}
+        return instances.observation(
+            axis=instances.AXIS_EXECUTION, state=state,
+            observer_type="provider-response", observer_id=self.provider_id,
+            observed_at=latest["observed_at"], evidence_type="provider-response",
+            reason=reason, extra=extra,
+        )
+
+    def observe(self, *, device_ref: str) -> dict:
+        """This device's readiness for this provider, with the evidence behind it.
+
+        Reachability is measured by calling, not assumed from configuration: the
+        same `/api/sessions` call `list_sessions` makes, whose failure IS the
+        observation. A provider that cannot be reached is not an error here —
+        it is a STOPPED control plane, which is a finding rather than a crash,
+        and the difference matters because a caller asked a question and
+        deserves an answer rather than an exception.
+        """
+        observed_at = self._now()
+        try:
+            self._request("GET", "/api/sessions")
+        except BotMuxError as exc:
+            control = instances.observation(
+                axis=instances.AXIS_CONTROL_PLANE, state="STOPPED",
+                observer_type="host-measurement", observer_id=self.provider_id,
+                observed_at=observed_at, evidence_type="host-measurement",
+                extra={"why": f"{type(exc).__name__}: {exc}"[:300]},
+            )
+            execution = instances.unknown_execution(
+                observed_at=observed_at, provider_id=self.provider_id)
+        else:
+            control = instances.observation(
+                axis=instances.AXIS_CONTROL_PLANE, state="RUNNING",
+                observer_type="provider-response", observer_id=self.provider_id,
+                observed_at=observed_at, evidence_type="provider-response",
+                extra={"source": "botmux:/api/sessions"},
+            )
+            execution = self._execution_observation(observed_at=observed_at)
+
+        return instances.instance(
+            provider=self.provider_id, device_ref=device_ref,
+            observations=[control, execution], reference=observed_at,
+        )
 
     def _bot_for_session(self, provider_session_id: str) -> str:
         rows = self._request("GET", "/api/sessions").get("sessions") or []
@@ -360,7 +497,6 @@ class BotMuxProvider:
             raise BotMuxError("BotMux accepted create but returned no sessionId")
         ref = session_ref(device_ref, self.provider_id, native_id)
         return {
-            "session_id": ref,
             "session_ref": ref,
             "provider": self.provider_id,
             "provider_session_id": native_id,
@@ -388,7 +524,6 @@ class BotMuxProvider:
         )
         ref = session_ref(device_ref, self.provider_id, provider_session_id)
         return {
-            "session_id": ref,
             "session_ref": ref,
             "provider": self.provider_id,
             "provider_session_id": provider_session_id,
@@ -409,6 +544,14 @@ class BotMuxProvider:
             path += "?" + urlencode({"triggerId": trigger_id})
         data = self._request("GET", path, require_auth=True)
         turn_state, provenance = self._normalize_turn(data.get("state"))
+        # A settleable turn outcome is readiness evidence, and this is the only
+        # place one is produced. Recorded from the provider's own report and
+        # nothing else: a turn that is still running says nothing about whether
+        # execution works, so only the terminal states are written down.
+        if turn_state in ("TURN_COMPLETED", "TURN_FAILED"):
+            self._record_execution(
+                outcome=turn_state, error_code=data.get("errorCode"),
+                detail=data.get("error"), provider_session_id=provider_session_id)
         return {
             "provider": self.provider_id,
             "provider_session_id": provider_session_id,

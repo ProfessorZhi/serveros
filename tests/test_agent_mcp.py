@@ -22,7 +22,16 @@ def _load(name: str, path: Path):
 
 
 agent_mcp = _load("serveros_test_agent_mcp", MCP / "agent_mcp.py")
+# Loaded under the name the contract tests below already use, so the whole file
+# reads one module instance rather than one per test.
+service_mod = _load("serveros_test_service_for_contract",
+                    MCP / "agent_session_service.py")
 semantics = sys.modules["serveros_runtime_agent_sessions"]
+
+# Named once, because the fake daemon's device identity and the refs the fake
+# provider hands out have to be the same device or `session.inspect` would
+# reject a ref this module itself produced.
+DEVICE_REF = "device:server-beijing"
 
 
 class FakeDaemon:
@@ -33,7 +42,7 @@ class FakeDaemon:
     def call(self, method, params=None):
         self.calls.append((method, dict(params or {})))
         if method == "device.show":
-            return {"device_ref": "device:server-beijing"}
+            return {"device_ref": DEVICE_REF}
         if method == "agent.action.admit":
             return {"decision": self.decision, "reason": "fixture"}
         raise AssertionError(method)
@@ -45,12 +54,17 @@ class FakeProvider:
     def __init__(self):
         self.calls = []
 
+    @property
+    def ref(self):
+        """The ref this provider would hand out for its one session."""
+        return semantics.session_ref(DEVICE_REF, self.provider_id, "s1")
+
     def list_agents(self, *, device_ref):
         return [{"agent_id": "a1", "agent_ref": "agent:a1", "device_ref": device_ref}]
 
     def list_sessions(self, *, device_ref):
         ref = semantics.session_ref(device_ref, "fake", "s1")
-        return [{"session_ref": ref, "session_id": ref,
+        return [{"session_ref": ref,
                  "provider_session_id": "s1", "last_activity": "2026-01-01T00:00:00Z",
                  "action_support": {
                      "session.send": semantics.support("SUPPORTED"),
@@ -203,16 +217,72 @@ def test_every_declared_semantic_action_is_either_served_or_named_absent():
 
 
 def test_control_verbs_are_absent_from_the_surface_but_present_in_the_service():
-    from importlib.util import module_from_spec, spec_from_file_location
-    spec = spec_from_file_location("serveros_test_service_for_contract",
-                                   REPO / "mcp/agent_session_service.py")
-    service = module_from_spec(spec)
-    sys.modules["serveros_test_service_for_contract"] = service
-    spec.loader.exec_module(service)
-    assert set(service.CONTROL_VERBS) == {
+    assert set(service_mod.CONTROL_VERBS) == {
         "session.interrupt", "session.stop", "session.handoff", "session.resume",
     }
-    assert not (set(service.CONTROL_VERBS) & set(agent_mcp.tool_names()))
+    assert not (set(service_mod.CONTROL_VERBS) & set(agent_mcp.tool_names()))
+
+
+def test_every_public_service_method_has_a_caller_that_can_actually_reach_it():
+    """The service is the middle of the stack, so nothing checks it from above.
+
+    A public method here that no dispatch calls and no other method calls is a
+    capability with no path to a caller — and, worse, its docstring is free to
+    claim otherwise. `readiness_list` did exactly that: it described itself as
+    "the only way an operator can see that support = SUPPORTED and readiness =
+    UNAVAILABLE are both true of the same provider", and no surface dispatched
+    it, no method called it and no test exercised it. The fact it advertised was
+    reachable, but through `agent.list`, which the contract already names.
+
+    This is a structural read of the two real call sites rather than a
+    hand-kept list, because a hand-kept list is the other half of the same
+    defect: it would be updated by whoever moved the call, or not.
+    """
+    import ast
+
+    service_tree = ast.parse((REPO / "mcp/agent_session_service.py").read_text())
+    klass = next(n for n in service_tree.body
+                 if isinstance(n, ast.ClassDef) and n.name == "SessionService")
+    public = {
+        n.name for n in klass.body
+        if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))
+        and not n.name.startswith("_")
+    }
+
+    # Callers on the object itself: `self.foo(...)` anywhere in the class.
+    internal = {
+        node.func.attr for node in ast.walk(klass)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+        and isinstance(node.func.value, ast.Name) and node.func.value.id == "self"
+    }
+
+    # The surface's own dispatch: `service.foo(...)` inside AgentControlClient.
+    mcp_tree = ast.parse((REPO / "mcp/agent_mcp.py").read_text())
+    client = next(n for n in mcp_tree.body
+                  if isinstance(n, ast.ClassDef) and n.name == "AgentControlClient")
+    dispatched = {
+        node.func.attr for node in ast.walk(client)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+        and isinstance(node.func.value, ast.Name) and node.func.value.id == "service"
+    }
+
+    # The four control verbs are served by methods the surface declines to
+    # dispatch. They are named here by mapping rather than by a second literal
+    # list, so that adding a verb without a method — or the reverse — fails.
+    declared_absent = set(service_mod.CONTROL_VERBS.values())
+
+    unreachable = public - internal - dispatched - declared_absent
+    assert not unreachable, (
+        f"public SessionService methods nothing can reach: {sorted(unreachable)}. "
+        "Either wire it to a surface and a test, or make it private — a public "
+        "method whose docstring promises reachability is the claim, not the "
+        "capability."
+    )
+
+    # And the reverse, so this cannot be satisfied by deleting the caller and
+    # widening the exception set: every name excused as a control verb must be
+    # a method that really exists on the service.
+    assert declared_absent <= public, sorted(declared_absent - public)
 
 
 def test_declared_absent_verbs_have_no_reachable_mcp_path():
@@ -221,3 +291,51 @@ def test_declared_absent_verbs_have_no_reachable_mcp_path():
         response = rpc(server, "tools/call", name=verb, arguments={"ref": "x"})
         assert response["result"]["isError"] is True
         assert "Unknown tool" in response["result"]["content"][0]["text"]
+
+
+def test_readiness_does_not_widen_the_mcp_surface():
+    """No new tool, because the contract never declared one.
+
+    Readiness is a provider-instance fact, not an Agent Session verb. A
+    `readiness.list` tool would be a name in this surface that
+    `runtime/agent-session-contract.yaml` does not declare, and the gate that
+    keeps the surface honest is exactly `served <= declared`. Widening the
+    surface to make a new fact reachable would trade one honesty check for one
+    convenience, which is the wrong direction.
+    """
+    contract = yaml.safe_load((REPO / "runtime/agent-session-contract.yaml").read_text())
+    declared = set(contract["support"]["actions"])
+    assert not [n for n in agent_mcp.tool_names() if "readiness" in n]
+    assert set(agent_mcp.tool_names()) <= declared
+
+
+def test_readiness_is_reachable_through_the_read_path_that_already_existed():
+    """The fact is visible where an operator looks before driving something."""
+    daemon, provider = FakeDaemon(), FakeProvider()
+    client = agent_mcp.AgentControlClient(daemon=daemon, providers=[provider])
+    view = client.call("agent.list", {})
+    assert "providers" in view
+    assert view["providers"], "a configured provider must report readiness, even if UNKNOWN"
+    assert view["providers"][0]["status"] in ("AVAILABLE", "DEGRADED", "UNAVAILABLE",
+                                              "INCOMPATIBLE", "UNKNOWN")
+
+
+def test_a_mutation_result_carries_the_readiness_it_was_made_under():
+    daemon, provider = FakeDaemon(), FakeProvider()
+    client = agent_mcp.AgentControlClient(daemon=daemon, providers=[provider])
+    out = client.call("session.send", {"ref": provider.ref,
+                                       "instruction": "hi",
+                                       "turn_idempotency_key": "t1"})
+    assert "provider_readiness" in out
+    assert out["provider_readiness"]["status"] in (
+        "AVAILABLE", "DEGRADED", "UNAVAILABLE", "INCOMPATIBLE", "UNKNOWN")
+
+
+def test_the_surface_does_not_serve_anything_the_contract_cannot_name():
+    """The gate, restated against the new fact so it cannot drift."""
+    contract = yaml.safe_load((REPO / "runtime/agent-session-contract.yaml").read_text())
+    readiness_block = contract["readiness"]
+    assert readiness_block["refusal"] == "ProviderNotReady"
+    assert readiness_block["refusal_is_not"] == ["ActionNotSupported",
+                                                 "ActionNotAdmitted"]
+    assert "skills" not in agent_mcp.tool_names()
