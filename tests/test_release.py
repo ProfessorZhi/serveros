@@ -187,6 +187,36 @@ class ReleaseTests(unittest.TestCase):
         self.assertFalse((self.comp_root / "current").is_symlink(),
                          "a refused artifact left the node pointed at something")
 
+    def test_a_dry_run_writes_nothing(self):
+        """A dry run that stages is a real run with the last step removed.
+
+        Found the direct way: `--dry-run` staged a revision, and the real
+        promotion that followed refused its own leftovers with "already
+        staged". The check is a filesystem assertion rather than a return-code
+        one, because a dry run returning 0 while having written is exactly the
+        failure.
+        """
+        art = make_artifact(self.base, "a")
+        before = sorted(p.name for p in self.runtime_root.rglob("*")) if self.runtime_root.exists() else []
+        result = self.promote(art, "rev-a", "--dry-run")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("would promote", result.stdout)
+
+        after = sorted(p.name for p in self.runtime_root.rglob("*")) if self.runtime_root.exists() else []
+        self.assertEqual(before, after, "a dry run created files")
+        self.assertFalse((self.comp_root / "revisions").exists(),
+                         "a dry run staged a revision")
+        self.assertFalse((self.unit_dir / "serverosd.service").exists(),
+                         "a dry run installed a unit")
+
+    def test_a_dry_run_then_a_real_promote_succeeds(self):
+        """The sequence the bug broke, asserted end to end."""
+        art = make_artifact(self.base, "a")
+        self.assertEqual(self.promote(art, "rev-a", "--dry-run").returncode, 0)
+        self.assertEqual(self.promote(art, "rev-a").returncode, 0,
+                         "a real promote failed after a dry run of the same revision")
+        self.assertEqual(release.current_revision(self.comp_root), "rev-a")
+
     def test_promote_refuses_to_restage_a_revision_without_replace(self):
         art = make_artifact(self.base, "a")
         self.assertEqual(self.promote(art, "rev-a").returncode, 0)

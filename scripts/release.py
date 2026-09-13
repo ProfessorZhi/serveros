@@ -234,8 +234,26 @@ def cmd_status(args) -> int:
 def cmd_promote(args) -> int:
     root = args.runtime_root / args.composition
     revisions = root / "revisions"
-    revisions.mkdir(parents=True, exist_ok=True)
 
+    # A dry run verifies the artifact where it was built and stops. It must not
+    # stage first and check afterwards: staging writes a revision directory, so
+    # a dry run that staged would be a real run with the last step removed —
+    # and the next real run would then refuse its own leftovers with "already
+    # staged", which is how this was found. Nothing below `--dry-run` is
+    # reached, so `revisions/` is not even created.
+    if args.dry_run:
+        report = verify_revision(args.artifact, args.state_dir)
+        if not report["ok"]:
+            for problem in report["problems"]:
+                print(f"REFUSED {problem}", file=sys.stderr)
+            return 1
+        if not (args.artifact / "runtime" / UNIT_NAME).is_file():
+            print(f"REFUSED no runtime/{UNIT_NAME}", file=sys.stderr)
+            return 1
+        print(f"would promote  {args.revision}  tree={report['tree_hash']}")
+        return 0
+
+    revisions.mkdir(parents=True, exist_ok=True)
     rev_dir = stage(args.artifact, revisions, args.revision,
                     args.state_dir, replace=args.replace)
     report = verify_revision(rev_dir, args.state_dir)
@@ -249,10 +267,6 @@ def cmd_promote(args) -> int:
     # while `current` still points at the revision that is running.
     unit_text = render_unit((rev_dir / "runtime" / UNIT_NAME).read_text(),
                             root / "current", args.state_dir)
-
-    if args.dry_run:
-        print(f"would promote  {args.revision}  tree={report['tree_hash']}")
-        return 0
 
     previous = current_revision(root)
     if previous and previous != args.revision:
