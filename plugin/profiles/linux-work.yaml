@@ -33,7 +33,7 @@ short_description: Agent Engineering Workbench for a Linux work node
 # A profile's payload differs from its parent's, so it declares its own cache
 # identity. The builder refuses a profile that inherits this one — a shared
 # cachebuster would let two different payloads claim one version string.
-cachebuster: srv0003.20260913a
+cachebuster: srv0003.20260913b
 
 skills:
   - name: runtime-management
