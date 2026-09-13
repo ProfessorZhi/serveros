@@ -142,11 +142,18 @@ publishing:
 # different one says so by carrying a different sha, and `packs.py` reports
 # that as PIN_MISMATCH rather than silently comparing two things.
 #
-# §62 status: the pinned revision exists on `serveros/srv-0007-ability-packs`
-# in ability-management and has NOT been pushed. A pin naming an unpushed
-# commit resolves on exactly one machine. It is written down rather than
-# omitted so that the obligation is legible: push the ability branch, then
-# repin from the remote HEAD.
+# §62 status: PUBLISHED. The pinned revision was pushed to
+# `ProfessorZhi/ability-management` on 2026-09-13, both as the branch
+# `serveros/srv-0007-ability-packs` and on `main` — the second of those is a
+# requirement and not a convention, because `scripts/runtime_truth.py` decides
+# provenance by reachability from `refs/heads/main`, so a revision that exists
+# only on a feature branch still yields PIN_NOT_CANONICAL.
+#
+# Before the push this line said the revision had NOT been pushed, and the pin
+# named an unreadable commit. That was written down rather than omitted so the
+# obligation stayed legible; it is now written down in the other direction for
+# the same reason. A pin whose status is not recorded is a pin whose status is
+# re-derived — usually wrongly — by whoever reads it next.
 # ---------------------------------------------------------------------------
 packs:
   - id: pack:autonomous-quality-loop
