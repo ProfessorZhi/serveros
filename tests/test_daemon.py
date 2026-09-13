@@ -46,6 +46,17 @@ health_mod = _load("serveros_runtime_health", "health.py")
 probes_mod = _load("serveros_runtime_probes", "probes.py")
 daemon_mod = _load("serveros_runtime_daemon", "daemon.py")
 
+# `release.py` is the one module under test that lives outside `runtime/`, so it
+# does not fit `_load`. It is loaded here because the unit-rendering it owns is
+# the thing an installed unit has to be a rendering OF — asserting that
+# relationship needs the same function the installer used, not a second
+# implementation of the substitution in this file.
+_release_spec = importlib.util.spec_from_file_location(
+    "serveros_release", REPO / "scripts" / "release.py")
+release = importlib.util.module_from_spec(_release_spec)
+sys.modules["serveros_release"] = release
+_release_spec.loader.exec_module(release)
+
 Registry = registry_mod.Registry
 Daemon = daemon_mod.Daemon
 Budget = daemon_mod.Budget
@@ -318,15 +329,59 @@ def test_an_installed_unit_is_byte_identical_to_the_reviewed_artefact():
     about the RELATIONSHIP, not about this machine having a service. But when
     a copy IS installed, a difference means somebody's node is running a unit
     that no review covers, which is worth failing over.
+
+    The template carries placeholders now, so the comparison renders it first.
+    That is a stronger check than the byte comparison it replaces, not a weaker
+    one: it still fails on any edit to the reviewed template, and it fails
+    additionally when the installed unit names a runtime or a state directory
+    that the reviewed template would not have produced from those values.
+
+    The values are read back out of the installed unit rather than supplied by
+    the test. Hardcoding this machine's paths would make the test pass on the
+    node it was written on and mean nothing anywhere else, and it would stop
+    noticing the one thing worth noticing — that the unit is a consistent
+    rendering of the template rather than a hand-edited file that resembles one.
     """
     installed = Path.home() / ".config/systemd/user/serverosd.service"
     if not installed.exists():
         pytest.skip("the serverosd pilot is not installed on this host")
-    assert installed.read_bytes() == (RUNTIME / "serverosd.service").read_bytes(), (
-        "the installed unit has drifted from runtime/serverosd.service; reinstall "
-        "with `install -m 0644 runtime/serverosd.service "
-        "~/.config/systemd/user/serverosd.service`"
+
+    text = installed.read_text()
+    exec_line = next((l for l in text.splitlines() if l.startswith("ExecStart=")), None)
+    assert exec_line is not None, "the installed unit has no ExecStart"
+    runtime_dir = exec_line[len("ExecStart="):].removesuffix("/bin/serverosd")
+    state_line = next(
+        (l for l in text.splitlines() if l.startswith("Environment=SERVEROS_STATE_DIR=")), None)
+    assert state_line is not None, "the installed unit declares no SERVEROS_STATE_DIR"
+    state_dir = state_line[len("Environment=SERVEROS_STATE_DIR="):]
+
+    expected = release.render_unit((RUNTIME / "serverosd.service").read_text(),
+                                   Path(runtime_dir), Path(state_dir))
+    assert text == expected, (
+        "the installed unit has drifted from runtime/serverosd.service; reinstall it "
+        "with `scripts/release.py promote ...`, which renders the reviewed template"
     )
+
+
+def test_the_installed_unit_does_not_name_a_source_checkout():
+    """A supervisor must not be pointed at a worktree.
+
+    Stated as its own test because this is the defect the release path was built
+    to remove, and it is invisible in a byte comparison: a unit pointing at a
+    worktree is byte-identical to the reviewed template that still contains that
+    path. The worktree gets retired, the service stops starting, and nothing
+    that ran before it did had a reason to object.
+    """
+    installed = Path.home() / ".config/systemd/user/serverosd.service"
+    if not installed.exists():
+        pytest.skip("the serverosd pilot is not installed on this host")
+    for line in installed.read_text().splitlines():
+        if not line.strip() or line.lstrip().startswith(("#", ";")):
+            continue
+        assert "/workspace/worktrees/" not in line, (
+            f"the installed unit runs out of a per-Item worktree, which may be retired: "
+            f"{line.strip()}"
+        )
 
 
 def test_the_unit_does_not_turn_on_reconcile_or_listen_on_tcp():

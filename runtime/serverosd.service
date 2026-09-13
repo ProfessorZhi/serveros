@@ -18,10 +18,22 @@
 #   protected — so even with --enable-reconcile there is nothing here the
 #   daemon may act on.
 #
-# ExecStart points at this worktree, and that is a PILOT CONDITION, not a
-# design. A worktree is per-Item and may be retired; the productised unit must
-# point at a stable installation path (§27-§32). Recorded here rather than
-# discovered later as a service that stopped starting.
+# ExecStart carried this worktree's absolute path, and that was a PILOT
+# CONDITION, not a design: a worktree is per-Item and may be retired. It is now
+# `@SERVEROS_RUNTIME@`, rendered by `scripts/release.py` at install time.
+#
+# The placeholder is deliberately not a systemd specifier. systemd expands `%`
+# and `$`, so a `$SERVEROS_RUNTIME` here would expand to the empty string when
+# the variable is unset and ExecStart would silently become `/bin/serverosd` —
+# a path that may well exist and start the wrong program. `@...@` is inert to
+# systemd, and an unrendered unit fails with the literal path it could not find.
+# A unit that cannot start says so; a unit that starts something else does not.
+#
+# Rendering at install rather than at build is what lets this file ship inside
+# the artifact at all. The builder's contract is that no generated artifact
+# references this machine's build paths, and a template naming one worktree
+# would have broken it — while omitting the file would ship a runtime with no
+# declaration of how a supervisor is meant to start it.
 #
 # Conventions it follows, and why each one is here:
 #
@@ -70,12 +82,16 @@ StartLimitBurst=5
 [Service]
 Type=simple
 WorkingDirectory=%h
-Environment=SERVEROS_STATE_DIR=/opt/applications/data/home-hwz/state/serveros
+# Rendered at install time for the same reason as ExecStart, and it is the more
+# obviously per-node of the two: the state root belongs to the device, and a
+# template that hardcoded one device's state root would install a second node's
+# daemon writing into the first node's state.
+Environment=SERVEROS_STATE_DIR=@SERVEROS_STATE_DIR@
 # `SERVEROS_PROFILE=server-beijing` used to sit here and is read by NOTHING in
 # the tree — the profile registry (`fleet/profiles.yaml`) selects a profile by
 # DEVICE, not by an environment variable. It was removed rather than kept as
 # decoration; when a consumer exists, it comes back with one.
-ExecStart=/opt/applications/data/home-hwz/workspace/worktrees/serveros/fleet-device-registry-v1/bin/serverosd
+ExecStart=@SERVEROS_RUNTIME@/bin/serverosd
 Restart=on-failure
 RestartSec=30
 

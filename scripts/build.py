@@ -70,7 +70,17 @@ def _git(repo: Path, *args: str) -> bytes:
 # able to load it from the installed bundle instead of from a source checkout
 # that moves. It differs in one respect — it is not a decision kernel but an
 # entry point, so it additionally gets declared to the runtime as a server.
-CORE_MODULES = ("context", "space", "relations", "mcp")
+#
+# `runtime` and `bin` are the other half of that same argument, and their
+# absence was the defect. `mcp` ships an adapter that calls `serverosd`; until
+# these two joined it, the artifact contained the caller and not the callee, so
+# a node installed from this distribution had an MCP surface that could only
+# ever answer `daemon not running`, and an operator who wanted a working node
+# had to point a unit at a source checkout. `bin` is here for the same reason as
+# `runtime` rather than for symmetry: the entry points resolve the runtime
+# relative to themselves, so the pair is one unit and shipping either alone
+# produces a shim that cannot import what it names.
+CORE_MODULES = ("context", "space", "relations", "mcp", "runtime", "bin")
 
 
 def resolve_ability_rev(repo: Path, rev: str) -> str:
