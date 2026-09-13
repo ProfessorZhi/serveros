@@ -58,11 +58,49 @@ capabilities:
   # to strengthen.
   skill_discovery: native
   # Where instructions are read from at session start.
+  #
+  # These four values were written from the shape of the convention rather than
+  # from the disk, and two of them were wrong. `runtime_parity.py` found it on
+  # its first run against the live host, which is the entire argument for the
+  # file existing: a declaration nobody executes cannot be wrong, it can only
+  # be believed.
+  #
+  #   `.codex/AGENTS.md`  — no such file, and none ever was. `/home/hwz/.codex/`
+  #                         contains no Markdown at all. The Codex home entry
+  #                         is `/home/hwz/AGENTS.md`, a 3409-byte standalone
+  #                         file, which `SRV-0003` records as one of the three
+  #                         files verified to converge on one invariant.
+  #   `.claude/CLAUDE.md` — correct, and it is the whole file: 49 bytes whose
+  #                         only content is `@/home/hwz/CLAUDE.md`. So the
+  #                         content lives in `/home/hwz/CLAUDE.md`, which is
+  #                         now listed too. Three files converge on one
+  #                         invariant and the middle one is an importer; both
+  #                         are surfaces, because deleting either changes what
+  #                         the session reads.
+  #   the workspace pair  — `workspace/CLAUDE.md` exists (2330 bytes).
+  #                         `workspace/AGENTS.md` does not, so a Codex session
+  #                         started under the workspace root does not receive
+  #                         the ServerOS workspace entry that a Claude session
+  #                         does. That is an asymmetry between the two runtimes
+  #                         and it is recorded here rather than corrected:
+  #                         creating it means writing into the user's Agent
+  #                         configuration, which this contract may not do.
   instruction_surfaces:
     claude-code: [{path_role: workspace, relative: "CLAUDE.md"},
-                  {path_role: home, relative: ".claude/CLAUDE.md"}]
+                  {path_role: home, relative: ".claude/CLAUDE.md"},
+                  {path_role: home, relative: "CLAUDE.md"}]
     codex: [{path_role: workspace, relative: "AGENTS.md"},
-            {path_role: home, relative: ".codex/AGENTS.md"}]
+            {path_role: home, relative: "AGENTS.md"}]
+  # What the runtime parity check cannot see. Kept beside the data it is about,
+  # because a known gap recorded away from its subject is a gap nobody reads.
+  known_gaps:
+    - surface: "codex workspace AGENTS.md"
+      state: ABSENT_ON_THIS_HOST
+      because: >
+        the file does not exist. Codex sessions under the workspace root get no
+        ServerOS workspace entry; Claude sessions do.
+      closing_action: NEEDS_HUMAN — writing it modifies the user's Agent
+        configuration, which §42 places outside this round's authority.
   # Where MCP servers are declared, per runtime. One key, one file.
   mcp_surfaces:
     claude-code: {path_role: home, relative: ".claude.json", key: "mcpServers"}
