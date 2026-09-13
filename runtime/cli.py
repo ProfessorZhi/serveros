@@ -786,11 +786,18 @@ def cmd_runtime_infrastructure(args) -> int:
     crit = infra_mod.criticality_report(reg)
     never = infra_mod.never_reclaim(reg)
     recovery = infra_mod.recovery_report(reg)
+    # §17. No owner states are passed, and that is the honest default rather
+    # than an oversight: whether a work item is open is `work-management`'s
+    # authority, so every task-scoped resource comes back DEFER until somebody
+    # who knows supplies it. A CLI that guessed "closed" here would be
+    # proposing removals on the strength of not having asked.
+    reclaim = infra_mod.reclaim_report(reg)
     payload = {
         "partition": part,
         "criticality": crit,
         "never_reclaim": never,
         "recovery": recovery,
+        "reclaim": reclaim,
     }
     lines = ["permanent infrastructure"]
     for row in part["permanent"]:
