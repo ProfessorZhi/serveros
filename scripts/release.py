@@ -121,6 +121,20 @@ def fingerprint(root: Path) -> str:
     finished lines would order them by their leading hash, which is a different
     permutation of the same bytes and therefore a different digest — a hash that
     looks like verification and is not.
+
+    What the recorded hash covers, and what it deliberately does not. A staged
+    revision contains `RELEASE.json`, and that file holds the hash — so it is
+    written after the hash is computed and is not itself covered by it. A file
+    cannot contain its own digest, so this is forced rather than chosen, but it
+    is worth saying out loud because the natural check gets it wrong:
+    `fingerprint(revisions/<rev>)` returns a DIFFERENT number from the one
+    recorded in that same directory, and a reader who does not know why will
+    read a correct revision as tampered with.
+
+    The hash that has to match is the artifact's. Fingerprinting the built
+    artifact, or the published asset after extracting it, gives the recorded
+    value; fingerprinting the staged directory gives that value plus one file,
+    which is a different tree and correctly a different number.
     """
     entries = [p for p in root.rglob("*") if p.is_file()]
     entries.sort(key=lambda p: f"./{p.relative_to(root).as_posix()}")
