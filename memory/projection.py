@@ -231,9 +231,17 @@ def staleness(manifest: dict | None, *, ledger_revision: str) -> dict:
                             "exactly this case as STALE rather than inventing "
                             "a third state for it")}
     if named != ledger_revision:
+        # Both revisions are printed WHOLE. They were truncated to 12
+        # characters, which is the length of a bare commit sha — and a
+        # content-named revision is `sha+content:hex`, so the two names shared
+        # their first twelve characters and the message read "built from
+        # 2092223277eb, ledger is at 2092223277eb". A staleness report whose
+        # whole purpose is to show that two things differ, printing them
+        # identically, is the failure this module exists to detect, wearing the
+        # report's own clothes.
         return {"status": "STALE", "ledger_revision": named,
-                "because": (f"built from {named[:12]}, ledger is at "
-                            f"{ledger_revision[:12]}. The repair is to "
+                "because": (f"built from {named}, ledger is at "
+                            f"{ledger_revision}. The repair is to "
                             "regenerate; editing the projection to match is "
                             "the reverse direction")}
     return {"status": "CURRENT", "ledger_revision": named,
