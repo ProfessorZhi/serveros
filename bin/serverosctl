@@ -9,6 +9,19 @@ re-export of the module's internals.
 import sys
 from pathlib import Path
 
+# The revision this shim points at is meant to be immutable: `release.py`
+# records a tree hash for it and the node's identity IS that hash. Importing
+# the modules next to this file makes Python write `__pycache__` into it, so a
+# single `--help` is enough to make the recorded hash unreachable — measured,
+# 16 files from one command.
+#
+# The composition already sets PYTHONDONTWRITEBYTECODE for the MCP member
+# (`.mcp.json`, asserted in test_build.py). This is the same decision for the
+# two entry points that have no config file to put it in. Set in code rather
+# than in the unit's Environment= because this shim is also run from a shell,
+# where no unit file applies.
+sys.dont_write_bytecode = True
+
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "runtime"))
 
 import cli  # noqa: E402
