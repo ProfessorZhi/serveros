@@ -1,0 +1,140 @@
+# Human approval — the binding, not the transport.
+#
+# Where the line is
+# -----------------
+# `HumanControlProvider` owns the TRANSPORT of an approval: it carries the
+# question to a person and carries the answer back.
+#
+# This file owns the TRUTH of an approval: what exactly was approved, by whom,
+# for how long, and whether the thing being asked now is still that thing.
+#
+# The distinction is not pedantry. A transport that owned approval truth would
+# make the answer to "may I?" a property of which chat application carried it,
+# and swapping the chat application would silently change what is permitted.
+schema: serveros/approval.v1
+version: 1
+
+identity:
+  approval_ref: "approval:<sha256-of-binding>"
+  because: >-
+    the ref IS the binding, hashed. Two approvals of the same action on the
+    same target with the same parameters in the same context are the same
+    approval, which is what makes issuance idempotent without a lookup table of
+    near-duplicates. A random or sequential ref would need one, and would let
+    the same decision be recorded twice under two names.
+
+# ---------------------------------------------------------------------------
+# What an approval is bound to. §6's list, verbatim, as fields.
+# ---------------------------------------------------------------------------
+binding:
+  required:
+    actor_ref: "who approved — resolved from the context, never supplied by the requester"
+    context_ref: "the evidence the approval was decided from; a different context is a different approval"
+    action: "the semantic action, e.g. session.interrupt"
+    target:
+      device_ref: "which machine the action lands on"
+      session_ref: "which session, or null when the action does not name one"
+      agent_runtime: "which runtime, or null"
+      provider: "which provider, or null"
+    scope: "what the approval covers — one action on one target, never a class of them"
+    request_fingerprint: "sha256 over the normalized request; see `fingerprint` below"
+    issued_at: "when the person decided"
+    expires_at: "when it stops being an answer"
+  target_nullable_because: >-
+    an action that creates a session has no session_ref yet, and refusing to
+    bind it would mean the one class of action with the widest blast radius —
+    starting something new — is the one class needing no approval. A null field
+    is part of the binding: it says this approval was for the case where there
+    was no such session, so it does not apply to one that names a session.
+
+# ---------------------------------------------------------------------------
+# The fingerprint. This is the whole of "批准后修改目标、设备或动作，应失效".
+# ---------------------------------------------------------------------------
+fingerprint:
+  algorithm: "sha256 over canonical JSON of {action, target, params}, keys sorted"
+  covers: [action, target, params]
+  extra_params: >-
+    participate. An unrecognized parameter is not skipped, because skipping is
+    how a caller modifies a request while leaving the fingerprint alone: add a
+    field the normalizer ignores, and the approval still matches. Anything that
+    changes what the provider will do changes the hash.
+  normalization:
+    - "objects are key-sorted at every depth"
+    - "numbers are compared as written; there is no coercion between 1 and \"1\""
+    - >-
+      null and missing coincide WHERE THE KEY SET IS FIXED, and only there.
+      `target` is rebuilt from its four declared keys rather than copied, so
+      `{}` and `{device_ref: null}` both mean "an action that names no device"
+      and hash alike — the caller cannot distinguish "there was no session"
+      from "I did not say", and should not be able to.
+    - >-
+      null and missing are DIFFERENT inside `params`, whose key set is open.
+      Adding a key always changes the fingerprint, including a key whose value
+      is null. Folding those together would be a way to add a parameter while
+      leaving the hash alone, which is the same evasion the `extra_params` rule
+      below closes for non-null values. This was stated as a single global rule
+      in the first draft of this file and the code disagreed with it in exactly
+      this one place; the code was right, and the rule now says where it holds.
+  rule: >-
+    the fingerprint is computed by ServerOS from the request it is about to
+    perform, never accepted from the caller. A caller-supplied fingerprint
+    would let the requester choose what its approval was for.
+
+# ---------------------------------------------------------------------------
+# The decision. Five outcomes, five repairs.
+# ---------------------------------------------------------------------------
+verdicts:
+  ALLOW:
+    means: "this approval is for exactly this request, right now"
+    repair: "none"
+  APPROVAL_REQUIRED:
+    means: "no approval names this request"
+    repair: "ask a person; ServerOS sends the question through a HumanControlProvider"
+  APPROVAL_BINDING_MISMATCH:
+    means: "an approval exists for this actor and action, and not for these parameters"
+    repair: "ask again — and the question sent is about the NEW parameters"
+  APPROVAL_EXPIRED:
+    means: "the approval was real and its window has closed"
+    repair: "ask again"
+  APPROVAL_ALREADY_CONSUMED:
+    means: "this approval was spent on an earlier call"
+    repair: "ask again; one decision is one action"
+  APPROVAL_CONTEXT_MISMATCH:
+    means: "the approval was decided from a different context than the one presented"
+    repair: "present the context the approval was decided from, or ask again"
+
+  rule: >-
+    these are separate because they send a person to different places. Telling
+    a requester "denied" when the truth is "the parameters changed since
+    somebody approved it" hides the one fact that would let them fix it, and
+    telling them "denied" when the truth is "nobody has been asked yet" turns a
+    question into a refusal.
+
+# ---------------------------------------------------------------------------
+# Consumption and idempotency.
+# ---------------------------------------------------------------------------
+consumption:
+  model: single-use
+  because: >-
+    one human decision authorizes one action. An approval that stays valid for
+    its whole window turns one "yes" into an unbounded grant on that target,
+    which is the class of authority this plane exists to avoid.
+  atomicity: >-
+    consumption and the resulting mutation are recorded together. A crash
+    between them leaves an approval that was spent and an action that ran, or
+    neither; it never leaves an approval that can run twice.
+  idempotency:
+    issue: "issuing the same binding twice returns the same approval_ref and creates no second record"
+    replay_of_the_same_call: >-
+      a retried mutation that carries the same idempotency key is answered from
+      the first result, not refused as a consumed approval. Retry is not reuse.
+    reuse_with_a_new_key: >-
+      refused as APPROVAL_ALREADY_CONSUMED. Two different calls wanting the same
+      approval is reuse, and the idempotency key is the only thing that tells
+      the two apart.
+
+not_this:
+  - "not an approval of a PERSON: it authorizes one target and one action"
+  - "not transferable between actions: interrupt and stop are different bindings"
+  - "not a session state: an approval never closes, starts or resumes anything"
+  - "not transport-specific: the same approval survives a change of HumanControlProvider"

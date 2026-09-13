@@ -135,6 +135,36 @@ namespaces:
         producer: runtime/graph.py
         required: false
         absent_means: COMPUTED_ON_DEMAND
+      agent-control:
+        class: authority
+        holds: >-
+          trusted actor contexts and human approvals — who a request came from,
+          what a person approved, and until when
+        producer: runtime/agent_control_store.py (writes), runtime/daemon.py (mints)
+        required: false
+        absent_means: NO_AGENT_CONTROL_ACTIVITY
+        # AUTHORITY, and deliberately not a projection. A record loaded from
+        # this file is not re-verified by being loaded: `expires_at` is read
+        # back and re-checked against the clock by every reader, so a process
+        # that starts after an outage finds its approvals expired rather than
+        # intact. Same rule as the rest of this root, applied to the one
+        # namespace where being wrong means acting on authority nobody still
+        # holds.
+        #
+        # It is also NOT a HumanIdentity DB, and the distinction is structural
+        # rather than a policy: the store is keyed by `context_ref` and
+        # `approval_ref`. An actor appears on records as a field and is never a
+        # key, and `AgentControlStore` has no method returning everything about
+        # a person — asserted by a test, because the tempting method is the
+        # change that turns an evidence log into a directory of people.
+        #
+        # One file, not two. Contexts and approvals are written in the same
+        # transaction when an approval is consumed, and two files written
+        # together are two files that can disagree after a crash.
+        not_a_claim: >
+          not a source of identity, and not readable as one. Nothing here may
+          be used to answer "who is this"; a context is evidence about one
+          event and authorizes nothing on its own.
       anomalies:
         class: projection
         holds: anomaly classifications, including the combinations that did not fire
