@@ -38,6 +38,12 @@ LOCAL_SKILLS = ("serveros",)
 # reason.
 ABILITY_SKILLS = (
     "runtime-management",
+    # §35: named by `pack:cross-device-collaboration` in the repository's own
+    # pack contract. They are here so the fixture catalogue can satisfy that
+    # contract, and their absence would otherwise surface as a pack failure
+    # with nothing to do with the code under test.
+    "fleet-coordination",
+    "shared-memory",
     "ability-management",
     "workspace-management",
     "test-management",
@@ -78,15 +84,50 @@ def make_ability_repo(base: Path, pycache_in: str | None = None) -> tuple[Path, 
     # compared against canonical at all, and every provenance case silently
     # falls into the "could not determine" branch — which passes the tests that
     # assert nothing blocks while never exercising the detector.
+    #
+    # Every skill directory above is DECLARED here, not just the one the
+    # provenance check reads. A manifest that created sixteen payloads and
+    # named one of them was a catalogue that disagreed with its own disk, and
+    # the pack closure check is what found it: the packs name abilities by
+    # name, and a fixture whose manifest lists one ability can satisfy no pack
+    # at all.
     (repo / "abilities-manifest.yaml").write_text(yaml.safe_dump({
         "schema_version": 3, "authors": [],
-        "abilities": [{"type": "skill", "id": "ProfessorZhi/ability-management",
-                       "name": "ability-management", "path": "skills/ability-management",
-                       "artifact_mode": "vendored", "revisions": []}],
+        "abilities": [
+            {"type": "skill", "id": f"ProfessorZhi/{name}", "name": name,
+             "path": f"skills/{name}", "artifact_mode": "vendored", "revisions": []}
+            for name in ABILITY_SKILLS
+        ],
     }, sort_keys=False, allow_unicode=True))
     _git(repo, "add", "-A")
     _git(repo, "commit", "--quiet", "-m", "synthetic")
     return repo, _git(repo, "rev-parse", "HEAD")
+
+
+def write_pack_contract(base: Path, rev: str, *packs: dict) -> Path:
+    """A pack contract pinned to THIS fixture's revision.
+
+    The repository's own contract pins a real ability-management commit, and a
+    hermetic build reads a synthetic one — so the pin cannot match, and the
+    builder would refuse for a reason that has nothing to do with the code
+    under test. That is why the contract path is injectable, exactly as
+    `--bundle` already is.
+
+    It is a separate file rather than a weakened check: the pin is still
+    compared, still per-pack, and `tests/test_packs.py` runs the REAL contract
+    against the REAL catalogue, which is the case this fixture cannot cover.
+    """
+    path = base / "pack-contract.yaml"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(yaml.safe_dump({
+        "schema": "serveros/ability-pack.v1", "version": 1,
+        "packs": [{"id": f"pack:{i}", "name": f"Pack {i}", "purpose": "to exist",
+                   "authority": {"repo": "ProfessorZhi/ability-management",
+                                 "revision": rev},
+                   "members": [{"ability": f"ability:{name}", "role": "required"}],
+                   } for i, name in enumerate(packs or ("ability-management",))],
+    }, sort_keys=False), encoding="utf-8")
+    return path
 
 
 def run_build(args: list[str]) -> subprocess.CompletedProcess:
@@ -99,6 +140,7 @@ class BuildTests(unittest.TestCase):
         self._tmp = tempfile.TemporaryDirectory()
         self.base = Path(self._tmp.name)
         self.repo, self.rev = make_ability_repo(self.base)
+        self.contract = write_pack_contract(self.base, self.rev, "runtime-management")
         self.out = self.base / "dist/current"
         self.marketplace = self.base / "dist/.agents/plugins/marketplace.json"
 
@@ -111,6 +153,7 @@ class BuildTests(unittest.TestCase):
             "--ability-rev", self.rev,
             "--output", str(self.out),
             "--marketplace-path", str(self.marketplace),
+            "--pack-contract", str(self.contract),
             *extra,
         ]
 
@@ -141,6 +184,7 @@ class BuildTests(unittest.TestCase):
         args = [
             "--ability-repo", str(repo), "--ability-rev", rev,
             "--output", str(self.out), "--marketplace-path", str(self.marketplace),
+            "--pack-contract", str(write_pack_contract(self.base, rev, "runtime-management")),
         ]
         self.assertEqual(run_build(args + ["--write"]).returncode, 0)
         stale = [p for p in self.out.rglob("*") if p.suffix == ".pyc" or p.name == "__pycache__"]
@@ -175,6 +219,35 @@ class BuildTests(unittest.TestCase):
         # above is about the recommendation.
         for name in ("workspace-management", "test-management"):
             self.assertTrue((self.out / f"skills/{name}").is_dir())
+
+    def test_a_pack_naming_an_absent_ability_fails_the_build(self):
+        """The contract says "refused at build time, not carried with a marker
+        beside it". This is the build saying it.
+
+        `tests/test_packs.py` tests `packs.py`; this tests that the builder
+        calls it. Both matter, and only this one can catch the call site going
+        away — which is how the rule survived unimplemented for as long as it
+        did.
+        """
+        contract = write_pack_contract(self.base, self.rev, "document-stewardship")
+        result = run_build(self.args("--write", "--pack-contract", str(contract)))
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("document-stewardship", result.stderr)
+        self.assertIn("does not exist", result.stderr)
+
+    def test_a_pack_pinned_to_another_revision_fails_the_build(self):
+        """The case that goes green: every member resolves, and the answer is
+        about a catalogue that is not the one being built against."""
+        contract = write_pack_contract(self.base, "0" * 40, "runtime-management")
+        result = run_build(self.args("--write", "--pack-contract", str(contract)))
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("pin", result.stderr.lower())
+
+    def test_a_closed_pack_does_not_block_the_build(self):
+        """The gate has to be able to say yes, or the two tests above pass on a
+        builder that refuses everything."""
+        result = run_build(self.args("--write"))
+        self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_reusable_skills_come_from_the_pinned_revision(self):
         self.assertEqual(run_build(self.args("--write")).returncode, 0)
