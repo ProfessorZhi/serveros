@@ -170,6 +170,10 @@ def test_the_declared_namespaces_agree_and_the_shape_is_pinned():
     assert top == set(paths_mod.STATE_SERVEROS_TOP_LEVEL)
     assert set(contract["namespaces"]["runtime"]["children"]) == set(
         paths_mod.STATE_SERVEROS_RUNTIME)
+    # §5/§6 widened the runtime children by one. Declared before the directory
+    # exists, which is the point of declaring a namespace at all: the tuple is
+    # the contract and the directory is the state.
+    assert "agent-control" in paths_mod.STATE_SERVEROS_RUNTIME
 
 
 def test_a_namespace_with_no_producer_is_absent_not_missing(tmp_path):
