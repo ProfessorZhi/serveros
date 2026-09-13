@@ -26,7 +26,7 @@ ROOT = Path(__file__).resolve().parents[1]
 BUILDER = ROOT / "scripts" / "build.py"
 
 sys.path.insert(0, str(ROOT / "tests"))
-from test_build import _git, make_ability_repo  # noqa: E402  (shares the fixture)
+from test_build import _git, make_ability_repo, write_pack_contract  # noqa: E402
 
 _spec = importlib.util.spec_from_file_location("serveros_build", BUILDER)
 build = importlib.util.module_from_spec(_spec)
@@ -84,6 +84,11 @@ class CompositionTests(unittest.TestCase):
         self._tmp = tempfile.TemporaryDirectory()
         self.base = Path(self._tmp.name)
         self.repo, self.rev = make_ability_repo(self.base)
+        # The build validates the pack contract, and this repository's own contract
+        # pins a real ability-management commit that the synthetic catalogue
+        # cannot answer for. Injecting one pinned to the fixture's revision keeps
+        # the closure check in the path of every composition build here.
+        self.contract = write_pack_contract(self.base, self.rev)
 
     def tearDown(self):
         self._tmp.cleanup()
@@ -98,6 +103,7 @@ class CompositionTests(unittest.TestCase):
             "--ability-rev", rev or self.rev,
             "--output", str(root / "payload"),
             "--marketplace-path", str(root / ".agents/plugins/marketplace.json"),
+            "--pack-contract", str(self.contract),
         ])
 
     def out(self, key: str) -> Path:

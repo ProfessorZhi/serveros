@@ -16,7 +16,7 @@ schema: serveros/ability-pack.v1
 version: 1
 
 record:
-  required_fields: [id, name, purpose, members]
+  required_fields: [id, name, purpose, members, authority]
   optional_fields: [description, domain, note]
   forbidden_fields:
     - "a payload, a path, or a file"
@@ -43,6 +43,29 @@ member:
     which is what the Ability Fabric is for.
 
 # ---------------------------------------------------------------------------
+# `authority` — the field `publishing.rule` needs and the record shape had no
+# room for.
+#
+# It is REQUIRED, and that is a change. Until this round no pack carried one,
+# which meant `publishing.rule` required a pin that no pack had and nothing
+# compared the two. Making it required is not a new abstraction: it is the
+# field the rule below already demanded, made visible enough to be checked.
+# ---------------------------------------------------------------------------
+authority:
+  required_for_every_pack: true
+  shape:
+    repo: "ProfessorZhi/ability-management"
+    revision: "the full commit sha the member ids were validated against"
+  answers_as: [PIN_MATCH, PIN_MISMATCH, PIN_ABSENT]
+  because: >
+    the pin is what makes "every member exists" a claim about a catalogue
+    rather than about whatever happened to be on disk. The pin is answered as
+    a question of its OWN, reported for every pack including the ones whose
+    members all resolve — because those are exactly the packs whose stale pin
+    is invisible. A correct closure answer about the wrong catalogue reads
+    identically to a correct one about the right one.
+
+# ---------------------------------------------------------------------------
 # The closure rule. This is the one that was being violated.
 # ---------------------------------------------------------------------------
 closure:
@@ -63,6 +86,22 @@ closure:
     this makes a pack unbuildable when the catalogue moves under it, which is
     the intended failure. The repair is to fix the pack or fix the catalogue,
     and both are visible.
+  decided_by: >
+    `abilities/packs.py — resolve()`, called from `scripts/build.py`. This line
+    is not decoration: the rule above was written first and implemented in no
+    version of this product, and a `grep` for this filename over the ServerOS
+    tree returned exactly one hit — this file. The rule was accurate the whole
+    time; accuracy was never the problem.
+  found: >
+    run against the published catalogue, three of these four packs had a
+    required member that resolved to nothing. `pack:cross-device-collaboration`
+    named `shared-memory` and `fleet-coordination`, which existed in no
+    manifest and no checkout anywhere; `pack:autonomous-quality-loop` and
+    `pack:cross-device-collaboration` both named `runtime-management`, which
+    exists at the published revision but not at every revision that was checked
+    against it. That last one is the whole argument for the pin: the same pack,
+    the same members, two catalogues, two different answers, and no way to tell
+    which one a reader was looking at.
 
 # ---------------------------------------------------------------------------
 # Packs are declarative and carry no payload, so publishing one is publishing
@@ -76,6 +115,18 @@ publishing:
     a published pack pins the ability-management revision its member ids were
     validated against. Without that pin the pack's closure was true of a
     catalogue that no longer exists.
+  # The pin is no longer only a rule. Every pack below carries one, and
+  # `abilities/packs.py` answers it independently of the members.
+  #
+  # OPEN, and named rather than left to be discovered: the packs are DECLARED
+  # here, in serveros, and `location` says they belong in ability-management.
+  # That sentence has never been true. Moving them is not a file move — it
+  # needs a pack schema on the ability-management side and a reader that reads
+  # the declarations from the pinned revision the same way `read_manifest()`
+  # reads the manifest. Until that exists this file is the declaration and
+  # ability-management is only the catalogue, which is a smaller claim than
+  # the line above makes.
+  location_status: DECLARED_NOT_IMPLEMENTED
 
 # ---------------------------------------------------------------------------
 # Intent packs, as declared. Each names abilities that EXIST at the pinned
@@ -85,6 +136,17 @@ publishing:
 # `reporting` are named by prose in several places and exist in no manifest, so
 # they appear in no pack. An intent that needs them is a NEEDS_HUMAN finding
 # against the catalogue, not a pack member with a marker.
+#
+# Every pack below carries `authority`. The revision is the same for all four
+# because they are validated against one catalogue; a pack validated against a
+# different one says so by carrying a different sha, and `packs.py` reports
+# that as PIN_MISMATCH rather than silently comparing two things.
+#
+# §62 status: the pinned revision exists on `serveros/srv-0007-ability-packs`
+# in ability-management and has NOT been pushed. A pin naming an unpushed
+# commit resolves on exactly one machine. It is written down rather than
+# omitted so that the obligation is legible: push the ability branch, then
+# repin from the remote HEAD.
 # ---------------------------------------------------------------------------
 packs:
   - id: pack:autonomous-quality-loop
@@ -92,6 +154,9 @@ packs:
     purpose: >
       a work item that develops, tests itself, reacts to the result, and does
       not need a person to notice that it stopped.
+    authority:
+      repo: ProfessorZhi/ability-management
+      revision: 95c31ed8a0a49f048ff0f89d3fabd0c6ba7fd2d5
     members:
       - {ability: "ability:work-management", role: required}
       - {ability: "ability:runtime-management", role: required}
@@ -102,6 +167,9 @@ packs:
   - id: pack:litellm-development
     name: LiteLLM development
     purpose: "plan, build, image, test and report a LiteLLM-side change."
+    authority:
+      repo: ProfessorZhi/ability-management
+      revision: 95c31ed8a0a49f048ff0f89d3fabd0c6ba7fd2d5
     members:
       - {ability: "ability:technical-architecture-and-planning", role: required}
       - {ability: "ability:backend-solution-design", role: required}
@@ -114,6 +182,9 @@ packs:
     purpose: >
       the same work item picked up on a second device, with the memory and the
       running resources it needs, and without re-establishing either.
+    authority:
+      repo: ProfessorZhi/ability-management
+      revision: 95c31ed8a0a49f048ff0f89d3fabd0c6ba7fd2d5
     members:
       - {ability: "ability:work-management", role: required}
       - {ability: "ability:runtime-management", role: required}
@@ -123,6 +194,9 @@ packs:
   - id: pack:quality-delivery
     name: Quality and delivery
     purpose: "the abilities a node needs to test, react, and report."
+    authority:
+      repo: ProfessorZhi/ability-management
+      revision: 95c31ed8a0a49f048ff0f89d3fabd0c6ba7fd2d5
     members:
       - {ability: "ability:test-management", role: required}
       - {ability: "ability:quality-feedback-and-iteration", role: required}
