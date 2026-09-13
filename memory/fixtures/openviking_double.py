@@ -20,10 +20,14 @@ acquires authority it should not have:
   * `index` is idempotent, and re-indexing a record at a new revision replaces
     the old one rather than accumulating both. An index that keeps the stale
     revision serves a superseded fact with a citation that resolves.
-  * every hit carries its Layer B id AND the revision it was indexed from. A
-    hit whose record cannot be cited is dropped by the provider, because the
-    contract puts that rule on the provider's side of the line — a caller that
-    has to remember to check will eventually not.
+  * every hit carries its Layer B id AND the revision it was indexed from. This
+    is the provider's half of a rule the contract splits in two: the provider
+    guarantees it echoes the id and revision it was given, and the CALLER
+    discards a hit it cannot cite (`memory/layering.py`), because only
+    something holding the ledger can say whether an id is still in it. This
+    paragraph used to claim the provider does the dropping. It does not — it
+    cannot, it has never seen the ledger — and the sentence contradicted the
+    contract it was citing.
   * `invalidate` is correct for a record the index never held. Called with an
     unknown id it reports zero removed and does not error, because rebuild
     paths call it speculatively.

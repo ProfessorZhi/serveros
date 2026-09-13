@@ -116,16 +116,57 @@ not_memory:
 # and a projection is derived in the strict sense used everywhere else here.
 # ---------------------------------------------------------------------------
 projection:
-  location: "state/serveros/memory/"
+  # §24. This was `state/serveros/memory/` — a second projections namespace
+  # beside the one that already exists. `fleet/state-root-contract.yaml` is the
+  # authority for `state/serveros/` and forbids exactly that, in the reason it
+  # gives for the namespace it declares: "a second top-level root for derived
+  # material would itself become a durable-looking location, and the whole
+  # point is that this namespace's contents are disposable". Two declarations,
+  # one fact, and nothing compared them.
+  #
+  # The state root contract wins because it owns the root, and because the
+  # memory projection is a projection — which is a claim the other namespace
+  # has a manifest, five invariants and a reader for, all of which would have
+  # had to be re-implemented here.
+  location: "state/serveros/projections/memory/"
+  namespace_authority: "fleet/state-root-contract.yaml#projections"
+  manifest: projection.yaml
   derived_from: ledger
   regenerable: true
   hand_edit: forbidden
   because: >
     if the projection and the ledger disagree, exactly one repair is correct
     and it is not reconciliation. The projection is rebuilt.
+  carries: >
+    pointers, not content — `id`, `kind`, `at`, `by`, `source`, `revision`, and
+    no `body`. A node offline with its projection can say THAT a decision
+    exists and what it was about; it cannot say what the decision was, because
+    a projection that carried the text would be a second copy of the ledger
+    sitting in the one namespace declared to have no authority.
   staleness:
     recorded: "the ledger revision the projection was built from"
     visible: "a projection that cannot name its revision is reported STALE"
+    decided_by: "memory/projection.py — `build`, `manifest_for`, `staleness`"
+
+# ---------------------------------------------------------------------------
+# Who enforces this. Every rule above names something a program can check, and
+# for as long as nothing checked them the contract was a description of a
+# ledger that did not exist.
+# ---------------------------------------------------------------------------
+enforcement:
+  validate: >
+    `memory/record.py — validate()` refuses one record against one record's
+    rules, and is deliberately callable on a record the ledger does not contain
+    yet, because the caller that matters is an author checking before writing.
+  audit: >
+    `memory/record.py — audit()` reports the whole-ledger properties no single
+    record can have: duplicate ids, supersession cycles, a `supersedes` naming
+    a record that is not here, a correction of a different subject.
+  partial: >
+    the forbidden-content list is enforced only where it is checkable — key
+    blocks, token prefixes, JWTs, MAC addresses, credential-shaped assignments.
+    `audit()` returns a `not_checked` list naming the rest rather than
+    reporting a clean ledger it has no basis to report.
 
 rules:
   - "A record names its authority. A fact that lives only in a session's

@@ -1627,6 +1627,215 @@ def cmd_probe(args) -> int:
 
 
 # ---------------------------------------------------------------------------
+# memory (§20–§28)
+# ---------------------------------------------------------------------------
+
+
+def _memory_modules():
+    return (
+        _load_module_from(REPO_ROOT / "memory" / "record.py",
+                          "serveros_memory_record"),
+        _load_module_from(REPO_ROOT / "memory" / "projection.py",
+                          "serveros_memory_projection"),
+    )
+
+
+def _ledger_revision(directory: Path) -> dict:
+    """What revision the ledger ON DISK is at, and how that was decided.
+
+    Not `git rev-parse HEAD`, which is the answer to a different question. The
+    ledger's files may have been edited since the last commit, and a projection
+    stamped with HEAD while the working tree has moved is exactly the failure
+    this round has already recorded once under another name: a pin that matches
+    the declaration it was copied from, and not the content it is supposed to
+    identify.
+
+    So the revision names the content. Clean tree: the commit, which is what a
+    reader can `git show`. Dirty tree, or no repository at all: a hash of the
+    ledger files themselves, prefixed so that the two are never confused —
+    `sha+content:abcd1234` says "commit sha, modified by local content".
+    """
+    import hashlib
+    import subprocess
+
+    files = sorted(p for p in Path(directory).glob("*") if p.is_file())
+    digest = hashlib.sha256()
+    for path in files:
+        digest.update(path.name.encode())
+        digest.update(b"\0")
+        digest.update(path.read_bytes())
+        digest.update(b"\0")
+    content = digest.hexdigest()[:8]
+
+    head = None
+    try:
+        proc = subprocess.run(
+            ["git", "-C", str(directory), "rev-parse", "HEAD"],
+            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True,
+            timeout=10)
+        if proc.returncode == 0:
+            head = proc.stdout.strip()
+    except (OSError, subprocess.SubprocessError):
+        head = None
+
+    dirty = False
+    if head:
+        try:
+            proc = subprocess.run(
+                ["git", "-C", str(directory), "status", "--porcelain", "--",
+                 str(directory), *[str(p) for p in files]],
+                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True,
+                timeout=10)
+            dirty = bool(proc.stdout.strip())
+        except (OSError, subprocess.SubprocessError):
+            dirty = True
+
+    if head and not dirty:
+        revision = head
+    elif head:
+        revision = f"{head}+content:{content}"
+    else:
+        revision = f"content:{content}"
+    return {"revision": revision, "head": head, "dirty": dirty,
+            "files": len(files), "content": content}
+
+
+def _ledger_dir(args) -> Path:
+    paths = paths_mod.Paths()
+    if getattr(args, "ledger_dir", None):
+        return Path(args.ledger_dir)
+    return Path(paths.memory_ledger(args.project)["path"])
+
+
+def cmd_memory_audit(args) -> int:
+    """The whole-ledger check the record contract declares and nothing ran."""
+    record_mod, _ = _memory_modules()
+    directory = _ledger_dir(args)
+    files = sorted(p for p in directory.glob("*")
+                   if p.is_file() and p.suffix in (".yaml", ".yml", ".json"))
+    records = record_mod.load(files) if files else []
+    report = {**record_mod.audit(records), "directory": str(directory)}
+    lines = [
+        f"ledger      {directory}",
+        f"files       {len(files)}",
+        f"records     {report['records']}  valid {report['valid']}",
+        f"verdict     {report['verdict']}",
+    ]
+    for finding in report["findings"]:
+        lines.append(f"  {finding['code']}  {finding.get('id') or ''}")
+        for reason in finding["reasons"]:
+            lines.append(f"      {reason}")
+    if not files:
+        # Not a defect. A project with no memory has no memory, which is the
+        # state every project starts in and most stay in.
+        lines.append("  (no ledger yet — an empty ledger is the starting state, "
+                     "not a failure)")
+    for note in report["not_checked"]:
+        lines.append(f"  not checked: {note}")
+    emit(report, as_json=args.json, lines=lines)
+    return EXIT_OK if report["verdict"] == "CONFORMANT" else EXIT_FAULT
+
+
+def cmd_memory_project(args) -> int:
+    """Build the Layer A projection. The write side `projections/` never had."""
+    record_mod, projection_mod = _memory_modules()
+    directory = _ledger_dir(args)
+    files = sorted(p for p in directory.glob("*")
+                   if p.is_file() and p.suffix in (".yaml", ".yml", ".json"))
+    records = record_mod.load(files) if files else []
+
+    # Refuse before writing. A projection built from a ledger with a broken
+    # record in it is a derived copy of a defect, and the defect is much easier
+    # to see in the ledger than in a projection of it.
+    report = record_mod.audit(records)
+    if report["verdict"] != "CONFORMANT":
+        emit({**report, "directory": str(directory), "written": []},
+             as_json=args.json,
+             lines=[f"refused     ledger has {len(report['findings'])} finding(s)",
+                    "            `serverosctl memory audit` names them"])
+        return EXIT_FAULT
+
+    revision = _ledger_revision(directory)
+    generated_at = args.generated_at or _utc_now()
+    ledger_ref = args.ledger_ref or f"records/projects/{args.project}/memory"
+    document = projection_mod.build(
+        records, ledger_ref=ledger_ref, ledger_revision=revision["revision"],
+        generated_at=generated_at,
+        generator="serverosctl memory project")
+    manifest = projection_mod.manifest_for(document, generated_at=generated_at,
+                                           generator="serverosctl memory project")
+    out = Path(args.out) if args.out else Path(
+        paths_mod.Paths().memory_projection()["path"])
+    written = projection_mod.write(document, manifest, out)
+    payload = {"written": [str(p) for p in written], "records": len(records),
+               "subjects": len(document["subjects"]), "ledger": revision,
+               "generated_at": generated_at}
+    emit(payload, as_json=args.json,
+         lines=[f"wrote       {', '.join(str(p) for p in written)}",
+                f"records     {len(records)}  subjects {len(document['subjects'])}",
+                f"ledger      {revision['revision']}"
+                + ("  (dirty: the revision names the content, not HEAD)"
+                   if revision["dirty"] else "")])
+    return EXIT_OK
+
+
+def cmd_memory_status(args) -> int:
+    """Is the projection current, and if not, against what?"""
+    _, projection_mod = _memory_modules()
+    directory = _ledger_dir(args)
+    revision = _ledger_revision(directory)
+    out = Path(args.projection_dir) if args.projection_dir else Path(
+        paths_mod.Paths().memory_projection()["path"])
+    result = projection_mod.status(out, ledger_revision=revision["revision"])
+    payload = {**result, "ledger": revision, "ledger_dir": str(directory),
+               "records": None}
+    lines = [f"projection  {result['directory']}",
+             f"ledger      {revision['revision']}",
+             f"status      {result['status']}",
+             f"            {result['because']}"]
+    emit(payload, as_json=args.json, lines=lines)
+    return EXIT_OK if result["status"] == "CURRENT" else EXIT_FAULT
+
+
+def cmd_memory_subject(args) -> int:
+    """What this work currently remembers about one subject."""
+    record_mod, _ = _memory_modules()
+    directory = _ledger_dir(args)
+    files = sorted(p for p in directory.glob("*")
+                   if p.is_file() and p.suffix in (".yaml", ".yml", ".json"))
+    records = record_mod.load(files) if files else []
+    value = record_mod.current_value(records, args.subject)
+    if value is None:
+        emit({"subject": args.subject, "current": None}, as_json=args.json,
+             lines=[f"subject     {args.subject}",
+                    "            no records. Not an error — most subjects "
+                    "have no memory."])
+        return EXIT_COULD_NOT_ANSWER
+    lines = [f"subject     {args.subject}",
+             f"current     {value.get('id')}  {value.get('kind')}  {value.get('at')}"]
+    for field in ("by", "source", "revision"):
+        if value.get(field):
+            lines.append(f"{field:<12}{value[field]}")
+    chain = record_mod.chain(records, value["id"])
+    if len(chain) > 1:
+        lines.append(f"supersedes  {' <- '.join(r['id'] for r in chain[1:])}")
+    if value.get("body"):
+        lines.append("")
+        lines.append(str(value["body"]).strip())
+    elif value.get("note"):
+        lines.append("")
+        lines.append(str(value["note"]).strip())
+    emit({"subject": args.subject, "current": value, "chain": chain},
+         as_json=args.json, lines=lines)
+    return EXIT_OK
+
+
+def _utc_now() -> str:
+    from datetime import datetime, timezone
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+# ---------------------------------------------------------------------------
 # parser
 # ---------------------------------------------------------------------------
 
@@ -1839,6 +2048,53 @@ def build_parser() -> argparse.ArgumentParser:
     ab_resolve.add_argument("--device", help="override request.device_ref")
     ab_resolve.add_argument("--runtime", help="override request.runtime")
     ab_resolve.set_defaults(func=cmd_ability_resolve)
+
+    memory = sub.add_parser(
+        "memory", help="Layer B the ledger, Layer A the projection (§20–§28)",
+        **_COMMON)
+    memory_sub = memory.add_subparsers(dest="subcommand", required=True)
+
+    def _ledger_args(parser):
+        # The same three flags on all four subcommands, because they all read
+        # the same ledger and a reader that had to be told the path twice would
+        # eventually be told two paths.
+        parser.add_argument("--project", default="serveros",
+                            help="the project the ledger belongs to (default: serveros)")
+        parser.add_argument("--ledger-dir",
+                            help="override the resolved ledger directory")
+
+    mem_audit = memory_sub.add_parser(
+        "audit", help="the whole-ledger check: invalid records, cycles, dangling "
+                      "supersedes (§26)", **_COMMON)
+    _ledger_args(mem_audit)
+    mem_audit.set_defaults(func=cmd_memory_audit)
+
+    mem_project = memory_sub.add_parser(
+        "project", help="build the Layer A projection from the ledger (§27)",
+        **_COMMON)
+    _ledger_args(mem_project)
+    mem_project.add_argument("--out", help="override the projection directory")
+    mem_project.add_argument("--ledger-ref",
+                             help="the ref a reader uses to find the ledger")
+    mem_project.add_argument("--generated-at",
+                             help="ISO-8601 UTC. Defaults to now; fixed so that "
+                                  "rebuilding the same ledger is byte-identical")
+    mem_project.set_defaults(func=cmd_memory_project)
+
+    mem_status = memory_sub.add_parser(
+        "status", help="CURRENT, STALE or MISSING, and against what (§27)",
+        **_COMMON)
+    _ledger_args(mem_status)
+    mem_status.add_argument("--projection-dir",
+                            help="override the resolved projection directory")
+    mem_status.set_defaults(func=cmd_memory_status)
+
+    mem_subject = memory_sub.add_parser(
+        "subject", help="what this work currently remembers about one subject",
+        **_COMMON)
+    _ledger_args(mem_subject)
+    mem_subject.add_argument("subject", help="e.g. project/serveros/SRV-0007")
+    mem_subject.set_defaults(func=cmd_memory_subject)
 
     probe = sub.add_parser("probe", help="run one resource's declared probes", **_COMMON)
     probe.add_argument("id")
