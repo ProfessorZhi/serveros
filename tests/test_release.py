@@ -94,6 +94,11 @@ class ReleaseTests(unittest.TestCase):
         self.unit_dir = self.base / "systemd-user"
         self.bin_dir = self.base / "bin"
         self.state_dir = self.base / "state/serveros"
+        # Seeded, because a node whose state root does not exist cannot start —
+        # the daemon exits 2 without a registry under it — and `promote` now
+        # refuses that rather than reporting success. The fixture models a
+        # runnable node; the test below covers the unseeded one.
+        self.state_dir.mkdir(parents=True)
         self.composition = "serveros-linux-work"
         self.comp_root = self.runtime_root / self.composition
 
@@ -143,6 +148,78 @@ class ReleaseTests(unittest.TestCase):
         self.assertNotIn("@SERVEROS_RUNTIME@", unit)
         self.assertNotIn("@SERVEROS_STATE_DIR@", unit)
         self.assertIn(str(self.comp_root / "current"), unit)
+
+    def test_the_default_state_dir_does_not_come_from_the_environment(self):
+        """The regression, tested under the condition that produced it.
+
+        The default used to be `SERVEROS_STATE_DIR`, else `DATA_ROOT`, else
+        `$HOME`, with `state/serveros` appended. `DATA_ROOT` is a documented
+        root rather than an exported variable, so on an ordinary shell the
+        middle branch missed and the answer became `$HOME/state/serveros` —
+        which does not exist. Two shells exported differently produced two
+        different units from the same command.
+
+        So this runs the resolver twice with different environments and requires
+        the same answer, which is what makes the value a property of the node
+        rather than of whoever typed the command.
+        """
+        probe = (
+            "import importlib.util;"
+            f"s=importlib.util.spec_from_file_location('r',{str(RELEASE)!r});"
+            "m=importlib.util.module_from_spec(s);s.loader.exec_module(m);"
+            "print(m.default_state_dir())"
+        )
+
+        def resolve(**overrides) -> str:
+            env = dict(os.environ)
+            for key in ("SERVEROS_STATE_DIR", "DATA_ROOT"):
+                env.pop(key, None)
+            env.update(overrides)
+            proc = subprocess.run([sys.executable, "-c", probe],
+                                  stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                  text=True, env=env)
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            return proc.stdout.strip()
+
+        bare = resolve()
+        # The specific wrong answer, pinned. With DATA_ROOT absent the old
+        # expression produced this, and it is not a node root — it is where a
+        # missing lookup went.
+        self.assertNotEqual(bare, str(Path.home() / "state/serveros"),
+                            "the state root fell back to $HOME")
+        self.assertFalse(bare.startswith(str(Path.home()) + os.sep), bare)
+
+        # An explicit DATA_ROOT IS honoured, and that distinction is the point:
+        # a stated root is a statement about the node, while an absent one used
+        # to become a guess. `paths.py` owns that call.
+        self.assertEqual(resolve(DATA_ROOT="/tmp/somewhere-else"),
+                         "/tmp/somewhere-else/state/serveros")
+
+        # `SERVEROS_STATE_DIR` named the DAEMON's environment, not the
+        # installer's input. Reading it here let a variable set for one purpose
+        # decide where an install pointed, so it is no longer consulted.
+        self.assertEqual(bare, resolve(SERVEROS_STATE_DIR="/tmp/ignored"))
+
+    def test_promote_refuses_a_state_root_that_does_not_exist(self):
+        """A node pointed at a missing state root cannot start, so promoting it
+        is not a success. The daemon exits 2 looking for a registry there, and
+        this used to return 0 with the unit already written."""
+        art = make_artifact(self.base, "a")
+        missing = self.base / "never-seeded"
+        proc = run_release([
+            "promote", "--artifact", str(art), "--revision", "rev-a",
+            "--runtime-root", str(self.runtime_root),
+            "--composition", self.composition,
+            "--state-dir", str(missing),
+            "--unit-dir", str(self.unit_dir),
+            "--bin-dir", str(self.bin_dir),
+            "--no-reload",
+        ])
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertIn("state root does not exist", proc.stderr)
+        # And nothing was pointed anywhere: the failure is before the swap.
+        self.assertFalse((self.comp_root / "current").exists())
+        self.assertFalse((self.unit_dir / "serverosd.service").exists())
 
     def test_rollback_returns_both_entry_points_to_the_previous_revision(self):
         a, b = make_artifact(self.base, "a"), make_artifact(self.base, "b")
