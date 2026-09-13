@@ -17,21 +17,58 @@ from workengine.model import RunCancelReason, RunState
 from workengine.store import ActiveWorkerAckRequired, ServerOSStore
 
 
-class FakeContexts:
-    """A resolver, and the record it found."""
+CONTEXT_REF = "human-context:provider%3Abotmux-human-control/deadbeef"
 
-    def __init__(self, actor="human:hwz", found=True, raises=None):
+
+def a_minted_record(actor: str = "human:hwz", ref: str = CONTEXT_REF) -> dict:
+    """A context record in the shape `actor.build` produces.
+
+    Written out rather than imported because the actor module lives in the
+    ServerOS repository and this one must not depend on it. It is therefore a
+    copy, and a copy is the thing that drifts — so `test_the_resolver_shape_is_
+    the_one_the_daemon_answers_with` below pins it against the daemon's own
+    answer at the boundary this fixture stands in for.
+    """
+    return {
+        "context_ref": ref,
+        "actor_ref": actor,
+        "human_control_provider": "provider:botmux-human-control",
+        "transport": "feishu",
+        "transport_identity": "botmux-verified-enterprise-user",
+        "conversation_ref": "oc_test",
+        "message_ref": "om_test",
+        "observed_at": "2026-09-14T00:00:00Z",
+        "provider_status": "VERIFIED",
+        "provenance": "FACT",
+    }
+
+
+class FakeContexts:
+    """A resolver, answering in the shape `actor.resolve` answers in.
+
+    Nested under `context`, because that is the only shape a real resolver in
+    this fleet returns — see `WorkControlClient.actor_for`. A flat fixture here
+    is what let the surface ship reading `actor_ref` off the top level.
+    """
+
+    def __init__(self, actor="human:hwz", found=True, raises=None, nested=True):
         self.actor = actor
         self.found = found
         self.raises = raises
+        self.nested = nested
         self.asked = []
 
     def __call__(self, ref):
         self.asked.append(ref)
         if self.raises is not None:
             raise self.raises
-        return {"found": self.found, "actor_ref": self.actor, "context_ref": ref,
-                "because": "no such context"}
+        if not self.found:
+            return {"found": False, "context_ref": ref,
+                    "because": "no such context"}
+        record = a_minted_record(self.actor, ref)
+        if not self.nested:
+            return dict(record, found=True)
+        return {"found": True, "context_ref": ref, "context": record}
 
 
 class WorkMcpTest(unittest.TestCase):
@@ -121,6 +158,43 @@ class TestTheActorIsNeverSelfReported(WorkMcpTest):
         client = mcp.WorkControlClient(store=self.store,
                                        resolve_context=FakeContexts(actor=""))
         self.assertEqual(client.actor_for("ctx:x")["reason_code"], "UNTRUSTED_ACTOR")
+
+    def test_a_resolution_that_carried_no_record_is_refused(self):
+        client = mcp.WorkControlClient(store=self.store,
+                                       resolve_context=lambda ref: {"found": True})
+        result = client.actor_for("ctx:x")
+        self.assertEqual(result["reason_code"], "UNTRUSTED_ACTOR")
+        self.assertIn("carried no record", result["detail"])
+
+    def test_a_flat_resolution_is_not_a_resolution(self):
+        """The shape the surface used to read, and why it is refused now.
+
+        A resolver that answers `{"found": true, "actor_ref": ...}` is not
+        answering the way `actor.resolve` answers. Accepting both shapes would
+        mean this surface deciding which one it was given, and the decision it
+        would have to make is "is this dict an identity" — which is exactly the
+        question the `context_ref` protocol exists so that an agent-reachable
+        surface never has to ask.
+        """
+        client = mcp.WorkControlClient(store=self.store,
+                                       resolve_context=FakeContexts(nested=False))
+        result = client.actor_for("ctx:x")
+        self.assertEqual(result["reason_code"], "UNTRUSTED_ACTOR")
+        self.assertIn("carried no record", result["detail"])
+
+    def test_the_daemon_answers_in_the_shape_this_surface_reads(self):
+        """The boundary, pinned without importing across repositories.
+
+        `serverosd agent.context.resolve` is the only trusted-context resolver
+        this fleet has, and this fixture stands in for it. If the daemon ever
+        changes its answer, this test still passes and the deployment breaks —
+        so the assumption is written down where a reader of THIS test will find
+        it, and the ServerOS side asserts the same string from its own end.
+        """
+        answer = FakeContexts()(CONTEXT_REF)
+        self.assertEqual(set(answer) >= {"found", "context_ref", "context"}, True)
+        self.assertEqual(answer["found"], True)
+        self.assertIn("actor_ref", answer["context"])
 
     def test_a_resolver_that_raises_is_a_refusal_not_a_traceback(self):
         client = mcp.WorkControlClient(store=self.store,

@@ -226,10 +226,19 @@ class WorkControlClient:
     def actor_for(self, context_ref: str) -> dict:
         """Resolve a context into an actor, or say why it could not be.
 
-        Never consults the caller for a name and never invents one. The three
+        Never consults the caller for a name and never invents one. The
         outcomes are distinct on purpose: no resolver bound, a ref that does not
-        resolve, and a record that carries no actor are three different repair
-        actions for whoever reads the refusal.
+        resolve, a resolution that carries no record, and a record with no actor
+        are four different repair actions for whoever reads the refusal.
+
+        The record is read from `context`, which is the shape `actor.resolve`
+        returns and the shape `serverosd agent.context.resolve` answers with —
+        the only trusted-context resolver this fleet has. An earlier revision
+        read `actor_ref` off the top level, which is a shape no real resolver
+        produces: it was exercised only against a fixture that returned it, so
+        wiring the daemon in would have refused every mutation forever with
+        "the context resolved but carries no actor_ref" and looked, from the
+        outside, like a policy decision.
         """
         if not str(context_ref or "").strip():
             return {"state": "REFUSED", "reason_code": "UNTRUSTED_ACTOR",
@@ -240,13 +249,19 @@ class WorkControlClient:
                     "detail": "no trusted-context resolver is bound to this surface, "
                               "so no context can be verified"}
         try:
-            record = self._resolve_context(context_ref) or {}
+            answer = self._resolve_context(context_ref) or {}
         except Exception as exc:
             return {"state": "REFUSED", "reason_code": "UNTRUSTED_ACTOR",
                     "detail": f"the context resolver did not answer: {type(exc).__name__}"}
-        if not record.get("found"):
+        if not answer.get("found"):
             return {"state": "REFUSED", "reason_code": "UNTRUSTED_ACTOR",
-                    "detail": record.get("because") or "the context_ref did not resolve"}
+                    "detail": answer.get("because") or "the context_ref did not resolve"}
+        record = answer.get("context")
+        if not isinstance(record, dict):
+            return {"state": "REFUSED", "reason_code": "UNTRUSTED_ACTOR",
+                    "detail": ("the context resolved but carried no record; a "
+                               "resolution that found something and returned nothing "
+                               "is not an identity")}
         actor = str(record.get("actor_ref") or "").strip()
         if not actor:
             return {"state": "REFUSED", "reason_code": "UNTRUSTED_ACTOR",
