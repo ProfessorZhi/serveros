@@ -49,6 +49,12 @@ def _load(name: str, path: Path):
 
 
 packs = _load("serveros_abilities_packs", ABILITIES / "packs.py")
+# Loaded under its own name so it does not collide with `test_build.py`'s copy.
+# The builder is still loaded here, but no longer because it owns part of the
+# pin rule: `_pin_still_describes()` lived there for one revision and this file
+# is where the cost of that showed up — see `OnePinRuleTests`. It is loaded for
+# the wiring assertions in `BuildWiringTests`, which read the builder's source.
+build = _load("serveros_build_for_pack_pins", REPO / "scripts" / "build.py")
 
 # A revision that is not special: nothing here touches git, and the pin is
 # compared as a string. The LIVE revision is in `LiveContractTests`.
@@ -118,6 +124,37 @@ def _manifest_at(revision: str) -> tuple[dict, Path] | None:
 
 def resolve_one(pack, catalogue=CATALOGUE, revision=REV):
     return packs.resolve(a_contract(pack), catalogue, catalogue_revision=revision)
+
+
+# Where the published pack declarations live, and the revision that first
+# carried them. The pin inside that file names `7bc7687`: the declarations were
+# moved out of the ServerOS contract verbatim, so the catalogue they were
+# validated against is the one `7bc7687` already had. `0091d8d` adds this file
+# and changes no ability, which is WHY the pins are allowed to be an ancestor
+# of the revision they are read from — see `AncestorPinTests` and
+# `publishing.ancestor_rule_in` in the contract.
+PACK_DECLARATIONS_FILE = "ability-packs.yaml"
+DECLARATIONS_REV = "0091d8d72546b0c7b45bcaa5f2e3016bbb0124f6"
+
+
+def _declarations_at(revision: str) -> tuple[list[dict], Path] | None:
+    """The pack declarations as a git object at `revision`.
+
+    The exact counterpart of `_manifest_at()` — one reads the catalogue, one
+    reads the packs that name members of it, and they read the same repository
+    the same way for the same reason. Read from the object and never from a
+    checkout: the declarations moved into the repository whose catalogue they
+    name, so a checkout would be a working copy of the very thing being asked
+    about.
+    """
+    for repo in _ability_repos():
+        proc = subprocess.run(
+            ["git", "-C", str(repo), "show", f"{revision}:{PACK_DECLARATIONS_FILE}"],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        if proc.returncode == 0:
+            document = yaml.safe_load(proc.stdout.decode())
+            return document["packs"], repo
+    return None
 
 
 class MemberVerdictTests(unittest.TestCase):
@@ -352,6 +389,192 @@ class BuildWiringTests(unittest.TestCase):
                       source.index("def _packs_module")]
         self.assertIn("declares no abilities", body)
 
+    def test_the_build_reads_the_packs_from_the_pinned_revision_too(self):
+        """Two readers now, and they must agree about which revision they mean.
+
+        The declarations moved to ability-management, so the build reads the
+        catalogue and the packs from the same git object with the same
+        discipline. A build that read the packs from a checkout would answer
+        "what has been published" with whatever happened to be on disk — and
+        the two readers disagreeing about the revision is the exact shape of
+        PIN LAG, which is the defect the pin was added for.
+        """
+        source = self.source()
+        body = source[source.index("def published_packs"):
+                      source.index("def _packs_module")]
+        self.assertIn("show", body)
+        self.assertNotIn("read_text", body)
+        # The filename by NAME, not by value: the reader must go through the
+        # one constant that `publishing.file` also names, so the contract and
+        # the reader cannot end up talking about two different files.
+        self.assertIn("PACK_DECLARATIONS_FILE", body)
+
+    def test_the_build_assembles_rules_and_declarations_from_two_repositories(self):
+        """The contract's rules, the published packs, one verdict.
+
+        Asserted structurally because the failure it guards against is silent:
+        a `resolve()` call that went back to reading `contract["packs"]` would
+        find no packs in this repository's contract and raise — and the tempting
+        repair for that would be to put a copy of the packs back in the contract,
+        which is two sources for one fact.
+        """
+        source = self.source()
+        body = source[source.index("def validate_packs"):
+                      source.index("def local_skill_files")]
+        self.assertIn("packs=published_packs(ability_repo, ability_rev)", body)
+        self.assertIn("dict(contract, packs=", body)
+
+
+class AncestorPinTests(unittest.TestCase):
+    """The one rule that came with publishing the declarations.
+
+    A pin that is not the revision being read was unconditionally PIN_MISMATCH.
+    It has to be, once the declarations live in the same repository as the
+    catalogue they name: editing a pack moves the repository, so the strict
+    rule would refuse the build for the one act it exists to permit — a gate
+    that fails exactly when it is exercised.
+
+    Both directions are exercised here, and the second one is the reason this
+    class exists: a relaxation that is only ever shown to accept is a hole with
+    a passing test in front of it.
+    """
+
+    def setUp(self):
+        read = _declarations_at(DECLARATIONS_REV)
+        if read is None:
+            self.skipTest("no ability-management repository reachable; an absent "
+                          "declarations file is not an unchanged one")
+        self.repo = read[1]
+
+    def test_the_declarations_parent_still_describes_them(self):
+        """`0091d8d` adds this file and touches no ability, so the pin naming
+        its parent still names a catalogue that can be produced again."""
+        self.assertTrue(packs.pin_still_describes(
+            "7bc768709ec93c9264b078f5d72b9dbed735cb43", DECLARATIONS_REV, self.repo))
+
+    def test_an_ancestor_whose_manifest_moved_is_still_refused(self):
+        """The case the relaxation must NOT swallow.
+
+        `95c31ed` is an ancestor of `f97a43b`, so the first half of the rule
+        passes; the manifest changed between them, which is precisely the drift
+        the pin exists to catch. If ancestry alone were enough, a pin would
+        survive the catalogue moving underneath it, and the closure would be a
+        true statement about a catalogue nobody can produce.
+        """
+        self.assertFalse(packs.pin_still_describes(
+            "95c31ed8a0a49f048ff0f89d3fabd0c6ba7fd2d5",
+            "f97a43b176a0bbc8ec26812e80a8405735fc494d", self.repo))
+
+    def test_a_pin_that_is_not_an_ancestor_is_refused(self):
+        """An unknown sha is not an ancestor, and neither is a descendant."""
+        self.assertFalse(packs.pin_still_describes("0" * 40, DECLARATIONS_REV, self.repo))
+
+    def test_the_revision_itself_trivially_describes_itself(self):
+        self.assertTrue(packs.pin_still_describes(DECLARATIONS_REV, DECLARATIONS_REV,
+                                                  self.repo))
+
+
+class OnePinRuleTests(unittest.TestCase):
+    """The pin rule has ONE implementation, and both callers reach it.
+
+    This class exists because of a defect that was measured rather than
+    imagined. `resolve()` can only compare shas, so it reports every pin that is
+    not the revision being read as PIN_MISMATCH; deciding which of those are
+    merely an ancestor with an unchanged manifest needs git. For one revision
+    that decision lived in `scripts/build.py`, and the consequence was that
+    `abilities/packs.py` — which has a command-line entry point, a documented
+    way to run this exact check — printed `FAIL ... PIN_MISMATCH` and exited 1
+    over the same files the build built successfully.
+
+    Two answers to one question, from two copies of one rule, on one machine, in
+    one afternoon. The repair was not to fix the CLI: it was to keep one copy.
+    """
+
+    def setUp(self):
+        read = _declarations_at(DECLARATIONS_REV)
+        if read is None:
+            self.skipTest("no ability-management repository reachable")
+        self.repo = read[1]
+
+    def settled(self, pin, revision=DECLARATIONS_REV):
+        pack = a_pack(authority={"repo": "ProfessorZhi/ability-management",
+                                 "revision": pin})
+        report = packs.resolve(a_contract(pack), CATALOGUE,
+                               catalogue_revision=revision)
+        drifted = packs.settle_pins(report, revision=revision, repo=self.repo)
+        return report, drifted
+
+    def test_a_pin_that_is_only_older_is_upgraded_where_it_stands(self):
+        """Not waved through: `resolve()` said PIN_MISMATCH and that verdict is
+        replaced by a checked one, in the same field, so nothing downstream has
+        to know there were two spellings of "acceptable"."""
+        report, drifted = self.settled("7bc768709ec93c9264b078f5d72b9dbed735cb43")
+        verdict = report["pins"]["packs"][0]
+        self.assertEqual("PIN_EQUIVALENT", verdict["status"])
+        self.assertIn("ancestor", verdict["because"])
+        self.assertEqual([], drifted)
+        self.assertTrue(report["pins"]["all_match"])
+
+    def test_a_pin_that_really_drifted_is_returned_and_still_fails(self):
+        report, drifted = self.settled("95c31ed8a0a49f048ff0f89d3fabd0c6ba7fd2d5",
+                                       revision="f97a43b176a0bbc8ec26812e80a8405735fc494d")
+        self.assertEqual("PIN_MISMATCH", report["pins"]["packs"][0]["status"])
+        self.assertEqual(1, len(drifted))
+        self.assertFalse(report["pins"]["all_match"],
+                         "a settled report must not go green on a pin that drifted")
+
+    def test_all_match_is_recomputed_rather_than_left_as_resolve_set_it(self):
+        """`resolve()` sets it False for any pin that is not the revision; the
+        settle step has to put it back, or a caller that only prints the summary
+        reports a failure it just resolved."""
+        pack = a_pack(authority={"repo": "ProfessorZhi/ability-management",
+                                 "revision": "7bc768709ec93c9264b078f5d72b9dbed735cb43"})
+        report = packs.resolve(a_contract(pack), CATALOGUE,
+                               catalogue_revision=DECLARATIONS_REV)
+        self.assertFalse(report["pins"]["all_match"])
+        packs.settle_pins(report, revision=DECLARATIONS_REV, repo=self.repo)
+        self.assertTrue(report["pins"]["all_match"])
+
+    def test_the_builder_no_longer_keeps_a_second_copy(self):
+        """Structural, and deliberately so: this is the assertion that fails if
+        somebody re-adds the rule to `scripts/build.py` because it is convenient
+        there. Convenient there is how it got there the first time."""
+        source = (REPO / "scripts" / "build.py").read_text(encoding="utf-8")
+        self.assertNotIn("def _pin_still_describes", source)
+        self.assertIn("packs.settle_pins(report, revision=ability_rev, repo=ability_repo)",
+                      source)
+
+    def test_the_command_line_and_the_build_agree_on_the_real_files(self):
+        """The defect, run end to end, on the files it happened to.
+
+        The contract and the published declarations, the real catalogue, the
+        real repository, through `packs.main()` — the entry point that used to
+        exit 1 here. A test of either half alone cannot fail this way; only the
+        two of them over the same inputs can.
+        """
+        read = _declarations_at(DECLARATIONS_REV)
+        manifest = _manifest_at(DECLARATIONS_REV)
+        if read is None or manifest is None:
+            self.skipTest("no ability-management repository reachable")
+        import contextlib, io, tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            (tmp / PACK_DECLARATIONS_FILE).write_text(
+                yaml.safe_dump({"packs": read[0]}), encoding="utf-8")
+            names = [a["name"] for a in manifest[0]["abilities"]]
+            (tmp / "names.txt").write_text("\n".join(names) + "\n", encoding="utf-8")
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                code = packs.main([
+                    "--contract", str(REPO / "abilities" / "pack-contract.yaml"),
+                    "--declarations", str(tmp / PACK_DECLARATIONS_FILE),
+                    "--catalogue", str(tmp / "names.txt"),
+                    "--catalogue-revision", DECLARATIONS_REV,
+                    "--catalogue-repo", str(self.repo),
+                ])
+        self.assertEqual(0, code, out.getvalue())
+        self.assertNotIn("FAIL", out.getvalue())
+
 
 class LiveContractTests(unittest.TestCase):
     """The declared packs, against the declared catalogue.
@@ -362,9 +585,56 @@ class LiveContractTests(unittest.TestCase):
     the real file.
     """
 
+    def published(self) -> list[dict]:
+        """The packs as published, read from the git object — not from a copy.
+
+        This used to return `contract["packs"]`, because the packs were
+        declared inside the contract. They are not any more: `publishing.location`
+        said they belong in ability-management and this round made that
+        sentence true, so a test that kept reading a local list would be
+        checking a copy that no longer exists — and would pass if the published
+        file were deleted.
+        """
+        read = _declarations_at(DECLARATIONS_REV)
+        if read is None:
+            self.fail(
+                f"{PACK_DECLARATIONS_FILE} does not resolve at "
+                f"{DECLARATIONS_REV[:12]} in any reachable ability-management "
+                "repository. The packs are published there, so a missing file "
+                "is not an empty catalogue — it is the declaration layer having "
+                "no subject at all, which is the defect this file exists for")
+        return read[0]
+
     def contract(self) -> dict:
-        return yaml.safe_load(
+        """The schema from here, the packs from the published revision.
+
+        Assembled exactly the way `scripts/build.py` assembles them. Reading
+        the schema from this file is the point: the two halves live in two
+        repositories and the thing that could go wrong is their disagreement.
+        """
+        schema = yaml.safe_load(
             (ABILITIES / "pack-contract.yaml").read_text(encoding="utf-8"))
+        return dict(schema, packs=self.published())
+
+    def test_the_contract_does_not_also_declare_the_packs(self):
+        """One source per fact.
+
+        The packs are published in ability-management and read from there. A
+        copy left in this file would be read by nothing — `validate_packs` takes
+        them from the pinned revision — and would drift unobserved, which is
+        this repository's recurring failure in a new costume: a declaration
+        that has stopped having anything to do with what is used.
+
+        `location_status` is asserted by name rather than left to the prose,
+        because it is the field that was `DECLARED_NOT_IMPLEMENTED` while the
+        sentence above it was untrue, and the only thing that should be able to
+        move it back is the file it describes going away.
+        """
+        contract = yaml.safe_load(
+            (ABILITIES / "pack-contract.yaml").read_text(encoding="utf-8"))
+        self.assertNotIn("packs", contract)
+        self.assertEqual(contract["publishing"]["location_status"], "IMPLEMENTED")
+        self.assertEqual(contract["publishing"]["file"], PACK_DECLARATIONS_FILE)
 
     def test_every_declared_pack_carries_a_pin(self):
         """`publishing.rule` requires one. Before this round none had one, and
@@ -450,7 +720,20 @@ class AgentOrchestrationPackTests(unittest.TestCase):
     OLD_REV = "95c31ed8a0a49f048ff0f89d3fabd0c6ba7fd2d5"
 
     def contract(self) -> dict:
-        return yaml.safe_load((ABILITIES / "pack-contract.yaml").read_text(encoding="utf-8"))
+        """Schema from here, packs from where they are published.
+
+        This class mutates the pack it reads (it re-pins it, twice, to exercise
+        both directions), so it must get a fresh object per call. Reading from
+        the git object gives one every time; a module-level fixture would not.
+        """
+        schema = yaml.safe_load(
+            (ABILITIES / "pack-contract.yaml").read_text(encoding="utf-8"))
+        read = _declarations_at(DECLARATIONS_REV)
+        if read is None:
+            self.fail(f"{PACK_DECLARATIONS_FILE} does not resolve at "
+                      f"{DECLARATIONS_REV[:12]} in any reachable "
+                      "ability-management repository")
+        return dict(schema, packs=read[0])
 
     @staticmethod
     def _catalogue(revision: str) -> list[str] | None:

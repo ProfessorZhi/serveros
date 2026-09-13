@@ -65,8 +65,20 @@ def _git(repo: Path, *args: str) -> str:
     return proc.stdout.decode().strip()
 
 
-def make_ability_repo(base: Path, pycache_in: str | None = None) -> tuple[Path, str]:
-    """A minimal ability-management stand-in, committed, returning (repo, sha)."""
+def make_ability_repo(base: Path, pycache_in: str | None = None,
+                      packs: tuple[str, ...] = ("runtime-management",),
+                      pin: str | None = None) -> tuple[Path, str]:
+    """A minimal ability-management stand-in, committed, returning (repo, sha).
+
+    TWO commits, because that is what the real repository does and because it
+    is what makes the pin rule exercisable here. The first carries the
+    catalogue; the second publishes the pack declarations, which name abilities
+    from the first. So the pin is a revision whose manifest is unchanged and
+    which is nevertheless not the revision being read — `scripts/build.py`
+    accepts exactly that (an ancestor with an identical manifest) and refuses
+    anything else, and a fixture with a single commit could not tell the two
+    apart. `pin=` overrides it for the case that must be refused.
+    """
     repo = base / "ability-management"
     repo.mkdir(parents=True)
     _git(repo, "init", "--quiet", "-b", "main")
@@ -101,32 +113,46 @@ def make_ability_repo(base: Path, pycache_in: str | None = None) -> tuple[Path, 
     }, sort_keys=False, allow_unicode=True))
     _git(repo, "add", "-A")
     _git(repo, "commit", "--quiet", "-m", "synthetic")
-    return repo, _git(repo, "rev-parse", "HEAD")
+    catalogue = _git(repo, "rev-parse", "HEAD")
 
-
-def write_pack_contract(base: Path, rev: str, *packs: dict) -> Path:
-    """A pack contract pinned to THIS fixture's revision.
-
-    The repository's own contract pins a real ability-management commit, and a
-    hermetic build reads a synthetic one — so the pin cannot match, and the
-    builder would refuse for a reason that has nothing to do with the code
-    under test. That is why the contract path is injectable, exactly as
-    `--bundle` already is.
-
-    It is a separate file rather than a weakened check: the pin is still
-    compared, still per-pack, and `tests/test_packs.py` runs the REAL contract
-    against the REAL catalogue, which is the case this fixture cannot cover.
-    """
-    path = base / "pack-contract.yaml"
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(yaml.safe_dump({
+    # The declarations, published in the same repository as the catalogue they
+    # name — the shape `publishing.location` asks for, and the one the real
+    # repository now has. The pin names `catalogue`, the commit below, so this
+    # second commit is the case the ancestor rule exists for: same catalogue,
+    # different revision.
+    (repo / "ability-packs.yaml").write_text(yaml.safe_dump({
         "schema": "serveros/ability-pack.v1", "version": 1,
         "packs": [{"id": f"pack:{i}", "name": f"Pack {i}", "purpose": "to exist",
                    "authority": {"repo": "ProfessorZhi/ability-management",
-                                 "revision": rev},
+                                 "revision": pin or catalogue},
                    "members": [{"ability": f"ability:{name}", "role": "required"}],
-                   } for i, name in enumerate(packs or ("ability-management",))],
-    }, sort_keys=False), encoding="utf-8")
+                   } for i, name in enumerate(packs)],
+    }, sort_keys=False, allow_unicode=True), encoding="utf-8")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "--quiet", "-m", "declarations")
+    return repo, _git(repo, "rev-parse", "HEAD")
+
+
+def write_pack_contract(base: Path) -> Path:
+    """The SCHEMA half of the pack contract, which is all this repository owns.
+
+    The packs themselves are published in ability-management and read from the
+    git object at the pinned revision. So a hermetic build needs a hermetic
+    CATALOGUE REPOSITORY and not merely a hermetic contract file, and
+    `make_ability_repo()` is that: it writes the catalogue AND the declarations
+    into one commit history, which is how the real one is laid out.
+
+    Writing the packs into an injectable contract would have been the smaller
+    change and the wrong one. It would have kept a second source for the packs
+    alive in the one place nobody thinks to look for one — the fixture — so the
+    tests would have been exercising a code path that no build in production
+    has. The file this writes is what is left after the split: the rules.
+    """
+    path = base / "pack-contract.yaml"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(yaml.safe_dump(
+        {"schema": "serveros/ability-pack.v1", "version": 1},
+        sort_keys=False), encoding="utf-8")
     return path
 
 
@@ -140,22 +166,32 @@ class BuildTests(unittest.TestCase):
         self._tmp = tempfile.TemporaryDirectory()
         self.base = Path(self._tmp.name)
         self.repo, self.rev = make_ability_repo(self.base)
-        self.contract = write_pack_contract(self.base, self.rev, "runtime-management")
+        self.contract = write_pack_contract(self.base)
         self.out = self.base / "dist/current"
         self.marketplace = self.base / "dist/.agents/plugins/marketplace.json"
 
     def tearDown(self):
         self._tmp.cleanup()
 
-    def args(self, *extra: str) -> list[str]:
+    def args_for(self, repo: Path, rev: str, *extra: str) -> list[str]:
+        """Build arguments against any ability-management repository.
+
+        Parameterised because the pack fixtures now need their own REPOSITORY
+        rather than their own contract file: the declarations live in the
+        catalogue repository and are read from its git object, so a test that
+        wants different declarations has to publish a different repository.
+        """
         return [
-            "--ability-repo", str(self.repo),
-            "--ability-rev", self.rev,
+            "--ability-repo", str(repo),
+            "--ability-rev", rev,
             "--output", str(self.out),
             "--marketplace-path", str(self.marketplace),
             "--pack-contract", str(self.contract),
             *extra,
         ]
+
+    def args(self, *extra: str) -> list[str]:
+        return self.args_for(self.repo, self.rev, *extra)
 
     def test_write_then_check_is_idempotent(self):
         self.assertNotEqual(run_build(self.args("--check")).returncode, 0)
@@ -184,7 +220,7 @@ class BuildTests(unittest.TestCase):
         args = [
             "--ability-repo", str(repo), "--ability-rev", rev,
             "--output", str(self.out), "--marketplace-path", str(self.marketplace),
-            "--pack-contract", str(write_pack_contract(self.base, rev, "runtime-management")),
+            "--pack-contract", str(write_pack_contract(self.base)),
         ]
         self.assertEqual(run_build(args + ["--write"]).returncode, 0)
         stale = [p for p in self.out.rglob("*") if p.suffix == ".pyc" or p.name == "__pycache__"]
@@ -229,8 +265,9 @@ class BuildTests(unittest.TestCase):
         away — which is how the rule survived unimplemented for as long as it
         did.
         """
-        contract = write_pack_contract(self.base, self.rev, "document-stewardship")
-        result = run_build(self.args("--write", "--pack-contract", str(contract)))
+        repo, rev = make_ability_repo(self.base / "absent",
+                                      packs=("document-stewardship",))
+        result = run_build(self.args_for(repo, rev, "--write"))
         self.assertEqual(result.returncode, 2)
         self.assertIn("document-stewardship", result.stderr)
         self.assertIn("does not exist", result.stderr)
@@ -238,8 +275,8 @@ class BuildTests(unittest.TestCase):
     def test_a_pack_pinned_to_another_revision_fails_the_build(self):
         """The case that goes green: every member resolves, and the answer is
         about a catalogue that is not the one being built against."""
-        contract = write_pack_contract(self.base, "0" * 40, "runtime-management")
-        result = run_build(self.args("--write", "--pack-contract", str(contract)))
+        repo, rev = make_ability_repo(self.base / "badpin", pin="0" * 40)
+        result = run_build(self.args_for(repo, rev, "--write"))
         self.assertEqual(result.returncode, 2)
         self.assertIn("pin", result.stderr.lower())
 

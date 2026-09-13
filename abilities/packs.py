@@ -1,8 +1,16 @@
 #!/usr/bin/env python3
 """Decide whether a pack names abilities that exist, and say which do not.
 
-    python3 packs.py --contract pack-contract.yaml --catalogue names.txt \\
-        --catalogue-revision <sha> [--catalogue-repo <path>]
+    python3 packs.py --contract pack-contract.yaml --declarations ability-packs.yaml \\
+        --catalogue names.txt --catalogue-revision <sha> [--catalogue-repo <path>]
+
+`--catalogue-repo` is what lets a pin be settled against git history instead of
+compared for equality; without it every pin that is not the revision being read
+is reported PIN_MISMATCH and the program exits non-zero.
+
+The contract and the packs are two inputs because they live in two
+repositories: the schema and the rules in serveros, the declarations beside
+the catalogue whose members they name.
 
 `abilities/pack-contract.yaml` declared a closure rule and nobody implemented
 it:
@@ -13,17 +21,25 @@ it:
 
 Nothing refused anything, because nothing read the file. A `grep` over the tree
 for its name returned one hit: the contract itself. Three of the four packs
-below name an ability that resolves to nothing, and the reason nobody noticed
-is the reason this round keeps finding — a rule that is only written down is a
-rule that has never been tested, and an untested rule has the same failure rate
-as no rule with better optics.
+then declared named a required ability that resolved to nothing, and the reason
+nobody noticed is the reason this round keeps finding — a rule that is only
+written down is a rule that has never been tested, and an untested rule has the
+same failure rate as no rule with better optics.
 
-This module is the checker. Like `resolver.py` beside it, it is a pure
+This module is the checker. Like `resolver.py` beside it, `resolve()` is a pure
 function: it reads no file, runs no command, opens no socket and looks at no
 clock. The catalogue arrives as a set of names. That is what lets the closure of
 a three-pack contract be asserted in a unit test, and it is what keeps the
 answer reproducible — the same contract against the same catalogue always
 produces the same verdict, on any machine.
+
+One function here is not pure, and its impurity is named rather than smuggled:
+`pin_still_describes()` runs `git`. It has to — deciding whether a pin still
+describes the catalogue it was validated against is a question about history,
+not about a name set — and it lives here rather than in a caller because the
+pin VERDICT is this module's. When half of it lived in `scripts/build.py`, this
+module's own command-line entry point printed FAIL PIN_MISMATCH over the same
+files the build accepted.
 
 What it is NOT
 --------------
@@ -51,6 +67,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import subprocess
 import sys
 from pathlib import Path
 
@@ -67,7 +84,16 @@ MEMBER_STATUS = ("RESOLVED", "MISSING")
 PACK_STATUS = ("CLOSED", "PARTIAL", "UNAVAILABLE")
 
 # The pin, answered independently of the members.
-PIN_STATUS = ("PIN_MATCH", "PIN_MISMATCH", "PIN_ABSENT")
+#
+# PIN_EQUIVALENT is in the vocabulary and is NOT produced by `resolve()`. That
+# function is pure over a name set and can only compare shas, so it reports a
+# pin that is not the revision being read as PIN_MISMATCH. Whether that
+# mismatch is fatal is a question about git history — is the pin an ancestor of
+# the revision being read, and has `abilities-manifest.yaml` moved between them
+# — and it is answered by `settle_pins()` below, which upgrades the verdict in
+# place. Both this module's command-line entry point and `scripts/build.py` call
+# it; there is one implementation and this is it.
+PIN_STATUS = ("PIN_MATCH", "PIN_MISMATCH", "PIN_ABSENT", "PIN_EQUIVALENT")
 
 # A member id is a name and nothing else. `rules` in the contract is explicit:
 # "A pack names abilities. It never names a provider, a device or a runtime —
@@ -280,6 +306,83 @@ def _pin_verdicts(contract: dict, catalogue_revision: str,
     }
 
 
+def pin_still_describes(pin: str, revision: str, repo) -> bool:
+    """Is `pin` an ancestor of `revision` with an unchanged catalogue?
+
+    The rule, and why it exists rather than being a relaxation:
+
+    the declarations are published in the same repository as the catalogue they
+    name, so every edit to a pack moves that repository. The revision a reader
+    reads FROM is therefore never the revision the pins were validated AGAINST,
+    and under strict sha equality publishing a pack would break its own closure
+    check on the way out. A gate that fails exactly when it is exercised is not
+    a gate.
+
+    So a pin is still valid when BOTH hold: it is an ancestor of the revision
+    being read, and `abilities-manifest.yaml` is byte-identical between the two.
+    Then it is still a claim about a catalogue that can be produced again, which
+    is the entire purpose of pinning. If either fails it is a claim about a
+    catalogue nobody can reproduce, and it stays PIN_MISMATCH.
+
+    This is the one thing in this module that is not a pure function, and it is
+    kept here anyway rather than in the caller: the pin VERDICT is this
+    module's, and when half of it lived in `scripts/build.py` the command-line
+    entry point below disagreed with the build over the same files — one
+    printing FAIL PIN_MISMATCH while the other built successfully. Two answers
+    to one question is the defect this repository keeps finding; the fix is one
+    implementation, not two that are usually the same.
+    """
+    if pin == revision:
+        return True
+    ancestor = subprocess.run(
+        ["git", "-C", str(repo), "merge-base", "--is-ancestor", pin, revision],
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    if ancestor.returncode != 0:
+        return False
+    unchanged = subprocess.run(
+        ["git", "-C", str(repo), "diff", "--quiet", pin, revision,
+         "--", "abilities-manifest.yaml"],
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    return unchanged.returncode == 0
+
+
+def settle_pins(report: dict, *, revision: str, repo) -> list[dict]:
+    """Finish the pin verdicts, in place, and return the ones that drifted.
+
+    `resolve()` can only compare shas, so every pin that is not exactly the
+    revision being read comes back PIN_MISMATCH. This decides which of those
+    are nevertheless still describing the same catalogue and upgrades them to
+    PIN_EQUIVALENT. A report that says PIN_EQUIVALENT is therefore one where
+    the pin was checked and found intact, not one where the check was skipped —
+    which is why the status is upgraded rather than the failure being waved
+    through.
+
+    Returns the verdicts that really drifted, for a caller that wants to refuse
+    the build. `report["pins"]["all_match"]` is recomputed here too, so a
+    caller that only prints the summary does not have to know the difference.
+    """
+    drifted = []
+    for verdict in report["pins"]["packs"]:
+        if verdict["status"] != "PIN_MISMATCH":
+            continue
+        if pin_still_describes(verdict["pinned"], revision, repo):
+            verdict["status"] = "PIN_EQUIVALENT"
+            verdict["because"] = (
+                f"the pack pins {verdict['pinned']}, which is an ancestor of "
+                f"{revision} and differs from it in no way that touches "
+                "`abilities-manifest.yaml`. The closure above is therefore "
+                "still about the catalogue the members were validated against; "
+                "the repository moved because the declarations themselves are "
+                "published in it, which is the one way a pack edit can move a "
+                "revision without invalidating its own pin")
+        else:
+            drifted.append(verdict)
+    report["pins"]["all_match"] = all(
+        v["status"] in ("PIN_MATCH", "PIN_EQUIVALENT")
+        for v in report["pins"]["packs"])
+    return drifted
+
+
 def summarize(report: dict) -> str:
     """One line per pack, and a line for the pin. For a person reading a build."""
     lines = []
@@ -299,7 +402,18 @@ def summarize(report: dict) -> str:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("--contract", type=Path, default=Path("abilities/pack-contract.yaml"))
+    parser.add_argument("--contract", type=Path, default=Path("abilities/pack-contract.yaml"),
+                        help="the SCHEMA half: record shape, member roles, pin rule")
+    # Required, and it was not always: the packs used to be declared inside
+    # `--contract`, so this program could be run with one file. They are
+    # published in ability-management now, so a caller that supplies only the
+    # schema gets a contract declaring no packs and an exception from deep
+    # inside `resolve()`. Making the argument required moves that failure to
+    # the command line, where the reason is one line long instead of a
+    # traceback through two modules.
+    parser.add_argument("--declarations", type=Path, required=True,
+                        help="the published packs (ability-packs.yaml), which the "
+                             "schema contract no longer carries")
     parser.add_argument("--catalogue", type=Path,
                         help="file of ability names, one per line")
     parser.add_argument("--catalogue-revision", required=True)
@@ -313,7 +427,13 @@ def main(argv: list[str] | None = None) -> int:
         sys.stderr.write("ERROR: PyYAML is required to read the pack contract\n")
         return 2
 
-    contract = yaml.safe_load(args.contract.read_text(encoding="utf-8"))
+    # Assembled the same way `scripts/build.py` assembles it and for the same
+    # reason: two repositories, one verdict. `resolve()` is not told which half
+    # came from where — it asks the one question it has always asked, about the
+    # packs a contract declares.
+    schema = yaml.safe_load(args.contract.read_text(encoding="utf-8"))
+    contract = dict(schema,
+                    packs=yaml.safe_load(args.declarations.read_text(encoding="utf-8"))["packs"])
     names = []
     if args.catalogue:
         names = [line.strip() for line in args.catalogue.read_text(encoding="utf-8").splitlines()
@@ -321,11 +441,39 @@ def main(argv: list[str] | None = None) -> int:
     report = resolve(contract, names, catalogue_revision=args.catalogue_revision,
                      catalogue_repo=args.catalogue_repo)
 
+    # Settled here for the same reason `scripts/build.py` settles it: a pin that
+    # is not the revision being read may still be describing the same catalogue,
+    # and whether it is cannot be answered from a name set. This program used to
+    # stop at `resolve()` and print `FAIL ... PIN_MISMATCH` (exit 1) over a
+    # contract the build accepted — the same files, the same rule, two answers.
+    #
+    # Without `--catalogue-repo` the ancestor question cannot be asked at all, so
+    # the mismatch is reported as what it is: UNSETTLED, with the flag that would
+    # settle it. It is still a non-zero exit — an unanswered pin is not a passed
+    # one — but the line says which of the two it is, because "FAIL PIN_MISMATCH"
+    # and "FAIL ... but nobody checked" send a reader to the same place for two
+    # different reasons.
+    unsettled = []
+    if args.catalogue_repo:
+        unsettled = settle_pins(report, revision=args.catalogue_revision,
+                                repo=args.catalogue_repo)
+    else:
+        unsettled = [v for v in report["pins"]["packs"]
+                     if v["status"] == "PIN_MISMATCH"]
+
     if args.json:
         json.dump(report, sys.stdout, indent=2, sort_keys=True)
         sys.stdout.write("\n")
     else:
         sys.stdout.write(summarize(report) + "\n")
+        if unsettled and not args.catalogue_repo:
+            sys.stdout.write(
+                "NOTE no --catalogue-repo given: %d pin(s) could not be settled "
+                "against history and are reported PIN_MISMATCH. Pass "
+                "--catalogue-repo <path> to ask whether they are merely an "
+                "ancestor of %s with an unchanged abilities-manifest.yaml, "
+                "which is not a failure.\n"
+                % (len(unsettled), args.catalogue_revision[:12]))
     return 1 if (report["refused"] or not report["pins"]["all_match"]) else 0
 
 
