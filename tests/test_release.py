@@ -81,9 +81,10 @@ def make_artifact(base: Path, marker: str, *, with_daemon: bool = True) -> Path:
     return art
 
 
-def run_release(args: list[str]) -> subprocess.CompletedProcess:
+def run_release(args: list[str], env: dict | None = None) -> subprocess.CompletedProcess:
     return subprocess.run([sys.executable, str(RELEASE), *args],
-                          stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+                          stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                          env=env)
 
 
 class ReleaseTests(unittest.TestCase):
@@ -116,9 +117,9 @@ class ReleaseTests(unittest.TestCase):
             *extra,
         ]
 
-    def promote(self, artifact: Path, revision: str, *extra: str):
+    def promote(self, artifact: Path, revision: str, *extra: str, env: dict | None = None):
         return run_release(["promote", "--artifact", str(artifact),
-                            "--revision", revision, *self.args(*extra)])
+                            "--revision", revision, *self.args(*extra)], env=env)
 
     def status(self):
         return run_release(["status", *self.args()])
@@ -220,6 +221,38 @@ class ReleaseTests(unittest.TestCase):
         # And nothing was pointed anywhere: the failure is before the swap.
         self.assertFalse((self.comp_root / "current").exists())
         self.assertFalse((self.unit_dir / "serverosd.service").exists())
+
+    def test_verification_does_not_write_into_the_artifact(self):
+        """Promoting must not mutate what it promotes.
+
+        `verify_revision` runs the revision's own entry point to prove the shim
+        resolves the runtime it ships beside, and that import makes Python write
+        `__pycache__` next to the modules. The tree hash is computed afterwards,
+        so the node recorded an identity for files the verifier had just made:
+        the same code hashed to 04e9956b clean and d6ea08ee promoted, and both
+        numbers were correct.
+        """
+        art = make_artifact(self.base, "a")
+        before = release.fingerprint(art)
+        # Run with PYTHONDONTWRITEBYTECODE removed. Without this the test
+        # inherits whatever the runner was launched with, and under
+        # `PYTHONDONTWRITEBYTECODE=1` the mutation cannot happen however broken
+        # the release tool is — the first version of this test was written that
+        # way and passed against the defect it was written to catch. A test for
+        # "the verifier must not write" has to be run in a world where writing
+        # is allowed, so it depends on release.py and not on the ambient shell.
+        env = {k: v for k, v in os.environ.items()
+               if k != "PYTHONDONTWRITEBYTECODE"}
+        self.assertEqual(self.promote(art, "rev-a", env=env).returncode, 0)
+
+        staged = self.comp_root / "revisions" / "rev-a"
+        self.assertEqual(list(staged.rglob("__pycache__")), [],
+                         "promotion wrote bytecode into the staged revision")
+        self.assertEqual(release.fingerprint(art), before,
+                         "promotion mutated the artifact it was given")
+        # The recorded identity is the artifact's, not the verifier's.
+        self.assertEqual(
+            json.loads((staged / "RELEASE.json").read_text())["tree_hash"], before)
 
     def test_rollback_returns_both_entry_points_to_the_previous_revision(self):
         a, b = make_artifact(self.base, "a"), make_artifact(self.base, "b")

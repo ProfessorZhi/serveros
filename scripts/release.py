@@ -221,9 +221,21 @@ def verify_revision(rev_dir: Path, state_dir: Path) -> dict:
     # exists and still fails, which an existence check alone never catches.
     entry = rev_dir / "bin" / "serverosctl"
     if entry.is_file():
+        # PYTHONDONTWRITEBYTECODE, because this probe imports the revision's own
+        # modules and would otherwise leave `__pycache__` inside the artifact it
+        # is checking. That is not a tidiness problem: `fingerprint` is computed
+        # after this runs, so the revision's recorded tree hash was a hash of
+        # files the VERIFIER had just created. The clean artifact hashed to
+        # 04e9956b and the promoted one to d6ea08ee, both correct, describing
+        # the same code — the two-incomparable-numbers failure the fingerprint
+        # docstring exists to warn about, produced by the release tool itself.
+        #
+        # Verification must not alter what it verifies, and an artifact is
+        # supposed to be immutable once staged.
+        env = {**os.environ, "PYTHONDONTWRITEBYTECODE": "1"}
         proc = subprocess.run(
             [sys.executable, str(entry), "--help"],
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=env,
         )
         if proc.returncode != 0:
             problems.append(
