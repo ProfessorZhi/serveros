@@ -7,16 +7,47 @@
 
 ## The definition (frozen)
 
-**ServerOS = a user-space Agent control plane.**
+**ServerOS = a user-space Agent Operating Fabric.**
 
 It does not schedule the kernel, it does not supervise every process on the
-machine, and it is not a workflow engine. It is the layer that knows *which
-machine this is*, *what is running on it*, *who owns it*, *what is protected*,
-and *how a declared piece of it may be brought back* — and it exposes that to
-agents under the user's own authority, never root's.
+machine, and it is not a workflow engine. It is the layer between an Agent
+runtime and a machine that makes *what an Agent can do here, right now, without
+surprising anyone* answerable — which machine this is, which ability is actually
+available on it, what durable memory the work already has, and who owns the
+resource that is running.
 
-What the control plane delivers to a working agent is still Environment, Context
-and Capabilities; that is the *purpose*, not a second architecture.
+**This supersedes the earlier sentence "ServerOS = a user-space Agent control
+plane".** That sentence was not wrong, it was incomplete in a way that cost real
+time: it named the daemon's job and called it the product, so every question
+about abilities, memory or a second device was answered by pointing at the
+registry. The control plane is now exactly one of four planes — the Node Runtime
+Plane — and the other three are not new machinery bolted on beside it. They are
+the parts the control-plane framing left out and that three live failures ran
+into:
+
+```text
+Case A  a tunnel required by a task vanished when an unrelated Agent session
+        ended. Nothing was broken and nothing was wrong on the machine: the
+        tunnel had been registered with session lifetime, so it was retired
+        exactly on time.
+Case B  127.0.0.1:17890 is the documented outbound tunnel on the Linux node.
+        It exists in a `.bashrc` comment. There is no listener, no service
+        owner, and no declaration anywhere that says it should exist.
+Case C  the Dell node reached Playwright through `npx @playwright/mcp@latest`,
+        a dependency that floats by design and resolves to something new on
+        every start.
+```
+
+Each is a capability that was *stated* and not *bound*: to a lifetime, to an
+owner, or to a version. The four planes are the four places a capability has to
+be bound before a device can be said to have it.
+
+```text
+Node Runtime Plane      what is running here, who owns it, is it healthy
+Ability Fabric          what this machine can do, and through which provider
+Memory-Context Fabric   what the work remembers, across sessions and devices
+Coordination Fabric     what several devices do together
+```
 
 ServerOS consists of exactly these parts:
 
@@ -29,6 +60,13 @@ Ability-driven procedures   specialist procedures, resolved on demand
 Plugin composition          what gets packaged and installed per runtime
 optional Fleet              topology across devices, when a device declares it
 ```
+
+The parts do not change. What changes is that the four planes are now named, and
+each of the three planes that were implicit gets a resolver, a schema and a
+refusal rule of its own — see [`docs/ability-fabric.md`](docs/ability-fabric.md),
+[`docs/memory-fabric.md`](docs/memory-fabric.md) and
+[`docs/runtime-resources.md`](docs/runtime-resources.md). An abstract plane with
+no resolver is exactly the defect these documents exist to stop repeating.
 
 **Availability is per-device declared.** ServerOS is not a product-global
 always-on promise. A device declares whether it runs the node runtime, which
@@ -157,17 +195,91 @@ runtime artifact. Neither may hold a tenant-specific path or call a cloud API �
 that is an **adapter** concern, and adapters live with the capability that owns
 the surface. See [`docs/space-resolver.md`](docs/space-resolver.md).
 
-## Planes, kept apart
+## Four planes
+
+The planes divide *questions*, not directories — that is why they are planes
+and not folders. Storage is a separate, older taxonomy that stays as it was:
 
 ```text
-Control plane   state/serveros/                    node runtime state, registry, lease
-Human plane     records/projects/<project>/        cards, briefs, board views, reports
-Evidence plane  artifacts/work-items/<project>/<ITEM>/<RUN>/
-Cloud plane     Feishu / GitHub                    bodies stay with the cloud owner
+Planes — the questions
+
+Node Runtime Plane      what is running here, who owns it, is it healthy
+Ability Fabric          what this machine can do, and through which provider
+Memory-Context Fabric   what the work remembers, across sessions and devices
+Coordination Fabric     what several devices do together
+
+Storage — where the answers are kept
+
+Control         state/serveros/                                       node runtime state
+Human           records/projects/<project>/                          cards, briefs, board views
+Evidence        artifacts/work-items/<project>/<ITEM>/<RUN>/
+Cloud           Feishu / GitHub                                       bodies stay with the owner
 ```
+
+The two taxonomies are deliberately not aligned. One question may be answered
+from two stores — "who owns this tunnel" is control state, "when was it
+promised" is an evidence Run — and forcing them into one tree is how a
+projection becomes a second authority.
 
 A board view is a *recomputable projection* of card + state + claims. It is
 never a second state database.
+
+### The ten invariants
+
+These are the properties a change must not break. They are stated as invariants
+rather than as advice because every one of them has already been violated once.
+An invariant that no test or resolver enforces is where the next violation
+lands, so each names the enforcement that exists today.
+
+```text
+1  One architecture statement.        ARCHITECTURE.md is it; other documents link, never restate.
+2  Mechanism, API, procedure, package stay apart.
+                                      serverosd / MCP / Skill / Plugin, one job each.
+3  Nothing is authority by being written down.
+                                      maps, projections and summaries are regenerated, never hand-fixed.
+4  Device identity is authored.       A hostname, UUID or address is a route, never a key.
+5  Availability is per-device declared.
+                                      A machine with no serverosd is supported, not broken.
+6  Nothing beyond a session boundary may be owned by that session.
+                                      See the ownership rule below. Case A.
+7  A durable resource declares durable desired state.
+                                      A comment is not a declaration. Case B.
+8  A managed dependency is pinned or refused.
+                                      Floating versions are admitted, never silent. Case C.
+9  An ability is not available because it is documented.
+                                      Availability is resolved against a device, or it is UNKNOWN.
+10 Evidence is written once, at a path derived from identity.
+                                      project / Item / Run, never from cwd or a guess.
+```
+
+Invariants 1–5 and 10 were already implicit in the frozen statement and are
+written down here so that "it was always understood" stops being an argument.
+Invariants 6–9 are new, and each is a real failure rather than a hypothetical:
+they are Cases A, B and C, and the last is the `declared-but-absent` pattern
+this product has now hit often enough to name.
+
+### The ownership rule (new)
+
+> **Anything that must outlive the Agent session that caused it requires an
+> explicit durable owner and an explicit lifecycle. An Agent session may cause
+> creation; it may not be the owner of record.**
+
+That single sentence is what Case A needed. The tunnel was not misconfigured —
+it was correctly configured for the lifecycle it had been given, and nobody had
+ever asked it to be anything else. The rule makes the question compulsory at
+registration: a resource whose only owner is a session is either refused or
+downgraded to `disposable`, and it is never the one a task depends on.
+
+### What ServerOS does not promise
+
+ServerOS does not promise that an ability works. It promises that a question
+about an ability has an answer: available, degraded, unavailable, incompatible,
+or unknown — and *why*. A node that cannot resolve an ability says `UNKNOWN`
+with a reason. It never says nothing, and it never says "should work".
+
+ServerOS does not promise durable memory is complete. It promises that memory
+has a named authority, a version, and a rebuild path, so that a projection can
+always be discarded and recomputed rather than argued with.
 
 ## Canonical ownership and distribution
 
@@ -297,6 +409,30 @@ answer, it is not ServerOS.
 
 ## Status of this document
 
-Round 9 froze this statement. **No more architecture expansion.** The next
-permitted actions are promotion / cutover of the built candidate, or porting a
-new device profile — not another round of Core design.
+Round 9 froze this statement and closed with **"no more architecture
+expansion"**. This is the round that supersedes that sentence, and it does so
+openly rather than by quietly editing around it.
+
+Round 9 was right about the thing it was protecting. What it called expansion
+was Core design with no failure case behind it, and there was plenty of that —
+the four-plane framing is not a licence to resume it. The two rounds differ in
+one testable way: **every plane named above arrived with a failure that already
+happened, and left with a resolver, a schema and a refusal.** The Node Runtime
+Plane already had all three. The other three did not, which is why the failures
+were possible.
+
+The freeze is therefore amended, not lifted:
+
+```text
+Closed       the four planes and the ten invariants above.
+Closed       a plane may not be added without a named real failure.
+Open         the resolvers, schemas, adapters and fixtures that make each
+             plane answerable — and nothing else.
+Closed again anything that improves none of the three answers:
+             can this machine do it · does the work remember it · who owns it.
+```
+
+The next permitted actions are the ones in this round's implementation order,
+then promotion / cutover of the built candidate, then porting a new device
+profile. A new Core module, a fifth plane, or a service added because it would
+be tidy is still refused by the same test Round 9 used.
