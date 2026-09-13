@@ -244,6 +244,33 @@ class BuildTests(unittest.TestCase):
         self.assertEqual(proc.returncode, 0,
                          f"shipped entry point could not run:\n{proc.stderr}")
 
+    def test_the_shipped_entry_points_are_executable(self):
+        """An artifact can have every byte right and still not run.
+
+        This is not hypothetical. The first promotion of this composition
+        produced a `bin/serverosd` with correct contents and mode 0644, and
+        systemd answered `status=203/EXEC` on a node whose previous daemon had
+        been up for 375 ticks. Both entry points are extensionless, and the
+        writer restored a mode only for `.sh` and `.py` — so the rule was wrong
+        for precisely the files whose mode is the whole point.
+        """
+        self.assertEqual(run_build(self.args("--write")).returncode, 0)
+        for rel in ("bin/serverosd", "bin/serverosctl"):
+            self.assertTrue(os.access(self.out / rel, os.X_OK),
+                            f"{rel} shipped without its executable bit")
+
+    def test_check_reports_a_lost_executable_bit(self):
+        """The mode must be visible to `--check`, not silently tolerated.
+
+        Without this, a build that dropped the bit again would report clean, and
+        the next thing to notice would be a supervisor refusing to start.
+        """
+        self.assertEqual(run_build(self.args("--write")).returncode, 0)
+        (self.out / "bin" / "serverosd").chmod(0o644)
+        result = run_build(self.args("--check"))
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("mode bin/serverosd", result.stderr)
+
     def test_the_shipped_unit_declares_no_build_machine_path(self):
         """The unit template travels inside the artifact, so it must not name
         the machine that built it.

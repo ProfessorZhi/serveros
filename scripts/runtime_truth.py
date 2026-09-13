@@ -370,7 +370,7 @@ def expected_artifact(build, ability_repo: Path, ability_rev: str, output: Path,
             path, ability_repo, ability_rev, output, marketplace_path)
     except (OSError, ValueError) as exc:
         return None
-    payload = {rel: content for content, rel in files}
+    payload = {rel: content for content, rel, _executable in files}
     payload.update({rel: build._json_bytes(value) for rel, value in manifests.items()})
     payload[Path("README.md")] = readme.encode()
     return payload, version
