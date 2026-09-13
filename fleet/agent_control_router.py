@@ -503,7 +503,7 @@ class LocalLoopbackTransport(AgentControlTransport):
         p = dict(request.params)
         if request.verb == "session.create":
             return service.create(
-                provider_id=p.get("provider_id") or _provider_hint(resolved),
+                provider_id=p.get("provider_id") or self._provider_hint(resolved),
                 agent_id=p["agent_id"], instruction=p["instruction"],
                 idempotency_key=p["idempotency_key"], workspace=request.workspace)
         if request.verb == "session.send":
@@ -702,7 +702,14 @@ class FleetAgentControlRouter:
         # request is a claim; this is the store the claim is resolved against,
         # and it is deliberately empty by default. A router that minted a
         # context to satisfy a ref would verify a claim with itself.
-        self.context_store = dict(context_store or {})
+        #
+        # Held by reference rather than copied into a dict, because the store
+        # is not always local: a caller whose contexts live behind the daemon
+        # passes a mapping whose `get` asks for one record. Copying would
+        # materialise it, and the alternative to a mapping here is a second
+        # resolution path — the one thing `actor.resolve` must not have.
+        # Nothing in this class writes to it.
+        self.context_store = {} if context_store is None else context_store
         self.transports = list(transports or [])
         # Single-flight replay for retries, in memory and bounded. Named for
         # what it is: an in-process guard against a caller retrying a mutation
@@ -784,6 +791,29 @@ class FleetAgentControlRouter:
                                 f"trusted context_ref has no actor to bind an "
                                 f"approval to or to attribute the act to")
 
+        # A ref that was PRESENTED and did not resolve is refused here, before
+        # admission is even reached, and regardless of what admission would
+        # have said.
+        #
+        # The resolver already refuses an unresolvable ref on a human-gated
+        # verb, which is where the actor is load-bearing. That leaves the
+        # delegation-class verbs — `session.send` among them — where a forged
+        # ref used to be dropped on the floor and the call proceeded with no
+        # actor at all. Two things were wrong with that. The act was
+        # unattributed in a ledger whose whole purpose is attribution, and a
+        # forged ref was indistinguishable from no ref: §22 says a forged
+        # context_ref is refused, and a caller that keeps presenting a stale
+        # handle was never told it had stopped working. An ALLOW does not make
+        # the claim true; it only means nobody needed to approve it.
+        context = self._resolved_context(request)
+        if request.context_ref and not context.get("context"):
+            return self._refuse(
+                request, "INVALID_CONTEXT",
+                f"{request.action} presented a context_ref and no context was "
+                f"resolved from it. A ref is a claim and the minted record is the "
+                f"evidence; proceeding without one would record this act with no "
+                f"actor and would tell a forger its ref had been accepted")
+
         node = self.transport_for(request.device_ref)
         observed = (node.resolve_inputs(request.device_ref, request.runtime_id)
                     if node is not None else {})
@@ -801,7 +831,7 @@ class FleetAgentControlRouter:
             "local_device_ref": self.local_device_ref,
             "registry": self.registry,
             "approvals": list(request.approvals),
-            **self._resolved_context(request),
+            **context,
         }
         record = target.resolve(resolver_request)
 

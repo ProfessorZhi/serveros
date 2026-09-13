@@ -380,23 +380,52 @@ def _values(node):
 # ---------------------------------------------------------------------------
 
 
-def test_node_and_fleet_mcp_ownership_do_not_overlap():
-    c = contract("mcp-contract.yaml")
-    node = c["surfaces"]["serveros-node-mcp"]
-    fleet = c["surfaces"]["serveros-fleet-mcp"]
+def test_no_two_mcp_surfaces_own_or_serve_the_same_thing():
+    """Ownership is a partition, pairwise and not just against the node.
 
-    assert set(node["owns"]).isdisjoint(fleet["owns"])
-    assert set(node["tools"]).isdisjoint(fleet["tools"])
-    # Each surface's absences must be the other's job, not a shared hole.
+    The earlier version compared the node surface with `serveros-fleet-mcp`,
+    which was declared with no implementation and no tools — so half of every
+    assertion was against an empty set and the test passed without comparing
+    anything real. It now runs over whatever surfaces are declared, which is
+    also what makes it fail loudly if a fourth is added that overlaps.
+    """
+    c = contract("mcp-contract.yaml")
+    surfaces = c["surfaces"]
+    assert len(surfaces) >= 2, "one surface overlaps with nothing"
+    for name, surface in surfaces.items():
+        assert surface.get("owns"), f"{name} owns nothing, so the check is vacuous"
+
+    names = sorted(surfaces)
+    for i, left in enumerate(names):
+        for right in names[i + 1:]:
+            a, b = surfaces[left], surfaces[right]
+            assert set(a["owns"]).isdisjoint(b["owns"]), (left, right)
+            # A surface implemented elsewhere does not restate its tool list
+            # here, so there is nothing in this file to compare — the overlap
+            # that matters is the one between lists this file actually holds.
+            if "tools" in a and "tools" in b:
+                assert set(a["tools"]).isdisjoint(b["tools"]), (left, right)
+
+    # The node surface's blind spot is named as the other surfaces' job rather
+    # than left as a hole: another device is answered by the fleet-wide surface.
+    node = surfaces["serveros-node-mcp"]
     assert "other devices" in node["does_not_own"]
-    assert "device-local path resolution" in fleet["does_not_own"]
+    assert "cross-device routing" in node["does_not_own"]
 
 
 def test_no_surface_exposes_a_generic_remote_shell():
     c = contract("mcp-contract.yaml")
     for name, surface in c["surfaces"].items():
         assert "remote.shell" in surface["explicitly_absent"], name
-        assert not any("shell" in tool for tool in surface["tools"]), name
+        assert not any("shell" in tool for tool in surface.get("tools", ())), name
+        # A surface whose tool list lives in another repository cannot be
+        # scanned here, and that is the one thing that may stand in for the
+        # scan: it must say where the list is. Silence would read as a clean
+        # result, which is the failure this whole test is about.
+        if "tools" not in surface:
+            assert surface.get("tools_source"), (
+                f"{name} declares no tools and does not say where they live, so "
+                f"this test cannot tell an empty surface from an unscanned one")
 
     # Remote execution, when added, is admitted by level — never by raw command.
     levels = transport.CAPABILITY_LEVELS
