@@ -17,11 +17,12 @@ from .model import (
     ItemState,
     Outcome,
     Run,
+    RunCancelReason,
     RunState,
     WorkItem,
     now_iso,
 )
-from .state_machine import reopen, transition, transition_run
+from .state_machine import RUN_TERMINAL, reopen, transition, transition_run
 from .migrations import migrate
 
 
@@ -123,10 +124,10 @@ class ServerOSStore:
             self._event(conn, item.id, "created", {"state": item.state.value})
         return item
 
-    def _event(self, conn, item_id: str, event_type: str, payload: dict) -> None:
+    def _event(self, conn, item_id: str, event_type: str, payload: dict, at: str | None = None) -> None:
         conn.execute(
             "INSERT INTO item_events(item_id,event_type,at,payload_json) VALUES (?,?,?,?)",
-            (item_id, event_type, now_iso(), json.dumps(payload, sort_keys=True)),
+            (item_id, event_type, at or now_iso(), json.dumps(payload, sort_keys=True)),
         )
 
     def get_item(self, item_id: str) -> WorkItem | None:
@@ -545,17 +546,167 @@ class ServerOSStore:
         return self._run(row) if row else None
 
     def advance_run(self, item_id: str, run_id: str, target: RunState | str) -> Run:
+        target = RunState(target)
+        if target in {RunState.CANCELLED, RunState.INVALID}:
+            # Those two are operator terminations, not forward steps. They owe a
+            # reason, an actor, and an audit record, so they belong to cancel_run.
+            raise ValueError(
+                f"advance_run cannot end a Run as {target.value}; "
+                "use cancel_run (CLI: run cancel / run abandon) so the reason, actor, "
+                "and audit event are preserved"
+            )
         with self.transaction(immediate=True) as conn:
             row = conn.execute("SELECT * FROM runs WHERE item_id=? AND run_id=?", (item_id, run_id)).fetchone()
             if row is None:
                 raise KeyError(f"unknown Run: {item_id}/{run_id}")
             target = transition_run(RunState(row["state"]), target)
-            ended = now_iso() if target in {RunState.SUCCEEDED, RunState.FAILED, RunState.CANCELLED, RunState.INVALID} else ""
+            ended = now_iso() if target in RUN_TERMINAL else ""
             conn.execute(
                 "UPDATE runs SET state=?,ended_at=? WHERE item_id=? AND run_id=?",
                 (target.value, ended, item_id, run_id),
             )
         return self.get_run(item_id, run_id)
+
+    def cancel_run(
+        self,
+        item_id: str,
+        run_id: str,
+        *,
+        reason: str,
+        actor: str,
+        reason_code: RunCancelReason | str | None = None,
+        target: RunState | str = RunState.CANCELLED,
+        evidence: tuple[str, ...] = (),
+        operation: str = "cancel",
+        acknowledge_active_worker: bool = False,
+        dry_run: bool = False,
+    ) -> dict:
+        """End a Run by explicit operator action, and record why.
+
+        This is the audited way to reach CANCELLED or INVALID.  It moves the Run
+        and appends one item_events record.  It deliberately does not touch the
+        Item, artifacts, worktrees, or any runtime resource: terminating a Run is
+        a control-plane fact, not a cleanup.
+        """
+        if operation not in {"cancel", "abandon"}:
+            raise ValueError(f"unsupported termination operation: {operation}")
+        if not str(reason).strip():
+            raise ValueError("run termination requires a non-empty reason")
+        if not str(actor).strip():
+            raise ValueError("run termination requires a non-empty actor")
+        reason_code = (
+            RunCancelReason(reason_code)
+            if reason_code
+            else (RunCancelReason.ABANDONED if operation == "abandon" else RunCancelReason.OPERATOR_CANCELLED)
+        )
+        target = RunState(target)
+        if target not in {RunState.CANCELLED, RunState.INVALID}:
+            raise ValueError(f"run termination target must be CANCELLED or INVALID, not {target.value}")
+        references = tuple(str(locator) for locator in evidence)
+        if any(not Path(locator).is_absolute() for locator in references):
+            raise ValueError("termination evidence references must be absolute paths")
+
+        with self.transaction(immediate=True) as conn:
+            row = conn.execute("SELECT * FROM runs WHERE item_id=? AND run_id=?", (item_id, run_id)).fetchone()
+            if row is None:
+                raise KeyError(f"unknown Run: {item_id}/{run_id}")
+            current = RunState(row["state"])
+            if current in RUN_TERMINAL:
+                if current != target:
+                    raise ValueError(
+                        f"Run {item_id}/{run_id} already ended as {current.value}; "
+                        f"refusing to restate it as {target.value}"
+                    )
+                # Nothing is written, so report what the ledger already says
+                # rather than what this caller asked for: a reader asking why a
+                # Run ended must not be handed a reason that was never recorded.
+                recorded = self._recorded_termination(conn, item_id, run_id)
+                return self._termination_record(
+                    item_id, run_id,
+                    recorded["operation"] if recorded else operation,
+                    RunCancelReason(recorded["reason_code"]) if recorded else reason_code,
+                    recorded["reason"] if recorded else "",
+                    recorded["actor"] if recorded else "",
+                    tuple(recorded["evidence"]) if recorded else (),
+                    current, current, row["ended_at"],
+                    runtime_may_still_be_active=bool(recorded and recorded["runtime_may_still_be_active"]),
+                    already_terminal=True, dry_run=False,
+                )
+            # Legality stays with the state machine. cancel_run adds the reason,
+            # the actor, and the audit record on top of it and nothing else.
+            target = transition_run(current, target)
+            # The control plane owns no worker handle: runs.state is a statement
+            # of intent, not an observation of a live process. A RUNNING Run may
+            # still have a worker executing, so require an explicit extra action.
+            active = current == RunState.RUNNING
+            if active and not acknowledge_active_worker:
+                raise ValueError(
+                    f"Run {item_id}/{run_id} is {current.value}: the control plane cannot observe or "
+                    "stop a worker process, so terminating here would not end one. Re-run with "
+                    "--acknowledge-active-worker to record the control-plane fact anyway."
+                )
+            at = now_iso()
+            if not dry_run:
+                conn.execute(
+                    "UPDATE runs SET state=?,ended_at=? WHERE item_id=? AND run_id=?",
+                    (target.value, at, item_id, run_id),
+                )
+                self._event(
+                    conn,
+                    item_id,
+                    "run_terminated",
+                    {
+                        "run": run_id,
+                        "operation": operation,
+                        "from": current.value,
+                        "to": target.value,
+                        "reason_code": reason_code.value,
+                        "reason": reason,
+                        "actor": actor,
+                        "evidence": list(references),
+                        "runtime_may_still_be_active": active,
+                    },
+                    at=at,
+                )
+        return self._termination_record(
+            item_id, run_id, operation, reason_code, reason, actor, references,
+            current, target, at,
+            runtime_may_still_be_active=active, already_terminal=False, dry_run=dry_run,
+        )
+
+    def _recorded_termination(self, conn, item_id: str, run_id: str) -> dict | None:
+        """The operator termination already on record for this Run, if any."""
+        rows = conn.execute(
+            "SELECT payload_json FROM item_events WHERE item_id=? AND event_type='run_terminated' "
+            "ORDER BY event_id DESC",
+            (item_id,),
+        ).fetchall()
+        for row in rows:
+            payload = json.loads(row["payload_json"])
+            if payload.get("run") == run_id:
+                return payload
+        return None
+
+    @staticmethod
+    def _termination_record(
+        item_id, run_id, operation, reason_code, reason, actor, references,
+        from_state, to_state, ended_at, *, runtime_may_still_be_active, already_terminal, dry_run,
+    ) -> dict:
+        return {
+            "item": item_id,
+            "run": run_id,
+            "operation": operation,
+            "from": from_state.value,
+            "to": to_state.value,
+            "reason_code": reason_code.value,
+            "reason": reason,
+            "actor": actor,
+            "evidence": list(references),
+            "runtime_may_still_be_active": runtime_may_still_be_active,
+            "already_terminal": already_terminal,
+            "dry_run": dry_run,
+            "ended_at": ended_at,
+        }
 
     @staticmethod
     def _run(row) -> Run:

@@ -72,6 +72,9 @@ class ServerOS:
     def advance_run(self, item_id: str, run_id: str, state: RunState | str):
         return self.store.advance_run(item_id, run_id, state)
 
+    def cancel_run(self, item_id: str, run_id: str, *, reason: str, actor: str, **options):
+        return self.store.cancel_run(item_id, run_id, reason=reason, actor=actor, **options)
+
     def resume_run(self, item_id: str, run_id: str):
         run = self.store.get_run(item_id, run_id)
         if run is None:

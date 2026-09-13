@@ -59,6 +59,21 @@ class RunState(StrEnum):
     INVALID = "INVALID"
 
 
+class RunCancelReason(StrEnum):
+    """Why an operator ended a Run.
+
+    These are operation semantics, not Run states.  Every one of them lands in
+    the existing terminal states CANCELLED or INVALID; none of them introduces
+    a new state.
+    """
+
+    OPERATOR_CANCELLED = "OPERATOR_CANCELLED"
+    ABANDONED = "ABANDONED"
+    SUPERSEDED = "SUPERSEDED"
+    SCOPE_CHANGED = "SCOPE_CHANGED"
+    ENVIRONMENT_UNNEEDED = "ENVIRONMENT_UNNEEDED"
+
+
 class ContextMode(StrEnum):
     INSPECT = "inspect"
     TEST = "test"

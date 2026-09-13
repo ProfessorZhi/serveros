@@ -103,6 +103,20 @@ ALLOCATED → PREPARING → RUNNING → FINALIZING
           → SUCCEEDED | FAILED | CANCELLED | INVALID
 ```
 
+`SUCCEEDED` and `FAILED` are verdicts produced by `run finalize`. `CANCELLED`
+and `INVALID` are operator terminations and are reached only through
+`run cancel` or `run abandon`, which require a reason and an actor and append a
+`run_terminated` record to the Item's event history. `run advance` refuses them,
+so a termination can never be recorded without why and by whom.
+
+`abandon` is not a state: it is the operation that lands in `CANCELLED` with
+`reason_code=ABANDONED`. Terminating a Run is a control-plane fact only — it
+never changes the Item, deletes artifacts or worktrees, or touches any runtime
+resource. `CANCELLED` and `INVALID` are legal from every non-terminal state;
+`INVALID` records that the Run's result must not count. A Run in `RUNNING`
+additionally requires `--acknowledge-active-worker`, because the control plane
+holds no worker handle and cannot observe or stop a worker process.
+
 ## Migration journal
 
 Migration manifests are JSON and contain absolute move operations. Layered

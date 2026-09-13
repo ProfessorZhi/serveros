@@ -13,7 +13,7 @@ from .board import render as render_board
 from .context import resolve_capsule
 from .engine import ServerOS, default_state_dir
 from .migration import MigrationManager
-from .model import ItemState, Outcome, RunState
+from .model import ItemState, Outcome, RunCancelReason, RunState
 from .store import ServerOSStore
 from .federation import publish_inventory, check_inventory, proposal as federation_proposal
 
@@ -100,8 +100,34 @@ def _run_payload(server: ServerOS, run) -> dict:
     }
 
 
+def _run_terminate(server: ServerOS, args) -> dict:
+    """Shared body of `run cancel` and `run abandon`.
+
+    The two commands differ only in their defaults (abandon implies
+    CANCELLED + reason_code ABANDONED and offers no --to); the termination
+    itself is one call, so there is no second copy of the transition logic.
+    """
+    termination = server.cancel_run(
+        args.item,
+        args.run,
+        reason=args.reason,
+        actor=args.actor,
+        reason_code=getattr(args, "reason_code", None),
+        target=getattr(args, "to", None) or RunState.CANCELLED,
+        evidence=tuple(getattr(args, "evidence", ())),
+        operation=args.action,
+        acknowledge_active_worker=args.acknowledge_active_worker,
+        dry_run=args.dry_run,
+    )
+    payload = _run_payload(server, server.resume_run(args.item, args.run))
+    payload["termination"] = termination
+    return payload
+
+
 def _cmd_run(args):
     server = _server(args)
+    if args.action in ("cancel", "abandon"):
+        return _run_terminate(server, args)
     if args.action == "begin":
         return _run_payload(server, server.begin_run(args.item, args.activity, args.worker, args.idempotency_key))
     if args.action == "show":
@@ -285,6 +311,26 @@ def build_parser() -> argparse.ArgumentParser:
     advance.add_argument("--to", required=True, choices=[state.value for state in RunState])
     evidence = run_actions.add_parser("evidence", parents=[_common()]); evidence.add_argument("item"); evidence.add_argument("run"); evidence.add_argument("--kind",required=True); evidence.add_argument("--locator",required=True); evidence.add_argument("--command",required=True); evidence.add_argument("--case",action="append",default=[]); evidence.add_argument("--exit-code",type=int,required=True); evidence.add_argument("--revision",required=True); evidence.add_argument("--verdict",required=True); evidence.add_argument("--dirty",action="store_true")
     finalize = run_actions.add_parser("finalize", parents=[_common()]); finalize.add_argument("item"); finalize.add_argument("run"); finalize.add_argument("--verdict",required=True); finalize.add_argument("--exit-code",type=int,required=True); finalize.add_argument("--command",required=True); finalize.add_argument("--case",action="append",default=[]); finalize.add_argument("--revision",required=True); finalize.add_argument("--dirty",action="store_true")
+
+    # Terminating a Run is destructive control-plane action: it is deliberately
+    # one Run at a time, with a mandatory reason and actor, and no bulk form.
+    terminate_parsers = {}
+    for action in ("cancel", "abandon"):
+        terminate = run_actions.add_parser(action, parents=[_common()])
+        terminate.add_argument("item"); terminate.add_argument("run")
+        terminate.add_argument("--reason", required=True)
+        terminate.add_argument("--actor", required=True)
+        terminate.add_argument("--reason-code", choices=[code.value for code in RunCancelReason])
+        terminate.add_argument("--evidence", action="append", default=[])
+        terminate.add_argument("--acknowledge-active-worker", action="store_true")
+        terminate.add_argument("--dry-run", action="store_true")
+        terminate_parsers[action] = terminate
+    # `cancel` may also record that the Run's result must not count; `abandon`
+    # only ever means CANCELLED.
+    terminate_parsers["cancel"].add_argument(
+        "--to", default=RunState.CANCELLED.value,
+        choices=[RunState.CANCELLED.value, RunState.INVALID.value],
+    )
 
     context = groups.add_parser("context", parents=[_common()])
     context_actions = context.add_subparsers(dest="action", required=True)
