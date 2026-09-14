@@ -307,6 +307,137 @@ TOOLS: tuple[dict, ...] = (
         ),
         "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False},
     },
+    # -- §14/§15/§16/§16A/§17 -------------------------------------------------
+    #
+    # Five reads, and three of them exist because the tempting alternative is
+    # a guess. Each takes NO argument, for the reason spelled out in
+    # `daemon.handler_map`: a caller that can supply an identity, a protection
+    # claim or a measurement can supply one that is not true, and this surface
+    # would then be relaying a claim as an observation. An empty `inputSchema`
+    # is the tool-surface form of that rule, and it is why these five are not
+    # the `path.resolve` shape with a helpful optional override.
+    {
+        "name": "ports.ownership",
+        "description": (
+            "Every listening endpoint on this node and the claims on each one. "
+            "Disagreements between claims are reported as conflicts rather "
+            "than resolved, and a port nobody can be attributed to stays "
+            "unattributed — which is the honest answer on a shared host, not a "
+            "failure to look."
+        ),
+        "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False},
+    },
+    {
+        "name": "desired.actual",
+        "description": (
+            "Every registration compared against what was measured about it. "
+            "A registration whose desired state is unmeasurable is UNCHECKED "
+            "and NOT a mismatch: `desired_state = None` is the absence of a "
+            "comparison. Read `unchecked` before concluding anything from an "
+            "empty `mismatches`."
+        ),
+        "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False},
+    },
+    {
+        "name": "runtime.hygiene",
+        "description": (
+            "The nine cleanliness classes over the registrations, with the "
+            "evidence kept beside each decision. CLEANUP_CANDIDATE is a label "
+            "attached to a question for a person and is never decided by one "
+            "variable — and `stopped for N days` is not that variable."
+        ),
+        "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False},
+    },
+    {
+        "name": "fs.hygiene",
+        "description": (
+            "The filesystem roots classified — canonical, allowed exception, "
+            "legacy, misplaced, oversized, duplicate semantic root, unknown. "
+            "Every class is a description: nothing here moves, renames or "
+            "deletes anything, and duplicate semantic roots are reported "
+            "rather than reunited."
+        ),
+        "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False},
+    },
+    {
+        "name": "protection.resolve",
+        "description": (
+            "Whether each container on this node is protected, resolved over "
+            "every spelling of its identity, plus any spelling where the "
+            "answer differs. Protection is declared, never inferred: a name "
+            "that contains 'prod' is not a permission level. Nothing here "
+            "writes a label or registers a resource."
+        ),
+        "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False},
+    },
+    # -- §6/§7/§13 -----------------------------------------------------------
+    #
+    # Two reads §19's suggested surface names that had no tool behind them at
+    # all. Both were reachable from `serverosctl` and from nothing else, which
+    # is the shape this round keeps finding: the fact had a producer and no
+    # way for an agent to ask for it.
+    #
+    # Neither takes an argument, and the Docker one is the case where that
+    # costs something: `resource.docker` cannot be asked for the reclaimable
+    # picture, because that is a `docker system df` measured at ~22s. The
+    # description says so and names the CLI flag, so the limitation is a
+    # sentence a caller can read rather than an argument that quietly did
+    # nothing.
+    {
+        "name": "resource.docker",
+        "description": (
+            "The Docker inventory of this node: daemon summary and data root, "
+            "containers with their writable-layer and rootfs sizes, images, "
+            "volumes and networks, and the ten biggest containers by measured "
+            "size. Nothing here is a cleanup candidate. The reclaimable and "
+            "build-cache picture is deliberately NOT included — it is one "
+            "`docker system df` call, measured at ~22s; ask for it with "
+            "`serverosctl resource docker --space`."
+        ),
+        "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False},
+    },
+    {
+        "name": "tunnel.list",
+        "description": (
+            "The tunnels this node can see, the forwarders it can see, and — "
+            "the important field — what it structurally CANNOT see. Read "
+            "`blind_spots` before concluding anything from `declared_count: "
+            "0`: `/proc` is mounted with hidepid=invisible here, so an sshd "
+            "forward is invisible to this surface by construction, and a "
+            "declared tunnel is joined to a visible forwarder by PID rather "
+            "than by guessing."
+        ),
+        "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False},
+    },
+    # -- §18 ----------------------------------------------------------------
+    #
+    # The fifteen resource anomaly codes, graded, with the codes that could NOT
+    # be graded named separately. That second list is the answer, not a
+    # footnote: `codes_graded` is what was looked for and not found, and
+    # `codes_not_evaluated` is what was never looked for at all, and on this
+    # node the difference is large — two codes need a `docker system df` nobody
+    # paid for. A caller that read an empty `signals` as a healthy node would be
+    # reading the second list as the first.
+    {
+        "name": "resource.anomaly.list",
+        "description": (
+            "The resource anomalies this node can currently see — disk and "
+            "inode tiers, memory and swap pressure, Docker storage and build "
+            "cache, container log and writable-layer sizes, unowned and "
+            "orphaned runtimes, a protected resource standing on a filling "
+            "filesystem, declared-vs-measured mismatches, and unhealthy or "
+            "unowned tunnels. Read `codes_not_evaluated` before concluding "
+            "anything from an empty `signals`: it names each code that could "
+            "not be graded and why, and the reclaimable/build-cache picture is "
+            "NOT included — it is one `docker system df` at ~22s, available "
+            "with `serverosctl resource anomaly --space`. Every row is a "
+            "measurement with its threshold beside it; nothing here stops, "
+            "removes, prunes or restarts anything, and §25's two forbidden "
+            "responses (`high CPU => kill`, `high memory => kill`) do not "
+            "exist as code."
+        ),
+        "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False},
+    },
 )
 
 

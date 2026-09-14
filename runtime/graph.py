@@ -438,3 +438,755 @@ def load_endpoint_map(path=None) -> dict:
         return {}
     entries = document.get("endpoints") or {}
     return {str(k): str(v) for k, v in entries.items()}
+
+
+# ---------------------------------------------------------------------------
+# §12 — the resource graph
+#
+# `build_groups` and `build_chain` above answer "what is this PROCESS", which
+# is a question about the machine as it is running. This section answers "what
+# does this RUNTIME hold, and who does it belong to", which is a question
+# about resources. Two questions, two graphs, and deliberately one primitive:
+# `link()`.
+#
+# A second way to spell an epistemic status is a second thing that can drift,
+# which is why the brief's "do not create ResourceGraphV2" is a correctness
+# rule and not a taste rule. This section adds nodes and edges; it does not
+# add a vocabulary.
+# ---------------------------------------------------------------------------
+
+# §12 names three levels of edge confidence. The module already has three
+# epistemic statuses (FACT / INFERRED / UNKNOWN from `attribution`), and these
+# are NOT a rename of them — see `edge()` for why both are carried.
+AUTHORITATIVE = "AUTHORITATIVE"
+
+CONFIDENCE_LEVELS = (AUTHORITATIVE, INFERRED, UNKNOWN)
+
+# The relationships this graph is allowed to draw. Enumerated rather than
+# free-form so that an edge nothing can interpret is a test failure instead
+# of a string a reader has to guess at.
+RELATIONSHIPS = (
+    "hosts",        # device -> managed runtime
+    "mounts",       # managed runtime -> volume
+    "binds-to",     # managed runtime -> host path
+    "attached-to",  # managed runtime -> network
+    "publishes",    # managed runtime -> port (the provider published it)
+    "forwards",     # managed runtime -> tunnel
+    "owned-by",     # managed runtime | tunnel -> owner
+    "alias-of",     # a registry's own spelling -> the canonical runtime node
+)
+
+NODE_KINDS = ("device", "managed-runtime", "provider-resource", "host-path", "owner")
+
+# Declared freshness windows, in seconds, per evidence source. This is a
+# POLICY, stated here so that it can be argued with.
+#
+# A source with no entry produces UNKNOWN freshness rather than a default. A
+# `DEFAULT_WINDOW` constant would merge "this is fresh" with "this host has
+# no declared window for this kind of evidence", and those are different
+# sentences — the same substitution §15 forbids for desired state.
+FRESH_WITHIN_SECONDS = {
+    "docker-inspect": 300,
+    "registry": 86400,
+    # -- §18 resource-observation sources ------------------------------------
+    # Host pressure moves on the scale of a build, not of a tick: five minutes
+    # is long enough that a reading is not re-taken for every question and
+    # short enough that a filling disk is not reported as yesterday's news.
+    "host-filesystem": 300,
+    "host-memory": 300,
+    # The Docker store's own accounting is a ~22s read on this host, so a call
+    # that paid for it is allowed to be an hour old before it is called stale.
+    # A window shorter than the cost of the measurement would make every
+    # observation stale by construction.
+    "docker-space": 3600,
+    "docker-sizes": 900,
+    "docker-logs": 900,
+    "docker-hygiene": 900,
+    "desired-actual": 900,
+    # The cross-check re-reads the same two documents the other two sources
+    # did, so it ages with the faster of them rather than declaring a third
+    # clock for one question.
+    "protected-cross-check": 300,
+    "tunnel-observation": 300,
+}
+
+
+def edge(relationship: str, source: str, target, *, provenance: str,
+         confidence: str, rule: str | None = None, why: str | None = None,
+         observed_at: str | None = None, freshness: dict | None = None) -> dict:
+    """One edge, reusing `link()` for the epistemic half.
+
+    `provenance` and `confidence` are not the same field written twice:
+
+      provenance   how the raw fact was obtained — FACT, INFERRED, UNKNOWN.
+      confidence   how far the edge BINDS — AUTHORITATIVE, INFERRED, UNKNOWN.
+
+    They come apart in the ordinary case, which is why both exist. `docker
+    inspect` naming the network a container is attached to is a FACT and the
+    edge is AUTHORITATIVE, because the provider's own structured API named it.
+    The same inspect naming a mount's host path is also a FACT, and the edge
+    is INFERRED — a path is not a resource identity, and tomorrow a volume
+    may occupy it.
+
+    Collapsing the two would force one of those to be reported wrongly. The
+    `why` on an INFERRED edge names what is missing, so the edge can be
+    argued with rather than merely disbelieved.
+    """
+    if relationship not in RELATIONSHIPS:
+        raise ValueError(
+            f"{relationship!r} is not a relationship this graph draws. Known: "
+            f"{sorted(RELATIONSHIPS)}. An edge nothing can interpret is not a "
+            f"finding, it is a string."
+        )
+    if confidence not in CONFIDENCE_LEVELS:
+        raise ValueError(
+            f"{confidence!r} is not a confidence level. Known: "
+            f"{list(CONFIDENCE_LEVELS)}"
+        )
+    out = link(target, provenance, rule=rule, why=why)
+    out["relationship"] = relationship
+    out["source"] = source
+    out["confidence"] = confidence
+    out["observed_at"] = observed_at
+    out["freshness"] = freshness
+    return out
+
+
+def freshness_of(observed_at, *, now, source: str | None = None,
+                 within_seconds: int | None = None) -> dict:
+    """How old one observation is, against a DECLARED window.
+
+    Reports FRESH or STALE only when there is a window to compare against,
+    a time on the observation, and a clock to age it with. Every other case
+    is UNKNOWN with the reason — never FRESH. "Nothing has aged" is not a
+    state this function can reach; the most it can say is that it cannot
+    tell, and saying more than that is how a stale edge comes to read as a
+    current fact.
+    """
+    window = within_seconds
+    because = None
+    if window is None:
+        window = FRESH_WITHIN_SECONDS.get(source or "")
+        if window is None:
+            because = (
+                f"no freshness window is declared for evidence from "
+                f"{source or 'an unnamed source'}, so its age is not "
+                f"measurable against a policy"
+            )
+    if observed_at is None:
+        because = because or (
+            "the observation carries no time, so its age cannot be computed"
+        )
+    if now is None:
+        because = because or (
+            "the reader supplied no clock, so this observation cannot be aged"
+        )
+
+    if because is not None or window is None:
+        return {
+            "state": UNKNOWN,
+            "age_seconds": None,
+            "within_seconds": window,
+            "observed_at": observed_at,
+            "why": because,
+        }
+
+    age = _seconds_between(observed_at, now)
+    if age is None:
+        return {
+            "state": UNKNOWN,
+            "age_seconds": None,
+            "within_seconds": window,
+            "observed_at": observed_at,
+            "why": (
+                f"the observation's timestamp {observed_at!r} does not parse "
+                f"as a time, so its age is unknown rather than assumed zero"
+            ),
+        }
+
+    return {
+        "state": "FRESH" if age <= window else "STALE",
+        "age_seconds": age,
+        "within_seconds": window,
+        "observed_at": observed_at,
+        "why": None,
+    }
+
+
+def _seconds_between(then, now) -> float | None:
+    """Seconds from `then` to `now`, or None if either will not parse.
+
+    Tolerant of both the ISO-with-offset form docker returns and a bare
+    `datetime`, because the two callers between them use both. A parse
+    failure is NOT zero: an edge whose age reads as 0 is reported as fresh,
+    which is the single most misleading answer this function could give.
+    """
+    import datetime as _dt
+
+    def parse(value):
+        if isinstance(value, _dt.datetime):
+            return value
+        if not isinstance(value, str):
+            return None
+        text = value.strip()
+        if text.endswith("Z"):
+            text = text[:-1] + "+00:00"
+        try:
+            return _dt.datetime.fromisoformat(text)
+        except ValueError:
+            return None
+
+    a, b = parse(then), parse(now)
+    if a is None or b is None:
+        return None
+    if (a.tzinfo is None) != (b.tzinfo is None):
+        # Comparing an aware and a naive time raises. Guessing a zone here
+        # would silently shift an age by hours; refusing is the honest answer.
+        return None
+    return (b - a).total_seconds()
+
+
+def _node(ref: str, *, kind: str, **extra) -> dict:
+    node = {"ref": ref, "kind": kind}
+    node.update(extra)
+    return node
+
+
+def _node_kind_for(ref: str) -> str:
+    """What kind of thing a bare ref names.
+
+    Prefix-driven, over the ref namespaces this product already uses. An
+    unrecognised ref is `owner`, because the only refs this graph reaches it
+    without having classified are the ones an attribution passed through, and
+    those are owners by construction.
+    """
+    if ref.startswith("device:"):
+        return "device"
+    if ref.startswith("runtime:container:"):
+        return "managed-runtime"
+    if ref.startswith(("volume:", "network:", "tunnel:", "port:", "image:")):
+        return "provider-resource"
+    if ref.startswith("path:"):
+        return "host-path"
+    return "owner"
+
+
+def _identity_anchor_refs(record: dict) -> list[str]:
+    return [
+        a["runtime_ref"] for a in (record.get("identity") or {}).get("anchors") or []
+        if a.get("runtime_ref")
+    ]
+
+
+def _binds_and_volumes(evidence, ref: str, *, observed_at, now) -> tuple[list[dict], set[str]]:
+    """`docker inspect`'s mounts, split into the two relationships they mean.
+
+    A named volume and a bind mount arrive in the same list and are NOT the
+    same kind of edge:
+
+      volume    docker's own API named a volume by the identity docker uses
+                for it. AUTHORITATIVE.
+      bind      the source is a host PATH. The fact is the provider's, but
+                the edge is INFERRED: a path is not a resource identity, and
+                the same path may hold a different thing by tomorrow.
+    """
+    out: list[dict] = []
+    volumes: set[str] = set()
+    if not evidence:
+        return out, volumes
+    for mount in evidence.get("mounts") or []:
+        kind = mount.get("type")
+        destination = mount.get("destination")
+        if kind == "volume" and mount.get("name"):
+            volumes.add(f"volume:{mount['name']}")
+            out.append(edge(
+                "mounts", ref, f"volume:{mount['name']}",
+                provenance=FACT, confidence=AUTHORITATIVE,
+                rule="docker inspect Mounts, structured",
+                why=f"mounted at {destination}",
+                observed_at=observed_at,
+                freshness=freshness_of(observed_at, now=now, source="docker-inspect"),
+            ))
+        elif mount.get("source"):
+            out.append(edge(
+                "binds-to", ref, f"path:{mount['source']}",
+                provenance=FACT, confidence=INFERRED,
+                rule="docker inspect Mounts, structured",
+                why=(
+                    f"the provider states this path is bound at {destination}; "
+                    f"a path is not a resource identity and the same path may "
+                    f"hold something else later"
+                ),
+                observed_at=observed_at,
+                freshness=freshness_of(observed_at, now=now, source="docker-inspect"),
+            ))
+    return out, volumes
+
+
+def resource_graph(attribution_document: dict, *, evidences=None, tunnels=None,
+                   ports=None, aliases=None, device_ref=None, observed_at=None,
+                   now=None) -> dict:
+    """§12. Device -> Managed Runtime -> Provider Resource, and Runtime -> Owner.
+
+    Built from the records `containers.attribute_all` already produces rather
+    than by re-inspecting the host, so that the graph cannot disagree with the
+    inventory it describes. Re-inspecting would give this function a second
+    chance to see a different machine, and a graph that disagrees with the
+    inventory it was built from is worse than no graph.
+
+    What this function will NOT do:
+
+      * It never draws an owner edge from a NAME. Two containers called
+        `litellm-1` and `litellm-2` are two containers; the first being
+        attributed says nothing whatever about the second. §12 forbids the
+        inference by name, and the prohibition is stronger than that — it
+        forbids it for being an inference at all.
+      * It never silently picks between disagreeing sources. When two
+        observations name different owners for one runtime, BOTH edges are
+        emitted and the pair is recorded in `conflicts`. Resolving that is a
+        human's job; a graph that chose would hide the disagreement.
+      * It never drops an edge because it is old. A stale edge is still an
+        edge and its `freshness` says so; dropping it would turn "we last saw
+        this an hour ago" into "this never existed".
+
+    `aliases` maps a ref a registry spells one way onto the canonical runtime
+    node, which is how a registry naming a container by NAME still reaches the
+    node keyed by id. The alias becomes an `alias-of` edge rather than a
+    rewrite: replacing the ref would make the registry's own spelling
+    unrecoverable, and that spelling is what a reader has to search for.
+    """
+    records = attribution_document.get("containers") or []
+    tunnels = tunnels or []
+    ports = ports or []
+    aliases = aliases or {}
+
+    if device_ref is None:
+        device_ref = attribution_document.get("device_ref")
+
+    by_id = {ev.get("id"): ev for ev in (evidences or []) if ev.get("id")}
+    by_ref = {r["ref"]: r for r in records if r.get("ref")}
+
+    nodes: dict[str, dict] = {}
+    edges: list[dict] = []
+    conflicts: list[dict] = []
+
+    def add_node(ref, kind=None, **extra):
+        if ref in nodes:
+            nodes[ref].update({k: v for k, v in extra.items() if v is not None})
+            return nodes[ref]
+        nodes[ref] = _node(ref, kind=kind or _node_kind_for(ref), **extra)
+        return nodes[ref]
+
+    if device_ref:
+        add_node(device_ref, display_name=device_ref)
+
+    observed = freshness_of(observed_at, now=now, source="docker-inspect")
+    mount_evidence_seen = 0
+
+    for record in records:
+        ref = record.get("ref")
+        if not ref:
+            continue
+        runtime = record.get("runtime") or {}
+        identity = record.get("identity") or {}
+        management = record.get("management") or {}
+        owner = record.get("owner") or {}
+
+        add_node(
+            ref, display_name=record.get("container"),
+            provider=runtime.get("provider"),
+            actual_state=runtime.get("actual_state"),
+            protected=runtime.get("protected"),
+            management=management.get("class"),
+            management_confidence=management.get("confidence"),
+            stable_across_rename=identity.get("stable_across_rename"),
+        )
+
+        # -- device -> runtime ---------------------------------------------
+        evidence = by_id.get(_container_id_of(record)) if by_id else None
+        if evidence is not None:
+            mount_evidence_seen += 1
+
+        declared_device = (
+            (evidence or {}).get("runtime_labels") or {}
+        ).get("device_ref")
+        host_ref = device_ref
+        if host_ref:
+            add_node(host_ref, kind="device")
+            edges.append(edge(
+                "hosts", host_ref, ref,
+                provenance=FACT, confidence=AUTHORITATIVE,
+                rule="observed on this node by its own provider API",
+                observed_at=observed_at, freshness=observed,
+            ))
+        # The runtime's OWN device reading. `runtime_record` prefers a declared
+        # label and falls back to the registry, so a value that differs from
+        # the registry's can only have come from a declaration — which is why
+        # the differing case is drawn as a second edge rather than ignored.
+        # (Without the raw evidence the graph cannot read the label itself, and
+        # the rule below says so instead of implying it was inspected.)
+        record_device = runtime.get("device_ref")
+        if record_device and host_ref and record_device != host_ref:
+            # §12's conflict rule, applied to identity rather than ownership.
+            add_node(record_device, kind="device", declared_not_observed=True)
+            edges.append(edge(
+                "hosts", record_device, ref,
+                provenance=FACT if evidence is not None else INFERRED,
+                confidence=INFERRED,
+                rule=(
+                    "the container's own label names a device"
+                    if evidence is not None else
+                    "the runtime record's device_ref, whose raw label was not "
+                    "supplied to this graph"
+                ),
+                why=(
+                    f"the container declares {record_device} while this node "
+                    f"is {host_ref}; both are reported and neither is treated "
+                    f"as authoritative over the other"
+                ),
+                observed_at=observed_at, freshness=observed,
+            ))
+            conflicts.append({
+                "subject": ref,
+                "relationship": "hosts",
+                "candidates": sorted([host_ref, record_device]),
+                "why": (
+                    "the node this observer runs on and the device the "
+                    "container declares for itself disagree; §12 keeps both "
+                    "and does not choose"
+                ),
+            })
+
+        # -- runtime -> provider resources ---------------------------------
+        # The mount evidence is the richer source and goes first; the
+        # `resource_refs` list on the record is the fallback for a container
+        # whose raw evidence the caller did not supply. A volume named by both
+        # is drawn ONCE, from the structured one, so the edge count is the
+        # number of resources rather than the number of lists they appeared in.
+        mount_edges, drawn_volumes = _binds_and_volumes(
+            evidence, ref, observed_at=observed_at, now=now,
+        )
+        edges.extend(mount_edges)
+        for resource in runtime.get("resource_refs") or []:
+            target = resource.get("ref")
+            if not target:
+                continue
+            if target in drawn_volumes:
+                continue
+            add_node(target, kind="provider-resource", provider=runtime.get("provider"))
+            edges.append(edge(
+                "attached-to" if target.startswith("network:") else "mounts",
+                ref, target,
+                provenance=FACT, confidence=AUTHORITATIVE,
+                rule="docker inspect, structured",
+                why=resource.get("because"),
+                observed_at=observed_at, freshness=observed,
+            ))
+
+        # -- runtime -> owner ----------------------------------------------
+        if owner.get("ref"):
+            add_node(
+                owner["ref"], kind="owner",
+                owner_type=owner.get("type"),
+            )
+            confidence = _confidence_from(management.get("confidence"))
+            edges.append(edge(
+                "owned-by", ref, owner["ref"],
+                provenance=INFERRED if confidence != AUTHORITATIVE else FACT,
+                confidence=confidence,
+                rule=(record.get("attribution") or {}).get("decided_by")
+                     or "attribution ladder",
+                why=record.get("disposition_because"),
+                observed_at=observed_at, freshness=observed,
+            ))
+        else:
+            # No owner edge. An edge to a node called `owner:unknown` would be
+            # a node that does not exist dressed as a finding; §12 asks for
+            # "missing owner" to be visible, and the node's own link is where
+            # that is visible.
+            nodes[ref]["owner"] = link(
+                None, UNKNOWN,
+                why=(
+                    "no rung of the attribution ladder reached an owner. This "
+                    "is reported as an absence on the node rather than as an "
+                    "edge to an unknown owner, because the second would make a "
+                    "missing answer look like a present one"
+                ),
+            )
+
+        # -- what a reader asked for and did not get -----------------------
+        drift = (runtime.get("unknowns") or {}).get("device_ref_drift")
+        if drift:
+            nodes[ref].setdefault("drift", {})["device_ref_drift"] = drift
+
+    # -- tunnels (§13) -----------------------------------------------------
+    for tunnel in tunnels:
+        _add_tunnel(tunnel, add_node, edges, conflicts,
+                    observed_at=observed_at, now=now, aliases=aliases)
+
+    # -- ports (§14) -------------------------------------------------------
+    for port in ports:
+        _add_port(port, by_ref, add_node, edges, observed_at=observed_at,
+                  now=now, aliases=aliases)
+
+    # -- registry aliases --------------------------------------------------
+    for alias_ref, canonical in aliases.items():
+        if alias_ref == canonical:
+            continue
+        add_node(canonical, kind="managed-runtime")
+        add_node(alias_ref, kind="managed-runtime", alias_of=canonical)
+        edges.append(edge(
+            "alias-of", alias_ref, canonical,
+            provenance=FACT, confidence=AUTHORITATIVE,
+            rule="a declaration on this node names the same runtime twice",
+            why=(
+                "the alias is kept as its own node because the declaration "
+                "spells it that way, and a reader searching for the declared "
+                "spelling must still find it"
+            ),
+            observed_at=observed_at, freshness=freshness_of(
+                observed_at, now=now, source="registry"),
+        ))
+
+    ordered_edges = sorted(
+        edges, key=lambda e: (e["source"], e["relationship"], str(e["value"]))
+    )
+
+    # Every edge endpoint is a node. Stated once, here, rather than left to
+    # each producer — a producer that draws an edge and forgets the node
+    # leaves a dangling reference, and a dangling reference is how a graph
+    # reports a resource that "exists" only as the far end of an arrow.
+    # Found the hard way: `_binds_and_volumes` drew `mounts` and `binds-to`
+    # edges without adding their targets, so a bound path and a named volume
+    # were reachable only as strings.
+    for e in ordered_edges:
+        add_node(e["source"])
+        if e["value"]:
+            add_node(e["value"])
+
+    return {
+        "schema": "serveros/resource-graph.v1",
+        "device_ref": device_ref,
+        "observed_at": observed_at,
+        "nodes": [nodes[ref] for ref in sorted(nodes)],
+        "edges": ordered_edges,
+        "conflicts": sorted(conflicts, key=lambda c: (c["subject"], c["relationship"])),
+        "coverage": {
+            "nodes": len(nodes),
+            "edges": len(ordered_edges),
+            "runtime_nodes": sum(1 for n in nodes.values()
+                                 if n["kind"] == "managed-runtime"),
+            "owner_nodes": sum(1 for n in nodes.values() if n["kind"] == "owner"),
+            "runtimes_without_owner_edge": sorted(
+                r["ref"] for r in records
+                if r.get("ref") and not (r.get("owner") or {}).get("ref")
+            ),
+            "conflicts": len(conflicts),
+            # The graph can only draw a bind edge for a container whose raw
+            # evidence the caller supplied. Reporting the shortfall keeps
+            # "this container has no bind mounts" apart from "nobody passed
+            # this container's mounts to the graph".
+            "mount_evidence_supplied": mount_evidence_seen,
+            "mount_evidence_absent_for": sorted(
+                r["ref"] for r in records
+                if r.get("ref") and _container_id_of(r) not in by_id
+            ),
+        },
+    }
+
+
+def _container_id_of(record: dict) -> str | None:
+    """The container id behind a runtime ref, from the record's own anchors.
+
+    Within one `attribute_all` tick this is an exact join: the anchor and the
+    evidence record's `id` are both `(record["Id"])[:12]` of the same inspect
+    output. It is NOT an exact join against `build_groups`, whose container
+    refs come from the cgroup and therefore carry docker's full 64-hex id.
+    See `reconcile_container_refs` for that one — the two spellings differ and
+    pretending otherwise is how a graph silently reports two nodes for one
+    container.
+    """
+    for anchor in (record.get("identity") or {}).get("anchors") or []:
+        if anchor.get("anchor") == "container-id" and anchor.get("runtime_ref"):
+            return anchor["runtime_ref"].removeprefix("runtime:container:")
+    return None
+
+
+def reconcile_container_refs(canonical_refs, foreign_refs) -> dict:
+    """Join a container ref from another surface onto this graph's node refs.
+
+    Two surfaces name the same container differently and both are right:
+
+      `containers.py`   `runtime:container:<12 hex>` — `docker inspect` is
+                        read for the first 12 characters of `Id`, which is
+                        what a human and `docker ps` use.
+      `graph.build_groups`  `runtime:container:<64 hex>` — the cgroup scope
+                        is `/system.slice/docker-<full id>.scope`, and
+                        `attribution.container_of_cgroup` does not truncate.
+
+    So the join is a PREFIX join, and a prefix join is a guess unless it is
+    unambiguous. Two containers on one host can share twelve hex characters,
+    and this function refuses rather than picks: an ambiguous ref is reported
+    as ambiguous and reaches no node. That is the same rule as everywhere else
+    in this round — a wrong join that reads as a right one is worse than a
+    reported gap, because only one of the two is visible.
+
+    Returns `{"matched": {foreign: canonical}, "ambiguous": [...],
+    "unmatched": [...], "rule": str}`. `matched` is empty when either side is
+    empty, which is a measurement rather than a failure.
+    """
+    canonical = sorted(set(canonical_refs or ()))
+    by_prefix: dict[str, list[str]] = {}
+    for ref in canonical:
+        key = ref.removeprefix("runtime:container:")
+        by_prefix.setdefault(key, []).append(ref)
+
+    matched: dict[str, str] = {}
+    ambiguous: list[dict] = []
+    unmatched: list[str] = []
+    for foreign in sorted(set(foreign_refs or ())):
+        key = foreign.removeprefix("runtime:container:")
+        # Equality is the one-candidate case of this predicate, not a special
+        # path: a 12-hex id against itself matches once and joins.
+        hits = [ref for cand, refs in by_prefix.items()
+                if cand.startswith(key) or key.startswith(cand) for ref in refs]
+        if len(hits) == 1:
+            matched[foreign] = hits[0]
+        elif len(hits) > 1:
+            ambiguous.append({
+                "ref": foreign,
+                "candidates": sorted(hits),
+                "why": (
+                    "more than one node on this device shares the id prefix "
+                    "this ref carries; joining would be a coin toss, so no "
+                    "node is reached and the collision is reported instead"
+                ),
+            })
+        else:
+            unmatched.append(foreign)
+
+    return {
+        "matched": matched,
+        "ambiguous": ambiguous,
+        "unmatched": unmatched,
+        "rule": (
+            "equality first; otherwise an unambiguous 12-hex prefix match, "
+            "because `docker inspect` is read truncated and the cgroup is not"
+        ),
+    }
+
+
+def _confidence_from(management_confidence) -> str:
+    word = (management_confidence or "").upper()
+    if word in CONFIDENCE_LEVELS:
+        return word
+    return UNKNOWN
+
+
+def _add_tunnel(tunnel, add_node, edges, conflicts, *, observed_at, now, aliases):
+    ref = tunnel.get("tunnel_ref")
+    if not ref:
+        return
+    add_node(ref, kind="provider-resource", provider=tunnel.get("provider"),
+             scope=tunnel.get("scope"), health=tunnel.get("health"))
+    runtime_ref = tunnel.get("runtime_ref")
+    if runtime_ref:
+        canonical = aliases.get(runtime_ref, runtime_ref)
+        add_node(canonical, kind="managed-runtime")
+        edges.append(edge(
+            "forwards", canonical, ref,
+            provenance=FACT if runtime_ref == canonical else INFERRED,
+            confidence=AUTHORITATIVE if runtime_ref == canonical else INFERRED,
+            rule="the tunnel observation names the runtime it belongs to",
+            why=None if runtime_ref == canonical else (
+                f"the observation spells the runtime {runtime_ref} and the "
+                f"canonical node is {canonical}"
+            ),
+            observed_at=observed_at,
+            freshness=freshness_of(observed_at, now=now,
+                                   source=tunnel.get("provenance") or "tunnel-probe"),
+        ))
+    _owner_edge(tunnel.get("owner_ref"), tunnel.get("ownership_confidence"),
+                "the tunnel's own declaration or provider", ref, add_node, edges,
+                conflicts, observed_at=observed_at, now=now,
+                conflict_sources=tunnel.get("owner_conflicts"))
+
+
+def _add_port(port, by_ref, add_node, edges, *, observed_at, now, aliases):
+    ref = port.get("port_ref")
+    if not ref:
+        return
+    add_node(ref, kind="provider-resource", provider=port.get("provider"),
+             protocol=port.get("protocol"), local=port.get("local_address"),
+             state=port.get("state"))
+    runtime_ref = port.get("runtime_ref")
+    if runtime_ref and not (port.get("state") == "UNKNOWN"):
+        canonical = aliases.get(runtime_ref, runtime_ref)
+        add_node(canonical, kind="managed-runtime")
+        edges.append(edge(
+            "publishes", canonical, ref,
+            provenance=port.get("provenance") or INFERRED,
+            confidence=_confidence_from(port.get("confidence")),
+            rule=port.get("because") or "port attribution",
+            observed_at=observed_at,
+            freshness=freshness_of(observed_at, now=now,
+                                   source=port.get("provenance_source") or "docker-inspect"),
+        ))
+
+
+def _owner_edge(owner_ref, confidence_word, rule, subject, add_node, edges,
+                conflicts, *, observed_at, now, conflict_sources=None):
+    """Draw `owned-by`, or record why there is none — never a fabricated one."""
+    sources = [s for s in (conflict_sources or []) if s]
+    names = [s.get("owner_ref") for s in sources if s.get("owner_ref")]
+    distinct = sorted({n for n in names if n} | ({owner_ref} if owner_ref else set()))
+    if len(distinct) > 1:
+        for name in distinct:
+            add_node(name, kind="owner")
+            edges.append(edge(
+                "owned-by", subject, name,
+                provenance=INFERRED, confidence=INFERRED,
+                rule=rule,
+                why=(
+                    "another source names a different owner for this subject; "
+                    "§12 keeps every candidate and does not choose"
+                ),
+                observed_at=observed_at,
+                freshness=freshness_of(observed_at, now=now, source="conflict"),
+            ))
+        conflicts.append({
+            "subject": subject,
+            "relationship": "owned-by",
+            "candidates": distinct,
+            "why": (
+                "two sources disagree about the owner of this subject; §12 "
+                "keeps both candidates and does not choose"
+            ),
+        })
+        return
+    if not owner_ref:
+        # No owner edge, and no stand-in node for one. `_add_tunnel` and
+        # `_add_port` have already added the subject; what is missing is
+        # recorded on it, the same way a container runtime records its
+        # missing owner, so that "nothing owns this" and "nobody looked" stay
+        # different readings.
+        subject_node = add_node(subject)
+        subject_node["owner"] = link(
+            None, UNKNOWN,
+            why=(
+                "no source reached an owner for this subject, and none is "
+                "invented. An edge to an unknown owner would read as an "
+                "answer where there is only an absence"
+            ),
+        )
+        return
+    add_node(owner_ref, kind="owner")
+    edges.append(edge(
+        "owned-by", subject, owner_ref,
+        provenance=FACT if _confidence_from(confidence_word) == AUTHORITATIVE
+        else INFERRED,
+        confidence=_confidence_from(confidence_word),
+        rule=rule,
+        observed_at=observed_at,
+        freshness=freshness_of(observed_at, now=now, source="declaration"),
+    ))

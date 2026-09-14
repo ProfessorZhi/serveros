@@ -109,11 +109,37 @@ class FakeHost:
     pass because the fake silently answered something plausible.
     """
 
-    def __init__(self, files=None, commands=None, usage=None, paths=None):
+    def __init__(self, files=None, commands=None, usage=None, paths=None,
+                 inodes=None, clocks=None, file_sizes=None, denied=None):
         self.files = files or {}
         self.commands = commands or {}
         self.usage = usage or {}
         self.paths = set(paths or ())
+        self.inodes = inodes or {}
+        self.file_sizes = file_sizes or {}
+        self.denied = set(denied or ())
+        # Successive `/proc/uptime` values, consumed one read at a time. A
+        # counter sample is a DELTA, so a fake clock that returns one value
+        # forever can only ever measure a zero-length window.
+        self.clocks = list(clocks or ())
+        self.slept = []
+
+    def read_text(self, path):
+        """One file's contents, or the next of several.
+
+        A configured value that is a LIST is consumed one entry per read. That
+        is what a counter sample is: two reads of the same file that must
+        differ, and a fake that returns one string forever can only ever
+        measure a zero-length window — which is the shape of defect the tests
+        below exist to catch, so the fake must not be able to fake its way
+        into passing them.
+        """
+        if path == "/proc/uptime" and self.clocks:
+            return f"{self.clocks.pop(0)} 0.00\n"
+        value = self.files.get(path)
+        if isinstance(value, list):
+            return value.pop(0) if value else None
+        return value
 
     def read(self, args, timeout):
         key = " ".join(args)
@@ -124,14 +150,31 @@ class FakeHost:
                 return result
         return 127, "", f"not configured: {key}"
 
-    def read_text(self, path):
-        return self.files.get(path)
-
     def statvfs(self, path):
         return self.usage.get(path)
 
+    def inode_usage(self, path):
+        return self.inodes.get(path)
+
+    def path_stat(self, path):
+        if path in self.denied:
+            return {"state": "PERMISSION_DENIED",
+                    "reason": "a directory on the way to it is not traversable"}
+        if path in self.file_sizes:
+            return {"state": "PRESENT", "size_bytes": self.file_sizes[path],
+                    "modified_at": 1_700_000_000.0}
+        return {"state": "UNAVAILABLE", "reason": "FileNotFoundError: no such file"}
+
     def exists(self, path):
         return path in self.paths
+
+    def sleep(self, seconds):
+        # Recorded rather than slept: a test that is measuring a counter delta
+        # supplies the second sample itself, and waiting 150 ms per call to
+        # arrive at the same numbers is 150 ms of nothing. The requested
+        # interval is kept so a test can assert the module ASKED for one — a
+        # sampler that forgot to wait would otherwise look identical.
+        self.slept.append(seconds)
 
 
 @pytest.fixture
@@ -694,6 +737,398 @@ def test_root_pressure_produces_advice_and_never_a_deletion():
     assert pressure["advisory_only"] is True
     assert any("ROOT_FS" in note for note in pressure["notes"])
     assert any("will not remove anything automatically" in note for note in pressure["notes"])
+
+
+# ---------------------------------------------------------------------------
+# §4/§5 · filesystem roles are resolved, and a threshold is a policy
+# ---------------------------------------------------------------------------
+
+def a_disk(total=1000, used=100):
+    return type("U", (), {"total": total, "used": used, "free": total - used})()
+
+
+def test_the_docker_data_root_is_asked_for_and_not_assumed():
+    """`/var/lib/docker` is a default, not a fact about this machine. This
+    host's is somewhere else entirely, and a policy that protects the assumed
+    path protects the wrong disk."""
+    host = FakeHost(
+        commands={"docker info --format {{.DockerRootDir}}": (0, "/srv/docker\n", "")},
+        usage={"/srv/docker": a_disk()}, paths={"/srv/docker"},
+    )
+    roles = {r["role"]: r for r in Inventory(host)._resolved_roles()}
+    assert roles["DOCKER_FS"]["path"] == "/srv/docker"
+    assert "/var/lib/docker" not in str(roles)
+
+
+def test_an_unresolvable_role_is_reported_not_dropped():
+    """A role that vanishes from the list makes the report shorter and reads
+    as "nothing to see". It has to be present and named as unmeasured."""
+    host = FakeHost(commands={"docker info --format {{.DockerRootDir}}": (127, "", "no daemon")})
+    roles = {r["role"]: r for r in Inventory(host)._resolved_roles()}
+    assert roles["DOCKER_FS"]["path"] is None
+    assert "DockerRootDir" in roles["DOCKER_FS"]["reason"]
+
+    mount = [m for m in Inventory(host).disk_status()["roles"]
+             if m["role"] == "DOCKER_FS"][0]
+    assert mount["state"] == "UNAVAILABLE"
+    assert mount["path"] is None
+    # Not ABSENT: absent would be a measurement, and nothing was measured.
+    assert mount["state"] != "ABSENT"
+
+
+def test_a_template_that_did_not_resolve_is_not_used_as_a_path():
+    """A wrong `--format` returns whatever else it matched. Using that as a
+    directory puts a confident `PRESENT` on a role nobody resolved."""
+    host = FakeHost(commands={
+        "docker info --format {{.DockerRootDir}}": (0, "<no value>\n", ""),
+        "docker info": (0, '{"Containers": 29}', ""),
+    })
+    assert Inventory(host)._docker_root_dir() is None
+
+
+def test_roles_sharing_a_filesystem_say_so():
+    """"Docker's data root is on the root disk" is only visible when the roles
+    are compared to each other. Per-role thresholds applied to one filesystem
+    twice read as two healthy disks."""
+    host = FakeHost(
+        commands={"docker info --format {{.DockerRootDir}}": (0, "/var/lib/docker\n", ""),
+                  "findmnt": (0, "/dev/vda2 ext4 /\n", "")},
+        usage={"/": a_disk(), "/var/lib/docker": a_disk()},
+        paths={"/", "/var/lib/docker"},
+    )
+    mounts = {m["role"]: m for m in Inventory(host).disk_status()["roles"]}
+    assert "ROOT_FS" in mounts["DOCKER_FS"]["shares_filesystem_with"]
+    assert mounts["DOCKER_FS"]["mount_point"] == "/"
+    assert mounts["ROOT_FS"].get("shares_filesystem_with")  # symmetric
+
+
+def test_an_unreadable_contract_yields_no_advice_rather_than_all_of_it():
+    """`_at_least(None, None)` must not be True. A contract that failed to load
+    would otherwise flag every reading on the machine."""
+    assert inventory_mod._at_least(None, 85) is False
+    assert inventory_mod._at_least(99, None) is False
+    assert inventory_mod._at_least("62%", 85) is False
+    assert inventory_mod._at_least(85.0, 85.0) is True
+
+
+def test_inode_exhaustion_is_a_separate_gate_from_free_bytes():
+    """A filesystem with free space and no free inodes cannot create a file.
+    Bytes are not the limit here, and before this the two role mounts — the
+    ones policy reads — carried no inode figure at all."""
+    host = FakeHost(
+        files={"findmnt": None},
+        usage={"/": a_disk(total=1000, used=100)}, paths={"/"},
+        inodes={"/": {"total": 100, "free": 2, "used": 98, "used_percent": 98.0}},
+        commands={"findmnt": (0, "/dev/vda2 ext4 /\n", ""), "df": (0, "header\n", "")},
+    )
+    mount = Inventory(host)._mount("/", "ROOT_FS")
+    assert mount["inodes"]["used_percent"] == 98.0
+    notes = inventory_mod.Inventory(host).pressure()["notes"]
+    assert any("inodes" in n for n in notes)
+    assert not any("% full" in n for n in notes)  # 10% of bytes used
+
+
+def test_pressure_reports_the_thresholds_it_used():
+    """A reading a reader cannot argue with is a reading they can only
+    believe. The three comparisons here were literals in the function."""
+    host = FakeHost(
+        files={"/proc/meminfo": "MemTotal: 1000 kB\nMemAvailable: 10 kB\nSwapTotal: 100 kB\nSwapFree: 5 kB\n"},
+        usage={"/": a_disk(total=1000, used=920)}, paths={"/"},
+        commands={"findmnt": (0, "/dev/vda2 ext4 /\n", ""), "df": (0, "header\n", "")},
+    )
+    pressure = Inventory(host).pressure()
+    assert pressure["thresholds"]["filesystem_percent_high"] == 85.0
+    assert pressure["thresholds"]["swap_percent_high"] == 90.0
+    assert any("threshold 85.0" in n for n in pressure["notes"])
+
+
+# ---------------------------------------------------------------------------
+# §4 · counters: a sample is a delta, and a missing sample is not zero
+# ---------------------------------------------------------------------------
+
+def test_cpu_usage_needs_two_reads_and_waits_between_them():
+    """One read of `/proc/stat` is a lifetime average since boot, which is a
+    number about the machine's birthday and not about now."""
+    host = FakeHost(files={"/proc/stat": [
+        "cpu  100 0 100 800 0 0 0 0 0 0\n",
+        "cpu  200 0 200 1600 0 0 0 0 0 0\n",   # +100 user, +100 sys, +800 idle
+    ]})
+    usage = Inventory(host).cpu_usage()
+    assert usage["state"] == "PRESENT"
+    assert usage["used_percent"] == 20.0
+    assert usage["sample_seconds"] == Inventory.CPU_SAMPLE_SECONDS
+    assert host.slept == [Inventory.CPU_SAMPLE_SECONDS]
+
+
+def test_iowait_is_idle_time_not_busy_time():
+    """A machine waiting on a disk is not a machine doing work. Counting
+    iowait as busy is how a stalled host reports 100% and looks healthy."""
+    first = {"user": 0, "idle": 0, "iowait": 0}
+    second = {"user": 100, "idle": 800, "iowait": 100}
+    delta = Inventory._cpu_delta(first, second, 0.15)
+    assert delta["used_percent"] == 10.0
+
+
+def test_a_sample_that_caught_no_ticks_is_unavailable_not_zero_percent():
+    same = {"user": 5, "idle": 5, "iowait": 0}
+    result = Inventory._cpu_delta(same, dict(same), 0.15)
+    assert result["state"] == "UNAVAILABLE"
+    assert result.get("used_percent") is None
+
+
+def test_absent_psi_is_unavailable_per_resource_not_zero():
+    """`psi=0` on the kernel command line, a pre-4.20 kernel and a container
+    without the file all look identical from here. "No stall" and "cannot
+    tell" are different claims and only one of them is safe to print."""
+    host = FakeHost(files={"/proc/pressure/cpu": (
+        "some avg10=1.00 avg60=2.00 avg300=3.00 total=1000\n"
+        "full avg10=0.00 avg60=0.00 avg300=0.00 total=0\n"
+    )})
+    psi = Inventory(host).pressure_stall()
+    assert psi["cpu"]["state"] == "PRESENT"
+    assert psi["cpu"]["some"]["avg10"] == 1.0
+    assert psi["memory"]["state"] == "UNAVAILABLE"
+    assert psi["memory"].get("some") is None
+    assert psi["provider"] == "PRESENT"
+
+
+def test_disk_io_measures_over_a_real_gap_and_reports_it():
+    """Two reads taken back to back measure nothing: the counters would not
+    have moved, and "0 B/s" would be reported on a disk that is busy."""
+    host = FakeHost(
+        files={"/proc/diskstats": [
+            "   8       0 vdb 100 0 2000 0 50 0 400 0 0 0 0\n",
+            "   8       0 vdb 200 0 4000 0 150 0 1200 0 0 0 0\n",
+        ]},
+        commands={"findmnt": (0, "/dev/vdb xfs /opt/applications\n", "")},
+        paths={"/opt/applications"}, usage={"/opt/applications": a_disk()},
+        clocks=[100.0, 100.4],
+    )
+    result = Inventory(host).disk_io()
+    assert host.slept == [Inventory.CPU_SAMPLE_SECONDS]
+    # The window comes from the clock in the samples, not from what was
+    # requested: `sleep` returns after *at least* the interval, and on a loaded
+    # host the difference is the load.
+    assert result["sample_seconds"] == pytest.approx(0.4)
+    row = result["roles"]["DATA_FS"]
+    # (4000 - 2000) sectors x 512 bytes, over 0.4s.
+    assert row["read_bytes_per_second"] == pytest.approx(2560000.0)
+    assert row["write_bytes_per_second"] == pytest.approx(1024000.0)
+
+
+def test_docker_sizes_parses_the_one_field_the_cli_actually_emits():
+    """`docker ps` reports `"77.7MB (virtual 1.28GB)"` in ONE field. The Engine
+    API's separate `SizeRw` / `SizeRootFs` do not exist in the CLI's JSON, and
+    a reader who looked for them here would find `None` for every container."""
+    host = FakeHost(commands={"docker ps -a --size": (0, "\n".join([
+        '{"ID":"a1","Names":"x","State":"running","Size":"77.7MB (virtual 1.28GB)"}',
+        '{"ID":"b2","Names":"y","State":"created","Size":"0B (virtual 1.22GB)"}',
+    ]) + "\n", "")})
+    sizes = Inventory(host).docker_sizes()
+    x, y = sizes["containers"]
+    assert x["size_rw_bytes"] == 77_700_000
+    assert x["size_root_fs_bytes"] == 1_280_000_000
+    assert x["size_image_layers_bytes"] == 1_202_300_000
+    # A container with nothing written to it is a REAL zero, not a missing
+    # measurement, and it stays distinguishable from one.
+    assert y["size_rw_bytes"] == 0
+    assert y["size_image_layers_bytes"] == 1_220_000_000
+    assert "SI units" in sizes["note"]
+
+
+def test_docker_sizes_without_the_size_flag_reports_nothing_not_zero():
+    host = FakeHost(commands={"docker ps -a --size": (0,
+        '{"ID":"a1","Names":"x","State":"running"}\n', "")})
+    sizes = Inventory(host).docker_sizes()
+    assert sizes["containers"][0]["size_rw_bytes"] is None
+    assert sizes["containers"][0]["size_image_layers_bytes"] is None
+
+
+def test_si_and_iec_suffixes_are_not_the_same_number():
+    """`docker images` uses 1000-based units and `docker stats` uses 1024-based
+    ones. Treating the suffix as decoration is a consistent 7% error in the
+    direction of understating disk use."""
+    assert inventory_mod._parse_size("1GB") == 1_000_000_000
+    assert inventory_mod._parse_size("1GiB") == 1_073_741_824
+    assert inventory_mod._parse_size("1.62GB") == 1_620_000_000
+
+
+def test_a_missing_docker_size_is_none_and_never_zero():
+    """`N/A` on SharedSize is what this host prints for every image. Zero would
+    say "this image shares nothing", which is a different and false claim."""
+    assert inventory_mod._parse_size("N/A") is None
+    assert inventory_mod._parse_size("") is None
+    assert inventory_mod._parse_size(None) is None
+    assert inventory_mod._parse_percent("N/A") is None
+    assert inventory_mod._parse_percent("0.00%") == 0.0
+
+
+def test_an_unreachable_docker_is_not_an_empty_one():
+    """§27. `docker is down` and `there are zero containers` are different
+    facts, and a caller that conflates them reports a clean machine during an
+    outage — which is exactly when somebody is reading it."""
+    host = FakeHost(commands={"docker": (1, "", "Cannot connect to the Docker daemon")})
+    for method in (Inventory(host).docker_list, Inventory(host).docker_images,
+                   Inventory(host).docker_stats, Inventory(host).docker_networks,
+                   Inventory(host).docker_sizes, Inventory(host).container_logs,
+                   Inventory(host).docker_space):
+        result = method()
+        assert result.get("state") == "UNAVAILABLE", method.__name__
+        assert result.get("count") is None, method.__name__
+        assert "Docker daemon" in result["reason"] or result["reason"], method.__name__
+
+
+def test_a_reachable_daemon_with_no_containers_is_an_empty_list():
+    """The other half of the same rule: an empty answer from a reachable
+    provider IS an answer."""
+    host = FakeHost(commands={"docker ps -aq": (0, "", "")})
+    logs = Inventory(host).container_logs()
+    assert logs["state"] != "UNAVAILABLE"
+    assert logs["count"] == 0
+    assert logs["unobservable"] == 0
+
+
+def test_container_images_report_how_many_containers_use_them():
+    """Zero users is a candidate and two is not, and that is a fact about
+    containers rather than about the image."""
+    host = FakeHost(commands={"docker images": (0, "\n".join([
+        '{"ID":"i1","Repository":"litellm","Tag":"latest","Size":"1.62GB","Containers":"2","Digest":"<none>"}',
+        '{"ID":"i2","Repository":"<none>","Tag":"<none>","Size":"900MB","Containers":"0","Digest":"<none>"}',
+        '{"ID":"i3","Repository":"litellm-base","Tag":"<none>","Size":"1.46GB","Containers":"0","Digest":"<none>"}',
+    ]) + "\n", "")})
+    images = Inventory(host).docker_images()
+    assert images["count"] == 3
+    # i2 and i3 are both dangling: a missing REPOSITORY and a missing TAG are
+    # each enough, and matching on the literal "<none>" string alone misses i3.
+    assert images["dangling"] == 2
+    assert images["images"][0]["containers_using"] == 2
+    assert images["containers_using_fewest"] == 0
+
+
+def test_container_logs_report_the_reason_and_never_a_zero():
+    """This host's Docker data root is `0710 root:root` and the observer is
+    `hwz`. Every log is UNREADABLE, and the honest total is unknown — a zero
+    total would read as "no logs on this machine"."""
+    host = FakeHost(
+        commands={"docker ps -aq": (0, "abc123\n", ""),
+                  "docker inspect": (0,
+                      "abc123|/litellm|json-file|/opt/applications/data/docker/"
+                      "containers/abc/abc-json.log\n", "")},
+        denied={"/opt/applications/data/docker/containers/abc/abc-json.log"},
+    )
+    logs = Inventory(host).container_logs()
+    assert logs["observable"] == 0
+    assert logs["unobservable"] == 1
+    assert logs["logs_total_bytes"] is None
+    entry = logs["containers"][0]
+    assert entry["state"] == "UNREADABLE"
+    assert entry["unreadable_because"] == "PERMISSION_DENIED"
+    assert entry["size_bytes"] is None
+    # The path is reported. The CONTENT is never read: a container log is
+    # application output and can carry tokens.
+    assert entry["log_path"].endswith("-json.log")
+
+
+def test_a_log_driver_with_no_file_is_a_different_fact_from_a_denied_read():
+    host = FakeHost(
+        commands={"docker ps -aq": (0, "abc123\n", ""),
+                  "docker inspect": (0, "abc123|/litellm|journald|\n", "")},
+    )
+    entry = Inventory(host).container_logs()["containers"][0]
+    assert entry["state"] == "NO_LOG_FILE"
+    assert entry["state"] != "UNREADABLE"
+    assert "journald" in entry["reason"]
+
+
+def test_a_readable_log_file_is_measured():
+    path = "/var/log/containers/abc-json.log"
+    host = FakeHost(
+        commands={"docker ps -aq": (0, "abc123\n", ""),
+                  "docker inspect": (0, f"abc123|/litellm|json-file|{path}\n", "")},
+        file_sizes={path: 4096},
+    )
+    logs = Inventory(host).container_logs()
+    assert logs["observable"] == 1
+    assert logs["logs_total_bytes"] == 4096
+    assert logs["containers"][0]["modified_at"] == 1_700_000_000.0
+
+
+def test_all_never_pays_for_the_twenty_two_second_read():
+    """22s on this host against a 60s tick. It is correct; it is just not
+    something every tick can afford. Asserted by BEHAVIOUR — the daemon-wide
+    read is made to raise, and `all()` must not notice — rather than by
+    grepping the source, which a comment mentioning the name would defeat."""
+    def exploding(args, timeout):
+        key = " ".join(args)
+        if key.startswith("docker system df"):
+            raise AssertionError("all() ran docker system df")
+        if key.startswith("docker"):
+            return 0, "", ""
+        return 127, "", f"not configured: {key}"
+
+    host = FakeHost()
+    host.read = exploding
+    everything = Inventory(host).all()
+    # The live-usage reads (2.15s and 0.54s) are inside the tick.
+    for present in ("stats", "sizes", "images", "networks", "logs"):
+        assert present in everything["docker"], present
+    assert "space" not in everything["docker"]
+
+
+def test_docker_space_sums_reclaimable_without_offering_to_reclaim():
+    rows = "\n".join([
+        '{"Type":"Images","TotalCount":"56","Active":"22","Size":"191.6GB","Reclaimable":"177.7GB (92%)"}',
+        '{"Type":"Build Cache","TotalCount":"1513","Active":"0","Size":"162.1GB","Reclaimable":"140.9GB"}',
+    ]) + "\n"
+    host = FakeHost(commands={"docker system df": (0, rows, "")})
+    space = Inventory(host).docker_space()
+    assert space["sections"]["images"]["reclaimable_bytes"] == 177_700_000_000
+    assert space["sections"]["build_cache"]["count"] == 1513
+    assert space["reclaimable_bytes_total"] == 177_700_000_000 + 140_900_000_000
+    assert "report only" in space["note"]
+
+
+def test_docker_space_falls_back_to_the_table_when_format_is_ignored():
+    """`--format` is not honoured by this verb on every daemon version, and it
+    yields the plain table rather than an error."""
+    table = (
+        "TYPE            TOTAL     ACTIVE    SIZE      RECLAIMABLE\n"
+        "Images          56        22        191.6GB   177.7GB (92%)\n"
+        "Local Volumes   643       25        83.57GB   465.6MB (0%)\n"
+        "Build Cache     1513      0         162.1GB   140.9GB\n"
+    )
+    host = FakeHost(commands={"docker system df": (0, table, "")})
+    space = Inventory(host).docker_space()
+    assert space["sections"]["local_volumes"]["count"] == 643
+    assert space["sections"]["build_cache"]["reclaimable_bytes"] == 140_900_000_000
+
+
+def test_docker_stats_omits_a_container_it_has_no_reading_for():
+    """`docker stats` reports running containers only. A stopped one is ABSENT
+    rather than present with zeros — a zero would read as "running and idle"."""
+    host = FakeHost(commands={"docker stats": (0,
+        '{"ID":"a1","Name":"litellm","CPUPerc":"1.79%","MemUsage":"524.7MiB / 30.97GiB",'
+        '"MemPerc":"1.65%","NetIO":"392kB / 544kB","BlockIO":"258MB / 200MB","PIDs":"17"}\n', "")})
+    stats = Inventory(host).docker_stats()
+    assert stats["count"] == 1
+    row = stats["containers"][0]
+    assert row["cpu_percent"] == 1.79
+    assert row["memory_used_bytes"] == int(524.7 * 1024 ** 2)
+    assert row["pids"] == 17
+
+
+def test_disk_io_with_no_clock_says_so_instead_of_dividing_by_zero():
+    host = FakeHost(
+        files={"/proc/diskstats": "   8       0 vdb 1 0 2 0 3 0 4 0 0 0 0\n"},
+        commands={"findmnt": (0, "/dev/vdb xfs /opt/applications\n", "")},
+        paths={"/opt/applications"}, usage={"/opt/applications": a_disk()},
+    )
+    result = Inventory(host).disk_io()
+    # No clock is configured, so /proc/uptime is unreadable and the requested
+    # interval is the honest fallback — the sample still reports a window.
+    assert result["sample_seconds"] == Inventory.CPU_SAMPLE_SECONDS
+    assert result["roles"]["DATA_FS"]["read_bytes_per_second"] == 0.0
+
 
 
 # ---------------------------------------------------------------------------

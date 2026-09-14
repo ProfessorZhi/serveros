@@ -75,18 +75,17 @@ FAULT_STATES = frozenset(
 
 
 def default_registry_path() -> Path:
-    state = os.environ.get("SERVEROS_STATE_DIR") or "/opt/applications/data/home-hwz/state/serveros"
-    return Path(state) / "runtime/registry/resources.yaml"
+    """Kept as a name because callers here and in tests ask for a path.
+
+    The resolution itself lives in `registry.py` — the module that owns the
+    document — so the CLI and `serverosd` cannot come to disagree about where
+    the node's registry is. Both ask this one function's producer.
+    """
+    return registry_mod.default_path()
 
 
 def load_registry(path: str | None):
-    target = Path(path) if path else default_registry_path()
-    if not target.exists():
-        raise registry_mod.RegistryError(
-            f"no managed-runtime registry at {target}. Nothing is managed "
-            f"until something is registered; there is no discovery fallback."
-        )
-    return registry_mod.Registry(path=target)
+    return registry_mod.load_default(path)
 
 
 # ---------------------------------------------------------------------------
@@ -1886,6 +1885,320 @@ def _utc_now() -> str:
 
 
 # ---------------------------------------------------------------------------
+# §14/§15/§16/§16A/§17 — the five surfaces this round added
+# ---------------------------------------------------------------------------
+#
+# Read-only, and read-only in a way a reviewer can check rather than take on
+# trust: not one of them takes a flag that names a resource to act on, and each
+# prints the `note` its document carries instead of a summary line of its own.
+# The rule the whole round is written under is that a command which could only
+# be right on a good day is worse than a command that refuses.
+
+
+def cmd_resource_ports(args) -> int:
+    """§14 — what listens, and what is claimed about who owns it."""
+    reg = load_registry(args.registry)
+    payload = view_mod.port_ownership(registry_doc=reg)
+    coverage = payload["coverage"]
+    lines = [
+        f"endpoints            {coverage['endpoints']}",
+        f"claimed by a container {coverage['claimed_by_a_container']}",
+        f"claimed by a tunnel  {coverage['claimed_by_a_tunnel']}",
+        f"with an authoritative owner {coverage['with_an_authoritative_owner']}",
+        # Printed even when it is the largest number, and NOT as a failure.
+        # §14 forbids attributing every connection to a managed runtime, so on
+        # a shared host this is expected to be big; a report that hid it would
+        # make "we could not say" look like "nobody is there".
+        f"unattributed         {coverage['unattributed']}",
+        f"listening, no visible holder {coverage['listening_with_no_visible_holder']}",
+        "",
+        f"{'ENDPOINT':<30} {'OWNER':<26} CONF",
+    ]
+    rows = payload["ports"]
+    if getattr(args, "claimed_by_a_container", False):
+        # A filter over the SAME payload, reported as a filter. The coverage
+        # counts above stay whole on purpose: "how many endpoints did I hide"
+        # is not an answer this command may leave implicit. `container_ref` is
+        # the measured field — an endpoint a published port resolves to — not
+        # a re-derivation of the count.
+        rows = [row for row in rows if row.get("container_ref")]
+        lines.append(f"(filtered to the container-claimed endpoints: "
+                     f"{len(rows)} of {coverage['endpoints']})")
+    for row in rows:
+        lines.append(f"{row['port_ref']:<30} "
+                     f"{str(row.get('owner_ref') or '—'):<26} {row['confidence']}")
+    if payload["conflicts"]:
+        lines.append("")
+        lines.append("claims that disagree — both sides kept, neither chosen:")
+        for conflict in payload["conflicts"]:
+            lines.append(f"  {conflict.get('port_ref')}: {conflict.get('why')}")
+    for name, provider in sorted(payload["providers"].items()):
+        if provider["state"] != "AVAILABLE":
+            lines.append(f"  {name}: {provider['state']} — {provider['why']}")
+    lines.append("")
+    lines.append(payload["note"])
+    emit(payload, as_json=args.json, lines=lines)
+    return EXIT_OK
+
+
+def cmd_runtime_desired(args) -> int:
+    """§15 — every registration against what was measured about it."""
+    reg = load_registry(args.registry)
+    payload = view_mod.desired_actual(registry_doc=reg)
+    lines = [
+        f"registrations  {payload['providers']['registry']['registrations']}",
+        f"in mismatch    {len(payload['mismatches'])}",
+        # `unchecked` is printed beside `mismatches`, never behind it. An empty
+        # mismatch list means one thing when everything was compared and
+        # another when nothing was, and the second reads as the first.
+        f"unchecked      {len(payload['unchecked'])}",
+        "",
+        f"{'RESOURCE':<30} {'VERDICT':<17} DESIRED / ACTUAL",
+    ]
+    for row in payload["comparisons"]:
+        shown = f"{row['desired_state']} / {row['actual_state']}"
+        if row["actual_derived_state"]:
+            shown += f" ({row['actual_derived_state']})"
+        lines.append(f"{str(row['resource_id']):<30} {row['verdict']:<17} {shown}")
+    for row in payload["comparisons"]:
+        if row["verdict"] != "IN_DESIRED_STATE":
+            lines.append(f"  {row['resource_id']}: {row['why']}")
+    emit(payload, as_json=args.json, lines=lines)
+    return EXIT_OK
+
+
+def cmd_runtime_classify(args) -> int:
+    """§16 — the nine classes over the registrations, with the gaps named."""
+    reg = load_registry(args.registry)
+    payload = view_mod.runtime_hygiene(registry_doc=reg)
+    lines = [f"{'CLASS':<20} COUNT"]
+    for name, count in sorted(payload["counts"].items()):
+        lines.append(f"{name:<20} {count}")
+    lines.append("")
+    lines.append(f"{'RESOURCE':<42} CLASS")
+    for row in payload["resources"]:
+        also = row.get("also_matches") or []
+        suffix = f"  (also matches: {', '.join(also)})" if also else ""
+        lines.append(f"{row['resource_ref']:<42} {row['class']}{suffix}")
+    if payload["candidates"]:
+        lines.append("")
+        lines.append("candidates — a question for a person, never an instruction:")
+        for row in payload["candidates"]:
+            lines.append(f"  {row.get('resource_ref')}: {row.get('why')}")
+    lines.append("")
+    lines.append(f"inputs gathered      {', '.join(payload['inputs_gathered']) or 'none'}")
+    # The negative half is the report. A class that could not be decided
+    # because its input was never measured is not a class that was checked and
+    # found false, and the difference is the whole reason this is printed.
+    lines.append(f"inputs NOT gathered  {', '.join(payload['inputs_not_gathered']) or 'none'}")
+    lines.append(payload["note"])
+    emit(payload, as_json=args.json, lines=lines)
+    return EXIT_OK
+
+
+def cmd_fs_hygiene(args) -> int:
+    """§16A — the roots classified, and nothing moved."""
+    payload = view_mod.fs_hygiene()
+    lines = [f"{'ROOT':<12} {'ENTRIES':<8} {'ENFORCED':<9} PATH"]
+    for name, root in sorted(payload["roots"].items()):
+        coverage = (payload.get("coverage") or {}).get(name) or {}
+        lines.append(f"{name:<12} {str(coverage.get('entries', '—')):<8} "
+                     f"{str(coverage.get('vocabulary_enforced_on_write', '—')):<9} "
+                     f"{root.get('path')}")
+        lines.append(f"    {root.get('class')}: {coverage.get('why') or ''}")
+    lines.append("")
+    lines.append(f"{'CLASS':<24} COUNT")
+    for name, count in sorted(payload["counts"].items()):
+        lines.append(f"{name:<24} {count}")
+    # MISPLACED and the other "this is in the wrong place" classes are the
+    # answer to the round's third question, so they are printed as entries
+    # rather than only counted.
+    for row in payload.get("open_questions") or []:
+        lines.append("")
+        lines.append(f"{row['class']:<14} {row['path']}  ({row['kind']})")
+        lines.append(f"    {row['why']}")
+    lines.append("")
+    lines.append(f"roles resolved       "
+                 f"{(payload.get('role_locations') or {}).get('entries', 0)} entries, "
+                 f"{len((payload.get('role_locations') or {}).get('declared') or [])} declared")
+    for target, row in sorted((payload.get("symlinks_into_data_root") or {}).items()):
+        lines.append(f"    symlink {row.get('home_path')} -> {target}")
+    if payload.get("duplicate_semantic_roots"):
+        lines.append("")
+        lines.append("duplicate semantic roots — REPORTED, never reunited:")
+        for name, paths in sorted(payload["duplicate_semantic_roots"].items()):
+            lines.append(f"    {name}: {paths}")
+    lines.append("")
+    lines.append(payload["note"])
+    emit(payload, as_json=args.json, lines=lines)
+    return EXIT_OK
+
+
+def cmd_resource_docker(args) -> int:
+    """§6/§7 — the Docker inventory, and the reclaimable picture on request."""
+    space = bool(getattr(args, "space", False))
+    payload = view_mod.docker_observation(space=space)
+    summary = payload["summary"]
+    lines = [
+        f"containers           {summary.get('Containers')} "
+        f"({summary.get('ContainersRunning')} running, "
+        f"{summary.get('ContainersStopped')} stopped)",
+        f"images               {summary.get('Images')}",
+        f"data root            {summary.get('DockerRootDir')}",
+        f"storage driver       {summary.get('Driver')}",
+        f"volumes              {payload['volumes'].get('count')}",
+        f"networks             {payload['networks'].get('count')}",
+        f"images dangling      {payload['images'].get('dangling')}",
+        "",
+        "largest observed consumers, by measured size",
+    ]
+    for row in payload["largest_observed_consumers"]:
+        lines.append(f"  {str(row['name'])[:30]:<30} "
+                     f"writable {human_bytes(row['writable_layer_bytes']):>10}  "
+                     f"rootfs {human_bytes(row['rootfs_bytes']):>10}")
+    if space:
+        sections = (payload.get("space") or {}).get("sections") or {}
+        lines.append("")
+        lines.append("reclaimable — what a prune WOULD free, not a candidate list")
+        for name, row in sorted(sections.items()):
+            lines.append(f"  {name:<14} {human_bytes(row.get('reclaimable_bytes'))} "
+                         f"of {human_bytes(row.get('size_bytes'))}")
+        lines.append(f"  total          "
+                     f"{human_bytes((payload.get('space') or {}).get('reclaimable_bytes_total'))}")
+    else:
+        lines.append("")
+        lines.append(payload["space_note"])
+    lines.append("")
+    lines.append(payload["advisory"])
+    emit(payload, as_json=args.json, lines=lines)
+    return EXIT_OK
+
+
+def cmd_resource_anomaly(args) -> int:
+    """§18/§19 — the resource codes, and the ones that could not be graded.
+
+    The second half is the point of the command and is why it prints
+    `codes_not_evaluated` before it prints anything reassuring: a code nobody
+    looked for and a code looked for and not found are the same empty list, and
+    on this node two of the fifteen need a `docker system df` nobody has paid
+    for.
+    """
+    space = bool(getattr(args, "space", False))
+    payload = view_mod.resource_anomaly(space=space)
+    lines = [
+        f"observed at          {payload.get('observed_at') or 'UNKNOWN'}",
+        f"codes graded         {payload['coverage']['graded']} of "
+        f"{payload['coverage']['of']}",
+        "",
+    ]
+    if payload["signals"]:
+        lines.append(f"{'SEVERITY':<9} {'CODE':<30} SUBJECT")
+        for row in payload["signals"]:
+            lines.append(f"{row['severity']:<9} {row['code']:<30} {row['subject']}")
+            measured = row.get("measured") or {}
+            threshold = {k: v for k, v in measured.items()
+                         if k.startswith("threshold")}
+            lines.append(f"          {row['why'][:96]}")
+            if threshold:
+                lines.append(f"          measured {measured} "
+                             f"(threshold {threshold})")
+            # §26. The window is what makes this row ageable later, so it is
+            # printed beside the freshness rather than left in the JSON only.
+            lines.append(f"          source {row['source']} · window "
+                         f"{row['window']} · freshness "
+                         f"{row['freshness']['state']}")
+    else:
+        lines.append("no signal fired")
+    lines.append("")
+    lines.append("codes NOT evaluated — not looked for, which is not the same as")
+    lines.append("looked for and not found:")
+    for row in payload["codes_not_evaluated"]:
+        lines.append(f"  {row['code']:<30} {row['why']}")
+    lines.append("")
+    gathering = payload["gathering"]
+    lines.append(f"inputs reached       "
+                 f"{', '.join(gathering['inputs_reached']) or 'none'}")
+    lines.append(f"inputs unreachable   "
+                 f"{', '.join(f'{k} ({v})' for k, v in gathering['inputs_unreachable'].items())
+                 or 'none'}")
+    policy = payload["supported_by_resource_policy"]
+    lines.append(f"governance document  {policy.get('state')} "
+                 f"(destructive reconcile "
+                 f"{(policy.get('destructive_reconcile') or {}).get('enabled')})")
+    if not space:
+        lines.append("")
+        lines.append("the reclaimable/build-cache codes are not graded in this "
+                     "answer: they need one `docker system df`, measured at "
+                     "~22s. Ask with `serverosctl resource anomaly --space`")
+    lines.append("")
+    lines.append(payload["advisory"])
+    emit(payload, as_json=args.json, lines=lines)
+    return EXIT_OK
+
+
+def cmd_tunnel_list(args) -> int:
+    """§13 — the tunnels this node can see, and the ones it cannot."""
+    payload = view_mod.tunnel_observation(registry_doc=args.registry)
+    lines = [
+        f"TUNNEL OBSERVATION = {payload['state']}",
+        f"declared tunnels     {payload['declared_count']}",
+        f"visible forwarders   {payload['observed_count']}",
+    ]
+    for row in payload["declared"]:
+        lines.append(f"  {row['id']:<24} {row['local']} -> {row['remote']} "
+                     f"({row['transport_class']})")
+    for row in payload["observed_forwarders"]:
+        lines.append(f"  pid {row['pid']:<8} {row['transport_class']:<12} "
+                     f"age {row['age_seconds']}s")
+    if payload["undeclared_forwarders"]:
+        lines.append("")
+        lines.append("forwarding, and not declared by anyone — candidates, not owners:")
+        for row in payload["undeclared_forwarders"]:
+            lines.append(f"  pid {row['pid']:<8} {row['transport_class']}")
+    lines.append("")
+    lines.append("what this node cannot see about tunnels")
+    for spot in payload["blind_spots"]:
+        measured = ", ".join(f"{k}={v}" for k, v in spot["measured"].items())
+        lines.append(f"  {spot['what']}: {spot['state']} ({measured})")
+        lines.append(f"    {spot['why']}")
+    lines.append("")
+    lines.append(payload["advisory"])
+    emit(payload, as_json=args.json, lines=lines)
+    return EXIT_OK
+
+
+def cmd_container_protection(args) -> int:
+    """§17 — protection per container, and every spelling where it differs."""
+    reg = load_registry(args.registry)
+    inv = inventory_mod.Inventory()
+    listing = inv.docker_list()
+    payload = view_mod.protection(containers=listing.get("containers") or [],
+                                  registry_doc=reg)
+    counts = payload["counts"]
+    lines = [
+        f"containers checked  {payload['checked']}",
+        f"protected           {counts['protected']}",
+        f"not protected       {counts['not_protected']}",
+        # `unknown` is printed and is not a rounding of the other two: it is
+        # "nothing on this node could be asked", and folding it into "not
+        # protected" would be a protection bypass performed by a summary line.
+        f"unknown             {counts['unknown']}",
+        "",
+        f"{'CONTAINER':<22} {'NAME':<34} PROTECTED",
+    ]
+    for row in payload["containers"]:
+        lines.append(f"{str(row['subject']):<22} {str(row['name']):<34} "
+                     f"{row['protected']}")
+    if payload["findings"]:
+        lines.append("")
+        lines.append("the answer differs by spelling:")
+        for finding in payload["findings"]:
+            lines.append(f"  {finding['subject']}: {finding['why']}")
+    emit(payload, as_json=args.json, lines=lines)
+    return EXIT_OK
+
+
+# ---------------------------------------------------------------------------
 # parser
 # ---------------------------------------------------------------------------
 
@@ -1988,6 +2301,32 @@ def build_parser() -> argparse.ArgumentParser:
     r_ps.set_defaults(func=cmd_resource_docker_list)
     r_svc = resource_sub.add_parser("user-services", help="systemd --user units", **_COMMON)
     r_svc.set_defaults(func=cmd_resource_user_services)
+    r_ports = resource_sub.add_parser(
+        "ports", help="listening endpoints and who may be claiming them (§14)",
+        **_COMMON)
+    r_ports.add_argument(
+        "--claimed-by-a-container", action="store_true",
+        help="only the endpoints a container's published port claims")
+    r_ports.set_defaults(func=cmd_resource_ports)
+    r_docker = resource_sub.add_parser(
+        "docker", help="containers, images, volumes, networks and sizes (§6/§7)",
+        **_COMMON)
+    r_docker.add_argument(
+        "--space", action="store_true",
+        help="also read the reclaimable/build-cache picture. One "
+             "`docker system df`, measured at ~22s, so it is opt-in rather "
+             "than part of every call")
+    r_docker.set_defaults(func=cmd_resource_docker)
+    r_anomaly = resource_sub.add_parser(
+        "anomaly",
+        help="the §18 resource codes, and the ones that could not be graded",
+        **_COMMON)
+    r_anomaly.add_argument(
+        "--space", action="store_true",
+        help="also grade the two BuildKit/Docker-store codes. One "
+             "`docker system df`, measured at ~22s, so it is opt-in rather "
+             "than part of every call")
+    r_anomaly.set_defaults(func=cmd_resource_anomaly)
 
     runtime = sub.add_parser("runtime", help="managed runtimes (§16)", **_COMMON)
     runtime_sub = runtime.add_subparsers(dest="subcommand", required=True)
@@ -2051,6 +2390,18 @@ def build_parser() -> argparse.ArgumentParser:
         "budget", help="what the daemon has retried, and what it may not (§19)",
         **_COMMON)
     rt_budget.set_defaults(func=cmd_runtime_budget)
+    rt_desired = runtime_sub.add_parser(
+        "desired",
+        help="what was DECLARED this runtime should be, versus what was "
+             "measured (§15). Compares nothing where nothing declared one",
+        **_COMMON)
+    rt_desired.set_defaults(func=cmd_runtime_desired)
+    rt_classify = runtime_sub.add_parser(
+        "classify",
+        help="every registration under the §16 classes, with the inputs that "
+             "could not be gathered named rather than assumed",
+        **_COMMON)
+    rt_classify.set_defaults(func=cmd_runtime_classify)
 
     process = sub.add_parser(
         "process", help="processes, attributed (§14)", **_COMMON)
@@ -2090,6 +2441,33 @@ def build_parser() -> argparse.ArgumentParser:
     c_attr = container_sub.add_parser(
         "attribution", help="who each container belongs to, and the evidence", **_COMMON)
     c_attr.set_defaults(func=cmd_container_attribution)
+    c_protection = container_sub.add_parser(
+        "protection",
+        help="is each container protected, by what declaration, and does the "
+             "answer change with the spelling asked (§17)",
+        **_COMMON)
+    c_protection.set_defaults(func=cmd_container_protection)
+
+    fs = sub.add_parser(
+        "fs", help="the filesystem roots, classified and not moved (§16A)",
+        **_COMMON)
+    fs_sub = fs.add_subparsers(dest="subcommand", required=True)
+    fs_hygiene = fs_sub.add_parser(
+        "hygiene",
+        help="what is canonical, what is an allowed exception, and what is "
+             "in the wrong place — advisory only, nothing is moved",
+        **_COMMON)
+    fs_hygiene.set_defaults(func=cmd_fs_hygiene)
+
+    tunnel = sub.add_parser(
+        "tunnel", help="tunnels, forwarders and blind spots (§13)", **_COMMON)
+    tunnel_sub = tunnel.add_subparsers(dest="subcommand", required=True)
+    t_list = tunnel_sub.add_parser(
+        "list",
+        help="the tunnels this node can see, and — the important half — the "
+             "ones it structurally cannot",
+        **_COMMON)
+    t_list.set_defaults(func=cmd_tunnel_list)
 
     ability = sub.add_parser(
         "ability", help="what capabilities this node can resolve (§55)",

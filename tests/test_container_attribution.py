@@ -681,3 +681,707 @@ def test_an_undeterminable_current_user_makes_nothing_foreign(monkeypatch):
     else's."""
     attribution = _load("serveros_runtime_attribution", "attribution.py")
     assert attribution.foreign_home("/home/szj/x", user="") is False
+
+
+# ---------------------------------------------------------------------------
+# §9/§10 · the runtime identity is not the Docker name
+# ---------------------------------------------------------------------------
+
+
+def test_a_rename_does_not_change_the_runtime_ref(registry):
+    """§10. The load-bearing test for this section.
+
+    Before this, `ref` was built as `runtime:container:<name>`, so renaming a
+    container silently produced a DIFFERENT resource. Every record that had
+    stored the old ref — evidence, an anomaly subject, an operator's notes —
+    pointed at something that no longer existed, and nothing said so.
+
+    Here the same container is attributed twice under two names. The
+    identity, the owner and the disposition must all be identical; only the
+    display name may differ.
+    """
+    labels = compose_labels("litellm-baseline", working_dir="/srv/litellm")
+    before = cont.attribute(cont.evidence(inspect_record("old-name", labels=labels)),
+                            registry=registry, roots=ROOTS)
+    after = cont.attribute(cont.evidence(inspect_record("renamed", labels=labels)),
+                           registry=registry, roots=ROOTS)
+
+    assert before["ref"] == after["ref"]
+    assert before["identity"]["runtime_ref"] == after["identity"]["runtime_ref"]
+    assert before["owner"] == after["owner"]
+    assert before["disposition"] == after["disposition"]
+    # And the name still moves, because it is the human-readable label and a
+    # rename that changed nothing at all would mean the name was not read.
+    assert before["container"] == "old-name"
+    assert after["container"] == "renamed"
+    assert before["identity"]["display_name"] == "old-name"
+    assert after["identity"]["display_name"] == "renamed"
+
+
+def test_the_identity_says_it_is_stable_and_why(registry):
+    """A reader must be able to see which anchor was used without reverse
+    engineering the ref string. "it happens to look stable" is not the same
+    claim as "this anchor cannot be moved by a rename"."""
+    labels = compose_labels("proj", service="svc")
+    result = cont.attribute(cont.evidence(inspect_record("c1", labels=labels)),
+                            registry=registry, roots=ROOTS)
+
+    identity = result["identity"]
+    assert identity["anchor"] == "compose"
+    assert identity["runtime_ref"] == "runtime:container:compose:proj/svc"
+    assert identity["stable_across_rename"] is True
+    assert "name" in identity["why"]
+
+
+def test_a_container_with_no_labels_is_identified_by_its_id_not_its_name(registry):
+    """A plain container — no compose labels, nothing declared — is still not
+    identified by its name. `docker inspect` always returns an `Id`, so the
+    id anchor is always available and the name anchor is reached only when
+    Docker returned no id at all.
+
+    This is worth pinning because the opposite is the intuitive guess: with
+    nothing else to go on it looks as though the name is all there is. It is
+    not, and a name-derived ref is the one case that a rename can move."""
+    result = cont.attribute(cont.evidence(inspect_record("bare")),
+                            registry=registry, roots=ROOTS)
+
+    identity = result["identity"]
+    assert identity["anchor"] == "container-id"
+    assert identity["stable_across_rename"] is True
+    assert identity["runtime_ref"] == "runtime:container:" + "c" * 12
+    # §9: the name did not disappear. It is the display label, and it is in
+    # the alias set so a record keyed by the old name can still be re-keyed.
+    assert identity["display_name"] == "bare"
+    assert [a["anchor"] for a in identity["anchors"]] == ["container-id", "name"]
+
+
+def test_the_name_anchor_is_the_honest_floor_and_says_it_is_not_stable():
+    """Reachable only when the container reported no id — a malformed or
+    truncated inspect record. The result must SAY a rename would change the
+    identity rather than presenting a name-derived ref as if it were stable."""
+    record = inspect_record("bare")
+    record["Id"] = ""
+    result = cont.attribute(cont.evidence(record), registry={}, roots=ROOTS)
+
+    identity = result["identity"]
+    assert identity["anchor"] == "name"
+    assert identity["stable_across_rename"] is False
+    assert identity["runtime_ref"] == "runtime:container:bare"
+    # "renaming" — matched on the stem, because the point is that the reason
+    # names the failure mode, not that it uses one particular word form.
+    assert "renam" in identity["why"]
+    # It is still an identity. A container identified weakly has not failed
+    # to be identifiable, and both are different from having no identity.
+    assert result["ref"] == "runtime:container:bare"
+
+
+def test_the_declared_label_outranks_every_other_anchor(registry):
+    """§9: `serveros.runtime_ref` is written by whoever created the container,
+    so it is the identity even when compose labels disagree with it."""
+    labels = compose_labels("proj", service="svc")
+    labels["serveros.runtime_ref"] = "sos-litellm-baseline-9f3a"
+    result = cont.attribute(cont.evidence(inspect_record("c1", labels=labels)),
+                            registry=registry, roots=ROOTS)
+
+    assert result["identity"]["anchor"] == "declared-label"
+    assert result["ref"] == "runtime:container:sos-litellm-baseline-9f3a"
+    # The compose anchor is not discarded — it stays in the alias set, which
+    # is what lets a reader re-key a record written before the label existed.
+    anchors = {a["anchor"] for a in result["identity"]["anchors"]}
+    assert anchors == {"declared-label", "compose", "container-id", "name"}
+
+
+def test_a_declared_ref_naming_a_different_kind_is_refused_not_rewritten(registry):
+    """`runtime:volume:v1` is not a container. Re-prefixing it into
+    `runtime:container:runtime:volume:v1` would invent an identity nobody
+    wrote, so the label is rejected and the next anchor is used instead."""
+    labels = compose_labels("proj", service="svc")
+    labels["serveros.runtime_ref"] = "runtime:volume:v1"
+    result = cont.attribute(cont.evidence(inspect_record("c1", labels=labels)),
+                            registry=registry, roots=ROOTS)
+
+    assert result["identity"]["anchor"] == "compose"
+    assert "volume" not in result["ref"]
+
+
+def test_every_anchor_carries_its_own_reason(registry):
+    """The alias set is a list of things the container SAID, not a list of
+    guesses. Each entry says why it qualifies."""
+    labels = compose_labels("proj", service="svc")
+    labels["serveros.runtime_ref"] = "declared"
+    anchors = cont.stable_identity(cont.evidence(inspect_record("c1", labels=labels)))["anchors"]
+
+    assert [a["anchor"] for a in anchors] == [
+        "declared-label", "compose", "container-id", "name"]
+    for anchor in anchors:
+        assert anchor["because"]
+        assert anchor["runtime_ref"].startswith("runtime:container:")
+    # Only the name is moveable, and it is the only one that says so.
+    assert [a["stable_across_rename"] for a in anchors] == [True, True, True, False]
+
+
+def test_a_container_with_no_id_and_no_name_has_no_identity():
+    """Not an empty string standing in for "unknown" — None, with a reason."""
+    identity = cont.stable_identity({"compose": {}, "runtime_labels": {}})
+    assert identity["runtime_ref"] is None
+    assert identity["anchor"] is None
+    assert identity["anchors"] == []
+    assert identity["stable_across_rename"] is False
+    assert identity["why"]
+
+
+def test_a_registry_anchor_survives_a_rename_the_name_would_have_missed(registry):
+    """§10 at the registry rung. Rung 3 is a NAME lookup, so a rename defeats
+    it. A registry that pins its container by a compose anchor keeps matching
+    after the name moves."""
+    document = registry_doc()
+    document["resources"][2]["probes"][0] = {
+        "id": "l4", "container": "lit-0104-dev100-litellm",
+        "anchor": "compose:lit-0104-e2e/litellm",
+    }
+    anchored = {"registry_present": True,
+                **cont.build_registry_index(document),
+                "owner_label_namespaces": {}}
+
+    labels = compose_labels("lit-0104-e2e", service="litellm")
+    result = cont.attribute(cont.evidence(inspect_record("renamed-entirely", labels=labels)),
+                            registry=anchored, roots=ROOTS)
+
+    assert result["owner"]["ref"] == "work-item:LIT-0104"
+    assert result["disposition"] == "PROTECTED"
+    assert "anchor" in result["attribution"]["decided_by"]
+    assert result["attribution"]["registry_resource_id"] == "lit0104-dev-litellm"
+
+
+def test_a_registry_with_no_anchors_reports_a_miss_instead_of_only_UNKNOWN(registry):
+    """What a rename looks like from the outside when the registry has not
+    declared an anchor. The disposition is still DEFER — that does not
+    change — but the record now names every identity it tried, so an operator
+    can tell a rename from a container that was never registered."""
+    labels = compose_labels("unregistered-project", service="app")
+    result = cont.attribute(cont.evidence(inspect_record("mystery", labels=labels)),
+                            registry=registry, roots=ROOTS)
+
+    assert result["disposition"] == "DEFER"
+    assert result["unknown_owner"] is True
+    tried = result["registry_anchors_tried"]
+    assert tried["matched"] is False
+    assert "runtime:container:compose:unregistered-project/app" in tried["tried"]
+    assert tried["note"]
+
+
+def test_an_attributed_container_reports_no_registry_miss(registry):
+    """The negative half. `registry_anchors_tried` is assembled beside the
+    anchor loop but must not be REPORTED for a container a later rung goes on
+    to attribute — that would put a miss in the output next to a match."""
+    labels = compose_labels("litellm-baseline")
+    labels["com.docker.compose.project.working_dir"] = "/opt/applications/data/home-hwz/workspace/test-envs/lit-0104"
+    result = cont.attribute(cont.evidence(inspect_record("lit-0104-dev100-litellm",
+                                                         labels=labels)),
+                            registry=registry, roots=ROOTS)
+
+    assert result["owner"]["ref"] == "work-item:LIT-0104"
+    assert result["registry_anchors_tried"] is None
+
+
+# ---------------------------------------------------------------------------
+# §11 · MANAGED / EXTERNAL / UNKNOWN
+# ---------------------------------------------------------------------------
+
+
+def _management(record, *, registry=None, roots=ROOTS):
+    return cont.attribute(cont.evidence(record), registry=registry or {},
+                          roots=roots)["management"]
+
+
+def test_a_registered_container_is_managed_authoritatively(registry):
+    """The registry is the system of record, so a hit is a statement rather
+    than an inference."""
+    result = _management(inspect_record("litellm-container0-litellm"), registry=registry)
+    assert result["class"] == "MANAGED"
+    assert result["confidence"] == "AUTHORITATIVE"
+    assert result["decided_by"] == "registry-match"
+
+
+def test_a_declared_managed_label_outranks_the_registry():
+    """§9: the container declaring its own state is the strongest evidence
+    there is, and it is read before anything else."""
+    record = inspect_record("anything", labels={"serveros.managed": "true"})
+    result = _management(record, registry={})
+    assert result["class"] == "MANAGED"
+    assert result["confidence"] == "AUTHORITATIVE"
+    assert result["decided_by"] == "docker-label"
+
+
+def test_a_container_that_says_it_is_not_managed_is_external_not_unknown():
+    """`serveros.managed=false` is a statement, and collapsing it into the
+    same UNKNOWN as a container that said nothing throws away the only
+    positive evidence in the rung."""
+    result = _management(inspect_record("x", labels={"serveros.managed": "false"}))
+    assert result["class"] == "EXTERNAL"
+    assert result["confidence"] == "AUTHORITATIVE"
+    assert "false" in result["because"]
+
+
+def test_an_unparseable_managed_value_is_not_read_as_false():
+    """`serveros.managed=1` is neither. Reading it as `not managed` would be
+    a guess dressed as a reading, and reading it as True would be the same
+    guess pointed the other way."""
+    result = _management(inspect_record("x", labels={"serveros.managed": "1"}))
+    assert result["class"] == "UNKNOWN"
+    assert result["declared"]["managed_label_raw"] == "1"
+
+
+def test_an_identity_label_without_the_managed_flag_is_managed_by_inference():
+    record = inspect_record("x", labels={"serveros.runtime_ref": "sos-a-b-1"})
+    result = _management(record, registry={})
+    assert result["class"] == "MANAGED"
+    assert result["confidence"] == "INFERRED"
+    assert "serveros.*" in result["because"]
+
+
+def test_a_foreign_mount_makes_a_container_external(registry):
+    """Kept on the same axis as the §10 foreign_actor finding: this is what
+    positive evidence that a resource is somebody else's looks like."""
+    result = _management(
+        inspect_record("new-api",
+                       mounts=[{"Type": "bind", "Source": "/home/szj/gpt-img-2/data",
+                                "Destination": "/data", "Mode": "rw"}]),
+        registry=registry)
+    assert result["class"] == "EXTERNAL"
+    assert result["confidence"] == "INFERRED"
+    assert result["decided_by"] == "bind-mount"
+
+
+def test_an_unrecognised_label_namespace_makes_a_container_external(registry):
+    """`com.multiuserclaw.hermes-runtime-config` is a dotted key that is not
+    an image convention — so some other system labels this container."""
+    labels = {"com.multiuserclaw.hermes-runtime-config": "{}"}
+    result = _management(inspect_record("hermes-1", labels=labels), registry=registry)
+    assert result["class"] == "EXTERNAL"
+    assert result["confidence"] == "INFERRED"
+
+
+def test_an_ecosystem_label_alone_does_not_make_a_container_external(registry):
+    """The negative half, and the one that matters for the live inventory:
+    `org.opencontainers.image.*` and `com.docker.compose.*` are on nearly
+    every container, including ours. Treating them as somebody else's label
+    would classify most of this host as EXTERNAL."""
+    labels = {"org.opencontainers.image.source": "x",
+              "com.docker.compose.project": "p",
+              "com.docker.compose.service": "s"}
+    result = _management(inspect_record("c1", labels=labels), registry=registry)
+    assert result["class"] == "UNKNOWN"
+
+
+def test_a_bare_word_label_does_not_make_a_container_external(registry):
+    """`maintainer` and `version` are image metadata. They have no namespace
+    and say nothing about who runs the container."""
+    result = _management(inspect_record("c1", labels={"maintainer": "x", "version": "1"}),
+                         registry=registry)
+    assert result["class"] == "UNKNOWN"
+
+
+def test_an_absent_registry_is_unknown_not_external():
+    """With no system of record there is nothing to be external TO. The class
+    is UNKNOWN and the reason says why, rather than defaulting to the class
+    that sounds safer."""
+    result = _management(inspect_record("c1"), registry={"registry_present": False})
+    assert result["class"] == "UNKNOWN"
+    assert "absent" in result["because"]
+
+
+def test_management_is_not_a_safety_claim(registry):
+    """§11. A MANAGED container with an unknown owner keeps UNKNOWN_OWNER and
+    DEFER. Merging the two axes is the substitution this module exists to
+    refuse, so the pair is pinned together."""
+    labels = {"serveros.managed": "true"}
+    result = cont.attribute(cont.evidence(inspect_record("mystery", labels=labels)),
+                            registry=registry, roots=ROOTS)
+
+    assert result["management"]["class"] == "MANAGED"
+    assert result["management"]["confidence"] == "AUTHORITATIVE"
+    assert result["unknown_owner"] is True
+    assert result["disposition"] == "DEFER"
+    assert result["reclaim_candidate"] is False
+    assert "not a safety claim" in result["management"]["note"]
+
+
+def test_a_declared_protection_of_true_is_reported(registry):
+    record = inspect_record("x", labels={"serveros.protected": "true"})
+    result = _management(record, registry=registry)
+    assert result["declared"]["protected"] is True
+
+
+def test_an_unreadable_protection_is_reported_and_relaxes_nothing():
+    """The bypass this guards: `bool("false")` is True, so a naive read of an
+    unparseable value is not merely wrong, it is wrong in an unpredictable
+    direction. The value is reported as what it was."""
+    result = _management(inspect_record("x", labels={"serveros.protected": "perhaps"}))
+    assert result["declared"]["protected"] is None
+    assert result["declared"]["protected_because"]
+    assert "NOT read as unprotected" in result["declared"]["protected_because"]
+
+
+def test_an_absent_protection_says_absent_rather_than_false():
+    result = _management(inspect_record("x"))
+    assert result["declared"]["protected"] is None
+    assert "no protection was declared" in result["declared"]["protected_because"]
+
+
+def test_the_runtime_namespace_keys_never_reach_the_opaque_namespace_rung(registry):
+    """The footgun this closes: rung 2 trusts the CONTRACT for a namespace it
+    is declared, so leaving `serveros.protected` in the opaque-key list would
+    let one declaration of the `serveros` namespace assign every labelled
+    container on the host to a single owner — from a label that says nothing
+    about ownership."""
+    declaring = {"registry_present": True,
+                 **cont.build_registry_index(registry_doc()),
+                 "owner_label_namespaces": {"serveros": "project:whoever-declared-it"}}
+    labels = {"serveros.protected": "true", "serveros.scope": "machine"}
+    result = cont.attribute(cont.evidence(inspect_record("x", labels=labels)),
+                            registry=declaring, roots=ROOTS)
+
+    assert result["owner"]["ref"] is None
+    assert result["unknown_owner"] is True
+    assert result["disposition"] == "DEFER"
+
+
+def test_the_owner_ref_label_is_read_directly_and_decides(registry):
+    """`serveros.owner_ref` is a known key with defined semantics, so it is
+    read as an owner claim in its own right — not as an opaque namespace."""
+    labels = {"serveros.owner_ref": "work-item:LIT-0104",
+              "serveros.owner_type": "work-item"}
+    result = cont.attribute(cont.evidence(inspect_record("x", labels=labels)),
+                            registry=registry, roots=ROOTS)
+
+    assert result["owner"]["ref"] == "work-item:LIT-0104"
+    assert result["owner"]["type"] == "work-item"
+    assert result["disposition"] == "PROTECTED"
+
+
+def test_a_recorded_namespace_does_not_make_our_own_containers_external():
+    """The live misclassification this corrected, pinned.
+
+    Reading any dotted non-ecosystem key as "somebody else's system" put 17 of
+    37 containers in EXTERNAL and 10 of those were ours — the `litellm.*`
+    build-provenance containers and the `hwz.p18` pair. The contract records
+    all three namespaces, so the classifier is told which ones this host has
+    already accounted for.
+    """
+    recognised = {"litellm": "recorded and deliberately undeclared",
+                  "hwz": "recorded and deliberately undeclared",
+                  "com.multiuserclaw": "recorded and deliberately undeclared"}
+    result = cont.management_class(
+        evidence_record=cont.evidence(inspect_record(
+            "lit-0104-dev100-litellm",
+            labels={"litellm.source-sha": "abc", "litellm.profile": "dev"})),
+        owner_ref=None, registry_resource_id=None, foreign_actor=False,
+        registry_present=True, recognised_namespaces=recognised)
+
+    assert result["class"] != "EXTERNAL"
+
+
+def test_a_recorded_but_unresolved_namespace_is_unknown_not_managed():
+    """The other direction, and the reason the branch falls through rather
+    than returning MANAGED. `com.multiuserclaw.*` is another product's
+    namespace running on the same host. The contract knows about it and
+    deliberately resolves nothing — so the management class is genuinely
+    undetermined. Calling it MANAGED would import the same assumption as
+    calling it EXTERNAL, pointed the other way, and §11 asks for neither."""
+    recognised = {"com.multiuserclaw": "recorded and deliberately undeclared"}
+    result = cont.management_class(
+        evidence_record=cont.evidence(inspect_record(
+            "hermes-user-1",
+            labels={"com.multiuserclaw.hermes-runtime-config": "{}"})),
+        owner_ref=None, registry_resource_id=None, foreign_actor=False,
+        registry_present=True, recognised_namespaces=recognised)
+
+    assert result["class"] == "UNKNOWN"
+    assert result["confidence"] == "UNKNOWN"
+    assert "deliberately not resolved" in result["because"]
+    assert result["decided_by"] is None
+
+
+def test_an_unrecorded_namespace_still_reads_as_external_on_the_same_ladder():
+    """The positive half: recognising three namespaces must not make the
+    EXTERNAL branch unreachable for everything else."""
+    recognised = {"litellm": "recorded and deliberately undeclared"}
+    result = cont.management_class(
+        evidence_record=cont.evidence(inspect_record(
+            "stranger", labels={"acme.internal.runtime": "x"})),
+        owner_ref=None, registry_resource_id=None, foreign_actor=False,
+        registry_present=True, recognised_namespaces=recognised)
+
+    assert result["class"] == "EXTERNAL"
+    assert "acme.internal" in result["because"]
+
+
+def test_an_empty_recognised_set_is_the_stricter_answer():
+    """An unreadable contract recognises nothing, and that direction is
+    deliberate: with nothing recognised MORE containers are called EXTERNAL,
+    and EXTERNAL is the branch that never reclaims."""
+    result = cont.management_class(
+        evidence_record=cont.evidence(inspect_record(
+            "x", labels={"litellm.profile": "dev"})),
+        owner_ref=None, registry_resource_id=None, foreign_actor=False,
+        registry_present=True, recognised_namespaces={})
+
+    assert result["class"] == "EXTERNAL"
+
+
+def test_the_contract_is_the_source_of_the_recognised_namespaces():
+    """Read from the contract rather than hardcoded, so a namespace is added
+    to that list in one place and the classifier follows."""
+    recognised = cont.load_recognised_namespaces()
+    assert "litellm" in recognised
+    assert "hwz" in recognised
+    assert "com.multiuserclaw" in recognised
+    assert "serveros" in recognised
+    # `serveros` is the runtime namespace and is recorded from a different
+    # section, which is the case a reader hardcoding the other two misses.
+    assert "runtime namespace" in recognised["serveros"]
+
+
+def test_an_unreadable_contract_recognises_nothing(tmp_path):
+    """Not "recognises everything": a contract that failed to parse must not
+    make the host more permissive than a contract that declares nothing."""
+    assert cont.load_recognised_namespaces(tmp_path / "absent.yaml") == {}
+
+
+def test_the_coverage_summary_counts_the_classes_it_cannot_name():
+    """§11. UNKNOWN is the majority bucket on this host, and a summary that
+    listed only the classes it could name would render "we could not tell" as
+    a short list rather than as the largest one."""
+    host = FakeDockerHost({
+        "registered": inspect_record("litellm-container0-litellm"),
+        "stranger": inspect_record("stranger", labels={"acme.runtime": "x"}),
+        "nothing": inspect_record("nothing"),
+    })
+    result = cont.attribute_all(host, registry={"registry_present": True,
+                                                **cont.build_registry_index(registry_doc())},
+                                roots=ROOTS)
+
+    assert result["count"] == 3
+    assert result["by_management"] == {"MANAGED": 1, "EXTERNAL": 1, "UNKNOWN": 1}
+    assert sum(result["by_management"].values()) == result["count"]
+    assert sum(result["by_management_confidence"].values()) == result["count"]
+
+
+def test_the_coverage_summary_reports_identity_stability():
+    """§10, as a property of the inventory rather than of one row. Today the
+    list is empty and the flag is true; a rename would land here."""
+    host = FakeDockerHost({
+        "a": inspect_record("a"),
+        "b": inspect_record("b"),
+    })
+    result = cont.attribute_all(host, registry={}, roots=ROOTS)
+
+    assert result["identity_stable_across_rename"] is True
+    assert result["name_derived_identities"] == []
+
+
+def test_an_id_less_container_names_itself_in_the_instability_list():
+    """The other half. If a container ever does come back name-anchored, the
+    summary must name it — a boolean alone would say the inventory is unstable
+    without saying which container made it so."""
+    nameless = inspect_record("only-a-name")
+    nameless["Id"] = ""
+    host = FakeDockerHost({"only-a-name": nameless, "b": inspect_record("b")})
+    result = cont.attribute_all(host, registry={}, roots=ROOTS)
+
+    assert result["identity_stable_across_rename"] is False
+    assert result["name_derived_identities"] == ["only-a-name"]
+
+
+# ---------------------------------------------------------------------------
+# §8 · the runtime ownership model
+# ---------------------------------------------------------------------------
+
+# The brief's field list, verbatim. Every one must be present in every row —
+# a model that omits the fields it could not fill is a model that reads as
+# complete while being partial.
+RUNTIME_FIELDS = (
+    "runtime_ref", "device_ref", "owner_ref", "owner_type", "scope",
+    "desired_state", "actual_state", "protected", "retention", "created_by",
+    "created_at", "last_observed_at", "provider", "resource_refs",
+)
+
+
+def _runtime(record, *, registry=None, observed_at=None):
+    return cont.attribute(cont.evidence(record), registry=registry or {},
+                          roots=ROOTS, observed_at=observed_at)["runtime"]
+
+
+def test_every_field_in_the_model_is_present_in_every_row(registry):
+    result = _runtime(inspect_record("c1"), registry=registry)
+    for field in RUNTIME_FIELDS:
+        assert field in result, f"§8 field {field!r} is missing from the model"
+
+
+def test_the_model_carries_the_identity_the_row_carries(registry):
+    """One identity, not two that can disagree."""
+    row = cont.attribute(cont.evidence(inspect_record("c1")), registry=registry, roots=ROOTS)
+    assert row["runtime"]["runtime_ref"] == row["identity"]["runtime_ref"] == row["ref"]
+
+
+def test_an_unmeasurable_field_is_none_and_named_in_unknowns(registry):
+    """§8's hardest case. `retention` has no source on this host, so it is
+    None — and it is named with a reason. None alone is ambiguous between
+    "there is no retention" and "we did not look"."""
+    result = _runtime(inspect_record("c1"), registry=registry)
+    assert result["retention"] is None
+    assert "retention" in result["unknowns"]
+    assert result["unknowns"]["retention"]
+
+
+def test_desired_state_is_unknown_rather_than_defaulted_to_running(registry):
+    """The anomaly generator that a default would build. If desired_state
+    defaulted to "running", every intentionally-stopped container becomes a
+    §15 DESIRED_ACTUAL_MISMATCH — an alert per stopped test container, all of
+    them false, and the detector's precision gone before it has a real source
+    for desired state."""
+    stopped = _runtime(inspect_record("c1", status="exited"), registry=registry)
+    assert stopped["desired_state"] is None
+    assert stopped["actual_state"] == "exited"
+    assert "desired_state" in stopped["unknowns"]
+    assert "anomaly" in stopped["unknowns"]["desired_state"]
+
+
+def test_the_observation_time_is_stamped_by_the_caller_not_invented(registry):
+    """`attribute()` stays pure. The stamp is an argument, so a row built with
+    no tick says so instead of reading the wall clock."""
+    assert _runtime(inspect_record("c1"), registry=registry)["last_observed_at"] is None
+    stamped = _runtime(inspect_record("c1"), registry=registry,
+                       observed_at="2026-09-14T00:00:00Z")
+    assert stamped["last_observed_at"] == "2026-09-14T00:00:00Z"
+
+
+def test_actual_state_is_the_containers_own_reported_state(registry):
+    assert _runtime(inspect_record("c1", status="exited", exit_code=3),
+                    registry=registry)["actual_state"] == "exited"
+
+
+def test_the_device_comes_from_the_registry_that_describes_this_node():
+    """Read rather than re-derived: this observer is running on the device its
+    registry names, and a second way to compute that identity is a second
+    answer waiting to disagree with the first."""
+    registry = {"registry_present": True,
+                **cont.build_registry_index({**registry_doc(),
+                                             "device_ref": "device:server-beijing"}),
+                "owner_label_namespaces": {}}
+    assert _runtime(inspect_record("c1"), registry=registry)["device_ref"] == "device:server-beijing"
+
+
+def test_a_declared_device_that_disagrees_is_reported_and_not_resolved():
+    """Both values are kept. This observer is on the node its registry names
+    and the container says it was made for another one — that difference is
+    the finding, and replacing either value with the other deletes it."""
+    registry = {"registry_present": True,
+                **cont.build_registry_index({**registry_doc(),
+                                             "device_ref": "device:server-beijing"}),
+                "owner_label_namespaces": {}}
+    labels = {"serveros.device_ref": "device:server-shanghai"}
+    result = _runtime(inspect_record("c1", labels=labels), registry=registry)
+
+    assert result["device_ref"] == "device:server-shanghai"
+    assert "server-beijing" in result["unknowns"]["device_ref_drift"]
+
+
+def test_protection_is_read_from_both_sources_together(registry):
+    """A container that declares itself protected IS protected even when
+    nothing registered it, and a registered protected resource is protected
+    even when the container says nothing."""
+    from_label = _runtime(inspect_record("nobody-registered-this",
+                                         labels={"serveros.protected": "true"}))
+    assert from_label["protected"] is True
+
+    from_registry = _runtime(inspect_record("litellm-container0-litellm"), registry=registry)
+    assert from_registry["protected"] is True
+
+
+def test_an_undeclared_protection_is_none_not_false(registry):
+    """An undeclared protection reported as unprotected is a protection
+    bypass performed by a default value."""
+    result = _runtime(inspect_record("c1"), registry=registry)
+    assert result["protected"] is None
+    assert "protected" in result["unknowns"]
+    assert "NOT reported as unprotected" in result["unknowns"]["protected"]
+
+
+def test_created_by_is_unknown_because_docker_does_not_record_it(registry):
+    """Docker records WHEN a container was created and never who or what
+    created it. The reason is the finding."""
+    result = _runtime(inspect_record("c1"), registry=registry)
+    assert result["created_by"] is None
+    assert result["created_at"] == "2026-09-11T00:00:00Z"
+    assert "docker inspect" in result["unknowns"]["created_by"]
+
+
+def test_the_provider_is_named(registry):
+    assert _runtime(inspect_record("c1"), registry=registry)["provider"] == "docker"
+
+
+def test_resource_refs_name_the_volumes_and_networks_the_container_holds(registry):
+    record = inspect_record(
+        "c1",
+        mounts=[{"Type": "volume", "Name": "lit-data", "Source": "/var/lib/docker/volumes/lit-data/_data",
+                 "Destination": "/data", "Mode": "rw"},
+                {"Type": "bind", "Source": "/srv/x", "Destination": "/x", "Mode": "ro"}],
+        networks={"bridge": {"IPAddress": "1.2.3.4"}})
+    refs = {r["ref"] for r in _runtime(record, registry=registry)["resource_refs"]}
+
+    assert refs == {"volume:lit-data", "network:bridge"}
+    # The bind mount is not a Docker resource, so it is not a resource ref.
+    # It is path evidence and it is already reported as such.
+    assert not any("srv" in r for r in refs)
+
+
+def test_the_image_is_not_a_resource_ref(registry):
+    """The image is what the container IS, not something it holds. Listing it
+    would make an image look reachable through the container, and an image is
+    the one resource a cleanup pass must never reach that way."""
+    refs = _runtime(inspect_record("c1"), registry=registry)["resource_refs"]
+    assert not any("img" in r["ref"] for r in refs)
+
+
+def test_the_scope_is_derived_from_the_owners_kind(registry):
+    """`work-item:LIT-0104` names a work item, so the scope is the work item.
+    A reading of an observed value rather than a guess — and a declared scope
+    still wins over it."""
+    labels = {"serveros.owner_ref": "work-item:LIT-0104"}
+    result = _runtime(inspect_record("c1", labels=labels), registry=registry)
+    assert result["scope"] == "work-item"
+
+    declared = _runtime(inspect_record("c1", labels={**labels, "serveros.scope": "machine"}),
+                        registry=registry)
+    assert declared["scope"] == "machine"
+
+
+def test_an_underivable_scope_is_unknown_not_empty(registry):
+    result = _runtime(inspect_record("c1"), registry=registry)
+    assert result["scope"] is None
+    assert "scope" in result["unknowns"]
+
+
+def test_the_tick_stamps_every_row_with_the_same_time():
+    """One report, one time. Rows observed a few hundred milliseconds apart
+    would make a reader unable to tell one tick from two."""
+    class ClockedHost(FakeDockerHost):
+        def now(self):
+            return "2026-09-14T00:00:00Z"
+
+    host = ClockedHost({"a": inspect_record("a"), "b": inspect_record("b")})
+    result = cont.attribute_all(host, registry={}, roots=ROOTS)
+    stamps = {row["runtime"]["last_observed_at"] for row in result["containers"]}
+    assert stamps == {"2026-09-14T00:00:00Z"}
+
+
+def test_a_host_with_no_clock_leaves_the_stamp_null_but_still_reports():
+    """Not an error and not a crash: a host that cannot say when is a real
+    state, and the rows are still produced."""
+    host = FakeDockerHost({"a": inspect_record("a")})
+    assert not hasattr(host, "now")
+    result = cont.attribute_all(host, registry={}, roots=ROOTS)
+    assert result["count"] == 1
+    assert result["containers"][0]["runtime"]["last_observed_at"] is None

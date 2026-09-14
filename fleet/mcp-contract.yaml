@@ -75,6 +75,34 @@ surfaces:
       - anomaly.list
       - anomaly.explain
       - container.attribution
+      # From §14/§15/§16/§16A/§17 of the resource-observation brief. Five more
+      # reads, and five more reasons a caller cannot supply its own answer:
+      # each takes a CLOSED empty input schema (see `mcp/node_mcp.py`), so
+      # there is no parameter through which a caller could assert an identity,
+      # a protection claim or a measurement and have the daemon relay it as an
+      # observation. The evidence is gathered by the daemon from the host, and
+      # the tool only names the question.
+      - ports.ownership
+      - desired.actual
+      - runtime.hygiene
+      - fs.hygiene
+      - protection.resolve
+      # From §6/§7/§13. The two reads §19 names that had a producer and no
+      # tool: the Docker inventory, and the tunnels plus the ones this node
+      # structurally cannot see. `resource.docker` is the one place this
+      # surface's no-argument rule costs a caller something — the reclaimable
+      # picture is a ~22s `docker system df` and is reachable only from the
+      # CLI — so its description says so instead of accepting an argument that
+      # quietly does nothing.
+      - resource.docker
+      - tunnel.list
+      # From §18/§19. The fifteen resource codes, graded, with the codes that
+      # could not be graded named separately and why. Its `codes_not_evaluated`
+      # is what keeps an empty `signals` from reading as a healthy node, and it
+      # inherits the no-argument rule above: there is no parameter through
+      # which a caller could supply a measurement and have the daemon relay it
+      # as an observation of the host.
+      - resource.anomaly.list
     owns:
       - current-node environment facts
       - current-node path role resolution
@@ -83,6 +111,16 @@ surfaces:
       - current-node runtime groups, their lineage and their chains
       - current-node anomalies, their combinations and their blind spots
       - current-node container attribution from evidence
+      - current-node port claims, as claims rather than as ownership
+      - current-node declared-versus-measured comparison
+      - current-node runtime classification under the §16 classes
+      - current-node filesystem root classification
+      - current-node container protection, resolved from declarations
+      - "current-node Docker inventory: containers, images, volumes,
+        networks, sizes"
+      - current-node tunnels, visible forwarders, and the blind spots
+      - "current-node resource anomalies, their thresholds, and the codes that
+        could not be graded"
     does_not_own:
       - other devices
       - fleet device identity

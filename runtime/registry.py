@@ -35,6 +35,7 @@ from __future__ import annotations
 
 import functools
 import importlib.util
+import os
 import re
 import sys
 from pathlib import Path
@@ -175,6 +176,44 @@ def contract() -> dict:
 def load_yaml(path: Path) -> dict:
     with path.open(encoding="utf-8") as fh:
         return yaml.safe_load(fh) or {}
+
+
+# The one place that answers "where does this node's registry live".
+#
+# It used to be answered twice — `cli.default_registry_path` and the body of
+# `daemon.main` each built the same expression out of the same two literals.
+# Two producers of one fact agree until one of them is edited, and then the
+# disagreement is invisible: `serverosctl` reports a resource the daemon has
+# never heard of and both surfaces are internally consistent. §18 asks for one
+# producer per fact, so the expression moved here, next to the document it
+# names, and both surfaces now call it.
+STATE_DIR_ENV = "SERVEROS_STATE_DIR"
+DEFAULT_STATE_DIR = "/opt/applications/data/home-hwz/state/serveros"
+REGISTRY_RELATIVE = "runtime/registry/resources.yaml"
+
+
+def default_path() -> Path:
+    """This node's registry document. A path, whether or not it exists."""
+    state = os.environ.get(STATE_DIR_ENV) or DEFAULT_STATE_DIR
+    return Path(state) / REGISTRY_RELATIVE
+
+
+def load_default(path: str | Path | None = None) -> "Registry":
+    """The registry, or a typed refusal naming where it was looked for.
+
+    There is no discovery fallback and no empty-registry default. `Nothing is
+    managed by being noticed` is the module's whole premise, so "I found no
+    registry" must not be served as "nothing is registered" — the second is a
+    claim about the node and the first is a fact about a file. Every caller
+    that wants to *report* rather than *refuse* has to say so at the call site.
+    """
+    target = Path(path) if path is not None else default_path()
+    if not target.exists():
+        raise RegistryError(
+            f"no managed-runtime registry at {target}. Nothing is managed "
+            f"until something is registered; there is no discovery fallback."
+        )
+    return Registry(path=target)
 
 
 def _values(section: str) -> tuple[str, ...]:

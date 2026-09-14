@@ -560,6 +560,61 @@ def test_probe_results_carry_the_declared_kind_so_the_mcp_rule_can_fire():
     assert "mcp-server" in view.anomaly.MCP_KINDS
 
 
+def test_the_derived_state_survives_the_shim_that_renders_probe_results():
+    """§15's comparison reads the DERIVED state, and the shim used to drop it.
+
+    `Health.show()` carries `state` — the health model's classification, made
+    with the registration's desired state in hand. `_probe_results` kept only
+    the four axis WORDS and discarded it, so `desired.comparison` found
+    `derived is None`, took its "no derived state to read" branch, and returned
+    UNCHECKED whose `why` blamed a gap in the declaration.
+
+    The failure was silent in the direction that matters: three live
+    registrations declared `running` were measured STOPPED on 2026-09-14 and
+    `desired_actual()["mismatches"]` was `[]` — which reads as "every
+    registration is in its desired state".
+
+    Both halves are asserted, because either alone passes in the broken world:
+    the derived state reaches the shim, AND the comparison it feeds produces
+    the mismatch rather than the UNCHECKED.
+    """
+    reg = registry_of(resource("res-down", kind="container", probes=[
+        {"id": "state", "kind": "container-state", "axis": "liveness",
+         "container": "res-down"},
+    ]))
+    results = view._probe_results(
+        reg, host=FakeProbeHost(containers={"res-down": {"State": {"Status": "exited"}}}))
+    assert results["res-down"]["derived_state"] == "NOT_RUNNING"
+    assert results["res-down"]["liveness"] == "STOPPED"
+    # The provider's own word rides along, which is what makes `actual_raw`
+    # readable on the comparison row.
+    assert results["res-down"]["evidence"]["container_status"] == "exited"
+
+    document = view.desired_actual(registry_doc=reg, measured=results)
+    assert [row["resource_id"] for row in document["mismatches"]] == ["res-down"]
+    assert document["mismatches"][0]["actual_derived_state"] == "NOT_RUNNING"
+    assert document["mismatches"][0]["actual_raw"] == "exited"
+
+
+def test_a_measurement_that_is_running_still_compares_as_in_desired_state():
+    """The strict direction: the fix above must not turn every resource red.
+
+    §15's rule is about comparing a declaration against a measurement, and a
+    resource that IS in its declared state has to keep reporting so. A test
+    that only asserted the mismatch would pass on a comparator that reported
+    everything as one.
+    """
+    reg = registry_of(resource("res-up", kind="container", probes=[
+        {"id": "state", "kind": "container-state", "axis": "liveness",
+         "container": "res-up"},
+    ]))
+    results = view._probe_results(
+        reg, host=FakeProbeHost(containers={"res-up": {"State": {"Status": "running"}}}))
+    document = view.desired_actual(registry_doc=reg, measured=results)
+    assert [row["verdict"] for row in document["comparisons"]] == ["IN_DESIRED_STATE"]
+    assert document["mismatches"] == []
+
+
 # ---------------------------------------------------------------------------
 # §10/§11 · explain carries the negative half
 # ---------------------------------------------------------------------------
@@ -943,3 +998,142 @@ def test_a_registry_that_names_no_device_reports_none_rather_than_a_default():
     would be the same defect in the other direction."""
     instance = daemon.Daemon(registry_of(resource("res-r")), state_dir=Path("/tmp/x"))
     assert instance.handle({"method": "device.show", "params": {}})["result"]["device_ref"] is None
+
+
+# ---------------------------------------------------------------------------
+# §18/§19 — the resource anomaly view
+# ---------------------------------------------------------------------------
+
+
+class FakeAnomalyInventory:
+    """A Docker provider that is reachable, and records what was asked of it.
+
+    `docker_space` is the one read here that costs ~22s on the live host, so
+    whether it was called is a fact worth asserting rather than a detail: an
+    opt-in that is not actually opt-in is a tick that misses its deadline.
+    """
+
+    name = "fake-anomaly-inventory"
+
+    def __init__(self, *, host=None, disk=None, sizes=None, logs=None, space=None):
+        self._host = host or {"memory": {"total_bytes": 100, "used_bytes": 10,
+                                        "available_bytes": 90,
+                                        "swap": {"total_bytes": 100,
+                                                 "used_bytes": 1}}}
+        self._disk = disk or {"roles": [], "others": []}
+        self._sizes = sizes if sizes is not None else {"count": 0, "containers": []}
+        self._logs = logs if logs is not None else {"state": "PRESENT", "count": 0,
+                                                    "unobservable": 0,
+                                                    "containers": []}
+        self._space = space if space is not None else {"state": "PRESENT",
+                                                       "sections": {}}
+        self.asked: list[str] = []
+
+    def host_summary(self):
+        self.asked.append("host_summary")
+        return self._host
+
+    def disk_status(self):
+        self.asked.append("disk_status")
+        return self._disk
+
+    def docker_sizes(self):
+        self.asked.append("docker_sizes")
+        return self._sizes
+
+    def container_logs(self):
+        self.asked.append("container_logs")
+        return self._logs
+
+    def docker_space(self):
+        self.asked.append("docker_space")
+        return self._space
+
+
+def test_the_anomaly_view_gathers_from_the_producers_and_names_which(
+        monkeypatch):
+    """§18/§19. Six inputs, and the report says which of them this call reached.
+
+    `detect` cannot tell a document the caller supplied from one this layer
+    measured, and a reader checking whether an answer rests on a fresh
+    measurement or on somebody's snapshot needs to. That is what `gathering`
+    is for, and the tunnel document is the honest case here: nothing is
+    declared on this host, so the two tunnel codes come back as not-evaluated
+    rather than as a healthy fleet.
+    """
+    inv = FakeAnomalyInventory()
+    payload = view.resource_anomaly(
+        inventory=inv, registry_doc=view.NO_REGISTRY,
+        tunnel={"declared": [], "declared_count": 0})
+    assert payload["gathering"]["inputs_reached"] == ["host", "disk", "docker",
+                                                      "tunnel"]
+    assert payload["gathering"]["inputs_supplied_by_the_caller"] == ["tunnel"]
+    # No registry, so the two that need one are named with their reason instead
+    # of being gathered against a registry nobody authored.
+    assert sorted(payload["gathering"]["inputs_unreachable"]) == ["desired", "hygiene"]
+    assert "no managed-runtime registry" in payload["gathering"]["inputs_unreachable"]["hygiene"]
+    reasons = {row["code"] for row in payload["codes_not_evaluated"]}
+    assert {"TUNNEL_UNHEALTHY", "TUNNEL_OWNER_MISSING"} <= reasons
+    # §22 over the same call. No registry means nothing to classify as owned,
+    # and the two codes that would have read that classification are named as
+    # ungraded rather than reported as a host with no unowned containers.
+    assert {"RUNTIME_UNOWNED", "RUNTIME_ORPHANED"} <= reasons
+
+
+def test_the_reclaimable_picture_is_opt_in_at_this_layer_too():
+    """The ~22s read is asked for by name, or it is not asked for at all."""
+    EMPTY_TUNNEL = {"declared": [], "declared_count": 0}
+    off = FakeAnomalyInventory()
+    view.resource_anomaly(inventory=off, registry_doc=view.NO_REGISTRY,
+                          tunnel=EMPTY_TUNNEL)
+    assert "docker_space" not in off.asked
+
+    on = FakeAnomalyInventory()
+    payload = view.resource_anomaly(inventory=on, registry_doc=view.NO_REGISTRY,
+                                    tunnel=EMPTY_TUNNEL, space=True)
+    assert "docker_space" in on.asked
+    assert payload["space_included"] is True
+
+
+def test_the_docker_share_is_measured_against_the_filesystem_the_root_lands_on():
+    """The denominator, and it is the one `inventory._mount` documents.
+
+    DOCKER_FS is asked about `/var/lib/docker` and lands on `/`. A denominator
+    taken from the path that was asked about would be `None` here — the path is
+    not a filesystem this document describes — and the code would stay silent
+    on a Docker store holding 90% of its disk.
+    """
+    inv = FakeAnomalyInventory(
+        disk={"roles": [{"role": "DOCKER_FS", "path": "/var/lib/docker",
+                         "state": "PRESENT", "mount_point": "/",
+                         "total_bytes": 1000, "used_percent": 10.0,
+                         "inodes": {"used_percent": 1.0}}], "others": []},
+        space={"state": "PRESENT", "sections": {
+            "images": {"size_bytes": 900, "reclaimable_bytes": 0},
+            "build_cache": {"size_bytes": 100, "reclaimable_bytes": 0}}})
+    payload = view.resource_anomaly(
+        inventory=inv, registry_doc=view.NO_REGISTRY,
+        tunnel={"declared": [], "declared_count": 0}, space=True)
+    rows = [r for r in payload["signals"] if r["code"] == "DOCKER_STORAGE_HIGH"]
+    assert len(rows) == 1
+    assert rows[0]["measured"]["filesystem_bytes"] == 1000
+    assert rows[0]["measured"]["used_percent"] == 100.0
+
+
+def test_the_governance_document_is_attached_as_a_report_and_never_as_a_gate():
+    """§22 on the §18 surface. The document states what an owner said.
+
+    It is reported beside the measurements, with `destructive_reconcile`
+    carried through as OFF, and it is read defensively: a governance document
+    that moved or was made unparseable is a finding about the document, and it
+    must not be able to fail the observation it is reported next to.
+    """
+    payload = view.resource_anomaly(
+        inventory=FakeAnomalyInventory(), registry_doc=view.NO_REGISTRY,
+        tunnel={"declared": [], "declared_count": 0})
+    policy = payload["supported_by_resource_policy"]
+    assert policy["state"] in ("DECLARED", "ABSENT", "UNREADABLE")
+    assert policy["destructive_reconcile"]["enabled"] is False
+    # And the coverage answer is the three-way one: a class the document does
+    # not carry is ABSENT, never silently filled.
+    assert {"declared", "absent", "unestablished"} <= set(policy["coverage"])

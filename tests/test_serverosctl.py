@@ -756,3 +756,376 @@ def test_ability_without_a_daemon_says_so_rather_than_listing_nothing(
     assert code == cli_mod.EXIT_COULD_NOT_ANSWER
     assert "daemon" in captured.err
     assert captured.out == ""
+
+
+# ---------------------------------------------------------------------------
+# §21 · the five surfaces this round added to `serverosctl`
+#
+# The bug these tests exist for is specific and was live: the five command
+# functions were written against payload shapes that had been GUESSED, and run
+# against the daemon they read keys that are not there. Four of the five would
+# have raised `KeyError` on this node and one would have silently printed an
+# empty table, and the test suite was green through all of it because nothing
+# exercised the rendering. A verb is not covered because it parses.
+# ---------------------------------------------------------------------------
+
+FIVE = (
+    (["resource", "ports"], "cmd_resource_ports"),
+    (["runtime", "desired"], "cmd_runtime_desired"),
+    (["runtime", "classify"], "cmd_runtime_classify"),
+    (["fs", "hygiene"], "cmd_fs_hygiene"),
+    (["container", "protection"], "cmd_container_protection"),
+    # §6/§13/§19. The two reads §19's suggested surface names that had a
+    # producer and no way for an agent to ask for it.
+    (["resource", "docker"], "cmd_resource_docker"),
+    (["tunnel", "list"], "cmd_tunnel_list"),
+    # §18/§19. The fifteen resource codes, with the ones that could not be
+    # graded named beside the ones that could.
+    (["resource", "anomaly"], "cmd_resource_anomaly"),
+)
+
+
+def test_each_verb_this_round_added_parses_and_names_a_handler():
+    """A verb that parses to no `func` is a command that will not run."""
+    parser = cli_mod.build_parser()
+    for argv, handler in FIVE:
+        args = parser.parse_args(argv)
+        assert args.func is getattr(cli_mod, handler), argv
+
+
+# The shapes below are COPIES of what this node's daemon answers with on
+# 2026-09-14, trimmed to the fields the renderers read. They are copies rather
+# than calls because a test that measured the live host would pass on a node
+# with no containers and prove nothing, and because the property under test is
+# "the renderer reads the fields that exist", not "the host is a particular
+# shape today".
+PORTS_PAYLOAD = {
+    "coverage": {"endpoints": 2, "claimed_by_a_container": 1, "claimed_by_a_tunnel": 0,
+                 "with_an_authoritative_owner": 1, "unattributed": 1,
+                 "listening_with_no_visible_holder": 1},
+    "ports": [
+        {"port_ref": "port:tcp:0.0.0.0:22", "owner_ref": None, "confidence": "UNKNOWN",
+         "container_ref": None},
+        {"port_ref": "port:tcp:127.0.0.1:26400", "owner_ref": "work-item:LIT-0104",
+         "confidence": "AUTHORITATIVE", "container_ref": "runtime:container:abc123"},
+    ],
+    "conflicts": [{"port_ref": "port:tcp:0.0.0.0:3000", "why": "two claims disagree"}],
+    "providers": {"proc-net": {"state": "AVAILABLE", "why": "read"},
+                  "docker": {"state": "UNAVAILABLE", "why": "no daemon"}},
+    "note": "advisory",
+}
+
+DESIRED_PAYLOAD = {
+    "providers": {"registry": {"registrations": 1}},
+    "comparisons": [{"resource_id": "res-down", "desired_state": "running",
+                     "actual_state": "STOPPED", "actual_derived_state": "NOT_RUNNING",
+                     "verdict": "IN_MISMATCH", "why": "declared running, measured stopped"}],
+    "mismatches": [{"resource_id": "res-down"}],
+    "unchecked": [],
+}
+
+HYGIENE_PAYLOAD = {
+    "counts": {"ACTIVE": 1, "CLEANUP_CANDIDATE": 0},
+    "resources": [{"resource_ref": "managed-runtime:res", "class": "PROTECTED",
+                   "also_matches": ["ACTIVE"], "why": "protected"}],
+    "candidates": [{"resource_ref": "managed-runtime:res", "why": "a question"}],
+    "inputs_gathered": ["comparison"],
+    "inputs_not_gathered": ["activity"],
+    "note": "advisory",
+}
+
+FS_PAYLOAD = {
+    "roots": {"home": {"path": "/home/hwz", "class": "NO_VOCABULARY"},
+              "workspace": {"path": "/w", "class": "DECLARED_CLOSED"}},
+    "coverage": {"home": {"entries": 64, "vocabulary_enforced_on_write": False,
+                          "why": "no declared vocabulary"},
+                 "workspace": {"entries": 9, "vocabulary_enforced_on_write": True,
+                               "why": None}},
+    "counts": {"CANONICAL": 25, "MISPLACED": 1, "UNKNOWN": 71},
+    "open_questions": [{"class": "MISPLACED", "path": "/w/stray",
+                        "kind": "directory", "why": "not in the closed set"}],
+    "role_locations": {"declared": ["runtime.a"], "entries": 11, "why": "one level in"},
+    "symlinks_into_data_root": {"/data/.vscode-server": {
+        "home_path": "/home/hwz/.vscode-server", "target": "/data/.vscode-server",
+        "why": "deliberate relocation"}},
+    "duplicate_semantic_roots": {"artifacts": ["/a", "/b"]},
+    "note": "advisory",
+}
+
+PROTECTION_PAYLOAD = {
+    "checked": 1,
+    "counts": {"protected": 1, "not_protected": 0, "unknown": 0},
+    "containers": [{"subject": "abc123", "name": "res", "protected": True,
+                    "container_id": "abc123", "by_identity": {},
+                    "findings": [
+                        {"code": "PROTECTION_LOST_ON_IDENTITY_SWITCH",
+                         "severity": "HIGH", "implies_stale": False,
+                         "identity_that_protects": "container_name",
+                         "identity_that_does_not": "container_id",
+                         "sources": [], "why": "the answer depends on the spelling"}]}],
+    "findings": [{"subject": "abc123", "code": "PROTECTION_LOST_ON_IDENTITY_SWITCH",
+                  "severity": "HIGH", "implies_stale": False,
+                  "identity_that_protects": "container_name",
+                  "identity_that_does_not": "container_id", "sources": [],
+                  "why": "the answer depends on the spelling"}],
+}
+
+
+class _Args:
+    def __init__(self, **kw):
+        self.json = False
+        self.registry = None
+        for key, value in kw.items():
+            setattr(self, key, value)
+
+
+def test_the_five_renderers_read_the_shapes_the_daemon_actually_answers(
+        monkeypatch, capsys, tmp_path):
+    """Each renderer is driven with the real field names and must print the
+    values that are IN them.
+
+    Asserting the values rather than only the exit code is the point: a
+    renderer that reads a key that does not exist raises, and a renderer that
+    reads the WRONG existing key prints a blank column and exits 0.
+    """
+    monkeypatch.setattr(cli_mod.view_mod, "port_ownership",
+                        lambda **k: PORTS_PAYLOAD)
+    monkeypatch.setattr(cli_mod.view_mod, "desired_actual",
+                        lambda **k: DESIRED_PAYLOAD)
+    monkeypatch.setattr(cli_mod.view_mod, "runtime_hygiene",
+                        lambda **k: HYGIENE_PAYLOAD)
+    monkeypatch.setattr(cli_mod.view_mod, "fs_hygiene", lambda **k: FS_PAYLOAD)
+    monkeypatch.setattr(cli_mod.view_mod, "protection",
+                        lambda **k: PROTECTION_PAYLOAD)
+    monkeypatch.setattr(cli_mod, "load_registry", lambda path: None)
+
+    class _Inventory:
+        def docker_list(self):
+            return {"containers": [{"name": "res", "id": "abc123", "labels": ""}]}
+
+    monkeypatch.setattr(cli_mod.inventory_mod, "Inventory", _Inventory)
+
+    # A registry file that exists, so `load_registry` is never reached.
+    args = _Args()
+
+    assert cli_mod.cmd_resource_ports(args) == cli_mod.EXIT_OK
+    out = capsys.readouterr().out
+    assert "port:tcp:127.0.0.1:26400" in out and "work-item:LIT-0104" in out
+    assert "two claims disagree" in out
+    assert "docker: UNAVAILABLE" in out
+
+    assert cli_mod.cmd_runtime_desired(args) == cli_mod.EXIT_OK
+    out = capsys.readouterr().out
+    assert "res-down" in out and "running / STOPPED (NOT_RUNNING)" in out
+    assert "unchecked      0" in out
+
+    assert cli_mod.cmd_runtime_classify(args) == cli_mod.EXIT_OK
+    out = capsys.readouterr().out
+    assert "managed-runtime:res" in out and "PROTECTED" in out
+    assert "also matches: ACTIVE" in out
+    assert "inputs NOT gathered  activity" in out
+
+    assert cli_mod.cmd_fs_hygiene(args) == cli_mod.EXIT_OK
+    out = capsys.readouterr().out
+    assert "MISPLACED" in out and "/w/stray" in out
+    assert "not in the closed set" in out
+    assert "/home/hwz/.vscode-server -> /data/.vscode-server" in out
+    assert "artifacts: ['/a', '/b']" in out
+
+    assert cli_mod.cmd_container_protection(args) == cli_mod.EXIT_OK
+    out = capsys.readouterr().out
+    assert "abc123" in out and "res" in out
+    assert "the answer depends on the spelling" in out
+
+
+DOCKER_PAYLOAD = {
+    "summary": {"Containers": 3, "ContainersRunning": 1, "ContainersStopped": 2,
+                "Images": 5, "DockerRootDir": "/var/lib/docker", "Driver": "overlay2"},
+    "containers": {"containers": [], "count": 3},
+    "images": {"images": [], "count": 5, "dangling": 1},
+    "volumes": {"volumes": [], "count": 32},
+    "networks": {"networks": [], "count": 21},
+    "sizes": {"containers": [
+        {"name": "big", "id": "aaa", "size_rw_bytes": 10 * 1024 * 1024,
+         "size_root_fs_bytes": 2 * 1024 * 1024 * 1024},
+        {"name": "small", "id": "bbb", "size_rw_bytes": 0,
+         "size_root_fs_bytes": 1024 * 1024},
+    ], "count": 2},
+    "largest_observed_consumers": [
+        {"name": "big", "container_id": "aaa",
+         "writable_layer_bytes": 10 * 1024 * 1024,
+         "rootfs_bytes": 2 * 1024 * 1024 * 1024},
+        {"name": "small", "container_id": "bbb", "writable_layer_bytes": 0,
+         "rootfs_bytes": 1024 * 1024},
+    ],
+    "space_included": False,
+    "space_note": "the reclaimable/build-cache picture is NOT in this answer",
+    "advisory": "every number here is a measurement",
+}
+
+TUNNEL_PAYLOAD = {
+    "state": "UNKNOWN", "declared_count": 0, "observed_count": 0,
+    "declared": [], "observed_forwarders": [], "undeclared_forwarders": [],
+    "blind_spots": [{"what": "sshd-owned forwards", "state": "UNKNOWN",
+                     "measured": {"visible_uids": [1006]},
+                     "why": "hidepid=invisible"}],
+    "advisory": "joined by PID",
+}
+
+
+def test_resource_docker_renders_the_daemons_docker_shape(monkeypatch, capsys):
+    """The verb §30's acceptance needs, rendered end to end.
+
+    The space note must appear in the answer when the picture is absent —
+    an omitted section that printed nothing would read as a section that was
+    measured and came back empty.
+    """
+    monkeypatch.setattr(cli_mod.view_mod, "docker_observation",
+                        lambda **k: DOCKER_PAYLOAD)
+    assert cli_mod.cmd_resource_docker(_Args(space=False)) == cli_mod.EXIT_OK
+    out = capsys.readouterr().out
+    assert "3 (1 running, 2 stopped)" in out
+    assert "/var/lib/docker" in out
+    assert "2.0 GiB" in out and "big" in out
+    assert "NOT in this answer" in out
+
+
+def test_resource_docker_reports_the_reclaimable_figure_as_a_would_be(monkeypatch, capsys):
+    """`--space` prints what a prune WOULD free and says so, because the
+    number is an estimate of an action this round must not take."""
+    payload = dict(DOCKER_PAYLOAD, space_included=True, space={
+        "sections": {"images": {"size_bytes": 4 * 1024 ** 3,
+                                "reclaimable_bytes": 3 * 1024 ** 3}},
+        "reclaimable_bytes_total": 3 * 1024 ** 3})
+    monkeypatch.setattr(cli_mod.view_mod, "docker_observation",
+                        lambda **k: payload)
+    assert cli_mod.cmd_resource_docker(_Args(space=True)) == cli_mod.EXIT_OK
+    out = capsys.readouterr().out
+    assert "what a prune WOULD free" in out
+    assert "3.0 GiB of 4.0 GiB" in out
+
+
+def test_tunnel_list_prints_the_blind_spots_not_only_the_counts(monkeypatch, capsys):
+    """`declared 0` is a fact about what was found; the blind spots are the
+    fact about what could be looked for. A rendering that printed only the
+    counts would answer §30's tunnel question with the first and hide the
+    second."""
+    monkeypatch.setattr(cli_mod.view_mod, "tunnel_observation",
+                        lambda **k: TUNNEL_PAYLOAD)
+    assert cli_mod.cmd_tunnel_list(_Args()) == cli_mod.EXIT_OK
+    out = capsys.readouterr().out
+    assert "TUNNEL OBSERVATION = UNKNOWN" in out
+    assert "sshd-owned forwards" in out and "hidepid=invisible" in out
+
+
+ANOMALY_PAYLOAD = {
+    "observed_at": "2026-09-14T13:00:00+08:00",
+    "signals": [{
+        "code": "DISK_CRITICAL", "severity": "high", "subject": "filesystem:/",
+        "measured": {"used_percent": 93.4, "threshold_percent": 92.0,
+                     "roles": ["ROOT_FS", "DOCKER_FS"]},
+        "window": "point in time", "why": "this filesystem is at or above the critical tier",
+        "source": "host-filesystem",
+        "freshness": {"state": "FRESH", "age_seconds": 0.0,
+                      "within_seconds": 300, "observed_at": None, "why": None},
+    }],
+    "by_code": {"DISK_CRITICAL": 1},
+    "codes_emitted": ["DISK_CRITICAL"],
+    "codes_graded": ["DISK_CRITICAL", "CONTAINER_WRITABLE_LAYER_LARGE"],
+    "codes_not_evaluated": [
+        {"code": "DOCKER_STORAGE_HIGH", "why": "`docker system df`: not "
+         "collected. On this host it costs ~22s and is opt-in by name — and not "
+         "asking is not the same as finding 0", "needs": "docker_space()",
+         "threshold": {"key": "docker_storage_percent_high"}},
+        {"code": "TUNNEL_OWNER_MISSING", "why": "no declared tunnel was supplied",
+         "needs": "tunnel_observation() rows", "threshold": None},
+    ],
+    "coverage": {"graded": 2, "of": 15, "note": "a code in `codes_graded` was "
+                 "looked for and not found; a code in `codes_not_evaluated` "
+                 "was not looked for at all"},
+    "notes": [],
+    "gathering": {"inputs_supplied_by_the_caller": [],
+                  "inputs_reached": ["host", "disk", "docker", "hygiene",
+                                     "desired", "tunnel"],
+                  "inputs_unreachable": {}},
+    "space_included": False,
+    "supported_by_resource_policy": {"state": "DECLARED",
+                                     "destructive_reconcile": {"enabled": False}},
+    "advisory": "Every row here is a measurement with its threshold beside it.",
+}
+
+
+def test_resource_anomaly_prints_the_codes_it_could_not_grade(monkeypatch, capsys):
+    """§27 applied to §18's own output, and the reason this renderer exists.
+
+    A report that printed only the signals would show a host with one problem
+    and hide the thirteen codes nothing looked at. The not-evaluated list is
+    printed with each reason, and the space note names why two of them are
+    missing instead of letting an omitted section read as an empty one.
+    """
+    monkeypatch.setattr(cli_mod.view_mod, "resource_anomaly",
+                        lambda **k: ANOMALY_PAYLOAD)
+    assert cli_mod.cmd_resource_anomaly(_Args(space=False)) == cli_mod.EXIT_OK
+    out = capsys.readouterr().out
+    assert "DISK_CRITICAL" in out and "filesystem:/" in out
+    assert "2 of 15" in out
+    assert "codes NOT evaluated" in out
+    assert "not the same as finding 0" in out
+    assert "--space" in out
+    assert "destructive reconcile False" in out
+
+
+def test_resource_anomaly_says_freshness_and_the_window_beside_each_row(
+        monkeypatch, capsys):
+    """§26 on the printed surface: the window is what makes the row ageable,
+    so a reader who copies `used_percent: 93.4` out of the table has also
+    copied when it was true and how long it stays true."""
+    monkeypatch.setattr(cli_mod.view_mod, "resource_anomaly",
+                        lambda **k: ANOMALY_PAYLOAD)
+    assert cli_mod.cmd_resource_anomaly(_Args(space=True)) == cli_mod.EXIT_OK
+    out = capsys.readouterr().out
+    assert "source host-filesystem" in out
+    assert "window point in time" in out and "freshness FRESH" in out
+    assert "threshold" in out and "92.0" in out
+
+
+def test_the_container_filter_is_a_view_and_says_so(monkeypatch, capsys):
+    """`--claimed-by-a-container` narrows the printed rows and leaves the
+    coverage counts whole, and it names the narrowing. A filtered report that
+    hid how much it hid would make a partial answer read as a complete one."""
+    monkeypatch.setattr(cli_mod.view_mod, "port_ownership",
+                        lambda **k: PORTS_PAYLOAD)
+    monkeypatch.setattr(cli_mod, "load_registry", lambda path: None)
+
+    assert cli_mod.cmd_resource_ports(
+        _Args(claimed_by_a_container=True)) == cli_mod.EXIT_OK
+    out = capsys.readouterr().out
+    assert "endpoints            2" in out, "the coverage count was narrowed too"
+    assert "filtered to the container-claimed endpoints: 1 of 2" in out
+    assert "port:tcp:0.0.0.0:22" not in out
+
+
+def test_the_cli_module_contains_no_mutating_call():
+    """§26's gate, applied to the file this round edited most.
+
+    Classified from the parsed AST by the same guard the rest of the tree is
+    checked with, so a verb spelled inside a docstring — and this module's
+    docstrings name the verbs it refuses — is prose rather than a call.
+    """
+    guard = _load("serveros_mutation_guard",
+                  str(REPO / "skills" / "serveros" / "scripts" / "mutation_guard.py"))
+    source = (RUNTIME / "cli.py").read_text()
+    hits = guard.scan_file("runtime/cli.py", source)["hits"]
+    assert [h for h in hits if h["kind"] == "mutation"] == []
+
+    # Non-vacuity: the same scan over a copy with one real call added finds it.
+    poisoned = source + (
+        "\n\ndef _poison(args):\n"
+        "    import subprocess\n"
+        "    subprocess.run(['docker', 'stop', 'abc123'], check=False)\n"
+    )
+    assert [h for h in guard.scan_file("runtime/cli.py", poisoned)["hits"]
+            if h["kind"] == "mutation"], (
+        "the scan found nothing in a file that stops a container, so it would "
+        "have found nothing in one that did"
+    )

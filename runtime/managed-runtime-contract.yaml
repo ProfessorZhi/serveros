@@ -163,6 +163,59 @@ desired_states:
   - running
   - stopped
 
+# ---------------------------------------------------------------------------
+# §15 · desired / actual.
+#
+# Two vocabularies meet here and they are not the same one. A registration
+# declares `running` or `stopped`; a measurement produces `RUNNING`, `STOPPED`,
+# `UNAVAILABLE`, or — on an axis this resource does not declare — nothing at
+# all. The join is declared rather than written into the comparator, because
+# the alternative is a third list living in the code that nobody reviews, and
+# the day either side gains a member the comparison silently stops matching
+# and reports IN_DESIRED_STATE for everything.
+#
+# `satisfies` is a one-way map on purpose: a desired state is a claim about
+# what the measured state must be, and the reverse direction ("this
+# measurement means a registration must have declared running") is not a
+# thing anybody needs and would be wrong for a container that is stopped
+# because its desired state is stopped.
+#
+# States that are NOT COMPARABLE are listed separately and are the whole
+# difficulty of §15. `UNAVAILABLE` means a probe could not ask. `UNKNOWN`
+# means it asked and could not tell. Neither is "not running", and treating
+# either as a mismatch is how a probe that failed gets reported as a resource
+# that failed — the §11 defect, arriving through a comparison instead of
+# through a classifier.
+# ---------------------------------------------------------------------------
+desired_actual:
+  satisfies:
+    running: [RUNNING]
+    stopped: [STOPPED]
+  not_comparable:
+    - UNAVAILABLE
+    - UNKNOWN
+    - NOT_APPLICABLE
+  # Derived states that mean "the measured state contradicts a declaration",
+  # and the desired value each one contradicts.
+  #
+  # Read from the health model's own output rather than recomputed here. The
+  # comparison of a declaration against a measurement already happens in
+  # `Health.state` — its rule table distinguishes `STOPPED` ("at rest; this is
+  # the desired state, not a fault") from `NOT_RUNNING` ("desired running, is
+  # not") — and a second comparison in this module would be a second answer to
+  # the same question, free to disagree with the first.
+  #
+  # Named explicitly rather than derived from `satisfies`, because the mapping
+  # from a derived word to the declaration it contradicts is a fact somebody
+  # should have to write down and review, not a thing a comparator infers.
+  mismatch_states:
+    NOT_RUNNING: running
+  note: >
+    A comparison neither side established is UNCHECKED and not a mismatch.
+    §15 states this as a rule about `desired_state = None`; the same reasoning
+    covers the measured half, which is why it is written down here rather than
+    left to the comparator's control flow.
+
 protection_levels:
   # Not reclaimable by any automatic action, ever. Removal is a human decision.
   - protected
@@ -496,8 +549,18 @@ ownership:
   session_owner_ids:
     # Ids that denote a session lifetime. A registration owned by one of these
     # may not be registered with a lifecycle class outside this list.
+    #
+    # This list is the SSOT for the rule, so it must not be a subset of the
+    # ids the code already calls session-shaped. `agent-session:*` was in
+    # `anomaly.SESSION_OWNER_PREFIXES` — the list `registry._check_ownership`
+    # refuses on — and was missing here, which made the two readers of one
+    # rule disagree: a document that reached the observer without passing
+    # through registration (a fixture, a hand-built document, a future
+    # producer) would have been reported CONSISTENT. Found 2026-09-14 by
+    # `test_the_contract_and_the_detector_agree_about_what_a_session_is`.
     - "session:*"
     - "agent-runtime:*"
+    - "agent-session:*"
   permitted:
     session_owner_lifecycle: [session-scoped, disposable]
     forbidden:

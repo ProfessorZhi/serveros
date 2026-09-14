@@ -76,9 +76,23 @@ DEFAULT_THRESHOLDS = {
     "memory_rss_high_bytes": 1073741824,
     "age_long_seconds": 86400,
     "filesystem_percent_high": 85.0,
+    "inode_percent_high": 85.0,
+    "swap_percent_high": 90.0,
+    "load1_per_cpu_high": 1.0,
     "error_repeats_high": 10,
     "error_window_seconds": 3600,
     "idle_grace_seconds": 1800,
+    # -- §18 resource-observation thresholds ---------------------------------
+    # A SECOND disk tier. `filesystem_percent_high` above is the warning tier
+    # and already existed; this is the one that says "do not create anything
+    # else here". One number cannot say both, and §31's four-valued verdict
+    # cannot be produced from a single threshold.
+    "filesystem_percent_critical": 92.0,
+    "memory_percent_high": 90.0,
+    "docker_storage_percent_high": 85.0,
+    "docker_build_cache_bytes_high": 21474836480,   # 20 GiB
+    "container_writable_layer_bytes_high": 1073741824,   # 1 GiB
+    "container_log_bytes_high": 1073741824,   # 1 GiB
 }
 
 # Codes that describe a thing being BROKEN rather than unused. The distinction
@@ -122,6 +136,14 @@ SEVERITY = {
     "PERSISTENT_RUNTIME_FLOATING_DEPENDENCY": "medium",
     "SESSION_OWNED_DURABLE_RESOURCE": "high",
     "UNDECLARED_DURABLE_RESOURCE": "medium",
+    # §15. Medium, not high: the desired state on the other side of this
+    # comparison is a DECLARATION, so a mismatch says the declaration and the
+    # world disagree and does not say which one is wrong.
+    "DESIRED_ACTUAL_MISMATCH": "medium",
+    # §17. High, and the only code here whose subject is a permission rather
+    # than a resource: a protection that lapses through a change of identity
+    # produces no error and no anomaly of its own.
+    "PROTECTION_LOST_ON_IDENTITY_SWITCH": "high",
 }
 
 # ---------------------------------------------------------------------------

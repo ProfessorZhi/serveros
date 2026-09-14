@@ -45,6 +45,10 @@ registry_mod = _load("serveros_runtime_registry", "registry.py")
 health_mod = _load("serveros_runtime_health", "health.py")
 probes_mod = _load("serveros_runtime_probes", "probes.py")
 daemon_mod = _load("serveros_runtime_daemon", "daemon.py")
+# §27. Loaded so the unavailable-provider tests can drive the REAL inventory
+# over a host whose reads all fail, rather than a fake that models the failure
+# shapes — and therefore tests the fake.
+inventory_mod = _load("serveros_runtime_inventory", "inventory.py")
 
 # `release.py` is the one module under test that lives outside `runtime/`, so it
 # does not fit `_load`. It is loaded here because the unit-rendering it owns is
@@ -1634,3 +1638,110 @@ def test_an_empty_string_parameter_is_refused_the_same_way(daemon_factory, metho
     response = daemon.handle({"method": method, "params": {param: ""}})
     assert response["ok"] is False
     assert "missing required parameter" in response["error"]["message"]
+
+
+# ---------------------------------------------------------------------------
+# §18/§27 · the resource anomaly surface, and what "nothing was measured" says
+# ---------------------------------------------------------------------------
+
+
+class DeadHost:
+    """A host whose every read fails, driven through the REAL inventory.
+
+    The point of using `Inventory` over a dead host rather than a hand-built
+    fake document is that the failure SHAPES under test are the producer's own.
+    A fake that returns `{}` tests the fake: it found a `KeyError` in
+    `hygiene.containers()` on the first attempt, when the real `docker_list`
+    returns `{"state": "UNAVAILABLE", "reason": ...}` and the guard expects
+    exactly that. §27 is about what the real producer does when the provider is
+    down, so the real producer is what this drives.
+    """
+
+    def read(self, args, timeout):
+        return -1, "", f"`{' '.join(args[:2])}` is not reachable in this test"
+
+    def read_text(self, path):
+        return None
+
+    def statvfs(self, path):
+        return None
+
+    def exists(self, path):
+        return False
+
+
+def _dead_inventory():
+    return inventory_mod.Inventory(DeadHost())
+
+
+def test_an_unmeasured_node_does_not_answer_that_it_has_no_resource_anomalies(
+        daemon_factory):
+    """§27, at the surface: unavailable is not zero.
+
+    The failure this forbids has no error in it. A node that cannot read Docker
+    or `/proc` and answers "0 anomalies, 15 codes clean" is wrong in the one
+    direction nobody investigates, and this round's §27 exists because the
+    resource layer was one `None` comparison away from doing exactly that.
+
+    BOTH halves of the host are dead here, and that is the whole point of the
+    fixture: `_dead_inventory()` kills the Docker, disk and memory reads, and
+    `containers={}` kills the probe host §15's comparison goes through. An
+    inventory-only dead host still has a working probe host, so exactly one
+    code — `DESIRED_ACTUAL_MISMATCH` — graded, correctly, because a comparison
+    really did run and really did find the registration in its desired state.
+    That version of this test asserted the wrong thing and would have passed
+    for the wrong reason had the comparison been skippable.
+    """
+    daemon = daemon_factory(a_resource("thing-one"), containers={},
+                            inventory=_dead_inventory())
+    response = daemon.handle({"method": "resource.anomaly.list", "params": {}})
+    assert response["ok"] is True
+    result = response["result"]
+
+    assert result["coverage"]["graded"] == 0, result["codes_graded"]
+    assert result["codes_graded"] == []
+    assert result["codes_emitted"] == []
+    assert len(result["codes_not_evaluated"]) == result["coverage"]["of"] == 15
+    # Every ungraded code names why, and the reasons are about a provider, not
+    # about a threshold: an empty `why` would be the declaration-layer shape of
+    # "we did not look" reported as "we looked and found nothing".
+    assert all(row["why"] for row in result["codes_not_evaluated"])
+    assert all(row["needs"] for row in result["codes_not_evaluated"])
+
+
+def test_a_comparison_that_really_ran_is_still_graded(daemon_factory):
+    """The other half of the rule above, and why it is not "grade nothing".
+
+    Same dead inventory, but the probe host answers this time: one container,
+    registered `desired: running`, found running. `DESIRED_ACTUAL_MISMATCH` is
+    then graded with zero signals — which is the correct reading and the one
+    §27 is not asking anybody to stop reporting. Without this test the rule
+    above would be satisfied by a detector that never grades this code at all,
+    and "never graded" is the same silence as "graded clean" with a different
+    label on it.
+    """
+    daemon = daemon_factory(a_resource("thing-one"), inventory=_dead_inventory())
+    result = daemon.handle({"method": "resource.anomaly.list", "params": {}})["result"]
+    assert result["codes_graded"] == ["DESIRED_ACTUAL_MISMATCH"], result["codes_graded"]
+    assert result["codes_emitted"] == []
+    assert all(row["code"] != "DESIRED_ACTUAL_MISMATCH"
+               for row in result["codes_not_evaluated"])
+
+
+def test_the_two_runtime_codes_are_ungraded_rather_than_clean_when_docker_is_down(
+        daemon_factory):
+    """The narrower half, and the one that was a live defect in this round.
+
+    `RUNTIME_UNOWNED` and `RUNTIME_ORPHANED` are graded from the container
+    hygiene report. When Docker is unreachable that report classifies nothing,
+    and the first version of this read "classified nothing" as "nothing is
+    unowned" — the two codes came back in `codes_graded` on a call where
+    nothing had looked at a container.
+    """
+    daemon = daemon_factory(a_resource("thing-one"), inventory=_dead_inventory())
+    result = daemon.handle({"method": "resource.anomaly.list", "params": {}})["result"]
+    ungraded = {row["code"]: row["why"] for row in result["codes_not_evaluated"]}
+    for code in ("RUNTIME_UNOWNED", "RUNTIME_ORPHANED"):
+        assert code in ungraded, code
+        assert "unreachable" in ungraded[code] or "could not" in ungraded[code], ungraded[code]
+        assert code not in result["codes_graded"]

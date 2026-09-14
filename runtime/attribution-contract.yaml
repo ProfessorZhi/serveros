@@ -98,6 +98,40 @@ confidence:
   - low
   - unknown
 
+# This list and `epistemic` above are two vocabularies for two questions, and
+# they are NOT alternatives to each other:
+#
+#   epistemic   how the value was obtained      FACT / INFERRED / UNKNOWN
+#   confidence  how far what it got binds        high / medium / low / unknown
+#
+# §12 and §14 report BOTH, because the interesting rows are the ones where they
+# disagree: a published binding read straight out of `docker inspect` is a FACT
+# about a container nobody has registered, and an owner derived from a bind
+# mount is INFERRED and can still be `high`. A single field cannot hold that
+# pair, and collapsing them reports "we are sure" about a value that was
+# guessed.
+#
+# The runtime graph and the port view speak the confidence words below rather
+# than `high/medium/low`, because their consumers are asking "does this edge
+# bind" and not "how strong is the evidence class". The mapping is declared
+# here so that the two vocabularies join in exactly one place instead of in
+# every consumer that needs both.
+#
+# Forward direction, source word -> binding word, so that it is a function
+# rather than a table with a hole in it: three targets and four sources is
+# many-to-one, and a reverse reading would leave `low` undefined.
+confidence_alignment:
+  high: AUTHORITATIVE
+  medium: INFERRED
+  low: INFERRED
+  unknown: UNKNOWN
+  note: >
+    `low` maps to INFERRED and not to UNKNOWN. A locator that plausibly names
+    an owner is a stronger thing than no evidence at all, and calling it
+    UNKNOWN would report a finding as a blank. It is not AUTHORITATIVE either:
+    §12 forbids a similar name from becoming an owner edge, and `low` is
+    exactly the class that rule is written about.
+
 # ---------------------------------------------------------------------------
 # Where an attribution came from. A closed list, because "we got it from
 # somewhere" is how an inference becomes indistinguishable from a measurement.
@@ -141,6 +175,60 @@ container_attribution:
   # path. A design that works only when owners cooperate does nothing today.
   owner_label: serveros.owner
 
+  # The declared label namespace. Surveyed 2026-09-14 across all 38 containers
+  # on this host: ZERO `serveros.*` labels exist. So this is a PROPOSAL, not a
+  # description of anything running, and it is recorded here — in the one
+  # place the reader side reads — so that the day a container carries one it
+  # is decisive without a code change.
+  #
+  # A container MAY carry any subset. None is required. A missing label is not
+  # a defect and not a weaker claim about the container; it means the
+  # container predates the convention or was created by something that does
+  # not know it. Nothing in this round writes a label (§11, read-only), so
+  # every one of these is read-and-report only.
+  declared_runtime_namespace:
+    namespace: serveros
+    observed_instances: 0
+    observed: "2026-09-14"
+    # `serveros.owner` is listed here as well as in `owner_label` above
+    # because the two are one rung of one ladder: a container carrying both
+    # is not better attributed, it is the same owner written twice.
+    labels:
+      owner: >
+        the original owner key; identical in force to owner_ref
+      owner_ref: >
+        the owner, under the §9 namespace
+      owner_type: >
+        qualifies owner_ref when the ref's prefix is not the type
+      runtime_ref: >
+        the canonical identity. Outranks every other anchor
+      device_ref: >
+        which device this runtime was AUTHORED for. Reported as written and
+        never checked against the host it is running on — those two differing
+        is a drift finding, and resolving it here would hide it
+      scope: >
+        machine / project / work-item / session
+      protected: >
+        written as the string "true" or "false". Any other value is reported
+        as unparseable and NOT coerced to false: bool() of the string "false"
+        is True, and a protection flag that reads as False when it was
+        written as something else is a protection bypass
+      work_item: >
+        e.g. LIT-0104
+      run_id: >
+        e.g. RUN-0019
+      session_ref: >
+        an agent session
+      created_by: >
+        who created it
+    managed:
+      key: serveros.managed
+      note: >
+        the single label that says a container is under ServerOS management at
+        all. This is the MANAGED half of the §11 classification; its absence
+        is one of the things that makes a container EXTERNAL or UNKNOWN, and
+        absence is NOT the same as `serveros.managed=false`.
+
   # A label whose KEY is inside a declared namespace delegates ownership to
   # that namespace's ref. THE VALUE IS NEVER READ: a runtime-config label's
   # value is configuration, and configuration is where credentials live. The
@@ -164,6 +252,36 @@ container_attribution:
         name. Declaring it here would resolve all four; leaving it undeclared
         keeps them UNKNOWN_OWNER and therefore DEFER, which is the safe
         default for a decision this run has no mandate to make.
+
+    # Surveyed 2026-09-14 and added to this list, which had not been updated
+    # since 09-13 and was missing both. They are product-owned namespaces
+    # rather than strangers' — which is the reason they are the FIRST
+    # candidates for a declaration, and exactly why the decision belongs to a
+    # human rather than to a survey that noticed them.
+    - namespace: litellm
+      labels:
+        - litellm.ui-dependency-hash
+        - litellm.source-sha
+        - litellm.profile
+        - litellm.dependency-hash
+      containers: 4
+      observed: "2026-09-14"
+      note: >
+        build provenance for the LiteLLM images, written by our own publish
+        path. `litellm.source-sha` and `litellm.dependency-hash` are the
+        identity of the SOURCE an image was built from, so declaring this
+        namespace is how a container would claim its own build. Left
+        undeclared: it identifies a build, not an owner.
+
+    - namespace: hwz
+      label: hwz.p18
+      containers: 2
+      observed: "2026-09-14"
+      note: >
+        not a namespace with a documented meaning on this host. Recorded
+        because it contains a dot and is therefore indistinguishable from an
+        ownership claim by the rung-2 test alone — which is why it is listed
+        here rather than left for the next reader to trip over.
 
   # A container whose paths sit under ANOTHER user's home.
   #
@@ -397,6 +515,48 @@ anomalies:
       shell comment. The capability it backs resolves to PROVIDER_NOT_INSTALLED
       rather than UNKNOWN, because "we are not sure whether this node has it"
       is false comfort when the answer is that it has no provider at all.
+  # -- added by the resource-observation round (§15) ------------------------
+  - code: DESIRED_ACTUAL_MISMATCH
+    severity: medium
+    implies_stale: false
+    note: >
+      a registered resource that is measurably not in the state its own
+      registration declares. Raised as a SIGNAL and never as a conclusion: the
+      desired state is a declaration, so a mismatch means the declaration and
+      the world disagree — and which of the two is wrong is not something this
+      detector can see. Medium rather than high for that reason, and
+      `implies_stale` false because a resource that should be running and is
+      not is the opposite of a reclamation candidate; every automatic path in
+      this system treats a stopped resource under a `running` declaration as
+      something to look at, never as something to remove.
+
+      It is a separate code from the whole class of "this looked wrong"
+      findings because it is the only one with a declaration on the other
+      side of it. A container that exited with `--restart no` and no
+      registration is not a mismatch; it is nobody's declared problem, and
+      saying otherwise is how a detector acquires a population of one false
+      alert per stopped test container.
+  # -- added by the protection gate (§17) ----------------------------------
+  - code: PROTECTION_LOST_ON_IDENTITY_SWITCH
+    severity: high
+    implies_stale: false
+    note: >
+      a resource whose protection is reachable through one of its identities
+      and not through another. §9 made `runtime:container:<id>` the canonical
+      identity of a container, and every automatic path will use that spelling
+      — but protection declarations on this node name work items and container
+      names, so under the canonical identity the same container resolves to
+      `protected: false`. Both answers are defensible and only one of them is
+      safe, which is exactly why it is reported rather than resolved: the fix
+      is a declaration somebody has to write, not a fallback a resolver should
+      invent. High, because a protection that lapses produces no error, no
+      anomaly and no line in any report — the container simply becomes
+      reclaimable and looks exactly like one that always was.
+
+      The live gate fires on four containers on this host (measured
+      2026-09-14), which is recorded in the round's report and NOT acted on:
+      editing the registry's protection list is a declaration change and
+      requires authorisation.
 
 # ---------------------------------------------------------------------------
 # Thresholds (§10). Declared here, read by the detector, never hard-coded.
@@ -416,10 +576,207 @@ thresholds:
   memory_rss_high_bytes: 1073741824      # 1 GiB
   age_long_seconds: 86400                # one day
   filesystem_percent_high: 85.0
+  # The same question asked of inodes. A filesystem with free bytes and no free
+  # inodes cannot create a file, so it is a separate gate with a separate
+  # threshold rather than a second reading of the byte one.
+  inode_percent_high: 85.0
+  # Swap in use. Above this the machine is not merely busy, it is out of the
+  # memory it would need to absorb one more persistent process — which is an
+  # admission question, not a cleanup one.
+  swap_percent_high: 90.0
+  # Load average per logical CPU. Expressed per CPU so that the number does not
+  # have to be restated when the machine is resized, and so that a 32-core host
+  # and a 4-core host are compared by the same rule.
+  load1_per_cpu_high: 1.0
   error_repeats_high: 10
   error_window_seconds: 3600
   # A runtime whose task went idle this long ago and is still consuming.
   idle_grace_seconds: 1800
+  # -- §18 resource-observation thresholds ----------------------------------
+  # A SECOND disk tier. `filesystem_percent_high` above is the warning tier
+  # and already existed; this is the one that says "do not create anything
+  # else here". One number cannot say both, and §31's four-valued verdict
+  # (`NO ACTION / MONITOR / GOVERNANCE REQUIRED / CRITICAL`) cannot be
+  # produced from a single threshold.
+  filesystem_percent_critical: 92.0
+  # Host-level memory, as opposed to the per-runtime `memory_rss_high_bytes`
+  # above. A single process over its own budget and a machine out of memory
+  # are different findings and only the second one gates admission.
+  memory_percent_high: 90.0
+  # Docker's share of the filesystem its data root lands on. Above this the
+  # store is the thing filling the disk, which is a different disposition
+  # from "something else here is large".
+  docker_storage_percent_high: 85.0
+  # BuildKit's cache. On this host two buildx instances hold tens of GB and
+  # are BUILD INFRASTRUCTURE, not litter — this threshold exists to keep the
+  # number in front of a person, not to authorise pruning it.
+  docker_build_cache_bytes_high: 21474836480   # 20 GiB
+  container_writable_layer_bytes_high: 1073741824   # 1 GiB
+  container_log_bytes_high: 1073741824   # 1 GiB
+
+# ---------------------------------------------------------------------------
+# Resource anomaly codes (§18). Fifteen, and a SECOND vocabulary beside the
+# process-layer `anomalies:` list above.
+#
+# Why a second list rather than fifteen more entries above: the list above is
+# the PROCESS layer — a runtime group, a pid tree, a task. This one is the
+# RESOURCE layer — a filesystem, the host's memory, the Docker store, a
+# container, a tunnel. They share the severity scale and the
+# `measured`-carries-its-threshold rule (both are enforced by
+# `anomaly.signal`), and they answer different questions about different
+# subjects. Merging them would make `anomaly.list` a list where a reader
+# cannot tell which half they are looking at.
+#
+# `emitted_by` names the producer. `alias_of` is set where a code here is the
+# GRADED spelling of a code above: DISK_WARNING and DISK_CRITICAL are the
+# warning and critical tiers of the same filesystem measurement that
+# ROOT_FS_PRESSURE and DATA_FS_PRESSURE report, read from the same threshold
+# key. That is stated rather than resolved because the two surfaces are
+# asked different questions — the process layer by `serverosd`'s tick, this
+# one by the resource surface — and a reader who finds both should be able to
+# see they are one measurement rather than two disagreements.
+#
+# Every code here is `implies_stale: false`, and for the same reason as above:
+# a filesystem under pressure, an unowned container and an unhealthy tunnel
+# are facts about the host, not verdicts about a runtime.
+# ---------------------------------------------------------------------------
+resource_anomalies:
+  - code: DISK_WARNING
+    severity: medium
+    implies_stale: false
+    emitted_by: resource_anomaly._disk_signals
+    threshold: filesystem_percent_high
+    alias_of: [ROOT_FS_PRESSURE, DATA_FS_PRESSURE]
+    note: >
+      the warning tier of a filesystem. It means "plan for this", and the
+      section-31 verdict it produces is MONITOR.
+  - code: DISK_CRITICAL
+    severity: high
+    implies_stale: false
+    emitted_by: resource_anomaly._disk_signals
+    threshold: filesystem_percent_critical
+    alias_of: [ROOT_FS_PRESSURE, DATA_FS_PRESSURE]
+    permitted_consequence: >
+      refuse the CREATION of a new disposable build or runtime resource on
+      this filesystem. Never stop, remove or prune an existing one — §25
+      states the boundary and §24 states the verbs that do not exist.
+  - code: INODE_CRITICAL
+    severity: high
+    implies_stale: false
+    emitted_by: resource_anomaly._disk_signals
+    threshold: inode_percent_high
+    note: >
+      a filesystem with free bytes and no free inodes cannot create a file.
+      It gets its own code rather than a second reading of the byte one
+      because the two exhaustions have different causes and different fixes.
+  - code: MEMORY_PRESSURE
+    severity: medium
+    implies_stale: false
+    emitted_by: resource_anomaly._memory_signals
+    threshold: memory_percent_high
+    distinct_from: HIGH_MEMORY_SUSTAINED
+    note: >
+      the HOST is out of memory, as opposed to one runtime being large.
+      HIGH_MEMORY_SUSTAINED above is about a process's own RSS; this is about
+      the machine. Only this one may gate admission, and it may gate creation
+      only.
+  - code: SWAP_PRESSURE
+    severity: medium
+    implies_stale: false
+    emitted_by: resource_anomaly._memory_signals
+    threshold: swap_percent_high
+    note: >
+      above this the machine is not merely busy, it is out of the memory it
+      would need to absorb one more persistent process. An admission
+      question, not a cleanup one.
+  - code: DOCKER_STORAGE_HIGH
+    severity: medium
+    implies_stale: false
+    emitted_by: resource_anomaly._docker_signals
+    threshold: docker_storage_percent_high
+    note: >
+      Docker's store, as a share of the filesystem its data root lands on.
+      Above this the store is the thing filling the disk, which is a
+      different disposition from "something else here is large".
+  - code: RUNTIME_UNOWNED
+    severity: low
+    implies_stale: false
+    emitted_by: resource_anomaly._hygiene_signals
+    reuses: hygiene.py UNKNOWN_OWNER
+    note: >
+      No owner could be confirmed. On a shared host this is the expected
+      result and not a defect in the classification: a container name is a
+      string, and a compose project label names a compose run, not an owner.
+      Low severity for exactly that reason.
+  - code: RUNTIME_ORPHANED
+    severity: medium
+    implies_stale: false
+    emitted_by: resource_anomaly._hygiene_signals
+    reuses: hygiene.py ORPHANED
+  - code: DESIRED_ACTUAL_MISMATCH
+    severity: medium
+    implies_stale: false
+    emitted_by: resource_anomaly._desired_signals
+    emitted_by_primary: desired.signal_of
+    note: >
+      already a process-layer code (§15) and reused rather than re-derived:
+      `desired.py` owns the comparison, and a second comparison would be a
+      second answer to "what does the registration say".
+  - code: PROTECTED_RESOURCE_AT_RISK
+    severity: high
+    implies_stale: false
+    emitted_by: resource_anomaly._protected_at_risk
+    threshold: filesystem_percent_high
+    note: >
+      a protected resource standing on a filesystem in a warning tier. High,
+      and the only code in this list whose subject is a PERMISSION: the
+      protection prevents the automatic path from acting, and nothing else
+      was watching the thing the protection was for. The identity half of the
+      same sentence is PROTECTION_LOST_ON_IDENTITY_SWITCH above.
+  - code: CONTAINER_LOG_LARGE
+    severity: low
+    implies_stale: false
+    emitted_by: resource_anomaly._docker_signals
+    threshold: container_log_bytes_high
+    note: >
+      size only, never content — the same rule `inventory.container_logs`
+      enforces one layer down. On this host every log is UNREADABLE to the
+      observing user, so this code reports into `codes_not_evaluated` with
+      that reason rather than as "all logs are small".
+  - code: CONTAINER_WRITABLE_LAYER_LARGE
+    severity: low
+    implies_stale: false
+    emitted_by: resource_anomaly._docker_signals
+    threshold: container_writable_layer_bytes_high
+    note: >
+      from `docker ps -a --size`, which costs 0.54s here against 22s for the
+      daemon-wide accounting. The daemon's own rounded figure — a
+      classification, not an exact byte count.
+  - code: BUILD_CACHE_HIGH
+    severity: medium
+    implies_stale: false
+    emitted_by: resource_anomaly._docker_signals
+    threshold: docker_build_cache_bytes_high
+    note: >
+      Two buildx instances hold tens of GB on this host and are BUILD
+      INFRASTRUCTURE, not litter. This code exists to keep the number in
+      front of a person; `docker system df`'s reclaimable figure is what a
+      prune WOULD free, not what is safe to free.
+  - code: TUNNEL_UNHEALTHY
+    severity: high
+    implies_stale: false
+    emitted_by: resource_anomaly._tunnel_signals
+    note: >
+      the declaration says this tunnel exists and the measurement does not
+      agree. §13 forbids restarting it: an observation that repaired what it
+      observed would destroy the evidence that it was ever broken.
+  - code: TUNNEL_OWNER_MISSING
+    severity: medium
+    implies_stale: false
+    emitted_by: resource_anomaly._tunnel_signals
+    note: >
+      No owner of record. A process that is forwarding has not declared
+      itself anything, and a nearby port or a matching name is not an owner.
 
 # ---------------------------------------------------------------------------
 # Combinations (§11).
@@ -518,3 +875,91 @@ rules:
   - "The daemon reports measurements, never causes. There is no field here
      for a diagnosis, and adding one would be the whole failure mode."
   - "Unknown owner fails safe: DEFER, never reclaim."
+
+# ---------------------------------------------------------------------------
+# §25 · the CPU / memory policy boundary.
+#
+# ServerOS observes pressure. This block is the complete list of what that
+# observation is permitted to cause, and it is written as an ALLOW-list because
+# the failure it guards against is a reflex rather than an oversight: a host
+# under memory pressure and a process with a high resident set are the two
+# facts easiest to reach for, and the two responses a person regrets.
+#
+# The forbidden pair is named in the brief's own words, and it is named here
+# rather than paraphrased so that a reader comparing the two cannot conclude
+# the document is stricter in spirit and looser in writing.
+# ---------------------------------------------------------------------------
+resource_admission:
+  acts_on_existing_resources: false
+  forbidden_responses:
+    - "high CPU => kill"
+    - "high memory => kill"
+  permitted_consequence: >
+    REFUSING the creation of a NEW disposable build or runtime on a resource
+    that is in a tier where the next allocation may not fit. That is the whole
+    of it. The strongest permitted answer is "this host will not take another
+    one right now", which leaves everything already running exactly as it is.
+  wired_into_a_creation_path: false
+  why_not_wired: >
+    §25 permits contract and tests only when wiring would significantly expand
+    the round. It would: the creation paths are the build runner, the test
+    environment provisioner and the agent session launcher, and each of them
+    would need its own decision about what a refusal means to a caller
+    mid-flight. Wiring an admission gate without having read one live
+    observation is the same ordering this round exists to correct — the
+    declaration running ahead of the data.
+  next_round: "Resource Governance V1 (§38)"
+  request_kinds:
+    disposable_build: refuse
+    disposable_runtime: refuse
+    session: refuse
+    persistent: refuse
+    note: >
+      Every kind refuses at the same tier on purpose. A gate that only stopped
+      the cheapest kind would leave the expensive one available precisely when
+      the host is least able to pay for it.
+  gates:
+    DISK_CRITICAL:
+      level: refuse
+      why: >
+        the filesystem is above the critical tier. A new disposable resource
+        would be created onto a disk that cannot be counted on to hold it.
+    INODE_CRITICAL:
+      level: refuse
+      why: >
+        free bytes and no free inodes cannot create a file, so a creation
+        would fail in a way that looks like an unrelated error.
+    MEMORY_PRESSURE:
+      level: refuse
+      why: >
+        at or above the declared threshold the machine has no headroom it
+        would need to absorb one more process.
+    SWAP_PRESSURE:
+      level: refuse
+      why: >
+        a host already swapping has spent the slack that a new allocation
+        would consume. §25's forbidden response is the tempting one here.
+    DISK_WARNING:
+      level: advisory
+      why: >
+        the warning tier is a fact worth reporting to whoever is about to
+        create something, and not a refusal. A gate that closed here would be
+        closed most of the time, which is how a gate becomes noise.
+    DOCKER_STORAGE_HIGH:
+      level: advisory
+      why: >
+        the store's share of its filesystem. Whether that is a problem depends
+        on what is about to be built, which the signal does not know.
+    BUILD_CACHE_HIGH:
+      level: advisory
+      why: >
+        build infrastructure rather than litter. A large cache is what makes
+        the next build cheap, so refusing on this signal alone would trade a
+        slow build for a fast one.
+  note: >
+    Four of the fifteen §18 codes refuse and three advise; the remaining eight
+    are statements about things that already exist and are not admission
+    questions at all. Nothing in this block authorises an action on a resource
+    that exists, and a code with no entry here cannot refuse anything — the
+    list is closed, so a code added later is advisory by default rather than
+    accidentally gating.
