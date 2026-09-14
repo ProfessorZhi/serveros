@@ -46,7 +46,7 @@ version: "3.1.0"
 # regenerated payload must invalidate an already-installed plugin cache. Leave
 # it unchanged otherwise, so that rebuilding from unchanged inputs stays
 # byte-identical.
-cachebuster: srv0003.20260914c
+cachebuster: srv0003.20260915a
 
 # Skills composed into the plugin, in bundle order.
 #
