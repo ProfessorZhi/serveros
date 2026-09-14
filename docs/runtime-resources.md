@@ -571,6 +571,39 @@ module's output as input (`resource-governance-contract.yaml`,
 honest result is **zero** `CLEANUP_CANDIDATE` — 30 containers `DEFER`, 8
 `PROTECTED`, and a code that can never fire must not rank above one that can.
 
+### 9.1 `RESOURCE-CONTAINMENT` — a candidate that is not implemented
+
+A third kind is named here and **deliberately not implemented**, recorded so it
+is a known absence rather than a thing nobody wrote down:
+
+```text
+RESOURCE-CONTAINMENT   a workload whose SCRATCH SPACE lands somewhere it
+                       should not, and which could be contained at launch
+                       → candidate. No module produces it. No code acts on it.
+```
+
+The case behind it: a Codex app-server was observed writing continuously for
+hours into SQLite temporary files under `/var/tmp/etilqs_*` — many gigabytes of
+cumulative writes, on the system disk, transient files by construction. The
+containment would be to point `SQLITE_TMPDIR` / `TMPDIR` at the data disk, and
+it is a **launch-configuration** change in the provider, not an observation and
+not a notification.
+
+It is not in this round for a reason worth stating plainly: the anomaly was
+visible, the top contributor was identifiable, and the containment was still
+not ours to do. ServerOS observes this host; the Codex app-server is launched by
+a Codex Desktop remote connection under a user's own configuration, and
+rewriting that configuration to make a symptom go away is the same category of
+mistake as killing the process. The alert said `REVIEW`, and the correct
+outcome of a `REVIEW` recommendation is a person deciding — including deciding
+that the scratch directory belongs where it is.
+
+When it is implemented it will be a **containment** candidate on the runtime's
+declaration (which provider, which launch environment), not a cleanup candidate
+on the files (deleting `etilqs` files under a live SQLite connection is a
+different and worse idea). Until then the honest entry is this one, and a
+reader looking for it should find it here rather than conclude it was missed.
+
 ## Related
 
 - [`../ARCHITECTURE.md`](../ARCHITECTURE.md) — invariants 6, 7, 8, 11, 12 and 13
