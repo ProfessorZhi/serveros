@@ -218,6 +218,95 @@ def _at_least(measured, threshold) -> bool:
         return False
 
 
+def _psi_avg60(kind) -> float | None:
+    """One PSI window, or None when the kernel did not give one.
+
+    None is not zero and the caller must not treat it as zero: a `some` line
+    with no `avg60`, or a value the parser could not turn into a number, is a
+    measurement that did not happen.
+    """
+    if not isinstance(kind, dict):
+        return None
+    value = kind.get("avg60")
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _gib(value) -> str:
+    if not isinstance(value, (int, float)):
+        return "an unreadable amount"
+    return f"{value / (1024 ** 3):.1f} GiB"
+
+
+def _swap_note(swap, swap_high, psi, limits, mem) -> str:
+    """What a full swap file means — which is not always the same thing.
+
+    **A watermark and a pressure are two different facts, and a note that
+    reports the first as the second is a note nobody can act on correctly.**
+    `used_percent` is a high-water mark. Pages are written to swap when memory
+    was short and read back only when they are touched again, so a swap file
+    that filled once stays full for as long as the pages sitting in it are
+    never needed. Read alone it says what happened to this machine, not what
+    is happening to it — and this host is the worked example, measured
+    2026-09-15: 99.2% of an 8.0 GiB swap file in use, memory PSI at
+    some/full avg10/avg60/avg300 all 0.00, `pswpout` at 3208181 across two
+    readings forty minutes apart, and 15.7 GiB of 31.0 GiB still available.
+    Nothing was paging. The note said "Real memory pressure".
+
+    So the watermark is a reason to ASK, and memory PSI is the answer. The
+    three outcomes are stated separately rather than folded into one sentence,
+    because they call for different responses: real pressure needs the process
+    to justify itself, a stale watermark needs nothing, and an unreadable PSI
+    needs the reader to know that nobody established it.
+
+    Deliberately NOT saying "no pressure" when PSI is absent. `/proc/pressure`
+    is missing on a pre-4.20 kernel and under `psi=0`, and "cannot tell" is
+    not "fine" — that conflation is the same one `pressure_stall` refuses to
+    make one method above, and it would not become true by being made in a
+    sentence instead of a field.
+    """
+    watermark = (
+        f"swap is {swap['used_percent']}% used "
+        f"({swap['used_bytes']} of {swap['total_bytes']} bytes, "
+        f"threshold {swap_high}%)."
+    )
+    some_high = limits.get("psi_memory_some_avg60_percent_high")
+    full_high = limits.get("psi_memory_full_avg60_percent_high")
+    some, full = _psi_avg60((psi or {}).get("some")), _psi_avg60((psi or {}).get("full"))
+
+    if some is None or full is None:
+        why = (psi or {}).get("reason") if isinstance(psi, dict) else None
+        return (
+            f"{watermark} Whether that is pressure NOW was not established: "
+            f"{why or 'memory pressure-stall information was not readable'}. "
+            f"A watermark is not a measurement of pressure, and this note will "
+            f"not guess which one it is looking at."
+        )
+    stall = (
+        f"memory stall is some avg60={some}% (threshold {some_high}%), "
+        f"full avg60={full}% (threshold {full_high}%)"
+    )
+    if some >= some_high or full >= full_high:
+        return (
+            f"{watermark} Real memory pressure, and measured as such: {stall}, "
+            f"with {_gib(mem.get('available_bytes'))} available of "
+            f"{_gib(mem.get('total_bytes'))}. A new persistent process has to "
+            f"justify itself."
+        )
+    return (
+        f"{watermark} That is a full swap file, not current memory pressure: "
+        f"{stall}, {_gib(mem.get('available_bytes'))} available of "
+        f"{_gib(mem.get('total_bytes'))}. Pages are read back from swap only "
+        f"when they are touched again, so a swap file that filled once stays "
+        f"full while nothing is paging. This number says what happened to this "
+        f"machine, not what is happening to it."
+    )
+
+
 class LiveHost:
     """Shell access with budgets. Read-only by construction: no method here
     has any means of writing, and this module imports no mutating verb."""
@@ -1014,12 +1103,11 @@ class Inventory:
         swap = mem.get("swap") or {}
         swap_high = limits.get("swap_percent_high")
         if _at_least(swap.get("used_percent"), swap_high):
-            notes.append(
-                f"swap is {swap['used_percent']}% used "
-                f"({swap['used_bytes']} of {swap['total_bytes']} bytes, "
-                f"threshold {swap_high}%). Real memory pressure; a new "
-                f"persistent process has to justify itself."
-            )
+            # The watermark opens the question; memory PSI answers it. Reading
+            # only the first is what made this note assert pressure on a host
+            # that was not under any — see `_swap_note`.
+            notes.append(_swap_note(
+                swap, swap_high, self.pressure_stall().get("memory"), limits, mem))
 
         load = self._load()
         cpus = self._cpu().get("logical_cpus")
@@ -1040,7 +1128,8 @@ class Inventory:
             # the opinion or ignore it.
             "thresholds": {k: limits.get(k) for k in (
                 "filesystem_percent_high", "inode_percent_high",
-                "swap_percent_high", "load1_per_cpu_high")},
+                "swap_percent_high", "psi_memory_some_avg60_percent_high",
+                "psi_memory_full_avg60_percent_high", "load1_per_cpu_high")},
         }
 
     # -- processes ---------------------------------------------------------

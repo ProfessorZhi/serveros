@@ -230,8 +230,12 @@ def domain_tree(rows) -> dict:
        tree into a search result.
 
     3. **An ability with no `domain.primary` is listed as unplaced, not
-       defaulted into a node.** 38 of this catalogue's 55 entries are in that
-       state, and a default would put them somewhere plausible and wrong. §4 is
+       defaulted into a node.** A large fraction of the catalogue is in that
+       state — 33 of 55, measured on `ability-management@origin/main`
+       2026-09-15 — and the number moves every time an ability is classified,
+       so it is recorded with the ref it was read at rather than as a fact
+       about the catalogue. A default would put them somewhere plausible and
+       wrong. §4 is
        explicit that the tree is generated from the real catalogue: an
        unclassified ability has no place because nobody has said where it goes,
        which is a fact about the catalogue and not a hole in this function.

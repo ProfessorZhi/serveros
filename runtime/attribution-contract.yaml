@@ -490,9 +490,40 @@ anomalies:
   - code: STALE_CONTAINER
     severity: medium
     implies_stale: false
-  - code: STOPPED_RECLAIM_CANDIDATE
+  # RENAMED from STOPPED_RECLAIM_CANDIDATE, and the word was the defect. The
+  # code named an action while both of its producers refuse to recommend one,
+  # and §Y's rule is that a review candidate is not a CLEANUP_CANDIDATE and is
+  # not destructive eligibility. The rename cost nothing when it was done — no
+  # alert state file existed, so no recorded alert identity carried the old
+  # name — which is exactly why it was worth doing now rather than after the
+  # first one was written down.
+  #
+  # ONE NAME, TWO PRODUCERS, OPPOSITE OWNER SEMANTICS. This was measured, not
+  # suspected, and it is recorded rather than merged because the two are not
+  # the same finding:
+  #
+  #   `hygiene.py`            a typed owner ref IS present ("stopped,
+  #                           unregistered, and declaring a typed owner
+  #                           <ref>. Nameable, not abandoned")
+  #   `anomaly.py`            the owner is NOT established ("stopped, and its
+  #                           owner is not established")
+  #
+  # They are mutually exclusive by construction — one requires `typed_ref`,
+  # the other requires `unknown_owner` — so a consumer that keys on the code
+  # alone cannot tell which fact it is looking at. Neither is actionable, and
+  # that is the property to keep: `hygiene.NEVER_ACTIONABLE` and
+  # `runtime_hygiene.LABEL_ONLY` both contain it. Splitting the code in two is
+  # left to the round that gives it a consumer.
+  - code: STOPPED_REVIEW_CANDIDATE
     severity: low
     implies_stale: false
+    note: >
+      a stopped container that somebody should be asked about, and never a
+      queue entry. It is in `hygiene.NEVER_ACTIONABLE` and is not the
+      actionable class (`hygiene.ACTIONABLE_CLASSES` holds STALE_CANDIDATE
+      alone). No alert code reaches actuator authorization: the only path to a
+      destructive action is a verified identity plus an approval plus actuator
+      admission, and this code supplies none of the three.
   - code: AGE_WITHOUT_ACTIVITY
     severity: low
     implies_stale: false
@@ -593,10 +624,32 @@ thresholds:
   # inodes cannot create a file, so it is a separate gate with a separate
   # threshold rather than a second reading of the byte one.
   inode_percent_high: 85.0
-  # Swap in use. Above this the machine is not merely busy, it is out of the
-  # memory it would need to absorb one more persistent process — which is an
-  # admission question, not a cleanup one.
+  # Swap in use — a WATERMARK, and not by itself a claim about now. This
+  # number is a high-water mark: pages go to swap when memory was short and
+  # come back only when they are touched again, so a swap file that filled
+  # once stays full while the machine is idle. Read alone it says what
+  # happened to this host, not what is happening to it, and a note that
+  # reported it as current pressure was measured here saying "Real memory
+  # pressure" while `pswpout` was unmoved and 16.8 GiB of 32.5 GiB was free.
+  #
+  # So it opens a question rather than settling one, and the two PSI keys
+  # below are the answer. Anything that gates admission on swap must read
+  # both halves; the watermark alone is a reason to look.
   swap_percent_high: 90.0
+  # Memory pressure-stall, `some avg60`. The kernel's own answer to "how much
+  # did work stall waiting on memory", which is the question the watermark
+  # above only appears to answer.
+  #
+  # `some` means at least one task stalled. 1.0% of a 60-second window is a
+  # low bar deliberately: on an idle host this reads 0.00, and the repair for
+  # a false positive here is a reader disagreeing with a number they can see.
+  psi_memory_some_avg60_percent_high: 1.0
+  # Memory pressure-stall, `full avg60`. `full` means EVERY runnable task was
+  # stalled, which is a strictly stronger claim than `some`, so it carries the
+  # lower bar. Two keys rather than one for the same reason
+  # `filesystem_percent_high` and `filesystem_percent_critical` are two: one
+  # number cannot say both "some work is waiting" and "no work is running".
+  psi_memory_full_avg60_percent_high: 0.5
   # Load average per logical CPU. Expressed per CPU so that the number does not
   # have to be restated when the machine is resized, and so that a 32-core host
   # and a 4-core host are compared by the same rule.

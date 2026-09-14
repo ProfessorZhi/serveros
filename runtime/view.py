@@ -766,7 +766,7 @@ def anomaly_list(*, host=None, registry=None, docker_host=None,
 
     # A container set attributed WITHOUT a registry is not a weaker attribution,
     # it is a different and dangerous one: every container comes back
-    # `unknown_owner`, `unknown_owner` is what makes STOPPED_RECLAIM_CANDIDATE
+    # `unknown_owner`, `unknown_owner` is what makes STOPPED_REVIEW_CANDIDATE
     # fire, and a PROTECTED container would be reported that way because the
     # document that says it is protected was not loaded. Fail-safe means the
     # detector is not fed an input whose ownership cannot be established. It is

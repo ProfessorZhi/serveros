@@ -287,7 +287,7 @@ def test_an_unknown_owner_container_gets_a_proposal_never_an_action():
         container("runtime:container:mystery", state="exited", unknown=True),
     ])
     codes = [s["code"] for s in signals]
-    assert codes == ["STOPPED_RECLAIM_CANDIDATE"]
+    assert codes == ["STOPPED_REVIEW_CANDIDATE"]
     result = an.classify(signals, subject="runtime:container:mystery")
     # No declared combination covers this, so it stays unclassified.
     assert result["recommendation"] == "NONE"

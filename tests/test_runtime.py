@@ -695,6 +695,95 @@ def test_swap_pressure_is_reported_separately_from_ram():
     assert mem["swap"]["used_percent"] == pytest.approx(99.8, abs=0.1)
 
 
+# ---------------------------------------------------------------------------
+# §T/§U · a watermark is not a pressure, and the note has to be able to say so
+# ---------------------------------------------------------------------------
+
+# This host, measured 2026-09-15: 99.2% of an 8.0 GiB swap file in use — while
+# memory PSI read some/full avg10/avg60/avg300 all 0.00 and 15.7 GiB of 31.0
+# GiB was still available. `pswpout` read 3208181 at two moments forty minutes
+# apart, unchanged: nothing was paging. The note said "Real memory pressure".
+# Every constant below is one of those readings, so the test is written against
+# the machine it was found on rather than against a plausible one.
+A_FULL_SWAP_HOST = (
+    "MemTotal:       32472892 kB\n"
+    "MemAvailable:   16842260 kB\n"
+    "SwapTotal:       8388608 kB\n"
+    "SwapFree:          67092 kB\n"
+)
+PSI_CALM = (
+    "some avg10=0.00 avg60=0.00 avg300=0.00 total=59254097\n"
+    "full avg10=0.00 avg60=0.00 avg300=0.00 total=55493135\n"
+)
+PSI_STALLING = (
+    "some avg10=1.20 avg60=4.10 avg300=3.80 total=59254097\n"
+    "full avg10=0.30 avg60=0.90 avg300=0.80 total=55493135\n"
+)
+
+
+def swap_notes(host):
+    notes = Inventory(host).pressure()["notes"]
+    return [n for n in notes if n.startswith("swap is")]
+
+
+def test_a_full_swap_file_with_no_stall_is_not_reported_as_pressure():
+    """The watermark is a high-water mark, not a measurement of now.
+
+    This is the defect the test is named for, taken from the host it was found
+    on: the note asserted "Real memory pressure" while the kernel said nothing
+    was stalled on memory and half the RAM was free. Pages come back out of
+    swap only when they are touched again, so a swap file that filled once
+    stays full while the machine is idle.
+    """
+    host = FakeHost(files={"/proc/meminfo": A_FULL_SWAP_HOST,
+                           "/proc/pressure/memory": PSI_CALM})
+    (note,) = swap_notes(host)
+    assert "Real memory pressure" not in note
+    assert "not current memory pressure" in note
+    assert "99.2% used" in note
+    # And it names the measurement rather than only its conclusion.
+    assert "some avg60=0.0%" in note and "full avg60=0.0%" in note
+
+
+def test_a_full_swap_file_under_a_real_stall_is_still_reported_as_pressure():
+    """The positive control. A rule that never fires is indistinguishable from
+    a rule that was deleted, and this one has to keep its teeth: at 4.1% some
+    and 0.9% full over a minute, the process really does have to justify
+    itself."""
+    host = FakeHost(files={"/proc/meminfo": A_FULL_SWAP_HOST,
+                           "/proc/pressure/memory": PSI_STALLING})
+    (note,) = swap_notes(host)
+    assert "Real memory pressure" in note
+    assert "some avg60=4.1%" in note
+    assert "not current memory pressure" not in note
+
+
+def test_a_full_swap_file_with_unreadable_psi_claims_neither():
+    """`psi=0` on the command line, a pre-4.20 kernel, and a container without
+    the file are indistinguishable from here. "No pressure" and "cannot tell"
+    are different answers, and a note that picked one would be guessing about
+    a machine it could not read — the same conflation `pressure_stall` refuses
+    one method above."""
+    host = FakeHost(files={"/proc/meminfo": A_FULL_SWAP_HOST})
+    (note,) = swap_notes(host)
+    assert "Real memory pressure" not in note
+    assert "not current memory pressure" not in note
+    assert "was not established" in note
+    assert "is not readable" in note
+
+
+def test_the_swap_note_reports_the_pressure_thresholds_it_used():
+    """A reader has to be able to disagree with the rule, not only the number."""
+    host = FakeHost(files={"/proc/meminfo": A_FULL_SWAP_HOST,
+                           "/proc/pressure/memory": PSI_CALM})
+    pressure = Inventory(host).pressure()
+    assert pressure["thresholds"]["swap_percent_high"] == 90.0
+    assert pressure["thresholds"]["psi_memory_some_avg60_percent_high"] == 1.0
+    assert pressure["thresholds"]["psi_memory_full_avg60_percent_high"] == 0.5
+    (note,) = [n for n in pressure["notes"] if n.startswith("swap is")]
+    assert "threshold 1.0%" in note and "threshold 0.5%" in note
+
+
 def test_process_read_that_times_out_is_unavailable_not_an_empty_list():
     host = FakeHost(commands={"ps": (-1, "", "timed out after 8.0s")})
     result = Inventory(host).processes_top()
@@ -1268,7 +1357,7 @@ def test_worktree_placement_is_evidence_and_moves_no_classification(tmp_path):
 def test_a_typed_label_is_an_owner_and_a_malformed_one_is_not():
     good = hygiene_for([a_container("worker", state="exited",
                                     labels="serveros.owner=work-item:WI-123")]).containers()
-    assert good["containers"][0]["classification"] == "STOPPED_RECLAIM_CANDIDATE"
+    assert good["containers"][0]["classification"] == "STOPPED_REVIEW_CANDIDATE"
 
     bad = hygiene_for([a_container("worker", state="exited",
                                    labels="serveros.owner=WI-123")]).containers()
