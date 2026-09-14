@@ -80,6 +80,25 @@ def _record_module():
     return module
 
 
+def _scope_module():
+    """`memory/scope.py`, loaded by path. Same idiom, same reason.
+
+    Loaded through the SAME synthetic name `record.py` uses
+    (`serveros_memory_scope`), so a projection and the ledger agree about what
+    an operator reading is; two module objects would mean two
+    `RecallRefused` classes, and a `raise`/`except` pair that silently stops
+    matching is a firewall that stops refusing without failing anything.
+    """
+    name = "serveros_memory_scope"
+    if name in sys.modules:
+        return sys.modules[name]
+    spec = importlib.util.spec_from_file_location(name, _HERE / "scope.py")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
 SCHEMA = "serveros/memory-projection.v1"
 LEDGER_SCHEMA = "serveros/memory-record.v1"
 
@@ -122,13 +141,21 @@ def build(records: list[dict], *, ledger_ref: str, ledger_revision: str,
             "than building none")
 
     record_mod = _record_module()
+    # The projection is a catalogue of the whole ledger, and a catalogue is
+    # read by whoever holds the ledger — which is what `OPERATOR_READING`
+    # names. It is passed rather than defaulted so that §18's firewall has a
+    # reader for every read `heads()`/`current_value()` ever does, and so that
+    # a future caller cannot inherit an admission it did not ask for. A
+    # projection that silently narrowed itself to what some thread was allowed
+    # to see would be a catalogue with a hole in it that reports no hole.
+    operator = _scope_module().OPERATOR_READING
     by_subject: dict[str, list[dict]] = {}
     for one in records:
         by_subject.setdefault(str(one.get("subject")), []).append(one)
 
     subjects = {}
     for subject, group in sorted(by_subject.items()):
-        current = record_mod.current_value(records, subject)
+        current = record_mod.current_value(records, subject, reader=operator)
         kinds: dict[str, int] = {}
         for one in group:
             kinds[str(one.get("kind"))] = kinds.get(str(one.get("kind")), 0) + 1
@@ -148,7 +175,7 @@ def build(records: list[dict], *, ledger_ref: str, ledger_revision: str,
             # choice made on the reader's behalf has to be visible. A subject
             # with one head and a subject with eight render identically in
             # `current` alone.
-            "heads": len(record_mod.heads(records, subject)),
+            "heads": len(record_mod.heads(records, subject, reader=operator)),
             # Listed rather than counted. A question is the one kind whose
             # whole purpose is to be picked up by somebody, and a count of open
             # questions that does not say which ones is a count nobody can act

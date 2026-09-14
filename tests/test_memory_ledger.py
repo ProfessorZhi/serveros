@@ -59,6 +59,14 @@ projection = _load("serveros_memory_projection",
                    MEMORY / "projection.py")
 layering = _load("serveros_memory_layering",
                  MEMORY / "layering.py")
+scope = _load("serveros_memory_scope",
+              MEMORY / "scope.py")
+
+# A test that reads a ledger directly is an operator: it holds the ledger, it
+# is not a thread, and it has no Item. Written out at each call site rather
+# than defaulted, because §18's whole design is that a read says who is asking
+# — and a test is not exempt from the rule it is checking.
+OPERATOR = scope.OPERATOR_READING
 
 sys.path.insert(0, str(REPO / "runtime"))
 paths_mod = _load("serveros_paths", REPO / "runtime" / "paths.py")
@@ -351,7 +359,8 @@ class SupersessionTests(unittest.TestCase):
         self.ledger = [self.first, self.second]
 
     def test_the_current_value_is_the_head_of_the_chain(self):
-        self.assertEqual(record.current_value(self.ledger, self.first["subject"])["id"],
+        self.assertEqual(record.current_value(self.ledger, self.first["subject"],
+                                              reader=OPERATOR)["id"],
                          "mem:second")
 
     def test_the_chain_is_newest_first_and_carries_the_history(self):
@@ -363,7 +372,8 @@ class SupersessionTests(unittest.TestCase):
         self.assertEqual([r["id"] for r in chain], ["mem:second", "mem:first"])
 
     def test_a_subject_with_no_records_returns_none(self):
-        self.assertIsNone(record.current_value(self.ledger, "project/litellm/LIT-0104"))
+        self.assertIsNone(record.current_value(self.ledger, "project/litellm/LIT-0104",
+                                               reader=OPERATOR))
 
     def test_choosing_between_heads_is_visible_rather_than_quiet(self):
         """`current_value` picks the newer of several heads, which is a choice
@@ -371,8 +381,10 @@ class SupersessionTests(unittest.TestCase):
         projection records, and that is where the choice is visible."""
         rival = a_record(id="mem:rival", at="2026-09-13T06:00:00Z")
         ledger = [*self.ledger, rival]
-        self.assertEqual(len(record.heads(ledger, self.first["subject"])), 2)
-        self.assertEqual(record.current_value(ledger, self.first["subject"])["id"],
+        self.assertEqual(len(record.heads(ledger, self.first["subject"],
+                                          reader=OPERATOR)), 2)
+        self.assertEqual(record.current_value(ledger, self.first["subject"],
+                                              reader=OPERATOR)["id"],
                          "mem:rival")
 
     def test_many_heads_are_ordinary_and_are_not_a_conflict_report(self):
@@ -389,7 +401,8 @@ class SupersessionTests(unittest.TestCase):
         right."""
         ledger = [a_record(id=f"mem:decision-{n}",
                            at=f"2026-09-13T0{n}:00:00Z") for n in range(1, 5)]
-        self.assertEqual(len(record.heads(ledger, self.first["subject"])), 4)
+        self.assertEqual(len(record.heads(ledger, self.first["subject"],
+                                          reader=OPERATOR)), 4)
         self.assertEqual(record.audit(ledger)["verdict"], "CONFORMANT")
 
 
@@ -850,14 +863,27 @@ class CliTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             (Path(tmp) / "one.yaml").write_text(yaml.safe_dump(a_record()))
             found = self._ctl("memory", "subject", "project/serveros/SRV-0007",
-                              "--ledger-dir", tmp, "--json")
+                              "--as", "operator", "--ledger-dir", tmp, "--json")
             self.assertEqual(found.returncode, 0, found.stderr)
             self.assertEqual(json.loads(found.stdout)["current"]["id"],
                              "mem:the-tunnel-is-task-scoped")
             absent = self._ctl("memory", "subject", "project/litellm/LIT-0104",
-                               "--ledger-dir", tmp, "--json")
+                               "--as", "operator", "--ledger-dir", tmp, "--json")
             self.assertEqual(absent.returncode, 2)
             self.assertIsNone(json.loads(absent.stdout)["current"])
+
+    def test_subject_refuses_without_saying_who_is_reading(self):
+        """argparse's own refusal, which is the point: `--as` is not validated
+        after the fact, it is required by the parser, so there is no path that
+        reaches a read without a reader."""
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp) / "one.yaml").write_text(yaml.safe_dump(a_record()))
+            found = self._ctl("memory", "subject", "project/serveros/SRV-0007",
+                              "--ledger-dir", tmp, "--json")
+            self.assertEqual(found.returncode, 2)
+            self.assertIn("--as", found.stderr)
 
 
 if __name__ == "__main__":

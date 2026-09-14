@@ -201,16 +201,33 @@ record:
 # Reasons — the refusal vocabulary.
 #
 # §8 of the release brief names fifteen words and this list is those fifteen,
-# plus three. The three are not an extension of the design; they are the
-# approval kernel reporting its own verdict instead of having it re-worded on
-# the way out. `runtime/approval.py#decide` has produced `APPROVAL_EXPIRED`,
-# `APPROVAL_ALREADY_CONSUMED` and `APPROVAL_CONTEXT_MISMATCH` since §67, and a
-# brief written before that kernel existed could not have named them. Folding
-# any of them into `APPROVAL_REQUIRED` would tell a person "ask again" when what
-# happened is "you already answered and the answer was spent" — the same
-# sentence with the useful half removed. A test asserts this list equals the
-# brief's fifteen plus exactly the verdicts `decide` can return, so the two
-# cannot drift.
+# plus six. The six are not an extension of the design; each is a kernel
+# reporting its own verdict instead of having it re-worded on the way out, and
+# each is here because folding it into a word that already existed would remove
+# the half of the sentence the caller has to act on.
+#
+#   approval kernel   `runtime/approval.py#decide` has produced
+#                     APPROVAL_EXPIRED, APPROVAL_ALREADY_CONSUMED and
+#                     APPROVAL_CONTEXT_MISMATCH since §67, and a brief written
+#                     before that kernel existed could not have named them.
+#                     Folding any of them into APPROVAL_REQUIRED would tell a
+#                     person "ask again" when what happened is "you already
+#                     answered and the answer was spent".
+#
+#   coordination      `runtime/coordination.py` produces THREAD_ITEM_MISMATCH,
+#   kernel            READ_ONLY_CLOSURE and THREAD_CLOSED_FOR_NEW_WORK for §17.
+#                     Each names a different field for the caller to change:
+#                     the Item in the payload, the thread (its Item is
+#                     finished), or the thread (it was closed while its provider
+#                     session is still accepting turns). Reporting the last two
+#                     as ACTION_UNSUPPORTED would say the provider has no way to
+#                     accept the turn — which is false, and would stop a caller
+#                     from ever retrying.
+#
+# A test asserts this list equals the brief's fifteen plus exactly the verdicts
+# those two kernels can return, so the two cannot drift. The test that matters
+# is the one that reads each kernel's own source: a word in this list with no
+# producer in either file fails it.
 # ---------------------------------------------------------------------------
 reasons:
   values:
@@ -232,8 +249,30 @@ reasons:
     - TIMEOUT
     - INVALID_CONTEXT
     - UNTRUSTED_ACTOR
+    - THREAD_ITEM_MISMATCH
+    - READ_ONLY_CLOSURE
+    - THREAD_CLOSED_FOR_NEW_WORK
   from_brief: 15
-  declared_here_only: [APPROVAL_CONTEXT_MISMATCH, APPROVAL_EXPIRED, APPROVAL_ALREADY_CONSUMED]
+  declared_here_only:
+    - APPROVAL_CONTEXT_MISMATCH
+    - APPROVAL_EXPIRED
+    - APPROVAL_ALREADY_CONSUMED
+    - THREAD_ITEM_MISMATCH
+    - READ_ONLY_CLOSURE
+    - THREAD_CLOSED_FOR_NEW_WORK
+  produced_by:
+    runtime/approval.py: [APPROVAL_REQUIRED, APPROVAL_BINDING_MISMATCH,
+                          APPROVAL_CONTEXT_MISMATCH, APPROVAL_EXPIRED,
+                          APPROVAL_ALREADY_CONSUMED]
+    runtime/coordination.py: [THREAD_ITEM_MISMATCH, READ_ONLY_CLOSURE,
+                              THREAD_CLOSED_FOR_NEW_WORK]
+  produced_by_rule: >-
+    A word in `values` that no file in `produced_by` can return is a word with
+    no producer, which is the defect this repository keeps finding one plane
+    over: a vocabulary that reads as enforced because it is written down.
+    `tests/test_coordination.py` reads those two modules' own source and
+    asserts every word declared new here is produced by one of them, and that
+    neither module can return a word that is not in `values`.
   not_a_transport_vocabulary: >-
     SESSION_NOT_FOUND, TURN_FAILED, PROVIDER_ERROR and TIMEOUT are declared here
     because a resolution record and a transport result share one vocabulary, and

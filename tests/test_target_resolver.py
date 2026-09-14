@@ -148,13 +148,17 @@ def test_the_status_vocabulary_is_the_provider_contract_s_own():
     assert target.statuses() == provider_instance.STATUSES
 
 
-def test_the_reason_vocabulary_is_the_brief_s_fifteen_plus_the_approval_verdicts():
-    """§8 names fifteen words. The approval kernel produces three more.
+def test_the_reason_vocabulary_is_the_brief_s_fifteen_plus_what_the_kernels_return():
+    """§8 names fifteen words. Two kernels produce six more between them.
 
     This test is the gate on that sentence. A word added to the contract
-    without a verdict that produces it, or a verdict added to `decide` without
+    without a verdict that produces it, or a verdict added to a kernel without
     a word here, both fail — which is the only way this stays a closed
     vocabulary rather than a list that grows quietly.
+
+    The three coordination words were added deliberately, and this assertion
+    is the review of that edit: it lists them by name, so a fourth could not
+    arrive without somebody changing this line as well.
     """
     brief = {
         "DEVICE_UNREACHABLE", "NODE_RUNTIME_UNAVAILABLE", "AGENT_RUNTIME_UNAVAILABLE",
@@ -163,10 +167,13 @@ def test_the_reason_vocabulary_is_the_brief_s_fifteen_plus_the_approval_verdicts
         "SESSION_NOT_FOUND", "TURN_FAILED", "PROVIDER_ERROR", "TIMEOUT",
         "INVALID_CONTEXT", "UNTRUSTED_ACTOR",
     }
+    approval_words = {"APPROVAL_CONTEXT_MISMATCH", "APPROVAL_EXPIRED",
+                      "APPROVAL_ALREADY_CONSUMED"}
+    coordination_words = {"THREAD_ITEM_MISMATCH", "READ_ONLY_CLOSURE",
+                          "THREAD_CLOSED_FOR_NEW_WORK"}
     declared = set(target.reason_vocabulary())
     assert brief <= declared
-    assert declared - brief == {"APPROVAL_CONTEXT_MISMATCH", "APPROVAL_EXPIRED",
-                                "APPROVAL_ALREADY_CONSUMED"}
+    assert declared - brief == approval_words | coordination_words
     assert contract()["reasons"]["from_brief"] == 15
     assert set(contract()["reasons"]["declared_here_only"]) == declared - brief
 

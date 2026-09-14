@@ -97,6 +97,21 @@ if "_serveros_context_actor" not in sys.modules:
     _spec.loader.exec_module(_module)
 actor_mod = sys.modules["_serveros_context_actor"]
 approval_mod = _load("serveros_runtime_approval", "approval.py")
+# §17. What a thread is for. The rules are pure and live in `coordination.py`;
+# the daemon contributes the two things only it has — the durable binding store
+# and a way to reach the Item authority.
+coordination_mod = _load("serveros_runtime_coordination", "coordination.py")
+# The Item-state reader. Loaded from `context/` rather than restated here for
+# the reason `context/resolver.py` states in its own docstring: the CLI and the
+# socket must not read two different worlds.
+_RESOLVER_PATH = _HERE.parent / "context" / "resolver.py"
+if "_serveros_context_resolver" not in sys.modules:
+    _resolver_spec = importlib.util.spec_from_file_location(
+        "_serveros_context_resolver", _RESOLVER_PATH)
+    _resolver_module = importlib.util.module_from_spec(_resolver_spec)
+    sys.modules["_serveros_context_resolver"] = _resolver_module
+    _resolver_spec.loader.exec_module(_resolver_module)
+resolver_mod = sys.modules["_serveros_context_resolver"]
 
 
 class DaemonError(Exception):
@@ -875,6 +890,14 @@ class Daemon:
             "agent.approval.inspect": self._r_agent_approval_inspect,
             "agent.approval.record": self._r_agent_approval_record,
             "agent.control.status": self._r_agent_control_status,
+            # §17. What a thread is for. `agent.binding.record` and
+            # `agent.binding.close` are the two writes; everything §17 refuses
+            # is refused by READING through `agent.binding.resolve`, which is
+            # why the read is the one with the Item in it.
+            "agent.binding.resolve": self._r_agent_binding_resolve,
+            "agent.binding.list": self._r_agent_binding_list,
+            "agent.binding.record": self._r_agent_binding_record,
+            "agent.binding.close": self._r_agent_binding_close,
         }
 
     def handle(self, request: dict, *, peer: dict | None = None) -> dict:
@@ -927,7 +950,15 @@ class Daemon:
                 "agent.context.attach", "agent.context.inspect",
                 "agent.context.resolve",
                 "agent.approval.inspect", "agent.approval.record",
-                "agent.control.status")
+                "agent.control.status",
+                # §17. `agent.binding.resolve` and `agent.binding.list` are
+                # reads; `record` and `close` are the two writes. The write
+                # surface is the daemon's and not the Agent MCP's: a session
+                # role is stated by the caller that starts the thread, and an
+                # Agent runtime is not a source of a statement about its own
+                # purpose.
+                "agent.binding.resolve", "agent.binding.list",
+                "agent.binding.record", "agent.binding.close")
 
     # -- the local capability view (§27/§28) --------------------------------
 
@@ -1314,6 +1345,152 @@ class Daemon:
             return {"found": False, "context_ref": ref,
                     "because": resolved["because"]}
         return {"found": True, "context_ref": ref, "context": resolved["context"]}
+
+    # -- §17: what a thread is for ------------------------------------------
+
+    def _item_roots(self):
+        """Where an Item's state is read from, derived from THIS daemon's state.
+
+        `context/resolver.py#item_state` needs one thing: the machine's
+        `serveros.db`. It is not read from the ambient environment, because a
+        daemon launched with `--state-dir /tmp/...` would then answer about the
+        live machine — the failure this repository has recorded three times
+        under a different name (a test reading the real world and reporting it
+        green).
+
+        `<state_dir>/../serveros.db` is not an invented layout. `default_state_dir()`
+        below composes the same pair the other way round (`$SERVEROS_STATE_DIR`
+        + `/runtime`), and the live unit sets exactly that variable, so this
+        derivation and the daemon's own state dir cannot come apart. When the
+        file is not there, `item_state` answers UNKNOWN, `item_axis` answers
+        UNEVALUABLE, and the caller is told which input was missing — which is
+        the honest answer for a daemon pointed at a directory that holds no
+        Item records.
+        """
+        return resolver_mod.Roots(
+            workspace_root=Path(self.state_dir).parent,
+            artifacts_root=Path(self.state_dir).parent,
+            state_db=Path(self.state_dir).parent / "serveros.db")
+
+    def _r_agent_binding_resolve(self, params) -> dict:
+        """What this thread is for, and what the Item it is for looks like NOW.
+
+        Two reads in one answer, deliberately. A caller that fetched the binding
+        and then asked about the Item would be holding two records taken at two
+        moments, and the refusal it is about to make joins them — so the join
+        happens here, where both came from one call.
+
+        The Item read is a FORWARD to `context/resolver.py#item_state`, the same
+        function `serverosctl` calls, and this method classifies nothing: it
+        reports the state it read and where it read it. `coordination.py#item_axis`
+        turns that into a verdict. A daemon that decided READ_ONLY here would be
+        a second place that decides it, and the CLI answer would then differ from
+        the socket answer for a reason no caller could see.
+
+        There is NO parameter for the Item. The Item read is the one the binding
+        names, and a method that took an Item ref would be a second
+        `work.item.get` — the Item authority read again, on the node surface,
+        with none of the Item-scoped rules that authority applies. A caller can
+        ask about a thread it holds a ref for; it cannot ask about an Item.
+        """
+        ref = _required(params, "session_ref")
+        store = self.control_store()
+        record = store.get_binding(ref)
+        if record is None:
+            return {"found": False, "session_ref": ref,
+                    "binding": None, "item": None,
+                    "because": ("no session_role was ever recorded for this "
+                                "session, so ServerOS does not hold a statement "
+                                "about what it is for")}
+        bound = str(record.get("bound_item_ref") or "") or None
+        item = None
+        if bound:
+            item = resolver_mod.item_state(self._item_roots(), bound)
+            item["item_ref"] = bound
+            item["source"] = "context/resolver.py#item_state"
+            item["observed_at"] = _iso(self._now())
+        return {"found": True, "session_ref": ref, "binding": record,
+                "item": item,
+                "item_axis": coordination_mod.item_axis(
+                    (item or {}).get("state"), outcome=(item or {}).get("outcome")),
+                "provenance": {
+                    "store": str(store.path),
+                    "state_db": str(self._item_roots().state_db),
+                    "state_db_present": self._item_roots().state_db.is_file()}}
+
+    def _r_agent_binding_record(self, params) -> dict:
+        """Record what a thread is for. The one write path for §17 bindings.
+
+        The rules are `coordination.binding()`'s, and they are applied HERE as
+        well as at the call site that already applied them — not because two
+        places decide, but because this is the write point and a write point
+        that trusts its caller's shape is a write point that will eventually be
+        handed a shape that was assembled somewhere else. The CLI reaches this
+        method directly, and it must not be a way to create a binding the MCP
+        path would have refused.
+
+        The record is built here rather than accepted. `put_binding` refuses a
+        second, different record for a session, so a caller cannot use this to
+        change which Item a thread is for; it can only create one.
+        """
+        ref = _required(params, "session_ref")
+        try:
+            record = coordination_mod.binding(
+                session_role=params.get("session_role"),
+                bound_item_ref=params.get("bound_item_ref"),
+                work_item=params.get("work_item"),
+                device_ref=params.get("device_ref"),
+                recorded_at=_iso(self._now()))
+        except coordination_mod.ThreadRefused as exc:
+            return {"recorded": False, "session_ref": ref,
+                    "reason": exc.reason, "detail": exc.detail}
+        record["session_ref"] = ref
+        try:
+            stored = self.control_store().put_binding(record)
+        except agent_control_store_mod.StoreError as exc:
+            return {"recorded": False, "session_ref": ref,
+                    "reason": "INVALID_CONTEXT", "detail": str(exc)}
+        return {"recorded": True, "session_ref": ref, "binding": stored}
+
+    def _r_agent_binding_close(self, params) -> dict:
+        """Close a thread for new work. Never a deletion, and never a rebind.
+
+        Closing is what makes `THREAD_CLOSED_FOR_NEW_WORK` answerable later, so
+        the record stays and its Item stays with it. A caller that wanted the
+        thread to be about a different Item is told to start one; there is no
+        parameter here for a new `bound_item_ref`, and adding one would be the
+        rebind that `put_binding` exists to refuse.
+        """
+        ref = _required(params, "session_ref")
+        try:
+            closed = self.control_store().close_binding(
+                ref, at=_iso(self._now()), reason=params.get("reason"))
+        except agent_control_store_mod.StoreError as exc:
+            return {"closed": False, "session_ref": ref,
+                    "reason": "INVALID_CONTEXT", "detail": str(exc)}
+        return {"closed": True, "session_ref": ref, "binding": closed}
+
+    def _r_agent_binding_list(self, params) -> dict:
+        """Every binding this node holds, by role. Never by actor, never by Item.
+
+        Counts and roles, for a status surface. The records themselves are
+        reachable one at a time by a caller that holds a ref — which is the same
+        shape as every other read here, and the reason this store is not a
+        directory of anything.
+        """
+        store = self.control_store()
+        bindings = store.bindings()
+        return {
+            "schema": coordination_mod.SCHEMA,
+            "count": len(bindings),
+            "by_role": {role: sorted(ref for ref, b in bindings.items()
+                                     if b.get("session_role") == role)
+                        for role in coordination_mod.ROLES},
+            "closed": sorted(ref for ref, b in bindings.items()
+                             if str(b.get("state") or "").upper() == "CLOSED"),
+            "item_axis_values": list(coordination_mod.ITEM_AXIS),
+            "read_only_item_states": list(coordination_mod.READ_ONLY_ITEM_STATES),
+        }
 
     # -- §6: approvals ------------------------------------------------------
 

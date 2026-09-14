@@ -366,15 +366,28 @@ had to be re-derived from a live failure.
 ### Where the unified answers are not yet real
 
 Naming a question as unified does not make it answered, and this product has a
-documented tendency to let the declaration run ahead of the mechanism. Three of
+documented tendency to let the declaration run ahead of the mechanism. Two of
 the seven above are, today, **statements of intent with no resolver behind
 them**, and they are listed here so that reading this section does not confer
 on them a status they do not have:
 
 ```text
-coordination    no resolver, no schema, no refusal. Greenfield, not deferred.
-memory recall   the firewall is declared in prose and implemented nowhere.
 runtime facts   version and features are declared fields with no reader.
+```
+
+The two that were on this list until v1.2 are worth keeping in view, because
+each one closed by shrinking the claim rather than by widening the code:
+
+```text
+coordination    CLOSED (§17) — session_role at create, an immutable Item for
+                an execution thread, and three refusals. It was not answered
+                by a schema; it was answered by discovering that a session
+                must say what it is FOR before anything can be enforced.
+memory recall   CLOSED (§18) — memory/scope.py. It was not answered by an
+                access-control layer; it was answered by one field on the
+                record and a required `reader` on the read path, because the
+                phrase the prose had used all along was "the promotion is the
+                consent, and it is recorded".
 ```
 
 [`docs/fabric-v1-roadmap.md`](docs/fabric-v1-roadmap.md) is the ledger: what
