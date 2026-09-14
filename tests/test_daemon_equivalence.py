@@ -37,6 +37,7 @@ import os
 import socket
 import subprocess
 import sys
+import warnings
 from pathlib import Path
 
 import pytest
@@ -199,6 +200,69 @@ def _rows(payload, *keys):
     return []
 
 
+def _count_agreement(*, method: str, keys: str, before: int, direct: int,
+                     after: int) -> str | None:
+    """Whether two readers of one fact agree, given the host may be moving.
+
+    THE PROBLEM THIS SOLVES
+    -----------------------
+    The daemon and the CLI are two readers of the same fact, and neither freezes
+    the host while the other reads. The first form of this test asserted exact
+    equality between two counts sampled ~1.6 s apart — the CLI subprocess costs
+    1.55-1.65 s, measured, not assumed. On a host where a container appears or
+    disappears inside that window the assertion is unsatisfiable **for two
+    correct readers**, and it went red 3 times in 5 during one such window
+    (F-04-1 in `04-RUNTIME-CONVERGENCE.md`).
+
+    That is not a reason to add a tolerance. A daemon that sees a subset of the
+    host reports a *smaller* number and every part of its own output stays
+    internally consistent, which is precisely the private-userns defect this
+    file exists to catch; a tolerance added to make a red test green is how a
+    gate stops being one. So the comparison is bracketed instead of loosened.
+    The daemon is sampled on BOTH sides of the direct observation:
+
+      * the two daemon reads are equal → the host did not move across the
+        window, and the direct observation must equal them EXACTLY. This is the
+        original assertion, undiminished, including its power to catch a blind
+        daemon: one that reads 20 both times against a direct 39 fails here.
+
+      * the two daemon reads differ → the host moved, and the direct
+        observation must lie between them. A blind daemon still fails, because
+        it cannot bracket a number it never saw; a daemon serving a stale cached
+        observation still fails, because its two reads are equal and stale.
+
+    What this gives up, stated rather than discovered later: on a run where the
+    host genuinely moved, a daemon blind by exactly the amount of the move is
+    indistinguishable from a correct one. That is inherent in comparing two
+    samples of a mutable world, and the warning below names it on the run where
+    it happens rather than leaving a silently weaker assertion in the file.
+
+    The tightness that is recovered: the daemon's two reads bracket the direct
+    observation. The residual false positive — the host moving between the
+    second daemon read and the direct observation — is a window of milliseconds
+    instead of 1.6 s.
+    """
+    if before == after:
+        if direct != before:
+            return (f"{method}: the daemon read {before} {keys} and then {after} "
+                    f"around a direct observation of {direct} — the daemon did "
+                    f"not move across the comparison, so this is a disagreement "
+                    f"about the host and not churn")
+        return None
+    low, high = sorted((before, after))
+    warnings.warn(
+        f"{method}: the host moved during the comparison — the daemon read "
+        f"{before} {keys}, then {after}. Exact equality was NOT asserted this "
+        f"run; the direct observation of {direct} was checked against the "
+        f"bracket {low}..{high} instead. A daemon blind by exactly the amount "
+        f"of this move would pass this run.", stacklevel=2)
+    if not low <= direct <= high:
+        return (f"{method}: the daemon read {before} {keys} then {after}, and "
+                f"the direct observation of {direct} is outside that bracket — "
+                f"one of the two readers is not seeing the same host")
+    return None
+
+
 @pytest.mark.parametrize("method,cli_args,keys", [
     ("runtime.list", ("runtime", "list"), ("resources",)),
     ("runtime.groups", ("runtime", "groups"), ("groups",)),
@@ -206,16 +270,75 @@ def _rows(payload, *keys):
     ("resource.summary", ("resource", "summary"), ("disk", "roles")),
 ])
 def test_the_daemon_and_the_cli_count_the_same_things(method, cli_args, keys):
-    """Exact agreement on counts.
+    """Exact agreement on counts, bracketed against a host that can move.
 
-    Not a tolerance. A daemon that sees a subset of the host reports a
-    *smaller* number and looks healthy; the whole point of the private-userns
-    defect was that nothing in its own output was internally inconsistent.
+    Not a tolerance — `_count_agreement` says exactly what is asserted when the
+    host holds still across the comparison and what is asserted when it does
+    not. Read that before changing anything here.
     """
-    live = _ipc(method)["result"]
-    direct = _cli(*cli_args)
-    assert len(_rows(live, *keys)) == len(_rows(direct, *keys)), (
-        f"{method}: daemon and CLI disagree on count")
+    before = len(_rows(_ipc(method)["result"], *keys))
+    direct = len(_rows(_cli(*cli_args), *keys))
+    after = len(_rows(_ipc(method)["result"], *keys))
+    message = _count_agreement(method=method, keys=" ".join(keys), before=before,
+                               direct=direct, after=after)
+    assert message is None, message
+
+
+@pytest.mark.parametrize("before,direct,after,expected", [
+    # A still host, two readers that agree.
+    (39, 39, 39, None),
+    # The blindness defect: the daemon is stable and sees FEWER than the host.
+    # This is the case the whole test exists for, and it still fails.
+    (20, 39, 20, "did not move"),
+    # A stale cached observation: stable, and larger than the host now is.
+    (45, 39, 45, "did not move"),
+    # The host moved and the direct read landed inside the bracket.
+    (39, 40, 40, None),
+    (39, 39, 40, None),
+    (40, 40, 39, None),
+    # A blind daemon cannot bracket a number it never saw.
+    (20, 40, 21, "outside that bracket"),
+    (45, 39, 40, "outside that bracket"),
+])
+def test_the_count_comparison_still_catches_a_blind_daemon(before, direct, after,
+                                                           expected):
+    """The comparison's own rule, exercised without a daemon or a host.
+
+    The live test above can only run its "still host" branch when the host
+    happens to hold still, so the branch that matters most — a stable daemon
+    reporting a smaller number — would otherwise never be travelled in CI. It
+    is travelled here.
+    """
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        message = _count_agreement(method="container.attribution",
+                                   keys="containers", before=before,
+                                   direct=direct, after=after)
+    if expected is None:
+        assert message is None, message
+    else:
+        assert message is not None, "a disagreement was reported as agreement"
+        assert expected in message, message
+
+
+def test_the_moving_host_case_says_so_out_loud():
+    """The weakened branch is announced, never taken silently.
+
+    If a future change makes the bracket the normal path — a host that churns
+    on every sample — the warning is the only thing that says the exact
+    assertion stopped running. It is asserted here so that removing it fails.
+    """
+    with pytest.warns(UserWarning, match="host moved during the comparison"):
+        message = _count_agreement(method="container.attribution",
+                                   keys="containers", before=39, direct=40,
+                                   after=41)
+    assert message is None, message
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        assert _count_agreement(method="container.attribution", keys="containers",
+                                before=39, direct=39, after=39) is None
+    assert not caught, "a still host produced a warning"
 
 
 def test_the_daemon_is_not_blind_to_a_class_of_processes():
