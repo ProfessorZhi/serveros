@@ -110,11 +110,50 @@ record of it; the other is a disagreement between two authorities. Neither
 blocks, because neither is a byte-level lie: the bytes are what they claim, and
 what changed is whether they are still the ones to ship.
 
+The distribution is not the node
+--------------------------------
+Everything above is about an artifact: what a release contains, where it went,
+and whether the bytes agree. None of it is about the thing this file's first
+sentence promises — *is the runtime actually running the code we wrote* — and
+until 2026-09-15 nothing here measured a runtime at all. The file's own history
+made that easy to miss: it named `runtime-assets/hwz-server-os/current` and
+called it "the installed runtime", when that path is the **plugin distribution**
+a marketplace installs from. The node's own runtime is a different composition
+at a different path, reached through a symlink this file never opened, started
+by a unit it never read, in a process it never looked for. The reference to
+`git rev-parse` in the paragraph below was, in the same way, a claim about a
+subprocess that no longer matched the code around it — a small lie of exactly
+the kind this file spends its length warning about.
+
+So the node is measured here on its own terms, and the three facts are kept
+apart because they have three different repairs:
+
+    DECLARATION   what the unit file says will be started. Read as data, not
+                  asked of systemd: the question is what a supervisor would do,
+                  and the unit file is where that is written down.
+
+    EXECUTION     which of this machine's live processes actually runs that
+                  program. Answered from `/proc`, by exact argument match —
+                  never by substring, because a substring match finds the shell
+                  that ran the search. That is not hypothetical: the first draft
+                  of this scan reported its own shell as the running daemon.
+
+    REVISION      which revision directory that program lives in, and whether
+                  its bytes are the ones canonical source builds today.
+
+A node can be right about any one of those and wrong about the others, and the
+repairs do not transfer: a service running a superseded revision needs a
+restart, a unit pointing at a retired revision needs a re-render, and an
+artifact whose bytes no longer match canonical needs a rebuild. Collapsing them
+into one word would name the symptom and hide which of the three to do.
+
 What it does NOT do
 -------------------
 No network. No LLM. No database. No full-disk scan. No mutation of any kind —
-every path below is opened read-only, and the one subprocess it runs is
-`git rev-parse`. Output contains no clock reading, so two runs over an unchanged
+every path below is opened read-only, the subprocesses it runs read `git`
+objects and nothing else, and it never asks systemd anything: a running unit is
+a fact in `/proc`, and a supervisor's intention is a fact in a unit file. Both
+are files. Output contains no clock reading, so two runs over an unchanged
 machine produce identical bytes and can be compared.
 """
 from __future__ import annotations
@@ -144,9 +183,43 @@ DEFAULT_CANONICAL_REF = "refs/heads/main"
 
 OK = "OK"
 SOURCE_RUNTIME_DRIFT = "SOURCE_RUNTIME_DRIFT"
-BUILT_RUNTIME_DRIFT = "BUILT_RUNTIME_DRIFT"
 MISSING = "MISSING"
 UNKNOWN = "UNKNOWN"
+
+# The node's own surface, and the three states it can be in. Each names a
+# different repair, which is the whole reason there are three of them:
+#
+#   BUILT_RUNTIME_DRIFT  a live process is running a revision that is not the
+#                        one `current` points at. `release.py promote` swaps
+#                        the symlink and reloads units but does NOT restart the
+#                        service, so this is what a promote looks like until
+#                        somebody restarts — the running code is real, staged,
+#                        and superseded. REPAIR: restart the node.
+#
+#   UNIT_STALE           the supervisor is configured to start a program that is
+#                        not this composition's `current/bin/serverosd`. REPAIR:
+#                        re-render the unit (re-promote, or roll back).
+#
+#   NOT_RUNNING          the unit declares the right program and nothing is
+#                        executing it. REPAIR: start the node.
+#
+# This constant was declared and never used from the day it was written until
+# 2026-09-15 — a name with no branch, in a file about names with no branches.
+# It is used now because the situation it names turned out to be reachable, and
+# reachable by the ordinary path: promote does not restart.
+BUILT_RUNTIME_DRIFT = "BUILT_RUNTIME_DRIFT"
+UNIT_STALE = "UNIT_STALE"
+NOT_RUNNING = "NOT_RUNNING"
+
+# The composition the NODE runs from, the supervisor that starts it, and the
+# manifest `release.py promote` writes into a staged revision. These are not the
+# plugin distribution: that is a different composition (`serveros-core`, built
+# into the marketplace root) whose members a Claude or Codex install consumes.
+# Both are measured; they are different things and this file used to call only
+# one of them "the installed runtime".
+NODE_COMPOSITION = "serveros-linux-work"
+NODE_UNIT = "serverosd.service"
+TREE_MANIFEST = "RELEASE.json"
 
 # Drift classes that are NOT about the bytes on disk agreeing with each other.
 # A chain can be internally perfect and still be the wrong release; these name
@@ -204,6 +277,24 @@ def _load_build(serveros_repo: Path):
     """
     path = serveros_repo / "scripts/build.py"
     spec = importlib.util.spec_from_file_location("serveros_build", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _load_release(serveros_repo: Path):
+    """Import release.py so this file reuses ITS fingerprint recipe.
+
+    A staged revision carries a `tree_hash` that `release.py promote` computed,
+    and the only way to check that number is to recompute it the same way. Doing
+    that here with a second function would produce two hashes over the same
+    directory that are both correct and cannot be compared — the failure mode
+    release.py's own `fingerprint` docstring is written about, and the one this
+    module exists to catch. So the recipe is imported, not restated, for the
+    same reason `build.plan()` is.
+    """
+    path = serveros_repo / "scripts/release.py"
+    spec = importlib.util.spec_from_file_location("serveros_release", path)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
@@ -268,21 +359,31 @@ def tree_hash(root: Path) -> str | None:
     return digest.hexdigest() if found else None
 
 
-def tree_drift(expected: dict[Path, bytes], root: Path) -> list[str]:
+def tree_drift(expected: dict[Path, bytes], root: Path,
+               ignore: tuple[Path, ...] = ()) -> list[str]:
     """Name every difference between an expected file set and a directory.
 
     Content, not just presence: an installed copy with the right file names and
     stale bytes is exactly the failure this module exists to catch, and a
     presence-only check would call it clean.
+
+    `ignore` is for the one directory that legitimately holds a file the
+    artifact does not: a staged revision, into which `release.py promote` writes
+    `RELEASE.json` after computing the hash that file records. Skipping it here
+    is not skipping the check on it — that file is verified against the tree it
+    describes by `node_revision`, which is a stronger question than "is it one
+    of the expected members". The default is empty, so every existing caller
+    keeps comparing whole trees.
     """
     if not root.is_dir():
         return [f"missing tree {root}"]
+    skip = set(ignore)
     reasons: list[str] = []
-    actual = {rel for rel, _ in _iter_files(root)}
+    actual = {rel for rel, _ in _iter_files(root) if rel not in skip}
     expected_rels = set(expected)
-    reasons += [f"missing {rel}" for rel in sorted(expected_rels - actual)]
+    reasons += [f"missing {rel}" for rel in sorted((expected_rels - skip) - actual)]
     reasons += [f"unexpected {rel}" for rel in sorted(actual - expected_rels)]
-    for rel in sorted(expected_rels & actual):
+    for rel in sorted((expected_rels - skip) & actual):
         if (root / rel).read_bytes() != expected[rel]:
             reasons.append(f"content {rel}")
     return reasons
@@ -345,7 +446,8 @@ def composition_files(build) -> dict[str, Path]:
 
 
 def expected_artifact(build, ability_repo: Path, ability_rev: str, output: Path,
-                      marketplace_path: Path) -> tuple[dict[Path, bytes], str] | None:
+                      marketplace_path: Path,
+                      layout_at: Path | None = None) -> tuple[dict[Path, bytes], str] | None:
     """Recompute the artifact from current canonical source + the recorded pin.
 
     This is what makes the question answerable without the build recording its
@@ -358,6 +460,19 @@ def expected_artifact(build, ability_repo: Path, ability_rev: str, output: Path,
     against `plugin/bundle.yaml` would accuse a correctly-built profile of
     drifting from a composition it never claimed — a false report produced by
     the checker, in the same shape as the false report it exists to catch.
+
+    `layout_at` is not a detail of the build, it is the repair of a check whose
+    answer depended on where two unrelated directories happened to sit. `plan()`
+    takes one output path and uses it twice: in `build()` it is where the
+    payload is written, and in `plan()` it is only the plugin's position inside
+    a Codex marketplace root, which `codex_marketplace` computes with
+    `os.path.relpath` and REFUSES when it escapes. A node revision lives under
+    the runtime root and is in no marketplace, so recomputing it against its own
+    directory raises — and on this machine it did not, for no better reason than
+    that `runtime-assets/` and the marketplace root share a parent. A verdict
+    that flips when someone moves a directory is not a measurement. The
+    marketplace file is written beside the marketplace, never into the artifact,
+    so the value passed here reaches only a dictionary this function discards.
     """
     composition = declared_composition(output)
     if not composition:
@@ -367,7 +482,7 @@ def expected_artifact(build, ability_repo: Path, ability_rev: str, output: Path,
         return None
     try:
         files, manifests, readme, marketplace, version = build.plan(
-            path, ability_repo, ability_rev, output, marketplace_path)
+            path, ability_repo, ability_rev, layout_at or output, marketplace_path)
     except (OSError, ValueError) as exc:
         return None
     payload = {rel: content for content, rel, _executable in files}
@@ -593,6 +708,253 @@ def canonical_provenance(ability_repo: Path, pin: str, canonical_ref: str) -> di
     return out
 
 
+def node_revision(runtime_root: Path, composition: str, release) -> dict:
+    """What the node would start, read as data rather than asked of anything.
+
+    Three separate facts, because they have three separate repairs:
+
+      the symlink      `current` → `revisions/<label>`. A `current` that is not
+                       a symlink is a node nobody promoted into; a symlink whose
+                       target is gone is a node that cannot start.
+      the manifest     `<rev>/RELEASE.json`, which records the tree hash of the
+                       artifact AS STAGED. Verified by recomputing it over the
+                       same directory minus the manifest itself — a file cannot
+                       contain its own digest, so the comparison has to be
+                       against the tree the number describes.
+      the label        `main@0a98bb6` is a CLAIM made at promote time about
+                       which source revision the bytes came from. It is reported
+                       as a claim. Whether it is true is answered by
+                       `expected_artifact`, which rebuilds from the pin in the
+                       artifact's own README and compares bytes.
+
+    Returns a state word in every case. "There is no node runtime here" and
+    "there is one and it is broken" are different, and a caller that cannot tell
+    them apart will either block a machine with no node or wave through one
+    whose node is gone.
+    """
+    out = {"composition": composition, "root": str(runtime_root / composition),
+           "state": "ABSENT", "current": None, "previous": None,
+           "revision_dir": None, "manifest": None, "tree_hash_ok": None,
+           "detail": ""}
+    root = runtime_root / composition
+    if not root.is_dir():
+        out["detail"] = (f"no node runtime for composition {composition!r} at "
+                         f"{root} — this machine has no installed node to measure")
+        return out
+    link = root / "current"
+    if not link.is_symlink():
+        out["state"] = "NOT_PROMOTED"
+        out["detail"] = f"{link} is not a symlink; nothing has been promoted here"
+        return out
+    target = Path(os.readlink(link))
+    out["current"] = target.name
+    prev = root / "previous"
+    if prev.is_symlink():
+        out["previous"] = Path(os.readlink(prev)).name
+    # Resolve to the real directory BEFORE deciding it is missing. A revision
+    # may be reached through a relative link, and `revisions/<name>` is not the
+    # only legal spelling of it.
+    resolved = (link.parent / target).resolve() if not target.is_absolute() else target.resolve()
+    if not resolved.is_dir():
+        out["state"] = "REVISION_MISSING"
+        out["detail"] = (f"current points at {target}, which does not exist — the "
+                         "node would fail to start; roll back rather than promote")
+        return out
+    out["revision_dir"] = str(resolved)
+    manifest_path = resolved / TREE_MANIFEST
+    if manifest_path.is_file():
+        try:
+            out["manifest"] = json.loads(manifest_path.read_text())
+        except (OSError, json.JSONDecodeError) as exc:
+            out["state"] = "MANIFEST_UNREADABLE"
+            out["detail"] = f"{manifest_path} could not be read: {exc}"
+            return out
+    else:
+        # A revision directory with no manifest is one this machine did not
+        # stage through `release.py`. Reported rather than assumed: an older
+        # staging layout is not a defect, but the recorded hash is genuinely
+        # unavailable and the axis must not read that as agreement.
+        out["state"] = "PROMOTED"
+        out["tree_hash_ok"] = None
+        out["detail"] = (f"no {TREE_MANIFEST} in the revision, so the staged tree "
+                         "hash cannot be checked against anything")
+        return out
+    recorded = (out["manifest"] or {}).get("tree_hash")
+    actual = release.fingerprint(resolved, ignore=(TREE_MANIFEST,))
+    out["tree_hash_ok"] = (recorded == actual) if recorded else None
+    out["state"] = "PROMOTED"
+    out["detail"] = (
+        f"staged tree hash {'matches' if out['tree_hash_ok'] else 'DOES NOT MATCH'} "
+        f"the tree on disk" if recorded else
+        "the manifest records no tree hash; the staged revision cannot be identified")
+    return out
+
+
+def unit_exec_start(unit_dir: Path, unit_name: str) -> dict:
+    """The program a supervisor is configured to start.
+
+    Read from the unit file rather than asked of `systemctl`. Two reasons, and
+    the second is the one that matters: a unit file is a fact this process can
+    read on any machine, and asking the supervisor would make the answer depend
+    on a supervisor being up — so on a node whose systemd session is not running
+    this file would report UNKNOWN about a unit it could have simply read.
+    """
+    out = {"unit": unit_name, "path": None, "state": "ABSENT", "detail": ""}
+    path = unit_dir / unit_name
+    if not path.is_file():
+        out["detail"] = f"no unit at {path}"
+        return out
+    line = ""
+    try:
+        for raw in path.read_text(errors="replace").splitlines():
+            if raw.strip().startswith("ExecStart="):
+                line = raw.strip()[len("ExecStart="):]
+                break
+    except OSError as exc:
+        out["state"] = "UNREADABLE"
+        out["detail"] = f"{path} could not be read: {exc}"
+        return out
+    if not line:
+        out["state"] = "NO_EXEC_START"
+        out["detail"] = f"{path} declares no ExecStart"
+        return out
+    # systemd prefixes an argv with `-` (ignore failure), `@` (argv[0]), `+`/`!`
+    # (privilege). Any of them still leaves the program as the first token; a
+    # quote would make "the first token" a guess, so it is refused instead.
+    if '"' in line or "'" in line:
+        out["state"] = "UNPARSEABLE"
+        out["detail"] = (f"ExecStart is quoted, and splitting it would be a guess: "
+                         f"{line!r}")
+        return out
+    # Checked on the whole value and BEFORE the prefix strip, because `@` is both
+    # systemd's argv[0] marker and the delimiter of a placeholder: stripping the
+    # prefix first turns `@SERVEROS_RUNTIME@/bin/serverosd` into
+    # `SERVEROS_RUNTIME@/bin/serverosd`, which no longer looks like anything and
+    # would be reported as a declared path that simply does not exist — the wrong
+    # finding, with a plausible detail. `release.py` renders these at install
+    # time, and an unrendered one is inert to systemd, so the unit would start a
+    # literal path rather than failing.
+    if re.search(r"@[A-Z][A-Z0-9_]*@", line):
+        out["state"] = "UNRENDERED"
+        out["detail"] = (f"ExecStart still carries a placeholder: {line!r} — the "
+                         "unit was installed without being rendered")
+        return out
+    token = line.lstrip("-@+!:").strip().split()[0] if line.strip() else ""
+    if not token:
+        out["state"] = "UNPARSEABLE"
+        out["detail"] = f"ExecStart carries no program: {line!r}"
+        return out
+    out["path"] = token
+    out["state"] = "DECLARED"
+    out["detail"] = token
+    return out
+
+
+def live_processes(proc_root: Path) -> list[tuple[int, list[str]]]:
+    """Every process this user can see, as (pid, argv).
+
+    `/proc` rather than `ps`, because a command line is a list of arguments and
+    this is how the kernel stores one. It has to be a list: every comparison
+    below is an exact argument match, and a checker that substring-matched a
+    command line would find the shell that typed the search string. The first
+    draft of this function did exactly that and reported its own parent as the
+    running daemon.
+    """
+    out: list[tuple[int, list[str]]] = []
+    if not proc_root.is_dir():
+        return out
+    for entry in proc_root.iterdir():
+        if not entry.name.isdigit():
+            continue
+        try:
+            raw = (entry / "cmdline").read_bytes()
+        except OSError:
+            # A process that exited between the listing and the read is not an
+            # error; a process owned by somebody else is not ours to read. Both
+            # are simply not observations.
+            continue
+        if not raw:
+            continue
+        argv = [part.decode(errors="replace") for part in raw.split(b"\0") if part]
+        out.append((int(entry.name), argv))
+    return sorted(out)
+
+
+def process_started_at(pid: int, proc_root: Path, boot: float | None) -> float | None:
+    """Wall-clock seconds at which `pid` started, or None.
+
+    `starttime` in `/proc/<pid>/stat` is in clock ticks SINCE BOOT, so it is not
+    a time until boot time is added — and the two clocks are the same clock, so
+    the sum is comparable to a file mtime. `comm` is not always a bare name: it
+    is the second field, wrapped in parentheses, and a program whose name
+    contains a space or a `)` shifts every later field by one. Splitting on the
+    LAST `)` is what makes field 22 field 22 rather than field 20 for those
+    programs — the kind of parsing bug that produces a plausible number and no
+    error at all.
+    """
+    if boot is None:
+        return None
+    try:
+        raw = (proc_root / str(pid) / "stat").read_text(errors="replace")
+    except OSError:
+        return None
+    tail = raw.rsplit(")", 1)
+    if len(tail) != 2:
+        return None
+    fields = tail[1].split()
+    # After the ')' the fields resume at #3 (state), so #22 is index 19.
+    try:
+        ticks = int(fields[19])
+    except (IndexError, ValueError):
+        return None
+    try:
+        hz = os.sysconf("SC_CLK_TCK")
+    except (OSError, ValueError):
+        return None
+    return boot + ticks / hz
+
+
+def boot_epoch(proc_root: Path) -> float | None:
+    """The kernel's boot time, from `/proc/stat`'s `btime` line."""
+    try:
+        for line in (proc_root / "stat").read_text(errors="replace").splitlines():
+            if line.startswith("btime "):
+                return float(line.split()[1])
+    except (OSError, ValueError, IndexError):
+        return None
+    return None
+
+
+def execution_of(declared: str, composition_root: Path, processes) -> dict:
+    """Which live process runs `declared`, and which runs something under this node.
+
+    Two questions, because they are the two ways a running surface can disagree
+    with its installation, and the second is invisible if only the first is
+    asked: `declared` itself is running (fine), or some OTHER program under this
+    node's `revisions/` is running (the promote-without-restart case, where the
+    unit and the symlink agree and the process does not).
+    """
+    out = {"declared": declared, "pids": [], "elsewhere": [], "detail": ""}
+    if not declared:
+        out["detail"] = "no declared program to look for"
+        return out
+    revisions = composition_root / "revisions"
+    for pid, argv in processes:
+        if declared in argv:
+            out["pids"].append(pid)
+            continue
+        for token in argv:
+            if not token.startswith("/"):
+                continue
+            # `revisions in path.parents` rather than counting `.parent`s: the
+            # token can be at any depth under the revision, and a fixed number
+            # of hops would silently stop matching the moment `bin/` moved.
+            if revisions in Path(token).parents:
+                out["elsewhere"].append({"pid": pid, "argv0": token})
+                break
+    return out
+
+
 def materialization_audit(artifact: Path, runtimes: list[tuple[str, Path | None, Path | None]]) -> dict:
     """How many times does each bundle member reach each runtime?
 
@@ -659,12 +1021,15 @@ def materialization_audit(artifact: Path, runtimes: list[tuple[str, Path | None,
 
 def collect(args) -> dict:
     build = _load_build(args.serveros_repo)
+    release = _load_release(args.serveros_repo)
     rows: list[dict] = []
 
-    def row(component, canonical, built, installed, verdict, detail="", note="", axis=None):
+    def row(component, canonical, built, installed, verdict, detail="", note="",
+            axis=None, applies=True):
         rows.append({"component": component, "canonical": canonical,
                      "built": built, "installed": installed,
-                     "verdict": verdict, "detail": detail, "note": note, "axis": axis})
+                     "verdict": verdict, "detail": detail, "note": note,
+                     "axis": axis, "applies": applies})
 
     # --- 1. the bundle source repository --------------------------------
     serveros_head = _git(build.repo_root(), "rev-parse", "HEAD") or UNKNOWN
@@ -848,12 +1213,168 @@ def collect(args) -> dict:
         row(f"{BUNDLE_NAME} @ {label}", "", "", f"sha256={tree_hash(root) or 'NONE'}",
             verdict, detail, note)
 
+    # --- 8. the node: revision, unit, process ----------------------------
+    #
+    # Everything above measures the DISTRIBUTION — what a release contains and
+    # where a marketplace put it. The node runs a different composition from a
+    # different path under a different supervisor, and until this section existed
+    # none of it was measured. `args.runtime_root / args.composition` is where
+    # that node lives; `args.output` above is where the plugin payload lives.
+    node = node_revision(args.runtime_root, args.composition, release)
+    unit = unit_exec_start(args.unit_dir, NODE_UNIT)
+    processes = live_processes(args.proc_root)
+    rev_dir = Path(node["revision_dir"]) if node["revision_dir"] else None
+    unit_program = unit["path"]
+    exec_state = execution_of(unit_program or "", args.runtime_root / args.composition,
+                              processes)
+
+    # `argv` alone cannot say which revision a process is running when the path
+    # it was started from goes through `current`: the string is identical before
+    # and after a promote, because a promote moves the symlink and the process
+    # keeps the argv it was born with. The one fact that does distinguish them is
+    # time — `release.py promote` replaces the symlink, and a process that
+    # started BEFORE that replacement is executing what `current` used to name.
+    #
+    # Both numbers come from the same clock, so comparing them is sound rather
+    # than merely suggestive: `starttime` is ticks since boot and `btime` is
+    # boot, so their sum is wall time, and a file mtime is wall time.
+    repointed: list[dict] = []
+    started: dict[int, float | None] = {}
+    current_link = args.runtime_root / args.composition / "current"
+    link_mtime: float | None = None
+    if current_link.is_symlink():
+        try:
+            link_mtime = os.lstat(current_link).st_mtime
+        except OSError:
+            link_mtime = None
+    if link_mtime is not None:
+        boot = boot_epoch(args.proc_root)
+        for pid in exec_state["pids"]:
+            when = process_started_at(pid, args.proc_root, boot)
+            started[pid] = when
+            # One second of slack: the promote that repoints the link and a
+            # restart that follows it are allowed to be the same second. A
+            # genuine "promoted and never restarted" is minutes or days apart.
+            if when is not None and when < link_mtime - 1.0:
+                repointed.append({"pid": pid, "started_at": when,
+                                  "current_repointed_at": link_mtime})
+
+    # The supervisor's declaration against the installation it is supposed to be
+    # pointing at. A unit naming a path outside this composition's `current` is
+    # not a running problem yet — it is a unit somebody promoted past and did not
+    # re-render, and the repair happens before the service is touched.
+    #
+    # The comparison is by REAL PATH, not by string: the unit names
+    # `.../current/bin/serverosd` and the revision lives at
+    # `.../revisions/<label>/bin/serverosd`, so comparing the text would report
+    # every correctly rendered unit as stale. The string form is what makes the
+    # `/proc` match exact and the real path is what makes this comparison right;
+    # using either one for the other's question gets it wrong in both directions.
+    def _same_program(value: str, path: Path | None) -> bool:
+        if not value or path is None:
+            return False
+        return os.path.realpath(value) == os.path.realpath(path)
+
+    if unit["state"] != "DECLARED":
+        unit_verdict, unit_detail = UNKNOWN, unit["detail"]
+    elif node["state"] != "PROMOTED":
+        unit_verdict, unit_detail = UNIT_STALE, (
+            f"the unit starts {unit_program}, but this node has no promoted revision "
+            f"to compare it against ({node['state']}: {node['detail']})")
+    elif not _same_program(unit_program or "", rev_dir / "bin/serverosd" if rev_dir else None):
+        unit_verdict, unit_detail = UNIT_STALE, (
+            f"the unit starts {unit_program}, which is not this node's current "
+            f"revision ({node['current']}) — the unit was rendered for a revision "
+            "`current` no longer points at")
+    elif repointed:
+        entry = repointed[0]
+        unit_verdict, unit_detail = BUILT_RUNTIME_DRIFT, (
+            f"pid {entry['pid']} started {link_mtime - entry['started_at']:.0f}s "
+            f"before `current` was last repointed, and it is still running — it is "
+            "executing the revision that `current` used to name. `release.py "
+            "promote` reloads units but does NOT restart, so this is what a "
+            "promote looks like until the node is restarted")
+    elif exec_state["pids"]:
+        unit_verdict, unit_detail = OK, f"pid {', '.join(map(str, exec_state['pids']))}"
+    elif exec_state["elsewhere"]:
+        where = exec_state["elsewhere"][0]
+        unit_verdict, unit_detail = BUILT_RUNTIME_DRIFT, (
+            f"nothing runs {unit_program}; pid {where['pid']} is running "
+            f"{where['argv0']} — a revision this node has already moved past")
+    else:
+        unit_verdict, unit_detail = NOT_RUNNING, (
+            f"{unit_program} is declared and is not executing; no process under this "
+            "node's revisions/ is running either")
+    row(f"{NODE_UNIT} (running unit)", args.composition,
+        f"pid={exec_state['pids'][0]}" if exec_state["pids"] else "",
+        unit_program or UNKNOWN, unit_verdict,
+        # The pid is the answer when the row passes, and `render` prints every
+        # detail as a problem marker. Saying "pid 1653" in the shape of a
+        # finding teaches a reader to skip that marker, which is the one thing
+        # it must never learn to do.
+        "" if unit_verdict == OK else unit_detail,
+        # A machine with no unit file is not a machine whose unit is broken: the
+        # question "is the declared program running" has no declaration to be
+        # asked of, and answering NOT_RUNNING would report an absent supervisor
+        # as a stopped node. Keyed on the FILE, never on a check having failed,
+        # and named in `release.not_applicable` like the node row below.
+        applies=unit["state"] != "ABSENT")
+
+    # The revision's bytes against what canonical source builds from the pin the
+    # artifact itself declares. This is the same question the payload rows ask of
+    # the plugin, asked of the thing that is actually executing.
+    node_verdict, node_detail, node_built = UNKNOWN, node["detail"], ""
+    node_expected = None
+    if node["state"] != "PROMOTED" or rev_dir is None:
+        node_verdict = MISSING if node["state"] == "ABSENT" else UNKNOWN
+    elif node["tree_hash_ok"] is False:
+        # The recorded hash and the directory disagree, so the revision is not
+        # the one that was staged. Rebuilding from source would answer a
+        # different question, so this is decided here and nothing is recomputed.
+        node_verdict = SOURCE_RUNTIME_DRIFT
+        node_detail = ("the staged revision's tree hash does not match its own "
+                       "directory — these bytes are not the ones that were promoted")
+    else:
+        pin = declared_pin(rev_dir)
+        if not pin or not args.ability_repo.is_dir():
+            node_detail = recompute_blocker(build, rev_dir)
+        else:
+            # `layout_at=args.output`: the node revision is not a plugin and has
+            # no marketplace position, so it borrows the one the plugin rows are
+            # already required to have rather than being asked for its own.
+            got = expected_artifact(build, args.ability_repo, pin, rev_dir,
+                                    args.marketplace_path, layout_at=args.output)
+            if got is None:
+                node_detail = recompute_blocker(build, rev_dir)
+            else:
+                node_expected, node_built = got
+                drift = tree_drift(node_expected, rev_dir, ignore=(Path(TREE_MANIFEST),))
+                node_verdict = OK if not drift else SOURCE_RUNTIME_DRIFT
+                node_detail = ("" if not drift else
+                               f"canonical source builds {node_built}, and the running "
+                               f"revision differs in {len(drift)} path(s); "
+                               f"e.g. {', '.join(drift[:3])}")
+    node_label = (node["manifest"] or {}).get("revision") or node["current"] or ""
+    row(f"{args.composition} (node revision)", node_label, node_built,
+        f"{node['revision_dir'] or node['root']}"
+        + (f"  sha256={node['manifest']['tree_hash'][:12]}" if node["manifest"] else ""),
+        node_verdict, node_detail,
+        note=node["detail"] if node_verdict == OK else "",
+        # A machine with no node runtime for this composition has no running
+        # surface to converge, and reporting that as a failure would make this
+        # file unusable on every machine that is not this node. The exclusion is
+        # keyed on the DISTRIBUTION ROOT being absent — a fact about what is
+        # installed — and never on a check having failed. It is reported in
+        # `release.not_applicable` so it cannot be silent.
+        applies=node["state"] != "ABSENT")
+
     # The chain verdict answers only "do the bytes agree at every hop". The pin
     # row is excluded because reachability is a different question, answered on
     # its own axis below; letting it leak into the chain verdict would make a
     # perfectly consistent chain read as UNKNOWN for a reason that has nothing
     # to do with consistency.
-    chain_verdicts = {r["verdict"] for r in rows if r["axis"] != AXIS_PROVENANCE}
+    chain_verdicts = {r["verdict"] for r in rows
+                      if r["axis"] != AXIS_PROVENANCE and r.get("applies", True)}
     if SOURCE_RUNTIME_DRIFT in chain_verdicts:
         overall = SOURCE_RUNTIME_DRIFT
     elif chain_verdicts <= {OK}:
@@ -865,15 +1386,54 @@ def collect(args) -> dict:
 
     claude_skills = getattr(args, "claude_skills_root", None)
     codex_skills = getattr(args, "codex_skills_root", None)
-    materialization = materialization_audit(args.output, [
-        ("Claude", claude.get("installPath") or None, claude_skills),
-        ("Codex", codex_leaf, codex_skills),
-    ])
+    # Two compositions, two member sets, one question. Auditing only the plugin
+    # payload would leave the members the NODE actually ships unchecked, and
+    # those are the ones a runtime skill root could duplicate. Both are audited
+    # and merged, with the per-composition breakdown kept so a duplicate can be
+    # attributed rather than merely counted.
+    audit_targets = [(args.output, "plugin payload"),
+                     (rev_dir, "node revision")] if rev_dir is not None else \
+                    [(args.output, "plugin payload")]
+    materialization = {
+        "verdict": PASS, "members": [], "duplicates": [], "collisions": [],
+        "notes": [], "detail": "", "compositions": {},
+    }
+    for artifact, label in audit_targets:
+        if artifact is None:
+            continue
+        found = materialization_audit(artifact, [
+            ("Claude", claude.get("installPath") or None, claude_skills),
+            ("Codex", codex_leaf, codex_skills),
+        ])
+        materialization["compositions"][label] = {
+            "artifact": str(artifact),
+            "verdict": found["verdict"],
+            "members": found["members"],
+            "detail": found["detail"],
+        }
+        materialization["members"] += found["members"]
+        materialization["duplicates"] += found["duplicates"]
+        materialization["collisions"] += found["collisions"]
+        materialization["notes"] += found["notes"]
+        if found["verdict"] != PASS:
+            materialization["verdict"] = found["verdict"]
+    materialization["members"] = sorted(set(materialization["members"]))
+    if materialization["duplicates"]:
+        materialization["detail"] = (
+            f"{len(materialization['duplicates'])} member(s) materialized twice: "
+            + ", ".join(f"{d['member']}@{d['runtime']}"
+                        for d in materialization["duplicates"][:4]))
+    else:
+        materialization["detail"] = (
+            f"{len(materialization['members'])} member(s) across "
+            f"{len(materialization['compositions'])} composition(s), each reaching "
+            "every installed runtime once")
 
+    not_applicable = [r["component"] for r in rows if not r.get("applies", True)]
     axes = {
         AXIS_CHAIN: {
             "verdict": PASS if overall == OK else FAIL,
-            "detail": ("source, built and installed bytes agree at every hop"
+            "detail": ("source, built, installed and running agree at every hop"
                        if overall == OK else f"chain verdict is {overall}"),
         },
         AXIS_PROVENANCE: {
@@ -892,11 +1452,36 @@ def collect(args) -> dict:
     }
     blocking = [name for name in AXES if axes[name]["verdict"] != PASS]
 
-    return {"schema": "serveros/runtime-truth.v2", "verdict": overall, "rows": rows,
+    return {"schema": "serveros/runtime-truth.v3", "verdict": overall, "rows": rows,
             "release": {
                 "verdict": RELEASE_COMPLETE if not blocking else RELEASE_INCOMPLETE,
                 "axes": axes, "blocking": blocking,
+                "not_applicable": not_applicable,
                 "materialization": materialization,
+                # The node's own surface, kept as its own block because a reader
+                # asking "is the daemon running the code we wrote" should not
+                # have to find the answer by pattern-matching row labels. Every
+                # field is what was measured, including the ones that say the
+                # measurement could not be made.
+                "node": {
+                    "composition": args.composition,
+                    "state": node["state"],
+                    "current": node["current"],
+                    "previous": node["previous"],
+                    "revision_dir": node["revision_dir"],
+                    "revision_label": node_label,
+                    "tree_hash_recorded": (node["manifest"] or {}).get("tree_hash"),
+                    "tree_hash_ok": node["tree_hash_ok"],
+                    "unit": {"name": NODE_UNIT, "state": unit["state"],
+                             "exec_start": unit_program, "detail": unit["detail"]},
+                    "processes": {"running": exec_state["pids"],
+                                  "running_a_superseded_revision":
+                                      exec_state["elsewhere"],
+                                  "started_before_current_was_repointed":
+                                      repointed,
+                                  "visible": len(processes)},
+                    "detail": node["detail"],
+                },
                 "pin": {"used": pinned, "declared": declared, "recorded": recorded_pin,
                         "state": provenance.get("state", PIN_STATE_MISSING),
                         "record_agrees": declared == recorded_pin if declared else None,
@@ -946,6 +1531,23 @@ def render(report: dict) -> None:
         # artifacts and that should never scroll past unread.
         print(f"  -- {NAME_COLLISION}: {entry['member']} @ {entry['runtime']} "
               f"({entry['path']}) differs from the plugin member")
+    node = release.get("node")
+    if node:
+        running = ", ".join(map(str, node["processes"]["running"])) or "none"
+        print(f"  {'NODE':<22} {node['state']:<5} {node['composition']}@"
+              f"{node['current'] or '(none)'}  unit={node['unit']['state']}  "
+              f"running pid={running}")
+        for entry in node["processes"]["running_a_superseded_revision"]:
+            print(f"  -- running a superseded revision: pid {entry['pid']} "
+                  f"{entry['argv0']}")
+        for entry in node["processes"]["started_before_current_was_repointed"]:
+            print(f"  -- pid {entry['pid']} started {entry['current_repointed_at'] - entry['started_at']:.0f}s "
+                  "before `current` was last repointed; restart to converge")
+    for component in release.get("not_applicable", []):
+        # Named rather than silent. A row excluded from the chain verdict is a
+        # hole in the gate, and a hole nobody can see is how a gate stops being
+        # one — this line is the difference between an exclusion and an absence.
+        print(f"  -- not applicable on this machine: {component}")
     print()
     print(f"RELEASE: {release['verdict']}"
           + (f"  (blocking: {', '.join(release['blocking'])})" if release["blocking"] else ""))
@@ -996,6 +1598,31 @@ def main() -> int:
     ap.add_argument("--codex-skills-root", type=Path,
                     default=Path(os.environ.get("SERVEROS_CODEX_SKILLS")
                                  or home / ".codex/skills"))
+    # --- the node, which is not the distribution -------------------------
+    # `--output` above is where the PLUGIN payload is built and installed from;
+    # this is where the NODE runs from. They are different paths, different
+    # compositions and different names, and the file conflated them for as long
+    # as it existed because only one of the two was ever on the machine when it
+    # was written.
+    ap.add_argument("--runtime-root", type=Path,
+                    default=Path(os.environ.get("SERVEROS_RUNTIME_ROOT")
+                                 or "/opt/applications/data/home-hwz/runtime-assets/hwz-server-os"),
+                    help="distribution root holding one directory per composition, "
+                         "each with `current` -> `revisions/<label>`")
+    ap.add_argument("--composition", default=os.environ.get("SERVEROS_COMPOSITION")
+                    or NODE_COMPOSITION,
+                    help="the composition the node RUNS from; the plugin "
+                         "composition is read from the artifact's own README")
+    ap.add_argument("--unit-dir", type=Path,
+                    default=Path(os.environ.get("SERVEROS_UNIT_DIR")
+                                 or home / ".config/systemd/user"),
+                    help="where the supervisor's unit files live; read as data, so "
+                         "this works on a machine whose systemd session is not up")
+    ap.add_argument("--proc-root", type=Path,
+                    default=Path(os.environ.get("SERVEROS_PROC_ROOT") or "/proc"),
+                    help="where to look for live processes; a parameter so the "
+                         "fixture can supply a synthetic one rather than describe "
+                         "whatever happens to be running when the suite runs")
     args = ap.parse_args()
 
     report = collect(args)
