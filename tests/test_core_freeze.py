@@ -72,6 +72,28 @@ CORE_BINARY = "bin/serverosd"
 # of what it is asked to supervise.
 RESIDENT_UNITS = {"runtime/serverosd.service"}
 
+# §W's delivery runtime: a oneshot and the timer that fires it. It is listed
+# here rather than left implicit so that adding a third unit is a diff, and it
+# is kept SEPARATE from RESIDENT_UNITS because that separation is the whole
+# claim — §W says the delivery worker is "Managed Runtime / HumanControl
+# delivery worker，不是第二个 ServerOS daemon", and a comment is not a gate.
+#
+# `test_every_other_unit_is_provably_not_resident` reads `Type=` and `Restart=`
+# out of each of these and requires that systemd would NOT keep them running.
+# The resident unit is put through the same predicate as a positive control: if
+# it did not come back resident, the predicate would be answering yes to
+# everything and the assertion under it would be worth nothing.
+DELIVERY_UNITS = {
+    "runtime/serveros-alert-sync.service",
+    "runtime/serveros-alert-sync.timer",
+}
+
+# The daemon may not open a network socket (§W: "serverosd 不做网络调用"). It
+# is checked as an AST property of the daemon's own loader closure rather than
+# by reading one file, because the call this refuses is the one added by a
+# future edit to a module two hops away.
+NETWORK_SOCKET_FAMILIES = ("AF_INET", "AF_INET6")
+
 # §C's refused names. Each is the obvious way to make one of ServerOS's semantic
 # services into a process. They are refused because each of them is a service
 # that answers a question the node already answers in-process, and a question
@@ -135,20 +157,118 @@ def _tracked_executables() -> set[str]:
     return out
 
 
+UNIT_SUFFIXES = (".service", ".timer")
+
+
 def _unit_files() -> set[str]:
     return {
         p.relative_to(REPO).as_posix()
-        for p in REPO.rglob("*.service")
-        if ".git" not in p.parts
+        for p in REPO.rglob("*")
+        if p.suffix in UNIT_SUFFIXES and ".git" not in p.parts
     }
+
+
+def directives(text: str) -> list[tuple[str, str, str]]:
+    """(section, key, value) for every `Key=value` line, case-folded on the key.
+
+    A parse rather than a substring search, because the claim below is about
+    what systemd would READ — and systemd reads neither the prose block at the
+    top of these files nor a key that appears in the wrong section. `[Service]`
+    keys written under `[Unit]` are logged as unknown and ignored, which is a
+    property `serverosd.service` already documents having been bitten by.
+    """
+    found, section = [], ""
+    for raw in text.splitlines():
+        line = raw.strip()
+        if line.startswith("[") and line.endswith("]"):
+            section = line[1:-1]
+            continue
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        found.append((section, key.strip().lower(), value.strip()))
+    return found
+
+
+def is_resident(text: str) -> bool:
+    """Would systemd keep this unit running?
+
+    The question §C actually asks, asked about a file rather than about a name.
+    A unit that is resident is a process with a lifetime the node does not
+    choose, and that is the surface that has to stay closed. A oneshot is a
+    command someone asked for; it exits, and nothing about it can be "down".
+
+    `Restart=` is checked as well as `Type=` because a oneshot with
+    `Restart=always` is a loop wearing a oneshot's clothes — systemd would
+    re-run it forever, which is the same failure the daemon's unit refuses in
+    its own header.
+    """
+    keys = directives(text)
+    if next((v for _, k, v in keys if k == "type"), "") != "oneshot":
+        return True
+    restart = next((v for _, k, v in keys if k == "restart"), None)
+    return restart is not None and restart.lower() != "no"
 
 
 class TheResidentSurfaceIsClosed(unittest.TestCase):
     def test_the_executable_surface_is_exactly_this(self):
         self.assertEqual(_tracked_executables(), ENTRY_POINTS)
 
-    def test_the_tree_has_exactly_one_unit_file(self):
-        self.assertEqual(_unit_files(), RESIDENT_UNITS)
+    def test_the_tree_declares_exactly_these_units(self):
+        # Was `== RESIDENT_UNITS` and said "exactly one unit file". That was the
+        # right assertion while it was true and the wrong one the moment it was
+        # not: §W adds a delivery runtime, and a gate that can only be satisfied
+        # by deleting the new unit would be a gate arguing against the feature.
+        # It now names BOTH sets, so adding a third unit is still a diff.
+        self.assertEqual(_unit_files(), RESIDENT_UNITS | DELIVERY_UNITS)
+
+    def test_every_other_unit_is_provably_not_resident(self):
+        """§W: the delivery worker is not a second ServerOS daemon.
+
+        Not "it is written as a oneshot in a comment", and not "it lives in a
+        different file" — `Type=` and `Restart=` as systemd would read them.
+        """
+        for rel in sorted(DELIVERY_UNITS):
+            with self.subTest(unit=rel):
+                text = (REPO / rel).read_text()
+                if Path(rel).suffix == ".timer":
+                    # A timer runs nothing itself; what it must not carry is an
+                    # ExecStart, which would be a second thing that starts a
+                    # process on its own.
+                    self.assertEqual(
+                        [v for _, k, v in directives(text) if k == "execstart"], [],
+                        f"{rel} carries an ExecStart; a timer names a Unit=",
+                    )
+                    self.assertTrue(
+                        any(k == "unit" for _, k, _ in directives(text)),
+                        f"{rel} does not name the unit it fires",
+                    )
+                    continue
+                self.assertFalse(
+                    is_resident(text),
+                    f"{rel} would be kept running by systemd — Type= is not "
+                    f"oneshot, or it carries a Restart= that re-runs it. §W "
+                    f"allows a delivery worker and refuses a second daemon.",
+                )
+
+    def test_that_predicate_calls_the_resident_unit_resident(self):
+        # The positive control, and the reason the assertion above is worth
+        # anything: a predicate that answered False to everything would pass it
+        # while checking nothing. `serverosd.service` IS the resident surface,
+        # so the predicate has to say so about it.
+        self.assertTrue(is_resident((REPO / next(iter(RESIDENT_UNITS))).read_text()))
+
+    def test_the_delivery_worker_holds_no_socket_directory(self):
+        # `RuntimeDirectory=` is the one property a copy-paste from the daemon's
+        # unit would carry, and it would be actively harmful here: systemd
+        # REMOVES a RuntimeDirectory when the unit that declared it stops, so a
+        # oneshot declaring `RuntimeDirectory=serveros` would delete %t/serveros
+        # — and with it the daemon's socket — on every run.
+        for rel in sorted(DELIVERY_UNITS):
+            with self.subTest(unit=rel):
+                keys = {k for _, k, _ in directives((REPO / rel).read_text())}
+                self.assertNotIn("runtimedirectory", keys, rel)
+                self.assertNotIn("listenstream", keys, rel)
 
     def test_the_entry_point_set_is_not_empty(self):
         # The positive control. A scanner that returned the empty set would
@@ -156,6 +276,7 @@ class TheResidentSurfaceIsClosed(unittest.TestCase):
         # a gate that passes when it sees nothing is the failure mode this
         # whole round is written against.
         self.assertTrue(ENTRY_POINTS)
+        self.assertTrue(DELIVERY_UNITS)
 
     def test_the_unit_starts_the_core_and_nothing_else(self):
         unit = (REPO / next(iter(RESIDENT_UNITS))).read_text()
@@ -169,6 +290,22 @@ class TheResidentSurfaceIsClosed(unittest.TestCase):
             starts[0].endswith(CORE_BINARY),
             f"the resident unit must start {CORE_BINARY}, not {starts[0]}",
         )
+
+    def test_the_delivery_worker_runs_the_cli_and_not_the_provider(self):
+        """§W's split, at the one place an ExecStart can violate it.
+
+        The worker must go through `serverosctl alert sync`, which asks the
+        daemon what has to be said and records what happened. An ExecStart that
+        called a provider or a module directly would be a second producer of the
+        dedupe, cooldown and recovery decisions the register already owns.
+        """
+        text = (REPO / "runtime/serveros-alert-sync.service").read_text()
+        starts = [v for _, k, v in directives(text) if k == "execstart"]
+        self.assertEqual(len(starts), 1, starts)
+        self.assertIn("bin/serverosctl", starts[0])
+        self.assertIn("alert sync", starts[0])
+        for forbidden in ("human_control", "python3 -c", "curl", "notifications.py"):
+            self.assertNotIn(forbidden, starts[0])
 
 
 class TheRefusedDaemonsAreNamedBeforeTheyExist(unittest.TestCase):
@@ -319,6 +456,191 @@ class ASessionIsNotAManagedRuntime(unittest.TestCase):
         text = (REPO / "runtime" / "registry.py").read_text()
         self.assertIn("SESSION_OWNER_PREFIXES", text)
         self.assertIn("disposable", text)
+
+
+def network_socket_calls(source: str) -> list[str]:
+    """Every `socket.socket(...)` in `source` that is NOT an AF_UNIX one.
+
+    Read from the AST and not from text, because the property is about what the
+    call RESOLVES TO. A text search for `AF_INET` is satisfied by a comment
+    explaining why there is none — which is exactly the shape this repository
+    keeps finding in its own declarations.
+
+    A first argument that is not a literal `socket.AF_*` attribute is reported
+    as unresolved rather than assumed safe, so that `socket.socket(family)`
+    cannot pass by hiding its family in a variable.
+    """
+    out = []
+    for node in ast.walk(ast.parse(source)):
+        if not isinstance(node, ast.Call):
+            continue
+        func = node.func
+        if not (isinstance(func, ast.Attribute) and func.attr == "socket"
+                and isinstance(func.value, ast.Name) and func.value.id == "socket"):
+            continue
+        if not node.args:
+            out.append("socket.socket() with no family — defaults to AF_INET")
+            continue
+        first = node.args[0]
+        if isinstance(first, ast.Attribute) and first.attr == "AF_UNIX":
+            continue
+        if isinstance(first, ast.Attribute):
+            out.append(f"socket.socket(socket.{first.attr}, ...)")
+        else:
+            out.append(f"socket.socket(<{type(first).__name__}>, ...) — family "
+                       f"is not a literal, so it cannot be checked")
+    return out
+
+
+# Modules that exist to speak to something over the network. §W puts the network
+# call in the delivery worker and keeps it out of the daemon; an import of any
+# of these in the daemon's closure would be that boundary crossed silently, two
+# hops from the file somebody was editing.
+NETWORK_MODULES = ("urllib", "http", "requests", "httpx", "xmlrpc", "ftplib",
+                   "smtplib", "telnetlib", "asyncore", "socketserver")
+
+# The closure files that DO reach a network module, each with the measurement
+# that says what it actually does. An allow-list with a reason per entry rather
+# than a boolean, because the entries are not equivalent and the difference is
+# the finding.
+#
+# MEASURED 2026-09-15 over `closure(Path("runtime/daemon.py"))` — 30 modules,
+# three of them naming a network module:
+#
+#   context/actor.py           from urllib.parse import quote, unquote
+#   runtime/agent_sessions.py  from urllib.parse import quote, unquote
+#   runtime/probes.py          import urllib.error / import urllib.request
+#
+# `urllib.parse` is string handling and opens nothing. `runtime/probes.py` is
+# the real one, and it is a FINDING rather than something this round repaired:
+# `Probes.http_get` and `McpToolsList` open an outbound HTTP connection, so the
+# daemon's closure retains the capability to reach the network — but §W's
+# sentence ("serverosd 不做网络调用") holds TODAY **by registry contents and not
+# by construction**. Of the seven registrations in
+# `state/serveros/runtime/registry/resources.yaml`, none declares `http-health`
+# or `mcp-tools-list`; every one of them is a local probe (`systemd-unit-state`,
+# `relay-socket`, `relay-presence`, `journal-diagnostic`, `container-state`,
+# `container-healthcheck`, `process-exists`). So no HTTP probe runs, and adding
+# one registration is all it would take to make one run.
+#
+# Both imports are function-local, so the daemon does not even load
+# `urllib.request` at startup. That is a real mitigation and it is not a gate.
+#
+# This is recorded rather than repaired because the repair is an architecture
+# change — moving the HTTP probes behind a provider, or refusing `http-health`
+# from the daemon's own probe engine — and §AO forbids inventing architecture in
+# the release round. What this gate does supply is the thing that was missing:
+# **a second place the daemon can reach the network is now a red test**.
+NETWORK_CAPABLE = {
+    "runtime/probes.py": "http_get / McpToolsList open an outbound connection",
+    "context/actor.py": "urllib.parse only — no I/O",
+    "runtime/agent_sessions.py": "urllib.parse only — no I/O",
+}
+
+# The one module that can actually open a connection, as opposed to parsing a
+# URL. Named separately so that a new network-capable file has to be added to
+# two places, and the second one is the sentence above.
+THE_ONE_NETWORK_CAPABLE_MODULE = "runtime/probes.py"
+
+
+def network_imports(source: str) -> list[str]:
+    """`import`/`from` statements naming a network module, deduplicated."""
+    found = set()
+    for node in ast.walk(ast.parse(source)):
+        if isinstance(node, ast.Import):
+            found |= {f"import {a.name}" for a in node.names
+                      if a.name.split(".")[0] in NETWORK_MODULES}
+        elif isinstance(node, ast.ImportFrom) and node.module:
+            if node.module.split(".")[0] in NETWORK_MODULES:
+                found.add(f"from {node.module} import ...")
+    return sorted(found)
+
+
+class TheDaemonDoesNotReachTheNetwork(unittest.TestCase):
+    """§W: 网络调用属于投递 worker，`serverosd` 不做。
+
+    The daemon's whole claim is that it answers "what is true" without depending
+    on anything that can be unreachable. A socket to another host is the
+    sharpest possible violation: the answer would start depending on the network
+    a person is usually asking about BECAUSE it is broken.
+
+    Scanned over the daemon's loader closure rather than over `daemon.py`, and
+    over the AST rather than the text, for the same reason the sibling gate is:
+    the call this refuses is one a future edit adds two hops away.
+
+    `socket` itself is NOT forbidden. The daemon's IPC is an `AF_UNIX` socket in
+    the runtime directory (§22), and §22's "nothing here binds a port" is the
+    first assertion below.
+    """
+
+    def test_the_daemon_opens_only_unix_sockets(self):
+        offenders = []
+        for path in sorted(closure(Path("runtime/daemon.py"))):
+            for hit in network_socket_calls((REPO / path).read_text()):
+                offenders.append(f"{path.as_posix()}: {hit}")
+        self.assertEqual(offenders, [], "\n".join(offenders))
+
+    def test_the_network_capable_modules_are_exactly_these(self):
+        # The gate. Not "nothing imports a network module" — that is false — but
+        # "the set of things that do is exactly the set somebody has looked at
+        # and written down". A new one is a red test rather than a silent
+        # widening of what the daemon can depend on.
+        found = {}
+        for path in sorted(closure(Path("runtime/daemon.py"))):
+            hits = network_imports((REPO / path).read_text())
+            if hits:
+                found[path.as_posix()] = hits
+        self.assertEqual(sorted(found), sorted(NETWORK_CAPABLE),
+                         f"the daemon's closure reaches the network from "
+                         f"{sorted(found)}; it may only do so from "
+                         f"{sorted(NETWORK_CAPABLE)} — see the constant for what "
+                         f"each entry was measured doing")
+
+    def test_only_one_module_can_actually_open_a_connection(self):
+        users = [rel for rel in NETWORK_CAPABLE
+                 if any("urllib.request" in hit or "urllib.request" == hit.split()[-1]
+                        for hit in network_imports((REPO / rel).read_text()))]
+        self.assertEqual(users, [THE_ONE_NETWORK_CAPABLE_MODULE],
+                         "a second module can open an outbound connection; §W's "
+                         "'serverosd 不做网络调用' now has two ways to be false")
+
+    def test_the_http_probe_kinds_are_named_as_the_network_capability(self):
+        # The measurement behind §W's sentence, made checkable: the capability
+        # lives in two probe classes, and a resource has to DECLARE one of them
+        # for it to run. If that stops being true — if a probe kind starts
+        # reaching the network without a registration naming it — then "no
+        # registration declares it, so nothing calls it" is no longer the reason
+        # the daemon is quiet.
+        source = (REPO / THE_ONE_NETWORK_CAPABLE_MODULE).read_text()
+        for kind in ("http-health", "mcp-tools-list"):
+            self.assertIn(kind, source,
+                          f"{kind} is gone from {THE_ONE_NETWORK_CAPABLE_MODULE}: "
+                          f"either the probe was removed, or this entry is stale")
+
+    def test_the_scan_finds_the_one_socket_the_daemon_does_open(self):
+        # The positive control for the first assertion. If the scanner returned
+        # an empty list for every input, "no AF_INET socket" would be true and
+        # meaningless — so it is required to SEE the AF_UNIX socket that
+        # `daemon.py` genuinely opens, and to say that it is fine.
+        source = (REPO / "runtime" / "daemon.py").read_text()
+        self.assertEqual(network_socket_calls(source), [])
+        self.assertIn("AF_UNIX", source,
+                      "daemon.py no longer opens a unix socket — either the IPC "
+                      "moved, or this control has stopped controlling anything")
+
+    def test_the_scanners_catch_a_network_use(self):
+        # The other half of the control: scanners that ignored everything would
+        # pass every assertion above. The same two functions, on sources that do
+        # the forbidden thing.
+        self.assertEqual(
+            network_socket_calls("import socket\ns = socket.socket(socket.AF_INET, 1)\n"),
+            ["socket.socket(socket.AF_INET, ...)"])
+        self.assertTrue(
+            network_socket_calls("import socket\ns = socket.socket(socket.AF_UNIX, 1)\n"
+                                 "t = socket.socket()\n"))
+        self.assertEqual(network_imports("import urllib.request\n"),
+                         ["import urllib.request"])
+        self.assertEqual(network_imports("import os\nfrom pathlib import Path\n"), [])
 
 
 if __name__ == "__main__":

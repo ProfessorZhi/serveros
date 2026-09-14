@@ -50,20 +50,34 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
 from pathlib import Path
 
-# The two placeholders `runtime/serverosd.service` is written with. They are
-# inert to systemd on purpose: systemd expands `%` and `$`, so a `$NAME` left
-# unrendered would expand to the empty string and turn an ExecStart into a
-# different, plausible path. `@...@` stays literal, so an unrendered unit fails
-# naming the path it could not find instead of starting the wrong program.
+# The placeholders the units are written with. They are inert to systemd on
+# purpose: systemd expands `%` and `$`, so a `$NAME` left unrendered would
+# expand to the empty string and turn an ExecStart into a different, plausible
+# path. `@...@` stays literal, so an unrendered unit fails naming the path it
+# could not find instead of starting the wrong program.
 RUNTIME_PLACEHOLDER = "@SERVEROS_RUNTIME@"
 STATE_PLACEHOLDER = "@SERVEROS_STATE_DIR@"
+# The alert delivery worker's destination, and the only placeholder whose
+# unrendered form is not merely wrong but silently plausible: systemd would
+# happily run `alert sync --conversation @SERVEROS_ALERT_CONVERSATION@`, and the
+# provider would be asked to send to a chat named after a placeholder. So this
+# one is REQUIRED rather than defaulted — `render_unit` raises when the template
+# names it and no value is supplied, and `cmd_alert_worker` refuses to install
+# without `--conversation`.
+CONVERSATION_PLACEHOLDER = "@SERVEROS_ALERT_CONVERSATION@"
 
 UNIT_NAME = "serverosd.service"
+# §W's production delivery runtime. A oneshot and its timer, NOT a second
+# resident unit — `tests/test_core_freeze.py` holds the distinction by reading
+# `Type=` rather than by trusting this comment.
+ALERT_SERVICE_NAME = "serveros-alert-sync.service"
+ALERT_TIMER_NAME = "serveros-alert-sync.timer"
 TREE_MANIFEST = "RELEASE.json"
 
 
@@ -161,11 +175,47 @@ def _symlink_swap(link: Path, target: Path) -> None:
     os.replace(tmp, link)
 
 
-def render_unit(template: str, runtime_dir: Path, state_dir: Path) -> str:
+def render_unit(template: str, runtime_dir: Path, state_dir: Path, *,
+                conversation: str | None = None) -> str:
+    """Write a unit template out for THIS node.
+
+    `conversation` is keyword-only and has no default because there is no
+    honest one. A unit that names the alert destination and is rendered without
+    one would either keep the literal placeholder — and be handed to a provider
+    as a chat id — or expand to the empty string, which systemd turns into
+    `--conversation` with nothing after it. Both produce a worker that runs,
+    fails to send, and reports that as nothing to do. Raising here is the only
+    outcome that says what is actually wrong.
+    """
     rendered = template.replace(RUNTIME_PLACEHOLDER, str(runtime_dir))
     rendered = rendered.replace(STATE_PLACEHOLDER, str(state_dir))
-    if RUNTIME_PLACEHOLDER in rendered or STATE_PLACEHOLDER in rendered:
-        raise ValueError("unit still carries an unrendered placeholder")
+    if CONVERSATION_PLACEHOLDER in template:
+        if not conversation:
+            raise ValueError(
+                f"unit names {CONVERSATION_PLACEHOLDER} and no conversation was "
+                f"supplied; alert delivery has no destination and must not be "
+                f"installed as if it did"
+            )
+        rendered = rendered.replace(CONVERSATION_PLACEHOLDER, conversation)
+    left = [p for p in (RUNTIME_PLACEHOLDER, STATE_PLACEHOLDER,
+                        CONVERSATION_PLACEHOLDER) if p in rendered]
+    if left:
+        raise ValueError(f"unit still carries an unrendered placeholder: {left}")
+    # And any OTHER placeholder, because the list above is a list of the three
+    # this file knows how to fill, and a fourth was added to a unit and not
+    # here. The symptom is quiet in exactly the way this project keeps paying
+    # for: systemd treats `@...@` as text, so a unit carrying a placeholder
+    # nobody registered installs cleanly and runs with the literal in it. The
+    # check is a shape rather than a name so that the next placeholder is
+    # caught by the person who typo'd it rather than by the person reading a
+    # journal six weeks later.
+    stray = sorted(set(re.findall(r"@[A-Z][A-Z0-9_]*@", rendered)))
+    if stray:
+        raise ValueError(
+            f"unit carries a placeholder no renderer fills: {stray}. Add it to "
+            f"`render_unit` and to the caller that supplies its value, or the "
+            f"unit installs with the literal in it and systemd runs it as text"
+        )
     return rendered
 
 
@@ -228,6 +278,26 @@ def verify_revision(rev_dir: Path, state_dir: Path) -> dict:
             render_unit(template.read_text(), rev_dir, state_dir)
         except ValueError as exc:
             problems.append(str(exc))
+
+    # The delivery worker, checked WHEN PRESENT and not required to be. The
+    # split is §24's: the core must start without it, so an artifact that omits
+    # the worker is still a runnable node — but an artifact that ships one
+    # carrying a placeholder nobody can render is a worker that cannot send, and
+    # that is worth failing over before the revision is promoted rather than
+    # when the first real alert fires.
+    #
+    # The conversation here is a sentinel and never reaches a file: this asks
+    # whether the TEMPLATE renders, which is a question about the artifact. The
+    # value that becomes a real destination is supplied by a person at install
+    # time (`alert-worker --conversation`), because it is a fact about a chat
+    # and not a fact about a build.
+    alert_template = rev_dir / "runtime" / ALERT_SERVICE_NAME
+    if alert_template.is_file():
+        try:
+            render_unit(alert_template.read_text(), rev_dir, state_dir,
+                        conversation="template-check")
+        except ValueError as exc:
+            problems.append(f"runtime/{ALERT_SERVICE_NAME}: {exc}")
 
     # The entry point must resolve the runtime it ships with. `bin/` and
     # `runtime/` find each other by relative path, so a revision carrying one
@@ -408,6 +478,101 @@ def cmd_rollback(args) -> int:
     return 0
 
 
+def cmd_alert_worker(args) -> int:
+    """Install §W's delivery runtime: a oneshot and the timer that fires it.
+
+    Deliberately NOT part of `promote`, and the reason is the same one that
+    keeps `--enable-reconcile` out of the daemon's ExecStart: promote places a
+    revision and points the node at it, which must keep working on a node whose
+    operator has not yet decided where alerts should go. Folding this in would
+    either make every promotion depend on knowing a chat id — blocking the core
+    release on a delivery question, which §AM refuses for repo governance and
+    this file refuses for the same reason — or let promote install a worker with
+    no destination and call it done.
+
+    So it is one explicit act, and the act is the one that cannot be undone by a
+    reboot: `enable --now` on the timer. Before it, nothing is delivered and the
+    alerts stay pending, visible in `serverosctl alert list`. After it, a
+    condition that opens is said out loud within five minutes.
+
+    The unit is rendered from the revision `current` resolves to, not from
+    wherever this script happens to run, so the worker runs the same code the
+    daemon does — the split this whole file exists to remove, one hop further
+    out.
+    """
+    root = args.runtime_root / args.composition
+    current = current_revision(root)
+    if not current:
+        print(f"REFUSED nothing is promoted: {root / 'current'} is not a symlink.",
+              file=sys.stderr)
+        print("        The worker runs the revision's own `bin/serverosctl`; "
+              "install one first.", file=sys.stderr)
+        return 1
+    rev_dir = root / "revisions" / current
+
+    service_template = rev_dir / "runtime" / ALERT_SERVICE_NAME
+    timer_template = rev_dir / "runtime" / ALERT_TIMER_NAME
+    for path in (service_template, timer_template):
+        if not path.is_file():
+            print(f"REFUSED {path} is missing from revision {current}.", file=sys.stderr)
+            print("        An artifact built before the delivery runtime existed "
+                  "cannot install one.", file=sys.stderr)
+            return 1
+
+    try:
+        service_text = render_unit(service_template.read_text(), root / "current",
+                                   args.state_dir, conversation=args.conversation)
+    except ValueError as exc:
+        print(f"REFUSED {exc}", file=sys.stderr)
+        return 1
+    # The timer carries no placeholder, and running it through the same
+    # renderer anyway is what keeps "which files are rendered" from becoming a
+    # second list to maintain.
+    timer_text = render_unit(timer_template.read_text(), root / "current", args.state_dir)
+
+    if args.dry_run:
+        print(f"would install  {args.unit_dir / ALERT_SERVICE_NAME}")
+        print(f"would install  {args.unit_dir / ALERT_TIMER_NAME}")
+        print(f"  revision     {current}")
+        print(f"  destination  {args.conversation}")
+        exec_line = next((l for l in service_text.splitlines()
+                          if l.startswith("ExecStart=")), "")
+        print(f"  {exec_line}")
+        if not args.no_enable:
+            print(f"would enable   {ALERT_TIMER_NAME}")
+        return 0
+
+    args.unit_dir.mkdir(parents=True, exist_ok=True)
+    (args.unit_dir / ALERT_SERVICE_NAME).write_text(service_text)
+    (args.unit_dir / ALERT_TIMER_NAME).write_text(timer_text)
+    print(f"installed      {args.unit_dir / ALERT_SERVICE_NAME}")
+    print(f"installed      {args.unit_dir / ALERT_TIMER_NAME}")
+    print(f"  revision     {current}")
+    print(f"  destination  {args.conversation}")
+
+    if args.no_reload:
+        return 0
+    subprocess.run(["systemctl", "--user", "daemon-reload"], check=False)
+    if args.no_enable:
+        print("  not enabled. Nothing is delivered until you enable it:")
+        print(f"    systemctl --user enable --now {ALERT_TIMER_NAME}")
+        return 0
+    # `enable --now` starts the timer AND runs nothing immediately: a timer is
+    # armed for its next OnCalendar match. The first delivery therefore happens
+    # at the next :04/:09/… and not at install time, which is the right default
+    # — installing a delivery path should not send a card nobody asked for.
+    done = subprocess.run(["systemctl", "--user", "enable", "--now", ALERT_TIMER_NAME],
+                          check=False)
+    print(f"  enabled      {ALERT_TIMER_NAME} "
+          f"({'ok' if done.returncode == 0 else f'exit {done.returncode}'})")
+    if done.returncode != 0:
+        print("  The unit and the timer are installed and the timer is NOT "
+              "running. Alerts stay pending — `serverosctl alert list` shows "
+              "them — and nothing was sent.", file=sys.stderr)
+        return 1
+    return 0
+
+
 def main() -> int:
     home = Path.home()
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
@@ -449,6 +614,20 @@ def main() -> int:
     p = sub.add_parser("status", help="report what the node is actually pointed at")
     common(p)
     p.set_defaults(func=cmd_status)
+
+    p = sub.add_parser(
+        "alert-worker",
+        help="§W · install the alert delivery worker (a oneshot and its timer). "
+             "Separate from promote: it needs a destination a person chooses")
+    common(p)
+    p.add_argument("--conversation", required=True,
+                   help="where the worker sends. Required and not defaulted — "
+                        "an install without a destination would produce a "
+                        "worker that runs, sends nothing, and reports that as "
+                        "nothing to do")
+    p.add_argument("--no-enable", action="store_true",
+                   help="write the units but do not enable or start the timer")
+    p.set_defaults(func=cmd_alert_worker)
 
     args = ap.parse_args()
     return args.func(args)

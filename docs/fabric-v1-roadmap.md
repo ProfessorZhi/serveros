@@ -44,6 +44,8 @@ what this product keeps building by accident.
 |---|---|---|---|
 | GEN-01 | **EXISTS — the one gate is now four** | **The gate, for all four classes.** `tests/test_declared_commands.py` walks the real argparse parser and fails when any scanned document tells a reader to run a verb that does not exist. Joining it, `tests/test_declared_implementations.py` holds a contract to its own declarations in three classes: `DeclaredEventsHaveProducers` (a `producers:` entry must appear as a literal in code that is not a contract and not a test), `DeclaredFieldsHaveReaders` (a declared field must be read by some non-test module — **read by AST, not by text**, so a mention in a docstring is not a reader) and `EnforcerClaimsResolve` (an `enforcement:` / `enforced_by:` / `decided_by:` naming a file or symbol that does not exist). Each class carries an exemption table shaped like `test_declared_commands.py#KNOWN_ABSENT`, and every table only empties: **leaving is the only exit an exemption has**, so a field that gains a reader must lose its row or the gate goes red. What it found the day it opened: **six events with no producer**, **one declared field with no reader**, and **no unresolved enforcer claims** — the last held to a positive control fed a synthetic contract naming a file and a symbol that do not exist, because a gate whose findings list is empty on the day it opens is indistinguishable from a scanner that stopped matching. The fourth is `tests/test_core_ability_boundary.py`: the import direction, and whether the Core starts with no provider at all. | The systemic one, observed in **seven instances inside a single module** during the resource-observation round with the test suite green through all seven — and in an **eighth**, when that one gate caught this page's own author citing `serverosctl anomaly explain` in a form the parser does not accept. |
 
+| GEN-02 | **PARTIAL — the property holds by registry contents, not by construction** | **§W's *"serverosd 不做网络调用"*, measured rather than assumed.** The daemon's loader closure is 30 modules and exactly three of them name a network module: `context/actor.py` and `runtime/agent_sessions.py` take `urllib.parse` (string handling, opens nothing), and `runtime/probes.py` takes `urllib.error`/`urllib.request` for real — `Probes.http_get` and `McpToolsList` open outbound connections. Both imports are **function-local**, so the daemon does not even load `urllib.request` at startup, and on this node **none of the seven live registrations declares `http-health` or `mcp-tools-list`**, so no HTTP probe runs. Adding one registration is all it would take to make one run. The gate (`tests/test_core_freeze.py::TheDaemonDoesNotReachTheNetwork`) therefore claims the weaker and true thing: the set of closure files that can reach the network is exactly the set written down in `NETWORK_CAPABLE`, each with the measurement of what it does — so a second one is a red test. | **§24's exact failure, one hop out.** *"core 必须能在 provider 缺席时启动"* is enforced by construction for abilities and only by a registry's current contents for probes. The repair is an architecture change — move the HTTP probes behind a provider, or refuse those two kinds from the daemon's own probe engine — and §AO forbids inventing architecture in the release round, so it is recorded here with its measurement rather than improvised. |
+
 GEN-01 is the reason every entry below exists, and the one gate that is already
 built is the model to generalize rather than a thing to admire. It is worth
 reading in full (`tests/test_declared_commands.py`) because two of its
@@ -248,6 +250,8 @@ introducing a priority field is a decision about where it lives, not a task.
 | HUM-03 | **EXISTS** | A notification policy, in `runtime/notification-contract.yaml#alerts`. Identity is `code + device_ref + subject_ref`, and **`identity_is_not: [pid, container_name, timestamp]`** is part of it. Cooldown is 900s / 1h / 6h by severity with the clock on `last_attempt_at` and not `last_notified_at` — otherwise a transport that is down silences the alert for as long as it stays down. Hysteresis closes at `threshold - margin`, with the margins left in `attribution-contract.yaml` where the thresholds they modify already live. | Alert fatigue as the eventual failure of HUM-01/02 done naively — every graded code becomes a message, and the messages stop being read. |
 | HUM-04 | **UNSUPPORTED** | An approval transport. `human.approval.transport` is `UNSUPPORTED` and `request_approval` **raises** `HumanControlUnsupported` rather than returning a soft value. This is now also the reason `alert.ack` and `alert.snooze` are `transport: LOCAL_ONLY, surfaces: [serverosctl]` — a Feishu message cannot carry a decision back, so a design that let a person "reply ACK" would produce alerts nobody could close. | Anything irreversible that would be gated on an approval this transport cannot carry. The capability table is measured on this device and every entry carries `measured_by`. |
 | HUM-05 | **UNKNOWN** | The answer to whether `human.identity.verify` works **inside** a BotMux turn. It is `UNKNOWN` rather than `UNSUPPORTED` on purpose — the surface exists and BotMux correctly declined to verify *this* process, because this process is not in a turn. | An `UNKNOWN` flattened into a `no` produces a system that stops asking. Closing it is an experiment, not an implementation. |
+| HUM-06 | **EXISTS — the delivery runtime** | §W's production delivery path: `runtime/serveros-alert-sync.service` (a `Type=oneshot`) and `runtime/serveros-alert-sync.timer` (`OnCalendar=*-*-* *:4/5:00`), installed by the separate act `scripts/release.py alert-worker --conversation <chat>`. The last hop of HUM-01 was **finished, tested, and reachable only by somebody typing a command**; this is what types it. The timer's offsets are measured against this host's other timers (`hwz-monitor` at `:00/:30` takes a sampling window it documents as polluted; `botmux-watchdog` at `:02/5`), and `Persistent=false` because the durable queue is the register and not the timer. | A complete delivery path that says nothing, on a machine where everything it would say is already detected and already graded. The failure is invisible: an unrun command and a node with no alerts look identical from the outside. |
+| HUM-07 | **EXISTS — the worker delegates rather than reimplements** | The four things the worker could plausibly have implemented for itself — dedupe, cooldown, recovery, delivery-failure truth — are **all** the register's, and `tests/test_alert_delivery.py` holds that by reading `cmd_alert_sync`'s AST: its whole conversation with the register is `alert.pass` / `alert.pending` / `alert.record-delivery`, and it names no register field of its own (`not_before`, `last_notified_at`, `cooldown_seconds`, …). The unit's header claimed this in prose; the gate is what makes it checkable. Two of the assertions in that file were **wrong when first written** and the mutation harness caught both — see the note below. | A second producer of the cooldown, in the surface that runs every five minutes while the daemon ticks every few seconds. The two would disagree the first time one was edited, and every alert would be either late or early in a way nobody could trace to a file. |
 
 HUM-01, HUM-02 and HUM-03 were done in one pass, in that order, as the ledger
 said to. **The split that made it work is the one to keep**: `alert_pass()`
@@ -256,6 +260,38 @@ sync` is the only surface that holds a transport and the only one that can write
 `last_delivery ∈ DELIVERED · FAILED · UNSUPPORTED · UNKNOWN`, and **none of the
 four resolves an alert**. A daemon that can send is a daemon that cannot tell
 you the transport is broken, which is exactly when its answer is wanted.
+
+**HUM-06/07 and the word `DECLARED_ABSENT`.** §W asked for a delivery *runtime*
+and named the fallback explicitly — *"否则使用 systemd user service/timer 运行
+`serverosctl alert sync`"* — which is the path taken. Reuse was considered first
+and refused on a measurement: the sibling monitor's boundary was already found
+wrong this round (§T/§U), and its whole `ops/scripts/monitor/` tree is
+untracked, so a delivery worker built on it would be a worker whose producer is
+not in any repository. The worker is therefore two files in this tree, and it is
+**not a second ServerOS daemon**: `Type=oneshot`, no `Restart=`, no socket, no
+`RuntimeDirectory=` — the last one named because a copy-paste from the daemon's
+unit would bring it, and systemd *deletes* a `RuntimeDirectory` when the unit
+that declared it stops, so a oneshot declaring the daemon's would delete the
+daemon's socket every five minutes. `tests/test_core_freeze.py` holds the
+distinction by reading `Type=`/`Restart=` rather than by trusting the header.
+
+**Two of HUM-07's assertions were wrong when first written**, and both were
+caught by the mutation harness rather than by review — which is the point of
+running it:
+
+- `test_the_template_names_a_destination_it_cannot_invent` asserted the
+  placeholder with a file-wide `assertIn`. The unit's header discusses the
+  placeholder by name four times, so rewriting `ExecStart` to a literal left the
+  test green. It now asserts against the **directive**.
+- `local_derivations` (the delegator scan) walked assignment *targets*, so it
+  saw `not_before = …` and missed `alert["pending"] = {"not_before": …}` — the
+  shape somebody would actually write while "just fixing up the payload". It now
+  also reads string constants, and the positive control asserts both shapes.
+
+Neither was a defect in the shipped code; both were gates that would have stayed
+green through the change they exist to refuse. Both are recorded here rather
+than quietly fixed, because a gate that was wrong once is worth knowing about
+when the next one is trusted.
 
 None of the three can act on the world. **They can only tell a person**, which
 is why they went before anything in the Ability or Coordination columns — and
@@ -434,6 +470,8 @@ Phase 1  Telling a person — nothing here can act               no authorizatio
   HUM-01  DONE in v1.2 — one producer of seven, the other six named
   HUM-02  DONE in v1.2 — the anomaly → event bridge, graded codes only
   HUM-03  DONE in v1.2 — identity, cooldown, hysteresis, delivery record
+  HUM-06  DONE in v1.2 — the delivery runtime (§W), installed by its own act
+  HUM-07  DONE in v1.2 — the worker delegates to the register, by an AST gate
   OBS-01  DONE in v1.2 — the alert state machine
   OBS-02  the two container states — remains
   OBS-03  the three regions — remains

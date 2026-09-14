@@ -251,6 +251,57 @@ it is the only one that writes `last_delivery`: `DELIVERED`, or `FAILED`,
 or `UNSUPPORTED` when the provider declined before trying, or `UNKNOWN` when
 neither could be established. **None of the four resolves an alert.**
 
+### The delivery runtime — §W
+
+The command above was, until v1.2, **reachable only by somebody typing it**. That
+is a complete delivery path that says nothing, and the failure has no symptom: an
+unrun command and a node with no alerts look identical from outside. So the last
+hop is a runtime now, and it is two files:
+
+```text
+runtime/serveros-alert-sync.service   Type=oneshot, no Restart=, no socket
+runtime/serveros-alert-sync.timer     OnCalendar=*-*-* *:4/5:00, Persistent=false
+
+installed by  scripts/release.py alert-worker --conversation <chat>
+              (a subcommand of the release CLI, not of serverosctl: it acts on
+               the node's units, which is what the release tool owns)
+```
+
+**It is not a second ServerOS daemon**, and that is held by reading `Type=` and
+`Restart=` rather than by trusting this paragraph: `tests/test_core_freeze.py`
+asserts the tree declares exactly one *resident* unit and that every other one is
+provably non-resident. `RuntimeDirectory=` is deliberately absent, and it is
+worth naming because a copy-paste from `serverosd.service` would bring it —
+systemd **deletes** a `RuntimeDirectory` when the unit that declared it stops, so
+a oneshot declaring the daemon's would delete `%t/serveros` and the daemon's
+socket every five minutes.
+
+**Why it is a separate act from `promote`.** `promote` places a revision and
+points the node at it, and it has to keep working on a node whose operator has
+not decided where alerts should go. Folding the worker in would make every
+promotion depend on knowing a chat id — the same shape as blocking a core
+release on a delivery question. So `alert-worker` is what a person types once,
+with a destination, and it is the act a reboot does not undo.
+
+**It delegates all four properties.** Dedupe, cooldown, recovery and
+delivery-failure truth are the register's — the worker's whole conversation with
+the daemon is `alert.pass` / `alert.pending` / `alert.record-delivery`, and it
+computes no clock of its own. `tests/test_alert_delivery.py` holds that over the
+command's AST, and `local_derivations()` is deliberately written to catch the
+subtle shape (`alert["pending"] = {"not_before": …}` while "just fixing up the
+payload") and not only the obvious one.
+
+**The timer is not the queue.** `Persistent=false`: an alert that opens while the
+worker is not running stays pending with its clock unmoved, and the next ordinary
+tick delivers it. A catch-up rescues nothing — all it decides is whether a
+machine that has just come back sends a burst of cards at once. The offsets
+`:04 :09 :14 …` are a measurement rather than a taste: `hwz-monitor.timer` runs
+at `:00/:30` and takes a ~15 s sampling window its own header records as
+polluted, and `botmux-watchdog.timer` runs on a five-minute stride from `:02`.
+A delivery tick is one IPC round trip against a daemon that is already ticking;
+landing it inside the monitor's window would put our work into the numbers a
+person reads.
+
 The read half is on the node MCP surface as `alert.list` and `alert.inspect`,
 which is where an Agent asks. The write half — `ack` and `snooze` — is
 **deliberately not**: `fleet/mcp-contract.yaml` says that surface holds no
