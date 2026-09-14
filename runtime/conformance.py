@@ -57,6 +57,11 @@ SCHEMA = "serveros/directory-conformance.v1"
 # hand-written list — see `_declaration_conflicts`.
 NODE_ROOT_CONTRACT = "fleet/node-root-contract.yaml"
 
+# The authority for `state/serveros/`. Read here for the same reason as the node
+# contract above — not for the vocabulary, which `paths.py` holds, but for each
+# namespace's own statement of what its absence means.
+STATE_ROOT_CONTRACT = "fleet/state-root-contract.yaml"
+
 
 # ---------------------------------------------------------------------------
 # The exception table.
@@ -118,12 +123,23 @@ EXCEPTIONS: dict[str, dict[str, dict]] = {
             "authority": "as above",
             "disposition": "KEEP",
         },
-        "lit0104-build-evidence": {
-            "class": "PROTECTED",
-            "reason": "build evidence for a protected parallel lane",
-            "authority": "§3 — named as a resource that must not be touched",
-            "disposition": "FROZEN",
-        },
+        # `lit0104-build-evidence` was exempted here as PROTECTED/FROZEN. It is
+        # gone, and the exemption is gone with it — an exemption whose subject
+        # has moved on is the declaration-outliving-its-subject shape this file
+        # deletes rather than keeps.
+        #
+        # What it actually was, recorded because the entry would otherwise read
+        # as having been a well-formed ruling: four files from a docker build
+        # attempt, sitting at the top level of a root whose vocabulary holds only
+        # `src worktrees test-envs ops knowledge records`. It was never a
+        # protected lane. It was a build scratch dir that landed in the wrong
+        # root, and `FROZEN` was the classification that made it looked-after
+        # instead of misfiled — so the check stopped reporting it and the drift
+        # became policy. On 2026-09-14 the files were copied byte-identical to
+        # artifacts/work-items/litellm/LIT-0104/RUN-0033/build-evidence/ (with
+        # SHA256SUMS and a provenance README) and the legacy directory was
+        # removed. An undeclared top-level entry under `workspace/` is once
+        # again reported as UNDECLARED_ENTRY, and that report is correct.
     },
     "state": {
         "README.md": {
@@ -529,14 +545,81 @@ def declaration_conflicts(paths, repo_root: Path) -> list[dict]:
 # ---------------------------------------------------------------------------
 
 
+def _load_state_root():
+    """The state-root contract's owner module, with the reason it did not load.
+
+    Returned as a pair rather than raised so that the two things that need it —
+    the `absent_means` lookup during the sweep and the AUTHORITY_CONFLICT check
+    after it — cannot disagree about whether the contract was readable. A
+    loader that raised in one call site and was caught in the other would give
+    a report where half the findings came from a contract and half did not.
+    """
+    try:
+        import importlib.util as _ilu
+
+        _spec = _ilu.spec_from_file_location(
+            "serveros_runtime_state_root", Path(__file__).resolve().parent / "state_root.py")
+        _module = _ilu.module_from_spec(_spec)
+        sys.modules["serveros_runtime_state_root"] = _module
+        _spec.loader.exec_module(_module)
+        return _module, None
+    except Exception as exc:  # noqa: BLE001 - an unreadable contract is a fact
+        return None, exc
+
+
+def _state_absent_means(surface: dict, state_root_dir: Path, state_root_mod,
+                        contract: dict) -> dict[str, str]:
+    """What the state contract says a *missing entry of this surface* means.
+
+    Two vocabularies had to be joined, and they key differently. The contract
+    keys namespaces by path relative to the state root (`runtime/anomalies`),
+    while a surface is a labeled directory. Keying the lookup on the surface's
+    bare child name returns `{}` for every nested namespace — which is what
+    this check did before, and why ten of its eleven `DECLARED_ENTRY_ABSENT`
+    rows said nothing about the absence while `state_root.py` read exactly the
+    same statements and reported them. The prefix comes from the directory, not
+    from the label, so a rename of the display string cannot empty the lookup.
+    """
+    try:
+        rel = surface["directory"].relative_to(state_root_dir)
+    except ValueError:
+        return {}
+    prefix = "" if str(rel) == "." else f"{rel.as_posix()}/"
+    out: dict[str, str] = {}
+    for ref, spec in state_root_mod.namespace_classes(contract).items():
+        if not ref.startswith(prefix):
+            continue
+        name = ref[len(prefix):]
+        if "/" in name:
+            continue  # a nested namespace belongs to its own surface
+        if spec.get("absent_means"):
+            out[name] = spec["absent_means"]
+    return out
+
+
 def collect(paths, *, repo_root: Path, home: str | None = None) -> dict:
     home = home or str(Path.home())
     node_contract = node_root_contract(repo_root) or {}
+    state_root_dir = paths.root("state")
+
+    state_root_mod, state_root_error = _load_state_root()
+    state_contract: dict | None = None
+    if state_root_mod is not None:
+        try:
+            state_contract = state_root_mod.load_contract()
+        except Exception as exc:  # noqa: BLE001 - see _load_state_root
+            state_root_mod, state_root_error = None, exc
+
     rows: list[dict] = []
     for surface in surfaces(paths, home):
-        means = ({name: (spec or {}).get("absent_means")
-                  for name, spec in node_contract.items()}
-                 if surface["area"] == "home" else None)
+        if surface["area"] == "home":
+            means = {name: (spec or {}).get("absent_means")
+                     for name, spec in node_contract.items()}
+        elif surface["area"] == "state" and state_contract is not None:
+            means = _state_absent_means(surface, state_root_dir,
+                                        state_root_mod, state_contract)
+        else:
+            means = None
         rows.extend(compare(surface, EXCEPTIONS.get(surface["area"], {}),
                             {k: v for k, v in (means or {}).items() if v}))
     rows.extend(declaration_conflicts(paths, repo_root))
@@ -546,21 +629,17 @@ def collect(paths, *, repo_root: Path, home: str | None = None) -> dict:
     # run with one exit code. A second checker with its own severity table is
     # the second table this file's own docstring warns about.
     try:
-        import importlib.util as _ilu
-
-        _spec = _ilu.spec_from_file_location(
-            "serveros_runtime_state_root", Path(__file__).resolve().parent / "state_root.py")
-        _state_root = _ilu.module_from_spec(_spec)
-        sys.modules["serveros_runtime_state_root"] = _state_root
-        _spec.loader.exec_module(_state_root)
-        rows.extend(_state_root.authority_conflicts(root=paths.root("state")))
+        if state_root_mod is None:
+            raise state_root_error or RuntimeError("state_root.py did not load")
+        rows.extend(state_root_mod.authority_conflicts(root=state_root_dir))
     except Exception as exc:  # noqa: BLE001 - an unreadable contract is a finding
         # NOT swallowed. If the authority check cannot run, that is the fact
         # the reader most needs, because a check that silently does not run
         # reports exactly what a check that found nothing reports.
         rows.append(finding(
             "CHECK_UNAVAILABLE", "state/serveros",
-            "the projections namespace is checked for AUTHORITY_CONFLICT",
+            "the state root is read for ABSENT_MEANS and checked for "
+            "AUTHORITY_CONFLICT",
             f"the check could not run: {type(exc).__name__}: {exc}",
             "fleet/state-root-contract.yaml",
             "HIGH", "OPEN",

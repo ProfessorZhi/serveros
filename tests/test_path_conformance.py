@@ -130,6 +130,40 @@ def test_a_declared_directory_that_was_never_created_is_reported(world):
     assert "abilities" not in absent, "a declared entry that IS present must not be reported"
 
 
+def test_an_absence_the_contract_explains_is_reported_explained(world):
+    """Ten of this node's eleven absent entries have a declared meaning.
+
+    `state_root.py` reads every one of them and renders it. This check read the
+    same contract and reported them bare, so the report said "declared and not
+    on disk" eleven times beside one row that added "absence is the defined
+    state REMOTE_CONTROLLER_NOT_EXPOSED" — and the ten bare rows are the ones a
+    reader is most likely to act on, because nothing there says not to.
+    """
+    report = world(state=(), runtime_state=())
+    absent = {f["entry"]: f for f in of(report, "DECLARED_ENTRY_ABSENT")}
+    for entry in ("context", "fleet", "locks", "node", "source-index"):
+        assert absent[entry].get("absent_means"), (
+            f"{entry} is expected-absent with no statement of what its absence "
+            f"means; a reader cannot tell a defined absence from an unfinished one")
+
+
+def test_a_nested_namespace_statement_reaches_the_surface_that_declares_it(world):
+    """The four namespaces that are `COMPUTED_ON_DEMAND`, read by path not name.
+
+    The contract keys nested namespaces by path relative to the state root
+    (`runtime/anomalies`); a surface is a labeled directory. Looking each entry
+    up by its bare child name therefore found nothing for every nested
+    namespace, which is how the contract came to state these four meanings and
+    have this report drop all four. Keyed by directory, the lookup cannot be
+    emptied by renaming a display label.
+    """
+    report = world(state=(), runtime_state=())
+    absent = {f["entry"]: f for f in of(report, "DECLARED_ENTRY_ABSENT")}
+    for entry in ("resources", "attribution", "graph", "anomalies"):
+        assert absent[entry].get("absent_means") == "COMPUTED_ON_DEMAND", entry
+    assert absent["agent-control"].get("absent_means") == "NO_AGENT_CONTROL_ACTIVITY"
+
+
 def test_a_conforming_node_reports_nothing_open(world):
     """The positive control. Every declared area present, nothing extra."""
     report = world(
@@ -152,14 +186,104 @@ def test_the_exception_table_is_read_as_cited_not_as_silence(world):
     It must not exist so the entry disappears: a table that silently absorbs
     entries is how a closed vocabulary stops being closed, one plausible
     directory at a time.
+
+    The subject is `state/serveros/migrations`, which is the hardest entry in
+    the table: unresolved, its three declarations disagree, and its authority
+    string names the disagreement rather than settling it. An exemption that
+    survives this assertion is one whose authority can be read and argued with.
     """
-    report = world(workspace=("lit0104-build-evidence",))
-    found = of(report, "EXEMPT_ENTRY", "lit0104-build-evidence")
+    report = world(state=("migrations",))
+    found = of(report, "EXEMPT_ENTRY", "migrations")
     assert len(found) == 1
     assert found[0]["status"] == "OBSERVED"
-    assert found[0]["exemption_class"] == "PROTECTED"
-    assert found[0]["disposition"] == "FROZEN"
-    assert "§3" in found[0]["authority"]
+    assert found[0]["exemption_class"] == "UNKNOWN_OWNER"
+    assert found[0]["disposition"] == "UNKNOWN_OWNER"
+    assert "EXPIRY.md" in found[0]["authority"]
+
+
+# The exception table, pinned. Not because these entries are wrong — they are
+# each a recorded ruling with an authority — but because the table is the one
+# place in this check where a directory can stop being reported without being
+# declared, and that makes it the place a real drift directory would be sent to
+# die. Adding an entry has to be an edit here as well: two files, one of them a
+# test whose failure text states the rule. The gate is not that exemptions are
+# forbidden; it is that they cannot be added quietly.
+EXPECTED_EXEMPTIONS = {
+    "data": {
+        ".vscode-server": ("FOREIGN_TOOL", "KEEP"),
+    },
+    "workspace": {
+        "CLAUDE.md": ("ENTRY_DOCUMENT", "KEEP"),
+        "README.md": ("ENTRY_DOCUMENT", "KEEP"),
+    },
+    "state": {
+        "README.md": ("ENTRY_DOCUMENT", "KEEP"),
+        "serveros.db": ("CITED_CANONICAL", "CONTRACT_GAP"),
+        "serveros.db-shm": ("CITED_CANONICAL", "CONTRACT_GAP"),
+        "serveros.db-wal": ("CITED_CANONICAL", "CONTRACT_GAP"),
+        "migrations": ("UNKNOWN_OWNER", "UNKNOWN_OWNER"),
+        "document-stewardship": ("UNKNOWN_OWNER", "UNKNOWN_OWNER"),
+    },
+}
+
+
+def test_the_exemption_inventory_is_a_ruling_not_a_swallow():
+    """The anti-absorption gate, stated as a diff.
+
+    `compare()` reports an exempted entry at `EXEMPT_ENTRY`/OBSERVED and never at
+    UNDECLARED_ENTRY, so `summary.undeclared == 0` is reachable by two very
+    different routes: every entry is declared, or somebody added the unruly ones
+    to the table. Those two are indistinguishable from the report alone, which is
+    the property that makes the table worth attacking.
+
+    Pinning the inventory does not make the first route more likely to be taken.
+    It makes the second one loud — the commit that adds a directory to
+    `EXCEPTIONS` also has to add it here, and the failure message below says what
+    the author is being asked to justify. An entry that is still here after that
+    is an entry a reviewer saw.
+    """
+    actual = {area: {entry: (spec["class"], spec["disposition"])
+                     for entry, spec in entries.items()}
+              for area, entries in conformance.EXCEPTIONS.items()}
+
+    def flat(table):
+        return {f"{area}/{entry}": value
+                for area, entries in table.items()
+                for entry, value in entries.items()}
+
+    in_code, in_test = flat(actual), flat(EXPECTED_EXEMPTIONS)
+    unexpected = {k: v for k, v in in_code.items() if in_test.get(k) != v}
+    missing = {k: v for k, v in in_test.items() if k not in in_code}
+
+    assert not unexpected and not missing, (
+        "the exemption table changed.\n"
+        f"  new or reclassified in code: {unexpected}\n"
+        f"  expected but gone:           {missing}\n"
+        "An exemption is a ruling, not a silencer: it says a directory that no "
+        "declaration claims has a reason to be there. Add it to "
+        "EXPECTED_EXEMPTIONS in the same commit and say what the authority is. "
+        "If the directory is really drift, move it instead — the table is not "
+        "where drift goes to become invisible."
+    )
+
+
+def test_every_exemption_carries_something_a_reader_can_check():
+    """A row with no authority is a row nobody can disagree with.
+
+    The four fields exist so that an exemption can be argued with rather than
+    merely observed. One that cites nothing, or names a disposition outside the
+    vocabulary, is unauditable while looking complete — the failure mode this
+    whole module was written after finding in `paths.py`'s transcription.
+    """
+    dispositions = {"KEEP", "FROZEN", "CONTRACT_GAP", "OWNER_CHECK", "UNKNOWN_OWNER"}
+    for area, entries in conformance.EXCEPTIONS.items():
+        for entry, spec in entries.items():
+            where = f"{area}/{entry}"
+            for field in ("class", "reason", "authority", "disposition"):
+                assert spec.get(field), f"{where}: {field} is empty"
+            assert spec["disposition"] in dispositions, (
+                f"{where}: {spec['disposition']!r} is not one of "
+                f"{sorted(dispositions)}")
 
 
 # ---------------------------------------------------------------------------
@@ -322,11 +446,25 @@ def test_no_exemption_shadows_a_declared_entry():
     something and the branch that would use it cannot be taken. The two sets are
     allowed to differ — that is the point of having two — but they must not
     overlap, or the difference stops meaning anything.
+
+    Checked per *surface* rather than per hand-written area name, because one
+    area key can govern two vocabularies: `state` covers both
+    `state/serveros` and `state/serveros/runtime`, and a name that stopped being
+    a `state` member but became a `runtime` member would have slipped through
+    the four-name version of this loop while still being unreachable.
     """
-    for area in ("data", "workspace", "state", "home"):
-        vocabulary = set(paths_mod.Paths().vocabulary(area))
+    paths = paths_mod.Paths()
+    seen = set()
+    for surface in conformance.surfaces(paths, home=str(paths.root("home"))):
+        area, vocabulary = surface["area"], set(surface["vocabulary"])
         shadows = sorted(set(conformance.EXCEPTIONS.get(area, {})) & vocabulary)
-        assert not shadows, f"{area}: exemption for a declared entry {shadows}"
+        assert not shadows, (
+            f"{surface['surface']}: exemption for a declared entry {shadows}")
+        seen.add(area)
+    # And the other direction: an exception table no surface looks up is a table
+    # nothing enforces, which is indistinguishable from having no entries.
+    assert set(conformance.EXCEPTIONS) <= seen, (
+        f"exception areas never consulted: {sorted(set(conformance.EXCEPTIONS) - seen)}")
 
 
 def test_the_node_root_holds_bindings_only(world, tmp_path):
