@@ -148,6 +148,8 @@ def test_every_declared_tool_forwards_to_a_daemon_method_of_the_same_name(server
             payload["arguments"] = {"id": "x"}
         if name == "ability.status":
             payload["arguments"] = {"name": "x"}
+        if name == "ability.inspect":
+            payload["arguments"] = {"name": "x"}
         if name == "path.resolve":
             payload["arguments"] = {"ref": "state/runtime/observed"}
         if name == "path.admit":

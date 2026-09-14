@@ -29,6 +29,8 @@ from types import SimpleNamespace
 import pytest
 import yaml
 
+import ability_tree_reference as reference
+
 REPO = Path(__file__).resolve().parent.parent
 RUNTIME = REPO / "runtime"
 
@@ -351,3 +353,157 @@ def test_a_manifest_that_is_not_a_mapping_is_unreachable_rather_than_empty(autho
 # `test_daemon.py`, where the hermetic daemon fixture already lives. Building a
 # second one here would mean either duplicating that fixture or constructing a
 # Daemon against the live host, and a test that reads this machine is not a test.
+
+
+# ---------------------------------------------------------------------------
+# §4 · the discovery tree, joined against the authority's own renderer
+# ---------------------------------------------------------------------------
+#
+# This section is a JOIN, and that is the whole point of it. §4 asks for a tree
+# generated from the real catalogue, and this repository now has two spellings
+# of that derivation: `domain_tree()` here, and ability-management's
+# `scripts/render_ability_map.py`, whose output is the committed
+# `ABILITY-MAP.md`. Two implementations that never meet agree with nothing.
+#
+# So the expectations below are not written down from the spec. They are what
+# the other implementation actually emitted, captured in
+# `ability_tree_reference.py` along with the rows that produced them. If the two
+# ever disagree, the failure is the join, which is a fact about this repository,
+# rather than a matter of taste, which is not.
+
+
+def test_the_local_tree_matches_the_nodes_the_authority_rendered():
+    """The node set is a claim that something is under each node (§4)."""
+    tree = projection.domain_tree(reference.ROWS)
+    assert tree["nodes"] == sorted(reference.EXPECTED_NODES)
+
+
+def test_every_classified_ability_lands_where_the_authority_placed_it():
+    """Placement, ability by ability, against the rendered map."""
+    tree = projection.domain_tree(reference.ROWS)
+    assert tree["placements"] == reference.EXPECTED_PLACEMENTS
+
+
+def test_cross_references_are_reported_beside_the_tree_and_not_inside_it():
+    """`taxonomy_refs` are alternate reader paths, so they belong in their own
+    field. The authority's renderer prints them separately for the same reason,
+    and this compares against its list rather than against this function's.
+
+    A cross-reference may or may not also be a node, and the difference is the
+    point: `serveros.operations` is a node because ten abilities live in it,
+    while `serveros.engineering.quality` is in `test-management`'s refs and is
+    NOT a node, because no ability's primary path runs through it. Adding it
+    would be materializing a node for a reader path, which is the same error as
+    materializing one for an empty domain.
+    """
+    tree = projection.domain_tree(reference.ROWS)
+    assert tree["cross_refs"] == reference.EXPECTED_CROSS_REFS
+    # Only a placed ability has a home for a second path to be an alternative
+    # to, so the two key sets nest and the cross-refs are a strict subset.
+    assert set(tree["cross_refs"]) < set(tree["placements"])
+    refs = {ref for refs in tree["cross_refs"].values() for ref in refs}
+    assert "serveros.engineering.quality" in refs
+    assert "serveros.engineering.quality" not in tree["nodes"]
+
+
+def test_an_unclassified_ability_is_reported_as_unplaced_not_defaulted():
+    """§4 generates the tree from the real catalogue, and most of this
+    catalogue is unclassified. A default node would hide that, and the count is
+    the part of the answer that says the tree is incomplete — so it is asserted
+    rather than left to be inferred from a shortfall."""
+    tree = projection.domain_tree(reference.ROWS)
+    assert len(tree["unplaced"]) == reference.TOTAL - reference.CLASSIFIED
+    assert tree["unplaced"] == sorted(tree["unplaced"])
+    for name in ("feature-development", "design-and-contract", "archguard"):
+        assert name in tree["unplaced"]
+        assert name not in tree["placements"]
+
+
+# --- positive controls -----------------------------------------------------
+#
+# "Every new gate has to be shown able to go red, or it is not a gate." The
+# four assertions below are that demonstration, one failure mode each.
+
+
+def test_the_fixture_is_not_empty_so_the_join_above_is_not_vacuous():
+    """An emptied fixture would satisfy `domain_tree([])` trivially. The counts
+    are asserted first so that truncation fails here rather than turning the
+    comparisons above green."""
+    assert len(reference.ROWS) == reference.TOTAL
+    assert len(reference.EXPECTED_PLACEMENTS) == reference.CLASSIFIED
+    assert reference.EXPECTED_NODES and reference.EXPECTED_CROSS_REFS
+    tree = projection.domain_tree(reference.ROWS)
+    assert tree["nodes"] and tree["placements"]
+    # ...and the empty catalogue is genuinely empty, rather than erroring or
+    # conjuring a skeleton. Both halves, or the positive control proves nothing.
+    assert projection.domain_tree([])["nodes"] == []
+    assert projection.domain_tree(None)["placements"] == {}
+
+
+def test_placing_by_cross_reference_would_not_agree_with_the_authority():
+    """The near miss this function's docstring names, executed.
+
+    `taxonomy_refs` reads like a list of places an ability belongs, so placing
+    by every reference is the implementation a careful reader writes — and it
+    disagrees with the rendered map on both axes at once: it invents a node
+    (`serveros.engineering.quality`, which no ability's primary path runs
+    through) and it places `test-management` twice. Running it here is what
+    makes the tests above evidence that the shipped algorithm is the right one,
+    rather than evidence that a fixture agrees with itself.
+    """
+    naive_nodes, naive_pairs = set(), []
+    for row in reference.ROWS:
+        for node in [row["primary"], *row["refs"]] if row["primary"] else []:
+            naive_pairs.append((row["name"], node))
+            segments = node.split(".")
+            for depth in range(1, len(segments) + 1):
+                naive_nodes.add(".".join(segments[:depth]))
+
+    assert naive_nodes != set(reference.EXPECTED_NODES)
+    assert "serveros.engineering.quality" in naive_nodes
+    assert "serveros.engineering.quality" not in reference.EXPECTED_NODES
+
+    real = projection.domain_tree(reference.ROWS)["placements"]
+    assert len(naive_pairs) > len(real)
+    # `test-management` carries two refs beside its primary, so the naive
+    # version places it three times; and because eleven abilities' `refs` repeat
+    # their own primary, it double-counts those too. Neither is a hypothetical:
+    # both are what the captured data actually contains.
+    names = [name for name, _ in naive_pairs]
+    assert names.count("test-management") == 3
+    assert names.count("ability-management") == 2
+    assert names.count("test-management") > 1
+
+
+def test_the_tree_is_derived_from_classification_and_never_from_a_path():
+    """§4's second sentence and §19's first, as a mutation test. `path` is a
+    source address; the tree is a logical projection. If any of this read
+    `path`, scrambling it would move abilities — so scrambling it must change
+    nothing. A test that only asserted the output would pass just as happily
+    against an implementation that sorted by directory."""
+    scrambled = [dict(row, path=f"elsewhere/{i}/{row['name']}")
+                 for i, row in enumerate(reference.ROWS)]
+    assert projection.domain_tree(scrambled) == projection.domain_tree(reference.ROWS)
+
+
+def test_the_row_shape_the_tree_consumes_carries_no_field_about_a_person():
+    """`tree_rows()` is the boundary §30 needs: the projection already refuses
+    to copy `authors`, and this is the second surface that would carry it out of
+    the building. Asserting the key set is stronger than asserting the absence
+    of one name, because a field added upstream reaches the tree by being
+    projected, not by being read."""
+    rows = projection.tree_rows([{
+        "name": "shared-memory", "id": "ProfessorZhi/shared-memory", "type": "skill",
+        "path": "skills/shared-memory", "version": "1.0.0", "agents": ["claude-code"],
+        "authors": [{"name": "a person", "email": "p@example.invalid"}],
+        "domain": {"primary": "serveros.memory"}, "taxonomy_refs": ["serveros.memory"],
+    }])
+    assert set(rows[0]) == {"id", "name", "path", "primary", "refs"}
+    assert rows[0]["primary"] == "serveros.memory"
+    # A row with no `domain` at all is unplaced, not an error: the manifest's
+    # `domain` key is absent on 38 of 55 entries, and `None`/`{}`/`[]` all
+    # arrive here in the wild.
+    for empty in ({}, None, [], {"primary": None}, {"primary": ""}):
+        row = projection.tree_rows([{"name": "x", "id": "x", "domain": empty}])[0]
+        assert row["primary"] is None
+        assert row["refs"] == []

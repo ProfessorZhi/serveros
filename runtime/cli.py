@@ -338,6 +338,74 @@ def cmd_ability_status(args) -> int:
     return EXIT_OK if installed else EXIT_FAULT
 
 
+def cmd_ability_refresh(args) -> int:
+    """§2 — the producer for the local capability projection.
+
+    The Discovery surface has read `state/abilities/effective.json` since §24
+    and nothing ever wrote it. So the surface existed, was correct, reported
+    the three facts it is careful to keep apart (FRESH / STALE /
+    NOT_MATERIALIZED), and answered `NOT_MATERIALIZED` forever. This is the
+    caller that ends that.
+
+    It reads the authority's manifest at an explicitly pinned revision from a
+    GIT OBJECT rather than from a working tree, which is `ability_projection`'s
+    decision and not one to re-litigate here: a dirty or stale checkout on this
+    machine must not silently become what the node believes about its own
+    capabilities.
+
+    Two things about the answer it prints are load-bearing:
+
+      * `generated_at` is when the authority was last SUCCESSFULLY read, not
+        when this file was written. On a failed refresh it is carried through
+        unchanged, because the reader ages the projection from it.
+      * `abilities: []` with `registry_status: FRESH` is a real and dangerous
+        answer — it means the manifest was read and this node matched nothing
+        in it. That is what a missing `legacy_ids` entry looks like. It is
+        called out below rather than printed as an empty table.
+    """
+    projection_mod = _load_module_from(REPO_ROOT / "runtime" / "ability_projection.py",
+                                       "serveros_ability_projection")
+
+    # The contract's state root, never cwd. A producer that wrote the node's
+    # belief about its own capabilities into whatever directory it was run from
+    # would be a second, invisible projection — and the reader would keep
+    # answering NOT_MATERIALIZED with no clue that a file existed elsewhere.
+    state_root = paths_mod.Paths().root("state")
+    try:
+        document = projection_mod.refresh(
+            args.ability_repo, args.ability_rev, tuple(args.device_id), state_root)
+    except OSError as exc:
+        sys.stderr.write(f"serverosctl: cannot write the projection: {exc}\n")
+        return EXIT_COULD_NOT_ANSWER
+
+    status = document.get("registry_status")
+    abilities = document.get("abilities") or []
+    lines = [f"projection  {document.get('schema')}",
+             f"status      {status}",
+             f"authority   {document.get('authority')}",
+             f"revision    {document.get('source_revision') or 'none read'}",
+             f"matched     {', '.join(document.get('device_ids_matched') or [])}",
+             f"generated   {document.get('generated_at') or 'never'}",
+             f"abilities   {len(abilities)}"]
+    if status == "STALE":
+        lines.append(f"unreachable {document.get('unreachable_reason')}")
+        lines.append(document.get("note", ""))
+    elif not abilities:
+        # FRESH and empty is not "nothing is installed" in general — it is
+        # "nothing in the manifest is installed on the ids I matched", and the
+        # usual cause is one this command can name.
+        lines.append(
+            "            the manifest was read and none of its installations "
+            "name this device. Check `--device-id`: a renamed device keeps its "
+            "historical id in the registry's `legacy_ids`, and matching only "
+            "the canonical one finds nothing and reports no error.")
+    emit(document, as_json=args.json, lines=lines)
+    # STALE is a fault the shell must be able to see without parsing text: the
+    # command answered, and what it answered is that the authority is
+    # unreachable.
+    return EXIT_FAULT if status == "STALE" else EXIT_OK
+
+
 def cmd_device_agents(args) -> int:
     """§9/§18 — the agent runtimes this node has, and whether parity holds.
 
@@ -2664,6 +2732,26 @@ def build_parser() -> argparse.ArgumentParser:
     ab_resolve.add_argument("--device", help="override request.device_ref")
     ab_resolve.add_argument("--runtime", help="override request.runtime")
     ab_resolve.set_defaults(func=cmd_ability_resolve)
+    ab_refresh = ability_sub.add_parser(
+        "refresh",
+        help="read the authority and write this node's capability projection (§2)",
+        **_COMMON)
+    ab_refresh.add_argument(
+        "--ability-repo", type=Path, required=True,
+        help="the ability-management checkout the manifest is read from")
+    ab_refresh.add_argument(
+        "--ability-rev", required=True,
+        help="the pinned revision the manifest is read at; read from a git "
+             "object, so a dirty checkout on this machine cannot become what "
+             "the node believes about its own capabilities")
+    ab_refresh.add_argument(
+        "--device-id", action="append", required=True,
+        help="an id that means THIS node — canonical first, then the registry's "
+             "`legacy_ids` for it. Repeatable, and repeat it: a renamed device "
+             "whose historical id is omitted matches nothing and reports no "
+             "error, because the manifest records installations under the id "
+             "in force when they happened")
+    ab_refresh.set_defaults(func=cmd_ability_refresh)
 
     memory = sub.add_parser(
         "memory", help="Layer B the ledger, Layer A the projection (§20–§28)",
