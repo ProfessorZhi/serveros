@@ -1,0 +1,167 @@
+# §S — Requirement Intake and the Global Requirement Board.
+#
+# The three nouns are separate things and this file exists to keep them that
+# way. It is written before the code for the same reason the rest of this
+# tree's contracts are: a declaration that outruns its implementation is the
+# pathology this round keeps finding, and the defence is not to write fewer
+# declarations — it is to write them where a gate can read them.
+schema: serveros/requirement-board-contract.v1
+
+nouns:
+
+  requirement-source:
+    is: where a requirement came from, before it is work
+    truth_owner: the source itself, plus work-management for what was taken from it
+    held_by:
+      - "records/projects/<project>/items/<ID>/card.yaml#source_refs"
+      - "records/projects/<project>/items/<ID>/card.yaml#aliases"
+      - "work-engine item_candidates.(domain, external_id, external_revision)"
+    supported_kinds:
+      - feishu-doc
+      - feishu-wiki
+      - im-thread
+      - github-issue
+      - local-document
+      - manual
+    # Not restated as a checkable list. The card's `source_refs` are locators —
+    # a jsonl path with a message range, a topic document, a wiki URL — and
+    # `aliases` is where a spoken name like "REQ4 / 需求4" is pinned to an Item
+    # id. A closed vocabulary here would be a fourth place to keep the source
+    # kinds and the only one nothing reads.
+    not_a_database: >
+      A requirement source is a locator into something that already exists.
+      Nothing in this repository copies its content.
+
+  work-item:
+    is: the unit of work, and the only authority on its own state
+    truth_owner: work-engine
+    read_through: "serveros-work-mcp (fleet/mcp-contract.yaml)"
+    note: >
+      This repository does not read the work-engine store. The boundary is one
+      declared MCP path, and a second reader would be a second answer to
+      "what state is this Item in".
+
+  requirement-board:
+    is: a derived projection — no authority, no state of its own
+    truth_owner: nobody. It is regenerated, never edited.
+    producer: intake/global_board.py
+    written_to: "state/requirement-board/current.{json,md}"
+    reads:
+      - "state/boards/<project>/current.json — the per-project projections the control plane writes"
+      - "the Item cards named by each row's `card_locator`, for source_refs and aliases"
+      - "state/runtime/agent-control/store.json — §17 bindings, for the execution session column"
+    writes_nothing_else: >
+      In particular it does not write back to a board, a card, or the store.
+      A projection that can be edited is a second authority, whatever it is
+      called on the tin.
+
+generation:
+
+  # A regeneration is idempotent in everything except `generated_at`, which is
+  # why the document carries it: a reader has to be able to tell a fresh board
+  # from one generated before the change they are looking for.
+  command: "serverosctl requirement board --write"
+  atomic: "write to .current.json.serveros.tmp in the same directory, then replace"
+
+# §S's default display, in §S's order.
+sections:
+  declared:
+    - P0
+    - P1
+    - P2
+    - P3
+    - P4
+    - 已完成
+  # The one section §S does not name, and it is not optional: with no priority
+  # produced anywhere, every active Item has to appear under a heading that
+  # says what is true of it rather than under a level that would be a guess.
+  added:
+    UNCLASSIFIED:
+      title: 未分级
+      because: >
+        There is no priority to bucket by. See `priority` below.
+
+completion:
+  # Taken from the authority, not chosen here. `state_machine.reopen()` accepts
+  # exactly {CANCELLED, CLOSED} and returns AVAILABLE, refusing everything
+  # else — so these two and no others are the states the authority treats as
+  # finished and reopenable.
+  states: [CLOSED, CANCELLED]
+  source: "work-engine:workengine/state_machine.py — reopen()"
+  # DELIVERED is deliberately not in that set. It sits on the mainline between
+  # ACTIVE and CLOSED, and an Item delivered but not closed still has something
+  # outstanding. It renders in the active area with its state visible.
+  not_completed: [DELIVERED]
+  on_completion:
+    keep_title: derived — a projection that never dropped the title cannot lose it
+    keep_priority: derived — same, and vacuously true while no priority exists
+    strikethrough: "the Markdown renderer writes ~~title~~ iff the Item is in a completed state"
+    move_to: 已完成
+    delete_history: never — the board cannot delete an Item it does not store
+  reopen:
+    mechanism: "workengine item reopen <id> --reason --source → state becomes AVAILABLE"
+    board_change_required: none
+    because: >
+      The board stores no completion flag, so reopening removes the
+      strikethrough by the Item no longer being in a completed state. There is
+      no path by which a board and the store disagree about what is finished,
+      because only one of them holds that fact.
+    history: "the authority records a `reopened` event; the board never removes the Item"
+
+priority:
+  levels: [P0, P1, P2, P3, P4]
+  producer: null
+  state: UNPRODUCED
+  # This is the honest state, not a placeholder for work not yet started. No
+  # priority, severity or P-level field exists anywhere in this fabric — not in
+  # work-engine's `items_index`, not in the item-card schema's required keys,
+  # not in this repository — and `docs/fabric-v1-roadmap.md` has carried
+  # "a new Item-card field: priority / severity do not exist anywhere" under
+  # "What has to be decided by a person" since before this round.
+  #
+  # The board therefore renders the five declared levels EMPTY and marks the
+  # axis UNPRODUCED, rather than filling them from a proxy. Bucketing by `kind`
+  # or by `state` and printing the result under P0–P4 would invent a taxonomy
+  # and present it in a column a reader has been told means priority.
+  #
+  # The board does report the one real signal: `titles_naming_a_level` lists
+  # every title containing a literal P0–P4. Reporting that a string occurs is
+  # not reading it as a fact, and that field never fills a bucket.
+  requires: a ruling — the field has to be introduced somewhere, and where is the decision
+  decided_by: a person
+  see: "docs/fabric-v1-roadmap.md — What has to be decided by a person"
+
+# What the projection is not allowed to do, stated as rules rather than as
+# prose, because each one is a specific failure of a specific earlier version.
+refusals:
+  - rule: >
+      A board document whose schema is not `serveros/board.v3` is refused, not
+      read hopefully. This module composes projections somebody else produced;
+      a document of another shape would have to be guessed at, and every field
+      guessed is a field reported wrongly.
+  - rule: >
+      Two board documents naming the same Item is refused. An Item belongs to
+      one project, and a duplicate is one fact reported twice while looking
+      like two Items.
+  - rule: >
+      The board's own output must never be inside the boards root it reads.
+      The first version wrote there and the next run would have read its own
+      output as a project board and refused the composition over a schema
+      mismatch it had created itself.
+  - rule: >
+      The output directory must be absolute. A projection that landed in
+      whatever directory the caller was standing in is a second board nobody
+      knows about.
+  - rule: >
+      A card locator that resolves to a file which does not parse is reported
+      UNREADABLE, never NOT_FOUND. The two send a reader to different places,
+      and the first version of this code collapsed them.
+
+# The level at which a session learns any of this. The board is L2: it is a
+# report about the whole fabric's work, it is asked for by name, and it is
+# never part of what a session is handed at startup.
+disclosure:
+  axis: context
+  level: L2
+  reachable_by: "serverosctl requirement board"
+  never_at_l0: true

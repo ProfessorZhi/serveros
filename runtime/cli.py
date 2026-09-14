@@ -3239,6 +3239,141 @@ def cmd_container_protection(args) -> int:
 
 
 # ---------------------------------------------------------------------------
+# §S — the global requirement board.
+#
+# The board's rules live in `intake/global_board.py` and this is the shell
+# around them: the same split `ability refresh` has, and here for the same
+# reason — the part worth testing is the part that does not touch a disk.
+#
+# IT IS `requirement board` AND NOT `board`. Two programs carry the name
+# `serverosctl`, PATH gives it to this repository's, and the other one — the
+# work-engine control plane — is what publishes the per-project board
+# documents this command READS via `board render`. A `board` verb here would
+# be a second thing whose name resolves to a different program's job, which is
+# the exact ambiguity the `boards` entry in `fleet/state-root-contract.yaml`
+# exists to record. `requirement` is §S's own noun and belongs to no one else.
+# ---------------------------------------------------------------------------
+
+
+def cmd_requirement_board(args) -> int:
+    """§S — the Global Requirement Board, composed from projections that exist.
+
+    Read-only unless `--write` is given, and the default is read-only because
+    the board is a projection: printing it changes nothing, and a command that
+    wrote on every inspection would leave a file whose only reader is the
+    person who asked for the printout.
+
+    Two things the answer is careful about:
+
+      * It does NOT read the work-engine store. The statuses it shows came
+        from board documents the control plane rendered from the authority,
+        which is the one edge `fleet/mcp-contract.yaml` owns. A second reader
+        here would be a second answer to "what state is this Item in".
+      * `priority: UNPRODUCED` is a complete answer, not a missing one. No
+        priority field exists anywhere in this fabric, and the board says so
+        in a named state rather than bucketing Items by a proxy and printing
+        the result under P0–P4.
+    """
+    board_mod = _load_module_from(REPO_ROOT / "intake" / "global_board.py",
+                                  "serveros_global_board")
+    paths = paths_mod.Paths()
+    boards_root = Path(paths.resolve("state/boards")["path"])
+    workspace = Path(paths.root("workspace"))
+    # The W2 store, at the one path the daemon writes it to. Read directly
+    # rather than through a daemon call because this command has to answer
+    # when the daemon does not — an absent store is "no session is bound",
+    # which is a fact and not a missing measurement.
+    binding_store = Path(
+        paths.resolve("state/runtime/agent-control")["path"]) / "store.json"
+
+    def resolve_locator(locator: str) -> str:
+        """A card locator as an absolute path, relative to the WORKSPACE root.
+
+        `card_locator` is written by the authority and has been seen in both
+        forms. Relative means relative to the workspace — the cards live under
+        `records/`, a workspace child — and never to the cwd: a board composed
+        from a different directory would silently join a different set of
+        cards, and every row would look complete.
+        """
+        candidate = Path(locator)
+        return str(candidate if candidate.is_absolute() else workspace / locator)
+
+    try:
+        document = board_mod.build(boards_root=boards_root,
+                                   card_locator_resolver=resolve_locator,
+                                   binding_store=binding_store)
+    except board_mod.Refused as exc:
+        sys.stderr.write(f"serverosctl: {exc}\n")
+        return EXIT_FAULT
+
+    written = None
+    if args.write:
+        output_dir = Path(args.output_dir) if args.output_dir else Path(
+            paths.resolve("state/requirement-board")["path"])
+        if not output_dir.is_absolute():
+            sys.stderr.write(
+                f"serverosctl: --output-dir must be absolute, got {output_dir}. "
+                f"A board written into whatever directory the caller was "
+                f"standing in is a second board nobody knows about.\n")
+            return EXIT_FAULT
+        if output_dir == boards_root or boards_root in output_dir.parents:
+            # Refused rather than documented, because the failure it prevents
+            # is silent for one run and then total: `load_boards` globs
+            # `*/current.json` under the boards root, so a board written there
+            # would be read back next time as a project board, and `compose`
+            # would refuse the whole composition over the schema mismatch this
+            # command had just created.
+            sys.stderr.write(
+                f"serverosctl: --output-dir {output_dir} is inside the boards "
+                f"root {boards_root}, which this command reads. The next run "
+                f"would pick this board up as a project board and refuse the "
+                f"composition over a mismatch it had written itself.\n")
+            return EXIT_FAULT
+        try:
+            written = board_mod.render(document, output_dir)
+        except OSError as exc:
+            sys.stderr.write(f"serverosctl: cannot write the board: {exc}\n")
+            return EXIT_COULD_NOT_ANSWER
+
+    counts = document["counts"]
+    priority = document["priority"]
+    lines = [
+        f"board       {document['schema']}",
+        f"generated   {document['generated_at']}",
+        f"projects    {', '.join(document['source']['projects']) or 'none'}",
+        f"boards      {document['source']['boards']} read",
+        f"revision    {document['source']['generation_source_revision'] or 'not recorded'}",
+        f"items       {counts['items']} ({counts['active']} active, "
+        f"{counts['completed']} completed)",
+        f"cards       {counts['items'] - counts['without_a_card']} joined, "
+        f"{counts['without_a_card']} not joined",
+        f"priority    {priority['state']}",
+    ]
+    if priority["state"] == "UNPRODUCED":
+        # The line above is a state a caller can switch on; this is why it is
+        # that state, and it is printed every time because "the priority
+        # column is empty" and "nobody produces a priority" send a reader to
+        # two different places.
+        lines.append(f"            {priority['because']}")
+    lines.append("")
+    for section in document["sections"]:
+        lines.append(f"  {section['title']:<8} {len(section['items'])}")
+    named = priority.get("titles_naming_a_level") or []
+    if named:
+        lines.append("")
+        lines.append("titles containing a literal P0-P4. Reported, and NOT read "
+                     "as a priority:")
+        for row in named:
+            lines.append(f"  {row['item_ref']}  {row['title']}")
+    if written is not None:
+        lines.append("")
+        lines.append(f"written     {written['json']}")
+        lines.append(f"            {written['markdown']}")
+    emit(document, as_json=args.json, lines=lines)
+    return EXIT_OK
+
+
+# ---------------------------------------------------------------------------
 # parser
 # ---------------------------------------------------------------------------
 
@@ -3767,6 +3902,29 @@ def build_parser() -> argparse.ArgumentParser:
         "--dry-run", action="store_true",
         help="evaluate and show what WOULD be sent, without sending it")
     al_sync.set_defaults(func=cmd_alert_sync)
+
+    requirement = sub.add_parser(
+        "requirement",
+        help="requirements, and the global board derived from them (§S)",
+        **_COMMON)
+    requirement_sub = requirement.add_subparsers(dest="subcommand", required=True)
+    rq_board = requirement_sub.add_parser(
+        "board",
+        help="compose the global requirement board from the per-project "
+             "projections and print it; --write persists it",
+        **_COMMON)
+    rq_board.add_argument(
+        "--write", action="store_true",
+        help="persist to `state/requirement-board/current.{json,md}`. Omitted "
+             "prints and writes nothing — the board is a projection, and a "
+             "command that wrote on every inspection would leave a file whose "
+             "only reader was the person who asked for the printout")
+    rq_board.add_argument(
+        "--output-dir", type=Path, default=None,
+        help="where --write puts the board, overriding the contract's state "
+             "root. Must be absolute; a board that landed in the caller's cwd "
+             "would be a second board nobody knows about")
+    rq_board.set_defaults(func=cmd_requirement_board)
 
     return parser
 

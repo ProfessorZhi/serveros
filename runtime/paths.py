@@ -91,6 +91,18 @@ STATE_SERVEROS_TOP_LEVEL = (
     # worktree. Declaring them would end the question by fiat instead of
     # answering it.
     "boards", "federation", "resource-leases", "work-items",
+    #   requirement-board     §S's Global Requirement Board, derived from the
+    #                         per-project `boards` above plus two joins (Item
+    #                         cards for source_refs/aliases, the §17 binding
+    #                         store for the execution-session column). It is a
+    #                         projection with no authority and no readers: the
+    #                         only way to produce it is
+    #                         `serverosctl requirement board --write`, and
+    #                         nothing consults it. Declared here so that
+    #                         `resolve` can name it and `admit` can refuse a
+    #                         second board somebody writes elsewhere under a
+    #                         name of their own choosing.
+    "requirement-board",
 )
 STATE_SERVEROS_RUNTIME = (
     "registry", "observed", "health", "hygiene", "resources",

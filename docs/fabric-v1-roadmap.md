@@ -199,6 +199,41 @@ already exists and is waiting.
 
 ---
 
+## Requirement Intake, and the board a person reads
+
+§S asks for three things that are easy to write as one and wrong that way:
+**Requirement Source**, **Work Item**, and **Requirement Board**. Two of the
+three already existed and only the third was missing, which is why this plane
+is one table row and not a project.
+
+The intake half is **not built here, on purpose**. A requirement's origin is
+already held by the authority — `item_candidates.(domain, external_id,
+external_revision)` on the work-engine side and `source_refs` / `aliases` on
+the Item card — and a store in this repository would be a second place a
+requirement's origin lives, needing reconciliation with the first. What was
+missing was a projection: one view over every project, for a person.
+
+| id | status | what is missing | the failure it answers |
+|---|---|---|---|
+| REQ-01 | **EXISTS** | The three nouns, kept apart, in `intake/board-contract.yaml`: `requirement-source` (held by the authority), `work-item` (truth owner work-engine, read through one declared MCP path), `requirement-board` (a projection with **no authority and no reader**). The board reads the per-project documents the control plane already rendered and **never the store** — a second reader of the store would be a second answer to "what state is this Item in". | A board that quietly becomes the answer to a question the authority already answers, and then disagrees with it. |
+| REQ-02 | **EXISTS** | The Global Board itself: `intake/global_board.py`, reached as `serverosctl requirement board` (and `--write` to persist), state at `state/requirement-board/current.json` + `current.md` — both generated together so they cannot describe different generations. Measured live on 2026-09-14: **17 Items over 3 projects, 10 active, 7 completed, 17 of 17 cards joined**. §S's default display is rendered in §S's order: the five levels, then 未分级, then 已完成. | Every project having its own board and nobody having the one a person asks for. |
+| REQ-03 | **EXISTS**, by derivation | The completion semantics. `已完成` is `CLOSED` and `CANCELLED` — **taken from `state_machine.reopen()`**, which accepts exactly those two and refuses everything else, not chosen here. `DELIVERED` is deliberately **not** in the set: it sits on the mainline with something still outstanding, so it renders in the active area with its state visible. `~~title~~` is drawn from the Item's state, and reopen needs **no board write at all** because the board stores no completion flag to clear. It cannot delete an Item it does not store. | A board that keeps its own copy of "finished" and a reopen that has to be applied in two places, one of which is a projection nobody remembers to regenerate. |
+| REQ-04 | **DECLARED, UNPRODUCED** | The **priority axis**. §S's `P0 P1 P2 P3 P4` are declared and rendered **empty**, and the axis says `UNPRODUCED` in a named state. No priority, severity or P-level field exists anywhere in this fabric — not in work-engine's `items_index`, not in the item-card schema's `required`, not here. The board reports the one real signal it has — `titles_naming_a_level`, every title containing a literal `P0`–`P4` (**1 live: `litellm/LIT-0103`**, over all 17 rows including completed ones) — and that field **never fills a bucket**. Bucketing by `kind` or by `state` and printing the result under P0–P4 would invent a taxonomy and present it in a column a reader has been told means priority. | A priority column filled by a proxy, which is worse than an empty one because it is believed. |
+| REQ-05 | **PARTIAL** | Of the six declared source kinds, **one is exercised**: every `source_refs` value in the live board is a local document path. `feishu-doc`, `feishu-wiki`, `im-thread` and `github-issue` are declared in the contract and **no Item carries one yet**; `candidate_mappings` is empty on all 17 rows. The execution-session column is joined from the §17 binding store and is **`-` on every row**, because no session has ever been created through that path on this node — the join is exercised by test, not by live data. | A five-kind intake surface that reads as complete. It is not: what exists is the shape, and four of its five external kinds have never carried an Item. |
+
+**The board has no reader, and that is the design rather than a gap.** Nothing
+routes, admits or resolves on it, which is why `serverosctl requirement board`
+prints and writes **nothing** unless `--write` is given, and why `--output-dir`
+is refused inside the boards root it reads — the first draft wrote there and the
+next run would have read its own output back as a project board and refused the
+whole composition over a schema mismatch it had created itself. That failure
+appears on the **second** run, which is the worst place for one to appear.
+
+REQ-04 is the row that needs a person, and it is already on the list below:
+introducing a priority field is a decision about where it lives, not a task.
+
+---
+
 ## Human Control, and the notification path
 
 | id | status | what is missing | the failure it answers |
@@ -323,7 +358,12 @@ in a decision nobody wrote down.
 ```text
 a push to another repository            not implied by any approval to date
 a live promotion of this product        rebuild, promote, restart, rematerialize
-a new Item-card field                   priority / severity do not exist anywhere
+a new Item-card field                   priority / severity do not exist anywhere.
+                                        §S's board renders P0-P4 empty and marks the
+                                        axis UNPRODUCED rather than filling it from a
+                                        proxy; run `serverosctl requirement board` to
+                                        see the five empty buckets and the one real
+                                        signal (titles containing a P-level)
 approval transport (HUM-04)             a surface that has to exist, possibly upstream
 identity verification inside a turn     an experiment, not an implementation
 what leaves a catalogue                 a pack may not shrink to one device
