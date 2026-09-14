@@ -347,3 +347,190 @@ def test_a_recommended_ability_the_registry_does_not_provide_is_medium(world):
     # it must not ALSO be reported as composition drift, or one cause is billed
     # twice and the second bill is the one a reader acts on.
     assert drifts(report) == []
+
+# ---------------------------------------------------------------------------
+# §18/§26 · the reachability axis, and the verdict it contributes to
+# ---------------------------------------------------------------------------
+#
+# The axis is the glue between this gate and `mutation_guard.py`, and glue is
+# where the two shapes that matter are decided: whether the contracts are read
+# from the pin or from the worktree (the pin — like every other declaration
+# here), and whether a run that cannot read them says so or shrugs. Both are
+# asserted below, including the branch that reports UNAVAILABLE.
+#
+# The `world` fixture above supplies no contracts, so every one of its runs
+# takes that UNAVAILABLE branch. That is correct — the fixture predates them —
+# but it means the axis's successful path is exercised nowhere else, which is
+# the whole reason for this section.
+#
+# These fixtures carry hand-written minimal contracts rather than copies of the
+# real ones. A copy would declare twenty-three sites in `runtime/*.py` files
+# that no fixture has, so every run would be dominated by `STALE_ACTUATOR`
+# noise and the assertion under test would be a rounding error in it.
+
+# The forbidden list is not decoration: an empty one is reported as
+# MCP_FORBIDDEN_LIST_DRIFT, because a policy that has drifted from the
+# vocabulary it is a policy about stops forbidding anything. So the fixture
+# declares it exactly as the real contract does.
+FORBIDDEN = "[" + ", ".join(guard_helpers := ["docker", "df", "free", "ss", "du", "find"]) + "]"
+EMPTY_ACTUATORS = (
+    "schema: serveros/actuator.v1\n"
+    "scopes: []\n"
+    f"mcp_layer_forbidden_commands: {FORBIDDEN}\n"
+    "actuators: []\n")
+EMPTY_STATE_ROOT = "schema: serveros/state-root.v1\nnamespaces: {}\n"
+
+READ = "import subprocess\nsubprocess.run(['df', '-h'])\n"
+DESTROY = "import subprocess\nsubprocess.run(['docker', 'rm', name])\n"
+
+
+def _declaration(*, kind, verb):
+    return ("schema: serveros/actuator.v1\nscopes: []\n"
+            f"mcp_layer_forbidden_commands: {FORBIDDEN}\n"
+            "actuators:\n  - id: fixture\n"
+            f"    kind: {kind}\n    verb: {verb}\n"
+            "    sites:\n      - file: runtime/thing.py\n"
+            "        symbols: ['<module>']\n")
+
+
+@pytest.fixture
+def reachable(tmp_path):
+    """A throwaway repo carrying both contracts, and a way to run the axis on it."""
+
+    repo = _init(tmp_path / "serveros")
+
+    def build(*, code=(), contract=None, contracts=True, worktree_contract=None):
+        (repo / "runtime").mkdir(parents=True, exist_ok=True)
+        (repo / "fleet").mkdir(parents=True, exist_ok=True)
+        for rel, text in code:
+            (repo / rel).write_text(text)
+        if contracts:
+            (repo / "runtime/actuator-contract.yaml").write_text(
+                contract or EMPTY_ACTUATORS)
+            (repo / "fleet/state-root-contract.yaml").write_text(EMPTY_STATE_ROOT)
+        _commit(repo)
+        if worktree_contract is not None:
+            # Written AFTER the commit, so it exists in the worktree only. The
+            # axis must not see it: declarations come from the pin.
+            (repo / "runtime/actuator-contract.yaml").write_text(worktree_contract)
+        findings: list[dict] = []
+        axis = check.reachability_axis(SimpleNamespace(), repo, "HEAD", findings)
+        return axis, findings
+
+    return build
+
+
+def ids(findings) -> list[str]:
+    return [f["id"] for f in findings]
+
+
+def test_a_clean_tree_with_both_contracts_is_checked(reachable):
+    """The successful path, and the fields it reports so a run can be audited.
+
+    `declaration_ref` and `worktree_head` are both here because the axis reads
+    its declarations from one and its code from the other. A report naming only
+    one of them leaves a reader unable to say which revision the answer is
+    about."""
+    axis, findings = reachable(code=[("runtime/thing.py", "x = 1\n")])
+    assert ids(findings) == []
+    assert axis["status"] == "CHECKED"
+    assert axis["declaration_ref"] == "HEAD"
+    assert axis["worktree_head"]
+    assert axis["counts"]["undeclared"] == 0
+
+
+def test_a_declared_read_passes_and_the_scan_is_not_vacuous(reachable):
+    """Non-vacuity in both directions. A clean report is only worth reading if
+    the scan found something, and an empty contract covering a real call site
+    is itself a failure — so the same tree is run twice, with the read declared
+    and undeclared, and the hit count is what separates the two."""
+    undeclared_axis, undeclared = reachable(code=[("runtime/thing.py", READ)])
+    assert ids(undeclared) == ["UNDECLARED_ACTUATOR"]
+    assert undeclared_axis["counts"]["product_hits"] == 1
+
+    declared_axis, declared = reachable(
+        code=[("runtime/thing.py", READ)],
+        contract=_declaration(kind="host_reader", verb="df"))
+    assert ids(declared) == []
+    assert declared_axis["status"] == "CHECKED"
+    assert declared_axis["counts"]["product_hits"] == 1, (
+        "the same single call site, now covered — not a scan that found nothing")
+    assert declared_axis["counts"]["declared"] == 1
+
+
+def test_a_destroyer_with_no_declaration_fails_the_axis(reachable):
+    """The §26 claim in the only direction that can contradict it."""
+    axis, findings = reachable(code=[("runtime/thing.py", DESTROY)])
+    assert ids(findings) == ["UNDECLARED_ACTUATOR"]
+    assert findings[0]["severity"] == "HIGH"
+    assert findings[0]["status"] == "OPEN"
+    assert axis["status"] == "FAILED"
+    assert axis["counts"]["product_hits"] == 1
+
+
+def test_declaring_the_destroyer_clears_it(reachable):
+    """And the declaration is checked, not merely accepted: it has to name the
+    verb that is actually there."""
+    axis, findings = reachable(
+        code=[("runtime/thing.py", DESTROY)],
+        contract=_declaration(kind="mutation", verb="docker rm"))
+    assert ids(findings) == [], [f["observed"] for f in findings]
+    assert axis["status"] == "CHECKED"
+    assert axis["counts"]["declared"] == 1
+
+
+def test_declaring_the_wrong_verb_does_not_clear_it(reachable):
+    """`docker` declared where `docker rm` runs is exactly the stale exemption
+    this contract's two-directional check exists to catch. Both halves are
+    reported, because neither alone describes the defect: the call site is
+    undeclared AND the declaration covers nothing."""
+    axis, findings = reachable(
+        code=[("runtime/thing.py", DESTROY)],
+        contract=_declaration(kind="host_reader", verb="docker"))
+    assert ids(findings) == ["UNDECLARED_ACTUATOR", "STALE_ACTUATOR"]
+    assert axis["status"] == "FAILED"
+
+
+def test_contracts_missing_from_the_pin_are_reported_rather_than_passed(reachable):
+    """The branch `world` takes. A checker that cannot read its own contract
+    has not thereby found the code clean, and UNAVAILABLE is not a synonym for
+    conformant — the finding is HIGH, so the gate is red until the pin carries
+    the contract."""
+    axis, findings = reachable(code=[("runtime/thing.py", "x = 1\n")], contracts=False)
+    assert ids(findings) == ["REACHABILITY_CONTRACT_ABSENT"]
+    assert findings[0]["severity"] == "HIGH"
+    assert findings[0]["status"] == "OPEN"
+    assert axis["status"] == "UNAVAILABLE"
+
+
+def test_the_axis_reads_the_declaration_from_the_pin_not_the_worktree(reachable):
+    """The rule this checker follows everywhere, applied to its own contract.
+
+    The worktree here carries a declaration covering the destroyer; it was
+    written after the commit, so the pin does not have it. If the axis read the
+    worktree the destroyer would come back covered. It must come back
+    undeclared — otherwise every run in progress is judged against a contract
+    nobody has reviewed yet."""
+    axis, findings = reachable(
+        code=[("runtime/thing.py", DESTROY)],
+        worktree_contract=_declaration(kind="mutation", verb="docker rm"))
+    assert ids(findings) == ["UNDECLARED_ACTUATOR"], [f["observed"] for f in findings]
+    assert axis["counts"]["declared"] == 0
+    assert axis["worktree_dirty"], (
+        "and the report says the scan is of a dirty worktree, so a reader can "
+        "see the asymmetry rather than infer it")
+
+
+def test_the_guard_missing_is_reported_rather_than_silently_skipped(reachable, monkeypatch):
+    """The axis resolves `mutation_guard.py` relative to its own `__file__`.
+    If that path is wrong the axis must say the check is unavailable instead of
+    returning an empty, green-looking report."""
+    axis, findings = reachable(code=[("runtime/thing.py", "x = 1\n")])
+    assert axis["status"] == "CHECKED"
+
+    monkeypatch.setattr(check, "__file__", "/nonexistent/dir/architecture_check.py")
+    findings: list[dict] = []
+    axis = check.reachability_axis(SimpleNamespace(), Path("/nonexistent"), "HEAD", findings)
+    assert ids(findings) == ["REACHABILITY_CHECK_UNAVAILABLE"]
+    assert findings[0]["severity"] == "HIGH"
+    assert axis["status"] == "UNAVAILABLE"

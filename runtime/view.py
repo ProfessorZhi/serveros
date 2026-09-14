@@ -63,6 +63,24 @@ anomaly = _load("serveros_runtime_anomaly", "anomaly.py")
 containers = _load("serveros_runtime_containers", "containers.py")
 paths_mod = _load("serveros_runtime_paths", "paths.py")
 infra = _load("serveros_runtime_infrastructure", "infrastructure.py")
+# §14/§15/§16/§16A/§17. Loaded under the names the rest of the tree already
+# uses — `runtime_hygiene.py` in particular refuses to be loaded as
+# `serveros_runtime_hygiene`, because the two modules answer different
+# questions about containment and one name for both is how a reader ends up
+# holding the wrong one.
+ports_mod = _load("serveros_runtime_ports", "ports.py")
+protection_mod = _load("serveros_runtime_protection", "protection.py")
+fs_hygiene_mod = _load("serveros_runtime_fs_hygiene", "fs_hygiene.py")
+desired_mod = _load("serveros_runtime_desired", "desired.py")
+runtime_hygiene_mod = _load("serveros_runtime_runtime_hygiene", "runtime_hygiene.py")
+# §18. The resource anomaly catalogue, and the container hygiene report it
+# classifies from. `hygiene.py` is loaded under the name `daemon.py` already
+# gives it — the third hygiene module in this file, and the three answer
+# different questions: `hygiene.py` classifies CONTAINERS, `runtime_hygiene.py`
+# classifies REGISTRATIONS, `fs_hygiene.py` classifies ROOTS.
+hygiene_mod = _load("serveros_runtime_hygiene", "hygiene.py")
+resource_anomaly_mod = _load("serveros_runtime_resource_anomaly", "resource_anomaly.py")
+resource_policy_mod = _load("serveros_runtime_resource_policy", "resource_policy.py")
 
 FACT = attribution.FACT
 INFERRED = attribution.INFERRED
@@ -498,6 +516,46 @@ def _subject_registry(registry) -> dict:
     return out
 
 
+def _alias_subjects(subjects: dict, container_rows) -> None:
+    """Let every identity a container carries reach its registration.
+
+    §9 makes `runtime_ref` the canonical identity and a rename must not move
+    it. The detector looks subjects up by that ref, but the registry is
+    written against a container NAME. Without this, making the ref
+    name-independent would have silently darkened two branches: the
+    INFRASTRUCTURE_AT_RISK guard (which only fires for `criticality:
+    critical`) and the protection guard — the same class of defect the
+    name-keyed dict was introduced to fix, arriving from the other side.
+
+    So each row's registration is looked up ONCE, by the name the registry
+    knows, and then registered under every anchor the row reports. A container
+    nothing is registered for resolves to nothing and stays UNKNOWN_OWNER:
+    this adds aliases to a known answer and never invents one.
+    """
+    if not container_rows:
+        return
+    for row in container_rows:
+        entry = None
+        name = row.get("container")
+        if name and f"runtime:container:{name}" in subjects:
+            entry = subjects[f"runtime:container:{name}"]
+        if entry is None:
+            # Already anchor-matched during attribution (rung 3b), or not
+            # matched at all. Either way the row itself is the authority on
+            # whether it reached a registration.
+            resource_id = (
+                ((row.get("attribution") or {}).get("registry_resource_id"))
+            )
+            if resource_id:
+                entry = subjects.get(resource_id)
+        if entry is None:
+            continue
+        for anchor in (row.get("identity") or {}).get("anchors") or []:
+            ref = anchor.get("runtime_ref")
+            if ref:
+                subjects.setdefault(ref, entry)
+
+
 def _container_name(resource) -> str | None:
     for probe in resource.probes:
         if probe.get("container"):
@@ -541,6 +599,27 @@ def _probe_results(registry, *, host=None) -> dict:
     reach that rule — the rule as written compared against the literal `"mcp"`,
     which no registration in the contract's kind list can ever equal, so the
     branch was dead on arrival.
+
+    Each axis is carried as its STATE WORD (the anomaly detector compares those
+    strings) and the health model's derived `state` is carried beside them as
+    `derived_state`, with the liveness axis's own evidence and timestamp. That
+    one extra key is §15's whole input:
+
+        measured on 2026-09-14 — `litellm-baseline-litellm`,
+        `litellm-baseline-postgres` and `botmux-host` are registered
+        `desired: running`, probed `liveness: STOPPED`, and the health model
+        classifies all three `NOT_RUNNING` — which the contract's
+        `desired_actual.mismatch_states` maps to `running`, i.e. a mismatch.
+        `desired_actual()` reported `mismatches: []` anyway, because this
+        function kept only the axis words and threw `Health.state` away, so
+        `desired.comparison` found `derived is None`, took its
+        "no derived state to read" branch, and returned UNCHECKED with a `why`
+        that blamed a gap in the declaration.
+
+    So the shape to keep in mind: a derived state that is COMPUTED one call
+    above the comparator and DISCARDED by the shim between them makes §15
+    silent without making it wrong, and `mismatches: []` reads as "every
+    registration is in its desired state" while three of them are not.
     """
     if registry is None:
         return {}
@@ -554,7 +633,11 @@ def _probe_results(registry, *, host=None) -> dict:
             continue
         shown = health.show()
         axes = {axis: (shown["axes"][axis]["state"]) for axis in health_mod.AXES}
+        liveness = shown["axes"]["liveness"]
         axes["kind"] = resource.kind
+        axes["derived_state"] = shown["state"]
+        axes["evidence"] = dict(liveness.get("evidence") or {})
+        axes["observed_at"] = liveness.get("observed_at")
         out[resource.id] = axes
     return out
 
@@ -698,6 +781,7 @@ def anomaly_list(*, host=None, registry=None, docker_host=None,
     host_facts = _host_facts(inventory)
     probe_results = _probe_results(registry, host=probes_host)
     subjects = _subject_registry(registry)
+    _alias_subjects(subjects, container_rows)
     criticality = {k: v["criticality"] for k, v in subjects.items()}
     protection = {k: v["protection"] for k, v in subjects.items()}
     error_windows, window_coverage = _error_windows(groups, registry,
@@ -835,6 +919,108 @@ def anomaly_explain(subject: str, *, host=None, registry=None, docker_host=None,
 # ---------------------------------------------------------------------------
 
 
+def docker_observation(*, inventory=None, space: bool = False,
+                       answered_by: str = DEFAULT_MEASURER) -> dict:
+    """§6/§7/§19 — the Docker inventory, for the read surface that lacked it.
+
+    Every fact here comes from `inventory.py`, which is §6's producer. This
+    function decides nothing and measures nothing itself: §18 asks for one
+    producer per fact, and a view layer that ran its own `docker` command would
+    be a second producer whose answer could disagree with the daemon's while
+    both stayed internally consistent.
+
+    `docker_space` is opt-in and the reason is cost, not correctness: it is the
+    one `docker system df` call, measured here at ~22s against every other read
+    in this payload at under 3s. A caller that wants the reclaimable picture
+    asks for it and waits; a caller that does not is not made to.
+
+    The reclaimable figure is reported as what a prune WOULD free. It is not a
+    candidate list and nothing here may act on it — hence `advisory`, which is
+    spelled out in the payload rather than left to the reader.
+    """
+    inv = inventory if inventory is not None else inventory_mod.Inventory()
+    payload = {
+        "summary": inv.docker_summary(),
+        "containers": inv.docker_list(),
+        "images": inv.docker_images(),
+        "volumes": inv.docker_volumes(),
+        "networks": inv.docker_networks(),
+        "sizes": inv.docker_sizes(),
+    }
+    if space:
+        payload["space"] = inv.docker_space()
+    return _envelope({
+        **payload,
+        "space_included": space,
+        "largest_observed_consumers": _largest_observed_consumers(payload),
+        "advisory": (
+            "every number here is a measurement. Nothing in this payload is a "
+            "cleanup candidate, and no tool on any surface built from it stops, "
+            "removes or prunes anything. `space.reclaimable_bytes_total`, when "
+            "included, is what a prune WOULD free — an estimate of a possible "
+            "action, not a list of things to act on"
+        ),
+        **({} if space else {
+            "space_note": (
+                "the reclaimable/build-cache picture is NOT in this answer. It "
+                "is one `docker system df` call, measured at ~22s, and it is "
+                "opt-in rather than omitted: ask with `serverosctl resource "
+                "docker --space`"
+            )}),
+    }, answered_by=answered_by)
+
+
+def _largest_observed_consumers(payload: dict) -> list[dict]:
+    """The biggest containers BY MEASURED SIZE, and nothing else.
+
+    `docker ps --size` reports a writable-layer and a rootfs size per
+    container. Those are the only per-container storage numbers Docker
+    actually measures, and the empty writable layer is reported as exactly
+    that rather than as an absence — a container that has written nothing is a
+    measurement of zero, not a missing value.
+    """
+    rows = ((payload.get("sizes") or {}).get("sizes")
+            or (payload.get("sizes") or {}).get("containers")
+            or (payload.get("containers") or {}).get("containers") or [])
+    def total(row):
+        return (row.get("size_rw_bytes") or 0) + (row.get("size_root_fs_bytes") or 0)
+    ranked = sorted((row for row in rows if isinstance(row, dict)), key=total,
+                    reverse=True)
+    return [{"name": row.get("name"), "container_id": row.get("id"),
+             "writable_layer_bytes": row.get("size_rw_bytes"),
+             "rootfs_bytes": row.get("size_root_fs_bytes")}
+            for row in ranked[:10]]
+
+
+def tunnel_observation(*, registry_doc=None, answered_by: str = DEFAULT_MEASURER) -> dict:
+    """§13 — the tunnels this node can see, and the ones it structurally cannot.
+
+    A thin envelope over `infrastructure.tunnel_inventory`, for the same reason
+    `docker_observation` is one: the tunnels have exactly one producer, and a
+    read surface that re-derived them would be a second one.
+
+    The blind spots are carried through unchanged and are the most important
+    field in the payload. `declared_count: 0` and `observed_count: 0` are
+    facts about what was found; `blind_spots` is the fact about what could not
+    be looked for, and on a host with `hidepid=invisible` the second is larger
+    than the first. A caller that read only the counts would conclude this
+    node has no tunnels, which is not something anything here measured.
+    """
+    reg = _registry_or_none(registry_doc)
+    inventory = infra.tunnel_inventory(registry_doc=reg)
+    return _envelope({
+        **inventory,
+        "state": ("UNKNOWN" if inventory.get("blind_spots")
+                  else "COMPLETE"),
+        "advisory": (
+            "a declared tunnel and an observed forwarder are joined by PID. "
+            "Without that join a visible forwarder is a candidate and never an "
+            "owner: the registry decides what is ours, and a process that "
+            "happens to be forwarding does not register itself by forwarding"
+        ),
+    }, answered_by=answered_by)
+
+
 def infrastructure_report(registry, owner_states: dict | None = None, *,
                           answered_by: str = DEFAULT_MEASURER) -> dict:
     """§7/§9/§17/§20: what outlives the work, what restarting would achieve,
@@ -933,3 +1119,501 @@ def chain_rows(chain: dict) -> list[tuple[str, str, str]]:
         value = link.get("value")
         rows.append((name, "—" if value is None else str(value), str(link.get("status"))))
     return rows
+
+
+# ---------------------------------------------------------------------------
+# §14/§15/§16/§16A/§17 — the observation surfaces this round added
+# ---------------------------------------------------------------------------
+#
+# Five modules, one wrapper each, and the wrappers are deliberately thin. The
+# rule this file exists to hold is that ONE implementation answers a question
+# and the CLI, the daemon and the MCP adapter are transports — so a wrapper
+# here that recomputed what its module already computed would be the fourth
+# implementation, arriving through the file that exists to prevent it.
+#
+# What the wrappers do add is the envelope: `answered_by` and `measured_at`, so
+# that "this is a fresh measurement" and "this is the daemon's last tick" are
+# distinguishable JSON. A module that measures the host has no way to know
+# which caller is asking or when its answer will be read; this layer does.
+
+# The registry is the authority for what SHOULD be running, so every surface
+# below that compares two states takes it from the same loader the CLI uses.
+_UNSETTLED_ADVISORY = (
+    "advisory only. Nothing in this answer stops, removes, moves, prunes or "
+    "reclaims anything, and no field here is an instruction to."
+)
+
+#: Pass as `registry_doc=` to say, deliberately, that this caller has none.
+#: Deliberately not `None`. See `_registry_or_none` for why the two are
+#: different statements; an object rather than a sentinel string so that a
+#: string that happens to read "none" can never be taken for it.
+NO_REGISTRY = object()
+
+
+def _registry_or_none(registry_doc=None):
+    """A `Registry` from whatever the caller had, or None.
+
+    Four inputs and four different statements. Collapsing any two of them is a
+    defect this round has already made once, so they are written out:
+
+      not supplied      the node's own registry, through the one loader
+                        `serverosctl` and `serverosd` also resolve it. If this
+                        node has none the loader raises and names the path,
+                        because `{"resources": 0}` served to a caller who
+                        simply forgot an argument reads as a claim about the
+                        node: *nothing is registered here*. That claim is what
+                        this module's own docstring forbids — an absence is
+                        never returned as a measurement.
+      `NO_REGISTRY`     None. The caller has no registry and said so. None is
+                        legitimate downstream: §15's central rule is that
+                        nothing may be reported as a MISMATCH when nothing
+                        declared a desired state.
+      a Registry        itself, untouched.
+      a path, or a      loaded through the same loader, so a path that does not
+      parsed document   exist refuses rather than becoming an empty document.
+    """
+    if registry_doc is NO_REGISTRY:
+        return None
+    if registry_doc is None:
+        return registry_mod.load_default()
+    if isinstance(registry_doc, registry_mod.Registry):
+        return registry_doc
+    if isinstance(registry_doc, (str, Path)):
+        return registry_mod.load_default(registry_doc)
+    if isinstance(registry_doc, dict):
+        return registry_mod.Registry(document=registry_doc)
+    raise TypeError(
+        f"registry_doc must be a Registry, a path, a parsed document, "
+        f"NO_REGISTRY or None; got {type(registry_doc).__name__}. Nothing here "
+        f"guesses a registry from an object of unknown shape — a surface that "
+        f"did would report on a registry nobody authored."
+    )
+
+
+def port_ownership(*, host=None, registry_doc=None, containers_document=None,
+                   answered_by: str = DEFAULT_MEASURER) -> dict:
+    """§14 — every endpoint this node holds, and the claims on each of them.
+
+    Ports are the surface where "who owns this" is most often answered by a
+    guess, so the module keeps every claim and reports disagreements instead of
+    picking one. `unattributed` is not an error: §14 forbids attributing every
+    connection to a managed runtime, and the largest honest bucket on a shared
+    host is the one that says nobody could be named.
+
+    The container half is GATHERED here when the caller does not supply it, for
+    the reason measured on 2026-09-14: called with only the socket table, this
+    returned `coverage.claimed_by_a_container: 0` and
+    `providers.docker.state: UNAVAILABLE`, and 37 unattributed endpoints. Those
+    zeros are about the ARGUMENT, not about the node — the node publishes
+    ports, and a caller reading `claimed_by_a_container: 0` has no way to tell
+    a host with no published bindings from a surface that never asked. It is
+    the same shape as `resources: 0` from an unread registry, one namespace
+    over.
+    """
+    registry = _registry_or_none(registry_doc)
+    if containers_document is None:
+        # Through this layer's own container view, so the ports report and the
+        # attribution report are answering about the same measurement rather
+        # than two reads taken a second apart.
+        containers_document = container_attribution(registry=registry)
+    document = ports_mod.port_inventory(
+        host=host,
+        registry_doc=registry,
+        containers_document=containers_document)
+    return _envelope(document, answered_by=answered_by)
+
+
+def desired_actual(*, registry_doc=None, probes_host=None, measured=None,
+                   answered_by: str = DEFAULT_MEASURER) -> dict:
+    """§15 — every registration against what was measured about it.
+
+    `measured` is `{resource_id: four-axis health}`. Omitted, it is taken from
+    the same probe path the rest of this layer uses, so the CLI and the daemon
+    compare against one measurement rather than two.
+
+    `probes_host` is the PROBE host — the object with `docker_inspect` and
+    `systemd_user_unit` on it. It was called `host` until this round, which is
+    also the name `resource_anomaly` below uses for a host FACTS DOCUMENT: two
+    different things, one word, and the shim between them passed the document
+    into `probes.observe`, where it would have raised `AttributeError` rather
+    than answering. No caller does that today, which is why it is a rename
+    rather than a repair — and why the rename is worth making before one does.
+    """
+    registry = _registry_or_none(registry_doc)
+    if measured is None and registry is not None:
+        measured = _probe_results(registry, host=probes_host)
+    document = desired_mod.desired_actual(registry_doc=registry, measured=measured)
+    # Each mismatch is also rendered in the anomaly catalogue's signal shape, so
+    # that a reader filtering signals does not have to learn a second shape for
+    # the one detector this round added to it.
+    document = {**document,
+                "signals": [desired_mod.signal_of(row)
+                            for row in document.get("mismatches", [])]}
+    return _envelope(document, answered_by=answered_by)
+
+
+# The classification inputs §16 reads, and which of them this layer can gather.
+# It is a literal rather than a comment because the answer is printed: a report
+# that could reach four of eight inputs and does not say so is read as one that
+# found nothing in the other four.
+HYGIENE_INPUTS = ("comparison", "protection", "activity", "owner_evidence",
+                  "superseded_by", "traffic")
+
+
+def runtime_hygiene(*, registry_doc=None, host=None, traffic=None,
+                    owner_evidence=None, superseded_by=None,
+                    answered_by: str = DEFAULT_MEASURER) -> dict:
+    """§16 — the nine-class vocabulary over the registrations.
+
+    `CLEANUP_CANDIDATE` is a label attached to a question for a person. The
+    classes are assigned from evidence with the evidence kept beside the
+    decision, and the one class that is never inferred from a single variable
+    is the one that would be a deletion instruction if it were.
+
+    `traffic` and `owner_evidence` are gathered by the caller — the port view
+    (§14) and the container attribution (§6) already own those facts, and
+    re-deriving them here would be the second implementation this file exists
+    to prevent. What this layer does is report which inputs it was given, so a
+    class that could not be reached is distinguishable from one that was
+    checked and found false.
+    """
+    registry = _registry_or_none(registry_doc)
+    rows = _runtime_hygiene_rows(registry, host=host, traffic=traffic,
+                                owner_evidence=owner_evidence,
+                                superseded_by=superseded_by)
+    document = runtime_hygiene_mod.classify_all(rows)
+    gathered = sorted({key for row in rows for key in row
+                       if key in HYGIENE_INPUTS})
+    document = {**document,
+                "inputs_gathered": gathered,
+                "inputs_not_gathered": [k for k in HYGIENE_INPUTS
+                                        if k not in gathered],
+                "note": (
+                    document.get("note", "") + " Inputs listed in "
+                    "`inputs_not_gathered` were not measured, so a class they "
+                    "would have decided is absent rather than false.")}
+    return _envelope(document, answered_by=answered_by)
+
+
+def _runtime_hygiene_rows(registry, *, host=None, traffic=None, owner_evidence=None,
+                          superseded_by=None) -> list[dict]:
+    """One classification input per registration.
+
+    Every optional mapping is keyed by resource id, and a key that is missing
+    is left OUT of the row rather than defaulted: `traffic: False` and no
+    traffic measurement at all are different statements, and §16's rule about
+    `stopped > N days` exists because the second keeps being written as the
+    first.
+    """
+    if registry is None:
+        return []
+    health = _probe_results(registry, host=host)
+    rows = []
+    for resource in registry.all():
+        row = {
+            "resource_ref": f"managed-runtime:{resource.id}",
+            "resource": resource,
+            # The comparison is §15's, reused rather than re-made here, so that
+            # "in desired state" means one thing on both surfaces — and
+            # `desired_state = None` keeps producing UNCHECKED rather than a
+            # mismatch, which is §15's central rule.
+            "comparison": desired_mod.comparison(
+                declared=resource,
+                measured=health.get(resource.id),
+                resource_ref=f"managed-runtime:{resource.id}"),
+        }
+        for key, mapping in (("traffic", traffic),
+                             ("owner_evidence", owner_evidence),
+                             ("superseded_by", superseded_by)):
+            if mapping is not None and resource.id in mapping:
+                row[key] = mapping[resource.id]
+        rows.append(row)
+    return rows
+
+
+def fs_hygiene(*, home=None, data=None, sizes=None, answered_by: str = DEFAULT_MEASURER) -> dict:
+    """§16A — the two roots classified, and nothing moved.
+
+    Every class this reports is a DESCRIPTION. `.botmux-clone.log` and
+    `.ccbridge-bridge.log` are classified, never deleted or moved (§16A), and
+    duplicate semantic roots are reported as DUPLICATE_SEMANTIC_ROOT rather
+    than resolved — a report that reunited them would be making the ruling the
+    report exists to ask for.
+    """
+    document = fs_hygiene_mod.report(home=home, data=data, sizes=sizes)
+    return _envelope(document, answered_by=answered_by)
+
+
+def protection(*, containers=None, registry_doc=None, answered_by: str = DEFAULT_MEASURER) -> dict:
+    """§17 — protection resolved per identity spelling, and where it lapses.
+
+    Every spelling of one container is checked and the union decides, because
+    the failure §17 names is protection that holds under the name and is lost
+    when the identity switches to the container id. `PROTECTION_LOST_ON_IDENTITY_SWITCH`
+    is the finding for exactly that, and it is reported rather than repaired:
+    nothing here writes a label, and nothing here registers a resource.
+
+    A row is read in either spelling — this layer's own (`id`/`name`/`identity`)
+    or the one `docker ps --format {{json .}}` emits (`ID`/`Names`). The second
+    is not a convenience: the daemon's container set comes straight off that
+    command, and a caller that had to translate it first would be the second
+    place a container's identity is spelled, free to spell it differently.
+    """
+    registry = _registry_or_none(registry_doc)
+    rows = []
+    for container in containers or []:
+        if not isinstance(container, dict):
+            continue
+        name = container.get("name") or container.get("Names")
+        if isinstance(name, str) and "," in name:
+            # Docker can report several names in one comma-separated field. The
+            # first is the one `docker inspect` accepts; the rest are aliases.
+            name = name.split(",")[0].strip()
+        container_id = container.get("id") or container.get("ID")
+        labels = protection_mod.parse_labels(
+            container.get("labels") if container.get("labels") is not None
+            else container.get("Labels"))
+        # ONE container per resolution, with ITS labels. Merging the node's
+        # containers into a single call is not a smaller version of this — the
+        # module keys its per-identity results by identity KIND, so two
+        # containers both carrying a `container_name` collapse into one entry
+        # and the second container's resolution is served as the first's. The
+        # labels have the same failure: one dict for the set means the last
+        # container's compose names are attached to every container's identity.
+        resolved = protection_mod.resolve_by_identity(
+            identities=protection_mod.identities_of(
+                container.get("identity"), name=name,
+                container_id=container_id, labels=labels),
+            registry_doc=registry,
+            labels=labels)
+        rows.append({
+            # What a reader can point at, preferring the id because §9 made it
+            # canonical and a name can be changed.
+            "subject": container_id or name or None,
+            "container_id": container_id,
+            "name": name,
+            "protected": _protection_union(resolved["by_identity"]),
+            "by_identity": resolved["by_identity"],
+            "findings": resolved["findings"],
+        })
+
+    findings = [{**finding, "subject": row["subject"]}
+                for row in rows for finding in row["findings"]]
+    document = {
+        "schema": "serveros/protection-resolution.v1",
+        "containers": rows,
+        "findings": findings,
+        "checked": len(rows),
+        # The classes are three-valued and the third value is the point: `None`
+        # is "nothing on this node could be asked", and a summary that folded it
+        # into `False` would be a protection bypass performed by a count.
+        "counts": {
+            "protected": sum(1 for r in rows if r["protected"] is True),
+            "not_protected": sum(1 for r in rows if r["protected"] is False),
+            "unknown": sum(1 for r in rows if r["protected"] is None),
+        },
+    }
+    return _envelope(document, answered_by=answered_by)
+
+
+def _protection_union(by_identity: dict[str, dict]):
+    """§17's union rule over the spellings of ONE container.
+
+    `True` if any spelling is protected — that is the direction that keeps the
+    answer from depending on which spelling the caller happened to hold. `False`
+    only if something on this node was asked and named nothing, over every
+    spelling. `None` when nothing could be asked at all, which is not `False`:
+    the wrong `False` here is a protection bypass performed by a default.
+    """
+    verdicts = [result.get("protected") for result in by_identity.values()]
+    if any(v is True for v in verdicts):
+        return True
+    if any(v is False for v in verdicts):
+        return False
+    return None
+
+
+# ---------------------------------------------------------------------------
+# §18/§19 — the resource anomaly catalogue, over documents this layer gathered
+# ---------------------------------------------------------------------------
+
+# The inputs §18's detector consumes, and which of them this layer can gather
+# on its own. A literal for the same reason `HYGIENE_INPUTS` is one: the answer
+# is printed, and a report that reached five of six inputs without saying so is
+# read as one that found nothing in the sixth.
+ANOMALY_INPUTS = ("host", "disk", "docker", "hygiene", "desired", "tunnel")
+
+
+def resource_anomaly(*, inventory=None, host=None, disk=None, docker=None,
+                     hygiene=None, desired=None, tunnel=None, measured=None,
+                     thresholds=None, space: bool = False, now=None,
+                     registry_doc=None, probes_host=None,
+                     answered_by: str = DEFAULT_MEASURER) -> dict:
+    """§18/§19 — the fifteen resource codes, graded, plus the ones ungraded.
+
+    This function measures NOTHING. Every document below is read from the
+    producer that already owns that fact — `inventory.py` for the host, the
+    disk and the four Docker reads; `hygiene.py` for the container
+    classifications; `desired.py` for the declaration comparison;
+    `infrastructure.py` for the tunnels. §28 asks for one producer per fact and
+    this layer is where that is easy to lose: it already imports all four
+    modules, so a re-derivation here would look like a convenience rather than
+    like the second implementation it is.
+
+    `space` is opt-in and stays opt-in, for the reason `docker_observation`
+    spells out: one `docker system df` at ~22s against reads that cost under
+    3s. Not asking is not the same as finding 0 — the two codes that need it
+    come back in `codes_not_evaluated` with the cost stated, which is the
+    honest answer and the one §27 asks for.
+
+    `measured` is the `{resource_id: health}` mapping §15's comparison reads.
+    A daemon should pass its own last tick's observations: it has already paid
+    for them, and re-probing every registration would produce a second
+    measurement whose answer could disagree with the one the daemon is acting
+    on. Supplying it is also what makes `now` worth passing — the tick's
+    observation time and the caller's clock are then genuinely different.
+
+    `probes_host` is the object §15's comparison probes through when the caller
+    supplied no `measured` — the daemon's own, whether that is `LiveHost` or a
+    test's. It is a separate parameter from `host` because `host` here is the
+    host FACTS document this function passes to the detector, and a comparison
+    taken through a different observer than the rest of the document is the
+    §28 shape: one answer assembled from two measurements that can disagree.
+    """
+    registry = _registry_or_none(registry_doc)
+    inv = inventory if inventory is not None else inventory_mod.Inventory()
+
+    # Falsy and not-supplied are the same statement here, and deliberately so:
+    # `_Gathered.take` refuses an empty document one layer down, so a caller
+    # that passed `{}` would otherwise be recorded as having supplied an input
+    # the detector reports as missing. Two spellings of one absence, one
+    # meaning.
+    supplied = [name for name, value in (
+        ("host", host), ("disk", disk), ("docker", docker),
+        ("hygiene", hygiene), ("desired", desired), ("tunnel", tunnel),
+    ) if value]
+
+    disk_document = disk if disk else inv.disk_status()
+    host_document = host if host else inv.host_summary()
+    docker_document = (docker if docker
+                       else _docker_anomaly_inputs(inv, disk_document, space=space))
+
+    absent: dict[str, str] = {}
+    if not hygiene:
+        if registry is None:
+            # §15's rule, one namespace over: with no registry nothing declared
+            # a container is ours, so the classification would be made against
+            # a registry nobody authored. Reported as a gap rather than as a
+            # host with no unowned containers.
+            absent["hygiene"] = (
+                "no managed-runtime registry was resolved, so no container "
+                "could be classified as owned or unowned")
+        else:
+            hygiene = hygiene_mod.Hygiene(registry, inv).report()
+    if not desired:
+        if registry is None:
+            absent["desired"] = (
+                "no managed-runtime registry was resolved, so there is nothing "
+                "whose declared state could be compared")
+        else:
+            # Through THIS LAYER's own `desired_actual`, not the module's, so
+            # that the mismatches arrive already rendered into the signal
+            # shape. Calling the module directly returns `mismatches` and no
+            # `signals`, and the detector reads `signals` — so the comparison
+            # would be made, the rows published on one surface and silently
+            # absent on this one, which is this round's recurring defect
+            # exactly: a value computed one call above the consumer and
+            # discarded by the shim between them.
+            desired = desired_actual(registry_doc=registry,
+                                     probes_host=probes_host,
+                                     measured=measured)
+    if not tunnel:
+        tunnel = infra.tunnel_inventory(registry_doc=registry)
+
+    document = resource_anomaly_mod.detect(
+        host=host_document, disk=disk_document, docker=docker_document,
+        hygiene=hygiene, desired=desired, tunnel=tunnel,
+        thresholds=thresholds, observed_at=_now_iso(), now=now)
+
+    gathered = [name for name, value in (
+        ("host", host_document), ("disk", disk_document), ("docker", docker_document),
+        ("hygiene", hygiene), ("desired", desired), ("tunnel", tunnel),
+    ) if value]
+    return _envelope({
+        **document,
+        # §20/§27. Which inputs this call reached, which the caller supplied,
+        # and which it could not reach at all with the reason. The middle list
+        # is worth printing: `detect` cannot tell a supplied document from a
+        # gathered one, and a reader checking whether this answer came from a
+        # fresh measurement or from a caller's snapshot needs to.
+        "gathering": {
+            "inputs_supplied_by_the_caller": supplied,
+            "inputs_reached": gathered,
+            "inputs_unreachable": absent,
+        },
+        "space_included": space,
+        "supported_by_resource_policy": _policy_summary(registry, hygiene),
+        "advisory": (
+            document["advisory"] + " Every input above was read from the "
+            "producer that owns it, and `gathering` names which of the six "
+            "this call reached — a code listed in `codes_not_evaluated` was "
+            "not looked for, which is not the same as one that was looked for "
+            "and not found"),
+    }, answered_by=answered_by)
+
+
+def _docker_anomaly_inputs(inv, disk_document: dict, *, space: bool) -> dict:
+    """The four Docker reads §18's Docker codes consume, from their producers.
+
+    `data_root_total_bytes` is the total size of the filesystem the DOCKER_FS
+    role LANDED ON, not of the path the role asked about. The distinction is
+    `inventory._mount`'s own: on this host DOCKER_FS is asked about
+    `/var/lib/docker` and lands on `/`, and a denominator taken from the
+    question instead of the answer would report Docker's share of a disk it
+    does not stand on.
+    """
+    payload = {
+        "sizes": inv.docker_sizes(),
+        "logs": inv.container_logs(),
+        "data_root_total_bytes": next(
+            (row.get("total_bytes") for row in (disk_document.get("roles") or [])
+             if row.get("role") == "DOCKER_FS" and row.get("state") == "PRESENT"),
+            None),
+    }
+    if space:
+        payload["space"] = inv.docker_space()
+    return payload
+
+
+def _policy_summary(registry, hygiene) -> dict:
+    """§22 — what the governance document permits, read as a policy input.
+
+    Read through `resource_policy.py` so that §22's four classes have one
+    reader, and carried here rather than merged into the signals because the
+    document states what an owner said, not what was measured — §18's
+    `PROTECTED_RESOURCE_AT_RISK` fires on the classification the report made,
+    and a document saying "deny" is not a measurement of anything.
+
+    The group-key trap is why this is a summary and not a join: the document's
+    top-level keys are GROUP names, so `declared_objects` unwraps the second
+    level. A caller that compared the group names to container names would find
+    every one of them dangling.
+    """
+    known = [row.get("name") for row in
+             ((hygiene or {}).get("docker") or {}).get("containers") or []]
+    try:
+        payload = resource_policy_mod.resolve()
+    except Exception as exc:  # noqa: BLE001 - a report, not a gate
+        # This is a REPORT and it must not be able to fail the observation it
+        # is reported beside: a governance document that moved, or that a
+        # later revision made unparseable, is a finding about the document.
+        return {"state": "UNREADABLE", "why": f"{type(exc).__name__}: {exc}"}
+    return {
+        "state": payload.get("state"),
+        "location": payload.get("location"),
+        "coverage": resource_policy_mod.coverage(payload),
+        "destructive_reconcile": payload.get("destructive_reconcile"),
+        "protection": resource_policy_mod.protection_input(
+            payload, known_containers=[n for n in known if n],
+            path=payload.get("location")),
+    }

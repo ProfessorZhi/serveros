@@ -1,0 +1,168 @@
+# §22 · Resource governance as a policy input.
+#
+# What this file is
+# -----------------
+# The brief asks for `RESOURCE-GOVERNANCE.yaml` to stop being a cleanup
+# DECISION document and become a formal policy INPUT. This is the contract for
+# that input: which parts of a governance document ServerOS reads, what it
+# does with each, and — the half that matters more — which parts it does not.
+#
+# What this file is NOT
+# ---------------------
+# It is not a second copy of the governance document, and it does not restate
+# the document's contents. The document is a declaration owned by whoever
+# wrote it; ServerOS reads it. A copy here would be a copy that falls behind,
+# and the copy is what a reader would trust.
+#
+# It is also not an authorisation. §22 says destructive reconcile must not be
+# enabled this round, and that is expressed below as a boundary rather than as
+# a default that a document could override: a governance document may ASK for
+# reconciliation, and the ask is reported, and nothing acts on it.
+schema: serveros/resource-governance-contract.v1
+
+# ---------------------------------------------------------------------------
+# The four input classes. §22's closed list, in the brief's words.
+#
+# Closed on purpose. A governance document is a large, hand-written, mostly
+# historical artifact, and the failure mode of reading one is not that a class
+# is missed — it is that a field gets promoted to policy because it happened
+# to be sitting next to a field that was. Every class below names what it is
+# read FOR; anything not named here is carried through as `unread` with its
+# key, so a reader can see what was ignored rather than assuming it was not
+# there.
+# ---------------------------------------------------------------------------
+inputs:
+  capacity_thresholds:
+    read_for: >
+      numbers that a detector compares a measurement against
+    consumed_by: resource_anomaly.detect
+    in_the_current_document: ABSENT
+    note: >
+      The document at
+      `artifacts/skills/test-management/docker-resource-governance/2026-09-13/`
+      carries sizes (`29.72GB`, `54.2GB`, `≈4.16MB`) and no threshold. Sizes
+      are measurements; a threshold is a POLICY, and one cannot be read out
+      of the other. Capacity thresholds therefore come from
+      `runtime/attribution-contract.yaml#thresholds`, which already owns
+      them, and this class is reported ABSENT rather than filled with the
+      sizes that were lying around.
+  protection_rules:
+    read_for: >
+      resources an owner has declared must not be reclaimed, and the
+      mechanism by which that protection holds
+    consumed_by: runtime/protection.py (resolve), resource_anomaly (PROTECTED_RESOURCE_AT_RISK)
+    in_the_current_document: PRESENT
+    vocabulary:
+      deny: "never. The strongest form, and the only one that maps to `protected`"
+      blocked: "not now, for a named reason"
+      blocked_until_retention_window: "not until a stated time"
+      blocked_no_formal_mechanism: "not now, AND the mechanism to do it does not exist"
+      defer: "unknown owner or unproven safety; the answer is a question"
+    note: >
+      `protection.mechanism` is read as well as the level, because a
+      protection whose mechanism is a container reference is a protection
+      that lapses when the container is removed — which is a real finding and
+      the document states it correctly for the Gold rollback anchor.
+  retention_metadata:
+    read_for: >
+      when a resource becomes eligible for a decision, and what has to be
+      re-checked before the decision is made
+    consumed_by: reported. Nothing schedules anything off it this round
+    in_the_current_document: PRESENT
+    fields: [stopped_at, earliest_removal_eligibility, removal_preconditions]
+    note: >
+      A retention window is the reason `stopped > N days` cannot be the
+      single variable behind CLEANUP_CANDIDATE (§16). The document already
+      states eligibility as a timestamp plus a list of preconditions, which
+      is the shape this round needs and the shape a single age never has.
+  classification_rules:
+    read_for: >
+      the vocabulary a document uses to say what a resource IS, so that two
+      documents can be compared without a translation table
+    consumed_by: reported. The §16 ladder is `runtime_hygiene.CLASSES`
+    in_the_current_document: PRESENT
+    vocabulary:
+      - protected
+      - always_on
+      - always_on_external
+      - build-reuse-asset
+      - external-owner
+      - stopped
+      - stopped-observation
+      - restore-dependency
+      - unreferenced-artifact
+      - unused
+      - unused-orphan
+      - quarantined
+      - deferred-workstream
+      - unclassified
+      # `stale-runs` carries this one, and it is a LIFECYCLE value there
+      # rather than a `cleanup_policy` value — the same word in both
+      # vocabularies, meaning "not now" in one and "this group is in a state
+      # it cannot leave on its own" in the other. A test compares this list to
+      # the document's, which is how it was found.
+      - blocked
+    note: >
+      A DIFFERENT vocabulary from §16's nine, and the difference is not a
+      defect in either: §16's classes are about what may be done now, these
+      are about what a resource is for. They are carried through here as
+      their own list, because mapping one onto the other would be a
+      translation this round has no evidence to justify — several entries
+      here (`always_on_external`, `build-reuse-asset`) have no §16 class that
+      means the same thing.
+
+# ---------------------------------------------------------------------------
+# The boundary. §22: destructive reconcile must not be enabled this round.
+#
+# Written as a decision rather than as a flag with a default, because a
+# default is a thing a document can argue with. A governance document may
+# request reconciliation; the request is REPORTED under
+# `requested_but_not_enabled` and there is no code path from it to an action.
+# ---------------------------------------------------------------------------
+destructive_reconcile:
+  enabled: false
+  why: >
+    §22 and §37 both forbid it this round, and §24 lists the verbs that must
+    not exist anywhere in the tree. The reason it is off is not caution about
+    this particular document: the governance document is a DECLARATION, the
+    host is the fact, and this round has just finished building the
+    observation layer that could tell the two apart. Enabling a destructive
+    reconcile before the observation has been accepted once, in a report a
+    person read, would be acting on evidence nobody has looked at yet.
+  what_would_have_to_be_true_first:
+    - "§30's live acceptance has been run and read, not merely collected"
+    - "§32's hygiene report has been produced and every CLEANUP_CANDIDATE in it has a stated basis"
+    - "§31's disk verdict has been produced, and it is not `NO ACTION` by accident"
+    - "a human has approved a named list, not a rule"
+  proposals_are_not_instructions: >
+    Every `cleanup_policy` value in a governance document is read as a
+    STATEMENT about a resource. `deny` means an owner said no. Nothing in it
+    says yes to anything, and no value of it causes this system to act.
+
+# ---------------------------------------------------------------------------
+# The two facts §22 asks to be ensured and kept.
+#
+# Verified against the document that exists, 2026-09-14, and recorded here so
+# that the next reader does not have to re-derive them. These are the
+# document's own state, not ServerOS's opinion of it.
+# ---------------------------------------------------------------------------
+current_document:
+  # One line, quoted, NOT a folded scalar: `>-` turns the newline into a
+  # space, and a path with a space in the middle is a path that resolves to
+  # nothing while looking correct in every review.
+  location: "/opt/applications/data/home-hwz/artifacts/skills/test-management/docker-resource-governance/2026-09-13/RESOURCE-GOVERNANCE.yaml"
+  owned_by: test-management skill — a skill artifact, not a ServerOS input file
+  schema: docker-resource-governance/v2
+  revision: 2
+  not_found_under: [HOME, DATA_ROOT, WORKSPACE_ROOT, the ServerOS repository]
+  stale_runs:
+    capability_gap: resolved
+    reconciliation_required: true
+    note: >
+      §22 asks for `capability_gap = resolved` "if that fact already exists"
+      and for `reconciliation_required = true` to be preserved for Runs not
+      yet handled by hand. Both were already true when this round read the
+      document, and this round changed neither: it did not write to the
+      document at all. The Runs it names are the ones §23 forbids touching.
+  blocked_on_a_person:
+    - "the eight non-terminal Runs, of which LIT-0103 and LIT-0104 are under standing policy"

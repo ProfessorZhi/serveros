@@ -839,6 +839,31 @@ class Daemon:
             "anomaly.list": self._r_anomaly_list,
             "anomaly.explain": self._r_anomaly_explain,
             "container.attribution": self._r_container_attribution,
+            # §14/§15/§16/§16A/§17. Read-only, argument-free, and each one a
+            # forward to `view.py`. Their names are separate namespaces rather
+            # than more `resource.*`: `resource.hygiene` classifies CONTAINERS
+            # (§7's subject) and `runtime.hygiene` classifies the REGISTRATIONS,
+            # and one word for both questions is how a reader ends up holding
+            # the answer to the other one.
+            "ports.ownership": self._r_ports_ownership,
+            "desired.actual": self._r_desired_actual,
+            "runtime.hygiene": self._r_runtime_hygiene,
+            "fs.hygiene": self._r_fs_hygiene,
+            "protection.resolve": self._r_protection_resolve,
+            # §6/§7/§13/§19. The two reads §19's suggested surface names that
+            # had no tool at all. Both are forwards to `view.py` over
+            # `inventory.py` and `infrastructure.py` — the producers §6 and §13
+            # already have — so this adds a way to ASK for facts that existed
+            # and adds no new measurement.
+            "resource.docker": self._r_docker_observation,
+            "tunnel.list": self._r_tunnel_observation,
+            # §18/§19. The fifteen resource anomaly codes. A forward to
+            # `view.resource_anomaly`, which gathers from the four producers
+            # that already own these facts; the daemon contributes the one
+            # thing only it has — its own last tick's observations, so the
+            # declaration comparison is the one it is acting on rather than a
+            # second probe taken while an answer is being assembled.
+            "resource.anomaly.list": self._r_resource_anomaly,
             "node.status": self._r_node_status,
             # §5/§6. The trusted half of Agent Control. These are on the
             # NODE runtime plane, not on the control-agent MCP surface: an
@@ -891,6 +916,11 @@ class Daemon:
                 "runtime.groups", "runtime.group", "runtime.tree",
                 "runtime.budget", "process.top", "process.trace",
                 "anomaly.list", "anomaly.explain", "container.attribution",
+                # §14/§15/§16/§16A/§17.
+                "ports.ownership", "desired.actual", "runtime.hygiene",
+                "fs.hygiene", "protection.resolve",
+                # §6/§7/§13/§18.
+                "resource.docker", "tunnel.list", "resource.anomaly.list",
                 "node.status",
                 # §5/§6. Trusted actor contexts and approvals. `agent.approval.record`
                 # is deliberately NOT in the MCP surface — see `mcp/agent_mcp.py`.
@@ -1490,6 +1520,104 @@ class Daemon:
         return view_mod.container_attribution(registry=self.registry,
                                               answered_by=ANSWERED_BY)
 
+    # -- §14/§15/§16/§16A/§17. Five surfaces, five forwards. ------------------
+    #
+    # Each one takes NO caller-supplied evidence. The registry is this daemon's
+    # own (`self.registry`, the document it refused to start without), the
+    # container rows for §17 are read from the same inventory the tick uses, and
+    # nothing a caller sends can add an identity, a protection claim or a
+    # measurement. Over IPC a caller could otherwise say "container X is
+    # protected" or "port 5432 is mine", and the daemon would be relaying a
+    # claim as an observation — which is the one thing §14 and §17 forbid.
+    #
+    # `_required(params, ...)` is deliberately absent too: a method with no
+    # required argument cannot be called with one that changes the answer.
+
+    def _r_ports_ownership(self, params) -> dict:
+        return view_mod.port_ownership(registry_doc=self.registry,
+                                       answered_by=ANSWERED_BY)
+
+    def _r_desired_actual(self, params) -> dict:
+        return view_mod.desired_actual(registry_doc=self.registry,
+                                       probes_host=self.host,
+                                       answered_by=ANSWERED_BY)
+
+    def _r_runtime_hygiene(self, params) -> dict:
+        return view_mod.runtime_hygiene(registry_doc=self.registry,
+                                        answered_by=ANSWERED_BY)
+
+    def _r_fs_hygiene(self, params) -> dict:
+        return view_mod.fs_hygiene(answered_by=ANSWERED_BY)
+
+    def _r_protection_resolve(self, params) -> dict:
+        """§17. Protection over every container this node can see.
+
+        The rows come from the inventory rather than from the request: a
+        caller who could supply the container set could supply one that is
+        trivially unprotected, and §17's whole finding is about protection
+        lapsing when an identity is spelled differently than expected.
+        """
+        listing = self.inventory.docker_list()
+        return view_mod.protection(containers=listing.get("containers") or [],
+                                   registry_doc=self.registry,
+                                   answered_by=ANSWERED_BY)
+
+    def _r_docker_observation(self, params) -> dict:
+        """§6/§7 — the Docker inventory, over the daemon's own reader.
+
+        `space` stays opt-in on this surface too, for the same reason it is
+        opt-in in `view.docker_observation`: one `docker system df` measured at
+        ~22s against a daemon whose tick has a deadline. A caller that passes
+        `space: true` has asked to wait; a caller that does not is not made to.
+        """
+        return view_mod.docker_observation(
+            inventory=self.inventory, space=bool(params.get("space")),
+            answered_by=ANSWERED_BY)
+
+    def _r_resource_anomaly(self, params) -> dict:
+        """§18/§19. The resource anomaly catalogue, over this daemon's own tick.
+
+        `measured` is the last completed tick's observations, passed rather
+        than re-probed. Two reasons and both are correctness: the daemon is
+        already acting on that comparison, and a second probe taken here could
+        disagree with it while both surfaces describe themselves as current.
+        When no tick has completed the argument is left out and the layer below
+        probes — which is the honest answer for a daemon that has not looked
+        yet, not an empty comparison. That probe goes through `self.host`, the
+        same observer every other path on this daemon uses, rather than through
+        a fresh `LiveHost` taken while the answer is being assembled.
+
+        The tick's comparison is aged rather than assumed current: the layer
+        stamps each signal with the time of the measurement it came from, and
+        a tick older than the declared freshness window reports STALE. That is
+        the case this handler exists to make reachable — a daemon whose last
+        tick was four minutes ago answering "the node is fine" and "the node
+        was fine four minutes ago" as the same JSON.
+        `space` stays opt-in here for the same reason it is opt-in everywhere
+        else: it is one `docker system df`, measured at ~22s, and the two codes
+        that need it report as not-evaluated with that cost stated rather than
+        as two zeros.
+        """
+        measured = None
+        if getattr(self, "last_tick", None):
+            measured = self.last_tick.get("observations")
+        return view_mod.resource_anomaly(
+            inventory=self.inventory, registry_doc=self.registry,
+            measured=measured, probes_host=self.host,
+            space=bool(params.get("space")),
+            answered_by=ANSWERED_BY)
+
+    def _r_tunnel_observation(self, params) -> dict:
+        """§13. The tunnels this node can see, and the ones it cannot.
+
+        No parameters, and the missing half is the answer: `blind_spots` is
+        carried into the payload unchanged so a caller reading
+        `declared_count: 0` also reads why that number is not a measurement of
+        the world.
+        """
+        return view_mod.tunnel_observation(registry_doc=self.registry,
+                                           answered_by=ANSWERED_BY)
+
     def _r_observation_get(self, params) -> dict:
         if self.last_tick is None:
             return {"tick": None,
@@ -1790,10 +1918,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args(argv)
 
-    registry_path = Path(args.registry) if args.registry else Path(
-        os.environ.get("SERVEROS_STATE_DIR")
-        or "/opt/applications/data/home-hwz/state/serveros"
-    ) / "runtime/registry/resources.yaml"
+    registry_path = Path(args.registry) if args.registry else registry_mod.default_path()
     if not registry_path.exists():
         sys.stderr.write(f"serverosd: no registry at {registry_path}\n")
         return 2

@@ -1,0 +1,479 @@
+# Everywhere this codebase can change the world, declared once, with a reason.
+#
+# §18 says one fact has one producer. §26 says no code path may destroy a
+# resource this round. Both are statements about a SET, and a set that is only
+# ever described in prose is a set nobody can check — which is the pathology
+# this project keeps finding: the declaration layer runs ahead of the data
+# layer and no gate notices.
+#
+# So this file is the set, and `skills/serveros/scripts/mutation_guard.py` reads
+# the code and checks it against this file IN BOTH DIRECTIONS:
+#
+#   a hit with no entry      UNDECLARED_ACTUATOR — new reachability nobody
+#                            reviewed. This is the direction everyone writes.
+#   an entry with no hit     STALE_ACTUATOR — a permission that outlived the
+#                            code it was granted for. This is the direction
+#                            everybody forgets, and it is the reason an
+#                            exemption written once can silently keep covering
+#                            a file that has since grown a second call site.
+#
+# What is in scope
+# ----------------
+# The shipped surface. `tests/` is scanned and reported but is not held to this
+# table: §26 names fixture teardown as its exception, and a test unlinking a
+# file under `tmp_path` is teardown by construction. The one rule that does
+# apply to tests is that no test may invoke a mutating `docker` verb, and that
+# is asserted separately — a test that runs `docker rm` is not tearing down a
+# fixture, it is removing something that outlives the test process.
+#
+# What a `kind` means
+# -------------------
+#   host_reader          runs one of §18's six read commands (docker, df, free,
+#                        ss, du, find). A read, and still a fact worth naming:
+#                        it is what would make the MCP layer a second observer.
+#   exec                 runs a command that is neither a §26 mutation nor a
+#                        host read (git, pgrep, journalctl, systemctl show).
+#   command_handoff      hands a command to something that is not `subprocess`.
+#                        `runtime/daemon.py` builds a docker command and passes
+#                        it to a runner; a scan of `subprocess` call sites alone
+#                        would report that this product has no actuator at all.
+#   unresolved_argv      runs a command this scanner cannot read. Not a pass and
+#                        not a failure: a GAP in the checker's knowledge, and
+#                        the entry's `why` is where the gap is closed by hand.
+#   fs_mutation          deletes, moves, renames or replaces a path.
+#   process_termination  signals a process.
+#   mutation             runs one of §26's named mutating commands.
+#
+# The one rule with no exemption
+# ------------------------------
+# No entry here may cover a host_reader in `mcp/`. §18's rule is that the MCP
+# layer transcribes what the daemon observed and observes nothing itself, and an
+# exemption table that could grant an exception to the rule would mean the rule
+# was a default. `validate()` enforces that, and it is checked even though the
+# current hit list has no MCP-layer host read to declare — a rule that is only
+# enforced when it is already satisfied is not being enforced.
+schema: serveros/actuator.v1
+
+# What this checker cannot see from here, stated where a reader will find it
+# rather than left for the reader to discover.
+coverage_limits:
+  - >-
+    An MCP-layer command whose executable comes from configuration is not
+    statically checkable. `mcp/codex_app_server_provider.py` resolves its binary
+    through `SERVEROS_CODEX_BIN` / PATH and then runs a FIXED argv
+    (`app-server --listen stdio://`), so what varies is which binary answers and
+    not what it is asked to do. It is declared below as `unresolved_argv`
+    because the scanner reads the argv and not the environment, and this note is
+    the difference between a declared gap and a silent one.
+  - >-
+    A command assembled from a parameter rather than a literal is reported as
+    `unresolved_argv` at the site and named in the entry that covers it. Four
+    exec chokepoints are declared that way. A fifth appearing anywhere is an
+    UNDECLARED_ACTUATOR, because the chokepoint is the call site and not the
+    file it lives in.
+  - >-
+    `.replace()` and `.kill()` are resolved by the argument list, not by the
+    receiver's name: `Path.replace(target)` takes one positional argument and no
+    keywords, `str.replace(old, new)` takes two or three, `datetime.replace(...)`
+    is keyword-only, and `Popen.kill()` takes none. A call that matches neither
+    signature is not reported, and a new name introduced with a different
+    arity would be the way that stops being true.
+
+# The names §18 forbids the MCP layer to run directly. Kept here as well as in
+# the checker so that the rule can be read without reading Python.
+mcp_layer_forbidden_commands: [docker, df, free, ss, du, find]
+
+# How each scope is checked. The two are genuinely different questions and
+# writing them here is what keeps the difference a decision rather than an
+# accident of how the scanner happens to group its output.
+scopes:
+  - scope: product
+    policy: >-
+      Every live call site is declared by name in `actuators` below. A product
+      call site is a permission, so it is granted one at a time and a new one is
+      an UNDECLARED_ACTUATOR until somebody writes down why it is allowed.
+  - scope: tests
+    policy: >-
+      Inventoried, not site-declared. A hundred fixture teardowns declared by
+      name would be a table nobody reads, and a table nobody reads is the same
+      failure as no table — so the check is inverted: the test surface is
+      scanned in full, every hit is recorded, and the kinds below are forbidden
+      outright rather than exempted by an entry. §26 permits a test to remove
+      what the test itself created; it does not permit a test to run a command
+      that changes state it did not create, and no entry can make it one.
+    forbidden_kinds: [mutation]
+
+actuators:
+
+  # ---------------------------------------------------------------------
+  # Read-only git. Eight modules shell out to git for a revision, a tree
+  # listing or a blob. Every one is a read; none writes to a repository, and
+  # `GIT_OPTIONAL_LOCKS=0` is set where it matters so that not even the index
+  # is refreshed. Declared as one capability rather than eight because the
+  # question a reviewer has is the same question for all eight.
+  # ---------------------------------------------------------------------
+  - id: read-only-git-queries
+    kind: exec
+    verb: git
+    why: >-
+      Reads a revision, a tree listing or a blob. No subcommand that writes is
+      reachable from these call sites, and the two that could refresh the index
+      set GIT_OPTIONAL_LOCKS=0 so that a query is not a write.
+    sites:
+      - {file: abilities/packs.py, symbols: [pin_still_describes]}
+      - {file: context/resolver.py, symbols: [_git]}
+      - {file: runtime/ability_projection.py, symbols: [_git]}
+      - {file: runtime/cli.py, symbols: [_ledger_revision]}
+      - {file: scripts/build.py, symbols: [_git]}
+      - {file: scripts/runtime_truth.py, symbols: [_git, _git_object_at, _ability_payload_root, pin_superseded, canonical_provenance]}
+      - {file: skills/serveros/scripts/architecture_check.py, symbols: [_git]}
+      - {file: skills/serveros/scripts/map_projection.py, symbols: [_git]}
+
+  # ---------------------------------------------------------------------
+  # The exec chokepoints. Four of them, and the four are deliberate.
+  # ---------------------------------------------------------------------
+  - id: host-measurement-chokepoint
+    kind: unresolved_argv
+    verb: subprocess.run
+    why: >-
+      `runtime/probes.py` is the observation chokepoint: every host measurement
+      the daemon takes goes through `LiveHost`, whose docstring states the
+      read-only claim and whose injectability is what lets a test observe a
+      machine it is not on. The argv is a parameter, so the scanner reads the
+      chokepoint and not the command; the commands are enumerated by the
+      `host-reader-commands` entry below, which covers the call sites that
+      supply them.
+    sites:
+      - {file: runtime/probes.py, symbols: [LiveHost._run]}
+
+  - id: inventory-measurement-chokepoint
+    kind: unresolved_argv
+    verb: subprocess.run
+    why: >-
+      `runtime/inventory.py`'s module-level `_run`. The same shape as
+      `probes.LiveHost._run` and a second chokepoint on purpose: the two answer
+      different questions — probes answer "is this registered runtime up",
+      inventory answers "what is on this machine" — and merging them would make
+      one module the producer of two unrelated facts. §18's rule is one
+      producer per fact, not one producer per product.
+    sites:
+      - {file: runtime/inventory.py, symbols: [_run]}
+
+  - id: attribution-measurement-chokepoint
+    kind: unresolved_argv
+    verb: subprocess.run
+    why: >-
+      `runtime/attribution.py`'s `LiveHost`, which its own docstring records as
+      mirroring `probes.LiveHost` deliberately, with the same injectability and
+      the same read-only discipline. Named here rather than left implicit so
+      that the number of exec chokepoints in this product is a fact a reader
+      can count instead of a fact they have to go looking for.
+    sites:
+      - {file: runtime/attribution.py, symbols: [LiveHost.run]}
+
+  - id: daemon-actuator-chokepoint
+    kind: unresolved_argv
+    verb: subprocess.run
+    why: >-
+      The one chokepoint that is not a measurement. `SubprocessRunner.run` is
+      where every command the daemon ACTS with leaves the process. It is
+      reached from `Actuator.restart` and nowhere else, and that path is
+      declaration-gated at every step: `Actuator.perform` reads its operation
+      vocabulary from `managed-runtime-contract.yaml` and refuses an
+      unrecognised one rather than defaulting to the nearest recognised one;
+      `STOP` and `RECONNECT` are declared members of that vocabulary with NO
+      actuator, so the daemon cannot stop anything at all — which is why §26's
+      `docker stop` / `kill` / `rm` / `prune` have no reachable spelling
+      anywhere in this product; the command is `systemctl --user restart
+      <declared unit>` or `docker restart <named container>`; and nothing is
+      performed unless `--enable-reconcile` was passed, the default being
+      observe-only. `docker restart` is not in §26's vocabulary and is not a
+      mutation in this contract's sense: it destroys nothing, the container is
+      the same container, and it keeps its writable layer. Recording it as a
+      mutation because it is "the docker one" is how a vocabulary stops being
+      read.
+    sites:
+      - {file: runtime/daemon.py, symbols: [SubprocessRunner.run]}
+      # The caller, and the reason this entry is not one line: the command
+      # `SubprocessRunner.run` is handed is bound in two branches of one `if`,
+      # and the scanner names both rather than choosing. "Two possible
+      # commands" is a fact a reviewer can act on; "unknown" is not.
+      - {file: runtime/daemon.py, symbols: [Actuator.restart], verb: "<systemctl|docker>"}
+
+  # ---------------------------------------------------------------------
+  # The commands those chokepoints are handed. All reads.
+  # ---------------------------------------------------------------------
+  - id: host-reader-commands
+    kind: command_handoff
+    verb: docker
+    why: >-
+      `docker inspect`, `docker ps`, `docker stats`, `docker images`,
+      `docker volume ls`, `docker network ls`, `docker system df` and
+      `docker info`. Every one is a read; there is no `docker rm`, `stop`,
+      `kill` or `prune` anywhere in the product's own code, and that is checked
+      by the scanner rather than promised here.
+    sites:
+      - {file: runtime/probes.py, symbols: [LiveHost._docker_json, LiveHost.docker_inspect, LiveHost.docker_ps]}
+      - {file: runtime/inventory.py, symbols: [Inventory._docker_root_dir, Inventory.docker_summary, Inventory.docker_list, Inventory.docker_volumes, Inventory.docker_images, Inventory.docker_stats, Inventory.docker_networks, Inventory.docker_sizes, Inventory.docker_space, Inventory.container_logs]}
+
+  - id: disk-measurement-commands
+    kind: command_handoff
+    verb: df
+    why: >-
+      `df -B1 -x tmpfs -x devtmpfs -x squashfs`. Byte-exact, with the virtual
+      filesystems excluded, so the number the report prints is a measurement of
+      real storage rather than of memory.
+    sites:
+      - {file: runtime/inventory.py, symbols: [Inventory.disk_status]}
+
+  - id: user-unit-enumeration
+    kind: command_handoff
+    verb: systemctl
+    why: >-
+      `systemctl --user list-units` and `--user show`. Reads. The mutating
+      verbs — stop, restart, kill — are not reachable from this file, which is
+      what makes the daemon's actuator the only place a service is acted on.
+    sites:
+      - {file: runtime/inventory.py, symbols: [Inventory.user_services_list]}
+
+  - id: probe-commands
+    kind: exec
+    verb: journalctl
+    why: >-
+      `journalctl --user --no-pager -o cat --since …` and
+      `systemctl --user show <unit>` and `pgrep -f <pattern>`. Reads, and each
+      is reached only from a probe declared in the registry. The `pgrep -f`
+      call site is the one whose zero-match reading is ambiguous on a host with
+      `hidepid`, which `runtime/desired.py` records; the command itself is a
+      read either way.
+    sites:
+      # Three probes, three binaries. The verbs are written per site rather
+      # than the entry being split three ways: the permission being asked for
+      # is one permission — "this file may run read-only probes" — and a
+      # reviewer should not have to reassemble it to answer that.
+      - {file: runtime/probes.py, symbols: [LiveHost.journal]}
+      - {file: runtime/probes.py, symbols: [LiveHost.systemd_user_unit], verb: systemctl}
+      - {file: runtime/probes.py, symbols: [LiveHost.process_pids], verb: pgrep}
+
+  # ---------------------------------------------------------------------
+  # Writes that delete, and the two different reasons a delete is allowed.
+  # ---------------------------------------------------------------------
+  - id: atomic-write-temp-cleanup
+    kind: fs_mutation
+    verb: os.unlink
+    why: >-
+      The failure half of write-temp-then-rename. The unlink removes the
+      temporary file this same function created one statement earlier, on the
+      path where the rename did not happen. It is the only automatic delete in
+      the state root and it cannot reach a file it did not write: the name is
+      a fresh temporary path, not a caller-supplied one.
+    sites:
+      - {file: relations/project.py, symbols: [write]}
+      - {file: runtime/ability_projection.py, symbols: [write_atomic]}
+      - {file: runtime/agent_control_store.py, symbols: [_atomic_write]}
+      - {file: runtime/daemon.py, symbols: [_atomic_write]}
+
+  - id: atomic-write-commit
+    kind: fs_mutation
+    verb: os.replace
+    why: >-
+      The commit half of the same idiom, plus `Path.replace(target)` resolved by
+      signature. `os.replace` is atomic on one filesystem and overwrites the
+      destination, which is the point: a reader never sees a half-written file.
+      The `Path.replace` spellings in `runtime/daemon.py` are the same act —
+      `tmp.replace(destination)` — and are the reason this contract needs the
+      arity rule rather than a name-based one.
+    sites:
+      - {file: relations/project.py, symbols: [write]}
+      - {file: runtime/ability_projection.py, symbols: [write_atomic]}
+      - {file: runtime/agent_control_store.py, symbols: [_atomic_write]}
+      - {file: runtime/daemon.py, symbols: [_atomic_write, Budget._save], verb: ".replace()"}
+      - {file: scripts/release.py, symbols: [_symlink_swap]}
+
+  - id: daemon-owns-its-socket
+    kind: fs_mutation
+    verb: .unlink()
+    why: >-
+      `serverosd` removing its own listening socket before binding it and again
+      when it stops. The path is `Daemon.socket_path`, computed by this process
+      from its own roots; `test_a_daemon_does_not_unlink_a_socket_that_is_not_its_own`
+      is the regression that keeps a second daemon from removing the first's.
+      A stale socket file is the one file whose presence is indistinguishable
+      from a live listener, which is why it is removed rather than left.
+    sites:
+      - {file: runtime/daemon.py, symbols: [Daemon._prepare_socket, Daemon._release_socket]}
+
+  - id: daemon-socket-permissions
+    kind: fs_mutation
+    verb: os.chmod
+    why: >-
+      `os.chmod` on the socket this process just bound, to 0o600. Narrowing
+      permissions on a file this process created in this call. Declared because
+      it is a mutation, not because it is a risk: a gate that reported only the
+      mutations that frighten it would stop being a gate.
+    sites:
+      - {file: runtime/daemon.py, symbols: [Daemon._open_socket]}
+
+  - id: generated-artifact-is-regenerated
+    kind: fs_mutation
+    verb: .unlink()
+    why: >-
+      `scripts/build.py` clearing its own output directory before writing it.
+      The directory is generated-only and the unlink is bounded by an inventory
+      of what the build expected to produce: anything not in the expected set is
+      removed. This is the strongest automatic delete in the repository and the
+      reason it is safe is that the directory is derived from the source by this
+      same script — nothing a person wrote lives there, and `--check` reporting
+      drift is what detects the case where that stops being true.
+    sites:
+      - {file: scripts/build.py, symbols: [build]}
+
+  - id: generated-artifact-prunes-empty-dirs
+    kind: fs_mutation
+    verb: .rmdir()
+    why: >-
+      The second half of the same pass: directories left empty by the removals
+      above are pruned, in reverse depth order. `rmdir` refuses a non-empty
+      directory, so this call cannot remove content even if the loop above made
+      a mistake.
+    sites:
+      - {file: scripts/build.py, symbols: [build]}
+
+  - id: release-staging-and-symlink-swap
+    kind: fs_mutation
+    verb: shutil.rmtree
+    why: >-
+      `scripts/release.py` clearing its staging directory, which it created
+      under the state root in the same run, and swapping a symlink by unlink
+      then replace. Both act on paths `release.py` owns and neither touches a
+      deployed revision: the swap is unlink-then-replace on a temporary symlink
+      whose target was already staged, which is why a failed verify can leave
+      `current` untouched (there is a test for exactly that).
+    sites:
+      - {file: scripts/release.py, symbols: [stage]}
+      - {file: scripts/release.py, symbols: [_symlink_swap]}
+      # `.swap` is the temporary link beside the destination. Removing it is
+      # the recovery half of the same swap, and it acts on a path this function
+      # constructed one line earlier.
+      - {file: scripts/release.py, symbols: [_symlink_swap], verb: ".unlink()"}
+
+  - id: release-staging-rename
+    kind: fs_mutation
+    verb: .rename()
+    why: >-
+      Promoting the staged tree to its revision directory. A directory rename
+      within one filesystem, so the revision either exists complete or does not
+      exist.
+    sites:
+      - {file: scripts/release.py, symbols: [stage]}
+
+  # ---------------------------------------------------------------------
+  # The two services this repository will act on, through systemd, and only
+  # through a person running the release CLI.
+  # ---------------------------------------------------------------------
+  - id: release-promotes-and-rolls-back-units
+    kind: exec
+    verb: systemctl
+    why: >-
+      `cmd_promote` and `cmd_rollback` run `systemctl --user` against the unit
+      the revision deploys. These are the only two places in the shipped surface
+      that stop or start a service, and neither is reachable from the daemon,
+      the MCP layer or any observation path: they are subcommands a person
+      types. `--enable-reconcile` does not reach them and no Run can invoke them.
+    sites:
+      - {file: scripts/release.py, symbols: [cmd_promote, cmd_rollback]}
+
+  # ---------------------------------------------------------------------
+  # The MCP layer. §18's rule lives here.
+  # ---------------------------------------------------------------------
+  - id: mcp-agent-session-ends-its-own-child
+    kind: process_termination
+    verb: os.killpg
+    why: >-
+      `mcp/codex_app_server_provider.py` ending the codex app-server it started
+      itself. `close()` sets `self._proc = None` before signalling, so the
+      handle is cleared and a second call is a no-op; the pid comes from the
+      `Popen` object and never from the process table, so the worst case is
+      signalling a process that has already exited. It sends SIGTERM and only
+      then SIGKILL, and the process group is the one this object created with
+      `start_new_session=True` for the stated reason that killing only the
+      direct child leaves a grandchild holding the pipe. This is the one
+      process termination in the product, it is the MCP layer's own child, and
+      §26's example of the exception it permits: teardown of what you started.
+      Nothing in this round's Resource API can reach it.
+    sites:
+      - {file: mcp/codex_app_server_provider.py, symbols: [AppServerProcess.close]}
+      # `Popen.terminate()` in the same method, resolved by its signature —
+      # no arguments. The same child, the same decision, the SIGTERM half of
+      # the line above it.
+      - {file: mcp/codex_app_server_provider.py, symbols: [AppServerProcess.close], verb: ".terminate()"}
+
+  - id: mcp-agent-session-launch
+    kind: unresolved_argv
+    verb: <argv0>
+    why: >-
+      `subprocess.Popen([binary, "app-server", "--listen", "stdio://"])`. The
+      scanner reads the argv tail and not the binary, because the binary is
+      resolved at run time by `resolve_binary()` from `SERVEROS_CODEX_BIN` or
+      PATH — the deployed path on this machine is a wrapper, and pinning it
+      would break the one machine that has no wrapper. So what is fixed is what
+      the binary is ASKED TO DO, and what varies is which binary answers. The
+      capability this grants is "start an agent session", not "run a command":
+      the argv cannot be steered, and none of §18's six read commands appears in
+      any argv this file constructs. See `coverage_limits`: this is the one
+      reach in the product that a static scan cannot close, and it is recorded
+      as a gap rather than counted as clean.
+    sites:
+      - {file: mcp/codex_app_server_provider.py, symbols: [AppServerProcess.start]}
+
+  - id: mcp-human-control-identity
+    kind: unresolved_argv
+    verb: subprocess.run
+    why: >-
+      The BotMux identity command, run from a `list(...)` of a dataclass
+      default. It is not read from the environment — `from_env` does not touch
+      `actor_command`, and there is no `SERVEROS_BOTMUX_ACTOR_COMMAND` — so a
+      deployed node cannot point it anywhere; only a caller constructing the
+      provider in-process can, and that caller is this repository's own code
+      and its tests. The output is parsed as JSON against a checked schema
+      before any field is read, so an unanswered identity is `BLOCKED` rather
+      than a verification of nobody.
+    sites:
+      - {file: mcp/human_control.py, symbols: [BotMuxHumanControlProvider._run_actor_command]}
+
+  - id: release-verifies-with-the-shipped-interpreter
+    kind: unresolved_argv
+    verb: <argv0>
+    why: >-
+      `subprocess.run([sys.executable, str(entry), "--help"])` in
+      `scripts/release.py`'s `verify_revision`, the check that a staged revision
+      is runnable before anything points at it. The scanner reads neither
+      `sys.executable` nor `str(entry)`, so the argv is reported rather than
+      assumed; what it cannot show is the part that matters, which is that
+      `entry` is `rev_dir / "bin" / "serverosctl"` — the revision's OWN entry
+      point, one component under the directory being verified, evaluated by the
+      interpreter running this script. The probe imports the revision and prints
+      help. It writes nothing: `PYTHONDONTWRITEBYTECODE=1` is passed precisely
+      because this probe imports the revision's modules and would otherwise
+      leave `__pycache__` inside the artifact it is checking, and `fingerprint`
+      runs after it.
+    sites:
+      - {file: scripts/release.py, symbols: [verify_revision]}
+
+  - id: architecture-check-invokes-reused-checkers
+    kind: unresolved_argv
+    verb: <argv0>
+    why: >-
+      `subprocess.run([sys.executable, str(script), *argv])` in
+      `skills/serveros/scripts/architecture_check.py`'s `run_reused`. This is
+      the "invoke, never reimplement" rule made executable: the architecture
+      gate runs the existing checkers — `validate_contract.py`,
+      `runtime_truth.py`, `map_check.py`, this scanner — and reads their JSON
+      rather than growing a second parser that could disagree with them. `script`
+      is a path the caller resolved from the fixed revisions root and `argv` is
+      the flag list for that checker; both are the gate's own arguments, so
+      nothing a resource declares can steer the command. The `*argv` is why the
+      argv is partially read here and fully read at each checker's own entry
+      point, which is where this scanner finds its literals.
+    sites:
+      - {file: skills/serveros/scripts/architecture_check.py, symbols: [run_reused]}

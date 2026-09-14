@@ -60,10 +60,23 @@ def _load(name: str, filename: str):
 registry = _load("serveros_runtime_registry", "registry.py")
 health = _load("serveros_runtime_health", "health.py")
 attribution = _load("serveros_runtime_attribution", "attribution.py")
+# Loaded here rather than lazily inside `tunnel_observation`, because the
+# confidence vocabulary below is a value this module exports and an export
+# cannot be resolved at call time. `graph.py` loads only `attribution.py`, so
+# there is no cycle — and both modules reach each other through the same
+# `sys.modules` cache, so a caller that loaded one gets the other for free.
+graph = _load("serveros_runtime_graph", "graph.py")
 
 FACT = attribution.FACT
 INFERRED = attribution.INFERRED
 UNKNOWN = attribution.UNKNOWN
+
+# §12's confidence axis, taken from the module that declares it rather than
+# spelled a second time here. `AUTHORITATIVE` is NOT the same word as `FACT`:
+# provenance says how a value was obtained, confidence says how far what it
+# obtained binds. A second copy of these three would be a second answer waiting
+# to disagree about a fourth.
+AUTHORITATIVE = graph.AUTHORITATIVE
 
 CRITICALITY_ORDER = ("critical", "important", "normal")
 
@@ -472,6 +485,30 @@ def criticality_report(registry_doc) -> dict:
 # ---------------------------------------------------------------------------
 
 
+def _declared_tunnel_pids(resource) -> list[int]:
+    """The process ids a registration says belong to this tunnel.
+
+    Two places, because a registration may say it either way and both are
+    declarations: a `pids` list on the record, and a `pid` on any of its
+    probes. Nothing else is read — a pid is never guessed from a port or a
+    command line, because that inference is what `tunnel_inventory`'s join
+    exists to avoid making.
+
+    This function is the PRODUCER for a key that `tunnel_inventory` has been
+    consuming since it was written. Until 2026-09-14 `declared_tunnels` did
+    not emit `pids`, so `declared_pids` was the empty set on every host, every
+    observed forwarder was reported as `undeclared`, and the join the note
+    described could never match anything. The empty result was correct for
+    this host by accident: with no tunnel registered, every forwarder IS
+    undeclared. The defect was that the two cases were indistinguishable.
+    """
+    values = list(resource.record.get("pids") or [])
+    for probe in resource.probes:
+        if "pid" in probe:
+            values.append(probe.get("pid"))
+    return sorted({int(v) for v in values if str(v).strip().isdigit()})
+
+
 def declared_tunnels(registry_doc) -> list[dict]:
     """Tunnels in the registry, with the two things a tunnel must name.
 
@@ -479,6 +516,11 @@ def declared_tunnels(registry_doc) -> list[dict]:
     `kind_requirements` in the contract), so by the time anything is returned
     from here it has both endpoints and either a transport probe or a written
     reason there is none.
+
+    §13 needs the ownership fields beside the transport ones. They come from
+    the same resource and are read here rather than in `tunnel_observation`
+    for §18's reason: one fact, one producer. A second reader of the same
+    registration is a second answer waiting to disagree with the first.
     """
     out = []
     for resource in registry_doc.all():
@@ -506,11 +548,21 @@ def declared_tunnels(registry_doc) -> list[dict]:
             "functional_not_applicable_because": (
                 (na.get("functional") or {}).get("because") if na.get("functional") else None
             ),
+            # §13's ownership half.
+            "owner_ref": resource.owner_ref,
+            "owner_type": resource.owner_type,
+            "scope": resource.scope,
+            "lifecycle": resource.lifecycle,
+            "desired_state": resource.desired,
+            "device_ref": record.get("device_ref"),
+            "runtime_ref": record.get("runtime_ref"),
+            "pids": _declared_tunnel_pids(resource),
         })
     return out
 
 
-def tunnel_health(resource, observations: dict | None = None):
+def tunnel_health(resource, observations: dict | None = None, *,
+                  observed_at: str | None = None, why: str | None = None):
     """A tunnel's four axes, with liveness honestly separated from function.
 
     With no observations this returns a Health whose `functional` axis is
@@ -521,12 +573,46 @@ def tunnel_health(resource, observations: dict | None = None):
     puts `DEGRADED when functional: UNKNOWN` ahead of
     `HEALTHY when liveness: RUNNING, functional: OK`, so the trap is closed by
     the same table that closes it for every other resource.
+
+    `observations` maps an axis to EITHER state string or an `Observation`. A
+    string is wrapped in one here, because a caller that has only the state —
+    which is the case for a sweep reading `/proc/net/tcp` — should not have to
+    invent an observer to say so. An `Observation` is passed through
+    untouched: it already carries its own provenance, and replacing it would
+    discard the more specific of the two.
+
+    The wrap used to be missing entirely: strings went straight to `Health`,
+    which takes `Observation` objects, so every measured axis raised
+    `AttributeError: 'str' object has no attribute 'state'` at `.state`. The
+    caller caught it and reported the tunnel UNKNOWN, so the measurement path
+    of this function was dead and reported its own bug as a gap in the
+    contract's rule table. Found 2026-09-14 by
+    `test_a_listener_serving_the_declared_endpoint_is_listening_not_healthy`.
+    The existing tests passed only because they all hand in real
+    `Observation`s, which is why the two callers never met.
+
+    The wrapped evidence is `host-measurement`, which is what a tunnel reading
+    is: a process in `/proc`, or a LISTEN socket in `/proc/net/tcp`. It is not
+    `provider-response` — Docker's API is not answering this question — and
+    `Observation` refuses any state above UNKNOWN without evidence strong
+    enough to carry it, which is the check that keeps a string from becoming a
+    verdict by being passed to the right constructor.
     """
     observations = observations or {}
     axes = {}
     for axis in health.AXES:
         if axis in observations:
-            axes[axis] = observations[axis]
+            value = observations[axis]
+            axes[axis] = value if isinstance(value, health.Observation) else health.Observation(
+                axis=axis,
+                state=value,
+                observed_by={"type": "host-measurement", "id": "tunnel-observation"},
+                observed_at=observed_at,
+                evidence={
+                    "type": "host-measurement",
+                    "why": why or "read from /proc and /proc/net/tcp on this node",
+                },
+            )
             continue
         na = (resource.not_applicable or {}).get(axis)
         if na:
@@ -611,20 +697,23 @@ def observe_forwarders(host=None, *, table=None) -> list[dict]:
     return out
 
 
-def listening_sockets(host=None, *, table=None) -> list[dict]:
-    """Every local TCP LISTEN socket, and whether a visible process holds it.
+def host_sockets(host=None, *, table=None) -> list[dict]:
+    """Every TCP socket row this uid can see, with the visible pids holding it.
 
-    The join is the one `attribution.sockets_of` already makes, run backwards:
-    collect every visible process's socket inodes, then walk /proc/net/tcp and
-    report the LISTEN rows whose inode nobody visible holds.
+    The one walk of `/proc/net/tcp`, `/proc/net/tcp6` and `/proc/<pid>/fd` in
+    this codebase. `listening_sockets` filters it, and §14's port view filters
+    it a different way — the two questions must not drift, and a second walk is
+    how one of them keeps answering about a host that has since changed.
 
-    Split out of `unreadable_listeners` because two questions are asked of this
-    walk and they must not drift: "which listeners are unattributed" (the
-    blind-spot report) and "is anything listening on the port a declaration
-    names" (§58's egress answer). Two copies of a /proc walk is how one of them
-    keeps answering the original question about a host that has since changed —
-    and the second question is the one that decides whether an Agent can reach
-    the network, so a stale answer there is the expensive kind.
+    The join direction is the one `attribution.sockets_of` makes, run
+    backwards: collect every visible process's socket inodes, then read the net
+    tables and report which inode belongs to whom. `/proc/net/tcp` is
+    per-network-namespace and does not say who owns a row, so this is the only
+    direction that answers anything.
+
+    Rows are returned UNFILTERED by state. Filtering at the producer is how a
+    caller that wants ESTABLISHED ends up with a second producer and a second
+    answer — the defect this function exists to prevent, one level up.
     """
     host = readable_host(host)
     if table is None:
@@ -647,12 +736,29 @@ def listening_sockets(host=None, *, table=None) -> list[dict]:
             net.update(attribution.parse_net_tcp(raw))
 
     out = [
-        {"local": row["local"], "inode": inode,
+        {"local": row["local"], "remote": row["remote"], "state": row["state"],
+         "inode": inode,
          "holders": sorted(holders.get(inode, ())),
          "attributed": inode in visible_inodes}
-        for inode, row in net.items() if row["state"] == "LISTEN"
+        for inode, row in net.items()
     ]
-    return sorted(out, key=lambda row: row["local"])
+    return sorted(out, key=lambda row: (row["state"], row["local"], row["inode"]))
+
+
+def listening_sockets(host=None, *, table=None) -> list[dict]:
+    """Every local TCP LISTEN socket, and whether a visible process holds it.
+
+    Split out of `unreadable_listeners` because two questions are asked of this
+    walk and they must not drift: "which listeners are unattributed" (the
+    blind-spot report) and "is anything listening on the port a declaration
+    names" (§58's egress answer). Two copies of a /proc walk is how one of them
+    keeps answering the original question about a host that has since changed —
+    and the second question is the one that decides whether an Agent can reach
+    the network, so a stale answer there is the expensive kind.
+    """
+    return [{"local": row["local"], "inode": row["inode"],
+             "holders": row["holders"], "attributed": row["attributed"]}
+            for row in host_sockets(host, table=table) if row["state"] == "LISTEN"]
 
 
 def unreadable_listeners(host=None, *, table=None) -> dict:
@@ -750,6 +856,16 @@ def tunnel_inventory(host=None, *, registry_doc) -> dict:
         "observed_count": len(observed),
         "undeclared_forwarders": undeclared,
         "blind_spots": tunnel_blind_spots(host, table=table),
+        # Whether the join HAD a key at all. `undeclared_count ==
+        # observed_count` means one of two very different things — nothing is
+        # registered, or nothing registered names a pid — and a reader who
+        # cannot tell them apart cannot tell a clean host from a broken join.
+        "join_coverage": {
+            "declared_pids": sorted(declared_pids),
+            "join_had_a_key": bool(declared_pids),
+            "observed_forwarders": len(observed),
+            "matched": len(observed) - len(undeclared),
+        },
         "note": (
             "A declared tunnel and an observed forwarder are joined by PID, and "
             "the join is present only when a registration names its PIDs. "
@@ -1214,3 +1330,595 @@ def egress_answer(registry_doc, requirement: dict, *, host=None, table=None) -> 
             "above are the names of the things that were missing"
         ),
     }
+
+
+# ---------------------------------------------------------------------------
+# §13 · Tunnel observation, identity and ownership
+#
+# Everything below OBSERVES. Nothing here restarts, re-establishes, replaces or
+# removes a tunnel — §13 forbids repairing history, and the 2026-09-12 incident
+# in this module's own docstring is what happens when a supervisor treats a
+# channel it cannot measure as a channel it should re-open.
+#
+# The vocabulary is not invented here. `scope` is the registry's `user|system`;
+# §13's four words (session / task / persistent / unknown) are the contract's
+# existing `lifecycle_classes` — `session-scoped`, `task-scoped`, `persistent`
+# and a lifetime that is not declared — and they are reported under the name
+# the contract already gave them. A parallel enum spelled `session|task|
+# persistent` would be a second vocabulary for one concept, and the two would
+# disagree the first time somebody changed one of them.
+# ---------------------------------------------------------------------------
+
+import fnmatch  # noqa: E402 - kept beside the one section that uses it
+
+# The normalized field set §13 asks for, in the brief's order. Present on every
+# row, including the ones this host cannot fill: an absent field and a null
+# field read differently, and only one of them is a statement.
+TUNNEL_FIELDS = (
+    "tunnel_ref", "runtime_ref", "device_ref", "provider", "owner_ref",
+    "owner_type", "scope", "lifecycle_class", "direction", "local_endpoint",
+    "remote_endpoint", "desired_state", "actual_state", "health",
+    "last_healthy_at", "restart_policy", "criticality", "observed_at",
+    "provenance", "freshness",
+    # §13's invariant needs somewhere to be visible, so the confidence in the
+    # ownership answer and any refusal to honour it are fields rather than
+    # prose in a report.
+    "ownership_confidence", "ownership",
+)
+
+# How far back an observation of a tunnel is still talking about now. Declared
+# rather than assumed, and deliberately the same number `graph.py` uses for a
+# provider API read (`docker-inspect`) rather than the one it uses for a
+# registry read: this window is about the OBSERVATION — whether the process
+# table and the socket table we just read are still describing the present —
+# and not about how often the registration document changes. Those are two
+# different bars, and taking the registry's day-long one here would let an
+# observation from this morning be reported as current.
+TUNNEL_FRESH_WITHIN_SECONDS = graph.FRESH_WITHIN_SECONDS["docker-inspect"]
+
+
+def ownership_rule() -> dict:
+    """The contract's `ownership:` block, or `{}`.
+
+    Read through the existing contract loader rather than by opening the YAML
+    a second time. Two readers of one file is how the two come to disagree
+    about it, and this is the block that decides whether a resource may be
+    owned by the session that created it.
+    """
+    try:
+        return registry.contract().get("ownership") or {}
+    except Exception:  # noqa: BLE001 - an unreadable contract is "no rule"
+        return {}
+
+
+def owner_is_session(owner_ref, *, rule: dict | None = None) -> bool:
+    """Whether an owner ref denotes a session lifetime.
+
+    Matched against the contract's own `session_owner_ids` globs, so adding a
+    third session-shaped owner id is a declaration rather than a code change.
+    An unreadable rule matches nothing, which is the answer that keeps the
+    caller from treating "we could not check" as "this is a session".
+    """
+    if not owner_ref:
+        return False
+    patterns = (rule if rule is not None else ownership_rule()).get(
+        "session_owner_ids") or []
+    return any(fnmatch.fnmatchcase(str(owner_ref), str(p)) for p in patterns)
+
+
+def ownership_verdict(owner_ref, lifecycle_class, *, rule: dict | None = None) -> dict:
+    """Whether a registration may be owned by the ref it names.
+
+    §13's invariant, as a check rather than a paragraph: a resource that must
+    outlive the Agent session that caused it needs a durable owner, and an
+    Agent session may cause creation without being the owner of record.
+
+    Three outcomes, and the third is why this is not a boolean:
+
+      CONSISTENT   a durable owner, or a session owner of a session-lifetime
+                   resource.
+      VIOLATION    a session owner of a `persistent` or `task-scoped`
+                   resource. The contract's disposition is REFUSE, and the
+                   because is the contract's own prose about the incident.
+      UNKNOWN      the contract could not be read, or the lifecycle was not
+                   declared. NOT reported as consistent: the whole point is
+                   that this shape fails silently, so an unchecked one is a
+                   finding.
+    """
+    rule = rule if rule is not None else ownership_rule()
+    if not rule:
+        return {
+            "state": UNKNOWN,
+            "disposition": None,
+            "because": (
+                "the ownership rule could not be read, so this registration "
+                "was not checked against it. That is not the same as it "
+                "passing the check"
+            ),
+        }
+    if not lifecycle_class:
+        return {
+            "state": UNKNOWN,
+            "disposition": None,
+            "because": (
+                "no lifecycle class is declared, so whether a session may own "
+                "this cannot be decided either way"
+            ),
+        }
+    if not owner_is_session(owner_ref, rule=rule):
+        return {
+            "state": "CONSISTENT",
+            "disposition": None,
+            "because": (
+                f"{owner_ref or 'no owner'} is not a session-shaped id, so the "
+                f"session-ownership rule does not constrain it"
+            ),
+        }
+    permitted = (rule.get("permitted") or {}).get("session_owner_lifecycle") or []
+    if lifecycle_class in permitted:
+        return {
+            "state": "CONSISTENT",
+            "disposition": None,
+            "because": (
+                f"{owner_ref} is a session and {lifecycle_class} is a session "
+                f"lifetime, which is the pairing the contract permits"
+            ),
+        }
+    forbidden = (rule.get("permitted") or {}).get("forbidden") or {}
+    return {
+        "state": "VIOLATION",
+        "disposition": (rule.get("on_violation") or {}).get("disposition"),
+        "because": forbidden.get(lifecycle_class) or (
+            f"{owner_ref} denotes a session lifetime and {lifecycle_class} "
+            f"outlives it"
+        ),
+        "alternative": (rule.get("on_violation") or {}).get("alternative"),
+    }
+
+
+def session_end_consequence(row: dict, *, creating_session_present) -> dict:
+    """What an Agent session ending means for a tunnel. Usually: nothing.
+
+    §13's most important invariant, written as a function so that it is one
+    thing rather than a habit:
+
+        a task-scoped tunnel is NOT an agent-session-owned tunnel, and the
+        session that caused its creation ending must not make it an orphan.
+
+    The failure this refuses is concrete. A tunnel a task depended on was
+    registered with session lifetime; an unrelated Agent session ended; the
+    task lost its transport mid-flight while the far side was healthy
+    throughout. Every observation up to that moment said the tunnel was fine,
+    because it was — the resource was healthy and its OWNERSHIP was wrong.
+
+    `creating_session_present` is deliberately accepted and deliberately not
+    enough on its own to change the answer. It is reported so a reader can see
+    what was known, and it can only ever move the result towards "a human
+    should look", never towards `orphaned`.
+
+    Returns `{"orphaned", "state", "because"}`. `orphaned` is false for every
+    durable lifecycle class, and it is false — not `None` — because a false
+    here is a decision this function is entitled to make from the declared
+    lifecycle alone.
+    """
+    lifecycle = row.get("lifecycle_class")
+    owner_side = (row.get("ownership") or {}).get("state")
+    if lifecycle in ("persistent", "task-scoped"):
+        return {
+            "orphaned": False,
+            "state": "UNAFFECTED",
+            "because": (
+                f"this tunnel is {lifecycle}: it is owned by the work item "
+                f"that depends on it, not by the session that created it, so "
+                f"a session ending does not reach it. Two sessions working one "
+                f"item is a normal case, and the second one ending must not "
+                f"reclaim the first one's transport"
+            ),
+        }
+    if lifecycle in ("session-scoped", "disposable"):
+        return {
+            "orphaned": bool(creating_session_present is False),
+            "state": "SESSION_LIFETIME",
+            "because": (
+                f"this tunnel is {lifecycle} and was declared to end with its "
+                f"session, so the session ending is its lifetime and not an "
+                f"orphaning"
+            ),
+        }
+    return {
+        "orphaned": False,
+        "state": UNKNOWN,
+        "because": (
+            f"no lifecycle class is declared"
+            + (f" and its ownership checks out as {owner_side}" if owner_side else "")
+            + "; this is NOT an orphan, because orphanhood is a claim about a "
+              "declared lifetime and there is no declaration to claim it from"
+            if not lifecycle else " for this tunnel"
+        ),
+    }
+
+
+def _tunnel_direction(local, remote) -> dict:
+    """Which way a tunnel points, from its two declared endpoints.
+
+    A reading of the declaration, so INFERRED however confident it reads.
+    `127.0.0.1:17890 -> remote:443` is outbound by shape; the shape is not a
+    measurement of traffic.
+    """
+    lhost, lport = _endpoint_parts(local)
+    rhost, _ = _endpoint_parts(remote)
+    if lhost is None or rhost is None:
+        return {
+            "value": UNKNOWN,
+            "status": UNKNOWN,
+            "rule": "declared endpoint shape: which end is loopback",
+            "why": (
+                "the two endpoints are not both of the form host:port, so the "
+                "direction cannot be read from them"
+            ),
+        }
+    if _is_loopback(lhost) and not _is_loopback(rhost):
+        value = "outbound"
+    elif _is_loopback(rhost) and not _is_loopback(lhost):
+        value = "inbound"
+    elif _is_loopback(lhost) and _is_loopback(rhost):
+        value = "local"
+    else:
+        value = UNKNOWN
+    return {
+        "value": value,
+        "status": INFERRED if value != UNKNOWN else UNKNOWN,
+        "rule": "declared endpoint shape: which end is loopback",
+        "why": None if value != UNKNOWN else (
+            f"neither endpoint is loopback ({lhost}, {rhost}), so this "
+            f"declaration does not say which side initiates"
+        ),
+    }
+
+
+def _tunnel_liveness(*, local_endpoint, observed_pids, visible_pids, listeners) -> tuple:
+    """`actual_state` and how it was reached — with the hidepid trap closed.
+
+    The trap is the whole reason this is a function. On this host `/proc` is
+    mounted `hidepid=invisible`, so an sshd-owned forward is NOT in the
+    process table this uid can read. Every naive reading of that is
+    `STOPPED` — a live tunnel reported as down, which is the `docker ps`
+    mistake in a new place and the direction that gets something restarted.
+
+    So a declared pid that is not visible is UNKNOWN and says why. Only a
+    measurement that could have seen it and did not may say STOPPED, and on
+    this host no such measurement exists for a root-owned forward.
+
+    The endpoint is a PARAMETER rather than read off the row. It was read as
+    `row["local_endpoint"]` and the producer spells that key `local`, so the
+    listener branch below was unreachable on the real path: every declared
+    tunnel with a bound socket reported "nothing listens at None". Only the
+    fixtures could reach it, because a fixture written by the same hand spells
+    both sides the same way. Found 2026-09-14 by
+    `test_a_listener_serving_the_declared_endpoint_is_listening_not_healthy`,
+    which goes through `declared_tunnels` rather than constructing a row.
+    """
+    local = local_endpoint
+    if observed_pids and (observed_pids & visible_pids):
+        return "RUNNING", FACT, (
+            "a forwarding process this uid can read is running with a pid the "
+            "registration names"
+        )
+    served = [s for s in listeners if local and _serves(s["local"], local)]
+    if served:
+        return "LISTENING", FACT, (
+            f"a LISTEN socket at {served[0]['local']} serves the declared "
+            f"local endpoint {local}"
+        )
+    if observed_pids:
+        hidden = sorted(observed_pids - visible_pids)
+        return UNKNOWN, UNKNOWN, (
+            f"the registration names pid(s) {hidden} and none is visible in "
+            f"the process table this uid can read. On a host with "
+            f"hidepid=invisible that is what a root-owned forward looks like, "
+            f"so this is UNKNOWN and NOT stopped: reporting a live tunnel as "
+            f"down is the direction that gets it restarted"
+        )
+    if not local:
+        return UNKNOWN, UNKNOWN, (
+            "the registration declares neither a pid nor a local endpoint, so "
+            "there is nothing on this host to look for"
+        )
+    return UNKNOWN, UNKNOWN, (
+        f"nothing listens at {local} and no pid is declared for this tunnel, "
+        f"so this host has no measurement that could answer whether it is up"
+    )
+
+
+def tunnel_observation(host=None, *, registry_doc, device_ref=None,
+                       observed_at=None, now=None) -> dict:
+    """§13. Every declared tunnel, normalized, with its ownership check.
+
+    Declared and observed are kept apart on purpose, and the separation is the
+    §13 rule:
+
+      declared   the registry says this tunnel exists and who owns it. Its
+                 owner may be authoritative.
+      observed   a process this uid can see is forwarding, and no
+                 registration covers it. It is a CANDIDATE — it gets a row so
+                 that it is visible, and it gets `ownership_confidence:
+                 INFERRED` at best and no owner at all. A process that is
+                 forwarding has not declared itself anything.
+
+    Nothing here reads `~/.bashrc`, and nothing derives an owner from one. The
+    environment this shell inherits is evidence that somebody once started a
+    forward; it is not a producer of tunnel truth, and a tunnel that only ever
+    existed as an exported variable is exactly the case this surface exists to
+    report as UNKNOWN rather than to explain away.
+
+    `runtime_ref` is reported only when a declaration names it. Inferring it
+    from which container happens to publish a nearby port would be the
+    name-similarity mistake §12 forbids, one layer down.
+    """
+    host = readable_host(host)
+    table = attribution.process_table(host)
+    visible_pids = {int(p) for p in table}
+    listeners = listening_sockets(host, table=table)
+    forwarders = observe_forwarders(host, table=table)
+    rule = ownership_rule()
+
+    def _aged(source):
+        return graph.freshness_of(
+            observed_at, now=now, source=source,
+            within_seconds=TUNNEL_FRESH_WITHIN_SECONDS,
+        )
+
+    rows: list[dict] = []
+    declared_pids: set[int] = set()
+    for declared in declared_tunnels(registry_doc):
+        pids = {int(p) for p in (declared.get("pids") or []) if str(p).isdigit()}
+        declared_pids |= pids
+        actual, actual_status, actual_why = _tunnel_liveness(
+            local_endpoint=declared.get("local"),
+            observed_pids=pids, visible_pids=visible_pids, listeners=listeners,
+        )
+        ownership = ownership_verdict(
+            declared.get("owner_ref"), declared.get("lifecycle"), rule=rule,
+        )
+        row = {
+            **_declared_tunnel_identity(declared),
+            "actual_state": actual,
+            "actual_state_status": actual_status,
+            "actual_state_why": actual_why,
+            "observed_at": observed_at,
+            "freshness": _aged("registry"),
+            "provenance": {
+                "identity": FACT,
+                "endpoints": FACT,
+                "owner": FACT if declared.get("owner_ref") else UNKNOWN,
+                "actual_state": actual_status,
+                "why": (
+                    "the declaration is this node's own registry, so the "
+                    "identity and the endpoints are facts about a declaration "
+                    "rather than measurements of a channel"
+                ),
+            },
+            "ownership": ownership,
+            "ownership_confidence": _ownership_confidence(
+                declared, ownership, actual_status,
+            ),
+            "health": _tunnel_health_row(
+                _resource_by_id(registry_doc, declared.get("id")), declared, actual,
+                observed_at=observed_at, why=actual_why),
+            "session_end_consequence": None,  # filled below, needs the row
+        }
+        row["session_end_consequence"] = session_end_consequence(
+            row, creating_session_present=None,
+        )
+        rows.append(row)
+
+    declared_runtime_refs = {
+        r.get("runtime_ref") for r in rows if r.get("runtime_ref")
+    }
+    undeclared = []
+    for forwarder in forwarders:
+        pid = forwarder["pid"]
+        if pid in declared_pids:
+            continue
+        undeclared.append({
+            "tunnel_ref": f"tunnel:observed:{pid}",
+            "runtime_ref": None,
+            "device_ref": device_ref,
+            "provider": forwarder["transport_class"],
+            "owner_ref": None,
+            "owner_type": None,
+            "scope": None,
+            "lifecycle_class": None,
+            "direction": _tunnel_direction(None, None),
+            "local_endpoint": None,
+            "remote_endpoint": None,
+            "desired_state": None,
+            "actual_state": "RUNNING",
+            "actual_state_status": FACT,
+            "actual_state_why": (
+                "a process this uid can read is forwarding right now. What it "
+                "forwards, for whom, and until when are not in its argv"
+            ),
+            "health": None,
+            "last_healthy_at": None,
+            "restart_policy": None,
+            "criticality": None,
+            "observed_at": observed_at,
+            "freshness": _aged("/proc/<pid>/cmdline"),
+            "provenance": {
+                "identity": INFERRED,
+                "endpoints": UNKNOWN,
+                "owner": UNKNOWN,
+                "actual_state": FACT,
+                "why": (
+                    "a forwarding process is a measurement. It is not a "
+                    "declaration, so nothing here makes it ours"
+                ),
+            },
+            "ownership": {
+                "state": UNKNOWN,
+                "disposition": None,
+                "because": (
+                    "a process that is forwarding has not said who it is for. "
+                    "This is a candidate, and a candidate is never an owner"
+                ),
+            },
+            "ownership_confidence": "UNKNOWN",
+            "observed_pid": pid,
+            "age_seconds": forwarder.get("age_seconds"),
+        })
+
+    return {
+        "schema": "serveros/tunnel-observation.v1",
+        "device_ref": device_ref,
+        "observed_at": observed_at,
+        "declared": sorted(rows, key=lambda r: r["tunnel_ref"]),
+        "declared_count": len(rows),
+        "undeclared": sorted(undeclared, key=lambda r: r["tunnel_ref"]),
+        "undeclared_count": len(undeclared),
+        "blind_spots": tunnel_blind_spots(host, table=table),
+        "coverage": {
+            "declared_tunnels": len(rows),
+            "with_authoritative_owner": sum(
+                1 for r in rows if r["ownership_confidence"] == "AUTHORITATIVE"
+            ),
+            "with_unknown_actual_state": sum(
+                1 for r in rows if r["actual_state"] == UNKNOWN
+            ),
+            "ownership_violations": sorted(
+                r["tunnel_ref"] for r in rows
+                if (r["ownership"] or {}).get("state") == "VIOLATION"
+            ),
+            "declared_runtime_refs": sorted(x for x in declared_runtime_refs if x),
+            "rule_readable": bool(rule),
+        },
+        "note": (
+            "§13: this is an observation and not a repair. No tunnel here was "
+            "restarted, re-established, replaced or removed, and no historical "
+            "binding was corrected — a tunnel repaired during an audit leaves "
+            "no evidence of the defect that the audit existed to find."
+        ),
+    }
+
+
+def _resource_by_id(registry_doc, resource_id):
+    """One registration, or None. `Registry.get` is O(1) and already validates."""
+    if not resource_id:
+        return None
+    try:
+        return registry_doc.get(resource_id)
+    except Exception:  # noqa: BLE001 - a lookup that misses is not an outage
+        return None
+
+
+def _declared_tunnel_identity(declared: dict) -> dict:
+    """The declared half of a §13 row, under the brief's field names."""
+    local = declared.get("local")
+    remote = declared.get("remote")
+    return {
+        "tunnel_ref": f"tunnel:{declared['id']}" if declared.get("id") else None,
+        "runtime_ref": declared.get("runtime_ref"),
+        "device_ref": declared.get("device_ref"),
+        "provider": declared.get("transport_class"),
+        "owner_ref": declared.get("owner_ref"),
+        "owner_type": declared.get("owner_type"),
+        "scope": declared.get("scope"),
+        "lifecycle_class": declared.get("lifecycle"),
+        "direction": _tunnel_direction(local, remote),
+        "local_endpoint": local,
+        "remote_endpoint": remote,
+        "desired_state": declared.get("desired_state"),
+        "last_healthy_at": None,
+        "restart_policy": declared.get("recovery"),
+        "criticality": declared.get("criticality"),
+        "declared_pids": declared.get("pids") or [],
+        "protected": declared.get("protection"),
+        "unknowns": {
+            "last_healthy_at": (
+                "nothing on this host records when a tunnel was last healthy. "
+                "A probe's current result is not a history, and reporting the "
+                "observation time here would make every tunnel look like it "
+                "was healthy a moment ago"
+            ),
+             "runtime_ref": None if declared.get("runtime_ref") else (
+                "no declaration names the runtime this tunnel belongs to, and "
+                "it is not inferred from a nearby port or a similar name"
+            ),
+        },
+    }
+
+
+def _ownership_confidence(declared, ownership, actual_status) -> str:
+    """How far the ownership answer binds.
+
+    AUTHORITATIVE requires a declaration AND a check that passed against the
+    rule. A registration whose owner field looks fine but whose lifecycle the
+    rule forbids is INFERRED at best — the v1.0.1 defect this exists to catch
+    is that such a resource reads as owned right up to the moment it is
+    destroyed.
+    """
+    if not declared.get("owner_ref"):
+        return UNKNOWN
+    if (ownership or {}).get("state") == "VIOLATION":
+        return INFERRED
+    if (ownership or {}).get("state") == UNKNOWN:
+        return INFERRED
+    return AUTHORITATIVE
+
+
+def _tunnel_health_row(resource, declared: dict, actual: str, *,
+                       observed_at=None, why=None):
+    """The health model's verdict for one tunnel, or why it has none.
+
+    `health.Health` raises `HealthUndetermined` on an axis combination the
+    contract's rules do not cover, and that exception is deliberately fatal
+    everywhere else — a wrong-for-this-resource fallback word is worse than an
+    exception. Here it is caught, because an observation sweep that dies on
+    one row reports nothing about the other thirty; the row says UNKNOWN and
+    names the combination, so the defect is still visible.
+
+    The two failures are reported SEPARATELY. They were one branch, and it
+    told every reader "gap in the contract's rule table" — including about a
+    `TypeError` in this module, which is how a broken measurement path got
+    reported as a contract gap for as long as it did.
+    """
+    if resource is None:
+        return {"state": UNKNOWN, "why": "the resource is no longer in the registry"}
+
+    axes: dict = {}
+    if actual == "RUNNING":
+        axes["liveness"] = "RUNNING"
+    elif actual == "LISTENING":
+        # A local socket proves a listener, not that the channel to the far
+        # end carried anything. Liveness RUNNING with transport UNKNOWN is the
+        # honest pair, and it derives DEGRADED rather than HEALTHY.
+        axes["liveness"] = "RUNNING"
+    try:
+        verdict = tunnel_health(resource, axes or None,
+                                observed_at=observed_at, why=why)
+        return {
+            "state": verdict.state,
+            "reason": verdict.reason,
+            "axes": {axis: verdict.axis(axis).state for axis in health.AXES},
+            "why": None,
+        }
+    except health.HealthUndetermined as exc:
+        return {
+            "state": UNKNOWN,
+            "axes": None,
+            "why": (
+                f"the contract's rule table covers no combination for this "
+                f"tunnel ({exc}). That is a gap in the declaration, not a "
+                f"statement about the tunnel"
+            ),
+        }
+    except Exception as exc:  # noqa: BLE001 - one row must not end the sweep
+        return {
+            "state": UNKNOWN,
+            "axes": None,
+            "why": (
+                f"the health model raised {type(exc).__name__}: {exc}. That is "
+                f"a defect in this surface, NOT a statement about the tunnel "
+                f"and NOT a gap in the contract's rule table"
+            ),
+        }

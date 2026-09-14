@@ -32,6 +32,16 @@ What this surface deliberately does not have
   * No fourth MCP server. The fleet-level reads live here rather than in a
     `serveros-fleet-mcp`, which `fleet/mcp-contract.yaml` declared for two
     revisions without an implementation behind it. See that file's note.
+  * No port, filesystem or protection read. §19 of the resource-observation
+    brief extends the EXISTING agent control surface, and the decision of which
+    surface carries a new read is §11's own rule: the surface that owns the
+    fact. A listening socket, a declared-versus-measured comparison, a runtime
+    class and a filesystem root's classification are all facts about ONE
+    machine, so they went on `serveros-node` as `ports.ownership`,
+    `desired.actual`, `runtime.hygiene`, `fs.hygiene` and `protection.resolve`.
+    Declining them here is recorded rather than left to be inferred from their
+    absence, because an absent tool and a tool nobody wrote are the same empty
+    list and two different facts.
 """
 from __future__ import annotations
 

@@ -52,6 +52,21 @@ root:
 # `required: false` is not a weaker declaration. It says a directory whose
 # existence nothing depends on must not be conjured into existence to make a
 # conformance run green.
+#
+# Producers named by domain
+# -------------------------
+# Some of these facts are produced by a skill or a repository that does not
+# live in this tree. §18 asks for one producer per fact and a producer that can
+# be resolved, so the domains this contract cannot read from here are listed
+# rather than left as prose. The distinction the list draws is exact: a name in
+# it is a declaration that the producer is real and elsewhere, and a producer
+# naming neither a path nor one of these is reported as unresolvable — which is
+# what makes "we cannot see it from here" different from "nobody can see it".
+external_producers:
+  - ability-management
+  - workspace-management
+  - work-management
+
 namespaces:
   node:
     class: authority
@@ -140,7 +155,13 @@ namespaces:
         holds: >-
           trusted actor contexts and human approvals — who a request came from,
           what a person approved, and until when
-        producer: runtime/agent_control_store.py (writes), runtime/daemon.py (mints)
+        # One producer, and it is the store. `runtime/daemon.py` mints the
+        # identifiers and writes through the same module — that is a caller,
+        # not a second producer, and §18's whole rule is that the two are not
+        # the same thing. Written as a path because a parenthetical made it
+        # unresolvable: prose that names two files cannot be checked, and a
+        # checker that cannot check it has no opinion to offer.
+        producer: runtime/agent_control_store.py
         required: false
         absent_means: NO_AGENT_CONTROL_ACTIVITY
         # AUTHORITY, and deliberately not a projection. A record loaded from
@@ -206,7 +227,12 @@ namespaces:
   projections:
     class: projection
     holds: generated, derived, reproducible, non-authoritative views of anything
-    producer: see each projection's manifest
+    # Resolvable, and the resolution is the point: a projection's producer is
+    # the `generator` field its own manifest must carry, and the section below
+    # is where that manifest is described. Writing it as "see each projection's
+    # manifest" was a sentence that named nothing — §18's checker reported it,
+    # correctly, as a producer nobody could resolve.
+    producer: projections.manifest
     required: false
     authority: false
     absent_means: NO_PROJECTIONS

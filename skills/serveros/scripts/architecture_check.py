@@ -525,6 +525,112 @@ def map_projection_axis(args, findings: list[dict]) -> dict:
             "sources": report["sources"]}
 
 
+def reachability_axis(args, serveros_repo: Path, ref: str,
+                      findings: list[dict]) -> dict:
+    """§18/§26: what this code can reach, and who produces what it claims to own.
+
+    Two questions, and this axis answers both because they fail the same way —
+    a declaration that nothing checks stops being read.
+
+      §18  does the MCP layer touch the host here, and does every fact have one
+           producer that can be resolved?
+      §26  is there a code path that can destroy something this round must not?
+
+    Grading:
+      UNDECLARED_ACTUATOR     HIGH/OPEN   -- new reachability nobody reviewed
+      MCP_LAYER_REACHES_HOST  HIGH/OPEN   -- a second producer of a host fact
+      SOURCE_UNPARSEABLE      HIGH/OPEN   -- a hit could be hiding in it
+      TEST_REACHES_*          HIGH/OPEN   -- a test running a state-changing verb
+      PRODUCER_ABSENT         HIGH/OPEN   -- a producer named a path that is not
+                                            there, so the namespace is unwritable
+      STALE_ACTUATOR          MEDIUM/OPEN -- a permission that outlived its code
+      PRODUCER_UNRESOLVABLE   MEDIUM/OPEN -- a producer written as a sentence
+                                            that names nothing. Real but not a
+                                            breach: the fact may well have a
+                                            producer and nobody wrote down which
+      MCP_FORBIDDEN_LIST_DRIFT MEDIUM/OPEN -- the policy list has drifted from
+                                            the vocabulary it is a policy about
+
+    The declarations are read from the pinned object, like every other
+    declaration this checker reads. The CODE is read from the worktree, which is
+    the one asymmetry here and it is deliberate: reachability is a property of
+    the code being reviewed, and `worktree_head` / `worktree_dirty` are recorded
+    in the axis report so a scan of uncommitted code is visible rather than
+    implicit.
+
+    Both come from the same repository — the one `--serveros-repo` names, which
+    for a default run is the canonical checkout and NOT whichever worktree this
+    script happens to be executed from. So a self-consistent run in a branch
+    passes `--serveros-repo <worktree>` together with `--canonical-ref
+    <that branch>`, and a default run against `main` will report
+    REACHABILITY_CONTRACT_ABSENT until the round's contract is merged there.
+    That is the honest answer rather than a bug: the pin does not contain the
+    contract, so this checker cannot say the code is covered by it.
+    """
+    import importlib.util
+
+    here = Path(__file__).resolve().parent
+    script = here / "mutation_guard.py"
+    if not script.is_file():
+        findings.append(finding(
+            "REACHABILITY_CHECK_UNAVAILABLE", "safety",
+            "the mutation guard and its actuator contract are present",
+            {"script": str(script)},
+            "§26 — without the checker the prohibition is a sentence, and "
+            "`runtime/actuator-contract.yaml` is a document nothing reads",
+            "HIGH", status="OPEN"))
+        return {"status": "UNAVAILABLE"}
+
+    actuators_obs = observe_object(serveros_repo, ref,
+                                   "runtime/actuator-contract.yaml")
+    state_root_obs = observe_object(serveros_repo, ref,
+                                    "fleet/state-root-contract.yaml")
+    missing = [o["path"] for o in (actuators_obs, state_root_obs)
+               if not o["found"]]
+    if missing:
+        findings.append(finding(
+            "REACHABILITY_CONTRACT_ABSENT", "safety",
+            "both contracts are readable from the pinned revision",
+            {"absent": missing, "ref": ref},
+            "§18 — a checker that cannot read its own contract has not thereby "
+            "found the code clean", "HIGH", status="OPEN"))
+        return {"status": "UNAVAILABLE"}
+
+    import yaml
+    spec = importlib.util.spec_from_file_location("_serveros_mutation_guard",
+                                                  script)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+
+    # The tree to scan is the checker's own repository worktree. `root` is
+    # passed so that the module never reaches for the cwd on its own.
+    report = mod.check(
+        root=serveros_repo,
+        actuators=yaml.safe_load(actuators_obs["content"]) or {},
+        state_root=yaml.safe_load(state_root_obs["content"]) or {})
+
+    for row in report["findings"]:
+        findings.append(finding(
+            row["id"], row["class"], row["desired"], row["observed"],
+            row["authority"], row["severity"], status="OPEN",
+            subject=row.get("subject", "")))
+
+    return {
+        "status": report["status"],
+        "scanned_from": report["scanned_from"],
+        "counts": report["audit"]["counts"],
+        "producers": report["producers"]["counts"],
+        "declaration_ref": ref,
+        "worktree_head": (_git(serveros_repo, "rev-parse", "HEAD") or "").strip(),
+        "worktree_dirty": worktree_state(serveros_repo)["dirty"],
+        "coverage_limit": (
+            "The scan reads the worktree, so it sees uncommitted reachability. "
+            "The contracts are read from the pinned object. A run against a "
+            "dirty worktree therefore checks a code surface the pin does not "
+            "contain, and `worktree_dirty` above says so."),
+    }
+
+
 def collect(args) -> dict:
     findings: list[dict] = []
     observations: dict[str, dict] = {}
@@ -1122,6 +1228,9 @@ def collect(args) -> dict:
     # ---- §15 map projection drift -----------------------------------------
     map_projection = map_projection_axis(args, findings)
 
+    # ---- §18/§26 reachability and producers -------------------------------
+    reachability = reachability_axis(args, serveros_repo, ref, findings)
+
     # ---- verdicts ---------------------------------------------------------
     arch_findings = [f for f in findings if f["class"] != "materialization"]
     blocking = [f for f in arch_findings
@@ -1164,6 +1273,7 @@ def collect(args) -> dict:
         },
         "observations": observations,
         "map_projection": map_projection,
+        "reachability": reachability,
         "coverage_limits": [
             "validate_contract.py compares the contract against literals in its "
             "own body (expected values written twice); running it proves the "
