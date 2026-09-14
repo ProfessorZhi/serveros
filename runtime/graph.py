@@ -245,6 +245,10 @@ def _describe(scope: str, root: int, members: set[int], table: dict, *,
         "session_ref": f"session:{session_id}" if session_id else None,
         "container_ref": f"runtime:container:{container_id}" if container_id else None,
         "aggregate": aggregate(facts),
+        # The largest terms of `aggregate`, so a reader who sees a sum can see
+        # what is inside it. See `contributors()` for why the ratio matters and
+        # why no write rate appears per process.
+        "contributors": contributors(facts),
         "tree": attribution.process_tree(root, table),
     }
 
@@ -272,6 +276,46 @@ def aggregate(facts: list) -> dict:
     }
 
 
+# How many members of a group are named individually. Three, because the
+# question a contributor list answers is "is the cost one process or is it the
+# group", and past three the answer is "the group" — a list long enough to be
+# the member list is the aggregate with extra steps.
+CONTRIBUTORS = 3
+
+
+def contributors(facts: list, *, limit: int = CONTRIBUTORS) -> list[dict]:
+    """Which members make up the aggregate, largest by summed-lifetime CPU first.
+
+    `aggregate()` sums, and a sum is the one shape a real consumer can hide in:
+    "codex-app-server, 5 processes, 279.5%" reads as a fleet when one process is
+    doing 2.8 cores and four are idle, and the four idle ones are what makes the
+    number look like a quantity of work rather than one runaway. This is the
+    same measurement, split back out, so the largest term is visible next to the
+    total it dominates.
+
+    PID is a field here and never an identity: it says which process to look at
+    right now, and a restarted process is a different row. What does NOT appear
+    is a per-process write rate — this host cannot observe one (`ProcessFacts`
+    carries no IO counters), and a `write_bytes: 0` beside a process burning
+    30 MB/s would be a fabricated measurement of the exact quantity this list
+    exists to make visible. Disk throughput is observable at the HOST level
+    only, which is a different subject and is reported as one.
+    """
+    ordered = sorted(facts, key=lambda f: (-(f.cpu_percent or 0.0), f.pid))
+    rows = []
+    for facts_row in ordered[: max(0, limit)]:
+        rows.append({
+            "pid": facts_row.pid,
+            "comm": facts_row.comm,
+            "role": identify_role(facts_row)["value"],
+            "cpu_percent": facts_row.cpu_percent,
+            "cpu_metric": "lifetime_average_percent_of_one_core",
+            "rss_bytes": facts_row.rss_bytes,
+            "age_seconds": facts_row.age_seconds,
+        })
+    return rows
+
+
 def find_group(ref: str, table: dict) -> dict | None:
     for group in build_groups(table):
         if group["ref"] == ref or group["id"] == ref or str(group["root_pid"]) == ref:
@@ -295,6 +339,33 @@ def link(value, status: str, *, rule: str | None = None, why: str | None = None)
         out["rule"] = rule
     if why:
         out["why"] = why
+    return out
+
+
+def session_states(groups: list[dict], *, host=None) -> dict:
+    """The origin session of each group, as `loginctl` reports it — one call per
+    distinct session, not one per group.
+
+    `anomaly.detect()` needs this as a document rather than as a call it makes
+    itself, for the reason it takes `groups` and `containers` as documents: the
+    detector is pure, and a detector that shells out is a detector whose answer
+    depends on when it was asked. The shape is `attribution.session_facts()`'s,
+    keyed by the ref the group already carries.
+
+    Only the sessions a group actually names are asked about, so a group list
+    with no session scope costs nothing here — and the empty dict that comes
+    back is distinguishable from "every session is fine" because
+    `anomaly.unchecked()` reports the input as missing.
+    """
+    if host is None:
+        host = attribution.LiveHost()
+    refs = sorted({g["session_ref"] for g in groups if g.get("session_ref")})
+    out: dict[str, dict] = {}
+    for ref in refs:
+        session_id = ref.removeprefix("session:")
+        if not session_id:
+            continue
+        out[ref] = attribution.session_facts(session_id, host)
     return out
 
 
@@ -644,6 +715,14 @@ def _seconds_between(then, now) -> float | None:
         # would silently shift an age by hours; refusing is the honest answer.
         return None
     return (b - a).total_seconds()
+
+
+# Public under a second name, and deliberately the same function rather than a
+# copy: `runtime/alerting.py` measures a cooldown and a hysteresis window with
+# it, and two parsers is how one module comes to read an unparseable timestamp
+# as "0 seconds ago" while the other refuses. The refusing reading is the only
+# safe one — an alert whose age reads as zero never leaves its cooldown.
+seconds_between = _seconds_between
 
 
 def _node(ref: str, *, kind: str, **extra) -> dict:

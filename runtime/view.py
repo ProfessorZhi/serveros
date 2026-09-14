@@ -196,6 +196,9 @@ def _group_row(group: dict) -> dict:
         "members": group["members"],
         "member_roles": group.get("member_roles"),
         "aggregate": aggregate,
+        # §14: the aggregate plus its largest terms. A sum without them is the
+        # one shape a real consumer can hide in — see `graph.contributors()`.
+        "contributors": group.get("contributors"),
         "reparented_to_init": (group.get("tree") or {}).get("reparented_to_init"),
     }
 
@@ -787,14 +790,22 @@ def anomaly_list(*, host=None, registry=None, docker_host=None,
     error_windows, window_coverage = _error_windows(groups, registry,
                                                     probes_host=probes_host)
 
+    # §5. The origin session of each group, so RUNTIME_OUTLIVED_OWNER can fire.
+    # Derived here rather than inside the detector because the detector is pure
+    # and must stay so: a detector that shells out to `loginctl` is a detector
+    # whose answer depends on when it was asked. One call per distinct session,
+    # and the groups are already in hand.
+    sessions = graph.session_states(groups, host=host)
+
     signals = anomaly.detect(
         groups=groups, containers=container_rows, host_facts=host_facts,
         probe_results=probe_results, error_windows=error_windows,
-        criticality=criticality,
+        criticality=criticality, session_states=sessions,
     )
     unchecked = anomaly.unchecked(
         groups=groups, containers=container_rows, host_facts=host_facts,
         probe_results=probe_results, error_windows=error_windows,
+        session_states=sessions,
     )
     if container_error:
         unchecked.append({
@@ -827,9 +838,18 @@ def anomaly_list(*, host=None, registry=None, docker_host=None,
     classifications = anomaly.classify_all(
         signals, criticality=criticality, protection=protection
     )
+    # §9/§21. The two halves a signal list cannot carry, both derived from the
+    # inputs already in hand rather than measured again: which codes nobody
+    # looked at, and what every graded measurement IS. The alert layer needs
+    # both — without the first it closes alerts about codes that stopped being
+    # evaluated, without the second it closes them at the open threshold and
+    # reopens them one tick later.
     return _envelope({
         "signal_count": len(signals),
         "signals": signals,
+        "levels": anomaly.levels(groups=groups, host_facts=host_facts,
+                                 error_windows=error_windows),
+        "codes_not_evaluated": anomaly.unevaluated(unchecked),
         "classifications": classifications,
         "unchecked": unchecked,
         "error_window_coverage": window_coverage,

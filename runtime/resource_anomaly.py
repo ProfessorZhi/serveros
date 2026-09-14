@@ -237,6 +237,36 @@ def _signal(code: str, subject: str, measured: dict, *, window: str,
     return row
 
 
+# Moved to `anomaly.margin_key`, and bound here rather than copied. Both
+# detectors grade codes and both need the same derivation, and this module
+# already loads `anomaly` — the other direction would make the two load each
+# other. A second copy would be the file that falls behind the day a third
+# spelling of a threshold key appears; the `_high_bytes` suffix was added to
+# the real one and would have been missing from the copy.
+margin_key = anomaly.margin_key
+
+
+def _level(code: str, subject: str, value, threshold) -> dict:
+    """What a graded measurement IS, reported whether or not it fired.
+
+    A signal is only emitted ABOVE the threshold, so the signal list cannot
+    answer "has it come back down far enough to close the alert about it": at
+    84.9% the DISK_WARNING list is empty, and empty is also what a host with no
+    readable disks produces. The alert layer's hysteresis is therefore a
+    comparison against this row rather than an inference from an absence —
+    which is the same discipline `codes_graded` vs `codes_not_evaluated`
+    applies one level up: "below the line" and "not measured" are different
+    answers and must not be spelled the same way.
+    """
+    return {
+        "code": code,
+        "subject": subject,
+        "value": value,
+        "threshold": threshold,
+        "margin_key": margin_key(_THRESHOLDS.get(code)),
+    }
+
+
 # ---------------------------------------------------------------------------
 # One function per group of codes. Each returns (signals, note_or_None), so a
 # branch that found nothing can say what it did not find rather than returning
@@ -298,9 +328,14 @@ def _filesystem_rows(disk: dict) -> list[dict]:
     return list(rows.values())
 
 
-def _disk_signals(disk: dict, thresholds: dict, *, observed_at) -> tuple[list, str | None]:
-    """DISK_WARNING, DISK_CRITICAL, INODE_CRITICAL."""
-    warnings, critical = [], []
+def _disk_signals(disk: dict, thresholds: dict, *, observed_at) -> tuple[list, list, str | None]:
+    """DISK_WARNING, DISK_CRITICAL, INODE_CRITICAL.
+
+    Returns `(signals, levels, note)`. `levels` is what every graded filesystem
+    is AT, reported whether or not it crossed a tier — see `_level()` for why
+    the below-threshold reading is not the same thing as no reading.
+    """
+    warnings, critical, levels = [], [], []
     warning_at = thresholds["filesystem_percent_high"]
     critical_at = thresholds["filesystem_percent_critical"]
     inode_at = thresholds["inode_percent_high"]
@@ -310,6 +345,12 @@ def _disk_signals(disk: dict, thresholds: dict, *, observed_at) -> tuple[list, s
         if used is None and inodes is None:
             ungraded += 1
             continue
+        if used is not None:
+            # Two tiers of one number, so two levels from one reading. Both are
+            # emitted before either comparison, because which one fires is a
+            # property of the threshold and not of the measurement.
+            levels.append(_level("DISK_WARNING", row["subject"], used, warning_at))
+            levels.append(_level("DISK_CRITICAL", row["subject"], used, critical_at))
         if used is not None and used >= critical_at:
             critical.append(_signal(
                 "DISK_CRITICAL", row["subject"],
@@ -334,6 +375,8 @@ def _disk_signals(disk: dict, thresholds: dict, *, observed_at) -> tuple[list, s
                 observed_at=observed_at,
                 why="this filesystem is at or above the warning tier",
             ))
+        if inodes is not None:
+            levels.append(_level("INODE_CRITICAL", row["subject"], inodes, inode_at))
         if inodes is not None and inodes >= inode_at:
             warnings.append(_signal(
                 "INODE_CRITICAL", row["subject"],
@@ -350,18 +393,20 @@ def _disk_signals(disk: dict, thresholds: dict, *, observed_at) -> tuple[list, s
     if ungraded:
         note = (f"{ungraded} filesystem(s) were reported without a usage "
                 f"figure and are not graded — unread is not empty")
-    return critical + warnings, note
+    return critical + warnings, levels, note
 
 
-def _memory_signals(host: dict, thresholds: dict, *, observed_at) -> tuple[list, str | None]:
+def _memory_signals(host: dict, thresholds: dict, *, observed_at) -> tuple[list, list, str | None]:
     """MEMORY_PRESSURE, SWAP_PRESSURE."""
     signals: list[dict] = []
+    levels: list[dict] = []
     memory = host.get("memory") or {}
     total = memory.get("total_bytes")
     used = memory.get("used_bytes")
     mem_at = thresholds["memory_percent_high"]
     if total and used is not None:
         percent = round(100.0 * used / total, 1)
+        levels.append(_level("MEMORY_PRESSURE", "host:memory", percent, mem_at))
         if percent >= mem_at:
             signals.append(_signal(
                 "MEMORY_PRESSURE", "host:memory",
@@ -379,6 +424,7 @@ def _memory_signals(host: dict, thresholds: dict, *, observed_at) -> tuple[list,
     swap_at = thresholds["swap_percent_high"]
     if swap_total and swap_used is not None:
         percent = round(100.0 * swap_used / swap_total, 1)
+        levels.append(_level("SWAP_PRESSURE", "host:swap", percent, swap_at))
         if percent >= swap_at:
             signals.append(_signal(
                 "SWAP_PRESSURE", "host:swap",
@@ -394,16 +440,19 @@ def _memory_signals(host: dict, thresholds: dict, *, observed_at) -> tuple[list,
     not_evaluated = None
     if total is None or (swap_total is not None and swap_used is None):
         not_evaluated = "the host memory summary carried no usable totals"
-    return signals, not_evaluated
+    return signals, levels, not_evaluated
 
 
-def _docker_signals(docker: dict, thresholds: dict, *, observed_at) -> tuple[list, dict]:
+def _docker_signals(docker: dict, thresholds: dict, *, observed_at) -> tuple[list, list, dict]:
     """DOCKER_STORAGE_HIGH, BUILD_CACHE_HIGH, the two container-size codes.
 
-    Returns `(signals, not_evaluated)` where the second element maps a code to
-    the reason it could not be graded.
+    Returns `(signals, levels, not_evaluated)` where the last element maps a
+    code to the reason it could not be graded. Only the codes measured as a
+    reading are levelled; the two that report their own `size_bytes` are too,
+    with no margin key — see `margin_key()` for what that absence means.
     """
     signals: list[dict] = []
+    levels: list[dict] = []
     gaps: dict[str, str] = {}
     storage_at = thresholds["docker_storage_percent_high"]
     cache_at = thresholds["docker_build_cache_bytes_high"]
@@ -431,6 +480,9 @@ def _docker_signals(docker: dict, thresholds: dict, *, observed_at) -> tuple[lis
             host_total = docker.get("data_root_total_bytes")
             percent = (round(100.0 * total / host_total, 1)
                        if host_total else None)
+            if percent is not None:
+                levels.append(_level("DOCKER_STORAGE_HIGH", "docker:store",
+                                     percent, storage_at))
             if percent is not None and percent >= storage_at:
                 signals.append(_signal(
                     "DOCKER_STORAGE_HIGH", "docker:store",
@@ -443,6 +495,9 @@ def _docker_signals(docker: dict, thresholds: dict, *, observed_at) -> tuple[lis
                 ))
         build_cache = sections.get("build_cache") if sections else None
         cache_bytes = (build_cache or {}).get("size_bytes")
+        if cache_bytes is not None:
+            levels.append(_level("BUILD_CACHE_HIGH", "docker:build-cache",
+                                 cache_bytes, cache_at))
         if cache_bytes is not None and cache_bytes >= cache_at:
             signals.append(_signal(
                 "BUILD_CACHE_HIGH", "docker:build-cache",
@@ -463,6 +518,9 @@ def _docker_signals(docker: dict, thresholds: dict, *, observed_at) -> tuple[lis
     else:
         for row in (sizes or {}).get("containers") or []:
             layer = row.get("size_rw_bytes")
+            if layer is not None:
+                levels.append(_level("CONTAINER_WRITABLE_LAYER_LARGE",
+                                     f"container:{row.get('name')}", layer, layer_at))
             if layer is not None and layer >= layer_at:
                 signals.append(_signal(
                     "CONTAINER_WRITABLE_LAYER_LARGE", f"container:{row.get('name')}",
@@ -489,6 +547,8 @@ def _docker_signals(docker: dict, thresholds: dict, *, observed_at) -> tuple[lis
             if size is None:
                 continue
             graded += 1
+            levels.append(_level("CONTAINER_LOG_LARGE",
+                                 f"container:{row.get('name')}", size, log_at))
             if size >= log_at:
                 signals.append(_signal(
                     "CONTAINER_LOG_LARGE", f"container:{row.get('name')}",
@@ -507,7 +567,7 @@ def _docker_signals(docker: dict, thresholds: dict, *, observed_at) -> tuple[lis
                 f"{(logs or {}).get('unobservable') or 'all'} of "
                 f"{(logs or {}).get('count') or 0} logs were unreadable, which "
                 "is unknown rather than small")
-    return signals, gaps
+    return signals, levels, gaps
 
 
 def _hygiene_signals(hygiene: dict, *, observed_at) -> tuple[list[dict], dict]:
@@ -854,12 +914,14 @@ def detect(*, host=None, disk=None, docker=None, hygiene=None, desired=None,
 
     gathered = _Gathered()
     signals: list[dict] = []
+    levels: list[dict] = []
     notes: list[str] = []
     gaps: dict[str, str] = {}
 
     if gathered.take("disk", disk, why="the filesystem observation"):
-        found, note = _disk_signals(disk, thresholds, observed_at=observed_at)
+        found, found_levels, note = _disk_signals(disk, thresholds, observed_at=observed_at)
         signals += found
+        levels += found_levels
         if note:
             notes.append(note)
         if not found:
@@ -882,8 +944,9 @@ def detect(*, host=None, disk=None, docker=None, hygiene=None, desired=None,
             gaps.setdefault(code, gathered.missing["disk"])
 
     if gathered.take("host", host, why="the host summary"):
-        found, gap = _memory_signals(host, thresholds, observed_at=observed_at)
+        found, found_levels, gap = _memory_signals(host, thresholds, observed_at=observed_at)
         signals += found
+        levels += found_levels
         if gap:
             gaps.setdefault("MEMORY_PRESSURE", gap)
             gaps.setdefault("SWAP_PRESSURE", gap)
@@ -892,9 +955,10 @@ def detect(*, host=None, disk=None, docker=None, hygiene=None, desired=None,
             gaps.setdefault(code, gathered.missing["host"])
 
     if docker:
-        found, docker_gaps = _docker_signals(docker, thresholds,
-                                             observed_at=observed_at)
+        found, found_levels, docker_gaps = _docker_signals(docker, thresholds,
+                                                           observed_at=observed_at)
         signals += found
+        levels += found_levels
         gaps.update(docker_gaps)
     else:
         for code in ("DOCKER_STORAGE_HIGH", "BUILD_CACHE_HIGH",
@@ -961,9 +1025,16 @@ def detect(*, host=None, disk=None, docker=None, hygiene=None, desired=None,
     signals.sort(key=lambda row: (row["severity"] != "high",
                                   row["severity"] != "medium",
                                   row["code"], row["subject"]))
+    # §21. What every GRADED measurement is, whether or not it crossed a tier.
+    # Keyed by `code|subject` because that pair is the alert identity and the
+    # two tables are read together: `signals` says what fired, `levels` says
+    # what everything is, and an alert closes on a `levels` row rather than on
+    # a signal's absence — see `runtime/alerting.py`.
+    by_level = {f"{row['code']}|{row['subject']}": row for row in levels}
     return {
         "observed_at": observed_at,
         "signals": signals,
+        "levels": by_level,
         "by_code": {code: sum(1 for r in signals if r["code"] == code)
                     for code in emitted},
         "codes_emitted": emitted,

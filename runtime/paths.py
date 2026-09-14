@@ -102,6 +102,16 @@ STATE_SERVEROS_RUNTIME = (
     # its only producer and `state_dir` is the one root every daemon write is
     # resolved through. A second root would be a second thing to keep correct.
     "agent-control",
+    # §21 adds the alert state machine's one document. Declared here for the
+    # same reason `agent-control` was: the namespace is the contract and the
+    # directory is the state, and a daemon that answered "no alerts" from a
+    # path nothing had declared would be reporting an absence it could not
+    # distinguish from a typo.
+    #
+    # It is a CHILD of runtime rather than a top-level sibling because the
+    # daemon is its only producer and `state_dir` is the one root every daemon
+    # write is resolved through.
+    "alerts",
 )
 
 # Artifacts has exactly two canonical namespaces for NEW writes (§34).

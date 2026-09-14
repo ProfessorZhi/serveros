@@ -202,6 +202,36 @@ namespaces:
         required: false
         authority: false
         absent_means: COMPUTED_ON_DEMAND
+      alerts:
+        class: authority
+        holds: >-
+          the alert state machine — one row per open or closed anomaly, keyed by
+          code + device + subject, with what was measured and what a person has
+          done about it
+        producer: runtime/alerting.py
+        required: false
+        absent_means: NO_ALERTS_RECORDED
+        # AUTHORITY, and not a projection, and the distinction is the one this
+        # namespace is most likely to lose. A projection is recomputed from a
+        # source of record — `anomalies` above is exactly that, and a reader who
+        # disagrees with it can recompute it. This file cannot be recomputed:
+        # whether a person has acknowledged an alert, and when it last spoke, are
+        # not derivable from the process table, so the file IS the record. A
+        # reader that threw it away and started fresh would re-notify every open
+        # alert as if it were new, which is the failure the whole module exists
+        # to prevent.
+        #
+        # What it deliberately is NOT is a metrics store. There is no history
+        # here, no per-tick row and no series: `occurrence_count` is a counter
+        # and `last_seen` is one timestamp, and neither can answer "what was the
+        # disk usage at 3pm". A reader wanting that asks the observation surface,
+        # which measures it again.
+        not_a_claim: >
+          not a source of truth about the world, only about what this node said.
+          An OPEN row is not evidence that something is broken right now — the
+          detector is what answers that — and a RESOLVED row is not evidence
+          that a fault was fixed by anything this system did, because nothing
+          this system does fixes anything.
   fleet:
     class: projection
     holds: fleet-level observed state as seen from this node

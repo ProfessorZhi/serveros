@@ -409,6 +409,156 @@ def producers_of(event: str) -> list[str]:
             if not site.startswith("runtime/notifications.py:")]
 
 
+# -- §17: a producer that is declared, and the producer that is behind it -----
+#
+# `producers_of` above answers "does the event name appear anywhere outside the
+# contract and the module that renders it". That question has a false positive
+# built into it and §17 asks a narrower one: the contract now says WHERE each
+# event is raised — `raised_by: runtime/alerting.py#notify_for` — and a
+# reference like that is checkable in three separate ways, each of which can be
+# false on its own:
+#
+#   * the file may not exist (a rename),
+#   * the file may not define the function (a rename on the other side),
+#   * the file may define it and nothing may ever call it.
+#
+# The third is the one that matters, and it is the pathology this whole file
+# exists for: a function that is correct, tested, and reachable from nothing.
+# A string-literal scan cannot see it — `alerting.py` names both event names as
+# module constants, so `producers_of` is satisfied by the file merely declaring
+# them. `reachable_producers_of` asks who CALLS the named function instead, and
+# that is a different question with a different answer.
+
+_RAISED_BY = re.compile(r"^([\w./-]+\.py)#([A-Za-z_][A-Za-z0-9_]*)$")
+
+
+def declared_producer_entries() -> dict[str, dict]:
+    """`runtime/notification-contract.yaml#events.producers`, verbatim.
+
+    A mapping now rather than the bare list it was: each entry carries either
+    where it is raised or the reason it is not, and the two are mutually
+    exclusive by construction rather than by convention — see
+    `producer_problems`.
+    """
+    document = yaml.safe_load(
+        (REPO / EVENT_CONTRACT).read_text(encoding="utf-8"))
+    block = (document.get("events") or {}).get("producers") or {}
+    if not isinstance(block, dict):
+        raise AssertionError(
+            "`events.producers` must be a mapping of event → disposition, so "
+            "that an entry can say it is NOT produced. A bare list can only "
+            "say which events exist, which is what made the old one "
+            "unfalsifiable.")
+    return {str(event): (entry if isinstance(entry, dict) else {"status": entry})
+            for event, entry in block.items()}
+
+
+def _callers_of(relative: str, function: str) -> list[str]:
+    """Non-test modules that CALL `function` — not modules that mention it.
+
+    The distinction is the whole value of this check, so the rule is narrow on
+    purpose: a caller is a `Call` whose target is the bare name
+    (`notify_for(...)`) or the attribute (`alerting.notify_for(...)`). An
+    import alone is not a call, and a mention is not an import.
+
+    The first version accepted any `ast.Name` with a matching id, and the
+    positive control caught it immediately: `runtime/protection.py` has a
+    PARAMETER named `identity`, so `alerting.identity` — a helper nothing
+    outside its own file calls — was reported as reached. A scan that counts a
+    parameter name as a caller is the same class of false positive as a text
+    search that counts a sentence in a docstring, and it fails in the direction
+    that matters here: it reports a dead producer as live.
+    """
+    callers: list[str] = []
+    for rel, tree in _sources():
+        if rel == relative:
+            continue
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            target = node.func
+            name = (target.id if isinstance(target, ast.Name)
+                    else target.attr if isinstance(target, ast.Attribute)
+                    else None)
+            if name == function:
+                callers.append(rel)
+                break
+    return sorted(set(callers))
+
+
+def producer_problems(event: str, entry: dict) -> list[str]:
+    """Everything wrong with one producer entry, as readable lines.
+
+    Four statuses are possible and the contract uses two of them. The other two
+    are named here so that an entry cannot invent a third word that reads as a
+    promise:
+
+      IMPLEMENTED     something raises it. `raised_by` must resolve, and the
+                      function it names must be called from outside its own
+                      file — otherwise "implemented" means "written".
+      DECLARED_ABSENT named as not produced, with `because` and `disposition`.
+                      It must NOT carry a `raised_by`: an entry that says both
+                      "nothing raises this" and "here is where it is raised" is
+                      a file disagreeing with itself.
+    """
+    problems: list[str] = []
+    status = str(entry.get("status") or "")
+    raised_by = entry.get("raised_by")
+
+    if status not in {"IMPLEMENTED", "DECLARED_ABSENT"}:
+        problems.append(
+            f"{event}: status {status!r} is not one of IMPLEMENTED, "
+            f"DECLARED_ABSENT")
+        return problems
+
+    if status == "DECLARED_ABSENT":
+        if raised_by:
+            problems.append(
+                f"{event}: says nothing raises it and names {raised_by!r} as "
+                f"where it is raised")
+        for field in ("because", "disposition"):
+            if not str(entry.get(field) or "").strip():
+                problems.append(f"{event}: DECLARED_ABSENT with no {field}")
+        return problems
+
+    if not raised_by:
+        problems.append(f"{event}: IMPLEMENTED with no `raised_by` to check")
+        return problems
+
+    match = _RAISED_BY.match(str(raised_by))
+    if not match:
+        problems.append(
+            f"{event}: `raised_by: {raised_by}` is not `path#function`")
+        return problems
+
+    relative, function = match.group(1), match.group(2)
+    if not (REPO / relative).is_file():
+        problems.append(f"{event}: raised_by names {relative}, which is gone")
+        return problems
+
+    # The event name has to be a literal in the file it names — so a rename of
+    # either the event or the file is red rather than silent. Literal and not
+    # substring: `alert.opened` and `alert.opened_at` are different names.
+    literals = {value for value, _ in _strings_in(
+        ast.parse((REPO / relative).read_text(encoding="utf-8")))}
+    if event not in literals:
+        problems.append(
+            f"{event}: {relative} does not name the event as a string literal")
+
+    if function not in _defined_symbols(relative):
+        problems.append(
+            f"{event}: {relative} does not define {function!r}")
+        return problems
+
+    callers = _callers_of(relative, function)
+    if not callers:
+        problems.append(
+            f"{event}: {relative}#{function} exists and NOTHING outside that "
+            f"file calls it — which is `declared-but-absent` in its ordinary "
+            f"form: the producer is written, tested, and unreachable")
+    return problems
+
+
 def _read_required_fields() -> dict[str, list[str]]:
     """Every `required_fields` entry, by field name, with where it was declared."""
     declared: dict[str, list[str]] = {}
@@ -545,6 +695,126 @@ class DeclaredEventsHaveProducers(unittest.TestCase):
         self.assertGreaterEqual(len(declared_events()), 5, declared_events())
         self.assertEqual(producers_of("turn.completed"), [])
         self.assertEqual(producers_of("session.created"), [])
+
+
+class DeclaredProducersResolve(unittest.TestCase):
+    """§17. Every `raised_by` resolves, and every absence says so out loud.
+
+    `DeclaredEventsHaveProducers` above asks whether the event NAME appears in
+    the tree. This asks the narrower question the contract now makes possible:
+    whether the specific function the contract points at exists, and whether
+    anything calls it. Both are needed — the first catches an event nobody
+    mentions at all, the second catches the case that motivated §17, where the
+    function is written and correct and no production path reaches it.
+    """
+
+    def test_every_implemented_producer_resolves_and_is_reachable(self):
+        problems = []
+        for event, entry in declared_producer_entries().items():
+            problems.extend(producer_problems(event, entry))
+        self.assertEqual(problems, [], "\n".join(
+            ["the notification contract's producer table does not check out:",
+             *[f"  {line}" for line in problems], "",
+             "An IMPLEMENTED producer must name a file#function that exists,",
+             "names the event as a literal, and is called from outside its own",
+             "file. An entry that is not produced says DECLARED_ABSENT with a",
+             "`because` and a `disposition` and names no raised_by."]))
+
+    def test_the_two_records_of_absence_cannot_drift(self):
+        """This test and the contract each say which events are not produced.
+
+        Two spellings of one fact, and the join is the test — the same shape
+        the ability tree uses one directory over. They are not merged, because
+        they answer to different readers: the contract's `because` explains the
+        gap to whoever lands on it next, and `KNOWN_UNPRODUCED` is what makes
+        the exemption above force a failure the moment the gap closes. A
+        contract entry added without an exemption would exempt nothing; an
+        exemption without an entry would be a note in a test file about a claim
+        the contract no longer makes.
+        """
+        absent = {event for event, entry in declared_producer_entries().items()
+                  if entry.get("status") == "DECLARED_ABSENT"}
+        self.assertEqual(
+            absent, set(KNOWN_UNPRODUCED),
+            "the contract's DECLARED_ABSENT set and KNOWN_UNPRODUCED disagree: "
+            f"only in the contract {sorted(absent - set(KNOWN_UNPRODUCED))}, "
+            f"only in this file {sorted(set(KNOWN_UNPRODUCED) - absent)}")
+
+    def test_every_declared_event_has_a_disposition(self):
+        """No event may be missing from the table entirely.
+
+        An event with no entry is not "produced" and not "absent" — it is
+        unclassified, and unclassified is the state in which nobody has had to
+        decide, which is how the six got there in the first place.
+        """
+        missing = sorted(set(declared_events()) - set(declared_producer_entries()))
+        self.assertEqual(missing, [], "\n".join(
+            ["these events are declared and the producer table says nothing "
+             "about them:", *missing]))
+
+    def test_the_producer_scanner_can_go_red(self):
+        """Positive controls, in both directions.
+
+        A gate nobody has watched fail is a gate that might be comparing a
+        constant to itself. Each of these is a real claim taken from the
+        contract and broken in exactly one way.
+        """
+        # The real one passes.
+        self.assertEqual(
+            producer_problems("alert.opened", {
+                "raised_by": "runtime/alerting.py#notify_for",
+                "status": "IMPLEMENTED"}), [])
+
+        # A function that exists in a file that exists, and nothing calls it:
+        # the pathology, and the one a name-scan cannot see. `identity` is used
+        # as a PARAMETER name elsewhere in the tree, which is why the first
+        # version of this scan called it reachable — the control is not
+        # incidental, it is the bug it caught.
+        unreachable = producer_problems("alert.opened", {
+            "raised_by": "runtime/alerting.py#identity",
+            "status": "IMPLEMENTED"})
+        self.assertTrue(any("NOTHING outside that file calls it" in p
+                            for p in unreachable), unreachable)
+
+        # A rename on either side.
+        self.assertTrue(any("is gone" in p for p in producer_problems(
+            "alert.opened", {"raised_by": "runtime/alerting_gone.py#notify_for",
+                             "status": "IMPLEMENTED"})))
+        self.assertTrue(any("does not define" in p for p in producer_problems(
+            "alert.opened", {"raised_by": "runtime/alerting.py#not_for",
+                             "status": "IMPLEMENTED"})))
+
+        # An event the file does not name.
+        self.assertTrue(any("does not name the event" in p for p in
+                            producer_problems("alert.deleted", {
+                                "raised_by": "runtime/alerting.py#notify_for",
+                                "status": "IMPLEMENTED"})))
+
+        # Both sides of the contradiction.
+        self.assertTrue(any("and names" in p for p in producer_problems(
+            "turn.completed", {"status": "DECLARED_ABSENT",
+                               "raised_by": "runtime/alerting.py#notify_for",
+                               "because": "x", "disposition": "y"})))
+        self.assertTrue(any("no disposition" in p for p in producer_problems(
+            "turn.completed", {"status": "DECLARED_ABSENT", "because": "x"})))
+        self.assertTrue(any("is not one of" in p for p in producer_problems(
+            "turn.completed", {"status": "MAYBE_LATER"})))
+
+    def test_the_producer_of_both_alert_events_is_the_daemon(self):
+        """The one production path, named so that unwiring it is red.
+
+        `notify_for` is called from `runtime/cli.py#cmd_alert_sync`, and the
+        daemon reaches the same two events through `alert.pass` → the pending
+        intent → that command. What this asserts is the edge that makes the
+        event real: a surface that is not the module itself calls it. The full
+        chain — that `cmd_alert_sync` is wired to a parser — is not asserted
+        here because `test_declared_commands.py` already fails when a declared
+        `serverosctl` subcommand stops existing, and between the two gates the
+        path from a person typing a command to a message leaving the machine is
+        covered end to end.
+        """
+        callers = _callers_of("runtime/alerting.py", "notify_for")
+        self.assertIn("runtime/cli.py", callers, callers)
 
 
 class DeclaredFieldsHaveReaders(unittest.TestCase):

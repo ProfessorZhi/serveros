@@ -2341,6 +2341,296 @@ def cmd_coordination_list(args) -> int:
 
 
 # ---------------------------------------------------------------------------
+# §21 — the alert register, and the one command that actually says something
+# ---------------------------------------------------------------------------
+#
+# Five commands, and the split between them is the design rather than a
+# presentation choice.
+#
+#   list/inspect    read the register. Answered by the DAEMON, because the
+#                   register is its state and a second process reading the
+#                   file directly would be a second reader that can see a
+#                   half-written document.
+#   ack/snooze      what a PERSON does about an alert. Answered by the daemon,
+#                   over IPC, from a process a person is running. §11: there is
+#                   no inbound transport that carries an acknowledgement back
+#                   from a chat, so this is the only way one can happen.
+#   sync            the delivery hop, and the ONLY command in this tree that
+#                   constructs a HumanControlProvider. It evaluates, asks what
+#                   has to be said, says it, and records what happened.
+#
+# The daemon cannot send and this file does not decide. §2 puts ServerOS on the
+# "what is the fact" side and the provider on the "how it reaches a person"
+# side, and the two only stay apart if the process that evaluates is not the
+# process that sends.
+
+
+def _alert_answer(method: str, params: dict) -> tuple[dict, int]:
+    """One daemon call, and the exit code its answer earns.
+
+    Exit 2 is the daemon not answering — a missing measurement. A refusal the
+    daemon DID answer ("no alert with that ref") is a fact about the register
+    and exits 0, the same reading `_coordination_answer` makes.
+    """
+    try:
+        return ask_daemon(method, params), EXIT_OK
+    except DaemonUnavailable as exc:
+        sys.stderr.write(f"serverosctl: {exc}\n")
+        return {}, EXIT_COULD_NOT_ANSWER
+
+
+def _alert_state_word(state: str) -> str:
+    """OPEN / ACKNOWLEDGED / SNOOZED / RESOLVED, padded for the column."""
+    return f"{state or '?':<13}"
+
+
+def _alert_exists(alert_ref: str) -> int | None:
+    """None if this node holds that ref, otherwise the exit code to return.
+
+    Asked through the ordinary read BEFORE asking for the mutation, and the
+    reason is the exit code. `ack` and `snooze` raise for a ref the register
+    does not hold, and `ask_daemon` reports every refusal the same way as a
+    socket that would not connect — so letting the mutation fail would tell a
+    caller "this node could not answer" when the truth is that it answered and
+    does not hold that alert. One extra read on a command a person types buys
+    an exit code that says which of the two happened.
+    """
+    try:
+        payload = ask_daemon("alert.inspect", {"alert_ref": alert_ref})
+    except DaemonUnavailable as exc:
+        sys.stderr.write(f"serverosctl: {exc}\n")
+        return EXIT_COULD_NOT_ANSWER
+    if not payload.get("found"):
+        sys.stderr.write(
+            f"serverosctl: no alert {alert_ref} is held by this node. "
+            f"`serverosctl alert list` shows the refs it does hold — an alert "
+            f"ref is derived from code, device and subject, so a ref that "
+            f"never existed and one that was never opened look the same.\n")
+        return EXIT_FAULT
+    return None
+
+
+def cmd_alert_list(args) -> int:
+    """Every alert this node holds, most in need of attention first."""
+    payload, code = _alert_answer("alert.list", {})
+    if code != EXIT_OK:
+        return code
+    by_state = payload.get("by_state") or {}
+    lines = [
+        f"schema      {payload.get('schema')}",
+        f"device      {payload.get('device_ref')}",
+        f"alerts      {payload.get('count')}",
+        "  " + "  ".join(f"{state}={by_state.get(state, 0)}"
+                         for state in ("OPEN", "ACKNOWLEDGED", "SNOOZED",
+                                       "RESOLVED")),
+        "",
+        f"{'STATE':<14}{'SEV':<8}{'CODE':<34}{'SUBJECT':<40}",
+    ]
+    for row in payload.get("alerts") or []:
+        lines.append(
+            f"{_alert_state_word(row.get('state'))}"
+            f"{str(row.get('severity_word') or row.get('severity')):<8}"
+            f"{str(row.get('code')):<34}"
+            f"{str(row.get('subject_ref')):<40}")
+        # The two things a reader needs to know about an alert they are looking
+        # at and cannot act on: it was never said, or it was said and did not
+        # arrive. Both are printed rather than folded into the state, because
+        # neither is a state the alert is in.
+        if row.get("pending"):
+            lines.append(f"{'':<14}pending {row.get('pending')} "
+                         f"not before {row.get('pending_not_before')}")
+        if row.get("delivery_failure"):
+            lines.append(f"{'':<14}NOT DELIVERED: {row.get('delivery_failure')}")
+        if row.get("hold_reason"):
+            lines.append(f"{'':<14}quiet: {row.get('hold_reason')}")
+    lines.append("")
+    lines.append(payload.get("delivery_surface") or "")
+    emit(payload, as_json=args.json, lines=lines)
+    return EXIT_OK
+
+
+def cmd_alert_inspect(args) -> int:
+    """One alert: the register's row and the sentence a person would be sent."""
+    payload, code = _alert_answer("alert.inspect", {"alert_ref": args.alert_ref})
+    if code != EXIT_OK:
+        return code
+    if not payload.get("found"):
+        sys.stderr.write(f"serverosctl: {payload.get('note')}\n")
+        return EXIT_FAULT
+    alert = payload.get("alert") or {}
+    lines = [
+        f"ref         {alert.get('alert_ref')}",
+        f"code        {alert.get('code')}",
+        f"state       {alert.get('state')}",
+        f"device      {alert.get('device_ref')}",
+        f"subject     {alert.get('subject_ref')}",
+        f"first seen  {alert.get('first_seen')}",
+        f"last seen   {alert.get('last_seen')}  ({alert.get('occurrence_count')} occurrence(s))",
+        f"notified    {alert.get('last_notified_at') or 'never'}",
+        f"snoozed to  {alert.get('snooze_until') or '-'}",
+        f"resolved at {alert.get('resolved_at') or '-'}",
+        "",
+        "-- what a person would have been sent --",
+        payload.get("rendered") or "",
+    ]
+    emit(payload, as_json=args.json, lines=lines)
+    return EXIT_OK
+
+
+def cmd_alert_ack(args) -> int:
+    """A person has seen this. §11: it does NOT mean the condition ended."""
+    refused = _alert_exists(args.alert_ref)
+    if refused is not None:
+        return refused
+    params = {"alert_ref": args.alert_ref}
+    if args.note:
+        params["note"] = args.note
+    payload, code = _alert_answer("alert.ack", params)
+    if code != EXIT_OK:
+        return code
+    emit(payload, as_json=args.json, lines=[
+        f"ref         {payload.get('alert_ref')}",
+        f"state       {payload.get('state')}",
+        f"acked at    {payload.get('acknowledged_at')}",
+        "            acknowledged, not resolved: the alert keeps its "
+        "observation current and closes only when the condition does"])
+    return EXIT_OK
+
+
+def cmd_alert_snooze(args) -> int:
+    """Stop repeating it for a while. The observation keeps updating."""
+    refused = _alert_exists(args.alert_ref)
+    if refused is not None:
+        return refused
+    params = {"alert_ref": args.alert_ref}
+    if args.seconds:
+        params["seconds"] = args.seconds
+    payload, code = _alert_answer("alert.snooze", params)
+    if code != EXIT_OK:
+        return code
+    emit(payload, as_json=args.json, lines=[
+        f"ref         {payload.get('alert_ref')}",
+        f"state       {payload.get('state')}",
+        f"quiet until {payload.get('snooze_until')}",
+        "            it will speak again if it is still firing when this "
+        "expires — a snooze that resolved would be a way to make a problem "
+        "go away by waiting"])
+    return EXIT_OK
+
+
+def _alert_provider():
+    """The HumanControlProvider, constructed HERE and nowhere else.
+
+    Loaded on this command's first line rather than at import, so that a
+    `serverosctl` with no transport configured still answers every other
+    command. That is the same rule the daemon follows from the other side: the
+    surface that decides what is true never depends on the surface that
+    delivers, or neither can answer when the other is broken.
+    """
+    path = _HERE.parent / "mcp" / "human_control.py"
+    module = _load_module_from(path, "serveros_human_control")
+    return module.BotMuxHumanControlProvider()
+
+
+def cmd_alert_sync(args) -> int:
+    """Evaluate, then say what has to be said, then record what happened.
+
+    Three steps and each one is reported, because the interesting failure is
+    the one in the middle: an alert that is open, has been open, and was never
+    said — or was attempted and did not arrive. `--dry-run` stops after the
+    second step, which is what makes it possible to see what WOULD be sent
+    without sending it.
+
+    A FAILED delivery does not resolve the alert and does not mark it
+    delivered. It stays pending with its clock pushed forward by the declared
+    cooldown, which is §12's answer to both failure modes at once: not a lie
+    about what arrived, and not a retry loop.
+    """
+    passed, code = _alert_answer("alert.pass", {})
+    if code != EXIT_OK:
+        return code
+    pending, code = _alert_answer("alert.pending", {})
+    if code != EXIT_OK:
+        return code
+    items = pending.get("pending") or []
+    lines = [f"evaluated   {passed.get('at')} (both detectors)"]
+    for entry in passed.get("passes") or []:
+        lines.append(f"  {entry.get('detector'):<30} touched={len(entry.get('alerts') or [])} "
+                     f"held={len(entry.get('held') or [])}")
+    lines.append(f"to say      {len(items)}")
+
+    if args.dry_run:
+        for item in items:
+            alert = item.get("alert") or {}
+            lines.append(f"  would send  {item.get('kind'):<9} "
+                         f"{alert.get('severity')} {alert.get('code')} "
+                         f"{alert.get('subject_ref')}")
+        emit(pending, as_json=args.json, lines=lines)
+        return EXIT_OK
+
+    if not items:
+        emit(pending, as_json=args.json, lines=lines + [
+            "nothing to say. That is not the same as nothing being wrong — "
+            "read `alert list` for the alerts that are open and quiet, and "
+            "why"])
+        return EXIT_OK
+
+    try:
+        provider = _alert_provider()
+    except Exception as exc:  # noqa: BLE001 - the reason is the answer
+        sys.stderr.write(
+            f"serverosctl: no HumanControlProvider could be constructed: "
+            f"{type(exc).__name__}: {exc}\n"
+            f"            {len(items)} alert notification(s) remain pending. "
+            f"Nothing was sent and nothing was marked as sent.\n")
+        return EXIT_COULD_NOT_ANSWER
+
+    alerting = _load("serveros_runtime_alerting", "alerting.py")
+    conversation = args.conversation or os.environ.get("SERVEROS_ALERT_CONVERSATION")
+    if not conversation:
+        sys.stderr.write(
+            "serverosctl: no conversation to send to. Pass --conversation "
+            "(or set SERVEROS_ALERT_CONVERSATION). Nothing was sent; the "
+            "alerts stay pending.\n")
+        return EXIT_COULD_NOT_ANSWER
+
+    sent = failed = 0
+    for item in items:
+        answer = alerting.notify_for(
+            provider, alert=item["alert"], kind=item["kind"],
+            device_ref=item["alert"].get("device_ref") or "(unknown device)",
+            at=passed.get("at"), conversation_ref=conversation)
+        # The provider's answer is SUPPORTED/UNSUPPORTED/UNKNOWN, which is what
+        # it thinks of the TRANSPORT. The register records what happened to the
+        # MESSAGE, and the two vocabularies are not the same one: a transport
+        # that can carry notifications and a call that threw is a FAILED
+        # delivery, not a "supported" one. Translated here, in the only place
+        # that has both answers in hand.
+        state = ("DELIVERED" if answer.delivered
+                 else answer.state if answer.state in ("UNSUPPORTED", "UNKNOWN")
+                 else "FAILED")
+        _alert_answer("alert.record-delivery", {
+            "alert_ref": item["alert_ref"], "kind": item["kind"],
+            "state": state, "reason": answer.reason})
+        if answer.delivered:
+            sent += 1
+        else:
+            failed += 1
+        alert = item["alert"]
+        lines.append(f"  {'sent    ' if answer.delivered else 'NOT sent'}  "
+                     f"{item['kind']:<9} {alert.get('severity')} "
+                     f"{alert.get('code')} {alert.get('subject_ref')}")
+        if not answer.delivered:
+            lines.append(f"            {state}: {answer.reason}")
+    lines.append(f"delivered   {sent}, not delivered {failed}")
+    lines.append("            a notification that did not arrive leaves the "
+                 "alert pending and un-notified; it does not resolve it")
+    emit({"sent": sent, "failed": failed, "evaluated": passed},
+         as_json=args.json, lines=lines)
+    return EXIT_OK
+
+
+# ---------------------------------------------------------------------------
 # §14/§15/§16/§16A/§17 — the five surfaces this round added
 # ---------------------------------------------------------------------------
 #
@@ -3074,6 +3364,53 @@ def build_parser() -> argparse.ArgumentParser:
     co_list = coordination_sub.add_parser(
         "list", help="how many threads this node holds, by role", **_COMMON)
     co_list.set_defaults(func=cmd_coordination_list)
+
+    alert = sub.add_parser(
+        "alert", help="§21 · what this node has found, and what it has told "
+                      "you about it", **_COMMON)
+    alert_sub = alert.add_subparsers(dest="subcommand", required=True)
+
+    al_list = alert_sub.add_parser(
+        "list", help="every alert, most in need of attention first. An open "
+                     "alert with a hold reason is one it has chosen not to "
+                     "repeat yet, not a closed one", **_COMMON)
+    al_list.set_defaults(func=cmd_alert_list)
+
+    al_inspect = alert_sub.add_parser(
+        "inspect", help="one alert, plus the sentence a person would have "
+                        "been sent", **_COMMON)
+    al_inspect.add_argument("alert_ref")
+    al_inspect.set_defaults(func=cmd_alert_inspect)
+
+    al_ack = alert_sub.add_parser(
+        "ack", help="a person has seen it. NOT a resolution — the alert keeps "
+                    "its observation current and closes only when the "
+                    "condition does", **_COMMON)
+    al_ack.add_argument("alert_ref")
+    al_ack.add_argument("--note", help="why, in your words. Recorded with the "
+                                       "acknowledgement")
+    al_ack.set_defaults(func=cmd_alert_ack)
+
+    al_snooze = alert_sub.add_parser(
+        "snooze", help="stop repeating it for a while. It speaks again if it "
+                       "is still firing when the window ends", **_COMMON)
+    al_snooze.add_argument("alert_ref")
+    al_snooze.add_argument("--seconds", type=int,
+                           help="the window, in seconds. Omitted means the "
+                                "window the contract declares")
+    al_snooze.set_defaults(func=cmd_alert_snooze)
+
+    al_sync = alert_sub.add_parser(
+        "sync", help="evaluate, then send whatever has to be said, then record "
+                     "what happened. The only command that holds a transport",
+        **_COMMON)
+    al_sync.add_argument(
+        "--conversation", help="where to send. Falls back to "
+                               "SERVEROS_ALERT_CONVERSATION")
+    al_sync.add_argument(
+        "--dry-run", action="store_true",
+        help="evaluate and show what WOULD be sent, without sending it")
+    al_sync.set_defaults(func=cmd_alert_sync)
 
     return parser
 

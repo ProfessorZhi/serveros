@@ -383,55 +383,89 @@ to guess: **the one cell we cannot compute is left blank on the card.**
 
 ### 8.2 An alert is a state, not a verdict
 
-**There is no alert state machine.** `ACKNOWLEDGED`, `SNOOZED`, `RESOLVED`,
-`alert_ref`, `first_seen`, `hysteresis` and `cooldown` have **zero hits** across
-both `ops/scripts` and this repository.
+**There is now an alert state machine**, in `runtime/alerting.py`, and the
+state it keeps is the one a detector cannot: **an identity that outlives the
+process that noticed.**
 
-What exists:
+The problem it solves is still visible one directory over. `monitor.py`
+`evaluate()` returns a **transient** list of `{level, key, msg}` recomputed
+from scratch every run, and `run.sh` keys its idempotency on the hour
+(`YYYYMMDDTH` + a sha256 of card and report). Both are correct for what they
+do, and neither can tell you that the thing you were told about at 02:00 is the
+same thing you are being told about at 08:00 — so a condition that persists six
+hours is **six identical cards**, and a metric oscillating around its threshold
+produces an unbounded number of them. That trains people to ignore all of them,
+and the failure after that is a real alert nobody reads.
 
 ```text
-monitor.py evaluate()   a TRANSIENT list of {level, key, msg}, recomputed from
-                        scratch every run — alerts have no identity across runs
-run.sh                  an HOUR-scoped idempotency key (YYYYMMDDTH + a sha256 of
-                        card+report): same hour, same bytes → not resent
-history.jsonl           a METRIC ledger, not an alert ledger. Trend only.
+identity        code + device_ref + subject_ref      (never pid, never a
+                                                     container name — names are
+                                                     reused — never a timestamp)
+states          OPEN · ACKNOWLEDGED · SNOOZED · RESOLVED
 ```
 
-So an alert cannot be acknowledged, cannot be snoozed, cannot be resolved, and a
-condition that persists for six hours is six identical cards rather than one
-condition. The intended lifecycle is the standard one, and the reason each
-transition matters is a specific failure:
-
 ```text
-OPEN → ACKNOWLEDGED   someone is on it; stop telling everyone
-OPEN → SNOOZED        known, deliberately deferred until a time
-any  → RESOLVED       and the recovery is announced — otherwise silence after
+OPEN → ACKNOWLEDGED   someone is on it; stop telling everyone. NOT a closure:
+                      it never becomes RESOLVED on its own, keeps its
+                      observation current, and closes only when the world does
+OPEN → SNOOZED        known, deliberately deferred. The observation keeps
+                      updating, occurrence_count keeps rising, and when the
+                      window ends an alert that is still firing speaks again
+any  → RESOLVED       and the recovery is ANNOUNCED — otherwise silence after
                       an alert is indistinguishable from a dead timer
 ```
 
-plus **dedupe by identity** (one alert, one card), **hysteresis** (an alert that
-fires at 85 % and clears at 84 % fires forever), and **cooldown**. Without
-hysteresis a metric oscillating around a threshold produces an unbounded number
-of notifications, which trains people to ignore all of them — and the failure
-after that is a real alert nobody reads.
+Snoozing withholds a message that has not gone out yet, not only future ones.
+That is not obvious, and it is not a nicety: the "is this due" question is
+answered without consulting state, so an alert snoozed before its first message
+left would have been delivered by the next pass, for the whole window the
+person asked not to be told. The intent is **withheld and recorded as
+withheld** rather than dropped, and the ordinary path re-pends it if the alert
+is still firing when the window ends.
 
-The closest thing to a real state machine in the ecosystem is
-`ops/scripts/maintenance/botmux_watchdog.py`, and it is worth copying rather
-than designing: a persisted `state ∈ ok|problem|restarted|giveup|skip`, an
-explicit **recovery** transition (`RECOVERED — 上一次是 …, 现在恢复了`), a restart
-ledger, `MIN_SECONDS_BETWEEN_RESTARTS = 120` and `MAX_RESTARTS_PER_HOUR = 3`.
-It has no `alert_ref`, no ACK and no SNOOZE, and its "notification" is stdout
-into the systemd journal — **not a person**. But the parts it does have are the
-parts the monitor lacks.
-
-### 8.3 The notification pipeline exists. The producers do not.
-
-`runtime/notifications.py` and `runtime/notification-contract.yaml` are
-complete, tested, and **have no callers**:
+Three rules do the rest, and each answers a specific way the naive version
+fails:
 
 ```text
-9 closed events      session.* · turn.* · approval.required · device.unavailable
-                     · provider.degraded · handoff.completed · run.terminated
+dedupe      one alert per identity, so one condition is one row
+hysteresis  a measurement-backed alert closes at `threshold - margin`, never at
+            the threshold — an alert that fires at 85 % and clears at 84 %
+            fires forever. A code with NO margin is a declaration: it matches
+            or it does not, and it closes when the signal stops being emitted
+cooldown    first OPEN notifies IMMEDIATELY — a cooldown that swallowed the
+            first message would be useless for the one thing it exists for.
+            After that, 900s / 1h / 6h by severity, and the clock is
+            `last_attempt_at`, NOT `last_notified_at`
+```
+
+That last clause is the one worth keeping. If the clock ran from the last
+**successful** delivery, a transport that is down would leave the clock
+untouched, the cooldown would never elapse, and the alert would go silent for
+exactly as long as the transport stayed broken — the one period in which a
+person most needs to hear about it.
+
+The closest precedent in the ecosystem is still
+`ops/scripts/maintenance/botmux_watchdog.py` (persisted state, an explicit
+`RECOVERED — 上一次是 …, 现在恢复了`, `MIN_SECONDS_BETWEEN_RESTARTS = 120`,
+`MAX_RESTARTS_PER_HOUR = 3`), and it was copied rather than designed. It has no
+`alert_ref`, no ACK and no SNOOZE, and its "notification" is stdout into the
+systemd journal — **not a person**.
+
+### 8.3 The pipeline has a producer. The other six are named.
+
+`runtime/notifications.py` and `runtime/notification-contract.yaml` were
+complete, tested, and had **no callers**. The bridge that closes that is the
+one the detector was already behind:
+
+```text
+runtime/anomaly.py ─┐
+                    ├─→ runtime/alerting.py ─→ pending intent on the row
+runtime/resource_anomaly.py ─┘                        │
+                                                      │  serverosctl alert sync
+                                                      ↓
+                          HumanControlProvider ─→ BotMux ─→ Feishu
+11 closed events     the nine session/turn/approval/device/run events, plus
+                     `alert.opened` and `alert.resolved`
 severity per EVENT   not per call site, so two identical events cannot arrive
                      at different volumes from different code paths
 templates authored   `author: serveros`, `rendering_owner: HumanControlProvider`
@@ -440,21 +474,60 @@ deliver()            consults `human.notification.transport` FIRST and returns
                      `delivered: false` with the blocking state
 ```
 
-What is missing is every producer:
+**The daemon cannot deliver, and that is the design.** `alert_pass()` decides
+the facts and writes an intent; it holds no provider, for the same reason
+`agent_control_status` refuses to import a transport — a daemon that can send
+is a daemon that cannot tell you the transport is broken, which is exactly when
+its answer is wanted. Only `serverosctl alert sync` holds a transport, and only
+it can write `last_delivery` ∈ `DELIVERED · FAILED · UNSUPPORTED · UNKNOWN`.
+**None of the four resolves an alert.**
+
+What only genuinely graded anomalies may do is notify. A code in
+`codes_not_evaluated`, or a severity of `unknown`, **does not notify** — a
+three-valued reading is an answer, and "nothing was evaluated" is not "the node
+is fine". An alert whose code was not evaluated this tick is held, never
+resolved.
+
+The remaining six events are `DECLARED_ABSENT` **in the contract, with the
+reason and a disposition on each**: `session.created` and `handoff.completed`
+wait on a session service that persists nothing to raise them from,
+`session.waiting_input` and `approval.required` are blocked on inbound and
+approval transports, and `run.terminated` is `work-engine`'s transition rather
+than this repository's. `tests/test_declared_implementations.py` fails if an
+entry claims a producer that does not resolve, and fails again if a built
+producer keeps its `DECLARED_ABSENT` — the list can only shrink by something
+actually being built.
+
+### 8.3.1 The finding is the top contributor, not the group total
+
+A card that says `codex-app-server 5 processes total 279.5%` is **arithmetic
+about a group**, and it is not actionable: the group is not the thing to look
+at, and the number does not name it. The measurement that answers "who" was
+already being taken — `graph.contributors()` ranks the members of a runtime
+group — and it now travels with the alert:
 
 ```text
-no import of notifications.py outside tests/; daemon.py never names it
-the contract's `producers:` names six events that no code emits
-no anomaly → event bridge: anomaly.py's 19 codes terminate at a PULL command
-no notification policy anywhere
+top contributor (highest cpu): pid 79288 … 279.5% of one core
 ```
 
-The contract naming six producers that do not exist is the `declared-but-absent`
-pattern in its purest form, and it has a plain consequence: **unless a person
-runs a command, nobody is told anything.** This is the highest
-value-per-unit-effort entry on the roadmap, because the expensive half — the
-vocabulary, the severity model, the capability-aware delivery — is already
-built and correct.
+The label matters. "top contributor" placed above a memory figure reads as
+"this process is the memory problem", so the axis is named. A group the node
+ranked without a process table says **`not ranked`** with the reason, rather
+than printing nothing that a reader would take for "no contributor".
+
+**A PID is not an identity.** `pid 79288` is a fact about a process at an
+instant; the alert's identity is the canonical `runtime-group:` ref, which is
+why killing and relaunching the same runaway produces **one** alert and not one
+message per restart. That distinction has a case behind it: a Codex app-server
+was terminated, was relaunched by a remote SSH connection within about ten
+seconds under a new PID, and continued doing the same thing. The alert is about
+the thing that continued.
+
+A recommendation travels with it and is always one of `REVIEW` / `MONITOR` /
+`GOVERNANCE_REQUIRED`, and when one is present the sentence says that nothing
+was stopped. **An alert is not an authorization**: nothing in this path kills,
+terminates, restarts, stops or removes anything, and the sentence says so
+rather than leaving the reader to guess.
 
 ## 9. A review candidate is not a cleanup candidate
 

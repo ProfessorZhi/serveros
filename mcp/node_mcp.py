@@ -475,6 +475,49 @@ TOOLS: tuple[dict, ...] = (
         ),
         "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False},
     },
+    # -- §21: the alert register --------------------------------------------
+    #
+    # Two tools, and the absence of the other two is the design rather than an
+    # omission. `alert.ack` and `alert.snooze` exist as daemon methods and as
+    # CLI commands, and they are NOT here: this surface "holds no state and
+    # changes nothing" (its own `initialize` block says so), and §11 makes
+    # acknowledgement a statement about a person's attention. §18 leaves
+    # whether an agent may make that statement to the existing human-identity
+    # policy; that policy has no way to establish which person an agent call is
+    # speaking for, so the write stays where a person is: the CLI.
+    {
+        "name": "alert.list",
+        "description": (
+            "Every alert this node holds, most in need of attention first. An "
+            "alert is an anomaly given a stable identity, so the same problem "
+            "persisting across ticks is ONE row with an occurrence count rather "
+            "than a new finding each minute. Read two fields before concluding "
+            "anything from the list: `hold_reason` — this node has a reason not "
+            "to repeat it, which is not the same as it being fixed — and "
+            "`delivery_failure` — it was said and did not arrive. Nothing here "
+            "stops, restarts, kills or reclaims anything; an alert is a "
+            "finding, not an authorization."
+        ),
+        "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False},
+    },
+    {
+        "name": "alert.inspect",
+        "description": (
+            "One alert in full, plus the exact sentence a person would have "
+            "been sent. `rendered` is the message and not a summary of one, so "
+            "it is the thing to read when the question is what somebody is "
+            "being told. `found: false` is an answer and not an error: an "
+            "alert ref is derived from code, device and subject, so a ref that "
+            "never existed and one that was never opened look the same here."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {"alert_ref": {"type": "string",
+                                         "description": "e.g. alert:0f3a…, from alert.list"}},
+            "required": ["alert_ref"],
+            "additionalProperties": False,
+        },
+    },
 )
 
 
