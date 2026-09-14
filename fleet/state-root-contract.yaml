@@ -87,12 +87,23 @@ namespaces:
     # (observes)" — and neither half was true of any program in this tree:
     # ability-management never wrote here, and `runtime/ability_projection.py`
     # had no caller outside its own tests. So the Discovery surface read a file
-    # with no producer, which is `DECLARED_ABSENT` in its purest form. The
-    # command below is the producer, and it is a command rather than a daemon
-    # tick on purpose: a tick that ran `git show` against another repository
-    # would make the loop's latency depend on that repository's state, which is
-    # what §28 forbids.
-    producer: serverosctl ability refresh
+    # with no producer, which is `DECLARED_ABSENT` in its purest form.
+    #
+    # The producer is the module below, reached as `serverosctl ability
+    # refresh`. It is a command rather than a daemon tick on purpose: a tick
+    # that ran `git show` against another repository would make the loop's
+    # latency depend on that repository's state, which is what §28 forbids.
+    #
+    # The field names the MODULE, not the command, and that is a correction
+    # rather than a preference. "serverosctl ability refresh" is a sentence,
+    # and every reader of this field that matters resolves producers by asking
+    # three questions — is this a path in the tree, is it a domain this
+    # contract declares external, is it a section of this contract — and a
+    # sentence answers none of them. So the field reported as unresolvable,
+    # and an unresolvable producer is read as an unwritten one. Naming the
+    # module answers the first question, and the command stays one line up
+    # where a reader can type it.
+    producer: runtime/ability_projection.py
     required: false
     authority: false
     # Deliberately classed as a projection even though it sits in the
@@ -285,14 +296,55 @@ namespaces:
   boards:
     class: projection
     holds: the derived Board current view, per project
-    producer: serverosctl board render
+    # The producer is real and is NOT a command of this repository — and both
+    # halves of that took reading to establish, because the name is genuinely
+    # ambiguous on this machine.
+    #
+    # TWO PROGRAMS ARE CALLED `serverosctl`, AND PATH GIVES THE NAME TO THIS ONE
+    # -------------------------------------------------------------------------
+    #   ~/.local/bin/serverosctl -> runtime-assets/hwz-server-os/
+    #       serveros-linux-work/current/bin/serverosctl          = THIS repo's
+    #       node CLI. Subcommands: status, device, context, path, resource,
+    #       runtime, process, anomaly, container, ability, memory, probe. It
+    #       has no `board`, and never had one.
+    #   envs/python/serveros-control-plane/bin/serverosctl       = the
+    #       work-engine control plane. `pyproject.toml` declares BOTH
+    #       `workengine` and `serverosctl` as console scripts for
+    #       `workengine.cli:main`, and that CLI's argparse prog is literally
+    #       `serverosctl`. It has `board render`, and it wrote every file under
+    #       this namespace: `workengine/board.py` — `render()`, schema
+    #       `serveros/board.v3`, `current.json` + `current.md`.
+    #
+    # So the previous spelling of this field — this repository's CLI name,
+    # followed by the control plane's `board render` — named a command that
+    # EXISTS, in the other distribution. On this node a reader who typed it was
+    # answered `invalid choice: 'board'` by the node CLI, and both gates in
+    # this tree reported the namespace as one whose producer nobody could
+    # resolve, which reads as unwritable rather than as misattributed.
+    #
+    # `work-management` is the ability that owns Item/Run/board state, and it
+    # is the external domain this contract already declares for it; the command
+    # is named beside it so that a reader can run the thing rather than look up
+    # which program the ability resolves to today. Reached on this node as:
+    #   <control-plane>/bin/workengine board render \
+    #       --project P --output-dir <state>/boards/P
+    producer: work-management (the control plane's `workengine board render`,
+      whose own argparse prog is `serverosctl`)
     required: false
     authority: false
     absent_means: NO_BOARDS
   federation:
     class: projection
     holds: locator-only observed projections for external domains (feishu, github)
-    producer: the federation collectors
+    # "the federation collectors" named a GROUP, and a group is not something a
+    # reader can run, check, or be told is missing. The collectors are real:
+    # `workengine/federation.py` on the control plane — `publish_inventory`,
+    # `check_inventory` and `proposal` — exposed as `workengine federation
+    # <domain> publish|check|proposal`. The same correction as `boards` and
+    # `abilities` in this file: name the owning ability first, so the field
+    # resolves, and put the command beside it so a reader can run the thing.
+    producer: work-management (the control plane's `workengine federation
+      <domain> publish`)
     required: false
     authority: false
     # HWZ-MAP.md, FEISHU-MAP.md and GITHUB-MAP.md name

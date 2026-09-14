@@ -59,6 +59,34 @@ def contract_at(path: Path) -> dict:
     return yaml.safe_load(path.read_text())
 
 
+# The state-root namespaces whose declared producer nothing in this repository
+# can resolve — not a path, not an external domain this contract names, not a
+# section of the contract itself. Asserted to be exactly this set, so the list
+# cannot drift and neither can its absence: closing one of these means editing
+# this constant, on purpose, in the same commit.
+#
+# IT IS EMPTY, AND THAT IS A FINDING RATHER THAN A TIDY STATE.
+#
+# The audit reported three unresolvable producers before this round. All three
+# were the same defect wearing three different sentences, and none of them was
+# a missing producer — every one named something that exists:
+#
+#   abilities    `serverosctl ability refresh` — this repository's own command,
+#                added in §2, with a real writer behind it. Unresolvable
+#                because a command is a sentence and the resolver reads paths.
+#   boards       `serverosctl board render` — the control plane's command, of a
+#                distribution that ships a second program under this name.
+#   federation   `the federation collectors` — `workengine/federation.py`'s
+#                publish paths, named as a group instead of as a thing.
+#
+# A reader was told, for all three, that the producer was unresolvable, and an
+# unresolvable producer reads as an unwritten one. The repair was in the
+# contract, not here: each field now names something the three readings can
+# answer. This constant stays because the next prose producer must be a
+# deliberate entry rather than a new silent UNRESOLVED.
+KNOWN_UNRESOLVED: dict = {}
+
+
 # ---------------------------------------------------------------------------
 # It reads code, not text
 # ---------------------------------------------------------------------------
@@ -515,7 +543,18 @@ class ProducersResolve(unittest.TestCase):
         self.assertEqual(self.rows(report)["abilities"]["resolution"], "external")
 
     def test_prose_that_names_nothing_is_unresolved(self):
-        report = self.resolve({"boards": {"producer": "serverosctl board render"}})
+        """The fixture is deliberately a sentence that names nothing, and NOT
+        a copy of a real contract entry.
+
+        It used to read `{"boards": {"producer": "serverosctl board render"}}` —
+        which was, at the time, a faithful copy of what the live contract said.
+        That is exactly the shape that made it worthless: when the contract was
+        corrected, this fixture kept asserting the old world and kept passing,
+        and the only thing it was still testing was a string no clause in this
+        repository contains any more. A consumer test that hand-writes the
+        producer's shape is immune to the producer changing.
+        """
+        report = self.resolve({"boards": {"producer": "the boards renderer"}})
         row = self.rows(report)["boards"]
         self.assertEqual(row["resolution"], "UNRESOLVED")
         self.assertIn("no path, no declared external domain", row["why"])
@@ -613,21 +652,50 @@ class TheLiveTreeIsCovered(unittest.TestCase):
                      for h in scan["hits"] if h["kind"] == "mutation"]
         self.assertEqual([], offenders + mutating)
 
-    def test_the_declared_absence_of_a_producer_is_still_the_known_one(self):
-        """`boards` names `serverosctl board render` as its producer, and no
-        such command exists. This checker reaches that independently. The
-        assertion is not that it is fixed — it is that the two records AGREE
-        rather than being a second, rival list of known-absent things."""
-        absent = [r for r in self.report["producers"]["namespaces"]
-                  if r["resolution"] == "UNRESOLVED"]
-        names = {r["namespace"] for r in absent}
-        declared = _load("serveros_declared_commands",
-                         REPO / "tests" / "test_declared_commands.py")
-        if "boards" in names:
-            self.assertIn("board render", declared.KNOWN_ABSENT,
-                          "a producer this checker cannot resolve is also "
-                          "recorded as a declared-but-absent command; if the "
-                          "second record went away, this one is unreviewed")
+    def test_boards_names_a_producer_that_resolves(self):
+        """`boards` used to be this file's headline UNRESOLVED finding, and the
+        finding was wrong in the direction that costs the most: the producer
+        existed, in another distribution, spelled with a name this repository
+        also answers to. A checker that had said "unresolved, and here is who
+        owns it" would have sent a reader to the control plane in a minute.
+
+        So the assertion is now the positive one, against the live contract —
+        and it is the assertion that was missing before. `boards` must resolve,
+        and it must resolve to the domain the contract declares for it, so that
+        the next person to edit this field gets a red test rather than a field
+        that quietly reads as unwritable.
+        """
+        row = next(r for r in self.report["producers"]["namespaces"]
+                   if r["namespace"] == "boards")
+        self.assertNotEqual("UNRESOLVED", row["resolution"], row["why"])
+        self.assertEqual(row["resolution"], "external")
+        self.assertEqual(row["named_domains"], ["work-management"])
+
+    def test_every_unresolved_producer_is_recorded_by_name(self):
+        """The general form, and the repair of a real failure mode in this file.
+
+        The test this replaced was conditional — it checked that `boards` was
+        both UNRESOLVED here and exempted over there, `if "boards" in names`.
+        When the resolution changed, the condition went false and the test
+        stopped checking anything at all, silently, which is the one outcome a
+        cross-record check must never have. Two records that agree by both
+        being absent from each other's view are not two records.
+
+        Now the unresolved namespaces must appear in KNOWN_UNRESOLVED below
+        with a reason. A new one fails this test; closing one fails it too,
+        until the entry is deleted — the same shape as `KNOWN_ABSENT` in
+        `test_declared_commands.py`, and for the same reason."""
+        names = {r["namespace"] for r in self.report["producers"]["namespaces"]
+                 if r["resolution"] == "UNRESOLVED"}
+        self.assertEqual(self.report["producers"]["counts"]["unresolved"], len(names))
+        self.assertEqual(
+            sorted(names), sorted(KNOWN_UNRESOLVED),
+            "the set of producers nothing can resolve has changed; "
+            "add or remove the entry in KNOWN_UNRESOLVED with a reason")
+        for name, entry in KNOWN_UNRESOLVED.items():
+            self.assertTrue(entry["because"], f"{name} has no because")
+            self.assertIn(entry["disposition"],
+                          {"NEEDS_HUMAN", "REDECLARED", "DEFER"}, name)
 
 
 if __name__ == "__main__":
