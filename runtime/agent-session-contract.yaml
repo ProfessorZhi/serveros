@@ -181,6 +181,15 @@ session_fields:
     - title
     - workspace
     - cwd
+    # NOT the binding. `work_item` is a provider-reported field on a session
+    # record — the work a runtime was told about — and it is a string that no
+    # code validates. `bound_item_ref` (see the `coordination:` block below) is
+    # ServerOS's own record of which Item a thread is for: required for
+    # `execution`, frozen at create, and the operand every refusal compares
+    # against. Two words, two subjects, and the collision is exactly the shape
+    # §17's comment below says must be stated rather than left to a reader.
+    #   A provider that reports no `work_item` and a thread that is bound to an
+    #   Item are both ordinary; reading one as evidence of the other is not.
     - work_item
     - owner
     - created_at

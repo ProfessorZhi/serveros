@@ -174,28 +174,33 @@ changes that.
 
 ## Coordination Fabric
 
-**Every entry here is ABSENT.** This is not a deferred plane — it is a plane
-that has never been started. A full-workspace grep including `ops/docs/proposals/`
-and `ops/.agents/review/` returns **zero hits** for `session_role`,
-`bound_item_ref`, `THREAD_ITEM_MISMATCH`, `THREAD_CLOSED_FOR_NEW_WORK`,
-`READ_ONLY_CLOSURE` and `work.item.discovered`. No code, no contract, and no
-proposal has ever written any of them.
+**This section was written when the whole plane was ABSENT, and three of its
+four entries have since closed.** It is rewritten rather than deleted, because
+the prediction it made about *where* this work belonged was wrong in a way
+worth keeping: it argued that Coordination should go **last**, and it went
+third of nine.
 
 | id | status | what is missing | the failure it answers |
 |---|---|---|---|
-| COORD-01 | ABSENT | `session_role: coordinator \| execution`. The only `role` in the session contract is `serveros_role` (`agent-session-contract.yaml:231`), which is ServerOS's role relative to the provider — a different subject entirely. | No observed failure on this machine yet. The failure it prevents is the one every multi-agent system finds eventually: two sessions claiming the same Item, or a session that cannot tell whether it is allowed to start work. |
-| COORD-02 | ABSENT | `bound_item_ref`. `work_item` is an **optional, unvalidated passthrough string** — `agent-session-contract.yaml:184` puts it in `optional:`, not `required:` — carried through `agent_mcp.py:499` and `agent_control_router.py:248`, and **the execution layer never receives it**: `mcp/agent_session_service.py:333`'s `create()` signature has no `work_item` parameter at all. Nothing binds, validates, freezes or compares it. | A session that believes it is working on an Item, and a system with no record that it is. The value is transported and discarded one hop short of the thing that would act on it. |
-| COORD-03 | ABSENT | A cross-thread guard. The **structure already exists two planes over and is worth copying rather than reinventing**: `agent_mcp.py`'s `_device_for()` raises `INVALID_CONTEXT` (*"a session runs on one device and this call will not pick which"*), and `agent_session_service.send()` raises `ActionNotSupported` (*"a session that has reached CLOSED declares `session.send` UNSUPPORTED"*). Note both are **device- and state-scoped, never Item-scoped** — the Item has never been a comparison operand. | The whole point of COORD-01/02. Without a guard, binding is a comment. |
-| COORD-04 | ABSENT | `work.item.discovered`, and any way for a discovery to reach a coordinator. work-engine's `INBOX → AVAILABLE → … → CLOSED` has no `DISCOVERED`; the emitted set is `created · transitioned · reopened · outcome_recorded · deliverable_added · run_terminated`. **And no priority, severity or P0 field exists anywhere in the system** — not even in the item-card schema's `required`. The two repositories have no runtime coupling at all; the boundary is one declared path string (`fleet/mcp-contract.yaml:263-266`). | A discovery that lands as a row and waits to be pulled. There is nothing to escalate *to* and no word for *urgent*. |
+| COORD-01 | **EXISTS** | **`session_role: coordinator \| execution`.** What it was: the only `role` in the session contract was `serveros_role` (`agent-session-contract.yaml:274`), which is ServerOS's role relative to the *provider* — a different subject entirely, and the reason a grep for `session_role` returned zero hits without that being surprising. What it is now: declared in a `coordination:` block of `agent-session-contract.yaml` and **required at create with no default**, because a default would be a guess about somebody's intent recorded as a fact, and the record would then be evidence for the guess. It is deliberately **not** a field in `session_fields.optional`: a role is what a thread is *for*, not one more thing a session has. `fleet/agent-control-contract.yaml:127` carries the ruling to the control plane. | The failure this plane exists for is on this machine and in `runtime/coordination.py`'s own header: **LIT-0101 reached DELIVERED / SUCCESS, and the same execution conversation went on to prepare LIT-0205.** Two real Items, one finished, a thread that did not close with it, and nothing in the tree that could tell it to. |
+| COORD-02 | **EXISTS** | **`bound_item_ref`.** What it was: `work_item` was an **optional, unvalidated passthrough string** carried through `agent_mcp.py:499` and `agent_control_router.py:248`, and the execution layer never received it, because `agent_session_service.create()` had no such parameter. Nothing bound, validated, froze or compared it — and `work_item` is *still* in `session_fields.optional` (`agent-session-contract.yaml:184`) **without a second meaning**: the contract now says which word is the binding, and `work_item` stays as the provider-reported field it always was. Leaving the two words side by side with no note would have been the near-collision this file's own §17 comment forbids, so the note is in the contract rather than here. What it is now: **required for `execution`, forbidden for `coordinator`, frozen at create and immutable after** — the one role that is legitimately unbound is the coordinator, which coordinates *across* Items and therefore has no single one. It is held by `runtime/agent_control_store.py#put_binding`, beside `contexts` and `approvals`, in the same atomic write and under the same key discipline (`by ref, never by actor`) rather than in a second store. **The provider service still does not take it, and that is the design rather than a remaining gap**: the binding is ServerOS-side state about a thread, not a parameter of a provider's `create`, and threading it in would give the provider a reason to hold an opinion about which Item is legitimate. | A session that believes it is working on an Item, and a system with no record that it is — the value transported and discarded one hop short of the thing that would act on it. |
+| COORD-03 | **EXISTS** | **The cross-thread guard, and it was copied rather than invented** — exactly as this row predicted. `runtime/coordination.py` is a pure module: binding arrives as a dict, the Item's state arrives as a string, no clock and no store, and the reader that goes and gets an Item's state lives in `runtime/daemon.py` so the decisions can be tested without a state root. Four refusals, and the vocabulary is the part that took the care: **`INVALID_CONTEXT` reused** (no binding at all — the same shape as `_device_for`'s refusal for a request that contradicts the ref it was addressed to), and **three new words**, each because the alternative was to report it as one of the others. `THREAD_ITEM_MISMATCH` (the caller named one Item, the thread is bound to another — repair is in the caller's payload); `READ_ONLY_CLOSURE` (the bound Item is DELIVERED or CLOSED — repair is a new thread, not a new Item name, which is why calling it a mismatch would send the caller to fix the wrong field); `THREAD_CLOSED_FOR_NEW_WORK` (the thread was closed while its provider is still alive and accepting — calling it `ACTION_UNSUPPORTED` would say something false about the provider and stop the caller ever retrying). The three landed in `abilities/target-contract.yaml#reasons`, the single owner, and `tests/test_target_resolver.py:172` is the gate that makes the closed list a decision rather than a habit. | The whole point of COORD-01/02: without a guard, binding is a comment. |
+| COORD-04 | ABSENT — **and still the only entry in this plane that is** | `work.item.discovered`, and any way for a discovery to reach a coordinator. work-engine's `INBOX → AVAILABLE → … → CLOSED` has no `DISCOVERED`; the emitted set is `created · transitioned · reopened · outcome_recorded · deliverable_added · run_terminated`, and `runtime/notification-contract.yaml`'s closed event set is eleven names — *discovered* is not among them, so this was **not** quietly half-done alongside the other three. **And no priority, severity or P0 field exists anywhere in the system** — not even in the item-card schema's `required`, which is why §S's board renders five empty buckets and marks the axis `UNPRODUCED` rather than filling it from a proxy. | A discovery that lands as a row and waits to be pulled. There is nothing to escalate *to* and no word for *urgent*. |
 
-**The asymmetry, stated plainly, because the ordering below depends on it.**
-Coordination is the least mature plane in the product and the one a design
-document is most tempted to put first, because it is the most interesting. It
-should go **last**. It is the only entry in this ledger with nothing partial to
-build on and no precedent to copy at the Item level — and a guard that is wrong
-does not merely fail, it blocks work that used to succeed. Everything it needs
-(the guard shape, the refusal vocabulary, the `INVALID_CONTEXT` precedent)
-already exists and is waiting.
+**What the ordering argument got wrong, since this ledger is supposed to be
+read against itself.** The paragraph that used to close this section said
+Coordination should go last — it was greenfield, it had no partial to build on,
+and a guard that is wrong blocks work that used to succeed. The second half was
+right and is what made the work cheap: every piece it needed (`_device_for`'s
+`INVALID_CONTEXT`, `ActionNotSupported` for a closed session, the store's
+atomic write) already existed, so three entries closed in one round without
+inventing a mechanism. The first half was wrong, and the reason is worth
+keeping: **greenfield was being read as "unbounded", when what it actually
+meant was "nothing to reconcile"** — there was no legacy binding to migrate and
+no existing caller to break, which is why it cost less than the entries this
+page had ranked ahead of it. The plane that genuinely has to go last is
+COORD-04, and for a reason the original paragraph did not name: it needs the
+**priority axis**, and that axis does not exist in either repository.
 
 ---
 
@@ -291,6 +296,82 @@ on an anomaly rather than becoming a second class in that ladder.
 
 ---
 
+## Feishu Knowledge Work — frozen for v1.3, not started in v1.2
+
+**This is a scope decision, not a gap, and the difference matters for how it is
+read.** Nothing below is a promise or a schedule; it is the list of names that a
+reader might reasonably expect to find implemented in v1.2 and will not, with
+the measurement that says so.
+
+The sequencing rule it follows was stated by the person who made the call:
+
+> v1.2 proves that **any** Ability Family can be correctly discovered, expanded,
+> resolved, constrained and executed. v1.3 proves that **Feishu**, as the first
+> complex consumer, can run completely on that Fabric.
+
+Doing both in one round would mean validating an unstable family against an
+unstable generic layer, which is the dependency the ordering exists to avoid.
+So the family is measured, named, and stopped.
+
+### The measurement
+
+Taken 2026-09-15 against `abilities-manifest.yaml` and `skills/` **across all
+37 refs** in the ability-management repository, not against the working tree —
+which is why the answer is per-branch rather than a single yes or no:
+
+| member | state | where it actually is |
+|---|---|---|
+| `feishu-space-management` | **canonical** | on `origin/main` and on every other ref. `domain.primary: serveros.corporate.feishu`, `taxonomy_refs: [serveros.corporate]`, `artifact_mode: vendored`, two revisions, `installations: []` — the catalogue does not claim it is installed anywhere, and this node agrees: `serverosctl ability status feishu-space-management` answers *"not in the local projection"* |
+| `document-stewardship` | **unmerged** | on four refs and no others: `serveros/ability-registry-v3-layout-fleet`, `serveros/convergence-20260911`, `serveros/srv-0003-docstew`, `serveros/system-convergence-closure-20260911`. Its `payload/` is **byte-identical across all four** (`SKILL.md` 393c6422, both references, `maintain.py` 4e143388, tests 158318b7); what differs is packaging — one variant carries `ability.yaml` + `revisions.yaml` and a different `ABILITY.md`, the other three carry neither |
+| `personal-knowledge-management` | **absent** | zero hits, every ref |
+| `team-document-governance` | **absent** | zero hits, every ref |
+| `content-archiving` | **absent** | zero hits, every ref |
+| `pack:feishu-knowledge-work` | **absent** | zero hits. The five declared packs — `autonomous-quality-loop`, `litellm-development`, `cross-device-collaboration`, `agent-orchestration`, `quality-delivery` — all resolve `CLOSED` against the catalogue, and none mentions the family |
+
+**One thing is already true and is worth more than the negative list.** The tree
+node this family would live in **already exists and is populated**:
+`serverosctl ability tree` derives `serveros.corporate.feishu` from a real
+installed ability, `feishu-report`, which is an optional member of the
+`quality-delivery` pack. So v1.3 extends a node that resolves today rather than
+creating an axis — and `feishu-report` cross-referencing `serveros.corporate` is
+the mechanism §4's `taxonomy_refs` exists for, working on real data.
+
+### The frozen names
+
+```text
+abilities       document-stewardship · personal-knowledge-management
+                team-document-governance · content-archiving
+                feishu-space-management (canonical, not installed here)
+pack            pack:feishu-knowledge-work
+profiles        DocumentGovernanceProfile · StyleProfile
+mutation rule   team high-risk mutation → pre-change backup
+archive policy  DENY | REFERENCE_ONLY | EXPAND
+```
+
+**And the boundary that must travel with the list.** A live work document on
+this machine does keep a completed item's title with its strikethrough, moves it
+to a *"已完成"* section, and can bring it back on reopen. That behaviour is
+**one profile**, `DocumentGovernanceProfile: litellm-living-work-doc`, and it is
+**not** a property of `team-document-governance`. A v1.3 implementation that
+read the observed behaviour as the general rule would apply one document's
+convention to a team's records — which is the kind of generalization this
+repository has paid for before.
+
+### What v1.2 proves instead
+
+The generic claim is the deliverable, and the measurement above is also its
+test case: a family that is **partly materialized** is exactly what a fabric
+that cannot tell *absent* from *invented* gets wrong. The v1.2 claim is that it
+does not — `ability status` answers *"not in the local projection"* and adds
+that absence from a projection is not proof of absence on the authority;
+`ability tree` places what is classified and lists the rest as unplaced rather
+than defaulting them into a node; `pack inspect` refuses without a catalogue
+rather than resolving against the local projection and reporting every pack
+`UNAVAILABLE`. Those three answers were taken against this family and are
+recorded in `SRV-0009/RUN-0001/05-FEISHU-KNOWLEDGE-WORK-FAMILY.md`.
+
+---
+
 ## The order
 
 The ordering rule is not "biggest gap first". It is **reversibility**, then
@@ -322,8 +403,14 @@ Phase 2  Closing the declared-and-absent on the read path       authorization: p
   ABL-06  resolution as an MCP surface — remains, and is now a decision
 
 Phase 3  Coordination — greenfield, and last                    authorization: design
-  COORD-01 · COORD-02 · COORD-03, reusing _device_for() and ActionNotSupported
-  COORD-04 only after a discovery has somewhere to go
+  COORD-01 · COORD-02 · COORD-03  DONE in v1.2 — the same pass, and it cost less
+          than the entries Phase 0 ranked ahead of it, because greenfield
+          turned out to mean "nothing to reconcile" rather than "unbounded"
+  COORD-04  the only entry left in this plane, and it waits on the priority axis
+
+Phase 4  Feishu Knowledge Work — frozen, and deliberately not started
+  the family, the pack, the two profiles and the archive policy
+  see the section above: this is a scope decision, not a gap
 ```
 
 Three things about this order are worth saying out loud.
