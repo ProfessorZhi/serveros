@@ -480,6 +480,195 @@ class PurityTests(unittest.TestCase):
             resolver.resolve({"ability": ABILITY})
 
 
+class RuntimeFeatureTests(unittest.TestCase):
+    """§11 — the second half of the agent_runtime input.
+
+    `agents: [claude-code, codex]` could only ever answer "this family exists".
+    A provider that needs a feature of the INSTALLATION now says so, and the
+    three answers are three different outcomes: available resolves, unavailable
+    refuses with the word the provider contract already uses for "the agent side
+    cannot", and unknown is UNKNOWN — because writing it as AGENT_UNSUPPORTED
+    would say the runtime cannot do it on the strength of nobody having asked.
+    """
+
+    @staticmethod
+    def binding(**states):
+        """A binding record shaped as `abilities/runtime_binding.py` builds one."""
+        return {"schema": "serveros/runtime-binding.v1",
+                "binding_ref": "binding:device:server-beijing/agent-runtime:claude-code",
+                "device_ref": "device:server-beijing",
+                "runtime_ref": "agent-runtime:claude-code",
+                "runtime_id": "claude-code",
+                "observation": "OBSERVED",
+                "features": {name: {"state": state} for name, state in states.items()}}
+
+    def needs(self, *features, **over):
+        """A provider that requires runtime features, and a binding that answers."""
+        states = over.pop("states", None)
+        return request(
+            providers=[provider(required_runtime_features=list(features))],
+            runtime_record=None,
+            runtime_binding=self.binding(**(states or {})), **over)
+
+    def test_the_record_the_resolver_reads_is_the_one_the_kernel_built(self):
+        """The join, and the reason every test above is not enough on its own.
+
+        The helper above writes the binding record's SHAPE by hand, which proves
+        the resolver handles that shape and proves nothing about whether that
+        shape is what `abilities/runtime_binding.py` produces. A mutation that
+        made `feature()` answer `UNAVAILABLE` where it should say `UNKNOWN` left
+        every test in this class green, because the states here are literals in
+        a dict rather than answers from the function.
+
+        So this one builds the record the kernel builds — authored declaration,
+        authored registry, a real observation — and feeds it straight in. It is
+        the only test here that can fail on account of `feature()`.
+        """
+        spec = importlib.util.spec_from_file_location(
+            "serveros_runtime_binding", ROOT / "abilities" / "runtime_binding.py")
+        kernel = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(kernel)
+
+        observed = kernel.observation(
+            runtime_id="claude-code", observed_at="2026-09-14T00:00:00Z",
+            probe="cli-version", version="2.1.234 (Claude Code)", source="test",
+            surface="cli", features={"mcp.client": {"state": "AVAILABLE"}})
+        record = kernel.binding(
+            {"device_ref": "device:server-beijing",
+             "runtime_ref": "agent-runtime:claude-code",
+             "declared_at": "2026-09-14"},
+            observed=observed, reference="2026-09-14T00:10:00Z")
+
+        # The two states the kernel has to produce, not the test.
+        self.assertEqual(record["features"]["mcp.client"]["state"], "AVAILABLE")
+        self.assertEqual(record["features"]["gui"]["state"], "UNKNOWN")
+
+        answered = resolver.resolve(request(
+            providers=[provider(required_runtime_features=["mcp.client"])],
+            runtime_record=None, runtime_binding=record))
+        self.assertEqual(answered["status"], "AVAILABLE")
+
+        # UNKNOWN is carried, not refused. A verifier that flattened it into
+        # UNAVAILABLE would refuse here with AGENT_UNSUPPORTED.
+        unobserved = resolver.resolve(request(
+            providers=[provider(required_runtime_features=["gui"])],
+            runtime_record=None, runtime_binding=record))
+        self.assertEqual(unobserved["status"], "UNKNOWN")
+        self.assertIsNone(unobserved["reason"])
+
+        # And the same question asked of the OTHER family, which is the half
+        # that catches an inference from the name. A `feature()` that answered
+        # "codex has a GUI" would make this resolve AVAILABLE — and the test
+        # above would still be green, because it never says `codex`.
+        codex = kernel.binding(
+            {"device_ref": "device:server-beijing",
+             "runtime_ref": "agent-runtime:codex", "declared_at": "2026-09-14"},
+            observed=kernel.observation(
+                runtime_id="codex", observed_at="2026-09-14T00:00:00Z",
+                probe="cli-version", version="codex-cli 0.153.4", source="test",
+                surface="cli",
+                features={"instruction.workspace": {"state": "UNAVAILABLE"}}),
+            reference="2026-09-14T00:10:00Z")
+        asked_of_codex = resolver.resolve(request(
+            providers=[provider(required_runtime_features=["gui"])],
+            runtime_record=None, runtime_binding=codex))
+        self.assertEqual(asked_of_codex["status"], "UNKNOWN")
+        self.assertIsNone(asked_of_codex["reason"])
+
+    def test_a_binding_alone_satisfies_the_runtime_input(self):
+        """The binding names its own runtime ref, so the family record is not
+        required to have one — and the input must not be recorded as missing."""
+        record = resolver.resolve(self.needs("mcp.client", states={"mcp.client": "AVAILABLE"}))
+        self.assertEqual(record["status"], "AVAILABLE")
+        self.assertIn("agent_runtime", record["inputs_seen"])
+        self.assertNotIn("agent_runtime", record["inputs_missing"])
+
+    def test_a_required_feature_that_is_available_resolves(self):
+        record = resolver.resolve(
+            self.needs("mcp.client", "skill.native",
+                       states={"mcp.client": "AVAILABLE", "skill.native": "AVAILABLE"}))
+        self.assertEqual(record["status"], "AVAILABLE")
+
+    def test_a_required_feature_that_is_unavailable_refuses(self):
+        record = resolver.resolve(
+            self.needs("gui", states={"gui": "UNAVAILABLE"}))
+        self.assertEqual(record["reason"], "AGENT_UNSUPPORTED")
+        candidate = record["candidates"][0]
+        self.assertEqual(candidate["refused_by"], "agent_runtime")
+        self.assertEqual(candidate["reason"], "AGENT_UNSUPPORTED")
+
+    def test_the_refusal_is_incompatible_because_the_runtime_is_the_blocker(self):
+        """`INCOMPATIBLE`, which is the word this resolver already uses one
+        plane up for "the runtime cannot consume that".
+
+        It matters that it is not `UNAVAILABLE`: an unavailable provider is one
+        to install, and a runtime that cannot hold the feature is not. A
+        consumer that read the two as one word would try to fix a working
+        provider by reinstalling it.
+        """
+        record = resolver.resolve(self.needs("gui", states={"gui": "UNAVAILABLE"}))
+        self.assertEqual(record["status"], "INCOMPATIBLE")
+        self.assertIn(record["status"], resolver.STATUSES)
+        self.assertEqual(record["detail"], record["candidates"][0]["detail"])
+
+    def test_an_axis_the_family_lacks_refuses_the_same_way(self):
+        record = resolver.resolve(self.needs("app.server", states={"app.server": "INCOMPATIBLE"}))
+        self.assertEqual(record["reason"], "AGENT_UNSUPPORTED")
+
+    def test_a_required_feature_nobody_observed_is_unknown_and_not_a_refusal(self):
+        record = resolver.resolve(
+            self.needs("instruction.workspace",
+                       states={"instruction.workspace": "UNKNOWN"}))
+        self.assertEqual(record["status"], "UNKNOWN")
+        self.assertIsNone(record["reason"],
+                          "an unobserved feature was written as a refusal")
+        self.assertEqual(record["candidates"][0]["runtime_features_state"], "UNKNOWN")
+        self.assertNotIn("agent_runtime", record["inputs_missing"])
+
+    def test_the_unknown_names_the_feature_axis_as_its_cause(self):
+        record = resolver.resolve(
+            self.needs("instruction.workspace",
+                       states={"instruction.workspace": "UNKNOWN"}))
+        line = resolver.summarize(record)
+        self.assertIn("unknown", line)
+        self.assertIn("features", line)
+        self.assertNotIn("no inputs", line)
+
+    def test_a_binding_silent_about_the_feature_is_unknown_too(self):
+        """Absent from the record and UNKNOWN in it are the same answer here:
+        neither established anything about this device."""
+        record = resolver.resolve(self.needs("gui", states={}))
+        self.assertEqual(record["status"], "UNKNOWN")
+
+    def test_a_definite_refusal_outranks_an_unobserved_feature(self):
+        """The intersection property, one axis over: a `no` must not be
+        shadowed by a `we did not look`."""
+        record = resolver.resolve(self.needs(
+            "gui", instances=[], states={"gui": "UNKNOWN"}))
+        self.assertEqual(record["status"], "UNAVAILABLE",
+                         "an unobserved feature shadowed a definite no")
+        self.assertEqual(record["reason"], "PROVIDER_NOT_INSTALLED")
+
+    def test_a_provider_that_requires_no_features_is_unaffected(self):
+        record = resolver.resolve(request())
+        self.assertEqual(record["status"], "AVAILABLE")
+        self.assertIsNone(record["candidates"][0]["runtime_features_state"])
+
+    def test_flipping_unknown_to_unavailable_turns_the_answer_into_a_refusal(self):
+        """§19's mutation, at the consumer.
+
+        The two records differ in one field. If the resolver read UNKNOWN as a
+        no, "nobody asked" and "it cannot" would be one outcome — and this test
+        would fail on the first assertion rather than the second.
+        """
+        unknown = resolver.resolve(self.needs("gui", states={"gui": "UNKNOWN"}))
+        no = resolver.resolve(self.needs("gui", states={"gui": "UNAVAILABLE"}))
+        self.assertEqual(unknown["status"], "UNKNOWN")
+        self.assertEqual(no["status"], "INCOMPATIBLE")
+        self.assertEqual(unknown["reason"], None)
+        self.assertEqual(no["reason"], "AGENT_UNSUPPORTED")
+
+
 class SummaryTests(unittest.TestCase):
     """The disclosure surfaces. A summary is one line — a relationship a
     session can read without spending context on it."""

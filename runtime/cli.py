@@ -31,6 +31,7 @@ implemented says so and exits 2, rather than being quietly absent.
 from __future__ import annotations
 
 import argparse
+import datetime
 import importlib.util
 import json
 import os
@@ -406,14 +407,175 @@ def cmd_ability_refresh(args) -> int:
     return EXIT_FAULT if status == "STALE" else EXIT_OK
 
 
+def _probe_cli_version(program: str) -> tuple[str | None, str | None]:
+    """`<program> --version`, as (first line, why not).
+
+    Read-only, and the only subprocess this CLI runs on behalf of a binding. The
+    version string is kept VERBATIM — `codex-cli 0.153.4` is what Codex answers
+    and it is what goes in the record, unparsed. Pulling a numeric token out of
+    it would add a second place to be wrong and would make "the version changed"
+    depend on a regex rather than on the program's own answer.
+
+    The program is located with `shutil.which` and never written down, for the
+    reason `mcp/codex_app_server_provider.py:167` gives for its own binary: the
+    deployed path differs per device and per install method, so recording one
+    would record one machine's installation as the product's.
+    """
+    import shutil
+    import subprocess
+    path = shutil.which(program)
+    if not path:
+        return None, (f"`{program}` is not on PATH for this process, so this "
+                      "node cannot ask it anything")
+    try:
+        proc = subprocess.run([path, "--version"], capture_output=True,
+                              text=True, timeout=15)
+    except (OSError, subprocess.SubprocessError) as exc:
+        return None, f"`{program} --version` could not be run: {exc}"
+    text = (proc.stdout or "") + (proc.stderr or "")
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    if proc.returncode != 0 or not lines:
+        return None, (f"`{program} --version` exited {proc.returncode} with "
+                      f"{'no output' if not lines else 'output'}; nothing was "
+                      "observed")
+    return lines[0], None
+
+
+def _feature_observations(contract: dict, runtime: str, measured: dict) -> dict:
+    """What the surfaces already measured here say about this runtime's features.
+
+    Each of the three mappings below is a MEASUREMENT already taken by this
+    command, read as an answer to one feature question. Nothing is inferred
+    from the runtime's name, and a feature with no measurement behind it is
+    absent from this dict — which `abilities/runtime_binding.py` resolves to
+    `UNKNOWN`, not to a no.
+
+      instruction.home / instruction.workspace
+        the declared instruction surface for that role. A path role that is not
+        bound contributes nothing and leaves the feature unestablished; a
+        measured file that is there is AVAILABLE and one that is not is
+        UNAVAILABLE, which is a claim only because the path was read.
+
+      mcp.client
+        the declared MCP surface file. Same rule.
+
+    `gui` and `app.server` are deliberately absent: nothing in this tree
+    measures whether an installation has a graphical surface or serves a control
+    protocol, so a state for either would have to be invented. `skill.native`
+    and `session.lifecycle` are absent too, and for the opposite reason — they
+    are product invariants the contract answers for, and a per-device
+    observation of them would be a measurement of something that does not vary
+    by device.
+    """
+    out: dict[str, dict] = {}
+    for role, feature in (("home", "instruction.home"),
+                          ("workspace", "instruction.workspace")):
+        entries = [row for row in (measured.get("instruction_surfaces") or ())
+                   if row.get("role") == role]
+        if not entries:
+            continue
+        present = [row for row in entries if row.get("present")]
+        out[feature] = {
+            "state": "AVAILABLE" if present else "UNAVAILABLE",
+            "evidence": (
+                f"{len(present)} of {len(entries)} declared {role} instruction "
+                "surface(s) exist on this device: "
+                + ", ".join(sorted(row["path"] for row in entries))),
+        }
+    mcp_entries = list(measured.get("mcp_surfaces") or ())
+    if mcp_entries:
+        present = [row for row in mcp_entries if row.get("present")]
+        out["mcp.client"] = {
+            "state": "AVAILABLE" if present else "UNAVAILABLE",
+            "evidence": ("the declared MCP surface file is "
+                         + ("present" if present else "absent")
+                         + ": " + ", ".join(sorted(row["path"] for row in mcp_entries))),
+        }
+    return out
+
+
+def _runtime_observations(contract: dict, measured: dict,
+                          device_ref: str) -> tuple[dict, str | None]:
+    """(observations by runtime ref, why the version half may be missing).
+
+    The surface half is this command's own measurement, already taken above. The
+    version half is a `cli-version` probe against the family's own program, and
+    when that probe cannot run the observation is still built — with a time on
+    it and no version — so the record says "this node looked, and could not
+    establish a version", which is a different fact from "nobody looked".
+    """
+    observations: dict[str, dict] = {}
+    programs = ((contract.get("version_observation") or {}).get("cli_program") or {})
+    reasons: list[str] = []
+    for runtime in contract.get("ids") or ():
+        program = programs.get(runtime)
+        version = None
+        if program is None:
+            reasons.append(f"no `cli_program` is declared for {runtime}, so the "
+                           "cli-version probe has nothing to ask")
+        else:
+            version, why = _probe_cli_version(str(program))
+            if version is None:
+                reasons.append(why)
+        features = _feature_observations(contract, runtime, measured.get(runtime) or {})
+        if version is None:
+            entry = {"state": "UNKNOWN", "observed_at": None, "source": None,
+                     "surface": None, "features": features,
+                     "version": None, "probe": None, "version_state": "UNKNOWN"}
+            observations[f"agent-runtime:{runtime}"] = entry
+            continue
+        source = f"`{program} --version` run by serverosctl on {device_ref}"
+        observations[f"agent-runtime:{runtime}"] = {
+            "state": "OBSERVED",
+            "observed_at": datetime.datetime.now(
+                datetime.timezone.utc).isoformat().replace("+00:00", "Z"),
+            "source": source,
+            "surface": "cli",
+            "features": features,
+            "version": version,
+            "probe": "cli-version",
+            "version_state": "FACT",
+        }
+    return observations, ("; ".join(reasons) if reasons else None)
+
+
+def _bindings_for(registry: dict, device_ref: str, observed: dict | None,
+                  because: str | None = None) -> dict:
+    """The device's bindings, with why the observation half is what it is.
+
+    `because` is attached rather than inferred, so that a reader learns from
+    the record which of three different things happened: nobody measured this
+    device, the observation aged out, or nothing declared a binding here at all.
+    Those are three different findings and a single `UNKNOWN` would serve all
+    three equally badly.
+    """
+    binding_mod = _load_module_from(REPO_ROOT / "abilities/runtime_binding.py",
+                                    "serveros_runtime_binding")
+    return binding_mod.list_bindings(registry, device_ref, observed=observed,
+                                     reference=binding_mod.now_utc(),
+                                     unobserved_because=because)
+
+
 def cmd_device_agents(args) -> int:
     """§9/§18 — the agent runtimes this node has, and whether parity holds.
+
+    Two questions, and the split between them is the point of the command.
+    Parity is device-independent: do the two runtime FAMILIES agree on the
+    fields they must share. Bindings are per device: what is authored for this
+    machine, and — only with `--probe` — what can be measured about it now.
 
     The observation half is read-only: whether each declared adapter surface
     exists on this device. Nothing is created, and a surface that cannot be
     resolved is reported as unobserved rather than as absent — a path role
     that is not bound means nobody has looked, which is not the same finding
     as a file that is not there.
+
+    `--probe` is opt-in, and it is opt-in for the reason the disclosure contract
+    prices L0 at "one manifest read, no probes": without it this command answers
+    from files this node already has and costs nothing. With it, this node runs
+    each family's own `--version` and reports what came back — and only for the
+    device this node IS. A binding for a laptop nobody queried is reported with
+    its observation UNKNOWN, which is the honest shape and the one §14 asks for.
     """
     parity_mod = _load_module_from(REPO_ROOT / "abilities/runtime_parity.py",
                                    "serveros_runtime_parity")
@@ -443,11 +605,44 @@ def cmd_device_agents(args) -> int:
                 except Exception:  # noqa: BLE001 - an unbound role is a finding
                     continue
                 target = base / spec["relative"]
-                measured.append({"path": str(target), "present": target.exists()})
+                measured.append({"path": str(target), "present": target.exists(),
+                                 # Carried so that a caller can answer a
+                                 # per-feature question from this measurement
+                                 # without re-reading the contract's spec list
+                                 # a second time and pairing the two by index.
+                                 "role": spec.get("path_role"),
+                                 "relative": spec.get("relative")})
             entry[field] = measured
         observed[runtime] = entry
 
+    # --- W7: the bindings. -------------------------------------------------
+    # The device this command is about. Default is this node, because this
+    # node is the only machine this process can measure; `--device` names
+    # another one and gets its authored binding with no observation, which is
+    # the honest answer rather than a missing one.
+    local_ref = getattr(load_registry(args.registry), "device_ref", None)
+    device_ref = getattr(args, "device", None) or local_ref
+    probing = bool(getattr(args, "probe", False))
+    observations: dict[str, dict] = {}
+    because = None
+    if device_ref is None:
+        because = ("this host is bound to no device, so there is no device for "
+                   "these bindings to be about")
+    elif device_ref != local_ref:
+        because = (f"no observer on this node reaches {device_ref}; the binding "
+                   "is authored and unmeasured, and an unmeasured binding is "
+                   "not an absent one")
+    elif not probing:
+        because = ("`--probe` was not requested, so nothing on this device was "
+                   "asked anything; the bindings below are authored only")
+    else:
+        observations, probe_because = _runtime_observations(
+            contract, observed, device_ref)
+        because = probe_because
+
     result = parity_mod.report(contract, registry, observed)
+    result["bindings"] = _bindings_for(registry, device_ref, observations,
+                                       because)
 
     lines = [f"runtimes    {', '.join(result['runtimes'])}",
              f"compared    {', '.join(result['compared_fields'])}",
@@ -472,6 +667,26 @@ def cmd_device_agents(args) -> int:
     for surface in result["unobserved_declared_gaps"]:
         lines.append(f"  stale gap {surface}: recorded but not observed; "
                      "either it was fixed or the record is wrong")
+
+    # The bindings, one block per device runtime. L1 is one line; the feature
+    # states are one line each because a reader asking "can this machine do X"
+    # is asking per feature and a joined string would make UNKNOWN and
+    # UNAVAILABLE look alike at a glance.
+    document = result["bindings"]
+    lines.append(f"bindings    {document['device_ref']} · "
+                 f"{document['count']} · {document['state']}")
+    if document.get("state_because"):
+        lines.append(f"  why       {document['state_because']}")
+    for row in document["bindings"]:
+        lines.append(f"  {row['runtime_ref']:<28} {row['observation']:<9} "
+                     f"surface={row['surface'] or 'UNKNOWN'} "
+                     f"version={row['version'] or 'UNKNOWN'}")
+        if row["observation_because"]:
+            lines.append(f"    why     {row['observation_because']}")
+        for name, entry in row["features"].items():
+            lines.append(f"    {name:<22} {entry['state']}")
+        lines.append(f"    binding_ref {row['binding_ref']} "
+                     f"declared_at {row['declared_at']}")
     emit(result, as_json=args.json, lines=lines)
     return EXIT_OK if result["verdict"] == "CONFORMANT" else EXIT_FAULT
 
@@ -2501,6 +2716,15 @@ def build_parser() -> argparse.ArgumentParser:
     device_agents = device_sub.add_parser(
         "agents", help="the agent runtimes here, and whether parity holds (§18)",
         **_COMMON)
+    device_agents.add_argument(
+        "--device", help="a device ref (default: the device this node is bound "
+                         "to). A device that is not this node is reported with "
+                         "its authored binding and an UNKNOWN observation.")
+    device_agents.add_argument(
+        "--probe", action="store_true",
+        help="also run each runtime's own `--version` and report what came "
+             "back. Opt-in: without it this command reads files it already has "
+             "and asks nothing.")
     device_agents.set_defaults(func=cmd_device_agents)
 
     context = sub.add_parser("context", help="what this shell is inside", **_COMMON)

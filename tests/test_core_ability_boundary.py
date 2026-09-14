@@ -92,6 +92,17 @@ KNOWN_CLI_CROSSINGS = {
                    "one written for the CLI.",
         "disposition": "REDECLARED",
     },
+    "abilities/runtime_binding.py": {
+        "because": "`serverosctl device agents` is the surface that answers "
+                   "which runtime bindings a device has, what surface and "
+                   "version were observed, and which runtime features are "
+                   "available — §16 asks for it there rather than in a new "
+                   "command. The bindings it renders are the kernel's "
+                   "(`abilities/runtime_binding.py`); the CLI supplies the "
+                   "observation it collected and renders the answer, and holds "
+                   "no binding of its own.",
+        "disposition": "REDECLARED",
+    },
     "abilities/resolver.py": {
         "because": "`serverosctl ability resolve` IS the resolver's operator "
                    "surface. §24 keeps the daemon free of it; the CLI is where "

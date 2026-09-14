@@ -106,10 +106,21 @@ class LiveContractTests(unittest.TestCase):
 
 class ContractProbes(unittest.TestCase):
     def test_a_runtime_id_with_no_adapter_surfaces_is_a_finding(self):
+        """Naming a runtime in `ids` and declaring nothing else about it.
+
+        The set is no longer asserted exactly, and the loss is deliberate. A
+        runtime added to `ids` alone is missing an adapter surface AND has no
+        entry in every per-runtime compared capability, so two independent
+        checks are right to fire — `SURFACE_NOT_DECLARED` for the surface it
+        was promised, `PARITY_COMPARES_A_SHARED_VALUE` for the comparison that
+        cannot differ for it. Asserting the pair would pin this test to the
+        number of per-runtime capabilities the contract happens to have today.
+        What must not become possible is a fresh contract reporting findings;
+        that is `test_the_contract_that_ships_is_internally_consistent`.
+        """
         broken = copy.deepcopy(contract())
         broken["ids"] = [*broken["ids"], "gemini-cli"]
-        self.assertEqual(codes(parity.report(broken)),
-                         {"SURFACE_NOT_DECLARED"})
+        self.assertIn("SURFACE_NOT_DECLARED", codes(parity.report(broken)))
 
     def test_a_surface_for_a_runtime_that_does_not_exist_is_a_finding(self):
         broken = copy.deepcopy(contract())
@@ -126,8 +137,20 @@ class ContractProbes(unittest.TestCase):
                       codes(parity.report(broken)))
 
     def test_a_field_both_compared_and_excused_is_a_finding(self):
+        """The field this breaks is the one `compared_fields` really carries.
+
+        It used to name `skill_discovery`, which by W7 is not a parity field at
+        all — it is a runtime feature. Appending it to `allowed_differences`
+        still produced a finding, but the wrong one
+        (`PARITY_NAMES_AN_ABSENT_FIELD`), so this probe was passing while
+        proving something other than what its name says. Taking the field from
+        the contract under test means a future rename breaks this test loudly
+        instead of quietly re-aiming it.
+        """
         broken = copy.deepcopy(contract())
-        broken["parity"]["allowed_differences"].append("skill_discovery")
+        compared = list(broken["parity"]["compared_fields"])
+        self.assertTrue(compared, "no compared field to excuse")
+        broken["parity"]["allowed_differences"].append(compared[0])
         self.assertIn("FIELD_BOTH_COMPARED_AND_ALLOWED",
                       codes(parity.report(broken)))
 

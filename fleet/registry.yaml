@@ -10,6 +10,27 @@
 # never auto-derived from a discovered endpoint.
 schema: serveros/fleet-registry.v1
 
+# ---------------------------------------------------------------------------
+# `runtime_bindings:` is the canonical statement that a runtime family is
+# resolved on a device; `agents:` is the same relationship in its older
+# spelling, kept as a projection. Where the two disagree the binding is the
+# answer, and the disagreement is reported rather than reconciled —
+# `BINDING_MEMBERSHIP_MISMATCH`, from `abilities/runtime_parity.py`.
+#
+# What a binding entry does NOT carry, and why it matters more than what it
+# does: no surface, no version, no install path, no feature list. Those are
+# OBSERVATIONS — a fact about a machine at a time, made by a producer that
+# reached it — and this file is authored by a human who did not. A surface
+# written here for `device:personal-dell` would be a claim about a Windows
+# laptop nobody has queried, and it would be indistinguishable in the record
+# from the same line written after checking.
+#
+# So an entry says the two things a human decision can actually say: this
+# runtime family belongs on this device, and when that was decided. Everything
+# else is measured per device by `abilities/runtime_binding.py`, and where
+# nothing measured it, it is UNKNOWN.
+# ---------------------------------------------------------------------------
+
 # Environment profiles are declared in fleet/profiles.yaml. A device names one;
 # it does not carry the profile inline, so a profile cannot fork per device.
 devices:
@@ -29,6 +50,11 @@ devices:
     roles: [fleet-controller-primary]
     environment_profile: linux-server
     agents: [claude-code, codex]
+    runtime_bindings:
+      - runtime_ref: agent-runtime:claude-code
+        declared_at: 2026-09-14
+      - runtime_ref: agent-runtime:codex
+        declared_at: 2026-09-14
     # Historical ids remain resolvable. They renamed; they did not disappear.
     # Preserving them keeps earlier Installation and Revision evidence attached
     # to a stable identity instead of stranding it under a dead key.
@@ -44,6 +70,11 @@ devices:
     roles: [corporate-workstation]
     environment_profile: windows-corporate
     agents: [claude-code, codex]
+    runtime_bindings:
+      - runtime_ref: agent-runtime:claude-code
+        declared_at: 2026-09-14
+      - runtime_ref: agent-runtime:codex
+        declared_at: 2026-09-14
     legacy_ids: []
     enrollment: enrolled
 
@@ -56,6 +87,11 @@ devices:
     roles: [personal-workstation]
     environment_profile: windows-personal
     agents: [claude-code, codex]
+    runtime_bindings:
+      - runtime_ref: agent-runtime:claude-code
+        declared_at: 2026-09-14
+      - runtime_ref: agent-runtime:codex
+        declared_at: 2026-09-14
     # `dell-work` was this machine's earlier registration. It migrates here by
     # alias; its Installation and Revision history stays attached.
     # It was NOT migrated into work-fj: two Windows laptops that look alike are
@@ -69,3 +105,7 @@ rules:
   - "platform is recorded because profiles are platform-shaped, not because it
      is an identity. Two devices sharing a platform are not one device."
   - "This registry is authored. It is never rewritten by a scanner."
+  - "runtime_bindings is authoritative for which runtimes a device runs.
+     agents is a projection of it. A device may list a binding without listing
+     the same agent, and that difference is a finding rather than a preference:
+     see BINDING_MEMBERSHIP_MISMATCH in abilities/runtime_parity.py."

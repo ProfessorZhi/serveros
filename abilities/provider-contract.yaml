@@ -86,6 +86,7 @@ optional_fields:
   - adapters           # runtime → adapter id
   - revision           # the pinned revision of the thing that was materialized
   - operations         # the verbs this provider implements; see below
+  - required_runtime_features   # runtime features the runtime must have; see below
   - note
 
 # ---------------------------------------------------------------------------
@@ -156,6 +157,49 @@ operations:
   # and is reused rather than coined here, because it is the same finding: the
   # thing exists and cannot do this.
   refusal: {status: INCOMPATIBLE, reason: ACTION_UNSUPPORTED}
+
+# ---------------------------------------------------------------------------
+# required_runtime_features — what the INSTALLED runtime must have for this
+# provider to work, as opposed to what the runtime FAMILY can consume.
+#
+# `consumable_provider_kinds` in `agent-runtime-contract.yaml` answers "can a
+# Codex consume an MCP server at all". It is a family fact and it is the same
+# answer on all three devices. A provider that needs something the family fact
+# does not cover — an app-server surface, a workspace instruction file — needs
+# the second question, and the second question has a different subject: this
+# device's binding.
+#
+# The vocabulary is NOT declared here. It is
+# `agent-runtime-contract.yaml#runtime_features.order`, which is the one place
+# a runtime feature is named, and `abilities/runtime_binding.py#feature()` is
+# the one function that answers one. A list copied into this file would be a
+# second copy of a closed vocabulary, and the first time the two disagreed the
+# reader would be looking at the wrong one.
+#
+# Optional, and for the reason `operations` is: a provider that requires nothing
+# special is the common case, and making this required would produce six empty
+# lists that read as six checked answers. Absent means this provider does not
+# narrow by feature, and the resolver returns no feature refusal for it.
+#
+# The three outcomes are the resolver's, not this file's, and they are the same
+# three-valued asymmetry one axis over:
+#
+#   every required feature AVAILABLE    → no refusal
+#   one is UNAVAILABLE or INCOMPATIBLE  → INCOMPATIBLE / AGENT_UNSUPPORTED,
+#                                         the word `_input_agent_runtime()` uses
+#                                         for the same finding at family level
+#   one is UNKNOWN                      → the caller's answer is UNKNOWN and
+#                                         NOT a refusal, because "nobody
+#                                         established it" is not a "no"
+#
+# The last line is the one that matters: a provider requiring `gui` on a device
+# whose GUI was never probed must resolve to UNKNOWN. Reading that as a refusal
+# would turn every unmeasured feature into a missing capability.
+# ---------------------------------------------------------------------------
+required_runtime_features:
+  shape: [mcp.client, instruction.workspace]
+  vocabulary: abilities/agent-runtime-contract.yaml#runtime_features
+  consumer: abilities/resolver.py#_input_runtime_features
 
 # ---------------------------------------------------------------------------
 # probe — how the resolver asks whether the provider works, and WHICH question

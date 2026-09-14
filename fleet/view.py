@@ -354,22 +354,45 @@ class FleetView:
     # -- per-field derivations ---------------------------------------------
 
     def _agent_runtimes(self, device) -> dict:
-        """Which Agent Runtimes the device DECLARES, read from the contract.
+        """Which Agent Runtimes the device is authored as running.
 
-        Names come from `abilities/agent-runtime-contract.yaml`, not from the
-        registry's `agents` list. The two happen to agree today; a view that
-        assumed they must would report a device as declaring a runtime that
-        does not exist the first time they diverge.
+        Names are checked against `abilities/agent-runtime-contract.yaml`, not
+        trusted from the registry's `agents` list. The two happen to agree
+        today; a view that assumed they must would report a device as declaring
+        a runtime that does not exist the first time they diverge.
+
+        Two lists appear here, and this is the one place both are visible side
+        by side, which is why neither is reconciled. `bindings` is the
+        authority — `fleet/registry.yaml`'s `runtime_bindings` — and `declared`
+        is `agents`, its older spelling and now a projection of it. The view
+        reports them and does NOT compare them: the comparison is
+        `BINDING_MEMBERSHIP_MISMATCH`, computed once in
+        `abilities/runtime_binding.py` and raised by `abilities/runtime_parity.py`.
+        A second comparison here would be a second answer to one question, and
+        the first time the two implementations disagreed, the view would be the
+        one a reader happened to see.
+
+        Still L1, and still the declared half only: a binding says a family
+        belongs on this device. On which surface, at which version, with which
+        features — none of that is here, because none of it may be authored and
+        nothing at this level has reached the machine to measure it.
         """
         contract_ids = tuple(target.runtime_ids())
         declared = [name for name in device.agents if name in contract_ids]
+        bindings = list(device.runtime_bindings)
         return {
             "state": "DECLARED",
+            "authority": "runtime_bindings",
+            "binding_state": "BOUND" if bindings else "NOT_DECLARED",
+            "bindings": bindings,
             "declared": declared,
             "not_a_runtime_contract_id": sorted(set(device.agents) - set(contract_ids)),
             "measured": unknown(
-                "declared agents are an authoring statement about the device, "
-                "not a measurement of what can run there"),
+                "a binding is an authoring statement about which runtime "
+                "families this device is for, not a measurement of what is "
+                "installed on it or of what can run there; surface, version and "
+                "feature observations come from `serverosctl device agents` and "
+                "carry their own provenance"),
         }
 
     def _runtime_summary(self, device_ref: str) -> dict:

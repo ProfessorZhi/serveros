@@ -26,7 +26,7 @@ version: 1
 # machines with three different versions of it.
 # ---------------------------------------------------------------------------
 record:
-  required_fields: [id, name, version_observed_by, capability_probe]
+  required_fields: [id, name]
   optional_fields: [aliases, note]
   forbidden_fields:
     - "an install path"
@@ -36,6 +36,31 @@ record:
     the moment a runtime record names a path or a machine it becomes an
     installation record, and installations are already modelled — one per
     device, in the registry, with an owner.
+
+# ---------------------------------------------------------------------------
+# Two fields left `required_fields` here, and the two departures are different
+# findings rather than one tidy-up. Both were required by a record that no code
+# ever wrote and no code ever read; `tests/test_declared_implementations.py`
+# carried both as `KNOWN_UNREAD`.
+#
+#   version_observed_by   IMPLEMENTED, and moved to where its subject is. How a
+#                         runtime's version is established is a property of the
+#                         runtime family, not of a record; it is now
+#                         `version_observation.version_observed_by` below, and
+#                         `abilities/runtime_binding.py` refuses a version whose
+#                         probe is not the one declared for that family.
+#
+#   capability_probe      DELETED, and it is the honest half of this block. It
+#                         named how to probe what a runtime can do, written
+#                         before there was a vocabulary of things to probe for.
+#                         There is one now (`runtime_features` below), and each
+#                         feature observation carries its own `source` and
+#                         `observed_at` — so a single record-level probe name
+#                         would be a second, coarser answer to a question that
+#                         is already answered per feature. Keeping it would have
+#                         meant keeping a required field with no reader, which
+#                         is the exact shape this round exists to remove.
+# ---------------------------------------------------------------------------
 
 # ---------------------------------------------------------------------------
 # Identifiers. Closed, and the growth rule is stated because this list will be
@@ -49,14 +74,31 @@ ids: [claude-code, codex]
 # "missing", it is incompatible-by-design, and the two must not be conflated.
 # ---------------------------------------------------------------------------
 capabilities:
-  consumable_provider_kinds: [skill, mcp-server, cli, local-service, remote-service, builtin]
+  # Per runtime, and it was not before. It was one list under one key, and
+  # `parity.compared_fields` offered it as a field the two runtimes are
+  # compared on — a comparison between one value and itself. The two lists are
+  # identical today, which is now a finding a reader can make rather than an
+  # arrangement that made the comparison unfalsifiable. That the comparison is
+  # no longer vacuous is enforced: `PARITY_COMPARES_A_SHARED_VALUE` in
+  # `abilities/runtime_parity.py` fails a `compared_fields` entry whose value is
+  # not keyed by runtime id.
+  consumable_provider_kinds:
+    claude-code: [skill, mcp-server, cli, local-service, remote-service, builtin]
+    codex: [skill, mcp-server, cli, local-service, remote-service, builtin]
   # How the runtime discovers a Skill. NATIVE, always — see
   # `docs/capability-discovery.md`. A runtime that has no native discovery
   # cannot be supported by writing one, because the non-regression contract
   # ("a ServerOS hint must never shrink the set of capabilities the native
   # agent could otherwise discover") is unsatisfiable without a native surface
   # to strengthen.
-  skill_discovery: native
+  #
+  # This was `skill_discovery: native`, one global scalar, and it is now the
+  # `skill.native` runtime feature. The fact did not change; what changed is
+  # that it stopped being a global value offered as a field two runtimes are
+  # compared on. A reader asking "does this runtime discover Skills natively"
+  # now gets an answer about a BINDING — this family, on this device — rather
+  # than about the product, and `UNKNOWN` is available as an answer.
+  #
   # Where instructions are read from at session start.
   #
   # These four values were written from the shape of the convention rather than
@@ -105,10 +147,87 @@ capabilities:
   mcp_surfaces:
     claude-code: {path_role: home, relative: ".claude.json", key: "mcpServers"}
     codex: {path_role: home, relative: ".codex/config.toml", key: "mcp_servers"}
-  # A runtime that can hold a session open across a task boundary can own a
-  # session-scoped resource. None can own a persistent one; see
-  # `ownership` below.
-  session_lifecycle: true
+
+# ---------------------------------------------------------------------------
+# What a runtime can be asked about, one question per axis.
+#
+# Every name below was reverse-engineered from something that already exists in
+# this tree — a surface this contract declares, a consumer that reads one, or a
+# provider that speaks a protocol. None was written from a plausible future,
+# and the omitted ones are named with the reason they are omitted, because a
+# list of candidate names is only worth having if something can be left out of
+# it.
+#
+# SHAPE COPIED, AND COPIED FROM: `fleet/transport-contract.yaml:112`
+# `capability_levels` with its `order` / `alias_of` / `rule`, and the four-state
+# resolution in `fleet/transport.py:433` `CapabilityAvailability`. That object
+# already solves this exact problem one plane over — one closed vocabulary,
+# resolved per (entity, subject), with `UNKNOWN` as a first-class answer so that
+# "we did not ask" cannot be read as "no". `docs/agent-runtime-model.md` names
+# it as the thing to copy rather than invent, and this is that.
+#
+# One difference, stated so it does not read as an omission: `capability_levels`
+# is ordered weakest-first and the order is load-bearing (a transport is granted
+# a subset). This one is an enumeration. There is no weakest feature, and a
+# running order here would be an invented structure that the next reader would
+# try to honour.
+# ---------------------------------------------------------------------------
+runtime_features:
+  order:
+    - mcp.client            # consumes MCP servers; contract: capabilities.mcp_surfaces
+    - skill.native          # discovers Skills off its own agent surface
+    - instruction.home      # reads a home-level instruction file at session start
+    - instruction.workspace # reads a workspace-level instruction file
+    - session.lifecycle     # holds a session open across a task boundary
+    - app.server            # serves a control protocol; mcp/codex_app_server_provider.py
+    - gui                   # has a graphical surface; see `surfaces` below
+  # What a binding may answer about one feature. Four, and the fourth is the
+  # one that makes the other three usable.
+  states:
+    AVAILABLE: the binding has this and it was established
+    UNAVAILABLE: the binding does not have this, and that was established
+    UNKNOWN: nobody established it — NOT a no
+    INCOMPATIBLE: this runtime FAMILY has no such axis, so the question
+      does not apply to it
+  # Which axes each family has at all. An axis absent here is INCOMPATIBLE for
+  # every binding of that family, which is a different finding from UNAVAILABLE
+  # and the reason the fourth state exists: "Claude Code has no app-server
+  # protocol" and "this Codex install does not answer one" call for different
+  # actions, and one word for both would hide the first.
+  #
+  # This is a DECLARATION, and it is the only lawful source of a feature's
+  # applicability. Nothing derives a feature from a runtime's name — see the
+  # `rule` below, which is enforced by mutation in
+  # `tests/test_runtime_binding.py`.
+  axes:
+    claude-code: [mcp.client, skill.native, instruction.home,
+                  instruction.workspace, session.lifecycle, gui]
+    codex: [mcp.client, skill.native, instruction.home,
+            instruction.workspace, session.lifecycle, app.server, gui]
+  exposes:
+    # §15's progressive disclosure, attached to the axis rather than to a UI
+    # that does not exist yet. The binding record carries a block per level, so
+    # that a future L1 read does not have to be handed the whole thing to
+    # render one line.
+    L1: [the runtime family and whether this device has a binding at all]
+    L2: [surface, and the feature states]
+    L3: [probe, version, provenance and observed_at]
+  rule: >
+    a feature's state comes from a declaration-with-authority or from an
+    observation, and from nowhere else. `if runtime == "codex": app_server =
+    True` is forbidden; so is "a desktop binding therefore has a GUI". An axis
+    nobody established is `UNKNOWN`, which is why a probe that cannot be run
+    produces `UNKNOWN` rather than `UNAVAILABLE` — the second is a claim and
+    the first is not.
+  omitted:
+    - name: native.extension
+      because: >
+        there is no native-extension surface anywhere in this tree — not in
+        this contract, not in a provider, not in a device record. Declaring it
+        would have produced a feature nothing could ever answer about, which is
+        the declaration-before-mechanism shape this round removes. It is left
+        out rather than marked planned: a vocabulary is allowed to be the size
+        of what it can actually describe.
 
 # ---------------------------------------------------------------------------
 # The ownership rule, applied to runtimes.
@@ -144,10 +263,166 @@ ownership:
 version_observation:
   required: [probe, observed_at]
   accepted_probes: [cli-version, package-manifest, service-handshake]
+  # Which of those a producer exists for, and which are the intended set with
+  # nothing behind them yet. The distinction is written down because three
+  # accepted probes read as three implemented ones, and that is the shape this
+  # whole round removes: a vocabulary that is larger than what can answer for
+  # it. `accepted_probes` stays the full intended set — a version observed
+  # through a package manifest is a fact this contract would accept — and
+  # `implemented_probes` is what to check a claim against before believing a
+  # version arrived the way it says it did.
+  #
+  # `tests/test_runtime_binding.py` asserts the subset and that every name in
+  # `unimplemented_probes` is in `accepted_probes`, so a fourth probe cannot be
+  # added to one list and forgotten in the other.
+  implemented_probes: [cli-version]
+  unimplemented_probes:
+    package-manifest: >
+      would read the version out of the installed package's own manifest. No
+      producer: neither family is installed here from a package manager this
+      node can query, so there is nothing to read and no way to test one.
+    service-handshake: >
+      would ask a running runtime service for its version. No producer:
+      `mcp/codex_app_server_provider.py` completes an app-server handshake and
+      the response carries no version field, so the probe would have to invent
+      one from the protocol revision.
+  # Which probe is lawful for which family. Named per runtime because the
+  # question "how do you know the version" has a different answer per family —
+  # a CLI is asked, a package manifest is read, a service is handshaked — and a
+  # single global answer would have let a version observed by any means pass as
+  # a version observed by this family's.
+  version_observed_by:
+    claude-code: cli-version
+    codex: cli-version
+  # The program the `cli-version` probe asks. A NAME and never a path:
+  # `mcp/codex_app_server_provider.py:167` already argues the case for its own
+  # binary — the deployed location differs per device and per install method —
+  # so it is found with `shutil.which` when the probe runs and never written
+  # down. Recording a path here would be recording one machine's installation
+  # as the product's, which is the mistake the `bindings` block exists to stop.
+  cli_program:
+    claude-code: claude
+    codex: codex
+  # The reader lives here, and saying so is the point: this block spent its
+  # first life as a required record field that no code read, so the rule below
+  # was a sentence rather than a refusal. It is now enforced where it is
+  # stated — a version carrying no `observed_at` raises, and a version whose
+  # probe is not the one declared for its family does too.
+  enforced_by: "`abilities/runtime_binding.py — version_observation()`"
   rule: >
     a version with no `observed_at` is refused. An unversioned fact about a
     runtime is how "it worked yesterday" and "it works today" become statements
     about two different programs.
+
+# ---------------------------------------------------------------------------
+# The binding — one runtime family, on one device.
+#
+# This block is the answer to the question `:23-27` has been asserting since it
+# was written: it says a runtime record is device-independent "so that one
+# runtime be described once and installed on three machines with three different
+# versions of it", and until now nothing in the tree could express the second
+# half. `fleet/registry.yaml` carried `agents: [claude-code, codex]` per device,
+# which is MEMBERSHIP: it can say a family is expected here and cannot say which
+# installation, on which surface, at which version, measured when, with which
+# features actually probed.
+#
+# Identity is `device_ref + runtime_ref` and nothing else. Not the installation
+# path, not the version, not the surface, not the hostname, not a pid: an
+# upgrade from a CLI to a desktop app is the same binding with a new
+# observation, and a binding whose identity moved when the version did would
+# strand every observation attached to it. `abilities/runtime_binding.py
+# — binding_ref()` mints it and nothing else does.
+# ---------------------------------------------------------------------------
+bindings:
+  record:
+    required_fields: [binding_ref, device_ref, runtime_ref]
+    optional_fields: [surface, declared_at, declared_provenance, observation,
+                      features, levels]
+  # Where a binding is AUTHORED, and where the legacy list sits beside it.
+  authority:
+    authored_in: fleet/registry.yaml, under `runtime_bindings:`
+    legacy: >
+      `agents:` on the same device entry. It is the pre-binding spelling of the
+      same relationship and it is now a PROJECTION: it may say less than
+      `runtime_bindings` says, and where the two disagree the binding is the
+      answer. It is kept because it is persisted, human-authored and read by
+      the fleet view, and a migration that broke it would take the device row
+      with it — but it is no longer the fact Ability resolution depends on.
+    mismatch: BINDING_MEMBERSHIP_MISMATCH
+    mismatch_rule: >
+      a difference in either direction is reported by
+      `abilities/runtime_parity.py — check_registry()` and fails the check. It
+      is not reconciled and it is not resolved by preferring one: two lists
+      that disagree are two statements about one device, and the reader is owed
+      both. When `agents:` is eventually removed the code stays, and the check
+      goes back to being a migration gate over an empty legacy surface.
+  # The surface is a property of the BINDING, not of the family. This is the
+  # decision `docs/agent-runtime-model.md` argues for at length, and it is what
+  # makes `codex-cli`/`codex-desktop`/`codex-vscode`/`claude-desktop` unnecessary
+  # as runtime ids: they were four surfaces wearing four identities, which would
+  # have doubled every resolution, every adapter step and every `agents:` list.
+  surfaces:
+    order: [cli, desktop, vscode]
+    rule: >
+      a binding whose surface nobody established carries `UNKNOWN`, not a
+      default. A default here would make "we know these are all CLI" a fact
+      about the record rather than about whether anyone looked.
+  observation:
+    states: [OBSERVED, UNKNOWN]
+    # How long an observation stays a statement about now. Declared here rather
+    # than defaulted in code, because a window nobody wrote down is a window
+    # that changes when someone edits a constant — and this one decides whether
+    # a version measured this morning is reported as this machine's version.
+    # `abilities/runtime_binding.py — freshness_seconds()` reads it.
+    #
+    # Deliberately NOT the same number as `provider-contract.yaml`'s readiness
+    # window: a provider's readiness is a question about a running process and
+    # an agent runtime's version is a question about an installation, and the
+    # two go stale at different rates. That is also why the reader resolves this
+    # window explicitly instead of inheriting the provider default.
+    freshness:
+      window_seconds: 900
+    rule: >
+      a binding exists the moment it is authored; an observation of it may not.
+      An unreachable device has a binding and an `UNKNOWN` observation, and
+      collapsing those two into "no binding" is how a device that is merely
+      offline comes to look like a device that was never enrolled. An
+      observation past `freshness.window_seconds` stops being evidence rather
+      than becoming weaker evidence: it ages into `UNKNOWN`, never into a
+      different positive value.
+
+# ---------------------------------------------------------------------------
+# What is shared by every supported runtime, stated as an invariant rather than
+# offered as a comparison.
+#
+# These three were `parity.compared_fields` entries or global scalars, and a
+# field with one value on both sides of a comparison is not a comparison. Each
+# is written here with what enforces it, because an invariant nothing enforces
+# is a sentence — and `tests/test_declared_implementations.py` resolves every
+# `enforced_by:` below to a real file and a real symbol.
+# ---------------------------------------------------------------------------
+product_invariants:
+  - name: consumable_provider_kinds
+    statement: >
+      every supported runtime consumes the same six provider kinds, so a
+      provider the fabric can hold is a provider either runtime can be handed.
+      This is the claim `docs/claude-codex-parity.md` makes, and it is now a
+      per-runtime map so that a future divergence is a visible edit rather than
+      an invisible one.
+    enforced_by: "`abilities/resolver.py — _input_agent_runtime()`"
+  - name: skill.native
+    statement: >
+      every supported runtime discovers Skills natively. See
+      `docs/capability-discovery.md`: the non-regression contract is
+      unsatisfiable without a native surface to strengthen, so a runtime
+      without native discovery is not a runtime this product supports.
+    enforced_by: "`abilities/runtime_binding.py — feature()`"
+  - name: session.lifecycle
+    statement: >
+      every supported runtime can hold a session open across a task boundary.
+      None can own a persistent resource — see `ownership` above, which is the
+      rule this one is often confused with.
+    enforced_by: "`abilities/runtime_binding.py — feature()`"
 
 # ---------------------------------------------------------------------------
 # Parity. The claim in `docs/claude-codex-parity.md` is that the two runtimes
@@ -156,17 +431,31 @@ version_observation:
 # `allowed_differences` is a finding, not a judgement call.
 # ---------------------------------------------------------------------------
 parity:
+  # One entry, where there were three. `skill_discovery` and `session_lifecycle`
+  # were scalars — the same value offered as a field two runtimes are compared
+  # on, which is a comparison between one thing and itself. Both are now
+  # `runtime_features` axes, which is a per-binding answer to the same question.
+  # `consumable_provider_kinds` stayed and became per-runtime, so this list now
+  # names a field whose two sides can actually differ.
+  #
+  # The shape is enforced rather than trusted:
+  # `PARITY_COMPARES_A_SHARED_VALUE` in `abilities/runtime_parity.py` fails any
+  # entry here whose value is not keyed by runtime id, so restoring an entry
+  # like `skill_discovery` is a red check rather than a quiet regression.
   compared_fields:
     - consumable_provider_kinds
-    - skill_discovery
-    - session_lifecycle
   # The ONLY fields two runtimes may differ in. Named explicitly, so growing
   # this list is an edit to this file rather than a quiet adapter change.
+  #
+  # `version_observed_by` left this list because it left the record shape: it is
+  # a per-runtime map under `version_observation` now, and this block's fields
+  # are checked against the record and capability key sets, where it no longer
+  # appears. The per-runtime differences that matter are its three keys, and
+  # they are declared rather than merely permitted.
   allowed_differences:
     - instruction_surfaces
     - mcp_surfaces
     - name
-    - version_observed_by
   rule: >
     a difference in a compared field is a defect in the canonical source, not a
     legitimate runtime difference. It is reported as such and never resolved by
@@ -191,6 +480,17 @@ rules:
      bug."
   - "A runtime record carries no path and no device. Those are installation
      facts and installations are per device, in the registry, with an owner."
-  - "Adding a runtime means adding an `instruction_surfaces` and an
-     `mcp_surfaces` entry and nothing else, or the parity comparison will fail
-     and name the field that disagreed."
+  - "Adding a runtime means adding an `instruction_surfaces`, an
+     `mcp_surfaces`, a `consumable_provider_kinds` and a
+     `version_observed_by` entry and an `axes` entry, or a check will fail and
+     name the field that disagreed."
+  - "That list grew, and it grew because the checks that name a missing entry
+     grew. The previous version of this rule said `instruction_surfaces` and
+     `mcp_surfaces` and *nothing else*, and it was true only of the fields the
+     parity checker compared — which is a reason to distrust such a sentence
+     rather than to keep it. Every field named above is one whose absence now
+     produces a finding, and nothing else needs to change."
+  - "A runtime family is an identity; a surface is a property of a binding. A
+     new SURFACE is an edit to `bindings.surfaces` and no new runtime id —
+     `codex-vscode` is not a runtime, it is Codex resolved on this device, on
+     this surface, with an observation attached."

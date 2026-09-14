@@ -164,15 +164,28 @@ def runtime_record(runtime_id: str) -> dict | None:
     lives here. The resolver needs the second to answer `AGENT_UNSUPPORTED`, and
     returning `None` for an unknown id is deliberate: the step then reports
     UNEVALUABLE rather than agreeing on a runtime nobody declared.
+
+    This is only the FAMILY half. Whether this device runs that family, on which
+    surface, at which version, with which features — the half that decides
+    whether a call can be made HERE — is a binding, and it is resolved by
+    `abilities/runtime_binding.py` and nowhere else. Keeping the two apart is
+    the point of the split: "Codex can consume an MCP server" and "this machine
+    has a Codex that can" were the same sentence for as long as the registry
+    carried `agents:` and nothing more.
+
+    `consumable_provider_kinds` is looked up per runtime. It was one list under
+    one key, which made `parity.compared_fields` a comparison between a value
+    and itself; the lookup below is what makes the remaining compared field name
+    two values that can differ.
     """
     import yaml
     data = yaml.safe_load(RUNTIME_CONTRACT.read_text(encoding="utf-8")) or {}
     if runtime_id not in tuple(data.get("ids") or ()):
         return None
+    kinds = (data.get("capabilities") or {}).get("consumable_provider_kinds") or {}
     return {
         "id": runtime_id,
-        "consumable_provider_kinds": list(
-            (data.get("capabilities") or {}).get("consumable_provider_kinds") or ()),
+        "consumable_provider_kinds": list(kinds.get(runtime_id) or ()),
     }
 
 

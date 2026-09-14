@@ -114,6 +114,17 @@ class StubAvailability:
 
 
 class StubDevice:
+    """Stands in for `fleet/transport.Device`, field for field.
+
+    `runtime_bindings` is here because the real dataclass carries it as of W7
+    and the view reads it without a `getattr`. A tolerant read would let a
+    fleet layer that stopped populating the field render `NOT_DECLARED` for
+    every device — an answer where the truthful one is "this view was handed a
+    device that is not the shape it agreed to". The stub declaring a binding
+    that agrees with its `agents` list is deliberate: a mismatch is a finding
+    for `abilities/runtime_parity.py`, not something a view stub should model.
+    """
+
     def __init__(self, ref: str) -> None:
         self.device_ref = type("Ref", (), {"ref": ref})()
         self.display_name = ref
@@ -121,6 +132,7 @@ class StubDevice:
         self.environment_profile = "headless"
         self.enrollment = "enrolled"
         self.agents = ["codex"]
+        self.runtime_bindings = ("agent-runtime:codex",)
         self.legacy_ids = []
         self.roles = []
         self.ownership = "hwz"

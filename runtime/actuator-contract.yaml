@@ -255,6 +255,28 @@ actuators:
       - {file: runtime/probes.py, symbols: [LiveHost.systemd_user_unit], verb: systemctl}
       - {file: runtime/probes.py, symbols: [LiveHost.process_pids], verb: pgrep}
 
+  - id: runtime-version-probe
+    kind: unresolved_argv
+    verb: subprocess.run
+    why: >-
+      `<program> --version`, run by `runtime/cli.py`'s `_probe_cli_version` to
+      answer the one question `device agents --probe` exists to answer: which
+      version of a runtime is installed on THIS device. It is `unresolved_argv`
+      because the binary is not a literal — it is resolved by `shutil.which`
+      from the program named in `agent-runtime-contract.yaml`'s
+      `version_observation.cli_program`, which is a closed two-entry map, so the
+      reachable binaries are `claude` and `codex` and a third would be an edit
+      to that contract rather than to this call. The argv is exactly
+      `[path, "--version"]`: no shell, no interpolation, no argument taken from
+      a caller or from a device, and a 15-second timeout so a binary that hangs
+      on start cannot hold the read. The output is taken verbatim and never
+      parsed — the first non-empty line is the version, because a parser here
+      would be a second opinion about what a version is. It reads and writes
+      nothing, installs nothing and upgrades nothing: §20's acceptance is a
+      read of two machines, and no command here can change either.
+    sites:
+      - {file: runtime/cli.py, symbols: [_probe_cli_version], verb: "<argv0>"}
+
   # ---------------------------------------------------------------------
   # Writes that delete, and the two different reasons a delete is allowed.
   # ---------------------------------------------------------------------
