@@ -1031,13 +1031,19 @@ class Daemon:
                 # purpose.
                 "agent.binding.resolve", "agent.binding.list",
                 "agent.binding.record", "agent.binding.close",
-                # §21. The two reads, the two a person performs, and the two
-                # halves of the delivery hop that keep transport out of the
-                # daemon. `alert.ack` is deliberately NOT on the node MCP
-                # surface: that surface holds no state and changes nothing,
-                # and whether an acknowledgement may arrive over a chat is the
-                # inbound-identity question `mcp/human_control.py` answers
-                # UNKNOWN for.
+                # §21. All seven, and this list is the DAEMON SOCKET's surface
+                # rather than the node MCP's — the same distinction the
+                # `agent.approval.record` line above draws. `serverosctl alert
+                # ack` is a local command that reaches the register through
+                # this socket, so the two writes have to be here; what is
+                # deliberately absent is their presence on the node MCP, which
+                # declares `alert.list` and `alert.inspect` and nothing else,
+                # because that surface holds no state and changes nothing.
+                # Whether an acknowledgement may arrive over a chat is a
+                # different and unanswered question: the inbound-identity one
+                # `mcp/human_control.py` answers UNKNOWN for. Reading this list
+                # as the MCP surface is how somebody later "corrects" the code
+                # to match a comment and breaks the CLI.
                 "alert.list", "alert.inspect", "alert.ack", "alert.snooze",
                 "alert.pending", "alert.record-delivery", "alert.pass")
 
