@@ -84,8 +84,36 @@ def module_refs(path: Path) -> set[Path]:
                                                  beside the calling module,
                                                  because that is what the
                                                  helper does with it.
+      * `_load("name", "mcp/botmux_provider.py")` — the same call with a path
+                                                 relative to the repo root.
+                                                 `resolve()` already tried
+                                                 `REPO / candidate` first, so
+                                                 this cost nothing to support;
+                                                 it was excluded by a `"/" not
+                                                 in ...` guard until §C's
+                                                 mutation testing showed the
+                                                 guard was the whole of the
+                                                 blind spot (below).
       * `_load_module_from(REPO / "a" / "b.py")` — a division chain, joined from
                                                  its string parts.
+
+    THE GUARD THAT WAS REMOVED, AND WHY IT MATTERED
+    -----------------------------------------------
+    The loader-argument branch used to skip any string constant containing a
+    `/`. The intent was to avoid reading a version string or a sentence as a
+    path, but `resolve()` already refuses anything that is not an existing
+    `.py` file, so the guard bought nothing and cost the repo-root-relative
+    form outright.
+
+    Measured, not reasoned: injecting `_load("serveros_botmux_provider",
+    "mcp/botmux_provider.py")` into `runtime/daemon.py` left
+    `closure(daemon.py)` unchanged, so §C's "none of the outer systems is
+    reachable from the daemon" passed while the daemon loaded a provider.
+    That is the failure this module's own header warns about — "the scanner
+    said it was true" — reproduced on the newest gate rather than the oldest.
+    `test_the_scanner_sees_a_slash_bearing_loader_argument` is the positive
+    control, and it synthesizes the form rather than reading a live edge,
+    because no module in the tree uses it today.
     """
     path = path if path.is_absolute() else REPO / path
     tree = ast.parse(path.read_text(encoding="utf-8"))
@@ -128,7 +156,10 @@ def module_refs(path: Path) -> set[Path]:
         if parts:
             resolve("/".join(reversed(parts)))
 
-    # Bare filenames handed to a loader, which resolves them beside itself.
+    # Filenames handed to a loader: beside the caller, or relative to the repo
+    # root. Both go through `resolve()`, which only accepts an existing `.py`
+    # file, so no guard on the string's shape is needed — and the one that used
+    # to be here is what hid the repo-root-relative form (see the docstring).
     for node in ast.walk(tree):
         if not isinstance(node, ast.Call):
             continue
@@ -139,7 +170,7 @@ def module_refs(path: Path) -> set[Path]:
             continue
         for arg in node.args:
             if (isinstance(arg, ast.Constant) and isinstance(arg.value, str)
-                    and id(arg) not in prose and "/" not in arg.value):
+                    and id(arg) not in prose):
                 resolve(arg.value)
 
     return found

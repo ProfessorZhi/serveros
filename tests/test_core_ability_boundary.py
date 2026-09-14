@@ -210,6 +210,47 @@ class CoreDoesNotDependOnTheFabric(unittest.TestCase):
                       "the daemon's trust kernel is a module-level path "
                       "constant, not a loader argument")
 
+    def test_the_scanner_sees_a_slash_bearing_loader_argument(self):
+        """The third form, and the one this file was blind to until §C.
+
+        `_load(name, "file.py")` was read, and `_load(name, "mcp/x.py")` was
+        not: the loader branch skipped any argument containing a `/`. That
+        guard was written to avoid reading a version string as a path, and it
+        bought nothing — `resolve()` already refuses anything that is not an
+        existing `.py` file — while costing the repo-root-relative form
+        outright.
+
+        The cost was measured rather than argued. Injecting
+        `_load("serveros_botmux_provider", "mcp/botmux_provider.py")` into
+        `runtime/daemon.py` left `closure(daemon.py)` unchanged, so §C's
+        "none of the outer systems is reachable from the daemon" passed while
+        the daemon loaded a provider. Both readings — the one that misses an
+        edge and the one that misses a *guard* — produce the same green.
+
+        Asserted by construction rather than on a live edge: no module in the
+        tree currently uses this form, which is exactly why the control has to
+        synthesize it. A control that needs the defect to exist in order to
+        notice it would disappear the moment the defect was fixed.
+        """
+        import tempfile
+
+        source = (
+            "import importlib.util\n"
+            "def _load(name, rel):\n"
+            "    spec = importlib.util.spec_from_file_location(name, rel)\n"
+            "    return spec\n"
+            "_X = _load('srv_botmux_provider', 'mcp/botmux_provider.py')\n"
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            probe = Path(tmp) / "probe.py"
+            probe.write_text(source)
+            refs = module_refs(probe)
+        self.assertIn(
+            Path("mcp/botmux_provider.py"), refs,
+            "the scanner is blind to a repo-root-relative loader argument; the "
+            "§C provider assertion is unfalsifiable without this",
+        )
+
     def test_the_closure_is_not_empty(self):
         """A guard against the closure collapsing to nothing, which would make
         the two assertions above pass by having nothing to look at."""
