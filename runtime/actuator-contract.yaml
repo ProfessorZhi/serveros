@@ -305,12 +305,24 @@ actuators:
       The `Path.replace` spellings in `runtime/daemon.py` are the same act —
       `tmp.replace(destination)` — and are the reason this contract needs the
       arity rule rather than a name-based one.
+
+      `intake/global_board.py#render` is the third spelling and the one with
+      the widest destination: the §S board writes `current.json` and
+      `current.md` into a directory the CALLER names, so the destination is not
+      computed from this process's own roots the way the daemon's writes are.
+      Two things bound it. `render()` refuses a relative directory, so the path
+      cannot come from the cwd; and the temporary is
+      `.{destination.name}.serveros.tmp` in the destination's own directory, so
+      the only file ever replaced is the one being written — which is also why
+      the two are in the same directory rather than in `tmp/`, and why this is
+      one entry and not a rename across filesystems.
     sites:
       - {file: relations/project.py, symbols: [write]}
       - {file: runtime/ability_projection.py, symbols: [write_atomic]}
       - {file: runtime/agent_control_store.py, symbols: [_atomic_write]}
       - {file: runtime/daemon.py, symbols: [_atomic_write, Budget._save], verb: ".replace()"}
       - {file: scripts/release.py, symbols: [_symlink_swap]}
+      - {file: intake/global_board.py, symbols: [render], verb: ".replace()"}
 
   - id: daemon-owns-its-socket
     kind: fs_mutation

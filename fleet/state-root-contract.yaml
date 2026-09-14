@@ -369,6 +369,39 @@ namespaces:
     # the ordinary reading on an idle node. Read by
     # ops/workspace/serveros/resources.yaml.
     absent_means: NO_LEASES_HELD
+  requirement-board:
+    class: projection
+    holds: §S's Global Requirement Board — every project's Items in one view
+    # A THIRD kind of derived document, beside `boards` and `federation`, and
+    # the difference is what it is derived FROM: `boards` is per project and
+    # written by the control plane from the authority, this one is all projects
+    # at once and is derived from those boards. It therefore has no authority
+    # to reconcile with — it reads `boards/<project>/current.json`, never the
+    # work-engine store, and the state column it prints is the state the
+    # control plane already published.
+    #
+    # IT IS NOT WRITTEN BACK AND NOTHING READS IT. §S's board is for a person
+    # and for the report; no routing, admission or resolution decision consults
+    # it, and a second reader appearing here would make a projection into a
+    # second authority. That is why the CLI's default is to print and write
+    # nothing.
+    #
+    # This producer is a MODULE and not a command name, which is the opposite
+    # of the choice made for `boards` and `federation` two entries up — those
+    # name an ability and a command because the producer is in another
+    # distribution. Here it is in this repository, and both readers of this
+    # field answer a path by asking whether it exists: a sentence with spaces
+    # in it answers none of their questions and is read as an unwritten
+    # producer. The command is named in the comment instead, and in
+    # `intake/board-contract.yaml#generation.command`, which is where a
+    # command belongs.
+    #
+    # Reached on this node as:
+    #   serverosctl requirement board [--write] [--output-dir <abs>]
+    producer: intake/global_board.py
+    required: false
+    authority: false
+    absent_means: NO_BOARD_GENERATED_YET
 
 # ---------------------------------------------------------------------------
 # Preexisting entries with no producer declaration

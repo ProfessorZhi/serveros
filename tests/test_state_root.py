@@ -159,12 +159,20 @@ def test_the_declared_namespaces_agree_and_the_shape_is_pinned():
     vocabulary rather than move the directory. They are NOT folded into
     `projections/`: that namespace holds disposable manifest-bearing views,
     while these are stable named namespaces with fixed layouts.
+
+    §S widened it by one more, and `requirement-board` is the first entry that
+    is a projection of a projection: it composes the per-project `boards`
+    rather than the authority. It is declared anyway for the reason the §38
+    four were — the alternative is an exemption excusing a directory somebody
+    already writes, and a namespace nobody declared is a namespace nobody can
+    refuse a second writer of.
     """
     contract = state_root.load_contract()
     top = set(contract["namespaces"])
     assert top == {"node", "context", "abilities", "runtime", "fleet",
                    "source-index", "locks", "projections",
-                   "boards", "federation", "work-items", "resource-leases"}
+                   "boards", "federation", "work-items", "resource-leases",
+                   "requirement-board"}
     # And the tuple the resolver actually enforces is the same set — two
     # declarations of one shape is the defect this whole round is about.
     assert top == set(paths_mod.STATE_SERVEROS_TOP_LEVEL)
