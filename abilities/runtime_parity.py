@@ -31,25 +31,36 @@ defect would actually hide:
      declared for a runtime that does not exist. A runtime named in `ids` with
      no `instruction_surfaces` entry is an adapter that was promised and never
      written — and nothing else in the repository would notice.
-  2. Every device that claims to run an agent names one that exists.
+  2. Every device that claims to run an agent names one that exists, and every
+     device's `runtime_bindings` and its legacy `agents` list agree.
      `fleet/registry.yaml` has three devices each listing two agents, and
      nothing compared those lists against the closed `ids` set.
   3. On this host, each declared surface is either present or reported absent.
      Read-only; nothing is created.
 
-Why the compared fields are global
-----------------------------------
-`capabilities.consumable_provider_kinds`, `skill_discovery` and
-`session_lifecycle` are single values, not per-runtime maps. That looks like
-the comparison is vacuous — two records compared, and the states are shared —
-and it is worth being explicit that it is not an oversight: the contract's own
-rule says adding a runtime means adding an `instruction_surfaces` and an
-`mcp_surfaces` entry "and nothing else". The shared values ARE the claim, and
-the per-runtime parts are exactly `allowed_differences`.
+Why this docstring changed, and what was wrong with it
+------------------------------------------------------
+This file used to carry a section headed "Why the compared fields are global".
+It argued that `capabilities.consumable_provider_kinds`, `skill_discovery` and
+`session_lifecycle` being single values rather than per-runtime maps was not an
+oversight, because "the shared values ARE the claim". The sentence is true and
+it was doing the wrong work: it made a vacuous comparison read as a designed
+one. A field with one value on both sides of a comparison cannot differ, so
+`compared_fields` was a list of three names and zero checks, and the argument
+in this docstring was the reason nobody looked again.
 
-So parity reduces to key-set agreement, and the check is that the key sets
-agree — not a field-by-field comparison of two records, because there is only
-one record's worth of shared state and that is the design.
+The three fields are now resolved rather than argued away. Two
+(`skill_discovery`, `session_lifecycle`) are gone from the parity block and are
+`runtime_features` axes — per-binding answers, in a vocabulary where `UNKNOWN`
+exists, instead of a global scalar offered as a comparison. The third became a
+per-runtime map, so the entry that remains names two values that can actually
+differ. And the shape is enforced rather than trusted:
+`PARITY_COMPARES_A_SHARED_VALUE` below fails any `compared_fields` entry whose
+value is not keyed by every declared runtime id — so restoring `skill_discovery`
+to that list is a red check rather than a quiet regression.
+
+The lesson kept here on purpose: a comment explaining why an empty check is
+correct is the most effective way to keep it empty.
 """
 from __future__ import annotations
 
@@ -123,11 +134,52 @@ def check_contract(contract: dict) -> list[dict]:
             "FIELD_BOTH_COMPARED_AND_ALLOWED",
             f"{sorted(overlap)} is compared and excused in the same breath",
             fields=sorted(overlap)))
+
+    # The comparison has to be able to come out either way. A compared field
+    # whose value is one list rather than one list per runtime is a comparison
+    # between one thing and itself: every run of this check would report
+    # agreement, and it would report it for any pair of runtimes, including two
+    # that had nothing in common. That is the shape this whole module exists to
+    # catch, so it is caught here rather than left to a comment.
+    for name in sorted(compared):
+        if name not in capabilities_keys:
+            continue  # a record field; `PARITY_NAMES_AN_ABSENT_FIELD` owns it
+        value = capabilities.get(name)
+        if not isinstance(value, dict):
+            findings.append(_finding(
+                "PARITY_COMPARES_A_SHARED_VALUE",
+                f"parity compares `{name}`, whose value is not keyed by runtime "
+                "id; one value offered as a field two runtimes are compared on "
+                "cannot differ, so the comparison is vacuous",
+                field=name, value_type=type(value).__name__))
+            continue
+        missing = sorted(set(ids) - set(value))
+        if missing:
+            findings.append(_finding(
+                "PARITY_COMPARES_A_SHARED_VALUE",
+                f"parity compares `{name}`, which declares no entry for "
+                f"{missing}; the field cannot differ for a runtime that has no "
+                "value in it",
+                field=name, runtimes=missing))
     return findings
 
 
 def check_registry(registry: dict, contract: dict) -> list[dict]:
-    """Does every device that claims an agent claim one that exists?"""
+    """Does every device that claims an agent claim one that exists?
+
+    And, since W7: does every device's `runtime_bindings` agree with its legacy
+    `agents` list? The second question is `BINDING_MEMBERSHIP_MISMATCH`, and the
+    computation lives in `abilities/runtime_binding.py` rather than here,
+    because the fleet view and the CLI need to ask it too and a second
+    implementation would be a second answer.
+
+    The first question is now the weaker of the two — an agent name is checked
+    against the closed `ids` set, while a binding is checked against that set
+    AND against the list beside it — and it is kept because a device could
+    carry `agents: [codex]` with no `runtime_bindings` key at all, which is a
+    registry that has not started the migration rather than one that disagrees
+    with itself.
+    """
     ids = set(contract.get("ids") or ())
     findings: list[dict] = []
     devices = registry.get("devices") or []
@@ -142,7 +194,32 @@ def check_registry(registry: dict, contract: dict) -> list[dict]:
                     f"device {device_id} lists agent {agent!r}, which the "
                     "runtime contract does not declare",
                     device=device_id, agent=agent))
+    findings += _binding().membership_findings(registry, ids)
     return findings
+
+
+def _binding():
+    """`abilities/runtime_binding.py`, loaded the way this repository loads.
+
+    Deferred rather than imported at module scope so that this file stays
+    answerable on its own: `main()` can check a contract for a caller that has
+    no registry and no binding code on disk, and a hard import would make the
+    contract check fail for a reason that has nothing to do with the contract.
+    """
+    global _BINDING_MODULE
+    if _BINDING_MODULE is None:
+        import importlib.util
+        path = Path(__file__).resolve().parent / "runtime_binding.py"
+        spec = importlib.util.spec_from_file_location(
+            "serveros_runtime_binding_from_parity", path)
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[spec.name] = module
+        spec.loader.exec_module(module)
+        _BINDING_MODULE = module
+    return _BINDING_MODULE
+
+
+_BINDING_MODULE = None
 
 
 def check_observed(observed: dict, contract: dict) -> list[dict]:

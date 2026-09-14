@@ -182,6 +182,18 @@ class Device:
     ownership: str | None = None
     os_family: str | None = None
     enrollment: str = "enrolled"
+    # The runtime refs this device is authored as running — `agent-runtime:<id>`
+    # strings, in the registry's own spelling. This is the AUTHORED half of a
+    # binding and it is all a device record may carry: no surface, no version,
+    # no install path, no feature list. Those are observations, made by a
+    # producer that reached the machine, and a human writing them here would be
+    # writing a measurement they did not take.
+    #
+    # `agents` above is the same relationship in its older spelling and is a
+    # projection of this tuple. Where the two disagree, both are reported:
+    # `BINDING_MEMBERSHIP_MISMATCH`, from `abilities/runtime_binding.py` via
+    # `abilities/runtime_parity.py`.
+    runtime_bindings: tuple[str, ...] = ()
 
 
 class DeviceRegistry:
@@ -203,6 +215,10 @@ class DeviceRegistry:
                 roles=tuple(entry.get("roles") or ()),
                 environment_profile=entry["environment_profile"],
                 agents=tuple(entry.get("agents") or ()),
+                runtime_bindings=tuple(
+                    str(row.get("runtime_ref"))
+                    for row in (entry.get("runtime_bindings") or ())
+                    if isinstance(row, dict) and row.get("runtime_ref")),
                 legacy_ids=tuple(entry.get("legacy_ids") or ()),
                 ownership=entry.get("ownership"),
                 os_family=entry.get("os_family"),

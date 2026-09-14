@@ -89,11 +89,22 @@ rules:
 
   declared_is_not_runnable: >-
     `fleet/registry.yaml` declares that every device has `claude-code` and
-    `codex` agents. That is an authoring statement about what the device is
-    FOR, not a measurement. §13 names the exact error this prevents: a registry
-    entry for `device:work-fj` must not make this view claim Claude is
-    runnable there. Declared agents appear under `declared_agents`; only
-    measured ones ever appear under a readiness field.
+    `codex` agents, and since W7 it also carries a `runtime_bindings` entry per
+    device. Both are authoring statements about what the device is FOR, not
+    measurements. §13 names the exact error this prevents: a registry entry for
+    `device:work-fj` must not make this view claim Claude is runnable there.
+    Declared agents appear under `declared_agents` and the authored binding
+    under `agent_runtimes.bindings`; only measured facts ever appear under a
+    readiness field.
+
+  binding_is_not_a_measurement: >-
+    A binding is authored and survives the device being unreachable — that is
+    the whole reason it is separate from an observation. What it does NOT carry
+    is a surface, a version, an install path or a feature list: those are
+    observations made by a producer that reached the machine, and this view
+    reports none of them at any level. A surface written into the registry for
+    a laptop nobody has queried would be indistinguishable in the record from
+    one written after checking, and this view would render both the same way.
 
   unreachable_is_typed: >-
     A device with no node runtime answers with NODE_RUNTIME_UNAVAILABLE rather

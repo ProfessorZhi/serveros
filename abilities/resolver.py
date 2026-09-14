@@ -345,6 +345,12 @@ def _input_device_capability(request: dict, provider: dict) -> dict | None:
 
 
 def _input_agent_runtime(request: dict, provider: dict) -> dict | None:
+    """input 5, first half — can this runtime FAMILY consume this provider kind?
+
+    A statement about the family, and device-independent. `runtime_record` is
+    built from `abilities/agent-runtime-contract.yaml`, which describes each
+    runtime once. Whether THIS device runs one is the second half below.
+    """
     runtime = request.get("runtime_record")
     if runtime is None:
         return None  # unevaluable
@@ -354,6 +360,61 @@ def _input_agent_runtime(request: dict, provider: dict) -> dict | None:
             "INCOMPATIBLE", "AGENT_UNSUPPORTED",
             f"runtime {runtime.get('id')!r} cannot consume a {provider.get('kind')!r} provider")
     return None
+
+
+def _input_runtime_features(request: dict, provider: dict) -> tuple[dict | None, str | None]:
+    """input 5, second half — does THIS device's binding have what it needs?
+
+    (refusal, unasked). Two outcomes rather than one, and the reason this input
+    has a shape its siblings do not is that its subject is genuinely two-sided.
+    "Codex can consume an MCP server" and "this machine has a Codex that can"
+    were one sentence for as long as `fleet/registry.yaml` carried `agents:` and
+    nothing more; they are now a family fact and a binding fact, and the second
+    can come out three ways:
+
+      * every required feature AVAILABLE -> no refusal, nothing unasked;
+      * a required feature UNAVAILABLE, or INCOMPATIBLE with the family -> a
+        DEFINITE refusal, reason `AGENT_UNSUPPORTED`, which is the word the
+        provider contract already uses for "the agent side cannot";
+      * a required feature UNKNOWN -> nothing refused, and this returns a
+        sentence for the caller to carry, because the answer is UNKNOWN and NOT
+        a refusal. Writing that as `AGENT_UNSUPPORTED` would say the runtime
+        cannot do it on the strength of nobody having asked.
+
+    Reads the RECORD `abilities/runtime_binding.py` built, the way every other
+    input reads a record somebody else made. It does not resolve a binding
+    itself: this module's import list is closed, and a resolver that read the
+    fleet registry would be a second answer to a question with one owner.
+    """
+    binding = request.get("runtime_binding")
+    if binding is None:
+        return None, None  # the caller already recorded the input as missing
+    required = tuple(provider.get("required_runtime_features") or ())
+    if not required:
+        return None, None
+    features = binding.get("features") or {}
+    for name in required:
+        entry = features.get(name)
+        if entry is None:
+            return None, (
+                f"the binding record says nothing about `{name}`, so whether "
+                "this device can run it was never established")
+        state = entry.get("state")
+        if state in ("UNAVAILABLE", "INCOMPATIBLE"):
+            why = entry.get("evidence") or (
+                f"{binding.get('runtime_ref')} declares no `{name}` axis"
+                if state == "INCOMPATIBLE" else None)
+            return _refusal(
+                "INCOMPATIBLE", "AGENT_UNSUPPORTED",
+                f"this device's {binding.get('runtime_ref')} binding does not "
+                f"have `{name}`" + (f": {why}" if why else ""),
+                runtime_feature=name, runtime_feature_state=state), None
+        if state == "UNKNOWN":
+            return None, (
+                f"whether this device's {binding.get('runtime_ref')} binding has "
+                f"`{name}` was never established; not observed is not the same "
+                "as absent")
+    return None, None
 
 
 def _input_runtime_health(request: dict, provider: dict) -> dict | None:
@@ -425,6 +486,11 @@ def _evaluate_one(request: dict, ability: str, provider: dict,
     """
     unevaluated = []
     operation_unasked = None
+    # Distinct from `unevaluated`: those name an input nobody supplied, and a
+    # supplied binding whose feature state is UNKNOWN is an input that WAS
+    # consulted and answered "not established". Collapsing the two would make
+    # the request look incomplete when it is the answer that is incomplete.
+    binding_unasked = None
 
     if operation is not None:
         state, detail = _operation_state(provider, operation)
@@ -471,10 +537,20 @@ def _evaluate_one(request: dict, ability: str, provider: dict,
             else:
                 refusal = None
         elif name == "agent_runtime":
-            if request.get("runtime_record") is None:
+            # Either half present means the input was supplied. The family half
+            # can arrive without a binding — a caller resolving against a
+            # runtime contract and no device — and the binding half without a
+            # family record, since a binding names its own runtime ref.
+            if (request.get("runtime_record") is None
+                    and request.get("runtime_binding") is None):
                 unevaluated.append(name)
                 continue
             refusal = _input_agent_runtime(request, provider)
+            feature_refusal, unasked = _input_runtime_features(request, provider)
+            if feature_refusal is not None:
+                refusal = feature_refusal
+            elif unasked is not None:
+                binding_unasked = binding_unasked or unasked
         elif name == "runtime_health":
             # NOT decisive, and the contract says why: `costs.capability.L0` is
             # "one manifest read, no probes". Health is a probe. If absence
@@ -504,17 +580,19 @@ def _evaluate_one(request: dict, ability: str, provider: dict,
 
     preferred = provider.get("preference", 100)
 
-    if unevaluated or operation_unasked is not None:
+    if unevaluated or operation_unasked is not None or binding_unasked is not None:
         if unevaluated:
             detail = ("no input refused, and these were never consulted: "
                       + ", ".join(unevaluated))
         else:
-            detail = f"no input refused, and {operation_unasked}"
+            detail = "no input refused, and " + "; ".join(
+                part for part in (operation_unasked, binding_unasked) if part)
         return _refusal(
             "UNKNOWN", "ACTION_UNSUPPORTED" if operation_unasked else None,
             detail,
             unevaluated=unevaluated, preference=preferred,
-            operations_state="UNKNOWN" if operation_unasked else None)
+            operations_state="UNKNOWN" if operation_unasked else None,
+            runtime_features_state="UNKNOWN" if binding_unasked else None)
 
     # -- every decisive input was consulted and none refused. ----------------
     caveats = []
@@ -579,7 +657,8 @@ def resolve(request: dict) -> dict:
         ("device_capability", bool(request.get("device_capabilities"))),
         ("device_profile", request.get("profile") is not None),
         ("device_binding", request.get("instances") is not None),
-        ("agent_runtime", request.get("runtime_record") is not None),
+        ("agent_runtime", request.get("runtime_record") is not None
+                          or request.get("runtime_binding") is not None),
         ("runtime_health", bool(request.get("health"))),
         ("policy", request.get("policy") is not None),
         ("task_context", request.get("task_context") is not None),
@@ -616,6 +695,10 @@ def resolve(request: dict) -> dict:
             # the whole rule: a bare `ability:x` never consults the table, so it
             # has no state to report and must not be given a fabricated one.
             "operations_state": outcome.get("operations_state"),
+            # Same treatment for the runtime-feature axis, and for the same
+            # reason: when every candidate comes back UNKNOWN, the reason is on
+            # the candidate or nowhere. `summarize()` reads it below.
+            "runtime_features_state": outcome.get("runtime_features_state"),
         })
 
     usable = [c for c in candidates if c["status"] in ("AVAILABLE", "DEGRADED")]
@@ -682,6 +765,15 @@ def summarize(record: dict) -> str:
         if record.get("operation") and unasked:
             return (f"{ref}: unknown (no provider was asked whether it "
                     f"implements {record['operation']})")
+        # The second cause that lives only on a candidate. `inputs_missing`
+        # would report the runtime input as present — it was supplied, and it
+        # answered "nobody established this" — so naming it there would send a
+        # caller to fix the wrong thing.
+        unobserved = [c for c in record.get("candidates") or ()
+                      if c.get("runtime_features_state") == "UNKNOWN"]
+        if unobserved:
+            return (f"{ref}: unknown (whether this device's runtime binding has "
+                    "the features the provider requires was never established)")
         return (f"{ref}: unknown "
                 f"({', '.join(record['inputs_missing']) or 'no inputs'})")
     return f"{ref}: {record['status'].lower()} ({record.get('reason')})"

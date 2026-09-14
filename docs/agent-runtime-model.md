@@ -17,7 +17,7 @@ that is executed and this one is wrong.
 ## The identity, and the growth rule
 
 ```text
-ids: [claude-code, codex]        abilities/agent-runtime-contract.yaml:44
+ids: [claude-code, codex]        abilities/agent-runtime-contract.yaml:69
 ```
 
 Two. The list is closed, which is a decision rather than an observation about
@@ -33,7 +33,7 @@ contract states what else has to change:
 > *"Adding a runtime means adding an `instruction_surfaces` and an
 > `mcp_surfaces` entry and nothing else, or the parity comparison will fail and
 > name the field that disagreed."*
-> — `abilities/agent-runtime-contract.yaml:194`
+> — `abilities/agent-runtime-contract.yaml`, the `addition` rule
 
 That is the shape to preserve. A new runtime is a **new family**, declared
 once, and the comparison that fails tells you which declaration you forgot.
@@ -50,116 +50,197 @@ agent-runtime:codex        a capability record — what this runtime can consume
 kind: agent-runtime        a resource record  — a process on a device, with an owner
 ```
 
-The contract says so at `:16`: it *"is NOT a second definition of what a runtime
+The contract says so in its header: it *"is NOT a second definition of what a runtime
 is."* A reader who conflates them will conclude that installing Codex gives the
 node a runtime record, which is the same error as reading a registry entry as a
 capability — invariant 9, with a different noun.
 
 ## Membership is not a binding
 
-This is the distinction the whole document exists to make, and today only the
-first half of it is real.
+This is the distinction the whole document exists to make, and since W7 both
+halves of it are real.
 
 ```text
 membership   which runtimes exist on this device    fleet/registry.yaml, `agents:`
-binding      which version, with which features,
-             materialized where                     — does not exist
+binding      which version, on which surface,
+             established when, by which probe       fleet/registry.yaml,
+                                                    `runtime_bindings:`
 ```
 
-Membership is declared per device and is wired:
+`agents:` is still there. It is no longer the authority — it is a **projection**
+of `runtime_bindings`, and where the two disagree the binding is the answer.
+The word for the disagreement is `BINDING_MEMBERSHIP_MISMATCH`, and it is
+raised by `abilities/runtime_binding.py#membership_findings()` and turned into
+a failed check by `abilities/runtime_parity.py#check_registry()`.
+
+The choice between "the binding is authoritative" and "both are" was made
+rather than avoided: two lists that disagree are two statements about one
+device, and a checker that silently preferred one would make the other
+unfalsifiable. So the disagreement is reported and the binding is what
+initialises. Both directions are reported separately, because they mean
+different things — an agent with no binding is a runtime the device claims and
+cannot resolve; a binding with no agent is a runtime this device resolves and
+the older view does not know about.
 
 ```yaml
-# fleet/registry.yaml:31, :46, :58 — all three enrolled devices
+# fleet/registry.yaml — all three enrolled devices, still
 agents: [claude-code, codex]
+runtime_bindings:
+  - {runtime_ref: agent-runtime:claude-code, declared_at: 2026-09-14}
+  - {runtime_ref: agent-runtime:codex,       declared_at: 2026-09-14}
 ```
 
-Read as `Device.agents` (`fleet/transport.py:174-180`), checked against the
-closed id list by `abilities/runtime_parity.py:129-146` `check_registry()`
-(a device's `agents` must be a subset of `ids`), and surfaced on the device row
-by `fleet/view.py:227-239`, which probes `agent-runtime:<first declared id>`.
+Read as `Device.runtime_bindings` (`fleet/transport.py:196`), with `agents`
+kept as `Device.agents` for the consumers that already read it. The device row
+serves the bindings under `agent_runtimes.bindings` and names
+`runtime_bindings` as the authority (`fleet/view.py#_agent_runtimes`).
 
-A binding record does **not** exist. `grep -rn "DeviceRuntimeBinding\|runtime_binding"`
-over the tree returns nothing. The contract intends one — `:23-27` says a
-runtime record is device-independent *"so that one runtime be described once and
-installed on three machines with three different versions of it"*, and `:37`
-and `:193` both assert that installations are *"already modelled — one per
-device, in the registry, with an owner"* — **but there are no installation
-records in `fleet/registry.yaml`.** No per-device runtime version is declared
-or consumed anywhere in this repository.
+What the binding carries and what it does not is the whole of §3, and the split
+is the one the rest of this document argues for: **`runtime_ref` and
+`declared_at` are authored; surface, version and features are observed.** A
+surface written into the registry for a laptop nobody has queried would be
+indistinguishable in the record from one written after checking, so the
+registry holds none of them. `fleet/view-contract.yaml#binding_is_not_a_measurement`
+states it as a rule at the level the view is held to.
 
-The one per-device, per-runtime fact that does exist lives somewhere else
-entirely: `runtime/ability_projection.py:103-110` reads
-`installations[].device_id` and `.agent` out of the **ability-management**
-manifest. That is *per ability, per device, per agent* — it says where a Skill
-is installed, not what a runtime is. It is a real fact and it is not this one.
+The record the contract always intended now exists, and it is
+`abilities/runtime_binding.py`. The shape is the contract's (`bindings:`), and
+the module is the one place a caller asks what a device's runtime relationship
+is — so the Ability resolver, the fleet view and the CLI do not each grow a
+private reading of the registry.
 
-So the honest statement of the model today is:
+What it is **not** is a store. There is no `bindings.json`, no writer, no cache
+and nothing on disk to go stale. A binding is resolved from two inputs the
+caller already has — the authored registry and an observation — and returned.
+That is `abilities/provider_instance.py`'s `persistence: none` for the same
+reason: a stored observation is a memory of a past machine being read as a
+statement about the present one.
 
 ```text
 identity        real, closed, wired
-membership      real, per device, wired
-binding         declared as already existing; absent
-version         declared as a required field; never read
-features        no vocabulary exists, not even declared
+membership      real, per device, and now a projection of the binding
+binding         real, per device, resolved — `abilities/runtime_binding.py`
+version         observed by a probe carrying `observed_at`, and refused without one
+features        a closed four-valued vocabulary, answered per binding
 ```
 
 ## What *is* per-runtime today
 
-Two maps, and they are the only ones:
+Three maps now, and they are the contract's whole per-runtime surface:
 
 ```text
 instruction_surfaces   which files a runtime reads at session start
 mcp_surfaces           one key, one file, per runtime
+consumable_provider_kinds   which provider kinds a runtime can be handed
 ```
 
-`{path_role, relative}` pairs (`:88-107`), read by `runtime/cli.py:363-371` and
-compared by the parity checker. Everything else in the contract's
-`capabilities:` block is a **single global value**:
+`{path_role, relative}` pairs for the first two, read by `runtime/cli.py`'s
+surface measurement and compared by the parity checker.
+`consumable_provider_kinds` used to be a single global list, and it is the one
+that changed shape in W7:
 
 ```text
-consumable_provider_kinds   [skill, mcp-server, cli, local-service,
-                             remote-service, builtin]     — one list, not per-runtime
-skill_discovery             native                       — one value, not per-runtime
-session_lifecycle           true                         — one value, not per-runtime
+before   consumable_provider_kinds: [skill, mcp-server, cli, …]   one list
+after    consumable_provider_kinds: {claude-code: [...], codex: [...]}
 ```
 
-The first is wired and load-bearing: `fleet/agent_control_router.py:154-155`
-and `abilities/target.py:541` both read it, and it is what makes a provider the
-runtime cannot consume `AGENT_UNSUPPORTED` rather than "missing" (`:46-49`).
+It is wired and load-bearing at both ends: `abilities/resolver.py#_input_agent_runtime()`
+and `fleet/agent_control_router.py#runtime_record()` read it, and it is what
+makes a provider the runtime cannot consume `AGENT_UNSUPPORTED` rather than
+"missing".
 
-The second and third are read by **nothing**. `runtime_parity.py:42` mentions
-`skill_discovery` in a docstring; no code reads either. And the parity checker
-knows: `runtime_parity.py:41-45` states outright that comparing two records on
-single global values *"looks like the comparison is vacuous"*, and explains
-that it is not an oversight — the values are genuinely properties of the
-product, not of one runtime. That is an honest note about a real thing, and it
-is also the reason a per-runtime `features:` map would not be a small edit: the
-vocabulary it would live in does not exist.
-
-### `version_observed_by`, and what a required field with no reader means
+The other two former globals, `skill_discovery` and `session_lifecycle`, left
+the `capabilities:` block entirely. They are now entries in
+`product_invariants:` — statements about the *product*, not about one runtime
+or one device — and the question they answer moved to the feature axis:
 
 ```text
-record.required_fields: [id, name, version_observed_by, capability_probe]   :29
+skill.native        AVAILABLE for every declared runtime, from the declaration
+session.lifecycle   AVAILABLE for every declared runtime, from the declaration
 ```
 
-Neither `version_observed_by` nor `capability_probe` is read by any code.
-`capability_probe` appears once in the tree — in this line. `version_observed_by`
-appears three times, all inside this file.
+The reason for the move is the reason `runtime_parity.py` gave for the old
+arrangement being *not* an oversight: a comparison between two values that are
+always equal cannot differ, so leaving them in `compared_fields` produced a
+check that could only ever report agreement. The parity block now enforces the
+shape rather than trusting it — `PARITY_COMPARES_A_SHARED_VALUE` fails any
+`compared_fields` entry whose value is not keyed by every declared runtime id,
+so restoring a global to that list is a red check instead of a quiet
+regression. One entry remains: `consumable_provider_kinds`.
 
-The contract does say what a version *is* for:
+### `version_observed_by`, and what happened to `capability_probe`
 
 ```text
-version_observation.required: [probe, observed_at]                          :145
-rule: "a version with no `observed_at` is refused."                         :147
+record.required_fields: [id, name]
 ```
 
-That rule has no enforcer. A version without a date is not refused anywhere,
-because no version is read anywhere. This is worth writing down precisely
-because the surrounding prose is *correct* — the reasoning at `:137-142` about
-why a remembered version and a measured version are different facts is exactly
-right, and it is reasoning nobody executes. It is
-`mem:a-declaration-with-no-reader-never-fails` in its purest form: a field in
-`required_fields:` is read by the next author, who believes it.
+Both fields left that list, and the two departures are different findings
+rather than one tidy-up. Both had been required by a record no code ever wrote
+and no code ever read.
+
+`version_observed_by` was **implemented**, and it moved to where its subject is.
+How a runtime's version is established is a property of the runtime *family*,
+not of a record about one device, so it is now
+`version_observation.version_observed_by` — a two-entry map — and
+`abilities/runtime_binding.py#version_observation()` refuses a version whose
+probe is not the one declared for that family. The contract's rule now has an
+enforcer:
+
+```text
+version_observation.rule: "a version with no `observed_at` is refused."
+```
+
+`capability_probe` was **deleted**, and it is the honest half of the pair. It
+named how to probe what a runtime can do, written before there was a vocabulary
+of things to probe *for*. The vocabulary now exists
+(`runtime_features.order`), its producer exists, and a second mechanism that
+described the same probe in a different place would be the second copy this
+document spends its length arguing against.
+
+The tree still has one lesson from that block worth keeping: a field in
+`required_fields:` is read by the next author, who believes it. Both fields were
+believed for as long as they were listed, and neither was ever executed. What
+changed in W7 is not that someone remembered them — it is that
+`tests/test_declared_implementations.py` fails when a declared field has no
+reader, and that the exemption table it consults cannot keep an entry whose
+field has since gained one.
+
+### The feature vocabulary, and the line it may not cross
+
+```text
+runtime_features.order: [mcp.client, skill.native, instruction.home,
+                         instruction.workspace, session.lifecycle,
+                         app.server, gui]
+```
+
+Seven, closed, and each of them a real surface of a real runtime — `app.server`
+is the Codex app-server (`mcp/codex_app_server_provider.py`), not an invented
+axis. `native.extension` was considered and is explicitly **omitted** in the
+contract rather than marked planned: there is no native-extension surface
+anywhere in the tree, so declaring it would have produced a feature nothing
+could ever answer about.
+
+Every state is one of four, and the fourth is what makes the vocabulary a
+measurement rather than a restatement:
+
+```text
+AVAILABLE      the binding has it, and that was established
+UNAVAILABLE    the binding does not have it, and that was established
+UNKNOWN        nobody established it — NOT a no
+INCOMPATIBLE   this runtime FAMILY has no such axis
+```
+
+`INCOMPATIBLE` is the axis-applicability answer, and it comes from
+`runtime_features.axes`, not from a branch on the runtime's name.
+`abilities/runtime_binding.py#feature()` is the only function that answers the
+question, and a test asserts there is no runtime id used as a *value* anywhere
+in that module — so `if runtime == "codex": app_server = True` is
+unrepresentable rather than merely disallowed, and "Codex Desktop should have a
+GUI" has nowhere to be written.
+
+The order in `feature()` is the design: applicability first, then a product
+invariant, then the observation, then `UNKNOWN`. Nothing reads a runtime's name
+to decide a state.
 
 ## Why CLI and desktop must not become two identities
 
@@ -172,7 +253,7 @@ and a rule that holds for one may not hold for the other. The obvious fix is
 That fix is refused, and the reason is what the id is *for*.
 
 `agent-runtime:<id>` is a key into the **ability question** — it is one of the
-eight inputs to `EffectiveAbility` (`abilities/resolver.py:68-77`). Making the
+eight inputs to `EffectiveAbility` (`abilities/resolver.py#resolve()`, the `inputs_seen` loop). Making the
 surface part of the identity means every ability resolution, every provider
 adapter step (`abilities/target.py:512-550` `_step_adapter()`), every registry
 `agents:` list and every parity comparison has to be written twice, and then
@@ -195,10 +276,51 @@ fleet/transport-contract.yaml:155    CapabilityAvailability
 ```
 
 Nine levels, declared once, resolved per transport, and `UNKNOWN` is one of the
-four answers so that "we did not ask" cannot be read as "no". A runtime feature
-vocabulary would be the same object with a different subject:
-`fleet/transport.py:441-493` is the precedent for how one gets computed and
-sold.
+four answers so that "we did not ask" cannot be read as "no". The runtime
+feature vocabulary is that object with a different subject, and it copied the
+shape rather than inventing one: `runtime_features.order` for the closed list,
+`runtime_features.states` for the four answers, `bindings.surfaces.order` for
+the surfaces a binding may report. `fleet/transport.py#CapabilityAvailability`
+is the precedent for how one gets computed and sold.
+
+The refusals were copied too, and that is the part that keeps the identity from
+growing names. `agent-runtime-contract.yaml#bindings.authority` states that
+`agents:` is a projection; the mismatch word is
+`BINDING_MEMBERSHIP_MISMATCH`, and the six forbidden spellings —
+`codex-cli`, `codex-desktop`, `codex-vscode`, `claude-desktop` and their kind —
+are not refused by a check that could be relaxed. They have nowhere to live:
+the id list is closed, `parse_runtime_ref` refuses anything not in it, and the
+surface is a field of a *binding*. `codex` on a desktop surface is one family
+with a different observation, which is what §13 asks for and what
+`tests/test_runtime_binding.py#IdentityTests` runs.
+
+## How to ask
+
+One surface, and it is an existing command. There is no `runtime binding`
+verb and no `bindings.json` to read, because a second way to ask would be a
+second answer to one question.
+
+```text
+serverosctl device agents                      L0-ish: the authored bindings, no probe
+serverosctl device agents --probe              reaches the machine for version + features
+serverosctl device agents --probe --json       the record, for a program
+serverosctl device agents --device device:work-fj --probe
+```
+
+Without `--probe` a binding is returned with `observation: UNKNOWN` and a
+reason saying the probe was not requested, which is the honest answer and the
+cheap one. With `--probe` the CLI runs
+`agent-runtime-contract.yaml#version_observation.cli_program` for each declared
+family, takes the first line of `<program> --version` verbatim, and measures
+the instruction and MCP surfaces
+the contract declares — no more. It installs nothing, upgrades nothing, writes
+nothing, and does not touch a user's agent configuration.
+
+Features with no producer are **omitted**, so they come back `UNKNOWN` rather
+than being inferred: `gui` and `app.server` are not probed by the CLI, and on
+a host where the Codex app-server has not been reached `app.server` reads
+`UNKNOWN` even though the family declares the axis. That is the §6 proof, and
+it is visible in the live output rather than merely asserted.
 
 ## Adapters: where a runtime reads, not what a runtime must have
 
@@ -212,7 +334,7 @@ provider implementation   mcp/botmux_provider.py — code, not a declaration
 ```
 
 Only the middle one is a record. Its shape
-(`abilities/provider-contract.yaml:190-202`) is:
+(`abilities/provider-contract.yaml#adapters.shape`) is:
 
 ```yaml
 shape:
@@ -222,32 +344,41 @@ shape:
 ```
 
 Read it as a sentence: *on this runtime, this provider is materialized by
-writing this key in this file.* `abilities/target.py:512-550` `_step_adapter()`
-executes exactly that.
+writing this key in this file.* `abilities/target.py#_step_adapter()` executes
+exactly that.
 
-What it is **not** is a requirement. There is no `requires: {runtime, features}`
-anywhere, and requirement-checking is done by two other mechanisms:
+What it is **not** is a requirement. There is no `requires:` on an adapter, and
+requirement-checking is done by three other mechanisms, at three different
+subjects:
 
 ```text
-provider-side requirements:   device capabilities, evaluated in resolver.py:154
-consumable_provider_kinds:    the runtime's global consumable set
+does this DEVICE have the capability?     device capabilities, resolver.py
+can this runtime FAMILY consume it?       consumable_provider_kinds, per runtime
+does this INSTALLED runtime have it?      required_runtime_features, per binding
 ```
 
-So the current model answers *"can this runtime consume this provider at all"*
-and *"does this device have the capability this provider needs"*, but not
-*"does this runtime have what this particular surface requires"*. That third
-question is the one a per-device binding would answer, and it is the question
-the `features:` proposal is actually about.
+The third is the one W7 added, and it is the one an adapter is not allowed to
+be. `abilities/provider-contract.yaml#required_runtime_features` names the
+features a provider needs; the vocabulary is not restated there but referenced
+(`agent-runtime-contract.yaml#runtime_features`), and
+`abilities/resolver.py#_input_runtime_features()` is the reader.
+
+The subject distinction is the reason all three exist rather than one. A
+provider needing `instruction.workspace` is not making a claim about the device
+or about Codex: it is making a claim about *this binding of Codex on this
+machine*, which is the only one of the three that a probe can settle and the
+only one that can come back `UNKNOWN` without anything being wrong.
 
 ## What a runtime is not
 
-The contract closes this explicitly at `:180-184`:
+The contract closes this explicitly under `capabilities`, in the comment
+`A runtime is not a provider and never becomes one`:
 
 > **A runtime is not a provider and never becomes one.** Collapsing them would
 > let "Codex can do it" stand in for "this machine can do it", which is the
 > union error the Ability Fabric is an intersection to prevent.
 
-Its rules block (`:186-196`) is worth reading as the summary of the model:
+Its `rules` block is worth reading as the summary of the model:
 
 - A runtime executes and materializes. **It decides nothing.**
 - No runtime-specific fact lives outside an adapter.
@@ -256,7 +387,8 @@ Its rules block (`:186-196`) is worth reading as the summary of the model:
 
 And one more, from the ownership rule: an agent runtime **is** a session
 boundary, so it is exactly the thing that may not own a durable resource —
-`may_own_lifecycle_classes: [session-scoped, disposable]` (`:122-124`). It is
+`may_own_lifecycle_classes: [session-scoped, disposable]`
+(`abilities/agent-runtime-contract.yaml#ownership`). It is
 also the candidate most likely to be proposed as an owner, because it is
 present, it is running, and it already supervises processes. Case A is the
 record of what that costs.
@@ -266,21 +398,39 @@ record of what that costs.
 The roadmap keeps the full ledger. The entries specific to this page:
 
 ```text
-absent    a per-device runtime binding record (version, features, install)
-absent    a runtime feature vocabulary — no `features:` key exists anywhere
-absent    any reader for version_observed_by or capability_probe
-absent    an adapter `requires:` — requirements are checked provider-side only
-global    skill_discovery and session_lifecycle are single values with no reader
-dead      fleet/agent_control_router.py:179-181 reads
-          getattr(provider, "runtime_adapters", None) and no provider in the
+EXISTS    a per-device runtime binding record
+EXISTS    a runtime feature vocabulary, four-valued, with a producer per feature
+EXISTS    a version observed by a declared probe, refused without `observed_at`
+EXISTS    `required_runtime_features` on a provider, evaluated per binding
+EXISTS    the CLI read surface: `serverosctl device agents [--probe]`
+LEDGER    `agents:` is still authored on all three devices. It is a projection
+          and the mismatch check is live, but the migration is not finished, and
+          finishing it means removing a key three device rows and the fleet view
+          read. Until then `BINDING_MEMBERSHIP_MISMATCH` is doing real work and
+          is not a gate over an empty surface.
+LEDGER    two of the three accepted version probes have no producer.
+          `package-manifest` and `service-handshake` are accepted and unimplemented,
+          and the contract says so per probe rather than leaving three accepted
+          probes reading as three implemented ones.
+UNKNOWN   device:work-fj and device:personal-dell have bindings and no
+          observation. That is not a gap to close by writing values in: nobody
+          has reached either machine from this node, and the honest record is
+          the binding with `observation: UNKNOWN` and a reason.
+DEAD      fleet/agent_control_router.py reads
+          `getattr(provider, "runtime_adapters", None)` and no provider in the
           tree defines that attribute — a branch that can never be taken and
-          cannot fail
+          cannot fail.
 ```
 
-None of these is a defect in what was built. Each is a place where the
-declaration has run ahead of the mechanism, which is the pattern this product
-already has a name for — and the reason the model above is written as *what is*
-rather than as *what should be*.
+Nothing in the first group was closed by writing a name into a ledger. Each is
+a mechanism with a producer, a reader and a test that fails when either stops.
+
+The second group matters as much. A binding record exists for all three devices
+and there is an observation of exactly one of them, because that is the only one
+this node can reach. Filling the other two columns from the Beijing row is the
+specific failure §14 names, and the record is shaped so that it cannot happen
+quietly: an unobserved binding has `observation: UNKNOWN` and an
+`observation_because` sentence, and a test asserts it stays that way.
 
 ## Related
 

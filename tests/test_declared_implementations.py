@@ -180,21 +180,14 @@ KNOWN_UNPRODUCED = {
 # Class 2 · record fields nothing reads.
 # ---------------------------------------------------------------------------
 KNOWN_UNREAD = {
-    "capability_probe": {
-        "declared_at": ("abilities/agent-runtime-contract.yaml",),
-        "because": "the runtime record declares how to probe what a runtime can "
-                   "do; §9's feature vocabulary is the thing that would read it, "
-                   "and there is no feature vocabulary yet.",
-        "disposition": "NEEDS_HUMAN",
-    },
-    "version_observed_by": {
-        "declared_at": ("abilities/agent-runtime-contract.yaml",),
-        "because": "declared so a reported version says who observed it, and "
-                   "no reader distinguishes an observed version from a declared "
-                   "one. One key that can be filled from either source and is "
-                   "read by neither is how a version comes to be believed.",
-        "disposition": "NEEDS_HUMAN",
-    },
+    # Two entries left this table in W7, and leaving is the only exit it has.
+    # `capability_probe` and `version_observed_by` were both declared in
+    # `record.required_fields` with no reader; the first was deleted and the
+    # second was implemented as a per-runtime probe declaration that
+    # `abilities/runtime_binding.py` reads. An exemption whose field gained a
+    # reader is not a smaller exemption, it is a lie, so the gate requires it
+    # to be removed rather than narrowed — see
+    # `test_a_field_that_gained_a_reader_must_lose_its_exemption`.
     "request": {
         "declared_at": ("abilities/target-contract.yaml",),
         "because": "`abilities/target.py:845` copies the whole request into "
