@@ -14,6 +14,7 @@ version" failure this module exists to catch.
 import argparse
 import importlib.util
 import json
+import os
 import shutil
 import subprocess
 import tempfile
@@ -26,6 +27,23 @@ ROOT = Path(__file__).resolve().parents[1]
 INSPECTOR = ROOT / "scripts" / "runtime_truth.py"
 BUILDER = ROOT / "scripts" / "build.py"
 
+# The composition the node runs from. A literal here rather than
+# `truth.NODE_COMPOSITION` because the synthetic composition file has to declare
+# it BEFORE the inspector is loaded, and a name that comes from the module under
+# test would let a rename on both sides agree with each other and disagree with
+# every machine.
+NODE_COMPOSITION = "serveros-node-fixture"
+NODE_UNIT = "serverosd.service"
+
+# The fixture's clock, for the one comparison in the inspector that is about
+# TIME rather than about bytes. A promoted node is one whose process started
+# after `current` was last repointed, and both readings come from the kernel, so
+# a fixture that let the symlink take the machine's real clock would compare a
+# synthetic process start against a real file mtime and read every healthy node
+# as drift. `install_node` stamps the link; a test that means "promoted since"
+# stamps it later, and one that means "restarted since" starts the process later.
+LINK_MTIME = 1_500_000.0
+
 _spec = importlib.util.spec_from_file_location("runtime_truth", INSPECTOR)
 truth = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(truth)
@@ -33,6 +51,15 @@ _spec.loader.exec_module(truth)
 _bspec = importlib.util.spec_from_file_location("serveros_build_rt", BUILDER)
 build = importlib.util.module_from_spec(_bspec)
 _bspec.loader.exec_module(build)
+
+# The release tool, imported for the same reason the inspector imports it: the
+# fixture has to PRODUCE a node, and a fixture that hand-wrote the layout would
+# be testing this file against its own idea of what `promote` does rather than
+# against what `promote` does.
+_rspec = importlib.util.spec_from_file_location("serveros_release_rt",
+                                                ROOT / "scripts" / "release.py")
+release = importlib.util.module_from_spec(_rspec)
+_rspec.loader.exec_module(release)
 
 import sys
 
@@ -65,7 +92,14 @@ HOST_ROWS = {"serveros (bundle source)", "work-engine (canonical)"}
 
 
 def chain_rows(report: dict) -> list[dict]:
-    return [r for r in report["rows"] if r["component"] not in HOST_ROWS]
+    # `applies` is filtered here for the same reason the axis computation
+    # filters it: a question this machine cannot be asked is not a chain
+    # statement, and asserting that it reads OK would assert a row that says
+    # UNKNOWN *because it was not asked*. The node rows are the reason this
+    # matters — a machine with no node runtime has no running surface to
+    # compare, and the fixture is such a machine until a test installs one.
+    return [r for r in report["rows"]
+            if r["component"] not in HOST_ROWS and r.get("applies", True)]
 
 
 class RuntimeTruthTests(unittest.TestCase):
@@ -92,6 +126,11 @@ class RuntimeTruthTests(unittest.TestCase):
         self.serveros = self.base / "serveros"
         (self.serveros / "scripts").mkdir(parents=True)
         shutil.copy2(ROOT / "scripts/build.py", self.serveros / "scripts/build.py")
+        # The inspector loads release.py from the source checkout, because the
+        # staged tree hash it verifies was computed by that file and a second
+        # implementation of the recipe would produce a correct number that
+        # cannot be compared with the recorded one.
+        shutil.copy2(ROOT / "scripts/release.py", self.serveros / "scripts/release.py")
         # The composition is read from the bundle, not restated here. As a
         # literal tuple it was a second copy of a vocabulary the bundle already
         # owns, and it silently fell behind the moment a member was added: the
@@ -104,6 +143,29 @@ class RuntimeTruthTests(unittest.TestCase):
         members += [m for m in build.CORE_MODULES if bundle.get(m, {}).get("path")]
         for rel in members:
             shutil.copytree(ROOT / rel, self.serveros / rel)
+        # A second composition for the synthetic source, because the node does
+        # not run the plugin's composition and this suite has to be able to
+        # measure a node. It is minimal on purpose: the real profile's
+        # `recommended:` list is checked against the real catalogue, and against
+        # a one-ability fixture it can only fail for reasons that have nothing
+        # to do with the running surface.
+        #
+        # `workspace-management` is here so the composition ADD a member core
+        # does not carry. Without it the fixture's node composition had exactly
+        # the plugin's members, and the test asserting that both are audited
+        # could not tell an audit of the node from an audit of the plugin — the
+        # two would agree on every member by construction.
+        (self.serveros / "plugin/profiles/fixture-node.yaml").write_text(yaml.safe_dump({
+            "schema": "serveros/bundle.v1",
+            "extends": "../bundle.yaml",
+            "composition": NODE_COMPOSITION,
+            "name": "hwz-server-os-fixture-node",
+            "cachebuster": "fixture.1",
+            "skills": [
+                {"name": "runtime-management", "source": "ability-management"},
+                {"name": "workspace-management", "source": "ability-management"},
+            ],
+        }, sort_keys=False))
         # Importing build.py writes scripts/__pycache__, which would make the
         # synthetic checkout permanently dirty the moment the inspector loads
         # the builder it is inspecting.
@@ -113,6 +175,16 @@ class RuntimeTruthTests(unittest.TestCase):
         git(self.serveros, "config", "user.name", "test")
         git(self.serveros, "add", "-A")
         git(self.serveros, "commit", "--quiet", "-m", "synthetic serveros")
+
+        # The fixture builds with the builder that belongs to ITS OWN checkout.
+        # `build.py` finds its repository from `__file__`, and the copy in this
+        # file's `scripts/` resolves to the real worktree — so a profile that
+        # `extends:` its parent is resolved against the wrong root and refused
+        # for escaping a repository it never left. Binding the loader to the
+        # synthetic checkout is what makes `extends` mean here what it means on
+        # a machine, and it is the same loader the inspector uses, so the
+        # artifact this fixture builds is the artifact the inspector recomputes.
+        self.build = truth._load_build(self.serveros)
 
         self.engine_repo = self.base / "engine"
         (self.engine_repo / "workengine").mkdir(parents=True)
@@ -137,12 +209,21 @@ class RuntimeTruthTests(unittest.TestCase):
         # same mistake that made "every row is OK" fail on the first run.
         self.claude_skills = self.base / "claude-skills"
         self.codex_skills = self.base / "codex-skills"
+        # The node's own surface, pointed at paths inside the fixture that do
+        # not exist. A test that does not build a node therefore asserts the
+        # file's plugin half, and "this machine has no node runtime" is a fact
+        # the fixture states rather than a fact about the machine running the
+        # suite. `install_node` turns all three on.
+        self.runtime_root = self.base / "runtime-assets"
+        self.unit_dir = self.base / "systemd" / "user"
+        self.proc_dir = self.base / "proc"
+        self.node_artifact = self.base / "dist" / "node"
 
     def tearDown(self):
         self._tmp.cleanup()
 
     def build_artifact(self):
-        rc = build.build(self.serveros / "plugin/bundle.yaml", self.ability, self.rev,
+        rc = self.build.build(self.serveros / "plugin/bundle.yaml", self.ability, self.rev,
                          self.out, self.marketplace, write=True,
                          pack_contract_path=self.contract)
         self.assertEqual(rc, 0)
@@ -182,7 +263,7 @@ class RuntimeTruthTests(unittest.TestCase):
         agrees with itself *and* a revision canonical does not contain.
         """
         rev = rev or self.rev
-        rc = build.build(self.serveros / "plugin/bundle.yaml", self.ability, rev,
+        rc = self.build.build(self.serveros / "plugin/bundle.yaml", self.ability, rev,
                          self.out, self.marketplace, write=True,
                          pack_contract_path=(self.contract if rev == self.rev
                                              else self.contract_at(rev)))
@@ -215,9 +296,92 @@ class RuntimeTruthTests(unittest.TestCase):
             canonical_ref=truth.DEFAULT_CANONICAL_REF,
             claude_skills_root=self.claude_skills,
             codex_skills_root=self.codex_skills,
+            runtime_root=self.runtime_root,
+            composition=NODE_COMPOSITION,
+            unit_dir=self.unit_dir,
+            proc_root=self.proc_dir,
         )
         base.update(over)
         return argparse.Namespace(**base)
+
+    # ---- the node, which is not the plugin distribution ----------------
+
+    def build_node_artifact(self, cachebuster: str = "fixture.1") -> Path:
+        """Build the fixture's node composition, the way release.py expects it.
+
+        Composed by `build()` rather than copied from the core artifact: the two
+        compositions have different member sets, which is exactly why auditing
+        only one of them left the node's members unchecked.
+        """
+        profile = self.serveros / "plugin/profiles/fixture-node.yaml"
+        if cachebuster != "fixture.1":
+            doc = yaml.safe_load(profile.read_text())
+            doc["cachebuster"] = cachebuster
+            profile.write_text(yaml.safe_dump(doc, sort_keys=False))
+        rc = self.build.build(profile, self.ability, self.rev, self.node_artifact,
+                         self.marketplace, write=True, pack_contract_path=self.contract)
+        self.assertEqual(rc, 0)
+        return self.node_artifact
+
+    def install_node(self, artifact: Path | None = None, label: str = "main@0a98bb6",
+                     revision: str | None = None, manifest: bool = True,
+                     declared: str | None = None) -> Path:
+        """Stage an artifact and point a unit at it, the way `promote` does.
+
+        `release.stage` is called for the layout and `release.fingerprint` for
+        the hash, so the recorded number is the one the real tool would record.
+        A hand-written fixture would agree with the inspector about a layout
+        neither of them shares with the machine.
+        """
+        artifact = artifact or self.node_artifact
+        if not (artifact / "bin" / "serverosd").is_file():
+            self.build_node_artifact()
+        root = self.runtime_root / NODE_COMPOSITION
+        revisions = root / "revisions"
+        revisions.mkdir(parents=True, exist_ok=True)
+        rev_dir = release.stage(artifact, revisions, label, self.base / "state", replace=True)
+        if manifest:
+            (rev_dir / truth.TREE_MANIFEST).write_text(json.dumps({
+                "composition": NODE_COMPOSITION, "revision": label,
+                "tree_hash": release.fingerprint(artifact),
+                "runtime_root": str(root / "current"), "previous": None,
+            }, indent=2) + "\n")
+        link = root / "current"
+        if link.is_symlink() or link.exists():
+            link.unlink()
+        link.symlink_to(rev_dir)
+        os.utime(link, (LINK_MTIME, LINK_MTIME), follow_symlinks=False)
+
+        self.unit_dir.mkdir(parents=True, exist_ok=True)
+        exec_start = declared if declared is not None else str(link / "bin/serverosd")
+        (self.unit_dir / NODE_UNIT).write_text(
+            "[Unit]\nDescription=fixture\n\n[Service]\nType=simple\n"
+            f"ExecStart={exec_start}\n")
+        return rev_dir
+
+    def run_process(self, argv: list[str], pid: int = 4242,
+                    started_at: float | None = None) -> None:
+        """A synthetic `/proc/<pid>`. `started_at` is wall-clock seconds."""
+        (self.proc_dir / str(pid)).mkdir(parents=True, exist_ok=True)
+        (self.proc_dir / str(pid) / "cmdline").write_bytes(
+            b"".join(part.encode() + b"\0" for part in argv))
+        if started_at is None:
+            return
+        boot = 1_000_000.0
+        (self.proc_dir / "stat").write_text(f"cpu  0 0 0 0\nbtime {int(boot)}\n")
+        hz = os.sysconf("SC_CLK_TCK")
+        ticks = int((started_at - boot) * hz)
+        # The `comm` field is wrapped in parentheses and may contain BOTH a space
+        # and a `)`, so the parser has to find field 22 by the LAST `)` rather
+        # than the first. Both are exercised here because a bare name would make
+        # the two parsings agree, and a mutation that swapped one for the other
+        # would then be indistinguishable from correct code.
+        fields = ["S"] + ["0"] * 18 + [str(ticks)]
+        (self.proc_dir / str(pid) / "stat").write_text(
+            f"{pid} (python3 (serverosd)) " + " ".join(fields) + "\n")
+
+    def node_rows(self, report) -> dict:
+        return rows_by(report)
 
     def side_branch_commit(self, branch: str = "side") -> str:
         """A commit reachable from a branch but NOT from main.
@@ -456,7 +620,7 @@ class RuntimeTruthTests(unittest.TestCase):
         # touching the install record — which is what `claude plugin update`
         # does when the marketplace source is a local path.
         sha = self.side_branch_commit()
-        rc = build.build(self.serveros / "plugin/bundle.yaml", self.ability, sha,
+        rc = self.build.build(self.serveros / "plugin/bundle.yaml", self.ability, sha,
                          self.out, self.marketplace, write=True,
                          pack_contract_path=self.contract_at(sha))
         self.assertEqual(rc, 0)
@@ -616,6 +780,276 @@ class RuntimeTruthTests(unittest.TestCase):
         self.assertEqual(report["release"]["verdict"], truth.RELEASE_INCOMPLETE)
         self.assertEqual(set(report["release"]["blocking"]),
                          {truth.AXIS_PROVENANCE, truth.AXIS_MATERIALIZATION})
+
+    # ---- the running surface (§AI) --------------------------------------
+    #
+    # Until 2026-09-15 none of this was measured. The file verified a
+    # distribution and called it the runtime; the node runs a different
+    # composition from a different path, under a unit the file never opened, in
+    # a process it never looked for. These tests are the measurement.
+
+    def test_a_machine_with_no_node_is_reported_and_not_blocking(self):
+        """The distribution can be perfect on a machine that has no node runtime.
+
+        A release tool that cannot say RELEASE_COMPLETE on a machine with no
+        node installed is a tool nobody runs, so absence is excluded — and the
+        exclusion is NAMED in the report rather than being an empty row, because
+        a hole in a gate that nobody can see is how a gate stops being one.
+        """
+        self.faithful_runtime()
+        report = truth.collect(self.args())
+        rows = rows_by(report)
+        self.assertEqual(rows[f"{truth.NODE_UNIT} (running unit)"]["verdict"], truth.UNKNOWN)
+        self.assertEqual(rows[f"{NODE_COMPOSITION} (node revision)"]["verdict"],
+                         truth.MISSING)
+        self.assertIn(f"{truth.NODE_UNIT} (running unit)", report["release"]["not_applicable"])
+        self.assertIn(f"{NODE_COMPOSITION} (node revision)",
+                      report["release"]["not_applicable"])
+        self.assertEqual(report["release"]["verdict"], truth.RELEASE_COMPLETE)
+        self.assertEqual(self.axis(report, truth.AXIS_CHAIN)["verdict"], truth.PASS)
+
+    def test_a_promoted_node_that_is_running_is_ok(self):
+        self.faithful_runtime()
+        rev = self.install_node()
+        self.run_process(["python3", str(self.runtime_root / NODE_COMPOSITION
+                                          / "current" / "bin/serverosd")],
+                         started_at=2_000_000.0)
+        report = truth.collect(self.args())
+        rows = rows_by(report)
+        self.assertEqual(rows[f"{truth.NODE_UNIT} (running unit)"]["verdict"], truth.OK)
+        self.assertEqual(rows[f"{NODE_COMPOSITION} (node revision)"]["verdict"],
+                         truth.OK)
+        # The row is attributed to the composition the CALLER asked about. The
+        # label is built from `--composition`, and a constant here would report
+        # a node measured here as the node of whichever composition the file
+        # happens to name — two different machines' business. Only the unit row
+        # can state this: the revision row's `canonical` column carries the
+        # revision label, which is what tells a reader WHICH bytes, and the
+        # composition is already in its name.
+        self.assertEqual(rows[f"{truth.NODE_UNIT} (running unit)"]["canonical"],
+                         NODE_COMPOSITION)
+        node = report["release"]["node"]
+        self.assertEqual(node["state"], "PROMOTED")
+        self.assertEqual(node["current"], rev.name)
+        self.assertEqual(node["processes"]["running"], [4242])
+        self.assertTrue(node["tree_hash_ok"])
+        self.assertEqual(report["release"]["verdict"], truth.RELEASE_COMPLETE)
+
+    def test_a_node_that_is_not_running_is_named_not_passed(self):
+        self.faithful_runtime()
+        self.install_node()
+        report = truth.collect(self.args())
+        row = rows_by(report)[f"{truth.NODE_UNIT} (running unit)"]
+        self.assertEqual(row["verdict"], truth.NOT_RUNNING)
+        self.assertIn("declared and is not executing", row["detail"])
+        self.assertEqual(set(report["release"]["blocking"]), {truth.AXIS_CHAIN})
+
+    def test_a_promote_without_a_restart_is_drift_not_success(self):
+        """The case the whole running surface exists for.
+
+        `release.py promote` swaps the symlink and runs `daemon-reload`; it does
+        NOT restart the service. The unit still declares `current/bin/serverosd`,
+        the symlink still resolves, and the process is still executing the code
+        it imported at start — so every fact except TIME reads as agreement. The
+        process started before `current` was last repointed, and that is the
+        fact that decides it.
+        """
+        self.faithful_runtime()
+        self.install_node()
+        link = self.runtime_root / NODE_COMPOSITION / "current"
+        self.run_process(["python3", str(link / "bin/serverosd")], started_at=2_000_000.0)
+        # `promote` repoints the link and does not restart the service.
+        os.utime(link, (3_000_000.0, 3_000_000.0), follow_symlinks=False)
+
+        report = truth.collect(self.args())
+        row = rows_by(report)[f"{truth.NODE_UNIT} (running unit)"]
+        self.assertEqual(row["verdict"], truth.BUILT_RUNTIME_DRIFT)
+        self.assertIn("repointed", row["detail"])
+        entry = report["release"]["node"]["processes"]["started_before_current_was_repointed"]
+        self.assertEqual([e["pid"] for e in entry], [4242])
+        self.assertAlmostEqual(entry[0]["current_repointed_at"] - entry[0]["started_at"],
+                               1_000_000.0, places=1)
+
+    def test_a_restart_after_the_promote_clears_that_finding(self):
+        """The negative control for the test above.
+
+        Without this, a checker that reported drift whenever two clocks were
+        compared at all would pass the previous test. Same promote, same
+        processes, one difference: the process started AFTER the repoint.
+        """
+        self.faithful_runtime()
+        self.install_node()
+        link = self.runtime_root / NODE_COMPOSITION / "current"
+        os.utime(link, (3_000_000.0, 3_000_000.0), follow_symlinks=False)
+        self.run_process(["python3", str(link / "bin/serverosd")], started_at=3_000_100.0)
+        report = truth.collect(self.args())
+        self.assertEqual(rows_by(report)[f"{truth.NODE_UNIT} (running unit)"]["verdict"],
+                         truth.OK)
+        self.assertEqual(report["release"]["node"]["processes"]
+                         ["started_before_current_was_repointed"], [])
+
+    def test_a_unit_rendered_for_a_retired_revision_is_stale(self):
+        self.faithful_runtime()
+        rev = self.install_node()
+        retired = rev.parent / "main@2d824b8"
+        shutil.copytree(rev, retired)
+        self.install_node(declared=str(retired / "bin/serverosd"))
+        self.run_process(["python3", str(retired / "bin/serverosd")], started_at=2_000_000.0)
+        report = truth.collect(self.args())
+        row = rows_by(report)[f"{truth.NODE_UNIT} (running unit)"]
+        self.assertEqual(row["verdict"], truth.UNIT_STALE)
+        self.assertIn("rendered for a revision", row["detail"])
+
+    def test_a_hand_started_process_on_another_revision_is_drift(self):
+        """`elsewhere`: a live process under this node's revisions/ that is not
+        the declared program. Reachable by starting the CLI from a revision path
+        by hand, and invisible to a checker that only looks for the declared
+        string."""
+        self.faithful_runtime()
+        rev = self.install_node()
+        old = rev.parent / "main@2d824b8"
+        shutil.copytree(rev, old)
+        self.run_process(["python3", str(old / "bin/serverosd")], started_at=2_000_000.0)
+        report = truth.collect(self.args())
+        row = rows_by(report)[f"{truth.NODE_UNIT} (running unit)"]
+        self.assertEqual(row["verdict"], truth.BUILT_RUNTIME_DRIFT)
+        self.assertEqual(report["release"]["node"]["processes"]
+                         ["running_a_superseded_revision"][0]["pid"], 4242)
+
+    def test_the_scan_does_not_find_the_shell_that_ran_it(self):
+        """Exact argument match, and here is the positive control for it.
+
+        A substring match on a command line finds any process whose text merely
+        mentions the path — including the shell that typed the search. The first
+        draft of this scan did exactly that and reported its own parent as the
+        running daemon. Both halves are asserted here, because a scan that
+        matches nothing would pass the negative half alone.
+        """
+        self.faithful_runtime()
+        self.install_node()
+        link = self.runtime_root / NODE_COMPOSITION / "current"
+        self.run_process(["/bin/bash", "-c", f"grep {link}/bin/serverosd /proc/*/cmdline"],
+                         pid=1111, started_at=2_000_000.0)
+        self.run_process(["python3", str(link / "bin/serverosd")],
+                         pid=2222, started_at=2_000_000.0)
+        report = truth.collect(self.args())
+        self.assertEqual(report["release"]["node"]["processes"]["running"], [2222])
+        self.assertEqual(rows_by(report)[f"{truth.NODE_UNIT} (running unit)"]["verdict"],
+                         truth.OK)
+
+    def test_an_unrendered_unit_is_unknown_and_says_why(self):
+        """`release.py` renders `@SERVEROS_RUNTIME@` at install. A unit still
+        carrying it installs cleanly — systemd treats it as text — and starts a
+        literal path, so it is named rather than resolved."""
+        self.faithful_runtime()
+        self.install_node(declared="@SERVEROS_RUNTIME@/bin/serverosd")
+        report = truth.collect(self.args())
+        row = rows_by(report)[f"{truth.NODE_UNIT} (running unit)"]
+        self.assertEqual(row["verdict"], truth.UNKNOWN)
+        self.assertIn("without being rendered", row["detail"])
+
+    def test_a_revision_whose_bytes_were_replaced_is_drift(self):
+        """The recorded hash is checked against the directory it describes.
+
+        A revision is immutable once staged; a byte changed inside one means the
+        thing being executed is not the thing that was promoted, and no amount
+        of rebuilding from source would say so.
+        """
+        self.faithful_runtime()
+        rev = self.install_node()
+        (rev / "runtime/daemon.py").write_text("# replaced after the promote\n")
+        report = truth.collect(self.args())
+        row = rows_by(report)[f"{NODE_COMPOSITION} (node revision)"]
+        self.assertEqual(row["verdict"], truth.SOURCE_RUNTIME_DRIFT)
+        self.assertIn("not the ones that were promoted", row["detail"])
+        self.assertFalse(report["release"]["node"]["tree_hash_ok"])
+
+    def test_a_dangling_current_is_named_rather_than_crashing(self):
+        self.faithful_runtime()
+        self.install_node()
+        link = self.runtime_root / NODE_COMPOSITION / "current"
+        link.unlink()
+        link.symlink_to(self.runtime_root / NODE_COMPOSITION / "revisions/main@gone")
+        report = truth.collect(self.args())
+        self.assertEqual(report["release"]["node"]["state"], "REVISION_MISSING")
+        self.assertEqual(rows_by(report)[f"{NODE_COMPOSITION} (node revision)"]
+                         ["verdict"], truth.UNKNOWN)
+        self.assertEqual(set(report["release"]["blocking"]), {truth.AXIS_CHAIN})
+
+    def test_a_node_behind_source_is_named_with_the_version_it_would_get(self):
+        """The convergence finding, in the shape it actually takes: the running
+        revision is internally perfect and is not what source builds today."""
+        self.faithful_runtime()
+        self.install_node()
+        self.build_node_artifact(cachebuster="fixture.2")
+        self.run_process(["python3", str(self.runtime_root / NODE_COMPOSITION
+                                          / "current" / "bin/serverosd")],
+                         started_at=2_000_000.0)
+        report = truth.collect(self.args())
+        row = rows_by(report)[f"{NODE_COMPOSITION} (node revision)"]
+        self.assertEqual(row["verdict"], truth.SOURCE_RUNTIME_DRIFT)
+        self.assertIn("canonical source builds 3.1.0+fixture.2", row["detail"])
+
+    def test_the_node_revision_is_hashed_without_its_own_manifest(self):
+        """`RELEASE.json` records the tree hash and therefore cannot be inside
+        it. A verifier that fingerprinted the staged directory whole would get a
+        correct number that matches nothing, and would read every healthy
+        revision as tampered with."""
+        self.faithful_runtime()
+        rev = self.install_node()
+        recorded = json.loads((rev / truth.TREE_MANIFEST).read_text())["tree_hash"]
+        self.assertEqual(recorded, release.fingerprint(rev, ignore=(truth.TREE_MANIFEST,)))
+        self.assertNotEqual(recorded, release.fingerprint(rev))
+
+    def test_a_revision_with_no_manifest_is_reported_not_assumed_broken(self):
+        self.faithful_runtime()
+        self.install_node(manifest=False)
+        self.run_process(["python3", str(self.runtime_root / NODE_COMPOSITION
+                                          / "current" / "bin/serverosd")],
+                         started_at=2_000_000.0)
+        report = truth.collect(self.args())
+        self.assertIsNone(report["release"]["node"]["tree_hash_ok"])
+        self.assertIn("cannot be checked against anything", report["release"]["node"]["detail"])
+        # The rest of the node still answers: an unverifiable hash does not make
+        # the revision unmeasurable, and the row still says what it found.
+        self.assertEqual(rows_by(report)[f"{truth.NODE_UNIT} (running unit)"]["verdict"],
+                         truth.OK)
+
+    def test_the_process_start_is_read_past_a_comm_that_contains_spaces(self):
+        """Field 22 by the LAST `)`, not by counting from the left.
+
+        `comm` is user-controlled: a program named `python3 serverosd` shifts
+        every field after it. Counting from the start produces a number that
+        looks like a start time and is not one — no exception, no test failure,
+        just a comparison against the wrong clock reading.
+        """
+        self.faithful_runtime()
+        self.install_node()
+        when = 2_000_000.0
+        self.run_process(["python3", "x"], started_at=when)
+        # run_process writes a comm containing a space on purpose; assert the
+        # parse lands on the tick count it was given rather than on a neighbour.
+        got = truth.process_started_at(4242, self.proc_dir, 1_000_000.0)
+        self.assertAlmostEqual(got, when, places=1)
+
+    def test_a_missing_proc_root_is_no_processes_not_a_crash(self):
+        self.faithful_runtime()
+        self.install_node()
+        report = truth.collect(self.args(proc_root=self.base / "no-such-proc"))
+        self.assertEqual(report["release"]["node"]["processes"]["visible"], 0)
+        self.assertEqual(rows_by(report)[f"{truth.NODE_UNIT} (running unit)"]["verdict"],
+                         truth.NOT_RUNNING)
+
+    def test_both_compositions_members_are_audited(self):
+        """The node ships members the plugin does not. Auditing only the plugin
+        left the ones a flat runtime skill root could duplicate unchecked."""
+        self.faithful_runtime()
+        self.install_node()
+        report = truth.collect(self.args())
+        compositions = report["release"]["materialization"]["compositions"]
+        self.assertEqual(set(compositions), {"plugin payload", "node revision"})
+        node_members = set(compositions["node revision"]["members"])
+        self.assertTrue(node_members - set(compositions["plugin payload"]["members"]))
 
 
 if __name__ == "__main__":

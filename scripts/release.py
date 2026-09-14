@@ -111,7 +111,7 @@ def default_state_dir() -> Path:
     return paths.Paths().root("state")
 
 
-def fingerprint(root: Path) -> str:
+def fingerprint(root: Path, ignore: tuple[str, ...] = ()) -> str:
     """Hash a directory's whole file tree.
 
     This reproduces, byte for byte, the recipe the release records already
@@ -149,8 +149,20 @@ def fingerprint(root: Path) -> str:
     artifact, or the published asset after extracting it, gives the recorded
     value; fingerprinting the staged directory gives that value plus one file,
     which is a different tree and correctly a different number.
+
+    `ignore` exists so that the alternative to reading this paragraph is not
+    writing a second hash function. A verifier standing outside this tool has
+    only the STAGED directory to look at — it cannot fingerprint the artifact,
+    because the artifact is gone by then — so it must ask for the recipe applied
+    to the tree the recorded hash actually describes. Reimplementing the four
+    details above in another file to get there is exactly the two-definitions
+    failure this docstring warns about, so the recipe grew a filter instead.
+    Relative paths, matching what `sort -z` would have seen; the default is
+    empty and every existing caller is unaffected.
     """
-    entries = [p for p in root.rglob("*") if p.is_file()]
+    skip = set(ignore)
+    entries = [p for p in root.rglob("*")
+               if p.is_file() and p.relative_to(root).as_posix() not in skip]
     entries.sort(key=lambda p: f"./{p.relative_to(root).as_posix()}")
     stream = "".join(
         f"{hashlib.sha256(p.read_bytes()).hexdigest()}  ./{p.relative_to(root).as_posix()}\n"
