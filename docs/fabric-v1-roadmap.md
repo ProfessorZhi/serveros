@@ -327,6 +327,9 @@ a new Item-card field                   priority / severity do not exist anywher
 approval transport (HUM-04)             a surface that has to exist, possibly upstream
 identity verification inside a turn     an experiment, not an implementation
 what leaves a catalogue                 a pack may not shrink to one device
+workload scratch containment            belongs to the provider's launch config,
+                                        not to the observer — see
+                                        `runtime-resources.md` §9.1
 ```
 
 Every one of these is a decision rather than a task, and none of them is
