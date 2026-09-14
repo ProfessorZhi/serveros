@@ -103,6 +103,17 @@ KNOWN_CLI_CROSSINGS = {
                    "no binding of its own.",
         "disposition": "REDECLARED",
     },
+    "abilities/packs.py": {
+        "because": "`serverosctl pack inspect` is §11's pack verdict — §F names "
+                   "`pack.inspect` as one of the four discovery surfaces, and "
+                   "until this command nothing in the product called "
+                   "`packs.resolve()` at all. The kernel keeps its place: the "
+                   "CLI supplies the declarations file, the catalogue revision "
+                   "and the repo, and renders the verdict; it computes no "
+                   "membership of its own, and the pack verdict it prints is "
+                   "the one `scripts/build.py` settles against.",
+        "disposition": "REDECLARED",
+    },
     "abilities/resolver.py": {
         "because": "`serverosctl ability resolve` IS the resolver's operator "
                    "surface. §24 keeps the daemon free of it; the CLI is where "
