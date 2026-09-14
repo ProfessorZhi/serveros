@@ -4,6 +4,12 @@
     python3 resolver.py --request request.json
     python3 resolver.py --ability ability:test-management --device device:server-beijing \
         --runtime claude-code --inputs inputs.json
+    python3 resolver.py --ability 'ability:information-management#read' --device device:server-beijing \
+        --runtime claude-code --inputs inputs.json
+
+The last line quotes its argument for a reason that is easy to lose an hour to:
+`#` starts a comment in every shell this runs in, so an unquoted
+`ability:x#read` reaches the process as `ability:x`.
 
 This is the ServerOS **Ability Resolver**. It is the third of the read-only
 decision kernels, beside Context (what is my environment) and Space (where does
@@ -41,6 +47,28 @@ a definite refusal outranks an indefinite yes: if an input cannot be read and a
 LATER input refuses, the refusal is the answer. Otherwise a device with nothing
 installed reports UNKNOWN for everything, which reads as "we have not looked"
 and hides the finding that nothing is there.
+
+An operation is a property of the reference, not a ninth input
+--------------------------------------------------------------
+`ability:information-management#read` names one ability AND one thing to do
+with it. The operation is decided by what the provider declares about itself
+(`provider-contract.yaml#operations`), so it is a provider-intrinsic check like
+the others — but it is NOT one of the eight inputs, and it is deliberately not
+made into one:
+
+  * The eight inputs are consulted against the DEVICE. An operation is not a
+    device fact. Adding a ninth would change `inputs_seen` — the field whose
+    whole job is to say how much of the intersection was actually evaluated —
+    into a list of nine things where one is not of the same kind.
+  * A bare `ability:x` never consults the operation table. If it did, every
+    provider that declares no `operations:` would return UNKNOWN for ordinary
+    work that resolves today, which is a retraction dressed as a refinement.
+
+Three states, copied verbatim from `target.py#_support_state` and asymmetric on
+purpose: a provider that declares no `operations:` key has NOT been asked
+(UNKNOWN); a provider that declares a table without the verb has said no
+(UNSUPPORTED). Absent from a published closed list is a no; a missing list is
+nobody asked.
 """
 from __future__ import annotations
 
@@ -60,7 +88,33 @@ REASONS = (
     "POLICY_DENIED",
     "NETWORK_UNAVAILABLE",
     "PROVIDER_NOT_INSTALLED",
+    # The seventh, and the only one here that the provider contract does NOT
+    # declare — deliberately. `provider_instance.REASONS` is asserted equal to
+    # `provider-contract.yaml#status.reasons` by a test, and that vocabulary is
+    # about whether a provider is THERE and ANSWERS. "This provider does not
+    # implement this operation" is neither: the provider is installed and
+    # healthy, and it will not do this thing. `provider-contract.yaml` says so
+    # where it declares `operations:`, and the word itself is the one
+    # `target-contract.yaml#reasons.values` has carried since an Agent Control
+    # request could name an action: it is reused, not minted here.
+    #
+    # Both the definite (UNSUPPORTED) and the indefinite (no table) case refuse
+    # with this word, and that is not a collapse. The distinction lives in the
+    # candidate's `operations_state` and in the candidate's status —
+    # INCOMPATIBLE versus UNKNOWN — exactly as `target-contract.yaml` rules for
+    # the same axis one plane over, where the word is coarse on purpose because
+    # a closed vocabulary has no word for "nobody asked".
+    "ACTION_UNSUPPORTED",
 )
+
+# The operation axis. `SUPPORTED` never appears as a refusal — it is the value
+# the axis returns when the verb is declared, and it is named here so the three
+# states can be asserted as a closed set rather than compared as strings.
+OPERATION_STATES = ("SUPPORTED", "UNSUPPORTED", "UNKNOWN")
+
+# The reference separator. `ability:<kebab-id>#<verb>`; the bare form stays
+# legal and means the ability without naming an operation.
+OPERATION_SEPARATOR = "#"
 
 # The eight inputs, in evaluation order. Order is what the REASON depends on:
 # any input may refuse, and the first to refuse names why. Cheap, local and
@@ -82,8 +136,120 @@ class Rejected(ValueError):
 
 
 # ---------------------------------------------------------------------------
+# The reference. One syntax, one parser, and it lives here because this module
+# owns what an ABILITY reference is. `target.py` calls into this one rather than
+# the other way round, so there is exactly one reading of `#` in an ability
+# reference.
+#
+# Stated that narrowly because it is not a tree-wide invariant and should not
+# read as one: `context/resolver.py:297` also partitions on `#`, for a SPACE
+# locator with a fragment — a different reference family with a different head,
+# and folding the two together is not a refactor this file may make.
+#
+# No regular expressions: this module may import `argparse`, `json`, `sys` and
+# `pathlib` and nothing else, which a test enforces. The grammar is one
+# separator and a character class, so a regex would be a dependency bought for
+# nothing.
+# ---------------------------------------------------------------------------
+
+def _is_operation_word(text: str) -> bool:
+    """kebab-case: lowercase ASCII letters, digits, single internal hyphens.
+
+    A SHAPE rule, not a vocabulary. There is deliberately no server-side list of
+    legal operations: the verbs belong to the providers that implement them, and
+    a resolver that owned a verb list would be a second answer to a question the
+    provider records already answer. This only refuses things that cannot be a
+    verb at all — `#Read`, `#read_me`, `#-read` — so a caller learns they
+    mistyped rather than learning that every provider lacks an operation nobody
+    could have declared.
+
+    ASCII is spelled out rather than left to `str.islower`, because `islower` is
+    true for `é` and for a surprising amount of Unicode — and the contract says
+    which characters may appear in an identifier, not which ones happen to have
+    a case. `"²".isdigit()` is likewise true, so digits are bounded the same way.
+    """
+    if not text or text.startswith("-") or text.endswith("-"):
+        return False
+    if "--" in text:
+        return False
+    return all(ch.isascii() and (ch.isdigit() or ch.islower() or ch == "-")
+               for ch in text)
+
+
+def ability_ref(ability: str, operation: str | None = None) -> str:
+    """Compose a reference. The inverse of `parse_ability_ref`."""
+    if not ability:
+        raise Rejected("an ability reference needs an ability")
+    if operation is None:
+        return ability
+    if not _is_operation_word(operation):
+        raise Rejected(
+            f"{operation!r} is not an operation: operations are kebab-case, "
+            "and there is no server-side list of them to look one up in")
+    return f"{ability}{OPERATION_SEPARATOR}{operation}"
+
+
+def parse_ability_ref(text: str) -> tuple[str, str | None]:
+    """`(ability, operation)` from `ability:<id>[#<verb>]`.
+
+    The bare form returns the text UNCHANGED as the ability. That is not
+    leniency — every caller and every fixture in the product writes
+    `ability:<kebab-id>` and none of them names an operation, and a parser that
+    normalised those would be rewriting inputs it was not asked about.
+
+    Only the first separator splits, and a second one is a rejection rather than
+    a verb that happens to contain `#`. Splitting at the last separator would
+    accept `ability:x#a#b` and silently drop `a`, which is how a typo becomes a
+    resolution about something the caller never asked for.
+    """
+    if not isinstance(text, str) or not text:
+        raise Rejected("request.ability is required")
+    head, separator, tail = text.partition(OPERATION_SEPARATOR)
+    if not separator:
+        return text, None
+    if OPERATION_SEPARATOR in tail:
+        raise Rejected(
+            f"{text!r} names more than one operation; a reference is "
+            "`ability:<id>#<verb>` and nothing after the verb")
+    if not head:
+        raise Rejected(f"{text!r} names no ability")
+    if not _is_operation_word(tail):
+        raise Rejected(
+            f"{tail!r} in {text!r} is not an operation: operations are "
+            "kebab-case, and there is no server-side list of them to look one "
+            "up in")
+    return head, tail
+
+
+# ---------------------------------------------------------------------------
 # Helpers. Small, pure, and named after the contract line each implements.
 # ---------------------------------------------------------------------------
+
+def _operation_state(provider: dict, operation: str) -> tuple[str, str]:
+    """(SUPPORTED | UNSUPPORTED | UNKNOWN, detail) for one provider.
+
+    `provider-contract.yaml#operations`. Declared, so a list of verbs; the
+    asymmetry between the first two returns is the whole point and is copied
+    from `target.py#_support_state`, which arrived at it against an observed
+    table — the same shape, one axis over.
+    """
+    table = provider.get("operations")
+    if table is None:
+        return ("UNKNOWN",
+                "the provider declares no operations table, so whether it "
+                f"implements {operation} has not been asked")
+    if not isinstance(table, list):
+        return ("UNKNOWN",
+                "the provider's operations table is not a list of verbs, so it "
+                f"does not answer whether {operation} is one of them")
+    declared = [str(verb) for verb in table]
+    if operation not in declared:
+        # A published closed list with a hole in it is a "no" for the hole.
+        return ("UNSUPPORTED",
+                f"{operation} is not among the {len(declared)} operations this "
+                "provider declares")
+    return "SUPPORTED", f"the provider declares {operation}"
+
 
 def _path_role_bound(profile: dict | None, role: str) -> bool:
     """Is `role` BOUND on this device?
@@ -140,8 +306,18 @@ def _instance_for(instances, provider_id: str, device_ref: str | None) -> dict |
 # Per-input evaluation. Each returns either None (input agreed) or a refusal.
 # ---------------------------------------------------------------------------
 
-def _input_ability(request: dict) -> dict | None:
-    ability = request["ability"]
+def _input_ability(request: dict, ability: str) -> dict | None:
+    """input 1 — the pinned catalogue.
+
+    Takes the ability as an argument rather than reading `request["ability"]`,
+    because that key may carry an operation (`ability:x#read`) and the catalogue
+    is keyed by the bare ability. Looking up the compound string would make
+    every operation-naming request a catalogue miss — a refusal about the
+    catalogue, produced by a question about a verb.
+
+    The catalogue is a statement about abilities, not about verbs: an operation
+    is resolved against the provider that implements it, one layer down.
+    """
     catalogue = request.get("abilities") or {}
     if ability not in catalogue:
         return _refusal(
@@ -203,7 +379,8 @@ def _input_policy(request: dict, ability: str) -> dict | None:
     return None
 
 
-def _evaluate_one(request: dict, ability: str, provider: dict) -> dict:
+def _evaluate_one(request: dict, ability: str, provider: dict,
+                  operation: str | None = None) -> dict:
     """One provider, through the eight inputs in order. First refusal wins.
 
     `ability` is not evaluated here — it is not a property of a provider, and
@@ -233,8 +410,30 @@ def _evaluate_one(request: dict, ability: str, provider: dict) -> dict:
     `summarize`, counted by `count_abilities` as `undecided`, and produced by
     no input at all, because a candidate could only be a refusal or a yes. It
     is now the answer for the case that has no answer.
+
+    The operation, when one was named
+    ---------------------------------
+    A verb the provider does not implement is a DEFINITE refusal, so it returns
+    immediately: the device may or may not have everything else, and it does
+    not matter, because this provider will never do this thing. A provider that
+    publishes no operations table is an INDEFINITE answer, and it deliberately
+    does NOT return here — it is remembered and falls through to the eight
+    inputs, because returning early would let "nobody asked about the verb"
+    mask a later, definite "this device cannot do it". The definite refusal
+    still outranks it. If everything else agrees, `operation_unasked` is what
+    makes the answer UNKNOWN instead of AVAILABLE.
     """
     unevaluated = []
+    operation_unasked = None
+
+    if operation is not None:
+        state, detail = _operation_state(provider, operation)
+        if state == "UNSUPPORTED":
+            return _refusal(
+                "INCOMPATIBLE", "ACTION_UNSUPPORTED", detail,
+                refused_by="operation", operations_state=state)
+        if state == "UNKNOWN":
+            operation_unasked = detail
 
     for name in INPUT_ORDER:
         if name == "ability":
@@ -305,12 +504,17 @@ def _evaluate_one(request: dict, ability: str, provider: dict) -> dict:
 
     preferred = provider.get("preference", 100)
 
-    if unevaluated:
+    if unevaluated or operation_unasked is not None:
+        if unevaluated:
+            detail = ("no input refused, and these were never consulted: "
+                      + ", ".join(unevaluated))
+        else:
+            detail = f"no input refused, and {operation_unasked}"
         return _refusal(
-            "UNKNOWN", None,
-            "no input refused, and these were never consulted: "
-            + ", ".join(unevaluated),
-            unevaluated=unevaluated, preference=preferred)
+            "UNKNOWN", "ACTION_UNSUPPORTED" if operation_unasked else None,
+            detail,
+            unevaluated=unevaluated, preference=preferred,
+            operations_state="UNKNOWN" if operation_unasked else None)
 
     # -- every decisive input was consulted and none refused. ----------------
     caveats = []
@@ -323,10 +527,14 @@ def _evaluate_one(request: dict, ability: str, provider: dict) -> dict:
             "not the same provider tomorrow",
             finding="PERSISTENT_RUNTIME_FLOATING_DEPENDENCY"))
 
+    # A checked-and-agreed operation is recorded, not merely passed. The reader
+    # of a resolution that came back AVAILABLE is entitled to know whether the
+    # verb was part of what was checked or was never in question.
+    agreed = "SUPPORTED" if operation is not None else None
     if caveats:
-        return {**caveats[0], "preference": preferred}
+        return {**caveats[0], "preference": preferred, "operations_state": agreed}
     return {"status": "AVAILABLE", "reason": None, "detail": None,
-            "preference": preferred}
+            "preference": preferred, "operations_state": agreed}
 
 
 # ---------------------------------------------------------------------------
@@ -344,13 +552,18 @@ def resolve(request: dict) -> dict:
         if not request.get(field):
             raise Rejected(f"request.{field} is required")
 
-    ability = request["ability"]
+    # §10 — split the reference once, here, and never again. Everything below
+    # works with the BARE ability, because that is the catalogue key, the key
+    # providers declare, and the identity that must not change when a caller
+    # asks about a verb. The operation travels beside it.
+    ability, operation = parse_ability_ref(request["ability"])
     providers = [p for p in (request.get("providers") or [])
                  if p.get("ability") == ability]
 
     record = {
         "schema": SCHEMA,
         "ability": ability,
+        "operation": operation,
         "device_ref": request["device_ref"],
         "runtime": request["runtime"],
         "resolved_at": request.get("resolved_at"),
@@ -377,7 +590,7 @@ def resolve(request: dict) -> dict:
     # It is not a property of a provider: a provider for an ability that is not
     # in the pinned catalogue is a provider for something that does not exist,
     # and the finding is about the catalogue, not about the provider.
-    catalogue_refusal = _input_ability(request)
+    catalogue_refusal = _input_ability(request, ability)
     if catalogue_refusal is not None:
         return {**record, **catalogue_refusal, "candidates": []}
 
@@ -389,7 +602,7 @@ def resolve(request: dict) -> dict:
 
     candidates = []
     for provider in sorted(providers, key=lambda p: (p.get("preference", 100), p["id"])):
-        outcome = _evaluate_one(request, ability, provider)
+        outcome = _evaluate_one(request, ability, provider, operation)
         candidates.append({
             "provider": provider["id"],
             "status": outcome["status"],
@@ -399,6 +612,10 @@ def resolve(request: dict) -> dict:
             "unevaluated": outcome.get("unevaluated", []),
             "finding": outcome.get("finding"),
             "preference": outcome.get("preference", provider.get("preference", 100)),
+            # Per candidate, and absent when no operation was named — which is
+            # the whole rule: a bare `ability:x` never consults the table, so it
+            # has no state to report and must not be given a fabricated one.
+            "operations_state": outcome.get("operations_state"),
         })
 
     usable = [c for c in candidates if c["status"] in ("AVAILABLE", "DEGRADED")]
@@ -427,6 +644,15 @@ def resolve(request: dict) -> dict:
     # inputs the PROVIDERS could not see, which is narrower and more useful
     # than the record's `inputs_missing`: the latter is about the request, and
     # this is about what stood in the way of a decision.
+    #
+    # `reason` stays None even when every candidate carries one, and that is a
+    # ruling copied rather than a convenience. `abilities/target-contract.yaml`
+    # settled the same axis one plane over: an UNEVALUABLE verdict is not a
+    # REFUSAL, so the word does not reach `record.reason` — it appears only on
+    # that step's own entry, which here is the candidate. Letting
+    # ACTION_UNSUPPORTED mean "refused" on one record and "nobody asked" on
+    # another is one word with two meanings at one field, and a consumer that
+    # switches on `reason` would read the second as the first.
     unconsulted = sorted({name for c in candidates for name in c["unevaluated"]})
     return {**record, "status": "UNKNOWN", "reason": None,
             "detail": ("no provider could be resolved and none refused; "
@@ -435,14 +661,30 @@ def resolve(request: dict) -> dict:
 
 
 def summarize(record: dict) -> str:
-    """One line, for a disclosure surface. Never a paragraph."""
+    """One line, for a disclosure surface. Never a paragraph.
+
+    The verb is part of the question, so it is part of the line. Rendering a
+    resolution of `ability:x#read` as `x` would report an answer to a question
+    nobody asked, and those two answers are allowed to differ — that is the
+    entire reason the operation axis exists.
+    """
+    ref = ability_ref(record["ability"], record.get("operation"))
     if record["status"] == "AVAILABLE":
-        return f"{record['ability']}: available via {record.get('provider')}"
+        return f"{ref}: available via {record.get('provider')}"
     if record["status"] == "UNKNOWN":
-        return (f"{record['ability']}: unknown "
+        # An UNKNOWN has no `reason` — see the ruling at the end of `resolve()`.
+        # So when a verb was named and no provider was asked about it, the cause
+        # is read from the candidates, where the word legitimately lives.
+        # Printing `inputs_missing` instead would name the wrong cause and send
+        # the caller to supply a record that would not have changed the answer.
+        unasked = [c["provider"] for c in record.get("candidates") or ()
+                   if c.get("operations_state") == "UNKNOWN"]
+        if record.get("operation") and unasked:
+            return (f"{ref}: unknown (no provider was asked whether it "
+                    f"implements {record['operation']})")
+        return (f"{ref}: unknown "
                 f"({', '.join(record['inputs_missing']) or 'no inputs'})")
-    return (f"{record['ability']}: {record['status'].lower()} "
-            f"({record.get('reason')})")
+    return f"{ref}: {record['status'].lower()} ({record.get('reason')})"
 
 
 def count_abilities(requests: list[dict]) -> dict:

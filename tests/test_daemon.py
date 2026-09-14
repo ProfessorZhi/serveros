@@ -1599,6 +1599,30 @@ def test_ability_inspect_of_an_unknown_name_does_not_claim_absence(
     assert result["source_revision"] == "deadbeef"
 
 
+def test_operations_declared_is_null_and_never_false(daemon_factory, tmp_path, monkeypatch):
+    """The §10 field this surface was asked for, and the one value it may hold.
+
+    A boolean here would be a claim about a PROVIDER record, and this process
+    holds none: providers reach the node over a transport, and §23 forbids the
+    core from loading the plane that governs it. A `false` would be
+    indistinguishable from a provider somebody actually read — the same defect
+    as an empty list standing in for "could not ask".
+
+    Asserted on the value rather than trusted to the comment, because a future
+    edit that "makes the field useful" by filling in `False` is exactly the edit
+    this exists to fail on.
+    """
+    _state_root(tmp_path, monkeypatch, [
+        {"name": "test-management", "id": "x", "path": "skills/test-management"},
+    ])
+    for name in ("test-management", "nothing-like-this"):
+        result = daemon_factory(a_resource("thing-one")).handle(
+            {"method": "ability.inspect", "params": {"name": name}})["result"]
+        assert result["operations_declared"] is None, name
+        assert not isinstance(result["operations_declared"], bool), name
+        assert result["operations_declared_by"].startswith("serverosctl ability resolve")
+
+
 def test_observation_get_before_a_tick_is_not_an_empty_healthy_answer(daemon_factory):
     """Absence has a name. An empty observation set must never read as a
     clean bill of health."""

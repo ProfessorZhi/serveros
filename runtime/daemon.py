@@ -1195,6 +1195,16 @@ class Daemon:
                 "tree": None,
                 "source": "local projection", "resolution": "not attempted",
                 "resolved_by": "serverosctl ability resolve",
+                # The work plan named `operations_declared: true|false` here.
+                # It is not built, and `None` is the honest value rather than a
+                # default: operation declarations live on PROVIDER records, and
+                # this process holds none — providers reach it over a transport
+                # (§23 keeps the core from loading the plane that governs it).
+                # Answering `false` would be a claim about a provider nobody
+                # read, indistinguishable from a checked one.
+                "operations_declared": None,
+                "operations_declared_by": (
+                    "serverosctl ability resolve --ability <id>#<verb>"),
                 "note": (
                     "no local capability projection has been materialized, so "
                     "nothing can be said about this ability from here. Absence "
@@ -1218,6 +1228,12 @@ class Daemon:
             "source": "local projection",
             "resolution": "not attempted",
             "resolved_by": "serverosctl ability resolve",
+            # See the note in the no-projection branch above: `null`, never
+            # `false`. A resource that kept no provider record cannot say a
+            # provider declares no operations.
+            "operations_declared": None,
+            "operations_declared_by": (
+                "serverosctl ability resolve --ability <id>#<verb>"),
             "note": (
                 f"{name!r} is not in the local projection. Absence from a "
                 f"projection is not proof of absence on the authority."

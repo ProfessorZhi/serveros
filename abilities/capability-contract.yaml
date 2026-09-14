@@ -75,6 +75,7 @@ record:
     - reason
     - provider         # chosen provider id, when one was chosen
     - candidates       # providers considered, with their individual statuses
+    - operation        # the verb named on the reference; null when none was (§10)
     - note
   forbidden_fields:
     - "a credential, token, cookie, or key"
@@ -82,8 +83,35 @@ record:
   invariants:
     - "status is never AVAILABLE without a chosen provider, except for a
        `builtin` provider, where the provider is named `builtin`."
-    - "reason is present for every status other than AVAILABLE, and is exactly
-       one of the six values in the provider contract."
+    - "reason is present for every status other than AVAILABLE and UNKNOWN, and
+       is drawn from the resolver's own closed list
+       (`abilities/resolver.py#REASONS`).
+       That list is NOT the provider contract's `status.reasons`, and the two
+       must not be reconciled into one: the provider vocabulary answers whether
+       a provider is there and answers, while ACTION_UNSUPPORTED answers whether
+       it implements a named operation. A provider can be installed, healthy,
+       and still refuse a verb — which is why that word cannot live in a
+       vocabulary whose worst case is RUNTIME_UNHEALTHY. The two share six
+       values; the provider contract holds two the resolver cannot emit, and the
+       resolver holds one the provider contract must not declare."
+    - "`ability` is always the BARE ability id, never the compound reference.
+       The verb travels in `operation`, so that naming a verb cannot change the
+       identity of the thing being resolved — and so that the catalogue and the
+       provider records, both keyed by the bare id, are looked up correctly."
+    - "`operation` is null when the caller named no verb, and in that case no
+       candidate carries `operations_state` either. Absent, not SUPPORTED:
+       'checked and agreed' and 'never in question' are different findings, and
+       a default here would erase the difference on every ordinary request."
+    - "An unasked operation does not reach `record.reason`. When the verb is
+       UNKNOWN the status is UNKNOWN and the reason is null, and
+       ACTION_UNSUPPORTED appears only on the candidate — the step's own entry.
+       This is `target-contract.yaml`'s
+       `reasons.support_unknown_shares_a_reason_because` applied to this record
+       rather than re-decided here: an UNEVALUABLE verdict is not a REFUSAL, and
+       one word carrying two meanings at one field is how a consumer that
+       switches on `reason` reads 'nobody asked' as 'refused'. The distinction
+       is not lost — it is in the candidate's `operations_state` and in the
+       status, INCOMPATIBLE versus UNKNOWN."
     - "inputs_seen is always present. A resolution that could not see an input
        is UNKNOWN with the missing input named, never a confident answer
        computed from the inputs that happened to be readable."
@@ -166,3 +194,14 @@ rules:
   - "UNKNOWN is never collapsed to UNAVAILABLE by a caller. A caller that does
      not handle UNKNOWN is a caller that will report a false negative as a
      decision."
+  - "An operation is resolved against the PROVIDER, not the device, and only
+     when the caller named one. A bare `ability:x` never consults a provider's
+     `operations:` at all — if it did, every provider that declares no such
+     table would answer UNKNOWN to an ordinary `#read`, and the operation axis
+     would have withdrawn capabilities that already worked."
+  - "A definite refusal outranks an unasked operation. A provider that declares
+     no `operations:` does not refuse and does not return early: the eight
+     inputs are consulted first, and only if none refuses does the unasked
+     operation make the answer UNKNOWN. Returning early would let 'nobody asked
+     about the verb' mask 'there is nothing installed here', and the reader
+     would go looking for the wrong thing."

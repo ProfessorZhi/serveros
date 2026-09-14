@@ -85,6 +85,7 @@ optional_fields:
   - requirements       # device capabilities this provider needs
   - adapters           # runtime → adapter id
   - revision           # the pinned revision of the thing that was materialized
+  - operations         # the verbs this provider implements; see below
   - note
 
 # ---------------------------------------------------------------------------
@@ -111,6 +112,50 @@ materialization:
     an absolute path in a provider record is this machine's layout promoted to a
     product fact, and it makes the record unusable on the other two devices.
     Fleet exists precisely so that `toolchains` resolves differently on each.
+
+# ---------------------------------------------------------------------------
+# operations — the verbs a provider implements, and the three states a question
+# about one of them can be in.
+#
+# A caller names a verb on the reference (`ability:<kebab-id>#<verb>`, §10), and
+# this is where the answer comes from. It is a property of the IMPLEMENTATION,
+# not of the device: unlike `materialization` and `probe`, nothing here resolves
+# per machine, so the same record answers on all three.
+#
+# Optional, and that is load-bearing rather than lenient. A provider may have no
+# way to enumerate what it does — an MCP server whose tool list is the only
+# truth, reached over a transport the resolver does not have. Making this a
+# `required_field` would not produce the answers; it would produce a list
+# somebody guessed to satisfy the schema, which is worse than a missing one,
+# because a guessed list is indistinguishable from a checked one.
+#
+# So absent and empty are DIFFERENT, copied verbatim from the three-valued
+# asymmetry `abilities/target.py#_support_state` established on the same axis:
+#
+#   no `operations:` key   → UNKNOWN      — nobody asked this provider
+#   `operations: []`       → UNSUPPORTED  — asked, and it does nothing
+#   the verb is not in it  → UNSUPPORTED  — a hole in a closed list is a "no"
+#
+# The first is not a soft version of the second. "Nobody asked" and "there is
+# nothing there" call for opposite actions, which is the whole reason UNKNOWN
+# exists in `status.values` above and why a bare `ability:x` — no verb named —
+# never reads this table at all.
+# ---------------------------------------------------------------------------
+operations:
+  shape:
+    - read
+    - write
+  # Kebab-case, like every other identifier in this scheme. A verb that is not
+  # a legal identifier is refused at the reference, before any provider is
+  # consulted, so a typo arrives as a malformed request rather than as a
+  # confident "no provider implements this".
+  form: "kebab-case: lowercase letters, digits and single hyphens"
+  consumer: abilities/resolver.py#parse_ability_ref
+  # A verb the provider does not implement is INCOMPATIBLE with reason
+  # ACTION_UNSUPPORTED — the word is `abilities/target-contract.yaml#reasons`
+  # and is reused rather than coined here, because it is the same finding: the
+  # thing exists and cannot do this.
+  refusal: {status: INCOMPATIBLE, reason: ACTION_UNSUPPORTED}
 
 # ---------------------------------------------------------------------------
 # probe — how the resolver asks whether the provider works, and WHICH question

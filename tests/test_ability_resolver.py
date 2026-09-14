@@ -257,6 +257,166 @@ class DegradationTests(unittest.TestCase):
         self.assertNotEqual(record["status"], "DEGRADED")
 
 
+class OperationTests(unittest.TestCase):
+    """§10 — `ability:<id>#<verb>`, resolved against the provider that
+    implements it.
+
+    The rule this class exists to defend is a NEGATIVE one: a bare reference
+    never consults the operation table. If it did, every provider that declares
+    no `operations:` would answer UNKNOWN to an ordinary `#read`, and the
+    operation axis would have withdrawn capabilities that already worked.
+    """
+
+    def test_a_bare_reference_never_consults_the_table(self):
+        """The negative control. This provider declares no `operations:` — and
+        the bare form is available, because nobody asked about a verb."""
+        record = resolver.resolve(request())
+        self.assertEqual(record["status"], "AVAILABLE")
+        self.assertIsNone(record["operation"])
+        self.assertIsNone(record["candidates"][0]["operations_state"])
+
+    def test_a_bare_reference_records_no_state_even_when_a_table_exists(self):
+        """A provider that DOES declare a table still gets no state for a bare
+        reference. The reader must be able to tell "checked and agreed" from
+        "never in question", and inventing SUPPORTED here would erase that."""
+        record = resolver.resolve(request(
+            providers=[provider(operations=["read", "write"])]))
+        self.assertEqual(record["status"], "AVAILABLE")
+        self.assertIsNone(record["candidates"][0]["operations_state"])
+
+    def test_a_declared_operation_is_checked_and_recorded(self):
+        record = resolver.resolve(request(
+            ability=f"{ABILITY}#read",
+            providers=[provider(operations=["read", "write"])]))
+        self.assertEqual(record["status"], "AVAILABLE")
+        self.assertEqual(record["ability"], ABILITY, "the record keeps the bare id")
+        self.assertEqual(record["operation"], "read")
+        self.assertEqual(record["candidates"][0]["operations_state"], "SUPPORTED")
+
+    def test_a_verb_outside_a_declared_table_is_a_definite_no(self):
+        """A closed list that omits the verb has said no. `ACTION_UNSUPPORTED`
+        is the word the rest of the product already uses for this, taken from
+        `target-contract.yaml`, not invented here."""
+        record = resolver.resolve(request(
+            ability=f"{ABILITY}#delete",
+            providers=[provider(operations=["read", "write"])]))
+        self.assertEqual(record["status"], "INCOMPATIBLE")
+        self.assertEqual(record["reason"], "ACTION_UNSUPPORTED")
+        self.assertEqual(record["candidates"][0]["refused_by"], "operation")
+        self.assertEqual(record["candidates"][0]["operations_state"], "UNSUPPORTED")
+
+    def test_no_table_is_unknown_not_a_no(self):
+        """`target.py#_support_state`, copied rather than paraphrased: a
+        provider that declares no table has NOT been asked. The distinction is
+        the one between "nobody looked" and "there is nothing there"."""
+        record = resolver.resolve(request(ability=f"{ABILITY}#read"))
+        self.assertEqual(record["status"], "UNKNOWN")
+        self.assertEqual(record["candidates"][0]["operations_state"], "UNKNOWN")
+        self.assertIn("operations table", record["candidates"][0]["detail"])
+
+    def test_an_unasked_operation_does_not_reach_the_records_reason(self):
+        """`target-contract.yaml`'s ruling, applied to this record rather than
+        re-decided here: an UNEVALUABLE verdict is not a REFUSAL, so the word
+        stays on the candidate — the step's own entry — and `record.reason`
+        stays null.
+
+        If ACTION_UNSUPPORTED meant "refused" on one record and "nobody asked"
+        on another, a consumer switching on `reason` would read the second as
+        the first.
+        """
+        unasked = resolver.resolve(request(ability=f"{ABILITY}#read"))
+        self.assertEqual(unasked["status"], "UNKNOWN")
+        self.assertIsNone(unasked["reason"])
+        self.assertEqual(unasked["candidates"][0]["reason"], "ACTION_UNSUPPORTED")
+
+        # The control: the same word on the same field DOES mean refused when
+        # the provider was asked and said no. That is what makes the null above
+        # a distinction rather than a gap.
+        refused = resolver.resolve(request(
+            ability=f"{ABILITY}#delete",
+            providers=[provider(operations=["read"])]))
+        self.assertEqual(refused["reason"], "ACTION_UNSUPPORTED")
+        self.assertEqual(refused["status"], "INCOMPATIBLE")
+
+    def test_a_definite_device_refusal_outranks_an_unasked_operation(self):
+        """The design decision in `_evaluate_one`, and the one most likely to
+        be "simplified" away: the indefinite answer does NOT return early.
+
+        Nothing is installed here, which is a definite no. Had the unasked
+        operation returned immediately, this device would report UNKNOWN — and
+        UNKNOWN reads as "we have not looked", hiding the finding that there is
+        nothing here at all.
+        """
+        record = resolver.resolve(request(ability=f"{ABILITY}#read", instances=[]))
+        self.assertEqual(record["status"], "UNAVAILABLE")
+        self.assertEqual(record["reason"], "PROVIDER_NOT_INSTALLED")
+        self.assertEqual(record["candidates"][0]["refused_by"], "device_binding")
+
+    def test_the_catalogue_is_keyed_by_the_bare_ability(self):
+        """Naming a verb must not turn a catalogue hit into a catalogue miss —
+        a refusal about the catalogue, produced by a question about a verb."""
+        record = resolver.resolve(request(
+            ability="ability:test-management#read",
+            providers=[provider(ability="ability:test-management",
+                                operations=["read"])]))
+        self.assertEqual(record["status"], "AVAILABLE")
+        self.assertEqual(record["ability"], "ability:test-management")
+        self.assertEqual(record["operation"], "read")
+
+    def test_the_operation_is_not_a_ninth_input(self):
+        """It rides on the reference, so the eight stay eight. A ninth input
+        would be one more thing a caller can forget to supply — and this module
+        exists because seven unreadable inputs once read as agreement."""
+        record = resolver.resolve(request(ability=f"{ABILITY}#read"))
+        self.assertEqual(len(resolver.INPUT_ORDER), 8)
+        self.assertEqual(len(record["inputs_seen"]) + len(record["inputs_missing"]), 8)
+
+    def test_a_malformed_verb_is_rejected_rather_than_answered(self):
+        for bad in ("ability:x#", "ability:x#Read", "ability:x#re_ad",
+                    "ability:x#-read", "ability:x#read-", "ability:x#a--b",
+                    "ability:x#read#write", "#read"):
+            with self.assertRaises(resolver.Rejected, msg=bad):
+                resolver.resolve(request(ability=bad))
+
+    def test_the_verb_shape_is_ascii_and_not_whatever_has_a_case(self):
+        """`str.islower` is true for `é` and `"²".isdigit()` is true. The
+        contract says which characters may appear in an identifier; "happens to
+        have a lowercase form" is a different and much larger set."""
+        for bad in ("ability:x#café", "ability:x#r²ad", "ability:x#read​"):
+            with self.assertRaises(resolver.Rejected, msg=bad):
+                resolver.resolve(request(ability=bad))
+        self.assertTrue(resolver._is_operation_word("read-write2"))
+
+    def test_the_reference_round_trips_through_its_own_parser(self):
+        for ref in (ABILITY, f"{ABILITY}#read", f"{ABILITY}#read-write"):
+            ability, operation = resolver.parse_ability_ref(ref)
+            self.assertEqual(resolver.ability_ref(ability, operation), ref)
+
+    def test_the_summary_names_the_verb_that_was_asked_about(self):
+        """The two answers are allowed to differ, so the line must not be the
+        same. A summary that drops `#read` reports a resolution of a question
+        the caller did not ask."""
+        asked = resolver.summarize(resolver.resolve(request(
+            ability=f"{ABILITY}#read",
+            providers=[provider(operations=["read"])])))
+        bare = resolver.summarize(resolver.resolve(request(
+            providers=[provider(operations=["read"])])))
+        self.assertIn("#read", asked)
+        self.assertNotIn("#read", bare)
+
+    def test_an_unknown_summary_names_the_operation_not_a_missing_input(self):
+        """`unknown (all eight inputs)` would send the caller to supply a
+        record that would not have changed the answer — the cause is not a
+        missing input, it is that nobody was asked."""
+        line = resolver.summarize(resolver.resolve(request(ability=f"{ABILITY}#read")))
+        self.assertIn("read", line)
+        self.assertNotIn("inputs", line)
+        # And the bare form of the very same request names no verb at all, so
+        # it has no such cause to name.
+        bare = resolver.summarize(resolver.resolve(request()))
+        self.assertNotIn("#", bare)
+
+
 class PurityTests(unittest.TestCase):
     """The resolver is a decision kernel. Everything that touches the machine
     is a probe the caller performs and passes in as a record."""
