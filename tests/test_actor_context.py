@@ -320,12 +320,30 @@ def test_a_missing_actor_surface_is_unsupported_not_blocked():
     assert provider.identify().status == "UNSUPPORTED"
 
 
-def test_approval_transport_is_unsupported_and_says_why():
+def test_request_approval_refuses_and_names_the_binding_it_cannot_do():
+    """The refusal survived the re-measurement, and its reason changed.
+
+    Until 2026-09-15 the exception said BotMux had *no* surface for a human
+    decision, resting on three `/api/*` 404s. BotMux v3.18 does have one:
+    `botmux ask buttons --options "a,b"` delivers the question and returns the
+    chosen key. So "there is no surface" became false, and a refusal resting on
+    a false premise is a refusal somebody will delete once they notice.
+
+    What is still true, and is why this still raises: a returned key is not
+    BOUND to a request fingerprint, so it cannot be shown to be about the
+    request the approval is for. §AA forbids treating a delivered message as an
+    approval. The test asserts the surviving reason, not the retired one.
+    """
     provider = BotMuxHumanControlProvider(clock=lambda: NOW)
     with pytest.raises(human_control.HumanControlUnsupported) as caught:
         provider.request_approval(conversation_ref="oc_x", question={}, idempotency_key="k")
     message = str(caught.value)
-    assert "404" in message and "not_found_yet" in message
+    assert "BOUND" in message and "fingerprint" in message, (
+        "the refusal must name what is actually missing — an answer bound to "
+        "the request — rather than an absence of a surface that now exists")
+    assert "404" not in message, (
+        "the retired claim. Every /api/* path answers 401 today, including a "
+        "bogus one, so the 404s are not reproducible and may not be restated")
 
 
 def test_capabilities_do_not_claim_a_capability_that_was_never_observed():
@@ -335,10 +353,24 @@ def test_capabilities_do_not_claim_a_capability_that_was_never_observed():
         "anybody from here. Calling that SUPPORTED would be the declaration "
         "running ahead of the data, which is the pathology this round exists "
         "to stop repeating.")
-    assert caps["human.approval.transport"]["state"] == "UNSUPPORTED"
     assert caps["human.notification.transport"]["state"] == "SUPPORTED"
+    # Four UNKNOWNs as of 2026-09-15, two of them corrected downward-from-
+    # UPWARD: approval and rendering were UNSUPPORTED, which claims the surface
+    # does not exist. The CLI measurement says the surfaces do exist (`ask
+    # buttons` returns a key; `send --card-file` is documented and reachable),
+    # and that nothing has shown them carrying what ServerOS needs. UNSUPPORTED
+    # would have meant "design around it"; UNKNOWN means "go and find out", and
+    # the finding-out is named in each reason.
+    assert caps["human.approval.transport"]["state"] == "UNKNOWN"
+    assert caps["human.interactive.rendering"]["state"] == "UNKNOWN"
+    assert caps["human.transport.ingress"]["state"] == "UNKNOWN"
     for name, entry in caps.items():
         assert entry.get("reason"), f"{name} is declared with no reason"
+    # An UNSUPPORTED anywhere in this table is now a claim that a documented
+    # surface is absent, and none survives measurement.
+    assert not [n for n, e in caps.items() if e["state"] == "UNSUPPORTED"], (
+        "UNSUPPORTED says the surface does not exist. Nothing in this table "
+        "can support that today; each entry names a documented CLI path")
 
 
 # ---------------------------------------------------------------------------

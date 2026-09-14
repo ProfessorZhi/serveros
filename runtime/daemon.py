@@ -107,6 +107,12 @@ approval_mod = _load("serveros_runtime_approval", "approval.py")
 # the daemon contributes the two things only it has — the durable binding store
 # and a way to reach the Item authority.
 coordination_mod = _load("serveros_runtime_coordination", "coordination.py")
+# §M. Which session a conversation is addressing. Pure rules and the level
+# projection; the daemon contributes the durable selection store. Loaded here
+# rather than restated because the console's `selection_record` is what refuses
+# a selection carrying an Item, and a daemon that built the record itself would
+# be a second place that decides what a selection may be.
+human_console_mod = _load("serveros_runtime_human_console", "human_console.py")
 # The Item-state reader. Loaded from `context/` rather than restated here for
 # the reason `context/resolver.py` states in its own docstring: the CLI and the
 # socket must not read two different worlds.
@@ -954,6 +960,17 @@ class Daemon:
             "agent.binding.list": self._r_agent_binding_list,
             "agent.binding.record": self._r_agent_binding_record,
             "agent.binding.close": self._r_agent_binding_close,
+            # §M. Which session a conversation is addressing. Two methods and
+            # not four: a selection has no close, because selecting another
+            # session is what supersedes one, and a conversation that has
+            # stopped addressing anything is a state the resolve reports rather
+            # than an act somebody performs. `agent.selection.record` is
+            # therefore the ONLY write, and it can move a person's attention and
+            # cannot move a thread — the two fields that would (§M's forbidden
+            # `bound_item_ref` and `session_role`) are refused by the record
+            # builder before this table is reached.
+            "agent.selection.record": self._r_agent_selection_record,
+            "agent.selection.resolve": self._r_agent_selection_resolve,
             # §21. The alert register. `alert.list` and `alert.inspect` are the
             # two reads; `ack` and `snooze` are what a PERSON does about an
             # alert and are therefore CLI-and-IPC only — see `alert.ack` for
@@ -1031,6 +1048,15 @@ class Daemon:
                 # purpose.
                 "agent.binding.resolve", "agent.binding.list",
                 "agent.binding.record", "agent.binding.close",
+                # §M. Both, and reachable from a conversation by way of the
+                # CLI. This is the one console operation no provider serves:
+                # no provider has an opinion about which session a person is
+                # looking at, so ServerOS decides and has to be able to record
+                # the decision somewhere a restart does not lose. Naming no
+                # provider is deliberate — this daemon holds none, and a
+                # comment naming one would be the first step toward reaching
+                # for it.
+                "agent.selection.record", "agent.selection.resolve",
                 # §21. All seven, and this list is the DAEMON SOCKET's surface
                 # rather than the node MCP's — the same distinction the
                 # `agent.approval.record` line above draws. `serverosctl alert
@@ -1894,12 +1920,25 @@ class Daemon:
         reachable one at a time by a caller that holds a ref — which is the same
         shape as every other read here, and the reason this store is not a
         directory of anything.
+
+        `session_refs` is the one filter, and it keeps that property rather than
+        weakening it: a caller that names refs gets back exactly those records
+        and cannot enumerate. Without the filter the answer stays counts, so
+        there is still no way to dump this store from this surface. §M's console
+        needs the second read because it draws an L1 card per session and would
+        otherwise make one round trip per card.
         """
         store = self.control_store()
         bindings = store.bindings()
+        wanted = params.get("session_refs")
+        records = None
+        if isinstance(wanted, (list, tuple)):
+            records = {str(ref): bindings[str(ref)]
+                       for ref in wanted if str(ref) in bindings}
         return {
             "schema": coordination_mod.SCHEMA,
             "count": len(bindings),
+            "records": records,
             "by_role": {role: sorted(ref for ref, b in bindings.items()
                                      if b.get("session_role") == role)
                         for role in coordination_mod.ROLES},
@@ -1908,6 +1947,68 @@ class Daemon:
             "item_axis_values": list(coordination_mod.ITEM_AXIS),
             "read_only_item_states": list(coordination_mod.READ_ONLY_ITEM_STATES),
         }
+
+    # -- §M: conversation selections ----------------------------------------
+
+    def _r_agent_selection_record(self, params) -> dict:
+        """Record which session a conversation is addressing. §M's one write.
+
+        The record is built by `human_console.selection_record` and not here,
+        for the reason `_r_agent_binding_record` states about its own shape: a
+        write point that assembles the record is a write point that can be made
+        to assemble one the rules would have refused. The console's builder is
+        the only thing that knows a selection may not carry an Item, so it is
+        the only thing that produces one — and `put_selection` refuses a
+        smuggled field a second time, independently.
+
+        Unlike a binding, this IS updatable, and the asymmetry is §M's: a
+        binding says what a thread is FOR and is immutable; a selection says
+        what a person is looking at, and moving it is the operation.
+        """
+        try:
+            record = human_console_mod.selection_record(
+                conversation_ref=params.get("conversation_ref"),
+                session_ref=params.get("session_ref"),
+                device_ref=params.get("device_ref"),
+                at=_iso(self._now()))
+        except human_console_mod.ConsoleRefused as exc:
+            return {"selected": False, "reason": exc.reason, "detail": exc.detail}
+        try:
+            stored = self.control_store().put_selection(record)
+        except agent_control_store_mod.StoreError as exc:
+            return {"selected": False,
+                    "conversation_ref": record.get("conversation_ref"),
+                    "reason": "INVALID_CONTEXT", "detail": str(exc)}
+        return {"selected": True, "conversation_ref": record["conversation_ref"],
+                "session_ref": record["session_ref"], "selection": stored}
+
+    def _r_agent_selection_resolve(self, params) -> dict:
+        """What this conversation is addressing, and whether it is still there.
+
+        `live_session_refs` is supplied by the CALLER, and that is deliberate
+        rather than an inconvenience. The daemon holds no provider (§24 — a
+        daemon that can reach one cannot tell you the provider is down, which
+        is when its answer is wanted), so it cannot know which sessions exist,
+        and it will not pretend to: with no list it reports `basis: stored-only`
+        and says the staleness comparison was not made. This is the shape
+        `memory/handoff.py#pending(records, device_ref)` already uses — the
+        caller hands in the scope it has, and the function refuses to resolve
+        one for itself.
+        """
+        conversation_ref = _required(params, "conversation_ref")
+        store = self.control_store()
+        record = store.get_selection(conversation_ref)
+        live = params.get("live_session_refs")
+        axis = human_console_mod.selection_axis(
+            record, live_refs=list(live) if isinstance(live, (list, tuple)) else None)
+        return {"conversation_ref": conversation_ref, "axis": axis,
+                "selection": record,
+                "basis": ("compared against the live sessions the caller "
+                          "supplied" if isinstance(live, (list, tuple))
+                          else "stored-only: no live session list was supplied, "
+                               "so whether the selected session still exists "
+                               "was NOT evaluated"),
+                "provenance": {"store": str(store.path)}}
 
     # -- §6: approvals ------------------------------------------------------
 

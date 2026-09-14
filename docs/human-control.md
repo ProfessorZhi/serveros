@@ -56,10 +56,16 @@ human.notification.transport   SUPPORTED    POST /api/trigger carries a ServerOS
 human.identity.verify          UNKNOWN      `botmux actor current --json` verifies only
                                             inside a BotMux turn; from a non-turn process
                                             it answers status=blocked, current_actor_unverified
-human.transport.ingress        UNKNOWN      nothing delivers inbound content: /api/events and
-                                            /api/messages answer 404 not_found_yet
-human.approval.transport       UNSUPPORTED  no documented callback surface for a decision
-human.interactive.rendering    UNSUPPORTED  BotMux renders its own cards; ServerOS authors none
+human.transport.ingress        UNKNOWN      a pull surface exists (`botmux history --session-id`,
+                                            `botmux quoted`); whether anything PUSHES inbound
+                                            content is not established from here
+human.approval.transport       UNKNOWN      BotMux can deliver the question and collect a key
+                                            (`botmux ask buttons --options` returns the chosen
+                                            one). Whether an answer can arrive BOUND to the
+                                            request that asked is what is not established
+human.interactive.rendering    UNKNOWN      `send --card-file/--card-json` and
+                                            `card patch --message-id` are documented; no card
+                                            has been observed arriving
 ```
 
 **`UNKNOWN` and `UNSUPPORTED` are not two spellings of "no".** An `UNSUPPORTED`
@@ -67,6 +73,20 @@ transport *has no way* to do it — the surface does not exist. An `UNKNOWN` one
 *might*, and this process cannot establish it from where it stands. They call
 for opposite actions: `UNSUPPORTED` means design around it; `UNKNOWN` means go
 and find out. Flattening them produces a system that stops asking.
+
+**Two of these moved, and the direction is the honest part.** Approval transport
+and interactive rendering read `UNSUPPORTED` on 2026-09-14 on the strength of
+three 404s (`/api/events`, `/api/messages`, and a callback route) that the second
+pass on 2026-09-15 **did not reproduce**. The bogus-route control settles why:
+a deliberately invalid path answers `401` with `{"code":"unauthorized"}` while
+the three real routes had answered `404`. Authentication precedes routing here,
+so a 404 was never evidence that a surface is absent — it was evidence that this
+process was unauthenticated when it asked, which is a statement about our
+implementation wearing a capability claim's clothes. Both surfaces are
+documented and both are reachable; what is `UNKNOWN` is whether either carries
+what ServerOS needs, and that is a question for whoever pays for the
+integration. The old entry was wrong in the direction that stops asking, which
+is the expensive one.
 
 Identity is `UNKNOWN` rather than `UNSUPPORTED` for a reason worth keeping: the
 surface exists and is documented, and BotMux **correctly** declined to verify
@@ -100,12 +120,22 @@ Read the table above as a permission list, not a feature list:
 may flow      a notification into a conversation          (notification.transport)
 may flow      which conversation, and what kind it is     (conversation.context)
 may flow      reading the record back                     (sessions is read-only)
+may flow      a non-destructive console operation         (see the console, below)
 
-may NOT       approve a destructive action                (approval.transport UNSUPPORTED)
+may NOT       approve a destructive action                (no answer BOUND to the request)
 may NOT       treat a message as a verified instruction   (identity.verify UNKNOWN)
 may NOT       receive inbound content as an event         (transport.ingress UNKNOWN)
-may NOT       have ServerOS author a card UI              (interactive.rendering UNSUPPORTED)
+may NOT       have ServerOS author a card UI              (interactive.rendering UNKNOWN)
 ```
+
+The approval line did not move when its capability word did, and the difference
+is worth stating because it is the whole lesson of that correction. BotMux
+**can** put the question in front of a person and return the key they pressed.
+What has not been shown is that the answer comes back carrying the identity of
+the request it answers — and an unbound key is not an approval, it is a
+keystroke. `request_approval` still raises; the premise it raises on is now the
+surviving one rather than a 404 that does not reproduce. A refusal resting on a
+false premise is a refusal somebody deletes the moment they notice.
 
 Consequences, stated plainly because they are the whole point:
 
@@ -305,11 +335,11 @@ person reads.
 The read half is on the node MCP surface as `alert.list` and `alert.inspect`,
 which is where an Agent asks. The write half — `ack` and `snooze` — is
 **deliberately not**: `fleet/mcp-contract.yaml` says that surface holds no
-state and changes nothing, and `human.transport.ingress` is `UNKNOWN` while
-`human.approval.transport` is `UNSUPPORTED`. A design that let a person
-"reply ACK" in Feishu would produce alerts nobody could close and a
-plausible-looking reading of messages that were never verified. Acknowledge in
-the terminal, or acknowledge nowhere.
+state and changes nothing, and `human.transport.ingress` is `UNKNOWN` while no
+answer is yet shown to come back bound to the request that asked. A design that
+let a person "reply ACK" in Feishu would produce alerts nobody could close and
+a plausible-looking reading of messages that were never verified. Acknowledge
+in the terminal, or acknowledge nowhere.
 
 The six remaining events are `DECLARED_ABSENT` **in the contract, with the
 reason and a disposition written on each** rather than in an exemption table:
@@ -325,6 +355,164 @@ built.
 Nothing in this path acts on the world. The recommendation it carries is one
 of `REVIEW` / `MONITOR` / `GOVERNANCE_REQUIRED`, and **an alert is not an
 authorization**.
+
+## The Remote Console — §L §M §N §O §P §AA §AB
+
+Notification is ServerOS speaking. The console is a person **looking and
+acting**, over the same channel:
+
+```text
+Feishu App1 ─→ BotMux ─→ HumanControlProvider ─→ ServerOS
+                          (transport)             (semantic operations)
+```
+
+Not through the Feishu Docs API, and BotMux is not the authority: ServerOS core
+reads no BotMux private state, and `tests/test_agent_mcp.py` greps the daemon's
+own source for the transport's name to hold that — the daemon must not know
+which provider exists, or it will start deciding with that knowledge.
+
+### The vocabulary is operations, not buttons — §P
+
+```text
+session.list      L1   session.send     L2   session.close     L2   destructive
+session.inspect   L3   session.resume   L2   session.interrupt L2   destructive
+session.result    L2   session.select   L1   session.handoff   L3   destructive
+session.create    L2   destructive
+```
+
+`runtime/human_console.py` is the only place this vocabulary exists, and a test
+asserts it is **exactly** this list — so nothing arrives by a client's
+permission. §M spells two of them differently from the session contract
+(`resume/continue`, `close/stop`); those are **aliases**, not second entries,
+because two entries would acquire two support states and could disagree.
+
+**`session.select` is `LOCAL`.** It is ServerOS's own decision about which
+session a conversation is addressing; no provider is asked, and a state word
+that said `AVAILABLE` would claim one was.
+
+### The sentence §M writes twice, enforced
+
+```text
+session.close      action = session.stop        never satisfied by session.interrupt
+session.interrupt  action = session.interrupt   (a different verb)
+```
+
+An operation is priced on **its own** provider action. `_assert_no_borrowed_support`
+refuses a state map in which an operation's entry carries somebody else's
+action — the close-as-interrupt substitution §M forbids — and a mutation that
+prices `session.interrupt` on `session.stop` makes it fire. This is enforced
+rather than commented because the first version of that guard checked a
+condition that **could never be true** (no two operations share an action), and
+a guard nobody can make fire is the same defect as a feature nobody wired — the
+pathology this version of ServerOS exists to name.
+
+When the transport has close and not interrupt, the answer is:
+
+```text
+session.close       AVAILABLE
+session.interrupt   UNSUPPORTED   the transport has no turn-scoped verb
+```
+
+The entry is **present and marked**, never omitted. A person has to be able to
+tell "cannot be done" from "nobody built it", and an absent row says the second.
+
+### The levels are §N's, and they are the existing axis — §AH
+
+```text
+L0  北京 / Claude Code · 2 · Codex · 1        counts. NO session row, ever
+L1  one card per session: session_ref · runtime · device · bound_item ·
+    status · last_activity · title
+L2  operations, priced on the selected session, plus its support state
+L3  provider · backend session id · transport · provenance · runtime features
+```
+
+`CARD_FIELDS` is asserted as an **exact** key set, and that assertion earned its
+place immediately: the constant listed six facts while the projection emitted a
+seventh (`title`) that nothing had argued for. `title` stayed and the constant
+now names it, with the rule that it is a **label the provider already gives the
+session** and not content read out of it.
+
+**L0 is a prohibition, not a rendering choice.** §AH: L0 must load no full
+session history. The test asserts the *absence* of a session row and of every
+session ref in the serialized payload — the property is what must not be there.
+This is the same L0–L3 as `context/disclosure-contract.yaml`; §12 forbids a
+**fourth coordinate system**, not a second subject.
+
+### The card is a join, and neither plane can produce it — §17
+
+```text
+bound_item  ← the thread binding (agent control store)
+runtime · device · status · title · action_support  ← the provider row
+```
+
+The provider knows the session and not what it is for; the binding store knows
+what it is for and not whether it is alive. A binding store that **did not
+answer** is reported as `binding_state: UNKNOWN` with the exception text, never
+as an empty map — because an empty map reads as "no thread has a purpose",
+and that reading shows every session as a coordinator. A coordinator really is
+bound to no Item, and its card says so with a reason rather than with a hole.
+
+### Selection is attention, not identity — §M
+
+```text
+SELECTION_FIELDS     conversation_ref · session_ref · device_ref · selected_at · identity
+THREAD_BINDING_FIELDS                    session_role · bound_item_ref
+```
+
+Disjoint by shape, and held three ways: a test asserts the disjointness; the
+store refuses a selection record carrying a binding field even when assembled by
+hand; and the console's builder has no field to put one in. Selecting a session
+is choosing where the conversation is **looking** — it cannot move a thread to
+another Item, and a thread's Item cannot be changed by anything this plane does.
+
+The record is keyed by `conversation_ref` and **not** by actor, which is not an
+exception to the HumanIdentity rule: a conversation is not a person. `identity`
+is a word the **transport** states, and it defaults to `UNVERIFIED` — a
+parameter rather than a literal, so that the day verification exists the record
+does not go on writing `UNVERIFIED` in the one direction that looks like
+success.
+
+Two asymmetries that would otherwise be surprising are deliberate and asserted
+in one place so neither can be "fixed" into looking consistent:
+
+```text
+a selection is re-selectable      moving attention is the operation (§M)
+a binding is write-once           what a thread is for does not move (§17)
+a selection is never swept        a pointer is not a window — STALE vs NONE
+                                  is a distinction only the record can carry
+```
+
+A selection whose session is gone is reported `STALE` **and kept**. Clearing it
+would leave a person finding nothing selected rather than being told what
+happened to what they chose. `live_refs=None` means the caller did not read the
+provider — that is `SELECTED`, not `STALE`, because a console that cried stale
+whenever it skipped a read trains its reader to ignore the word.
+
+### §AB — the product boundary
+
+```text
+ChatGPT mobile / Codex Remote   an OpenAI surface. ServerOS neither replaces
+                                nor proxies it, and the two may coexist.
+
+ServerOS unifies                session identity · Item ownership ·
+                                Ability semantics · runtime/device truth
+
+different Human UIs coexist     Feishu App1 is one. It is not the only one.
+```
+
+### Reaching it
+
+```text
+serverosctl console operations --level L2      the vocabulary and its levels
+serverosctl console selection <conversation>   what that conversation addresses
+serverosctl console select <conversation> <session_ref>
+agent.console (serveros-agent MCP)             device, level, conversation_ref
+```
+
+`agent.console` takes **no `context_ref`**, alone among the tools on that
+surface: every control action resolves an actor and is gated on admission, and
+this one changes nothing and claims no actor. A console that required an actor
+would be claiming to know who was looking, and §AA says that is `UNKNOWN`.
 
 ## What is not human control
 

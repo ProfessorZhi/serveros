@@ -821,6 +821,15 @@ class TestTheSurfaceCannotBecomeAShell(unittest.TestCase):
             "serveros_fleet_agent_control_router", "serveros_fleet_transport",
             "serveros_fleet_view", "serveros_abilities_target",
             "serveros_runtime_coordination",
+            # §M/§N. The console's rules, and §P's feature vocabulary. Both are
+            # loaded rather than restated here for the same reason as the
+            # coordination kernel above: the console owns what a selection may
+            # carry and the feature contract owns which operations a runtime is
+            # offered, and a second copy in this module would be the second
+            # spelling that drifts. Named explicitly so that adding a third
+            # module to this surface is a decision rather than a commit.
+            "serveros_runtime_human_console",
+            "serveros_abilities_runtime_binding",
         })
 
     def test_daemon_never_imports_or_calls_botmux_provider(self):

@@ -87,6 +87,18 @@ target_mod = _load("serveros_abilities_target", _ROOT / "abilities" / "target.py
 # the tool schema without a second edit that could be forgotten.
 coordination_mod = _load("serveros_runtime_coordination",
                          _ROOT / "runtime" / "coordination.py")
+# §L–§P. The Remote Console. Loaded here because THIS is the surface an agent
+# inside a BotMux turn can reach: the console's levels are computed from session
+# rows, and the only process that holds a provider is this one. §N's UI is
+# delivered into the conversation by the agent that calls this tool.
+human_console_mod = _load("serveros_runtime_human_console",
+                          _ROOT / "runtime" / "human_console.py")
+# §P. The runtime feature vocabulary that decides whether a provider-specific
+# operation is offered. Read from its owner rather than restated — the whole
+# point of §P is that ONE vocabulary decides, and a second list here would be
+# the second spelling this repository keeps paying for.
+runtime_binding_mod = _load("serveros_abilities_runtime_binding",
+                            _ROOT / "abilities" / "runtime_binding.py")
 
 PROTOCOL_VERSION = node_mcp.PROTOCOL_VERSION
 SERVER_NAME = "serveros-agent-mcp"
@@ -162,6 +174,21 @@ _LEVEL_DEEP = {
         "provenance of every field."
     ),
 }
+# The console's level is a different axis from the two above: it prices what
+# ServerOS says about a SESSION, not about a device. It spans all four because
+# L0 is the whole point of §N — the cheap answer a person reads first — and L3
+# is where the diagnostics a suspicious reader asks for live. Sharing
+# `_LEVEL_SHALLOW` here would have made L0 the console's default while meaning
+# "a device read that touches no clock".
+_LEVEL_ALL = {
+    "type": "string", "enum": ["L0", "L1", "L2", "L3"], "default": "L1",
+    "description": (
+        "L0 is counts only and loads no session row, no transcript and no "
+        "skill; L1 is one card per session; L2 adds the operations that may be "
+        "performed, each priced; L3 adds the provider's own fields and the "
+        "provenance of every one."
+    ),
+}
 
 
 def _envelope(*extra: dict) -> dict:
@@ -232,6 +259,26 @@ TOOLS: tuple[dict, ...] = (
      "description": "The provider's asynchronous result for a session or turn.",
      "inputSchema": _schema(_envelope({"trigger_id": _STR}),
                             ["session_ref", "runtime"])},
+    {"name": "agent.console",
+     "description": (
+        "§N's progressive console over one device's sessions, rendered into "
+        "whatever conversation the caller is in. This is what a person in "
+        "Feishu reads: L0 counts only and carries no session row; L1 one card "
+        "per session (session_ref, runtime, device, bound_item, status, last "
+        "activity); L2 adds what may be done, priced per operation; L3 adds the "
+        "provider's own fields, copied and never interpreted.\n\n"
+        "An operation the provider does not have is RETURNED and marked "
+        "UNSUPPORTED rather than omitted, so a person can tell 'this cannot be "
+        "done' from 'nobody thought of it'. A session's `close` never reports "
+        "as `interrupt`: the two are different verbs and the console will not "
+        "pass one off as the other. `bound_item` comes from §17's thread "
+        "binding and not from the provider — no provider knows what a session "
+        "is for.\n\n"
+        "`conversation_ref` names the conversation whose selected session this "
+        "is about, which is how a person answers 'which one am I talking to'."
+     ),
+     "inputSchema": _schema({"device": _DEVICE, "level": _LEVEL_ALL,
+                             "conversation_ref": _STR}, ["device"])},
 
     # -- control actions. §11: every one of these requires a context_ref. ---
     {"name": "agent.session.create",
@@ -432,6 +479,53 @@ class DaemonBindings:
                 str(answer.get("detail") or "serverosd did not record the binding"))
         return answer.get("binding") or {}
 
+    def records_for(self, refs) -> dict:
+        """The bindings for the sessions a caller just listed, in one read.
+
+        One call rather than one per session, because the console builds an L1
+        card for every session it was given and N round trips per page is a
+        latency the reader pays for no extra truth. The filter is on the
+        session refs the caller already holds: this cannot ask about a thread it
+        has no ref for, which is the same shape `agent.binding.resolve` has.
+        """
+        answer = self._call("agent.binding.list",
+                            {"session_refs": [str(r) for r in refs]})
+        return answer.get("records") or {}
+
+    def put_selection(self, *, conversation_ref: str, session_ref: str,
+                      device_ref: str | None = None) -> dict:
+        """§M's one console write. Refused by the daemon, not by a check here.
+
+        The record is built in `serverosd` — by
+        `human_console.selection_record`, which is the only thing that knows a
+        selection may not carry an Item. A client that assembled one would be a
+        second place that decides what a selection is, and the field §M forbids
+        would be one caller away from being recorded.
+        """
+        params = {"conversation_ref": conversation_ref, "session_ref": session_ref}
+        if device_ref:
+            params["device_ref"] = device_ref
+        answer = self._call("agent.selection.record", params)
+        if not answer.get("selected"):
+            raise _BadRequest(
+                str(answer.get("reason") or "INVALID_CONTEXT"),
+                str(answer.get("detail") or "serverosd did not record the selection"))
+        return answer.get("selection") or {}
+
+    def selection_for(self, conversation_ref: str, *, live_session_refs=None) -> dict:
+        """What this conversation is addressing, and whether it is still there.
+
+        The live list is passed IN rather than fetched here, because the daemon
+        holds no provider and the comparison is against what the caller can see.
+        Omitting it does not make the answer wrong; it makes it *partial*, and
+        the daemon says so in `basis` rather than reporting a stale selection as
+        current.
+        """
+        params: dict = {"conversation_ref": conversation_ref}
+        if live_session_refs is not None:
+            params["live_session_refs"] = [str(r) for r in live_session_refs]
+        return self._call("agent.selection.resolve", params)
+
 
 _MISSING = object()
 
@@ -459,9 +553,18 @@ class AgentControlClient:
     and the argument shaping that belongs to a typed boundary.
     """
 
-    def __init__(self, *, router, view) -> None:
+    def __init__(self, *, router, view, bindings=None, registry=None) -> None:
         self.router = router
         self.view = view
+        # §17/§M. The two console joins. `bindings` is the daemon handle
+        # (read the thread, write the selection); `registry` is where the
+        # device's declared runtimes live, which §P needs to price an
+        # operation. Both default to None so that every existing caller — and
+        # the 40-odd tests that build this class directly — keeps working, and
+        # the console reports UNKNOWN for what it was not given rather than
+        # inventing it.
+        self._bindings = bindings
+        self._registry = registry
 
     # -- reads ---------------------------------------------------------------
 
@@ -568,6 +671,128 @@ class AgentControlClient:
     def agent_session_list(self, device: str, level: str = "L2") -> dict:
         row = self._deep_row(device, level)
         return {"device_ref": row["device_ref"], "active_sessions": row["active_sessions"]}
+
+    # -- the console (§L–§P) -------------------------------------------------
+
+    def agent_console(self, device: str, level: str = "L1",
+                      conversation_ref: str | None = None) -> dict:
+        """§N's levels over this device's sessions, joined to what they are for.
+
+        Four reads, one answer, and the reader is told when any of them was
+        missing rather than being handed a hole:
+
+            sessions     the provider rows, from the service — this process's,
+                         because it is the only one holding a provider
+            bindings     §17's, from serverosd, one read for every session
+            features     §P's vocabulary, from the runtime binding for this
+                         device
+            selection    §M's, for the conversation the caller named
+
+        **Why the join is here and not in the console module.** The console
+        takes rows and answers about levels; it reaches nothing. This method
+        reaches four planes and produces no meaning of its own — every sentence
+        in the answer is `human_console`'s. A console that fetched would be a
+        console that could be given a provider and would eventually decide
+        something.
+        """
+        # The view's level and the console's level are different axes: the
+        # first prices what ServerOS says about a DEVICE, the second what it
+        # says about a SESSION. Asking the view for the deepest row and letting
+        # `human_console.levels` project downward is what keeps the device
+        # question from being answered by the console's argument.
+        row = self._deep_row(device, "L3")
+        sessions = list((row.get("active_sessions") or {}).get("sessions") or [])
+
+        bindings: dict = {}
+        binding_state = "KNOWN"
+        binding_because = None
+        try:
+            bindings = self._bindings.records_for(
+                [s.get("session_ref") for s in sessions])
+        except Exception as exc:  # noqa: BLE001 - a missing read is reported
+            # Not an empty dict. "No thread has a purpose" and "the store did
+            # not answer" are different, and only one of them means every card's
+            # bound_item is genuinely absent.
+            binding_state = "UNKNOWN"
+            binding_because = (f"the binding store did not answer "
+                               f"({type(exc).__name__}: {exc}), so no card below "
+                               f"says what its thread is for")
+
+        features = self._session_features(row.get("device_ref"))
+        axis = None
+        if conversation_ref:
+            try:
+                axis = (self._bindings.selection_for(
+                    conversation_ref,
+                    live_session_refs=[s.get("session_ref") for s in sessions])
+                    or {}).get("axis")
+            except Exception as exc:  # noqa: BLE001
+                axis = {"state": "UNKNOWN",
+                        "because": (f"the selection store did not answer "
+                                    f"({type(exc).__name__}: {exc})")}
+
+        payload = human_console_mod.levels(
+            level, sessions, bindings=bindings, features=features,
+            action_support=self._support_for(sessions, axis), selected=axis)
+        payload["device_ref"] = row.get("device_ref")
+        payload["binding_state"] = binding_state
+        if binding_because:
+            payload["binding_because"] = binding_because
+        if conversation_ref:
+            payload["conversation_ref"] = conversation_ref
+        return payload
+
+    def _support_for(self, sessions: list, axis: dict | None) -> dict:
+        """The action support of the session a selection points at, or nothing.
+
+        `action_support` is a PER-SESSION map — the provider saying which verbs
+        it has for THIS session — so there is no device-wide answer that would
+        be true. With a session selected, that session's map is the one to price
+        operations with. With nothing selected there is no session to ask about
+        and every operation reports UNKNOWN, which is the honest reading of
+        "nobody asked" and is why this returns an empty map rather than a
+        hopeful one.
+        """
+        ref = (axis or {}).get("session_ref")
+        if not ref:
+            return {}
+        for session in sessions:
+            if session.get("session_ref") == ref:
+                return session.get("action_support") or {}
+        # Selected but not in this device's list: a selection is a pointer and
+        # the session may be on another device or gone. Returning {} would say
+        # "the provider does not have these verbs", which is a claim about a
+        # provider nobody asked.
+        return {}
+
+    def _session_features(self, device_ref: str | None) -> dict | None:
+        """§P's feature map for this device's runtimes, or None and why.
+
+        Read from `abilities/runtime_binding.py`, which owns the observation.
+        None means the vocabulary was not consulted and every operation is
+        priced on the provider's answer alone — the console's `_apply_feature_gate`
+        treats an absent map as "nothing to narrow", which is correct and must
+        not be silently confused with "every feature is available".
+        """
+        if self._registry is None or not device_ref:
+            return None
+        try:
+            listing = runtime_binding_mod.list_bindings(self._registry, device_ref)
+        except Exception:  # noqa: BLE001 - an unread vocabulary narrows nothing
+            return None
+        merged: dict = {}
+        for record in listing.get("bindings") or []:
+            for name, state in ((record.get("levels") or {}).get("L2") or {}).get(
+                    "features", {}).items():
+                # First writer wins and a disagreement is kept as UNKNOWN.
+                # Two runtimes on one device may differ, and a console that let
+                # the last one read decide would make which runtime gated an
+                # operation depend on list order.
+                if name not in merged:
+                    merged[name] = state
+                elif merged[name] != state:
+                    merged[name] = "UNKNOWN"
+        return merged
 
     # -- control actions -----------------------------------------------------
 
@@ -681,6 +906,9 @@ class AgentControlClient:
                     args["device"], args["provider"], args.get("level") or "L2")
             if name == "agent.session.list":
                 return self.agent_session_list(args["device"], args.get("level") or "L2")
+            if name == "agent.console":
+                return self.agent_console(args["device"], args.get("level") or "L1",
+                                          args.get("conversation_ref"))
         except _BadRequest:
             raise
         except Exception as exc:  # noqa: BLE001 - a read must still answer
@@ -740,6 +968,12 @@ def build(*, daemon=None, providers=None, registry=None, local_device_ref=None):
     thing §4 forbids, and the router refuses a ref that is not `device:*`.
     """
     daemon = daemon or node_mcp.DaemonClient()
+    # Normalised once, so the registry the router routes against and the one
+    # §P prices operations against are the same object. Two `DeviceRegistry()`
+    # instances would be two reads of one file, and they can disagree after an
+    # edit — which would make a runtime the router knows about a runtime the
+    # console says does not exist.
+    registry = registry or transport_mod.DeviceRegistry()
     device_ref = local_device_ref or _authored_device_ref(daemon)
     service = _service(daemon, providers, device_ref)
     loopback = router_mod.LocalLoopbackTransport(
@@ -755,7 +989,13 @@ def build(*, daemon=None, providers=None, registry=None, local_device_ref=None):
         registry=registry, context_store=DaemonContexts(daemon),
     )
     view = view_mod.FleetView(routing=router, sessions=_sessions_for(service))
-    return AgentControlClient(router=router, view=view)
+    # §M/§P. The console's two inputs. `bindings` is the SAME daemon handle the
+    # loopback uses, so a selection recorded through the console is read back by
+    # the path that gates turns, and there is no second writer. `registry` is
+    # the device declarations §P prices operations against.
+    return AgentControlClient(router=router, view=view,
+                              bindings=DaemonBindings(daemon),
+                              registry=registry)
 
 
 def _authored_device_ref(daemon) -> str:

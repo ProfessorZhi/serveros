@@ -214,6 +214,7 @@ surfaces:
       - agent.session.list
       - agent.session.inspect
       - agent.session.result
+      - agent.console
       - agent.session.create
       - agent.session.send
       - agent.session.resume
@@ -226,6 +227,10 @@ surfaces:
       - typed normalization of provider-backed Agent/session operations
       - forwarding a control action to the §7 router, which resolves, admits and
         routes before any provider sees it
+      - the §N session console — its levels, and the join of a session to the
+        §17 binding that says what it is for. The console decides nothing. It
+        projects rows this surface already fetched, and prices each operation
+        from the provider's own `action_support`
     does_not_own:
       - device identity — authored in `fleet/registry.yaml`, never derived
       - reachability — observed by a transport for one call, never cached here

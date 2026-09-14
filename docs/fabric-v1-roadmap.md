@@ -248,10 +248,13 @@ introducing a priority field is a decision about where it lives, not a task.
 | HUM-01 | **EXISTS — one producer of seven** | The **producer**, for the one event that had a detector behind it. `runtime/alerting.py#notify_for` raises `alert.opened` and `alert.resolved`; both are `IMPLEMENTED` with a `raised_by` in `runtime/notification-contract.yaml#producers`, and the gate checks the file and the symbol resolve *and* that the event name is a literal in it. The other six are `DECLARED_ABSENT` **with the reason and a disposition written on each**, not parked in an exemption table. | **Unless a person runs a command, nobody is told anything.** The module that would tell them was finished and unreachable. It is now reachable from the one place where a detector was already running and already graded. |
 | HUM-02 | **EXISTS** | An anomaly → event bridge. `runtime/daemon.py#alert_pass` evaluates both detectors every tick (`runtime/anomaly.py` and `runtime/resource_anomaly.py`) through the daemon's **own** observers, and `runtime/alerting.py#evaluate` turns graded codes into alerts with an identity. Only graded codes: a code in `codes_not_evaluated`, or a severity of `unknown`, **does not notify** — "nothing was evaluated" is not "the node is fine". | A node that knows something is wrong and reports it only to whoever asks. This is the piece that converts a working detector into a notification. |
 | HUM-03 | **EXISTS** | A notification policy, in `runtime/notification-contract.yaml#alerts`. Identity is `code + device_ref + subject_ref`, and **`identity_is_not: [pid, container_name, timestamp]`** is part of it. Cooldown is 900s / 1h / 6h by severity with the clock on `last_attempt_at` and not `last_notified_at` — otherwise a transport that is down silences the alert for as long as it stays down. Hysteresis closes at `threshold - margin`, with the margins left in `attribution-contract.yaml` where the thresholds they modify already live. | Alert fatigue as the eventual failure of HUM-01/02 done naively — every graded code becomes a message, and the messages stop being read. |
-| HUM-04 | **UNSUPPORTED** | An approval transport. `human.approval.transport` is `UNSUPPORTED` and `request_approval` **raises** `HumanControlUnsupported` rather than returning a soft value. This is now also the reason `alert.ack` and `alert.snooze` are `transport: LOCAL_ONLY, surfaces: [serverosctl]` — a Feishu message cannot carry a decision back, so a design that let a person "reply ACK" would produce alerts nobody could close. | Anything irreversible that would be gated on an approval this transport cannot carry. The capability table is measured on this device and every entry carries `measured_by`. |
+| HUM-04 | **UNKNOWN — the word was wrong before the code was** | An approval transport. The row read `UNSUPPORTED` on the strength of three 404s that the second probe on 2026-09-15 **did not reproduce**, with the control settling why: a deliberately bogus route answers `401` while the "missing" ones had answered `404`, and authentication precedes routing here. A 404 was therefore never evidence of an absent surface — it was evidence that this process was unauthenticated when it asked. What BotMux demonstrably does is deliver the question and return the key a person pressed (`botmux ask buttons --options`, `--plugin-card-action`); what is not established is whether an answer can arrive **bound to the request that asked**. `request_approval` still raises — on that surviving premise, not on the retired one — because an unbound key is a keystroke and not an approval. Same reason `alert.ack` / `alert.snooze` stay `LOCAL_ONLY`. | Anything irreversible gated on an approval this transport cannot be shown to carry. **The old word was wrong in the direction that stops asking**: `UNSUPPORTED` says design around it, `UNKNOWN` says go and find out, and only one of those gets an integration built. |
 | HUM-05 | **UNKNOWN** | The answer to whether `human.identity.verify` works **inside** a BotMux turn. It is `UNKNOWN` rather than `UNSUPPORTED` on purpose — the surface exists and BotMux correctly declined to verify *this* process, because this process is not in a turn. | An `UNKNOWN` flattened into a `no` produces a system that stops asking. Closing it is an experiment, not an implementation. |
 | HUM-06 | **EXISTS — the delivery runtime** | §W's production delivery path: `runtime/serveros-alert-sync.service` (a `Type=oneshot`) and `runtime/serveros-alert-sync.timer` (`OnCalendar=*-*-* *:4/5:00`), installed by the separate act `scripts/release.py alert-worker --conversation <chat>`. The last hop of HUM-01 was **finished, tested, and reachable only by somebody typing a command**; this is what types it. The timer's offsets are measured against this host's other timers (`hwz-monitor` at `:00/:30` takes a sampling window it documents as polluted; `botmux-watchdog` at `:02/5`), and `Persistent=false` because the durable queue is the register and not the timer. | A complete delivery path that says nothing, on a machine where everything it would say is already detected and already graded. The failure is invisible: an unrun command and a node with no alerts look identical from the outside. |
 | HUM-07 | **EXISTS — the worker delegates rather than reimplements** | The four things the worker could plausibly have implemented for itself — dedupe, cooldown, recovery, delivery-failure truth — are **all** the register's, and `tests/test_alert_delivery.py` holds that by reading `cmd_alert_sync`'s AST: its whole conversation with the register is `alert.pass` / `alert.pending` / `alert.record-delivery`, and it names no register field of its own (`not_before`, `last_notified_at`, `cooldown_seconds`, …). The unit's header claimed this in prose; the gate is what makes it checkable. Two of the assertions in that file were **wrong when first written** and the mutation harness caught both — see the note below. | A second producer of the cooldown, in the surface that runs every five minutes while the daemon ticks every few seconds. The two would disagree the first time one was edited, and every alert would be either late or early in a way nobody could trace to a file. |
+| HUM-08 | **EXISTS — the Remote Console (§L §M §N §P)** | A semantic operation vocabulary over a person's channel: ten operations in `runtime/human_console.py`, asserted to be **exactly** that list so nothing arrives by a client's permission. Each is priced on **its own** provider action, and `_assert_no_borrowed_support` refuses a state map that prices one operation on another's — which is §M's *"不要把 close 冒充 interrupt"* made checkable. When the transport has close and not interrupt the entry is **present and `UNSUPPORTED`**, never omitted: a person has to be able to tell "cannot be done" from "nobody built it". `session.select` is `LOCAL` because it is ServerOS's own decision and no provider is asked. | A console that is a client's buttons wearing ServerOS names, and the specific substitution — a close reported as an interrupt — that an operator would act on and be wrong about. |
+| HUM-09 | **EXISTS — the join neither plane can make alone (§N §17)** | The L1 card is a join: `bound_item` from §17's thread binding, and `runtime · device · status · title · action_support` from the provider row. The provider knows the session and not what it is for; the binding store the reverse. A binding store that **did not answer** is `binding_state: UNKNOWN` with the exception text, never an empty map — an empty map reads as "no thread has a purpose" and would show every session as a coordinator. A coordinator really is bound to no Item and its card says so **with a reason**. | A session list that cannot say what any session is for, and the two ways of faking it: an empty join, and a coordinator shown as an unbound execution thread. |
+| HUM-10 | **EXISTS — selection moves attention, never identity (§M)** | `SELECTION_FIELDS` (`conversation_ref · session_ref · device_ref · selected_at · identity`) and `THREAD_BINDING_FIELDS` (`session_role · bound_item_ref`) are disjoint, held three ways: a test asserts the disjointness, the store refuses a record carrying a binding field **even assembled by hand**, and the console's builder has no field to put one in. A selection is `NONE` / `SELECTED` / `STALE`, is never swept, and is stored beside contexts and approvals because it is control-plane state a restart must not lose. `identity` is what the **transport** states and defaults to `UNVERIFIED` — a parameter, not a literal, so the record cannot go on writing `UNVERIFIED` on the day verification exists, in the one direction that looks like success. | §M's two prohibitions — changing a session's identity and moving a thread to another Item — which a console would otherwise reintroduce as a feature nobody thought of as a rebinding. |
 
 HUM-01, HUM-02 and HUM-03 were done in one pass, in that order, as the ledger
 said to. **The split that made it work is the one to keep**: `alert_pass()`
@@ -300,9 +303,20 @@ the recommendation an alert carries is always `REVIEW` / `MONITOR` /
 **An alert is not an authorization.**
 
 HUM-04 and HUM-05 are the two entries in this page that **a person has to
-close rather than a change**. HUM-04 needs a surface that does not exist and
-may have to come from upstream; HUM-05 needs someone to run a probe from inside
-a BotMux turn. No amount of code here substitutes for either.
+close rather than a change**. Both are `UNKNOWN` rather than `UNSUPPORTED`, and
+that is the point of keeping them separate: each names a surface that **exists**
+and a question this process cannot settle from where it stands. HUM-04 needs the
+integration paid for — or the binding proved impossible, which is also an answer;
+HUM-05 needs someone to run a probe from inside a BotMux turn. No amount of code
+here substitutes for either.
+
+**HUM-08/09/10 are what a console may do while HUM-04 is open**, and the line
+between them is the whole design. `human_console.non_destructive()` returns
+which of its operations may run on a transport that cannot verify an actor, and
+it is **computed** from the operations' own `destructive` flags rather than
+restated: selection and send are permitted, close and interrupt are refused.
+That is §AA's rule — *"破坏性操作不得把 message delivered 当 approved"* — in the
+one form that survives an edit to the vocabulary.
 
 ---
 
@@ -475,6 +489,11 @@ Phase 1  Telling a person — nothing here can act               no authorizatio
   OBS-01  DONE in v1.2 — the alert state machine
   OBS-02  the two container states — remains
   OBS-03  the three regions — remains
+  HUM-08  DONE in v1.2 — the semantic console vocabulary (§L §M §P)
+  HUM-09  DONE in v1.2 — the L1 join, and a read that did not answer
+  HUM-10  DONE in v1.2 — selection moves attention, never identity (§M)
+  HUM-04  OPEN — UNKNOWN, not UNSUPPORTED: the surface exists, the binding
+          is unproved. HUM-05 stays UNKNOWN and stays an experiment
 
 Phase 2  Closing the declared-and-absent on the read path       authorization: policy
   MEM-01  DONE in v1.2 — the recall firewall, and MEM-03's scope half with it
@@ -534,7 +553,12 @@ a new Item-card field                   priority / severity do not exist anywher
                                         proxy; run `serverosctl requirement board` to
                                         see the five empty buckets and the one real
                                         signal (titles containing a P-level)
-approval transport (HUM-04)             a surface that has to exist, possibly upstream
+approval transport (HUM-04)             the surface EXISTS (`botmux ask buttons`
+                                        returns a key); what is unbuilt is the
+                                        binding of an answer to the request that
+                                        asked. Either pay for the integration or
+                                        prove the binding impossible — both are
+                                        answers, and "design around it" is not
 identity verification inside a turn     an experiment, not an implementation
 what leaves a catalogue                 a pack may not shrink to one device
 workload scratch containment            belongs to the provider's launch config,
