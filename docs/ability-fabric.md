@@ -11,9 +11,10 @@ while `plugin/profiles/` holds one composition, and nothing in between resolved
 that gap. The gap had a symptom that looked like a bug and was not one: a device
 was reported as able to do something, and the command failed.
 
-This document is the vocabulary and the resolution rule. The schema is
-`fleet/ability-provider-contract.yaml`; the resolver is `runtime/capability.py`
-and it is pure — no filesystem, no network, no clock.
+This document is the vocabulary and the resolution rule. The contract is
+[`../abilities/provider-contract.yaml`](../abilities/provider-contract.yaml);
+the resolver is [`../abilities/resolver.py`](../abilities/resolver.py) and it is
+pure — no filesystem, no network, no clock.
 
 ## The five words
 
@@ -107,6 +108,65 @@ Case C  playwright MCP      DEGRADED — installed, and resolving to a new versi
 A registry that answered "installed: yes" to all three is not wrong. It is
 answering a different question.
 
+## Operations: the unit that actually gets refused
+
+`EffectiveAbility` resolves **one whole ability**. That is coarser than the
+question a caller is really asking, and the gap has a shape:
+
+```text
+ability:team-document-management#read      works on every device
+ability:team-document-management#restore   needs a credential this device lacks
+```
+
+One ability, one resolution, and the answer is wrong for one of the two
+callers. Reporting the ability `UNAVAILABLE` because restore is impossible
+takes away a working read; reporting it `AVAILABLE` makes a restore that will
+fail look available. Neither is a rounding error — they are the same defect
+from both ends.
+
+The correct unit is `ability#operation`, and **this does not exist yet**.
+`abilities/resolver.py` filters on `p.get("ability") == ability`
+(`:348-349`), and `abilities/provider-contract.yaml` has no `operations:` key.
+Adding it is on the roadmap, not in this round.
+
+### The shape already exists, one plane over
+
+The verb axis is built and running for **Agent Sessions**, and it is the
+precedent to copy rather than reinvent:
+
+```text
+runtime/agent-session-contract.yaml:95
+  support.values: [SUPPORTED, UNSUPPORTED, UNKNOWN]
+  support.actions: 11 closed verbs — agent.list · session.create · session.send ·
+                   session.handoff · session.stop · …
+
+  rule: "provider support is resolved per action. A stronger provider verb
+         never satisfies a narrower ServerOS verb."
+```
+
+Per-operation state lives on the **provider instance** as
+`action_support: {<verb>: {state, reason}}`, read at
+`abilities/target.py:283-298` `_support_state()`, and it preserves exactly the
+distinction this document keeps insisting on:
+
+```text
+verb absent from a published table   → UNSUPPORTED   (target.py:293)
+no table at all                      → UNKNOWN       (target.py:287)
+```
+
+Real tables exist and are asserted: Codex declares `session.resume: SUPPORTED`
+and `session.stop: UNSUPPORTED` (`mcp/codex_app_server_provider.py:654-679`,
+tested at `tests/test_agent_sessions.py:171-172`).
+
+One consequence of that design is worth carrying over wholesale, because it is
+subtle and it was reached deliberately: an `UNKNOWN` support state maps to
+`INCOMPATIBLE`, the same reason word as a plain `UNSUPPORTED`
+(`abilities/target-contract.yaml:244-261`). The reason vocabulary is closed and
+has no word for *"nobody asked"*, and rather than invent one, the contract says
+so in prose. The alternative — reusing `UNSUPPORTED` silently — is the defect.
+**When the vocabulary cannot say the true thing, say that, rather than saying
+the nearest false one.**
+
 ## Provider status is a claim with a date
 
 A provider status is only meaningful with its inputs recorded: which device,
@@ -170,9 +230,76 @@ member that resolves to `UNAVAILABLE` on this node is reported as such, and
 `PARTIAL` is a legitimate pack resolution. Silent dropping is what turns "this
 pack has nine of ten members here" into a support ticket.
 
+### A pack is a recommendation set, not an installation
+
+That sentence is the whole of it, and it is worth unfolding because the
+temptation to read it the other way is constant:
+
+```text
+a pack says    a scenario usually needs these abilities
+a pack is not  an install list, a promise, or a statement about a machine
+```
+
+The consequence people get wrong is what to do when a device cannot satisfy a
+member. The answer is **not** to remove the member from the catalogue. A
+catalogue that shrank to what one device can do would stop describing the
+product and start describing the machine — and then a second device with
+Blender installed would find it undocumented, which is invariant 9 read
+backwards.
+
+```text
+CLOSED        every required member resolves
+PARTIAL       a required member is missing; the pack is usable and incomplete
+UNAVAILABLE   every required member is missing; there is nothing to use
+```
+
+`PARTIAL` is not a failure. It is the honest answer to "can I use this
+scenario here", and `abilities/packs.py:81-84` states it in exactly those
+words.
+
+### The gap: `PARTIAL` is resolved against a catalogue, not a device
+
+The rule above says a member that "cannot be resolved **on the target
+device**" is reported. The code does not do that yet, and the difference is
+material rather than pedantic:
+
+```text
+packs.py:222      resolve(contract, catalogue, *, catalogue_revision, catalogue_repo)
+                  — there is no device, profile, provider or runtime input
+catalogue         a frozenset of ability names from the pinned manifest
+                  (scripts/build.py:275-300)
+so PARTIAL means  "a required member id is absent from the pinned catalogue"
+declared to mean "not resolvable on the target device"
+                  (abilities/pack-contract.yaml:37)
+```
+
+`packs.py:44-50` is explicit that this is deliberate and not a stub:
+
+> *"It is not a resolver. `resolver.py` answers 'can this device do this NOW'
+> and consults eight inputs; this answers one question with two inputs — is
+> every name in this pack a name in that catalogue — and it is asked once, at
+> build time, **about no device in particular**. A pack is a statement about
+> the catalogue, not about a machine."*
+
+So the build-time closure check is real, wired (`scripts/build.py:749`) and
+worth keeping. What does not exist is the device-relative half, and no code
+joins a pack to `resolver.py` or `target.py` at all. Until that exists, a
+`PARTIAL` reported to a person means *"this is missing from the registry"*, and
+must not be read as *"this device cannot do it"* — the two are one word apart
+in the contract and unrelated in the code.
+
+**One provenance correction while this is being read.**
+`abilities/pack-contract.yaml:127` cites
+`ability-management@7bc7687:ability-packs.yaml` as the declaration file. At
+that revision the file does not exist; it lands at `0091d8d`. The location is
+right, the revision is not, and it is recorded here rather than edited because
+this round does not touch contracts.
+
 ## Related
 
 - [`../ARCHITECTURE.md`](../ARCHITECTURE.md) — the four planes and the invariants
+- [`agent-runtime-model.md`](agent-runtime-model.md) — the runtime axis of the intersection
 - [`capability-discovery.md`](capability-discovery.md) — how an agent is told, natively
 - [`memory-fabric.md`](memory-fabric.md) — what the work remembers between sessions
 - [`runtime-resources.md`](runtime-resources.md) — who owns what is running
+- [`fabric-v1-roadmap.md`](fabric-v1-roadmap.md) — operations, device-relative packs

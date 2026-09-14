@@ -224,7 +224,7 @@ projection becomes a second authority.
 A board view is a *recomputable projection* of card + state + claims. It is
 never a second state database.
 
-### The ten invariants
+### The invariants
 
 These are the properties a change must not break. They are stated as invariants
 rather than as advice because every one of them has already been violated once.
@@ -250,6 +250,19 @@ lands, so each names the enforcement that exists today.
                                       Availability is resolved against a device, or it is UNKNOWN.
 10 Evidence is written once, at a path derived from identity.
                                       project / Item / Run, never from cwd or a guess.
+11 An unavailable provider is not an empty answer.
+                                      runtime/resource_anomaly.py grades only what it could evaluate.
+12 Unattributed is not reclaimable.   A resource with no proven owner may be reported,
+                                      never proposed for removal. runtime/hygiene.py admission.
+13 An irreversible action needs evidence this is not the only copy.
+                                      runtime/hygiene.py — REMOVE_VOLUME without a verified
+                                      backup is refused, with approval or without it.
+14 Unsupported is refused by name, never degraded quietly.
+                                      HumanControlUnsupported · ActionNotSupported ·
+                                      per-verb action_support on the provider instance.
+15 Every place the code can change the world is declared once, and checked in
+   both directions.                   skills/serveros/scripts/mutation_guard.py ·
+                                      runtime/actuator-contract.yaml.
 ```
 
 Invariants 1–5 and 10 were already implicit in the frozen statement and are
@@ -257,6 +270,15 @@ written down here so that "it was always understood" stops being an argument.
 Invariants 6–9 are new, and each is a real failure rather than a hypothetical:
 they are Cases A, B and C, and the last is the `declared-but-absent` pattern
 this product has now hit often enough to name.
+
+Invariants 11–15 arrived with the resource-observation round, and they are
+different in kind from 6–9 in one way worth stating: each is the *fixed* form
+of a defect that round found **in this product's own readers**, not in the
+world it observes. Seven of those readers answered a question nobody had asked
+them — a timeout reported as an empty cache, an unreadable log as a small one,
+a comparison in which every row failed as "every registration is in desired
+state" — and the test suite was green through all seven. 11 is that whole
+family, named once.
 
 ### The ownership rule (new)
 
@@ -280,6 +302,85 @@ with a reason. It never says nothing, and it never says "should work".
 ServerOS does not promise durable memory is complete. It promises that memory
 has a named authority, a version, and a rebuild path, so that a projection can
 always be discarded and recomputed rather than argued with.
+
+## Unify the control plane, not the execution personality (frozen)
+
+> **One identity, one ability vocabulary, one memory, one set of device and
+> resource facts, one ownership rule, one safety boundary, one coordination
+> model — and as many ways of executing as there are runtimes and devices.**
+
+This is what the four planes are an implementation of, and it is written down
+because it is the one thing a product of this shape gets wrong by default.
+
+Unifying execution is easy to attempt and impossible to finish. Claude Code and
+Codex do not have the same tool surface; the Linux node and the Windows node do
+not have the same filesystem; an Agent turned loose on a machine genuinely
+needs to use what that machine has. A product that tries to make those agree
+ends up maintaining a second, worse copy of each runtime — which is the
+`declared-but-absent` pattern with a maintainer attached.
+
+So the line is drawn by **question**, not by capability:
+
+```text
+Unified — declared once; every runtime and device gets the same answer
+  identity        which machine, which Item, which Run, which session
+  ability         what a kind of work is, and how it is resolved here
+  memory          what the work remembers, and which layer is its authority
+  device facts    what this machine is, and what it is willing to own
+  ownership       who owns a resource, and since when
+  safety          what may be done without a person, and what may not
+  coordination    what several devices do together
+
+Free — varies per runtime and per device, and must stay free
+  how an Agent is invoked, and what one turn looks like
+  which provider implements an ability on this machine
+  where a device keeps its source, toolchain, evidence and state
+  how a runtime materializes an MCP server or a Skill
+  how a device is administered
+```
+
+Two consequences follow, and both are refusals rather than features.
+
+**A capability difference is a resolution, not a second identity.** Codex and
+Claude Code are one ability question answered twice, not two products. When a
+runtime-only difference changes what a node can do, it belongs in **that
+device's binding** — the same ability, resolved differently here — and never in
+a new top-level name for the runtime. The identity is the runtime *family*;
+per-surface differences are data about one installation, and they are resolved
+per device, per operation. This is developed in
+[`docs/agent-runtime-model.md`](docs/agent-runtime-model.md).
+
+**A device difference is a path, not a semantic.** The nodes converge on the
+same questions and not on the same directories. `fleet/profiles.yaml` binds one
+closed role vocabulary to unrelated physical paths per device, so a consumer
+asks for `workspace.src` and never learns whether that is a POSIX path or a
+drive letter.
+
+The test for any proposal under this principle is which list it touches.
+Unifying one of the freedoms is how the second copy gets built. Preserving a
+difference in the unified list is how the four-plane framing is quietly
+abandoned — and that is not hypothetical either: it is what "ServerOS = a
+control plane" did to abilities, memory and a second device, and each of those
+had to be re-derived from a live failure.
+
+### Where the unified answers are not yet real
+
+Naming a question as unified does not make it answered, and this product has a
+documented tendency to let the declaration run ahead of the mechanism. Three of
+the seven above are, today, **statements of intent with no resolver behind
+them**, and they are listed here so that reading this section does not confer
+on them a status they do not have:
+
+```text
+coordination    no resolver, no schema, no refusal. Greenfield, not deferred.
+memory recall   the firewall is declared in prose and implemented nowhere.
+runtime facts   version and features are declared fields with no reader.
+```
+
+[`docs/fabric-v1-roadmap.md`](docs/fabric-v1-roadmap.md) is the ledger: what
+exists, what is missing, which real failure each gap answers, and what has to
+happen first. A unified answer that is not in that ledger's "exists" column is
+not a unified answer yet.
 
 ## Canonical ownership and distribution
 
@@ -424,13 +525,44 @@ were possible.
 The freeze is therefore amended, not lifted:
 
 ```text
-Closed       the four planes and the ten invariants above.
+Closed       the four planes and the invariants above.
 Closed       a plane may not be added without a named real failure.
 Open         the resolvers, schemas, adapters and fixtures that make each
              plane answerable — and nothing else.
 Closed again anything that improves none of the three answers:
              can this machine do it · does the work remember it · who owns it.
 ```
+
+### The Fabric V1 round, and what it added
+
+The round after the release added one thing and refused several, and the way it
+added it is the part worth recording. A full product-architecture design was
+written for the next version — runtime families, per-device bindings, an
+ability operation vocabulary, five memory semantics, coordination, human
+control, monitoring and alerts. It was **not** integrated as written, for the
+reason the whole document exists:
+
+```text
+it described mechanisms as though they were present
+```
+
+The design was checked against the tree, line by line, and the result is worth
+stating plainly: most of its fabric was already built — the four-plane framing,
+the eight-axis resolver, the five words, the three memory layers, the pack
+contract, the HumanControl capability table with its honest `UNKNOWN`s — and
+three of its planes were **not built at all**, not even as a contract. So the
+round split the design in two:
+
+```text
+frozen here    the principles that decisions must be consistent with, and
+               the invariants that already name an enforcement
+recorded there the mechanisms that do not exist yet, each with the failure it
+               answers and what has to be true first — docs/fabric-v1-roadmap.md
+```
+
+The unifying principle above is frozen. The roadmap is explicitly **not** a
+commitment that any of it will be built. A gap that is written down is a
+question; the same gap written as architecture is a lie with a maintainer.
 
 The next permitted actions are the ones in this round's implementation order,
 then promotion / cutover of the built candidate, then porting a new device
