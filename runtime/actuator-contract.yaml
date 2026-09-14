@@ -402,20 +402,25 @@ actuators:
       - {file: scripts/release.py, symbols: [stage]}
 
   # ---------------------------------------------------------------------
-  # The two services this repository will act on, through systemd, and only
-  # through a person running the release CLI.
+  # The systemd actions this repository will take, and only through a person
+  # running the release CLI.
   # ---------------------------------------------------------------------
   - id: release-promotes-and-rolls-back-units
     kind: exec
     verb: systemctl
     why: >-
-      `cmd_promote` and `cmd_rollback` run `systemctl --user` against the unit
-      the revision deploys. These are the only two places in the shipped surface
-      that stop or start a service, and neither is reachable from the daemon,
-      the MCP layer or any observation path: they are subcommands a person
-      types. `--enable-reconcile` does not reach them and no Run can invoke them.
+      Three subcommands a person types, and the only places in the shipped
+      surface that change what systemd is running. `cmd_promote` and
+      `cmd_rollback` point the node's unit at a revision and reload.
+      `cmd_alert_worker` reloads, then ENABLES A TIMER — added in §W, and it is
+      the one that needed saying out loud: enabling `serveros-alert-sync.timer`
+      is the act that makes a condition on this machine reach a person, and it
+      is separate from `promote` precisely so that it stays one explicit act
+      with a destination a person supplies. None of the three is reachable from
+      the daemon, the MCP layer or any observation path; `--enable-reconcile`
+      does not reach them and no Run can invoke them.
     sites:
-      - {file: scripts/release.py, symbols: [cmd_promote, cmd_rollback]}
+      - {file: scripts/release.py, symbols: [cmd_promote, cmd_rollback, cmd_alert_worker]}
 
   # ---------------------------------------------------------------------
   # The MCP layer. §18's rule lives here.

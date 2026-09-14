@@ -303,6 +303,18 @@ lands, so each names the enforcement that exists today.
 15 Every place the code can change the world is declared once, and checked in
    both directions.                   skills/serveros/scripts/mutation_guard.py ·
                                       runtime/actuator-contract.yaml.
+16 The surface that decides is not the surface that delivers.
+                                      serverosd evaluates and records an intent and
+                                      holds no transport; `serverosctl alert sync` is
+                                      the only surface that does, and it cannot act.
+                                      tests/test_core_freeze.py (the daemon's closure)
+                                      · tests/test_alert_authorization.py.
+17 A worker is not a daemon.           Exactly one resident unit exists, and every
+                                      other unit in the tree is provably
+                                      non-resident — `Type=`/`Restart=`, read rather
+                                      than trusted. tests/test_core_freeze.py::The
+                                      ResidentSurfaceIsClosed ·
+                                      runtime/serveros-alert-sync.{service,timer}.
 ```
 
 Invariants 1–5 and 10 were already implicit in the frozen statement and are
@@ -319,6 +331,20 @@ them — a timeout reported as an empty cache, an unreadable log as a small one,
 a comparison in which every row failed as "every registration is in desired
 state" — and the test suite was green through all seven. 11 is that whole
 family, named once.
+
+Invariants 16–17 arrived with the delivery runtime. **16 is enforced more
+weakly than it reads, and the difference is measured rather than glossed**: the
+daemon's loader closure retains the *capability* to reach the network —
+`runtime/probes.py` opens an outbound connection for the `http-health` and
+`mcp-tools-list` probe kinds — and the property holds today **by registry
+contents and not by construction**: none of the seven live registrations
+declares either kind, so no HTTP probe runs, and adding one registration is all
+it would take to make one run. The gate therefore does not claim "nothing in
+the closure can reach the network". It claims the set of things that can is
+exactly the set somebody has looked at and written down, so a second one is a
+red test. Repairing it properly is an architecture change — moving the HTTP
+probes behind a provider, or refusing those kinds from the daemon's own probe
+engine — and is recorded in the roadmap rather than improvised here.
 
 ### The ownership rule (new)
 

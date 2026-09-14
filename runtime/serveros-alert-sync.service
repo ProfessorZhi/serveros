@@ -1,0 +1,133 @@
+# serveros-alert-sync — user unit, oneshot. §W's production delivery runtime.
+#
+# WHAT THIS IS
+# ------------
+# The last hop. W8 built the chain Observation -> Anomaly -> Alert -> pending
+# notification and then stopped, deliberately: `serverosd` evaluates both
+# detectors on every tick and writes what still has to be said, and it holds no
+# transport, because a daemon that can send is a daemon that cannot tell you the
+# transport is broken — which is exactly when its answer is wanted.
+#
+# The consequence was that the module which tells a person was finished,
+# complete, tested, and reachable only by somebody typing a command. This unit
+# is the thing that types it.
+#
+#     Observation -> Anomaly -> Alert -> pending   (serverosd, every tick)
+#                                          |
+#                                          v
+#                              serverosctl alert sync   <-- this unit, on a timer
+#                                          |
+#                                          v
+#                              HumanControlProvider -> BotMux -> Feishu
+#
+# WHY IT IS NOT A SECOND SERVEROS DAEMON
+# --------------------------------------
+# `Type=oneshot`, no `Restart=`, no socket, no `RuntimeDirectory=`. It runs,
+# reports what happened, and exits — and it holds no state of its own, because
+# every decision it appears to make is made by the register it asks:
+#
+#   * dedupe      the register keys an alert on `code + device_ref +
+#                 subject_ref`, so a process killed and relaunched by its
+#                 supervisor is ONE alert, not one per restart
+#   * cooldown    `notification-contract.yaml#alerts.cooldown_seconds`, clocked
+#                 on `last_attempt_at` and not `last_notified_at` — otherwise a
+#                 transport that is down silences the alert for as long as it
+#                 stays down
+#   * recovery    `alert.resolved`, announced through the same hop
+#   * failure     a delivery that did not arrive is recorded as
+#                 FAILED/UNSUPPORTED/UNKNOWN and resolves nothing
+#
+# Reimplementing any of those here would create a second producer of a fact the
+# register already owns, and the two would disagree the first time one was
+# edited. `tests/test_alert_delivery.py` asserts this unit delegates them.
+#
+# WHY THE TIMER IS NOT A QUEUE
+# ----------------------------
+# `Persistent=false` on the timer, deliberately. The durable queue is the
+# REGISTER (`state/serveros/alerts/state.json`), not the timer: an alert that
+# opens while this unit is not running stays pending with its clock unmoved, and
+# the next ordinary tick delivers it. So catching up on a missed run would not
+# rescue anything the register had lost — it would only decide whether a burst
+# of cards is sent the moment a machine comes back, which is a worse answer than
+# the one tick that follows.
+#
+# WHAT IT DOES NOT DO
+# -------------------
+# It takes no action on the world. §Z's boundary and W8's sentence both hold
+# here, and this unit is where it would be violated first: the text it carries
+# always recommends REVIEW / MONITOR / GOVERNANCE_REQUIRED and always says that
+# nothing was stopped. An alert is not an authorization.
+#
+# WHY THERE IS NO PATH= HERE — MEASURED 2026-09-14
+# ------------------------------------------------
+# `hwz-monitor.service` sets an explicit PATH because its ExecStart is a shell
+# script calling `lark-cli`, which lives in /usr/local/bin. Neither of those is
+# true of this unit: ExecStart is an absolute path inside the revision, and its
+# interpreter comes from the shim's `#!/usr/bin/env python3`. Measured rather
+# than assumed —
+#
+#     $ systemctl --user show-environment | grep ^PATH
+#     PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:...
+#
+# — which is the environment a user unit is started with. A PATH= copied from
+# the sibling unit would be a declaration that outlived its measurement, which
+# is the defect this repository spends its time removing. `serverosd.service`
+# sets none either, for the same reason.
+#
+# WHY `ReadWritePaths=` IS ABSENT — the sibling's measured header
+# --------------------------------------------------------------
+# `serverosd.service` carries a table showing that `ReadWritePaths=` ALONE puts
+# a user unit into a private user namespace on this host, where `pgrep` runs,
+# exits 0, and matches nothing. That cost falls on an OBSERVER, and this unit is
+# not one — but the property is still absent, because adding an isolation
+# property here would be the same belief in a second file, untested against this
+# unit's actual needs (the daemon's socket under %t/serveros/, and a network call
+# to BotMux). `NoNewPrivileges=yes` is kept: it is the one property measured
+# harmless to /proc visibility, and it stops a future edit from adding an
+# escalation.
+
+[Unit]
+Description=ServerOS alert delivery — say what the node has found, once, and record what happened
+Documentation=file:%h/.serveros/node.yaml
+# Ordering only, and NOT `Wants=`. This unit is not the thing that should be
+# starting the control plane; if the daemon is down the command exits 2 with
+# "no node runtime at <socket>", which systemd records as a failed unit and
+# which `systemctl --user status serveros-alert-sync` shows. That failure IS the
+# honest answer — the alternative is a worker that quietly reports nothing
+# needed saying, which is indistinguishable from a node with no alerts.
+After=serverosd.service network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h
+# The same rendering as the daemon's unit, and for the same reason: a worker is
+# a surface OF one node, and a template that hardcoded one node's state root
+# would install a second node's worker reading the first node's alerts.
+Environment=SERVEROS_STATE_DIR=@SERVEROS_STATE_DIR@
+# `@SERVEROS_ALERT_CONVERSATION@` is the destination, rendered at install time
+# from a value a person supplies. It is NOT optional: `scripts/release.py`
+# refuses to render this unit without one. A worker installed with no
+# destination would run every five minutes, fail to send anything, and report
+# that as nothing to do — so the install fails instead, saying the alerts stay
+# pending.
+ExecStart=@SERVEROS_RUNTIME@/bin/serverosctl alert sync --conversation @SERVEROS_ALERT_CONVERSATION@
+# Bounded, because an unbounded oneshot is a timer that silently stops firing.
+# The work is one IPC round trip, one provider call per pending notification,
+# and one write; a transport that hangs must be visible as a failed run rather
+# than as a timer that never completes.
+TimeoutStartSec=120
+# NO `Restart=`. A retry loop here would be a second producer of the retry
+# policy the register already owns (`no_retry: no queue and no retry loop`), and
+# it would re-send on a cadence nobody chose. The next timer tick is the retry.
+NoNewPrivileges=yes
+
+# NO `RuntimeDirectory=`. It is worth naming because it is the one property a
+# copy-paste from the daemon's unit would bring along, and it would be actively
+# harmful: systemd REMOVES a RuntimeDirectory when the unit that declared it
+# stops, so a oneshot declaring `RuntimeDirectory=serveros` would delete
+# %t/serveros — and with it the daemon's socket — every five minutes. The
+# daemon owns that directory; this unit only connects to it.
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=serveros-alert-sync

@@ -1,0 +1,38 @@
+[Unit]
+Description=Say what ServerOS has found, every five minutes
+
+[Timer]
+# Every five minutes, at :04 :09 :14 … — deliberately off every other timer on
+# this host, and the offsets are a measurement rather than a taste:
+#
+#   hwz-monitor.timer      :00 :30   takes a ~15 s sampling window (CPU 2 s,
+#                                    network 5 s, docker stats) and its own
+#                                    header records that sampling pollution is
+#                                    ACCEPTED at those minutes
+#   botmux-watchdog.timer  :02 :07 :12 …   five-minute stride
+#
+# A delivery tick is one IPC round trip against a daemon that is already
+# ticking; landing it inside the monitor's sampling window would put our work
+# into the numbers that monitor is measuring, and the monitor is the thing a
+# person reads. :04/:09/… collides with neither.
+#
+# Five minutes and not fifteen: the cooldowns in
+# `notification-contract.yaml#alerts.cooldown_seconds` are 900 s / 1 h / 6 h and
+# they gate REPEATS, not openings. The timer's period is therefore the
+# worst-case delay between a condition opening and a person being told, and
+# three redundant passes per 900 s window cost one IPC call each to be told
+# there is nothing to say.
+OnCalendar=*-*-* *:4/5:00
+AccuracySec=30s
+# `Persistent=false`, and this is the one line here worth arguing about. Catching
+# up a missed run is the right behaviour for an observer and the wrong behaviour
+# for this. The queue is the REGISTER, not the timer: an alert that opens while
+# this unit is not running stays pending with its clock unmoved, and the next
+# ordinary tick delivers it. So a catch-up rescues nothing — all it decides is
+# whether a machine that has just come back sends a burst of cards at once,
+# which is the shape that trains people to ignore them.
+Persistent=false
+Unit=serveros-alert-sync.service
+
+[Install]
+WantedBy=timers.target

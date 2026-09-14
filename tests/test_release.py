@@ -412,5 +412,178 @@ class ReleaseTests(unittest.TestCase):
         self.assertNotEqual(release.fingerprint(art), before)
 
 
+ALERT_SERVICE_TEMPLATE = """\
+[Unit]
+Description=ServerOS alert delivery
+
+[Service]
+Type=oneshot
+Environment=SERVEROS_STATE_DIR=@SERVEROS_STATE_DIR@
+ExecStart=@SERVEROS_RUNTIME@/bin/serverosctl alert sync --conversation @SERVEROS_ALERT_CONVERSATION@
+TimeoutStartSec=120
+
+[Install]
+WantedBy=default.target
+"""
+
+ALERT_TIMER_TEMPLATE = """\
+[Unit]
+Description=Say what ServerOS has found
+
+[Timer]
+OnCalendar=*-*-* *:4/5:00
+Persistent=false
+Unit=serveros-alert-sync.service
+
+[Install]
+WantedBy=timers.target
+"""
+
+
+class TheDeliveryWorkerIsInstalledByASeparateAct(unittest.TestCase):
+    """§W's runtime, and the one property that keeps it from being a second
+    daemon: it is NOT part of `promote`.
+
+    That split is the whole design. `promote` places a revision and points the
+    node at it, and must keep working on a node whose operator has not yet
+    decided where alerts should go — otherwise every promotion depends on
+    knowing a chat id, which is the same shape as blocking a core release on a
+    delivery question. So the worker is one explicit act, and the act is the
+    one a reboot does not undo.
+    """
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.base = Path(self._tmp.name)
+        self.runtime_root = self.base / "runtime-assets"
+        self.unit_dir = self.base / "systemd-user"
+        self.bin_dir = self.base / "bin"
+        self.state_dir = self.base / "state/serveros"
+        self.state_dir.mkdir(parents=True)
+        self.composition = "serveros-linux-work"
+        self.comp_root = self.runtime_root / self.composition
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def args(self, *extra: str) -> list[str]:
+        return [
+            "--runtime-root", str(self.runtime_root),
+            "--composition", self.composition,
+            "--state-dir", str(self.state_dir),
+            "--unit-dir", str(self.unit_dir),
+            "--bin-dir", str(self.bin_dir),
+            "--no-reload",
+            *extra,
+        ]
+
+    def promote(self, art, revision, *extra):
+        return run_release(["promote", "--artifact", str(art),
+                            "--revision", revision, *self.args(*extra)])
+
+    def worker(self, *extra: str):
+        return run_release(["alert-worker", "--conversation", "oc_test_chat",
+                            *self.args(*extra)])
+
+    def artifact(self, *, with_worker=True, service=ALERT_SERVICE_TEMPLATE):
+        art = make_artifact(self.base, "a")
+        if with_worker:
+            (art / "runtime" / "serveros-alert-sync.service").write_text(service)
+            (art / "runtime" / "serveros-alert-sync.timer").write_text(
+                ALERT_TIMER_TEMPLATE)
+        return art
+
+    def test_promote_alone_installs_the_daemon_and_never_the_worker(self):
+        art = self.artifact()
+        self.assertEqual(self.promote(art, "rev-a").returncode, 0)
+        installed = sorted(p.name for p in self.unit_dir.iterdir())
+        self.assertEqual(installed, ["serverosd.service"],
+                         "promote must not arm a timer that sends cards to a "
+                         "chat nobody chose")
+
+    def test_an_artifact_without_the_worker_still_promotes(self):
+        """§24: the core must start without the provider. An artifact that
+        omits the delivery worker is a runnable node, and refusing it would
+        make the delivery question a precondition for every release."""
+        self.assertEqual(self.promote(self.artifact(with_worker=False),
+                                      "rev-a").returncode, 0)
+
+    def test_the_worker_is_installed_from_the_promoted_revision(self):
+        art = self.artifact()
+        self.assertEqual(self.promote(art, "rev-a").returncode, 0)
+        self.assertEqual(self.worker("--no-enable").returncode, 0)
+
+        service = (self.unit_dir / "serveros-alert-sync.service").read_text()
+        self.assertIn(str(self.comp_root / "current") + "/bin/serverosctl", service)
+        self.assertIn("alert sync", service)
+        self.assertIn("oc_test_chat", service)
+        self.assertNotIn("@", service.replace("ExecStart", ""),
+                         "the installed unit must carry no placeholder")
+        timer = (self.unit_dir / "serveros-alert-sync.timer").read_text()
+        self.assertIn("Unit=serveros-alert-sync.service", timer)
+
+    def test_the_worker_refuses_before_anything_is_promoted(self):
+        proc = self.worker()
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertIn("nothing is promoted", proc.stderr)
+        self.assertFalse(self.unit_dir.exists())
+
+    def test_the_worker_refuses_an_artifact_built_before_it_existed(self):
+        self.assertEqual(self.promote(self.artifact(with_worker=False),
+                                      "rev-a").returncode, 0)
+        proc = self.worker()
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertIn("missing from revision", proc.stderr)
+        self.assertEqual(sorted(p.name for p in self.unit_dir.iterdir()),
+                         ["serverosd.service"])
+
+    def test_a_dry_run_writes_no_unit(self):
+        art = self.artifact()
+        self.assertEqual(self.promote(art, "rev-a").returncode, 0)
+        before = sorted(p.name for p in self.unit_dir.iterdir())
+        proc = self.worker("--dry-run")
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn("would install", proc.stdout)
+        self.assertIn("oc_test_chat", proc.stdout)
+        self.assertEqual(sorted(p.name for p in self.unit_dir.iterdir()), before)
+
+    def test_a_worker_template_with_a_placeholder_nobody_fills_is_refused(self):
+        """The stray-placeholder hole, and why it is worth a test.
+
+        `render_unit` fills three names and checks for those three, so a fourth
+        placeholder added to a unit and not to the renderer would be installed
+        as the literal — and systemd treats `@...@` as text, so the unit would
+        run. That is a unit whose ExecStart reads correctly to everybody who
+        does not know what `@SERVEROS_NODE_ROOT@` was supposed to be.
+        """
+        stray = ALERT_SERVICE_TEMPLATE.replace(
+            "TimeoutStartSec=120", "TimeoutStartSec=@SERVEROS_TIMEOUT@")
+        art = self.artifact(service=stray)
+        proc = self.promote(art, "rev-a")
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertIn("@SERVEROS_TIMEOUT@", proc.stderr)
+        self.assertFalse((self.comp_root / "current").exists(),
+                         "the refusal is before the swap")
+
+    def test_the_renderer_refuses_a_destination_it_was_not_given(self):
+        with self.assertRaises(ValueError) as caught:
+            release.render_unit(ALERT_SERVICE_TEMPLATE, self.base, self.state_dir)
+        self.assertIn(release.CONVERSATION_PLACEHOLDER, str(caught.exception))
+        # And the same template renders once a person has said where alerts go.
+        text = release.render_unit(ALERT_SERVICE_TEMPLATE, self.base,
+                                   self.state_dir, conversation="oc_real")
+        self.assertIn("--conversation oc_real", text)
+        self.assertNotIn("@", text.replace("TimeoutStartSec", ""))
+
+    def test_the_units_this_tree_ships_are_the_ones_the_installer_names(self):
+        """The templates are optional to `verify_revision` — it checks them
+        WHEN PRESENT — so a rename would make the check quietly stop running
+        rather than fail. This is the join between the two."""
+        for name in (release.ALERT_SERVICE_NAME, release.ALERT_TIMER_NAME):
+            self.assertTrue((ROOT / "runtime" / name).is_file(),
+                            f"runtime/{name} is gone, and `verify_revision` "
+                            f"would not have noticed")
+
+
 if __name__ == "__main__":
     unittest.main()
