@@ -2274,6 +2274,14 @@ def _scope_module():
                              "serveros_memory_scope")
 
 
+def _console_module():
+    """§M/§N's console kernel. Same synthetic name the daemon and the agent MCP
+    load it under, so the `ConsoleRefused` caught here is the one this module's
+    own vocabulary raises rather than a second class with the same name."""
+    return _load_module_from(REPO_ROOT / "runtime" / "human_console.py",
+                             "serveros_runtime_human_console")
+
+
 def _ledger_revision(directory: Path) -> dict:
     """What revision the ledger ON DISK is at, and how that was decided.
 
@@ -2630,6 +2638,96 @@ def cmd_coordination_list(args) -> int:
         lines.append(f"  {role:<10}{len(refs)}")
     lines.append(f"closed      {len(payload.get('closed') or [])}")
     lines.append(f"item axis   {', '.join(payload.get('item_axis_values') or [])}")
+    emit(payload, as_json=args.json, lines=lines)
+    return EXIT_OK
+
+
+def cmd_console_select(args) -> int:
+    """Choose which session this conversation addresses. §M's one console write.
+
+    Reachable from a terminal and from an agent inside a conversation, and that
+    is the point of it existing as a command: no provider serves this operation,
+    so without a surface here a person could read a session list and have no way
+    to say which one they meant.
+    """
+    params = {"conversation_ref": args.conversation, "session_ref": args.session}
+    if args.device:
+        params["device_ref"] = args.device
+    payload, _, code = _coordination_answer("agent.selection.record", params)
+    if code != EXIT_OK:
+        return code
+    if not payload.get("selected"):
+        sys.stderr.write(
+            f"serverosctl: refused: {payload.get('reason')}: {payload.get('detail')}\n")
+        return EXIT_FAULT
+    emit(payload, as_json=args.json, lines=[
+        f"conversation {payload.get('conversation_ref')}",
+        f"session      {payload.get('session_ref')}",
+        "             selecting moves your attention and nothing else: the "
+        "thread's Item is untouched, because a selection has no field for one"])
+    return EXIT_OK
+
+
+def cmd_console_selection(args) -> int:
+    """What this conversation is addressing, and whether it is still there.
+
+    No live session list is supplied, so the answer says `stored-only` and does
+    not claim to have checked whether the session still exists. That is not a
+    shortcoming of this command — reaching a provider is the agent MCP's job,
+    and a CLI that fetched one would be a second process holding a transport.
+    """
+    payload, _, code = _coordination_answer(
+        "agent.selection.resolve", {"conversation_ref": args.conversation})
+    if code != EXIT_OK:
+        return code
+    axis = payload.get("axis") or {}
+    lines = [f"conversation {payload.get('conversation_ref')}",
+             f"state        {axis.get('state')}"]
+    if axis.get("session_ref"):
+        lines.append(f"session      {axis.get('session_ref')}")
+        lines.append(f"selected at  {axis.get('selected_at')}")
+        lines.append(f"identity     {axis.get('identity')}")
+    if axis.get("because"):
+        lines.append("             " + str(axis["because"]))
+    lines.append(f"basis        {payload.get('basis')}")
+    emit(payload, as_json=args.json, lines=lines)
+    return EXIT_OK
+
+
+def cmd_console_operations(args) -> int:
+    """The semantic operations a person can ask a session to do, and their level.
+
+    Printed from the console's own vocabulary rather than a list written here.
+    This command is what makes §M checkable by a person: an operation that is
+    missing from this output is one no surface can perform, and one whose
+    `never` column names another is one the console refuses to report as that
+    other — which is §M's 'close is not interrupt', in the form you can read.
+    """
+    console = sys.modules.get("serveros_runtime_human_console") or _console_module()
+    ops = console.operations_at(args.level)
+    lines = [f"level        {args.level} (cumulative; L2 offers what L1 does)",
+             f"operations   {len(ops)}"]
+    for op in ops:
+        marks = []
+        if op.local:
+            marks.append("local")
+        if op.destructive:
+            marks.append("human_gated")
+        if op.requires_feature:
+            marks.append(f"needs {op.requires_feature}")
+        never = (f"  never satisfied by {', '.join(op.never_satisfied_by)}"
+                 if op.never_satisfied_by else "")
+        action = f" -> {op.action}" if op.action and op.action != op.name else ""
+        lines.append(f"  {op.name:<20}{op.level}  "
+                     f"{('/'.join(marks)) or '-'}{action}{never}")
+    payload = {"level": args.level,
+               "operations": [{"name": op.name, "action": op.action,
+                               "level": op.level, "local": op.local,
+                               "destructive": op.destructive,
+                               "aliases": list(op.aliases),
+                               "never_satisfied_by": list(op.never_satisfied_by),
+                               "requires_feature": op.requires_feature}
+                              for op in ops]}
     emit(payload, as_json=args.json, lines=lines)
     return EXIT_OK
 
@@ -3855,6 +3953,33 @@ def build_parser() -> argparse.ArgumentParser:
     co_list = coordination_sub.add_parser(
         "list", help="how many threads this node holds, by role", **_COMMON)
     co_list.set_defaults(func=cmd_coordination_list)
+
+    console = sub.add_parser(
+        "console", help="§M/§N · which session a conversation is addressing, "
+                        "and what may be done with it", **_COMMON)
+    console_sub = console.add_subparsers(dest="subcommand", required=True)
+
+    con_select = console_sub.add_parser(
+        "select", help="choose which session this conversation addresses. "
+                       "Moves your attention, never a thread's Item", **_COMMON)
+    con_select.add_argument("--conversation", required=True,
+                            help="the conversation making the choice")
+    con_select.add_argument("--session", required=True,
+                            help="the session_ref it now addresses")
+    con_select.add_argument("--device", help="the device that session is on")
+    con_select.set_defaults(func=cmd_console_select)
+
+    con_show = console_sub.add_parser(
+        "selection", help="what this conversation is addressing, and whether it "
+                          "is still there", **_COMMON)
+    con_show.add_argument("--conversation", required=True)
+    con_show.set_defaults(func=cmd_console_selection)
+
+    con_ops = console_sub.add_parser(
+        "operations", help="the semantic operations a person can ask a session "
+                           "to do, and which level offers each", **_COMMON)
+    con_ops.add_argument("--level", default="L2", choices=["L0", "L1", "L2", "L3"])
+    con_ops.set_defaults(func=cmd_console_operations)
 
     alert = sub.add_parser(
         "alert", help="§21 · what this node has found, and what it has told "

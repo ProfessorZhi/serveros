@@ -25,6 +25,24 @@ It is keyed by `context_ref` and `approval_ref`, never by actor. There is no
 `get(actor)` in this file, and adding one would be the change that turns an
 evidence log into a directory of people. An actor appears on records as a
 field; it is never a key.
+
+Selections are keyed by `conversation_ref` and that is not an exception to the
+rule above, for the reason the rule exists: a conversation is not a person. The
+conversation is a place a message arrives, several people can be in one, and
+reading it as an identity would be the same mistake one step removed. The
+identity a selection would carry is `UNVERIFIED` today — there is nothing
+verified to key on, and the store says so rather than leaving the field out.
+
+Why selections are stored here (§M)
+-----------------------------------
+§M's `session.select` is the one console operation no provider serves: ServerOS
+decides which session a conversation is currently addressing, and no BotMux
+session has an opinion about it. It has to live somewhere that survives a
+restart, and the two candidate homes were a fourth store or this one. This one,
+because a selection is the same kind of thing as the other three collections —
+control-plane state that a restart must not lose — and a second store written
+by the same code path would be a second thing that can disagree after a crash,
+which is the reason the first three share a file.
 """
 from __future__ import annotations
 
@@ -34,6 +52,12 @@ import tempfile
 from pathlib import Path
 
 SCHEMA = "serveros/agent-control-store.v1"
+
+# The fields that make a record a THREAD BINDING and never a selection. §M says
+# selecting a session is not moving a thread to another Item, and this tuple is
+# how that sentence is spent: `put_selection` refuses a record carrying one.
+# Kept equal to `runtime/human_console.py#THREAD_BINDING_FIELDS` by a test.
+BINDING_ONLY_FIELDS = ("session_role", "bound_item_ref")
 
 
 class StoreError(RuntimeError):
@@ -86,7 +110,7 @@ class AgentControlStore:
     def _load(self) -> dict:
         if not self.path.exists():
             return {"schema": SCHEMA, "contexts": {}, "approvals": {},
-                    "bindings": {}}
+                    "bindings": {}, "selections": {}}
         try:
             data = json.loads(self.path.read_text(encoding="utf-8"))
         except (OSError, ValueError) as exc:
@@ -103,6 +127,7 @@ class AgentControlStore:
         data.setdefault("contexts", {})
         data.setdefault("approvals", {})
         data.setdefault("bindings", {})
+        data.setdefault("selections", {})
         data["schema"] = SCHEMA
         return data
 
@@ -240,6 +265,76 @@ class AgentControlStore:
         self._flush()
         return updated
 
+    # -- conversation selections (§M) --------------------------------------
+
+    def put_selection(self, record: dict) -> dict:
+        """Record which session a conversation is currently addressing.
+
+        **This one is deliberately NOT write-once**, and the difference from
+        `put_binding` one screen up is the whole reason both can live in the
+        same file. A binding says what a thread is FOR, and §17 requires that
+        to be immutable, so a second put is a refusal. A selection says what a
+        person is looking at right now, and moving it is the operation: §M's
+        `session.select` exists precisely so that choosing a different session
+        is possible, and a store that refused the second one would make the
+        operation a one-shot and leave the console unable to follow a person
+        who switched.
+
+        Immutability is not lost by this; it is somewhere else. The fields
+        §M forbids a selection to carry — an Item, or a role — are not in the
+        record and are not in any record this method can be handed, because
+        `runtime/human_console.py#selection_record` builds them and its
+        `SELECTION_FIELDS` and `THREAD_BINDING_FIELDS` are disjoint. So the
+        overwrite here can move a person's attention and cannot move a thread.
+        """
+        conversation = str(record.get("conversation_ref") or "").strip()
+        if not conversation:
+            raise StoreError(
+                "a selection without a conversation_ref cannot be stored: it is "
+                "a pointer from a conversation, and a pointer from nowhere can "
+                "never be found by the reader who needs it")
+        if not str(record.get("session_ref") or "").strip():
+            raise StoreError(
+                "a selection without a session_ref cannot be stored; storing it "
+                "would make 'this conversation selected nothing' and 'this "
+                "conversation selected something unnamed' the same record")
+        # Refused rather than stripped. A caller that put an Item on a
+        # selection is trying to do the thing §M forbids, and silently dropping
+        # the field would let them believe it was recorded.
+        #
+        # The two names are spelled here rather than imported from
+        # `runtime/human_console.py`, because the store is the lower layer and
+        # importing upward to validate would invert that. The copy is not left
+        # to drift: `tests/test_human_console.py` asserts this tuple EQUALS
+        # `human_console.THREAD_BINDING_FIELDS`, so a field added to the console
+        # makes this gate red rather than quietly weaker.
+        smuggled = [f for f in BINDING_ONLY_FIELDS if f in record]
+        if smuggled:
+            raise StoreError(
+                f"a selection may not carry {', '.join(smuggled)}. §M: selecting "
+                f"a session is choosing which session this conversation "
+                f"addresses, and it is not changing a thread's Item or its role "
+                f"— those belong to the binding, which this record cannot reach")
+        self._data["selections"][conversation] = record
+        self._flush()
+        return record
+
+    def get_selection(self, conversation_ref: str) -> dict | None:
+        """What this conversation last selected, or None if it never has.
+
+        None is a state and not a failure: a conversation that has selected
+        nothing is where every console starts. The caller distinguishes it from
+        a selection that has gone stale by asking
+        `runtime/human_console.py#selection_axis`, which is the only reader that
+        compares a stored selection against live sessions — this method does
+        not, because a store that re-checked the world on every read would need
+        the world.
+        """
+        return self._data["selections"].get(str(conversation_ref))
+
+    def selections(self) -> dict:
+        return dict(self._data["selections"])
+
     def replace(self, record: dict, *, kind: str) -> dict:
         """Overwrite one record by ref. Used by consumption, and only by it.
 
@@ -275,6 +370,15 @@ class AgentControlStore:
         happened. Sweeping it would make the closures this store exists to
         remember indistinguishable from threads nobody ever bound — which is
         precisely the reading that let the failure §17 was written for happen.
+
+        Selections are never swept either, for a smaller version of the same
+        reason. A selection is a pointer, and a pointer is not a window: the
+        session it names may be long gone and the record is still the true
+        answer to "what did this conversation last address". Sweeping it would
+        make a conversation that once chose something indistinguishable from
+        one that never did, and `human_console.selection_axis` reports that
+        difference as `STALE` versus `NONE` — which it cannot do if this method
+        has already deleted the evidence.
         """
         gone = {"contexts": [], "approvals": []}
         for ref, record in list(self._data["contexts"].items()):
@@ -315,4 +419,5 @@ class AgentControlStore:
                     role: sum(1 for b in bindings.values()
                               if b.get("session_role") == role)
                     for role in sorted({str(b.get("session_role") or "UNKNOWN")
-                                        for b in bindings.values()})}}
+                                        for b in bindings.values()})},
+                "selections": len(self._data["selections"])}

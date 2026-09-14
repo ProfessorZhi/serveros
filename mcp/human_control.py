@@ -28,8 +28,17 @@ Not assumed, and not remembered — asked, from this process tree:
         -> {"schema":"botmux.current-actor.v2",
             "status":"blocked","error":"current_actor_unverified"}
 
-The blocked answer is the interesting one, and it is why identity is the only
-capability here whose live state is UNKNOWN rather than UNSUPPORTED. The
+**The three 404s are dated, and the second pass on 2026-09-15 did not reproduce
+them.** Every `/api/*` path now answers `401 Token expired`, including a
+deliberately bogus one (`/api/definitely-not-a-real-route-xyz`), which is the
+control that makes the measurement readable: the auth layer precedes routing, so
+a 401 carries no information about whether a route exists, and neither the old
+404 claim nor its negation may be asserted from here. The states resting on that
+probe were re-derived from the **CLI** surface instead — which is documented,
+reachable, and measured today — and two of them moved. See `capabilities()`.
+
+The blocked actor answer is the interesting one, and it is why identity is the
+only capability here whose live state is UNKNOWN rather than UNSUPPORTED. The
 surface exists and is documented; BotMux declined to verify the sender of THIS
 process, correctly, because this process is not inside a BotMux turn. Whether
 it verifies inside one is not something this module may claim to know, so it
@@ -458,13 +467,16 @@ class BotMuxHumanControlProvider:
         approval channel is not.
         """
         raise HumanControlUnsupported(
-            "BotMux v3.18 exposes no documented callback surface for a human "
-            "decision: /api/events, /api/messages and /api/approvals all answer "
-            "404 not_found_yet, and /api/sessions is read-only. The question can "
-            "be delivered as a notification; an answer BOUND to a request "
-            "fingerprint cannot be received, so this provider does not claim to "
-            "carry approvals. ServerOS's approval contract is implemented and "
-            "tested independently of this transport.")
+            "BotMux v3.18 can DELIVER a question (`botmux ask buttons --options "
+            "\"a,b\"` returns the chosen key) and cannot be shown to return an "
+            "answer BOUND to a request fingerprint: the question is delivered, "
+            "and nothing carries the answer back to this process, which does not "
+            "run inside a BotMux turn and has no surface to receive one on. An "
+            "unbound key is not an approval — it cannot be shown to be about "
+            "this request, and §AA forbids treating a delivered message as one. "
+            "So this provider does not carry approvals, and ServerOS's approval "
+            "contract is implemented and tested independently of this "
+            "transport.")
 
     # -- what this provider can do ----------------------------------------
 
@@ -492,18 +504,46 @@ class BotMuxHumanControlProvider:
                     "BotMux /api/sessions reports chatId, chatType and sessionId per session"),
                 "human.transport.ingress": support(
                     "UNKNOWN",
-                    "BotMux ingests Feishu messages, and no documented surface delivers them "
-                    "to a consumer: /api/events and /api/messages answer 404 not_found_yet. "
-                    "Inbound content is not read by this provider at all"),
+                    "BotMux ingests Feishu messages, and nothing pushes them to a "
+                    "ServerOS process. A PULL surface is documented and reachable — "
+                    "`botmux history --session-id <id>` and `botmux quoted`, both of "
+                    "which accept a session id from outside a turn — so the transport "
+                    "is not absent, it is unadapted, and this provider reads no "
+                    "inbound content at all. Re-measured 2026-09-15 from a non-turn "
+                    "process: the earlier /api/events and /api/messages 404s are NOT "
+                    "reproducible, because every /api/* path including a deliberately "
+                    "bogus one now answers 401 Token expired — the auth layer precedes "
+                    "routing, so no route-existence claim can be made from here"),
                 "human.approval.transport": support(
-                    "UNSUPPORTED",
-                    "no documented callback surface for a human decision; see request_approval"),
+                    "UNKNOWN",
+                    "a documented surface DELIVERS a decision question and RETURNS an "
+                    "answer: `botmux ask buttons [--multi] --options \"a,b\" \"<q>\"` "
+                    "hands the question to Feishu as a card and returns the chosen key, "
+                    "and `send --plugin-card-action <plugin-id>` admits a declared "
+                    "plugin's callback action. Neither has been observed to reach a "
+                    "ServerOS process, and `ask` is env-bound to BOTMUX_SESSION_ID with "
+                    "no --session-id escape hatch, so it runs only inside a "
+                    "daemon-spawned turn. What is UNKNOWN is not whether a person can "
+                    "answer — they can — but whether an answer can arrive BOUND to the "
+                    "request fingerprint an approval is about; a returned key is bound "
+                    "to nothing. See request_approval, which still refuses"),
                 "human.notification.transport": support(
                     "SUPPORTED",
                     "POST /api/trigger carries a ServerOS sentence into the conversation"),
                 "human.interactive.rendering": support(
-                    "UNSUPPORTED",
-                    "BotMux renders its own cards; ServerOS authors none through this surface"),
+                    "UNKNOWN",
+                    "`botmux send --card-file` and `--card-json` are documented, and "
+                    "`botmux card patch --message-id` updates one in place; measured "
+                    "2026-09-15, `send` accepts --session-id from a non-turn process "
+                    "and gets past session resolution. Whether a card authored that way "
+                    "arrives is UNOBSERVED — the probe fails closed before sending, so "
+                    "no card was sent and none was seen. This is a correction of the "
+                    "earlier UNSUPPORTED, whose reason (\"ServerOS authors none through "
+                    "this surface\") was a statement about our implementation wearing a "
+                    "capability claim's clothes. It is UNKNOWN and not SUPPORTED "
+                    "because the console deliberately renders through BotMux-native "
+                    "replies rather than authoring cards (§P), so no ServerOS process "
+                    "has yet exercised the path"),
             },
             "measured_by": "mcp/human_control.py — see the module docstring for the probes",
         }

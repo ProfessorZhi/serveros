@@ -315,6 +315,35 @@ lands, so each names the enforcement that exists today.
                                       than trusted. tests/test_core_freeze.py::The
                                       ResidentSurfaceIsClosed ·
                                       runtime/serveros-alert-sync.{service,timer}.
+18 An operation is priced on its own provider action, and on nothing else.
+                                      runtime/human_console.py#_assert_no_borrowed_support
+                                      refuses a state map in which one operation's
+                                      entry carries another's action — §M's
+                                      "close must not be reported as interrupt".
+                                      tests/test_human_console.py::CloseIsNever
+                                      ReportedAsInterrupt.
+19 Selecting is not rebinding.          A selection moves which session a
+                                      conversation is addressing; it may not change
+                                      a session's identity or move a thread to
+                                      another Item. Held by shape rather than by
+                                      rule: SELECTION_FIELDS and
+                                      THREAD_BINDING_FIELDS are disjoint, the store
+                                      refuses a selection carrying a binding field
+                                      even when assembled by hand, and the builder
+                                      has no field to put one in.
+                                      tests/test_human_console.py::SelectingIs
+                                      NotRebinding.
+20 A join may not substitute an empty answer for an unread one.
+                                      A binding store that did not answer is
+                                      binding_state UNKNOWN with the exception
+                                      text, never an empty map — an empty map reads
+                                      as "no thread has a purpose" and would show
+                                      every session as a coordinator. Contrast
+                                      invariant 11, which is the same rule one
+                                      plane down. mcp/agent_mcp.py#agent_console ·
+                                      tests/test_human_console.py::TheConsoleAnswers
+                                      EndToEnd::test_a_binding_store_that_did_not_
+                                      answer_says_so.
 ```
 
 Invariants 1–5 and 10 were already implicit in the frozen statement and are
@@ -345,6 +374,19 @@ exactly the set somebody has looked at and written down, so a second one is a
 red test. Repairing it properly is an architecture change — moving the HTTP
 probes behind a provider, or refusing those kinds from the daemon's own probe
 engine — and is recorded in the roadmap rather than improvised here.
+
+Invariants 18–20 arrived with the Remote Console, and each is a statement about
+a **plane that joins others and must not absorb them**. 18 is §M's sentence
+made checkable, and it is written down here because the first version of that
+guard was **itself an instance of the pathology this document exists to name**:
+it checked whether two operations shared a provider action, which no two of them
+ever do, so it could not fire. A guard whose condition cannot be true is the
+same defect as a feature nobody wired — declared, unreachable, and green. 19
+holds a prohibition by making the forbidden thing unrepresentable rather than
+forbidden; a rule that says "do not put an Item here" is one caller away from
+being violated by somebody who did not read it. 20 is invariant 11 one plane
+down, and it earned its place by being the shape the console's first draft got
+wrong.
 
 ### The ownership rule (new)
 
