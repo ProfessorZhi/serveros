@@ -25,16 +25,27 @@ them had a gate:
 
 WHAT IS OUT OF SCOPE, AND WHY SAYING SO MATTERS
 -----------------------------------------------
-  * A `producer:` whose value is prose rather than a path is not checked.
-    `fleet/state-root-contract.yaml` says the `abilities` namespace is produced
-    by "ability-management (writes), this node (observes)" and the `federation`
-    namespace by "the federation collectors". No mechanical rule can resolve
-    those, and a rule that guessed would be wrong in the confident direction.
+  * A `producer:` whose value is prose rather than a path is not checked. This
+    paragraph used to give two examples from `fleet/state-root-contract.yaml` —
+    the `abilities` namespace produced by "ability-management (writes), this
+    node (observes)", the `federation` namespace by "the federation collectors"
+    — and both of those strings are now gone from the contract, so the
+    paragraph had outlived its own evidence while still reading as current. It
+    is kept because the rule is real, and the examples are struck because a
+    docstring describing declarations that no longer exist is the same defect
+    this file is about. What replaced them is not a fourth reading here: those
+    fields were changed to name a module and an owning domain, and
+    `tests/test_mutation_guard.py` now asserts that nothing in the contract is
+    left unresolvable, which is the check this file deliberately declines to
+    make.
   * `serverosctl board render`, listed as the producer of the `boards`
-    namespace, is NOT reported here. It is already a recorded gap in
-    `test_declared_commands.py`, which owns "a document names a command that
-    does not exist". Two gates reporting one finding is how a reader learns that
-    neither of them is the authority on it.
+    namespace, is NOT reported here — the principle is that two gates
+    reporting one finding teaches a reader that neither is the authority on
+    it. That particular example has since been resolved in the place that owns
+    it: the producer was a real command of the control plane misattributed to
+    this repository's CLI, the contract was corrected, and the exemption in
+    `test_declared_commands.py` was removed by that file's own rule the moment
+    the declaration changed. The principle stands; the example is history.
   * A `rule:` with no `enforcement:` key is prose. This file checks claims, not
     sentences.
   * A claim that names a function WITHOUT naming a file it lives in is not

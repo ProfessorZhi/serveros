@@ -19,14 +19,41 @@ This test found three, all predating the round:
     serverosctl context attach     context/schema.yaml, context/resolver.py
     serverosctl board render       fleet/state-root-contract.yaml — as a
                                    `producer:`, i.e. the thing declared to
-                                   materialize the `boards` projection, which
-                                   is produced by nothing
+                                   materialize the `boards` projection
 
-`board render` is the one worth pausing on. The state-root contract lists
-`boards` as `class: projection` and names its producer. There is no such
-command, no script, and no file anywhere by that name. The namespace is
-`required: false`, so it reads as `NO_BOARDS` — "no boards have been made
-yet" — when the truth is that no program can ever make one.
+The third one is worth pausing on, because it is the only entry this gate has
+ever had to give back, and what it turned out to be was not a missing program.
+
+The first reading was: the state-root contract lists `boards` as
+`class: projection` and names its producer; there is no such command, no
+script, no file anywhere by that name; the namespace is `required: false`, so
+it reads as `NO_BOARDS` — "no boards have been made yet" — when the truth is
+that no program can make one.
+
+That reading was wrong in the way this round keeps finding wrong: a correct
+observation of a surface, promoted to a conclusion about the world. Two
+programs on this node are called `serverosctl`:
+
+    ~/.local/bin/serverosctl -> .../serveros-linux-work/current/bin/serverosctl
+        THIS repository's node CLI. No `board`, and never had one.
+    envs/python/serveros-control-plane/bin/serverosctl
+        the work-engine control plane, whose `pyproject.toml` declares
+        `serverosctl = "workengine.cli:main"` alongside `workengine` — and
+        whose argparse prog is literally `serverosctl`. It has `board render`.
+
+PATH gives the name to the first. `board render` belongs to the second, and
+it wrote every file under `state/serveros/boards/`. The declaration was not
+naming a command that does not exist; it was naming a command of a different
+distribution without saying so, which on this node is indistinguishable from
+naming nothing.
+
+So the entry was closed as REDECLARED — not by building the command, and not
+by deleting the claim: the contract now names the ability that owns the
+projection and the control-plane command beside it. The entry is gone from
+`KNOWN_ABSENT` because the exemption's evidence is gone. This gate's own
+rules did that, and they did it without being asked: the moment the
+declaration stopped containing the literal string, this file went red and
+said "remove the entry".
 
 WHAT THIS GATE DOES NOT DO
 --------------------------
@@ -72,14 +99,6 @@ KNOWN_ABSENT = {
                    "not exist — which is defensible, and is not what the "
                    "contract says is happening.",
         "declared_at": ("context/schema.yaml",),
-        "disposition": "NEEDS_HUMAN",
-    },
-    "board render": {
-        "because": "declared as the `producer:` of the `boards` projection in "
-                   "`fleet/state-root-contract.yaml`. Nothing produces it, so "
-                   "the namespace reads as NO_BOARDS rather than as a missing "
-                   "producer.",
-        "declared_at": ("fleet/state-root-contract.yaml",),
         "disposition": "NEEDS_HUMAN",
     },
 }
@@ -222,7 +241,7 @@ class DeclaredCommandsExist(unittest.TestCase):
         form "nothing bad was found" and that is exactly the shape a broken
         checker produces.
 
-        Three declarations in the repo right now name commands that do not
+        Two declarations in the repo right now name commands that do not
         exist. If the scanner stopped seeing them, `test_every_declared...`
         would still pass — it would simply have nothing left to object to.
         """

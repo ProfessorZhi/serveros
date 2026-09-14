@@ -66,8 +66,13 @@ STATE_SERVEROS_TOP_LEVEL = (
     # named by a document outside this tuple, which is why it was never free to
     # move in the first place:
     #   boards                derived Board current view, regenerated wholesale
-    #                         by `serverosctl board render`, never authoritative
-    #                         (HWZ-MAP.md)
+    #                         by the work-engine control plane's `board render`,
+    #                         never authoritative (HWZ-MAP.md). Not this repo's
+    #                         `serverosctl`: two programs carry that name and
+    #                         PATH gives it to this one, which has no `board`
+    #                         subcommand — see the `boards` entry in
+    #                         `fleet/state-root-contract.yaml` for the
+    #                         measurement
     #   federation            locator-only observed projections for external
     #                         domains (feishu, github) — the L3 observed SSOT in
     #                         HWZ-MAP / FEISHU-MAP / GITHUB-MAP
