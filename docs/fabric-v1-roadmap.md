@@ -284,6 +284,37 @@ between a correct measurement and a person who can act on it.
 | OBS-04 | ABSENT | A latency axis in ServerOS, and `NOT_CONFIGURED`. Both are **deliberately** absent rather than missing: the only latency measurements in the ecosystem are the ops monitor's `probe_proxy.ms` and `history.jsonl.m_egress_ms`, and a tunnel declared nowhere is not a degraded tunnel — it is `PROVIDER_NOT_INSTALLED`. Recorded so that a future reader finds a decision rather than a hole. | A reader who finds the gap and fills it with an invention. |
 | OBS-05 | **EXISTS — the last hop, and where the numbers a person reads come from** | Tracked as **HUM-01/02/03** and **OBS-01**, now closed. The one thing this round added *for* the monitoring side is the shape of a finding: a card that said `codex-app-server 5 processes total 279.5%` read **top contributor (highest cpu): pid 79288 … 279.5% of one core**, because a group total is arithmetic and not a thing anybody can act on. A PID is still not an identity — the alert keys on the canonical `runtime-group:` ref, so a process killed and relaunched by its supervisor is **one** alert and not one per restart. | A reader who arrives from the monitoring side and finds a group name where they need a process, or a hole where the last hop should be. |
 
+| OBS-06 | **EXISTS — the family has a canonical home, and it is not a new name** | The `Runtime & Resources` family resolves through `runtime-management`, whose `domain.primary` is `serveros.operations.runtime` and whose `taxonomy_refs` name `serveros.operations`. Deriving the tree from the catalogue's own rows gives 15 nodes with that one occupied. The four other names the family was proposed under — `resource-monitoring`, `container-inspection`, `resource-governance`, tunnel/port inspection — are **absent from every ref** and are not created: §4 forbids manufacturing an ability so a tree looks complete, and the observation logic they would duplicate already lives in the Node Runtime semantic service. | A reader who expects a family to mean a set of new ability names, and builds four of them beside a tree that already answers the question. |
+| OBS-07 | **EXISTS — and it was the ServerOS side that was wrong** | `inventory.pressure()` asserted *"Real memory pressure"* from the swap **watermark** alone. Measured on this host 2026-09-15: 99.2% of an 8 GiB swap file used, while memory PSI read `some`/`full` avg10/avg60/avg300 all `0.00`, `pswpout` read 3208181 at two moments forty minutes apart, and 15.7 GiB of 31.0 GiB was available. Nothing was paging. The note now requires the watermark **and** a PSI reading, reports the PSI numbers and both thresholds it compared against, and **states that it did not establish pressure** when `/proc/pressure` cannot be read — the same refusal `pressure_stall` already made one method above. | A watermark reported as current pressure, on a machine that is idle. `vm.swappiness=10` means pages return from swap only when touched again, so a swap file that filled once stays full indefinitely and the number describes the machine's past. |
+| OBS-08 | ABSENT — **and blocked on a repository this round does not own** | §V's card requirement is unmet on both of the monitor's rendering surfaces: `monitor.py:295` and `monitor.py:808` print `{count} 个进程 合计占 {c}% 单核`, the exact shape §V forbids, and neither reads `checks.py:610`'s `pids` — the per-process list it already collected by the same two-point `/proc/<pid>/stat` differential the rest of the module uses. The repair is a rendering change over data that exists. It is not made here because `workspace/ops` is read-only to this round **and its entire `scripts/monitor/` tree is untracked** (`?? scripts/monitor/`, `git ls-files` empty at `b08d7ca`): the production alerting path has no revision to review against and none to revert to. | A card whose only CPU figure is an arithmetic total, on the surface a person reads every thirty minutes — and a finding that cannot be repaired because the file it lives in was never committed. |
+
+The **swap threshold pair has two producers.** The failure above was found and
+fixed **twice, one day apart, in two repositories**: `ops/scripts/monitor/
+rules.yaml` carries `swap_used_max_gb: 6.0` beside
+`swap_pressure_psi_some_avg60_min: 5.0` with the identical reasoning written
+out, dated 2026-09-14, and its card says *"不告警：水位是历史峰值，页早已在内存里"*.
+ServerOS's pair is 90.0% and 1.0%, and the two fail-loud directions are
+opposite — the monitor alerts anyway when PSI is unreadable, ServerOS refuses
+to claim either way — which is correct in both cases and worth keeping
+different: a notification should speak when it cannot measure, a note attached
+to a measurement should say what it did not establish. **What is not settled is
+that 1.0% and 5.0% are both called "memory pressure".** Between them sits a
+host one producer would call pressured and the other normal. Aligning them is a
+threshold change in one of two repositories, so it is recorded here and left
+for a person.
+
+The **top-contributor shape is right in ServerOS and ranked by the metric the
+monitor rejects.** `alerting.detail_for` renders *"top contributor (highest
+cpu): pid … % of one core"*, which is what §V asks for, but `graph.contributors()`
+orders by summed **lifetime average** CPU and says so (`cpu_metric:
+"lifetime_average_percent_of_one_core"`) — the same unit `checks.py:574`
+documents refusing, because a process that burns hard for one second and exits
+reads as ~100%. Both are deliberate: `cpu_percent_high`'s contract entry says
+*"sustained is the claim"*, and for a staleness question a lifetime average is
+the honest unit. §V's card is asking a different question — what is burning
+**now** — and ServerOS already computes that differential in
+`inventory.cpu_usage()`, just not per process.
+
 The **review-candidate versus `CLEANUP_CANDIDATE`** distinction belongs in the
 same pass and is already correct in the code: an anomaly code is a heuristic
 flag that confers nothing, while `CLEANUP_CANDIDATE`
@@ -293,6 +324,20 @@ from different sources, deliberately excludes `age_seconds`, and is
 `NEVER_ACTIONABLE`. Nothing consumes it as a queue. **That property is the one
 to protect**, and it is the reason `REVIEW_CANDIDATE` should stay a *severity*
 on an anomaly rather than becoming a second class in that ladder.
+
+The rename this round did make is the opposite kind and does not touch that
+ladder: `STOPPED_RECLAIM_CANDIDATE` became **`STOPPED_REVIEW_CANDIDATE`** in
+`hygiene.py` and `anomaly.py`, because *"reclaim"* named an action while both
+producers refuse to recommend one, and because one name was covering **two
+mutually exclusive owner facts** — `hygiene` emits it when a typed owner *is*
+declared ("Nameable, not abandoned"), `anomaly` when no owner *can* be
+established. Neither is actionable and both remain where they were. The rename
+cost nothing because no alert state file existed to carry the old identity, and
+`tests/test_alert_authorization.py` now asserts the property that was prose
+until this round: the alert vocabularies and the actuator's operation list are
+disjoint, and `Actuator.perform` refuses every alert code, advice word and
+hygiene class **by name** — with a positive control, so the loop cannot pass
+against an actuator that refuses everything.
 
 ---
 

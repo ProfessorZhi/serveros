@@ -39,7 +39,7 @@ work: it names a question for a person, not a queue.
 Reused, not rebuilt
 -------------------
 The container-level vocabulary already exists in `hygiene.py` (PROTECTED,
-ACTIVE, STALE_CANDIDATE, ORPHANED, UNKNOWN_OWNER, STOPPED_RECLAIM_CANDIDATE) and
+ACTIVE, STALE_CANDIDATE, ORPHANED, UNKNOWN_OWNER, STOPPED_REVIEW_CANDIDATE) and
 that module owns §24's Docker report. This module is the RUNTIME-level ladder
 from the same facts and adds the three classes that need a registration to
 answer — EXPECTED_STOPPED (which needs a desired state), IDLE (which needs a
@@ -115,6 +115,19 @@ ALIAS_OF = {
     ACTIVE: "ACTIVE",
     ORPHANED: "ORPHANED",
     UNOWNED: "UNKNOWN_OWNER",
+    # §Y: read this row with `LABEL_ONLY` open beside it, because by itself it
+    # inverts the property the two names are supposed to carry. Traversing it
+    # gives CLEANUP_CANDIDATE ≡ STALE_CANDIDATE, and STALE_CANDIDATE is the
+    # ONE class in `hygiene.ACTIONABLE_CLASSES` — so a consumer that joins on
+    # the alias and stops there concludes that a cleanup candidate is the
+    # thing cleanup acts on, which is exactly backwards.
+    #
+    # The row is correct as a claim about WHICH QUESTION the two ladders are
+    # answering (both say "this looks reclaimable, ask a person"), and the
+    # property is enforced where it belongs: `CLEANUP_CANDIDATE` is in
+    # `LABEL_ONLY` and every record carries `actionable: False`, so the alias
+    # cannot by itself authorise anything. Recorded rather than renamed — the
+    # vocabulary is declared, and the guard already holds.
     CLEANUP_CANDIDATE: "STALE_CANDIDATE",
 }
 

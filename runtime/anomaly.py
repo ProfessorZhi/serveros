@@ -77,7 +77,11 @@ DEFAULT_THRESHOLDS = {
     "age_long_seconds": 86400,
     "filesystem_percent_high": 85.0,
     "inode_percent_high": 85.0,
+    # A watermark, and the two PSI keys beside it are what makes it a claim
+    # about now. Transcribed with the contract's reasoning attached there.
     "swap_percent_high": 90.0,
+    "psi_memory_some_avg60_percent_high": 1.0,
+    "psi_memory_full_avg60_percent_high": 0.5,
     "load1_per_cpu_high": 1.0,
     "error_repeats_high": 10,
     "error_window_seconds": 3600,
@@ -160,7 +164,7 @@ SEVERITY = {
     "FUNCTIONAL_PROBE_FAILED": "high",
     "MCP_PROCESS_ALIVE_BUT_UNAVAILABLE": "high",
     "STALE_CONTAINER": "medium",
-    "STOPPED_RECLAIM_CANDIDATE": "low",
+    "STOPPED_REVIEW_CANDIDATE": "low",
     "AGE_WITHOUT_ACTIVITY": "low",
     "PERSISTENT_RUNTIME_FLOATING_DEPENDENCY": "medium",
     "SESSION_OWNED_DURABLE_RESOURCE": "high",
@@ -470,7 +474,7 @@ def detect(*, groups=None, containers=None, task_states=None, host_facts=None,
             state = container.get("state")
             if state in ("exited", "dead"):
                 signals.append(signal(
-                    "STOPPED_RECLAIM_CANDIDATE", ref,
+                    "STOPPED_REVIEW_CANDIDATE", ref,
                     {"state": state, "exit_code": (container.get("evidence") or {}).get("exit_code"),
                      "unknown_owner": True},
                     window="state at observation time",
@@ -675,7 +679,7 @@ INPUT_CODES = {
                "UNKNOWN_OWNER_LONG_RUNNING"),
     "session_states": ("RUNTIME_OUTLIVED_OWNER",),
     "task_states": ("TASK_IDLE_PROCESS_ACTIVE", "TASK_CLOSED_RESOURCE_RUNNING"),
-    "containers": ("STALE_CONTAINER", "STOPPED_RECLAIM_CANDIDATE"),
+    "containers": ("STALE_CONTAINER", "STOPPED_REVIEW_CANDIDATE"),
     "probe_results": ("FUNCTIONAL_PROBE_FAILED", "MCP_PROCESS_ALIVE_BUT_UNAVAILABLE"),
     "host_facts": ("ROOT_FS_PRESSURE", "DATA_FS_PRESSURE"),
     "error_windows": ("REPEATED_ERROR_LOOP",),

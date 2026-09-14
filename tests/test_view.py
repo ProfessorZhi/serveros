@@ -428,7 +428,7 @@ def test_containers_are_not_attributed_without_a_registry():
     """A PROTECTED container must not become a reclaim candidate.
 
     With no registry, every container comes back `unknown_owner`, and
-    `unknown_owner` is what makes STOPPED_RECLAIM_CANDIDATE fire. The document
+    `unknown_owner` is what makes STOPPED_REVIEW_CANDIDATE fire. The document
     that says a container is protected is exactly the document that is
     missing, so the safe answer is to evaluate nothing and say so.
     """
@@ -438,7 +438,7 @@ def test_containers_are_not_attributed_without_a_registry():
     payload = view.anomaly_list(host=host_of((100, {"comm": "prog"})),
                                 docker_host=FakeProbeHost(containers=containers))
     codes = {signal["code"] for signal in payload["signals"]}
-    assert "STOPPED_RECLAIM_CANDIDATE" not in codes
+    assert "STOPPED_REVIEW_CANDIDATE" not in codes
     reasons = {entry["input"]: entry["why"] for entry in payload["unchecked"]}
     assert "registry is absent" in reasons["containers"]
 
@@ -911,14 +911,14 @@ def test_the_container_guard_prevents_a_real_classification_not_a_hypothetical()
 
     This is what makes the guard in `anomaly_list` load-bearing. An
     unattributed stopped container is not benign input that happens to be
-    declined — it is the exact shape of STOPPED_RECLAIM_CANDIDATE, and the
+    declined — it is the exact shape of STOPPED_REVIEW_CANDIDATE, and the
     only thing standing between a PROTECTED container and that classification
     is the registry document the absent-registry path cannot read.
     """
     row = {"ref": "runtime:container:c1", "state": "exited", "unknown_owner": True,
            "disposition": "DEFER", "evidence": {"exit_code": 0}}
     codes = {signal["code"] for signal in view.anomaly.detect(containers=[row])}
-    assert "STOPPED_RECLAIM_CANDIDATE" in codes
+    assert "STOPPED_REVIEW_CANDIDATE" in codes
 
 
 def test_a_protected_container_emits_nothing_even_when_passed_directly():

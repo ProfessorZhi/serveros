@@ -87,7 +87,14 @@ CLASSES = (
     # Stopped, not registered, but carrying a typed owner ref — so an owner
     # can be named and asked. Still not actionable on its own: being nameable
     # is not the same as being abandoned.
-    "STOPPED_RECLAIM_CANDIDATE",
+    #
+    # Renamed from STOPPED_RECLAIM_CANDIDATE. `anomaly.py` emits the same word
+    # for the OPPOSITE owner fact — a stopped container whose owner could NOT
+    # be established — and the two rules are mutually exclusive, so one name
+    # covers two meanings a consumer cannot distinguish. Neither producer
+    # recommends an action, which is why "reclaim" was the wrong word in both.
+    # See the code's entry in `attribution-contract.yaml`.
+    "STOPPED_REVIEW_CANDIDATE",
 )
 
 # Classes the automatic path may ever act on, under policy. The complement is
@@ -97,7 +104,7 @@ ACTIONABLE_CLASSES = frozenset({"STALE_CANDIDATE"})
 # Classes that must never appear as a candidate in any report, listed
 # explicitly so that adding a class forces a decision about it.
 NEVER_ACTIONABLE = frozenset(
-    {"PROTECTED", "ACTIVE", "ORPHANED", "UNKNOWN_OWNER", "STOPPED_RECLAIM_CANDIDATE"}
+    {"PROTECTED", "ACTIVE", "ORPHANED", "UNKNOWN_OWNER", "STOPPED_REVIEW_CANDIDATE"}
 )
 
 # The label a container uses to declare a typed owner. ServerOS defines this
@@ -311,7 +318,7 @@ class Hygiene:
                 f"decision."
             )
         elif owner["typed_ref"] and not running:
-            classification = "STOPPED_RECLAIM_CANDIDATE"
+            classification = "STOPPED_REVIEW_CANDIDATE"
             reason = (
                 f"stopped, unregistered, and declaring a typed owner "
                 f"{owner['typed_ref']} via `{OWNER_LABEL}`. Nameable, not "

@@ -419,6 +419,24 @@ def _memory_signals(host: dict, thresholds: dict, *, observed_at) -> tuple[list,
                      "§25 forbids acting on this: the permitted response is to "
                      "refuse a NEW allocation, never to stop one that exists"),
             ))
+    # A KNOWN SECOND PRODUCER OF A CLAIM `inventory.pressure()` NO LONGER
+    # MAKES, recorded rather than silently aligned. This grades SWAP_PRESSURE
+    # from the watermark alone, and `ADMISSION_LEVELS` puts SWAP_PRESSURE at
+    # `refuse` — so an unbacked reading can, on the day `admission()` is wired
+    # into a creation path, refuse work on a machine that is not under any
+    # pressure. Measured on this host 2026-09-15: 99.2% swap with PSI at
+    # 0.00 across every window and `pswpout` unmoved over forty minutes.
+    #
+    # Not repaired here, and the reason is scope rather than doubt. This
+    # module cannot consult PSI at all — it has no reference to
+    # `inventory.pressure_stall` or to `/proc/pressure` anywhere, and the
+    # `host` dict it is handed does not carry the reading, so the fix is to
+    # thread a new field from the observation producer through to here and
+    # then decide what an admission gate should do with it. Moving a code
+    # between `refuse` and `advisory` is a POLICY change and needs a decision
+    # that is not this round's to make. `admission()`'s own contract entry
+    # records `wired_into_a_creation_path: false`, so nothing acts on this
+    # today; the hazard is that it would start to.
     swap = memory.get("swap") or {}
     swap_total, swap_used = swap.get("total_bytes"), swap.get("used_bytes")
     swap_at = thresholds["swap_percent_high"]
