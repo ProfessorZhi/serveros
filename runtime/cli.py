@@ -2728,7 +2728,13 @@ def build_parser() -> argparse.ArgumentParser:
         **_COMMON)
     ab_resolve.add_argument("--request", required=True,
                             help="a JSON file holding the resolver's inputs")
-    ab_resolve.add_argument("--ability", help="override request.ability")
+    ab_resolve.add_argument(
+        "--ability",
+        help=("override request.ability. An operation may be named on it — "
+              "`ability:<id>#<verb>` — and MUST be quoted, because `#` starts "
+              "a shell comment: --ability 'ability:test-management#read'. The "
+              "bare form names no operation and does not consult the provider's "
+              "operations table."))
     ab_resolve.add_argument("--device", help="override request.device_ref")
     ab_resolve.add_argument("--runtime", help="override request.runtime")
     ab_resolve.set_defaults(func=cmd_ability_resolve)

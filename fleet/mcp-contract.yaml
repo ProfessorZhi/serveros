@@ -151,6 +151,14 @@ surfaces:
       # says `resolution: not attempted` and names where the question IS
       # answered, rather than answering it with the union.
       - whether this node can EXECUTE an ability it has observed
+      # Same shape of boundary, second instance. §10's reference is
+      # `ability:<id>#<verb>`, and the verb is answered by the PROVIDER's
+      # `operations:` table — a provider record this process holds none of.
+      # `ability.inspect` therefore reports `operations_declared: null` and
+      # names `serverosctl ability resolve` as where the question is answered,
+      # rather than reporting `false`, which a caller cannot distinguish from a
+      # provider somebody actually read.
+      - whether an ability's provider declares a named operation
       - pack composition — a pack is an Ability-plane grouping, not a fact
         about this node
       - process lifecycle — no tool here stops, restarts or signals anything
