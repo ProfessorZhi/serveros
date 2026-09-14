@@ -307,6 +307,37 @@ class MutationThreeCapabilitiesDoNotLeakAcrossRuntimes(unittest.TestCase):
 # instance of it.
 
 
+    def test_the_startup_view_never_grows_the_tree(self):
+        """§AD/§AF — the fifth mutation, and the most likely one yet.
+
+        This round added three discovery surfaces to `serverosctl`: the ability
+        tree (L1), `ability inspect` (L2) and `pack inspect` (L1). Every one of
+        them is useful, none of them is L0, and the tree is the single most
+        tempting line this file will ever be asked to carry — "just show the
+        agent what it can do" is the same sentence as mutation 1, one level up.
+
+        Asserted against the CONTRACT's declared lines rather than against the
+        rendered text, because the rendered text is what a live host produces:
+        it would pass on a node with no projection no matter what the contract
+        said. The contract is the declaration; this is the gate on it.
+
+        `capability` L0 already renders a count and a pointer to `ability
+        resolve`. That is the level the tree belongs to: reachable, on request,
+        and never preloaded.
+        """
+        import yaml
+        contract = yaml.safe_load(
+            (CONTEXT / "disclosure-contract.yaml").read_text(encoding="utf-8"))
+        lines = "\n".join(contract["startup_view"]["lines"])
+        for verb in ("ability tree", "pack inspect", "ability inspect"):
+            self.assertNotIn(verb, lines, (
+                f"`{verb}` is L1/L2 and the startup view is L0 — the tree is "
+                "reachable on request and is never preloaded"))
+        # The positive control: the pointer line is still there, so the
+        # assertion above cannot pass by the view having lost its pointer.
+        self.assertIn("ability resolve", lines)
+
+
 class MutationThreeBNoL0LineEnumerates(unittest.TestCase):
     def test_the_declared_rule_covers_every_axis_not_just_capability(self):
         """The contract states it once, for all axes. If this ever grows an

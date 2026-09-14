@@ -37,6 +37,7 @@ import json
 import os
 import socket
 import sys
+import textwrap
 from pathlib import Path
 
 _HERE = Path(__file__).resolve().parent
@@ -337,6 +338,299 @@ def cmd_ability_status(args) -> int:
         lines.append(payload.get("note", ""))
     emit(payload, as_json=args.json, lines=lines)
     return EXIT_OK if installed else EXIT_FAULT
+
+
+def cmd_ability_tree(args) -> int:
+    """§4's logical tree, as this node currently believes it.
+
+    The daemon has derived this since v1.2's ability-tree round, and until this
+    command the only way to see it was `serverosctl` speaking JSON onto the
+    socket by hand — the same "implemented and unreachable" shape `cmd_ability_
+    list` was written to fix for `ability.list`.
+
+    Why it asks the daemon instead of reading `effective.json`: the daemon
+    grades the projection (FRESH / STALE / UNREADABLE / NOT_MATERIALIZED) and
+    returns `nodes: null` rather than `[]` when there is none. A CLI that read
+    the file itself would print an empty tree for all four states, and "the
+    catalogue has no classified abilities" is the opposite finding from
+    "nobody has asked ability-management".
+    """
+    try:
+        payload = ask_daemon("ability.tree")
+    except DaemonUnavailable as exc:
+        sys.stderr.write(f"serverosctl: {exc}\n")
+        if args.json:
+            json.dump({"ok": False, "registry_status": "UNREADABLE", "detail": str(exc)},
+                      sys.stdout, indent=2, sort_keys=True)
+            sys.stdout.write("\n")
+        return EXIT_COULD_NOT_ANSWER
+
+    nodes = payload.get("nodes")
+    lines = [f"authority   {payload.get('authority')}",
+             f"projection  {payload.get('registry_status')}",
+             f"basis       {payload.get('basis')}"]
+    if nodes is None:
+        lines.append("tree        none — no local capability projection is "
+                     "materialized, so there is nothing to derive from")
+        lines.append(f"            {payload.get('note', '')}")
+        emit(payload, as_json=args.json, lines=lines)
+        # NOT an error. §28: an unreachable authority is a supported answer —
+        # the node says so and names the command that would produce it.
+        return EXIT_OK
+
+    placements = payload.get("placements") or {}
+    for node in nodes:
+        # `node` is a prefix such as `serveros.operations`; the label is the
+        # last segment, because the indentation already carries the ancestry.
+        depth = node.count(".") if isinstance(node, str) else 0
+        here = sorted(name for name, at in placements.items() if at == node)
+        # Two counts, not one. `serveros` is a node in the tree and it is also
+        # every other node's prefix, so a single `(0)` beside it reads as "this
+        # branch is empty" when it means "nothing is placed at exactly this
+        # level". The first count is the placement rule; the second is what a
+        # reader is actually asking.
+        below = sum(1 for at in placements.values()
+                    if isinstance(at, str) and at.startswith(node + "."))
+        counts = f"({len(here)} here, {below} below)" if below else f"({len(here)})"
+        lines.append(f"{'  ' * depth}{node.split('.')[-1]}  {counts}")
+        for name in here:
+            lines.append(f"{'  ' * (depth + 1)}{name}")
+    lines.append(f"classified  {payload.get('classified_count')} of "
+                 f"{payload.get('ability_count')}")
+    unplaced = payload.get("unplaced") or []
+    if unplaced:
+        # Named, not hidden. An unplaced ability has no `domain.primary`, and
+        # §4 refuses to invent one to make the tree look complete — so the
+        # count is part of the answer rather than a footnote.
+        lines.append(f"unplaced    {len(unplaced)} "
+                     f"(no `domain.primary` — see `serverosctl ability inspect`)")
+    emit(payload, as_json=args.json, lines=lines)
+    return EXIT_OK
+
+
+def cmd_ability_inspect(args) -> int:
+    """One ability at L2: the projection's row, its place in the tree, and
+    whether any operation vocabulary exists for it.
+
+    Deliberately NOT a resolution. `installed` on this answer means "the local
+    projection carries a row for it" — which is a claim about a file on this
+    node, not about this node's ability to do the work. Whether this device and
+    runtime can actually run it is `serverosctl ability resolve`, and the note
+    on this answer says so, because the two questions print the same three
+    columns and mean different things.
+    """
+    try:
+        payload = ask_daemon("ability.inspect", {"name": args.name})
+    except DaemonUnavailable as exc:
+        sys.stderr.write(f"serverosctl: {exc}\n")
+        if args.json:
+            json.dump({"ok": False, "registry_status": "UNREADABLE", "detail": str(exc)},
+                      sys.stdout, indent=2, sort_keys=True)
+            sys.stdout.write("\n")
+        return EXIT_COULD_NOT_ANSWER
+
+    lines = [f"ability     {payload.get('name')}",
+             f"projection  {payload.get('registry_status')}",
+             f"installed   {payload.get('installed')}"]
+    # The daemon's shape, read rather than assumed: the row is `ability`, the
+    # tree answer is `tree.placement` / `tree.cross_refs` / `tree.unplaced`.
+    # A flat reader over this answer printed three lines and looked like an
+    # empty projection — the same wrong-reader failure `cmd_ability_status`
+    # records in its own comment.
+    row = payload.get("ability") or {}
+    for key in ("id", "type", "path"):
+        if row.get(key) is not None:
+            lines.append(f"{key:<19} {row[key]}")
+    domain = row.get("domain")
+    if isinstance(domain, dict) and domain.get("primary"):
+        lines.append(f"{'domain.primary':<19} {domain['primary']}")
+    refs = row.get("taxonomy_refs")
+    if refs:
+        lines.append(f"{'taxonomy_refs':<19} {','.join(refs)}")
+    tree = payload.get("tree")
+    if tree:
+        lines.append(f"{'tree_node':<19} {tree.get('placement') or '(unplaced)'}")
+        if tree.get("cross_refs"):
+            lines.append(f"{'cross_refs':<19} {','.join(tree['cross_refs'])}")
+    lines.append(f"{'source':<19} {payload.get('source')}")
+    lines.append(f"{'resolution':<19} {payload.get('resolution')} "
+                 f"(by `{payload.get('resolved_by')}`)")
+    lines.append(f"{'operations':<19} {payload.get('operations_declared')}")
+    if payload.get("note"):
+        lines.append(payload["note"])
+    emit(payload, as_json=args.json, lines=lines)
+    return EXIT_OK if payload.get("installed") else EXIT_FAULT
+
+
+def cmd_pack_inspect(args) -> int:
+    """§11 · one pack, resolved against the CATALOGUE — not against this node.
+
+    `pack.inspect` was named in §F as one of the four discovery surfaces and
+    did not exist anywhere in the tree: `abilities/packs.py` had a complete
+    `resolve()`, a pin-settling pass and its own `main()`, and no product
+    surface called any of it. This is that call.
+
+    WHY THE CATALOGUE IS NOT THE LOCAL PROJECTION — AND WAS, FOR ONE HOUR
+    --------------------------------------------------------------------
+    The first version of this command defaulted `--catalogue` to the abilities
+    the daemon reports over IPC, on the reasoning that a node can only honestly
+    resolve a pack against what it has observed. It ran, and it printed
+    `UNAVAILABLE 0/5 resolved` — for all five packs — and `PIN_MISMATCH` for
+    all five pins. Every line of that was wrong, and wrong in the shape this
+    product keeps re-learning: **a verdict about one thing computed from
+    another, with nothing in the output to say so.**
+
+    A pack's closure is a statement about the canonical catalogue, which is the
+    whole name set in `abilities-manifest.yaml`. The node's projection is a
+    *device-filtered* set — the abilities this machine has observed installed —
+    and it is 25 names against a manifest of 55. Feeding it to `resolve()` makes
+    every pack read UNAVAILABLE, which reads as "ability-management cannot
+    close its own packs" rather than as "this node is not the catalogue".
+
+    So the catalogue is read the way `scripts/build.py` reads it and the way
+    `serverosctl ability refresh` already reads the manifest beside it: from a
+    git object at a named revision, in the ability-management checkout. The
+    revision is required, because `resolve()` refuses without one and because a
+    verdict about an unnamed catalogue cannot be reproduced.
+
+    The node's own question — "can THIS device do the work in this pack" — is
+    `serverosctl ability resolve`, which intersects the projection with the
+    providers this device actually has. Two questions, two commands, and this
+    one does not answer the other's.
+    """
+    packs_mod = _load_module_from(REPO_ROOT / "abilities" / "packs.py",
+                                  "serveros_ability_packs")
+    projection_mod = _load_module_from(REPO_ROOT / "runtime" / "ability_projection.py",
+                                       "serveros_ability_projection")
+
+    try:
+        import yaml
+    except ImportError:  # pragma: no cover - environment guarantee
+        sys.stderr.write("serverosctl: PyYAML is required to read the pack contract\n")
+        return EXIT_COULD_NOT_ANSWER
+
+    contract = yaml.safe_load(args.contract.read_text(encoding="utf-8"))
+    if not isinstance(contract, dict):
+        sys.stderr.write(f"serverosctl: {args.contract} is not a mapping\n")
+        return EXIT_FAULT
+    declarations = yaml.safe_load(args.declarations.read_text(encoding="utf-8"))
+    if not isinstance(declarations, dict) or "packs" not in declarations:
+        sys.stderr.write(
+            f"serverosctl: {args.declarations} declares no `packs:` — the "
+            f"schema contract stopped carrying them, so a caller that passes "
+            f"only the schema gets an empty contract\n")
+        return EXIT_FAULT
+    contract = dict(contract, packs=declarations["packs"])
+
+    if not args.catalogue and not (args.ability_repo and args.ability_rev):
+        sys.stderr.write(
+            "serverosctl: a pack verdict needs a catalogue, and both ways of "
+            "naming one were omitted. Pass --ability-repo and --ability-rev "
+            "(the canonical manifest at a revision), or --catalogue. There is "
+            "deliberately no default: the local projection is what this NODE "
+            "has observed, and resolving a pack against it reports every pack "
+            "UNAVAILABLE as though that were a finding about the catalogue.\n")
+        return EXIT_FAULT
+
+    catalogue_repo = args.catalogue_repo or (
+        str(args.ability_repo) if args.ability_repo else None)
+    revision = args.catalogue_revision
+    names: list[str] = []
+    if args.catalogue:
+        names = [line.strip() for line in args.catalogue.read_text(encoding="utf-8").splitlines()
+                 if line.strip() and not line.startswith("#")]
+    else:
+        # The manifest, at a revision, out of a git object. `read_manifest`
+        # returns the resolved full SHA, and that — not what the operator
+        # typed — is the revision the verdict names, because `--ability-rev`
+        # is allowed to be a branch or a short SHA.
+        try:
+            manifest, resolved = projection_mod.read_manifest(
+                args.ability_repo, args.ability_rev)
+        except projection_mod.AuthorityUnreachable as exc:
+            sys.stderr.write(
+                f"serverosctl: cannot read the catalogue — {exc}\n"
+                f"This is an answer, not a failure to compute one: a pack "
+                f"resolved against a catalogue nobody read would be a verdict "
+                f"about nothing.\n")
+            return EXIT_COULD_NOT_ANSWER
+        names = [str(a.get("name")) for a in (manifest.get("abilities") or [])
+                 if isinstance(a, dict) and a.get("name")]
+        revision = revision or resolved
+
+    if not revision:
+        sys.stderr.write(
+            "serverosctl: no catalogue revision is available, and a closure "
+            "answer must name the revision it was computed against — without "
+            "it the verdict is about a catalogue that cannot be produced "
+            "again. Pass --catalogue-revision.\n")
+        return EXIT_FAULT
+
+    report = packs_mod.resolve(contract, names, catalogue_revision=revision,
+                               catalogue_repo=catalogue_repo)
+
+    # Settled here, not inside `resolve()`, for the reason `packs.py` records:
+    # a pin that is not the revision being read may still describe the same
+    # catalogue, and that question cannot be answered from a name set.
+    unsettled: list[dict] = []
+    if catalogue_repo:
+        unsettled = packs_mod.settle_pins(report, revision=revision,
+                                          repo=catalogue_repo)
+    else:
+        unsettled = [v for v in report["pins"]["packs"] if v["status"] == "PIN_MISMATCH"]
+
+    if args.pack:
+        wanted = args.pack
+        if not wanted.startswith("pack:"):
+            wanted = f"pack:{wanted}"
+        report["packs"] = [p for p in report["packs"] if p["id"] == wanted]
+        if not report["packs"]:
+            sys.stderr.write(
+                f"serverosctl: {args.declarations} declares no pack {wanted!r}. "
+                f"Refusing rather than answering about the packs it does "
+                f"declare, because a filter that silently widens is a filter "
+                f"nobody can use to check anything.\n")
+            return EXIT_FAULT
+        # The pin lines are part of the answer about this pack, so they are
+        # narrowed with it. Left alone they printed another pack's pin verdict
+        # underneath the one that was asked for — which is how a filtered read
+        # starts reporting facts from outside its filter.
+        unsettled = [v for v in unsettled if v["pack"] == wanted]
+
+    pins = report["pins"]
+    lines = [f"schema      {report['schema']}",
+             f"catalogue   {report['catalogue']['abilities']} abilities @ {revision[:12]}",
+             f"pins        {'all match' if pins['all_match'] else 'NOT all match'}"
+             + ("" if catalogue_repo else
+                "  (unsettled — pass --catalogue-repo to ask the ancestor question)")]
+    for pack in report["packs"]:
+        # The three lists the kernel keeps apart, kept apart here too. A pack
+        # is usable without its optional members by definition, so an
+        # unresolved optional member is not a refusal — and an unresolved
+        # REQUIRED one is, whether or not the other requireds resolved.
+        line = f"{pack['id']:<34} {pack['status']:<12} " \
+               f"{len(pack['resolved'])}/{pack['members_total']} resolved"
+        lines.append(line)
+        for member in pack["unresolved_required"]:
+            lines.append(f"{'':<34} ! required, unresolved: {member['name']}")
+        for member in pack["unresolved_optional"]:
+            lines.append(f"{'':<34} - optional, unresolved: {member['name']}")
+    if not args.json:
+        emit(report, as_json=False, lines=lines)
+        for verdict in unsettled:
+            # `because`, not `detail`: the verdict's keys are
+            # `pack`/`pinned`/`checked`/`status`/`because`, and the first draft
+            # of this loop read `detail` — a key that has never existed on any
+            # pin verdict, so it printed the pack and the status and then
+            # nothing, which looks like a reason that was checked and came back
+            # empty. The reason is the whole point here: a stale pin is
+            # invisible precisely because the verdict beside it is correct.
+            sys.stdout.write(
+                f"  pin {verdict['pack']}: {verdict['status']}\n"
+                f"    {textwrap.fill(verdict['because'], 74, subsequent_indent='    ')}\n")
+        return EXIT_OK
+    emit(report, as_json=True)
+    return EXIT_OK
 
 
 def cmd_ability_refresh(args) -> int:
@@ -3236,6 +3530,17 @@ def build_parser() -> argparse.ArgumentParser:
         "status", help="one ability by name", **_COMMON)
     ab_status.add_argument("name")
     ab_status.set_defaults(func=cmd_ability_status)
+    ab_tree = ability_sub.add_parser(
+        "tree",
+        help="the logical ability tree this node derives from `domain.primary` (§4)",
+        **_COMMON)
+    ab_tree.set_defaults(func=cmd_ability_tree)
+    ab_inspect = ability_sub.add_parser(
+        "inspect",
+        help="one ability's projection row and its place in the tree (§6)",
+        **_COMMON)
+    ab_inspect.add_argument("name")
+    ab_inspect.set_defaults(func=cmd_ability_inspect)
     ab_resolve = ability_sub.add_parser(
         "resolve",
         help="intersect the eight inputs for one device and runtime (§45)",
@@ -3272,6 +3577,57 @@ def build_parser() -> argparse.ArgumentParser:
              "error, because the manifest records installations under the id "
              "in force when they happened")
     ab_refresh.set_defaults(func=cmd_ability_refresh)
+
+    pack = sub.add_parser(
+        "pack", help="a declared pack, resolved against this node's catalogue (§11)",
+        **_COMMON)
+    pack_sub = pack.add_subparsers(dest="subcommand", required=True)
+    pk_inspect = pack_sub.add_parser(
+        "inspect",
+        help="resolve one pack (or all) against the abilities this node has observed",
+        **_COMMON)
+    pk_inspect.add_argument(
+        "pack", nargs="?", default=None,
+        help="a pack id, with or without the `pack:` prefix. Omitted inspects "
+             "every declared pack. A name that matches none is refused rather "
+             "than widened to all of them.")
+    pk_inspect.add_argument(
+        "--declarations", type=Path, required=True,
+        help="the published packs (ability-packs.yaml). The schema contract "
+             "stopped carrying them, so this is required and not defaulted — a "
+             "caller that supplies only the schema gets an empty contract.")
+    pk_inspect.add_argument(
+        "--contract", type=Path,
+        default=REPO_ROOT / "abilities" / "pack-contract.yaml",
+        help="the SCHEMA half: record shape, member roles, pin rule")
+    pk_inspect.add_argument(
+        "--ability-repo", type=Path,
+        help="the ability-management checkout the CATALOGUE is read from. Not "
+             "the local projection: a pack's closure is a statement about the "
+             "whole canonical catalogue, and the node's projection is a "
+             "device-filtered subset of it.")
+    pk_inspect.add_argument(
+        "--ability-rev",
+        help="the revision the catalogue is read at, as a git object. Read "
+             "this way for the same reason `ability refresh` does: a dirty "
+             "checkout on this machine must not become the catalogue a pack "
+             "verdict is about.")
+    pk_inspect.add_argument(
+        "--catalogue", type=Path,
+        help="a file of ability names, one per line, INSTEAD of reading the "
+             "manifest — for checking a pack against a name set that is not "
+             "`abilities-manifest.yaml`. Mutually exclusive in effect with "
+             "--ability-repo, which wins if both are given.")
+    pk_inspect.add_argument(
+        "--catalogue-revision",
+        help="override the revision the verdict names; defaults to the full "
+             "SHA the catalogue was actually resolved at")
+    pk_inspect.add_argument(
+        "--catalogue-repo",
+        help="the ability-management checkout, so the pin's ancestor question "
+             "can be asked. Without it an ancestor-passing pin is reported "
+             "UNSETTLED rather than PASS or FAIL. Defaults to --ability-repo.")
+    pk_inspect.set_defaults(func=cmd_pack_inspect)
 
     memory = sub.add_parser(
         "memory", help="Layer B the ledger, Layer A the projection (§20–§28)",

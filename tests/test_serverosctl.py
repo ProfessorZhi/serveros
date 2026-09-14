@@ -759,6 +759,389 @@ def test_ability_without_a_daemon_says_so_rather_than_listing_nothing(
 
 
 # ---------------------------------------------------------------------------
+# §4 §6 §11 · ability tree / ability inspect / pack inspect
+#
+# The three faces §F names and the tree §4 asks for. Two of them are daemon
+# verbs and are driven through the real socket below; `pack inspect` reads a
+# catalogue off the filesystem and is driven through the real parser, because
+# the decision it encodes — WHICH catalogue — is the whole command.
+#
+# The payloads are copies of what the daemon answers with, trimmed to the
+# fields the renderers read. Copies rather than live calls for the reason the
+# §21 section gives above: on a node with no projection the live answers are
+# empty in every field, and an empty answer agrees with every reader.
+# ---------------------------------------------------------------------------
+
+
+def _tree_reply(**overrides):
+    payload = {
+        "authority": "ability-management",
+        "this_is": "a local observed projection, not the authority",
+        "registry_status": "FRESH",
+        "generated_at": "2026-09-14T00:00:00+00:00",
+        "age_seconds": 12.0,
+        "stale_after_seconds": 86400,
+        "source_revision": "cb581b9",
+        "stale": False,
+        "source": "/state/serveros/abilities/effective.json",
+        "schema": "serveros/ability-tree.v1",
+        "basis": "domain.primary",
+        "nodes": ["serveros", "serveros.operations",
+                  "serveros.operations.test", "serveros.operations.workspace"],
+        "placements": {"test-management": "serveros.operations.test",
+                       "workspace-management": "serveros.operations.workspace"},
+        "unplaced": ["litellm-image-build"],
+        "cross_refs": {"workspace-management": ["work"]},
+        "ability_count": 3,
+        "classified_count": 2,
+        "unplaced_count": 1,
+        "note": "derived from `domain.primary` alone",
+    }
+    payload.update(overrides)
+    return {"ok": True, "method": "ability.tree", "result": payload}
+
+
+def test_ability_tree_asks_the_daemon_and_renders_the_placements(
+        tmp_path, monkeypatch, capsys):
+    seen = []
+    thread = _fake_daemon(tmp_path, monkeypatch, _tree_reply(), method_seen=seen)
+    code = cli_mod.main(["ability", "tree"])
+    thread.join(timeout=5)
+    assert code == cli_mod.EXIT_OK, capsys.readouterr().err
+    out = capsys.readouterr().out
+    assert seen == ["ability.tree"]
+    assert "serveros" in out
+    # The two counts, and why there are two: `serveros.operations` has nothing
+    # placed AT it and two things placed below it. A single `(0)` beside that
+    # node reads as an empty branch, which is the opposite of the fact.
+    assert "operations  (0 here, 2 below)" in out
+    assert "workspace  (1)" in out
+    # An unplaced ability is counted, not hidden — §4 refuses to invent a
+    # `domain.primary` to make the tree look complete.
+    assert "classified  2 of 3" in out
+    assert "unplaced    1" in out
+
+
+def test_an_absent_projection_is_not_an_empty_tree(tmp_path, monkeypatch, capsys):
+    """Exit 0, and the opposite finding from "the catalogue classifies nothing".
+
+    The daemon answers `nodes: null` when there is no projection and `nodes: []`
+    when there is one and it placed nothing. Both render as a tree with no
+    abilities under it, and they are different facts about two different
+    parties — nobody has asked ability-management, versus ability-management
+    has classified nothing.
+    """
+    absent = _tree_reply(
+        registry_status="NOT_MATERIALIZED", generated_at=None,
+        source=None, source_revision=None, stale=True,
+        nodes=None, placements=None, unplaced=None, cross_refs=None,
+        ability_count=None, classified_count=None, unplaced_count=None,
+        note="no local capability projection has been materialized, so there is "
+             "no catalogue to derive a tree from. Run `serverosctl ability "
+             "refresh` to produce the projection this is derived from.")
+    thread = _fake_daemon(tmp_path, monkeypatch, absent)
+    code = cli_mod.main(["ability", "tree"])
+    thread.join(timeout=5)
+    out = capsys.readouterr().out
+    # §28: an unreachable authority is a supported answer, not a failure to
+    # compute one. Exit 2 here would make every monitor that runs this report
+    # an outage while the node is working exactly as designed.
+    assert code == cli_mod.EXIT_OK
+    assert "no local capability projection" in out
+    assert "ability refresh" in out
+    assert "classified" not in out
+
+
+def test_a_projection_that_places_nothing_is_a_different_answer(
+        tmp_path, monkeypatch, capsys):
+    """The contrast the test above is worth nothing without.
+
+    Same command, same empty-looking rendering: a projection that exists and
+    classified nothing. If the reader treated `None` as `[]` these two answers
+    would be one answer, and a node whose catalogue is genuinely unclassified
+    would be reported as a node nobody has asked about.
+    """
+    thread = _fake_daemon(tmp_path, monkeypatch, _tree_reply(
+        nodes=[], placements={}, unplaced=["a", "b"], cross_refs={},
+        ability_count=2, classified_count=0, unplaced_count=2))
+    code = cli_mod.main(["ability", "tree"])
+    thread.join(timeout=5)
+    out = capsys.readouterr().out
+    assert code == cli_mod.EXIT_OK
+    assert "classified  0 of 2" in out
+    assert "unplaced    2" in out
+    assert "no local capability projection" not in out
+
+
+def _inspect_reply(**overrides):
+    payload = {
+        "authority": "ability-management",
+        "this_is": "a local observed projection, not the authority",
+        "registry_status": "FRESH",
+        "generated_at": "2026-09-14T00:00:00+00:00",
+        "age_seconds": 12.0,
+        "stale": False,
+        "source_revision": "cb581b9",
+        "name": "workspace-management",
+        "installed": True,
+        "ability": {"name": "workspace-management",
+                    "id": "ProfessorZhi/ability-management",
+                    "type": "skill", "path": "skills/workspace-management",
+                    "domain": {"primary": "serveros.operations.workspace"},
+                    "taxonomy_refs": ["work"]},
+        "tree": {"placement": "serveros.operations.workspace",
+                 "cross_refs": ["work"], "unplaced": []},
+        "source": "/state/serveros/abilities/effective.json",
+        "resolution": "not attempted",
+        "resolved_by": "serverosctl ability resolve",
+        "operations_declared": None,
+        "operations_declared_by": "serverosctl ability resolve --ability <id>#<verb>",
+        "note": "…",
+    }
+    payload.update(overrides)
+    return {"ok": True, "method": "ability.inspect", "result": payload}
+
+
+def test_ability_inspect_reads_the_daemons_nested_shape(tmp_path, monkeypatch, capsys):
+    """The regression test for the wrong reader this command was written with.
+
+    The first draft assumed a flat payload — `payload["tier"]`, a domain at the
+    top level — and against the real daemon printed three lines and exited 0,
+    which reads as an ability with no classification rather than as a reader
+    looking in the wrong place. The row is `ability`; the placement is
+    `tree.placement`. `cmd_ability_status` carries a comment about the same
+    mistake, which is how it was available to be repeated.
+    """
+    seen = []
+    thread = _fake_daemon(tmp_path, monkeypatch, _inspect_reply(), method_seen=seen)
+    code = cli_mod.main(["ability", "inspect", "workspace-management"])
+    thread.join(timeout=5)
+    assert code == cli_mod.EXIT_OK, capsys.readouterr().err
+    out = capsys.readouterr().out
+    assert seen == ["ability.inspect"]
+    assert "ProfessorZhi/ability-management" in out
+    # From `ability.domain.primary`, not from the row's top level.
+    assert "domain.primary      serveros.operations.workspace" in out
+    # From `tree.placement`.
+    assert "tree_node           serveros.operations.workspace" in out
+    assert "taxonomy_refs       work" in out
+    assert "operations          None" in out
+
+
+def test_ability_inspect_never_reports_a_resolution(tmp_path, monkeypatch, capsys):
+    """The two questions that print the same three columns.
+
+    "This ability is in the local projection" is a claim about a file on this
+    node. "This device can execute it" is the intersection of that projection
+    with the providers this device actually has, and it is `ability resolve`'s
+    answer. A surface that answered the second from the first would answer it
+    with a union — the resolver exists because the two sets are not one.
+    """
+    thread = _fake_daemon(tmp_path, monkeypatch, _inspect_reply())
+    code = cli_mod.main(["ability", "inspect", "workspace-management"])
+    thread.join(timeout=5)
+    out = capsys.readouterr().out
+    assert code == cli_mod.EXIT_OK
+    assert "resolution          not attempted" in out
+    assert "serverosctl ability resolve" in out
+    for word in ("SUPPORTED", "READY_TO_RUN", "CAN_RUN"):
+        assert word not in out, "inspect must not answer the resolver's question"
+
+
+def test_ability_inspect_on_an_ability_the_projection_lacks_is_a_fault(
+        tmp_path, monkeypatch, capsys):
+    """Exit 1, not 2: the node answered, and what it answered is "not here".
+
+    Exit 2 means "could not look", and collapsing the two is how a monitor
+    reports an outage during its own failures.
+    """
+    reply = _inspect_reply(
+        name="document-stewardship", installed=None, ability=None, tree=None,
+        note="no local capability projection has been materialized …")
+    thread = _fake_daemon(tmp_path, monkeypatch, reply)
+    code = cli_mod.main(["ability", "inspect", "document-stewardship"])
+    thread.join(timeout=5)
+    assert code == cli_mod.EXIT_FAULT
+    assert "installed   None" in capsys.readouterr().out
+
+
+# `pack inspect` reads its catalogue from the filesystem rather than the
+# socket, so these run the real parser and the real `abilities/packs.py`. The
+# kernel is not stubbed: the property under test is that this command prints
+# the verdict the kernel produced, and a stubbed kernel would assert that it
+# prints the verdict the test produced.
+
+PACK_DECLARATIONS = """
+packs:
+  - id: "pack:one"
+    name: "One"
+    purpose: "to exist"
+    authority:
+      repo: "ProfessorZhi/ability-management"
+      revision: "aaa1111aaa1111aaa1111aaa1111aaa1111aaa1"
+    members:
+      - {ability: "ability:work-management", role: required}
+      - {ability: "ability:test-management", role: required}
+      - {ability: "ability:not-in-the-catalogue", role: optional}
+  - id: "pack:two"
+    name: "Two"
+    purpose: "to exist as well"
+    authority:
+      repo: "ProfessorZhi/ability-management"
+      revision: "aaa1111aaa1111aaa1111aaa1111aaa1111aaa1"
+    members:
+      - {ability: "ability:work-management", role: required}
+"""
+
+CATALOGUE_REV = "bbb2222bbb2222bbb2222bbb2222bbb2222bbb2"
+
+
+def _pack_inputs(tmp_path):
+    declarations = tmp_path / "ability-packs.yaml"
+    declarations.write_text(PACK_DECLARATIONS)
+    catalogue = tmp_path / "catalogue.txt"
+    # `#` is a comment, because a name list a person maintains needs one.
+    catalogue.write_text("# the catalogue\nwork-management\ntest-management\n")
+    return declarations, catalogue
+
+
+def test_pack_inspect_refuses_to_resolve_against_the_local_projection(
+        tmp_path, capsys):
+    """The refusal is the finding, and it exists because the opposite shipped.
+
+    The first version of this command defaulted the catalogue to the abilities
+    the daemon reports over IPC. It ran, and printed `UNAVAILABLE 0/5 resolved`
+    for all five packs — because a pack's closure is a statement about the
+    whole canonical catalogue (55 names) and the node's projection is a
+    device-filtered subset of it (25 on this node). The verdict was about one
+    thing and computed from another, with nothing in the output to say so.
+
+    So there is no default. Omitting both ways of naming a catalogue is a
+    refusal, not a fallback, and nothing at all is printed on stdout.
+    """
+    declarations, _ = _pack_inputs(tmp_path)
+    code = cli_mod.main(["pack", "inspect", "--declarations", str(declarations)])
+    captured = capsys.readouterr()
+    assert code == cli_mod.EXIT_FAULT
+    assert captured.out == "", "a refusal must not print a verdict-shaped table"
+    assert "local projection" in captured.err
+    assert "--ability-repo" in captured.err
+
+
+def test_pack_inspect_prints_the_kernels_verdict_unchanged(tmp_path, capsys):
+    declarations, catalogue = _pack_inputs(tmp_path)
+    argv = ["pack", "inspect", "--declarations", str(declarations),
+            "--catalogue", str(catalogue),
+            "--catalogue-revision", CATALOGUE_REV]
+    code = cli_mod.main(argv)
+    out = capsys.readouterr().out
+    assert code == cli_mod.EXIT_OK
+    assert "2 abilities" in out
+    # Three members, two required and both present, one optional and absent:
+    # CLOSED with an unresolved optional named rather than dropped.
+    assert "pack:one" in out and "CLOSED" in out and "2/3 resolved" in out
+    assert "- optional, unresolved: not-in-the-catalogue" in out
+    assert "pack:two" in out
+
+    # The control: the same contract over a catalogue that is missing a
+    # REQUIRED member. Without this, a renderer that printed "CLOSED" for
+    # everything would satisfy the assertions above.
+    thin = tmp_path / "thin.txt"
+    thin.write_text("work-management\n")
+    code = cli_mod.main(["pack", "inspect", "--declarations", str(declarations),
+                         "--catalogue", str(thin),
+                         "--catalogue-revision", CATALOGUE_REV])
+    out = capsys.readouterr().out
+    assert code == cli_mod.EXIT_OK
+    assert "PARTIAL" in out and "1/3 resolved" in out
+    assert "! required, unresolved: test-management" in out
+
+
+def test_pack_inspect_reports_the_pin_as_a_question_of_its_own(tmp_path, capsys):
+    """A correct closure about the wrong catalogue reads like a correct one.
+
+    That is PIN LAG, and the only thing that finds it is a verdict which
+    reports the pin separately from the members. Here the members all resolve
+    and the pin is stale, so the pack is CLOSED and the pin is NOT all match —
+    and the reason has to be readable, because "PIN_MISMATCH" beside a closed
+    pack is exactly the line a reader skips.
+    """
+    declarations, catalogue = _pack_inputs(tmp_path)
+    code = cli_mod.main(["pack", "inspect", "--declarations", str(declarations),
+                         "--catalogue", str(catalogue),
+                         "--catalogue-revision", CATALOGUE_REV])
+    out = capsys.readouterr().out
+    assert code == cli_mod.EXIT_OK
+    assert "pins        NOT all match" in out
+    assert "pin pack:one: PIN_MISMATCH" in out
+    assert "revalidate and repin" in out
+
+    # And the other direction, so the line above is not a constant.
+    code = cli_mod.main(["pack", "inspect", "--declarations", str(declarations),
+                         "--catalogue", str(catalogue),
+                         "--catalogue-revision",
+                         "aaa1111aaa1111aaa1111aaa1111aaa1111aaa1"])
+    out = capsys.readouterr().out
+    assert code == cli_mod.EXIT_OK
+    assert "pins        all match" in out
+
+
+def test_pack_inspect_refuses_a_name_that_matches_no_declared_pack(
+        tmp_path, capsys):
+    """A filter that silently widens is a filter nobody can check with."""
+    declarations, catalogue = _pack_inputs(tmp_path)
+    code = cli_mod.main(["pack", "inspect", "pack:nine",
+                         "--declarations", str(declarations),
+                         "--catalogue", str(catalogue),
+                         "--catalogue-revision", CATALOGUE_REV])
+    captured = capsys.readouterr()
+    assert code == cli_mod.EXIT_FAULT
+    assert captured.out == ""
+    assert "declares no pack" in captured.err
+
+    # The bare id is accepted, because the `pack:` prefix is a spelling and
+    # not a second command.
+    code = cli_mod.main(["pack", "inspect", "one",
+                         "--declarations", str(declarations),
+                         "--catalogue", str(catalogue),
+                         "--catalogue-revision", CATALOGUE_REV])
+    out = capsys.readouterr().out
+    assert code == cli_mod.EXIT_OK
+    assert "pack:one" in out and "pack:two" not in out
+
+
+def test_the_three_discovery_verbs_parse_and_name_a_handler():
+    parser = cli_mod.build_parser()
+    for argv, handler in ((["ability", "tree"], "cmd_ability_tree"),
+                          (["ability", "inspect", "x"], "cmd_ability_inspect"),
+                          (["pack", "inspect", "--declarations", "x"], "cmd_pack_inspect")):
+        args = parser.parse_args(argv)
+        assert args.func is getattr(cli_mod, handler), argv
+
+
+def test_an_absent_projection_reaches_ability_inspect_too(
+        tmp_path, monkeypatch, capsys):
+    """The same three-state distinction, on the second face.
+
+    `ability tree` treats `nodes: null` as an answer; `ability inspect` has to
+    do the same with `ability: null`, or the two faces disagree about what an
+    absent projection is and a caller has to know which one it asked.
+    """
+    reply = _inspect_reply(
+        registry_status="NOT_MATERIALIZED", stale=True, generated_at=None,
+        source_revision=None, name="workspace-management",
+        installed=None, ability=None, tree=None,
+        note="no local capability projection has been materialized …")
+    thread = _fake_daemon(tmp_path, monkeypatch, reply)
+    code = cli_mod.main(["ability", "inspect", "workspace-management"])
+    thread.join(timeout=5)
+    out = capsys.readouterr().out
+    assert code == cli_mod.EXIT_FAULT
+    assert "NOT_MATERIALIZED" in out
+    assert "no local capability projection" in out
+
+
+# ---------------------------------------------------------------------------
 # §21 · the five surfaces this round added to `serverosctl`
 #
 # The bug these tests exist for is specific and was live: the five command
