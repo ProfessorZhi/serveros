@@ -77,6 +77,11 @@ transport = _load("serveros_fleet_transport", _HERE / "transport.py")
 target = _load("serveros_abilities_target", _ABILITIES / "target.py")
 semantics = _load("serveros_runtime_agent_sessions", _RUNTIME / "agent_sessions.py")
 actor = _load("_serveros_context_actor", _ROOT / "context" / "actor.py")
+# §17. The same module object the daemon loads, under the same synthetic name,
+# and that is load-bearing rather than tidy: `ThreadRefused` is caught across
+# this boundary, and two module instances would be two exception classes with
+# one name — a `except` clause that silently stops matching.
+coordination = _load("serveros_runtime_coordination", _RUNTIME / "coordination.py")
 
 SCHEMA = "serveros/agent-control-router.v1"
 CONTRACT = _HERE / "agent-control-contract.yaml"
@@ -114,6 +119,21 @@ def action_optional() -> dict:
     """The rest of what each action accepts. Together with `action_params`,
     this is the closed set — an action may carry nothing else."""
     return {row["control"]: tuple(row.get("optional") or ())
+            for row in contract()["actions"]["values"]}
+
+
+def action_coordination() -> dict:
+    """Which §17 envelope fields each control action may carry.
+
+    Closed per action for the same reason `params` is, and the reason is not
+    tidiness. `bound_item_ref` on a `session.send` would be a caller restating
+    what a thread is for — and since the thread's Item is immutable, a router
+    that accepted the field and ignored it would be accepting a declaration it
+    has no reader for, which is this repository's most expensive recurring
+    shape. A caller that wants a different Item wants a different thread, and
+    the only action that creates one is `session.create`.
+    """
+    return {row["control"]: tuple(row.get("coordination") or ())
             for row in contract()["actions"]["values"]}
 
 
@@ -247,6 +267,10 @@ class AgentControlRequest:
     workspace: str | None = None
     work_item: str | None = None
     session_ref: str | None = None
+    # §17. What the thread this request creates is FOR. Empty on every action
+    # but `session.create`, and `action_coordination` is what says so.
+    session_role: str | None = None
+    bound_item_ref: str | None = None
     correlation_id: str = ""
     idempotency_key: str | None = None
     timeout_s: float = 60.0
@@ -299,6 +323,8 @@ class AgentControlRequest:
             "workspace": self.workspace,
             "work_item": self.work_item,
             "session_ref": self.session_ref,
+            "session_role": self.session_role,
+            "bound_item_ref": self.bound_item_ref,
             "correlation_id": self.correlation_id,
             "idempotency_key": self.idempotency_key,
             "timeout_s": self.timeout_s,
@@ -424,6 +450,26 @@ class AgentControlTransport(abc.ABC):
         """
 
 
+class Unbound:
+    """A bindings handle for a call site that has no store. Permits nothing.
+
+    It exists so that the loopback's requirement can be satisfied without a
+    filesystem, and it is named for what it means rather than for what it is:
+    a site holding one of these will refuse every turn into every thread, and
+    that is the correct behaviour for a process that cannot state what a thread
+    is for. The alternative — a handle that answers "no binding, carry on" —
+    is the permissive default this whole section removes.
+    """
+
+    def get(self, ref):  # noqa: D102 - the protocol, in four lines
+        return {"binding": None, "item": None, "because": "no bindings handle"}
+
+    def put(self, record):  # noqa: D102
+        raise TargetError(
+            "this call site has no bindings store, so a thread it creates "
+            "cannot be recorded. Construct the loopback with a real handle")
+
+
 class LocalLoopbackTransport(AgentControlTransport):
     """The device this process runs on, served without leaving the process.
 
@@ -437,13 +483,108 @@ class LocalLoopbackTransport(AgentControlTransport):
 
     name = "local-loopback"
 
-    def __init__(self, *, device_ref: str, service) -> None:
+    def __init__(self, *, device_ref: str, service, bindings=None) -> None:
         if not str(device_ref).startswith("device:"):
             raise TargetError(
                 f"{device_ref!r} is not a device ref; the loopback answers for one "
                 f"device and a hostname is not the identity Fleet uses")
         self.device_ref = str(device_ref)
         self.service = service
+        # §17. Required, not defaulted, and the absence of a default is the
+        # whole design. A loopback that could be built without a bindings
+        # handle would dispatch every create and every send with no thread
+        # check at all, and it would do so silently — which is how the failure
+        # this section was written for happened in the first place. A caller
+        # that genuinely has no store must pass one that refuses.
+        if bindings is None:
+            raise TargetError(
+                "the loopback requires a bindings handle: without one it would "
+                "dispatch work into threads whose purpose ServerOS never "
+                "recorded, which is the case §17 exists for. Pass "
+                "`bindings=Unbound()` if the call site truly has no store — it "
+                "refuses every thread rather than permitting every one")
+        self.bindings = bindings
+
+    # -- §17: the thread this work is going into ---------------------------
+
+    def _admit(self, request: AgentControlRequest) -> dict:
+        """Whether this call may put work into the thread it is addressed to.
+
+        Consulted for the actions that START a turn — `session.send` and
+        `session.resume`. It is deliberately NOT consulted for `result`,
+        `inspect`, `interrupt` or `stop`: those read or terminate work that is
+        already in the thread, and refusing to let somebody read a closed
+        thread would make the closure itself unreadable — which is the opposite
+        of what a closure record is for.
+
+        One read, not two. The binding and the bound Item's state come back
+        from a single call, because a caller that fetched them separately would
+        be joining two records taken at two moments and the refusal it makes
+        would be about neither of them.
+        """
+        read = self.bindings.get(request.session_ref) or {}
+        try:
+            return coordination.admit_work(
+                binding_record=read.get("binding"),
+                work_item=request.work_item,
+                item_state=(read.get("item") or {}).get("state"),
+                outcome=(read.get("item") or {}).get("outcome"))
+        except coordination.ThreadRefused as exc:
+            # Translated rather than propagated, and translated here rather
+            # than caught in `route()`: `TransportFailure` validates the reason
+            # against the closed vocabulary at construction, so this line is
+            # also the assertion that the four words §17 refuses in are words a
+            # caller has.
+            raise TransportFailure(exc.reason, exc.detail) from exc
+
+    def _bind(self, request: AgentControlRequest) -> dict:
+        """The record of what the thread being created is for.
+
+        Built and validated BEFORE the provider is asked, so that a create
+        which cannot be bound never starts a provider session. The order
+        matters: validating afterwards would leave a live session with no
+        recorded purpose, and every later turn into it would refuse with
+        INVALID_CONTEXT — a working session that reports itself as unbound.
+        """
+        try:
+            return coordination.binding(
+                session_role=request.session_role,
+                bound_item_ref=request.bound_item_ref,
+                work_item=request.work_item,
+                device_ref=request.device_ref)
+        except coordination.ThreadRefused as exc:
+            raise TransportFailure(exc.reason, exc.detail) from exc
+
+    def _record(self, request: AgentControlRequest, answer: dict, *,
+                binding: dict) -> dict:
+        """Store the binding against the ref the PROVIDER minted.
+
+        The ref is not known until create has answered, which is why this is a
+        second step rather than part of `_bind`. The binding itself is a
+        parameter rather than built here, so that the call site shows the order:
+        built first, provider asked second, stored third.
+
+        If storing fails, the thread is unbound and every later turn into it
+        refuses — the failure is loud and on the safe side, and it is worth
+        saying which side that is: an unrecorded binding refuses work, it does
+        not permit it.
+        """
+        ref = (answer or {}).get("session_ref")
+        if not ref:
+            raise TransportFailure(
+                "INVALID_CONTEXT",
+                "the provider answered a create with no session_ref, so the "
+                "binding that says what this thread is for cannot be stored. "
+                "Refusing rather than returning a session whose purpose "
+                "ServerOS would not be able to state")
+        record = dict(binding)
+        record["session_ref"] = str(ref)
+        stored = self.bindings.put(record)
+        answer = dict(answer)
+        answer["binding"] = {"session_role": stored.get("session_role"),
+                             "bound_item_ref": stored.get("bound_item_ref"),
+                             "state": stored.get("state")}
+        return answer
 
     def reachable(self, device_ref: str) -> dict:
         if device_ref != self.device_ref:
@@ -502,11 +643,21 @@ class LocalLoopbackTransport(AgentControlTransport):
         service = self.service
         p = dict(request.params)
         if request.verb == "session.create":
-            return service.create(
+            # §17. Bound BEFORE the provider is asked, and the order is the
+            # point rather than a detail: `service.create` starts a session, so
+            # a create that validated afterwards would leave a live provider
+            # session with no recorded purpose — and every later turn into it
+            # would refuse with INVALID_CONTEXT, which is a working session
+            # reporting itself as unbound. `_bind` raises before this line is
+            # reached, so a create that cannot be bound starts nothing.
+            record = self._bind(request)
+            answer = service.create(
                 provider_id=p.get("provider_id") or self._provider_hint(resolved),
                 agent_id=p["agent_id"], instruction=p["instruction"],
                 idempotency_key=p["idempotency_key"], workspace=request.workspace)
+            return self._record(request, answer, binding=record)
         if request.verb == "session.send":
+            self._admit(request)
             return service.send(session_ref_value=request.session_ref,
                                 instruction=p["instruction"],
                                 turn_idempotency_key=p["turn_idempotency_key"])
@@ -516,6 +667,7 @@ class LocalLoopbackTransport(AgentControlTransport):
         if request.verb == "session.inspect":
             return service.session_inspect(request.session_ref)
         if request.verb == "session.resume":
+            self._admit(request)
             return service.resume(session_ref_value=request.session_ref)
         if request.verb == "session.interrupt":
             return service.interrupt(session_ref_value=request.session_ref)
@@ -1097,6 +1249,7 @@ def _resume_request(request: AgentControlRequest) -> AgentControlRequest:
         params=dict((request.params or {}).get("target_params") or {}),
         context_ref=request.context_ref, workspace=request.workspace,
         work_item=request.work_item,
+        session_role=request.session_role, bound_item_ref=request.bound_item_ref,
         session_ref=(request.params or {}).get("to_session_ref"),
         correlation_id=request.correlation_id)
 
@@ -1135,7 +1288,14 @@ def request_from_payload(payload: Mapping) -> AgentControlRequest:
     envelope = {"action", "device_ref", "agent_runtime", "params", "context_ref",
                 "approvals", "workspace", "work_item", "session_ref",
                 "correlation_id", "idempotency_key", "timeout_s"}
-    stray = sorted(set(payload) - envelope)
+    # §17's two fields are closed PER ACTION, not globally. On `session.send`
+    # a `bound_item_ref` would be a caller restating what a thread is for, and
+    # the router would have nowhere to put it — a field accepted and ignored is
+    # the declaration-with-no-reader shape this repository keeps finding. So a
+    # caller that names one where the contract does not allow it is refused by
+    # name rather than quietly obeyed.
+    allowed_envelope = envelope | set(action_coordination()[action])
+    stray = sorted(set(payload) - allowed_envelope)
     if stray:
         # The envelope is closed for the same reason `params` is, and this is
         # where a credential posted as a top-level field lands. Silently
@@ -1143,9 +1303,21 @@ def request_from_payload(payload: Mapping) -> AgentControlRequest:
         # credential that is quietly ignored is a credential the caller thinks
         # is being used.
         raise Rejected(
-            f"an Agent Control request does not take {stray}; it takes "
-            f"{sorted(envelope)}. Credentials belong to the provider, not to a "
-            f"routed request")
+            f"{action} does not take {stray}; it takes "
+            f"{sorted(allowed_envelope)}. Credentials belong to the provider, "
+            f"not to a routed request, and §17's role fields belong to the one "
+            f"action that creates the thread")
+    # `session_role` is required on `session.create` and has no default, and
+    # the check is here rather than in the session layer because it is a
+    # property of the REQUEST. A create that did not say what the thread is for
+    # is refused before a provider is asked to start one — the alternative is a
+    # live provider session whose purpose ServerOS would have to guess at.
+    for field_name in action_coordination()[action]:
+        if not payload.get(field_name) and field_name == "session_role":
+            raise Rejected(
+                f"{action} requires {field_name}: a session is created with a "
+                f"stated purpose, and there is no default because a default "
+                f"would be a guess about somebody's intent recorded as a fact")
 
     params = dict(payload.get("params") or {})
     if not isinstance(params, Mapping):
@@ -1183,6 +1355,8 @@ def request_from_payload(payload: Mapping) -> AgentControlRequest:
         context_ref=payload.get("context_ref"), approvals=tuple(approvals),
         workspace=payload.get("workspace"), work_item=payload.get("work_item"),
         session_ref=payload.get("session_ref"),
+        session_role=payload.get("session_role"),
+        bound_item_ref=payload.get("bound_item_ref"),
         correlation_id=str(payload.get("correlation_id") or ""),
         idempotency_key=payload.get("idempotency_key"),
         timeout_s=float(payload.get("timeout_s") or 60.0),

@@ -16,6 +16,7 @@ memory/record.py       validate() one record; audit() the whole ledger
 memory/projection.py   build() · manifest_for() · staleness()
 memory/handoff.py      checkpoint() · handoff() · pending() · answers()
 memory/layering.py     the caller-side filter for Layer C hits
+memory/scope.py        the recall firewall — who may read a record (§18)
 serverosctl memory     audit · project · status · subject
 ```
 
@@ -24,10 +25,11 @@ contract with no reader is not a harmless placeholder — it is read by the next
 author, who believes it. That pathology has its own record in the ledger:
 `mem:a-declaration-with-no-reader-never-fails`.
 
-**This list is the enforcement, and it is not the whole document.** Three rules
+**This list is the enforcement, and it is not the whole document.** Two rules
 stated here are *not* in it, and the sections that state them say so where they
-are stated rather than only here: the retrieval firewall, the write pipeline,
-and the `claim` kind. Reading a rule in this document does not mean a program
+are stated rather than only here: the write pipeline, and the `claim` kind. The
+recall firewall used to be the third and moved into the list in v1.2, when
+§18 gave it a module. Reading a rule in this document does not mean a program
 checks it; reading it in the list above does.
 
 ## Three layers, one authority
@@ -330,22 +332,27 @@ dropped: a bundle that returns matches and no misses cannot distinguish "nothing
 is recorded about this" from "the search was wrong", which is invariant 11
 applied to retrieval.
 
-### The firewall, and why it is the real gap
+### The firewall
 
-This is the important one, and it is not a missing convenience.
+This was the important one, and it was not a missing convenience. It is built
+now — §18, `memory/scope.py` — and what it replaced is worth keeping, because
+the shape of the gap is the argument for the shape of the fix.
 
 ```text
-today   current_value() and heads() accept any subject string.
-        They will answer a question about ANY Item in the ledger.
-        `firewall` and `bound_item` have zero hits in the tree.
+then    current_value() and heads() accepted any subject string.
+        They would answer a question about ANY Item in the ledger.
+        `firewall` and `bound_item` had zero hits in the tree.
+
+now     both take a REQUIRED keyword-only `reader` with no default, so the
+        omission is a TypeError at the call site rather than an admitted read.
 ```
 
-There is no boundary stopping an execution thread working on one Item from
-recalling another Item's memory. The only thing in the way is prose —
+There was no boundary stopping an execution thread working on one Item from
+recalling another Item's memory. The only thing in the way was prose —
 `context/disclosure-contract.yaml:184` says *"Memory is queried, never
 preloaded"* and the contract declares `forbidden_at_l0` — and **prose is not a
-gate**. Nothing fails when it is violated, which is the definition of the defect
-this whole document keeps finding.
+gate**. Nothing failed when it was violated, which is the definition of the
+defect this whole document keeps finding.
 
 The failure case is not hypothetical and it is not small. A production incident
 on one workstream produced findings that reached an unrelated workstream's
@@ -354,19 +361,68 @@ leaves no trace: the ledger records what was **written**, never what was
 **read**. An unlogged read across a boundary is invisible to `audit()` by
 construction.
 
-The intended rule is a single sentence:
+The rule is a single sentence:
 
 > **Cross-Item recall is refused by default. A fact that should be visible to
 > more than one Item must be promoted to a project-level object first — the
 > promotion is the consent, and it is recorded.**
 
-Enforcing it needs the thing that is missing everywhere else in this fabric: a
-**bound Item on the read path**, carried by the caller and checked by the
-reader, so that "which Item is asking" is a parameter rather than an assumption.
-That is what `memory/handoff.py` already does correctly for its own narrow case
-— `pending(records, device_ref)` takes the addressee and answers only for it.
-The inbox is the one place in this fabric where the caller's identity is an
-argument, and it is the precedent to generalize rather than a special case.
+Enforcing it needed the thing that was missing everywhere else in this fabric:
+a **bound Item on the read path**, carried by the caller and checked by the
+reader, so that "which Item is asking" is a parameter rather than an
+assumption. That is what `memory/handoff.py` already did correctly for its own
+narrow case — `pending(records, device_ref)` takes the addressee and answers
+only for it. The inbox was the one place in this fabric where the caller's
+identity is an argument, and it became the precedent rather than a special
+case.
+
+#### What the rule turned out to need
+
+Three scopes, and the second sentence of the rule is why there is no fourth
+object: *"the promotion is the consent, and it is **recorded**"*. So the
+consent is a field on the record.
+
+```text
+scope: item      the default. Recallable from a thread bound to this
+                 subject's own Item, and nowhere else.
+scope: project   promoted. Recallable from any Item of the same project.
+scope: user      promoted further. Recallable from any Item on the node.
+```
+
+A record is promoted by saying so, beside `by` and `at` and `revision` like
+every other authored claim — which makes a promotion a reviewed line in a diff
+rather than a side effect of a `promote()` call that wrote a second copy of the
+fact somewhere else. **There is no permission store for `user`**, deliberately:
+the permission *is* the promotion, with a name in `by`, and a second store
+would be a second authority with no producer and would put the answer to "may
+this be recalled" in a file no reviewer of the fact will ever open.
+
+The three refusals are three words because the repairs are three actions:
+
+```text
+CROSS_ITEM_RECALL    the fact belongs to another Item and was never promoted.
+                     Repair: bind a thread there, or promote the fact.
+UNBOUND_READER       the reader names no Item — a coordinator (§17), or a
+                     session from before §17. Repair: bind the thread.
+UNPROMOTED_SUBJECT   the subject is not on the Item axis at all (a `device:`
+                     fact) and was never promoted. Repair: promote it, or
+                     address it to a device with a handoff — which is a
+                     stronger claim than a scope, because it names its
+                     recipient.
+```
+
+A refusal is **raised**, never returned as an empty answer. An empty list is a
+legal answer — nothing is recorded about this subject — and a refusal arriving
+in that shape tells a caller the ledger is empty about an Item it is not
+allowed to see. The two call for opposite responses, so they cannot share a
+representation. This is the one way in which this firewall is stricter than the
+prose that specified it, and the prose was satisfiable by `if False: pass`.
+
+Reads are still not journaled — the ledger records what was written, and
+nothing here writes a read into it. What a read does now is **return a
+reading**: subject, reader, admitted, refused, reason. That is the trace §18
+has, and the honest statement of its limit is that it reaches the reader and
+not an auditor: `audit()` still cannot see a read that happened yesterday.
 
 ### Query, never preload
 

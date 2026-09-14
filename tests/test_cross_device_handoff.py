@@ -63,6 +63,7 @@ def _load(name: str, path: Path):
 
 record = _load("serveros_memory_record", MEMORY / "record.py")
 handoff = _load("serveros_memory_handoff", MEMORY / "handoff.py")
+scope = _load("serveros_memory_scope", MEMORY / "scope.py")
 
 
 def fixture_records() -> list[dict]:
@@ -183,7 +184,8 @@ class RoundTripTests(unittest.TestCase):
         about the subject — which here is the answer, written by the receiving
         device. A receiving device that asked it would be handed back its own
         work and would never see the request."""
-        newest = record.current_value(self.records, SUBJECT)
+        newest = record.current_value(self.records, SUBJECT,
+                                      reader=scope.OPERATOR_READING)
         self.assertEqual(newest["id"], "mem:fixture-work-fj-result-1")
         inbox = handoff.pending(self.records, WORK_FJ, at="2026-09-13T02:00:00Z")
         self.assertEqual([h["id"] for h in inbox["open"]],

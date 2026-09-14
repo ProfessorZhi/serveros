@@ -3,7 +3,7 @@
 
     from record import validate, audit, current_value
     python3 record.py --validate ledger/*.yaml
-    python3 record.py --subject project/serveros/SRV-0007 ledger/*.yaml
+    python3 record.py --subject project/serveros/SRV-0007 --as operator ledger/*.yaml
 
 `memory/record-contract.yaml` declares eight kinds, seven required fields, a
 forbidden-content list, and a supersession rule that says a record "is never
@@ -44,10 +44,33 @@ it is enforcing only partly.
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import json
 import re
 import sys
 from pathlib import Path
+
+_HERE = Path(__file__).resolve().parent
+
+
+def _scope_module():
+    """`memory/scope.py`, loaded by path — the idiom `handoff.py` uses for this
+    file, in the one direction this file's load order allows.
+
+    A bare `import scope` would work only when the caller happened to have this
+    directory on `sys.path`, which is to say it would work from the CLI and
+    fail from a test, or the other way round. The synthetic name matches the
+    one every other loader in this tree uses for this file, so the module and
+    the exception classes in it are one object and not two.
+    """
+    name = "serveros_memory_scope"
+    if name in sys.modules:
+        return sys.modules[name]
+    spec = importlib.util.spec_from_file_location(name, _HERE / "scope.py")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[name] = module
+    spec.loader.exec_module(module)
+    return module
 
 SCHEMA = "serveros/memory-record.v1"
 
@@ -59,7 +82,7 @@ KINDS = ("decision", "observation", "revision", "handoff", "finding", "question"
 
 REQUIRED = ("id", "kind", "subject", "at", "by", "source", "revision")
 OPTIONAL = ("body", "supersedes", "related", "device_ref", "to_device_ref",
-            "confidence", "note")
+            "confidence", "note", "scope")
 
 # Required only for some kinds. `confidence` is here rather than in `REQUIRED`
 # because the contract scopes it: "high | medium | low — for observations
@@ -217,6 +240,35 @@ def validate(record: dict) -> dict:
     if confidence is not None and confidence not in CONFIDENCE_VALUES:
         reasons.append(f"confidence {confidence!r} is not one of "
                        f"{', '.join(CONFIDENCE_VALUES)}")
+
+    # §18's promotion, checked here so it is refused on the way IN rather than
+    # discovered on the way out. `scope_of` raises for a value the vocabulary
+    # does not have; the default for an ABSENT field is `item`, stated once in
+    # `scope.py` rather than restated as a validator branch that could drift
+    # from the one the read path uses — which is why the module is loaded only
+    # when a scope was actually written.
+    if record.get("scope") is not None:
+        scope_mod = _scope_module()
+        spoken = None
+        try:
+            spoken = scope_mod.scope_of(record)
+        except scope_mod.ScopeRefused as exc:
+            reasons.append(str(exc))
+        # `scope: project` names a project, and the project comes from the
+        # SUBJECT. On a `device:` subject there is none, so the record asks for
+        # a reach wider than any one Item and narrower than `user` while naming
+        # neither — refused here rather than at read time, for the reason
+        # `to_device_ref` is refused on a non-handoff: an authoring error whose
+        # only symptom is somebody else's refusal, later, is one that gets
+        # debugged at the wrong end.
+        if (spoken == scope_mod.PROJECT
+                and scope_mod.item_of(str(record.get("subject") or "")) is None):
+            reasons.append(
+                f"scope: project is set on subject {record.get('subject')!r}, "
+                "which names no project. A project-wide reach is derived from "
+                "`project/<project>/<Item>`; a device-scoped fact that should "
+                "be read everywhere is `scope: user`, which names a reach "
+                "without needing a project")
 
     at = record.get("at")
     if at is not None and canonical_at(at) is None:
@@ -380,7 +432,8 @@ def chain(records: list[dict], record_id: str) -> list[dict]:
     return out
 
 
-def heads(records: list[dict], subject: str, *, at: str | None = None) -> list[dict]:
+def heads(records: list[dict], subject: str, *, reader: dict,
+          at: str | None = None) -> list[dict]:
     """Every record about `subject` that no other record supersedes.
 
     OFTEN MANY, AND THAT IS ORDINARY. Eight records about one work item — four
@@ -400,12 +453,28 @@ def heads(records: list[dict], subject: str, *, at: str | None = None) -> list[d
     `at` bounds the window by the time the facts became true, not the time they
     were written, so a caller replaying a subject as of a moment gets the head
     as of that moment.
+
+    `reader` is REQUIRED and keyword-only, and it is not a formality. §18's
+    firewall decides who may recall what, and a read is the only place that
+    question can be asked — so a read that does not say who is asking is the
+    one read the firewall cannot reach. There is no default for the same reason
+    `session_role` has none: a default would be a guess about somebody's
+    intent, and the guess here is `admit`, because a default of `refuse` would
+    have been discovered by every caller on the first day and quietly replaced
+    with `operator` anyway. `scope.OPERATOR_READING` and `scope.thread(item)`
+    are the two values, and which one a call site writes is a statement about
+    that call site.
+
+    Raises `scope.RecallRefused` when the window is non-empty and `reader` may
+    not have any of it. Not an empty list: that is the answer for a subject
+    with no records, and the two must not be confusable.
     """
     mine = [r for r in records
             if isinstance(r, dict) and r.get("subject") == subject
             and (at is None or _sort_key(r) <= at)]
     if not mine:
         return []
+    mine = _scope_module().require(mine, subject, reader=reader)
     superseded = {r["supersedes"] for r in mine
                   if isinstance(r.get("supersedes"), str)}
     current = [r for r in mine if r.get("id") not in superseded]
@@ -419,7 +488,8 @@ def heads(records: list[dict], subject: str, *, at: str | None = None) -> list[d
     return sorted(mine, key=_sort_key)
 
 
-def current_value(records: list[dict], subject: str, *, at: str | None = None):
+def current_value(records: list[dict], subject: str, *, reader: dict,
+                  at: str | None = None):
     """The current value of a subject: the newest head, or None.
 
     Returns the newest of `heads()` — and when there is more than one, the
@@ -429,9 +499,17 @@ def current_value(records: list[dict], subject: str, *, at: str | None = None):
     would hide the conflict behind the same value as "never recorded".
 
     None for a subject with no records, which is a valid state and not an
-    error — most subjects have no memory.
+    error — most subjects have no memory. `reader` is required for the same
+    reason it is required on `heads`, and it is passed through rather than
+    re-decided here: one read, one decision.
+
+    None is NOT the answer for a subject this reader may not have. That raises
+    `scope.RecallRefused`. A caller that conflated the two would report "this
+    Item has no memory of that" about an Item it is not allowed to remember,
+    which is a true sentence about the firewall and a false one about the
+    ledger.
     """
-    found = heads(records, subject, at=at)
+    found = heads(records, subject, reader=reader, at=at)
     if not found:
         return None
     return sorted(found, key=_sort_key)[-1]
@@ -484,18 +562,40 @@ def main(argv=None) -> int:
                         help="audit the whole ledger and report")
     parser.add_argument("--subject",
                         help="print the current value of one subject")
+    parser.add_argument("--as", dest="reader",
+                        help="who is reading: `operator`, or the Item ref a "
+                             "thread is bound to. Required with --subject")
     parser.add_argument("--chain", help="print the supersession chain of one id")
     args = parser.parse_args(argv)
+
+    if args.subject and not args.reader:
+        parser.error("--subject needs --as. A read that does not say who is "
+                     "asking is the one read §18's firewall cannot reach, and "
+                     "the two answers it guesses between are opposite: "
+                     "`operator` admits, an Item ref is scoped to that Item")
 
     records = load(args.ledger)
 
     if args.chain:
+        # Deliberately not gated. This walks by ID, and an ID is only knowable
+        # from the ledger you are already holding — so the caller is an
+        # operator inspecting a chain, not a thread asking about a subject.
+        # §18 is a rule about subjects and readers; there is no subject here.
         json.dump(chain(records, args.chain), sys.stdout, indent=2)
         sys.stdout.write("\n")
         return 0
 
     if args.subject:
-        value = current_value(records, args.subject)
+        scope_mod = _scope_module()
+        try:
+            reader = scope_mod.parse_reader(args.reader)
+        except scope_mod.ScopeRefused as exc:
+            parser.error(str(exc))
+        try:
+            value = current_value(records, args.subject, reader=reader)
+        except scope_mod.RecallRefused as exc:
+            sys.stderr.write(f"{exc}\n")
+            return 1
         if value is None:
             sys.stderr.write(f"no records for {args.subject}\n")
             return 2

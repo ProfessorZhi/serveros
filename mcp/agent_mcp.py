@@ -82,6 +82,11 @@ router_mod = _load("serveros_fleet_agent_control_router",
 transport_mod = _load("serveros_fleet_transport", _ROOT / "fleet" / "transport.py")
 view_mod = _load("serveros_fleet_view", _ROOT / "fleet" / "view.py")
 target_mod = _load("serveros_abilities_target", _ROOT / "abilities" / "target.py")
+# §17. Same synthetic name as everywhere else — this module is loaded once and
+# the roles enum below is read from it, so a role added to the kernel reaches
+# the tool schema without a second edit that could be forgotten.
+coordination_mod = _load("serveros_runtime_coordination",
+                         _ROOT / "runtime" / "coordination.py")
 
 PROTOCOL_VERSION = node_mcp.PROTOCOL_VERSION
 SERVER_NAME = "serveros-agent-mcp"
@@ -113,6 +118,18 @@ def _schema(properties=None, required=None) -> dict:
 
 
 _STR = {"type": "string"}
+# The enum is read from the kernel rather than retyped. A literal here would be
+# a second copy of a closed vocabulary, and the second copy is the one that
+# falls behind — which on this field means a caller building a thread whose
+# purpose the router then refuses.
+_ROLE = {
+    "type": "string",
+    "enum": list(coordination_mod.ROLES),
+    "description": (
+        "What this conversation is for. `execution` requires bound_item_ref; "
+        "`coordinator` is forbidden one."
+    ),
+}
 _CONTEXT = {
     "type": "string",
     "description": (
@@ -222,13 +239,20 @@ TOOLS: tuple[dict, ...] = (
         "Create a provider session on a named device, after ServerOS "
         "admission. `provider` is NOT a parameter: it comes from the resolved "
         "target, so a caller cannot use a resolution it did not ask for and "
-        "cannot see. Requires context_ref."
+        "cannot see. Requires context_ref.\n\n"
+        "`session_role` is required and has no default. Say what this "
+        "conversation is FOR: `execution` for a thread doing one Item's work, "
+        "which then requires `bound_item_ref`; `coordinator` for a thread that "
+        "crosses Items and is therefore bound to none. The role is frozen at "
+        "creation and cannot be changed — a thread that needs a different Item "
+        "needs a new thread."
      ),
      "inputSchema": _schema(
          _envelope({"agent_id": _STR, "instruction": _STR,
-                    "idempotency_key": _STR}),
+                    "idempotency_key": _STR, "session_role": _ROLE,
+                    "bound_item_ref": _STR}),
          ["device", "runtime", "agent_id", "instruction",
-          "idempotency_key", "context_ref"])},
+          "idempotency_key", "context_ref", "session_role"])},
     {"name": "agent.session.send",
      "description": (
         "Send one follow-up turn to an existing session, after admission. "
@@ -339,6 +363,74 @@ class DaemonContexts(Mapping):
         # are is not something it knows. Returning False would say the store is
         # empty; raising would break a caller that asked a different question.
         return True
+
+
+class DaemonBindings:
+    """§17's thread bindings, read and written through serverosd.
+
+    Same join as `DaemonContexts` and for the same reason: the records live in
+    the daemon's control store, this process holds a socket to it, and copying
+    the store into a dict here would materialise bindings this call is not
+    about. `get` is called once per gated turn for the one ref on the request.
+
+    WHY THIS RAISES INSTEAD OF ANSWERING "NO BINDING"
+    -------------------------------------------------
+    The loopback reads `get(...)` and feeds the answer to `coordination.admit_work`,
+    which refuses with INVALID_CONTEXT when there is no binding. That refusal is
+    correct for a thread nobody recorded. It is exactly the wrong answer for a
+    store that could not be read: it would report "this session was never bound"
+    about a session that is bound, and the repair it names — create a session for
+    the Item you mean — is not the repair for a daemon that is down.
+
+    So an unanswered call raises rather than returning an empty read. The router
+    catches `TransportFailure` around dispatch and turns it into a typed refusal,
+    which keeps the vocabulary closed and keeps the two failures apart. This is
+    the same distinction the daemon's own handlers draw; getting it wrong here
+    would restore, one layer up, the "absent and unreadable look identical"
+    failure that §17 is about.
+
+    `put` is a write, so it has no safe degraded mode at all: a create whose
+    binding could not be stored must fail loudly. An unbound thread refuses every
+    later turn, which is the correct side to be wrong on — see `_record`.
+    """
+
+    # The fields the daemon's own write path reads. Named rather than forwarded
+    # wholesale: `schema`, `state`, `bound_item_ref_frozen` and `recorded_at` are
+    # the daemon's to decide, and a caller that could pass them would be able to
+    # create a thread that arrives already closed or already frozen by somebody
+    # else's clock.
+    FIELDS = ("session_ref", "session_role", "bound_item_ref", "device_ref")
+
+    def __init__(self, daemon) -> None:
+        self._daemon = daemon
+
+    def _call(self, method: str, params: dict) -> dict:
+        try:
+            return self._daemon.call(method, params) or {}
+        except Exception as exc:  # noqa: BLE001 - any failure to reach the daemon
+            raise router_mod.TransportFailure(
+                "NODE_RUNTIME_UNAVAILABLE",
+                f"{method} could not be answered by serverosd: "
+                f"{type(exc).__name__}: {exc}. ServerOS cannot state what this "
+                f"thread is for, and a thread whose purpose cannot be stated "
+                f"admits no work") from exc
+
+    def get(self, ref) -> dict:
+        answer = self._call("agent.binding.resolve", {"session_ref": str(ref)})
+        # Both halves of one read. `admit_work` joins them, and joining two
+        # separately-fetched records would decide about a thread using an Item
+        # state from a different moment than the binding.
+        return {"binding": answer.get("binding"), "item": answer.get("item"),
+                "found": bool(answer.get("found"))}
+
+    def put(self, record) -> dict:
+        answer = self._call("agent.binding.record", {
+            key: record[key] for key in self.FIELDS if record.get(key) is not None})
+        if not answer.get("recorded"):
+            raise router_mod.TransportFailure(
+                str(answer.get("reason") or "INVALID_CONTEXT"),
+                str(answer.get("detail") or "serverosd did not record the binding"))
+        return answer.get("binding") or {}
 
 
 _MISSING = object()
@@ -498,6 +590,16 @@ class AgentControlClient:
             "workspace": arguments.get("workspace"),
             "work_item": arguments.get("work_item"),
         }
+        # §17's envelope fields, and they are added ONLY when the caller supplied
+        # one. The envelope is closed per action, and a key present holding
+        # `None` is present: setting these unconditionally made every `send`,
+        # `resume` and `stop` fail the closure with "does not take
+        # ['bound_item_ref', 'session_role']". The closure lives in
+        # `request_from_payload` and is not repeated here — this is about not
+        # sending a field the caller never wrote, which is a different claim.
+        for field_name in ("session_role", "bound_item_ref"):
+            if arguments.get(field_name) is not None:
+                payload[field_name] = arguments[field_name]
         if arguments.get("timeout_s") is not None:
             payload["timeout_s"] = arguments["timeout_s"]
         declared = set(router_mod.action_params().get(name, ())) | set(
@@ -640,7 +742,13 @@ def build(*, daemon=None, providers=None, registry=None, local_device_ref=None):
     daemon = daemon or node_mcp.DaemonClient()
     device_ref = local_device_ref or _authored_device_ref(daemon)
     service = _service(daemon, providers, device_ref)
-    loopback = router_mod.LocalLoopbackTransport(device_ref=device_ref, service=service)
+    loopback = router_mod.LocalLoopbackTransport(
+        device_ref=device_ref, service=service,
+        # §17. The real handle on the real store, so a create over this surface
+        # records what its thread is for in the same place the daemon's own
+        # answers read it from. A loopback given anything weaker would make the
+        # MCP path the one path §17 does not hold on.
+        bindings=DaemonBindings(daemon))
     node = router_mod.NodeControlTransport(connector=None, device_refs=_remote_refs(registry))
     router = router_mod.FleetAgentControlRouter(
         local_device_ref=device_ref, transports=[loopback, node],

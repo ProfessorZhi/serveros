@@ -115,6 +115,11 @@ optional_fields:
                   # for `handoff`; see `required_for_kind` below.
   - confidence    # high | medium | low — for observations only
   - note
+  - scope         # item | project | user — who may RECALL this record. Absent
+                  # means `item`. See the `scope` block below; this is §18's
+                  # promotion, and the absence of any other field here is the
+                  # point — a promotion is not a separate object with its own
+                  # file, it is this record saying who else may read it.
 
 # Required only for some kinds. `confidence` is here because the contract
 # scopes it ("for observations only") and then makes it a refusal in `rules`.
@@ -134,6 +139,88 @@ optional_fields:
 required_for_kind:
   observation: [confidence]
   handoff: [to_device_ref]
+
+# ---------------------------------------------------------------------------
+# §18 · The recall firewall. Who may READ a record, which is a different
+# question from what it says and the one nothing in this product could answer.
+#
+# `docs/memory-fabric.md` has said since §53: "Cross-Item recall is refused by
+# default. A fact that should be visible to more than one Item must be promoted
+# to a project-level object first — the promotion is the consent, and it is
+# recorded." The rule was prose and the mechanism was absent, which is the
+# defect this repository keeps finding; the sentence's own words are what made
+# the fix small, because "it is recorded" means the consent can be a FIELD.
+#
+# So a promotion is not an object, not a verb and not a second file. It is this
+# record, with a wider scope, carrying the same `by` and `at` as every other
+# authored claim — which is what makes it a reviewed line in a diff rather than
+# a side effect of somebody calling `promote()`.
+# ---------------------------------------------------------------------------
+scope:
+  field: scope
+  values: [item, project, user]
+  default: item
+  means:
+    item: >
+      recallable from a thread bound to this subject's own Item, and nowhere
+      else. This is every record that does not say otherwise, including every
+      record written before this block existed — requiring the field would not
+      have made anything safer, it would have made the ledger unreadable until
+      somebody restated what was already true.
+    project: >
+      promoted. Recallable from any Item OF THE SAME PROJECT. The project comes
+      from the subject (`project/<project>/<Item>`), not from the reader, and a
+      reader that names only an Item has its project resolved from the ledger —
+      by finding the projects that Item is recorded under. Exactly one means
+      that one; none or several means the reader is asked to write
+      `project/<project>/<Item>` rather than being guessed at.
+    user: >
+      promoted further. Recallable from any Item on the node. The permission
+      IS the promotion: a record somebody raised to node-wide reach, with their
+      name in `by`, is the record of that permission. There is deliberately no
+      second permission store — a second authority with no producer is the
+      pathology this block exists to end, and it would put the answer to "may
+      this be recalled" in a file no reviewer of the fact will open.
+  not_promotions:
+    - >-
+      making a record easier to find. Scope is reach, and a subject named
+      better is still one subject.
+    - >-
+      a record about a project. `project: litellm` on a decision is what the
+      fact is ABOUT; `scope: project` is who may SEE it. The two are one
+      character apart in a YAML file and opposite in effect.
+  reader_rule: >-
+    a read must state who is asking, and there are exactly two answers. A
+    THREAD is a session with a purpose (§17) and is scoped to the Item it is
+    bound to; an OPERATOR is a person holding the ledger and is admitted to
+    everything, because no program can draw a recall boundary inside one
+    person's own git repository. There is no default, for the reason
+    `session_role` has none: a default would be a guess about whose intent,
+    recorded as a fact — and the guess here is whether a boundary applies at
+    all, which is the one guess that must never be made on a caller's behalf.
+  refuses:
+    CROSS_ITEM_RECALL: the fact belongs to another Item and was never promoted
+    UNBOUND_READER: the reader names no Item, so only promoted facts are open
+    UNPROMOTED_SUBJECT: the subject is not on the Item axis and was never promoted
+  not_refused:
+    - >-
+      a subject with no records. That is an empty ledger about a subject, a
+      legal state, and `None` — which is why a refusal is RAISED and never
+      returned as an empty answer. A refusal that arrives looking like "nothing
+      was ever written here" reports the ledger as empty about an Item the
+      reader is not allowed to see.
+    - >-
+      a subject whose records are MIXED: a promoted one and an Item-scoped one
+      under one subject is ordinary, and the reader gets what it is entitled to
+      while the rest is simply not returned. That is what a scope means.
+  reads_are_not_journaled: >-
+    the ledger records what was WRITTEN, never what was READ — still true, and
+    nothing here writes a read into it. What a read does now is RETURN a
+    reading: subject, reader, admitted, refused, reason. That is the trace §18
+    has, and the honest statement of its limit is that it reaches the reader
+    and not an auditor; `audit()` still cannot see a read that happened
+    yesterday.
+  enforcement: memory/scope.py
 
 forbidden_fields:
   - "any credential, token, cookie, key, or private key"
@@ -250,6 +337,14 @@ enforcement:
     blocks, token prefixes, JWTs, MAC addresses, credential-shaped assignments.
     `audit()` returns a `not_checked` list naming the rest rather than
     reporting a clean ledger it has no basis to report.
+  recall: >
+    `memory/scope.py — require()` is the read side, and it is the one rule in
+    this contract that is not a property of a record. `validate()` sees a
+    record; recall sees a READER, and a reader is not in the ledger — which is
+    the whole reason the rule had no implementation for as long as it did.
+    `heads()` and `current_value()` both take a required `reader` and refuse
+    through it, so there is no read path that skips the firewall by not
+    mentioning it.
 
 rules:
   - "A record names its authority. A fact that lives only in a session's
@@ -271,3 +366,7 @@ rules:
      author to make the claim out loud, which is all a schema can do."
   - "Cross-device sync is a git operation and carries no ServerOS-specific
      merge logic. A conflict is a conflict; it is never auto-resolved."
+  - "A fact that should be visible to more than one Item is promoted first,
+     and the promotion is the consent and it is recorded. Cross-Item recall is
+     refused by default, and the refusal is raised rather than returned as an
+     empty answer."

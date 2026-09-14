@@ -106,6 +106,15 @@ KNOWN_CLI_CROSSINGS = {
         "because": "`serverosctl memory projection` builds the derived view.",
         "disposition": "REDECLARED",
     },
+    "memory/scope.py": {
+        "because": "`serverosctl memory subject` must state who is reading — "
+                   "§18's firewall is a decision about a READER, and the "
+                   "readers that exist are a person at a terminal and a "
+                   "thread. Refusing at the CLI's own door would mean the CLI "
+                   "deciding admissions the kernel owns, which is the second "
+                   "authority this round keeps removing.",
+        "disposition": "REDECLARED",
+    },
 }
 
 # `runtime/daemon.py` is the core process, and this is the only place its name

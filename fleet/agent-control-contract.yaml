@@ -39,10 +39,20 @@ actions:
       params: [agent_id, instruction, idempotency_key]
       optional: []
       derived: [provider_id]
+      coordination: [session_role, bound_item_ref]
       why: >-
         provider_id comes from the resolved target rather than from the caller.
         A create that named its own provider would use a resolution it did not
         ask for and cannot see.
+
+        `coordination` names the §17 envelope fields THIS action may carry, and
+        it is declared per action rather than globally on purpose. A
+        `bound_item_ref` on `session.send` would be a caller restating what a
+        thread is for; the thread's Item is immutable, so there is nowhere for
+        the value to go, and a field accepted and ignored is the
+        declaration-with-no-reader shape this repository keeps finding. Creating
+        a thread is the only action that states its purpose, so it is the only
+        action that may name one.
 
     - control: agent.session.send
       verb: session.send
@@ -106,6 +116,51 @@ actions:
     rather than merely absent so that the refusal says why, and so that a reader
     looking for the shell finds the sentence that says there is not one instead
     of concluding it was overlooked.
+
+# ---------------------------------------------------------------------------
+# §17 · What a thread is for, and which verbs may put work into one.
+#
+# The rules are `runtime/coordination.py`'s and are not restated here. What is
+# stated here is where the loopback consults them, because "which verbs are
+# gated" is a decision about this router and not about the kernel:
+#
+#   session.create   BINDS. `session_role` is required and has no default;
+#                    `bound_item_ref` is required for `execution` and forbidden
+#                    for `coordinator`. Validated before the provider is asked,
+#                    so a create that cannot be bound never starts a session.
+#   session.send     ADMITS. The thread's binding and its Item's state are read
+#                    and `admit_work` decides.
+#   session.resume   ADMITS. A resume starts a turn in the thread, so it is
+#                    gated with `send`. The gate reads the THREAD's state, not
+#                    the provider session's: a thread is closed by a person, and
+#                    a session that a provider considers stopped is a different
+#                    fact.
+#   result, inspect,
+#   interrupt, stop  NOT GATED. These read work that is already in the thread or
+#                    terminate it. Refusing `inspect` on a closed thread would
+#                    make the closure record itself unreadable, which is the
+#                    opposite of what recording it is for.
+#
+# A refusal here is a `TransportFailure` in the vocabulary owned by
+# `abilities/target-contract.yaml`, which now carries the three words §17 added.
+# ---------------------------------------------------------------------------
+coordination:
+  module: runtime/coordination.py
+  kernel: coordination.py#binding, item_axis, admit_work
+  refuses: [THREAD_ITEM_MISMATCH, READ_ONLY_CLOSURE, THREAD_CLOSED_FOR_NEW_WORK]
+  unbound_refuses: INVALID_CONTEXT
+  storage: runtime/agent_control_store.py#put_binding, get_binding, close_binding
+  store_rule: >-
+    The binding lives in the Agent Control store, beside contexts and
+    approvals, rather than in a second store. It is the same kind of thing —
+    durable control-plane state keyed by a ref and never by an actor — and a
+    second store would be a second thing to keep consistent after a restart.
+  immutability: >-
+    `put_binding` is write-once on `session_ref`. There is no method that can
+    change `bound_item_ref` after the write, a retried create re-reports an
+    equal record and is idempotent, and a different one is refused. Making this
+    structural rather than a comment is the point: a rule a method can reach
+    around is a rule that a caller who wants it will reach around.
 
 # ---------------------------------------------------------------------------
 # Transports. Only one is deployable in this release.

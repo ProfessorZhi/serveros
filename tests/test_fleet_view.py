@@ -18,6 +18,8 @@ import sys
 import unittest
 from pathlib import Path
 
+import threads
+
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parent
 
@@ -89,7 +91,8 @@ def deployed(*, service=None, sessions=None):
     """
     node = router_mod.NodeControlTransport(connector=None, device_refs=(FJ, DELL))
     loopback = router_mod.LocalLoopbackTransport(
-        device_ref=LOCAL, service=service or LocalService())
+        device_ref=LOCAL, service=service or LocalService(),
+        bindings=threads.MemoryBindings(unknown=threads.ASSUME_BOUND))
     routing = router_mod.FleetAgentControlRouter(
         local_device_ref=LOCAL, transports=[loopback, node])
     return view_mod.FleetView(routing=routing, sessions=sessions)

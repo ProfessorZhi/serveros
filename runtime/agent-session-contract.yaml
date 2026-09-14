@@ -193,6 +193,49 @@ session_fields:
     - status_reason
     - provider_evidence
 
+# ---------------------------------------------------------------------------
+# §17 · What a session is FOR.
+#
+# Deliberately NOT a member of `session_fields.optional` above, and the reason
+# is not tidiness. `session_ref` and `status` and `last_activity` are facts
+# about a session that a provider reports; `session_role` is a statement by
+# ServerOS about what the session is for, made once at create, and the two are
+# read by different rules. Putting it in the field list would make it something
+# a session record carries and a projection could fill in later — and a purpose
+# that can be filled in later is not a boundary.
+#
+# It is also NOT `projection.serveros_role` (see below), which says what
+# ServerOS is relative to a PROVIDER — normalization, caching, persistence.
+# `session_role` says what the thread is relative to the WORK. Two different
+# subjects, two different words, and the near-collision is why both are stated
+# here rather than left to a reader to disambiguate.
+# ---------------------------------------------------------------------------
+coordination:
+  module: runtime/coordination.py
+  storage: runtime/agent_control_store.py#bindings
+  roles: [coordinator, execution]
+  rules:
+    - "session_role is required at create and has no default. A default would
+      be a guess about somebody's intent recorded as a fact."
+    - "execution requires bound_item_ref. It is frozen at create and immutable:
+      put_binding is write-once on session_ref and there is no method that can
+      change it. A thread that could be re-pointed at another Item would make
+      every boundary drawn around it a boundary of convenience."
+    - "coordinator may not be bound to an Item. A coordinator crosses Items by
+      definition; a coordinator with one Item is an execution that has not
+      said so, and the two behave differently under every rule that reads it."
+  refuses:
+    THREAD_ITEM_MISMATCH: the call names an Item other than the thread's own
+    READ_ONLY_CLOSURE: the thread's Item is DELIVERED or CLOSED
+    THREAD_CLOSED_FOR_NEW_WORK: the thread was closed for new work
+    INVALID_CONTEXT: no binding was ever recorded for this session
+  item_states_that_close_a_thread: [DELIVERED, CLOSED]
+  item_states_that_do_not: >-
+    Everything else, and `NEEDS_HUMAN` most of all. An Item parked on a person
+    is live work waiting on a person; reading "not ACTIVE" as "finished" would
+    close the threads of exactly the Items that are still owed an answer.
+  vocabulary_owner: abilities/target-contract.yaml#reasons
+
 # The evidence record. `status_reason` is a sentence; this is not. Keeping the
 # two distinguishable is the point: a reader has to be able to tell what was
 # observed from what somebody concluded about it.

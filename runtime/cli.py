@@ -1689,6 +1689,14 @@ def _memory_modules():
     )
 
 
+def _scope_module():
+    """§18's kernel. The same synthetic name `record.py` and `projection.py`
+    load it under, so the `RecallRefused` this file catches is the one they
+    raise rather than a second class with the same name."""
+    return _load_module_from(REPO_ROOT / "memory" / "scope.py",
+                             "serveros_memory_scope")
+
+
 def _ledger_revision(directory: Path) -> dict:
     """What revision the ledger ON DISK is at, and how that was decided.
 
@@ -1847,13 +1855,40 @@ def cmd_memory_status(args) -> int:
 
 
 def cmd_memory_subject(args) -> int:
-    """What this work currently remembers about one subject."""
+    """What this work currently remembers about one subject.
+
+    `--as` is required by the parser, and the two readings it accepts are
+    opposite rather than two flavours of the same thing: `operator` admits
+    everything, an Item ref admits that Item. There is no default because a
+    default is a guess about who is asking, and here it is a guess about
+    whether a boundary applies.
+    """
     record_mod, _ = _memory_modules()
+    scope_mod = _scope_module()
     directory = _ledger_dir(args)
     files = sorted(p for p in directory.glob("*")
                    if p.is_file() and p.suffix in (".yaml", ".yml", ".json"))
     records = record_mod.load(files) if files else []
-    value = record_mod.current_value(records, args.subject)
+    try:
+        reader = scope_mod.parse_reader(args.reader)
+    except scope_mod.ScopeRefused as exc:
+        sys.stderr.write(f"{exc}\n")
+        return EXIT_COULD_NOT_ANSWER
+    try:
+        value = record_mod.current_value(records, args.subject, reader=reader)
+    except scope_mod.RecallRefused as exc:
+        # §18. Reported as a refusal and not as an absence, because the wrong
+        # answer here is the specific one that reads as "this Item has no
+        # memory of that" about an Item the reader is not allowed to remember.
+        emit({"subject": exc.subject, "reader": exc.reader, "recalled": False,
+              "reason": exc.reason, "refused": exc.refusals},
+             as_json=args.json,
+             lines=[f"subject     {exc.subject}",
+                    f"reader      {scope_mod.describe(exc.reader)}",
+                    f"            REFUSED  {exc.reason}",
+                    f"            {exc.why}",
+                    f"            refused {len(exc.refusals)} record(s)"])
+        return EXIT_FAULT
     if value is None:
         emit({"subject": args.subject, "current": None}, as_json=args.json,
              lines=[f"subject     {args.subject}",
@@ -1861,8 +1896,9 @@ def cmd_memory_subject(args) -> int:
                     "have no memory."])
         return EXIT_COULD_NOT_ANSWER
     lines = [f"subject     {args.subject}",
+             f"reader      {scope_mod.describe(reader)}",
              f"current     {value.get('id')}  {value.get('kind')}  {value.get('at')}"]
-    for field in ("by", "source", "revision"):
+    for field in ("by", "source", "revision", "scope"):
         if value.get(field):
             lines.append(f"{field:<12}{value[field]}")
     chain = record_mod.chain(records, value["id"])
@@ -1874,14 +1910,151 @@ def cmd_memory_subject(args) -> int:
     elif value.get("note"):
         lines.append("")
         lines.append(str(value["note"]).strip())
-    emit({"subject": args.subject, "current": value, "chain": chain},
-         as_json=args.json, lines=lines)
+    # The reader is echoed on the answer as well as the refusal. A read that
+    # says who made it is the trace §18 has, since the ledger records what was
+    # written and never what was read.
+    emit({"subject": args.subject, "reader": reader, "current": value,
+          "chain": chain}, as_json=args.json, lines=lines)
     return EXIT_OK
 
 
 def _utc_now() -> str:
     from datetime import datetime, timezone
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+# ---------------------------------------------------------------------------
+# §17 — what a thread is for.
+#
+# These four are the only commands in this file that WRITE control-plane state
+# through the daemon, and the reason they are here rather than behind an MCP
+# tool is worth stating: the MCP surface is for a caller that is creating a
+# session, and it is the wrong shape for the two things this group exists for.
+#
+#   1. MIGRATION. Every session that existed before §17 has no binding, and
+#      under §17 an unbound thread admits nothing. Somebody has to be able to
+#      say what those threads are for — or to close them — from a terminal,
+#      without a caller having to pretend to be an Agent Session.
+#
+#   2. THE COORDINATOR THREAD. A coordinator is a legitimate role and the role
+#      that crosses Items, and a person starting one is not an Agent Session.
+#
+# The rules are not restated here. `coordination.py` owns them and the daemon
+# applies them to the write, so this file cannot create a binding the MCP path
+# would have refused.
+# ---------------------------------------------------------------------------
+
+
+def _coordination_answer(method: str, params: dict) -> tuple[dict, list[str], int]:
+    """One daemon call, and the exit code its answer earns.
+
+    A refusal is an answer and exits 0 when the daemon answered it: "this
+    session is bound to another Item" is a fact about the world, reported in a
+    word a caller can switch on. Exit 2 is for the daemon not answering at all,
+    which is a missing measurement rather than a finding.
+    """
+    try:
+        return ask_daemon(method, params), [], EXIT_OK
+    except DaemonUnavailable as exc:
+        sys.stderr.write(f"serverosctl: {exc}\n")
+        return {}, [], EXIT_COULD_NOT_ANSWER
+
+
+def cmd_coordination_resolve(args) -> int:
+    """What this thread is for, and whether its Item still admits work."""
+    payload, _, code = _coordination_answer(
+        "agent.binding.resolve", {"session_ref": args.session_ref})
+    if code != EXIT_OK:
+        return code
+    if not payload.get("found"):
+        emit(payload, as_json=args.json, lines=[
+            f"session     {payload.get('session_ref')}",
+            "            unbound. Under §17 an unbound thread admits nothing: "
+            "a send into it is refused with INVALID_CONTEXT. Bind it with "
+            "`serverosctl coordination bind`, or close it."])
+        return EXIT_OK
+    binding = payload.get("binding") or {}
+    item = payload.get("item") or {}
+    lines = [
+        f"session     {binding.get('session_ref')}",
+        f"role        {binding.get('session_role')}",
+        f"item        {binding.get('bound_item_ref') or 'none (coordinator)'}",
+        f"thread      {binding.get('state')}",
+    ]
+    if item:
+        lines.append(
+            f"item state  {item.get('state')}"
+            + (f" / {item.get('outcome')}" if item.get("outcome") else "")
+            + f"   axis={payload.get('item_axis')}")
+    lines.append(f"read from   {(payload.get('provenance') or {}).get('state_db')}")
+    emit(payload, as_json=args.json, lines=lines)
+    return EXIT_OK
+
+
+def cmd_coordination_bind(args) -> int:
+    """Record what a thread is for. The write, and the migration path.
+
+    Called with a role and (for an execution) an Item. A session that already
+    has a DIFFERENT binding is refused by the store rather than rebound: there
+    is no flag here to change which Item a thread is for, and its absence is
+    the immutability rather than a restriction on top of it.
+    """
+    params = {"session_ref": args.session_ref, "session_role": args.role}
+    if args.item:
+        params["bound_item_ref"] = args.item
+    if args.work_item:
+        params["work_item"] = args.work_item
+    payload, _, code = _coordination_answer("agent.binding.record", params)
+    if code != EXIT_OK:
+        return code
+    if not payload.get("recorded"):
+        sys.stderr.write(
+            f"serverosctl: refused: {payload.get('reason')}: {payload.get('detail')}\n")
+        return EXIT_FAULT
+    binding = payload.get("binding") or {}
+    emit(payload, as_json=args.json, lines=[
+        f"session     {binding.get('session_ref')}",
+        f"role        {binding.get('session_role')}",
+        f"item        {binding.get('bound_item_ref') or 'none (coordinator)'}",
+        f"recorded    {binding.get('recorded_at') or ''}"])
+    return EXIT_OK
+
+
+def cmd_coordination_close(args) -> int:
+    """Close a thread for new work. Never a deletion, and never a rebind."""
+    params = {"session_ref": args.session_ref}
+    if args.reason:
+        params["reason"] = args.reason
+    payload, _, code = _coordination_answer("agent.binding.close", params)
+    if code != EXIT_OK:
+        return code
+    if not payload.get("closed"):
+        sys.stderr.write(
+            f"serverosctl: refused: {payload.get('reason')}: {payload.get('detail')}\n")
+        return EXIT_FAULT
+    binding = payload.get("binding") or {}
+    emit(payload, as_json=args.json, lines=[
+        f"session     {binding.get('session_ref')}",
+        f"closed at   {binding.get('closed_at')}",
+        f"item kept   {binding.get('bound_item_ref') or 'none (coordinator)'}",
+        "            the record stays: closing is what makes a later send "
+        "refusable, and a deletion would answer nothing"])
+    return EXIT_OK
+
+
+def cmd_coordination_list(args) -> int:
+    """Counts by role. Never the records, and never a directory of Items."""
+    payload, _, code = _coordination_answer("agent.binding.list", {})
+    if code != EXIT_OK:
+        return code
+    lines = [f"schema      {payload.get('schema')}",
+             f"bindings    {payload.get('count')}"]
+    for role, refs in sorted((payload.get("by_role") or {}).items()):
+        lines.append(f"  {role:<10}{len(refs)}")
+    lines.append(f"closed      {len(payload.get('closed') or [])}")
+    lines.append(f"item axis   {', '.join(payload.get('item_axis_values') or [])}")
+    emit(payload, as_json=args.json, lines=lines)
+    return EXIT_OK
 
 
 # ---------------------------------------------------------------------------
@@ -2537,11 +2710,52 @@ def build_parser() -> argparse.ArgumentParser:
         **_COMMON)
     _ledger_args(mem_subject)
     mem_subject.add_argument("subject", help="e.g. project/serveros/SRV-0007")
+    mem_subject.add_argument(
+        "--as", dest="reader", required=True,
+        help="who is reading: `operator` (a person holding the ledger), or the "
+             "Item ref a thread is bound to (e.g. SRV-0007, or "
+             "project/serveros/SRV-0007). Required: §18 refuses a cross-Item "
+             "recall, so a read that does not say who is asking is a read the "
+             "firewall cannot reach")
     mem_subject.set_defaults(func=cmd_memory_subject)
 
     probe = sub.add_parser("probe", help="run one resource's declared probes", **_COMMON)
     probe.add_argument("id")
     probe.set_defaults(func=cmd_probe)
+
+    coordination = sub.add_parser(
+        "coordination", help="§17 · what a thread is for, and whether it admits "
+                             "work", **_COMMON)
+    coordination_sub = coordination.add_subparsers(dest="subcommand", required=True)
+
+    co_resolve = coordination_sub.add_parser(
+        "resolve", help="a thread's role, its Item, and whether the Item still "
+                        "admits work", **_COMMON)
+    co_resolve.add_argument("session_ref")
+    co_resolve.set_defaults(func=cmd_coordination_resolve)
+
+    co_bind = coordination_sub.add_parser(
+        "bind", help="record what a thread is for. Refused for a session that "
+                     "already has a different binding", **_COMMON)
+    co_bind.add_argument("session_ref")
+    co_bind.add_argument("--role", required=True, choices=["coordinator", "execution"],
+                         help="execution requires --item; coordinator forbids it")
+    co_bind.add_argument("--item", help="the Item this thread is for")
+    co_bind.add_argument("--work-item",
+                         help="the Item this call also names. Accepted so that "
+                              "contradicting yourself inside one call is refused "
+                              "here rather than at the first turn")
+    co_bind.set_defaults(func=cmd_coordination_bind)
+
+    co_close = coordination_sub.add_parser(
+        "close", help="close a thread for new work. The record stays", **_COMMON)
+    co_close.add_argument("session_ref")
+    co_close.add_argument("--reason")
+    co_close.set_defaults(func=cmd_coordination_close)
+
+    co_list = coordination_sub.add_parser(
+        "list", help="how many threads this node holds, by role", **_COMMON)
+    co_list.set_defaults(func=cmd_coordination_list)
 
     return parser
 

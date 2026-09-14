@@ -14,6 +14,8 @@ import sys
 import unittest
 from pathlib import Path
 
+import threads
+
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parent
 
@@ -70,6 +72,11 @@ RUNTIME = "agent-runtime:codex"
 KIND_PROVIDER = "provider:test-agent-session"
 FAKE_NODE = HERE / "fake_node_control.py"
 ANCHOR = "2026-09-14T00:00:00Z"
+# §17. Two real Item refs, because a mismatch test is only a mismatch test if
+# the two sides differ — and because these are the two refs the incident that
+# motivated §17 actually named.
+ITEM = "LIT-0101"
+OTHER_ITEM = "LIT-0205"
 
 
 # ---------------------------------------------------------------------------
@@ -195,8 +202,15 @@ def _read_with_timeout(proc, seconds: float = 1.0) -> str:
     return proc.stdout.readline() if ready else ""
 
 
-def router(service, node=None, *, local=LOCAL, context_store=CONTEXT_STORE):
-    nodes = [router_mod.LocalLoopbackTransport(device_ref=local, service=service)]
+def router(service, node=None, *, local=LOCAL, context_store=CONTEXT_STORE,
+           bindings=None):
+    # §17. `assume-bound` because these are tests about ROUTING, not about the
+    # thread boundary — `tests/test_coordination.py` is where the boundary is
+    # tested, and it uses the refusing mode. The mode is named here rather than
+    # defaulted so that a reader can tell which test is guarding what.
+    nodes = [router_mod.LocalLoopbackTransport(
+        device_ref=local, service=service,
+        bindings=bindings or threads.MemoryBindings(unknown=threads.ASSUME_BOUND))]
     if node is not None:
         nodes.append(node)
     return router_mod.FleetAgentControlRouter(
@@ -382,11 +396,19 @@ class TestRequestsAreClosed(unittest.TestCase):
             params={"instruction": "x", "turn_idempotency_key": "t"},
             session_ref="session:a:b:c"))
         wire = request.wire()
+        # §17's two fields are on the wire for every request and are None on
+        # every action but create. They are carried rather than omitted because
+        # a node-side router rebuilds the request from this payload, and a
+        # `session.create` whose role did not survive the hop would be refused
+        # on the far side for a fact the caller did supply.
         self.assertEqual(set(wire), {"schema", "action", "device_ref", "agent_runtime",
                                      "params", "context_ref", "workspace", "work_item",
-                                     "session_ref", "correlation_id",
+                                     "session_ref", "session_role", "bound_item_ref",
+                                     "correlation_id",
                                      "idempotency_key", "timeout_s"})
         self.assertEqual(wire["schema"], router_mod.SCHEMA)
+        self.assertIsNone(wire["session_role"])
+        self.assertIsNone(wire["bound_item_ref"])
 
     def test_a_correlation_id_is_minted_when_absent(self):
         one = router_mod.request_from_payload(payload("agent.session.inspect"))
@@ -408,6 +430,195 @@ class TestRequestsAreClosed(unittest.TestCase):
             payload(READ_ONLY, LOCAL, session_ref="session:a:b:c")))
         self.assertTrue(response.ok, response.detail)
         self.assertEqual(svc.names(), ["session_inspect"])
+
+    def test_a_create_must_say_what_its_thread_is_for(self):
+        """§17. No role, no default, and the refusal is about the request.
+
+        A default here would be a guess about somebody's intent recorded as a
+        fact, and the fact would then be read by every later turn as though a
+        person had stated it.
+        """
+        with self.assertRaises(target.Rejected) as caught:
+            router_mod.request_from_payload(payload(
+                "agent.session.create", context_ref=CONTEXT_REF,
+                params=_minimal_params("agent.session.create")))
+        self.assertIn("session_role", str(caught.exception))
+
+    def test_the_role_fields_belong_to_the_one_action_that_creates_a_thread(self):
+        """`session.send` may not restate what the thread is for.
+
+        The thread's Item is immutable, so there is nowhere for a `bound_item_ref`
+        on a send to go — and a field that is accepted and ignored is the
+        declaration-with-no-reader shape this repository keeps finding.
+        """
+        for action, extra in (("agent.session.send", {"session_role": "execution"}),
+                              ("agent.session.resume", {"bound_item_ref": ITEM})):
+            with self.subTest(action=action):
+                with self.assertRaises(target.Rejected) as caught:
+                    router_mod.request_from_payload(payload(
+                        action, context_ref=CONTEXT_REF,
+                        params=_minimal_params(action), **extra))
+                self.assertIn("does not take", str(caught.exception))
+
+
+# ---------------------------------------------------------------------------
+# §17: what a thread is for, and which verbs may put work into one.
+#
+# The kernel's rules are `tests/test_coordination.py`'s. This class tests the
+# two seams that make the kernel reachable — `session.create` records a binding,
+# `session.send` and `session.resume` consult it — because a rule nothing calls
+# is the "complete, tested and unreachable" shape this repository keeps finding.
+# ---------------------------------------------------------------------------
+
+class TestTheTurnIntoAThreadIsGated(unittest.TestCase):
+
+    def setUp(self):
+        self.service = ok_service()
+        self.bindings = threads.MemoryBindings(unknown=threads.REFUSE)
+        self.router = router(self.service, bindings=self.bindings)
+        self.ref = semantics.session_ref(LOCAL, KIND_PROVIDER, "s1")
+
+    def created(self, **extra):
+        """A create whose binding is in place, returning the provider's ref."""
+        response = self.router.route(router_mod.request_from_payload(payload(
+            "agent.session.create", context_ref=CONTEXT_REF,
+            params=_minimal_params("agent.session.create"),
+            session_role="execution", bound_item_ref=ITEM, **extra)))
+        self.assertTrue(response.ok, response.detail)
+        return response.result["session_ref"]
+
+    def send(self, work_item=None):
+        base = {"context_ref": CONTEXT_REF, "session_ref": self.ref,
+                "params": _minimal_params("agent.session.send")}
+        if work_item is not None:
+            base["work_item"] = work_item
+        return self.router.route(router_mod.request_from_payload(
+            payload("agent.session.send", **base)))
+
+    def test_a_create_records_what_its_thread_is_for(self):
+        """Stored against the ref the PROVIDER minted, not one we invented.
+
+        The count of writes is asserted too: a create that recorded two
+        bindings for one session would make `put_binding`'s write-once rule look
+        enforced while it was being written twice under two refs.
+        """
+        response = self.router.route(router_mod.request_from_payload(payload(
+            "agent.session.create", context_ref=CONTEXT_REF,
+            params=_minimal_params("agent.session.create"),
+            session_role="execution", bound_item_ref=ITEM)))
+        self.assertTrue(response.ok, response.detail)
+        self.assertEqual(len(self.bindings.puts), 1)
+        record = self.bindings.puts[0]
+        # The provider's ref, taken from its own answer — the whole reason the
+        # store step is separate from the build step.
+        self.assertEqual(record["session_ref"], response.result["session_ref"])
+        self.assertEqual(record["session_role"], "execution")
+        self.assertEqual(record["bound_item_ref"], ITEM)
+        self.assertTrue(record["bound_item_ref_frozen"])
+
+    def test_a_create_names_the_item_in_its_answer_so_the_caller_can_see_it(self):
+        response = self.router.route(router_mod.request_from_payload(payload(
+            "agent.session.create", context_ref=CONTEXT_REF,
+            params=_minimal_params("agent.session.create"),
+            session_role="execution", bound_item_ref=ITEM)))
+        self.assertEqual(response.result["binding"],
+                         {"session_role": "execution", "bound_item_ref": ITEM,
+                          "state": "OPEN"})
+
+    def test_a_coordinator_may_not_be_bound_to_an_item(self):
+        """The refusal is typed, and nothing was started.
+
+        A coordinator with one Item is an execution that has not said so, and
+        the two behave differently under every rule that reads the field.
+        """
+        response = self.router.route(router_mod.request_from_payload(payload(
+            "agent.session.create", context_ref=CONTEXT_REF,
+            params=_minimal_params("agent.session.create"),
+            session_role="coordinator", bound_item_ref=ITEM)))
+        self.assertFalse(response.ok, response.result)
+        self.assertEqual(response.reason, "INVALID_CONTEXT")
+        self.assertEqual(self.service.calls, [], "a provider was asked to start a "
+                                                 "session that could not be bound")
+
+    def test_work_that_names_another_item_is_refused_in_the_mismatch_word(self):
+        self.created()
+        self.bindings.bind(self.ref, bound_item_ref=ITEM)
+        response = self.send(work_item=OTHER_ITEM)
+        self.assertFalse(response.ok)
+        self.assertEqual(response.reason, "THREAD_ITEM_MISMATCH")
+        self.assertEqual(self.service.names(), ["create"], response.detail)
+
+    def test_the_same_thread_admits_its_own_item(self):
+        """The positive control for the mismatch: same call, other Item.
+
+        Without this, a gate that refused every send would pass the test above
+        and would have closed the feature rather than the boundary.
+        """
+        self.created()
+        self.bindings.bind(self.ref, bound_item_ref=ITEM)
+        response = self.send(work_item=ITEM)
+        self.assertTrue(response.ok, response.detail)
+        self.assertIn("send", self.service.names())
+
+    def test_a_thread_nobody_recorded_admits_nothing(self):
+        """`refuse` mode: unrecorded is not unconstrained.
+
+        An absent binding read as "no restriction" is exactly how LIT-0205's
+        work entered LIT-0101's conversation: nothing had ever recorded where
+        that conversation belonged, and nothing said so.
+        """
+        response = self.send()
+        self.assertFalse(response.ok)
+        self.assertEqual(response.reason, "INVALID_CONTEXT")
+        self.assertEqual(self.service.calls, [])
+
+    def test_a_closed_thread_refuses_new_work_in_its_own_word(self):
+        self.created()
+        self.bindings.bind(self.ref, bound_item_ref=ITEM, state="CLOSED")
+        response = self.send()
+        self.assertFalse(response.ok)
+        self.assertEqual(response.reason, "THREAD_CLOSED_FOR_NEW_WORK")
+
+    def test_a_thread_whose_item_was_delivered_refuses_new_work(self):
+        self.created()
+        self.bindings.items[ITEM] = ("DELIVERED", "SUCCESS")
+        self.bindings.bind(self.ref, bound_item_ref=ITEM)
+        response = self.send()
+        self.assertFalse(response.ok)
+        self.assertEqual(response.reason, "READ_ONLY_CLOSURE")
+
+    def test_an_item_parked_on_a_person_does_not_close_its_thread(self):
+        """NEEDS_HUMAN is a live Item, and the boundary must not read it as done.
+
+        The distinction is the whole reason `READ_ONLY_ITEM_STATES` cites two
+        states rather than treating "not ACTIVE" as finished.
+        """
+        self.created()
+        self.bindings.items[ITEM] = ("NEEDS_HUMAN", None)
+        self.bindings.bind(self.ref, bound_item_ref=ITEM)
+        self.assertTrue(self.send(work_item=ITEM).ok)
+
+    def test_a_resume_is_gated_with_a_send(self):
+        """A resume starts a turn in the thread, so it is the same question."""
+        self.created()
+        self.bindings.bind(self.ref, bound_item_ref=ITEM, state="CLOSED")
+        response = self.router.route(router_mod.request_from_payload(payload(
+            "agent.session.resume", context_ref=CONTEXT_REF, session_ref=self.ref)))
+        self.assertFalse(response.ok)
+        self.assertEqual(response.reason, "THREAD_CLOSED_FOR_NEW_WORK")
+
+    def test_reading_a_closed_thread_is_not_gated(self):
+        """Deliberately ungated, and the reason is worth stating.
+
+        Refusing `inspect` on a closed thread would make the closure record
+        itself unreadable — the opposite of what recording it is for.
+        """
+        self.created()
+        self.bindings.bind(self.ref, bound_item_ref=ITEM, state="CLOSED")
+        response = self.router.route(router_mod.request_from_payload(payload(
+            "agent.session.inspect", session_ref=self.ref)))
+        self.assertTrue(response.ok, response.detail)
+        self.assertIn("session_inspect", self.service.names())
 
 
 # ---------------------------------------------------------------------------
@@ -625,8 +836,9 @@ class TestRemoteIntegration(unittest.TestCase):
         self.assertIn(response.reason, router_mod.reason_vocabulary())
 
     def test_the_loopback_refuses_to_serve_a_remote_device(self):
-        node = router_mod.LocalLoopbackTransport(device_ref=LOCAL,
-                                                 service=RecordingService())
+        node = router_mod.LocalLoopbackTransport(
+            device_ref=LOCAL, service=RecordingService(),
+            bindings=threads.MemoryBindings(unknown=threads.ASSUME_BOUND))
         with self.assertRaises(router_mod.TransportFailure) as caught:
             node.send(router_mod.request_from_payload(payload(READ_ONLY, FJ)))
         self.assertEqual(caught.exception.reason, "DEVICE_UNREACHABLE")
@@ -828,8 +1040,9 @@ class TestRouterIdentity(unittest.TestCase):
 
     def test_the_loopback_serves_one_named_device(self):
         with self.assertRaises(target.TargetError):
-            router_mod.LocalLoopbackTransport(device_ref="localhost",
-                                              service=RecordingService())
+            router_mod.LocalLoopbackTransport(
+                device_ref="localhost", service=RecordingService(),
+                bindings=threads.MemoryBindings(unknown=threads.ASSUME_BOUND))
 
     def test_the_router_holds_no_session_state(self):
         # §24: transport failure must not become a session state, and the way to

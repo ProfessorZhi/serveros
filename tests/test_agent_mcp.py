@@ -22,6 +22,7 @@ import sys
 import unittest
 from pathlib import Path
 
+import threads
 import yaml
 
 HERE = Path(__file__).resolve().parent
@@ -56,6 +57,11 @@ FJ = "device:work-fj"
 DELL = "device:personal-dell"
 RUNTIME = "agent-runtime:codex"
 PROVIDER = "provider:test-agent-session"
+# §17. A create states what its thread is for, and this is the Item the fixture
+# threads are for. A real ref, and not a placeholder: `coordination.binding`
+# only requires the field to be non-empty, and a fixture that passed "x" would
+# not exercise the same path a person's Item does.
+ITEM = "LIT-0101"
 
 
 def minted_context(*, actor_id: str = "human:hwz") -> dict:
@@ -211,8 +217,10 @@ def build(*, daemon=None, provider=None, providers=None, decision="ALLOW"):
             "action": action, "context": context}))
     router = router_mod.FleetAgentControlRouter(
         local_device_ref=device_ref,
-        transports=[router_mod.LocalLoopbackTransport(device_ref=device_ref,
-                                                      service=service),
+        transports=[router_mod.LocalLoopbackTransport(
+                        device_ref=device_ref, service=service,
+                        bindings=threads.MemoryBindings(
+                            unknown=threads.ASSUME_BOUND)),
                     router_mod.NodeControlTransport(connector=None,
                                                     device_refs=(FJ, DELL))],
         context_store=agent_mcp.DaemonContexts(daemon))
@@ -470,10 +478,17 @@ class TestEveryMutationIsAddressedAndGated(unittest.TestCase):
     def arguments_for(self, name: str, context_ref: str | None = CONTEXT_REF) -> dict:
         """The smallest legal call of each control action, addressed to the
         fixture's session. `context_ref=None` leaves the key out entirely, which
-        the schema refuses and `""` does not."""
+        the schema refuses and `""` does not.
+
+        A create carries the two §17 fields, because "legal" now includes saying
+        what the thread is for — an `execution` thread with no Item is refused
+        before the provider is asked, and a fixture that omitted them would be a
+        fixture of an illegal call.
+        """
         if name == "agent.session.create":
             arguments = {"device": LOCAL, "runtime": RUNTIME, "agent_id": "a1",
-                         "instruction": "go", "idempotency_key": "k1"}
+                         "instruction": "go", "idempotency_key": "k1",
+                         "session_role": "execution", "bound_item_ref": ITEM}
         else:
             arguments = {"session_ref": self.ref, "runtime": RUNTIME}
             if name == "agent.session.send":
@@ -578,7 +593,8 @@ class TestEveryMutationIsAddressedAndGated(unittest.TestCase):
         is_error, answer = payload(call(
             self.client, "agent.session.create", device=LOCAL, runtime=RUNTIME,
             agent_id="a1", instruction="go", idempotency_key="k1",
-            context_ref=CONTEXT_REF))
+            context_ref=CONTEXT_REF, session_role="execution",
+            bound_item_ref=ITEM))
         self.assertFalse(is_error, answer)
         self.assertTrue(answer["ok"], answer)
         self.assertIn("create", self.provider.calls)
@@ -589,6 +605,43 @@ class TestEveryMutationIsAddressedAndGated(unittest.TestCase):
         self.assertEqual(answer["target"]["provider_ref"], PROVIDER)
         self.assertEqual(answer["target"]["agent_runtime"], RUNTIME)
         self.assertEqual(answer["target"]["device_ref"], LOCAL)
+
+    def test_a_create_with_no_role_cannot_be_expressed_through_this_surface(self):
+        """§17, enforced at the schema rather than at the router.
+
+        `session_role` is in the tool's `required`, so an unbound create is not
+        a refused call here — it is not a call this surface can be asked to
+        make. That is the stronger form of the claim: a caller cannot reach the
+        provider with no purpose recorded even by accident. The router's own
+        refusal for the same payload is
+        `tests/test_agent_control_router.py::TestRequestsAreClosed`, which is
+        where the non-MCP paths land.
+
+        A tool error, not a refusal: nothing about the fleet was established, so
+        there is no reason word from the fleet vocabulary to report.
+        """
+        is_error, answer = payload(call(
+            self.client, "agent.session.create", device=LOCAL, runtime=RUNTIME,
+            agent_id="a1", instruction="go", idempotency_key="k1",
+            context_ref=CONTEXT_REF))
+        self.assertTrue(is_error)
+        self.assertIn("session_role", answer)
+        self.assertEqual(self.provider.calls, [])
+
+    def test_a_coordinator_create_is_expressible_and_may_not_name_an_item(self):
+        """`coordinator` is a legal role, so the schema must not forbid it.
+
+        The role that exists to cross Items — and the migration path for the
+        threads that predate §17 — would be unreachable if the surface only
+        accepted `execution`. The item rule is the kernel's, not the schema's.
+        """
+        is_error, answer = payload(call(
+            self.client, "agent.session.create", device=LOCAL, runtime=RUNTIME,
+            agent_id="a1", instruction="go", idempotency_key="k1",
+            context_ref=CONTEXT_REF, session_role="coordinator"))
+        self.assertFalse(is_error, answer)
+        self.assertTrue(answer["ok"], answer)
+        self.assertIsNone(answer["result"]["binding"]["bound_item_ref"])
 
     def test_a_human_gated_action_with_a_context_and_no_approval_is_not_admitted(self):
         """§22. An identified actor is not an approval, and the two are not
@@ -754,12 +807,20 @@ class TestTheSurfaceCannotBecomeAShell(unittest.TestCase):
 
         # And the OTHER half of the reach: the module loads its parts by path,
         # so the path list is the rest of the surface's vocabulary.
+        #
+        # `serveros_runtime_coordination` is §17's kernel, and it is here rather
+        # than typed out in the schema for the reason this whole list exists: the
+        # `session_role` enum in `agent.session.create` is read from
+        # `coordination.ROLES`, so a role added to the kernel reaches the tool
+        # schema without a second edit. A typed-out list would be the surface
+        # offering a role the kernel refuses, or refusing one it accepts.
         loaded = set(re.findall(r'_load\("([^"]+)"', (MCP / "agent_mcp.py").read_text()))
         self.assertEqual(loaded, {
             "serveros_mcp_node_shared", "serveros_agent_session_service",
             "serveros_botmux_provider", "serveros_codex_provider",
             "serveros_fleet_agent_control_router", "serveros_fleet_transport",
             "serveros_fleet_view", "serveros_abilities_target",
+            "serveros_runtime_coordination",
         })
 
     def test_daemon_never_imports_or_calls_botmux_provider(self):

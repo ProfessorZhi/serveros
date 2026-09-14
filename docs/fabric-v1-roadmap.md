@@ -75,21 +75,31 @@ already attempts for one contract.
 
 | id | status | what is missing | the failure it answers |
 |---|---|---|---|
-| MEM-01 | **DECLARED_ABSENT** | **The recall firewall.** `firewall` and `bound_item` have zero hits in the tree. `current_value()` and `heads()` take a free-form subject and will answer a question about **any** Item. The only statement of the rule is prose (`context/disclosure-contract.yaml:184`, *"Memory is queried, never preloaded"*). | **The strongest entry in this ledger.** It is the Memory-layer form of the exact defect a live incident already produced one layer up: work from one Item surfacing inside another. And it is invisible by construction — reads are never logged, so `audit()` cannot see a cross-boundary read even after the fact. |
+| MEM-01 | **EXISTS** (§18) | **The recall firewall** — built as `memory/scope.py`, closed in v1.2. What it was: `firewall` and `bound_item` had zero hits in the tree, `current_value()` and `heads()` took a free-form subject and would answer a question about **any** Item, and the only statement of the rule was prose. What it is now: a `scope` field on the record (`item` · `project` · `user`), a required keyword-only `reader` on both read entry points, and three refusals that are raised rather than returned as an empty answer. | **The strongest entry in this ledger.** It is the Memory-layer form of the exact defect a live incident already produced one layer up: work from one Item surfacing inside another. And it is invisible by construction — reads are never logged, so `audit()` cannot see a cross-boundary read even after the fact. That limit is unchanged and now stated: a read RETURNS a reading, which reaches the reader and not an auditor. |
 | MEM-02 | ABSENT | The write pipeline — candidate → scope → sensitivity → dedup → quality → policy → commit. Today there are two gates and no pipeline: `record.validate()` (one record) and `record.audit()` (whole-ledger duplicate and cycle detection). `record.py:383-398` states outright that the ledger *cannot* detect a conflict. | Nothing has failed yet. The missing rung is the one between *"an Agent inferred this"* and *"this is durable truth"*; without it every write is trusted equally, which is a decision made by omission. |
-| MEM-03 | ABSENT | `scope: user · project · item`, and the `subject/predicate/value/valid_from` shape. `subject` is a **location**, not a subject: `record.py:81` permits `device:<id>` or exactly three slash-separated parts, and there is no `user:`. | The promotion ladder from MEM-01: a fact that should have become project-level has nowhere to be promoted to, so it either stays Item-bound forever or is copied by hand. |
+| MEM-03 | **PARTIAL** | The `scope: user · project · item` half is built (§18, `record-contract.yaml#scope`) and is what MEM-01 needed. The `subject/predicate/value/valid_from` half is still absent: `subject` is a **location**, not a subject — `record.py` permits `device:<id>` or exactly three slash-separated parts, and there is no `user:`. | The promotion ladder from MEM-01: half of it was the missing rung, and the other half is a different claim about what a record IS. Recorded as one PARTIAL row rather than split in two, because a reader who finds one half built should not have to discover that by reading the other half's status. |
 | MEM-04 | ABSENT | The durable `claim` kind. Kinds are **closed at eight** (`decision · observation · revision · handoff · finding · question · checkpoint · incident`), enforced at `record.py:209` and asserted against the contract at `tests/test_memory_ledger.py:100`. | No observed failure. This is a specification item, and it is listed separately from MEM-03 because the *cost of adding a kind* is a different question from the cost of adding a field — the enforcement above means every new kind is a deliberate, tested act, which is the property worth keeping. |
 | MEM-05 | ABSENT | `ContextBundle`. Zero hits. What exists is `current_value()` (one record or `None`), `heads()`, `pending()` and `usable_hits()` — no purpose, no per-record provenance envelope, no token budget. | No observed failure. Without it, retrieval quality can only be argued about, never measured. |
 | MEM-06 | **COMPUTED_UNREAD** | Three values computed and then dropped: `projection.build()` writes `heads` and `open_questions` into `memory.json` and **nothing reads either**; `confidence` is validated and never weights anything (`heads()`/`current_value()` sort by `at` alone); `by` is documented as affecting weight (*"a fact recorded by a person and one recorded by an Agent do not carry the same weight"*) and is never read. | Silent, and this is the sharpest form of it: the module was written as if these mattered. A reader who trusts `confidence` will believe a low-confidence record was discounted. |
 | MEM-07 | PARTIAL | OpenViking as the Layer C provider. Contract, fixture and status evaluator all exist — and **three modules have zero production callers**: `provider_status.evaluate()`, `layering.usable_hits()`, `handoff.pending()` are reached only from tests. | No observed failure. Recorded as PARTIAL rather than ABSENT because the work is real, tested and correct; it simply has no production entry point and no deployment. |
 
-MEM-01's fix is smaller than its severity suggests, and the precedent is
+MEM-01's fix was smaller than its severity suggested, and the precedent was
 already in the tree: `memory/handoff.py:pending(records, device_ref)` takes the
-caller's scope **as an argument**, and refuses to resolve it itself. A read
-that takes `bound_item` the same way, and returns a refusal rather than an
-answer on mismatch, is the whole mechanism. The policy question — default
-refuse, or default allow with an explicit widening — is a decision for a
-person, not a default for a resolver to pick.
+caller's scope **as an argument**, and refuses to resolve it itself. The read
+path now takes `reader` the same way and raises rather than answering on
+mismatch.
+
+Two things about it are worth carrying forward, because they were the whole of
+the work and neither was the code:
+
+* **The policy is refuse-by-default**, decided by the user rather than chosen by
+  the kernel. It is not a safe default discovered by construction; it is a
+  ruling, and `record-contract.yaml#scope.reader_rule` records it as one.
+
+* **The widening is a field, not a verb.** The rule said the promotion "is
+  recorded", and the smallest thing that satisfies that sentence is a value
+  beside `by` and `at` and `revision` — not a promotion object, not a
+  permission store. Both alternatives invent a second place the answer lives.
 
 ---
 
@@ -220,8 +230,8 @@ Phase 1  Telling a person — nothing here can act               no authorizatio
   OBS-03  the three regions
 
 Phase 2  Closing the declared-and-absent on the read path       authorization: policy
-  MEM-01  the recall firewall  ← highest severity, small change
-  MEM-02  the write pipeline, then MEM-03's scope, then MEM-05
+  MEM-01  DONE in v1.2 — the recall firewall, and MEM-03's scope half with it
+  MEM-02  the write pipeline, then MEM-03's remaining half, then MEM-05
   RUN-01  the per-device binding, then RUN-02's feature vocabulary
   ABL-01  operation-level resolution, then ABL-02 device-relative packs
   ABL-06  resolution as an MCP surface
@@ -242,20 +252,21 @@ rounds' most expensive findings.
 output a person experiences directly this month. It is deliberately first among
 the things that do anything, because it can only ever add information.
 
-**MEM-01 is the highest-severity entry and sits in Phase 2 anyway** — but it is
-small, and it is listed ahead of the rest of its phase for that reason. The
-precedent is one file away: `handoff.pending(records, device_ref)` takes the
-caller's scope as an **argument** and refuses to resolve it itself. A read that
-takes `bound_item` the same way, and returns a refusal instead of an answer on
-mismatch, is the entire mechanism. What it needs from a person is the policy,
-not the code.
+**MEM-01 was the highest-severity entry, sat in Phase 2 anyway, and is done.**
+It was listed ahead of the rest of its phase because it was small, and it was
+small for the reason the whole ledger keeps rediscovering: the prose that
+specified it had already named the mechanism. `handoff.pending(records,
+device_ref)` took the caller's scope as an **argument** and refused to resolve
+it itself; the read path now takes `reader` the same way and raises instead of
+answering. What it needed from a person was the policy — refuse by default —
+and that ruling is now in `record-contract.yaml#scope.reader_rule` rather than
+in a decision nobody wrote down.
 
 ## What has to be decided by a person
 
 ```text
 a push to another repository            not implied by any approval to date
 a live promotion of this product        rebuild, promote, restart, rematerialize
-the memory-firewall default             refuse-by-default, or allow with widening
 a new Item-card field                   priority / severity do not exist anywhere
 approval transport (HUM-04)             a surface that has to exist, possibly upstream
 identity verification inside a turn     an experiment, not an implementation

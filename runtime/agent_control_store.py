@@ -85,7 +85,8 @@ class AgentControlStore:
 
     def _load(self) -> dict:
         if not self.path.exists():
-            return {"schema": SCHEMA, "contexts": {}, "approvals": {}}
+            return {"schema": SCHEMA, "contexts": {}, "approvals": {},
+                    "bindings": {}}
         try:
             data = json.loads(self.path.read_text(encoding="utf-8"))
         except (OSError, ValueError) as exc:
@@ -101,6 +102,7 @@ class AgentControlStore:
             raise StoreError(f"{self.path} is not a JSON object")
         data.setdefault("contexts", {})
         data.setdefault("approvals", {})
+        data.setdefault("bindings", {})
         data["schema"] = SCHEMA
         return data
 
@@ -157,8 +159,95 @@ class AgentControlStore:
         return [a for a in self._data["approvals"].values()
                 if a.get("actor_ref") == actor_ref and a.get("action") == action]
 
+    # -- thread bindings (§17) ---------------------------------------------
+
+    def put_binding(self, record: dict) -> dict:
+        """Record what a thread is for. Write-once, on `session_ref`.
+
+        A binding is the one part of this store that is deliberately NOT
+        updatable, and the reason is that its central field is the thing §17
+        requires to be immutable. `bound_item_ref` cannot be changed by a later
+        write because there is no method here that can change it: a second put
+        for the same session is either an idempotent re-report of an equal
+        record — which is what a retried create looks like — or a refusal.
+
+        Making immutability structural rather than a rule is the whole point.
+        A `put_binding` that overwrote would be a way for a thread to change
+        which Item it is for, and the caller who wants that does not want this
+        store to stop them; they want a new thread, which is what the refusal
+        tells them.
+
+        The exception is `state`, which `close_binding` owns. A thread closing
+        is a fact about the thread and not a change of mind about its Item.
+        """
+        ref = record.get("session_ref")
+        if not ref:
+            raise StoreError(
+                "a thread binding without a session_ref cannot be stored: it is "
+                "a statement about a session, and a binding whose session nobody "
+                "named is a rule with no subject")
+        existing = self._data["bindings"].get(str(ref))
+        if existing is not None:
+            mine = {k: v for k, v in record.items()
+                    if k not in ("recorded_at", "state", "closed_at", "closed_reason")}
+            theirs = {k: v for k, v in existing.items()
+                      if k not in ("recorded_at", "state", "closed_at", "closed_reason")}
+            if mine == theirs:
+                return existing
+            raise StoreError(
+                f"{ref} already has a binding and it cannot be replaced. A "
+                f"thread is created for one Item; changing which Item it is for "
+                f"in place would rewrite the record that says what the turns "
+                f"already taken were about. Create a session for the Item you "
+                f"mean")
+        self._data["bindings"][str(ref)] = record
+        self._flush()
+        return record
+
+    def get_binding(self, ref: str) -> dict | None:
+        """What this thread is for, or None if nothing ever said.
+
+        None rather than an empty record, and the caller must not read it as
+        "unconstrained". `runtime/coordination.py` refuses on None, because
+        "nobody stated a purpose" and "any purpose is allowed" are opposite
+        readings and only one of them is safe.
+        """
+        return self._data["bindings"].get(str(ref))
+
+    def bindings(self) -> dict:
+        return dict(self._data["bindings"])
+
+    def close_binding(self, ref: str, *, at: str, reason: str | None = None) -> dict:
+        """Close a thread for new work. Never a deletion, and never a rebind.
+
+        The record stays. Closing is what makes
+        `THREAD_CLOSED_FOR_NEW_WORK` answerable months later, and a store that
+        dropped the binding on closure would leave the closed thread looking
+        exactly like a thread nobody ever created one for.
+        """
+        existing = self._data["bindings"].get(str(ref))
+        if existing is None:
+            raise StoreError(
+                f"{ref} has no binding to close; closing a thread that was never "
+                f"bound would record a closure of something ServerOS does not "
+                f"hold a statement about")
+        updated = dict(existing)
+        updated["state"] = "CLOSED"
+        updated["closed_at"] = str(at)
+        if reason:
+            updated["closed_reason"] = str(reason)
+        self._data["bindings"][str(ref)] = updated
+        self._flush()
+        return updated
+
     def replace(self, record: dict, *, kind: str) -> dict:
-        """Overwrite one record by ref. Used by consumption, and only by it."""
+        """Overwrite one record by ref. Used by consumption, and only by it.
+
+        `binding` is deliberately absent from `collections` below: this is the
+        one method in this store that overwrites a record wholesale, and a
+        binding that could be handed to it would have an immutability rule that
+        a caller reaches around.
+        """
         collections = {"context": "contexts", "approval": "approvals"}
         if kind not in collections:
             raise StoreError(f"unknown record kind {kind!r}")
@@ -179,6 +268,13 @@ class AgentControlStore:
         than silent. A store that prunes on read has a read whose cost depends
         on how long the machine has been up, and a prune nobody is told about
         is a deletion that appears in no log.
+
+        Bindings are never swept, and that is not an oversight. Contexts and
+        approvals are windows; a binding has no window, because "what was this
+        thread for" is a question asked about a conversation that already
+        happened. Sweeping it would make the closures this store exists to
+        remember indistinguishable from threads nobody ever bound — which is
+        precisely the reading that let the failure §17 was written for happen.
         """
         gone = {"contexts": [], "approvals": []}
         for ref, record in list(self._data["contexts"].items()):
@@ -206,7 +302,17 @@ class AgentControlStore:
         for record in approvals.values():
             state = str(record.get("state") or "UNKNOWN")
             by_state[state] = by_state.get(state, 0) + 1
+        bindings = self._data["bindings"]
         return {"schema": SCHEMA, "path": str(self.path),
                 "contexts": len(self._data["contexts"]),
                 "approvals": len(approvals),
-                "approvals_by_state": by_state}
+                "approvals_by_state": by_state,
+                "bindings": len(bindings),
+                "bindings_open": sum(
+                    1 for b in bindings.values()
+                    if str(b.get("state") or "OPEN").upper() != "CLOSED"),
+                "bindings_by_role": {
+                    role: sum(1 for b in bindings.values()
+                              if b.get("session_role") == role)
+                    for role in sorted({str(b.get("session_role") or "UNKNOWN")
+                                        for b in bindings.values()})}}
