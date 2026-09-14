@@ -21,6 +21,7 @@ Three things are being tested here, and they are three different claims.
 """
 from __future__ import annotations
 
+import ast
 import importlib.util
 import re
 import sys
@@ -746,12 +747,71 @@ def test_admission_has_no_argument_for_something_that_already_exists():
     assert answer["forbidden"] == list(ra.FORBIDDEN_RESPONSES)
 
 
+def _code_references(path) -> str:
+    """Every name and string literal in a file EXCEPT the docstrings.
+
+    The distinction is the whole reason this helper exists. A file that says
+    "`runtime/resource_anomaly.py` grades fifteen codes" in a sentence has not
+    referenced the module in any sense a loader cares about, and a scanner that
+    counts prose as a reference forces the prose to stop naming the thing it is
+    about — which makes the documentation worse to satisfy the gate. So the
+    docstrings are dropped and everything else is kept: string literals (which
+    is how a dynamic `_load` names a file), imports, attribute names and bare
+    names. There is no import path to this module — it is reached by filename
+    or load name through `spec_from_file_location` — so those are the two
+    spellings that can actually reach it, and both are literals.
+    """
+    tree = ast.parse(path.read_text())
+    docstrings = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.Module, ast.ClassDef, ast.FunctionDef,
+                                 ast.AsyncFunctionDef)):
+            continue
+        body = getattr(node, "body", None) or []
+        if (body and isinstance(body[0], ast.Expr)
+                and isinstance(body[0].value, ast.Constant)
+                and isinstance(body[0].value.value, str)):
+            docstrings.add(id(body[0].value))
+    parts: list[str] = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Constant) and id(node) not in docstrings:
+            parts.append(str(node.value))
+        elif isinstance(node, ast.Name):
+            parts.append(node.id)
+        elif isinstance(node, ast.Attribute):
+            parts.append(node.attr)
+        elif isinstance(node, (ast.Import, ast.ImportFrom)):
+            parts.append(getattr(node, "module", "") or "")
+    return "\n".join(parts)
+
+
+def test_the_reference_scanner_reads_code_and_not_prose(tmp_path):
+    """The positive control for the scanner above, in both directions.
+
+    A control that only proved "it finds view.py" would pass just as happily if
+    the docstring exclusion did not work — and then the next comment someone
+    writes about this module turns into a phantom caller. So both directions
+    are asserted: prose is invisible, and a literal next to prose is not.
+    """
+    sample = tmp_path / "sample.py"
+    sample.write_text(
+        '"""This module mentions runtime/resource_anomaly.py in prose."""\n'
+        'load("serveros_runtime_resource_anomaly", "resource_anomaly.py")\n')
+    found = _code_references(sample)
+    assert "resource_anomaly.py" in found, found
+    assert "in prose" not in found, found
+
+
 def test_nothing_in_the_tree_yet_creates_through_the_admission_gate():
     """`wired_into_a_creation_path: false`, asserted instead of hoped for.
 
     §25 permits the contract and the tests when wiring would expand the round.
     That permission is only honest while the claim is true, so the claim is
     what is tested: no module outside this one and its tests calls `admission`.
+
+    The loader list is CODE references only — see `_code_references`. A prose
+    mention of this module is not a way to reach it, and `runtime/alerting.py`
+    mentions it in a docstring while loading nothing.
     """
     loaders: list[str] = []
     callers: list[str] = []
@@ -761,7 +821,7 @@ def test_nothing_in_the_tree_yet_creates_through_the_admission_gate():
         relative = path.relative_to(REPO).as_posix()
         if relative.startswith("tests/") or "worktrees" in relative:
             continue
-        text = path.read_text()
+        text = _code_references(path)
         # A file can only reach this module by naming the file or the load name
         # — there is no package import path to it. So "who could call it" has a
         # small answer, and a bare `admission(` elsewhere (`serverosd admission`,
@@ -769,7 +829,7 @@ def test_nothing_in_the_tree_yet_creates_through_the_admission_gate():
         if "resource_anomaly.py" not in text and "serveros_runtime_resource_anomaly" not in text:
             continue
         loaders.append(relative)
-        if "admission(" in text:
+        if "admission(" in path.read_text():
             callers.append(relative)
     assert callers == [], callers
     assert loaders == ["runtime/view.py"], loaders

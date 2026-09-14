@@ -109,6 +109,20 @@ KNOWN_CLI_CROSSINGS = {
                    "it is reachable.",
         "disposition": "REDECLARED",
     },
+    "mcp/human_control.py": {
+        "because": "`serverosctl alert sync` is the ONE surface allowed to hold "
+                   "a transport, and the transport is the HumanControlProvider. "
+                   "The module is constructed inside `_alert_provider()` and "
+                   "nowhere else, on the command's own path rather than at "
+                   "import — so a `serverosctl` with no provider configured "
+                   "still answers every other command, which is §24's property "
+                   "kept by construction rather than by this record. The "
+                   "alternative was routing the send through the daemon's "
+                   "socket, and that is the one thing §2 forbids: a daemon that "
+                   "can send is a daemon that cannot tell you the transport is "
+                   "broken, which is when its answer is wanted.",
+        "disposition": "REDECLARED",
+    },
     "memory/record.py": {
         "because": "`serverosctl memory ...` reads and validates the ledger.",
         "disposition": "REDECLARED",

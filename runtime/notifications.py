@@ -104,6 +104,16 @@ class Event:
     actor_ref: str | None = None
     reason: str | None = None
     detail: str | None = None
+    # A subject that is none of the typed ones above and is still the most
+    # specific stable thing this event is about — `filesystem:/` for a disk
+    # alert, `runtime-group:codex-session:…` for a runaway. Added in W8 because
+    # the alternative was worse: an alert about a full filesystem has no
+    # session, no run and no Item, so `render()` fell back to the DEVICE and
+    # every alert on one node read as if it were about the node. It is typed
+    # rather than folded into `detail` because a renderer must never have to
+    # parse meaning out of prose, and because the idempotency key has to
+    # include it — two disks on one device are two notifications, not one.
+    subject_ref: str | None = None
 
     def __post_init__(self) -> None:
         if self.event not in events():
@@ -127,7 +137,8 @@ class Event:
         correlation id is part of it: two turns that failed identically on the
         same session are two events, not one.
         """
-        subject = self.session_ref or self.run_ref or self.item_ref or "-"
+        subject = (self.session_ref or self.run_ref or self.item_ref
+                   or self.subject_ref or "-")
         return f"notify:{self.event}:{self.device_ref}:{subject}:{self.correlation_id}"
 
     def show(self) -> dict:
@@ -136,6 +147,7 @@ class Event:
             "correlation_id": self.correlation_id, "session_ref": self.session_ref,
             "run_ref": self.run_ref, "item_ref": self.item_ref,
             "actor_ref": self.actor_ref, "reason": self.reason, "detail": self.detail,
+            "subject_ref": self.subject_ref,
         }
 
 
@@ -161,11 +173,22 @@ def render(event: Event) -> str:
         raise NotificationError(
             f"{event.event!r} is a declared event with no template; an event "
             f"nobody wrote a sentence for cannot be delivered as one")
-    subject = event.session_ref or event.run_ref or event.item_ref or event.device_ref
+    subject = (event.session_ref or event.run_ref or event.item_ref
+               or event.subject_ref or event.device_ref)
     line = template.format(subject=subject, device=event.device_ref,
                            reason=event.reason or "no reason given")
     if event.detail:
-        line = f"{line} — {event.detail}"
+        # A one-line detail is appended; a MULTI-line one gets its own block.
+        #
+        # A person reads this on a phone, and the alert detail is a short list
+        # of labelled lines rather than prose. Joining that onto the headline
+        # would put the first line after an em dash and the rest wherever the
+        # wrapping happened to fall, which is how "CPU: 2.8 cores" ends up
+        # sharing a line with the headline and "not auto-terminated" ends up
+        # invisible at the bottom of a fold. The headline stays one line and the
+        # block stays whole.
+        separator = "\n" if "\n" in event.detail else " — "
+        line = f"{line}{separator}{event.detail}"
     return line
 
 

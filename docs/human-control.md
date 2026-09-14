@@ -183,15 +183,21 @@ A provider that composed these sentences would be **writing** the claim, and a
 provider that rendered "turn failed" as "the agent is still working" would be
 editing ServerOS truth at the last hop, where no ServerOS test would see it.
 
-The vocabulary is closed — nine events, and severity is a property of the
+The vocabulary is closed — eleven events, and severity is a property of the
 **event**, not of the site that raises it, so two identical events cannot
 arrive at different volumes depending on which code path produced them:
 
 ```text
 INFO       session.created · turn.completed · handoff.completed
 ATTENTION  turn.failed · device.unavailable · provider.degraded · run.terminated
+           alert.opened · alert.resolved
 ACTION     session.waiting_input · approval.required
 ```
+
+The last two are not a fourth kind of thing. An alert is an anomaly that
+persisted past the point where repeating it is useful, and it is the only
+member of this vocabulary with a **producer on this machine today** — see
+below.
 
 `deliver()` consults `human.notification.transport` **before** delivering and
 returns `delivered: false` with the blocking state, rather than reporting a
@@ -200,25 +206,74 @@ vocabulary owned by `abilities/target.py` — never a raw provider string,
 because a notification leaves this machine and a provider error body can carry
 anything at all.
 
-### What is missing: the producers
+### The producers: one exists, six are named
 
-The pipeline is complete, tested, and **has no callers**:
+The pipeline was complete and had **no callers**. One of the seven events now
+has a producer, and it is the one the ledger said to build first, because it is
+the only one behind which a **detector already existed**:
 
 ```text
-runtime/notifications.py         no import outside tests/; daemon.py never names it
-runtime/notification-contract.yaml:producers
-                                 names six events that no code emits
-runtime/anomaly.py               19 codes with severity; only pull surfaces read it
-                                 (serverosctl anomaly list, anomaly.list)
-notification policy              does not exist anywhere
+runtime/anomaly.py ─┐
+                    ├─→ runtime/alerting.py ─→ pending intent (on the row)
+runtime/resource_anomaly.py ─┘                        │
+                                                      │  serverosctl alert sync
+                                                      │  (the only holder of a transport)
+                                                      ↓
+                          HumanControlProvider ─→ BotMux ─→ Feishu
 ```
 
-The contract's `producers:` list is the pattern this product keeps finding:
-**a declaration naming something that was never built**. The practical result
-is that *until a person runs a command, nobody is told anything* — the module
-that would tell them is finished and unreachable. This is on the roadmap, and
-it is the entry with the best effort-to-value ratio in the ledger, because the
-expensive half is already done and correct.
+The reasoning detector is already graded — 19 codes with severity, a
+`codes_not_evaluated` list, and a level row per graded code that a recovery
+margin is read from. What was missing was not the detection. It was the four
+things a person notices when a detector is loud for a month and quiet for a
+year: **an identity that survives a restart, a cooldown, a recovery, and a
+memory of having said it.**
+
+**The daemon decides the facts and cannot deliver.** `alert_pass()` evaluates
+both detectors in one tick and writes an *intent* onto the alert row. It
+deliberately holds no provider, and `serverosctl alert sync` is the only
+command that does. This is the same rule `_r_agent_control_status` follows by
+refusing to import a transport, for the same reason: a daemon that can send is
+a daemon that cannot tell you the transport is broken, which is precisely when
+its answer is wanted. §12 is enforced across that seam — an intent is not a
+delivery, and only `record_delivery` moves `last_notified_at`.
+
+```text
+serverosctl alert list      every alert, most in need of attention first
+serverosctl alert inspect   one alert, plus the sentence a person WOULD be sent
+serverosctl alert ack       a person has seen it. NOT a resolution
+serverosctl alert snooze    stop saying this for a window
+serverosctl alert sync      evaluate, send what has to be said, record what happened
+```
+
+`serverosctl alert sync` is also the only surface the transport can lie to, so
+it is the only one that writes `last_delivery`: `DELIVERED`, or `FAILED`,
+or `UNSUPPORTED` when the provider declined before trying, or `UNKNOWN` when
+neither could be established. **None of the four resolves an alert.**
+
+The read half is on the node MCP surface as `alert.list` and `alert.inspect`,
+which is where an Agent asks. The write half — `ack` and `snooze` — is
+**deliberately not**: `fleet/mcp-contract.yaml` says that surface holds no
+state and changes nothing, and `human.transport.ingress` is `UNKNOWN` while
+`human.approval.transport` is `UNSUPPORTED`. A design that let a person
+"reply ACK" in Feishu would produce alerts nobody could close and a
+plausible-looking reading of messages that were never verified. Acknowledge in
+the terminal, or acknowledge nowhere.
+
+The six remaining events are `DECLARED_ABSENT` **in the contract, with the
+reason and a disposition written on each** rather than in an exemption table:
+`session.created` and `handoff.completed` wait on a session service that
+persists nothing to raise them from, `session.waiting_input` and
+`approval.required` are blocked on inbound and approval transports, and
+`run.terminated` is `work-engine`'s transition rather than this repository's.
+`tests/test_declared_implementations.py` fails if an entry claims a producer
+that does not resolve, and fails again if an entry that *has* one keeps its
+`DECLARED_ABSENT` — so the list can only shrink by something actually being
+built.
+
+Nothing in this path acts on the world. The recommendation it carries is one
+of `REVIEW` / `MONITOR` / `GOVERNANCE_REQUIRED`, and **an alert is not an
+authorization**.
 
 ## What is not human control
 

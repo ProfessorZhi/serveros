@@ -31,13 +31,21 @@ notifications = _load("serveros_runtime_notifications",
                       ROOT / "runtime" / "notifications.py")
 target = _load("serveros_abilities_target", ROOT / "abilities" / "target.py")
 
-# The nine names §10 states. Written out here rather than imported from the
-# module under test, so that a dropped event is a failing assertion instead of a
-# smaller vocabulary that every other test agrees with.
+# The nine names §10 states, plus the two W8 added. Written out here rather than
+# imported from the module under test, so that a dropped event is a failing
+# assertion instead of a smaller vocabulary that every other test agrees with.
+#
+# The two are `alert.opened` and `alert.resolved`, and the reason they are here
+# rather than folded into an existing event is in the contract: none of the nine
+# is about a disk filling up, a swap file, a Docker store or a tunnel, and
+# mapping DISK_CRITICAL onto `provider.degraded` would deliver a sentence about
+# a provider that does not exist. `alert.resolved` is separate from
+# `alert.opened` because §21 requires a recovery to SPEAK — an absence of a
+# message is not a message saying the problem ended.
 STATED_EVENTS = (
     "session.created", "session.waiting_input", "turn.completed", "turn.failed",
     "approval.required", "device.unavailable", "provider.degraded",
-    "handoff.completed", "run.terminated",
+    "handoff.completed", "run.terminated", "alert.opened", "alert.resolved",
 )
 
 DEVICE = "device:server-beijing"
@@ -95,7 +103,7 @@ def event(name="turn.failed", **kwargs) -> "notifications.Event":
 
 
 class TestTheVocabularyIsClosed(unittest.TestCase):
-    def test_the_nine_events_are_the_nine_events(self):
+    def test_the_declared_events_are_the_declared_events(self):
         self.assertEqual(notifications.events(), STATED_EVENTS)
 
     def test_an_invented_event_name_is_refused(self):

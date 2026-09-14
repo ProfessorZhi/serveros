@@ -118,6 +118,22 @@ surfaces:
       # which a caller could supply a measurement and have the daemon relay it
       # as an observation of the host.
       - resource.anomaly.list
+      # From §18/§21. The alert register — the anomaly that persisted, given
+      # an identity that outlives the tick that found it — and the one row in
+      # full with the sentence a person would be sent.
+      #
+      # Two of the four alert operations are deliberately NOT here.
+      # `alert.ack` and `alert.snooze` are daemon methods and CLI commands,
+      # and this surface declares that it "holds no state and changes
+      # nothing": §11 makes acknowledgement a statement about a PERSON's
+      # attention, and this surface has no way to establish which person an
+      # agent call speaks for. §18 leaves that to the existing human-identity
+      # policy, and that policy answers UNKNOWN — so the write stays on the
+      # CLI, where a person is the one running it. An unauthenticated ack
+      # would be worse than no ack: it would let a machine mark a finding as
+      # seen by somebody who never saw it, and the state would say so.
+      - alert.list
+      - alert.inspect
     owns:
       - current-node environment facts
       - current-node path role resolution
@@ -138,6 +154,8 @@ surfaces:
       - current-node tunnels, visible forwarders, and the blind spots
       - "current-node resource anomalies, their thresholds, and the codes that
         could not be graded"
+      - "the alerts this node has opened, what it has said about each, and
+        what it has not"
     does_not_own:
       - other devices
       - fleet device identity

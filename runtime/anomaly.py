@@ -93,6 +93,29 @@ DEFAULT_THRESHOLDS = {
     "docker_build_cache_bytes_high": 21474836480,   # 20 GiB
     "container_writable_layer_bytes_high": 1073741824,   # 1 GiB
     "container_log_bytes_high": 1073741824,   # 1 GiB
+    # -- alert hysteresis (§9) ------------------------------------------------
+    # How far back a measurement has to come before an alert about it closes.
+    # Transcribed from the contract like every other value here, and asserted
+    # equal to it, so the contract can be read without opening this module. The
+    # alert layer reads them from `load_thresholds()`; none of them is used by
+    # any branch below, because detection asks "is it over the line" and only
+    # the alert layer asks "has it come back far enough".
+    "filesystem_percent_recovery_margin": 3.0,
+    "inode_percent_recovery_margin": 3.0,
+    "memory_percent_recovery_margin": 5.0,
+    "swap_percent_recovery_margin": 5.0,
+    "docker_storage_percent_recovery_margin": 3.0,
+    # The process layer's own margins, and the three byte-valued aggregates
+    # whose margins were derivable but undeclared — see the contract for why
+    # each number is what it is. `memory_rss_recovery_margin` is the one that
+    # needed `margin_key` to learn the `_high_bytes` spelling; without it the
+    # alert about a group holding 1 GiB resident could never close.
+    "cpu_percent_recovery_margin": 10.0,
+    "memory_rss_recovery_margin": 268435456,
+    "container_log_bytes_recovery_margin": 268435456,
+    "container_writable_layer_bytes_recovery_margin": 268435456,
+    "docker_build_cache_bytes_recovery_margin": 4294967296,
+    "error_repeats_recovery_margin": 2,
 }
 
 # Codes that describe a thing being BROKEN rather than unused. The distinction
@@ -126,6 +149,12 @@ SEVERITY = {
     "TASK_IDLE_PROCESS_ACTIVE": "high",
     "TASK_CLOSED_RESOURCE_RUNNING": "high",
     "ORPHAN_PROCESS_TREE": "high",
+    # §5. Medium, and deliberately not high: the two halves are each true of
+    # things that are fine, so what this ranks is "a person should look at the
+    # lifecycle question", not "something is broken". It is also NOT a staleness
+    # signal and not a cleanup authorisation — `implies_stale: false` is asserted
+    # of it like every other code.
+    "RUNTIME_OUTLIVED_OWNER": "medium",
     "UNKNOWN_OWNER_LONG_RUNNING": "medium",
     "REPEATED_ERROR_LOOP": "medium",
     "FUNCTIONAL_PROBE_FAILED": "high",
@@ -198,6 +227,16 @@ FLOATING_DEPENDENCY_PATTERNS = (
 MCP_KINDS = ("mcp", "mcp-server")
 
 
+# Origin-session states that mean "this login is on its way out", as
+# `loginctl show-session -p State` reports them. A tuple rather than an equality
+# for the reason `resource_anomaly.TUNNEL_BAD_STATES` is one: matching a single
+# spelling is how a rule stops applying the first time the source grows a
+# synonym. `closing` is the value `attribution.session_facts` names as
+# load-bearing — "the login is on its way out while its scope's processes are
+# still alive" — and it is the only one this host has been observed to produce.
+TERMINATING_SESSION_STATES = ("closing",)
+
+
 def load_thresholds(path=None) -> dict:
     """Thresholds from the contract, over the built-in defaults.
 
@@ -214,6 +253,38 @@ def load_thresholds(path=None) -> dict:
         return thresholds
     thresholds.update(document.get("thresholds") or {})
     return thresholds
+
+
+def margin_key(threshold_key: str | None) -> str | None:
+    """The policy key that says how far a measurement must come back to close.
+
+    Derived from the threshold key rather than tabulated per code, because two
+    tiers of one measurement — `filesystem_percent_high` and
+    `filesystem_percent_critical` — are the same quantity and come back down
+    the same distance; a second table mapping codes to margins would be a
+    second place for the two tiers to drift apart. A threshold key with none of
+    the suffixes below has no margin, and that is the answer for every code
+    whose subject is a declaration rather than a measurement.
+
+    `_high_bytes` is the third suffix because the byte-valued thresholds are
+    spelled from the largest unit down (`memory_rss_high_bytes`) while the
+    percent-valued ones are spelled up (`cpu_percent_high`) — the same English
+    phrase, two orders. Without it, `memory_rss_high_bytes` would derive no
+    margin, the alert about it could never close, and the failure would look
+    like an alert nobody had got round to dealing with.
+
+    Lives here rather than in `resource_anomaly` because the runtime detector
+    grades codes too, and `resource_anomaly` already loads this module: putting
+    it the other way round would make the two load each other.
+    """
+    if not threshold_key:
+        return None
+    for suffix in ("_high", "_critical"):
+        if threshold_key.endswith(suffix):
+            return threshold_key[: -len(suffix)] + "_recovery_margin"
+    if threshold_key.endswith("_high_bytes"):
+        return threshold_key[: -len("_high_bytes")] + "_recovery_margin"
+    return None
 
 
 def signal(code: str, subject: str, measured: dict, *, window: str,
@@ -247,7 +318,8 @@ def signal(code: str, subject: str, measured: dict, *, window: str,
 
 def detect(*, groups=None, containers=None, task_states=None, host_facts=None,
            probe_results=None, error_windows=None, resources=None,
-           coverage_update=None, thresholds=None, criticality=None) -> list[dict]:
+           coverage_update=None, thresholds=None, criticality=None,
+           session_states=None) -> list[dict]:
     """Every anomaly the supplied facts support. Nothing is inferred here.
 
     Each block below is skipped when its input is absent, and skipped inputs
@@ -272,12 +344,20 @@ def detect(*, groups=None, containers=None, task_states=None, host_facts=None,
         cpu = agg.get("cpu_percent") or 0.0
         age = agg.get("age_seconds")
         memory = agg.get("memory_rss_bytes") or 0
+        # §5/§14. The group's largest term, carried on the signal itself so
+        # that a notification about a sum can name what is in the sum. It is
+        # the group document's own `contributors[0]` rather than a second
+        # computation: the detector does not have the process table and must
+        # not grow one, and two rankings of the same facts is how the alert
+        # and the process view start disagreeing about which process is busy.
+        top = (group.get("contributors") or [None])[0]
 
         if cpu >= thresholds["cpu_percent_high"] and (age or 0) >= thresholds["cpu_sustained_seconds"]:
             signals.append(signal(
                 "HIGH_CPU_SUSTAINED", ref,
                 {"cpu_percent": cpu, "threshold_percent": thresholds["cpu_percent_high"],
-                 "process_count": agg.get("process_count")},
+                 "process_count": agg.get("process_count"),
+                 "top_contributor": top},
                 window=f"lifetime average over {age:.0f}s",
                 why="the group's summed lifetime CPU exceeds the threshold over a life long enough for 'sustained' to mean something",
             ))
@@ -285,7 +365,8 @@ def detect(*, groups=None, containers=None, task_states=None, host_facts=None,
         if memory >= thresholds["memory_rss_high_bytes"]:
             signals.append(signal(
                 "HIGH_MEMORY_SUSTAINED", ref,
-                {"memory_rss_bytes": memory, "threshold_bytes": thresholds["memory_rss_high_bytes"]},
+                {"memory_rss_bytes": memory, "threshold_bytes": thresholds["memory_rss_high_bytes"],
+                 "top_contributor": top},
                 window=f"resolved over {age:.0f}s" if age else "current",
                 why="resident memory exceeds the declared threshold",
             ))
@@ -321,6 +402,40 @@ def detect(*, groups=None, containers=None, task_states=None, host_facts=None,
                 {"age_seconds": age, "threshold_seconds": thresholds["age_long_seconds"]},
                 window=f"{age:.0f}s",
                 why="no agent rule identifies this group and it has been running longer than the long-lived threshold",
+            ))
+
+        # -- §5. The origin session is leaving and the work is not. ---------
+        #
+        # Both halves are separately true of things that are FINE, which is why
+        # this is a combination and not either test alone: a login mid-logout
+        # has nothing left running, and a long build has an owner who is still
+        # logged in. Only the pair says "the thing that started this has gone
+        # away and this is still spending the machine".
+        #
+        # The subject is the GROUP, not a runtime family. There is no branch on
+        # a program name here and there must not be one: a transport can be on
+        # its way out while what it started keeps running for any runtime, and
+        # a code named after the process where it was first noticed would be a
+        # Codex-specific detector wearing a general name.
+        session = (session_states or {}).get(group.get("session_ref") or "")
+        state = (session or {}).get("state")
+        if state in TERMINATING_SESSION_STATES and (
+                cpu >= thresholds["cpu_percent_high"]
+                or memory >= thresholds["memory_rss_high_bytes"]):
+            signals.append(signal(
+                "RUNTIME_OUTLIVED_OWNER", ref,
+                {"origin_session_state": state,
+                 "origin_session": group.get("session_ref"),
+                 "cpu_percent": cpu,
+                 "threshold_percent": thresholds["cpu_percent_high"],
+                 "memory_rss_bytes": memory,
+                 "threshold_bytes": thresholds["memory_rss_high_bytes"],
+                 "top_contributor": top},
+                window=f"lifetime average over {age:.0f}s" if age else "current",
+                why=("the login that owns this group is terminating and the "
+                     "group is still consuming. Neither fact alone justifies "
+                     "anything: what this reports is a lifecycle mismatch, not "
+                     "a fault and not a cleanup authorisation"),
             ))
 
         # -- task state. The honest branch. --------------------------------
@@ -484,7 +599,8 @@ def detect(*, groups=None, containers=None, task_states=None, host_facts=None,
 
 
 def unchecked(*, groups=None, containers=None, task_states=None, host_facts=None,
-              probe_results=None, error_windows=None, resources=None) -> list[dict]:
+              probe_results=None, error_windows=None, resources=None,
+              session_states=None) -> list[dict]:
     """Which inputs the detector could NOT evaluate, and why.
 
     This exists so that an empty signal list can be read correctly. On this
@@ -505,6 +621,21 @@ def unchecked(*, groups=None, containers=None, task_states=None, host_facts=None
         })
     if not groups:
         out.append({"input": "groups", "state": UNKNOWN, "why": "no runtime groups were supplied"})
+    if session_states is None:
+        # `None` rather than a falsy test, and the difference is a real reading.
+        # `graph.session_states()` derives the document from the groups and
+        # returns `{}` when no group has a session scope in its cgroup — that
+        # is a caller that LOOKED and found nothing to look at. A truthiness
+        # test here would report every session-free host as an unmeasured one,
+        # which is the declared-but-absent mistake with the sign flipped: a
+        # measurement reported as a gap.
+        out.append({
+            "input": "session_states",
+            "state": UNKNOWN,
+            "why": ("no origin-session states were supplied, so "
+                    "RUNTIME_OUTLIVED_OWNER could not be evaluated. Its absence "
+                    "is NOT evidence that every group's owner is still there."),
+        })
     if not containers:
         out.append({"input": "containers", "state": UNKNOWN, "why": "no containers were supplied"})
     if not host_facts:
@@ -524,6 +655,142 @@ def unchecked(*, groups=None, containers=None, task_states=None, host_facts=None
                     "registration is well-formed."),
         })
     return out
+
+
+# Which code each input gates. Declared here, beside `unchecked()`, because
+# this module owns both vocabularies — the input names and the code names — and
+# a mapping between two vocabularies belongs where they meet.
+#
+# It exists for one reader: the alert state machine. An alert that stops being
+# reported can close for two entirely different reasons — the condition ended,
+# or nobody looked. The signal list cannot tell them apart (both are an absence)
+# and `unchecked()` speaks in INPUTS, so something has to say "because
+# `containers` was missing, these two codes were not evaluated". Without this
+# table the runtime detector's alerts would all close on the first tick whose
+# process table, Docker socket or registry failed to answer, and the alert list
+# would report a broken node as a recovered one.
+INPUT_CODES = {
+    "groups": ("HIGH_CPU_SUSTAINED", "HIGH_MEMORY_SUSTAINED",
+               "AGE_WITHOUT_ACTIVITY", "ORPHAN_PROCESS_TREE",
+               "UNKNOWN_OWNER_LONG_RUNNING"),
+    "session_states": ("RUNTIME_OUTLIVED_OWNER",),
+    "task_states": ("TASK_IDLE_PROCESS_ACTIVE", "TASK_CLOSED_RESOURCE_RUNNING"),
+    "containers": ("STALE_CONTAINER", "STOPPED_RECLAIM_CANDIDATE"),
+    "probe_results": ("FUNCTIONAL_PROBE_FAILED", "MCP_PROCESS_ALIVE_BUT_UNAVAILABLE"),
+    "host_facts": ("ROOT_FS_PRESSURE", "DATA_FS_PRESSURE"),
+    "error_windows": ("REPEATED_ERROR_LOOP",),
+    "resources": ("SESSION_OWNED_DURABLE_RESOURCE",
+                  "PERSISTENT_RUNTIME_FLOATING_DEPENDENCY",
+                  "UNDECLARED_DURABLE_RESOURCE"),
+}
+
+# Codes in `SEVERITY` that no input in this module gates, because this module
+# never emits them. `DESIRED_ACTUAL_MISMATCH` and `PROTECTION_LOST_ON_IDENTITY_
+# SWITCH` are declared with a severity here so that one table answers "how bad
+# is this code" for every code in the product; the detectors that emit them are
+# `desired.py` and `protection.py`, and `resource_anomaly` re-labels the first
+# as one of its own. A test asserts these two sets and `SEVERITY` cover each
+# other, so a new code cannot be added here without answering which input
+# decides whether it was evaluated.
+NOT_GATED_BY_AN_INPUT = {
+    "DESIRED_ACTUAL_MISMATCH": (
+        "emitted by `desired.py` and carried by `resource_anomaly`, which "
+        "reports its own coverage for it"),
+    "PROTECTION_LOST_ON_IDENTITY_SWITCH": (
+        "emitted by `protection.py`, whose input is the container list rather "
+        "than any of this module's"),
+}
+
+
+def unevaluated(rows: list[dict]) -> list[dict]:
+    """`codes_not_evaluated`, derived from what `unchecked()` reported.
+
+    The list a caller assembles for the alert layer, in the shape
+    `resource_anomaly` already emits: one row per CODE, each carrying the input
+    that was missing. Codes whose input WAS supplied are absent rather than
+    present-and-clean, which is the distinction the alert layer reads.
+    """
+    out = []
+    for row in rows or []:
+        why = row.get("why")
+        for code in INPUT_CODES.get(str(row.get("input")), ()):
+            out.append({"code": code, "input": row.get("input"),
+                        "state": row.get("state"), "why": why})
+    out.sort(key=lambda item: item["code"])
+    return out
+
+
+def levels(*, groups=None, host_facts=None, error_windows=None) -> dict:
+    """Every GRADED measurement, reported whether or not it fired.
+
+    A signal list cannot answer "has this come back down far enough to close
+    the alert about it", because a signal is only emitted ABOVE its threshold:
+    at 84.9% the list is empty, and empty is also what an unmeasurable host
+    produces. The alert layer's hysteresis compares against these rows instead,
+    which is the same discipline `codes_not_evaluated` applies one level up.
+
+    Only the codes whose subject is a CONTINUOUS quantity appear here. The
+    declaration-shaped codes — ORPHAN_PROCESS_TREE, RUNTIME_OUTLIVED_OWNER,
+    the durable-resource family — have no distance to come back and are absent
+    on purpose: an alert about one of those closes when it stops being
+    reported, and giving it a level row would invent a measurement nobody
+    takes.
+    """
+    out: dict = {}
+    thresholds = load_thresholds()
+
+    for group in groups or []:
+        ref = group["ref"]
+        agg = group.get("aggregate") or {}
+        rows = (
+            ("HIGH_CPU_SUSTAINED", agg.get("cpu_percent"),
+             thresholds["cpu_percent_high"]),
+            ("HIGH_MEMORY_SUSTAINED", agg.get("memory_rss_bytes"),
+             thresholds["memory_rss_high_bytes"]),
+        )
+        for code, value, threshold in rows:
+            if value is None:
+                continue
+            out[f"{code}|{ref}"] = _level_row(code, ref, value, threshold)
+
+    for fact in (host_facts or {}).get("filesystems") or []:
+        used = fact.get("used_percent")
+        if used is None:
+            continue  # unread is not empty
+        mount = fact.get("mount")
+        code = "ROOT_FS_PRESSURE" if mount == "/" else "DATA_FS_PRESSURE"
+        out[f"{code}|filesystem:{mount}"] = _level_row(
+            code, f"filesystem:{mount}", used, thresholds["filesystem_percent_high"])
+
+    for ref, window in (error_windows or {}).items():
+        count = window.get("count")
+        if count is None:
+            continue
+        out[f"REPEATED_ERROR_LOOP|{ref}"] = _level_row(
+            "REPEATED_ERROR_LOOP", ref, count, thresholds["error_repeats_high"])
+
+    return out
+
+
+def _level_row(code: str, subject: str, value, threshold) -> dict:
+    """One graded measurement. `margin_key` derived, never tabulated."""
+    return {"code": code, "subject": subject, "value": value,
+            "threshold": threshold,
+            "margin_key": margin_key(THRESHOLD_KEYS.get(code))}
+
+
+# The threshold key per graded code, so `margin_key()` derives the recovery
+# margin from the same key the detector compares against. A code whose key has
+# no `_high`/`_critical`/`_high_bytes` suffix derives no margin, and the alert
+# layer holds rather than closes — which is why `TO_GRADED` and this table are
+# asserted to agree.
+THRESHOLD_KEYS = {
+    "HIGH_CPU_SUSTAINED": "cpu_percent_high",
+    "HIGH_MEMORY_SUSTAINED": "memory_rss_high_bytes",
+    "ROOT_FS_PRESSURE": "filesystem_percent_high",
+    "DATA_FS_PRESSURE": "filesystem_percent_high",
+    "REPEATED_ERROR_LOOP": "error_repeats_high",
+}
 
 
 # ---------------------------------------------------------------------------

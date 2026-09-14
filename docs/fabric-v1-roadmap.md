@@ -203,20 +203,25 @@ already exists and is waiting.
 
 | id | status | what is missing | the failure it answers |
 |---|---|---|---|
-| HUM-01 | **DECLARED_ABSENT** | **Every producer.** `runtime/notifications.py` is complete, tested, and has **no importer outside `tests/`**; `runtime/daemon.py` never names it. The contract's `producers:` block names six events that no code emits. | **Unless a person runs a command, nobody is told anything.** The module that would tell them is finished and unreachable. |
-| HUM-02 | ABSENT | An anomaly → event bridge. `runtime/anomaly.py` grades its codes with severity, and the only consumers are **pull** surfaces (`serverosctl anomaly list`, `serverosctl anomaly explain`, `anomaly.list`, `resource.anomaly.list`). | A node that knows something is wrong and reports it only to whoever asks. This is the piece that converts a working detector into a notification. |
-| HUM-03 | ABSENT | A notification policy. Zero hits workspace-wide: nothing decides which events reach which conversation, at what volume, or when to stay quiet. | Alert fatigue as the eventual failure of HUM-01/02 done naively — every graded code becomes a message, and the messages stop being read. |
-| HUM-04 | **UNSUPPORTED** | An approval transport. `human.approval.transport` is `UNSUPPORTED` and `request_approval` **raises** `HumanControlUnsupported` rather than returning a soft value. | Anything irreversible that would be gated on an approval this transport cannot carry. The capability table is measured on this device and every entry carries `measured_by`. |
+| HUM-01 | **EXISTS — one producer of seven** | The **producer**, for the one event that had a detector behind it. `runtime/alerting.py#notify_for` raises `alert.opened` and `alert.resolved`; both are `IMPLEMENTED` with a `raised_by` in `runtime/notification-contract.yaml#producers`, and the gate checks the file and the symbol resolve *and* that the event name is a literal in it. The other six are `DECLARED_ABSENT` **with the reason and a disposition written on each**, not parked in an exemption table. | **Unless a person runs a command, nobody is told anything.** The module that would tell them was finished and unreachable. It is now reachable from the one place where a detector was already running and already graded. |
+| HUM-02 | **EXISTS** | An anomaly → event bridge. `runtime/daemon.py#alert_pass` evaluates both detectors every tick (`runtime/anomaly.py` and `runtime/resource_anomaly.py`) through the daemon's **own** observers, and `runtime/alerting.py#evaluate` turns graded codes into alerts with an identity. Only graded codes: a code in `codes_not_evaluated`, or a severity of `unknown`, **does not notify** — "nothing was evaluated" is not "the node is fine". | A node that knows something is wrong and reports it only to whoever asks. This is the piece that converts a working detector into a notification. |
+| HUM-03 | **EXISTS** | A notification policy, in `runtime/notification-contract.yaml#alerts`. Identity is `code + device_ref + subject_ref`, and **`identity_is_not: [pid, container_name, timestamp]`** is part of it. Cooldown is 900s / 1h / 6h by severity with the clock on `last_attempt_at` and not `last_notified_at` — otherwise a transport that is down silences the alert for as long as it stays down. Hysteresis closes at `threshold - margin`, with the margins left in `attribution-contract.yaml` where the thresholds they modify already live. | Alert fatigue as the eventual failure of HUM-01/02 done naively — every graded code becomes a message, and the messages stop being read. |
+| HUM-04 | **UNSUPPORTED** | An approval transport. `human.approval.transport` is `UNSUPPORTED` and `request_approval` **raises** `HumanControlUnsupported` rather than returning a soft value. This is now also the reason `alert.ack` and `alert.snooze` are `transport: LOCAL_ONLY, surfaces: [serverosctl]` — a Feishu message cannot carry a decision back, so a design that let a person "reply ACK" would produce alerts nobody could close. | Anything irreversible that would be gated on an approval this transport cannot carry. The capability table is measured on this device and every entry carries `measured_by`. |
 | HUM-05 | **UNKNOWN** | The answer to whether `human.identity.verify` works **inside** a BotMux turn. It is `UNKNOWN` rather than `UNSUPPORTED` on purpose — the surface exists and BotMux correctly declined to verify *this* process, because this process is not in a turn. | An `UNKNOWN` flattened into a `no` produces a system that stops asking. Closing it is an experiment, not an implementation. |
 
-HUM-01 is **the best effort-to-value entry in this ledger.** The expensive half
-— a closed nine-event vocabulary, severity fixed per event rather than per call
-site, ServerOS-authored templates, and a `deliver()` that consults
-`human.notification.transport` before claiming a send it did not make — is done
-and correct. What is missing is the boring half: something to call it. HUM-01,
-HUM-02 and HUM-03 belong in one pass, in that order, and none of them can act
-on the world. **They can only tell a person**, which is why they go before
-anything in the Ability or Coordination columns.
+HUM-01, HUM-02 and HUM-03 were done in one pass, in that order, as the ledger
+said to. **The split that made it work is the one to keep**: `alert_pass()`
+decides the facts and writes an intent, holding no provider; `serverosctl alert
+sync` is the only surface that holds a transport and the only one that can write
+`last_delivery ∈ DELIVERED · FAILED · UNSUPPORTED · UNKNOWN`, and **none of the
+four resolves an alert**. A daemon that can send is a daemon that cannot tell
+you the transport is broken, which is exactly when its answer is wanted.
+
+None of the three can act on the world. **They can only tell a person**, which
+is why they went before anything in the Ability or Coordination columns — and
+the recommendation an alert carries is always `REVIEW` / `MONITOR` /
+`GOVERNANCE_REQUIRED`, with the sentence stating that nothing was stopped.
+**An alert is not an authorization.**
 
 HUM-04 and HUM-05 are the two entries in this page that **a person has to
 close rather than a change**. HUM-04 needs a surface that does not exist and
@@ -233,11 +238,11 @@ between a correct measurement and a person who can act on it.
 
 | id | status | what is missing | the failure it answers |
 |---|---|---|---|
-| OBS-01 | ABSENT | **An alert state machine.** `ACKNOWLEDGED`, `SNOOZED`, `RESOLVED`, `alert_ref`, `first_seen`, `hysteresis` and `cooldown` have **zero hits** in `ops/scripts` and in this repository. What exists: `evaluate()`'s transient `{level, key, msg}` list recomputed from scratch every run (so **an alert has no identity across runs**), `run.sh`'s hour-scoped idempotency key, and `history.jsonl` (a metric ledger, not an alert ledger). | A condition that persists six hours becomes **six identical cards**, and a metric oscillating around its threshold produces an unbounded number of them — which trains people to ignore all of them, and the failure after that is a real alert nobody reads. |
+| OBS-01 | **EXISTS** | **An alert state machine**, in `runtime/alerting.py`, state at `state/serveros/alerts/state.json` through the same `_atomic_write` the control store uses. Four states — `OPEN · ACKNOWLEDGED · SNOOZED · RESOLVED` — over an identity of `code + device_ref + subject_ref`, with dedupe, cooldown, hysteresis and an announced recovery. An `ACKNOWLEDGED` alert **never becomes RESOLVED on its own**; a `SNOOZED` one keeps observing and speaks again when its window ends if it is still firing. §12's rule is enforced across the delivery seam: an intent is not a delivery, only `record_delivery` moves `last_notified_at`, and a delivery that did not arrive leaves the alert exactly as open as it was. Surfaces: `serverosctl alert list · inspect · ack · snooze · sync`, and `alert.list` / `alert.inspect` on the node MCP — the **write** half is deliberately not on MCP, which holds no state and changes nothing. | A condition that persists six hours becomes **six identical cards**, and a metric oscillating around its threshold produces an unbounded number of them — which trains people to ignore all of them, and the failure after that is a real alert nobody reads. |
 | OBS-02 | PARTIAL | `RESTARTING` and `NO_HEALTHCHECK` have **no representation**. `runtime/containers.py:295` carries Docker's raw value (`healthy\|unhealthy\|starting\|none`) through verbatim as evidence; `runtime/probes.py:465` maps it onto four axes; the derived states are `UNAVAILABLE · UNKNOWN · STOPPED · NOT_RUNNING · NOT_READY · FUNCTIONALLY_FAILED · DEGRADED · HEALTHY`. So mid-restart and no-healthcheck both read `DEGRADED`. | One word for a **transient condition** and a **permanent property** — the two a person most needs to tell apart. The precedent to copy is `botmux_watchdog.py`, which models exactly this and adds the transition nobody else has: an explicit recovery, announced. |
 | OBS-03 | ABSENT | The three display regions — `HOST` / `MANAGED-ATTRIBUTED` / `UNATTRIBUTED`. Today scope is mixed and a reader has to work out whose a number is. | The ownership split not being visible where it is decided. The monitor's own five measurement 口径 are the same discipline applied to numbers rather than to regions, and one of them is already left **deliberately blank** because the value cannot be computed — that blank is invariant 11, on a card, in production. |
 | OBS-04 | ABSENT | A latency axis in ServerOS, and `NOT_CONFIGURED`. Both are **deliberately** absent rather than missing: the only latency measurements in the ecosystem are the ops monitor's `probe_proxy.ms` and `history.jsonl.m_egress_ms`, and a tunnel declared nowhere is not a degraded tunnel — it is `PROVIDER_NOT_INSTALLED`. Recorded so that a future reader finds a decision rather than a hole. | A reader who finds the gap and fills it with an invention. |
-| OBS-05 | — | Same gap as **HUM-01/02/03**, which is where it is tracked. Listed here only so a reader who arrives from the monitoring side finds it. | — |
+| OBS-05 | **EXISTS — the last hop, and where the numbers a person reads come from** | Tracked as **HUM-01/02/03** and **OBS-01**, now closed. The one thing this round added *for* the monitoring side is the shape of a finding: a card that said `codex-app-server 5 processes total 279.5%` read **top contributor (highest cpu): pid 79288 … 279.5% of one core**, because a group total is arithmetic and not a thing anybody can act on. A PID is still not an identity — the alert keys on the canonical `runtime-group:` ref, so a process killed and relaunched by its supervisor is **one** alert and not one per restart. | A reader who arrives from the monitoring side and finds a group name where they need a process, or a hole where the last hop should be. |
 
 The **review-candidate versus `CLEANUP_CANDIDATE`** distinction belongs in the
 same pass and is already correct in the code: an anomaly code is a heuristic
@@ -265,11 +270,12 @@ Phase 0  Reading the ledger honestly                          no authorization
   the PARTIAL doc drifts:   ABL-03 — open
 
 Phase 1  Telling a person — nothing here can act               no authorization
-  HUM-01  producers for the nine events
-  HUM-02  the anomaly → event bridge
-  HUM-03  a notification policy
-  OBS-01  the alert state machine, and OBS-02's two states
-  OBS-03  the three regions
+  HUM-01  DONE in v1.2 — one producer of seven, the other six named
+  HUM-02  DONE in v1.2 — the anomaly → event bridge, graded codes only
+  HUM-03  DONE in v1.2 — identity, cooldown, hysteresis, delivery record
+  OBS-01  DONE in v1.2 — the alert state machine
+  OBS-02  the two container states — remains
+  OBS-03  the three regions — remains
 
 Phase 2  Closing the declared-and-absent on the read path       authorization: policy
   MEM-01  DONE in v1.2 — the recall firewall, and MEM-03's scope half with it
@@ -292,9 +298,15 @@ the code is *already correct* and the declaration is wrong. Fixing them costs
 almost nothing and removes the class of error that produced the last two
 rounds' most expensive findings.
 
-**Phase 1 is where the product gets a voice**, and it is the only phase whose
-output a person experiences directly this month. It is deliberately first among
-the things that do anything, because it can only ever add information.
+**Phase 1 is where the product gets a voice, and it has one from v1.2.** It was
+deliberately first among the things that do anything, because it can only ever
+add information — and the sentence a person now receives says so: when a
+recommendation is present, it states that nothing was stopped. What took the
+work was not the sending. It was the four properties that make a voice worth
+listening to: an identity that survives a restart, a cooldown so one condition
+is one message, a hysteresis margin so a wobbling number cannot machine-gun a
+person, and an announced recovery — because silence after an alert is
+indistinguishable from a dead timer.
 
 **MEM-01 was the highest-severity entry, sat in Phase 2 anyway, and is done.**
 It was listed ahead of the rest of its phase because it was small, and it was

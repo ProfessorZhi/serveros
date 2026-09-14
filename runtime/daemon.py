@@ -89,6 +89,12 @@ view_mod = _load("serveros_runtime_view", "view.py")
 # decision a security boundary rests on be tested without a filesystem.
 agent_control_store_mod = _load("serveros_runtime_agent_control_store",
                                 "agent_control_store.py")
+# §21. The alert state machine. Loaded here for the same reason the control
+# store is: the daemon is what runs the tick, and the tick is what keeps the
+# register current. It is NOT loaded so the daemon can send anything — the
+# module holds no transport and this daemon holds no provider, which is the
+# split §18 requires and `_r_agent_control_status` explains.
+alerting_mod = _load("serveros_runtime_alerting", "alerting.py")
 _ACTOR_PATH = _HERE.parent / "context" / "actor.py"
 if "_serveros_context_actor" not in sys.modules:
     _spec = importlib.util.spec_from_file_location("_serveros_context_actor", _ACTOR_PATH)
@@ -458,6 +464,12 @@ class Daemon:
         # store is opened lazily so that `serverosd --check` and the many tests
         # that never touch agent control do not create a file they do not use.
         self._control_store: object | None = None
+        # §21. The alert register. Lazy for the same reason: a daemon that
+        # never detects anything should not create an empty register, because
+        # an empty register is indistinguishable from one whose alerts were
+        # all resolved and then forgotten.
+        self._alert_store: object | None = None
+        self.last_alert_pass: dict | None = None
         # Whose connection the request in flight arrived on. Cleared by
         # `handle`; read only by `agent.context.attach`.
         self._peer: dict | None = None
@@ -474,6 +486,22 @@ class Daemon:
         observations = self.observe_all()
         drift = self.detect_drift(observations)
         decisions = self.reconcile(observations)
+        # §21. The alert register is kept current by the pass that just looked
+        # at the world, using the observations it took — not by a second
+        # measurement taken while the first is being reported.
+        #
+        # A failed alert pass does NOT fail the tick. The daemon loop dying is
+        # a strictly larger problem than a stale register, and the failure is
+        # recorded here rather than only logged, so "no alerts" and "the alert
+        # pass has been raising for an hour" are different answers.
+        try:
+            alert_pass: dict = self.alert_pass(measured=observations)
+        except Exception as exc:  # noqa: BLE001 - the loop outlives this
+            alert_pass = {
+                "error": f"{type(exc).__name__}: {exc}",
+                "note": ("the alert register was NOT updated this tick. An "
+                         "unchanged register does not mean nothing changed."),
+            }
         report = {
             "tick_started_at": _iso(started),
             "duration_seconds": round(self._now() - started, 3),
@@ -482,6 +510,13 @@ class Daemon:
             "observations": observations,
             "drift": drift,
             "decisions": decisions,
+            "alerts": {"passes": [{"detector": p["detector"],
+                                   "opened_or_updated": len(p["alerts"]),
+                                   "pending": len(p["pending"]),
+                                   "held": len(p["held"])}
+                                  for p in alert_pass.get("passes", [])],
+                       "at": alert_pass.get("at"),
+                       "error": alert_pass.get("error")},
             "budget": self.budget.snapshot(),
         }
         self.last_tick = report
@@ -919,6 +954,21 @@ class Daemon:
             "agent.binding.list": self._r_agent_binding_list,
             "agent.binding.record": self._r_agent_binding_record,
             "agent.binding.close": self._r_agent_binding_close,
+            # §21. The alert register. `alert.list` and `alert.inspect` are the
+            # two reads; `ack` and `snooze` are what a PERSON does about an
+            # alert and are therefore CLI-and-IPC only — see `alert.ack` for
+            # why a chat message cannot be one of these. `pending` and
+            # `record-delivery` are the two halves of the delivery hop, split
+            # across the daemon boundary so that the daemon never holds a
+            # transport (§2/§18). `alert.pass` exists because a caller testing
+            # what the register would say should not have to wait for a tick.
+            "alert.list": self._r_alert_list,
+            "alert.inspect": self._r_alert_inspect,
+            "alert.ack": self._r_alert_ack,
+            "alert.snooze": self._r_alert_snooze,
+            "alert.pending": self._r_alert_pending,
+            "alert.record-delivery": self._r_alert_record_delivery,
+            "alert.pass": self._r_alert_pass,
         }
 
     def handle(self, request: dict, *, peer: dict | None = None) -> dict:
@@ -980,7 +1030,16 @@ class Daemon:
                 # Agent runtime is not a source of a statement about its own
                 # purpose.
                 "agent.binding.resolve", "agent.binding.list",
-                "agent.binding.record", "agent.binding.close")
+                "agent.binding.record", "agent.binding.close",
+                # §21. The two reads, the two a person performs, and the two
+                # halves of the delivery hop that keep transport out of the
+                # daemon. `alert.ack` is deliberately NOT on the node MCP
+                # surface: that surface holds no state and changes nothing,
+                # and whether an acknowledgement may arrive over a chat is the
+                # inbound-identity question `mcp/human_control.py` answers
+                # UNKNOWN for.
+                "alert.list", "alert.inspect", "alert.ack", "alert.snooze",
+                "alert.pending", "alert.record-delivery", "alert.pass")
 
     # -- the local capability view (§27/§28) --------------------------------
 
@@ -1415,6 +1474,187 @@ class Daemon:
                 Path(self.state_dir) / "agent-control" / "store.json",
                 now=self._now)
         return self._control_store
+
+    # -- §21: the alert register -------------------------------------------
+
+    # Which detector produced which identity. The name is stored ON the alert
+    # row and decides who may close it, so it is a stable name and not the
+    # object or the class — see `alerting.evaluate`'s docstring for the bug
+    # this prevents: `DESIRED_ACTUAL_MISMATCH` is declared by both detectors,
+    # and one detector's silence about a code it never evaluates would close
+    # the other's alert one tick after it opened.
+    #
+    # The names live in `notification-contract.yaml#alerts.detectors` rather
+    # than here, and are read through `alerting.detectors()`. Two reasons, and
+    # the second is the one that made it a change rather than a preference:
+    # the name is durable state and must not be a file path a rename can
+    # orphan — and the daemon does not LOAD either detector, it reads their
+    # documents through `view`, so a module path here was a label that read
+    # like a dependency.
+    DECLARATION_DETECTOR = "declaration-anomaly"
+    MEASUREMENT_DETECTOR = "measurement-anomaly"
+
+    def alert_store(self):
+        """The alert register. Opened on first use, like the control store."""
+        if self._alert_store is None:
+            self._alert_store = alerting_mod.AlertStore(
+                Path(self.state_dir) / "alerts" / "state.json")
+        return self._alert_store
+
+    def detections(self, *, measured: dict | None = None) -> list[dict]:
+        """Both detection documents, each paired with the detector that made it.
+
+        Measured through this daemon's own observers — `self.inventory` and
+        `self.host` — rather than through fresh ones. §28's rule: an answer
+        assembled from two observers is two answers, and the one the daemon is
+        acting on is the one it took itself.
+
+        `measured` is this tick's observations when the caller already has
+        them. The resource layer ages them rather than assuming they are
+        current, so passing the tick's own comparison is what makes the alert
+        about the comparison the daemon actually made instead of a second
+        probe taken while the first is being reported.
+        """
+        declared = alerting_mod.detectors()
+        missing = [name for name in (self.DECLARATION_DETECTOR,
+                                     self.MEASUREMENT_DETECTOR)
+                   if name not in declared]
+        if missing:
+            # Raised rather than worked around, and it does not kill the loop:
+            # `tick()` records a failed alert pass as a failed alert pass, so
+            # the report says the register was not updated and why. Rows this
+            # node already wrote carry one of these names, and a name that is
+            # no longer declared belongs to nobody — the "only the opener may
+            # close it" rule would quietly match nothing, forever.
+            raise alerting_mod.AlertError(
+                f"{missing} are the detector names this daemon raises alerts "
+                f"under, and {alerting_mod.CONTRACT} does not declare them")
+        return [
+            {"detector": self.DECLARATION_DETECTOR,
+             "document": view_mod.anomaly_list(
+                 registry=self.registry, inventory=self.inventory,
+                 probes_host=self.host, answered_by=ANSWERED_BY)},
+            {"detector": self.MEASUREMENT_DETECTOR,
+             "document": view_mod.resource_anomaly(
+                 inventory=self.inventory, registry_doc=self.registry,
+                 measured=measured, probes_host=self.host,
+                 answered_by=ANSWERED_BY)},
+        ]
+
+    def alert_pass(self, *, measured: dict | None = None) -> dict:
+        """§21. One evaluation pass over both detectors. Sends NOTHING.
+
+        The split is §2's, and it is the whole design: this method decides what
+        the facts are and records what still has to be said. It cannot deliver,
+        because it holds no provider — and it must not be given one. A daemon
+        that can send is a daemon that cannot answer when the transport is
+        broken, which is the moment its answer is wanted, and it is why
+        `_r_agent_control_status` refuses to import a transport either.
+
+        So `pending` comes out of here as an INTENT and the delivery hop
+        happens on a surface allowed to know about transports. §12's honesty
+        rule is enforced across that boundary: an intent is not a delivery, and
+        only `record_delivery` can move `last_notified_at`.
+        """
+        at = _iso(self._now())
+        device_ref = self.registry.device_ref
+        store = self.alert_store()
+        passes = []
+        for entry in self.detections(measured=measured):
+            passes.append({"detector": entry["detector"],
+                           **alerting_mod.evaluate(
+                               store, detection=entry["document"],
+                               device_ref=device_ref, at=at,
+                               detector=entry["detector"])})
+        self.last_alert_pass = {"at": at, "passes": passes}
+        return self.last_alert_pass
+
+    def _r_alert_pass(self, params) -> dict:
+        """Evaluate now, deliver nothing. The same pass the tick runs."""
+        measured = None
+        if getattr(self, "last_tick", None):
+            measured = self.last_tick.get("observations")
+        return self.alert_pass(measured=measured)
+
+    def _r_alert_list(self, params) -> dict:
+        """The register as a person scans it, most in need of attention first."""
+        at = _iso(self._now())
+        return {**alerting_mod.listing(self.alert_store(), at=at),
+                "device_ref": self.registry.device_ref,
+                "delivery_surface": (
+                    "`serverosctl alert sync` performs the delivery. This "
+                    "daemon records the intent and cannot send: it holds no "
+                    "transport, and the surface that does is named by "
+                    "`agent.control.status`.")}
+
+    def _r_alert_inspect(self, params) -> dict:
+        """One alert in full, with the sentence a person would have been sent."""
+        ref = _required(params, "alert_ref")
+        at = _iso(self._now())
+        store = self.alert_store()
+        alert = store.get(ref)
+        if alert is None:
+            # An answer, not an error: "this ref is not here" is a fact about
+            # the register, and the refs it does hold are in its own listing.
+            return {"found": False, "alert_ref": ref,
+                    "note": ("no alert with this ref is held by this node. "
+                             "`alert.list` shows the refs it does hold, and an "
+                             "alert ref is derived from code, device and "
+                             "subject — so a ref that never existed and one "
+                             "whose alert was never opened look the same here.")}
+        return {"found": True, "alert": alert,
+                "rendered": alerting_mod.detail_for(alert, at=at),
+                "recommendation": alerting_mod.recommendation(
+                    str(alert.get("severity")))}
+
+    def _r_alert_ack(self, params) -> dict:
+        """A person has seen it. §11: this is NOT a resolution."""
+        at = _iso(self._now())
+        return alerting_mod.acknowledge(
+            self.alert_store(), _required(params, "alert_ref"), at=at,
+            note=params.get("note"))
+
+    def _r_alert_snooze(self, params) -> dict:
+        """Stop repeating it for a while. The observation keeps updating."""
+        at = _iso(self._now())
+        return alerting_mod.snooze(
+            self.alert_store(), _required(params, "alert_ref"), at=at,
+            seconds=params.get("seconds"))
+
+    def _r_alert_pending(self, params) -> dict:
+        """What still has to be said, and may be said now. Delivery free."""
+        at = _iso(self._now())
+        pending = alerting_mod.pending_for(self.alert_store(), at=at)
+        return {"at": at, "count": len(pending), "pending": pending,
+                "note": ("these are INTENTS. Nothing has been sent, and this "
+                         "method cannot send. The caller performs the delivery "
+                         "and reports the outcome through "
+                         "`alert.record-delivery`; until it does, the intent "
+                         "stays pending and no `last_notified_at` is set.")}
+
+    def _r_alert_record_delivery(self, params) -> dict:
+        """§12. What actually happened when somebody tried to say it."""
+        at = _iso(self._now())
+        kind = _required(params, "kind")
+        state = _required(params, "state")
+        if kind not in ("opened", "resolved"):
+            raise DaemonError(
+                f"{kind!r} is not an alert notification kind; the two are "
+                f"'opened' and 'resolved'")
+        if state not in ("DELIVERED", "FAILED", "UNSUPPORTED", "UNKNOWN"):
+            raise DaemonError(
+                f"{state!r} is not one of DELIVERED, FAILED, UNSUPPORTED, "
+                f"UNKNOWN — an outcome nobody can name is an outcome that will "
+                f"be read as a delivery")
+        stored = alerting_mod.record_delivery(
+            self.alert_store(), alert_ref=_required(params, "alert_ref"),
+            kind=kind, at=at, delivered=state == "DELIVERED", state=state,
+            reason=params.get("reason"))
+        return {"alert_ref": stored["alert_ref"], "kind": kind,
+                "state": state, "delivered": state == "DELIVERED",
+                "last_notified_at": stored.get("last_notified_at"),
+                "pending": stored.get("pending"),
+                "delivery_failure": stored.get("delivery_failure")}
 
     def _r_agent_context_attach(self, params) -> dict:
         """Mint a trusted context from a provider report. §5's only doorway.

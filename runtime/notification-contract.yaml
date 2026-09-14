@@ -12,7 +12,20 @@ schema: serveros/notification.v1
 module: runtime/notifications.py
 
 events:
-  # The nine §10 names, and no others.
+  # The nine §10 names, and no others — plus the two the alert layer raises.
+  #
+  # `alert.opened` and `alert.resolved` were added in W8 and the reason is not
+  # that the vocabulary wanted to grow. A resource anomaly is a real thing this
+  # node detects fifteen kinds of, and none of the nine could carry it: not one
+  # of them is about a disk filling up, a swap file, a Docker store or a
+  # tunnel, and mapping DISK_CRITICAL onto `provider.degraded` would deliver a
+  # sentence about a provider that does not exist. An event vocabulary that
+  # cannot express the finding is a vocabulary that silently drops it.
+  #
+  # Two, and not four. ACKNOWLEDGED and SNOOZED are states of an alert rather
+  # than things that happened, and neither produces a message — see the
+  # `alerts.acknowledgement` block below for why that is a boundary rather than
+  # an omission.
   values:
     - session.created
     - session.waiting_input
@@ -23,6 +36,8 @@ events:
     - provider.degraded
     - handoff.completed
     - run.terminated
+    - alert.opened
+    - alert.resolved
 
   # Severity is a property of the event, not of the site that raises it. A
   # `turn.failed` raised from a handoff is not more urgent than one raised from
@@ -42,6 +57,19 @@ events:
     provider.degraded: ATTENTION
     handoff.completed: INFO
     run.terminated: ATTENTION
+    # Both ATTENTION, and the same value for both because this axis does not
+    # answer "how bad is it". That question has its own answer — `alerts.severity_words`
+    # below maps the alert's own low/medium/high onto NOTICE/WARNING/CRITICAL and
+    # the word travels inside the sentence. What this axis answers is "does a
+    # person need to act", and for an opening alert the answer is: not by
+    # themselves, and not now — the alert layer's whole job is that a person is
+    # told once and not told again until something changes.
+    #
+    # `alert.resolved` is ATTENTION rather than INFO for §10's reason: the
+    # absence of a message is not a recovery message. A person who was told
+    # about the problem and never told it ended reasonably concludes it did not.
+    alert.opened: ATTENTION
+    alert.resolved: ATTENTION
 
   # The sentence a person reads. Written here, in the ServerOS repository,
   # because the claim in the sentence is a ServerOS claim.
@@ -62,6 +90,14 @@ events:
     provider.degraded: "A provider on {device} is degraded: {reason}."
     handoff.completed: "Handoff completed for {subject} ({device})."
     run.terminated: "Run {subject} terminated on {device}: {reason}."
+    # One line, and the rest of the alert rides in `detail` below it — see
+    # `alerts.text` for what that block is allowed to contain. The headline is
+    # deliberately mechanical: it names the CODE (`{reason}` is the anomaly
+    # code here, not a reason word), because a person who has seen it twice
+    # should be able to grep for it, and a sentence that rephrases the code is
+    # a sentence two people will disagree about.
+    alert.opened: "{reason} · {device} · {subject}"
+    alert.resolved: "RECOVERED · {reason} · {device} · {subject}"
 
   # Who authors the text. Stated explicitly because §10 states it explicitly:
   # a provider that composed these sentences would be writing the claim, and a
@@ -79,13 +115,81 @@ events:
   # cover the vocabulary and must not overlap. An event in neither list is a
   # sentence nobody will ever read; an event in both is raised by two paths that
   # could disagree about when it happens.
+  #
+  # WHAT CHANGED IN W8, AND WHY THIS IS NO LONGER A LIST
+  # ----------------------------------------------------
+  # It was a bare list of six names, and for as long as it was, it made a
+  # claim that nothing could check: `tests/test_notifications.py` compared it to
+  # `from_reason` and to `events.values`, and all three were declarations in
+  # one file. The comparison passed while every one of the six had **zero
+  # callers** — `runtime/notifications.py` was imported by nothing outside
+  # `tests/`, `runtime/daemon.py` never named it, and the roadmap recorded all
+  # six as DECLARED_ABSENT. A gate that compares declarations to declarations
+  # cannot notice that the thing declared was never built.
+  #
+  # So each entry now says WHERE it is raised, or says that it is not. The
+  # `raised_by` reference is `path#function`, both parts are checked to exist,
+  # and the event name must appear as a literal in that file — so a rename on
+  # either side is red rather than silent. An entry whose producer does not
+  # exist is `DECLARED_ABSENT` with the disposition written down, and that is a
+  # first-class answer rather than a TODO: this round wired the one producer
+  # that had a real detector behind it and left the rest named.
   producers:
-    - session.created
-    - session.waiting_input
-    - turn.completed
-    - approval.required
-    - handoff.completed
-    - run.terminated
+    alert.opened:
+      raised_by: runtime/alerting.py#notify_for
+      status: IMPLEMENTED
+    alert.resolved:
+      raised_by: runtime/alerting.py#notify_for
+      status: IMPLEMENTED
+
+    # The six W1 recorded. They are unchanged by W8 — a producer is not wired
+    # by writing a better sentence about it — and each now carries the reason
+    # rather than only a name in an exemption table.
+    session.created:
+      status: DECLARED_ABSENT
+      because: >-
+        `mcp/agent_session_service.py#create` is where a session comes into
+        being and it names no notification. The session service is
+        provider-backed and persists nothing, so wiring this means deciding
+        what "created" means for a provider that owns the session — a
+        coordination question, not a rendering one.
+      disposition: wire when the session service has a record of its own to raise it from
+    session.waiting_input:
+      status: DECLARED_ABSENT
+      because: >-
+        requires an inbound surface. `human.transport.ingress` is UNKNOWN —
+        BotMux ingests Feishu messages and documents no surface that delivers
+        them to a consumer (`/api/events` and `/api/messages` answer 404
+        not_found_yet). ServerOS cannot see a session become waiting.
+      disposition: blocked on an inbound surface, not on this module
+    turn.completed:
+      status: DECLARED_ABSENT
+      because: >-
+        `mcp/codex_app_server_provider.py` observes turn notifications, and
+        nothing routes them here. Also INFO: the event is not worth a message
+        on its own, and `turn.failed` is the one that is.
+      disposition: wire together with `turn.failed`, if a turn is ever worth an out-of-band sentence
+    approval.required:
+      status: DECLARED_ABSENT
+      because: >-
+        `mcp/human_control.py#request_approval` is UNSUPPORTED on this
+        transport — no documented callback surface carries a human decision
+        back. Raising this would ask a person for something the transport
+        cannot collect.
+      disposition: blocked on `human.approval.transport`, not on this module
+    handoff.completed:
+      status: DECLARED_ABSENT
+      because: >-
+        `context/` hands off between sessions and raises no event. Same
+        subject as `session.created`.
+      disposition: wire when the handoff path has a record to raise it from
+    run.terminated:
+      status: DECLARED_ABSENT
+      because: >-
+        Runs are `work-engine`'s. This repository can read a Run's state and
+        does not own the transition that terminates one, so a producer here
+        would be a second observer of somebody else's event.
+      disposition: owned by work-engine; cross-repository, so out of scope for a single-repo round
 
 # ---------------------------------------------------------------------------
 # Capability states. All three are ordinary answers; none is an exception.
@@ -134,6 +238,172 @@ from_reason:
   READINESS_UNKNOWN: [provider.degraded]
   INVALID_CONTEXT: [turn.failed]
   UNTRUSTED_ACTOR: [turn.failed]
+
+# ---------------------------------------------------------------------------
+# Alerts. §21 in the brief: an anomaly that persists is ONE alert, not one
+# message per probe tick, and it speaks again when it ends.
+#
+# This block is the POLICY half of that, and it is here rather than in
+# `runtime/alerting.py` for the reason every other table in this tree is in a
+# contract: a cooldown written next to the comparison that uses it is a number
+# nobody reviews, and the person who wants alerts to be quieter edits a policy
+# file, not Python.
+#
+# What it is NOT is a metrics system. There is no history here, no rate, no
+# window query and no aggregation. An alert is a four-valued state attached to
+# a stable identity, and the only question this block answers is when to speak.
+# ---------------------------------------------------------------------------
+alerts:
+  # Which detectors may own an alert, and what each is CALLED on the row.
+  #
+  # The name is not the module path, and that is the point rather than a
+  # stylistic choice. A row remembers who opened it and ONLY that detector may
+  # close it, and rows outlive files: a detector renamed or split would leave
+  # every persisted row uninterpretable and that rule matching nothing, with
+  # no error anywhere. So the row stores a name in this node's own vocabulary,
+  # and this mapping is the one place that says which module answers to it.
+  #
+  # Two of them, and the reason is a real bug rather than symmetry — see
+  # `alerting.evaluate`'s docstring. `DESIRED_ACTUAL_MISMATCH` is declared by
+  # both, and the measurement detector's silence about a code it never grades
+  # is a false recovery for an alert the other one opened.
+  detectors:
+    declaration-anomaly: runtime/anomaly.py
+    measurement-anomaly: runtime/resource_anomaly.py
+
+  # SIX-STATE-FREE, deliberately. ACKNOWLEDGED and SNOOZED are not "more
+  # resolved" or "less open" — they are what a person did to the alert, and the
+  # observation underneath keeps updating in all four.
+  states: [OPEN, ACKNOWLEDGED, SNOOZED, RESOLVED]
+  # What creates a NEW alert rather than updating one, and the rule is the
+  # whole of §7: identity is the CODE plus the DEVICE plus the stable SUBJECT.
+  #
+  # PID is not in it. A runtime that is killed and relaunched by its supervisor
+  # is the same alert — the second process is not a second problem, and keying
+  # on PID is how a restart loop produces one message per restart. A container
+  # name is not in it either: names are reused, and two deployments of the same
+  # name are two incidents that must not merge. A timestamp is not in it: an
+  # identity that includes when it happened changes every time it happens.
+  #
+  # `subject_ref` is the producer's own stable subject — `filesystem:/`,
+  # `runtime-group:codex-session:…`, `tunnel:…` — which is why it is the third
+  # part and why the code and the device are not enough: one device can have
+  # two full disks and they are two alerts.
+  identity: "code + device_ref + subject_ref"
+  identity_is_not: [pid, container_name, timestamp]
+
+  # How the alert's own low/medium/high reads in the sentence. The event
+  # severity above answers "should a person act"; this answers "how bad", and
+  # they are different axes — a CRITICAL disk that nobody needs to act on right
+  # now is exactly what an alert with a cooldown is for.
+  severity_words:
+    low: NOTICE
+    medium: WARNING
+    high: CRITICAL
+
+  # §8. First OPEN notifies immediately, always — a cooldown that swallowed the
+  # first message would be a cooldown that made the feature useless for the one
+  # thing it exists for. After that, a persisting alert speaks again only when
+  # this many seconds have passed AND its severity has not gone down. The
+  # values are per severity because the right cadence for "a disk has 8% left"
+  # and "a disk has 3% left" is not the same number.
+  #
+  # Not every minute, and the number is not a guess about people: 900s is the
+  # daemon's own freshness window for an observation (`provider-contract.yaml`
+  # `readiness.freshness.window_seconds`), so anything faster would repeat a
+  # reading the node itself still considers current.
+  cooldown_seconds:
+    low: 21600      # 6h
+    medium: 3600    # 1h
+    high: 900       # 15m
+  # §8. The clock is `last_attempt_at` — the last time this node tried to say
+  # something — and NOT `last_notified_at`, which is the version this rule was
+  # written with and which is wrong in a way that only shows up during an
+  # outage. If the clock ran from the last SUCCESSFUL delivery, a transport
+  # that is down would leave `last_notified_at` untouched, the cooldown would
+  # never elapse, and the alert would go silent for exactly as long as the
+  # transport stayed broken — the one period in which a person most needs to
+  # hear about it. `last_notified_at` is still set, and set only, for a
+  # DELIVERED notification: it answers "was this announced", which is a
+  # different question from "when did we last try".
+  repeat_rule: >-
+    a repeat notifies only if the alert is still OPEN or ACKNOWLEDGED, at least
+    `cooldown_seconds[severity]` have passed since `last_attempt_at`, and its
+    severity has not decreased. A repeat is never a new alert and never changes
+    `first_seen`.
+  # §9. An alert closes at `open - margin`, never at `open`. The margins are
+  # NOT here — they modify thresholds that `attribution-contract.yaml#thresholds`
+  # already owns, and a second table restating them would be the drift this tree
+  # keeps removing. What is stated here is the rule; what it is expressed in
+  # lives with the number it modifies.
+  hysteresis: >
+    a measurement-backed alert resolves only once its measurement has come back
+    below `threshold - margin`, where the margin is
+    `attribution-contract.yaml#thresholds.<measure>_recovery_margin`. Absence of
+    a margin key for a code means the code is not a measurement — a declaration
+    either matches or it does not — and such an alert resolves when the signal
+    stops being emitted, not when a value comes back down.
+
+  # §11. What a person may do to an alert, and WHERE THEY MAY DO IT. The
+  # boundary is the load-bearing part: `human.transport.ingress` is UNKNOWN and
+  # `human.approval.transport` is UNSUPPORTED, so a Feishu message cannot carry
+  # a decision back into this node. A design that let people "reply ACK" would
+  # be a design that produced alerts nobody could close and a plausible-looking
+  # reading of messages that were never verified.
+  acknowledgement:
+    states: [ACKNOWLEDGED, SNOOZED]
+    transport: LOCAL_ONLY
+    surfaces: [serverosctl]
+    what_it_means: >-
+      ACKNOWLEDGED means a person has seen it and the condition has NOT gone
+      away. It is not a closure and must never become RESOLVED on its own; an
+      ACKNOWLEDGED alert that the world fixed becomes RESOLVED by the ordinary
+      path, and one that nobody fixes stays ACKNOWLEDGED and keeps its
+      observation current.
+    snooze_what_it_means: >-
+      SNOOZED means stop repeating this, and nothing else. The observation keeps
+      updating, `occurrence_count` keeps rising, and when the snooze expires an
+      alert that is still firing is allowed to speak again — a snooze that
+      silently resolved would be a way to make a problem disappear by waiting.
+    snooze_default_seconds: 3600
+    not_supported_because: >-
+      no inbound surface exists on this transport, so ack and snooze are CLI and
+      local-API only. This is a property of the transport and is reported by
+      `mcp/human_control.py#capabilities` as UNKNOWN/UNSUPPORTED rather than
+      worked around here.
+
+  # §12. What we know after trying to tell somebody. The vocabulary is three
+  # values and the third is the one that matters: a delivery that was never
+  # attempted because the transport said no is NOT the same as one that failed,
+  # and neither is the same as one we could not establish. None of them resolves
+  # an alert.
+  delivery:
+    values: [DELIVERED, FAILED, UNSUPPORTED, UNKNOWN]
+    rule: >-
+      a notification that did not arrive never resolves its alert and is never
+      recorded as delivered. The alert stays exactly as open as it was and
+      `last_delivery` says what happened, so the next reader can tell "this was
+      announced" from "this was supposed to be announced and was not".
+    no_retry: >-
+      no queue and no retry loop, per the module docstring. A failed delivery is
+      reported; the next tick's cooldown decides whether it is tried again, and
+      that is a policy decision rather than a hidden loop.
+
+  # §13. What the sentence may contain. A person reads this on a phone.
+  text:
+    headline_from: events.templates
+    detail_shape:
+      - "what and how bad: `{severity_word}` and the anomaly code"
+      - "the measurement, with the threshold it was compared against"
+      - "the top contributor, when the subject is a group of processes"
+      - "how long it has been true, and how many times it has been seen"
+      - "what may be done — always one of REVIEW / MONITOR / GOVERNANCE_REQUIRED"
+      - "that nothing was stopped, whenever a recommendation exists"
+    forbidden:
+      - "a raw provider payload or error body"
+      - "a path outside the declared roots"
+      - "a credential, token, cookie or key"
+      - "any claim of action: this system takes none (§15)"
 
 not_claimed:
   - >-

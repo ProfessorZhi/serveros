@@ -459,6 +459,19 @@ anomalies:
     note: >
       the tree's parent is init and the session that started it is not coming
       back. Evidence about lineage, not about whether the work matters.
+  - code: RUNTIME_OUTLIVED_OWNER
+    severity: medium
+    implies_stale: false
+    note: >
+      the login that owns this group is in a TERMINATING state and the group's
+      processes are still consuming. The two halves are separately true of
+      things that are fine — a session mid-logout has nothing left to run, and
+      a long build has an owner that is still logged in — so neither alone
+      fires this. Generic by construction: the subject is a runtime group and
+      its origin session, and no runtime family is named here. It exists
+      because a transport can be on its way out while the thing it started
+      keeps running, which is a lifecycle fact about ANY runtime and was
+      written up as a Codex incident only because that is where it was seen.
   - code: UNKNOWN_OWNER_LONG_RUNNING
     severity: medium
     implies_stale: false
@@ -613,6 +626,66 @@ thresholds:
   docker_build_cache_bytes_high: 21474836480   # 20 GiB
   container_writable_layer_bytes_high: 1073741824   # 1 GiB
   container_log_bytes_high: 1073741824   # 1 GiB
+
+  # -- alert hysteresis margins ----------------------------------------------
+  # Every threshold above is an OPEN threshold: the value at which a signal
+  # starts firing. None of them says when to stop, and the difference is the
+  # whole of §9 — a filesystem at 84.9% then 85.1% then 84.8% crosses the
+  # warning tier three times in three ticks and produces three unrelated
+  # events, which is how a person learns to stop reading them.
+  #
+  # So an alert closes at `open - margin`, not at `open`. The margin is a
+  # POLICY and lives beside the threshold it modifies rather than in the
+  # notification module, because a margin hardcoded next to the code that
+  # compares it is a second threshold table nobody reviews.
+  #
+  # Why a MARGIN and not a second absolute: the two numbers are one decision —
+  # "how far back does it have to come before we believe it" — and stating the
+  # distance keeps that visible when either end is edited. A second absolute
+  # would let someone move the open threshold and leave the close threshold
+  # above it, which reads as hysteresis and behaves as a flap.
+  #
+  # Only the codes whose subject is a MEASUREMENT have one. `RUNTIME_UNOWNED`,
+  # `DESIRED_ACTUAL_MISMATCH` and the tunnel codes are not thresholds — a
+  # declaration either matches or it does not — so they resolve on the fact
+  # disappearing, not on a value coming back down. Absence of a margin is that
+  # statement, and the alert layer reads it that way rather than inventing one.
+  filesystem_percent_recovery_margin: 3.0
+  inode_percent_recovery_margin: 3.0
+  memory_percent_recovery_margin: 5.0
+  swap_percent_recovery_margin: 5.0
+  docker_storage_percent_recovery_margin: 3.0
+
+  # The process layer's two continuous measurements. `cpu_percent_high` is the
+  # case §5's acceptance run produced: a runtime group sitting at 279% of one
+  # core does not sit there — it falls to nothing when the process it is
+  # restarted, rises again as it starts working, and with no margin the alert
+  # about it opens and closes on every one of those turns. 10 percentage
+  # points is one tenth of a core: far enough that ordinary scheduling noise
+  # stays inside the open alert, close enough that a group which really stopped
+  # working closes it on the next tick.
+  cpu_percent_recovery_margin: 10.0
+  # `memory_rss_high_bytes` is 1 GiB, so this is 256 MiB back — a quarter of the
+  # threshold. Resident memory falls in steps as processes exit, and the step
+  # for the case that produced this number was ~390 MB.
+  memory_rss_recovery_margin: 268435456
+
+  # The three byte-valued aggregates whose recovery margin was DERIVED but
+  # never declared, which made their alerts permanently open: `margin_key()`
+  # turned `container_log_bytes_high` into `container_log_bytes_recovery_margin`
+  # and nothing looked that key up, so the alert layer held with "there is no
+  # distance to come back" — an alert that reads as an open problem nobody is
+  # dealing with, forever, because a number was missing. Declared now, and a
+  # test asserts that every key `margin_key()` can derive for a graded code is
+  # present here, so the next one cannot be missing silently.
+  container_log_bytes_recovery_margin: 268435456          # 256 MiB under 1 GiB
+  container_writable_layer_bytes_recovery_margin: 268435456
+  docker_build_cache_bytes_recovery_margin: 4294967296    # 4 GiB under 20 GiB
+  # `error_repeats_high` is a windowed COUNT, and this is the one margin here
+  # that is not a continuous quantity: two repeats fewer than the threshold,
+  # so a subject oscillating between nine and eleven failures an hour does not
+  # produce two events an hour.
+  error_repeats_recovery_margin: 2
 
 # ---------------------------------------------------------------------------
 # Resource anomaly codes (§18). Fifteen, and a SECOND vocabulary beside the
