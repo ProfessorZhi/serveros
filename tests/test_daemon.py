@@ -1446,6 +1446,159 @@ def test_the_daemon_reads_the_projection_the_writer_actually_writes(
     assert result["generated_at"] == "2027-01-15T07:00:00+00:00"
 
 
+# ---------------------------------------------------------------------------
+# §4/§2 · the discovery tree and the single-ability read
+# ---------------------------------------------------------------------------
+#
+# These two methods exist so that §11's `ability.inspect` names something richer
+# than `ability.status`, and so that §4's tree is reachable by an agent at all.
+# The failure mode both guard against is the one this file's neighbours already
+# guard: an empty answer that reads as a confident one.
+
+
+def _state_root(tmp_path, monkeypatch, materials):
+    """A state root holding one projection, so the derivations have a subject."""
+    projection = _load("serveros_ability_projection", "ability_projection.py")
+    state = tmp_path / "state"
+    (state / "abilities").mkdir(parents=True)
+    projection.write_atomic(state / "abilities" / "effective.json", {
+        "schema": "serveros/ability-projection.v1",
+        "authority": "ability-management",
+        "this_is": "a local observed projection, not the authority",
+        "registry_status": "FRESH",
+        "generated_at": "2027-01-15T07:00:00+00:00",
+        "source_revision": "deadbeef",
+        "abilities": materials,
+    })
+
+    class Paths:
+        def root(self, name):
+            assert name == "state"
+            return state
+
+    monkeypatch.setattr(daemon_mod.paths_mod, "Paths", Paths)
+    return state
+
+
+def test_the_tree_is_derived_from_the_projection_and_carries_its_provenance(
+        daemon_factory, tmp_path, monkeypatch):
+    """A tree without the projection's staleness beside it is a placement
+    presented as a fact about the authority, which §27 forbids the node to
+    claim."""
+    _state_root(tmp_path, monkeypatch, [
+        {"name": "shared-memory", "id": "ProfessorZhi/shared-memory",
+         "path": "skills/shared-memory", "domain": {"primary": "serveros.memory"},
+         "taxonomy_refs": ["serveros.memory"]},
+        {"name": "test-management", "id": "ProfessorZhi/test-management",
+         "path": "skills/test-management",
+         "domain": {"primary": "serveros.operations.test"},
+         "taxonomy_refs": ["serveros.engineering.quality", "serveros.operations"]},
+        {"name": "design-and-contract", "id": "ProfessorZhi/design-and-contract",
+         "path": "skills/design-and-contract"},
+    ])
+    result = daemon_factory(a_resource("thing-one")).handle(
+        {"method": "ability.tree"})["result"]
+
+    assert result["authority"] == "ability-management"
+    assert result["registry_status"] == "FRESH"
+    assert result["source_revision"] == "deadbeef"
+    assert result["basis"] == "domain.primary"
+    # Every prefix is a node, including the root — a tree whose top level
+    # vanished would put every ability one level too high.
+    assert result["nodes"] == ["serveros", "serveros.memory",
+                               "serveros.operations", "serveros.operations.test"]
+    assert result["placements"] == {"shared-memory": "serveros.memory",
+                                    "test-management": "serveros.operations.test"}
+    # `serveros.engineering.quality` is referenced and is NOT a node: no
+    # ability's primary path runs through it, and inventing one would be a node
+    # no ability is in.
+    assert result["cross_refs"] == {
+        "test-management": ["serveros.engineering.quality", "serveros.operations"]}
+    assert "serveros.engineering.quality" not in result["nodes"]
+    assert result["unplaced"] == ["design-and-contract"]
+    assert (result["ability_count"], result["classified_count"],
+            result["unplaced_count"]) == (3, 2, 1)
+
+
+def test_the_tree_is_null_and_not_empty_when_nothing_was_materialized(
+        daemon_factory, tmp_path, monkeypatch):
+    """The distinction this whole surface turns on, applied one level up.
+
+    `nodes: []` says "the catalogue has no nodes in it". That is a claim about
+    ability-management, made by a node that has not read it — and the empty
+    list is exactly how the claim gets made by accident, because `[]` is also
+    what a correct derivation from an unread catalogue would produce.
+    """
+    empty = tmp_path / "state"
+    empty.mkdir()
+
+    class Paths:
+        def root(self, name):
+            assert name == "state"
+            return empty
+
+    monkeypatch.setattr(daemon_mod.paths_mod, "Paths", Paths)
+    result = daemon_factory(a_resource("thing-one")).handle(
+        {"method": "ability.tree"})["result"]
+
+    assert result["registry_status"] == "NOT_MATERIALIZED"
+    assert result["nodes"] is None and result["placements"] is None
+    assert result["unplaced"] is None and result["cross_refs"] is None
+    assert "NOT an empty tree" in result["note"]
+
+
+def test_ability_inspect_places_one_ability_and_refuses_to_resolve_it(
+        daemon_factory, tmp_path, monkeypatch):
+    """§11's name, and the boundary it must not cross.
+
+    The tempting implementation answers "can this node run it" from "is it in
+    the projection", which is a union where the truth is an intersection: the
+    ability is materialized AND a provider that can execute it is present. A
+    projection is only the first half, so `resolution` is `not attempted` and
+    the answer names what does attempt it.
+    """
+    _state_root(tmp_path, monkeypatch, [
+        {"name": "test-management", "id": "ProfessorZhi/test-management",
+         "path": "skills/test-management",
+         "domain": {"primary": "serveros.operations.test"},
+         "taxonomy_refs": ["serveros.engineering.quality"]},
+    ])
+    result = daemon_factory(a_resource("thing-one")).handle(
+        {"method": "ability.inspect", "params": {"name": "test-management"}})["result"]
+
+    assert result["installed"] is True
+    assert result["source"] == "local projection"
+    assert result["resolution"] == "not attempted"
+    assert result["resolved_by"] == "serverosctl ability resolve"
+    assert result["registry_status"] == "FRESH"
+    assert result["tree"] == {"placement": "serveros.operations.test",
+                              "cross_refs": ["serveros.engineering.quality"],
+                              "unplaced": False}
+    # No FIELD in this answer may read as a verdict on executability. Asserted
+    # over the keys rather than over the prose, because the prose is where an
+    # explanation belongs and the keys are where a caller looks first.
+    assert set(result) & {"runnable", "supported", "available", "ready"} == set()
+
+
+def test_ability_inspect_of_an_unknown_name_does_not_claim_absence(
+        daemon_factory, tmp_path, monkeypatch):
+    """Absence from a projection is not absence on the authority (§27)."""
+    _state_root(tmp_path, monkeypatch, [
+        {"name": "shared-memory", "id": "x", "path": "skills/shared-memory"},
+    ])
+    result = daemon_factory(a_resource("thing-one")).handle(
+        {"method": "ability.inspect", "params": {"name": "nothing-like-this"}})["result"]
+
+    assert result["installed"] is None
+    assert result["ability"] is None
+    assert result["tree"] is None
+    assert "not proof of absence" in result["note"]
+    # The projection itself is still fresh and is still reported as such: the
+    # ability is missing, not the catalogue.
+    assert result["registry_status"] == "FRESH"
+    assert result["source_revision"] == "deadbeef"
+
+
 def test_observation_get_before_a_tick_is_not_an_empty_healthy_answer(daemon_factory):
     """Absence has a name. An empty observation set must never read as a
     clean bill of health."""

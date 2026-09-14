@@ -183,6 +183,43 @@ TOOLS: tuple[dict, ...] = (
             "additionalProperties": False,
         },
     },
+    # -- §4/§2: the discovery tree ------------------------------------------
+    #
+    # Two derivations of the projection above, and neither adds an argument a
+    # caller could use to describe the node differently from how it is.
+    {
+        "name": "ability.tree",
+        "description": (
+            "The taxonomy this node derives from its local capability "
+            "projection: the node set, where each observed ability falls, the "
+            "abilities that are in no node, and the cross-references kept "
+            "separately. Derived from classification metadata ALONE — never "
+            "from where a file lives, so the tree can be reorganised without "
+            "moving anything. An ability appears exactly once, under its "
+            "primary. `nodes` is null rather than empty when nothing has been "
+            "materialized: an empty tree would be a claim about "
+            "ability-management that nobody has read."
+        ),
+        "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False},
+    },
+    {
+        "name": "ability.inspect",
+        "description": (
+            "One ability as this node last observed it, plus where the tree "
+            "places it and what it is cross-referenced from. Does NOT report "
+            "whether this device can execute it: `resolution` is always "
+            "`not attempted`, because that question is the projection "
+            "intersected with the providers this device actually has, and "
+            "`serverosctl ability resolve` is what answers it. Listed is not "
+            "the same as executable."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {"name": {"type": "string"}},
+            "required": ["name"],
+            "additionalProperties": False,
+        },
+    },
     # -- §3/§5: the runtime graph -------------------------------------------
     {
         "name": "runtime.groups",

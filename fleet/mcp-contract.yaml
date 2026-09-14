@@ -63,6 +63,21 @@ surfaces:
       - observation.get
       - ability.list
       - ability.status
+      # §4/§2. The discovery tree, and the single-ability read with its
+      # placement. Both are DERIVATIONS from `ability.list`'s projection and
+      # carry that projection's provenance, so a caller reading a placement
+      # also reads whether the catalogue behind it is fresh. `ability.tree`
+      # returns `nodes: null` rather than `[]` when nothing has been
+      # materialized, for the same reason `ability.list` distinguishes those
+      # two: an empty tree is a claim about ability-management that this node
+      # would be making without having read it.
+      #
+      # `ability.inspect` is the name §11 lists, and until now it was served as
+      # an alias of `ability.status` — a mapping that named a richer read than
+      # anything behind it. §11's table pointed here because this is where the
+      # fact lives; the tool now exists, so the alias is gone.
+      - ability.tree
+      - ability.inspect
       # From §3/§5/§6/§10/§14 of the runtime-attribution brief. Every one is
       # read-only, and every one answers the question a pid cannot: whose work
       # is this, is it still valid, and what does it not justify.
@@ -107,6 +122,8 @@ surfaces:
       - current-node environment facts
       - current-node path role resolution
       - current-node ability materialization status
+      - the taxonomy this node derives from that projection, and where each
+        observed ability falls in it
       - current-node protected resources
       - current-node runtime groups, their lineage and their chains
       - current-node anomalies, their combinations and their blind spots
@@ -126,6 +143,16 @@ surfaces:
       - fleet device identity
       - cross-device routing
       - desired state for any device
+      # Not an omission and not a gap. "Is this ability listed on this node"
+      # and "can this node execute it" are different questions, and the second
+      # one is the projection intersected with the providers the device
+      # actually has — an Ability-plane fact this process is forbidden to
+      # reach (§23: the core may not load what it governs). `ability.inspect`
+      # says `resolution: not attempted` and names where the question IS
+      # answered, rather than answering it with the union.
+      - whether this node can EXECUTE an ability it has observed
+      - pack composition — a pack is an Ability-plane grouping, not a fact
+        about this node
       - process lifecycle — no tool here stops, restarts or signals anything
       - container lifecycle — no tool here removes, stops or prunes anything
     explicitly_absent:
@@ -311,7 +338,12 @@ section_11:
     # differs by one character — `ability.status` is that surface's own name
     # for the single-ability read, and it is the name it has always had.
     ability.list: {surface: serveros-node-mcp, as: ability.list}
-    ability.inspect: {surface: serveros-node-mcp, as: ability.status}
+    # Served under its own name now. It was mapped to `ability.status` while
+    # that was the only single-ability read this surface had — an alias that
+    # said "the name you were promised is this other name", which is only
+    # honest while the richer read does not exist. `ability.tree` and
+    # `ability.inspect` landed, so it does.
+    ability.inspect: {surface: serveros-node-mcp, as: ability.inspect}
     work.item.get: {surface: serveros-work-mcp, as: work.item.get}
     work.run.get: {surface: serveros-work-mcp, as: work.run.get}
     work.run.list: {surface: serveros-work-mcp, as: work.run.list}

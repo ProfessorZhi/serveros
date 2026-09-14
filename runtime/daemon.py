@@ -112,6 +112,19 @@ if "_serveros_context_resolver" not in sys.modules:
     sys.modules["_serveros_context_resolver"] = _resolver_module
     _resolver_spec.loader.exec_module(_resolver_module)
 resolver_mod = sys.modules["_serveros_context_resolver"]
+# §4/§2. The tree ALGORITHM, loaded rather than restated. The projection writer
+# and this surface must derive the same tree from the same catalogue, and a
+# second implementation here is two spellings of one idea that agree on the day
+# they are written. The synthetic name is the one `runtime/cli.py` uses for the
+# same file on purpose: two names for one module is two module objects, which is
+# how a `isinstance` check starts failing on a value that is the right type.
+#
+# Legitimate for the core to hold: it is under `runtime/`, it reads the LOCAL
+# projection rather than the authority, and `domain_tree()` is pure. The daemon
+# never calls `refresh()` — writing the projection is `serverosctl ability
+# refresh`'s job (§28), and a daemon that could reach another repository's git
+# objects would make this loop's latency depend on that repository.
+ability_projection_mod = _load("serveros_ability_projection", "ability_projection.py")
 
 
 class DaemonError(Exception):
@@ -838,6 +851,14 @@ class Daemon:
             "observation.get": self._r_observation_get,
             "ability.list": self._r_ability_list,
             "ability.status": self._r_ability_status,
+            # §4/§2. The discovery tree and the single-ability read, both
+            # derived from the same projection `ability.list` reports. §11
+            # names `ability.inspect` on this surface; before these two it was
+            # served as an ALIAS of `ability.status`, which was true of nothing
+            # a caller could observe and stopped being true the moment there
+            # was a richer answer to give.
+            "ability.tree": self._r_ability_tree,
+            "ability.inspect": self._r_ability_inspect,
             # Internal policy primitive used by the dedicated Agent Session MCP.
             # The daemon decides intent only and never calls an Agent provider.
             "agent.action.admit": self._r_agent_action_admit,
@@ -935,7 +956,8 @@ class Daemon:
         return ("device.show", "context.current", "path.resolve", "path.admit",
                 "runtime.list", "runtime.status", "runtime.explain",
                 "resource.summary", "resource.hygiene", "observation.get",
-                "ability.list", "ability.status", "agent.action.admit",
+                "ability.list", "ability.status", "ability.tree",
+                "ability.inspect", "agent.action.admit",
                 "runtime.groups", "runtime.group", "runtime.tree",
                 "runtime.budget", "process.top", "process.trace",
                 "anomaly.list", "anomaly.explain", "container.attribution",
@@ -1075,6 +1097,139 @@ class Daemon:
                             f"from a projection is not proof of absence on the "
                             f"authority."}
         return {**view, "name": name, "installed": True, "ability": match}
+
+    # -- §4/§2 · the discovery tree, over the same projection ----------------
+    #
+    # Both methods below are DERIVATIONS from `_capability_view()` and add no
+    # fact of their own. That is deliberate: the projection is the one thing
+    # this node knows about its own capabilities, and a second reader of the
+    # authority — or a cached tree beside the projection — would be a second
+    # answer to a question that already has one.
+
+    # The projection's provenance, carried into every derived answer. Named
+    # once so that a derivation cannot accidentally present a tree or a
+    # placement without the staleness of the catalogue it came from. §28 is
+    # explicit that a stale projection is USABLE and is not an installation
+    # authority; both halves of that have to be readable from the answer.
+    _PROJECTION_PROVENANCE = (
+        "authority", "this_is", "registry_status", "generated_at",
+        "age_seconds", "stale", "source", "source_revision",
+    )
+
+    def _projection_header(self, view: dict) -> dict:
+        return {key: view.get(key) for key in self._PROJECTION_PROVENANCE}
+
+    def _r_ability_tree(self, params) -> dict:
+        """§4's tree, as this node currently believes it.
+
+        The node renders the tree from classification metadata alone. §19 keeps
+        the physical layout flat, so a tree derived from where files live would
+        be a source index wearing the name of a taxonomy — which is why the
+        algorithm is handed rows rather than ability records, and why the row
+        shape is asserted in `test_ability_projection.py` rather than described
+        here.
+
+        `nodes: null` when there is no projection to derive from, and NOT `[]`.
+        An empty node list is a claim about ability-management ("its catalogue
+        has no classified abilities") made without having read it, and this is
+        the same distinction `_capability_view` already draws with
+        `abilities: null` versus `abilities: []`.
+        """
+        view = self._capability_view()
+        materials = view.get("abilities")
+        if materials is None:
+            return {
+                **self._projection_header(view),
+                "schema": ability_projection_mod.TREE_SCHEMA,
+                "basis": "domain.primary",
+                "nodes": None, "placements": None,
+                "unplaced": None, "cross_refs": None,
+                "note": (
+                    "no local capability projection has been materialized, so "
+                    "there is no catalogue to derive a tree from. This is NOT "
+                    "an empty tree: nobody has asked ability-management. Run "
+                    "`serverosctl ability refresh` to produce the projection "
+                    "this is derived from."
+                ),
+            }
+        tree = ability_projection_mod.domain_tree(
+            ability_projection_mod.tree_rows(materials))
+        unplaced = tree["unplaced"]
+        return {
+            **self._projection_header(view),
+            **tree,
+            "ability_count": len(materials),
+            "classified_count": len(tree["placements"]),
+            "unplaced_count": len(unplaced),
+            "note": (
+                "derived from `domain.primary` alone, so an ability appears "
+                "exactly once and `taxonomy_refs` are reported separately as "
+                "cross-references rather than as a second placement. An "
+                "unplaced ability has no `domain.primary`; that is a fact about "
+                "the catalogue and not a hole in this answer."
+            ),
+        }
+
+    def _r_ability_inspect(self, params) -> dict:
+        """One ability: what the projection says, and where the tree puts it.
+
+        §11 lists `ability.inspect` on this surface, and this is the method
+        that makes that name mean something rather than alias `ability.status`.
+
+        It NEVER reports a resolution status. "Listed in the local projection"
+        and "this device can execute it right now" are different questions: the
+        first is a materialization fact this node observed, the second is the
+        intersection of the projection with the providers this device actually
+        has — which is `resolver.py`'s job and is reachable as `serverosctl
+        ability resolve`. Answering the second question from the first would
+        answer it with a union, and the resolver exists because the two are not
+        the same set.
+        """
+        view = self._capability_view()
+        header = self._projection_header(view)
+        name = params.get("name")
+        materials = view.get("abilities")
+        if materials is None:
+            return {
+                **header, "name": name, "installed": None, "ability": None,
+                "tree": None,
+                "source": "local projection", "resolution": "not attempted",
+                "resolved_by": "serverosctl ability resolve",
+                "note": (
+                    "no local capability projection has been materialized, so "
+                    "nothing can be said about this ability from here. Absence "
+                    "of a projection is not absence of the ability."
+                ),
+            }
+        match = next((a for a in materials
+                      if isinstance(a, dict) and a.get("name") == name), None)
+        tree = ability_projection_mod.domain_tree(
+            ability_projection_mod.tree_rows(materials))
+        placement = tree["placements"].get(name) if match is not None else None
+        return {
+            **header, "name": name,
+            "installed": True if match is not None else None,
+            "ability": match,
+            "tree": {
+                "placement": placement,
+                "cross_refs": tree["cross_refs"].get(name, []),
+                "unplaced": match is not None and placement is None,
+            } if match is not None else None,
+            "source": "local projection",
+            "resolution": "not attempted",
+            "resolved_by": "serverosctl ability resolve",
+            "note": (
+                f"{name!r} is not in the local projection. Absence from a "
+                f"projection is not proof of absence on the authority."
+                if match is None else
+                "this is what the node last OBSERVED as installed, plus where "
+                "the tree places it. It is not a statement that this device "
+                "can execute it now — `resolution: not attempted` — because "
+                "that is the projection intersected with the providers this "
+                "device has, and `serverosctl ability resolve` is what "
+                "answers it."
+            ),
+        }
 
     def _r_node_status(self, params) -> dict:
         """The node runtime, describing itself.

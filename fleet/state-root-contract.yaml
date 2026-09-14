@@ -83,7 +83,16 @@ namespaces:
   abilities:
     class: projection
     holds: the last-observed LOCAL capability projection
-    producer: ability-management (writes), this node (observes)
+    # The producer used to be prose — "ability-management (writes), this node
+    # (observes)" — and neither half was true of any program in this tree:
+    # ability-management never wrote here, and `runtime/ability_projection.py`
+    # had no caller outside its own tests. So the Discovery surface read a file
+    # with no producer, which is `DECLARED_ABSENT` in its purest form. The
+    # command below is the producer, and it is a command rather than a daemon
+    # tick on purpose: a tick that ran `git show` against another repository
+    # would make the loop's latency depend on that repository's state, which is
+    # what §28 forbids.
+    producer: serverosctl ability refresh
     required: false
     authority: false
     # Deliberately classed as a projection even though it sits in the
