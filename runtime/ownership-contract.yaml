@@ -1,0 +1,303 @@
+# Ownership — who may be acted on, and the three things that are not one thing.
+#
+# Why this file exists
+# -------------------
+# `network-contract.yaml` declares an `ownership` input to its gate and says
+# what it means: "an EXTERNAL or UNKNOWN owner on the subject is a refusal, and
+# a PROTECTED subject is REQUIRE_APPROVAL". That input had no producer. The
+# parameter existed, the compose step read it, and the only thing that ever
+# filled it was a test. This file is the producer.
+#
+# It does NOT invent a second attribution system. Everything below is a wiring
+# rule over four things that already exist and already disagree with each other
+# on purpose:
+#
+#   §11 management class   `containers.management_class`  MANAGED / EXTERNAL / UNKNOWN
+#   §13 hygiene class      `hygiene.CLASSES`               PROTECTED / ACTIVE / STALE_CANDIDATE / …
+#   protection             `protection.resolve`            True / False / None
+#   registry               `registry.Registration`         owner.type, protection.level, lifecycle.class
+#
+# The three axes are separate questions and merging any two of them is the
+# substitution this file exists to refuse:
+#
+#   management class   is this under ServerOS management at all
+#   ownership          can an owner be NAMED, and on what evidence
+#   protection         has somebody DECLARED that nothing may touch it
+#
+# A container is routinely MANAGED with no nameable owner and no protection
+# declaration. That is not an error state and it is not "probably ours".
+
+schema: serveros.ownership.v1
+
+# ---------------------------------------------------------------------------
+# The decision. Three values, and the caller's next move differs for each.
+# ---------------------------------------------------------------------------
+decisions:
+  ALLOW:
+    means: "the ownership gate admitted the subject. This is NOT a permission."
+    caller_may: >-
+      continue to the action's own policy. `eligible: true` says the subject
+      got past ownership, not that the action is allowed — the tier policy, the
+      network preflight and the recovery class each still get to refuse.
+  REQUIRE_APPROVAL:
+    means: "no ownership rule refused it, and it may not be taken on the requester's own authority"
+    caller_may: "ask a person, through `approval.py` and its trusted context"
+  DENY:
+    means: "an ownership rule refused it"
+    caller_may: "nothing; the code below says which rule"
+
+# `eligible` is a field of its own and is not `decision == "ALLOW"`.
+#
+#   eligible: true   ownership did not refuse. Destructive actions then face
+#                    `hygiene.admission` and its tier; additive actions face
+#                    whatever policy the action carries.
+#   eligible: false  ownership refused. No later policy is consulted at all,
+#                    because a later policy that can be reached is a later
+#                    policy that can overrule this one.
+#
+# A gate whose pass is a permission is not a gate. This product has been bitten
+# by that shape often enough that the field is named after the weaker of the
+# two claims on purpose.
+
+# ---------------------------------------------------------------------------
+# The decision table. Every row cites where it comes from; none is invented
+# here.
+# ---------------------------------------------------------------------------
+decision_table:
+  - owner_class: UNKNOWN
+    protection: any
+    action: any
+    decision: DENY
+    code: OWNER_UNKNOWN
+    because: >-
+      `attribution-contract.yaml`: "If the evidence does not reach an owner, the
+      answer is UNKNOWN_OWNER and the resource is DEFER — never a reclaim
+      candidate." A mutation is the same question with a worse failure mode.
+
+  - owner_class: EXTERNAL
+    protection: any
+    action: any
+    decision: DENY
+    code: OWNER_EXTERNAL
+    because: >-
+      `network-contract.yaml` names this refusal and §11 resolves it: a subject
+      that declared itself not ours, or that another actor's evidence owns,
+      is not a subject this product may mutate on its own authority.
+
+  - owner_class: MANAGED
+    protection: protected
+    action: destructive
+    decision: DENY
+    code: PROTECTED_SUBJECT
+    because: >-
+      `hygiene.TIER_POLICY` for every tier, and `admission()`'s DENY_PROTECTED:
+      "protection: protected is not a hint. No automatic path reaches it, on
+      any trigger." A requested destructive action is not an automatic path,
+      and the sentence is kept anyway because the destructive tiers are exactly
+      the ones the protection was written about.
+
+  - owner_class: MANAGED
+    protection: protected
+    action: additive
+    decision: REQUIRE_APPROVAL
+    code: PROTECTED_SUBJECT
+    because: >-
+      `network-contract.yaml` compose block, verbatim: "a PROTECTED subject is
+      REQUIRE_APPROVAL". Creating something on a protected subject changes the
+      subject and destroys nothing, which is the difference between this row
+      and the one above.
+
+  - owner_class: MANAGED
+    protection: not_protected
+    action: destructive
+    decision: ALLOW
+    eligible_only: true
+    because: >-
+      ownership admitted it. `hygiene.admission` is then asked with the §13
+      class and the tier, and it is that call — not this row — that decides
+      whether anything happens. `STOP` on a STALE_CANDIDATE is ALLOW_UNDER_POLICY;
+      `REMOVE_VOLUME` is NEEDS_APPROVAL until a backup is verified.
+
+  - owner_class: MANAGED
+    protection: not_protected
+    action: additive
+    decision: ALLOW
+    eligible_only: true
+    because: "ownership admitted it; the action's own policy decides the rest"
+
+# `protection: not_protected` covers both `False` and `None` for the DECISION,
+# and they are NOT the same record. `protection.resolve` returns None when no
+# source on this node declared anything — see the `protection_undeclared` field
+# below, which is reported on every verdict so that "nobody said" never renders
+# as "somebody said no".
+
+# ---------------------------------------------------------------------------
+# What may decide an owner. Copied from `attribution-contract.yaml` on purpose
+# rather than referenced, because a gate that reads its rule from a file the
+# scanned code can also write is a gate the scanned code can widen.
+# ---------------------------------------------------------------------------
+decisive_evidence:
+  - docker-label
+  - registry-match
+  - cgroup
+  - systemd-unit
+
+# Everything else may CORROBORATE and may not decide. Enumerated because the
+# list is the rule: each of these is a string that correlates with an owner and
+# does not establish one, and every one of them has been mistaken for evidence
+# on this host at least once.
+locators:
+  name: "a container called `redis-cache-2` is a container called that"
+  image: "`litellm` is a package, not a person"
+  pid: "a pid names a process this minute and nothing next minute"
+  command_substring: "a command line is what it was told to run"
+  working_directory: "a path says where, not whose"
+  port: "a port is a rendezvous, not a title"
+  compose_project: >-
+    a compose project names a compose run. The 2026-09-13 batch-2 report
+    attributed `wi-001-internal` to LIT-0101 from exactly this, and the
+    attribution happened to be right; it was still not evidence, and the same
+    inference on `wi-002` would have been right for the same non-reason.
+
+weak_evidence_rule: >-
+  An owner conclusion whose evidence is entirely locators is UNKNOWN, and
+  UNKNOWN is OWNER_UNKNOWN, which is DENY. Corroboration may raise confidence in
+  an owner that a decisive source already established. It may not establish one.
+
+# ---------------------------------------------------------------------------
+# Resource kinds. `decisive_source` is the honest answer to "can this product
+# name an owner for a thing of this kind from something that may decide one".
+#
+# A kind with `ABSENT` is not unimplemented — it is a kind for which no decisive
+# source exists in this product, so every subject of that kind is UNKNOWN and
+# every mutation of one is DENY. That is the fail-closed direction and it is
+# recorded here so that the refusals are a property of the declaration rather
+# than of a code path nobody has written yet.
+# ---------------------------------------------------------------------------
+resource_kinds:
+  container:
+    decisive_source: PRESENT
+    through: "§11 `containers.management_class` over docker inspect + the registry"
+  network:
+    decisive_source: PRESENT
+    through: >-
+      docker labels resolved by `protection.resolve` and the registry. Note what
+      is NOT decisive here: `com.docker.compose.project` is a locator, so a
+      compose-created network whose owner is only known from its project label
+      is UNKNOWN and refused. Finding the real owner of `wi-001-internal`
+      needed the compose file and the env file on disk — files, not labels —
+      which is content, and content is what a decisive source is made of.
+  volume:
+    decisive_source: PRESENT
+    through: >-
+      the registration's `owner.ref` where a registration exists, and the
+      container that mounts it. A volume's owner by mount alone is a locator
+      chain: the mount says which container, and the container has to answer
+      for itself.
+  process:
+    decisive_source: PRESENT
+    through: "`attribution.attribute_process` — cgroup, session and systemd unit are all decisive"
+  tunnel:
+    decisive_source: ABSENT
+    through: >-
+      nothing. A forwarder is joined to a declared tunnel by pid, and a pid is a
+      locator. Fail-closed: UNKNOWN, DENY.
+  builder_cache:
+    decisive_source: ABSENT
+    through: >-
+      nothing. BuildKit's cache is not addressed by the registry and carries no
+      ownership label. Fail-closed: UNKNOWN, DENY.
+
+# ---------------------------------------------------------------------------
+# Codes. Every one has a producer and a test that drives it to red.
+# ---------------------------------------------------------------------------
+codes:
+  OWNER_UNKNOWN:
+    rule: "no decisive evidence names an owner for the subject"
+    means: "the subject may be ours, and that is not the same as it being ours"
+    repair: "write the decisive evidence — a docker label, a registration, a unit — or leave it alone"
+  OWNER_EXTERNAL:
+    rule: "the subject's decisive evidence places it under another actor"
+    means: "somebody else's, on evidence rather than on appearance"
+    repair: "ask the owner. A name that looks like ours is not a request for it"
+  PROTECTED_SUBJECT:
+    rule: "protection was declared for the subject"
+    means: "protection is a declaration and not a hint"
+    repair: "for a destructive action there is none; for an additive one, approval"
+  NO_DECISIVE_SOURCE:
+    rule: "this product has no decisive owner source for a subject of this kind"
+    means: "not unread — unanswerable with what exists"
+    repair: "declare a source, or accept that this kind is refused by construction"
+  WEAK_EVIDENCE_ONLY:
+    rule: "every piece of evidence offered is a locator"
+    means: "the answer would be a guess wearing an owner's field name"
+    repair: "substitute one decisive source, or accept UNKNOWN"
+  NO_TRUSTED_CONTEXT:
+    rule: "a mutation was proposed with no trusted context"
+    means: >-
+      `candidate.owner_ref` is documented as "resolved from the trusted context;
+      never a name", so a mutation with no context has no requester and nobody
+      to attribute the act to. `approval.py` refuses on the same rule.
+    repair: "present a context; the store in `agent_control_store.py` holds them"
+  SUBJECT_MALFORMED:
+    rule: "the subject names no kind, or a kind not in `resource_kinds`"
+    means: "a subject that cannot be classified cannot be refused for a nameable reason"
+    repair: "name one of the declared kinds"
+
+# ---------------------------------------------------------------------------
+# What a caller passes, and what comes back. The output is the record
+# `network-contract.yaml`'s `compose` block consumes: it reads `decision` and
+# `reason` and nothing else, so those two are load-bearing and the rest is for
+# a person.
+# ---------------------------------------------------------------------------
+verdict:
+  required:
+    decision: "ALLOW | REQUIRE_APPROVAL | DENY"
+    eligible: "whether ownership admitted the subject; not a permission"
+    code: "the first code, or null when nothing fired"
+    codes: "every code, in `code_precedence` order"
+    reason: "one sentence, naming the fact the caller's next move depends on"
+    subject: "kind + the identities that were resolved over"
+    owner: "class, confidence, because, decided_by"
+    protection: "protected, declared, and every spelling that was asked"
+  reported:
+    evidence_strength: "decisive vs locator, per input"
+    action: "the kind and, for destructive actions, the tier"
+    registry_present: "an absent registry makes every subject UNKNOWN, as §11 says"
+
+# `WEAK_EVIDENCE_ONLY` sits immediately above `OWNER_UNKNOWN` because it is
+# the REASON for it: when every source offered is a locator the owner is forced
+# to UNKNOWN first, and the two codes then travel together. A precedence list
+# that named only the conclusion would report a name-only subject as though no
+# evidence had been offered at all, which is a different and less useful fact.
+surface:
+  # The verb this contract is the authority for. Written in full and not
+  # elided, because `tests/test_declared_commands.py` reads every
+  # `serverosctl <a> <b>` in the scanned files and fails when the parser does
+  # not accept it — which makes this block the thing that keeps the contract
+  # and the CLI from drifting apart in the direction nobody checks.
+  command: serverosctl ownership check
+  read_only: true
+  execute_flag: none
+  mutating_verbs: none — nothing here stops, removes or creates anything, and there is no execute flag to add
+  exit_codes:
+    "0": "ALLOW. Ownership admitted the subject. The action's own policy has not been consulted, so this is not a permission to act."
+    "10": "DENY, and `code` names which rule refused."
+    "11": "REQUIRE_APPROVAL. Nothing refused it and nobody may take it on the requester's own authority. Not 0, because `eligible` is true for an approval and a caller reading `$?` must not proceed past a mutation nobody approved."
+    "2": "the question could not be put — an unknown action kind, a destructive action with no tier."
+code_precedence: [SUBJECT_MALFORMED, NO_TRUSTED_CONTEXT, NO_DECISIVE_SOURCE,
+                  WEAK_EVIDENCE_ONLY, OWNER_UNKNOWN, OWNER_EXTERNAL,
+                  PROTECTED_SUBJECT]
+
+# ---------------------------------------------------------------------------
+# What this file does NOT do
+# ---------------------------------------------------------------------------
+# - It does not mutate anything. `ownership_gate.py` imports no mutating verb
+#   and has no execute path. `hygiene.py`'s sentence applies unchanged: the
+#   caller that executes is a different component, deliberately.
+# - It does not decide the action. It decides the SUBJECT, and hands the
+#   destructive tiers to `hygiene.admission` and the additive ones to their own
+#   policy. There is exactly one implementation of "may this tier be taken" and
+#   it is not here.
+# - It does not replace §11, §13 or `protection.py`. Reimplementing any of them
+#   is how two answers to one question start disagreeing.

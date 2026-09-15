@@ -27,6 +27,19 @@ The executor refuses on its own
 It does not take a caller's word for it, and it is not parameterized to skip
 the check — a gate the caller may bypass is a convention, and the point of
 wiring one in is that the code path does not exist.
+
+Exit codes, and they are not two
+--------------------------------
+    0   ALLOW — the preflight admitted it. Whether anything RAN is a separate
+        question, answered by `execution.performed`; `--execute` is off by
+        default.
+    10  DENY — a rule refused it, and `preflight.code` names which.
+    11  REQUIRE_APPROVAL — nothing refused it and nobody may take it on the
+        requester's own authority. Nothing ran. It is not 0 because a caller
+        reading `$?` must not proceed past a mutation nobody approved, and it
+        is not 10 because it is repaired by a different person: a DENY needs
+        the request or the policy changed, and this needs a human.
+    2   the question could not be put — a malformed request, an unnamed tier.
 """
 from __future__ import annotations
 
@@ -55,6 +68,7 @@ def _load(name: str, filename: str):
 _policy = _load("serveros_runtime_network_policy", "network_policy.py")
 _evidence = _load("serveros_runtime_network_evidence", "network_evidence.py")
 _probes = _load("serveros_runtime_probes", "probes.py")
+_ownership = _load("serveros_runtime_ownership_gate", "ownership_gate.py")
 
 SCHEMA = "serveros/network.v1"
 ACTION = "docker.network.create"
@@ -141,12 +155,54 @@ def plan(request: dict, *, host, policy: dict, policy_ref: str | None,
 
 def preflight(plan_record: dict, *, policy: dict, ownership: dict | None = None,
               recovery: str | None = None) -> dict:
+    """Compose the three inputs. It does not produce the ownership one.
+
+    `ownership=None` is the state C1's contract names — "an absent input is not
+    a vote" — and it is kept, because this function is a composition step and
+    the decision to require a requester belongs to an entry point rather than
+    to a fold. `run()` is that entry point and it always passes a verdict,
+    including the NULL one that a missing context earns.
+    """
     return _policy.evaluate(
         candidate=plan_record["candidate"],
         evidence=plan_record["evidence"],
         policy=policy,
         ownership=ownership,
         recovery=recovery or plan_record.get("recovery"),
+    )
+
+
+def ownership_verdict(plan_record: dict, *, context: dict | None,
+                      registry: dict | None = None) -> dict:
+    """C2's verdict on this candidate, from the requester the candidate names.
+
+    This is the producer `network-contract.yaml` declared and did not have: its
+    compose block reads `ownership` and says what the value means, and until
+    now the only caller that ever filled the parameter in was a test.
+
+    The subject is the REQUESTER and not the network. A network this call is
+    about to create has no labels, no cgroup and no unit — every decisive
+    ownership source on this node reads something that does not exist yet —
+    while `candidate.required` makes `owner_ref` mandatory and defines it as
+    "who is asking, resolved from the trusted context; never a name". So the
+    owner question is asked of that ref, and a ref that arrived as a bare
+    string with no context behind it is refused for exactly that reason.
+
+    Read the two failure modes apart, because they are repaired differently:
+    NO_TRUSTED_CONTEXT means nobody was named as asking, and OWNER_UNKNOWN
+    means somebody was named and the registry does not know them.
+    """
+    index = registry if registry is not None else _ownership.build_registry_index()
+    candidate = plan_record.get("candidate") or {}
+    return _ownership.evaluate(
+        subject={"kind": "network",
+                 "name": candidate.get("network_name"),
+                 "ref": plan_record.get("subject_ref")},
+        action={"kind": "additive"},
+        context=context,
+        registry=index,
+        resolved=_ownership.resolve_owner_ref(
+            owner_ref=candidate.get("owner_ref"), registry=index, kind="network"),
     )
 
 
@@ -225,7 +281,8 @@ def _read_request(path: str) -> dict:
         return yaml.safe_load(text) or {}
 
 
-def run(argv: list[str] | None = None, *, host=None, runner=None) -> int:
+def run(argv: list[str] | None = None, *, host=None, runner=None,
+        registry: dict | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("action", choices=("preflight", "create"))
     parser.add_argument("--request", required=True, help="JSON or YAML request file")
@@ -233,6 +290,16 @@ def run(argv: list[str] | None = None, *, host=None, runner=None) -> int:
     parser.add_argument("--execute", action="store_true",
                         help="perform the mutation; without it nothing is run")
     parser.add_argument("--level", choices=_policy.LEVELS)
+    # Required in effect and not by argparse, which is the point: its absence
+    # is a DENY with a code and a repair, not a usage error that teaches the
+    # caller to pass any string that parses. `owner_ref` is documented as
+    # "resolved from the trusted context; never a name", so a mutation with no
+    # context has no requester — and a requester is what an approval belongs
+    # to, so without one there is nothing for a person to approve either.
+    parser.add_argument(
+        "--context",
+        help="trusted context document ({context_ref, actor_ref}). Without it "
+             "the ownership gate answers NO_TRUSTED_CONTEXT and nothing runs")
     args = parser.parse_args(argv)
 
     host = host or _probes.LiveHost()
@@ -248,13 +315,20 @@ def run(argv: list[str] | None = None, *, host=None, runner=None) -> int:
         # A malformed REQUEST is not a refused CANDIDATE. Only the second has a
         # code and a repair, and answering the first with a code would tell the
         # caller their subnet collided with something when in fact nothing was
-        # looked at. Exit 2 so a caller can tell the three apart: 0 ALLOW,
-        # 10 DENY, 2 this.
+        # looked at. Exit 2 so a caller can tell it apart from the four below.
         sys.stderr.write(f"REJECTED: {exc}\n")
         return 2
-    verdict = preflight(plan_record, policy=policy)
+    context = _read_request(args.context) if args.context else None
+    ownership = ownership_verdict(plan_record, context=context, registry=registry)
+    verdict = preflight(plan_record, policy=policy, ownership=ownership)
 
     payload: dict = {"plan": {k: v for k, v in plan_record.items() if k != "evidence"},
+                     # C2's verdict, at the level the caller asked for. It is
+                     # reported even when it changed nothing, so that "ownership
+                     # admitted this" and "ownership was never asked" cannot be
+                     # read the same way from the output.
+                     "ownership": _ownership.disclose(ownership, args.level)
+                     if args.level else ownership,
                      "preflight": _policy.disclose(verdict, args.level)}
     if args.action == "create":
         payload["execution"] = execute(
@@ -263,9 +337,19 @@ def run(argv: list[str] | None = None, *, host=None, runner=None) -> int:
 
     json.dump(payload, sys.stdout, indent=2, sort_keys=True, default=str)
     sys.stdout.write("\n")
+    render = _policy.render(verdict, args.level)
     if verdict["decision"] == "DENY":
-        sys.stderr.write(_policy.render(verdict, args.level) + "\n")
+        sys.stderr.write(render + "\n")
         return 10
+    if verdict["decision"] == "REQUIRE_APPROVAL":
+        # The third outcome, and it is not a success. Nothing ran — `execute`
+        # refuses anything that is not ALLOW — and a caller reading `$?` has to
+        # see that, or a shell doing `serverosctl network create ... && ...`
+        # proceeds past a mutation nobody approved. 11 rather than 10 because
+        # the two are repaired by different people: a DENY needs the request or
+        # the policy changed, and this needs a person.
+        sys.stderr.write(render + "\n")
+        return 11
     return 0
 
 
