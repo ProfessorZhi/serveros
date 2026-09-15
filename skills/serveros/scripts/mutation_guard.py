@@ -91,6 +91,34 @@ MUTATING_DOCKER_SUBJECTS = {
 }
 MUTATING_SYSTEMCTL_VERBS = ("stop", "kill", "restart", "disable", "mask")
 
+# `ip` is the third binary with the `docker` shape — mostly a reader, with
+# mutating forms — and it is handled before the generic reader label for the
+# same reason `docker` is: reading it as a read because most uses are
+# `ip addr show` is how `ip route add` becomes a mutation nothing can find.
+#
+# Enumerated per object rather than as one word list, because `ip` is
+# `ip [flags] OBJECT COMMAND` and `show` mutates nothing while `add` on the
+# same object does. An object not named here is reported as a read of that
+# object; the alternative — treating an unknown object as possibly-mutating —
+# would report `ip -j addr show` as unresolved and a report full of those is
+# one nobody reads.
+MUTATING_IP_COMMANDS = {
+    "link": ("set", "add", "del", "delete", "change", "replace"),
+    "addr": ("add", "del", "delete", "change", "replace", "flush"),
+    "address": ("add", "del", "delete", "change", "replace", "flush"),
+    "route": ("add", "del", "delete", "change", "replace", "append",
+              "prepend", "flush"),
+    "rule": ("add", "del", "delete"),
+    "neigh": ("add", "del", "delete", "change", "replace", "flush"),
+    "neighbour": ("add", "del", "delete", "change", "replace", "flush"),
+    "netns": ("add", "del", "delete", "attach", "set"),
+    "tunnel": ("add", "del", "delete", "change"),
+    "vlan": ("add", "del", "delete"),
+    "maddress": ("add", "del", "delete"),
+    "mroute": ("add", "del", "delete"),
+    "token": ("set", "del", "delete"),
+}
+
 # Calls that change the world wherever they appear, whatever they are given.
 MUTATING_OS_CALLS = {
     "os.kill": "process_termination",
@@ -174,9 +202,9 @@ ARITY_RESOLVED_METHODS = {
 # The list is deliberately only these names. Any call whose first argument is a
 # string list would otherwise be a hit, and a gate nobody can read is a gate
 # nobody reads.
-HANDOFF_BINARIES = (HOST_READERS + ("docker", "systemctl", "pkill", "killall",
-                                    "kill", "rm", "rmdir", "shred", "shutdown",
-                                    "reboot", "poweroff", "halt"))
+HANDOFF_BINARIES = (HOST_READERS + ("docker", "systemctl", "ip", "pkill",
+                                    "killall", "kill", "rm", "rmdir", "shred",
+                                    "shutdown", "reboot", "poweroff", "halt"))
 
 # Names that are a Python interpreter rather than a host command. Running a
 # script through `sys.executable` is how the tests invoke the CLI; it is not a
@@ -290,6 +318,29 @@ def _systemctl_verb(prefix: list[str]) -> tuple[str | None, bool]:
     return (words[0] if words[0] in MUTATING_SYSTEMCTL_VERBS else None), True
 
 
+def _ip_verb(prefix: list[str]) -> tuple[str | None, bool]:
+    """(mutating command, whether the OBJECT was found at all).
+
+    The two are told apart for the same reason `_docker_verb` tells them apart,
+    with the object standing where docker's verb stands. `["ip", <flag>]` with
+    the object unread is a coin flip between `show` and `route add`, and
+    calling it a read is the silent-clean failure.
+
+    Flags are dropped by `_bare_words` before either word is read, which is
+    what makes `ip -j route show table all` and `ip -4 addr show` work: the
+    object is the first bare word and not the second argument.
+    """
+    words = _bare_words(prefix)
+    if not words:
+        return None, False
+    commands = MUTATING_IP_COMMANDS.get(words[0])
+    if commands is None:
+        return None, True                       # a read of that object
+    if len(words) < 2:
+        return None, False                      # object read, command unread
+    return (f"{words[0]} {words[1]}" if words[1] in commands else None), True
+
+
 def classify_argv(argv: list[str | None]) -> tuple[str, str, bool]:
     """(kind, verb, complete) for a first argument read as a command.
 
@@ -349,6 +400,19 @@ def classify_argv(argv: list[str | None]) -> tuple[str, str, bool]:
         if not found:
             return "unresolved_argv", "systemctl <verb>", False
         return "exec", "systemctl", complete
+    if binary == "ip":
+        command, found = _ip_verb(prefix)
+        if command:
+            return "mutation", f"ip {command}", complete
+        if not found:
+            return "unresolved_argv", "ip <object>", False
+        # A read. `exec` and not `host_reader`: `ip` is not one of §18's six
+        # commands, and labelling it a host reader would put it in the set the
+        # MCP-layer rule matches on — a fabrication in the other direction,
+        # where a command §18 never named becomes one the MCP layer may not
+        # run. The MCP layer may hold no host knowledge of its own either way;
+        # that is enforced by the rule, not by a label it was never given.
+        return "exec", "ip", complete
     if binary in ("pkill", "killall", "kill", "rm", "rmdir", "shred",
                   "shutdown", "reboot", "poweroff", "halt"):
         return "mutation", binary, complete

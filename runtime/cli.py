@@ -3472,16 +3472,65 @@ def cmd_requirement_board(args) -> int:
 
 
 # ---------------------------------------------------------------------------
+# network
+# ---------------------------------------------------------------------------
+
+def _network_module():
+    return _load_module_from(REPO_ROOT / "runtime" / "network_mutation.py",
+                             "serveros_runtime_network_mutation")
+
+
+def _network_levels() -> tuple:
+    """The disclosure levels, from the module that declares them.
+
+    Written out here instead, this list is a second vocabulary that agrees with
+    `disclosure-contract.yaml` until one of the two moves. The module name is
+    the one `network_mutation` loads it under, so `main()` and this agree on a
+    single module object.
+    """
+    return _load_module_from(REPO_ROOT / "runtime" / "network_policy.py",
+                             "serveros_runtime_network_policy").LEVELS
+
+
+def _network_argv(args) -> list[str]:
+    argv = [args.subcommand, "--request", args.request]
+    if getattr(args, "policy", None):
+        argv += ["--policy", args.policy]
+    if getattr(args, "level", None):
+        argv += ["--level", args.level]
+    if getattr(args, "execute", False):
+        argv.append("--execute")
+    return argv
+
+
+def cmd_network(args) -> int:
+    """The one subcommand here that can change the host.
+
+    It delegates the whole argv to `network_mutation.run` rather than
+    re-deriving the request, the policy and the level in this file. The other
+    arrangement — parse here, act there — makes two places that know what
+    `--policy` means, and the second one is the one that goes stale.
+
+    The exit code is that module's vocabulary and not this CLI's: 0 allowed,
+    10 refused with a code and a repair, 2 the request was not a candidate at
+    all. `network_mutation` documents why those three are not two.
+    """
+    return _network_module().run(_network_argv(args))
+
+
+# ---------------------------------------------------------------------------
 # parser
 # ---------------------------------------------------------------------------
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(
-        prog="serverosctl",
-        description="ServerOS reference-node control CLI. Read-only: no "
-                    "subcommand here stops, removes or restarts anything.",
-    )
+    # There used to be a second `ArgumentParser(prog="serverosctl", ...)` right
+    # here, immediately overwritten by the one below. Its `description` was the
+    # one a reader edits — `python3 -c "import cli; print(cli.build_parser()
+    # .description)"` prints the OTHER one — so a change made there took effect
+    # in the source and not in `--help`. Found by making exactly that change.
+    # One construction now, and it is the live one.
+
     # Global flags live on a parent parser as well as the top level, so that
     # `serverosctl --json runtime list` and `serverosctl runtime list --json`
     # both work. Only the first is idiomatic argparse, and only the second is
@@ -3503,8 +3552,15 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="serverosctl",
         parents=[common],
-        description="ServerOS reference-node control CLI. Read-only: no "
-                    "subcommand here stops, removes or restarts anything.",
+        # This said "Read-only: no subcommand here stops, removes or restarts
+        # anything" until `network create` existed. The sentence was true when
+        # it was written and the behaviour changed underneath it, which is the
+        # failure mode this repository keeps recording.
+        description="ServerOS reference-node control CLI. Nothing here stops, "
+                    "removes or restarts anything; `network create` is the one "
+                    "subcommand that creates, it is gated by a preflight that "
+                    "runs on the same invocation, and it performs nothing "
+                    "without `--execute`.",
     )
     # NOT `parser.set_defaults(json=False, registry=None)`.
     #
@@ -3915,6 +3971,35 @@ def build_parser() -> argparse.ArgumentParser:
              "recall, so a read that does not say who is asking is a read the "
              "firewall cannot reach")
     mem_subject.set_defaults(func=cmd_memory_subject)
+
+    network = sub.add_parser(
+        "network", help="the network mutation gate: preflight, and create (§C1)",
+        **_COMMON)
+    network_sub = network.add_subparsers(dest="subcommand", required=True)
+    for name, helptext in (
+            ("preflight",
+             "decide, without doing anything: ALLOW, REQUIRE_APPROVAL or DENY"),
+            ("create",
+             "preflight, then create the network if it allowed it (needs "
+             "--execute; a DENY never reaches the executor)")):
+        net_cmd = network_sub.add_parser(name, help=helptext, **_COMMON)
+        net_cmd.add_argument("--request", required=True,
+                             help="JSON or YAML `{network: {...}}` request file")
+        net_cmd.add_argument(
+            "--policy",
+            help="host profile holding `network_policy`. No path is built in: "
+                 "an absent policy is NETWORK_POLICY_INCOMPLETE, and a default "
+                 "location nothing writes is indistinguishable from a host "
+                 "whose policy is genuinely empty")
+        net_cmd.add_argument("--level", choices=_network_levels(),
+                             help="disclosure level; L1 is the default and a "
+                                  "DENY promotes itself to L2")
+        if name == "create":
+            net_cmd.add_argument(
+                "--execute", action="store_true",
+                help="perform the creation. Without it the preflight still "
+                     "runs and nothing is performed")
+        net_cmd.set_defaults(func=cmd_network)
 
     probe = sub.add_parser("probe", help="run one resource's declared probes", **_COMMON)
     probe.add_argument("id")

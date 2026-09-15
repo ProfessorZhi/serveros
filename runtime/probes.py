@@ -219,6 +219,86 @@ class LiveHost:
                     continue
         return rows
 
+    def docker_network_ls(self) -> list[dict]:
+        """`docker network ls` as rows.
+
+        Separate from `docker_ps` because a network with no containers attached
+        appears nowhere else: `docker ps` reports the networks its containers
+        are on, and this host has networks with zero members.
+        """
+        return self._json_lines(["docker", "network", "ls", "--format", "{{json .}}"])
+
+    def docker_network_inspect(self, name: str) -> dict:
+        """One network's full inspect, which is where the subnet lives.
+
+        `docker network ls` reports ID, Name, Driver and Scope and no subnet at
+        all, so a listing alone cannot answer the one question this is for.
+        """
+        return self._docker_json(["docker", "network", "inspect", name])
+
+    # -- host topology -----------------------------------------------------
+    def interface_cidrs(self) -> list[dict]:
+        return self._json_array(["ip", "-j", "addr", "show"], "ip addr")
+
+    def route_table(self) -> list[dict]:
+        return self._json_array(["ip", "-j", "route", "show"], "ip route")
+
+    def route_get(self, address: str) -> dict:
+        """Where the kernel would actually send a packet for `address`.
+
+        A READ, and it sends no packet. `ip route get` performs the lookup —
+        longest prefix, metric, policy rules and link state all applied — and
+        prints the result. That is the only authority on this question: the
+        route table is a set of declarations, and which of them wins for a
+        given address is a property of the kernel rather than of the text.
+
+        Never raises for "no route": an unreachable address is an answer. It
+        raises only when `ip` itself could not be run, because "the tool did
+        not run" and "the kernel says unreachable" are different facts and the
+        first one must not be reported as the second.
+        """
+        out = self._run(["ip", "route", "get", address])
+        line = out.strip().splitlines()[0] if out.strip() else ""
+        words = line.split()
+        row = {"address": address, "raw": line, "dev": None, "via": None,
+               "local": words[:1] == ["local"], "reachable": bool(words)}
+        for index, word in enumerate(words):
+            if word == "dev" and index + 1 < len(words):
+                row["dev"] = words[index + 1]
+            elif word == "via" and index + 1 < len(words):
+                row["via"] = words[index + 1]
+        return row
+
+    def _json_lines(self, args: list[str]) -> list[dict]:
+        """One JSON object per line — `--format '{{json .}}'` output."""
+        rows = []
+        for line in self._run(args).splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                rows.append(json.loads(line))
+            except json.JSONDecodeError:
+                continue        # a docker warning interleaved into stdout
+        return rows
+
+    def _json_array(self, args: list[str], what: str) -> list[dict]:
+        """One JSON array — `ip -j` output.
+
+        A separate reader from `_docker_json` because the shapes differ: docker
+        emits a one-element array this code takes `[0]` of, and `ip -j` emits
+        the array itself. Sharing one reader would mean one of them silently
+        losing everything but its first element.
+        """
+        out = self._run(args)
+        try:
+            data = json.loads(out)
+        except json.JSONDecodeError as exc:
+            raise ProbeUnavailable(f"{what} returned non-JSON: {exc}") from exc
+        if not isinstance(data, list):
+            raise ProbeUnavailable(f"{what} did not return an array")
+        return data
+
     def _docker_json(self, args: list[str]) -> dict:
         out = self._run(args)
         try:
