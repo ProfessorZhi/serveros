@@ -3496,6 +3496,15 @@ def _network_argv(args) -> list[str]:
     argv = [args.subcommand, "--request", args.request]
     if getattr(args, "policy", None):
         argv += ["--policy", args.policy]
+    if getattr(args, "context", None):
+        argv += ["--context", args.context]
+    if getattr(args, "registry", None):
+        # Forwarded because it was silently dropped before: `common` declares
+        # `--registry` for every subcommand, `network_mutation.run` takes it,
+        # and nothing carried it across. `serverosctl --registry X network
+        # preflight` therefore read THIS node's registry while reading as
+        # though it had been pointed elsewhere.
+        argv += ["--registry", args.registry]
     if getattr(args, "level", None):
         argv += ["--level", args.level]
     if getattr(args, "execute", False):
@@ -3512,10 +3521,62 @@ def cmd_network(args) -> int:
     `--policy` means, and the second one is the one that goes stale.
 
     The exit code is that module's vocabulary and not this CLI's: 0 allowed,
-    10 refused with a code and a repair, 2 the request was not a candidate at
-    all. `network_mutation` documents why those three are not two.
+    10 refused with a code and a repair, 11 nothing refused it and nobody may
+    take it on their own authority, 2 the request was not a candidate at all.
+    `network_mutation` documents why those four are not three.
     """
     return _network_module().run(_network_argv(args))
+
+
+# ---------------------------------------------------------------------------
+# ownership
+# ---------------------------------------------------------------------------
+
+def _ownership_module():
+    return _load_module_from(REPO_ROOT / "runtime" / "ownership_gate.py",
+                             "serveros_runtime_ownership_gate")
+
+
+def _ownership_levels() -> tuple:
+    """Same reasoning as `_network_levels`: read from the module that declares
+    them, so `main()` and the gate cannot disagree about the ladder."""
+    return _ownership_module().LEVELS
+
+
+def cmd_ownership(args) -> int:
+    """The ownership gate's verb. Read-only, and there is no `--execute`.
+
+    `ownership check` answers one question — may this subject be acted on —
+    and the answer is one of three values. It is the same module
+    `network_mutation` calls before every creation, so the verdict a person
+    reads here is the verdict that gate receives, not a second opinion.
+
+    Set `SERVEROS_STATE_DIR` to read a registry other than this node's; the
+    path is `registry.default_path()`'s and is not composed here.
+    """
+    argv = ["check", "--kind", args.kind, "--name", args.name]
+    if getattr(args, "action", None):
+        argv += ["--action", args.action]
+    if getattr(args, "tier", None):
+        argv += ["--tier", args.tier]
+    if getattr(args, "context", None):
+        argv += ["--context", args.context]
+    if getattr(args, "registry", None):
+        argv += ["--registry", args.registry]
+    if getattr(args, "level", None):
+        argv += ["--level", args.level]
+    if getattr(args, "json", False):
+        argv.append("--json")
+    try:
+        return _ownership_module().run(argv)
+    except ValueError as exc:
+        # A backstop and not the path: `_cmd_check` catches `Rejected` itself —
+        # an action it cannot weigh is exit 2 there, the way `network_mutation`
+        # reports a malformed request. This catches anything that still escapes
+        # as a `ValueError`, and 2 says the same thing: the question could not
+        # be put, so no verdict about the subject exists to report.
+        sys.stderr.write(f"ownership: {exc}\n")
+        return 2
 
 
 # ---------------------------------------------------------------------------
@@ -3994,12 +4055,53 @@ def build_parser() -> argparse.ArgumentParser:
         net_cmd.add_argument("--level", choices=_network_levels(),
                              help="disclosure level; L1 is the default and a "
                                   "DENY promotes itself to L2")
+        net_cmd.add_argument(
+            "--context",
+            help="trusted context document ({context_ref, actor_ref}). It is "
+                 "what names the requester, and without it the ownership gate "
+                 "answers NO_TRUSTED_CONTEXT and nothing runs — a missing "
+                 "requester is a refusal with a repair, not a usage error")
         if name == "create":
             net_cmd.add_argument(
                 "--execute", action="store_true",
                 help="perform the creation. Without it the preflight still "
                      "runs and nothing is performed")
         net_cmd.set_defaults(func=cmd_network)
+
+    ownership = sub.add_parser(
+        "ownership",
+        help="who may be acted on: ALLOW, REQUIRE_APPROVAL or DENY (§C2)",
+        **_COMMON)
+    ownership_sub = ownership.add_subparsers(dest="subcommand", required=True)
+    own_check = ownership_sub.add_parser(
+        "check", help="evaluate one subject and say why", **_COMMON)
+    own_check.add_argument("--kind", required=True,
+                           help="container, network, volume, process, tunnel "
+                                "or builder_cache. The last two have no "
+                                "decisive owner source and are refused by "
+                                "construction rather than unimplemented")
+    own_check.add_argument("--name", required=True, help="the subject's name")
+    own_check.add_argument("--action", default="additive",
+                           choices=("additive", "destructive"),
+                           help="additive changes the subject and destroys "
+                                "nothing. A protected subject is refused for "
+                                "the first and needs approval for the second")
+    own_check.add_argument("--tier",
+                           help="required with --action destructive; the tiers "
+                                "are the ones `hygiene.RISK_TIERS` declares")
+    own_check.add_argument("--context", help="a trusted context document "
+                                             "({context_ref, actor_ref})")
+    # `--registry` is NOT declared here: the shared `common` parent already
+    # declares it as "path to the managed-runtime registry document", and a
+    # second declaration is an argparse conflict rather than an override.
+    # `cmd_ownership` forwards the inherited one.
+    own_check.add_argument("--level", default="L1",
+                           choices=_ownership_levels(),
+                           help="L0 the decision, L1 the decision and why, "
+                                "L2 the evidence it rests on, L3 the resolved "
+                                "record verbatim")
+    # `--json` is not declared here either; `common` carries it.
+    own_check.set_defaults(func=cmd_ownership)
 
     probe = sub.add_parser("probe", help="run one resource's declared probes", **_COMMON)
     probe.add_argument("id")

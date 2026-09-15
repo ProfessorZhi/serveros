@@ -63,6 +63,7 @@ policy_mod = _load("serveros_runtime_network_policy", "network_policy.py")
 evidence_mod = _load("serveros_runtime_network_evidence", "network_evidence.py")
 mutation_mod = _load("serveros_runtime_network_mutation", "network_mutation.py")
 probes_mod = _load("serveros_runtime_probes", "probes.py")
+containers = _load("serveros_runtime_containers", "containers.py")
 
 CONTRACT_DOC = yaml.safe_load(
     (RUNTIME / "network-contract.yaml").read_text(encoding="utf-8"))
@@ -236,7 +237,7 @@ POLICY_FOR_RESERVED_COLLISION = {
 
 
 def evaluate(*, name, subnet, policy, host=None, **extra):
-    fields = {"network_name": name, "owner_ref": "actor:fixture"}
+    fields = {"network_name": name, "owner_ref": "work-item:C1-FIXTURE"}
     if subnet is not None:
         fields["subnet"] = subnet
     fields.update(extra)
@@ -707,6 +708,36 @@ def write_policy(tmp_path: Path, policy: dict) -> Path:
     return path
 
 
+def write_registry(tmp_path: Path, *, owner_ref="work-item:C1-FIXTURE",
+                   owner_type="work-item", protection="normal") -> dict:
+    """A managed-runtime registry document, read through the real reader.
+
+    Built with `containers.load_registry` rather than as a literal dict so that
+    the fixture carries the fields that function adds — `registry_present`
+    above all, which is the difference between "the registry says this ref is
+    not protected" and "nobody could be asked". A hand-written index would
+    agree with itself about that distinction and prove nothing about the code
+    that makes it.
+    """
+    path = tmp_path / "registry.yaml"
+    path.write_text(yaml.safe_dump({"resources": [{
+        "id": "c1-fixture",
+        "kind": "project",
+        "owner": {"ref": owner_ref, "type": owner_type},
+        "protection": {"level": protection},
+        "lifecycle": {"class": "task"},
+    }]}), encoding="utf-8")
+    return containers.load_registry(str(path))
+
+
+def write_context(tmp_path: Path, *, context_ref="ctx:c1-fixture",
+                  actor_ref="actor:fixture") -> Path:
+    """A trusted context. C2's gate refuses without one, on the ground that
+    `owner_ref` is documented as resolved from it and never from a name."""
+    return write(tmp_path, "context.json",
+                 {"context_ref": context_ref, "actor_ref": actor_ref})
+
+
 class TheManagedPath(unittest.TestCase):
     """§七 — request, transient plan, compliance preflight, executor.
 
@@ -721,7 +752,7 @@ class TheManagedPath(unittest.TestCase):
         self.addCleanup(self._tmp.cleanup)
 
     def _request(self, name="c1-control", subnet="10.247.0.0/24") -> Path:
-        block = {"network_name": name, "owner_ref": "actor:fixture"}
+        block = {"network_name": name, "owner_ref": "work-item:C1-FIXTURE"}
         if subnet is not None:
             block["subnet"] = subnet
         return write(self.tmp, "req.json", {"network": block})
@@ -751,8 +782,9 @@ class TheManagedPath(unittest.TestCase):
         code = mutation_mod.run(
             ["create", "--request", str(self._request("over-wi001", "172.20.5.0/24")),
              "--policy", str(write_policy(self.tmp, POLICY_FOR_DOCKER_COLLISION)),
+             "--context", str(write_context(self.tmp)),
              "--execute"],
-            host=host, runner=runner)
+            host=host, runner=runner, registry=write_registry(self.tmp))
 
         self.assertEqual(code, 10, "a DENY must not report success")
         self.assertEqual(runner.calls, [], "the actuator was entered on a DENY")
@@ -767,8 +799,9 @@ class TheManagedPath(unittest.TestCase):
         code = mutation_mod.run(
             ["create", "--request", str(self._request()),
              "--policy", str(write_policy(self.tmp, POLICY_COMPLETE)),
+             "--context", str(write_context(self.tmp)),
              "--execute"],
-            host=FakeHost(), runner=runner)
+            host=FakeHost(), runner=runner, registry=write_registry(self.tmp))
 
         self.assertEqual(code, 0)
         self.assertEqual(runner.calls, [
@@ -782,8 +815,9 @@ class TheManagedPath(unittest.TestCase):
         runner = Recorder()
         code = mutation_mod.run(
             ["create", "--request", str(self._request()),
-             "--policy", str(write_policy(self.tmp, POLICY_COMPLETE))],
-            host=FakeHost(), runner=runner)
+             "--policy", str(write_policy(self.tmp, POLICY_COMPLETE)),
+             "--context", str(write_context(self.tmp))],
+            host=FakeHost(), runner=runner, registry=write_registry(self.tmp))
         self.assertEqual(code, 0, "a permitted request is not a failure")
         self.assertEqual(runner.calls, [])
         self.assertEqual(mutation_mod.load_policy(
