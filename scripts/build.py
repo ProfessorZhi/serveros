@@ -109,8 +109,27 @@ def _git(repo: Path, *args: str) -> bytes:
 # start its own declared surfaces. It is named in CORE_MODULES rather than
 # only in the bundle so that `test_every_declared_core_module_is_present`
 # covers it and a future drop is a failure rather than a discovery.
+#
+# `intake` is the third instance, and the sentence above is exactly what did
+# not happen. `runtime/cli.py` loads `intake/global_board.py` at call time for
+# `serverosctl requirement board`; the directory was named in neither this
+# tuple nor `plugin/bundle.yaml`, so it shipped in no artifact and the verb
+# raised FileNotFoundError on every installed node while working perfectly from
+# a source checkout. It was found by installing the distribution and running
+# the verb — not by a test, because `test_every_declared_core_module_is_present`
+# iterates THIS tuple, and a module that was never added to it is not merely
+# unchecked, it is invisible to the check.
+#
+# So the remedy is not a fourth name here. The requirement is now derived from
+# the production loader closure — see `tests/loader_graph.py`'s
+# `production_closure()` and `test_build.py`'s
+# `test_the_artifact_answers_the_production_loader_closure`, which asserts the
+# artifact satisfies it and carries a positive control proving the gate can go
+# red. This tuple remains the builder's IMPLEMENTATION input: it is how the
+# composition is assembled, and it is no longer the statement of what is
+# required.
 CORE_MODULES = ("context", "space", "relations", "mcp", "runtime", "bin",
-                "abilities", "memory", "fleet")
+                "abilities", "memory", "fleet", "intake")
 
 
 def resolve_ability_rev(repo: Path, rev: str) -> str:
