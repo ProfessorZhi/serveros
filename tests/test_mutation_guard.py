@@ -183,6 +183,55 @@ class TheDestroyingVerbs(unittest.TestCase):
                 found = hits_of(f"import subprocess\nsubprocess.run({argv})\n")
                 self.assertEqual(found[0]["kind"], expected, argv)
 
+    def test_ip_reads_are_declared_and_ip_writes_are_mutations(self):
+        """`ip` has docker's shape and was added to the vocabulary for docker's
+        reason. Before it was, an `ip` command handed to a runner produced NO
+        HIT AT ALL — the declaration written for it came back STALE_ACTUATOR,
+        because the scanner had nothing to match. The mutation half is what
+        makes that widening safe rather than a hole: `ip route add` is a
+        mutation on a host whose routing table is the whole subject of the
+        network gate, and widening the vocabulary without this half would have
+        turned it into an `exec ip` nothing refuses."""
+        for argv, expected in (('["ip","-j","addr","show"]', "exec"),
+                               ('["ip","-j","route","show","table","all"]', "exec"),
+                               ('["ip","route","get","10.0.0.1"]', "exec"),
+                               ('["ip","-4","addr","show","dev","eth0"]', "exec"),
+                               ('["ip","route","add","172.20.0.0/16"]', "mutation"),
+                               ('["ip","addr","add","10.1.1.1/24"]', "mutation"),
+                               ('["ip","link","set","br-x","down"]', "mutation"),
+                               ('["ip","rule","del","table","100"]', "mutation"),
+                               ('["ip","netns","add","n"]', "mutation"),
+                               ('["ip","netns","list"]', "exec")):
+            with self.subTest(argv=argv):
+                found = hits_of(f"import subprocess\nsubprocess.run({argv})\n")
+                self.assertEqual(found[0]["kind"], expected, (argv, found))
+
+    def test_ip_is_not_a_host_reader_however_it_is_read(self):
+        """§18 names six commands the MCP layer may not run, and `ip` is not
+        one of them. Labelling it a host reader would put it in the set that
+        rule matches on — a fabrication in the other direction, where a
+        command §18 never named becomes one the MCP layer is forbidden to run
+        and the forbidden-list check then reports drift that is not there."""
+        for argv in ('["ip","route","show"]', '["ip","route","add","10.0.0.0/8"]'):
+            with self.subTest(argv=argv):
+                found = hits_of(f"import subprocess\nsubprocess.run({argv})\n")
+                self.assertNotEqual(found[0]["kind"], "host_reader", argv)
+
+    def test_an_ip_with_no_readable_object_is_a_gap_not_a_read(self):
+        """`["ip", <flag>]` with nothing after it is a coin flip between
+        `addr show` and `route add`, and reporting it as a read is the
+        silent-clean failure — the same call `_docker_verb` makes for
+        `["docker", <variable>]`."""
+        found = hits_of('import subprocess\nsubprocess.run(["ip", flag])\n')
+        self.assertEqual([h["kind"] for h in found], ["unresolved_argv"])
+
+    def test_an_ip_object_read_without_its_command_is_a_gap(self):
+        """`ip addr` alone names an object and no command. The object is known
+        and the command is not, which is the second half of the same
+        distinction: the snapshot docker gets right for `docker volume`."""
+        found = hits_of('import subprocess\nsubprocess.run(["ip","route"])\n')
+        self.assertEqual([h["kind"] for h in found], ["unresolved_argv"])
+
 
 # ---------------------------------------------------------------------------
 # Unreadable is reported, never passed

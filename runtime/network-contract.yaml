@@ -1,0 +1,415 @@
+# Network safety — what may be created, and the one asymmetry that makes this
+# different from the monitor.
+#
+# Why this file exists
+# --------------------
+# `ops/scripts/monitor/checks.py` already detects 网段劫持 — a docker subnet
+# that wins longest-prefix against a real destination and sends its packets
+# into a bridge. That detector is OBSERVATION: it runs on a timer, it is
+# read-only, and its job is to tell a person that the host is already wrong.
+#
+# This file is about the other half. Observation cannot stop the state from
+# being created; by the time a timer notices, traffic has been black-holed for
+# up to an hour. Enforcement is the half that runs BEFORE the mutation, which
+# means it is on the critical path of an action rather than beside it.
+#
+# The two halves share the facts and not the conclusion, and the difference is
+# not a detail:
+#
+#   observation gate     evidence unreadable  ->  NO KNOWN CONFLICT, no alert
+#                        (a warning nobody can act on trains people to ignore
+#                         the whole card — `rules.yaml` states this)
+#
+#   mutation gate        evidence unreadable  ->  DENY
+#                        (an authorization granted without evidence is an
+#                         authorization nobody made)
+#
+# `NETWORK_POLICY_INCOMPLETE` produces a DENY for a mutation and deliberately
+# produces NO ALERT for the monitor, from the same policy file, in the same
+# tick. That is not an inconsistency to be fixed. It is the whole point: alert
+# policy and mutation policy answer different questions, and collapsing them
+# would mean an operator who muted a noisy alert had also, silently, granted
+# permission to create networks.
+schema: serveros/network.v1
+version: 1
+
+# ---------------------------------------------------------------------------
+# The action this gate authorizes, and what it is not.
+# ---------------------------------------------------------------------------
+actions:
+  docker.network.create:
+    subject: a docker network that does not exist yet
+    recovery: REVERSIBLE
+    because: >-
+      creating a network destroys nothing and shadows nothing until a route
+      for it exists. A network created and found to be wrong is removed with
+      `docker network rm` once it has no running members — the executor's
+      post-change audit is what establishes that it has none.
+  # NOT declared: docker.network.remove. It is reachable in `docker` and it is
+  # deliberately absent from this vocabulary, for the reason §26 gives for
+  # stop/kill/rm/prune — a removal is not this round's business, and a gate
+  # that declared a verb it does not implement would be a permission with no
+  # producer, which is the pathology this repository keeps finding. wi-001's
+  # remediation is DEFER while its owner is unproven; see
+  # `remediation.unowned` below.
+
+# ---------------------------------------------------------------------------
+# The plan. Intent as data, built and discarded in one call.
+# ---------------------------------------------------------------------------
+plan:
+  transient: true
+  because: >-
+    there is no workflow engine here and no plan database. The record exists
+    between `plan()` and `preflight()` and nowhere after that — which is why it
+    carries no identifier: an identifier is what something is resumed by, and
+    nothing resumes this. Asking twice for the same network produces the same
+    `subject_ref` instead, so the two requests are comparable without either
+    being stored.
+  fields:
+    schema: "`serveros/network.v1`, the same one the verdict carries"
+    transient: "the literal `true`. A record that is meant to be discarded says so."
+    action: "the `actions` key this plan is for"
+    subject_ref: "`network:<name>`, derived from the request and not minted"
+    candidate: "the closed candidate record above, as accepted"
+    policy_context: >-
+      host_profile_ref and the coverage it resolved to. Recorded even when
+      there is no policy: `host_profile_ref: null` is the fact
+      NETWORK_POLICY_INCOMPLETE is about, and a plan that omitted it would not
+      show why the answer was what it was.
+    evidence_refs: >-
+      one entry per evidence source, each `{source, digest, rows}`. `rows` is
+      the number of entries the source returned and is `null` when it could not
+      be read — for `route_decisions` that is the number of addresses the
+      kernel was asked about. The digest is of what was actually read, so a
+      later reader can tell one reading from another without the reading being
+      kept.
+    evidence: >-
+      the sources themselves, because `preflight` reads them from here rather
+      than re-reading the host. A preflight that measured again would be
+      deciding about a different host than the plan describes.
+    recovery: "from `actions`; the input `compose()` turns into REQUIRE_APPROVAL"
+    created_at: "when the plan was built, passed in rather than read from a clock"
+  not_carried:
+    id: "an identifier is what something is resumed by, and nothing resumes this"
+    state: >-
+      the plan is not a state machine. Whether the network exists afterwards is
+      asked of docker by the post-change audit, not remembered here.
+
+# ---------------------------------------------------------------------------
+# The candidate. A closed field set: an unrecognised key is a refusal, not a
+# key that is ignored.
+# ---------------------------------------------------------------------------
+candidate:
+  required:
+    network_name: "lowercase, what a person will type; not derived from the subnet"
+    owner_ref: "who is asking, resolved from the trusted context; never a name"
+  declared:
+    subnet: >-
+      CIDR, and it must be STATED. There is no default and no inference.
+      DELIBERATELY not in `required`: a candidate that names a network and no
+      subnet is exactly the candidate NETWORK_SUBNET_UNDECLARED exists for, and
+      it must produce that refusal rather than an error. A request naming no
+      network at all is the other case and is rejected outright, because there
+      is no code to refuse a candidate that is not one.
+  optional:
+    gateway: "must be inside `subnet` and is checked to be"
+    driver: "defaults to bridge"
+    project: "the compose project or Item this network serves, for provenance"
+    composed_by: >-
+      `compose` when a compose file asked for it. This field is how
+      COMPOSE_IMPLICIT_NETWORK is detectable: compose creates a `<project>_default`
+      network with a subnet IT chooses when none is declared, and the danger is
+      the choosing, not the compose.
+  unknown_key_is: DENY
+
+# ---------------------------------------------------------------------------
+# The decision. Three values, because two of them are refusals for different
+# reasons and the caller's next move differs.
+# ---------------------------------------------------------------------------
+decisions:
+  ALLOW:
+    means: "every rule below was evaluated against complete evidence and none refused"
+    caller_may: perform the mutation
+  REQUIRE_APPROVAL:
+    means: "no rule refused, and this action may not be taken by the requester alone"
+    caller_may: ask a person, through the existing `approval.py` binding
+  DENY:
+    means: "a rule refused it"
+    caller_may: nothing; the reason is in `code` and it is one of the codes below
+
+# Where REQUIRE_APPROVAL comes from, stated so that this vocabulary is not
+# three-valued for appearance's sake.
+#
+# NO NETWORK RULE IN THIS FILE PRODUCES IT. Every rule below is a hard refusal,
+# because every one of them is a statement about a subnet and there is no
+# subnet for which "ask a person" is the better answer than "no". A person
+# cannot be asked to bless a collision; the collision is a fact.
+#
+# It is reachable from the two inputs this gate COMPOSES with, both of which
+# are real and both of which are declared here rather than left to a caller:
+#
+#   ownership  (C2's gate)  an EXTERNAL or UNKNOWN owner on the subject is a
+#                           refusal, and a PROTECTED subject is REQUIRE_APPROVAL
+#   recovery   (this file)  an IRREVERSIBLE action may not be taken on the
+#                           requester's own authority
+#
+# Neither is implemented here. `compose()` takes them as records, applies
+# `precedence` below, and this is the only place in the product that answers
+# the question — so an evaluator test can drive REQUIRE_APPROVAL with a
+# synthetic ownership record and prove the value is reachable.
+compose:
+  inputs: [network, ownership, recovery]
+  precedence: "DENY > REQUIRE_APPROVAL > ALLOW"
+  because: >-
+    the strictest input wins. An input that could be overruled by a laxer one
+    is not a gate, it is a vote.
+
+# ---------------------------------------------------------------------------
+# The rules. Ordered, and the order is the answer's order: shape, then policy,
+# then the world.
+# ---------------------------------------------------------------------------
+codes:
+  COMPOSE_IMPLICIT_NETWORK:
+    rule: "the candidate is a compose-created network and no subnet was declared"
+    means: >-
+      compose picks a subnet from a pool it chooses, and it does so at `up`
+      time — after this gate, after any review, and with no record of what it
+      picked. The address it chooses may be one that is already in use by
+      something the compose file has never heard of.
+    repair: >-
+      declare `networks: {<name>: {ipam: {config: [{subnet: "..."}]}}}` in the
+      compose file and send the declared subnet through this gate as an
+      ordinary candidate.
+  NETWORK_SUBNET_UNDECLARED:
+    rule: "the candidate has no subnet, or one that cannot be read as a CIDR"
+    means: "docker will allocate from its default pool; the answer is not known at gate time"
+    repair: "state the subnet"
+    malformed_is_the_same_code: >-
+      `10.0.0.1/33` and a missing field deny for the same reason and send the
+      requester to the same repair. The distinction between them is a parsing
+      detail and not a fact anyone acts differently on; a separate code would
+      be a fourth place to look for the same answer.
+  NETWORK_POLICY_INCOMPLETE:
+    rule: "the host policy document does not establish COMPLETE coverage"
+    means: >-
+      the reserved-CIDR list is empty, absent, unreadable, or declares
+      `coverage: INCOMPLETE`. A gate whose policy is incomplete cannot answer
+      "does this collide with the corporate range" — and the honest answer to
+      an unanswerable question on a mutation path is a refusal.
+    repair: >-
+      an operator authors the reserved ranges for this host and marks the
+      document COMPLETE. This is deliberately NOT automatable: `ip route` sees
+      one hop, and a list derived from it would name the ranges that happened
+      to be routed through this host as if they were the company's.
+    not_the_same_as: "ABSENT and INCOMPLETE both deny, and they are reported apart"
+  NETWORK_OUTSIDE_ALLOWED_POOL:
+    rule: "pools were declared, and the subnet is inside none of them"
+    only_fires_when_declared: >-
+      with no pools declared this rule says nothing a reader can act on — the
+      absence of pools IS the incompleteness, and it is already named by
+      NETWORK_POLICY_INCOMPLETE. A rule that fires on the absence of a
+      declaration is noise wearing a second code.
+    means: >-
+      the pools are the ranges this host is permitted to allocate docker
+      networks from. A subnet outside all of them is a subnet nobody has
+      decided is docker's to take.
+    repair: "choose a subnet inside a declared pool, or have the pool widened"
+  NETWORK_CIDR_COLLISION:
+    rule: "the subnet overlaps a reserved range or an observed destination"
+    means: >-
+      after this network exists, `ip route` will prefer its bridge for every
+      address in the overlap, because the route docker adds is a longer prefix
+      than whatever carries that address today. Traffic to those addresses is
+      then delivered into a bridge that has no reason to exist: NATed into a
+      container network if a container is attached, and DROPPED if the bridge
+      is down. The second case is the one this gate exists for — it is silent,
+      it is not a misconfiguration of anything on either end, and it looks
+      exactly like the remote host being down.
+    repair: "choose a subnet that overlaps nothing `conflicts` names"
+    note: >-
+      a `/32` route elsewhere is NOT a mitigation. It exempts one address and
+      leaves the rest of the range in the same hole; the observation half of
+      this found exactly that shape on this host.
+  NETWORK_EVIDENCE_UNAVAILABLE:
+    rule: "the host could not be asked, so the absence of a collision was not established"
+    means: >-
+      docker networks, host interface addresses, the route table, or the
+      kernel's route decision could not be read. This is the asymmetry in the
+      header: the monitor reports NO KNOWN CONFLICT here and stays quiet,
+      because it is describing the host. This gate refuses, because it is
+      being asked to authorize a change to it.
+    repair: "make the read work; there is no way to answer without it"
+
+# The order is not arbitrary and it is not the order the codes are declared
+# in. It is the order of the requester's next move: shape problems are theirs
+# to fix in the request, policy problems are an operator's to fix in a file,
+# and a collision is the world's answer, which nobody can talk their way out
+# of. A refusal that names a fixable cause sends them to the right place.
+precedence:
+  order:
+    - COMPOSE_IMPLICIT_NETWORK
+    - NETWORK_SUBNET_UNDECLARED
+    - NETWORK_POLICY_INCOMPLETE
+    - NETWORK_OUTSIDE_ALLOWED_POOL
+    - NETWORK_CIDR_COLLISION
+    - NETWORK_EVIDENCE_UNAVAILABLE
+  because: >-
+    every rule is evaluated and every one that fires is reported. `code` is the
+    first that fired and `codes` is all of them, because "you asked for a
+    subnet outside the pool AND it collides" is a fact the requester needs and
+    a bare first-code response destroys — the same reasoning as approval.py's
+    six verdicts.
+
+# ---------------------------------------------------------------------------
+# The policy input: who writes it, and what it must prove.
+# ---------------------------------------------------------------------------
+policy:
+  document: "a host profile, authored by an operator for THIS host"
+  schema: serveros/network-policy.v1
+  # The document is a HOST PROFILE and this policy is one SECTION of it. The
+  # nesting is not decoration: a host profile also carries the node's identity,
+  # its roots and whatever else the node has decided about itself, and a
+  # top-level field list would collide with all of it. Stated here because the
+  # field list below is this section's fields and reads like the file's — an
+  # operator who wrote it flat got `coverage: ABSENT` at the very path they had
+  # just passed, which is a sentence about a file that does not exist said
+  # about a file that does.
+  #
+  #   schema: serveros/host-profile.v1     # the document
+  #   node: ...
+  #   network_policy:                      # the section this gate reads
+  #     coverage: COMPLETE
+  #     allowed_pools: [...]
+  #
+  # A document with no `network_policy` section is INCOMPLETE, not ABSENT: the
+  # file is there and being read; the section is what is missing. A document
+  # carrying the field names below at its ROOT is UNREADABLE: the section was
+  # written a level too high, and reading it from there would mean guessing
+  # which part of a larger document is meant to be this policy.
+  section: network_policy
+  resolution_order:
+    - "--policy <path>"
+    - "$SERVEROS_NETWORK_POLICY"
+    - "absent — and absent denies"
+  default_location: null
+  default_location_because: >-
+    there is deliberately no built-in path yet. A declared default that nothing
+    writes is the standing defect of this codebase: it resolves, it reports
+    "nothing here", and it is indistinguishable from a host whose policy is
+    genuinely empty. Until the migration package names where a host profile
+    lives on a node, the path is supplied and its absence is a finding a person
+    sees, not a file the code quietly looks for.
+  fields:
+    allowed_pools: "ranges this host may allocate docker networks from"
+    corporate_reserved_cidrs: "the company's ranges, as routed from off-host"
+    vpn_reserved_cidrs: "ranges reachable only through a VPN tunnel"
+    infrastructure_reserved_cidrs: "ranges this host's own infrastructure occupies"
+    coverage: "COMPLETE | INCOMPLETE — an operator's claim, not a computed value"
+  coverage_of:
+    COMPLETE: "the document declares COMPLETE and names at least one allowed pool"
+    INCOMPLETE: "the document exists and declares INCOMPLETE, or names no pool"
+    ABSENT: "there is no document"
+    UNREADABLE: "a document exists and could not be read"
+  provenance_required: >-
+    every reserved entry must name where it came from. An entry with no
+    provenance is a guess, and a guess in this field is indistinguishable from
+    a fact to everything downstream.
+  derived_from_host_is_forbidden:
+    - "`ip route` — it sees this host's hop and not the company's ranges"
+    - "current SSH peers — an observation of who is talking now, which is a
+       dynamic fact, and a dynamic fact written into an authored policy is a
+       policy that changes without anyone deciding to change it"
+    - "the docker networks that exist — those are the state being checked, and
+       deriving the policy from the state makes every state its own permission"
+  seeded_from_the_iana_ranges_is_forbidden:
+    because: >-
+      `10/8`, `172.16/12` and `192.168/16` are the private blocks, and listing
+      them as reserved would make every docker network collide with them. The
+      gate would then refuse everything, which is the same failure as a gate
+      that refuses nothing: nobody reads the answer.
+
+# ---------------------------------------------------------------------------
+# Evidence. What is read, and what "complete" means.
+# ---------------------------------------------------------------------------
+evidence:
+  sources:
+    - id: docker_subnets
+      read: "`docker network ls` then `docker network inspect` per network"
+      gives: "the subnets that already exist, with the bridge device and member count"
+    - id: host_iface_cidrs
+      read: "`ip -j addr show`"
+      gives: "the addresses this host answers on; a candidate covering one shadows the host's own identity"
+    - id: host_routes
+      read: "`ip -j route show`"
+      gives: "explicit destinations; kernel/scope-link entries are the on-link neighbourhood and are excluded"
+    - id: route_decisions
+      read: "`ip route get <addr>`"
+      gives: >-
+        what the kernel would ACTUALLY do with an address, which is the only
+        authority that includes longest-prefix, metric and policy rules. It
+        sends no packet: the lookup is a read of the kernel's own table.
+  complete_when: "every source above answered for every address it was asked about"
+  incomplete_means: DENY
+  because: >-
+    a gate that proceeds on partial evidence reports the collisions it happened
+    to look for as if they were the collisions there are.
+  probe_targets:
+    rule: >-
+      one representative address per conflict, plus the network address, plus
+      the neighbours of any `/32` in the conflict. The neighbours are what turn
+      "this range is shadowed" into "these addresses are being dropped right
+      now": a `/32` exempts itself and nothing beside it.
+
+# ---------------------------------------------------------------------------
+# Declaration. What a caller is told, and what it must ask for.
+# ---------------------------------------------------------------------------
+disclosure:
+  # This gate does not invent a fourth axis. `context/disclosure-contract.yaml`
+  # already names the axis this belongs to:
+  #
+  #     authority L1  "the policy set that applies to this project"
+  #     authority L2  "a specific denial and its reason"
+  #     authority L3  "the full authority statement"
+  #
+  # which is exactly L1/L2/L3 of a preflight result. L0 is the count.
+  axis: authority
+  L0: "one line: the decision and the code"
+  L1: "the decision, the code, the short reason, the subject"
+  L2: "plus every conflict that fired, with the source it collided with"
+  L3: "plus the evidence: every source read, every probe target and its route decision"
+  default_level: L1
+  why_default_is_not_L3: >-
+    the full evidence for one preflight is every docker subnet on the host plus
+    the route table plus a route decision per probe target. That is a few
+    thousand tokens to answer a yes/no question, and it is the shape
+    `disclosure-contract.yaml` names under `capability_l0` — a menu invites
+    browsing, and browsing is how a session spends its first thousand tokens
+    reading a catalogue instead of working. A refusal is the one case that
+    promotes itself: a DENY renders at L2 by default, because the conflicts ARE
+    the reason and a refusal without its reason sends the caller to guess.
+  never_at_l1: "the evidence. It is one level down, not withheld."
+
+# ---------------------------------------------------------------------------
+# What this gate does NOT claim.
+# ---------------------------------------------------------------------------
+not_this:
+  - >-
+    not a containment boundary against a person typing `docker network create`.
+    ServerOS V1 enforces on the mutations that go THROUGH it and observes the
+    rest; a subnet created by hand is the monitor's business, and the monitor
+    says so.
+  - >-
+    not a statement that the host is safe. It answers "may this one subnet be
+    created", and a host with no unowned collisions can still be wrong in ways
+    this question does not reach.
+  - >-
+    not a policy author. It reads one. `reserved_cidrs` empty is a finding
+    about this deployment and not a value this code may supply.
+
+remediation:
+  unowned:
+    rule: >-
+      an existing network whose owner cannot be proven is DEFER, and its
+      finding stays CRITICAL. A known live conflict on a host is a reason to
+      stop migrating, not a reason to delete something whose owner nobody can
+      name — the two are independent and a single verdict cannot carry both.

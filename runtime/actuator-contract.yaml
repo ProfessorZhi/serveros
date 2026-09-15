@@ -208,13 +208,77 @@ actuators:
     verb: docker
     why: >-
       `docker inspect`, `docker ps`, `docker stats`, `docker images`,
-      `docker volume ls`, `docker network ls`, `docker system df` and
-      `docker info`. Every one is a read; there is no `docker rm`, `stop`,
-      `kill` or `prune` anywhere in the product's own code, and that is checked
-      by the scanner rather than promised here.
+      `docker volume ls`, `docker network ls`, `docker network inspect`,
+      `docker system df` and `docker info`. Every one is a read; there is no
+      `docker rm`, `stop`, `kill` or `prune` anywhere in the product's own
+      code, and that is checked by the scanner rather than promised here.
+      `docker network inspect` is here rather than left implied by
+      `docker network ls`: the listing reports ID, Name, Driver and Scope and
+      no subnet at all, so a network-creation preflight that read only the
+      listing would be asking "is this subnet free" of a set of rows that does
+      not carry a subnet.
     sites:
-      - {file: runtime/probes.py, symbols: [LiveHost._docker_json, LiveHost.docker_inspect, LiveHost.docker_ps]}
+      - {file: runtime/probes.py, symbols: [LiveHost._docker_json, LiveHost.docker_inspect, LiveHost.docker_ps, LiveHost.docker_network_ls, LiveHost.docker_network_inspect]}
       - {file: runtime/inventory.py, symbols: [Inventory._docker_root_dir, Inventory.docker_summary, Inventory.docker_list, Inventory.docker_volumes, Inventory.docker_images, Inventory.docker_stats, Inventory.docker_networks, Inventory.docker_sizes, Inventory.docker_space, Inventory.container_logs]}
+
+  - id: host-topology-commands
+    kind: command_handoff
+    verb: ip
+    why: >-
+      `ip -j addr show`, `ip -j route show table all` and `ip route get <addr>`,
+      all three read-only and all three reached through the same
+      `LiveHost._run` chokepoint as every other host measurement — so the
+      number of places this product can reach the host did not change when
+      these were added. `ip route get` in particular reads the kernel's own
+      routing decision for one address and sends no packet: the alternative
+      (parsing the route table and re-implementing longest-prefix, metric and
+      policy-rule selection) is a second implementation of the kernel that
+      would disagree with it. Named here because `ip` is not among §18's six
+      read commands, and a read that is not on the list still has to be
+      declared for the declaration to mean anything.
+      This entry was STALE_ACTUATOR the first time it was written, and the
+      reason is worth keeping: `ip` was not in `HANDOFF_BINARIES` at all, so
+      none of the three reads below produced a hit and the declaration covered
+      nothing the scanner could see. The scanner was widened rather than the
+      declaration trimmed — with `_ip_verb`, so that widening it did not make
+      `ip route add` an unfindable read, which is exactly the failure the
+      `docker` branch's comment describes.
+    sites:
+      - {file: runtime/probes.py, symbols: [LiveHost.interface_cidrs, LiveHost.route_table, LiveHost.route_get]}
+
+  - id: network-create-actuator
+    kind: unresolved_argv
+    verb: subprocess.run
+    why: >-
+      The first actuator in this product that CREATES something on the host.
+      `daemon-actuator-chokepoint` returns an existing thing to its declared
+      state; this one brings a network into existence that was not there, and
+      that is a different kind of reach even though both end at
+      `subprocess.run`.
+      It is NOT declared as a `mutation`, and the reason is the one
+      `daemon-actuator-chokepoint` already gives for `docker restart`:
+      §26's vocabulary is `stop`/`kill`/`rm`/`rmi`/`prune`/`down` — every one
+      of which ends a process this code does not own or removes bytes — and
+      `MUTATING_DOCKER_VERBS` is that list. `docker network create` is not on
+      it, and recording it as a mutation because it is "the docker one that
+      writes" is how a vocabulary stops being read. What it destroys is
+      nothing; what it changes is the routing table's future contents, which is
+      the harm this gate exists to refuse and not the harm §26 enumerates.
+      The argv is unresolved at the scan site because it arrives as a
+      parameter. It is not unresolved at the call site that builds it:
+      `argv_for` emits the literal `docker network create` and appends only
+      fields a closed candidate accepted — `candidate()` refuses an unknown key
+      outright, so the tail cannot be steered by anything the request smuggles
+      in.
+      What gates it is one call deep and not advisory: `execute` reads the
+      preflight verdict itself and performs nothing unless it is ALLOW, the
+      `runner` parameter has no default so there is no built-in route to the
+      world, and `--execute` is off unless passed. On a DENY the actuator is
+      not entered — which is the assertion C1 §七 asks to be proven rather than
+      asserted, and `tests/test_network_policy.py` proves it by passing a
+      runner that records being called.
+    sites:
+      - {file: runtime/network_mutation.py, symbols: [subprocess_runner]}
 
   - id: disk-measurement-commands
     kind: command_handoff
