@@ -23,6 +23,9 @@ _spec = importlib.util.spec_from_file_location("serveros_build", BUILDER)
 build = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(build)
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from loader_graph import missing_from, production_closure  # noqa: E402
+
 # Skills canonical in this repository, in bundle order. §24 left exactly one:
 # runtime-management became an ability-management source, so a second entry
 # here would be a second source of truth rather than a composition choice.
@@ -319,6 +322,63 @@ class BuildTests(unittest.TestCase):
         for module in build.CORE_MODULES:
             self.assertTrue((self.out / module).is_dir(),
                             f"bundle declares {module} but the artifact lacks it")
+
+    def test_the_artifact_answers_the_production_loader_closure(self):
+        """The artifact must contain everything its own surfaces load.
+
+        This is the gate the C4 defect needed and did not have. The test above
+        it iterates `build.CORE_MODULES`, so it can only confirm modules
+        somebody already remembered to list — `runtime/cli.py` loaded
+        `intake/global_board.py` for `serverosctl requirement board`, and
+        `intake` was on no list, so the verb worked from a source checkout and
+        raised FileNotFoundError on every installed node. Measured, on the
+        running node and on a clean external install.
+
+        The requirement here comes from the loader graph — what these surfaces
+        actually load — so a module nobody lists is a failure rather than an
+        absence of evidence. `CORE_MODULES` stays the builder's implementation
+        input, and it is no longer the authority for this question.
+        """
+        self.assertEqual(run_build(self.args("--write")).returncode, 0)
+        missing = missing_from(self.out)
+        self.assertEqual(
+            missing, [],
+            "the artifact omits modules its own entry points load: "
+            f"{[str(p) for p in missing]}")
+
+    def test_the_loader_closure_gate_can_go_red(self):
+        """A gate that cannot fail certifies nothing.
+
+        Removing a required module from a copy of the artifact must make the
+        closure check report exactly that module — and, in the same breath, the
+        `CORE_MODULES` test must still pass on the same damaged tree. That
+        second half is the point: it is the demonstration that the old gate was
+        blind here, not merely unlucky, and it is why the requirement had to
+        move rather than the list grow a third time.
+        """
+        self.assertEqual(run_build(self.args("--write")).returncode, 0)
+
+        # The exact module that shipped missing. Asserted to be required rather
+        # than assumed, so this control cannot quietly stop testing anything.
+        victim = Path("intake/global_board.py")
+        self.assertIn(victim, production_closure(),
+                      "the closure no longer requires the module this control "
+                      "removes; pick the one it does require")
+
+        damaged = self.base / "damaged"
+        shutil.copytree(self.out, damaged)
+        (damaged / victim).unlink()
+
+        self.assertEqual(missing_from(damaged), [victim],
+                         "the closure gate did not notice the removal")
+        self.assertEqual(missing_from(self.out), [])
+
+        # The old predicate, applied to the same damaged tree, still passes.
+        for module in build.CORE_MODULES:
+            self.assertTrue(
+                (damaged / module).is_dir(),
+                f"expected the CORE_MODULES gate to be blind to this removal, "
+                f"but it flagged {module}")
 
     def test_the_artifact_ships_the_daemon_its_adapter_calls(self):
         """The composition ships an MCP adapter whose only job is to call

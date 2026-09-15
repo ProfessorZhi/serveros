@@ -116,6 +116,26 @@ abilities:
 memory:
   path: memory
 
+# `intake` is the same defect a third time, and the first one a gate could not
+# have caught by reading this file.
+#
+# `runtime/cli.py` loads `intake/global_board.py` at call time for
+# `serverosctl requirement board`. The directory was therefore required by a
+# shipped surface and declared by nothing: it was in neither this file nor
+# `CORE_MODULES`, and the packaging loop treats that as "not a module" rather
+# than as an error. A source checkout runs the verb; an installed artifact
+# raises FileNotFoundError, which is how it was found.
+#
+# The mechanism matters more than the instance. The gate that was supposed to
+# catch this iterated `CORE_MODULES` — the list a module is missing FROM — so
+# it could only ever confirm a module somebody had already remembered. Named
+# here so the composition ships it; `test_build.py`'s
+# `test_the_artifact_answers_the_production_loader_closure` derives the
+# requirement from the loader graph instead, so the next one is a failure
+# rather than a discovery.
+intake:
+  path: intake
+
 # The node runtime, shipped for the reason the `mcp` block below states and for
 # one more that the artifact was getting wrong.
 #

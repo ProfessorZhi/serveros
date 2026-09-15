@@ -189,3 +189,58 @@ def closure(entry: Path) -> set[Path]:
             if reference not in seen:
                 frontier.append(reference)
     return seen
+
+
+# What the composition ships and starts. Each is an entry point a node runs:
+# the two CLI/daemon shims, the two MCP adapters a manifest names, and the
+# modules behind them.
+#
+# This is the one place a shipped surface is named as an entry, and it is
+# deliberately short. It is NOT a second module list: what each entry needs is
+# computed from this tree by `production_closure()`, so naming an entry here
+# cannot disagree with what that entry actually loads.
+PRODUCTION_ENTRIES = (
+    "bin/serverosctl",
+    "bin/serverosd",
+    "mcp/bin/serveros-node-mcp",
+    "mcp/bin/serveros-agent-mcp",
+    "runtime/cli.py",
+    "runtime/daemon.py",
+    "mcp/node_mcp.py",
+    "mcp/agent_mcp.py",
+)
+
+
+def production_closure() -> set[Path]:
+    """Every repository file the shipped surfaces need, transitively.
+
+    This is the packaging REQUIREMENT — the set an artifact must contain for the
+    surfaces it declares to run. `scripts/build.py`'s `CORE_MODULES` is how the
+    builder satisfies it and is not the statement of it.
+
+    The distinction is the whole of the C4 defect. A gate that reads
+    `CORE_MODULES` asks "is everything on this list present", which is true by
+    construction for every module that was put on the list — and says nothing at
+    all about a module nobody put there. Deriving the set from the loader graph
+    instead makes the question "is everything these surfaces load present",
+    which a forgotten module fails rather than evades.
+
+    The scan's limits are `loader_graph`'s: reflection is not followed, and a
+    path built by f-string or read from a config file is not an edge. So this is
+    a LOWER bound on what a surface needs — it can say "this artifact is missing
+    something its CLI loads", and cannot say "nothing else is missing".
+    """
+    needed: set[Path] = set()
+    for entry in PRODUCTION_ENTRIES:
+        needed.add(Path(entry))
+        needed |= closure(Path(entry))
+    return needed
+
+
+def missing_from(root: Path) -> list[Path]:
+    """The subset of `production_closure()` that is not a file under `root`.
+
+    Relative paths, sorted, so a red gate prints the same list twice.
+    """
+    return sorted(path for path in production_closure()
+                  if not (root / path).is_file())
