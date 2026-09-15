@@ -1,0 +1,202 @@
+# C3 · The managed path, declared once, so that it is checkable rather than
+# merely believed.
+#
+# `network_mutation.py` proved the shape for one action on one resource kind:
+#
+#     intent -> transient plan -> compliance preflight -> executor
+#
+# This file is that shape generalised to a SECOND action on a different subject,
+# which is the only way to know whether the first one was a pipeline or a
+# coincidence. Nothing here is a workflow engine: a plan is a dict built in one
+# function and consumed by the next call, and every stage below is a function
+# you can call in a REPL.
+schema: serveros/managed-mutation.v1
+
+# Transient, and this is a constraint rather than a description of the current
+# code. A stored plan needs a lifetime; a lifetime needs a sweeper; a sweeper
+# needs a rule for when an intent has expired, which is a policy nobody has
+# written. C3 asks for none of it, so none of it exists:
+forbidden:
+  - a plan database
+  - a plan daemon
+  - a plan scheduler
+  - a plan lifecycle state machine
+plan:
+  lifetime: one call
+  shape:
+    - action              # which declared action, never a raw command
+    - subject_ref         # derived from the request, so asking twice compares
+    - proposed_changes    # the exact paths, known before anything is written
+    - policy_context      # which contract decides, and its coverage
+    - evidence_refs       # what was read, by digest
+    - recovery            # REVERSIBLE / COMPENSATABLE / IRREVERSIBLE
+  note: >
+    `proposed_changes` names paths and not commands. A plan that carries a
+    command line has already decided HOW, and the executor then has nothing
+    left to refuse.
+
+# ---------------------------------------------------------------------------
+# The actions this round declares
+# ---------------------------------------------------------------------------
+actions:
+  - id: projection.publish
+    tier: additive
+    subject_kind: projection
+    writes: state/serveros/projections/<name>/
+    recovery: REVERSIBLE
+    why: >
+      A projection is the one class of state whose contract already promises
+      that losing it is recoverable — `fleet/state-root-contract.yaml`'s
+      LOSS_REPRODUCIBLE invariant, enforced on the way in by `read_manifest`'s
+      `reproducible: true`. So a mutation to a projection is REVERSIBLE by the
+      same evidence that admits it, and the rollback below is a restore rather
+      than an apology.
+    not_chosen:
+      docker network create: >
+        C1's action, and structurally unreachable on this node: the host
+        profile's network coverage is ABSENT, so the composition denies before
+        an executor is reached. That is correct behaviour and it is not a
+        positive path, which is why C3 does not use it to demonstrate one.
+      container restart: >
+        The daemon's actuator. Reachable, and it stops something that is
+        serving. C3's fixture must be low-risk, user-space and short-lived;
+        restarting a live runtime to prove a pipeline is the wrong trade.
+      a lock file under `locks/`: >
+        Looked right and is wrong. That namespace is read as lease intent, so a
+        fixture lock left behind by an interrupted run reads as a resource
+        somebody is holding. A fixture must not be able to lie to another
+        subsystem, and the cheapest way to guarantee that is not to write into
+        a namespace with a meaning.
+
+# ---------------------------------------------------------------------------
+# Compliance: three questions, asked in this order, and the first refusal wins
+# ---------------------------------------------------------------------------
+compliance:
+  composes:
+    - ownership: runtime/ownership_gate.py
+    - destination: fleet/state-root-contract.yaml
+  rules:
+    - id: OWNERSHIP
+      asks: >
+        who is asking, and do they have standing over the subject at all.
+        Delegated to C2's gate rather than re-implemented: two gates that
+        answer the same question are two answers, and the failure this project
+        keeps finding is the second one drifting from the first.
+      refuses: [NO_TRUSTED_CONTEXT, OWNER_UNKNOWN, OWNER_EXTERNAL, PROTECTED_SUBJECT]
+    - id: DESTINATION_IS_NOT_AN_AUTHORITY
+      asks: >
+        what kind of thing is at the path being written. This is
+        NO_OVERWRITE_AUTHORITY read as a rule instead of as a sentence: a
+        generator that can only express its result by overwriting an authority
+        namespace has made the authority derived, whatever its manifest says.
+      classifies_with: runtime/state_root.py#classify
+      refuses: [TARGET_IS_AUTHORITY, TARGET_UNDECLARED_NAMESPACE]
+      unreachable_from_cli_because: >
+        `projection.publish` computes its destination from the declared
+        namespace and refuses a caller-supplied path, so today no CLI request
+        can name an authority target. The rule stays because the alternative is
+        a rule that arrives together with the first caller that needs it, which
+        is how a guard becomes an exemption. It is exercised by test at the
+        stage boundary, and this line says so rather than implying the live
+        surface can reach it.
+    - id: REPRODUCIBLE
+      asks: >
+        can what is about to be written be regenerated from its sources. A
+        projection that cannot be is evidence wearing a projection's directory
+        name.
+      refuses: [NOT_REPRODUCIBLE]
+  outcomes:
+    ALLOW: every rule admitted it, and the action's own tier policy has still not been consulted
+    DENY: one rule refused it, and `codes` names which
+    REQUIRE_APPROVAL: >
+      nothing refused it and nobody may take it on the requester's own
+      authority. The executor does not run on this outcome either.
+
+# ---------------------------------------------------------------------------
+# The executor: off unless asked, and it reads the verdict itself
+# ---------------------------------------------------------------------------
+executor:
+  default: REFUSES
+  enable_flag: --execute
+  refuses:
+    - decision != ALLOW
+    - --execute absent
+  note: >
+    It does not take a caller's word for the verdict and it is not
+    parameterized to skip the check. `--execute` is the difference between
+    planning and doing; it is not the difference between checking and not
+    checking. The writer is injected and has no default reachable from a test,
+    because the one thing this module must be able to prove is that on a
+    refusal the actuator is never entered.
+
+# ---------------------------------------------------------------------------
+# The audit: scoped, and the scope is a list of paths decided before the write
+# ---------------------------------------------------------------------------
+audit:
+  scope: >
+    the plan's declared paths and the subject directory that contains them,
+    plus a re-resolution of the protected set. Machine-wide `before != after`
+    is explicitly not how this works: on a shared host it reports every other
+    actor's work as this mutation's side effect, which is both false and
+    exactly the reading that makes a real side effect invisible in the noise.
+  observed_from: Observation.take(paths, directory)
+  verdicts:
+    AUDIT_OK: >
+      the planned targets are in the planned state, no protected resource
+      moved, and the executor wrote nothing it did not declare.
+    PLAN_TARGET_NOT_WRITTEN: a path the plan named is not there after the run
+    PLAN_TARGET_MALFORMED: it is there and does not satisfy its own contract
+    PROTECTED_RESOURCE_CHANGED: >
+      re-resolving the declared protected set gave a different answer before
+      and after. The set is the registry's, so this is bounded by construction
+      and not a scan.
+    UNEXPECTED_SIDE_EFFECT: >
+      the executor wrote a path the plan did not declare. Our own doing, and
+      the failure mode a scope check exists to catch.
+    CONCURRENT_EXTERNAL_CHANGE: >
+      something in the observed scope changed that our executor did not write.
+      On this host that is the ordinary case — the daemon publishes its own
+      snapshots on a tick — and it is reported rather than attributed, because
+      a pipeline that claims it caused a change it did not make will also miss
+      one it did.
+
+# ---------------------------------------------------------------------------
+# Rollback, in words that cannot be softened by usage
+# ---------------------------------------------------------------------------
+rollback:
+  vocabulary:
+    REVERSIBLE: >
+      the prior bytes were captured before the write and can be put back, or
+      what was created can be removed, leaving the observed scope byte-identical
+      to what it was. Verified by re-observing and comparing digests, not by
+      asserting that the code path ran.
+    COMPENSATABLE: >
+      the change cannot be undone, and a second change can cancel its effect.
+      Never claimed for anything in this round.
+    IRREVERSIBLE: what is gone is gone. Nothing in this round is this either.
+  this_round: REVERSIBLE
+  verification: >
+    a restore that is not re-observed is a belief. `rollback` returns the
+    before/after comparison of the restored scope, and a rollback that did not
+    restore is reported as ROLLBACK_INCOMPLETE rather than quietly passing.
+  never: >
+    no rollback may remove or restore anything outside the scope its own plan
+    declared, including when it fails. A failed rollback that widens its reach
+    is how a cleanup becomes the incident.
+
+# ---------------------------------------------------------------------------
+# The surface
+# ---------------------------------------------------------------------------
+surface:
+  commands:
+    - serverosctl mutation plan
+    - serverosctl mutation run
+  read_only: false
+  read_only_verbs: serverosctl mutation plan
+  execute_flag: --execute
+  exit_codes:
+    "0": "ALLOW. Whether anything was written is `execution.performed`; without --execute it is False."
+    "10": "DENY, and `codes` names which rule refused."
+    "11": "REQUIRE_APPROVAL. Nothing ran."
+    "2": "the question could not be put — no request, a name that is not a name."
+    "12": "it ran and the audit is not clean. Distinct from 0 on purpose: a caller that treats 'it did not crash' as 'it was scoped' has no way to hear about a side effect."

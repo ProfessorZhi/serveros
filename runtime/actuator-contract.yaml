@@ -437,6 +437,58 @@ actuators:
     sites:
       - {file: scripts/build.py, symbols: [build]}
 
+  # ---------------------------------------------------------------------------
+  # C3 · the managed path's own writer
+  # ---------------------------------------------------------------------------
+  # Three entries for one class, because the class is the only place C3 changes
+  # anything and each of the three is a different act. They are declared
+  # together so that reading the contract's actuator surface shows the whole of
+  # what the managed path can do, rather than one third of it.
+  #
+  # What is NOT here is as much of the claim as what is: there is no subprocess
+  # entry for `runtime/managed_mutation.py`, because the module has none. Its
+  # executor writes files and nothing else, and it reaches no container, no
+  # network, no unit and no process.
+  - id: managed-mutation-writes-its-plan
+    kind: fs_mutation
+    verb: .replace()
+    why: >-
+      Three names and one site. `_replace` is the primitive — temp file, write,
+      rename, the same idiom as `atomic-write-commit`; `write` serialises a
+      payload into it for the publisher, and `restore` puts captured bytes back
+      through it unchanged for the rollback. They are listed together because
+      they are one reachable path: all three are called only from `execute()`
+      and `rollback()`, and both refuse before the writer is touched unless
+      their own gate said so. The reason the writer is injected rather than
+      module-level is this entry: a test asserts on the call log that a refusal
+      never reaches it, and a call log can only exist if there is an object to
+      keep it on.
+    sites:
+      - {file: runtime/managed_mutation.py,
+         symbols: [FilesystemWriter._replace, FilesystemWriter.write,
+                   FilesystemWriter.restore]}
+  - id: managed-mutation-rollback-removes-what-it-created
+    kind: fs_mutation
+    verb: .unlink()
+    why: >-
+      The rollback's removal half, for a path that did not exist before the
+      write. Bounded by the plan: it iterates `proposed_changes`, which was
+      built before anything ran, so it cannot discover a path to remove at
+      rollback time. `missing_ok=True` because a rollback that raises on a file
+      it already removed is a rollback that stops halfway.
+    sites:
+      - {file: runtime/managed_mutation.py, symbols: [FilesystemWriter.remove]}
+  - id: managed-mutation-rollback-prunes-the-directory-it-made
+    kind: fs_mutation
+    verb: .rmdir()
+    why: >-
+      The destination directory, and only when it is empty — `rmdir` refuses a
+      non-empty one, so a rollback that got the paths wrong fails loudly here
+      instead of deleting a directory somebody else has since put something in.
+    sites:
+      - {file: runtime/managed_mutation.py,
+         symbols: [FilesystemWriter.rmdir, rollback]}
+
   - id: release-staging-and-symlink-swap
     kind: fs_mutation
     verb: shutil.rmtree

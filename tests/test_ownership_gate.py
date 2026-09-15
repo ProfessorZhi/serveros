@@ -337,9 +337,22 @@ class TheSixKindsOneGate(unittest.TestCase):
 
     def test_every_declared_kind_is_answered_by_the_same_evaluate(self):
         declared = gate.resource_kinds()
-        self.assertEqual(sorted(declared), ["builder_cache", "container",
-                                            "network", "process", "tunnel",
-                                            "volume"])
+        # The host kinds, pinned, because a vocabulary that drifts silently is
+        # how a gate starts answering about things nobody declared it for.
+        for kind in ("builder_cache", "container", "network", "process",
+                     "tunnel", "volume"):
+            self.assertIn(kind, declared)
+        # And the declared set is that plus exactly one entry that is not a
+        # thing on the host at all. Named here rather than left as "len > 6",
+        # because the point of the extension is that it was a decision: C3's
+        # subject is a projection, the gate refused it as SUBJECT_MALFORMED,
+        # and widening this table is how that refusal became an ownership
+        # answer instead of a vocabulary gap.
+        self.assertEqual(sorted(set(declared) - {
+            "builder_cache", "container", "network", "process", "tunnel",
+            "volume"}), ["projection"])
+        self.assertTrue(declared["projection"].get("through"),
+                        "an added kind must still say where its evidence comes from")
         for kind, block in sorted(declared.items()):
             with self.subTest(kind=kind):
                 resolved = self._resolve(kind)
