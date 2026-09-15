@@ -77,20 +77,45 @@ def a_contract(*packs_declared) -> dict:
     return {"schema": "serveros/ability-pack.v1", "packs": list(packs_declared)}
 
 
+def _workspace_roots(start: Path) -> list[Path]:
+    """Ancestors that look like a workspace: they hold both `src/` and `worktrees/`.
+
+    The same test `test_architecture_check.py` uses to find the evaluator, kept
+    as the same shape on purpose: two tests searching for the same repository by
+    two different rules is how one of them starts finding a different checkout.
+    """
+    for parent in [start, *start.parents]:
+        if (parent / "src").is_dir() and (parent / "worktrees").is_dir():
+            return [parent]
+    return []
+
+
 def _ability_repos() -> list[Path]:
     """Every git work tree that might be able to answer for the pin.
 
     Searched rather than hard-coded, because the checkout that can answer for
     the pinned revision is an Item worktree, and worktrees move. Named roots
-    first: `SERVEROS_ABILITY_REPO` for a caller that already knows, then the
-    two roots this product uses for repositories.
+    first: `SERVEROS_ABILITY_REPO` for a caller that already knows, then the two
+    roots this product declares for repositories — `workspace.src` and
+    `workspace.worktrees` in `fleet/profiles.yaml`.
+
+    Those two roots are found by looking for a workspace, not by counting
+    parents. The previous version counted: it computed `<repo>/../../` and
+    `<repo>/../../../src`, which are the right directories only for a layout
+    where the repo sits directly under the workspace. On this machine's own
+    layout — `workspace/src/serveros` — both candidates missed, the search
+    returned no repository at all, and five tests failed with a message blaming
+    ability-management for a file that was there the whole time. A discovery
+    that finds nothing has to be a failure somewhere, and the place it failed
+    was the one place it could not be seen from.
     """
     roots = []
     named = os.environ.get("SERVEROS_ABILITY_REPO")
     if named:
         roots.append(Path(named))
-    roots += [REPO.parent.parent / "ability-management",
-              REPO.parent.parent.parent / "src" / "ability-management"]
+    for ws in _workspace_roots(REPO):
+        roots += [ws / "src" / "ability-management",
+                  ws / "worktrees" / "ability-management"]
     found = []
     for root in roots:
         if not root.is_dir():
