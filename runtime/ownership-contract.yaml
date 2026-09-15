@@ -207,6 +207,30 @@ resource_kinds:
     through: >-
       nothing. BuildKit's cache is not addressed by the registry and carries no
       ownership label. Fail-closed: UNKNOWN, DENY.
+  # Added by C3, and the only entry here that is not a thing on the host.
+  #
+  # C3's subject is a projection, and the gate refused it as SUBJECT_MALFORMED —
+  # correctly, because this table was written for resources and a projection is
+  # not one. The refusal was a vocabulary boundary and not an ownership answer,
+  # which is exactly the distinction this project keeps having to make: a gate
+  # that answers "I cannot classify that" and a gate that answers "not yours"
+  # must not be readable as the same thing.
+  #
+  # C2.3 requires these kinds to be covered *at least*, so this widens a
+  # declared set rather than reopening a closed one. It is PRESENT rather than
+  # ABSENT because the evidence does exist and does reach an owner: a
+  # projection has no label, no cgroup and no unit to read, and the only thing
+  # that can decide who owns it is that ServerOS registered the lane that is
+  # asking — `registry-match`, which `attribution-contract.yaml` lists among
+  # the decisive sources. A subject that names no `owner_ref` resolves UNKNOWN
+  # and is refused, the same fail-closed direction as the two ABSENT kinds.
+  projection:
+    decisive_source: PRESENT
+    through: >-
+      the registration of the requester, by ref. Not the file, and not its
+      path: derived material written by ServerOS is owned by the lane that
+      asked for it, and a path under the state root is a location rather than
+      an owner.
 
 # ---------------------------------------------------------------------------
 # Codes. Every one has a producer and a test that drives it to red.

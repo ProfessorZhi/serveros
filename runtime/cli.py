@@ -2306,6 +2306,37 @@ def cmd_ownership(args) -> int:
         return 2
 
 
+def _mutation_module():
+    return _load_module_from(REPO_ROOT / "runtime" / "managed_mutation.py",
+                             "serveros_runtime_managed_mutation")
+
+
+def cmd_mutation(args) -> int:
+    """The managed path's verb. `plan` writes nothing; `run --execute` does.
+
+    The exit codes are the module's own policy and not a mapping written again
+    here — `exit_code()` exists in each of them for exactly this reason, and a
+    second translation table is how two verbs come to mean different things by
+    the same number.
+    """
+    argv = [getattr(args, "mutation_verb", "plan")]
+    argv += ["--request", args.request]
+    if getattr(args, "context", None):
+        argv += ["--context", args.context]
+    if getattr(args, "level", None):
+        argv += ["--level", args.level]
+    if getattr(args, "execute", False):
+        argv.append("--execute")
+    try:
+        return _mutation_module().run(argv)
+    except ValueError as exc:
+        # The same backstop as `cmd_ownership`'s, saying the same thing: a
+        # request that cannot be turned into a plan is exit 2, and no verdict
+        # about a subject exists to report.
+        sys.stderr.write(f"mutation: {exc}\n")
+        return 2
+
+
 # ---------------------------------------------------------------------------
 # parser
 # ---------------------------------------------------------------------------
@@ -2699,10 +2730,11 @@ def build_parser() -> argparse.ArgumentParser:
     own_check = ownership_sub.add_parser(
         "check", help="evaluate one subject and say why", **_COMMON)
     own_check.add_argument("--kind", required=True,
-                           help="container, network, volume, process, tunnel "
-                                "or builder_cache. The last two have no "
-                                "decisive owner source and are refused by "
-                                "construction rather than unimplemented")
+                           help="a kind `ownership-contract.yaml` declares. "
+                                "The list is that contract's and not this "
+                                "help text's: a second copy here is a second "
+                                "vocabulary, and it had already drifted by one "
+                                "entry before anyone read it")
     own_check.add_argument("--name", required=True, help="the subject's name")
     own_check.add_argument("--action", default="additive",
                            choices=("additive", "destructive"),
@@ -2725,6 +2757,30 @@ def build_parser() -> argparse.ArgumentParser:
                                 "record verbatim")
     # `--json` is not declared here either; `common` carries it.
     own_check.set_defaults(func=cmd_ownership)
+
+    mutation = sub.add_parser(
+        "mutation",
+        help="the managed path: intent, plan, compliance, executor, audit (§C3)",
+        **_COMMON)
+    mutation_sub = mutation.add_subparsers(dest="subcommand", required=True)
+    for verb, blurb in (("plan", "build the transient plan and the verdict, "
+                                 "and write nothing"),
+                        ("run", "the same, and with --execute perform it and "
+                                "audit the result")):
+        mut = mutation_sub.add_parser(verb, help=blurb, **_COMMON)
+        mut.add_argument("--request", required=True,
+                         help="a JSON or YAML request: the action, the "
+                              "subject, the requester and what to write")
+        mut.add_argument("--context", help="a trusted context document "
+                                           "({context_ref, actor_ref})")
+        mut.add_argument("--level", choices=("L0", "L1", "L2", "L3"),
+                         help="disclosure level for the compliance verdict")
+        if verb == "run":
+            mut.add_argument("--execute", action="store_true",
+                             help="perform the mutation. Without it the plan, "
+                                  "the verdict and the audit's scope are still "
+                                  "produced and nothing is written")
+        mut.set_defaults(func=cmd_mutation, mutation_verb=verb)
 
     probe = sub.add_parser("probe", help="run one resource's declared probes", **_COMMON)
     probe.add_argument("id")
