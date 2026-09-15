@@ -1,0 +1,47 @@
+{
+  "schema": "hwz/release-artifact.v1",
+  "release": {
+    "tag": "serveros-v1.2.0",
+    "title": "ServerOS v1.2.0",
+    "asset_base": "hwz-server-os-linux-work-3.1.0-srv0003.20260915b"
+  },
+  "artifact": {
+    "tree_hash": "e5e489ef52f1c32b1d76ee1eed23b555af296779dd7088fa751a867fe938bba4",
+    "tree_hash_recipe": "export LC_ALL=C; find . -type f -print0 | sort -z | xargs -0 sha256sum | sha256sum"
+  },
+  "archive": {
+    "name": "hwz-server-os-linux-work-3.1.0-srv0003.20260915b.tar.zst",
+    "compression": "zstd",
+    "level": 19,
+    "threads": 1,
+    "uncompressed_tar_bytes": 3420160,
+    "compressed_bytes": 735265,
+    "sha256": "1a97679e026494ddafb261d3b4da87c72ebc4973f7c32fbdeb0110509c07c460",
+    "tar": {
+      "format": "gnu",
+      "sort": "name",
+      "mtime": "@315532800",
+      "owner": "0/0",
+      "numeric_owner": true
+    }
+  },
+  "provenance": {
+    "publication_base": "d427b2fe2275155556e56e8b66a0d223738b42bc",
+    "source_repo": "ProfessorZhi/serveros",
+    "source_revision": "d427b2fe2275155556e56e8b66a0d223738b42bc",
+    "device_ref": "device:server-beijing",
+    "generated_at": "2026-09-15T01:32:19Z"
+  },
+  "generator": {
+    "repo": "ProfessorZhi/hwz-ops",
+    "path": "scripts/release_publish.py",
+    "revision": "197dcd2f4c5f3466367f8806dfb4e6e19310fe70"
+  },
+  "assets": [
+    {
+      "name": "hwz-server-os-linux-work-3.1.0-srv0003.20260915b.tar.zst",
+      "size": 735265,
+      "sha256": "1a97679e026494ddafb261d3b4da87c72ebc4973f7c32fbdeb0110509c07c460"
+    }
+  ]
+}
