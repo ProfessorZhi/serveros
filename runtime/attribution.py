@@ -167,51 +167,225 @@ def container_of_cgroup(cgroup: str) -> str | None:
 # Ownership - who a group belongs to, and the evidence for saying so
 # ---------------------------------------------------------------------------
 
-# A group the system manager owns. Named for the conclusion rather than for the
-# slice, because the slice is the evidence and the conclusion is what a reader
-# is being handed.
-EXTERNAL_SYSTEM = "EXTERNAL_SYSTEM"
+# Two CLASSES, borrowed from the vocabulary this file already uses for
+# resources, because a reader who learns it once should not have to learn a
+# second one:
+#
+#     EXTERNAL   the cgroup path itself names an owner that is not this
+#                deployment's
+#     UNKNOWN    nobody can say from what the kernel recorded
+#
+# `role` carries the SUBTYPE. It exists because "external" is not one thing: a
+# host service, the root cgroup, and another tenant's login session are all not
+# ours, and reporting them as one undifferentiated class is what let a per-user
+# systemd manager be mistaken for a host service. Every role is backed by a
+# DIFFERENT clause of the cgroup path, and `why` quotes the clause.
+#
+# `lifecycle` is OBSERVE_ONLY on every EXTERNAL answer. Nothing in this file
+# reclaims, cleans up or mutates anything; the field is here so that a consumer
+# reading an EXTERNAL group cannot mistake "attributed" for "actionable".
+EXTERNAL = "EXTERNAL"
+#: Ours, by the deployment's own declaration. The third answer, beside
+#: "somebody else's" and "nobody can say" — see `deployment_units()`.
+MANAGED = "MANAGED"
+UNKNOWN = "UNKNOWN"
+
+#: An installed unit's process, under `system.slice` or the root `init.scope`.
+ROLE_EXTERNAL_SYSTEM = "EXTERNAL_SYSTEM"
+#: In the cgroup hierarchy but outside every slice the system manager builds —
+#: the root cgroup (kernel threads) and vendor agents such as `/YunJing/YDEyes`.
+ROLE_EXTERNAL_UNSLICED = "EXTERNAL_UNSLICED"
+#: A login manager: `user@<uid>.service`, which owns that user's session slice.
+ROLE_EXTERNAL_USER_MANAGER = "EXTERNAL_USER_MANAGER"
+#: A login session: `session-<N>.scope`, which the kernel created for a login.
+ROLE_EXTERNAL_USER_SESSION = "EXTERNAL_USER_SESSION"
+
+#: A unit this deployment declares in its own tree. The opposite answer to
+#: every role above: not "which other owner is this" but "this is ours".
+ROLE_MANAGED_UNIT = "MANAGED_UNIT"
+
+#: Stated once, at module level, so no return site can disagree about it.
+OBSERVE_ONLY = "OBSERVE_ONLY"
 
 SYSTEM_SLICE = "system.slice"
+USER_SLICE = "user.slice"
 SYSTEM_SCOPES = ("init.scope",)
+
+
+def _owner(role, *, why, slice_name=None, unit=None, uid=None,
+           session=None) -> dict:
+    """One EXTERNAL answer with its evidence. Never guesses."""
+    return {
+        "class": EXTERNAL,
+        "role": role,
+        "lifecycle": OBSERVE_ONLY,
+        "provenance": "cgroup",
+        "slice": slice_name,
+        "unit": unit,
+        "uid": uid,
+        "session": session,
+        "why": why,
+    }
+
+
+def _managed(role, *, why, slice_name=None, unit=None, uid=None,
+             session=None) -> dict:
+    """One MANAGED answer with its evidence.
+
+    `lifecycle` is OBSERVE_ONLY here for the same reason it is on every
+    EXTERNAL answer: this round settles the attribution question and no other.
+    Knowing a runtime is ours says nothing about whether it should be stopped,
+    and a consumer that reads MANAGED as an instruction has misread the field.
+    """
+    return {
+        "class": MANAGED,
+        "role": role,
+        "lifecycle": OBSERVE_ONLY,
+        "provenance": "deployment-manifest",
+        "slice": slice_name,
+        "unit": unit,
+        "uid": uid,
+        "session": session,
+        "why": why,
+    }
+
+
+def _unattributed(*, why, slice_name=None, unit=None, uid=None,
+                  session=None) -> dict:
+    """The answer for a group nobody can attribute from what was recorded."""
+    return {
+        "class": UNKNOWN,
+        "role": None,
+        "lifecycle": None,
+        "provenance": None,
+        "slice": slice_name,
+        "unit": unit,
+        "uid": uid,
+        "session": session,
+        "why": why,
+    }
+
+
+#: What makes a path segment a systemd unit rather than a scope. Bare,
+#: because it is a parser's test and not a name — `unit_of_cgroup` tests the
+#: same suffix. The glob in `deployment_units()` is built from this so that no
+#: literal in this file names a unit: a pattern that matches every unit is the
+#: opposite of an allowlist.
+UNIT_SUFFIX = ".service"
+
+_DEPLOYMENT_UNITS: frozenset | None = None
+
+
+def deployment_units() -> frozenset:
+    """The systemd units this deployment ships, read from its own tree.
+
+    This is the `registry-match` evidence class `attribution-contract.yaml`
+    already lists as decisive — not a list of service names somebody typed.
+    The answer is whatever unit files sit in this module's own directory, so
+    it moves when the deployment does: adding a unit file there is what makes
+    a scope MANAGED, and nothing here names `serverosd`.
+
+    It is NOT the live managed-runtime registry, which is a document supplied
+    at run time and which is ABSENT on this host. Until one is supplied, this
+    is the only positive evidence of deployment membership there is, and it
+    covers the deployment's own units and nothing else.
+
+    Unreadable or absent directory -> empty set -> every scope falls through
+    to the cgroup rules in `ownership_of_scope`, which is exactly the
+    behaviour before this function existed. The failure direction is "not
+    ours", never "ours": an empty registry makes the classifier less willing
+    to claim a group, not more.
+    """
+    global _DEPLOYMENT_UNITS
+    if _DEPLOYMENT_UNITS is None:
+        try:
+            _DEPLOYMENT_UNITS = frozenset(
+                p.name for p in _HERE.glob("*" + UNIT_SUFFIX))
+        except OSError:
+            _DEPLOYMENT_UNITS = frozenset()
+    return _DEPLOYMENT_UNITS
 
 
 def ownership_of_scope(scope: str) -> dict:
     """Who owns this cgroup scope, with the evidence, or UNKNOWN.
 
-    Two answers, and the second is not a failure - it is the answer for a
-    process nobody can attribute from what the kernel recorded:
+    Four EXTERNAL roles, one MANAGED role and one UNKNOWN. The UNKNOWN answer
+    is not a failure —
+    it is the answer for a process nobody can attribute from what the kernel
+    recorded, and it is what keeps this function worth reading.
 
-        EXTERNAL_SYSTEM   the system manager started it from an installed unit
-        UNKNOWN           nobody can say from the cgroup path
+    This used to answer EXTERNAL_SYSTEM or UNKNOWN only, and put all of
+    `user.slice` in the second group with this reasoning: it holds this user's
+    sessions and every other user's, and the path does not distinguish them.
+    That is true of the bare `user.slice` segment and FALSE of everything
+    below it — `user-1002.slice` names the uid, `session-<N>.scope` names the
+    login, and `user@<uid>.service` names the manager. `user_of_cgroup` and
+    `session_of_cgroup` were already in this file reading exactly those
+    segments for other callers. So the old rule was refusing to read evidence
+    it already knew how to read, and the cost was paid by every per-user
+    systemd manager on the host: each one was reported as an orphan.
 
-    `user.slice` is deliberately in the second group. It holds this user's
-    sessions and every other user's, and the path does not distinguish them, so
-    a group there stays UNKNOWN. That is the load-bearing half of this rule: if
-    unprovable processes were reported as external to quiet an alert, the
-    classification would stop meaning anything, and the alerts it silenced
-    would include the ones that mattered.
+    The load-bearing half of the rule is unchanged and is the reason the roles
+    are separate strings. A per-user manager is EXTERNAL_USER_MANAGER, NOT
+    EXTERNAL_SYSTEM, and `is_external_system()` is false for it. An earlier
+    version of this function matched `init.scope` anywhere in the path and
+    called six user managers host services, one of them this user's own; that
+    was caught by reading its own output and is why the `segments[0]` guard
+    below exists. Roles keep that distinction while letting the group stop
+    being called an orphan.
 
-    `provenance` is `"cgroup"` for the positive answer - the same vocabulary
-    `DECISIVE_PROVENANCE` uses elsewhere in this file, and for the same reason:
-    a reader has to be able to tell a conclusion from a guess.
+    What this still does NOT do: claim an owner where the path does not name
+    one. A scope in a slice this file does not know (say `machine.slice`) has
+    no provable owner and stays UNKNOWN. Unattributable is not a synonym for
+    external and is not used as one.
     """
     scope = scope or ""
+    # Not a path, so not evidence about an owner. `""` is a group whose
+    # producer recorded no scope: the sentence written for it below was
+    # UNREACHABLE before this guard, because the fallthrough answered every
+    # unmatched input with "not under system.slice" instead — so a caller
+    # looking for "no scope" got "not a system service" and could not tell the
+    # two apart. That is the kind of gap a reader finds by trying to reach
+    # their own error path and failing.
+    if not scope:
+        return _unattributed(why="the group carries no cgroup scope")
+    # A raw `0::/user.slice` line, or any other string that is not a cgroup
+    # path. Answering it would be answering about something the kernel never
+    # wrote.
+    if not scope.startswith("/"):
+        return _unattributed(
+            why=("the value is not a cgroup path, so it is not evidence about "
+                 "an owner"))
     slice_name = slice_of_cgroup(scope)
     unit = unit_of_cgroup(scope)
     segments = [p for p in scope.split("/") if p]
+    uid = user_of_cgroup(scope)
+    session_id = session_of_cgroup(scope)
 
+    # Ours, by the deployment's own declaration, before any slice rule: an
+    # installed unit of this deployment is answered by WHICH DEPLOYMENT it
+    # belongs to, not by which manager happened to start it. Without this the
+    # ServerOS daemon itself — `user@1002.service/app.slice/serverosd.service`
+    # — came back as EXTERNAL_USER_MANAGER, i.e. "somebody else's", which is a
+    # false statement about our own process. The cgroup half of that answer
+    # was true and the class half was not; a class that carries a membership
+    # claim cannot be derived from a mechanism fact alone.
+    if unit and unit in deployment_units():
+        return _managed(
+            ROLE_MANAGED_UNIT, slice_name=slice_name, unit=unit, uid=uid,
+            session=session_id,
+            why=("the cgroup names " + unit + ", a unit this deployment ships "
+                 "in its own tree. The answer is the deployment that declares "
+                 "it, not the manager that started it"),
+        )
     if slice_name == SYSTEM_SLICE:
-        return {
-            "class": EXTERNAL_SYSTEM,
-            "provenance": "cgroup",
-            "slice": slice_name,
-            "unit": unit,
-            "why": (f"the cgroup is under {SYSTEM_SLICE}"
-                    + (f" as {unit}" if unit else "")
-                    + ", which is where an administrator-installed unit's "
-                      "processes run. The system manager is the owner"),
-        }
+        return _owner(
+            ROLE_EXTERNAL_SYSTEM, slice_name=slice_name, unit=unit,
+            why=("the cgroup is under " + SYSTEM_SLICE
+                 + (" as " + unit if unit else "")
+                 + ", which is where an administrator-installed unit's "
+                   "processes run. The system manager is the owner"),
+        )
     # `init.scope` is not a slice and holds no unit: it is PID1 and the units
     # the system manager starts before slices exist. It must be the FIRST
     # segment. Every per-user systemd manager creates its own `init.scope`
@@ -222,33 +396,171 @@ def ownership_of_scope(scope: str) -> dict:
     #
     # so matching the segment anywhere calls six user managers host system
     # services, one of which is this user's own. A nested one belongs to
-    # whichever manager created it, and that lives under `user.slice`, which
-    # stays UNKNOWN. Matching `segments[0]` is also what keeps this field
-    # consistent with `slice_of_cgroup`, which reports the first slice and was
-    # visibly disagreeing with the class before this line changed.
+    # whichever manager created it, and is answered below as a user manager.
     if segments and segments[0] in SYSTEM_SCOPES:
-        return {
-            "class": EXTERNAL_SYSTEM,
-            "provenance": "cgroup",
-            "slice": slice_name,
-            "unit": unit,
-            "why": ("the cgroup is the root-level init.scope, which holds "
-                    "PID1 and the units the system manager starts before any "
-                    "slice exists"),
-        }
-    return {
-        "class": UNKNOWN,
-        "provenance": None,
-        "slice": slice_name,
-        "unit": unit,
-        "why": (f"the cgroup is not under {SYSTEM_SLICE}"
-                if scope else "the group carries no cgroup scope"),
-    }
+        return _owner(
+            ROLE_EXTERNAL_SYSTEM, slice_name=slice_name, unit=unit,
+            why=("the cgroup is the root-level init.scope, which holds PID1 "
+                 "and the units the system manager starts before any slice "
+                 "exists"),
+        )
+    # The login manager, and the sessions it starts. Read from `user-<uid>
+    # .slice` and `session-<N>.scope`, both of which the kernel wrote; neither
+    # is typed by a person. The uid is what separates this user's groups from
+    # another tenant's, and naming it is the whole point of the role.
+    if slice_name == USER_SLICE:
+        if session_id:
+            return _owner(
+                ROLE_EXTERNAL_USER_SESSION, slice_name=slice_name, unit=unit,
+                uid=uid, session=session_id,
+                why=("the cgroup is session-" + session_id + ".scope under "
+                     + ("user-" + uid + ".slice" if uid else USER_SLICE)
+                     + ", which the kernel creates for one login. That login "
+                       "is not this deployment's process tree"),
+            )
+        return _owner(
+            ROLE_EXTERNAL_USER_MANAGER, slice_name=slice_name, unit=unit,
+            uid=uid,
+            why=("the cgroup is under " + USER_SLICE + " at "
+                 + ("user-" + uid + ".slice" if uid else "a user slice")
+                 + (", as " + unit if unit else "")
+                 + ". The login manager -- not the system manager -- started "
+                   "it, which is why this is not EXTERNAL_SYSTEM"),
+        )
+    # No slice at all: the root cgroup, and cgroups placed outside the
+    # system manager's hierarchy. The evidence is the ABSENCE of a slice,
+    # which is itself a fact the kernel recorded -- systemd puts everything it
+    # starts in a slice, so a process without one was not started by it. That
+    # covers PID2 and the kernel threads in `/`, and vendor agents such as
+    # `/YunJing/YDEyes`. It does NOT say "kernel thread": /proc/<pid>/stat
+    # carries no such flag in the facts this module collects, and inferring it
+    # from the cgroup alone would be a guess wearing a conclusion's name.
+    if slice_name is None:
+        return _owner(
+            ROLE_EXTERNAL_UNSLICED, slice_name=None, unit=unit, uid=uid,
+            why=("the cgroup is "
+                 + (scope if scope else "the root cgroup")
+                 + " -- outside every slice the system manager builds. The "
+                   "system manager puts everything it starts in a slice, so "
+                   "this was not started by it"),
+        )
+    return _unattributed(
+        slice_name=slice_name, unit=unit, uid=uid, session=session_id,
+        why=("the cgroup is under " + slice_name + ", a slice this file has no "
+             "evidence about. Unattributable is not external, so it stays "
+             "UNKNOWN"),
+    )
 
 
 def is_external_system(group: dict) -> bool:
-    """Convenience for readers of a group record. Never guesses."""
-    return (group.get("ownership") or {}).get("class") == EXTERNAL_SYSTEM
+    """True only for the host's own system-manager-owned groups. Never guesses."""
+    ownership = group.get("ownership") or {}
+    return (ownership.get("class") == EXTERNAL
+            and ownership.get("role") == ROLE_EXTERNAL_SYSTEM)
+
+
+def is_external(group: dict) -> bool:
+    """True for any group whose cgroup names a non-deployment owner.
+
+    Wider than `is_external_system` on purpose: it answers "who owns this",
+    and the answer "not us, and here is who" is the same answer whether the
+    owner is the system manager or a login. It is the right predicate for a
+    code whose claim is "no agent rule identifies this group" -- for a login's
+    session that claim is false and no agent rule SHOULD match it.
+
+    It is the WRONG predicate for deciding whether a group is still a hygiene
+    problem. Use `parented_to_init_by_design` for that.
+    """
+    return (group.get("ownership") or {}).get("class") == EXTERNAL
+
+
+def is_managed(group: dict) -> bool:
+    """True for a group this deployment's own declaration names.
+
+    The third answer, beside "somebody else's" and "nobody can say". It is
+    read wherever the question is "is this ours": a hygiene code must not rank
+    our own declared runtime alongside the groups nobody could attribute, and
+    it must not call it an orphan either — §1 makes "not managed" a
+    precondition of ORPHAN_PROCESS_TREE, and a runtime we declared is the
+    definition of managed.
+
+    Note the failure direction on an unreadable registry: it is empty, so this
+    returns False and the caller falls back to the cgroup rules. The
+    classifier never claims a group it cannot show evidence for.
+    """
+    return (group.get("ownership") or {}).get("class") == MANAGED
+
+
+#: The user manager's own scope, and nothing under it.
+#:
+#: `user@<uid>.service` is a unit the SYSTEM manager starts, so PID1 is its
+#: process's parent by design. The units and sessions BELOW it were started by
+#: the user's instance, so for those the same lineage means the user's instance
+#: is gone. The role cannot express that difference — it answers "whose is
+#: this", and both are the user manager's — so the scope is read here, where
+#: the question being asked is a different one.
+USER_MANAGER_SCOPE = re.compile(
+    r"^/user\.slice/user-\d+\.slice/user@\d+\.service/init\.scope$")
+
+#: Roles whose owner makes "parented to PID1" a design property. Membership is
+#: necessary and, for the manager, not sufficient — `USER_MANAGER_SCOPE` above
+#: narrows it further.
+PARENTED_TO_INIT_BY_DESIGN = (
+    ROLE_EXTERNAL_SYSTEM,
+    ROLE_EXTERNAL_USER_MANAGER,
+    ROLE_EXTERNAL_UNSLICED,
+)
+
+
+def parented_to_init_by_design(group: dict) -> bool:
+    """True when the cgroup shows that PID1 being the parent is what this group
+    IS, rather than a sign that its parent died.
+
+    This is the narrow question an orphan alert is actually asking. `EXTERNAL`
+    is not the answer to it, and using it as one was a real defect found by
+    running the suite rather than by reasoning:
+
+        EXTERNAL_SYSTEM        systemd started an installed unit, so PID1 is
+                               its parent by design.
+        EXTERNAL_USER_MANAGER  and the cgroup is the manager's OWN
+                               `user@<uid>.service/init.scope`, which holds
+                               `systemd --user`. PID1 started it, so PID1 is
+                               its parent by design. A unit underneath it
+                               (`user@1002.service/dbus.service`) is also the
+                               user manager's, and is NOT exempt: the user's
+                               instance started that one, so PID1 being its
+                               parent means the user's instance is gone.
+        EXTERNAL_UNSLICED      outside the manager's hierarchy entirely --
+                               kernel threads and vendor agents such as
+                               `/YunJing/YDEyes`. No session's death could
+                               explain it, so its lineage explains nothing
+                               either way.
+
+    EXTERNAL_USER_SESSION is deliberately NOT in that tuple. A process inside
+    `session-<N>.scope` whose parent is PID1 has outlived its session leader,
+    and that is the leftover signature this detector exists to find. A live
+    login's processes are parented to their session leader, not to PID1, so
+    exempting the scope wholesale would blind the one case that matters while
+    buying nothing for the case that does not — and nothing else catches it:
+    `RUNTIME_OUTLIVED_OWNER` fires only while the session still reports state
+    `closing`, and a session that is simply gone reports no state at all.
+
+    The role still travels on the record for a session group, so a reader
+    sees whose session it was. The alert stands.
+    """
+    ownership = group.get("ownership") or {}
+    if ownership.get("class") != EXTERNAL:
+        return False
+    role = ownership.get("role")
+    if role in (ROLE_EXTERNAL_SYSTEM, ROLE_EXTERNAL_UNSLICED):
+        return True
+    if role == ROLE_EXTERNAL_USER_MANAGER:
+        # Necessary, not sufficient: only the manager's OWN scope. A unit the
+        # user's instance started — `user@1002.service/dbus.service` — is the
+        # user manager's too, and there being parented to PID1 means the user
+        # instance died. Same signature as a session leftover, same answer.
+        return bool(USER_MANAGER_SCOPE.match(group.get("scope") or ""))
+    return False
 
 
 def slice_of_cgroup(cgroup: str) -> str | None:
