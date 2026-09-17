@@ -43,6 +43,8 @@ provider_instance = _load("serveros_abilities_provider_instance",
 LOCAL = "device:server-beijing"
 FJ = "device:work-fj"
 DELL = "device:personal-dell"
+# See test_agent_mcp: enrolled 2026-09-17.
+TOKYO = "device:tokyo-shared-dev-01"
 LEVELS = ("L0", "L1", "L2", "L3")
 
 # Every device in `fleet/registry.yaml` declares both agents. That declaration
@@ -283,8 +285,8 @@ class TestAnUnreachedDeviceIsTyped(unittest.TestCase):
         # leave a fleet that looks smaller rather than one that looks broken.
         envelope = deployed().render(level="L2")
         self.assertEqual({row["device_ref"] for row in envelope["devices"]},
-                         {LOCAL, FJ, DELL})
-        self.assertEqual(envelope["count"], 3)
+                         {LOCAL, FJ, DELL, TOKYO})
+        self.assertEqual(envelope["count"], 4)
 
     def test_a_device_the_runtime_cannot_see_is_unknown_not_absent(self):
         # No routing layer at all is not the same as a device that is down.
@@ -358,7 +360,7 @@ class TestNoEmptyListMeansUnknown(unittest.TestCase):
         # Once per device in the answer, because "what is running there now" is
         # a question about a device. Asking for one unnamed fleet-wide total
         # would be the view inventing a scope the provider never agreed to.
-        self.assertEqual(seen, [LOCAL, FJ, DELL])
+        self.assertEqual(seen, [LOCAL, FJ, DELL, TOKYO])
 
 
 class TestTheViewDoesNotInventProvenance(unittest.TestCase):
