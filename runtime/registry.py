@@ -188,13 +188,26 @@ def load_yaml(path: Path) -> dict:
 # producer per fact, so the expression moved here, next to the document it
 # names, and both surfaces now call it.
 STATE_DIR_ENV = "SERVEROS_STATE_DIR"
-DEFAULT_STATE_DIR = "/opt/applications/data/home-hwz/state/serveros"
 REGISTRY_RELATIVE = "runtime/registry/resources.yaml"
+
+# The qualified resolver for "where is this node's state root". Loaded the way
+# this package loads every sibling, and under the same module name the rest of
+# the tree uses, so this is the one module object and not a second copy of it.
+_paths = _sibling("serveros_runtime_paths", "paths.py")
 
 
 def default_path() -> Path:
-    """This node's registry document. A path, whether or not it exists."""
-    state = os.environ.get(STATE_DIR_ENV) or DEFAULT_STATE_DIR
+    """This node's registry document. A path, whether or not it exists.
+
+    `SERVEROS_STATE_DIR` is honoured: the unit the installer renders sets it,
+    and a variable a node's own service file exports is a statement about that
+    node. What is gone is the literal under it. It read
+    `/opt/applications/data/home-hwz/state/serveros` on every node that had not
+    exported `DATA_ROOT`, which is every node but one — and the way that
+    surfaced was an error message naming a directory the operator had never
+    heard of, from a host they were not on.
+    """
+    state = os.environ.get(STATE_DIR_ENV) or str(_paths.Paths().root("state"))
     return Path(state) / REGISTRY_RELATIVE
 
 

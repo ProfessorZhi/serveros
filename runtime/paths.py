@@ -254,24 +254,325 @@ class PathRefused(PathError):
     """A path is outside the contract. The caller must not fall back to cwd."""
 
 
-def _expand(roots: dict | None = None) -> dict:
+# Where a root's value came from. A configured path and a path that happened to
+# be the fallback are the SAME STRING and are NOT the same answer, and nothing
+# in the string says which one it is.
+#
+# The last resort used to be a compiled-in literal — the FIRST NODE's paths, so
+# on every other node a process the environment had not configured resolved to
+# a directory that does not exist, or, worse because it is silent, to one that
+# does. There is no last resort now. A node nobody identified has roots that
+# are UNBOUND, and a caller about to say where a file belongs reads
+# `Paths.bound` before it says anything.
+INJECTED = "INJECTED"        # the caller supplied it
+ENVIRONMENT = "ENVIRONMENT"  # the environment supplied it
+PROFILE = "PROFILE"          # the device's authored Profile binding supplied it
+DERIVED = "DERIVED"          # computed from a seed that was supplied
+UNBOUND = "UNBOUND"          # nothing supplied it, and nothing is invented
+
+# Which seed each root is built from, so provenance propagates along the same
+# edge the value does. Derived from the template rather than declared beside
+# it, because a second table would be a second thing to keep in step.
+_SEED_ENV = {"home": "HOME", "data_root": "DATA_ROOT",
+             "workspace_root": "WORKSPACE_ROOT",
+             "artifacts_root": "ARTIFACTS_ROOT",
+             "toolchains_root": "TOOLCHAINS_ROOT"}
+
+# Which path ROLE in the device's Profile supplies each seed. `data_root` is
+# the one that did not exist until this round: `fleet/profiles.yaml` could say
+# where artifacts, state and toolchains live and not where the root they are
+# built from lives, and a resolver with no way to read the seed reads a literal
+# instead. The role exists now and the literal is gone.
+#
+# `home` is a role and NOT a derivation. On the node this contract came from,
+# `HOME` is `/home/hwz` and `DATA_ROOT` is `/opt/applications/data/home-hwz` —
+# different directories with different lifetimes — so deriving either from the
+# other is the mistake §0.A names.
+_SEED_ROLE = {"data_root": "data_root",
+              "home": "home",
+              "artifacts_root": "artifacts",
+              "toolchains_root": "toolchains"}
+
+# Seeds that a Profile MAY declare a role for, and that are DERIVED from
+# `data_root` when it does not. `workspace` is not a declared role —
+# `workspace.src` and `workspace.worktrees` are, and both profiles bind those
+# two under `{DATA_ROOT}/workspace`.
+#
+# `artifacts` and `toolchains` ARE declared roles, so the Profile answers them
+# first and this table answers only behind it. Both are relative derivations
+# from a seed this node bound itself: `{data_root}/artifacts` is a statement
+# about layout, not another device's absolute path, which is the difference
+# between this table and the literal §0.A removed. Dropping them here left a
+# node with no `artifacts` role in its Profile with nothing to resolve, and
+# left a caller who injected a world inheriting this machine's instead.
+_SEED_DEFAULT_SUFFIX = {"workspace_root": "workspace",
+                        "artifacts_root": "artifacts",
+                        "toolchains_root": "toolchains"}
+
+
+class _LocalFleet:
+    """Marker for "the fleet authority this installation ships with".
+
+    A sentinel rather than `None`, because two different things are being
+    asked for: `LOCAL_FLEET` means read the authority beside this file, and
+    `None` means there is no authority to read — which is what an unattended
+    node and a fail-closed test both have. Collapsing them would make the
+    fail-closed case unreachable by construction.
+    """
+    __slots__ = ()
+
+    def __repr__(self) -> str:  # pragma: no cover - diagnostics only
+        return "LOCAL_FLEET"
+
+
+LOCAL_FLEET = _LocalFleet()
+
+# `runtime/paths.py` and `fleet/` are siblings in the source tree and in an
+# installed distribution alike, so this one hop is the same address in both.
+_AUTHORITY_DIR = Path(__file__).resolve().parent.parent / "fleet"
+NODE_FILE = "node.yaml"
+
+# Parsed per (authority, mtime), so a long-lived process reads three small
+# files once and a test that rewrites a fixture is not served a stale answer.
+_AUTHORITY_CACHE: dict[tuple, dict] = {}
+
+
+def _read_yaml(path: Path):
+    """Parsed YAML, or None. A missing authority is not an error.
+
+    PyYAML is imported here rather than at module scope so that this module
+    stays importable — and therefore fail-closed rather than fail-to-load — in
+    a process that cannot read the authority at all.
+    """
+    try:
+        import yaml
+    except ImportError:  # pragma: no cover - environment guarantee
+        return None
+    try:
+        return yaml.safe_load(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+
+
+def _node_file_for(fleet_dir: Path) -> Path:
+    """Where this installation says the node root is.
+
+    Read from `fleet/node-root-contract.yaml` rather than written down here, so
+    that the control root has one address in the codebase. `fleet/node.py`
+    resolves the same field the same way.
+    """
+    contract = _read_yaml(fleet_dir / "node-root-contract.yaml") or {}
+    default = (contract.get("root") or {}).get("default") or "~/.serveros"
+    return Path(os.path.expanduser(str(default))) / NODE_FILE
+
+
+def _profile_roles(fleet_dir, node_file) -> dict:
+    """role -> bound path, for the device this host claims to be.
+
+    The chain is the authored one, and it is followed rather than
+    reimplemented: `~/.serveros/node.yaml` says which device this host is,
+    `fleet/registry.yaml` says which profile that device runs, and
+    `fleet/profiles.yaml` says where the roles resolve. The node file carries
+    the claim and nothing else, so a machine cannot hold its own copy of its
+    identity.
+
+    `fleet/transport.py` reads the same three files and is the surface a caller
+    asking "where does role X live on device Y" goes through. This answers the
+    narrower question a root resolver has — what is THIS host — and
+    `tests/test_path_authority.py` pins the two to the same answer, so they
+    cannot drift apart quietly.
+
+    Empty is the answer in every case that is not a positive binding: no
+    authority, no node file, no device claim, a device that is not enrolled, a
+    profile that does not declare the role, a role that is UNBOUND or
+    NOT_APPLICABLE. All of them mean the same thing to a caller — there is no
+    authored answer — and none of them is a reason to invent one.
+    """
+    if fleet_dir is None or node_file is None:
+        return {}
+    fleet_dir = _AUTHORITY_DIR if fleet_dir is LOCAL_FLEET else Path(fleet_dir)
+    node_file = (_node_file_for(fleet_dir) if node_file is LOCAL_FLEET
+                 else Path(node_file))
+
+    try:
+        stamp = (str(fleet_dir), str(node_file),
+                 (fleet_dir / "registry.yaml").stat().st_mtime_ns,
+                 (fleet_dir / "profiles.yaml").stat().st_mtime_ns,
+                 node_file.stat().st_mtime_ns)
+    except OSError:
+        return {}
+    if stamp in _AUTHORITY_CACHE:
+        return _AUTHORITY_CACHE[stamp]
+
+    device_ref = (_read_yaml(node_file) or {}).get("device_ref")
+    registry = _read_yaml(fleet_dir / "registry.yaml") or {}
+    profiles = _read_yaml(fleet_dir / "profiles.yaml") or {}
+
+    profile_name = None
+    for device in registry.get("devices") or []:
+        if isinstance(device, dict) and device.get("device_ref") == device_ref:
+            profile_name = device.get("environment_profile")
+            break
+    profile = (profiles.get("profiles") or {}).get(profile_name) or {}
+
+    roles = {}
+    for role, entry in (profile.get("paths") or {}).items():
+        if not isinstance(entry, dict):
+            continue
+        # BOUND is the only state that carries a path. UNBOUND is a declared
+        # gap and NOT_APPLICABLE says the role has no meaning here; neither is
+        # a path, and a resolver that answered with one anyway would be
+        # answering a question the profile declined.
+        if entry.get("state") == "BOUND" and entry.get("path"):
+            roles[role] = str(entry["path"])
+
+    _AUTHORITY_CACHE[stamp] = roles
+    return roles
+
+
+def _unbound(placeholder: str) -> str:
+    """The value an unbound seed contributes, and it is its own template.
+
+    Not `""`, which formats into `/workspace` and reads as an absolute path,
+    and not a plausible default, which reads as a correct answer to a caller
+    that never asked whether the node was identified. `{DATA_ROOT}/state` can
+    be mistaken for neither, so the mistake this module exists to prevent is
+    not available to make.
+    """
+    return "{" + placeholder + "}"
+
+
+def expand_with_provenance(roots: dict | None = None, *,
+                           fleet_dir=LOCAL_FLEET,
+                           node_file=LOCAL_FLEET) -> tuple[dict, dict]:
+    """(resolved roots by name, provenance by name) — roots and roles alike.
+
+    Provenance is decided per SEED first and only then propagated to the roots
+    built from it, because `workspace` is derived: it is an unbound node's only
+    when `data_root` was, and deciding the derivation on its own would call a
+    root unbound when its input was bound. A false alarm of that kind is how a
+    true one gets ignored.
+
+    Precedence, per seed, is the order §2.1 asks for:
+
+        INJECTED     the caller named it
+        ENVIRONMENT  the process environment named it
+        PROFILE      the device's authored Profile binding says where it is
+        UNBOUND      nobody did, and nothing is invented
+
+    Seeds are resolved in dependency order — `data_root` before the roots
+    derived from it, so the derivation reads a settled value.
+    """
+    # An injected mapping is the caller STATING the world, so it is closed:
+    # neither this machine's Profile nor this process's environment is allowed
+    # to fill a seed it omits. `Paths` documents exactly this of itself --
+    # "Injectable so a test can exercise resolution against a tmp_path without
+    # the machine's real roots, and so a wrong root can never be reached by
+    # falling back to whatever the environment happened to say" -- and a
+    # partly-injected world that silently inherits the rest is the same defect
+    # as a compiled-in literal: it returns a plausible path nobody asked for.
+    # What is left over is UNBOUND, which `Paths.bound` already reports.
+    injected_world = roots is not None
     roots = roots or {}
-    home = roots.get("home") or os.environ.get("HOME") or "/home/hwz"
-    data_root = roots.get("data_root") or os.environ.get("DATA_ROOT") or "/opt/applications/data/home-hwz"
-    workspace = roots.get("workspace_root") or os.environ.get("WORKSPACE_ROOT") or f"{data_root}/workspace"
-    artifacts = roots.get("artifacts_root") or os.environ.get("ARTIFACTS_ROOT") or f"{data_root}/artifacts"
-    toolchains = roots.get("toolchains_root") or os.environ.get("TOOLCHAINS_ROOT") or f"{data_root}/toolchains"
+    profile_roles = {} if injected_world else _profile_roles(fleet_dir, node_file)
+
+    def configured(seed: str) -> tuple[str | None, str | None]:
+        """(value, provenance) when the caller or the environment named it."""
+        injected = roots.get(seed)
+        if injected:
+            return str(injected), INJECTED
+        if injected_world:
+            # Closed. The environment of the process running a fixture is not
+            # part of the fixture.
+            return None, None
+        from_env = os.environ.get(_SEED_ENV[seed])
+        if from_env:
+            return from_env, ENVIRONMENT
+        return None, None
+
+    supplied: dict[str, str] = {}
+    seed_provenance: dict[str, str] = {}
+
+    # EVERY seed, in dependency order: `data_root` first because the derived
+    # roots read it, then the rest as listed. ONE loop, because the rule is one
+    # rule -- caller, environment, authored binding, and only then the structure
+    # implied by a root that was bound.
+    #
+    # There were two walks over `_SEED_DEFAULT_SUFFIX`, and they disagreed. The
+    # second ran after this one and assigned `{data_root}/{suffix}` without
+    # asking whether the Profile had already answered, so `artifacts` and
+    # `toolchains` -- both declared roles -- were COMPUTED rather than READ. On
+    # this node the two coincide and only the provenance was wrong, which is
+    # what made it survive: `probe_derivation_overwrite.py` binds both roles
+    # somewhere else and the value is wrong too.
+    #
+    # `workspace_root` is in this list now. It is the seed with no role of its
+    # own, and it lived in the second loop only because that loop used to hold
+    # the whole table.
+    for seed in ("data_root", "home", "artifacts_root", "toolchains_root",
+                 "workspace_root"):
+        value, source = configured(seed)
+        if value:
+            supplied[seed], seed_provenance[seed] = value, source
+            continue
+        role = _SEED_ROLE.get(seed)
+        bound = profile_roles.get(role) if role else None
+        if bound:
+            supplied[seed], seed_provenance[seed] = bound, PROFILE
+            continue
+        # Behind the Profile, and only where a Profile declined to answer: the
+        # structure implied by a data root that WAS bound. `data_root` is
+        # resolved first in this loop, so the value it reads is settled, and a
+        # derivation from an unbound root stays unbound rather than becoming a
+        # longer string.
+        suffix = _SEED_DEFAULT_SUFFIX.get(seed)
+        if suffix and seed_provenance.get("data_root") != UNBOUND:
+            supplied[seed] = f"{supplied['data_root']}/{suffix}"
+            seed_provenance[seed] = DERIVED
+            continue
+        supplied[seed] = _unbound(_SEED_ENV[seed])
+        seed_provenance[seed] = UNBOUND
+
     values = {
-        "HOME": home, "DATA_ROOT": data_root, "WORKSPACE_ROOT": workspace,
-        "ARTIFACTS_ROOT": artifacts, "TOOLCHAINS_ROOT": toolchains,
+        "HOME": supplied["home"],
+        "DATA_ROOT": supplied["data_root"],
+        "WORKSPACE_ROOT": supplied["workspace_root"],
+        "ARTIFACTS_ROOT": supplied["artifacts_root"],
+        "TOOLCHAINS_ROOT": supplied["toolchains_root"],
     }
     # Roles are addressable through `resolve` too, so that a caller holding a
     # role name can use one code path. They are kept in their own table
     # because a role and a root are different claims: a root says where
     # something lives, a role says what it is, and a check that had to read
     # them out of one dictionary could not report a role whose path has moved.
-    return {name: template.format(**values)
-            for name, template in {**ROOTS, **SEMANTIC_ROLES}.items()}
+    resolved = {name: template.format(**values)
+                for name, template in {**ROOTS, **SEMANTIC_ROLES}.items()}
+
+    # Every name inherits the WORST provenance among the seeds its template
+    # names. Worst rather than best: a root built partly from an unconfigured
+    # seed is not a configured root, and resolving to a plausible path does not
+    # make the seed configured.
+    order = {INJECTED: 0, ENVIRONMENT: 1, PROFILE: 1, DERIVED: 1,
+             UNBOUND: 2}
+    provenance: dict[str, str] = {}
+    for name, template in {**ROOTS, **SEMANTIC_ROLES}.items():
+        used = [seed for seed in _SEED_ENV
+                if "{" + _SEED_ENV[seed] + "}" in template] or ["data_root"]
+        provenance[name] = max((seed_provenance[s] for s in used),
+                               key=lambda p: order[p])
+    return resolved, provenance
+
+
+def _expand(roots: dict | None = None, *, fleet_dir=LOCAL_FLEET,
+            node_file=LOCAL_FLEET) -> dict:
+    """Unchanged in what it returns. Kept as the narrow signature.
+
+    Most callers want a path and would do nothing useful with the provenance. A
+    caller that has to distinguish a bound node from an unbound one reads
+    `Paths.bound` or `Paths.provenance`.
+    """
+    return expand_with_provenance(roots, fleet_dir=fleet_dir,
+                                  node_file=node_file)[0]
 
 
 class Paths:
@@ -282,8 +583,31 @@ class Paths:
     falling back to whatever the environment happened to say.
     """
 
-    def __init__(self, roots: dict | None = None) -> None:
-        self.roots = _expand(roots)
+    def __init__(self, roots: dict | None = None, *,
+                 fleet_dir=LOCAL_FLEET,
+                 node_file=LOCAL_FLEET) -> None:
+        self.roots, self.provenance = expand_with_provenance(
+            roots, fleet_dir=fleet_dir, node_file=node_file)
+        # Names no authority answered for. Empty on a node whose roots were
+        # actually resolved, which is the state every placement answer depends
+        # on. These values are their own templates — `{DATA_ROOT}/state` — and
+        # are not paths a caller should ever use.
+        self.unconfigured = tuple(sorted(
+            name for name, source in self.provenance.items()
+            if source == UNBOUND))
+
+    @property
+    def bound(self) -> bool:
+        """Whether these roots describe a machine that was IDENTIFIED.
+
+        False means at least one root is UNBOUND — nobody, and no authority,
+        supplied it. A caller about to say where a file belongs has to check
+        this: resolving to a path is not the same as resolving to a path ON
+        THIS MACHINE, and the two are indistinguishable from the string alone
+        when the string is plausible. They are no longer indistinguishable
+        when it is not: an unbound root reads as `{DATA_ROOT}/...`.
+        """
+        return not self.unconfigured
 
     # -- resolution --------------------------------------------------------
 
@@ -640,8 +964,18 @@ class Paths:
             "state_serveros_runtime": list(STATE_SERVEROS_RUNTIME),
             "artifact_namespaces": list(ARTIFACT_NAMESPACES),
             "forbidden_suffixes": list(FORBIDDEN_SUFFIXES),
+            "provenance": dict(self.provenance),
+            "bound": self.bound,
+            "unconfigured": list(self.unconfigured),
             "note": (
                 "Resolution is a lookup, not a join. There is no default root "
                 "and no cwd fallback; an unresolvable reference is refused."
+            ),
+            "provenance_note": (
+                "`bound` is false when a root fell back to the first node's "
+                "literal, which is another machine's path. The resolved string "
+                "looks identical either way, so a caller that needs to know "
+                "whether this node was configured reads `provenance`, not the "
+                "path."
             ),
         }
