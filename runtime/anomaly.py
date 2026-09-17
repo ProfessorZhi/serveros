@@ -157,6 +157,11 @@ SEVERITY = {
     # than hidden — a reader can still see it — and it is ranked below the
     # hygiene questions because being a daemon is not one.
     "EXTERNAL_SYSTEM_PROCESS_TREE": "low",
+    # The observe-only counterpart for every other attributed non-owner: a
+    # per-user login manager, a login session, the root cgroup, a vendor
+    # agent. Same reasoning as the line above, and kept a separate code so
+    # that neither name claims more than was measured.
+    "EXTERNAL_PROCESS_TREE": "low",
     # §5. Medium, and deliberately not high: the two halves are each true of
     # things that are fine, so what this ranks is "a person should look at the
     # lifecycle question", not "something is broken". It is also NOT a staleness
@@ -388,7 +393,13 @@ def detect(*, groups=None, containers=None, task_states=None, host_facts=None,
                 why="the group is older than the declared long-lived threshold",
             ))
 
-        if (group.get("tree") or {}).get("reparented_to_init"):
+        # §1 makes "not managed" a precondition of ORPHAN_PROCESS_TREE, so a
+        # runtime this deployment declares is not one whatever its lineage
+        # looks like. Without this the ServerOS daemon would be reported as a
+        # leftover the moment its parent died — the one process on this host
+        # whose restart is already somebody's job.
+        if ((group.get("tree") or {}).get("reparented_to_init")
+                and not attribution.is_managed(group)):
             session_state = None
             if group.get("session_ref"):
                 session_state = (task_states or {}).get(group["session_ref"], {}).get("state")
@@ -406,31 +417,71 @@ def detect(*, groups=None, containers=None, task_states=None, host_facts=None,
             # visible, still in the record, no longer ranked as a hygiene
             # problem and no longer grouped with the things a reader is being
             # asked to go and clean up.
+            # Reparenting to init is true of EVERY systemd service — PID1 is
+            # its parent by design — so the fact alone cannot separate a
+            # service from a runtime somebody left behind. The cgroup can: a
+            # group under an installed unit, a per-user login manager, a login
+            # session, or the root cgroup was placed there by something other
+            # than this deployment, and the scope says which.
+            #
+            # The observation is not suppressed when that is proven. It is
+            # reported as an observe-only code at `low`: still visible, still
+            # in the record, no longer ranked as a hygiene problem and no
+            # longer grouped with the things a reader is being asked to go and
+            # clean up.
+            #
+            # `parented_to_init_by_design`, not `is_external`. "Not ours" and
+            # "PID1 is its parent by design" are different questions and this
+            # was caught by the suite: exempting every attributed group left a
+            # codex process that had outlived its login session reporting at
+            # `low` instead of `high`, and nothing else covers it —
+            # RUNTIME_OUTLIVED_OWNER fires only while the session still
+            # reports `closing`, and a session that is gone reports nothing.
+            #
+            # Two codes rather than one because the names have to stay true.
+            # `EXTERNAL_SYSTEM_PROCESS_TREE` says "the system manager started
+            # this" and is kept for exactly that case, so the alerts already
+            # carrying it keep their meaning. Everything else the cgroup
+            # attributes goes to `EXTERNAL_PROCESS_TREE`, which claims only
+            # what was measured: an owner that is not ours, named by the
+            # cgroup path, with the role on the evidence.
+            #
+            # What is NOT done here is treating "external" as a bin for
+            # whatever is inconvenient. Only a cgroup clause that NAMES an
+            # owner reaches this branch. A group whose owner cannot be read
+            # from the kernel's record keeps ORPHAN and stays exactly as
+            # alarming as it was.
             ownership = group.get("ownership") or {}
-            if ownership.get("class") == attribution.EXTERNAL_SYSTEM:
+            if attribution.parented_to_init_by_design(group):
+                role = ownership.get("role")
+                code = ("EXTERNAL_SYSTEM_PROCESS_TREE"
+                        if role == attribution.ROLE_EXTERNAL_SYSTEM
+                        else "EXTERNAL_PROCESS_TREE")
+                where = ownership.get("slice") or "no slice"
                 signals.append(signal(
-                    "EXTERNAL_SYSTEM_PROCESS_TREE", ref,
+                    code, ref,
                     {**lineage, "ownership": ownership},
                     window="lineage and cgroup at observation time",
                     why=("the group's root is parented to init AND its cgroup "
-                         "places it in the system manager's slice, so the "
-                         "system manager started it from an installed unit. "
-                         "This is a host service being observed, not a runtime "
-                         "left behind — the evidence is the cgroup path, and "
-                         "it is why this one is observe-only."),
+                         "places it under " + str(where) + " as " + str(role)
+                         + ". The kernel recorded an owner that is not this "
+                           "deployment's, so this is a host-owned group being "
+                           "observed rather than a runtime left behind — and "
+                           "it is why this one is observe-only."),
                 ))
             else:
                 signals.append(signal(
                     "ORPHAN_PROCESS_TREE", ref,
-                    lineage,
+                    {**lineage, "ownership": ownership},
                     window="lineage at observation time",
-                    why=("the group's root is parented to init. This is a fact about "
-                         "lineage and NOT a claim that the work is abandoned — a "
-                         "daemonised service looks identical, which is why the "
-                         "combination needs a second signal. Where the cgroup "
-                         "PROVES a system service the signal is reported as "
-                         "EXTERNAL_SYSTEM_PROCESS_TREE instead; this one is a "
-                         "group nobody could attribute."),
+                    why=("the group's root is parented to init and its cgroup "
+                         "does not show that PID1 being the parent is what it "
+                         "IS — either nothing was attributed, or what was "
+                         "attributed is a login session whose reparenting is "
+                         "the leftover signature rather than a design "
+                         "property. Where the cgroup DOES show that, the "
+                         "signal is reported as EXTERNAL_SYSTEM_PROCESS_TREE "
+                         "or EXTERNAL_PROCESS_TREE instead."),
                 ))
 
         # The code claims "no agent rule identifies this group". For a group
@@ -439,9 +490,17 @@ def detect(*, groups=None, containers=None, task_states=None, host_facts=None,
         # SHOULD match it. The classification answers this code rather than
         # re-labelling it, so it is not emitted. The 34 OPEN alerts on
         # sshd/cron/dbus/chrony are this and nothing else.
+        #
+        # The same holds for a group the deployment's own declaration names,
+        # and more strongly: our runtime is the one group on this host whose
+        # owner is not merely identifiable but US.
+        #
+        # Both are checked through the ownership class rather than by a second
+        # list here, so the two codes and this gate cannot drift apart.
         if (not group.get("agent", {}).get("value")
                 and (age or 0) >= thresholds["age_long_seconds"]
-                and not attribution.is_external_system(group)):
+                and not attribution.is_external(group)
+                and not attribution.is_managed(group)):
             signals.append(signal(
                 "UNKNOWN_OWNER_LONG_RUNNING", ref,
                 {"age_seconds": age, "threshold_seconds": thresholds["age_long_seconds"],
@@ -719,7 +778,7 @@ def unchecked(*, groups=None, containers=None, task_states=None, host_facts=None
 INPUT_CODES = {
     "groups": ("HIGH_CPU_SUSTAINED", "HIGH_MEMORY_SUSTAINED",
                "AGE_WITHOUT_ACTIVITY", "ORPHAN_PROCESS_TREE",
-               "EXTERNAL_SYSTEM_PROCESS_TREE",
+               "EXTERNAL_SYSTEM_PROCESS_TREE", "EXTERNAL_PROCESS_TREE",
                "UNKNOWN_OWNER_LONG_RUNNING"),
     "session_states": ("RUNTIME_OUTLIVED_OWNER",),
     "task_states": ("TASK_IDLE_PROCESS_ACTIVE", "TASK_CLOSED_RESOURCE_RUNNING"),

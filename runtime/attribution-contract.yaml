@@ -320,6 +320,13 @@ container_attribution:
     - owner-label                 # the owner wrote serveros.owner=
     - owner-label-namespace       # a declared namespace delegates
     - registry-match              # the registry names this container or its owner
+    # For a process group the registry-match class is read by
+    # `attribution.deployment_units()`: the systemd units this deployment
+    # ships in its own tree. That is a declaration, not a list of third-party
+    # service names — adding a unit file is what enrols it. The live
+    # managed-runtime registry document is a separate, stronger source and is
+    # absent on this host; until it is supplied, the shipped units are the
+    # only positive evidence of membership there is.
   locator_evidence:
     - working-directory           # resolves under a known root; informative, not decisive
     - bind-mount                  # same, and it can be a whole root
@@ -462,7 +469,11 @@ anomalies:
       fires only where the cgroup does NOT place the group in the system
       manager's slice: reparenting to init is true of every systemd service,
       so on its own it cannot separate a service from a runtime somebody left
-      behind. See EXTERNAL_SYSTEM_PROCESS_TREE for the proven case.
+      behind. See EXTERNAL_SYSTEM_PROCESS_TREE and EXTERNAL_PROCESS_TREE for
+      the cases where the cgroup shows that being parented to PID1 is what the
+      group IS. A group in a `session-<N>.scope` keeps THIS code even though
+      its cgroup names an owner, because there the reparenting is the finding.
+      The role rides on the evidence either way.
   - code: EXTERNAL_SYSTEM_PROCESS_TREE
     severity: low
     implies_stale: false
@@ -471,10 +482,76 @@ anomalies:
       so the system manager started it from an administrator-installed unit.
       Observe-only on purpose: this is a host service being reported, and the
       classification comes from the cgroup path rather than from a list of
-      names, because a list is wrong the day a unit is renamed. Deliberately
-      NOT applied to `user.slice`, which holds every user's sessions and does
-      not say whose — a group there stays UNKNOWN rather than being called
-      external to quiet an alert.
+      names, because a list is wrong the day a unit is renamed.
+
+      Narrowed on 2026-09-17 to exactly the case its name claims: the system
+      manager starting an installed unit. A per-user login manager, a login
+      session, the root cgroup and a vendor agent are attributed now too, but
+      as EXTERNAL_PROCESS_TREE with a role, because calling any of them "the
+      system manager started this" would be false.
+
+      This code used to carry a second job: keeping `user.slice` out. The
+      reasoning was that it holds every user's sessions and does not say
+      whose. That is true of the bare `user.slice` segment and false of
+      everything under it — `user-1002.slice` names the uid, `session-<N>
+      .scope` names the login, and `user_of_cgroup` was already in this file
+      reading exactly those segments. So it was refusing evidence it knew how
+      to read, and every per-user manager on the host was reported as an
+      orphan instead. What stays UNKNOWN is a slice this file has no evidence
+      about, and that has not moved.
+  - code: EXTERNAL_PROCESS_TREE
+    severity: low
+    implies_stale: false
+    note: >
+      the tree's parent is init AND the cgroup shows that PID1 being the
+      parent is what the group IS, rather than a sign that its parent died.
+      `role` says which kind: EXTERNAL_USER_MANAGER for a
+      `user@<uid>.service` login manager, EXTERNAL_UNSLICED for the root
+      cgroup and cgroups outside the slice hierarchy such as
+      `/YunJing/YDEyes`. Both are things PID1 starts or things outside the
+      manager's hierarchy entirely, so for both, being parented to PID1 is by
+      design.
+
+      For EXTERNAL_USER_MANAGER that is only true of the manager's OWN scope.
+      `user@<uid>.service` is a unit the system manager starts, but the units
+      and sessions below it were started by the user's instance, so a
+      `user@1002.service/dbus.service` parented to PID1 has outlived that
+      instance and keeps ORPHAN_PROCESS_TREE. The role cannot express this —
+      it answers "whose is this", and both are the user manager's — so the
+      scope is read where the question is asked.
+
+      EXTERNAL_USER_SESSION is deliberately NOT here and keeps
+      ORPHAN_PROCESS_TREE at `high`. A process inside `session-<N>.scope`
+      whose parent is PID1 has outlived its session leader — that is the
+      leftover signature, not a design property — and a live login's
+      processes are parented to their session leader, not to PID1, so
+      exempting sessions would blind the one case that matters.
+      RUNTIME_OUTLIVED_OWNER does not cover it: it fires only while the
+      session still reports state `closing`, and a session that is simply gone
+      reports no state at all. The role still rides on the ORPHAN alert's
+      evidence so a reader can see whose session it was.
+
+      Observe-only, and `lifecycle` carries OBSERVE_ONLY to say so on the
+      record rather than leaving a consumer to infer it. Nothing reclaims,
+      cleans up or mutates; the role exists so that a reader can tell a
+      tenant's login session from the host's own service inventory instead of
+      receiving one undifferentiated "external".
+
+      The bar for reaching this code is a cgroup clause that NAMES an owner,
+      quoted in `ownership.why`. A group whose owner cannot be read from the
+      kernel's record keeps ORPHAN_PROCESS_TREE at `high`. Unattributable was
+      not made a synonym for external to quiet an alert.
+
+      NOT on this list, and on neither of the two codes above: a group whose
+      class is MANAGED. A unit this deployment ships is not a third party, so
+      no EXTERNAL_* claim is true of it, and §1 makes "not managed" a
+      precondition of ORPHAN_PROCESS_TREE — a runtime we declared is the
+      definition of managed, whatever its lineage looks like. The ServerOS
+      daemon runs as `user@1002.service/app.slice/serverosd.service`, and
+      before MANAGED existed it was answered EXTERNAL_USER_MANAGER: the
+      cgroup half of that answer was true and the membership half was false.
+      A class that carries a membership claim cannot be derived from a
+      mechanism fact alone.
   - code: RUNTIME_OUTLIVED_OWNER
     severity: medium
     implies_stale: false

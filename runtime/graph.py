@@ -199,8 +199,65 @@ def build_groups(table: dict) -> list[dict]:
             groups.append(_describe(scope, root, subtree, table,
                                     whole_scope=whole_scope))
 
+    _disambiguate_ids(groups)
     groups.sort(key=lambda g: (-g["aggregate"]["cpu_percent"], g["ref"]))
     return groups
+
+
+def _disambiguate_ids(groups: list[dict]) -> None:
+    """Give every group an id that names exactly one group.
+
+    `_describe` names a group after the last scope segment: readable, and
+    enough whenever one scope holds one root. It is NOT enough across scopes.
+    On the live host `/init.scope` and five
+    `/user.slice/user-<uid>.slice/user@<uid>.service/init.scope` all end in
+    `init.scope`, so all six were named `init` and all six shared the ref
+    `runtime-group:process-tree:init`; the same happened to five
+    `dbus.service` groups. The existing guard adds `:pid<root>` only when a
+    group does not hold its whole scope, so it never fires for these.
+
+    A ref that names six groups is not an identity. `runtime group <ref>`
+    answered about whichever sorted first, and anything keyed on the ref
+    conflated them — which is exactly what the alert dedupe key (subject +
+    code) does, so one group's alert and another's closed each other.
+
+    The fix widens the name with parent segments until no OTHER SCOPE shares
+    it, and only for the groups that actually collide: a host with no
+    collision keeps the short names it had. Two groups in the same scope are
+    already separated by their `:pid<root>` suffix and are not compared
+    against each other, so a multi-root scope is left alone. Widening is
+    computed from the set of scopes, so the result does not depend on the
+    order groups were built in.
+    """
+    def parts_of(scope: str) -> list[str]:
+        return [p for p in (scope or "").split("/") if p]
+
+    def label(scope: str, depth: int) -> str:
+        parts = parts_of(scope)
+        if not parts:
+            return "root"
+        return ":".join(p[:-len(".scope")] if p.endswith(".scope") else p
+                        for p in parts[-depth:])
+
+    for record in groups:
+        scope = record.get("scope") or ""
+        short = label(scope, 1)
+        if not parts_of(scope) or not record["id"].startswith(short):
+            continue
+        depth = 1
+        total = len(parts_of(scope))
+        while depth < total:
+            mine = label(scope, depth)
+            if not any(o.get("scope") and o["scope"] != scope
+                       and label(o["scope"], depth) == mine for o in groups):
+                break
+            depth += 1
+        widened = label(scope, depth)
+        if widened == short:
+            continue
+        # `:pid<root>` is orthogonal to the name and is kept as it was.
+        record["id"] = widened + record["id"][len(short):]
+        record["ref"] = "runtime-group:" + record["kind"] + ":" + record["id"]
 
 
 def _describe(scope: str, root: int, members: set[int], table: dict, *,
