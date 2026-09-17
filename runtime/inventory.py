@@ -49,6 +49,13 @@ def _load(name: str, filename: str):
     return module
 
 
+# The root contract. `HOME` is a root the contract names, not a string this
+# module gets to spell: the question below is "does HOME share the root
+# filesystem", and answering it with a hardcoded path answered it for one
+# machine and silently answered NO on every other.
+_paths = _load("serveros_runtime_paths", "paths.py")
+
+
 registry = _load("serveros_runtime_registry", "registry.py")
 
 RegistryError = registry.RegistryError
@@ -1009,8 +1016,9 @@ class Inventory:
             entry["mount_point"] = parts[2] if len(parts) > 2 else None
         # HOME is on ROOT_FS on this host, which is why the root filesystem is
         # a capacity gate and not merely the place the OS lives.
-        if path == "/" and self.host.exists("/home/hwz"):
-            entry["note"] = "HOME (/home/hwz) is on this filesystem"
+        home = str(_paths.Paths().root("home"))
+        if path == "/" and self.host.exists(home):
+            entry["note"] = f"HOME ({home}) is on this filesystem"
         return entry
 
     @staticmethod

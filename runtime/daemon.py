@@ -72,6 +72,7 @@ def _load(name: str, filename: str):
 
 
 registry_mod = _load("serveros_runtime_registry", "registry.py")
+_paths = _load("serveros_runtime_paths", "paths.py")
 health_mod = _load("serveros_runtime_health", "health.py")
 probes_mod = _load("serveros_runtime_probes", "probes.py")
 inventory_mod = _load("serveros_runtime_inventory", "inventory.py")
@@ -2590,8 +2591,14 @@ def default_socket_path() -> Path:
 
 
 def default_state_dir() -> Path:
-    return Path(os.environ.get("SERVEROS_STATE_DIR")
-                or "/opt/applications/data/home-hwz/state/serveros") / "runtime"
+    """The state root's `runtime/` directory.
+
+    Same two inputs as `registry.default_path`, resolved the same way, because
+    they are the same fact: where this node keeps its state. Written out a
+    second time they would agree until one of them was edited.
+    """
+    state = os.environ.get("SERVEROS_STATE_DIR") or str(_paths.Paths().root("state"))
+    return Path(state) / "runtime"
 
 
 def main(argv: list[str] | None = None) -> int:

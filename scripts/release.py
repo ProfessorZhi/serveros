@@ -100,10 +100,13 @@ def default_state_dir() -> Path:
     at promote time and surfaced much later as a service that would not start —
     the worst shape for an installation bug to have.
 
-    `runtime/paths.py` is the qualified resolver for this: the same roots with
-    the correct literal fallback, and a refusal for an undeclared name instead
-    of an invented one. Asking it means a wrong root cannot be reached by asking
-    the environment a question it is permitted not to answer.
+    `runtime/paths.py` is the qualified resolver for this: the node's roots,
+    read from the caller, the environment, or the device's authored Profile
+    binding, and a refusal for an undeclared name instead of an invented one.
+    Asking it means a wrong root cannot be reached by asking the environment a
+    question it is permitted not to answer. (It carried a literal fallback when
+    this note was written. That is gone: an unanswered root is UNBOUND now, and
+    this call site reads the same resolver either way.)
     """
     sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "runtime"))
     import paths  # noqa: PLC0415 - resolved from the repo, never installed

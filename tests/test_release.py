@@ -183,12 +183,18 @@ class ReleaseTests(unittest.TestCase):
             return proc.stdout.strip()
 
         bare = resolve()
-        # The specific wrong answer, pinned. With DATA_ROOT absent the old
-        # expression produced this, and it is not a node root — it is where a
-        # missing lookup went.
-        self.assertNotEqual(bare, str(Path.home() / "state/serveros"),
-                            "the state root fell back to $HOME")
-        self.assertFalse(bare.startswith(str(Path.home()) + os.sep), bare)
+        # The old expression appended `state/serveros` to `$HOME`, and the
+        # check for it was "the answer must not be under $HOME". That check was
+        # a fact about the node it was written on. On THIS node the data root
+        # IS the home directory — `fleet/profiles.yaml` binds `data_root` and
+        # `home` to the same path — so the correct answer is under `$HOME` and
+        # the prefix test went red on the right value.
+        #
+        # What separates the bug from the fix is not the string; it is where
+        # the string came from. So the assertion is that the answer is the
+        # resolver's, which is what §18 asks for and what catches a
+        # `release.py` that quietly stops delegating.
+        self.assertEqual(bare, self.resolved_state_root())
 
         # An explicit DATA_ROOT IS honoured, and that distinction is the point:
         # a stated root is a statement about the node, while an absent one used
@@ -200,6 +206,28 @@ class ReleaseTests(unittest.TestCase):
         # installer's input. Reading it here let a variable set for one purpose
         # decide where an install pointed, so it is no longer consulted.
         self.assertEqual(bare, resolve(SERVEROS_STATE_DIR="/tmp/ignored"))
+
+    def resolved_state_root(self) -> str:
+        """What `runtime/paths.py` says the state root is, in the bare env.
+
+        The same environment `resolve()` uses, so the two answers are
+        comparable: no `SERVEROS_STATE_DIR`, no `DATA_ROOT`.
+        """
+        probe = (
+            "import importlib.util;"
+            f"s=importlib.util.spec_from_file_location('p',"
+            f"{str(ROOT / 'runtime' / 'paths.py')!r});"
+            "m=importlib.util.module_from_spec(s);s.loader.exec_module(m);"
+            "print(m.Paths().root('state'))"
+        )
+        env = dict(os.environ)
+        for key in ("SERVEROS_STATE_DIR", "DATA_ROOT"):
+            env.pop(key, None)
+        proc = subprocess.run([sys.executable, "-c", probe],
+                              stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                              text=True, env=env)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        return proc.stdout.strip()
 
     def test_promote_refuses_a_state_root_that_does_not_exist(self):
         """A node pointed at a missing state root cannot start, so promoting it

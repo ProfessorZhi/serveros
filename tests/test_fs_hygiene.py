@@ -117,13 +117,23 @@ def test_the_two_named_log_files_are_classified_and_not_special_cased_away():
     """They must appear in the report — §16A requires a classification — and
     they must not be moved or deleted, which is structural rather than a rule
     because nothing in this module can move anything."""
-    home = Path("/home/hwz")
-    for name in (".botmux-clone.log", ".ccbridge-bridge.log"):
+    names = (".botmux-clone.log", ".ccbridge-bridge.log")
+    for name in names:
         row = classify(name, root_name="home", is_dir=False, is_file=True)
         assert row["class"] == fh.UNKNOWN
         assert row["actionable"] is False
         assert row["size_note"] == "size_unmeasured"
-    assert (home / ".botmux-clone.log").exists(), "this test must not have moved it"
+
+    # The guard below is "this test must not have moved it", and it is about the
+    # node it runs on. §16A named the two files where they exist; a node that
+    # never had them has nothing to have moved, and asserting the literal would
+    # be asserting a fact about Beijing from Tokyo — true there, meaningless
+    # here. The classification above still ran, so only the guard is skipped.
+    home = Path(paths.Paths().root("home"))
+    absent = [name for name in names if not (home / name).exists()]
+    if absent:
+        pytest.skip(f"§16A's files are not on this node (home={home}): "
+                    f"{', '.join(absent)}")
 
 
 def test_a_file_at_a_roots_top_level_is_unknown_and_not_misplaced():
