@@ -1553,32 +1553,100 @@ def render(report: dict) -> None:
           + (f"  (blocking: {', '.join(release['blocking'])})" if release["blocking"] else ""))
 
 
+# --------------------------------------------------------------------------
+# where this inspector looks when nobody says
+# --------------------------------------------------------------------------
+#
+# There is no built-in path, and the absence is the point. Until §Q6 seven of
+# the defaults below were `/opt/applications/data/home-hwz/...` — one machine's
+# layout compiled into a program whose whole job is to report what is true of
+# the machine it is running on. On a host with that path absent it did not fail
+# loudly; it produced a report about a directory nobody had asked about, which
+# reads exactly like a report about this one.
+#
+# This is the same resolver `architecture_check.py` carries, written out a
+# second time rather than imported. The two are invoked as subprocesses from
+# different roots — one ships inside the Skill payload, this one inside the
+# repo's `scripts/` — so a shared import would be a dependency between two
+# things the release is free to move apart. What they share is the AUTHORITY,
+# not the code: flags, then environment, then this host's own profile, then a
+# refusal. `architecture_check.py` additionally forwards the two roots it was
+# given explicitly, so a check run against a particular checkout reads that
+# checkout rather than the profile's.
+
+HOST_PROFILE_ENV = "SERVEROS_HOST_PROFILE"
+DEFAULT_HOST_PROFILE = Path("~/.config/serveros/host-profile.yaml")
+
+#: argument -> (environment variable, profile root keys, path under that root).
+#:
+#: The suffixes are product layout — the bundle name, the control-plane venv's
+#: own path — and are the same on every node that runs this distribution. The
+#: part that differs per machine is the three roots, and those come from the
+#: profile.
+ROOT_SOURCES = {
+    "serveros_repo": ("SERVEROS_REPO", ("workspace_src",), ("serveros",)),
+    "ability_repo": ("SERVEROS_ABILITY_REPO", ("workspace_src",), ("ability-management",)),
+    "engine_repo": ("SERVEROS_ENGINE_REPO", ("workspace_src",), ("work-engine",)),
+    "output": ("SERVEROS_OUTPUT", ("runtime_assets_root",), (BUNDLE_NAME, "current")),
+    "marketplace_path": ("SERVEROS_MARKETPLACE", ("runtime_assets_root",),
+                         (BUNDLE_NAME, ".agents", "plugins", "marketplace.json")),
+    "runtime_root": ("SERVEROS_RUNTIME_ROOT", ("runtime_assets_root",), (BUNDLE_NAME,)),
+    "engine_installed": ("SERVEROS_ENGINE_INSTALLED", ("envs_root",),
+                         ("python", "serveros-control-plane", "lib", "python3.12",
+                          "site-packages", "workengine")),
+}
+
+
+def host_profile_roots() -> dict:
+    """This node's declared roots, or {} — never a fabricated path."""
+    raw = os.environ.get(HOST_PROFILE_ENV)
+    path = Path(raw).expanduser() if raw else DEFAULT_HOST_PROFILE.expanduser()
+    try:
+        document = yaml.safe_load(path.read_text(encoding="utf-8"))
+    except (OSError, yaml.YAMLError):
+        return {}
+    if not isinstance(document, dict):
+        return {}
+    node = document.get("node")
+    roots = node.get("roots") if isinstance(node, dict) else None
+    return roots if isinstance(roots, dict) else {}
+
+
+def default_root(argument: str):
+    """The environment's answer, else this host's, else None. Never a guess."""
+    env_name, profile_keys, suffix = ROOT_SOURCES[argument]
+    raw = os.environ.get(env_name)
+    if raw:
+        base = Path(raw)
+    else:
+        roots = host_profile_roots()
+        base = next((Path(roots[key]) for key in profile_keys
+                     if isinstance(roots.get(key), str) and roots[key]), None)
+    if base is None:
+        return None
+    return base.joinpath(*suffix) if suffix else base
+
+
 def main() -> int:
     home = Path(os.path.expanduser("~"))
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--json", action="store_true")
     ap.add_argument("--serveros-repo", type=Path,
-                    default=Path(os.environ.get("SERVEROS_REPO")
-                                 or "/opt/applications/data/home-hwz/workspace/src/serveros"),
+                    default=default_root("serveros_repo"),
                     help="canonical bundle-source checkout whose build.py defines "
                          "what the artifact should contain")
     ap.add_argument("--ability-repo", type=Path,
-                    default=Path(os.environ.get("SERVEROS_ABILITY_REPO")
-                                 or "/opt/applications/data/home-hwz/workspace/src/ability-management"))
+                    default=default_root("ability_repo"))
     ap.add_argument("--ability-rev", default="",
                     help="build pin; default = the revision Claude's install record carries")
     ap.add_argument("--output", type=Path,
-                    default=Path(os.environ.get("SERVEROS_OUTPUT")
-                                 or "/opt/applications/data/home-hwz/runtime-assets/hwz-server-os/current"))
+                    default=default_root("output"))
     ap.add_argument("--marketplace-path", type=Path,
-                    default=Path(os.environ.get("SERVEROS_MARKETPLACE")
-                                 or "/opt/applications/data/home-hwz/runtime-assets/hwz-server-os/.agents/plugins/marketplace.json"))
+                    default=default_root("marketplace_path"))
     ap.add_argument("--engine-repo", type=Path,
-                    default=Path(os.environ.get("SERVEROS_ENGINE_REPO")
-                                 or "/opt/applications/data/home-hwz/workspace/src/work-engine"))
+                    default=default_root("engine_repo"))
     ap.add_argument("--engine-installed", type=Path,
-                    default=Path(os.environ.get("SERVEROS_ENGINE_INSTALLED")
-                                 or "/opt/applications/data/home-hwz/envs/python/serveros-control-plane/lib/python3.12/site-packages/workengine"))
+                    default=default_root("engine_installed"))
     ap.add_argument("--claude-plugins-json", type=Path,
                     default=Path(os.environ.get("SERVEROS_CLAUDE_PLUGINS_JSON")
                                  or home / ".claude/plugins/installed_plugins.json"))
@@ -1605,8 +1673,7 @@ def main() -> int:
     # as it existed because only one of the two was ever on the machine when it
     # was written.
     ap.add_argument("--runtime-root", type=Path,
-                    default=Path(os.environ.get("SERVEROS_RUNTIME_ROOT")
-                                 or "/opt/applications/data/home-hwz/runtime-assets/hwz-server-os"),
+                    default=default_root("runtime_root"),
                     help="distribution root holding one directory per composition, "
                          "each with `current` -> `revisions/<label>`")
     ap.add_argument("--composition", default=os.environ.get("SERVEROS_COMPOSITION")
@@ -1624,6 +1691,23 @@ def main() -> int:
                          "fixture can supply a synthetic one rather than describe "
                          "whatever happens to be running when the suite runs")
     args = ap.parse_args()
+
+    # Refused, not guessed — and refused before `collect()`, so an unanswerable
+    # root can never be reported as a RELEASE_* verdict about a directory that
+    # does not exist. Exit 2, because 0 here means RELEASE_COMPLETE and nothing
+    # else may borrow it.
+    unset = [name for name in ROOT_SOURCES if getattr(args, name) is None]
+    if unset:
+        env_names = ", ".join(ROOT_SOURCES[name][0] for name in unset)
+        flags = ", ".join("--" + name.replace("_", "-") for name in unset)
+        sys.stderr.write(
+            "runtime_truth: no root for " + flags + ".\n"
+            "  This inspector carries no built-in path, because a path that is "
+            "right on one machine is a wrong answer on the next one.\n"
+            "  Pass the flag, set " + env_names + ", or point "
+            + HOST_PROFILE_ENV + " at a host profile whose `node.roots` "
+            "declares them.\n")
+        return 2
 
     report = collect(args)
     if args.json:

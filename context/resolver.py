@@ -5,8 +5,9 @@
     python3 resolver.py LIT-0104 --json
     python3 resolver.py                 # infer the Item from the current directory
 
-Roots are explicit-argument first, then environment, then the canonical
-defaults, so a caller that already resolved its own roots can hand them over:
+Roots are explicit-argument first, then environment, then THIS NODE'S OWN
+PROFILE, and then a refusal — there is no built-in default. A caller that has
+already resolved its own roots hands them over:
 
     python3 resolver.py LIT-0101 --workspace-root ... --artifacts-root ... --state-dir ...
 
@@ -53,6 +54,73 @@ KIND_CAPABILITIES = {
 }
 
 
+# --------------------------------------------------------------------------
+# where this node's roots are, when nobody says
+# --------------------------------------------------------------------------
+#
+# §Q6. This file used to answer `/opt/applications/data/home-hwz` — one
+# machine's layout — as the data root. On any other node that made
+# `infer_item` compare the caller's directory against a root that does not
+# exist there, find nothing, and report "no item inferred from this
+# directory": the same sentence a correct empty answer produces. A wrong
+# answer that reads like a right one is worse than a refusal, so an
+# unanswerable root raises into the handlers the callers already have.
+#
+# The precedence is `runtime/paths.py`'s, which is the authority for every
+# other root in the system: `DATA_ROOT` is a seed, the device's own Profile may
+# declare the role, and nothing is invented when neither answers. The two
+# derivations kept here (`workspace`, `artifacts` under the data root) are the
+# same ones `paths.py` keeps in `_SEED_DEFAULT_SUFFIX` — relative layout, not
+# another device's absolute path.
+
+HOST_PROFILE_ENV = "SERVEROS_HOST_PROFILE"
+DEFAULT_HOST_PROFILE = Path("~/.config/serveros/host-profile.yaml")
+
+
+class RootsUnresolved(RuntimeError):
+    """No authority could say where this node's data root is."""
+
+
+def _host_profile_roots() -> dict:
+    """This node's declared roots, or {} — never a fabricated path."""
+    raw = os.environ.get(HOST_PROFILE_ENV)
+    path = Path(raw).expanduser() if raw else DEFAULT_HOST_PROFILE.expanduser()
+    try:
+        document = yaml.safe_load(path.read_text(encoding="utf-8"))
+    except (OSError, yaml.YAMLError):
+        return {}
+    if not isinstance(document, dict):
+        return {}
+    node = document.get("node")
+    roots = node.get("roots") if isinstance(node, dict) else None
+    return roots if isinstance(roots, dict) else {}
+
+
+def _profile_root(*keys) -> Path | None:
+    roots = _host_profile_roots()
+    for key in keys:
+        value = roots.get(key)
+        if isinstance(value, str) and value:
+            return Path(value)
+    return None
+
+
+def _data_root() -> Path:
+    raw = os.environ.get("DATA_ROOT")
+    if raw:
+        return Path(raw)
+    # `identity_home` answers too: a node whose home IS its data root says so
+    # in its own Profile, in those words, rather than restating the path.
+    found = _profile_root("data_root", "identity_home")
+    if found is not None:
+        return found
+    raise RootsUnresolved(
+        f"no data root: set DATA_ROOT, or point {HOST_PROFILE_ENV} at a host "
+        "profile whose `node.roots` declares `data_root` or `identity_home`. "
+        "This resolver carries no built-in path, because a path that is right "
+        "on one machine is a wrong answer on the next one")
+
+
 class Roots:
     """ServerOS root contract. Every locator is derived from a root, never from cwd.
 
@@ -76,12 +144,12 @@ class Roots:
 
     @classmethod
     def from_env(cls) -> "Roots":
-        data_root = Path(os.environ.get("DATA_ROOT", "/opt/applications/data/home-hwz"))
+        data_root = _data_root()
         workspace_root = Path(os.environ.get("WORKSPACE_ROOT", str(data_root / "workspace")))
         artifacts_root = Path(
             os.environ.get("SERVEROS_ARTIFACTS_ROOT")
             or os.environ.get("ARTIFACTS_ROOT")
-            or str(data_root / "artifacts")
+            or str(_profile_root("artifacts") or data_root / "artifacts")
         )
         state_dir = os.environ.get("SERVEROS_STATE_DIR")
         state_db = (
@@ -420,10 +488,21 @@ def infer_item(roots: Roots, cwd: Path) -> str:
     """Infer the Item from cwd, but only when it is unambiguous."""
     cwd = cwd.resolve()
     candidates: set[str] = set()
+    # The depth is how many parts lie between the base and the Item, counting
+    # the Item itself. All three layouts have the same shape, so all three are
+    # 2: `worktrees/<repo>/<ITEM>`, `test-envs/<repo>/<ITEM>` and
+    # `artifacts/work-items/<project>/<ITEM>`. The third said 3 until §Q6 —
+    # one more than its own layout has — so it matched nothing, ever, on any
+    # node. It was invisible beside the Beijing root in this file: that root
+    # made the first two patterns fail as well, so a caller reading "cannot
+    # infer an Item" had one cause to blame, and it was the other one.
+    #
+    # Deeper paths still resolve, because the check is on position rather than
+    # on the path ending there: `.../MUC-0101/RUN-0001` infers MUC-0101.
     patterns = (
         (roots.worktrees, 2),      # worktrees/<repo>/<ITEM>
         (roots.test_envs, 2),      # test-envs/<repo>/<ITEM>
-        (roots.artifacts_root / "work-items", 3),  # artifacts/work-items/<project>/<ITEM>
+        (roots.artifacts_root / "work-items", 2),  # artifacts/work-items/<project>/<ITEM>
     )
     for base, depth in patterns:
         try:
@@ -453,11 +532,11 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--artifacts-root", help="explicit artifacts root; wins over the environment")
     ap.add_argument("--state-dir", help="explicit state directory; wins over the environment")
     args = ap.parse_args()
-    roots = Roots.from_args(args)
     try:
+        roots = Roots.from_args(args)
         item_id = args.item or infer_item(roots, args.cwd)
         capsule = resolve(roots, item_id)
-    except (OSError, ValueError) as exc:
+    except (OSError, ValueError, RootsUnresolved) as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 2
     if args.json:
