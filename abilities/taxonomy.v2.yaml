@@ -35,6 +35,21 @@
 # A member list here would be a second catalogue, which is the one thing the
 # five-word separation exists to prevent.
 #
+# A node may carry `aliases`: other words that NAME IT, which `taxonomy search`
+# matches alongside the id. They are here for a measured reason. The catalogue
+# is written in one language and asked about in another — `serveros.corporate.
+# feishu` holds two abilities and the query "飞书" found none of them, because
+# the node's id, its label and its members are all spelled in Latin. An alias
+# fills exactly that gap and nothing else: it is a spelling of a name.
+#
+# An alias is NOT a label and NOT membership. It does not appear in the tree,
+# it does not place an ability, and it cannot move a node's state — a node
+# found by its alias is exactly as occupied as it was before anyone asked. If a
+# word would mean "this node is about that subject" more loosely than a name,
+# it does not belong here; the id and the summary already say what the node is
+# about, and a synonym that is merely RELATED to the subject is how a lookup
+# table quietly becomes a bag of keywords.
+#
 # ORIGIN IS MANDATORY, AND IT IS NOT DECORATION
 # ---------------------------------------------
 # Every node carries `origin`, and it is one of exactly three values:
@@ -49,7 +64,7 @@
 # can audit is a taxonomy that quietly becomes wrong.
 
 schema: serveros/taxonomy.v2
-revision: 1
+revision: 3
 generated: 2026-09-17
 
 # The catalogue is NOT owned here. This block names where the authority lives
@@ -150,6 +165,23 @@ taxons:
     v1_parent: serveros.operations
     summary: Several machines agreeing on a shared view of the fleet.
 
+  # Declared, and the reason is that the seed's own summary does not cover
+  # these members. `serveros.agent` is about running agents and how several of
+  # them agree on who is doing what; a camera and a hand are neither. The
+  # abilities below are real, were placed nowhere, and belong under this family
+  # rather than under a widened version of it — so the distinction is stated
+  # where a reader can disagree with it, instead of being absorbed into the
+  # seed's prose until the seed means two things.
+  - id: serveros.agent.embodiment
+    origin: declared
+    aliases: [browser, 浏览器, vision, 视觉, desktop, 桌面]
+    summary: >
+      How the agent reaches outside itself: what it can perceive, and what it
+      can operate. Perception and action are one node because they are one
+      question at navigation time — "can this agent see the screen / drive the
+      browser" — and splitting them would put the vision skill and the browser
+      driver in two places a reader has to already know about.
+
   # =========================================================================
   # 2 / 10  RUNTIME & RESOURCES
   # =========================================================================
@@ -163,6 +195,7 @@ taxons:
   - id: serveros.operations.runtime
     origin: v1
     v1_parent: serveros.operations
+    aliases: [docker, container, 容器, process, 进程]
     summary: Running, observing and attributing managed runtimes.
 
   # =========================================================================
@@ -235,6 +268,7 @@ taxons:
   - id: serveros.work
     origin: seed
     label: Work & Development
+    aliases: [requirement, 需求]
     summary: >
       From a source to a delivered, tested, reported piece of work. The route
       through these nodes is a composition of abilities, not a workflow state
@@ -304,6 +338,7 @@ taxons:
   - id: serveros.engineering
     origin: v1
     v1_parent: null
+    aliases: [code, 代码, 工程]
     summary: >
       The development abilities proper — architecture, design, implementation,
       quality feedback. Inherited as a top-level node rather than folded under
@@ -324,6 +359,7 @@ taxons:
   - id: serveros.memory
     origin: seed
     label: Memory & Context
+    aliases: [session, 会话, 记忆]
     summary: >
       What persists between sessions, what a session is currently inside, and
       the difference between the two. Durable memory, execution session and
@@ -336,6 +372,7 @@ taxons:
   - id: serveros.human
     origin: seed
     label: Human & Communication
+    aliases: [alert, 告警, 报警, notification, 通知]
     summary: >
       Anything whose other end is a person: asking, telling, reporting, and
       the control surface a person uses to steer an agent.
@@ -353,6 +390,7 @@ taxons:
   - id: serveros.corporate.feishu
     origin: v1
     v1_parent: serveros.corporate
+    aliases: [飞书, lark]
     summary: >
       Feishu, split by purpose rather than by product. Control (a person
       directing an agent) and content (documents, wiki, minutes, messages as
@@ -382,6 +420,7 @@ taxons:
   - id: serveros.network
     origin: seed
     label: Network & Environment
+    aliases: [网络, 防火墙]
     summary: >
       What may be reached, what may be bound, and what somebody else's network
       policy allows. Declared and currently unoccupied — the enforcement
@@ -407,6 +446,7 @@ taxons:
   - id: serveros.security
     origin: seed
     label: Security & Credentials
+    aliases: [secret, 凭据, 密钥]
     summary: >
       Secrets and how far they can be trusted. On a shared host these two
       questions separate sharply: a file mode of 0600 stops an ordinary
@@ -457,6 +497,7 @@ edges:
 
   - {from: serveros.agent, to: serveros.core, kind: contains}
   - {from: serveros.agent, to: serveros.operations.fleet, kind: contains}
+  - {from: serveros.agent, to: serveros.agent.embodiment, kind: contains}
 
   - {from: serveros.runtime, to: serveros.operations.runtime, kind: contains}
 

@@ -427,8 +427,12 @@ def test_the_declaration_contains_no_ability_membership():
     allowed = {"schema", "revision", "generated", "catalogue", "taxons", "edges"}
     assert set(document_) <= allowed, set(document_) - allowed
     for node in document_["taxons"]:
+        # `aliases` joins the allowed keys because it is part of a node's own
+        # NAME, not a list of what lives under it. The guard that matters is
+        # the next line, and it is unchanged: an alias says a word names this
+        # node, and can never say that an ability is there.
         assert set(node) <= {"id", "origin", "label", "summary", "surface",
-                             "v1_parent"}, node["id"]
+                             "v1_parent", "aliases"}, node["id"]
         assert "abilities" not in node and "members" not in node, node["id"]
 
 
@@ -436,3 +440,191 @@ def test_search_refuses_an_empty_query():
     """An empty query matches everything, which is enumeration by another name."""
     with pytest.raises(taxonomy.TaxonomyError):
         taxonomy.search(taxonomy.load(TAXONOMY_PATH), [], "")
+
+# ---------------------------------------------------------------------------
+# §Q3 · a taxonomy that cannot read its catalogue has to say so, and a home is
+#        not a claim that anything lives in it
+# ---------------------------------------------------------------------------
+
+
+class _Args:
+    """Just the attributes `_load_rows` reads off its argparse namespace."""
+
+    def __init__(self, repository="", revision="origin/main", catalogue=""):
+        self.repository = repository
+        self.revision = revision
+        self.catalogue = catalogue
+
+
+def test_a_deployment_names_its_own_catalogue(monkeypatch, tmp_path):
+    """`SERVEROS_ABILITY_REPO` beats the sibling lookup of a source checkout.
+
+    Which checkout to read is a fact about a deployment, so the deployment says
+    it. The sibling lookup is a convenience that is true only where the two
+    repositories sit side by side — and this module also runs from a promoted
+    artifact under `runtime-assets/<composition>/revisions/<rev>/`, where the
+    sibling resolves to `revisions/ability-management` and has never existed.
+    """
+    monkeypatch.setenv("SERVEROS_ABILITY_REPO", str(tmp_path))
+    assert taxonomy._default_ability_repo() == tmp_path
+
+
+def test_a_render_without_a_catalogue_says_why_it_is_blank(capsys, monkeypatch,
+                                                           tmp_path):
+    """`[?]` is the right thing to print. Silence about it is not.
+
+    `tree` renders without the catalogue, so it asks for rows with
+    `required=False`, and that used to mean the reason never reached anybody:
+    a whole taxonomy came back `[?]` with nothing on screen saying that the
+    question had not been asked. That is also what made ten seeded families
+    read as ten empty ones.
+    """
+    monkeypatch.setenv("SERVEROS_ABILITY_REPO", str(tmp_path / "absent"))
+    assert taxonomy._load_rows(_Args(), required=False) is None
+    err = capsys.readouterr().err
+    assert "SERVEROS_ABILITY_REPO" in err
+    assert "Occupancy is not shown" in err
+
+
+def test_a_verdict_still_refuses_when_the_catalogue_is_absent(capsys, monkeypatch,
+                                                              tmp_path):
+    """The `required=True` case keeps its own, louder message."""
+    monkeypatch.setenv("SERVEROS_ABILITY_REPO", str(tmp_path / "absent"))
+    assert taxonomy._load_rows(_Args(), required=True) is None
+    assert "report a verdict" in capsys.readouterr().err
+
+
+def test_a_placement_is_navigation_and_never_promotes_the_ability():
+    """§Q3: naming an ability under a taxon must not make it available.
+
+    The two questions are answered from different fields and the test pins
+    them apart. `domain.primary` moves the TAXON's state and nothing else; the
+    ability's own rung is decided by `implementation`, compatibility and
+    installation. So an ability that exists only as a name can occupy a
+    branch's navigation and still be DECLARED.
+    """
+    rows = [{"name": "ghost", "domain": {"primary": "serveros.work"}}]
+    entries = taxonomy.membership(document([seed("serveros.work")], []), rows)
+    entry = entries["serveros.work"]
+    assert entry["placed"] == ["ghost"]
+    assert entry["availability"] == {"ghost": taxonomy.DECLARED}
+    assert entry["materialised"] == []
+    # Placed, and therefore not EMPTY — but not OCCUPIED either.
+    assert entry["state"] == taxonomy.DECLARED_ONLY
+    assert taxonomy.availability(rows[0]) == taxonomy.DECLARED
+
+
+@pytest.mark.skipif(not ABILITY_REPO.exists(),
+                    reason="the ability-management checkout is not beside this repo")
+def test_the_senses_and_actuators_node_is_declared_and_occupied():
+    """`serveros.agent.embodiment` is declared BECAUSE the catalogue uses it.
+
+    A `declared` node the catalogue never names is a promise with nothing
+    behind it. This one exists so that four real browser/desktop abilities
+    have a home, and the conformance check would fail on it in either
+    direction: undeclared in this file it is UNDECLARED_TAXON, and named by no
+    ability the node is still legitimate but unreferenced. The second half is
+    what this asserts.
+    """
+    manifest, _ = _read_manifest()
+    rows = list(manifest.get("abilities") or [])
+    entries = taxonomy.membership(taxonomy.load(TAXONOMY_PATH), rows)
+    entry = entries["serveros.agent.embodiment"]
+    assert entry["placed"], "the node is declared but nothing was placed in it"
+    assert entry["origin"] == "declared"
+
+
+@pytest.mark.skipif(not ABILITY_REPO.exists(),
+                    reason="the ability-management checkout is not beside this repo")
+def test_most_of_the_catalogue_has_a_home():
+    """§Q3 measured the gap: 33 of 55 rows carried no `domain.primary`.
+
+    A row with no placement is not shown anywhere a reader can browse to, so
+    the families look thin for a reason that has nothing to do with what the
+    fabric can do. The bound is deliberately loose — this is a floor against
+    regression, not a claim that every row SHOULD be placed, because some rows
+    are distribution channels and hook bundles and have no domain to be in.
+    """
+    manifest, _ = _read_manifest()
+    rows = list(manifest.get("abilities") or [])
+    placed = [r for r in rows if taxonomy._row_taxon(r)]
+    assert len(placed) >= 35, f"only {len(placed)} of {len(rows)} rows are placed"
+
+
+def test_a_query_in_another_language_finds_the_node():
+    """§Q3 measured this one: "飞书" returned nothing while the node held two
+    abilities, because its id, its label and all of its members are Latin."""
+    doc = document([seed("serveros.human"),
+                    {"id": "serveros.corporate.feishu", "origin": "v1",
+                     "v1_parent": "serveros.corporate",
+                     "aliases": ["飞书", "lark"]}],
+                   [])
+    rows = [{"name": "feishu-card",
+             "domain": {"primary": "serveros.corporate.feishu"}}]
+    result = taxonomy.search(doc, rows, "飞书")
+    assert [h["taxon"] for h in result["hits"]] == ["serveros.corporate.feishu"]
+    assert "alias" in result["hits"][0]["matched_on"]
+    # …and the member is still found by its own name, so the alias widened
+    # discovery rather than replacing it.
+    assert taxonomy.search(doc, rows, "feishu-card")["count"] == 1
+
+
+def test_every_word_of_a_query_has_to_match():
+    """ "network safety" is one subject a person spells as two words.
+
+    Matched as a literal phrase it found nothing. Split, it finds the one node
+    whose own id carries both — and the conjunction stays a conjunction: a
+    query whose words never co-occur is still empty rather than a loose OR.
+    """
+    doc = document([seed("serveros.network"), seed("serveros.safety"),
+                    declared("serveros.safety.network-conformance")], [])
+    result = taxonomy.search(doc, [], "network safety")
+    assert [h["taxon"] for h in result["hits"]] == [
+        "serveros.safety.network-conformance"]
+    assert result["tokens"] == ["network", "safety"]
+    assert taxonomy.search(doc, [], "network kubernetes")["count"] == 0
+
+
+def test_an_alias_is_a_name_and_never_a_membership():
+    """A node found by an alias is exactly as occupied as it was before.
+
+    The failure this pins down is the tempting one: an alias makes a node
+    ANSWER, and answering is what an occupied node does too. If a synonym ever
+    counted as a member, "somebody calls it that" would read as "something is
+    there".
+    """
+    doc = document([seed("serveros.creative", aliases=["art", "创作"])], [])
+    entry = taxonomy.membership(doc, [])["serveros.creative"]
+    assert entry["aliases"] == ["art", "创作"]
+    assert entry["placed"] == []
+    assert entry["materialised"] == []
+    assert entry["state"] == taxonomy.EMPTY
+
+
+def test_a_bare_string_alias_is_a_blocking_finding():
+    """`aliases: wip` would be iterated per character and match on any letter."""
+    assert "INVALID_ALIASES" in codes(taxonomy.validate(
+        document([seed("serveros.work", aliases="wip")], [])))
+    assert "INVALID_ALIASES" in codes(taxonomy.validate(
+        document([seed("serveros.work", aliases=["ok", ""])], [])))
+    assert "INVALID_ALIASES" not in codes(taxonomy.validate(
+        document([seed("serveros.work", aliases=["wip", "需求"])], [])))
+
+
+@pytest.mark.skipif(not ABILITY_REPO.exists(),
+                    reason="the ability-management checkout is not beside this repo")
+def test_the_nine_real_queries_all_reach_something():
+    """The acceptance list §Q3 named, run against the real catalogue.
+
+    Every one of these was a real question; five of them returned nothing
+    before this round. Pinned as a list rather than as prose because the value
+    of a search is exactly the set of things people asked it and could not
+    find.
+    """
+    manifest, _ = _read_manifest()
+    rows = list(manifest.get("abilities") or [])
+    doc = taxonomy.load(TAXONOMY_PATH)
+    for query in ("workspace", "飞书", "alert", "docker", "memory",
+                  "requirement", "test", "report", "network safety"):
+        found = taxonomy.search(doc, rows, query)
+        assert found["count"] >= 1, f"{query!r} reaches nothing"
