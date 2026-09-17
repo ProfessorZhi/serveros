@@ -1689,7 +1689,7 @@ class Daemon:
                          "`alert.record-delivery`; until it does, the intent "
                          "stays pending and no `last_notified_at` is set.")}
 
-    def _delivery_cursor(self):
+    def delivery_cursor(self):
         """The delivery ledger, beside the register and opened with it."""
         if self._delivery_cursor is None:
             path = Path(self.state_dir) / "alerts" / "state.json"
@@ -1709,13 +1709,13 @@ class Daemon:
         """
         at = _iso(self._now())
         return digest_mod.ensure_baseline(
-            self._delivery_cursor(), self.alert_store(), at=at,
+            self.delivery_cursor(), self.alert_store(), at=at,
             device_ref=self.registry.device_ref)
 
     def _r_alert_digest(self, params) -> dict:
         """§Q2. What changed, batched, and whether it is worth saying now."""
         at = _iso(self._now())
-        cursor = self._delivery_cursor()
+        cursor = self.delivery_cursor()
         digest = digest_mod.compose(
             self.alert_store(), cursor, at=at,
             device_ref=self.registry.device_ref)
@@ -1749,7 +1749,7 @@ class Daemon:
                 f"{type(shown).__name__}: the cursor records what a person was "
                 f"actually told, and a scalar here would record something else")
         return digest_mod.record(
-            self._delivery_cursor(), self.alert_store(), at=at,
+            self.delivery_cursor(), self.alert_store(), at=at,
             generation=int(generation), state=str(state), shown=shown,
             reason=params.get("reason"))
 
