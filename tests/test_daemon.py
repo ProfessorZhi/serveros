@@ -1922,3 +1922,80 @@ def test_the_two_runtime_codes_are_ungraded_rather_than_clean_when_docker_is_dow
         assert code in ungraded, code
         assert "unreachable" in ungraded[code] or "could not" in ungraded[code], ungraded[code]
         assert code not in result["codes_graded"]
+
+
+# ---------------------------------------------------------------------------
+# §Q2 · the digest handlers the daemon advertises are reachable from the object
+#        the request actually arrives at
+# ---------------------------------------------------------------------------
+
+
+def test_no_private_attribute_shadows_a_method_on_the_daemon(daemon_factory):
+    """A `self._name = None` cache in `__init__` over a method called `_name`
+    turns every call site into `TypeError: 'NoneType' object is not callable`.
+
+    Not hypothetical. §Q2's delivery cursor was written that way, the full
+    suite stayed green because nothing called the new handlers, and it surfaced
+    on a live node — as a refusal from a daemon that had already been promoted.
+    A gate written only for this one name would have been worth one defect; this
+    one is general, so the next cache lands on it at the moment it is written
+    rather than at the moment it is installed.
+    """
+    daemon = daemon_factory()
+    kind = type(daemon)
+    methods = {name for name in dir(kind)
+               if not name.startswith("__")
+               and callable(getattr(kind, name, None))}
+    shadowed = sorted(set(vars(daemon)) & methods)
+    assert shadowed == [], (
+        f"{shadowed} are instance attributes AND methods of the same name; "
+        f"`self.{shadowed[0]}(...)` calls the attribute, not the method")
+
+
+def test_the_digest_handlers_answer_through_the_real_dispatch(daemon_factory):
+    """The three methods §Q2 advertises, called the way the socket calls them.
+
+    Through `handle` and not through `_r_*`, because the map in `_methods()` is
+    itself part of the declared surface: a handler that works when called
+    directly and is unreachable over the wire is not a wired handler.
+    """
+    daemon = daemon_factory()
+
+    taken = daemon.handle(
+        {"method": "alert.digest-baseline", "params": {}})["result"]
+    assert taken["taken"] is True
+    assert taken["baseline_keys"] == 0
+    again = daemon.handle(
+        {"method": "alert.digest-baseline", "params": {}})["result"]
+    assert again["taken"] is False
+    assert again["baseline_at"] == taken["baseline_at"]
+
+    document = daemon.handle({"method": "alert.digest", "params": {}})["result"]
+    assert document["baseline_at"] == taken["baseline_at"]
+    assert document["counts"] == {"NEW": 0, "ESCALATED": 0,
+                                  "RECOVERED": 0, "REOPENED": 0}
+    assert document["decision"]["send"] is False
+
+    recorded = daemon.handle(
+        {"method": "alert.digest-record",
+         "params": {"generation": document["decision"]["generation"],
+                    "state": "DELIVERED", "shown": []}})["result"]
+    assert recorded["delivered"] is True
+
+
+def test_a_digest_composed_on_an_empty_register_is_quieter_not_louder(daemon_factory):
+    """Two ways to be loud by accident, both closed.
+
+    An unreadable register must not read as "everything resolved" and produce a
+    card full of recoveries, and a missing baseline must not read as "everything
+    is new". An empty register here produces neither: no rows, no send.
+    """
+    daemon = daemon_factory()
+    daemon.handle({"method": "alert.digest-baseline", "params": {}})
+    document = daemon.handle({"method": "alert.digest", "params": {}})["result"]
+    assert document["rows"] == []
+    assert document["shown"] == []
+    assert document["more"] == 0
+    assert document["silent_resolutions"] == 0
+    assert document["decision"]["send"] is False
+    assert "changed" in document["decision"]["why"]
