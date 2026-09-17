@@ -534,3 +534,82 @@ def test_the_guard_missing_is_reported_rather_than_silently_skipped(reachable, m
     assert ids(findings) == ["REACHABILITY_CHECK_UNAVAILABLE"]
     assert findings[0]["severity"] == "HIGH"
     assert axis["status"] == "UNAVAILABLE"
+
+
+# ---------------------------------------------------------------------------
+# §Q6 · where the checker looks when nobody says
+# ---------------------------------------------------------------------------
+
+
+def test_no_machine_path_is_compiled_into_the_checker():
+    """The defaults used to be one machine's layout: `/opt/applications/...`.
+
+    Not a style rule. This checker's whole job is to find claims that do not
+    describe the machine they were read on, and a rooted default made it do the
+    opposite — on a host where that path does not exist it reported on a
+    directory nobody had asked about, which reads exactly like a finding about
+    this one. The literal stays in the history comment above the resolver and
+    is allowed nowhere else.
+    """
+    literal = "/opt/applications/data/home-hwz"
+    source = (SCRIPTS / "architecture_check.py").read_text(encoding="utf-8")
+    for number, line in enumerate(source.splitlines(), 1):
+        if literal in line:
+            assert line.lstrip().startswith("#"), (
+                f"line {number} names {literal} outside a comment: {line!r}")
+
+
+def test_the_environment_names_the_roots(monkeypatch, tmp_path):
+    monkeypatch.setenv("WORKSPACE_ROOT", str(tmp_path / "ws"))
+    monkeypatch.setenv("DATA_ROOT", str(tmp_path / "data"))
+    monkeypatch.delenv(check.HOST_PROFILE_ENV, raising=False)
+    assert check.default_root("workspace_root") == tmp_path / "ws"
+    assert check.default_root("data_root") == tmp_path / "data"
+
+
+def test_this_hosts_profile_answers_when_the_environment_does_not(monkeypatch, tmp_path):
+    """The profile is the same document `serverosd` reads for the same reason.
+
+    Which host this is, is a fact about a deployment, so the deployment states
+    it in the one place that already exists for exactly this. Nothing in the
+    checker knows a machine name, a user name, or a layout.
+    """
+    for env_name, _, _ in check.ROOT_SOURCES.values():
+        monkeypatch.delenv(env_name, raising=False)
+    profile = tmp_path / "host-profile.yaml"
+    profile.write_text(
+        "schema: serveros/host-profile.v1\n"
+        "node:\n"
+        "  roots:\n"
+        f"    identity_home: {tmp_path}/home/x\n"
+        f"    workspace_root: {tmp_path}/home/x/workspace\n"
+        f"    workspace_src: {tmp_path}/home/x/workspace/src\n",
+        encoding="utf-8")
+    monkeypatch.setenv(check.HOST_PROFILE_ENV, str(profile))
+
+    assert check.default_root("data_root") == tmp_path / "home/x"
+    assert check.default_root("workspace_root") == tmp_path / "home/x/workspace"
+    assert check.default_root("serveros_repo") == tmp_path / "home/x/workspace/src/serveros"
+    assert check.default_root("ability_repo") == (
+        tmp_path / "home/x/workspace/src/ability-management")
+    assert check.default_root("ops_repo") == tmp_path / "home/x/workspace/ops"
+
+
+def test_a_host_that_says_nothing_gets_a_refusal_not_a_guess(monkeypatch, tmp_path, capsys):
+    """An unanswerable root is refused, and the refusal is not exit 0.
+
+    This program returns 0 for every conformance verdict it reaches, so "I
+    could not answer" has to be distinguishable from "conformant" — otherwise
+    the one machine that has not been configured reports the cleanest result.
+    """
+    for env_name, _, _ in check.ROOT_SOURCES.values():
+        monkeypatch.delenv(env_name, raising=False)
+    monkeypatch.setenv(check.HOST_PROFILE_ENV, str(tmp_path / "absent.yaml"))
+
+    for argument in check.ROOT_SOURCES:
+        assert check.default_root(argument) is None
+
+    assert check.main(["--json"]) == 2
+    err = capsys.readouterr().err
+    assert "--data-root" in err
+    assert check.HOST_PROFILE_ENV in err

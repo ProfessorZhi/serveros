@@ -1117,7 +1117,14 @@ def collect(args) -> dict:
                                  "in force for new runs"))
 
     # ---- runtime side (separate question, separate verdict) ---------------
-    rt = run_reused(serveros_repo / "scripts" / "runtime_truth.py", ["--json"])
+    # The two roots this checker resolved are forwarded, so a run aimed at a
+    # particular checkout asks about THAT checkout. Everything else the
+    # delegate needs it resolves from the same profile this file just read;
+    # both refuse rather than guess, so neither can answer about a path the
+    # other never looked at.
+    rt = run_reused(serveros_repo / "scripts" / "runtime_truth.py",
+                    ["--json", "--serveros-repo", str(serveros_repo),
+                     "--ability-repo", str(ability_repo)])
     runtime_status = "UNKNOWN"
     runtime_detail = {}
     if rt["available"] and rt.get("report"):
@@ -1324,32 +1331,114 @@ def render(report: dict) -> None:
             print(f"  {name}: {', '.join(roots)}")
 
 
+# --------------------------------------------------------------------------
+# where this checker looks when nobody says
+# --------------------------------------------------------------------------
+
+# There is no built-in path, and the absence is the point. Until §Q6 these
+# five arguments fell back to `/opt/applications/data/home-hwz/...` — one
+# machine's layout, compiled into a checker whose whole job is to find claims
+# that do not describe the machine they are being read on. On Tokyo it did not
+# fail loudly: it pointed at a directory that does not exist and reported on
+# it, which is this checker manufacturing the exact declared-vs-actual gap it
+# exists to find.
+#
+# The order is flag, then environment, then THIS HOST'S OWN PROFILE, then a
+# refusal. The profile is the document the rest of the release already reads
+# for this question — `serverosd` takes its network policy from one — and the
+# profile's own `roots` block says of itself that these are "the numbers
+# `serverosctl path resolve` returns and not a parallel description of them".
+# Nothing below knows the name of a machine or of a user.
+
+HOST_PROFILE_ENV = "SERVEROS_HOST_PROFILE"
+DEFAULT_HOST_PROFILE = Path("~/.config/serveros/host-profile.yaml")
+
+#: argument -> (environment variable, profile root keys, path under that root).
+#:
+#: `data_root` reads `identity_home` because this node's profile records
+#: `data_root_equals_home` as a fact about itself, in its own words. Where that
+#: note is false the profile would say so, and the environment names the root
+#: instead — which is why the environment is consulted first.
+ROOT_SOURCES = {
+    "serveros_repo": ("SERVEROS_REPO", ("workspace_src",), ("serveros",)),
+    "ability_repo": ("SERVEROS_ABILITY_REPO", ("workspace_src",), ("ability-management",)),
+    "ops_repo": ("SERVEROS_OPS_REPO", ("workspace_root",), ("ops",)),
+    "data_root": ("DATA_ROOT", ("identity_home",), ()),
+    "workspace_root": ("WORKSPACE_ROOT", ("workspace_root",), ()),
+}
+
+
+def host_profile_roots() -> dict:
+    """This node's declared roots, or {} — never a fabricated path.
+
+    A profile that is absent, unreadable or shaped differently yields {}, and
+    the caller then refuses. An empty answer is a fact about the machine; a
+    guess would be a fact about this file.
+    """
+    if yaml is None:  # pragma: no cover - yaml is in the control-plane venv
+        return {}
+    raw = os.environ.get(HOST_PROFILE_ENV)
+    path = Path(raw).expanduser() if raw else DEFAULT_HOST_PROFILE.expanduser()
+    try:
+        document = yaml.safe_load(path.read_text(encoding="utf-8"))
+    except (OSError, yaml.YAMLError):
+        return {}
+    if not isinstance(document, dict):
+        return {}
+    node = document.get("node")
+    roots = node.get("roots") if isinstance(node, dict) else None
+    return roots if isinstance(roots, dict) else {}
+
+
+def default_root(argument: str):
+    """The environment's answer, else this host's, else None. Never a guess."""
+    env_name, profile_keys, suffix = ROOT_SOURCES[argument]
+    raw = os.environ.get(env_name)
+    if raw:
+        base = Path(raw)
+    else:
+        roots = host_profile_roots()
+        base = next((Path(roots[key]) for key in profile_keys
+                     if isinstance(roots.get(key), str) and roots[key]), None)
+    if base is None:
+        return None
+    return base.joinpath(*suffix) if suffix else base
+
+
 def main(argv=None) -> int:
     home = Path(os.path.expanduser("~"))
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--json", action="store_true")
-    ap.add_argument("--serveros-repo", type=Path,
-                    default=Path(os.environ.get("SERVEROS_REPO")
-                                 or "/opt/applications/data/home-hwz/workspace/src/serveros"))
-    ap.add_argument("--ability-repo", type=Path,
-                    default=Path(os.environ.get("SERVEROS_ABILITY_REPO")
-                                 or "/opt/applications/data/home-hwz/workspace/src/ability-management"))
-    ap.add_argument("--ops-repo", type=Path,
-                    default=Path(os.environ.get("SERVEROS_OPS_REPO")
-                                 or "/opt/applications/data/home-hwz/workspace/ops"))
+    ap.add_argument("--serveros-repo", type=Path, default=default_root("serveros_repo"))
+    ap.add_argument("--ability-repo", type=Path, default=default_root("ability_repo"))
+    ap.add_argument("--ops-repo", type=Path, default=default_root("ops_repo"))
     ap.add_argument("--canonical-ref", default=os.environ.get("SERVEROS_CANONICAL_REF") or "main")
     ap.add_argument("--ability-ref", default=os.environ.get("SERVEROS_ABILITY_REF") or "main")
     ap.add_argument("--ops-ref", default=os.environ.get("SERVEROS_OPS_REF") or "main")
-    ap.add_argument("--data-root", type=Path,
-                    default=Path(os.environ.get("DATA_ROOT")
-                                 or "/opt/applications/data/home-hwz"))
-    ap.add_argument("--workspace-root", type=Path,
-                    default=Path(os.environ.get("WORKSPACE_ROOT")
-                                 or "/opt/applications/data/home-hwz/workspace"))
+    ap.add_argument("--data-root", type=Path, default=default_root("data_root"))
+    ap.add_argument("--workspace-root", type=Path, default=default_root("workspace_root"))
     ap.add_argument("--runtime-root", action="append", default=[], metavar="NAME=PATH",
                     help="a runtime skill root to observe; repeatable")
     ap.add_argument("--output", type=Path)
     args = ap.parse_args(argv)
+
+    # Refused, not guessed. Every one of these five is compared against a real
+    # tree below, and a wrong root produces findings about a directory nobody
+    # asked about — which reads exactly like a finding about this one. The exit
+    # code is 2 rather than the 0 this program otherwise always returns, because
+    # "I could not answer" must not be reportable as "conformant".
+    unset = [name for name in ROOT_SOURCES if getattr(args, name) is None]
+    if unset:
+        env_names = ", ".join(ROOT_SOURCES[name][0] for name in unset)
+        flags = ", ".join("--" + name.replace("_", "-") for name in unset)
+        sys.stderr.write(
+            "architecture_check: no root for " + flags + ".\n"
+            "  This checker carries no built-in path, because a path that is "
+            "right on one machine is a wrong answer on the next one.\n"
+            "  Pass the flag, set " + env_names + ", or point "
+            + HOST_PROFILE_ENV + " at a host profile whose `node.roots` "
+            "declares them.\n")
+        return 2
 
     if not args.runtime_root:
         claude_root = home / ".claude/skills"
