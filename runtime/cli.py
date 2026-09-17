@@ -3022,6 +3022,120 @@ def cmd_alert_sync(args) -> int:
     return EXIT_OK
 
 
+def _digest_answer(method: str, params: dict) -> tuple[dict, int]:
+    """One daemon call for the batch hop. Same reading as `_alert_answer`."""
+    return _alert_answer(method, params)
+
+
+def cmd_alert_digest_baseline(args) -> int:
+    """§Q2. Take the delivery baseline. Idempotent, and a no-op after the first.
+
+    Split from `digest` rather than folded into it so that the one command
+    which declares "everything currently open is not news" is a command
+    somebody chose to run. It is safe to run twice and safe to run late: the
+    second call changes nothing, and running it late only means fewer things
+    were covered by it.
+    """
+    payload, code = _digest_answer("alert.digest-baseline", {})
+    if code != EXIT_OK:
+        return code
+    lines = [f"baseline    {payload.get('baseline_at')}",
+             f"已记录身份  {payload.get('baseline_keys', '—')}"
+             if payload.get("taken") else "已存在，本次未改动",
+             "",
+             payload.get("note") or ""]
+    emit(payload, as_json=args.json, lines=lines)
+    return EXIT_OK
+
+
+def cmd_alert_digest(args) -> int:
+    """§Q2. What changed since a person was last told, batched into one card.
+
+    Read-only, and it says so in its own output: `decision.send` answers
+    whether the document is worth a message, and NOTHING is marked announced
+    until a surface that actually holds a transport reports back through
+    `alert digest-record`. The split is §2's — this decides what is true, the
+    renderer decides how it reaches a person — and it is also what keeps a
+    composed-but-undelivered digest from silently consuming its own deltas.
+    """
+    payload, code = _digest_answer("alert.digest", {})
+    if code != EXIT_OK:
+        return code
+    counts = payload.get("counts") or {}
+    severity = payload.get("severity_counts") or {}
+    verdict = payload.get("decision") or {}
+    lines = [
+        f"as of       {payload.get('at')}",
+        f"baseline    {payload.get('baseline_at')}",
+        f"generation  {payload.get('generation')}",
+        "",
+        f"变化        NEW {counts.get('NEW', 0)} · ESCALATED {counts.get('ESCALATED', 0)}"
+        f" · RECOVERED {counts.get('RECOVERED', 0)} · REOPENED {counts.get('REOPENED', 0)}",
+        f"严重度      🔴 {severity.get('high', 0)} · 🟡 {severity.get('medium', 0)}"
+        f" · ⚪ {severity.get('low', 0)}",
+        f"显示        {len(payload.get('shown') or [])} 条，另有 "
+        f"{payload.get('more', 0)} 条未进卡面",
+        f"积压        {payload.get('backlog', 0)} 条（基线之前就开着，不是新闻）",
+        f"静默结束    {payload.get('silent_resolutions', 0)} 条（从未告知过，故不报告恢复）",
+        "",
+        f"是否发送    {'是' if verdict.get('send') else '否'} — {verdict.get('why')}",
+        f"幂等键      {verdict.get('idempotency_key')}",
+    ]
+    for row in payload.get("shown") or []:
+        lines.append(f"  {row.get('kind'):<9} {row.get('severity_word'):<8} "
+                     f"`{row.get('code')}` {row.get('subject_ref')}")
+    lines.append("")
+    lines.append(payload.get("note") or "")
+    emit(payload, as_json=args.json, lines=lines)
+    return EXIT_OK
+
+
+def cmd_alert_digest_record(args) -> int:
+    """§Q2. What the transport did with the digest it was handed.
+
+    `--shown-file` is the document `alert digest --json` printed. It is a FILE
+    and not an argument list for two reasons: the shown rows are the evidence
+    for what a person was told and should travel whole rather than being
+    retyped, and a command line is a place where a long list gets truncated by
+    somebody else's limit without anybody noticing.
+    """
+    shown = None
+    if args.shown_file:
+        try:
+            document = json.loads(Path(args.shown_file).read_text(encoding="utf-8"))
+        except (OSError, ValueError) as exc:
+            sys.stderr.write(f"serverosctl: --shown-file could not be read "
+                             f"({type(exc).__name__}: {exc})\n")
+            return EXIT_FAULT
+        shown = document.get("shown") if isinstance(document, dict) else document
+        if not isinstance(shown, list):
+            sys.stderr.write(
+                "serverosctl: --shown-file is neither a digest document nor a "
+                "list of its rows. Nothing was recorded — a delivery whose "
+                "contents nobody can name is not one this node will mark as "
+                "told.\n")
+            return EXIT_FAULT
+    params = {"generation": args.generation, "state": args.state,
+              "shown": shown or [], "reason": args.reason}
+    payload, code = _digest_answer("alert.digest-record", params)
+    if code != EXIT_OK:
+        return code
+    lines = [f"generation  {args.generation}",
+             f"结果        {args.state}"]
+    if payload.get("delivered"):
+        lines.append(f"已标记告知  {payload.get('announced_keys')} 条")
+        lines.append(f"登记表落章  {payload.get('rows_stamped')} 行")
+    else:
+        lines.append(f"未送达      {args.reason or '未给出原因'}")
+        lines.append("            generation 不前进，delta 窗口保持打开 —— "
+                     "没送达的变化没有被任何人被告知，下一批会重新组成")
+    gone = payload.get("gone_from_register") or []
+    if gone:
+        lines.append(f"已不在册    {len(gone)} 条（卡面显示过，游标仍记账）")
+    emit(payload, as_json=args.json, lines=lines)
+    return EXIT_OK
+
+
 # ---------------------------------------------------------------------------
 # §14/§15/§16/§16A/§17 — the five surfaces this round added
 # ---------------------------------------------------------------------------
@@ -4354,6 +4468,32 @@ def build_parser() -> argparse.ArgumentParser:
         "--dry-run", action="store_true",
         help="evaluate and show what WOULD be sent, without sending it")
     al_sync.set_defaults(func=cmd_alert_sync)
+
+    al_digest = alert_sub.add_parser(
+        "digest", help="§Q2 · what CHANGED since a person was last told, "
+                       "batched into one card. Read-only: it decides whether "
+                       "the batch is worth a message and sends nothing",
+        **_COMMON)
+    al_digest.set_defaults(func=cmd_alert_digest)
+
+    al_digest_base = alert_sub.add_parser(
+        "digest-baseline", help="§Q2 · declare everything currently open to be "
+                                "backlog rather than news. Run once; safe to "
+                                "run twice", **_COMMON)
+    al_digest_base.set_defaults(func=cmd_alert_digest_baseline)
+
+    al_digest_rec = alert_sub.add_parser(
+        "digest-record", help="§Q2 · say what the transport did with the digest "
+                              "it was handed", **_COMMON)
+    al_digest_rec.add_argument("--generation", type=int, required=True)
+    al_digest_rec.add_argument("--state", required=True,
+                               choices=["DELIVERED", "FAILED", "UNSUPPORTED",
+                                        "UNKNOWN"])
+    al_digest_rec.add_argument("--shown-file",
+                               help="the document `alert digest --json` printed; "
+                                    "its `shown` rows are what the card carried")
+    al_digest_rec.add_argument("--reason")
+    al_digest_rec.set_defaults(func=cmd_alert_digest_record)
 
     requirement = sub.add_parser(
         "requirement",
