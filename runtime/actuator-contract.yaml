@@ -124,6 +124,7 @@ actuators:
       - {file: context/resolver.py, symbols: [_git]}
       - {file: runtime/ability_projection.py, symbols: [_git]}
       - {file: runtime/cli.py, symbols: [_ledger_revision]}
+      - {file: runtime/workspace.py, symbols: [_git]}
       - {file: scripts/build.py, symbols: [_git]}
       - {file: scripts/runtime_truth.py, symbols: [_git, _git_object_at, _ability_payload_root, pin_superseded, canonical_provenance]}
       - {file: skills/serveros/scripts/architecture_check.py, symbols: [_git]}
