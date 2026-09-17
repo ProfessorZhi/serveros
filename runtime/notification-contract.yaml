@@ -389,6 +389,61 @@ alerts:
       reported; the next tick's cooldown decides whether it is tried again, and
       that is a policy decision rather than a hidden loop.
 
+  # §Q2. How a batch of alerts becomes ONE message, and when it is worth one.
+  #
+  # The shape this replaces is one message per alert. That is not merely
+  # chatty: the engine's only transport is a session injection, so "tell a
+  # person the disk is full" meant "start an agent turn about the disk", and a
+  # standing backlog became hundreds of those. What is stated here is the
+  # cadence and the severity split; the deltas, the dedupe key and the backlog
+  # rule live in `runtime/alert_digest.py`.
+  digest:
+    # The four things that count as news, in the order a card reads them. Named
+    # here so a renderer has one vocabulary to read rather than its own.
+    kinds: [NEW, ESCALATED, RECOVERED, REOPENED]
+    # The outer cadence. A digest is COMPOSED on whatever schedule the surface
+    # runs and SENT only when something immediate is due or this many seconds
+    # have passed since the last one that actually arrived. A quiet hour
+    # therefore produces no card, and that is the intended outcome rather than
+    # a gap in the record — `alert list` is the standing state and it is
+    # always current.
+    interval_seconds: 3600
+    # Which severities may go out of band, and which may appear at all. HIGH is
+    # the only one that may: a disk at 3% is worth a message of its own when
+    # the interval has not elapsed, and a NOTICE is worth a line in the card a
+    # person is already reading. Both are policy, so neither is a judgement
+    # made at the call site.
+    immediate_severities: [high]
+    include_severities: [high, medium, low]
+    # What fits on one card. The remainder is COUNTED and never dropped: the
+    # document carries `rows` in full and `more` as the difference, so "three"
+    # and "three hundred" cannot read the same.
+    top_n: 5
+    # §Q2's backlog rule. Identities already in the register when the delivery
+    # ledger is first created are snapshotted as known and never announced:
+    # they are never reported as NEW, and their closure is not reported either,
+    # because a person cannot be told a thing recovered when they were never
+    # told it was broken. They stay alert truth, stay in the register, and stay
+    # visible in the standing section.
+    baseline: >-
+      taken once by `serverosctl alert digest-baseline` and recorded as
+      ALERT_DELIVERY_BASELINE_AT in the delivery cursor beside the register.
+      An identity that opens after it is announced; one that was already open
+      is counted and left alone. Taking it again is a no-op rather than a
+      re-baseline, so a restart cannot silently swallow a real delta.
+    # Where the ledger lives, relative to the register. A sibling document and
+    # not a key inside it: the register is alert truth and is rewritten whole
+    # on every evaluation pass, while the cursor is what has been SAID to a
+    # person. One file would mean an evaluation pass rewrote the ledger.
+    cursor_file: delivery.json
+    # §Q2. What must NOT become the normal path. Stated as policy rather than
+    # as a comment in one module, because the shape it forbids is the one
+    # somebody would reintroduce as a feature.
+    not_the_path:
+      - "an alert reaching a person by starting an agent turn"
+      - "agent reasoning between the register and the transport"
+      - "one message per alert on a host with a backlog"
+
   # §13. What the sentence may contain. A person reads this on a phone.
   text:
     headline_from: events.templates
