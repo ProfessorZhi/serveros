@@ -1,0 +1,525 @@
+# ABILITY TOPOLOGY V2 — the declared navigation DAG
+#
+# WHY A DECLARED FILE EXISTS AT ALL
+# ---------------------------------
+# Before this file, the only ability structure this node could show was
+# `runtime/ability_projection.py:domain_tree()`, which derives a tree from the
+# catalogue's `domain.primary` strings. That derivation is correct and it stays
+# authoritative for PLACEMENT: an internal node exists there because an
+# ability's primary path runs through it, never because something said it
+# should. What it cannot express is a family that is declared but not yet
+# occupied — a node with nothing under it is, in that derivation, not a node.
+#
+# That is the right rule for placement and the wrong rule for navigation. A
+# reader asking "where would safety work live" needs an answer even when no
+# safety ability exists yet; without this file the answer is "nowhere, the node
+# does not exist", which reads as "this fabric has no safety concept" rather
+# than "the concept is declared and unoccupied". Those are different findings
+# and only one of them is true.
+#
+# So there are two derivations answering two questions:
+#
+#   ability tree    placement    "what IS under this node"        domain.primary
+#   taxonomy tree   navigation   "what COULD be, and where"       this file
+#
+# They are allowed to disagree in SHAPE. They are not allowed to disagree about
+# which abilities exist or where they are placed, and `serverosctl taxonomy
+# validate` fails closed if they do.
+#
+# WHAT THIS FILE MAY CONTAIN
+# --------------------------
+# Taxon nodes and taxon edges. Nothing else — in particular it contains NO
+# ability membership. Which abilities are in a taxon is expressed in the
+# canonical catalogue (`ability-management/abilities-manifest.yaml`) by
+# `domain.primary` and `taxonomy_refs`, and this node only ever READS that.
+# A member list here would be a second catalogue, which is the one thing the
+# five-word separation exists to prevent.
+#
+# ORIGIN IS MANDATORY, AND IT IS NOT DECORATION
+# ---------------------------------------------
+# Every node carries `origin`, and it is one of exactly three values:
+#
+#   seed      one of the ten top-level families. Chosen deliberately.
+#   v1        inherited from the pre-V2 dotted namespace. Its `v1_parent` is
+#             recorded, and so is where it was moved to, because a re-parenting
+#             that a reader cannot see is indistinguishable from a typo.
+#   declared  added by this file for a reason stated in its own `summary`.
+#
+# Without this field a node's presence is unattributable, and a taxonomy nobody
+# can audit is a taxonomy that quietly becomes wrong.
+
+schema: serveros/taxonomy.v2
+revision: 1
+generated: 2026-09-17
+
+# The catalogue is NOT owned here. This block names where the authority lives
+# so a reader who wants to change membership is not misled into editing this
+# file, and so the validator has exactly one place to read the pin from.
+catalogue:
+  owner: ability-management
+  document: abilities-manifest.yaml
+  read_from: git-object
+  note: >
+    Read from a git object rather than a working tree, the same discipline
+    `ability_projection.read_manifest` uses. A dirty checkout on this machine
+    must not be able to become the thing this node believes about its own
+    capabilities.
+
+# ---------------------------------------------------------------------------
+# EDGE DIRECTION, ONCE, SO NOBODY HAS TO GUESS
+# ---------------------------------------------------------------------------
+# Edges run parent -> child. `from` is the parent, `to` is the child.
+#
+#   contains   the projection spine. `taxonomy tree` walks these.
+#   relates    a cross-family link. These are what make this a DAG rather than
+#              a tree, and they are shown as cross-refs rather than followed,
+#              so the projection stays renderable and the DAG stays real.
+#
+# A node may have at most one `contains` parent — two would make it belong to
+# two branches at once and the tree projection would have to pick one silently.
+# A node may have any number of `relates` links. The validator enforces both.
+
+taxons:
+
+  # =========================================================================
+  # THE NAMESPACE ROOT — derived, and not one of the ten
+  # =========================================================================
+  # Every taxon id shares a leading segment. That segment is not a family: an
+  # ability whose `domain.primary` is exactly `serveros` is not in a family, it
+  # is unclassified one level up. Calling it an eleventh seed would be wrong,
+  # so the validator DERIVES the namespace instead of letting it be declared:
+  # one rootless node that every seed sits strictly below, or no namespace at
+  # all. Two such nodes, or a node that does not contain all ten seeds, is
+  # still an error.
+  #
+  # It is declared here anyway, because the catalogue really does place
+  # abilities at `serveros`, and a node the catalogue uses and this file
+  # omits is exactly what `UNDECLARED_TAXON` exists to catch.
+  - id: serveros
+    origin: declared
+    summary: >
+      The namespace itself. Holds no family meaning and nothing is expected to
+      be placed here; an ability placed here is one the catalogue has not
+      classified yet, which is a fact worth being able to see.
+
+  # =========================================================================
+  # THE V1 CONTAINER — kept so the old shape stays visible
+  # =========================================================================
+  # `serveros.operations.*` is where eleven classified abilities live today.
+  # V2 re-parents them into the families they belong to, because "operations"
+  # says when work happens, not what it is about, and a family that groups a
+  # test runner with a fleet coordinator is not a navigation aid.
+  #
+  # The container is NOT deleted. Deleting it would erase the only record that
+  # these eleven strings were once siblings, and the catalogue still carries
+  # them verbatim — a reader moving between `taxonomy tree` and `ability tree`
+  # would see a node in one view and nothing in the other with no way to tell
+  # whether that was a re-parenting or a lost ability. `relates` edges below
+  # carry the old sibling relation, so the re-parenting is stated rather than
+  # implied.
+  - id: serveros.operations
+    origin: v1
+    v1_parent: serveros
+    summary: >
+      The v1 container, retained. Its members were re-parented into the ten
+      families by V2; the `relates` edges below are that former shape.
+
+  # =========================================================================
+  # 1 / 10  AGENT & COORDINATION
+  # =========================================================================
+  - id: serveros.agent
+    origin: seed
+    label: Agent & Coordination
+    summary: >
+      Running agents, the sessions they run in, and how several of them agree
+      on who is doing what. The fabric's own Core sits here because Core is
+      what the agent is made of, not a service the agent calls.
+
+  - id: serveros.core
+    origin: v1
+    v1_parent: null
+    summary: >
+      The fabric's own two abilities: the reference node and the ability
+      manager. Judgement placement — this is the one node whose family was
+      chosen by reading what the abilities do rather than by a name match, and
+      it is recorded as such so a later reader can disagree with the choice
+      instead of having to trust it.
+
+  - id: serveros.operations.fleet
+    origin: v1
+    v1_parent: serveros.operations
+    summary: Several machines agreeing on a shared view of the fleet.
+
+  # =========================================================================
+  # 2 / 10  RUNTIME & RESOURCES
+  # =========================================================================
+  - id: serveros.runtime
+    origin: seed
+    label: Runtime & Resources
+    summary: >
+      What is running on this machine, what it is allowed to consume, and what
+      has to be true before anything is started, stopped or changed.
+
+  - id: serveros.operations.runtime
+    origin: v1
+    v1_parent: serveros.operations
+    summary: Running, observing and attributing managed runtimes.
+
+  # =========================================================================
+  # 3 / 10  SAFETY & COMPLIANCE
+  # =========================================================================
+  # This family is seeded EMPTY ON PURPOSE, and the emptiness is the finding.
+  #
+  # No ability is placed under it today, and that is stated here rather than
+  # papered over with a plausible-looking ability. What does exist is six real
+  # enforcement surfaces in `runtime/` — they are code that runs on every
+  # mutation, not abilities an agent can invoke. Each child below carries a
+  # `surface:` pointer at the module that actually enforces it.
+  #
+  # `serverosctl taxonomy show <child>` reports those as SURFACE_ONLY and
+  # never as AVAILABLE, because "there is code here" and "an agent can ask for
+  # this by name" are different claims and only one of them is true. Creating
+  # six abilities to make this branch look finished would be inventing a
+  # catalogue to decorate a tree.
+  - id: serveros.safety
+    origin: seed
+    label: Safety & Compliance
+    summary: >
+      What must not be done here, and the evidence that it was not. The
+      agent-facing half of this family is inspect / explain / preflight /
+      diagnose. The half that actually refuses is Core Admission, and nothing
+      here replaces it.
+
+  - id: serveros.safety.network-conformance
+    origin: declared
+    surface: runtime/network_policy.py
+    summary: Whether a proposed network action is inside this host's policy.
+
+  - id: serveros.safety.resource-ownership
+    origin: declared
+    surface: runtime/ownership_gate.py
+    summary: >
+      Whether a resource belongs to this account before it is touched. The
+      gate reads ownership evidence; it does not assume that a container this
+      account can see is a container this account owns.
+
+  - id: serveros.safety.runtime-conformance
+    origin: declared
+    surface: runtime/resource_policy.py
+    summary: Whether a runtime action is inside the resource-governance contract.
+
+  - id: serveros.safety.filesystem-conformance
+    origin: declared
+    surface: runtime/conformance.py
+    summary: >
+      Whether what is on disk matches what the path contract declares. Read
+      only, and it creates nothing — a check that creates the directory it is
+      checking has answered its own question.
+
+  - id: serveros.safety.change-safety
+    origin: declared
+    surface: runtime/managed_mutation.py
+    summary: The preconditions a change has to satisfy before it is attempted.
+
+  - id: serveros.safety.post-change-audit
+    origin: declared
+    surface: runtime/fs_hygiene.py
+    summary: What is checked after a change, when the preconditions cannot help.
+
+  # =========================================================================
+  # 4 / 10  WORK & DEVELOPMENT
+  # =========================================================================
+  # The mature trunk (§H). Every child here maps onto a surface that exists in
+  # this repository or in the canonical catalogue — none was created to make
+  # the branch look full.
+  - id: serveros.work
+    origin: seed
+    label: Work & Development
+    summary: >
+      From a source to a delivered, tested, reported piece of work. The route
+      through these nodes is a composition of abilities, not a workflow state
+      machine: an agent may skip a node, return to one, or run two at once.
+
+  - id: serveros.operations.work
+    origin: v1
+    v1_parent: serveros.operations
+    summary: >
+      Item and Run lifecycle. This is the lifecycle TRUTH; it is not a claim
+      about what is actually running, which is the runtime's to make.
+
+  - id: serveros.operations.workspace
+    origin: v1
+    v1_parent: serveros.operations
+    summary: >
+      Placement and governance: which directory a thing belongs in, and
+      whether it is there. It owns placement only — not Item lifecycle, not
+      Docker supervision, not cloud content.
+
+  - id: serveros.operations.test
+    origin: v1
+    v1_parent: serveros.operations
+    summary: >
+      Test plan, type, execution reference, evidence and result. It does not
+      require every project to be end-to-end: a unit test with a recorded
+      result is a finished test, and forcing E2E on everything is the failure
+      this node exists to prevent.
+
+  # The three trunk branches that had no node at all. They are declared so the
+  # fabric can say where the gap is; each carries its real state and none of
+  # them is dressed up as occupied (§H: the Taxon may exist, the Ability may
+  # not be falsely reported AVAILABLE).
+  - id: serveros.work.intake
+    origin: declared
+    surface: intake/global_board.py
+    summary: >
+      Requirement intake: a source becomes a Candidate, and a Candidate becomes
+      an Item only when a person promotes it. SURFACE_ONLY, and deliberately so
+      — the board and the promote path exist in this repository and are
+      exercised, but no ability in the catalogue carries this Taxon, so calling
+      it OCCUPIED would report an ability that is not there.
+
+  - id: serveros.work.analysis-design
+    origin: declared
+    summary: >
+      Analysis and design: what the problem is, what constrains it, which
+      options exist, why this one, what would falsify it. Declared and EMPTY.
+      The four design abilities that exist today —
+      product-requirements-and-design, technical-architecture-and-planning,
+      frontend-solution-design, backend-solution-design — are placed under
+      `serveros.engineering`, and that is where the catalogue says they live.
+      This node cross-references that branch rather than relocating them: a
+      taxonomy that moves abilities is a second catalogue, and the first one
+      would win on the day they disagreed.
+
+  - id: serveros.work.reporting
+    origin: declared
+    summary: >
+      Reports for people, assembled from Item, Run, test evidence, artifacts
+      and runtime facts. Declared and EMPTY, and that emptiness is the finding:
+      there is no reporting ability in the catalogue and no module in this
+      repository that emits one. The nearest existing surface is
+      `feishu-report`, which projects into a Feishu document and belongs to
+      Human & Communication — cross-referenced, not claimed.
+
+  - id: serveros.engineering
+    origin: v1
+    v1_parent: null
+    summary: >
+      The development abilities proper — architecture, design, implementation,
+      quality feedback. Inherited as a top-level node rather than folded under
+      `serveros.work` because its seven abilities were authored against this
+      exact string.
+
+  - id: serveros.engineering.quality
+    origin: v1
+    v1_parent: serveros.engineering
+    summary: >
+      Declared because it is EXISTING catalogue content: `test-management`
+      carries it in `taxonomy_refs`. It holds no placement today, which is
+      exactly the declared-but-unoccupied case this file was written for.
+
+  # =========================================================================
+  # 5 / 10  MEMORY & CONTEXT
+  # =========================================================================
+  - id: serveros.memory
+    origin: seed
+    label: Memory & Context
+    summary: >
+      What persists between sessions, what a session is currently inside, and
+      the difference between the two. Durable memory, execution session and
+      session archive are three things, not one, and collapsing them is how a
+      live session gets treated as an archive.
+
+  # =========================================================================
+  # 6 / 10  HUMAN & COMMUNICATION
+  # =========================================================================
+  - id: serveros.human
+    origin: seed
+    label: Human & Communication
+    summary: >
+      Anything whose other end is a person: asking, telling, reporting, and
+      the control surface a person uses to steer an agent.
+
+  - id: serveros.operations.human-control
+    origin: v1
+    v1_parent: serveros.operations
+    summary: The surface a person uses to direct a running agent.
+
+  - id: serveros.corporate
+    origin: v1
+    v1_parent: null
+    summary: Corporation-specific surface. Inherited as a top-level node.
+
+  - id: serveros.corporate.feishu
+    origin: v1
+    v1_parent: serveros.corporate
+    summary: >
+      Feishu, split by purpose rather than by product. Control (a person
+      directing an agent) and content (documents, wiki, minutes, messages as
+      data) are different obligations and must not be one node called
+      "feishu-all".
+
+  # =========================================================================
+  # 7 / 10  KNOWLEDGE & INFORMATION
+  # =========================================================================
+  - id: serveros.information
+    origin: seed
+    label: Knowledge & Information
+    summary: >
+      Raw things something else said, turned into something this node can act
+      on — with the provenance kept. It owns source_ref, observation, claim
+      and relationship. It does NOT own the raw body of a cloud document: that
+      stays with the provider that holds it.
+
+  - id: serveros.operations.inventory-publishing
+    origin: v1
+    v1_parent: serveros.operations
+    summary: Turning a local inventory into something another party can read.
+
+  # =========================================================================
+  # 8 / 10  NETWORK & ENVIRONMENT
+  # =========================================================================
+  - id: serveros.network
+    origin: seed
+    label: Network & Environment
+    summary: >
+      What may be reached, what may be bound, and what somebody else's network
+      policy allows. Declared and currently unoccupied — the enforcement
+      surface below is real and is named so that the emptiness is legible as
+      "declared, not yet filled" rather than as "does not exist".
+
+  - id: serveros.network.binding
+    origin: declared
+    surface: runtime/network_policy.py
+    summary: >
+      Loopback-only by default. Whether a binding is permitted is answered
+      from the host profile, not from the fact that the port happened to be
+      free.
+
+  - id: serveros.network.evidence
+    origin: declared
+    surface: runtime/network_evidence.py
+    summary: What the network actually looks like, as opposed to what it is declared to be.
+
+  # =========================================================================
+  # 9 / 10  SECURITY & CREDENTIALS
+  # =========================================================================
+  - id: serveros.security
+    origin: seed
+    label: Security & Credentials
+    summary: >
+      Secrets and how far they can be trusted. On a shared host these two
+      questions separate sharply: a file mode of 0600 stops an ordinary
+      unprivileged reader and stops nothing else, and a status of BOUND is not
+      a claim of strong isolation.
+
+  - id: serveros.security.ownership
+    origin: declared
+    surface: runtime/ownership_gate.py
+    summary: Whether a resource belongs to this account, before anything is done to it.
+
+  - id: serveros.security.protection
+    origin: declared
+    surface: runtime/protection.py
+    summary: Which resources are protected, and what protection obliges a caller to do.
+
+  # =========================================================================
+  # 10 / 10  CREATIVE & AUTOMATION
+  # =========================================================================
+  # Seeded and deliberately left with nothing under it, not even a surface
+  # pointer, because there is nothing to point at. Stated plainly: this family
+  # is a name reserved for work that does not exist here yet. It is the one
+  # branch of the ten where an empty answer is the whole answer.
+  - id: serveros.creative
+    origin: seed
+    label: Creative & Automation
+    summary: >
+      Generation and unattended execution. Nothing is placed here today and
+      no surface is named, because naming one would suggest coverage that does
+      not exist.
+
+edges:
+  # --- contains: the projection spine -------------------------------------
+  # The namespace root contains the ten families and the retained v1
+  # container. Nothing else hangs off it — a node added directly under the
+  # namespace would be a family that is not one of the ten.
+  - {from: serveros, to: serveros.agent, kind: contains}
+  - {from: serveros, to: serveros.runtime, kind: contains}
+  - {from: serveros, to: serveros.safety, kind: contains}
+  - {from: serveros, to: serveros.work, kind: contains}
+  - {from: serveros, to: serveros.memory, kind: contains}
+  - {from: serveros, to: serveros.human, kind: contains}
+  - {from: serveros, to: serveros.information, kind: contains}
+  - {from: serveros, to: serveros.network, kind: contains}
+  - {from: serveros, to: serveros.security, kind: contains}
+  - {from: serveros, to: serveros.creative, kind: contains}
+  - {from: serveros, to: serveros.operations, kind: contains}
+
+  - {from: serveros.agent, to: serveros.core, kind: contains}
+  - {from: serveros.agent, to: serveros.operations.fleet, kind: contains}
+
+  - {from: serveros.runtime, to: serveros.operations.runtime, kind: contains}
+
+  - {from: serveros.safety, to: serveros.safety.network-conformance, kind: contains}
+  - {from: serveros.safety, to: serveros.safety.resource-ownership, kind: contains}
+  - {from: serveros.safety, to: serveros.safety.runtime-conformance, kind: contains}
+  - {from: serveros.safety, to: serveros.safety.filesystem-conformance, kind: contains}
+  - {from: serveros.safety, to: serveros.safety.change-safety, kind: contains}
+  - {from: serveros.safety, to: serveros.safety.post-change-audit, kind: contains}
+
+  - {from: serveros.work, to: serveros.operations.work, kind: contains}
+  - {from: serveros.work, to: serveros.operations.workspace, kind: contains}
+  - {from: serveros.work, to: serveros.operations.test, kind: contains}
+  - {from: serveros.work, to: serveros.work.intake, kind: contains}
+  - {from: serveros.work, to: serveros.work.analysis-design, kind: contains}
+  - {from: serveros.work, to: serveros.work.reporting, kind: contains}
+  - {from: serveros.work, to: serveros.engineering, kind: contains}
+  - {from: serveros.engineering, to: serveros.engineering.quality, kind: contains}
+
+  - {from: serveros.human, to: serveros.operations.human-control, kind: contains}
+  - {from: serveros.human, to: serveros.corporate, kind: contains}
+  - {from: serveros.corporate, to: serveros.corporate.feishu, kind: contains}
+
+  - {from: serveros.information, to: serveros.operations.inventory-publishing, kind: contains}
+
+  - {from: serveros.network, to: serveros.network.binding, kind: contains}
+  - {from: serveros.network, to: serveros.network.evidence, kind: contains}
+
+  - {from: serveros.security, to: serveros.security.ownership, kind: contains}
+  - {from: serveros.security, to: serveros.security.protection, kind: contains}
+
+  # --- relates: what makes this a DAG and not a tree -----------------------
+  # Each of these crosses a family boundary. They are the reason a tree
+  # projection is a VIEW and not the structure: collapsing the DAG into a tree
+  # is what would lose exactly the information these edges carry.
+  # The v1 container's former children. Each of these is a RECORD OF A MOVE:
+  # `serveros.operations.X` used to sit under `serveros.operations` and now
+  # sits under a family. Without these edges the container would render empty
+  # and the eleven abilities under it would look like they had always been
+  # where they are.
+  - {from: serveros.operations, to: serveros.operations.work, kind: relates}
+  - {from: serveros.operations, to: serveros.operations.workspace, kind: relates}
+  - {from: serveros.operations, to: serveros.operations.test, kind: relates}
+  - {from: serveros.operations, to: serveros.operations.runtime, kind: relates}
+  - {from: serveros.operations, to: serveros.operations.fleet, kind: relates}
+  - {from: serveros.operations, to: serveros.operations.human-control, kind: relates}
+  - {from: serveros.operations, to: serveros.operations.inventory-publishing, kind: relates}
+
+  - {from: serveros.operations.work, to: serveros.operations.workspace, kind: relates}
+  - {from: serveros.operations.work, to: serveros.operations.test, kind: relates}
+  - {from: serveros.work.intake, to: serveros.information, kind: relates}
+  - {from: serveros.work.intake, to: serveros.operations.work, kind: relates}
+  - {from: serveros.work.analysis-design, to: serveros.engineering, kind: relates}
+  - {from: serveros.work.reporting, to: serveros.operations.test, kind: relates}
+  - {from: serveros.work.reporting, to: serveros.corporate.feishu, kind: relates}
+  - {from: serveros.operations.test, to: serveros.engineering.quality, kind: relates}
+  - {from: serveros.operations.workspace, to: serveros.memory, kind: relates}
+  - {from: serveros.operations.work, to: serveros.memory, kind: relates}
+  - {from: serveros.information, to: serveros.operations.work, kind: relates}
+  - {from: serveros.operations.human-control, to: serveros.corporate.feishu, kind: relates}
+  - {from: serveros.information, to: serveros.operations.inventory-publishing, kind: relates}
+  - {from: serveros.runtime, to: serveros.safety.runtime-conformance, kind: relates}
+  - {from: serveros.network, to: serveros.safety.network-conformance, kind: relates}
+  - {from: serveros.security, to: serveros.safety.resource-ownership, kind: relates}
+  - {from: serveros.operations.runtime, to: serveros.security.ownership, kind: relates}
+  - {from: serveros.agent, to: serveros.security, kind: relates}

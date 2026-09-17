@@ -120,6 +120,16 @@ KNOWN_CLI_CROSSINGS = {
                    "it is reachable.",
         "disposition": "REDECLARED",
     },
+    "abilities/taxonomy.py": {
+        "because": "`serverosctl taxonomy` is §G's projection surface — the DAG "
+                   "stays the DAG internally and the CLI renders it as a tree, "
+                   "which §G permits for CLI/UI and forbids for the storage. The "
+                   "kernel keeps its place the same way `packs.py` does: the "
+                   "topology, the taxon table and the verdict `tree` prints are "
+                   "`abilities/taxonomy.py`'s, and the CLI supplies a repository "
+                   "and renders the answer.",
+        "disposition": "REDECLARED",
+    },
     "mcp/human_control.py": {
         "because": "`serverosctl alert sync` is the ONE surface allowed to hold "
                    "a transport, and the transport is the HumanControlProvider. "

@@ -290,14 +290,31 @@ class DeclaredGapTests(unittest.TestCase):
 
 class CliTests(unittest.TestCase):
     def test_device_agents_runs_and_reports_a_verdict(self):
+        """The command runs, and its exit code agrees with what it reported.
+
+        `rc == 0` would have been "this node is conformant", which is a
+        property of the node and not of this code — and one this node does not
+        have. It reports DEFECT for three genuinely absent surfaces:
+        `workspace/CLAUDE.md`, `workspace/AGENTS.md`, and codex's
+        `.codex/config.toml`, which does not exist here at all (`~/.codex/`
+        holds sessions and nothing else). Closing that means writing the user's
+        Agent configuration, which the report itself marks NEEDS_HUMAN.
+
+        So the assertion is the coherence of the command: the ids it compared,
+        a verdict it is allowed to reach, and an exit code that matches the
+        verdict. A broken CLI still fails this.
+        """
         proc = subprocess.run(
             [sys.executable, str(REPO / "bin" / "serverosctl"),
              "device", "agents", "--json"],
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-        self.assertEqual(proc.returncode, 0, proc.stderr)
         record = json.loads(proc.stdout)
         self.assertEqual(record["runtimes"], ["claude-code", "codex"])
         self.assertIn(record["verdict"], ("CONFORMANT", "DEFECT"))
+        expected = 0 if record["verdict"] == "CONFORMANT" else 1
+        self.assertEqual(proc.returncode, expected,
+                         f"verdict {record['verdict']} with rc "
+                         f"{proc.returncode}\n{proc.stderr}")
 
     def test_the_surface_reports_what_it_observed_not_what_is_declared(self):
         """End to end, on this host. The command reads the disk; a version of

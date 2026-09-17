@@ -110,6 +110,25 @@ def read_manifest(repo: Path, rev: str, path: str = "abilities-manifest.yaml") -
     return document, resolved
 
 
+def paths_in_tree(repo: Path, rev: str) -> set[str]:
+    """Every path in the authority's tree at `rev`.
+
+    The implementation fact for an ability is "there is a tree at its `path`",
+    and it is asked of the same revision the manifest was read from. Asking the
+    working tree instead would let a checkout's branch answer for the authority
+    — which is how a claim that an ability has no implementation got made about
+    an ability that has four files, on a ref nobody had checked out.
+
+    A path here may be a directory or a file; callers test membership of the
+    ability's own `path`, which the catalogue writes as a directory.
+    """
+    resolved = _git(repo, "rev-parse", "--verify", f"{rev}^{{commit}}").decode().strip()
+    if not resolved:
+        raise AuthorityUnreachable(f"cannot resolve authority revision: {rev}")
+    raw = _git(repo, "ls-tree", "-r", "--name-only", resolved)
+    return {line for line in raw.decode(errors="replace").splitlines() if line}
+
+
 def _matching_installations(revision: dict, device_ids: tuple[str, ...]) -> list[dict]:
     found = []
     for installation in revision.get("installations") or []:
