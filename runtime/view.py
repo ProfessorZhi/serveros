@@ -200,6 +200,11 @@ def _group_row(group: dict) -> dict:
         # one shape a real consumer can hide in — see `graph.contributors()`.
         "contributors": group.get("contributors"),
         "reparented_to_init": (group.get("tree") or {}).get("reparented_to_init"),
+        # The class, the role and the cgroup clause behind them. Carried on the
+        # row because an alert says a group is an orphan: without this the
+        # reader cannot see the evidence that made something NOT be one, and a
+        # verdict whose evidence is unreachable is a verdict nobody can check.
+        "ownership": group.get("ownership"),
     }
 
 
