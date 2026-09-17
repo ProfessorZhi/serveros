@@ -1331,3 +1331,107 @@ class ListingReadsTheContractOnce(unittest.TestCase):
             self.assertEqual(row["severity_word"], words["high"])
         self.assertEqual(result["count"], 3)
         self.assertEqual(result["by_state"]["OPEN"], 3)
+
+
+# ---------------------------------------------------------------------------
+# §7 the owner is on the sentence
+# ---------------------------------------------------------------------------
+
+
+class TheOwnerRidesOnTheSentence(unittest.TestCase):
+    """§7. The sentence a person is sent has to name the owner it measured.
+
+    The record has carried `measured.ownership` -- role, uid, session, and the
+    cgroup clause that produced them -- since the round that fixed attribution,
+    and `detail_for` read none of it. So the one line a person received for an
+    ORPHAN_PROCESS_TREE said that a tree had outlived its parent and never said
+    whose, which is both the field §7 names and the difference between a
+    finding its reader can act on and one they can only worry about.
+
+    None of these tests assert a word the contract does not already carry.
+    `EXTERNAL_USER_SESSION` and `OBSERVE_ONLY` are the producer's own
+    vocabulary, and the assertion that they survive to the sentence is the
+    whole claim.
+    """
+
+    OWNED = {
+        "code": "ORPHAN_PROCESS_TREE",
+        "severity": "high",
+        "state": "OPEN",
+        "first_seen": "2026-09-16T03:07:18+00:00",
+        "occurrence_count": 1836,
+        "window": "lineage at observation time",
+        "provenance": {"observed_at": "2026-09-17T09:59:11+00:00",
+                       "freshness": None, "source": "serverosd"},
+        "measured": {"root_ppid": 1, "ownership": {
+            "class": "EXTERNAL",
+            "role": "EXTERNAL_USER_SESSION",
+            "lifecycle": "OBSERVE_ONLY",
+            "provenance": "cgroup",
+            "uid": "1001",
+            "session": "134",
+            "unit": None,
+        }},
+    }
+
+    def rendered(self, alert=None) -> str:
+        return alerting.detail_for(alert or self.OWNED, at=T0)
+
+    def test_the_role_the_uid_and_the_session_all_reach_the_sentence(self):
+        """The three clauses the cgroup was read for, on the one line."""
+        self.assertIn(
+            "owner: EXTERNAL_USER_SESSION · uid 1001 · 134 · "
+            "lifecycle OBSERVE_ONLY", self.rendered())
+
+    def test_the_lifecycle_that_says_nothing_here_may_act_is_on_that_line(self):
+        """§15. OBSERVE_ONLY is the permission, and it is the reason a reader
+        who has been told whose tree this is must not conclude they may touch
+        it. A line that named the owner and dropped the permission would be an
+        invitation rather than a report."""
+        self.assertIn("lifecycle OBSERVE_ONLY", self.rendered())
+
+    def test_an_alert_nothing_was_attributed_to_gains_no_owner_line(self):
+        """The clause is `when the cgroup names one`. An alert whose measurement
+        carries no ownership has no owner to state, and printing an empty one
+        would be inventing a reading the probe never took."""
+        alert = dict(self.OWNED, measured={"root_ppid": 1})
+        self.assertNotIn("owner:", self.rendered(alert))
+
+    def test_a_clause_the_probe_did_not_record_reads_as_an_absence(self):
+        """uid with no session, no unit and no slice. The line says so.
+
+        Dropping the empty clause instead would make "the probe recorded no
+        session" and "this formatter chose not to print one" the same string,
+        and only one of those is a fact about the node."""
+        alert = dict(self.OWNED)
+        alert["measured"] = {"root_ppid": 1, "ownership": {
+            "class": "EXTERNAL", "role": "EXTERNAL_UNSLICED",
+            "lifecycle": "OBSERVE_ONLY", "uid": "1001",
+            "session": None, "unit": None, "slice": None}}
+        self.assertIn("no session or unit recorded", self.rendered(alert))
+
+    def test_an_ownership_block_with_no_lifecycle_says_not_stated(self):
+        """The contract has a closed set for lifecycle and this formatter does
+        not get to guess a member of it. An answer the producer did not give is
+        reported as one it did not give."""
+        alert = dict(self.OWNED)
+        alert["measured"] = {"root_ppid": 1, "ownership": {
+            "class": "UNKNOWN", "role": None, "lifecycle": None, "uid": None,
+            "session": None}}
+        rendered = self.rendered(alert)
+        self.assertIn("unattributed", rendered)
+        self.assertIn("lifecycle not stated", rendered)
+
+    def test_the_contract_declares_the_field_this_code_emits(self):
+        """The join between the two files, and the reason the edit touched both.
+
+        The notification contract declares the shape of this block. A field
+        added here and not there leaves the document that owns the shape
+        disagreeing with the code that renders it, and the next reader cannot
+        tell which of the two is the stale one."""
+        import yaml
+        contract = Path(alerting.__file__).resolve().parent / "notification-contract.yaml"
+        shape = yaml.safe_load(contract.read_text(encoding="utf-8"))
+        declared = shape["alerts"]["text"]["detail_shape"]
+        self.assertTrue(any("owner" in str(item) for item in declared),
+                        f"detail_shape does not declare an owner line: {declared}")

@@ -324,6 +324,38 @@ def ensure_baseline(cursor: DeliveryCursor, store, *, at: str,
 # ---------------------------------------------------------------------------
 
 
+def _owner_of(alert: dict) -> dict | None:
+    """Whose tree this is, as the producer measured it -- or None.
+
+    `measured.ownership` is written by the attribution round from the cgroup
+    path itself: the role it read, the uid it read, and the clause it read them
+    from. It is the answer to §7's "owner-lifecycle if known", and it has been
+    on the record the whole time without ever reaching a row.
+
+    Passed through as the producer's OWN vocabulary rather than translated
+    here. `EXTERNAL_USER_SESSION` is a member of a closed set that this module
+    does not own, and a digest that renamed it would be a second place the set
+    is written down -- the same reason `severity_word` is read from the
+    contract instead of composed at the call site.
+
+    Returns None and not an empty dict when nothing was attributed. A fabricated
+    owner would be worse than an absent one: the reader cannot tell the two
+    apart on a card, and one of them is a claim about a real login.
+    """
+    ownership = (alert.get("measured") or {}).get("ownership")
+    if not isinstance(ownership, dict) or not ownership:
+        return None
+    return {
+        "class": ownership.get("class"),
+        "role": ownership.get("role"),
+        "lifecycle": ownership.get("lifecycle"),
+        "uid": ownership.get("uid"),
+        "session": ownership.get("session"),
+        "unit": ownership.get("unit"),
+        "provenance": ownership.get("provenance"),
+    }
+
+
 def _row_of(alert: dict, *, at: str, ranks: dict, words: dict) -> dict:
     duration = _seconds_between(alert.get("first_seen"), at)
     severity = str(alert.get("severity") or "")
@@ -340,6 +372,11 @@ def _row_of(alert: dict, *, at: str, ranks: dict, words: dict) -> dict:
         "resolved_at": alert.get("resolved_at"),
         "duration_seconds": duration,
         "occurrence_count": alert.get("occurrence_count"),
+        # §7/§8. Present when the producer attributed this group to an owner,
+        # absent when it did not. A renderer reads it if it is there and falls
+        # back to the subject if it is not -- the card is allowed to be older
+        # than the daemon, and this field is what makes that safe.
+        "owner": _owner_of(alert),
     }
 
 
