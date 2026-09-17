@@ -96,6 +96,12 @@ agent_control_store_mod = _load("serveros_runtime_agent_control_store",
 # module holds no transport and this daemon holds no provider, which is the
 # split §18 requires and `_r_agent_control_status` explains.
 alerting_mod = _load("serveros_runtime_alerting", "alerting.py")
+
+# §Q2. The composer that turns several alerts into one message. Loaded the same
+# way and for the same reason as the register it reads: both are plain modules
+# in this directory, and neither is a package this daemon is allowed to import
+# by name.
+digest_mod = _load("serveros_runtime_alert_digest", "alert_digest.py")
 _ACTOR_PATH = _HERE.parent / "context" / "actor.py"
 if "_serveros_context_actor" not in sys.modules:
     _spec = importlib.util.spec_from_file_location("_serveros_context_actor", _ACTOR_PATH)
@@ -476,6 +482,10 @@ class Daemon:
         # an empty register is indistinguishable from one whose alerts were
         # all resolved and then forgotten.
         self._alert_store: object | None = None
+        # §Q2's delivery ledger. Opened lazily beside the register, and None
+        # rather than {} so that "never opened" and "opened and empty" cannot
+        # be confused — an empty cursor is a real state and a loud one.
+        self._delivery_cursor: object | None = None
         self.last_alert_pass: dict | None = None
         # Whose connection the request in flight arrived on. Cleared by
         # `handle`; read only by `agent.context.attach`.
@@ -987,6 +997,14 @@ class Daemon:
             "alert.pending": self._r_alert_pending,
             "alert.record-delivery": self._r_alert_record_delivery,
             "alert.pass": self._r_alert_pass,
+            # §Q2. The batch hop. `digest` and `digest-baseline` are reads of
+            # the register plus the DELIVERY ledger, and `digest-record` is the
+            # write that says what a transport did — the same split as
+            # `alert.pending`/`alert.record-delivery`, for the same reason:
+            # the daemon decides and records, and it holds no transport.
+            "alert.digest": self._r_alert_digest,
+            "alert.digest-baseline": self._r_alert_digest_baseline,
+            "alert.digest-record": self._r_alert_digest_record,
         }
 
     def handle(self, request: dict, *, peer: dict | None = None) -> dict:
@@ -1072,7 +1090,13 @@ class Daemon:
                 # as the MCP surface is how somebody later "corrects" the code
                 # to match a comment and breaks the CLI.
                 "alert.list", "alert.inspect", "alert.ack", "alert.snooze",
-                "alert.pending", "alert.record-delivery", "alert.pass")
+                "alert.pending", "alert.record-delivery", "alert.pass",
+                # §Q2. The batch hop, and it is on this socket for the same
+                # reason the seven above are: `serverosctl alert digest` is a
+                # local command that reaches the ledger through it. What is
+                # absent is again the point — the node MCP still declares
+                # `alert.list` and `alert.inspect` and nothing else.
+                "alert.digest", "alert.digest-baseline", "alert.digest-record")
 
     # -- the local capability view (§27/§28) --------------------------------
 
@@ -1664,6 +1688,70 @@ class Daemon:
                          "and reports the outcome through "
                          "`alert.record-delivery`; until it does, the intent "
                          "stays pending and no `last_notified_at` is set.")}
+
+    def _delivery_cursor(self):
+        """The delivery ledger, beside the register and opened with it."""
+        if self._delivery_cursor is None:
+            path = Path(self.state_dir) / "alerts" / "state.json"
+            self._delivery_cursor = digest_mod.DeliveryCursor(
+                digest_mod.cursor_path(path))
+        return self._delivery_cursor
+
+    def _r_alert_digest_baseline(self, params) -> dict:
+        """§Q2. Take the delivery baseline, once, and never again.
+
+        A deliberate act and not a side effect of asking for a digest. The
+        baseline is the instant this node started keeping a delivery ledger at
+        all, and everything already in the register at that instant is
+        declared not-news by it. A read that took it implicitly would let the
+        answer to "has this always been the backlog" depend on which command
+        somebody happened to type first.
+        """
+        at = _iso(self._now())
+        return digest_mod.ensure_baseline(
+            self._delivery_cursor(), self.alert_store(), at=at,
+            device_ref=self.registry.device_ref)
+
+    def _r_alert_digest(self, params) -> dict:
+        """§Q2. What changed, batched, and whether it is worth saying now."""
+        at = _iso(self._now())
+        cursor = self._delivery_cursor()
+        digest = digest_mod.compose(
+            self.alert_store(), cursor, at=at,
+            device_ref=self.registry.device_ref)
+        verdict = digest_mod.decision(digest, cursor, at=at)
+        return {**digest, "decision": verdict,
+                "delivery_surface": (
+                    "`serverosctl alert digest` decides and prints. The surface "
+                    "that SENDS is a renderer holding a transport — this "
+                    "daemon holds none, and `agent.control.status` names the "
+                    "one it does not have."),
+                "note": ("`decision.send` is the answer to 'is this worth a "
+                         "message'; nothing has been sent and nothing is "
+                         "marked announced until `alert.digest-record` says "
+                         "so.")}
+
+    def _r_alert_digest_record(self, params) -> dict:
+        """§Q2. What the transport did with the digest it was handed."""
+        at = _iso(self._now())
+        state = _required(params, "state")
+        generation = params.get("generation")
+        if generation is None:
+            raise DaemonError(
+                "a delivery is recorded against a GENERATION. Without one the "
+                "outcome cannot be attached to the document that was sent, and "
+                "a cursor that advanced on an unnamed generation would mark "
+                "announced whatever happened to be composed next")
+        shown = params.get("shown") or []
+        if not isinstance(shown, list):
+            raise DaemonError(
+                f"`shown` must be the list of rows the card carried, not "
+                f"{type(shown).__name__}: the cursor records what a person was "
+                f"actually told, and a scalar here would record something else")
+        return digest_mod.record(
+            self._delivery_cursor(), self.alert_store(), at=at,
+            generation=int(generation), state=str(state), shown=shown,
+            reason=params.get("reason"))
 
     def _r_alert_record_delivery(self, params) -> dict:
         """§12. What actually happened when somebody tried to say it."""
