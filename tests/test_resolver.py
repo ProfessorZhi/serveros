@@ -5,12 +5,14 @@ machine's real records, worktrees, artifacts or state.
 """
 import importlib.util
 import json
+import os
 import sqlite3
 import subprocess
 import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 RESOLVER = ROOT / "context" / "resolver.py"
@@ -188,17 +190,135 @@ class RootContractTests(unittest.TestCase):
         self.assertEqual(json.loads(proc.stdout)["runs"]["latest"]["state"], "RUNNING")
 
     def test_missing_roots_still_fall_back_to_the_environment(self):
-        """Standalone use keeps working: unnamed roots come from the environment."""
+        """Standalone use keeps working: unnamed roots come from the environment.
+
+        `DATA_ROOT` is named explicitly here. It did not need to be while the
+        file carried a literal default, and that was the problem: the test was
+        reading this machine. Which host this is, is a fact a test has to
+        state, not inherit.
+        """
         world = make_world(self.base, [("RUN-0001", "SUCCEEDED")])
         proc = subprocess.run(
             [sys.executable, str(RESOLVER), ITEM, "--json",
              "--workspace-root", str(world["workspace"]),
              "--artifacts-root", str(world["artifacts"])],
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
-            env={"PATH": "/usr/bin:/bin", "SERVEROS_STATE_DIR": str(world["state_dir"])},
+            env={"PATH": "/usr/bin:/bin", "DATA_ROOT": str(self.base),
+                 "SERVEROS_STATE_DIR": str(world["state_dir"])},
         )
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertEqual(json.loads(proc.stdout)["runs"]["latest"]["id"], "RUN-0001")
+
+
+class RootAuthorityTests(unittest.TestCase):
+    """§Q6 — where the roots come from when nobody names them.
+
+    The answer used to be `/opt/applications/data/home-hwz`: one machine's
+    layout, compiled into a resolver every other machine also runs. On a host
+    without that directory `infer_item` compared the caller's location against
+    a root that was not there, found nothing, and reported "no item inferred" —
+    the same sentence a correct empty answer produces.
+    """
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.base = Path(self._tmp.name)
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def _without_root_environment(self):
+        """Everything that could name a root, removed — this machine's included."""
+        return mock.patch.dict(
+            os.environ,
+            {key: os.environ[key] for key in os.environ
+             if key not in ("DATA_ROOT", "WORKSPACE_ROOT", "SERVEROS_ARTIFACTS_ROOT",
+                            "ARTIFACTS_ROOT")},
+            clear=True,
+        )
+
+    def test_this_hosts_profile_answers_when_the_environment_does_not(self):
+        """The profile is the same document `serverosd` reads, read the same way.
+
+        Nothing in the resolver knows a machine name, a user name or a layout:
+        the deployment states where its roots are, and the roles `data_root`
+        and `artifacts` are the two it may state that the environment did not.
+        """
+        profile = self.base / "host-profile.yaml"
+        profile.write_text(
+            "schema: serveros/host-profile.v1\n"
+            "node:\n"
+            "  roots:\n"
+            f"    identity_home: {self.base}\n"
+            f"    artifacts: {self.base}/built\n",
+            encoding="utf-8")
+        with self._without_root_environment(), \
+                mock.patch.dict(os.environ, {resolver.HOST_PROFILE_ENV: str(profile)}):
+            roots = resolver.Roots.from_env()
+        self.assertEqual(roots.data_root, self.base)
+        self.assertEqual(roots.workspace_root, self.base / "workspace")
+        self.assertEqual(roots.artifacts_root, self.base / "built")
+
+    def test_a_host_that_says_nothing_is_refused_not_guessed(self):
+        """No authority, no answer — and the refusal says which knob to turn."""
+        with self._without_root_environment(), mock.patch.dict(
+                os.environ,
+                {resolver.HOST_PROFILE_ENV: str(self.base / "absent.yaml")}):
+            with self.assertRaises(resolver.RootsUnresolved) as caught:
+                resolver.Roots.from_env()
+        message = str(caught.exception)
+        self.assertIn("DATA_ROOT", message)
+        self.assertIn(resolver.HOST_PROFILE_ENV, message)
+
+    def test_the_environment_wins_over_the_profile(self):
+        """A caller that has already resolved its own roots can hand them over."""
+        profile = self.base / "host-profile.yaml"
+        profile.write_text(
+            "schema: serveros/host-profile.v1\nnode:\n  roots:\n"
+            f"    identity_home: {self.base}/from-profile\n",
+            encoding="utf-8")
+        with self._without_root_environment(), mock.patch.dict(
+                os.environ, {resolver.HOST_PROFILE_ENV: str(profile),
+                             "DATA_ROOT": str(self.base / "from-env")}):
+            self.assertEqual(resolver.Roots.from_env().data_root, self.base / "from-env")
+
+    def test_an_item_is_inferred_from_every_layout_the_table_names(self):
+        """All three patterns are the same shape, so all three are depth 2.
+
+        The `artifacts/work-items` entry said 3 — one more than its own layout
+        has — so it matched nothing on any node, ever. It was invisible beside
+        the Beijing root above it: that root broke the other two patterns as
+        well, so the one visible cause absorbed the blame for both.
+        """
+        roots = resolver.Roots(
+            workspace_root=self.base / "workspace",
+            artifacts_root=self.base / "artifacts",
+            state_db=self.base / "state/serveros/serveros.db",
+        )
+        for cwd, expected in (
+            (self.base / "workspace/worktrees/demo/SRV-0001", "SRV-0001"),
+            (self.base / "workspace/test-envs/demo/MUC-0002", "MUC-0002"),
+            (self.base / "artifacts/work-items/demo/LIT-0003", "LIT-0003"),
+            # A Run directory under the Item is still that Item: the check is
+            # on position, not on the path ending there.
+            (self.base / "artifacts/work-items/demo/SRV-0001/RUN-0001", "SRV-0001"),
+        ):
+            with self.subTest(cwd=str(cwd)):
+                self.assertEqual(resolver.infer_item(roots, cwd), expected)
+
+    def test_a_directory_that_is_not_an_item_is_still_refused(self):
+        """Widening the depth must not have widened what counts as an Item."""
+        roots = resolver.Roots(
+            workspace_root=self.base / "workspace",
+            artifacts_root=self.base / "artifacts",
+            state_db=self.base / "state/serveros/serveros.db",
+        )
+        for cwd in (self.base / "artifacts/work-items/demo",
+                    self.base / "workspace/worktrees/demo",
+                    self.base / "artifacts/work-items/other/not-an-item"):
+            with self.subTest(cwd=str(cwd)):
+                with self.assertRaises(ValueError):
+                    resolver.infer_item(roots, cwd)
 
 
 class DevelopmentTests(unittest.TestCase):
