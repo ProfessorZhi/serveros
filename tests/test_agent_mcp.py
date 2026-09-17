@@ -55,6 +55,10 @@ actor = sys.modules["_serveros_context_actor"]
 LOCAL = "device:server-beijing"
 FJ = "device:work-fj"
 DELL = "device:personal-dell"
+# Enrolled 2026-09-17. Named here rather than derived from the registry so that
+# the expected ORDER stays asserted: `device.list` returns registry order, and
+# a set would let a reordering pass unnoticed.
+TOKYO = "device:tokyo-shared-dev-01"
 RUNTIME = "agent-runtime:codex"
 PROVIDER = "provider:test-agent-session"
 # §17. A create states what its thread is for, and this is the Item the fixture
@@ -679,7 +683,7 @@ class TestTheReadPath(unittest.TestCase):
         self.assertFalse(is_error, answer)
         self.assertEqual(answer["level"], "L1")
         self.assertEqual([row["device_ref"] for row in answer["devices"]],
-                         [LOCAL, FJ, DELL])
+                         [LOCAL, FJ, DELL, TOKYO])
 
     def test_two_levels_do_not_return_the_same_fields(self):
         """§12 asks for this by name, so it is asserted rather than described."""

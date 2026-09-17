@@ -37,6 +37,16 @@ path_roles:
   # capability resolved through this role on either of them is therefore
   # UNKNOWN, which is correct — see `abilities/agent-runtime-contract.yaml`.
   home:                 user home directory; agent runtime config roots
+  # The seed the derived roots are built from. It is the role the vocabulary
+  # was missing, and the gap had a cost: with no way to say where the shared
+  # root is, `runtime/paths.py` carried a compiled-in answer instead -- the
+  # first node's -- so every other node resolved `{DATA_ROOT}/...` to a
+  # directory that does not exist there, and resolved it silently.
+  #
+  # Declared, the resolver has something to read. Undeclared, it would have to
+  # invent, and `runtime/paths.py` no longer does: an unbound role leaves the
+  # root UNBOUND, and a caller about to say where a file belongs checks.
+  data_root:            the root the artifacts/state/toolchains roles sit under
 
 # BOUND            — path known, and the source of that knowledge is recorded
 # UNBOUND          — role applies here but no path is known yet (a real gap)
@@ -55,6 +65,10 @@ profiles:
     device_ref: device:server-beijing
     platform: linux
     paths:
+      data_root:
+        path: /opt/applications/data/home-hwz
+        state: BOUND
+        provenance: server_local_agent
       workspace.src:
         path: /opt/applications/data/home-hwz/workspace/src
         state: BOUND
@@ -136,6 +150,15 @@ profiles:
       has looked, so neither presence nor absence is claimed. Dell binds F:\
       and E:\ — that is a fact about Dell and it stays there.
     paths:
+      data_root:
+        state: UNBOUND
+        provenance: user_reported
+        note: >-
+          UNBOUND rather than a drive letter. This machine's roles resolve
+          to separate volumes -- D:\projects, D:\artifacts, D:\develop --
+          and there is no single root they are all under, so no value here
+          would reproduce them. A `{DATA_ROOT}/artifacts` on this profile is
+          a path that means nothing, and saying so is the honest entry.
       workspace.src:
         path: 'D:\projects'
         state: BOUND
@@ -200,6 +223,12 @@ profiles:
     device_ref: device:personal-dell
     platform: windows
     paths:
+      data_root:
+        state: UNBOUND
+        provenance: user_reported
+        note: >-
+          UNBOUND for the same reason as `windows-corporate`: the roles
+          resolve to separate volumes and no single root reproduces them.
       workspace.src:
         path: 'F:\'
         state: BOUND
@@ -245,6 +274,147 @@ profiles:
           Playwright was reached through `npx @playwright/mcp@latest` — which
           is a floating dependency and is recorded as an admission finding, not
           as a path.
+
+  # ---------------------------------------------------------------------------
+  # Tokyo shared development host.
+  #
+  # Every path below was measured ON THIS DEVICE. None was inferred from the
+  # Beijing profile it superficially resembles: the two hosts answer the same
+  # ten questions with unrelated physical paths, which is the point of this
+  # file. Where the shapes are alike (runtime-assets binds the parent on both)
+  # that is a decision repeated, not a value copied.
+  #
+  # `server_local_agent` is the provenance throughout: an agent running on this
+  # host read these directories. It is NOT `user_reported` -- nobody was asked
+  # -- and it is not a scan of a remote machine.
+  #
+  # One thing this profile does NOT say: /data is a shared 4 TB volume and
+  # /data/home/vince is one home among eight. A BOUND path here means the role
+  # resolves. It does not mean the path is private to this device's owner, and
+  # nothing in this fleet layer should be read as claiming that.
+  # ---------------------------------------------------------------------------
+  # ---------------------------------------------------------------------------
+  # A shared development host, named for its SHAPE and not for the device.
+  #
+  # `fleet/registry.yaml` states the rule - "A device names one; it does not
+  # carry the profile inline, so a profile cannot fork per device" - and every
+  # other profile here follows it: `linux-server`, `windows-corporate`,
+  # `windows-personal`. This was first written as `tokyo-shared-dev-01`, which
+  # is a device id, and a device id as a profile name is the fork the rule
+  # forbids.
+  #
+  # Every path below was measured ON THIS DEVICE. None was inferred from the
+  # Beijing profile it superficially resembles: the two hosts answer the same
+  # ten questions with unrelated physical paths, which is the point of this
+  # file. Where the shapes are alike (runtime-assets binds the parent on both)
+  # that is a decision repeated, not a value copied.
+  #
+  # `server_local_agent` is the provenance throughout: an agent running on this
+  # host read these directories. It is NOT `user_reported` -- nobody was asked
+  # -- and it is not a scan of a remote machine.
+  #
+  # One thing this profile does NOT say: /data is a shared 4 TB volume and
+  # /data/home/vince is one home among eight. A BOUND path here means the role
+  # resolves; it does not mean the volume is this user's. The tenancy rules --
+  # what may be deleted, whose processes may be touched, what is read-only --
+  # are on the `shared_host` section of this node's host profile, at
+  # `~/.config/serveros/host-profile.yaml`, because they are authored facts
+  # about a machine rather than path bindings, and §6 of this round requires
+  # them to exist rather than to be restated in two places.
+  # ---------------------------------------------------------------------------
+  linux-shared-multiuser:
+    device_ref: device:tokyo-shared-dev-01
+    platform: linux
+    volumes:
+      '/':
+        state: BOUND
+        provenance: server_local_agent
+        holds: >-
+          Ubuntu 24.04 system disk (/dev/vda2, ext4, 50G). NOT a working
+          volume -- it carries the OS and the package database and has roughly
+          26G free.
+      '/data':
+        state: BOUND
+        provenance: server_local_agent
+        holds: >-
+          4 TB XFS data disk (/dev/vdb) with `usrquota,prjquota`, carrying
+          every human home under /data/home/<user>, the per-user scratch under
+          /data/scratch/<user>, the Docker data-root and the read-only
+          admin-maintained /data/shared.
+    volumes_note: >-
+      `/data/shared` is BOUND but is NOT represented as a path role. It is
+      read-only, admin-maintained, and usable for none of the things a path
+      role is for: not a workspace, not ServerOS state, not container
+      writable state, not credential storage.
+    paths:
+      data_root:
+        path: /data/home/vince
+        state: BOUND
+        provenance: server_local_agent
+      workspace.src:
+        path: /data/home/vince/workspace/src
+        state: BOUND
+        provenance: server_local_agent
+      workspace.worktrees:
+        path: /data/home/vince/workspace/worktrees
+        state: BOUND
+        provenance: server_local_agent
+      artifacts:
+        path: /data/home/vince/artifacts
+        state: BOUND
+        provenance: server_local_agent
+      state:
+        path: /data/home/vince/state/serveros
+        state: BOUND
+        provenance: server_local_agent
+      toolchains:
+        path: /data/home/vince/toolchains
+        state: BOUND
+        provenance: server_local_agent
+      runtime-assets:
+        path: /data/home/vince/runtime-assets
+        state: BOUND
+        provenance: server_local_agent
+        note: >-
+          Binds the PARENT, as `linux-server` does, so the two profiles stay
+          shaped alike. The distribution inside it is `hwz-server-os`, not
+          `serveros`: `runtime/paths.py` declares `runtime-assets/serveros` and
+          its own comment states that nothing has ever been there, while
+          `SEMANTIC_ROLES["runtime.serveros-distribution"]` names the real
+          tree. Recorded, not "fixed" -- the role is the stable name and this
+          field says where the role resolves today.
+      downloads:
+        path: /data/home/vince/downloads
+        state: BOUND
+        provenance: server_local_agent
+      software.gui:
+        state: NOT_APPLICABLE
+        provenance: server_local_agent
+        note: >-
+          NOT_APPLICABLE rather than UNBOUND: this is a headless shared server
+          with no desktop session, so the role has no meaning here. The one
+          graphical surface that does exist -- the browser-stack noVNC console
+          on loopback -- is a development tool reached over a tunnel, not
+          installed GUI software, and it lives under `state`, not here.
+      knowledge.corporate:
+        path: /data/home/vince/workspace/knowledge
+        state: BOUND
+        provenance: server_local_agent
+        note: >-
+          Bound on measurement, not on hope. This was recorded UNBOUND while
+          the corporate knowledge repository had not been cloned on this node;
+          it has been, and the directory carries CLAUDE.md, INDEX.md and the
+          `feishu`, `git`, `linux` and sibling trees.
+      home:
+        path: /data/home/vince
+        state: BOUND
+        provenance: server_local_agent
+        note: >-
+          Note where this points: NOT `/home/vince`. On this host every human
+          home is under /data/home, on the 4 TB volume, and /home is not where
+          a user's files are. A profile that assumed the usual Linux answer
+          would resolve every agent runtime's config root to a directory this
+          user does not own.
 
 rules:
   - "A profile is selected by the device, not by the caller. Asking for a path

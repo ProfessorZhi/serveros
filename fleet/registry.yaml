@@ -99,6 +99,56 @@ devices:
     legacy_ids: [dell-work]
     enrollment: enrolled
 
+  # ---------------------------------------------------------------------------
+  # Enrolled 2026-09-16 by the Beijing -> Tokyo primary-node migration.
+  #
+  # This is a NEW device, not a rename of an old one, so it gets a new
+  # device_id and an empty `legacy_ids`. `device:server-beijing` stays exactly
+  # as it was: the migration names Beijing SEALED REFERENCE / ROLLBACK, and a
+  # rollback node whose record was rewritten during the migration is not a
+  # rollback node.
+  #
+  # `roles` is `development-primary`, NOT `fleet-controller-primary`. Two
+  # devices claiming to be the node the fleet is controlled from is the one
+  # role collision worth refusing on sight. Beijing keeps that role until a
+  # formal cutover; Tokyo's role says what Tokyo is FOR, not what it outranks.
+  # The value is this node's own - `~/.config/serveros/host-profile.yaml`
+  # states it under `node.roles` - so it is a fact about the device and not a
+  # promotion invented here.
+  #
+  # `agents` lists only `claude-code`. Measured on this host through a login
+  # shell: node v24.19.0 and npm 11.17.0 are present and the npm global list is
+  # exactly `@anthropic-ai/claude-code` and `@playwright/mcp`. Codex is not
+  # installed here and never has been. The `~/.codex` tree on this node is
+  # MIGRATED SESSION STATE - its `sessions` directory carries a mtime from
+  # before this node was bootstrapped - so it is evidence of what the migration
+  # moved, not of what runs here. Registering `codex` because Beijing has it
+  # would be the same defect as a surface written for a machine nobody queried.
+  #
+  # `ownership: company` and `os_family` are likewise this node's own, from the
+  # same host profile. They were first written here as `personal` and omitted,
+  # which is `device:server-beijing`'s ownership copied across; a shared
+  # corporate host is not a personal one.
+  # ---------------------------------------------------------------------------
+  - device_ref: device:tokyo-shared-dev-01
+    device_id: tokyo-shared-dev-01
+    display_name: Tokyo-Shared-Dev-01
+    platform: linux
+    os_family: linux-ubuntu-24.04
+    ownership: company
+    roles: [development-primary]
+    environment_profile: linux-shared-multiuser
+    agents: [claude-code]
+    runtime_bindings:
+      - runtime_ref: agent-runtime:claude-code
+        declared_at: 2026-09-16
+    # No legacy_ids: this device has never been known by another name. The two
+    # Windows machines each carry an earlier id here; Tokyo does not, and an
+    # empty list is the true answer rather than a placeholder.
+    legacy_ids: []
+    enrollment: enrolled
+
+
 rules:
   - "device_id is stable. Renaming a device is an alias addition, not a
      replacement, so that historical evidence keeps resolving."
