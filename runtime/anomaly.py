@@ -153,6 +153,10 @@ SEVERITY = {
     "TASK_IDLE_PROCESS_ACTIVE": "high",
     "TASK_CLOSED_RESOURCE_RUNNING": "high",
     "ORPHAN_PROCESS_TREE": "high",
+    # The observe-only counterpart. A proven system service is reported rather
+    # than hidden — a reader can still see it — and it is ranked below the
+    # hygiene questions because being a daemon is not one.
+    "EXTERNAL_SYSTEM_PROCESS_TREE": "low",
     # §5. Medium, and deliberately not high: the two halves are each true of
     # things that are fine, so what this ranks is "a person should look at the
     # lifecycle question", not "something is broken". It is also NOT a staleness
@@ -388,22 +392,61 @@ def detect(*, groups=None, containers=None, task_states=None, host_facts=None,
             session_state = None
             if group.get("session_ref"):
                 session_state = (task_states or {}).get(group["session_ref"], {}).get("state")
-            signals.append(signal(
-                "ORPHAN_PROCESS_TREE", ref,
-                {"root_ppid": (group.get("tree") or {}).get("root_ppid"),
-                 "chain_complete": (group.get("tree") or {}).get("chain_complete"),
-                 "origin_session_state": session_state},
-                window="lineage at observation time",
-                why=("the group's root is parented to init. This is a fact about "
-                     "lineage and NOT a claim that the work is abandoned — a "
-                     "daemonised service looks identical, which is why the "
-                     "combination needs a second signal."),
-            ))
+            lineage = {"root_ppid": (group.get("tree") or {}).get("root_ppid"),
+                       "chain_complete": (group.get("tree") or {}).get("chain_complete"),
+                       "origin_session_state": session_state}
+            # Reparenting to init is true of EVERY systemd service — PID1 is
+            # its parent by design — so the fact alone cannot separate a
+            # service from a runtime somebody left behind. The cgroup can:
+            # a group in `system.slice` was started by the system manager from
+            # an installed unit, which is what a host service is.
+            #
+            # The observation is not suppressed when that is proven. It is
+            # reported as `EXTERNAL_SYSTEM_PROCESS_TREE` at `low`: still
+            # visible, still in the record, no longer ranked as a hygiene
+            # problem and no longer grouped with the things a reader is being
+            # asked to go and clean up.
+            ownership = group.get("ownership") or {}
+            if ownership.get("class") == attribution.EXTERNAL_SYSTEM:
+                signals.append(signal(
+                    "EXTERNAL_SYSTEM_PROCESS_TREE", ref,
+                    {**lineage, "ownership": ownership},
+                    window="lineage and cgroup at observation time",
+                    why=("the group's root is parented to init AND its cgroup "
+                         "places it in the system manager's slice, so the "
+                         "system manager started it from an installed unit. "
+                         "This is a host service being observed, not a runtime "
+                         "left behind — the evidence is the cgroup path, and "
+                         "it is why this one is observe-only."),
+                ))
+            else:
+                signals.append(signal(
+                    "ORPHAN_PROCESS_TREE", ref,
+                    lineage,
+                    window="lineage at observation time",
+                    why=("the group's root is parented to init. This is a fact about "
+                         "lineage and NOT a claim that the work is abandoned — a "
+                         "daemonised service looks identical, which is why the "
+                         "combination needs a second signal. Where the cgroup "
+                         "PROVES a system service the signal is reported as "
+                         "EXTERNAL_SYSTEM_PROCESS_TREE instead; this one is a "
+                         "group nobody could attribute."),
+                ))
 
-        if not group.get("agent", {}).get("value") and (age or 0) >= thresholds["age_long_seconds"]:
+        # The code claims "no agent rule identifies this group". For a group
+        # the cgroup places in the system manager's slice that claim is false:
+        # the owner is identified — it is the host's — and no agent rule
+        # SHOULD match it. The classification answers this code rather than
+        # re-labelling it, so it is not emitted. The 34 OPEN alerts on
+        # sshd/cron/dbus/chrony are this and nothing else.
+        if (not group.get("agent", {}).get("value")
+                and (age or 0) >= thresholds["age_long_seconds"]
+                and not attribution.is_external_system(group)):
             signals.append(signal(
                 "UNKNOWN_OWNER_LONG_RUNNING", ref,
-                {"age_seconds": age, "threshold_seconds": thresholds["age_long_seconds"]},
+                {"age_seconds": age, "threshold_seconds": thresholds["age_long_seconds"],
+                 "ownership": group.get("ownership") or {
+                     "class": attribution.UNKNOWN, "provenance": None}},
                 window=f"{age:.0f}s",
                 why="no agent rule identifies this group and it has been running longer than the long-lived threshold",
             ))
@@ -676,6 +719,7 @@ def unchecked(*, groups=None, containers=None, task_states=None, host_facts=None
 INPUT_CODES = {
     "groups": ("HIGH_CPU_SUSTAINED", "HIGH_MEMORY_SUSTAINED",
                "AGE_WITHOUT_ACTIVITY", "ORPHAN_PROCESS_TREE",
+               "EXTERNAL_SYSTEM_PROCESS_TREE",
                "UNKNOWN_OWNER_LONG_RUNNING"),
     "session_states": ("RUNTIME_OUTLIVED_OWNER",),
     "task_states": ("TASK_IDLE_PROCESS_ACTIVE", "TASK_CLOSED_RESOURCE_RUNNING"),

@@ -56,6 +56,12 @@ def _load(name: str, filename: str):
 
 
 cont = _load("serveros_runtime_containers", "containers.py")
+# This node's roots, so that a test about "this user's home" is about the
+# home of the machine it runs on. `ROOTS` below stays Beijing's: it is
+# fixture DATA handed to `attribute(roots=...)`, and a fixture is allowed
+# to describe any node. What must not be a fixture is the answer to "which
+# node am I".
+paths_mod = _load("serveros_runtime_paths", "paths.py")
 
 ROOTS = {
     "home": "/home/hwz",
@@ -639,15 +645,21 @@ def test_foreign_evidence_does_not_change_the_unknown_owner_count(registry):
 
 
 def test_a_whole_serveros_root_mount_is_not_foreign_evidence(registry):
-    """`xpra-gui-hwz` mounts /home/hwz — THIS user's home, wholesale.
+    """A container that mounts THIS user's home, wholesale, is not a stranger's.
 
     It is a locator and a host-exposure finding. It is not evidence that the
-    container belongs to someone else, and a rule that read `/home/hwz` as a
-    foreign home would have said the node's own work is a stranger's.
+    container belongs to someone else, and a rule that read this node's own
+    home as a foreign home would have said the node's own work is a stranger's.
+
+    The mount source is read from the node's Profile rather than written as
+    `/home/hwz`. That literal made the test assert a fact about Beijing — there
+    the path is the user's home, here it belongs to nobody — so it passed for a
+    reason that had nothing to do with the rule.
     """
+    home = str(paths_mod.Paths().root("home"))
     result = cont.attribute(
         cont.evidence(inspect_record("xpra-gui-hwz", mounts=[
-            {"Type": "bind", "Source": "/home/hwz", "Destination": "/host"}])),
+            {"Type": "bind", "Source": home, "Destination": "/host"}])),
         registry=registry, roots=ROOTS,
     )
     assert result["foreign_actor"] is False
@@ -669,9 +681,16 @@ def test_the_foreign_home_rule_does_not_invert_when_USER_is_unset(monkeypatch):
     attribution = _load("serveros_runtime_attribution", "attribution.py")
 
     assert _os.environ.get("USER") is None          # the condition is real
-    assert attribution.foreign_home("/home/hwz/workspace") is False
+
+    # Both layouts the rule handles, each built from the identity this node
+    # actually has, in the same run. The rule must say "mine" for both and
+    # "theirs" for a stranger, with `USER` gone.
+    me = attribution.current_user()
+    home = str(paths_mod.Paths().root("home"))
+    assert me, "no current user was established; the rest of this proves nothing"
+    assert attribution.foreign_home(f"{home}/workspace") is False
     assert attribution.foreign_home(
-        "/opt/applications/data/home-hwz/workspace") is False
+        f"/opt/applications/data/home-{me}/workspace") is False
     assert attribution.foreign_home("/home/szj/gpt-img-2/data") is True
 
 

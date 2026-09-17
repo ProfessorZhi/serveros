@@ -163,6 +163,94 @@ def container_of_cgroup(cgroup: str) -> str | None:
     return None
 
 
+# ---------------------------------------------------------------------------
+# Ownership - who a group belongs to, and the evidence for saying so
+# ---------------------------------------------------------------------------
+
+# A group the system manager owns. Named for the conclusion rather than for the
+# slice, because the slice is the evidence and the conclusion is what a reader
+# is being handed.
+EXTERNAL_SYSTEM = "EXTERNAL_SYSTEM"
+
+SYSTEM_SLICE = "system.slice"
+SYSTEM_SCOPES = ("init.scope",)
+
+
+def ownership_of_scope(scope: str) -> dict:
+    """Who owns this cgroup scope, with the evidence, or UNKNOWN.
+
+    Two answers, and the second is not a failure - it is the answer for a
+    process nobody can attribute from what the kernel recorded:
+
+        EXTERNAL_SYSTEM   the system manager started it from an installed unit
+        UNKNOWN           nobody can say from the cgroup path
+
+    `user.slice` is deliberately in the second group. It holds this user's
+    sessions and every other user's, and the path does not distinguish them, so
+    a group there stays UNKNOWN. That is the load-bearing half of this rule: if
+    unprovable processes were reported as external to quiet an alert, the
+    classification would stop meaning anything, and the alerts it silenced
+    would include the ones that mattered.
+
+    `provenance` is `"cgroup"` for the positive answer - the same vocabulary
+    `DECISIVE_PROVENANCE` uses elsewhere in this file, and for the same reason:
+    a reader has to be able to tell a conclusion from a guess.
+    """
+    scope = scope or ""
+    slice_name = slice_of_cgroup(scope)
+    unit = unit_of_cgroup(scope)
+    segments = [p for p in scope.split("/") if p]
+
+    if slice_name == SYSTEM_SLICE:
+        return {
+            "class": EXTERNAL_SYSTEM,
+            "provenance": "cgroup",
+            "slice": slice_name,
+            "unit": unit,
+            "why": (f"the cgroup is under {SYSTEM_SLICE}"
+                    + (f" as {unit}" if unit else "")
+                    + ", which is where an administrator-installed unit's "
+                      "processes run. The system manager is the owner"),
+        }
+    # `init.scope` is not a slice and holds no unit: it is PID1 and the units
+    # the system manager starts before slices exist. It must be the FIRST
+    # segment. Every per-user systemd manager creates its own `init.scope`
+    # nested inside `user@<uid>.service`:
+    #
+    #     PID 1        /init.scope
+    #     uid 1002     /user.slice/user-1002.slice/user@1002.service/init.scope
+    #
+    # so matching the segment anywhere calls six user managers host system
+    # services, one of which is this user's own. A nested one belongs to
+    # whichever manager created it, and that lives under `user.slice`, which
+    # stays UNKNOWN. Matching `segments[0]` is also what keeps this field
+    # consistent with `slice_of_cgroup`, which reports the first slice and was
+    # visibly disagreeing with the class before this line changed.
+    if segments and segments[0] in SYSTEM_SCOPES:
+        return {
+            "class": EXTERNAL_SYSTEM,
+            "provenance": "cgroup",
+            "slice": slice_name,
+            "unit": unit,
+            "why": ("the cgroup is the root-level init.scope, which holds "
+                    "PID1 and the units the system manager starts before any "
+                    "slice exists"),
+        }
+    return {
+        "class": UNKNOWN,
+        "provenance": None,
+        "slice": slice_name,
+        "unit": unit,
+        "why": (f"the cgroup is not under {SYSTEM_SLICE}"
+                if scope else "the group carries no cgroup scope"),
+    }
+
+
+def is_external_system(group: dict) -> bool:
+    """Convenience for readers of a group record. Never guesses."""
+    return (group.get("ownership") or {}).get("class") == EXTERNAL_SYSTEM
+
+
 def slice_of_cgroup(cgroup: str) -> str | None:
     """`user.slice` / `system.slice` — coarse, and honest about being coarse."""
     match = re.search(r"(?:^|/)([a-z-]+\.slice)", cgroup or "")
