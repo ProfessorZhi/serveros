@@ -243,6 +243,11 @@ def _describe(scope: str, root: int, members: set[int], table: dict, *,
                   "rule": "single agent rule matched across the group's members"
                           if agent else "members disagree or match no rule"},
         "session_ref": f"session:{session_id}" if session_id else None,
+        # Who owns this group, derived from the cgroup the kernel wrote. Carried
+        # on the record rather than computed by each consumer, so that the
+        # detector, the view and the CLI cannot reach three different answers
+        # about one group — and so that the evidence travels with the verdict.
+        "ownership": attribution.ownership_of_scope(scope),
         "container_ref": f"runtime:container:{container_id}" if container_id else None,
         "aggregate": aggregate(facts),
         # The largest terms of `aggregate`, so a reader who sees a sum can see

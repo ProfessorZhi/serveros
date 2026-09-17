@@ -458,7 +458,23 @@ anomalies:
     implies_stale: false
     note: >
       the tree's parent is init and the session that started it is not coming
-      back. Evidence about lineage, not about whether the work matters.
+      back. Evidence about lineage, not about whether the work matters. This
+      fires only where the cgroup does NOT place the group in the system
+      manager's slice: reparenting to init is true of every systemd service,
+      so on its own it cannot separate a service from a runtime somebody left
+      behind. See EXTERNAL_SYSTEM_PROCESS_TREE for the proven case.
+  - code: EXTERNAL_SYSTEM_PROCESS_TREE
+    severity: low
+    implies_stale: false
+    note: >
+      the tree's parent is init AND the group's cgroup is under system.slice,
+      so the system manager started it from an administrator-installed unit.
+      Observe-only on purpose: this is a host service being reported, and the
+      classification comes from the cgroup path rather than from a list of
+      names, because a list is wrong the day a unit is renamed. Deliberately
+      NOT applied to `user.slice`, which holds every user's sessions and does
+      not say whose — a group there stays UNKNOWN rather than being called
+      external to quiet an alert.
   - code: RUNTIME_OUTLIVED_OWNER
     severity: medium
     implies_stale: false
