@@ -3615,6 +3615,90 @@ def cmd_mutation(args) -> int:
 # ---------------------------------------------------------------------------
 
 
+def cmd_taxonomy(args) -> int:
+    """The declared ability navigation DAG (§G).
+
+    Two things here look like "the ability tree" and answer different
+    questions. `ability tree` reports PLACEMENT: where abilities actually are,
+    derived from the catalogue's `domain.primary`, and in that derivation an
+    internal node exists only because some ability's path runs through it.
+    This reports the DECLARED NAVIGATION DAG: which families exist, which are
+    occupied, and which are declared and empty.
+
+    That second question had no answer before this command. A family with
+    nothing in it yet — Safety & Compliance is the live example, six real
+    enforcement surfaces and no ability — was, under placement alone, not a
+    node at all, so "this fabric has no safety concept" and "the concept is
+    declared and unoccupied" rendered identically.
+
+    The delegation is deliberate: `abilities/taxonomy.py` has a `main()` its
+    own tests call directly, and this forwards to it rather than reimplementing
+    the rendering, so the two entry points cannot drift apart.
+    """
+    taxonomy_mod = _load_module_from(REPO_ROOT / "abilities" / "taxonomy.py",
+                                     "serveros_abilities_taxonomy")
+    forwarded: list[str] = []
+    if args.repository:
+        forwarded += ["--repository", args.repository]
+    if args.revision:
+        forwarded += ["--revision", args.revision]
+    if getattr(args, "catalogue", None):
+        forwarded += ["--catalogue", args.catalogue]
+    if args.json:
+        forwarded += ["--json"]
+    forwarded.append(args.subcommand)
+    for extra in (getattr(args, "taxon", None), getattr(args, "query", None)):
+        if extra:
+            forwarded.append(extra)
+    try:
+        return taxonomy_mod.main(forwarded)
+    except taxonomy_mod.TaxonomyError as exc:
+        sys.stderr.write(f"serverosctl: {exc}\n")
+        return EXIT_COULD_NOT_ANSWER
+
+
+def cmd_workspace(args) -> int:
+    """workspace-management: placement and governance (§I).
+
+    Six questions, all answered from the path contract rather than from a
+    directory listing: overview, reconcile, drift, locate, inspect, policy.
+
+    Every one of them except `policy` refuses to answer when this process did
+    not resolve this node's roots. The refusal is not defensive coding. The
+    fallback root is the first node's — Beijing's — so an unconfigured process
+    resolves `workspace` to a path on another machine, and both `locate`
+    (which would then recommend writing there) and `overview` (which would
+    report it as simply absent) look exactly like correct answers. The
+    reasoning is in `require_bound`, stated once, where it can be disagreed
+    with.
+
+    `policy` stays readable, with its paths withheld: the rules are the same
+    on every node and an agent that cannot read them cannot place anything.
+
+    Delegation is deliberate, as with `taxonomy`: `runtime/workspace.py` has a
+    `main()` its own tests call, and reimplementing the rendering here would
+    give the two entry points a way to drift.
+    """
+    workspace_mod = _load_module_from(REPO_ROOT / "runtime" / "workspace.py",
+                                      "serveros_runtime_workspace")
+    forwarded: list[str] = []
+    if args.json:
+        forwarded.append("--json")
+    forwarded.append(args.subcommand)
+    if getattr(args, "dirty_detail", False):
+        forwarded.append("--dirty-detail")
+    for extra in (getattr(args, "class_name", None),
+                  getattr(args, "path", None),
+                  getattr(args, "name", None)):
+        if extra:
+            forwarded.append(extra)
+    try:
+        return workspace_mod.main(forwarded)
+    except workspace_mod.WorkspaceError as exc:
+        sys.stderr.write(f"serverosctl: {exc}\n")
+        return EXIT_COULD_NOT_ANSWER
+
+
 def build_parser() -> argparse.ArgumentParser:
     # There used to be a second `ArgumentParser(prog="serverosctl", ...)` right
     # here, immediately overwritten by the one below. Its `description` was the
@@ -4293,6 +4377,106 @@ def build_parser() -> argparse.ArgumentParser:
              "root. Must be absolute; a board that landed in the caller's cwd "
              "would be a second board nobody knows about")
     rq_board.set_defaults(func=cmd_requirement_board)
+
+    taxonomy = sub.add_parser(
+        "taxonomy",
+        help="the declared ability navigation DAG (§G)", **_COMMON)
+    taxonomy_sub = taxonomy.add_subparsers(dest="subcommand", required=True)
+
+    def _taxon_verb(name: str, help_text: str):
+        """One subcommand, with the catalogue arguments every one of them needs.
+
+        The three catalogue options are repeated per subcommand rather than
+        declared once on the group. A group-level optional has to be typed
+        BEFORE the subcommand — `taxonomy --repository X tree` — which is the
+        opposite of how every other group in this file reads, and a flag that
+        only works in an unexpected position is a flag people conclude does not
+        work. `ability resolve --request ...` sets the expectation and this
+        matches it.
+        """
+        verb = taxonomy_sub.add_parser(name, help=help_text, **_COMMON)
+        verb.add_argument(
+            "--repository",
+            help="the ability-management checkout holding the catalogue "
+                 "(default: SERVEROS_ABILITY_REPO, else the sibling checkout)")
+        verb.add_argument(
+            "--revision",
+            help="the catalogue revision to read (default: origin/main). Read "
+                 "from a git object, never from the working tree — a dirty "
+                 "checkout must not become what this node believes about its "
+                 "own capabilities")
+        verb.add_argument("--catalogue", help="override abilities-manifest.yaml")
+        verb.set_defaults(func=cmd_taxonomy)
+        return verb
+
+    _taxon_verb(
+        "tree",
+        "the declared DAG projected as a tree, with placement counts")
+    _taxon_verb(
+        "validate",
+        "the declaration against itself, and against the catalogue")
+    _taxon_verb(
+        "show",
+        "one declared taxon: its state, its abilities, its surface"
+    ).add_argument("taxon")
+    _taxon_verb(
+        "search",
+        "find a taxon by id, label or ability name — discovery is "
+        "search-first, not enumerate-everything (§AA)"
+    ).add_argument("query")
+
+    workspace = sub.add_parser(
+        "workspace",
+        help="placement and governance: where a thing belongs (§I)", **_COMMON)
+    workspace_sub = workspace.add_subparsers(dest="subcommand", required=True)
+
+    w_overview = workspace_sub.add_parser(
+        "overview", help="the declared areas, measured, area by area", **_COMMON)
+    w_overview.set_defaults(func=cmd_workspace)
+
+    # `reconcile` is deliberately NOT on this surface, though it is read-only.
+    # `serverosctl`'s contract is that no subcommand mutates, and
+    # `tests/test_serverosctl.py` enforces it by name — a verb called
+    # `reconcile` that happens to only report is exactly the name that
+    # erodes the surface's promise. The capability is unchanged and still
+    # reachable: `runtime/workspace.py reconcile` has its own `main()`.
+
+    w_policy = workspace_sub.add_parser(
+        "policy",
+        help="the six placement classes and their rules, readable without "
+             "running anything — the one verb that answers when this "
+             "process has not resolved the node's roots", **_COMMON)
+    w_policy.set_defaults(func=cmd_workspace)
+
+    # `locate` takes the class positionally and NOT as a --flag, because the
+    # class is the question. There is no default class: a `locate` that
+    # guessed would place a record in a scratch directory the first time it
+    # was asked about something new.
+    w_locate = workspace_sub.add_parser(
+        "locate",
+        help="where a THING of a known kind belongs, before it is created",
+        **_COMMON)
+    w_locate.add_argument("class_name",
+                          help="src | worktree | test-env | record | "
+                               "artifact | scratch")
+    w_locate.add_argument("name", nargs="?",
+                          help="the thing, when its name is already known")
+    w_locate.set_defaults(func=cmd_workspace)
+
+    w_inspect = workspace_sub.add_parser(
+        "inspect", help="what KIND an existing path is, and what that obliges",
+        **_COMMON)
+    w_inspect.add_argument("path")
+    w_inspect.set_defaults(func=cmd_workspace)
+
+    w_drift = workspace_sub.add_parser(
+        "drift",
+        help="per-checkout git state — the git half, and only the git half. "
+             "A workspace question that needed Docker running would be a "
+             "workspace question nobody could ask", **_COMMON)
+    w_drift.add_argument("--dirty-detail", action="store_true",
+                         help="list up to 50 dirty paths per checkout")
+    w_drift.set_defaults(func=cmd_workspace)
 
     return parser
 
