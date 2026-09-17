@@ -999,6 +999,14 @@ def listing(store: AlertStore, *, at: str | None = None) -> dict:
     """
     order = {"OPEN": 0, "ACKNOWLEDGED": 1, "SNOOZED": 2, "RESOLVED": 3}
     ranks = _ranks()
+    # Read once, not once per row. Both of these go through `policy()`, which
+    # parses the contract document; measured on this node at 10.2 ms. Inside
+    # the loop below that is one parse per alert -- 612 of them for a 612-row
+    # register, which is the whole of `alert list`'s 6.5 s. The client waits
+    # 5.0 s, so the answer a person got was a timeout rather than this node's
+    # alerts. Neither mapping depends on the row, so neither may live in the
+    # loop that has one.
+    words = severity_words()
     rows = list(store.alerts().values())
     rows.sort(key=lambda row: (order.get(str(row.get("state")), 9),
                                -ranks.get(str(row.get("severity")), -1),
@@ -1011,7 +1019,7 @@ def listing(store: AlertStore, *, at: str | None = None) -> dict:
             "alert_ref": row.get("alert_ref"),
             "code": row.get("code"),
             "severity": row.get("severity"),
-            "severity_word": severity_words().get(str(row.get("severity"))),
+            "severity_word": words.get(str(row.get("severity"))),
             "state": row.get("state"),
             "device_ref": row.get("device_ref"),
             "subject_ref": row.get("subject_ref"),

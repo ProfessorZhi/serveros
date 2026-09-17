@@ -36,6 +36,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parent
@@ -1249,3 +1250,84 @@ class Mutants(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+"""Appended to tests/test_alerting.py by §F7.
+
+The output of `listing()` was never wrong; its COST was the defect. A test
+that only compared rows would have passed against the broken version, so this
+one counts reads of the contract document instead of comparing output.
+"""
+class ListingReadsTheContractOnce(unittest.TestCase):
+    """`alert list` has to be cheaper than the cap on asking for it.
+
+    `listing()` renders one row per alert and the severity word on each row
+    comes from the contract document. Reading that document per row made a
+    612-row register take 6.5 s to list on this node, past the 5.0 s cap the
+    CLI puts on a daemon request -- so `serverosctl alert list` answered
+    "timed out" and §7's on-demand detail path (`alert inspect`) had no way to
+    learn a ref. The word does not depend on the row, so the number of reads
+    must not depend on the number of rows.
+    """
+
+    class _Register:
+        """Just enough store for `listing()`: it calls `.alerts()` and nothing else."""
+
+        def __init__(self, rows):
+            self._rows = rows
+
+        def alerts(self):
+            return self._rows
+
+    def _rows(self, count):
+        return {
+            "alert:%04d" % index: {
+                "alert_ref": "alert:%04d" % index,
+                "code": "ORPHAN_PROCESS_TREE",
+                "severity": "high",
+                "state": "OPEN",
+                "device_ref": "device:test",
+                "subject_ref": "subject:%04d" % index,
+                "first_seen": "2026-01-01T00:00:00+00:00",
+                "occurrence_count": 1,
+            }
+            for index in range(count)
+        }
+
+    def _reads(self, count):
+        """How many times `policy()` was consulted to list `count` alerts."""
+        calls = []
+        real = alerting.policy
+
+        def counting(*args, **kwargs):
+            calls.append(1)
+            return real(*args, **kwargs)
+
+        with mock.patch.object(alerting, "policy", counting):
+            result = alerting.listing(self._Register(self._rows(count)),
+                                      at="2026-01-01T00:00:10+00:00")
+        return len(calls), result
+
+    def test_the_number_of_reads_does_not_grow_with_the_register(self):
+        small, _ = self._reads(2)
+        large, _ = self._reads(400)
+        self.assertEqual(
+            small, large,
+            "listing() consulted the contract %d times for 2 alerts and %d "
+            "times for 400; the word it renders is the same for every row, so "
+            "a per-row read is a per-row file parse" % (small, large))
+
+    def test_a_listing_does_not_parse_the_contract_per_alert(self):
+        large, _ = self._reads(400)
+        self.assertLess(
+            large, 10,
+            "400 alerts cost %d reads of the contract document" % large)
+
+    def test_the_row_still_carries_the_word_the_contract_declares(self):
+        """The hoist must not have been paid for by dropping the field."""
+        _, result = self._reads(3)
+        words = alerting.severity_words()
+        for row in result["alerts"]:
+            self.assertEqual(row["severity_word"], words["high"])
+        self.assertEqual(result["count"], 3)
+        self.assertEqual(result["by_state"]["OPEN"], 3)
