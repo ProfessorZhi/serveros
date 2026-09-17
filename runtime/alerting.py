@@ -728,6 +728,27 @@ def detail_for(alert: dict, *, at: str) -> str:
         lines.append("origin session: {} state {}".format(
             measured.get("origin_session") or "unknown",
             measured.get("origin_session_state") or "not reported"))
+    ownership = measured.get("ownership")
+    if isinstance(ownership, dict) and ownership:
+        # §7. WHO this is and WHAT MAY BE DONE ABOUT IT are different
+        # questions, and an EXTERNAL answer settles the second one in advance:
+        # `lifecycle` is OBSERVE_ONLY, so the tree is somebody's and nothing
+        # here may act on it. Without this line the sentence a person receives
+        # names a leftover process tree and never says whose, which is both the
+        # field §7 asks for and the difference between a finding its reader can
+        # act on and one they can only worry about.
+        #
+        # Every clause is printed as the absence it is when the probe recorded
+        # none. A missing session and an elided one must not read the same on
+        # one line: "no session recorded" is a fact about the reading, and a
+        # dropped clause would be a fact about this formatter.
+        lines.append("owner: {} · uid {} · {} · lifecycle {}".format(
+            ownership.get("role") or "unattributed",
+            ownership.get("uid") or "unrecorded",
+            ownership.get("session") or ownership.get("unit")
+            or ownership.get("slice") or "no session or unit recorded",
+            ownership.get("lifecycle") or "not stated"))
+
     if alert.get("window"):
         # The qualifier on the number above it. "279% of one core" is a
         # different claim over a lifetime average than over five seconds, and

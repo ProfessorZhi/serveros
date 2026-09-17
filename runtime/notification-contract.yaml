@@ -451,6 +451,9 @@ alerts:
       - "what and how bad: `{severity_word}` and the anomaly code"
       - "the measurement, with the threshold it was compared against"
       - "the top contributor, when the subject is a group of processes"
+      - "the owner, when the cgroup names one: its role, the uid it belongs
+         to, and the session or unit it runs in, with the lifecycle that says
+         whether anything in this deployment may act on it"
       - "how long it has been true, and how many times it has been seen"
       - "what may be done — always one of REVIEW / MONITOR / GOVERNANCE_REQUIRED"
       - "that nothing was stopped, whenever a recommendation exists"
