@@ -201,6 +201,19 @@ def validate(document: dict) -> dict:
                 "was top-level. An absent key is indistinguishable from an "
                 "unrecorded one",
                 taxon=taxon_id)
+        # `aliases` is searched, so a malformed one is a discovery hole rather
+        # than a cosmetic problem: a bare string would be iterated CHARACTER BY
+        # CHARACTER and quietly match on any letter it contains, which is how a
+        # typo turns into a node that answers every query.
+        aliases = node.get("aliases")
+        if aliases is not None and (not isinstance(aliases, list) or not all(
+                isinstance(a, str) and a.strip() for a in aliases)):
+            _finding(
+                findings, "blocking", "INVALID_ALIASES",
+                f"aliases must be a list of non-empty strings, got "
+                f"{aliases!r}. A bare string is iterated per character and "
+                f"would match on any letter in it",
+                taxon=taxon_id)
 
     # --- edges -------------------------------------------------------------
     contains_parents: dict[str, list[str]] = {}
@@ -597,6 +610,7 @@ def membership(document: dict, rows: list[dict]) -> dict:
             "surface": node.get("surface"),
             "origin": node.get("origin"),
             "label": node.get("label"),
+            "aliases": [str(a) for a in (node.get("aliases") or [])],
         }
     return entries
 
@@ -699,36 +713,78 @@ def conformance(document: dict, rows: list[dict]) -> dict:
     }
 
 
+def _haystacks(taxon_id: str, entry: dict) -> list[tuple[str, str]]:
+    """Every string this taxon can be found by, paired with WHAT KIND it is.
+
+    The kind is not decoration. It is what lets a reader see that `飞书` matched
+    an alias rather than a taxon id — the difference between "this node is
+    called that" and "somebody calls it that" — and the difference between
+    finding a node by its own name and finding it through an ability that
+    happens to live there.
+    """
+    pairs = [("taxon id", taxon_id)]
+    if entry.get("label"):
+        pairs.append(("label", entry["label"]))
+    pairs += [("placed ability", a) for a in entry.get("placed") or []]
+    pairs += [("cross-referenced ability", a)
+              for a in entry.get("cross_referenced") or []]
+    pairs += [("alias", a) for a in entry.get("aliases") or []]
+    return pairs
+
+
 def search(document: dict, rows: list[dict], query: str) -> dict:
-    """Cases-insensitive substring match over ids, labels and ability names.
+    """Cases-insensitive substring match over ids, labels, aliases, ability names.
 
     Search-first is the discovery rule (§AA): a caller should be able to ask
     "what is there about testing" without knowing that the answer lives under
     `serveros.operations.test` and that `test-management` is the ability. This
     is deliberately a substring match and not a ranking function — a ranker
     that is wrong is harder to notice than a matcher that is simple.
+
+    Two things it does that a single-needle match did not, and both were asked
+    of it by real queries rather than invented:
+
+      * a multi-word query is split, and a taxon matches only if EVERY word is
+        found somewhere in it. "network safety" is a person naming one subject
+        they expect to be one thing; matched as a literal phrase it found
+        nothing, and the node that is about both words went unreported.
+        Conjunction, not ranking: nothing is ordered by how well it matched
+        and the answer stays a set.
+      * `aliases` are searched alongside the id. The catalogue is written in
+        one language and asked about in another: `serveros.corporate.feishu`
+        holds two abilities and the query "飞书" found none of them, because
+        the node's id, its label and its members are all spelled in Latin. An
+        alias is a declaration that a word names this node. It is not a second
+        label and it is not membership.
     """
-    needle = (query or "").strip().lower()
-    if not needle:
+    tokens = [t for t in (query or "").strip().lower().split() if t]
+    if not tokens:
         raise TaxonomyError("search needs a query; an empty one matches everything")
     entries = membership(document, rows)
     hits = []
     for taxon_id, entry in sorted(entries.items()):
+        haystacks = _haystacks(taxon_id, entry)
         matched: list[str] = []
-        if needle in taxon_id.lower():
-            matched.append("taxon id")
-        if entry["label"] and needle in entry["label"].lower():
-            matched.append("label")
-        if any(needle in a.lower() for a in entry["placed"]):
-            matched.append("placed ability")
-        if any(needle in a.lower() for a in entry["cross_referenced"]):
-            matched.append("cross-referenced ability")
+        for token in tokens:
+            # Every token is checked against the WHOLE taxon, never against
+            # what earlier tokens already found. Deduplicating here instead of
+            # on the way out is a bug this round actually shipped and the
+            # `network safety` test caught: the second word matched the same
+            # field as the first, that field was already in `matched`, and the
+            # check collapsed to "this word is nowhere" — the node about both
+            # words was the one node excluded.
+            kinds = [kind for kind, value in haystacks if token in value.lower()]
+            if not kinds:
+                matched = []
+                break
+            matched.extend(k for k in kinds if k not in matched)
         if matched:
             hits.append({"taxon": taxon_id, "matched_on": matched, **entry})
     return {
         "schema": SCHEMA,
         "basis": "declared-taxonomy",
         "query": query,
+        "tokens": tokens,
         "hits": hits,
         "count": len(hits),
     }
@@ -960,12 +1016,24 @@ def _load_rows(args, *, required: bool) -> list[dict] | None:
 
     repo = Path(args.repository) if args.repository else _default_ability_repo()
     if repo is None or not (repo / ".git").exists():
+        # Said out loud in BOTH cases, not only when a verdict depends on it.
+        # `tree` renders without the catalogue, so it passes `required=False`
+        # and this branch used to return None in silence — which is how a whole
+        # taxonomy came to read `[?]` with nothing anywhere saying that the
+        # question had not been asked. `[?]` is the right thing to print; a
+        # reader who cannot find out why is the defect.
         if required:
             sys.stderr.write(
                 "taxonomy: no ability-management checkout found. Pass "
                 "--repository, or set SERVEROS_ABILITY_REPO. Conformance is "
                 "checked against the catalogue and this command will not "
                 "report a verdict without one.\n")
+        else:
+            sys.stderr.write(
+                f"taxonomy: no ability-management checkout at "
+                f"{repo if repo is not None else '(unresolved)'}. Occupancy is "
+                f"not shown — pass --repository, or set "
+                f"SERVEROS_ABILITY_REPO.\n")
         return None
     try:
         manifest, _resolved = projection.read_manifest(
@@ -984,6 +1052,9 @@ def _load_rows(args, *, required: bool) -> list[dict] | None:
     except projection.AuthorityUnreachable as exc:
         if required:
             sys.stderr.write(f"taxonomy: catalogue unreadable: {exc}\n")
+        else:
+            sys.stderr.write(
+                f"taxonomy: catalogue unreadable, occupancy is not shown: {exc}\n")
         return None
     # EVERY ability in the manifest, not only the ones installed here. The
     # question "does the catalogue name a taxon we do not declare" is about the
@@ -1003,6 +1074,22 @@ def _load_rows(args, *, required: bool) -> list[dict] | None:
 
 
 def _default_ability_repo() -> Path | None:
+    """Where the catalogue lives, in the order that keeps the machine out of code.
+
+    `SERVEROS_ABILITY_REPO` first. Which checkout to read is a fact about a
+    deployment, so the deployment names it — the same split the host profile
+    makes for the network policy, and for the same reason: a path that is true
+    on one machine is a bug on the next one.
+
+    The sibling lookup below is a convenience for a SOURCE checkout, where
+    `serveros` and `ability-management` sit side by side. It deliberately does
+    not grow more candidates. This module is also executed from a promoted
+    artifact under `runtime-assets/<composition>/revisions/<rev>/`, where the
+    sibling resolves to `revisions/ability-management` and does not exist; the
+    honest answer there is "this deployment has not named its catalogue", and
+    the caller now says exactly that instead of the search quietly wandering
+    until something happens to hit a path that exists on one machine.
+    """
     import os
 
     configured = os.environ.get("SERVEROS_ABILITY_REPO")
