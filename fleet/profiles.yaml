@@ -48,6 +48,29 @@ path_roles:
   # root UNBOUND, and a caller about to say where a file belongs checks.
   data_root:            the root the artifacts/state/toolchains roles sit under
 
+  # Unlike `data_root`, this role was not missing because a layer above had to
+  # invent an answer. It was missing because the answer existed in exactly one
+  # place and was never projected. `/data/scratch/vince` is bound by this node's
+  # own host profile -- `roots.scratch_root`, and `scratch_area.this_account_path`
+  # -- and `runtime/workspace.py` already consumes that binding through its
+  # SCRATCH_SURFACES table, which cites the host profile as provenance, i.e. it
+  # points at the authority instead of duplicating it. What no fleet profile
+  # could do was confirm the binding, so every consumer above the host profile,
+  # the device's own map included, had to take it on trust. This is the
+  # projection, not a second authority.
+  #
+  # Single segment on purpose. It is a root with no sub-roles, like `artifacts`
+  # and `downloads`; the dotted form names a member of a namespace
+  # (`workspace.src`, `software.gui`) and scratch has no such parent.
+  #
+  # Declared here but bound on `linux-shared-multiuser` alone, and the asymmetry
+  # is the honest shape rather than an omission -- profiles are not required to
+  # be isomorphic. On the other three devices nobody has looked, and this
+  # vocabulary has no word for that: UNBOUND would assert the role applies and
+  # is a gap, NOT_APPLICABLE would assert it does not apply, and neither has
+  # been established there.
+  scratch:              disposable per-instance working space
+
 # BOUND            — path known, and the source of that knowledge is recorded
 # UNBOUND          — role applies here but no path is known yet (a real gap)
 # NOT_APPLICABLE   — role has no meaning on this device (not a gap)
@@ -351,6 +374,18 @@ profiles:
         path: /data/home/vince
         state: BOUND
         provenance: server_local_agent
+      scratch:
+        path: /data/scratch/vince
+        state: BOUND
+        provenance: server_local_agent
+        note: >-
+          Projects the host profile's `scratch_area.this_account_path`. This is
+          not a second authority: the host profile binds it and
+          `runtime/workspace.py` consumes it from there, so the only thing added
+          here is the fleet-visible projection the device's own map was
+          asserting without one. Disposable by contract -- 117 entries were
+          observed under it on 2026-09-18 and none of them is registered
+          anywhere, which is the design, not a coverage gap.
       workspace.src:
         path: /data/home/vince/workspace/src
         state: BOUND
