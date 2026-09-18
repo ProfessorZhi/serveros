@@ -94,6 +94,10 @@ THIS_USER_MANAGER = "/user.slice/user-1002.slice/user@1002.service/init.scope"
 OTHER_USER_MANAGER = "/user.slice/user-1042.slice/user@1042.service/init.scope"
 THIS_USER_UNIT = "/user.slice/user-1002.slice/user@1002.service/dbus.service"
 OTHER_USER_SESSION = "/user.slice/user-1042.slice/session-91.scope"
+# A runtime grouping under somebody's live user instance — the shape tmux's
+# spawn helper and `systemd-run --scope` both leave behind.
+USER_RUNTIME_SCOPE = ("/user.slice/user-1042.slice/user@1042.service/"
+                      "tmux-spawn-abc.scope")
 
 # A slice this file has no evidence about. Not present on the live host — every
 # cgroup there is under `system.slice`, `user.slice`, `/init.scope`, `/`, or no
@@ -137,13 +141,27 @@ def by_code(signals, code):
 
 
 def group(scope, *, ref="runtime-group:process-tree:900", age=3600, cpu=0.0,
-          memory=0, reparented=True, agent=None):
+          memory=0, reparented=True, agent=None, owns_its_session=None,
+          instance_live=None):
     """One group record shaped as `graph._describe` builds it.
 
     `ownership` is computed by the classifier rather than written by hand, so
     these tests exercise the real derivation and not a fixture that agrees with
     itself about what the answer should be.
+
+    `owns_its_session` defaults to None, which leaves
+    `root_owns_its_session` OUT of the tree entirely — the shape a group read
+    by an older collector has, and the shape most of this file wants, since
+    most of these tests are about the cgroup half. Say True or False
+    explicitly when the test is about the process half.
     """
+    tree = {"reparented_to_init": reparented, "root_ppid": 1,
+            "chain_complete": True}
+    if owns_its_session is not None:
+        tree["root_owns_its_session"] = owns_its_session
+        tree["root_session"] = 4242 if owns_its_session else 999999
+    if instance_live is not None:
+        tree["owner_instance_live"] = instance_live
     return {
         "ref": ref,
         "scope": scope,
@@ -152,8 +170,7 @@ def group(scope, *, ref="runtime-group:process-tree:900", age=3600, cpu=0.0,
                       "memory_rss_bytes": memory, "process_count": 1},
         "contributors": [{"pid": 4242}],
         "agent": {"value": agent},
-        "tree": {"reparented_to_init": reparented, "root_ppid": 1,
-                 "chain_complete": True},
+        "tree": tree,
     }
 
 
@@ -545,7 +562,12 @@ def test_a_session_leftover_keeps_the_high_severity_signal():
     report `closing`, and a session that is gone reports nothing). The
     contract's 2026-09-13 case is exactly this shape.
     """
-    signals = detect(group(OTHER_USER_SESSION))
+    # `owns_its_session=False` is the leftover shape read from the kernel:
+    # the root carries a session id that is not its own, because whoever led
+    # that session is gone. Asserted explicitly rather than left out of the
+    # fixture, so this test proves the discriminator answers "leftover"
+    # instead of proving that a missing field fails closed.
+    signals = detect(group(OTHER_USER_SESSION, owns_its_session=False))
     assert "ORPHAN_PROCESS_TREE" in codes(signals)
     assert "EXTERNAL_PROCESS_TREE" not in codes(signals)
     orphan = by_code(signals, "ORPHAN_PROCESS_TREE")[0]
@@ -553,6 +575,172 @@ def test_a_session_leftover_keeps_the_high_severity_signal():
     assert orphan["measured"]["ownership"]["role"] == \
         att.ROLE_EXTERNAL_USER_SESSION
     assert orphan["measured"]["ownership"]["uid"] == "1042"
+    assert orphan["measured"]["detached_by_design"] is False
+    assert orphan["measured"]["root_session"] == 999999
+
+
+def test_a_login_session_that_detached_on_purpose_is_not_an_orphan():
+    """The case that made the renderer look broken: a live `tmux` server, the
+    editor's server process, a bot multiplexer — all of them real daemons,
+    all of them sitting in a `session-<N>.scope` with PID1 as their parent.
+
+    The scope name cannot tell them from the leftover above, and the role
+    cannot either: they belong to the same login. What separates them is
+    `/proc/<pid>/stat` field 6. A `setsid()` caller is its own session
+    leader, so its session id IS its pid — that IS what daemonising means.
+
+    Measured on `device:tokyo-shared-dev-01`, 2026-09-18: `tmux: server` pid
+    328129, `botmux` 1444974 and two VS Code server processes each with
+    sid == pid; three `sh` with a sid whose pid was gone.
+    """
+    signals = detect(group(OTHER_USER_SESSION, owns_its_session=True))
+    assert "ORPHAN_PROCESS_TREE" not in codes(signals)
+    assert "EXTERNAL_PROCESS_TREE" in codes(signals)
+    external = by_code(signals, "EXTERNAL_PROCESS_TREE")[0]
+    assert external["severity"] == "low"
+    # The cgroup half is still reported, and still true: a reader can see
+    # whose login it detached from. Only the conclusion changed.
+    assert external["measured"]["ownership"]["role"] == \
+        att.ROLE_EXTERNAL_USER_SESSION
+    assert external["measured"]["detached_by_design"] is True
+    assert "setsid" in external["why"]
+
+
+def test_a_group_with_no_session_evidence_keeps_the_orphan_alert():
+    """Absent evidence is not the same as absent risk, and this is the
+    direction that decides it. A session-scope group whose tree carries no
+    `root_owns_its_session` — an older collector, a partial read — keeps
+    ORPHAN_PROCESS_TREE at `high`.
+
+    Went the other way in the first draft of this round, which exempted a
+    session scope as soon as the role matched. That would have been a name
+    test wearing a cgroup's clothes: every leftover on the host is in a
+    session scope too.
+    """
+    signals = detect(group(OTHER_USER_SESSION))
+    assert "ORPHAN_PROCESS_TREE" in codes(signals)
+    assert by_code(signals, "ORPHAN_PROCESS_TREE")[0]["severity"] == "high"
+    assert "EXTERNAL_PROCESS_TREE" not in codes(signals)
+
+
+def test_detached_by_design_reads_the_tree_and_nothing_else():
+    """The predicate on its own, including the two shapes that must be False.
+
+    No name is consulted anywhere in it, so no amount of process naming can
+    widen the exemption.
+    """
+    assert att.detached_by_design(group(OTHER_USER_SESSION,
+                                        owns_its_session=True)) is True
+    assert att.detached_by_design(group(OTHER_USER_SESSION,
+                                        owns_its_session=False)) is False
+    assert att.detached_by_design(group(OTHER_USER_SESSION)) is False
+    assert att.detached_by_design({"scope": OTHER_USER_SESSION}) is False
+    assert att.detached_by_design({}) is False
+
+    # A truthy-but-not-True value from a JSON round trip still works, and a
+    # falsey one does not sneak through as True.
+    assert att.detached_by_design(
+        {"tree": {"root_owns_its_session": 1}}) is True
+    assert att.detached_by_design(
+        {"tree": {"root_owns_its_session": None}}) is False
+
+    # It is asked of the process, so the cgroup class does not gate it: the
+    # caller decides when the question is worth asking.
+    assert att.detached_by_design(
+        {"tree": {"root_owns_its_session": True}}) is True
+
+
+def test_a_runtime_scope_under_a_live_instance_is_not_an_orphan():
+    """The second shape with this defect, and the reason it is a separate
+    predicate rather than a wider `detached_by_design`.
+
+    A `.scope` is never backed by a unit file and systemd does not fork what
+    runs in it: `systemd-run --scope` registers the scope around a process it
+    started and then exits, so the payload has PPID 1 from the moment the
+    command returns. Its instance is still running the whole time, and
+    `init.scope` under that instance is the kernel's record of that.
+
+    Measured on `device:tokyo-shared-dev-01`, 2026-09-18: `tmux-spawn-*.scope`
+    under a live `user@1004.service`, carrying yale's live `claude.exe`
+    sessions, with both cgroup directories present.
+
+    Note what is NOT required here: the root need not have called `setsid`.
+    The scope's payload reparents to PID1 because its creator exited, not
+    because it made itself a session leader, so asking that question would
+    reject groups for a reason that is not the reason.
+    """
+    signals = detect(group(USER_RUNTIME_SCOPE, owns_its_session=False,
+                           instance_live=True))
+    assert "ORPHAN_PROCESS_TREE" not in codes(signals)
+    assert "EXTERNAL_PROCESS_TREE" in codes(signals)
+    external = by_code(signals, "EXTERNAL_PROCESS_TREE")[0]
+    assert external["severity"] == "low"
+    assert external["measured"]["ownership"]["role"] == \
+        att.ROLE_EXTERNAL_USER_MANAGER
+    assert external["measured"]["owner_instance_live"] is True
+
+
+def test_a_runtime_scope_whose_instance_is_gone_is_still_an_orphan():
+    """The half that keeps this honest. A scope whose `init.scope` is not in
+    the table is a scope whose instance is not running, and the alert stands
+    at `high` — which is also where a short table lands."""
+    signals = detect(group(USER_RUNTIME_SCOPE, instance_live=False))
+    assert "ORPHAN_PROCESS_TREE" in codes(signals)
+    assert by_code(signals, "ORPHAN_PROCESS_TREE")[0]["severity"] == "high"
+    assert "EXTERNAL_PROCESS_TREE" not in codes(signals)
+
+    # And with no evidence at all in the tree, which is the older-collector
+    # shape. Fail closed.
+    signals = detect(group(USER_RUNTIME_SCOPE))
+    assert "ORPHAN_PROCESS_TREE" in codes(signals)
+    assert by_code(signals, "ORPHAN_PROCESS_TREE")[0]["severity"] == "high"
+
+
+def test_a_login_session_under_a_live_instance_keeps_its_own_rule():
+    """The exclusion that matters most. A `session-<N>.scope` is also a
+    runtime scope under the very same live instance, so a predicate that only
+    asked "is the instance alive" would exempt every leftover on the host —
+    the exact false negative the session tests above were written to prevent.
+
+    A login ends. A scope someone made does not. Those are different facts
+    and the cgroup path is where the kernel records the difference.
+    """
+    signals = detect(group(OTHER_USER_SESSION, owns_its_session=False,
+                           instance_live=True))
+    assert "ORPHAN_PROCESS_TREE" in codes(signals)
+    assert by_code(signals, "ORPHAN_PROCESS_TREE")[0]["severity"] == "high"
+    assert "EXTERNAL_PROCESS_TREE" not in codes(signals)
+
+
+def test_scope_of_a_live_instance_answers_only_for_runtime_scopes():
+    """The predicate on its own: what it accepts, what it refuses, and why.
+
+    Every refusal below is a shape that would otherwise be exempted by a
+    predicate that was looser about the path — and each one has its own rule
+    that is stricter for a reason.
+    """
+    def sc(scope, live):
+        return att.scope_of_a_live_instance(group(scope, instance_live=live))
+
+    assert sc(USER_RUNTIME_SCOPE, True) is True
+    assert sc(USER_RUNTIME_SCOPE, False) is False
+    assert sc(USER_RUNTIME_SCOPE, None) is False
+
+    # The manager's own scope: already exempt, and exempt for its own reason.
+    assert sc(THIS_USER_MANAGER, True) is False
+    # A service below the instance: its parent IS the manager, so PPID 1
+    # means the manager is gone. Its pending deletion is what that rule is.
+    assert sc(THIS_USER_UNIT, True) is False
+    # A login: its own rule, and the one case that must never be widened.
+    assert sc(OTHER_USER_SESSION, True) is False
+    # Not under a user instance at all.
+    assert sc(SYSTEM_UNIT, True) is False
+    assert sc("", True) is False
+
+    # Nothing here reads a process name.
+    assert att.scope_of_a_live_instance(
+        {"scope": USER_RUNTIME_SCOPE, "tree": {"owner_instance_live": 1}}) is True
+    assert att.scope_of_a_live_instance({}) is False
 
 
 def test_our_own_daemon_is_ours_and_not_somebody_elses():
@@ -633,7 +821,14 @@ def test_an_empty_registry_makes_the_classifier_quieter_not_louder():
 def test_exactly_three_roles_are_exempt_from_the_orphan_signal():
     """Pins the membership so adding a role to the exemption is a decision
     somebody makes rather than a side effect of adding a role. A session is
-    the one that must never be added."""
+    the one that must never be added.
+
+    Note what this does and does not say. The tuple lists roles, and the
+    session role is still not in it. A session group CAN be exempt — but
+    through `detached_by_design`, which reads the process rather than the
+    scope, and answers False when there is nothing to read. So the exemption
+    is never a property of the role, and the loop below holds: a session
+    scope with no session evidence in its tree is still False."""
     assert set(att.PARENTED_TO_INIT_BY_DESIGN) == {
         att.ROLE_EXTERNAL_SYSTEM,
         att.ROLE_EXTERNAL_USER_MANAGER,
