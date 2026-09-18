@@ -146,6 +146,29 @@ def policy() -> dict:
     return block
 
 
+# The kinds that describe something happening rather than something having
+# stopped. `RECOVERED` is deliberately not one of them: see `decision`.
+_PROACTIVE_KINDS = (NEW, ESCALATED, REOPENED)
+
+
+def proactive_severities(block: dict | None = None) -> tuple:
+    """Which severities may make a card exist once the interval has elapsed.
+
+    Read from the contract and REQUIRED, for the same reason the interval is:
+    a floor written next to the comparison that uses it is a number nobody
+    reviews. An empty or missing list would mean "nothing may ever cause a
+    card at the interval", which is a different product, not a default.
+    """
+    declared = (block or policy()).get("proactive_severities")
+    if not isinstance(declared, (list, tuple)) or not declared:
+        raise DigestError(
+            f"{CONTRACT}#alerts.digest.proactive_severities is {declared!r}. "
+            f"Without it the cadence has no floor and every hour with any row "
+            f"at all becomes a card, which is the shape this key exists to "
+            f"prevent")
+    return tuple(str(word) for word in declared)
+
+
 def severity_ranks() -> dict:
     """low < medium < high, read from the contract's own order.
 
@@ -596,16 +619,40 @@ def decision(digest: dict, cursor: DeliveryCursor, *, at: str,
                       f"not elapsed")
         return out
 
+    # §27. The interval is a clock, not a reason. Something has to be worth
+    # saying for the clock to produce a message, and what is worth saying at the
+    # hour is narrower than what fits in the document: an OPENING or WORSENING
+    # finding at a severity the contract covers. A RECOVERED row is excluded
+    # even at HIGH — it is only sayable to somebody who was told the thing was
+    # broken, so it rides along in a card that exists for another reason and
+    # never makes one exist. A NOTICE is excluded because it is context for a
+    # card somebody is reading, and hourly context on a quiet host is a robot
+    # that talks to itself.
+    floor = proactive_severities(block)
+    worthy = [row for row in digest["rows"]
+              if row.get("kind") in _PROACTIVE_KINDS
+              and row.get("severity") in floor]
+    if not worthy:
+        out["why"] = (f"{len(digest['rows'])} finding(s), none at "
+                      f"{'/'.join(floor)} and none immediate — a batch of "
+                      f"recoveries, notices or already-told findings is not "
+                      f"worth a message of its own")
+        return out
+
     if since_digest is None or since_digest >= interval:
         out["send"] = True
         out["why"] = (f"the {interval:.0f}s interval has elapsed since the last "
-                      f"delivered digest"
+                      f"delivered digest, and {len(worthy)} of "
+                      f"{len(digest['rows'])} finding(s) are at "
+                      f"{'/'.join(floor)}"
                       if since_digest is not None else
-                      f"no digest has been delivered yet and there are "
-                      f"{len(digest['rows'])} finding(s)")
+                      f"no digest has been delivered yet and {len(worthy)} of "
+                      f"{len(digest['rows'])} finding(s) are at "
+                      f"{'/'.join(floor)}")
         return out
 
-    out["why"] = (f"{len(digest['rows'])} finding(s), none immediate, and only "
+    out["why"] = (f"{len(digest['rows'])} finding(s), {len(worthy)} of them at "
+                  f"{'/'.join(floor)}, none immediate, and only "
                   f"{since_digest:.0f}s of the {interval:.0f}s interval have "
                   f"elapsed")
     return out
