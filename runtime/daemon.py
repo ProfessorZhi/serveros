@@ -2258,9 +2258,15 @@ class Daemon:
                 "last_action": self.budget.last_action(resource.id)}
 
     def _r_resource_summary(self, params) -> dict:
+        # Every segment is measured by this process, not derived by whoever
+        # reads the answer. The daemon tick is the one place a per-uid figure
+        # can be taken without a renderer inventing a second source for it.
         return {"host": self.inventory.host_summary(),
                 "disk": self.inventory.disk_status(),
-                "advisory": self.inventory.pressure()}
+                "advisory": self.inventory.pressure(),
+                "cpu_usage": self.inventory.cpu_usage(),
+                "user": {"summary": self.inventory.user_summary(),
+                         "quota": self.inventory.user_quota()}}
 
     def _r_resource_hygiene(self, params) -> dict:
         hygiene = hygiene_mod.Hygiene(self.registry, self.inventory)

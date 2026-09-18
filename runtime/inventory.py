@@ -165,6 +165,32 @@ def _parse_ps_size(text) -> tuple[int | None, int | None]:
     return _parse_size(writable), _parse_size(root)
 
 
+def _parse_xfs_quota(text: str) -> dict | None:
+    """One row of `xfs_quota -c 'quota -u <user>' <mount>`.
+
+    Columns are: filesystem, blocks, soft quota, hard limit, warn/time,
+    mountpoint. Blocks, quota and limit are all in **1024-byte units**, which
+    the header does not say. Reading them as 512-byte units turns a 450 GiB
+    soft limit into 225 GiB -- a factor of two, silently, in the direction of
+    a comfortable-looking number.
+
+    A filesystem with no quota configured prints the header and nothing else,
+    so None here is "not configured", not "failed to read".
+    """
+    for line in text.splitlines():
+        fields = line.split()
+        if len(fields) < 4 or not fields[0].startswith("/"):
+            continue
+        try:
+            used, soft, hard = (int(fields[1]) * 1024,
+                                int(fields[2]) * 1024,
+                                int(fields[3]) * 1024)
+        except ValueError:
+            continue
+        return {"filesystem": fields[0], "used": used, "soft": soft, "hard": hard}
+    return None
+
+
 def _int_or_none(text) -> int | None:
     try:
         return int(str(text).strip())
@@ -605,6 +631,169 @@ class Inventory:
             "total_jiffies": total,
             "sample_seconds": window,
             "counters": {k: second.get(k, 0) - first.get(k, 0) for k in keys},
+        }
+
+    # -- one account's share of the machine ---------------------------------
+    #
+    # The card asks "how much of this machine am I using". The host numbers
+    # cannot answer that -- they belong to every account at once -- and a
+    # renderer that ran its own `ps` would be a second source of truth for a
+    # fact this process can already own.
+
+    # Longer than CPU_SAMPLE_SECONDS on purpose. The per-uid counters advance
+    # in jiffies (1/100 s by default), so a window that catches no ticks is
+    # indistinguishable from an account that is genuinely idle -- and "the
+    # sample failed" and "nothing was running" must not print the same.
+    USER_SAMPLE_SECONDS = 1.0
+
+    def user_summary(self, interval: float | None = None) -> dict:
+        """What one account is using, measured by uid.
+
+        CPU is a *delta* between two samples, the same shape as `cpu_usage`,
+        and deliberately not `ps`'s `%cpu`: that column is a lifetime average,
+        so on a process up for a day it reports the mean of its whole life
+        rather than what it is doing now. The counters come from
+        `/proc/<pid>/stat` rather than from `ps -o cputimes`, because that
+        column is whole seconds and every window shorter than a second would
+        read as exactly zero.
+
+        Memory is the sum of RSS: pages resident, which is an *estimate* and
+        not the kernel's per-uid accounting. `provenance` says which one this
+        is, so nothing downstream has to guess and nothing has to relabel it.
+        """
+        uid = os.getuid()
+        window = self.USER_SAMPLE_SECONDS if interval is None else interval
+        first = self._user_sample(uid)
+        if first is None:
+            return _unavailable("could not list this account's processes")
+        self.host.sleep(window)
+        second = self._user_sample(uid)
+        if second is None:
+            return _unavailable(
+                "this account's processes stopped being readable mid-sample")
+        return self._user_result(first, second, window, uid)
+
+    def _user_sample(self, uid: int) -> dict | None:
+        code, out, _ = self.host.read(
+            ["ps", "-u", str(uid), "-o", "pid=,rss="], BUDGET["fast"])
+        if code != 0:
+            return None
+        jiffies = 0
+        rss_kb = 0
+        count = 0
+        for line in out.splitlines():
+            fields = line.split()
+            if len(fields) < 2:
+                continue
+            try:
+                rss_kb += int(fields[1])
+            except ValueError:
+                continue
+            tick = self._proc_cpu_jiffies(fields[0])
+            if tick is not None:
+                jiffies += tick
+            count += 1
+        return {"jiffies": jiffies, "rss_bytes": rss_kb * 1024,
+                "process_count": count}
+
+    def _proc_cpu_jiffies(self, pid: str) -> int | None:
+        """utime + stime for one pid, in jiffies.
+
+        Counted from after the **last** `)` rather than by splitting the whole
+        line. `/proc/<pid>/stat` puts the command name in parentheses and does
+        not escape what is inside them, so a process whose name contains a
+        space or a bracket shifts every later field by one -- and the CPU
+        numbers then come from the wrong columns without anything raising.
+        """
+        text = self.host.read_text(f"/proc/{pid}/stat")
+        if text is None:
+            return None
+        end = text.rfind(")")
+        if end < 0:
+            return None
+        fields = text[end + 1:].split()
+        if len(fields) < 13:
+            return None
+        try:
+            return int(fields[11]) + int(fields[12])
+        except ValueError:
+            return None
+
+    def _user_result(self, first: dict, second: dict, window: float, uid: int) -> dict:
+        host = self._cpu()
+        logical = host.get("logical_cpus") or None
+        memory_total = (self._memory() or {}).get("total_bytes") or None
+        delta = second["jiffies"] - first["jiffies"]
+        if delta < 0:
+            # The process set changed between the samples, so the two totals are
+            # not the same measurement. Clamping to zero would print "idle" for
+            # what is really "could not measure".
+            return _unavailable(
+                "this account's process set changed between the two samples, so "
+                "the CPU counters are not comparable",
+                sample_seconds=window)
+        hertz = os.sysconf("SC_CLK_TCK")
+        cores = round(delta / hertz / window, 2) if window > 0 else None
+        rss = second["rss_bytes"]
+        return {
+            "state": "PRESENT",
+            "uid": uid,
+            "cpu_cores": cores,
+            "cpu_percent_of_host": (
+                round(100.0 * cores / logical, 1)
+                if (cores is not None and logical) else None),
+            "logical_cpus": logical,
+            "memory_rss_bytes": rss,
+            "memory_percent_of_host": (
+                round(100.0 * rss / memory_total, 1) if memory_total else None),
+            "memory_total_bytes": memory_total,
+            "process_count": second["process_count"],
+            "sample_seconds": window,
+            "counters": {"cpu_jiffies": delta, "clock_ticks": hertz},
+            "provenance": ("sum of RSS over this uid's processes, sampled twice; "
+                           "an estimate of resident memory, not kernel per-uid "
+                           "accounting"),
+        }
+
+    def user_quota(self) -> dict:
+        """This account's filesystem quota, from the filesystem's authority.
+
+        Not `du`. A walk over a directory answers a different question: it sees
+        only what is *under that path*, so it misses files the account owns
+        elsewhere, charges nothing where the allocator charges for a reflink or
+        a sparse extent, and -- the part that matters most -- it cannot see a
+        limit at all. A `du`-based percentage can read "8% used" on an account
+        that is out of quota.
+        """
+        home = self._root("home") or "/"
+        code, out, _ = self.host.read(
+            ["findmnt", "-no", "TARGET", "--target", home], BUDGET["fast"])
+        mount = (out.strip().splitlines()[0].strip()
+                 if code == 0 and out.strip() else None)
+        if not mount:
+            return _unavailable(f"could not resolve the filesystem holding {home}")
+
+        code, out, err = self.host.read(
+            ["xfs_quota", "-c", f"quota -u {self._user()}", mount], BUDGET["fast"])
+        if code != 0:
+            return _unavailable(
+                f"xfs_quota could not answer for this account on {mount}: "
+                f"{err.strip()[:160]}")
+        row = _parse_xfs_quota(out)
+        if row is None:
+            return {"state": "NOT_CONFIGURED", "mount": mount,
+                    "reason": "the filesystem reports no quota for this account"}
+        hard = row["hard"]
+        return {
+            "state": "PRESENT",
+            "mount": mount,
+            "filesystem": row["filesystem"],
+            "used_bytes": row["used"],
+            "soft_limit_bytes": row["soft"],
+            "limit_bytes": hard,
+            "used_percent": round(100.0 * row["used"] / hard, 1) if hard else None,
+            "provenance": (f"xfs_quota -c 'quota -u {self._user()}' {mount}; the "
+                           f"blocks column is in 1024-byte units"),
         }
 
     # -- pressure stall information ----------------------------------------
