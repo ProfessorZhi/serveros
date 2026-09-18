@@ -52,8 +52,8 @@ graph = _load("serveros_runtime_graph", "graph.py")
 # ---------------------------------------------------------------------------
 
 
-def stat_line(*, pid, comm, state="S", ppid, utime=0, stime=0,
-              num_threads=1, starttime=0, rss_pages=0):
+def stat_line(*, pid, comm, state="S", ppid, pgrp=0, session=0, utime=0,
+              stime=0, num_threads=1, starttime=0, rss_pages=0):
     """Build one `/proc/<pid>/stat` line in the kernel's real layout.
 
     Built by field NUMBER, not by a hand-counted run of zeros. The first
@@ -66,6 +66,13 @@ def stat_line(*, pid, comm, state="S", ppid, utime=0, stime=0,
     values = {n: 0 for n in range(3, 25)}
     values.update({
         3: state, 4: ppid,                     # state, ppid
+        # Defaulted to 0 rather than to a realistic value, because 0 is what
+        # this builder produced before the parser read these two columns and
+        # every fixture in the file predates them. The point of naming them is
+        # that 0 is not a session: a raw line from `/proc` always carries the
+        # pid of some session leader here, so a test that cares about the
+        # distinction has to say so explicitly.
+        5: pgrp, 6: session,                   # pgrp, session
         14: utime, 15: stime,                  # utime, stime
         18: 20,                                # priority
         20: num_threads,                       # num_threads
@@ -260,6 +267,24 @@ def test_a_process_name_containing_spaces_and_parens_is_parsed():
     assert parsed["starttime"] == 100
 
 
+def test_the_parser_reads_the_process_group_and_the_session():
+    """Fields 5 and 6. These are the two columns that answer "did this
+    process detach on purpose", and they sit immediately after `ppid`, which
+    is the field most likely to be read by hand and the reason they were
+    skipped for so long. Read from the kernel's layout, not counted."""
+    parsed = att.parse_stat(stat_line(pid=42, comm="x", ppid=1, pgrp=42,
+                                      session=42))
+    assert parsed["pgrp"] == 42
+    assert parsed["session"] == 42
+
+    # Still in the right columns when the name shifts everything a naive
+    # split would have counted on.
+    shifted = att.parse_stat(stat_line(pid=43, comm="my prog", ppid=1,
+                                       pgrp=7, session=9))
+    assert shifted["pgrp"] == 7
+    assert shifted["session"] == 9
+
+
 # ---------------------------------------------------------------------------
 # CPU: what "sustained" is allowed to mean
 # ---------------------------------------------------------------------------
@@ -389,6 +414,88 @@ def test_a_daemonised_root_is_not_reparented_by_accident(codex_host):
     codex_host.procs[178963]["stat"]["ppid"] = 999
     table = att.process_table(codex_host)
     assert att.process_tree(178963, table)["reparented_to_init"] is False
+
+
+def test_a_root_that_is_its_own_session_leader_is_reported_as_daemonised(codex_host):
+    """The fact the lineage cannot supply, so the tree reports it.
+
+    A `setsid()` caller is a session leader, which the kernel records by
+    making its session id equal its own pid. A process whose session leader
+    died keeps the DEAD leader's id instead. Together with `reparented_to_init`
+    that is enough to separate a daemon from a leftover, and neither half is
+    a process name.
+    """
+    codex_host.procs[178963]["stat"]["session"] = 178963
+    table = att.process_table(codex_host)
+    tree = att.process_tree(178963, table)
+    assert tree["root_session"] == 178963
+    assert tree["root_owns_its_session"] is True
+
+    # The same root carrying somebody else's session id is the leftover
+    # shape, and the reader gets that answer from the same two fields.
+    codex_host.procs[178963]["stat"]["session"] = 999999
+    table = att.process_table(codex_host)
+    tree = att.process_tree(178963, table)
+    assert tree["root_session"] == 999999
+    assert tree["root_owns_its_session"] is False
+
+
+INSTANCE = "/user.slice/user-1004.slice/user@1004.service"
+TMUX_SCOPE = INSTANCE + "/tmux-spawn-abc.scope"
+INSTANCE_INIT = INSTANCE + "/init.scope"
+
+
+def instance_host(cgroup, *, live, root_pid=178963):
+    """A host whose root sits in `cgroup`, and optionally a live instance.
+
+    `live` adds one process sitting in the instance's own `init.scope`, which
+    is what a running `user@<uid>.service` leaves behind in the cgroup tree.
+    """
+    # `pid` is deliberately not in the stat record: `FakeHost` already passes
+    # it from the key, and repeating it is a TypeError rather than a wrong
+    # answer, which is the good kind of fixture bug.
+    procs = {
+        root_pid: {"stat": {"comm": "tmux", "ppid": 1, "session": root_pid},
+                   "cgroup": cgroup},
+    }
+    if live:
+        procs[1] = {"stat": {"comm": "systemd", "ppid": 0, "session": 1},
+                    "cgroup": INSTANCE_INIT}
+    return FakeHost(procs)
+
+
+def test_a_live_user_instance_is_read_from_the_cgroup_tree():
+    """`init.scope` under the instance exists for as long as the instance does.
+
+    Read from the process table rather than by asking `systemctl`, so the
+    answer is the same observation the rest of the record came from and cannot
+    be a second, later reading.
+    """
+    table = att.process_table(instance_host(TMUX_SCOPE, live=True))
+    assert att.process_tree(178963, table)["owner_instance_live"] is True
+
+    table = att.process_table(instance_host(TMUX_SCOPE, live=False))
+    assert att.process_tree(178963, table)["owner_instance_live"] is False
+
+    # A cgroup that is not under a user instance has no instance to be alive.
+    # None rather than False, so "there is no instance" and "the instance is
+    # gone" stay distinguishable to a reader of the record.
+    table = att.process_table(instance_host("/system.slice/docker.service",
+                                            live=True))
+    assert att.process_tree(178963, table)["owner_instance_live"] is None
+
+
+def test_a_short_table_does_not_read_as_a_live_instance():
+    """Under `hidepid` a table can be missing rows. Missing is not alive.
+
+    Reporting True here would exempt every runtime scope on the host the
+    moment the instance's own processes became unreadable, which is the
+    failure mode this file exists to avoid: an absence rendered as a pass.
+    """
+    host = instance_host(TMUX_SCOPE, live=True)
+    del host.procs[1]
+    table = att.process_table(host)
+    assert att.process_tree(178963, table)["owner_instance_live"] is False
 
 
 def test_the_process_tree_is_nested_and_complete(codex_host):

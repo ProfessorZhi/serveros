@@ -499,6 +499,11 @@ def is_managed(group: dict) -> bool:
 #: is gone. The role cannot express that difference — it answers "whose is
 #: this", and both are the user manager's — so the scope is read here, where
 #: the question being asked is a different one.
+# The instance segment of a user manager's cgroup path, captured so that its
+# `init.scope` can be looked for in a process table. Anchored at the start
+# because a cgroup path is absolute.
+USER_INSTANCE = re.compile(r"^(?P<instance>/user\.slice/user-\d+\.slice/user@\d+\.service)(?:/|$)")
+
 USER_MANAGER_SCOPE = re.compile(
     r"^/user\.slice/user-\d+\.slice/user@\d+\.service/init\.scope$")
 
@@ -536,17 +541,24 @@ def parented_to_init_by_design(group: dict) -> bool:
                                explain it, so its lineage explains nothing
                                either way.
 
-    EXTERNAL_USER_SESSION is deliberately NOT in that tuple. A process inside
-    `session-<N>.scope` whose parent is PID1 has outlived its session leader,
-    and that is the leftover signature this detector exists to find. A live
-    login's processes are parented to their session leader, not to PID1, so
-    exempting the scope wholesale would blind the one case that matters while
-    buying nothing for the case that does not — and nothing else catches it:
+    EXTERNAL_USER_SESSION is NOT in that tuple, and the reason has not
+    changed: a process inside `session-<N>.scope` whose parent is PID1 may
+    have outlived its session leader, and that is the leftover signature this
+    detector exists to find. A live login's processes are parented to their
+    session leader, not to PID1, so exempting the scope wholesale would blind
+    the one case that matters — and nothing else catches it:
     `RUNTIME_OUTLIVED_OWNER` fires only while the session still reports state
     `closing`, and a session that is simply gone reports no state at all.
 
+    What the ROLE cannot carry, though, is whether the group's root still has
+    that login. The role answers "whose is this", and both a leftover and a
+    daemon that detached from the same login answer it identically. So for a
+    session scope the exemption is not granted by role but asked of the
+    kernel, per group, through `detached_by_design` — which is False when the
+    evidence is absent, leaving ORPHAN exactly where it was.
+
     The role still travels on the record for a session group, so a reader
-    sees whose session it was. The alert stands.
+    sees whose session it was.
     """
     ownership = group.get("ownership") or {}
     if ownership.get("class") != EXTERNAL:
@@ -559,8 +571,108 @@ def parented_to_init_by_design(group: dict) -> bool:
         # user's instance started — `user@1002.service/dbus.service` — is the
         # user manager's too, and there being parented to PID1 means the user
         # instance died. Same signature as a session leftover, same answer.
-        return bool(USER_MANAGER_SCOPE.match(group.get("scope") or ""))
+        if USER_MANAGER_SCOPE.match(group.get("scope") or ""):
+            return True
+        return scope_of_a_live_instance(group)
+    if role == ROLE_EXTERNAL_USER_SESSION:
+        return detached_by_design(group)
     return False
+
+
+def _owner_instance_live(cgroup: str | None, table: dict) -> bool | None:
+    """Whether the user instance that owns this cgroup is still running.
+
+    Read from the cgroup the kernel put each process in, not from
+    `systemctl`: a `user@<uid>.service` keeps an `init.scope` under itself for
+    exactly as long as the instance is alive, and every process in the table
+    carries the cgroup the kernel wrote for it. So the answer costs one pass
+    over a table the caller already has, and it cannot be stale the way a
+    separate query can.
+
+    None means "this cgroup is not under a user instance", which is a
+    different fact from False and is why the caller tests it separately.
+    False is returned when the instance is not visible in the table — under
+    `hidepid` a table can be short, and a short table must not read as a live
+    instance.
+    """
+    if not cgroup or not isinstance(cgroup, str):
+        return None
+    match = USER_INSTANCE.match(cgroup)
+    if match is None:
+        return None
+    wanted = match.group("instance") + "/init.scope"
+    for facts in table.values():
+        if getattr(facts, "cgroup", None) == wanted:
+            return True
+    return False
+
+
+def detached_by_design(group: dict) -> bool:
+    """True when the group's root created its OWN POSIX session.
+
+    `reparented_to_init` alone cannot separate a leftover from a daemon that
+    double-forked, and this module said so for a long time: "the difference
+    between abandoned and daemonised is not in the lineage". That was true of
+    the lineage and false of the kernel's record. `/proc/<pid>/stat` field 6
+    is the POSIX session id, and it answers the question directly:
+
+      · A process that calls `setsid()` becomes a session leader, so its
+        session id IS its own pid. Its parent exiting afterwards is what
+        daemonising means. Measured on this host 2026-09-18: the VS Code
+        server (pid 25215) and `botmux` (pid 1444974) both sit in a
+        `session-<N>.scope` with ppid 1 and sid == pid.
+      · A process whose session leader died keeps the DEAD leader's session
+        id — not its own, and belonging to a pid that no longer exists.
+        Measured the same day: a `sh` (pid 317189) carrying sid 316851, where
+        316851 was gone.
+
+    Nothing here reads a name, so this cannot become an allowlist by another
+    route. It is False when the evidence is absent, which is the direction
+    that keeps the alert: a group whose lineage cannot be read keeps ORPHAN.
+
+    One case this does not cover, and should not: a daemon whose own session
+    leader later dies leaves grandchildren carrying the inherited sid. Those
+    are reported as leftovers, and that is the right answer for them — they
+    did outlive their leader.
+    """
+    return bool((group.get("tree") or {}).get("root_owns_its_session"))
+
+
+def scope_of_a_live_instance(group: dict) -> bool:
+    """True when the group is a RUNTIME scope under a user instance that is
+    still running.
+
+    The same defect as the one above, in a different cgroup shape. A scope is
+    a grouping systemd made at runtime; it is never backed by a unit file, and
+    systemd does not fork what runs in it — `systemd-run --scope` registers the
+    scope around a process it started and then exits, so the payload is
+    parented to PID1 from the moment the command returns. That is why
+    `reparented_to_init` looks identical here to a service that outlived its
+    manager, and why the existing rule ("only the manager's own scope") reads
+    it as the latter.
+
+    What separates them is the instance. A service below `user@<uid>.service`
+    has the manager as its parent, so PPID 1 means the manager is gone. A
+    runtime scope below it does not, and the manager can be seen to be alive:
+    `user@<uid>.service/init.scope` still exists in the cgroup tree. Measured
+    on `device:tokyo-shared-dev-01`, 2026-09-18: `tmux-spawn-*.scope` under a
+    live `user@1004.service`, both directories present in cgroupfs, roots with
+    PPID 1 carrying 2 to 18 processes each.
+
+    Session scopes are excluded and keep their own rule — they are runtime
+    groupings too, but a login really does end, and `detached_by_design` is
+    the question to ask about those. The user manager's own `init.scope` is
+    excluded because it is already exempt above.
+
+    Fail-closed like the other one: absent the cgroup, or a table too short to
+    contain the instance, this is False and the alert stands.
+    """
+    scope = group.get("scope") or ""
+    if not scope.endswith(".scope"):
+        return False
+    if USER_MANAGER_SCOPE.match(scope) or session_of_cgroup(scope):
+        return False
+    return bool((group.get("tree") or {}).get("owner_instance_live"))
 
 
 def slice_of_cgroup(cgroup: str) -> str | None:
@@ -597,6 +709,13 @@ def parse_stat(raw: str) -> dict:
         "comm": comm,
         "state": field(3),
         "ppid": int(field(4)),
+        # Fields 5 and 6. The process group and the POSIX session are what
+        # separate "this daemon detached on purpose" from "this outlived a
+        # leader that died" -- see `detached_by_design`, which is the only
+        # consumer, and which had to be answered from the cgroup alone until
+        # these two were parsed.
+        "pgrp": int(field(5)),
+        "session": int(field(6)),
         "utime": int(field(14)),
         "stime": int(field(15)),
         "starttime": int(field(22)),  # clock ticks since boot
@@ -859,9 +978,10 @@ class LiveHost:
 class ProcessFacts:
     """One process, as the kernel records it. No interpretation."""
 
-    __slots__ = ("pid", "ppid", "comm", "state", "argv", "executable", "cgroup",
-                 "uid", "user", "rss_bytes", "cpu_percent", "starttime",
-                 "num_threads", "cwd", "age_seconds")
+    __slots__ = ("pid", "ppid", "pgrp", "session", "comm", "state", "argv",
+                 "executable", "cgroup", "uid", "user", "rss_bytes",
+                 "cpu_percent", "starttime", "num_threads", "cwd",
+                 "age_seconds")
 
     def __init__(self, **kw):
         for name in self.__slots__:
@@ -922,6 +1042,8 @@ def process_table(host, *, container_index: dict[str, str] | None = None) -> dic
         table[pid] = ProcessFacts(
             pid=pid,
             ppid=stat["ppid"],
+            pgrp=stat["pgrp"],
+            session=stat["session"],
             comm=stat["comm"],
             state=stat["state"],
             argv=cmd["argv"],
@@ -1003,6 +1125,15 @@ def process_tree(pid: int, table: dict[int, ProcessFacts]) -> dict:
     lineage fact and leaves the conclusion to `anomaly.py`, which can combine
     it with a session state that is closing and a task that is closed.
 
+    `root_owns_its_session` is the half of that which IS in the kernel's
+    record, so it is reported here rather than left to a reader to rediscover.
+    `/proc/<pid>/stat` field 6 is the POSIX session id: a process that called
+    `setsid()` becomes a session leader and its session id IS its own pid,
+    which is what daemonising means; a process whose leader died keeps the
+    dead leader's id, which is not its own. See `detached_by_design` for the
+    measurements. It is reported and not concluded on for the same reason as
+    the lineage: this function is a fact, and `anomaly.py` is the verdict.
+
     That restraint is deliberate. An earlier version of this function returned
     `orphaned: true` for any ppid-1 root, which would have flagged every
     correctly-daemonised service on the host as abandoned.
@@ -1034,6 +1165,16 @@ def process_tree(pid: int, table: dict[int, ProcessFacts]) -> dict:
         "root_ppid": root_facts.ppid if root_facts else None,
         "lineage": chain,
         "reparented_to_init": bool(root_facts and root_facts.ppid == 1),
+        "root_session": root_facts.session if root_facts else None,
+        "root_owns_its_session": bool(
+            root_facts and root_facts.session == root_facts.pid
+        ),
+        # Whether the user instance this cgroup belongs to is still running.
+        # None when the cgroup is not under one, so "no instance" and "an
+        # instance that is gone" stay distinguishable to a reader.
+        "owner_instance_live": _owner_instance_live(
+            root_facts.cgroup if root_facts else None, table),
+        
         "chain_complete": chain_complete,
         "chain_terminated_at": last,
         "chain_terminated_because": (

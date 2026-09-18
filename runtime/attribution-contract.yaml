@@ -471,9 +471,13 @@ anomalies:
       so on its own it cannot separate a service from a runtime somebody left
       behind. See EXTERNAL_SYSTEM_PROCESS_TREE and EXTERNAL_PROCESS_TREE for
       the cases where the cgroup shows that being parented to PID1 is what the
-      group IS. A group in a `session-<N>.scope` keeps THIS code even though
-      its cgroup names an owner, because there the reparenting is the finding.
-      The role rides on the evidence either way.
+      group IS. A group in a `session-<N>.scope` keeps THIS code when its root
+      did NOT create its own session, because there the reparenting is the
+      finding; when it DID, being parented to PID1 is what daemonising means
+      and the group is EXTERNAL_PROCESS_TREE. That test is `/proc/<pid>/stat`
+      field 6 read against the root's own pid, so it comes from the kernel
+      rather than from the scope name. The role rides on the evidence either
+      way, and `detached_by_design` reports which branch fired.
   - code: EXTERNAL_SYSTEM_PROCESS_TREE
     severity: low
     implies_stale: false
@@ -512,24 +516,66 @@ anomalies:
       manager's hierarchy entirely, so for both, being parented to PID1 is by
       design.
 
-      For EXTERNAL_USER_MANAGER that is only true of the manager's OWN scope.
-      `user@<uid>.service` is a unit the system manager starts, but the units
-      and sessions below it were started by the user's instance, so a
+      For EXTERNAL_USER_MANAGER that is true of the manager's OWN scope, and
+      of a runtime `.scope` under an instance that can be seen to be alive.
+      `user@<uid>.service` is a unit the system manager starts, but a SERVICE
+      below it has the manager as its parent, so a
       `user@1002.service/dbus.service` parented to PID1 has outlived that
-      instance and keeps ORPHAN_PROCESS_TREE. The role cannot express this —
-      it answers "whose is this", and both are the user manager's — so the
-      scope is read where the question is asked.
+      instance and keeps ORPHAN_PROCESS_TREE. A `.scope` is different: it is
+      never backed by a unit file, and systemd does not fork what runs in it.
+      `systemd-run --scope` registers the scope around a process it started
+      and then exits, so the payload has PPID 1 from the moment the command
+      returns — while its instance is still running and its `init.scope` is
+      still in the cgroup tree. Measured on `device:tokyo-shared-dev-01`,
+      2026-09-18: `tmux-spawn-*.scope` under a live `user@1004.service`.
 
-      EXTERNAL_USER_SESSION is deliberately NOT here and keeps
-      ORPHAN_PROCESS_TREE at `high`. A process inside `session-<N>.scope`
-      whose parent is PID1 has outlived its session leader — that is the
-      leftover signature, not a design property — and a live login's
-      processes are parented to their session leader, not to PID1, so
-      exempting sessions would blind the one case that matters.
-      RUNTIME_OUTLIVED_OWNER does not cover it: it fires only while the
-      session still reports state `closing`, and a session that is simply gone
-      reports no state at all. The role still rides on the ORPHAN alert's
-      evidence so a reader can see whose session it was.
+      So the scope case is decided by evidence about the instance rather than
+      by the shape of the path, and it is read from the cgroup the kernel gave
+      each process — `init.scope` present under the instance means the
+      instance is alive. Session scopes keep their own rule (a login really
+      does end; `detached_by_design` is the question to ask of those). Absent
+      the cgroup, or a table too short to hold the instance, this is False and
+      the alert stands.
+
+      The role cannot express any of this — it answers "whose is this", and
+      every one of these is the user manager's — so the scope is read where
+      the question is asked.
+
+      EXTERNAL_USER_SESSION is here only when the group's root created its
+      OWN POSIX session, and keeps ORPHAN_PROCESS_TREE at `high` when it did
+      not. A process inside `session-<N>.scope` whose parent is PID1 MAY have
+      outlived its session leader — that is the leftover signature — but the
+      scope name cannot tell that apart from a process that called `setsid()`
+      and whose parent then exited, which is what daemonising IS. Both live in
+      the same kind of scope and both have ppid 1.
+
+      The kernel distinguishes them directly. `/proc/<pid>/stat` field 6 is
+      the POSIX session id: a `setsid()` caller is a session leader, so its
+      session id IS its own pid; a process whose leader died carries the DEAD
+      leader's id, which is not its own and belongs to a pid that no longer
+      exists. Measured on `device:tokyo-shared-dev-01` on 2026-09-18, both
+      shapes in one reading — the VS Code server (pid 25215), `botmux`
+      (1444974) and a live `tmux: server` (328129) each with sid == pid; and
+      three `sh` (28541, 317189, 353879) each carrying a sid whose pid was
+      already gone.
+
+      So the exemption is asked per group rather than granted by role, and it
+      is False when the evidence is absent: a group whose lineage cannot be
+      read keeps ORPHAN_PROCESS_TREE at `high`, which is the direction that
+      keeps the alert. Nothing here reads a name, so this did not become a
+      process-name allowlist by another route — and that is why a live tmux or
+      an active claude session is associated rather than mechanically
+      orphaned.
+
+      What it deliberately does NOT cover: a daemon whose OWN session leader
+      later dies leaves grandchildren carrying the inherited sid, and those
+      are still reported as leftovers. That is the correct answer for them —
+      they did outlive their leader.
+
+      RUNTIME_OUTLIVED_OWNER does not cover the leftover case either: it fires
+      only while the session still reports state `closing`, and a session that
+      is simply gone reports no state at all. The role still rides on the
+      alert's evidence so a reader can see whose session it was.
 
       Observe-only, and `lifecycle` carries OBSERVE_ONLY to say so on the
       record rather than leaving a consumer to infer it. Nothing reclaims,

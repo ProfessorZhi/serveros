@@ -403,9 +403,20 @@ def detect(*, groups=None, containers=None, task_states=None, host_facts=None,
             session_state = None
             if group.get("session_ref"):
                 session_state = (task_states or {}).get(group["session_ref"], {}).get("state")
-            lineage = {"root_ppid": (group.get("tree") or {}).get("root_ppid"),
-                       "chain_complete": (group.get("tree") or {}).get("chain_complete"),
-                       "origin_session_state": session_state}
+            tree = group.get("tree") or {}
+            lineage = {"root_ppid": tree.get("root_ppid"),
+                       "chain_complete": tree.get("chain_complete"),
+                       "origin_session_state": session_state,
+                       # The half of "is PID1 its parent by design" that the
+                       # cgroup cannot answer. Carried on the evidence so a
+                       # reader can audit the verdict instead of trusting it.
+                       "root_session": tree.get("root_session"),
+                       "detached_by_design": attribution.detached_by_design(group),
+                       # And the second half: whether the user instance that
+                       # owns this cgroup is still running, which is what
+                       # separates a runtime scope from a service that
+                       # outlived its manager.
+                       "owner_instance_live": tree.get("owner_instance_live")}
             # Reparenting to init is true of EVERY systemd service — PID1 is
             # its parent by design — so the fact alone cannot separate a
             # service from a runtime somebody left behind. The cgroup can:
@@ -458,28 +469,45 @@ def detect(*, groups=None, containers=None, task_states=None, host_facts=None,
                         if role == attribution.ROLE_EXTERNAL_SYSTEM
                         else "EXTERNAL_PROCESS_TREE")
                 where = ownership.get("slice") or "no slice"
+                # Two ways to reach this code, and the record says which one
+                # fired. A session scope gets here through the process rather
+                # than through the cgroup, so the cgroup half of the sentence
+                # would be true but not the reason — and a `why` that names
+                # the wrong reason is how a future reader concludes the
+                # exemption is broader than it is.
+                if lineage["detached_by_design"]:
+                    why = ("the group's root is parented to init AND it "
+                           "created its own POSIX session (`setsid`), so PID1 "
+                           "being the parent is what daemonising means rather "
+                           "than a sign its leader died. `ownership` still "
+                           "records the cgroup's answer — " + str(where)
+                           + " as " + str(role) + " — because that half is "
+                             "true and says whose login it detached from.")
+                else:
+                    why = ("the group's root is parented to init AND its "
+                           "cgroup places it under " + str(where) + " as "
+                           + str(role) + ". The kernel recorded an owner that "
+                           "is not this deployment's, so this is a host-owned "
+                           "group being observed rather than a runtime left "
+                           "behind — and it is why this one is observe-only.")
                 signals.append(signal(
                     code, ref,
                     {**lineage, "ownership": ownership},
                     window="lineage and cgroup at observation time",
-                    why=("the group's root is parented to init AND its cgroup "
-                         "places it under " + str(where) + " as " + str(role)
-                         + ". The kernel recorded an owner that is not this "
-                           "deployment's, so this is a host-owned group being "
-                           "observed rather than a runtime left behind — and "
-                           "it is why this one is observe-only."),
+                    why=why,
                 ))
             else:
                 signals.append(signal(
                     "ORPHAN_PROCESS_TREE", ref,
                     {**lineage, "ownership": ownership},
                     window="lineage at observation time",
-                    why=("the group's root is parented to init and its cgroup "
-                         "does not show that PID1 being the parent is what it "
-                         "IS — either nothing was attributed, or what was "
-                         "attributed is a login session whose reparenting is "
-                         "the leftover signature rather than a design "
-                         "property. Where the cgroup DOES show that, the "
+                    why=("the group's root is parented to init and neither "
+                         "the cgroup nor the process shows that PID1 being "
+                         "the parent is what it IS — nothing was attributed, "
+                         "or what was attributed is a login session whose "
+                         "root did NOT create its own session, so the "
+                         "reparenting is the leftover signature rather than a "
+                         "design property. Where either DOES show that, the "
                          "signal is reported as EXTERNAL_SYSTEM_PROCESS_TREE "
                          "or EXTERNAL_PROCESS_TREE instead."),
                 ))
