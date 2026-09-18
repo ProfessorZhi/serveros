@@ -49,6 +49,11 @@ INTERVAL = 3600
 TOP_N = 5
 IMMEDIATE = ("high",)
 INCLUDED = ("high", "medium", "low")
+# §27. Which severities may make a card EXIST once the interval has elapsed,
+# as opposed to which may preempt it. Literals for the same reason as the rest:
+# a fixture that reads the policy it is testing asserts only that the policy
+# equals itself.
+PROACTIVE = ("high", "medium")
 
 
 def _load(name: str, path: Path):
@@ -399,6 +404,78 @@ class WhenItIsWorthAMessage(Fixture):
         self.assertTrue(verdict["send"])
         self.assertTrue(verdict["immediate"])
 
+    def test_an_hour_of_nothing_but_recoveries_is_not_a_card(self):
+        """§27. The interval is a clock, not a reason.
+
+        Watched in production: the only news in an hour was a batch of
+        recoveries and the card still went out, full height, every hour. A
+        person who is told "32 things recovered" when they were never told
+        those 32 things were broken learns to skip the card, and the card is
+        the only surface a real finding has.
+        """
+        ref = ref_of(FS, FS)
+        self.baseline()
+        self.put(alert(ref, first_seen=LATER(60)))
+        first = self.compose(at=LATER(120))
+        digest.record(self.cursor, self.store, at=LATER(120), generation=1,
+                      state="DELIVERED", shown=first["shown"])
+        self.put(alert(ref, first_seen=LATER(60), state="RESOLVED",
+                       resolved_at=LATER(200)))
+        late = self.compose(at=LATER(120 + INTERVAL + 1))
+        self.assertEqual(late["counts"]["RECOVERED"], 1)
+        verdict = digest.decision(late, self.cursor,
+                                  at=LATER(120 + INTERVAL + 1))
+        self.assertFalse(verdict["send"])
+        self.assertIn("recoveries", verdict["why"])
+
+    def test_an_hour_of_nothing_but_notices_is_not_a_card(self):
+        """The same for LOW. A NOTICE is a line in a card somebody is already
+        reading; on a quiet host it would otherwise be an hourly card forever."""
+        self.baseline()
+        self.put(alert(ref_of(GROUP, GROUP), code="AGE_WITHOUT_ACTIVITY",
+                       severity="low", subject=GROUP, first_seen=LATER(60)))
+        late = self.compose(at=LATER(120 + INTERVAL + 1))
+        self.assertEqual(late["counts"]["NEW"], 1)
+        verdict = digest.decision(late, self.cursor,
+                                  at=LATER(120 + INTERVAL + 1))
+        self.assertFalse(verdict["send"])
+        self.assertIn("none at", verdict["why"])
+
+    def test_a_warning_still_earns_the_interval(self):
+        """The half that keeps this from being a silencer. A medium finding is
+        not immediate and must not preempt the hour — and must still be said
+        when the hour arrives. Narrowing the gate to HIGH alone would have
+        passed the two tests above and gone quiet on every WARNING."""
+        self.baseline()
+        self.put(alert(ref_of(FS, FS), severity="medium", first_seen=LATER(60)))
+        at = LATER(120 + INTERVAL + 1)
+        verdict = digest.decision(self.compose(at=at), self.cursor, at=at)
+        self.assertTrue(verdict["send"])
+        self.assertFalse(verdict["immediate"])
+
+    def test_a_recovery_rides_along_in_a_card_it_did_not_create(self):
+        """§26. A RECOVERED is not suppressed — it appears in a card that
+        exists for another reason. What it may never be is the reason."""
+        ref = ref_of(FS, FS)
+        self.baseline()
+        self.put(alert(ref, first_seen=LATER(60)))
+        first = self.compose(at=LATER(120))
+        digest.record(self.cursor, self.store, at=LATER(120), generation=1,
+                      state="DELIVERED", shown=first["shown"])
+        self.put(alert(ref, first_seen=LATER(60), state="RESOLVED",
+                       resolved_at=LATER(200)))
+        other = ref_of(GROUP, GROUP)
+        self.put(alert(other, code="HIGH_MEMORY_SUSTAINED", severity="medium",
+                       subject=GROUP, first_seen=LATER(200)))
+        at = LATER(120 + INTERVAL + 1)
+        document = self.compose(at=at)
+        self.assertIn("RECOVERED", self.kinds(document))
+        verdict = digest.decision(document, self.cursor, at=at)
+        self.assertTrue(verdict["send"])
+        # 两个 finding 里只有一个够格 —— 另一个正是那条恢复。这就是 §26 的形状：
+        # 恢复跟着走，但它不是这张卡存在的原因。
+        self.assertIn("1 of 2", verdict["why"])
+
     def test_a_non_immediate_delta_waits_for_the_interval(self):
         """The first digest goes out whenever it is composed — nobody has been
         told anything yet. After that the interval is what stops a medium
@@ -568,6 +645,7 @@ class TheContractOwnsTheNumbers(unittest.TestCase):
         self.assertEqual(self.block["top_n"], TOP_N)
         self.assertEqual(tuple(self.block["immediate_severities"]), IMMEDIATE)
         self.assertEqual(tuple(self.block["include_severities"]), INCLUDED)
+        self.assertEqual(tuple(self.block["proactive_severities"]), PROACTIVE)
 
     def test_the_kinds_are_the_four_the_module_implements(self):
         self.assertEqual(tuple(self.block["kinds"]), digest.KINDS)
@@ -587,6 +665,20 @@ class TheContractOwnsTheNumbers(unittest.TestCase):
     def test_the_immediate_split_is_a_subset_of_what_is_included(self):
         for severity in self.block["immediate_severities"]:
             self.assertIn(severity, self.block["include_severities"])
+
+    def test_the_cadence_floor_is_a_subset_of_what_is_included(self):
+        """A severity may not cause a card without being allowed to appear in
+        one — otherwise the gate would send a card whose own row the document
+        had been told to leave out."""
+        for severity in self.block["proactive_severities"]:
+            self.assertIn(severity, self.block["include_severities"])
+
+    def test_the_cadence_floor_excludes_the_lowest_level(self):
+        """The one assertion that would catch a well-meaning widening. LOW is
+        context, not news; if it ever becomes cause-for-a-card the hourly card
+        returns and this file's own cadence tests cannot see it, because they
+        all use one alert."""
+        self.assertNotIn("low", self.block["proactive_severities"])
 
 
 # ---------------------------------------------------------------------------

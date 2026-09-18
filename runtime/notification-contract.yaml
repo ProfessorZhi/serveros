@@ -402,11 +402,17 @@ alerts:
     # here so a renderer has one vocabulary to read rather than its own.
     kinds: [NEW, ESCALATED, RECOVERED, REOPENED]
     # The outer cadence. A digest is COMPOSED on whatever schedule the surface
-    # runs and SENT only when something immediate is due or this many seconds
-    # have passed since the last one that actually arrived. A quiet hour
-    # therefore produces no card, and that is the intended outcome rather than
-    # a gap in the record — `alert list` is the standing state and it is
-    # always current.
+    # runs and SENT only when something immediate is due, or this many seconds
+    # have passed since the last one that actually arrived AND the batch
+    # contains something `proactive_severities` covers. A quiet hour therefore
+    # produces no card, and that is the intended outcome rather than a gap in
+    # the record — `alert list` is the standing state and it is always current.
+    #
+    # The second clause was added after watching what the first one alone did
+    # in production: the interval is a clock, not a reason, so an hour in which
+    # the only news was 32 recoveries and a NOTICE still produced a full card.
+    # `kinds` still carries all four, so a RECOVERED that belongs in a card
+    # appears in one; it just cannot be what makes the card exist.
     interval_seconds: 3600
     # Which severities may go out of band, and which may appear at all. HIGH is
     # the only one that may: a disk at 3% is worth a message of its own when
@@ -414,6 +420,22 @@ alerts:
     # person is already reading. Both are policy, so neither is a judgement
     # made at the call site.
     immediate_severities: [high]
+    # The second half of the same split, and the one that keeps the hourly card
+    # from becoming a standing report. `immediate_severities` answers "may this
+    # preempt the interval"; this answers "may this CAUSE a card when the
+    # interval elapses". They are declared apart because the answers differ for
+    # the middle level and the difference is the whole point: a WARNING is
+    # worth a card at the hour, and is not worth waking the interval for.
+    #
+    # LOW is absent from both, and that omission is the rule rather than an
+    # oversight. A NOTICE is context for a card somebody is already reading —
+    # the /dev/shm line in a dashboard, the 47th stopped container — and a
+    # cadence gate that counted them would send an hourly card on a quiet host
+    # forever. RECOVERED is absent for a different reason and it is not a
+    # severity: a recovery is only sayable to somebody who was told the thing
+    # was broken, so it may ride along in a card that exists for another
+    # reason (`kinds` still lists it) and may never be the reason one exists.
+    proactive_severities: [high, medium]
     include_severities: [high, medium, low]
     # What fits on one card. The remainder is COUNTED and never dropped: the
     # document carries `rows` in full and `more` as the difference, so "three"
