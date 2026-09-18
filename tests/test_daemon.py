@@ -202,6 +202,24 @@ class FakeInventory:
     def host_summary(self):
         return {"cpu": {"model": "fake"}, "memory": {"total_gib": 31.0}}
 
+    # The three segments `resource.summary` gained when the card stopped
+    # counting host numbers as a person's. Answered as named absences rather
+    # than given placeholder numbers: this double has no `/proc` to read, and a
+    # fake that invented "0.1 core" would be a fixture asserting a measurement.
+    # The real paths are exercised in `tests/test_user_observation.py`, which
+    # drives the real `Inventory` through a host that serves `/proc`.
+    def cpu_usage(self):
+        return {"state": inventory_mod.UNAVAILABLE,
+                "reason": "the fake host does not sample /proc/stat"}
+
+    def user_summary(self):
+        return {"state": inventory_mod.UNAVAILABLE,
+                "reason": "the fake host has no processes to attribute"}
+
+    def user_quota(self):
+        return {"state": inventory_mod.UNAVAILABLE,
+                "reason": "the fake host has no filesystem quota"}
+
 
 class FakeRunner:
     """Records the commands it is asked to run and returns a configured result."""

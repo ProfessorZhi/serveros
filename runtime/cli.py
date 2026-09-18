@@ -1317,8 +1317,22 @@ def cmd_resource_summary(args) -> int:
     disk = inv.disk_status()
     docker = inv.docker_summary()
     advisory = inv.pressure()
+    # The account running this daemon, measured by uid. Host counters cannot
+    # answer "how much of this is mine" -- they belong to everyone at once.
+    user = inv.user_summary()
+    quota = inv.user_quota()
+    # `load` and `used_percent` are two different measurements and both are
+    # reported. Load is queue depth -- how many runnable threads were waiting --
+    # so `load1 / logical_cpus` is not a utilisation figure: on a 128-core box
+    # a load of 12 is either 9% busy or a machine with twelve threads queued
+    # behind one core, and the ratio cannot tell those apart. `cpu_usage` asks
+    # `/proc/stat` how many jiffies the CPUs actually spent not-idle, which is
+    # the question a reader means by "how busy is it".
+    usage = inv.cpu_usage()
 
-    payload = {"host": host, "disk": disk, "docker": docker, "advisory": advisory}
+    payload = {"host": host, "disk": disk, "docker": docker, "advisory": advisory,
+               "cpu_usage": usage,
+               "user": {"summary": user, "quota": quota}}
     lines = [
         f"cpu      {host['cpu']['model']} · {host['cpu']['logical_cpus']} logical · "
         f"threads/core {host['cpu']['threads_per_core']}",
@@ -1329,6 +1343,9 @@ def cmd_resource_summary(args) -> int:
         f"swap {human_bytes(host['memory']['swap']['used_bytes'])}/"
         f"{human_bytes(host['memory']['swap']['total_bytes'])} "
         f"({host['memory']['swap'].get('used_percent')}%)",
+        (f"cpu use  UNAVAILABLE — {usage['reason']}"
+         if usage.get("state") == inventory_mod.UNAVAILABLE else
+         f"cpu use  {usage['used_percent']}% over {usage['sample_seconds']}s"),
         f"gpu      {host['gpu']['state']}"
         + (f" — {host['gpu']['reason']}" if host['gpu'].get('reason') else ""),
         "",
@@ -1350,6 +1367,24 @@ def cmd_resource_summary(args) -> int:
             f"docker   {docker.get('ServerVersion')} · {docker.get('ContainersRunning')} running · "
             f"{docker.get('ContainersStopped')} stopped · {docker.get('Images')} images"
         )
+    lines.append("")
+    lines.append("this account")
+    if user.get("state") == inventory_mod.UNAVAILABLE:
+        lines.append(f"  cpu      UNAVAILABLE — {user['reason']}")
+        lines.append(f"  memory   UNAVAILABLE — {user['reason']}")
+    else:
+        lines.append(f"  cpu      {user['cpu_cores']} core · "
+                     f"{user['cpu_percent_of_host']}% of host")
+        lines.append(f"  memory   {human_bytes(user['memory_rss_bytes'])} · "
+                     f"{user['memory_percent_of_host']}% of host")
+        lines.append(f"  procs    {user['process_count']} (uid {user['uid']})")
+    if quota.get("state") == "PRESENT":
+        lines.append(f"  quota    {human_bytes(quota['used_bytes'])} / "
+                     f"{human_bytes(quota['limit_bytes'])} · "
+                     f"{quota['used_percent']}%  ({quota['mount']})")
+    else:
+        lines.append(f"  quota    {quota['state']}"
+                     + (f" — {quota['reason']}" if quota.get("reason") else ""))
     if advisory["notes"]:
         lines.append("")
         lines.append("advisory (never acted on automatically)")
