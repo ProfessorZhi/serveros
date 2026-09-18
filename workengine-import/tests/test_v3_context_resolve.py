@@ -54,7 +54,8 @@ class ContextResolveTest(unittest.TestCase):
     def run_cli(self, env_overrides, *args):
         env = os.environ.copy()
         for key in ("DATA_ROOT", "WORKSPACE_ROOT", "ARTIFACTS_ROOT", "SERVEROS_BUNDLE",
-                    "SERVEROS_STATE_DIR", "SERVEROS_ARTIFACTS_ROOT", "SERVEROS_PYTHON"):
+                    "SERVEROS_STATE_DIR", "SERVEROS_ARTIFACTS_ROOT", "SERVEROS_PYTHON",
+                    "SERVEROS_HOST_PROFILE", "SERVEROS_RUNTIME_ASSETS"):
             env.pop(key, None)
         env.update(env_overrides)
         return subprocess.run(
@@ -79,13 +80,39 @@ class ContextResolveTest(unittest.TestCase):
         self.assertEqual(roots["artifacts-root"], self.resolved(artifacts))
         self.assertEqual(roots["workspace-root"], self.resolved(workspace))
 
-    def test_roots_default_to_the_canonical_contract(self):
-        result = self.run_cli({"SERVEROS_BUNDLE": str(self.bundle)}, "context", "resolve", "LIT-0101")
+    def test_roots_default_to_the_devices_own_profile(self):
+        """With no environment at all, the roots follow the device's profile.
+
+        This assertion used to read `== "/opt/applications/data/home-hwz/..."`,
+        under the name "the canonical contract". It was not a contract; it was
+        one machine's binding compiled into the binary. On the machine this CLI
+        actually runs on, that path does not exist -- so `run begin` committed
+        its Run row and *then* failed the artifacts mkdir. The profile below is
+        synthetic: what is pinned is that the answer follows the profile rather
+        than the binary.
+        """
+        profile = self.base / "host-profile.yaml"
+        profile.write_text(
+            "schema: serveros/host-profile.v1\n"
+            "node:\n"
+            "  device_ref: device:test-device\n"
+            "  roots:\n"
+            f"    state_root: {self.base}/device/state/serveros\n"
+            f"    artifacts_root: {self.base}/device/artifacts\n"
+            f"    workspace_root: {self.base}/device/workspace\n"
+            f"    runtime_assets_root: {self.base}/device/runtime-assets\n",
+            encoding="utf-8",
+        )
+        result = self.run_cli(
+            {"SERVEROS_BUNDLE": str(self.bundle),
+             "SERVEROS_HOST_PROFILE": str(profile)},
+            "context", "resolve", "LIT-0101",
+        )
         self.assertEqual(result.returncode, 0, result.stderr)
         roots = json.loads(result.stdout)["roots"]
-        self.assertEqual(roots["state-dir"], "/opt/applications/data/home-hwz/state/serveros")
-        self.assertEqual(roots["artifacts-root"], "/opt/applications/data/home-hwz/artifacts")
-        self.assertEqual(roots["workspace-root"], "/opt/applications/data/home-hwz/workspace")
+        self.assertEqual(roots["state-dir"], self.resolved(self.base / "device/state/serveros"))
+        self.assertEqual(roots["artifacts-root"], self.resolved(self.base / "device/artifacts"))
+        self.assertEqual(roots["workspace-root"], self.resolved(self.base / "device/workspace"))
 
     def test_explicit_flags_win_over_the_environment(self):
         """A per-call root is honoured, not silently dropped."""
@@ -115,9 +142,14 @@ class ContextResolveTest(unittest.TestCase):
     def test_absent_bundle_fails_with_an_actionable_error(self):
         empty = self.base / "empty"
         empty.mkdir()
+        # All three candidates have to miss. The second is now addressed from
+        # the device's `runtime_assets_root` role rather than from a data root,
+        # so DATA_ROOT is no longer the knob that empties it -- and on a real
+        # host the device binding would find a genuine bundle, which is exactly
+        # what this test must not accidentally do.
         result = self.run_cli(
-            {"SERVEROS_BUNDLE": str(empty), "DATA_ROOT": str(empty),
-             "WORKSPACE_ROOT": str(empty), "ARTIFACTS_ROOT": str(empty)},
+            {"SERVEROS_BUNDLE": str(empty), "SERVEROS_RUNTIME_ASSETS": str(empty),
+             "WORKSPACE_ROOT": str(empty)},
             "context", "resolve", "LIT-0101",
         )
         self.assertEqual(result.returncode, 2)

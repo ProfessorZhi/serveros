@@ -25,16 +25,29 @@ from pathlib import Path
 # `_absolute_override` is imported rather than `ServerOS`, because constructing
 # `ServerOS` creates and migrates the state database. A Capsule resolve is
 # read-only, so it must not touch state just to learn where state lives.
-from .engine import DEFAULT_ARTIFACTS_ROOT, _absolute_override, default_state_dir
+from .engine import (
+    default_artifacts_dir,
+    default_runtime_assets_root,
+    default_state_dir,
+    default_workspace_root,
+)
 
-DEFAULT_DATA_ROOT = Path("/opt/applications/data/home-hwz")
 BUNDLE_RELATIVE = "runtime-assets/hwz-server-os/current"
+# The same location, addressed from the runtime-assets role instead of from a
+# data root. The device binds `runtime_assets_root` directly; deriving it from
+# a data root only worked on machines whose assets happened to sit there.
+BUNDLE_IN_ASSETS = "hwz-server-os/current"
 RESOLVER_RELATIVE = "context/resolver.py"
 
 
 def workspace_root() -> Path:
-    """The workspace root, from the same contract the rest of ServerOS uses."""
-    return _absolute_override("WORKSPACE_ROOT", _absolute_override("DATA_ROOT", DEFAULT_DATA_ROOT) / "workspace")
+    """The workspace root on the device that is running.
+
+    Resolved by the engine, which asks the device's own host profile rather
+    than assuming a layout. Named here because the Context Capsule reads it to
+    decide which source tree a Capsule refers to.
+    """
+    return default_workspace_root()
 
 
 def resolved_roots(args=None) -> dict[str, Path]:
@@ -47,7 +60,7 @@ def resolved_roots(args=None) -> dict[str, Path]:
     artifacts_root = (
         Path(args.artifacts_root).resolve()
         if getattr(args, "artifacts_root", None)
-        else _absolute_override("SERVEROS_ARTIFACTS_ROOT", DEFAULT_ARTIFACTS_ROOT)
+        else default_artifacts_dir()
     )
     return {"state_dir": state_dir, "artifacts_root": artifacts_root, "workspace_root": workspace_root()}
 
@@ -58,7 +71,7 @@ def bundle_candidates() -> list[Path]:
     explicit = os.environ.get("SERVEROS_BUNDLE")
     if explicit:
         roots.append(Path(explicit))
-    roots.append(Path(os.environ.get("DATA_ROOT", DEFAULT_DATA_ROOT)) / BUNDLE_RELATIVE)
+    roots.append(default_runtime_assets_root() / BUNDLE_IN_ASSETS)
     roots.append(workspace_root() / "src/serveros")  # development source tree
     return roots
 

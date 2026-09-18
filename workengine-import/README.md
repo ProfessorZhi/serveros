@@ -17,8 +17,14 @@ are preferred only when source isolation or a fixed revision is required.
 ## Authority boundaries
 
 - stable Item intent: `records/projects/<project>/items/<ITEM>/card.yaml`
-- runtime state: `/opt/applications/data/home-hwz/state/serveros/serveros.db`
-- evidence: `/opt/applications/data/home-hwz/artifacts/work-items/<project>/<ITEM>/<RUN>/`
+- runtime state: `<state_root>/serveros.db`
+- evidence: `<artifacts_root>/work-items/<project>/<ITEM>/<RUN>/`
+
+`state_root`, `artifacts_root`, `workspace_root` and `runtime_assets_root`
+are asked of the device that is running, in this order: an explicit argument,
+the role's environment variable, the device host profile's `node.roots.<role>`.
+A role the device does not bind raises rather than defaulting -- a default root
+resolves, and that is what makes it worse than an error.
 - code truth: Git
 - test environment definition: `workspace/test-envs/<repo>/<ITEM>/`
 
@@ -38,7 +44,7 @@ serverosctl --json activity add SRV-0001 implement --kind develop
 
 serverosctl --json context attach SRV-0001 implement \
   --repo work-engine --mode develop --revision "$(git rev-parse HEAD)" \
-  --worktree /opt/applications/data/home-hwz/workspace/worktrees/work-engine/SRV-0001
+  --worktree "$WORKSPACE_ROOT/worktrees/work-engine/SRV-0001"
 
 serverosctl --json run begin SRV-0001 implement \
   --worker codex --idempotency-key srv-0001-control-plane
@@ -55,7 +61,7 @@ serverosctl --json board render --project serveros \
 # Register a metadata-only Feishu or GitHub inventory and generate drift proposals.
 serverosctl --json federation feishu inventory \
   --source /absolute/path/inventory/feishu-objects.jsonl \
-  --target /opt/applications/data/home-hwz/state/serveros/federation/feishu/current.jsonl \
+  --target "$SERVEROS_STATE_DIR/federation/feishu/current.jsonl" \
   --evidence-run SRV-0001/RUN-0001
 serverosctl --json federation feishu proposal \
   --observed /absolute/path/inventory/feishu-objects.jsonl \

@@ -18,7 +18,9 @@ class ServerOSExecutionTest(unittest.TestCase):
         self.assertEqual(graph.ready({"resolve"}), ["test"])
 
     def test_artifact_path_is_exact_and_rejects_escape(self):
-        root = Path("/opt/applications/data/home-hwz/artifacts")
+        # An arbitrary absolute root: this test is about joining and escaping,
+        # not about any machine's binding, so the value is deliberately neutral.
+        root = Path("/srv/serveros/artifacts")
         self.assertEqual(
             artifact_dir(root, "litellm", "LIT-1042", "RUN-0001"),
             root / "work-items/litellm/LIT-1042/RUN-0001",
