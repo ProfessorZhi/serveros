@@ -459,6 +459,28 @@ def test_a_source_with_no_declared_window_is_unknown_not_defaulted():
     }
 
 
+def test_an_unparseable_clock_blames_the_clock_and_not_the_observation():
+    """Found by using it. `_seconds_between` returns None when EITHER side
+    fails, and the message named `observed_at` for both — so a caller passing
+    a display string as `now` was told its observations were malformed and
+    would go and fix the end that was already correct.
+
+    In production this read as four registrations reporting "nobody looked" on
+    a node where everything was running, because the argument was
+    `2026-09-20 01:25:00 CST` and the parser takes ISO-8601.
+    """
+    result = graph.freshness_of(T0, now="2026-09-20 01:25:00 CST",
+                                source="registry")
+    assert result["state"] == "UNKNOWN"
+    assert "the clock supplied" in result["why"]
+    assert repr(T0) not in result["why"]
+    # ...and the other direction still names the observation, which is what
+    # makes the two distinguishable rather than a swap.
+    other = graph.freshness_of("not a time", now=T0, source="registry")
+    assert other["state"] == "UNKNOWN"
+    assert "the observation's timestamp" in other["why"]
+
+
 def test_an_unparseable_timestamp_is_unknown_and_never_zero():
     """An age of zero reads as FRESH, which is the most misleading answer
     this function could give."""

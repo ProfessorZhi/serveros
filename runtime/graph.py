@@ -726,15 +726,24 @@ def freshness_of(observed_at, *, now, source: str | None = None,
 
     age = _seconds_between(observed_at, now)
     if age is None:
+        # WHICH of the two failed is the whole content of this message. The
+        # first version said "the observation's timestamp ... does not parse"
+        # whenever either side did, and the case that reaches it in practice is
+        # the other one: a caller passing a display string as `now`. A reader
+        # sent to the wrong document by a diagnostic is worse off than one told
+        # nothing, because they will fix the end that was already right.
+        if _parse_time(now) is None:
+            because = (f"the clock supplied to age this observation ({now!r}) "
+                       f"does not parse as a time")
+        else:
+            because = (f"the observation's timestamp {observed_at!r} does not "
+                       f"parse as a time")
         return {
             "state": UNKNOWN,
             "age_seconds": None,
             "within_seconds": window,
             "observed_at": observed_at,
-            "why": (
-                f"the observation's timestamp {observed_at!r} does not parse "
-                f"as a time, so its age is unknown rather than assumed zero"
-            ),
+            "why": f"{because}, so its age is unknown rather than assumed zero",
         }
 
     return {
@@ -746,6 +755,28 @@ def freshness_of(observed_at, *, now, source: str | None = None,
     }
 
 
+def _parse_time(value):
+    """One timestamp, or None. The only parser this module has.
+
+    Split out of `_seconds_between` so that a caller can ask WHICH side failed
+    without restating the rule — two copies of a parse rule disagree the first
+    time either learns a format the other has not.
+    """
+    import datetime as _dt
+
+    if isinstance(value, _dt.datetime):
+        return value
+    if not isinstance(value, str):
+        return None
+    text = value.strip()
+    if text.endswith("Z"):
+        text = text[:-1] + "+00:00"
+    try:
+        return _dt.datetime.fromisoformat(text)
+    except ValueError:
+        return None
+
+
 def _seconds_between(then, now) -> float | None:
     """Seconds from `then` to `now`, or None if either will not parse.
 
@@ -754,22 +785,7 @@ def _seconds_between(then, now) -> float | None:
     failure is NOT zero: an edge whose age reads as 0 is reported as fresh,
     which is the single most misleading answer this function could give.
     """
-    import datetime as _dt
-
-    def parse(value):
-        if isinstance(value, _dt.datetime):
-            return value
-        if not isinstance(value, str):
-            return None
-        text = value.strip()
-        if text.endswith("Z"):
-            text = text[:-1] + "+00:00"
-        try:
-            return _dt.datetime.fromisoformat(text)
-        except ValueError:
-            return None
-
-    a, b = parse(then), parse(now)
+    a, b = _parse_time(then), _parse_time(now)
     if a is None or b is None:
         return None
     if (a.tzinfo is None) != (b.tzinfo is None):
