@@ -28,9 +28,23 @@ levels_source: transport-contract.yaml#capability_levels.order
 # layout changes one file, and so that "abilities could not be listed because
 # nothing was found" is a visible configuration fact instead of a silent empty
 # result. `$SERVEROS_ABILITY_OBSERVATIONS` overrides this list entirely.
+#
+# These are paths on THIS host's checkout, not a portable default: the same
+# repository is checked out under a different root on a different machine, and
+# the value below is this node's, not a shared one.
+#
+# One root, and it is the canonical checkout. These records are committed
+# inputs to the Fleet projection, so their home is the checkout the projection
+# is regenerated from. A worktree is not that place: worktrees are retired.
+# Listing both would also double-count rather than shadow, because every root
+# is scanned and matches are collected from all of them -- not first-match.
+#
+# A root that does not exist is dropped in silence (fleet/interfaces.py,
+# _resolved_observation_roots). So naming a directory that is not there buys
+# nothing and hides the fact that it is not there; any entry added here must
+# name a directory that actually exists on this host.
 observation_roots:
-  - /opt/applications/data/home-hwz/workspace/worktrees/ability-management/registry-v3-layout-fleet/observations
-  - /opt/applications/data/home-hwz/workspace/src/ability-management/observations
+  - /data/home/vince/workspace/src/ability-management/observations
 
 sources:
   fleet_registry:      fleet/registry.yaml — enrolled devices; stable identity
