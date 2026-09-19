@@ -42,12 +42,14 @@ from __future__ import annotations
 import importlib.util
 import io
 import contextlib
+import os
 import shutil
 import subprocess
 import sys
 import tempfile
 import unittest
 from argparse import Namespace
+from unittest import mock
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
@@ -468,6 +470,187 @@ class TheColophonSaysWhatWasActuallyChecked(unittest.TestCase):
                 f"{name} now records commands, so it no longer needs the clause "
                 f"that says it records none — and the colophon text should change "
                 f"with it")
+
+
+class TheCheckRefusesInputsTheSetWasNotRenderedWith(unittest.TestCase):
+    """A set rendered WITH `--quay-run` carries sections a render without it
+    reports as 「没有答案」.
+
+    Comparing those two reports drift on pages that are individually correct,
+    and the verdict names the wrong cause — the failure class this whole round
+    keeps recording. So the inputs are compared before any page is, and a
+    mismatch is stated as a fact about the CHECK rather than about the
+    documents.
+    """
+
+    def _set(self, tmp: str, **extra) -> Path:
+        out = Path(tmp) / "set"
+        code, _, err = run_main(
+            ["--out", str(out), "--write", "--documents", "TODAY",
+             *sum(([f"--{k.replace('_', '-')}", v]
+                   for k, v in extra.items()), [])])
+        self.assertEqual(code, 0, err)
+        return out
+
+    def test_a_set_records_the_inputs_it_was_rendered_with(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            out = self._set(tmp, project="litellm")
+            head = (out / "TODAY.md").read_text().split("\n", 1)[0]
+            self.assertIn("inputs:", head)
+            self.assertIn("project=litellm", head)
+
+    def test_check_with_other_inputs_names_the_key_that_differs(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            out = self._set(tmp, project="litellm")
+            code, _, err = run_main(["--out", str(out), "--check", "--documents",
+                                     "TODAY", "--project", "serveros"])
+            self.assertEqual(code, 2)
+            self.assertIn("project", err)
+            # The verdict a person must NOT read: pages reported as drifted when
+            # the real cause is the invocation.
+            self.assertNotIn("DRIFT", err)
+
+    def test_a_set_records_no_inputs_is_refused_not_matched(self):
+        """An older set that does not say what it was rendered with cannot be
+        checked — but "we do not know" must not read as "it matched"."""
+        with tempfile.TemporaryDirectory() as tmp:
+            out = self._set(tmp, project="litellm")
+            path = out / "TODAY.md"
+            text = path.read_text()
+            head, _, body = text.partition("\n")
+            path.write_text(
+                "<!-- ⟦snapshot⟧ rendered 2026-01-01T00:00:00+00:00 by "
+                "`runtime/workbench.py` from /somewhere -->\n" + body)
+            self.assertNotEqual(head, "")
+            code, _, err = run_main(["--out", str(out), "--check", "--documents",
+                                     "TODAY", "--project", "litellm"])
+            self.assertEqual(code, 2)
+            self.assertIn("更早的格式", err)
+            self.assertNotIn("DRIFT", err)
+
+    def test_inputs_differ_names_only_what_differs(self):
+        a = "projects=x; project=a; item=c"
+        b = "projects=x; project=b; item=c"
+        self.assertEqual(wb.inputs_differ(a, b), ["project"])
+        self.assertEqual(wb.inputs_differ(a, a), [])
+
+    def test_a_key_this_revision_does_not_know_is_a_difference(self):
+        """A set rendered by a newer revision may carry an input this one has no
+        flag for. Dropping it would compare two sets and report them equal."""
+        self.assertIn("future-flag",
+                      wb.inputs_differ("project=a", "project=a; future-flag=z"))
+
+    def test_recorded_inputs_reads_the_header_and_not_the_body(self):
+        """The pages discuss their own inputs in prose. A body mentioning
+        `inputs:` must not be read as the record."""
+        self.assertIsNone(wb.recorded_inputs(
+            "<!-- ⟦snapshot⟧ rendered x from / -->\n\n# TODAY\n\n我们把 inputs: "
+            "写在这里会被误读。\n"))
+        self.assertEqual(
+            wb.recorded_inputs("<!-- ⟦snapshot⟧ rendered x · inputs: project=a -->\nbody"),
+            "project=a")
+
+
+class AnUnreadableFileIsASectionNotATraceback(unittest.TestCase):
+    """`--quay-run` is a directory somebody points this at, and on a shared host
+    a plain directory holds other actors' files.
+
+    An unreadable log used to raise out of the renderer and leave all fifteen
+    documents unwritten — a tenth of the set deciding the fate of the whole. The
+    page must say it could not read the file, on that page, and the rest of the
+    set must still be produced.
+    """
+
+    def test_an_unreadable_log_is_named_on_the_page(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            secret = Path(tmp) / "another-actors.log"
+            secret.write_text("someone else's run\n")
+            secret.chmod(0o000)
+            if secret.exists() and secret.stat().st_size and _readable(secret):
+                self.skipTest("running as a user who can read mode-000 files")
+            code, out, err = run_main(
+                ["--stdout", "QUAY-RESULTS", "--quay-run", tmp])
+            self.assertEqual(code, 0, err)
+            self.assertIn("运行日志 another-actors.log", out)
+            self.assertIn("读不了", out)
+            self.assertIn("不是空", out)
+            secret.chmod(0o600)
+
+    def test_the_rest_of_the_set_is_still_written(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            secret = Path(tmp) / "another-actors.log"
+            secret.write_text("someone else's run\n")
+            secret.chmod(0o000)
+            if _readable(secret):
+                self.skipTest("running as a user who can read mode-000 files")
+            out = Path(tmp) / "set"
+            code, _, err = run_main(["--out", str(out), "--write",
+                                     "--quay-run", tmp])
+            self.assertEqual(code, 0, err)
+            self.assertEqual(len(list(out.glob("*.md"))), 15)
+            secret.chmod(0o600)
+
+
+class TheQuayBinaryIsSuppliedNotBakedIn(unittest.TestCase):
+    """The Quay CLI's location is a fact about the node, not about the repo.
+
+    The first version listed two absolute paths under one home directory. AC-004
+    does not catch that: its criterion is "产物的 `runtime/` 与 `bin/` 里没有出现
+    **构建它的**工作树路径", which is the ServerOS build worktree, and a Quay
+    worktree is a different path. The rule AC-004 is an instance of is the one
+    asserted here, on the shipped file.
+    """
+
+    def test_the_module_carries_no_literal_home_path(self):
+        text = (REPO / "runtime" / "workbench.py").read_text()
+        self.assertNotIn(
+            str(Path.home()), text,
+            "runtime/workbench.py names this node's home as a literal — that is "
+            "the defect --quay-bin exists to remove, in the surface that ships")
+
+    def test_the_binary_comes_from_the_argument(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            fake = Path(tmp) / "quay.js"
+            fake.write_text("// not the real one\n")
+            self.assertEqual(wb._quay_binary(str(fake)), fake)
+
+    def test_the_binary_comes_from_the_environment(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            fake = Path(tmp) / "quay.js"
+            fake.write_text("// not the real one\n")
+            with mock.patch.dict(os.environ, {"SERVEROS_QUAY_BIN": str(fake)}):
+                self.assertEqual(wb._quay_binary(), fake)
+
+    def test_neither_means_none_rather_than_a_guess(self):
+        """A search that fell back to a plausible path would answer on this node
+        and silently render 「没有答案」 on every other one."""
+        with mock.patch.dict(os.environ, {"SERVEROS_QUAY_BIN": ""}):
+            self.assertIsNone(wb._quay_binary())
+
+    def test_the_page_names_the_flag_that_would_fill_it(self):
+        with mock.patch.dict(os.environ, {"SERVEROS_QUAY_BIN": ""}):
+            code, out, err = run_main(
+                ["--stdout", "QUAY-RESULTS", "--quay-run", str(REPO)])
+        self.assertEqual(code, 0, err)
+        self.assertIn("--quay-bin", out)
+        self.assertIn("不是空", out)
+
+    def test_a_rendered_page_carries_no_literal_home_path(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            fake = Path(tmp) / "quay.js"
+            fake.write_text("// not the real one\n")
+            with mock.patch.dict(os.environ, {"SERVEROS_QUAY_BIN": ""}):
+                out = _stdout_of(["QUAY-RESULTS", "--quay-run", str(REPO),
+                                  "--quay-bin", str(fake)])
+            self.assertNotIn(str(Path.home()), out)
+
+
+def _readable(path: Path) -> bool:
+    try:
+        path.read_text()
+        return True
+    except OSError:
+        return False
 
 
 if __name__ == "__main__":

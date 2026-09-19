@@ -1,4 +1,4 @@
-<!-- ⟦snapshot⟧ rendered 2026-09-19T19:15:42+00:00 by `runtime/workbench.py` from ~/workspace/worktrees/serveros/foundation-skeleton -->
+<!-- ⟦snapshot⟧ rendered 2026-09-19T19:39:00+00:00 by `runtime/workbench.py` from ~/workspace/worktrees/serveros/foundation-skeleton · inputs: projects=serveros,litellm,multi-user-claw; project=litellm; item=LIT-0101; quay-run=~/artifacts/skills/serveros/RUN-20260920-foundation-skeleton-f/quay; quay-bin=~/workspace/worktrees/quay/foundation-skeleton-develop/packages/quay/dist/quay.js; ability-repo=~/workspace/worktrees/ability-management/foundation-skeleton; reports-dir=~/artifacts/skills/serveros/RUN-20260920-foundation-skeleton-f; release-root=~/artifacts/skills/serveros/RUN-20260920-foundation-skeleton-f/release/hwz-server-os/serveros-linux-work -->
 
 # QUAY-RESULTS
 
@@ -21,7 +21,7 @@
 | AC-005 | criterion | achieved | GOAL-001 | 从已安装 revision 渲染九份 START-HERE 文档到一个外部目录，全部非空 |
 | AC-006 | criterion | achieved | GOAL-001 | 对四份文档的子集跑 workbench check（全 15 份 46s 超出判据 60s 上限），判定块、来源命令与结构都一致 |
 | AC-900 | criterion | draft | GOAL-900 | 指向一个不存在的产物：必须 exit 1，且账本里带着原因 |
-| GOAL-001 | goal | active |  | 工作包 F：构建产物可隔离安装、可回退、可被独立复算 |
+| GOAL-001 | goal | achieved |  | 工作包 F：构建产物可隔离安装、可回退、可被独立复算 |
 | GOAL-900 | goal | draft |  | 负控（不参与 GOAL-001 的达成判断） |
 
 ### Task 记录

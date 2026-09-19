@@ -664,3 +664,83 @@ actuators:
       point, which is where this scanner finds its literals.
     sites:
       - {file: skills/serveros/scripts/architecture_check.py, symbols: [run_reused]}
+
+  - id: workbench-runs-the-product-entry-point
+    kind: unresolved_argv
+    verb: <argv0>
+    why: >-
+      Four `subprocess.run(<expr>)` sites in `runtime/workbench.py` —
+      `run_full`, `out`, `_answers_moved`, and `_families` — where the argv is
+      built rather than written: `run_full`/`out`/`_answers_moved` go through
+      `argv_for`, which turns the recorded form `serverosctl ...` into
+      `[sys.executable, str(ENTRY), ...]`, and `_families` runs
+      `[sys.executable, str(script), "--stdout"]` on the ability-management
+      clone named by `--ability-repo`. The scanner reads neither
+      `sys.executable` nor a `str(...)` of a path, so each argv is reported
+      rather than assumed.
+      What it cannot show is the part that matters, and the module states it as
+      a rule rather than a habit: EVERY COMMAND A BUILDER RUNS IS READ-ONLY.
+      That is not a convention — `--check` re-runs precisely these calls, so a
+      builder that wrote would make the check itself a mutation. `ENTRY` is
+      this revision's OWN `bin/serverosctl`, resolved once at import from the
+      directory holding this file, so a render cannot reach a different
+      `serverosctl` than the one that produced it; the commands are literal
+      tuples in the builders (`device show`, `card status`, `work board`,
+      `requirement board`, `ability tree`, `taxonomy tree`), and `_families`
+      reaches the renderer ability-management owns rather than reimplementing
+      it — §18, at the one place a copy would have been tempting.
+      `_answers_moved` is the same call one step removed: it re-runs what a
+      document recorded, which is why the recorded form is the `serverosctl`
+      form and not an absolute path.
+    sites:
+      # The verb is overridden per site because the scanner reads these two
+      # groups differently and the difference is a fact about the checker, not
+      # about the code. `argv_for(...)` is a CALL, so the scanner reports the
+      # callee it could not resolve (`subprocess.run`) — the argv is one hop
+      # away, behind a helper that is where the `serverosctl` literal is read.
+      # `_families` writes its argv inline, so the scanner gets as far as
+      # seeing that the first word is an unknown expression and reports
+      # `<argv0>` there. Declaring one verb for both would make one of the two
+      # rows stale the moment the checker learned to read one of the shapes.
+      - {file: runtime/workbench.py,
+         symbols: [run_full, out, _answers_moved], verb: subprocess.run}
+      - {file: runtime/workbench.py, symbols: [_families]}
+
+  - id: workbench-asks-the-quay-provider
+    kind: exec
+    verb: node
+    why: >-
+      `subprocess.run(["node", str(Q), *args, "--json", "--root", str(ws)])`
+      in `runtime/workbench.py`'s nested `doc_quay.q`, the one place this
+      repository runs a command that is not its own entry point. `Q` is the
+      Quay CLI resolved from the pinned Quay worktrees and `ws` is the Quay
+      workspace under `--quay-run`; both are read-only queries of a provider's
+      goal store — `goal list`, `goal show`, `task list` — and the section is
+      rendered from their JSON. Quay is a Provider and not Core (§C): ServerOS
+      asks it what its goals are and does not keep a second copy of the answer,
+      which is why this is an `exec` reaching outside the revision rather than a
+      read of a ServerOS store. The verbs are a literal list in `doc_quay`; a
+      Quay verb that writes is not among them, and the provider's own `--root`
+      is pinned to the workspace it was given.
+    sites:
+      - {file: runtime/workbench.py, symbols: [doc_quay.q]}
+
+  - id: release-installs-the-daily-render
+    kind: exec
+    verb: systemctl
+    why: >-
+      `subprocess.run(["systemctl", "--user", *args])` in `scripts/release.py`'s
+      `cmd_daily_task` — the fourth and newest of the systemd actions this
+      repository will take, and the only one whose DEFAULT IS OFF. Installing
+      the unit and arming the timer are two separate invocations, and the
+      default polarity is deliberately the opposite of `cmd_alert_worker`'s
+      `--no-enable`: a delivery worker that sends nothing is a worker nobody
+      notices, while a nightly render that starts running before anybody has
+      chosen where it writes is a job that reports success into a directory
+      nobody opens. So `daily-task` refuses to install without an explicit
+      `--out`, and prints the two commands that arm it rather than arming it.
+      Like the other three it is reachable only by a person running the release
+      CLI: not from the daemon, not from the MCP layer, not from an observation
+      path, and not from any Run.
+    sites:
+      - {file: scripts/release.py, symbols: [cmd_daily_task]}

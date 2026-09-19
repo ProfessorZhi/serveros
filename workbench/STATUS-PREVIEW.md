@@ -1,4 +1,4 @@
-<!-- ⟦snapshot⟧ rendered 2026-09-19T19:15:42+00:00 by `runtime/workbench.py` from ~/workspace/worktrees/serveros/foundation-skeleton -->
+<!-- ⟦snapshot⟧ rendered 2026-09-19T19:39:00+00:00 by `runtime/workbench.py` from ~/workspace/worktrees/serveros/foundation-skeleton · inputs: projects=serveros,litellm,multi-user-claw; project=litellm; item=LIT-0101; quay-run=~/artifacts/skills/serveros/RUN-20260920-foundation-skeleton-f/quay; quay-bin=~/workspace/worktrees/quay/foundation-skeleton-develop/packages/quay/dist/quay.js; ability-repo=~/workspace/worktrees/ability-management/foundation-skeleton; reports-dir=~/artifacts/skills/serveros/RUN-20260920-foundation-skeleton-f; release-root=~/artifacts/skills/serveros/RUN-20260920-foundation-skeleton-f/release/hwz-server-os/serveros-linux-work -->
 
 # STATUS-PREVIEW
 
@@ -25,7 +25,7 @@ serverosctl card status	0
         "tag": "markdown"
       },
       {
-        "content": "**\u6211\u7684\u8d44\u6e90 \u00b7 \u5f53\u524d\u8d26\u6237**\n\u8d26\u6237 uid 1002 \u00b7 \u8fdb\u7a0b\u6570 89",
+        "content": "**\u6211\u7684\u8d44\u6e90 \u00b7 \u5f53\u524d\u8d26\u6237**\n\u8d26\u6237 uid 1002 \u00b7 \u8fdb\u7a0b\u6570 91",
         "tag": "markdown"
       },
       {
@@ -35,7 +35,7 @@ serverosctl card status	0
         },
         "elements": [
           {
-            "content": "CPU \u5360\u6574\u673a 0.1%\uff080.07 \u6838\u7b49\u6548 / \u5171 128 \u6838\uff09\n\u5185\u5b58 9.5 GiB \u00b7 \u5360\u6574\u673a 3.9%\n\u8d26\u6237\u6570\u5b57\u7684\u6765\u6e90 sum of RSS over this uid's processes, sampled twice; an estimate of resident memory, not kernel per-uid accounting\n\u914d\u989d /data\uff08/dev/vdb\uff09 \u5df2\u7528 55.2 GiB / \u8f6f\u9650 450.0 GiB\uff0811.0%\uff09 \u00b7 \u786c\u9650 500.0 GiB\n\u672c\u8d26\u6237 systemd \u7528\u6237\u5355\u5143 13 \u4e2a\uff08\u5176\u4e2d active 3\uff09 \u00b7 linger yes \u00b7 supervisor systemd --user\n  dbus.service \u2014 active\n  desktop-commander-remote.service \u2014 active\n  serverosd.service \u2014 active\n\u672c\u8282\u70b9\u767b\u8bb0\u7684\u53d7\u7ba1\u8fd0\u884c\u65f6 4 \u4e2a\uff08\u767b\u8bb0 \u2260 \u6b63\u5728\u8fd0\u884c\uff0c\u4e5f \u2260 \u5df2\u6279\u51c6\u81ea\u52a8\u4fee\u590d\uff09",
+            "content": "CPU \u5360\u6574\u673a 0.1%\uff080.07 \u6838\u7b49\u6548 / \u5171 128 \u6838\uff09\n\u5185\u5b58 9.5 GiB \u00b7 \u5360\u6574\u673a 3.9%\n\u8d26\u6237\u6570\u5b57\u7684\u6765\u6e90 sum of RSS over this uid's processes, sampled twice; an estimate of resident memory, not kernel per-uid accounting\n\u914d\u989d /data\uff08/dev/vdb\uff09 \u5df2\u7528 55.3 GiB / \u8f6f\u9650 450.0 GiB\uff0811.1%\uff09 \u00b7 \u786c\u9650 500.0 GiB\n\u672c\u8d26\u6237 systemd \u7528\u6237\u5355\u5143 13 \u4e2a\uff08\u5176\u4e2d active 3\uff09 \u00b7 linger yes \u00b7 supervisor systemd --user\n  dbus.service \u2014 active\n  desktop-commander-remote.service \u2014 active\n  serverosd.service \u2014 active\n\u672c\u8282\u70b9\u767b\u8bb0\u7684\u53d7\u7ba1\u8fd0\u884c\u65f6 4 \u4e2a\uff08\u767b\u8bb0 \u2260 \u6b63\u5728\u8fd0\u884c\uff0c\u4e5f \u2260 \u5df2\u6279\u51c6\u81ea\u52a8\u4fee\u590d\uff09",
             "tag": "markdown"
           }
         ],
@@ -69,7 +69,7 @@ serverosctl card status	0
         },
         "elements": [
           {
-            "content": "\u8d1f\u8f7d 2.52 / 2.94 / 3.13 \u00b7 \u53ef\u8fd0\u884c 6/7736\n\u5185\u5b58 \u5df2\u7528 37.2 GiB / 247.0 GiB \u00b7 \u53ef\u7528 209.8 GiB\uff08\u7f13\u5b58 151.8 GiB\uff09\n\u4ea4\u6362\u533a \u5df2\u7528 0.1%\uff089.5 MiB / 16.0 GiB\uff09 \u00b7 \u9608\u503c 90.0%\n\u6587\u4ef6\u7cfb\u7edf /\uff08ROOT_FS\uff09 \u5df2\u7528 48.2% \u00b7 inode 5.8% \u00b7 \u53ef\u7528 23.3 GiB\n\u6587\u4ef6\u7cfb\u7edf /data\uff08DOCKER_FS / STATE_FS / ARTIFACTS_FS\uff09 \u5df2\u7528 6.0% \u00b7 inode 1.0% \u00b7 \u53ef\u7528 3.8 TiB\nDocker 29.8.0 \u00b7 \u5bb9\u5668 \u8fd0\u884c 8 / \u505c\u6b62 1 / \u5171 9 \u00b7 \u955c\u50cf 19",
+            "content": "\u8d1f\u8f7d 3.65 / 3.2 / 3.23 \u00b7 \u53ef\u8fd0\u884c 5/7809\n\u5185\u5b58 \u5df2\u7528 37.5 GiB / 247.0 GiB \u00b7 \u53ef\u7528 209.5 GiB\uff08\u7f13\u5b58 152.2 GiB\uff09\n\u4ea4\u6362\u533a \u5df2\u7528 0.1%\uff089.5 MiB / 16.0 GiB\uff09 \u00b7 \u9608\u503c 90.0%\n\u6587\u4ef6\u7cfb\u7edf /\uff08ROOT_FS\uff09 \u5df2\u7528 48.2% \u00b7 inode 5.8% \u00b7 \u53ef\u7528 23.3 GiB\n\u6587\u4ef6\u7cfb\u7edf /data\uff08DOCKER_FS / STATE_FS / ARTIFACTS_FS\uff09 \u5df2\u7528 6.0% \u00b7 inode 1.0% \u00b7 \u53ef\u7528 3.8 TiB\nDocker 29.8.0 \u00b7 \u5bb9\u5668 \u8fd0\u884c 8 / \u505c\u6b62 1 / \u5171 9 \u00b7 \u955c\u50cf 19",
             "tag": "markdown"
           }
         ],
@@ -97,7 +97,7 @@ serverosctl card status	0
         "tag": "markdown"
       },
       {
-        "content": "\u91c7\u96c6\u65f6\u95f4 2026-09-20 03:16:02 CST \u00b7 \u89c2\u6d4b\u8303\u56f4 host\u3001mine \u00b7 \u672a\u8bfb\u5230 gateway",
+        "content": "\u91c7\u96c6\u65f6\u95f4 2026-09-20 03:39:17 CST \u00b7 \u89c2\u6d4b\u8303\u56f4 host\u3001mine \u00b7 \u672a\u8bfb\u5230 gateway",
         "tag": "markdown"
       },
       {
@@ -115,7 +115,7 @@ serverosctl card status	0
   },
   "header": {
     "subtitle": {
-      "content": "2026-09-20 03:16:02 CST \u66f4\u65b0",
+      "content": "2026-09-20 03:39:17 CST \u66f4\u65b0",
       "tag": "plain_text"
     },
     "template": "grey",
@@ -140,7 +140,7 @@ serverosctl card status	0
         "tag": "markdown"
       },
       {
-        "content": "**我的资源 · 当前账户**\n账户 uid 1002 · 进程数 89",
+        "content": "**我的资源 · 当前账户**\n账户 uid 1002 · 进程数 91",
         "tag": "markdown"
       },
       {
@@ -150,7 +150,7 @@ serverosctl card status	0
         },
         "elements": [
           {
-            "content": "CPU 占整机 0.1%（0.1 核等效 / 共 128 核）\n内存 9.5 GiB · 占整机 3.9%\n账户数字的来源 sum of RSS over this uid's processes, sampled twice; an estimate of resident memory, not kernel per-uid accounting\n配额 /data（/dev/vdb） 已用 55.2 GiB / 软限 450.0 GiB（11.0%） · 硬限 500.0 GiB\n本账户 systemd 用户单元 13 个（其中 active 3） · linger yes · supervisor systemd --user\n  dbus.service — active\n  desktop-commander-remote.service — active\n  serverosd.service — active\n本节点登记的受管运行时 4 个（登记 ≠ 正在运行，也 ≠ 已批准自动修复）",
+            "content": "CPU 占整机 0.0%（0.04 核等效 / 共 128 核）\n内存 9.5 GiB · 占整机 3.9%\n账户数字的来源 sum of RSS over this uid's processes, sampled twice; an estimate of resident memory, not kernel per-uid accounting\n配额 /data（/dev/vdb） 已用 55.3 GiB / 软限 450.0 GiB（11.1%） · 硬限 500.0 GiB\n本账户 systemd 用户单元 13 个（其中 active 3） · linger yes · supervisor systemd --user\n  dbus.service — active\n  desktop-commander-remote.service — active\n  serverosd.service — active\n本节点登记的受管运行时 4 个（登记 ≠ 正在运行，也 ≠ 已批准自动修复）",
             "tag": "markdown"
           }
         ],
@@ -184,7 +184,7 @@ serverosctl card status	0
         },
         "elements": [
           {
-            "content": "负载 2.52 / 2.94 / 3.13 · 可运行 3/7752\n内存 已用 37.0 GiB / 247.0 GiB · 可用 209.9 GiB（缓存 151.8 GiB）\n交换区 已用 0.1%（9.5 MiB / 16.0 GiB） · 阈值 90.0%\n文件系统 /（ROOT_FS） 已用 48.2% · inode 5.8% · 可用 23.3 GiB\n文件系统 /data（DOCKER_FS / STATE_FS / ARTIFACTS_FS） 已用 6.0% · inode 1.0% · 可用 3.8 TiB\nDocker 29.8.0 · 容器 运行 8 / 停止 1 / 共 9 · 镜像 19",
+            "content": "负载 3.65 / 3.2 / 3.23 · 可运行 6/7808\n内存 已用 37.1 GiB / 247.0 GiB · 可用 209.9 GiB（缓存 152.2 GiB）\n交换区 已用 0.1%（9.5 MiB / 16.0 GiB） · 阈值 90.0%\n文件系统 /（ROOT_FS） 已用 48.2% · inode 5.8% · 可用 23.3 GiB\n文件系统 /data（DOCKER_FS / STATE_FS / ARTIFACTS_FS） 已用 6.0% · inode 1.0% · 可用 3.8 TiB\nDocker 29.8.0 · 容器 运行 8 / 停止 1 / 共 9 · 镜像 19",
             "tag": "markdown"
           }
         ],
@@ -212,7 +212,7 @@ serverosctl card status	0
         "tag": "markdown"
       },
       {
-        "content": "采集时间 2026-09-20 03:16:00 CST · 观测范围 host、mine · 未读到 gateway",
+        "content": "采集时间 2026-09-20 03:39:15 CST · 观测范围 host、mine · 未读到 gateway",
         "tag": "markdown"
       },
       {
@@ -230,7 +230,7 @@ serverosctl card status	0
   },
   "header": {
     "subtitle": {
-      "content": "2026-09-20 03:16:00 CST 更新",
+      "content": "2026-09-20 03:39:15 CST 更新",
       "tag": "plain_text"
     },
     "template": "grey",

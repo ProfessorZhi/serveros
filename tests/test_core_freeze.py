@@ -88,6 +88,26 @@ DELIVERY_UNITS = {
     "runtime/serveros-alert-sync.timer",
 }
 
+# §8's daily workbench render. A THIRD set rather than a third entry in
+# DELIVERY_UNITS, because the two are different claims and folding them would
+# lose one: the delivery worker talks to a provider and sends something, and
+# this one sends nothing, takes no action on the world, and writes a directory a
+# person opens. What they share, and what is asserted of both below, is that
+# systemd would not keep either running.
+#
+# The unit lives in the same directory as `serverosd.service`, which is the
+# accidental reason a gate about the RESIDENT surface is the gate that should
+# still see it: a file next to the daemon's unit is the easiest place to add a
+# second daemon by accident.
+SCHEDULED_UNITS = {
+    "runtime/serveros-daily.service",
+    "runtime/serveros-daily.timer",
+}
+
+# Every unit that is not the resident daemon. Named once so the sub-tests below
+# cannot cover a set somebody added and forgot to wire in.
+NON_RESIDENT_UNITS = DELIVERY_UNITS | SCHEDULED_UNITS
+
 # The daemon may not open a network socket (§W: "serverosd 不做网络调用"). It
 # is checked as an AST property of the daemon's own loader closure rather than
 # by reading one file, because the call this refuses is the one added by a
@@ -219,8 +239,8 @@ class TheResidentSurfaceIsClosed(unittest.TestCase):
         # right assertion while it was true and the wrong one the moment it was
         # not: §W adds a delivery runtime, and a gate that can only be satisfied
         # by deleting the new unit would be a gate arguing against the feature.
-        # It now names BOTH sets, so adding a third unit is still a diff.
-        self.assertEqual(_unit_files(), RESIDENT_UNITS | DELIVERY_UNITS)
+        # It now names ALL THREE sets, so adding a fourth unit is still a diff.
+        self.assertEqual(_unit_files(), RESIDENT_UNITS | NON_RESIDENT_UNITS)
 
     def test_every_other_unit_is_provably_not_resident(self):
         """§W: the delivery worker is not a second ServerOS daemon.
@@ -228,7 +248,7 @@ class TheResidentSurfaceIsClosed(unittest.TestCase):
         Not "it is written as a oneshot in a comment", and not "it lives in a
         different file" — `Type=` and `Restart=` as systemd would read them.
         """
-        for rel in sorted(DELIVERY_UNITS):
+        for rel in sorted(NON_RESIDENT_UNITS):
             with self.subTest(unit=rel):
                 text = (REPO / rel).read_text()
                 if Path(rel).suffix == ".timer":
@@ -264,7 +284,7 @@ class TheResidentSurfaceIsClosed(unittest.TestCase):
         # REMOVES a RuntimeDirectory when the unit that declared it stops, so a
         # oneshot declaring `RuntimeDirectory=serveros` would delete %t/serveros
         # — and with it the daemon's socket — on every run.
-        for rel in sorted(DELIVERY_UNITS):
+        for rel in sorted(NON_RESIDENT_UNITS):
             with self.subTest(unit=rel):
                 keys = {k for _, k, _ in directives((REPO / rel).read_text())}
                 self.assertNotIn("runtimedirectory", keys, rel)
@@ -277,6 +297,7 @@ class TheResidentSurfaceIsClosed(unittest.TestCase):
         # whole round is written against.
         self.assertTrue(ENTRY_POINTS)
         self.assertTrue(DELIVERY_UNITS)
+        self.assertTrue(SCHEDULED_UNITS)
 
     def test_the_unit_starts_the_core_and_nothing_else(self):
         unit = (REPO / next(iter(RESIDENT_UNITS))).read_text()

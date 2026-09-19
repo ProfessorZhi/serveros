@@ -1,4 +1,4 @@
-<!-- ⟦snapshot⟧ rendered 2026-09-19T19:15:42+00:00 by `runtime/workbench.py` from ~/workspace/worktrees/serveros/foundation-skeleton -->
+<!-- ⟦snapshot⟧ rendered 2026-09-19T19:39:00+00:00 by `runtime/workbench.py` from ~/workspace/worktrees/serveros/foundation-skeleton · inputs: projects=serveros,litellm,multi-user-claw; project=litellm; item=LIT-0101; quay-run=~/artifacts/skills/serveros/RUN-20260920-foundation-skeleton-f/quay; quay-bin=~/workspace/worktrees/quay/foundation-skeleton-develop/packages/quay/dist/quay.js; ability-repo=~/workspace/worktrees/ability-management/foundation-skeleton; reports-dir=~/artifacts/skills/serveros/RUN-20260920-foundation-skeleton-f; release-root=~/artifacts/skills/serveros/RUN-20260920-foundation-skeleton-f/release/hwz-server-os/serveros-linux-work -->
 
 # ENVIRONMENT
 
@@ -13,7 +13,7 @@ serverosctl device show --json	0
 ### 能力树（本节点的投影）
 
 来源 `~/state/serveros/abilities/effective.json` @ `fa784d228eb54c10180e928e6a04f602140ab307`，权威是 `ability-management`，基数 `domain.primary`。
-能力 30 个，已归类 19 个；这个读数的年龄 209295 秒。
+能力 30 个，已归类 19 个；这个读数的年龄 210693 秒。
 
 **这份投影可能过期。** 它不自己去读权威；`serverosctl ability refresh` 才会。
 
@@ -299,15 +299,15 @@ _无：每个 pack 成员都在 manifest 里。_
       "state": "UNAVAILABLE"
     },
     "load": {
-      "load1": 2.39,
-      "load15": 3.13,
-      "load5": 2.94,
-      "runnable": "4/7732"
+      "load1": 2.99,
+      "load15": 3.19,
+      "load5": 3.05,
+      "runnable": "6/7779"
     },
     "memory": {
-      "available_bytes": 225648123904,
-      "cached_bytes": 163056173056,
-      "free_bytes": 51851628544,
+      "available_bytes": 224995192832,
+      "cached_bytes": 163442044928,
+      "free_bytes": 50768936960,
       "swap": {
         "free_bytes": 17169920000,
         "total_bytes": 17179865088,
@@ -315,9 +315,9 @@ _无：每个 pack 成员都在 manifest 里。_
         "used_percent": 0.1
       },
       "total_bytes": 265182715904,
-      "used_bytes": 39534592000
+      "used_bytes": 40187523072
     },
-    "uptime_seconds": 389108.37
+    "uptime_seconds": 390506.24
   },
   "managed_resources": {
     "automatable": 0,

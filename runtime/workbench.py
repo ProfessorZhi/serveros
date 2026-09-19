@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import subprocess
 import sys
@@ -146,9 +147,10 @@ def code_block(text, lang=""):
     return f"```{lang}\n{text.rstrip()}\n```"
 
 
-def stamp(when):
+def stamp(when, inputs=None):
+    tail = f" · inputs: {inputs}" if inputs is not None else ""
     return (f"<!-- {SNAPSHOT} rendered {when.isoformat(timespec='seconds')} by "
-            f"`runtime/workbench.py` from {ROOT} -->")
+            f"`runtime/workbench.py` from {ROOT}{tail} -->")
 
 
 def section(title, body, level=2):
@@ -601,7 +603,7 @@ def _reports(quay_run, reports_dirs=None):
     return found
 
 
-def doc_quay(when, quay_run):
+def doc_quay(when, quay_run, quay_bin=None):
     """Quay Goal/Task correspondence and the execution results read back."""
     if not quay_run:
         return ("未提供 `--quay-run`，因此这一节没有答案。它**不是空的**：Quay 的结果"
@@ -612,10 +614,20 @@ def doc_quay(when, quay_run):
         "父工作 → Goal → AC → Task → 执行 → 结果。这一页只印**回读**到的东西："
         "status、GateEvent、退出码。没有「创建成功」这种话。", "",
     ]
-    Q = _quay_binary()
+    # NO EARLY RETURN when the binary is missing. The ledger and the logs below
+    # are FILES in the run directory; they need no Quay CLI, and returning here
+    # would drop two sections a person can still read. A page that omits what it
+    # could not reach reads as a page with nothing to report — the failure this
+    # module's own docstring refuses, committed here in the first version of the
+    # flag that removed the baked-in path.
+    Q = _quay_binary(quay_bin)
     if not Q:
-        parts.append(failed("定位 quay 可执行文件", 127, "构建产物不在预期位置"))
-        return "\n".join(parts)
+        parts.append(failed(
+            "定位 quay 可执行文件", 127,
+            "没有指定 Quay CLI。这一页问的是 Provider 的 store，而 Provider 的构建产物"
+            "在哪是这一台机器的事，不是本仓的事——所以这里不猜。用 "
+            "`--quay-bin <packages/quay/dist/quay.js>`（或 `SERVEROS_QUAY_BIN`）指一下。"))
+        return "\n".join(parts + _quay_run_dir_sections(ws, qrun))
 
     def q(args):
         """One of the goal store's readings, asked for as JSON.
@@ -662,36 +674,97 @@ def doc_quay(when, quay_run):
             [[t.get("id"), t.get("status"), t.get("goal_ac") or t.get("goalAc"),
               (t.get("title") or "")[:90]] for t in items]), 3))
 
+    return "\n".join(parts + _quay_run_dir_sections(ws, qrun))
+
+
+def _quay_run_dir_sections(ws, qrun):
+    """The two sections that read FILES in the run directory.
+
+    Split out because they need no Quay CLI, and the first version of
+    `doc_quay` returned before reaching them when `--quay-bin` was absent —
+    dropping a readable ledger and readable logs because a different section
+    could not be filled. Which section could not be filled is a fact about that
+    section; this is the same rule as `failed` and `unreadable`, applied to the
+    page rather than to a file."""
+    parts = []
+
     ledger = ws / ".quay" / "gate-events.jsonl"
     if ledger.is_file():
-        events = [json.loads(ln) for ln in ledger.read_text().splitlines() if ln.strip()]
-        # The columns are the ledger row's OWN fields. The first version printed
-        # `at` and `exit`, which no row has — a table of two empty columns beside
-        # three populated ones. The row carries `timestamp` and, under `payload`,
-        # the `reason`; `reason` is the column that matters, because this shell
-        # requires a failing criterion to say why on the same line, so a red row
-        # is readable here without the log beside it.
-        parts.append(section(f"GateEvent 账本（{len(events)} 条）", table(
-            ["at", "record", "gate", "actor", "verdict", "reason"],
-            [[(e.get("timestamp") or "")[:19], e.get("item_id") or e.get("record"),
-              e.get("gate"), e.get("actor"), e.get("verdict"),
-              ((e.get("payload") or {}).get("reason") or "")[:140]] for e in events]), 3))
+        try:
+            events = [json.loads(ln) for ln in ledger.read_text().splitlines() if ln.strip()]
+        except (OSError, ValueError) as exc:
+            # An unreadable ledger and a malformed one are different findings
+            # and neither is "the ledger is empty". Both render here, on this
+            # page, rather than as a traceback that leaves the other fourteen
+            # documents unwritten because the fifteenth could not open a file.
+            events = None
+            parts.append(section("GateEvent 账本", unreadable("GateEvent 账本", exc), 3))
+        if events is not None:
+            # The columns are the ledger row's OWN fields. The first version
+            # printed `at` and `exit`, which no row has — a table of two empty
+            # columns beside three populated ones. The row carries `timestamp`
+            # and, under `payload`, the `reason`; `reason` is the column that
+            # matters, because this shell requires a failing criterion to say
+            # why on the same line, so a red row is readable here without the
+            # log beside it.
+            parts.append(section(f"GateEvent 账本（{len(events)} 条）", table(
+                ["at", "record", "gate", "actor", "verdict", "reason"],
+                [[(e.get("timestamp") or "")[:19], e.get("item_id") or e.get("record"),
+                  e.get("gate"), e.get("actor"), e.get("verdict"),
+                  ((e.get("payload") or {}).get("reason") or "")[:140]] for e in events]), 3))
     else:
         parts.append(section("GateEvent 账本", f"`{ledger}` 不存在。", 3))
 
     for extra in sorted(qrun.glob("*.log")):
-        parts.append(section(f"运行日志 {extra.name}",
-                             code_block(extra.read_text()[-6000:]), 3))
-    return "\n".join(parts)
+        try:
+            tail = extra.read_text()[-6000:]
+        except OSError as exc:
+            # `qrun` is a directory somebody points this at, and a plain
+            # directory on a shared host holds other actors' files. Refusing to
+            # render the whole set because one of them is mode 600 would make
+            # this page's usefulness depend on the permissions of a directory
+            # it does not own.
+            parts.append(section(f"运行日志 {extra.name}",
+                                 unreadable(f"运行日志 {extra.name}", exc), 3))
+            continue
+        parts.append(section(f"运行日志 {extra.name}", code_block(tail), 3))
+    return parts
 
 
-def _quay_binary():
-    for cand in [Path("/data/home/vince/workspace/worktrees/quay/foundation-skeleton-develop"
-                      "/packages/quay/dist/quay.js"),
-                 Path("/data/home/vince/workspace/worktrees/quay/foundation-skeleton"
-                      "/packages/quay/dist/quay.js")]:
-        if cand.is_file():
-            return cand
+def unreadable(what, exc):
+    """A file this page could not read.
+
+    Never a traceback, never a dropped section, and never an empty one: a page
+    that silently omits what it could not read is indistinguishable from a page
+    with nothing to report, which is the one confusion every document here is
+    written to prevent."""
+    return (f"**{what}：读不了。** `{type(exc).__name__}: {exc}`\n\n"
+            f"这一节因此是 FAILED，不是空：读不了和读到空的是两件事。\n")
+
+
+def _quay_binary(given=None):
+    """Where the Quay CLI is, from the caller or from `SERVEROS_QUAY_BIN`.
+
+    NO SEARCH, AND NO DEFAULT PATH. The first version of this function listed
+    two absolute paths under one home directory — the Quay worktrees this round
+    happened to build in. That is the defect `--quay-run`'s own comment refuses
+    forty lines up ("a shipped default naming one round's scratch tree is a path
+    that means nothing on any other node"), committed in the same file, inside
+    the surface that ships.
+
+    AC-004 does not catch it, and that is worth being precise about rather than
+    quietly widening: AC-004's criterion is "产物的 `runtime/` 与 `bin/` 里没有
+    出现**构建它的**工作树路径", which is the ServerOS build worktree — and a
+    Quay worktree is a different path. The rule it is an instance of is the one
+    being applied here, and a criterion that names one path cannot enforce it.
+
+    So which binary answers is a fact about THIS NODE, and it is supplied the way
+    every other node-specific input in this module is: by a person. Absent
+    means the section renders as FAILED with the flag that would fill it, which
+    is the same shape as `--quay-run` and `--ability-repo`."""
+    for cand in (given, os.environ.get("SERVEROS_QUAY_BIN")):
+        if cand and Path(cand).is_file():
+            return Path(cand)
     return None
 
 
@@ -770,7 +843,14 @@ def _reachable(pin):
             else:
                 remote = (f"`{pin['branch']}` 存在（远端 head 的对象不在本地，"
                           f"包含关系未验证）")
-    return [pin["name"], pin["repo"].replace("/data/home/vince/", "~/"),
+    # `rel_home` and not an inline `.replace(<home> + "/", "~/")`, which is what
+    # stood here first: the redaction was already written as a function for the
+    # whole set, and spelling the home directory out to redo it locally is the
+    # same defect the function removes — one string, two copies. The literal is
+    # not repeated here even in a comment, because the test below cannot tell a
+    # comment from code and a rule that has to be read is not a rule a scanner
+    # can hold.
+    return [pin["name"], rel_home(pin["repo"]),
             f"`{pin['revision'][:12]}`", local, remote]
 
 
@@ -866,6 +946,67 @@ DOCS = {
 }
 
 
+def render_inputs(args):
+    """The render inputs that change what a page SAYS, in one comparable line.
+
+    Not every flag. `--out` is where the set goes and changes nothing it says;
+    `--documents` restricts which pages this run produces, which shows up as a
+    missing file rather than a different page. These seven are the inputs that
+    make two renders of one revision differ while both are correct: a render
+    with `--quay-run` produces whole sections that a render without it reports
+    as 「没有答案」.
+
+    Separated by `; ` rather than a space because a path may contain a space,
+    and a value a human typed is not a value this may silently split.
+
+    `SERVEROS_WORKBENCH_SOURCES` is not in the list: it is resolved once at
+    import, it is not a flag, and a set rendered under a different one is a
+    different revision rather than a different invocation."""
+    return "; ".join([
+        f"projects={','.join(args.projects or [])}",
+        f"project={args.project or ''}",
+        f"item={args.item or ''}",
+        f"quay-run={args.quay_run or ''}",
+        f"quay-bin={args.quay_bin or ''}",
+        f"ability-repo={args.ability_repo or ''}",
+        f"reports-dir={','.join(args.reports_dir or [])}",
+        f"release-root={args.release_root or ''}",
+    ])
+
+
+INPUT_KEYS = ("projects", "project", "item", "quay-run", "quay-bin",
+              "ability-repo", "reports-dir", "release-root")
+
+
+def inputs_dict(line):
+    """Parse one `k=v; k=v` line back into a dict. Unknown keys are kept: a set
+    rendered by a NEWER revision may carry a key this one does not know, and
+    that mismatch has to be visible rather than dropped."""
+    out = {}
+    for part in (line or "").split("; "):
+        if "=" in part:
+            key, _, value = part.partition("=")
+            out[key.strip()] = value
+    return out
+
+
+_SNAPSHOT_INPUTS = re.compile(r"inputs:\s*(.*?)\s*-->")
+
+
+def recorded_inputs(text):
+    """What the set on disk says it was rendered with, or None when it does not
+    say. None is an answer — it is an older set — and is not read as "matched"."""
+    match = _SNAPSHOT_INPUTS.search(text.split("\n", 1)[0])
+    return match.group(1) if match else None
+
+
+def inputs_differ(recorded, current):
+    """The keys whose values differ, named. A count of differences would turn
+    "you gave the wrong --quay-run" into "something differs"."""
+    a, b = inputs_dict(recorded), inputs_dict(current)
+    return [k for k in sorted(set(a) | set(b) | set(INPUT_KEYS)) if a.get(k) != b.get(k)]
+
+
 def render_all(args, only=None):
     """Render the set, or just the members named in `only`.
 
@@ -888,7 +1029,7 @@ def render_all(args, only=None):
         "ITEM-CHAIN": lambda: doc_item_chain(when, args.project, args.item, args.item),
         "DECISIONS": lambda: doc_decisions(when),
         "REPORTS": lambda: doc_reports(when, args.quay_run, args.reports_dir),
-        "QUAY-RESULTS": lambda: doc_quay(when, args.quay_run),
+        "QUAY-RESULTS": lambda: doc_quay(when, args.quay_run, args.quay_bin),
         "RELEASE-MANIFEST": lambda: doc_manifest(when, args.release_root, SRC.PINS),
         "DEPLOYMENT": lambda: doc_deployment(when),
     }
@@ -912,7 +1053,7 @@ def render_all(args, only=None):
         body = builders[name]()
         ran = list(RUNLOG)
         out[name] = rel_home(
-            f"{stamp(when)}\n\n# {name}\n\n{kind_note(name, ran)}\n\n"
+            f"{stamp(when, render_inputs(args))}\n\n# {name}\n\n{kind_note(name, ran)}\n\n"
             f"{answers_block(ran)}\n\n{body}")
     return out
 
@@ -1069,6 +1210,12 @@ def main(argv=None):
     # on this disk. Absent means the section says it has no answer.
     ap.add_argument("--quay-run", default=None,
                     help="a directory holding a quay workspace (`ws/`) and logs")
+    ap.add_argument("--quay-bin", default=None,
+                    help="the Quay CLI to ask for the goal store. A fact about THIS "
+                         "node, so it has no default: the first version baked in two "
+                         "paths under one home directory, which is the defect this "
+                         "flag exists to remove. Absent means QUAY-RESULTS renders "
+                         "as FAILED and says which flag would fill it")
     ap.add_argument("--ability-repo", default=None,
                     help="the ability-management clone to render the family view "
                          "from. This module does not reimplement that renderer")
@@ -1087,12 +1234,12 @@ def main(argv=None):
     args = ap.parse_args(argv)
 
     only = {args.stdout} if args.stdout else (set(args.documents) if args.documents else None)
-    rendered = render_all(args, only=only)
 
-    if args.stdout:
-        sys.stdout.write(rendered.get(args.stdout, f"no such document: {args.stdout}\n"))
-        return 0
-
+    # THE TWO REFUSALS THAT NEED NO RENDERING, TAKEN BEFORE IT. Both are facts
+    # about this invocation rather than about the documents, and each would
+    # otherwise cost the full set's forty-five commands to discover — the
+    # harness would run every command on this node to learn that it had been
+    # asked the wrong question.
     if args.check:
         # An absent OUTPUT DIRECTORY and fifteen drifted documents are different
         # situations and only one of them is a defect. Inside an installed
@@ -1105,6 +1252,44 @@ def main(argv=None):
                 f"is nothing to compare against and nothing is claimed about it. "
                 f"Render one with `workbench render --out {args.out}`.\n")
             return 2
+        # WHAT THE SET ON DISK WAS RENDERED WITH. A set rendered with
+        # `--quay-run` carries whole sections a render without it reports as
+        # 「没有答案」, so comparing the two reports drift on pages that are
+        # individually correct. That verdict names the wrong cause — the failure
+        # this whole verb exists to avoid — so the inputs are compared first and
+        # a mismatch is stated as a fact about THIS CHECK. Exit 2, the same
+        # answer an absent directory gets: nothing was compared, and saying so
+        # is not the same as saying something passed.
+        recorded = None
+        for path in sorted(args.out.glob("*.md")):
+            recorded = recorded_inputs(path.read_text())
+            if recorded is not None:
+                break
+        current = rel_home(render_inputs(args))
+        if recorded is None:
+            sys.stderr.write(
+                f"serverosctl: workbench check: {args.out} 里的文档没有记录它们是"
+                f"用哪一组输入渲染的（更早的格式），所以这次比对的是两组未知输入"
+                f"——没有比对任何东西。重新渲染一次这一集，它会带上这行记录：\n"
+                f"    workbench render --out {args.out} <与当初相同的输入>\n")
+            return 2
+        if inputs_differ(recorded, current):
+            sys.stderr.write(
+                f"serverosctl: workbench check: 这一集不是用这组输入渲染的，"
+                f"所以差异会落在输入上，不是落在文档上。没有比对任何东西。\n"
+                f"  集里记录：{recorded}\n"
+                f"  这次给的：{current}\n"
+                f"  不同的输入：{'、'.join(inputs_differ(recorded, current))}\n"
+                f"  `--out` 之外，只有这些输入会改变输出；照集里记录的那一组重跑。\n")
+            return 2
+
+    rendered = render_all(args, only=only)
+
+    if args.stdout:
+        sys.stdout.write(rendered.get(args.stdout, f"no such document: {args.stdout}\n"))
+        return 0
+
+    if args.check:
         bad, skipped = [], []
         for name, text in sorted(rendered.items()):
             path = args.out / f"{name}.md"
