@@ -1,0 +1,110 @@
+# serveros-daily — user unit, oneshot. The START-HERE set, re-rendered daily.
+#
+# WHAT THIS IS
+# ------------
+# `serverosctl workbench render` walks fifteen documents, and each one reports
+# what this node answers NOW. That makes the set useful exactly as long as it is
+# recent, and a set rendered by hand on the day somebody was looking at it is
+# stale the next morning. This unit is the thing that re-renders it.
+#
+#     serverosd (every tick)  ──►  the truth each document reports
+#            │
+#            ▼
+#     serverosctl workbench render --out <dir>   <-- this unit, once a day
+#
+# WHY IT IS NOT A SECOND SERVEROS DAEMON
+# --------------------------------------
+# `Type=oneshot`, no `Restart=`, no socket, no `RuntimeDirectory=`. It holds no
+# state of its own: every number in the documents comes from a verb it calls,
+# and every decided line comes from `runtime/workbench_sources.py` in the
+# revision — which is to say, from the artifact, not from this unit.
+#
+# WHAT IT WRITES, AND WHY NOT INTO THE REVISION
+# --------------------------------------------
+# `--out` is REQUIRED and there is no default, because the default is
+# `@SERVEROS_RUNTIME@/workbench` — a hash-verified revision that the next update
+# replaces wholesale, and a directory `workbench render` REFUSES to write into
+# when it is not running from a checkout. So `scripts/release.py daily-task`
+# refuses to install this unit without an explicit destination, for the same
+# reason it refuses to install the delivery worker without a conversation: a
+# unit installed with no destination would run every morning, write somewhere
+# nobody chose, and report success.
+#
+# The destination is a directory a person can open. It is not the repository's
+# `workbench/` and it is not part of any artifact; it is this node's reading of
+# itself on a given morning, and the next morning's render replaces it.
+#
+# WHY IT DOES NOT READ the previous set BEFORE WRITING
+# ----------------------------------------------------
+# It does not read anything before writing. `check` is the verb that compares a
+# set against the commands behind it, it is read-only, and it is what a person
+# runs — putting it in this unit would mean a nightly job whose failure mode is
+# a document set nobody looks at, reported to a journal nobody reads. The unit's
+# job is to leave a current set where a person will find one.
+#
+# WHAT IT DOES NOT DO
+# -------------------
+# It takes no action on the world and sends nothing. It does not deliver cards,
+# does not touch the alert register, and does not promote anything. §8's list of
+# actions needing separate approval is unchanged by this unit existing.
+#
+# WHICH SECTIONS THE SET THIS UNIT LEAVES WILL NOT HAVE
+# ----------------------------------------------------
+# `ExecStart` carries none of `workbench render`'s optional inputs, and that is
+# deliberate: each of them names a place a ROUND left something (`--quay-run`
+# one round's Quay workspace, `--reports-dir` one round's daily reports,
+# `--ability-repo` a checkout). Baking one into a unit would give every node a
+# document rendered out of whatever happens to still be on this disk, which is
+# the thing every other input here refuses to do.
+#
+# So the daily set is THINNER than a reviewed one, and the difference is visible
+# rather than silent: Quay 委派, 日报, and the capability-family view render as
+# 「没有答案」with the reason, because a section that quietly disappears reads as
+# a section with nothing to report. A node that wants those filled renders by
+# hand with the inputs, which is what the reviewed set under `workbench/` is.
+#
+# WHY THERE IS NO PATH= HERE
+# --------------------------
+# Same measurement as the sibling unit's header: ExecStart is an absolute path
+# inside the revision, and its interpreter comes from the shim's
+# `#!/usr/bin/env python3`. A PATH= copied from a shell-script unit would be a
+# declaration that outlived its measurement.
+
+[Unit]
+Description=ServerOS daily workbench render — leave a current START-HERE set where a person will find it
+Documentation=file:%h/.serveros/node.yaml
+# Ordering only, and NOT `Wants=`. The documents report what the daemon has
+# observed; if it is down the render still completes and says so, which is the
+# honest answer and is visible as a difference between two mornings' sets. A
+# `Wants=` would make a stopped daemon into a failed render, which hides the
+# node's state behind this unit's state.
+After=serverosd.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h
+Environment=SERVEROS_STATE_DIR=@SERVEROS_STATE_DIR@
+# `@SERVEROS_WORKBENCH_OUT@` is the destination, rendered at install time from a
+# value a person supplies. NOT optional, and `render_unit` raises rather than
+# expanding it to the empty string: `--out` with nothing after it is not a
+# directory, and the failure would arrive as a render that wrote nothing.
+ExecStart=@SERVEROS_RUNTIME@/bin/serverosctl workbench render --out @SERVEROS_WORKBENCH_OUT@
+# Bounded. The full set re-runs every command every page reads from — measured
+# at ~21 s on this node — and a render that hangs must be visible as a failed
+# run rather than as a timer that never completes. Ten minutes is two orders of
+# magnitude of headroom on a measurement, not a guess.
+TimeoutStartSec=600
+# NO `Restart=`. A failed render is a fact about this node worth seeing as a
+# failed unit; retrying it would replace "the render failed" with "the render
+# eventually succeeded", which is the same class of softening the documents
+# themselves refuse. Tomorrow's run is the retry.
+NoNewPrivileges=yes
+
+# NO `RuntimeDirectory=`, for the sibling unit's measured reason: systemd
+# REMOVES a RuntimeDirectory when the declaring unit stops, so a oneshot
+# declaring `RuntimeDirectory=serveros` would delete %t/serveros — and the
+# daemon's socket with it — every morning.
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=serveros-daily

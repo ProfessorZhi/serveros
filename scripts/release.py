@@ -71,6 +71,11 @@ STATE_PLACEHOLDER = "@SERVEROS_STATE_DIR@"
 # names it and no value is supplied, and `cmd_alert_worker` refuses to install
 # without `--conversation`.
 CONVERSATION_PLACEHOLDER = "@SERVEROS_ALERT_CONVERSATION@"
+# The daily render's destination. Like the conversation, it has no honest
+# default: the default output is the revision's own `workbench/`, which is a
+# hash-verified directory the next update replaces. `render_unit` raises when the
+# template names it and no value is supplied.
+WORKBENCH_OUT_PLACEHOLDER = "@SERVEROS_WORKBENCH_OUT@"
 
 UNIT_NAME = "serverosd.service"
 # §W's production delivery runtime. A oneshot and its timer, NOT a second
@@ -78,6 +83,10 @@ UNIT_NAME = "serverosd.service"
 # `Type=` rather than by trusting this comment.
 ALERT_SERVICE_NAME = "serveros-alert-sync.service"
 ALERT_TIMER_NAME = "serveros-alert-sync.timer"
+# §8's daily-task template. Shipped, installable, and NOT enabled by default —
+# the install prints the one command that arms it and nothing arms it otherwise.
+DAILY_SERVICE_NAME = "serveros-daily.service"
+DAILY_TIMER_NAME = "serveros-daily.timer"
 TREE_MANIFEST = "RELEASE.json"
 
 
@@ -191,7 +200,8 @@ def _symlink_swap(link: Path, target: Path) -> None:
 
 
 def render_unit(template: str, runtime_dir: Path, state_dir: Path, *,
-                conversation: str | None = None) -> str:
+                conversation: str | None = None,
+                workbench_out: str | None = None) -> str:
     """Write a unit template out for THIS node.
 
     `conversation` is keyword-only and has no default because there is no
@@ -212,8 +222,17 @@ def render_unit(template: str, runtime_dir: Path, state_dir: Path, *,
                 f"installed as if it did"
             )
         rendered = rendered.replace(CONVERSATION_PLACEHOLDER, conversation)
+    if WORKBENCH_OUT_PLACEHOLDER in template:
+        if not workbench_out:
+            raise ValueError(
+                f"unit names {WORKBENCH_OUT_PLACEHOLDER} and no destination was "
+                f"supplied; a daily render with no destination writes somewhere "
+                f"nobody chose and reports success"
+            )
+        rendered = rendered.replace(WORKBENCH_OUT_PLACEHOLDER, workbench_out)
     left = [p for p in (RUNTIME_PLACEHOLDER, STATE_PLACEHOLDER,
-                        CONVERSATION_PLACEHOLDER) if p in rendered]
+                        CONVERSATION_PLACEHOLDER, WORKBENCH_OUT_PLACEHOLDER)
+            if p in rendered]
     if left:
         raise ValueError(f"unit still carries an unrendered placeholder: {left}")
     # And any OTHER placeholder, because the list above is a list of the three
@@ -313,6 +332,19 @@ def verify_revision(rev_dir: Path, state_dir: Path) -> dict:
                         conversation="template-check")
         except ValueError as exc:
             problems.append(f"runtime/{ALERT_SERVICE_NAME}: {exc}")
+
+    # §8's daily-task template, checked the same way and for the same reason. It
+    # is the second unit to carry a placeholder that has no honest default, and
+    # the failure it guards against is the quiet one: a template whose
+    # destination never renders installs cleanly and runs `--out` with nothing
+    # after it.
+    daily_template = rev_dir / "runtime" / DAILY_SERVICE_NAME
+    if daily_template.is_file():
+        try:
+            render_unit(daily_template.read_text(), rev_dir, state_dir,
+                        workbench_out="template-check")
+        except ValueError as exc:
+            problems.append(f"runtime/{DAILY_SERVICE_NAME}: {exc}")
 
     # The entry point must resolve the runtime it ships with. `bin/` and
     # `runtime/` find each other by relative path, so a revision carrying one
@@ -588,6 +620,115 @@ def cmd_alert_worker(args) -> int:
     return 0
 
 
+def cmd_daily_task(args) -> int:
+    """§8 — install the daily render, and leave it DISABLED.
+
+    The template §8 asks for: installable, manually verifiable, off. It is one
+    subcommand rather than two because the only difference between installing it
+    and arming it is one flag, and splitting them would let an install path
+    exist that nobody had ever seen arm.
+
+    The polarity is the opposite of `alert-worker --no-enable`, deliberately.
+    There, enabling is the act that starts telling a person things, so it is the
+    default and NOT enabling is the flag. Here, enabling is the act §8 puts on
+    the approved list, so the flag is `--enable` and its absence is the default —
+    an install that arms a timer nobody approved would be this file doing the
+    thing it exists to refuse.
+
+    Manual verification, which is the point of shipping it this way:
+
+        systemctl --user start serveros-daily.service     # run it once, now
+        journalctl --user -u serveros-daily.service -n 40 # what it did
+        ls <--out>                                        # the set it left
+
+    and running it does not require the timer at all — the unit is a oneshot and
+    the ExecStart line printed below can be typed.
+    """
+    root = args.runtime_root / args.composition
+    current = current_revision(root)
+    if not current:
+        print(f"REFUSED nothing is promoted: {root / 'current'} is not a symlink.",
+              file=sys.stderr)
+        print("        The render runs the revision's own `bin/serverosctl`; "
+              "install one first.", file=sys.stderr)
+        return 1
+    rev_dir = root / "revisions" / current
+
+    service_template = rev_dir / "runtime" / DAILY_SERVICE_NAME
+    timer_template = rev_dir / "runtime" / DAILY_TIMER_NAME
+    for path in (service_template, timer_template):
+        if not path.is_file():
+            print(f"REFUSED {path} is missing from revision {current}.", file=sys.stderr)
+            print("        An artifact built before the daily template existed "
+                  "cannot install one.", file=sys.stderr)
+            return 1
+
+    try:
+        service_text = render_unit(service_template.read_text(), root / "current",
+                                   args.state_dir, workbench_out=str(args.out))
+    except ValueError as exc:
+        print(f"REFUSED {exc}", file=sys.stderr)
+        return 1
+    timer_text = render_unit(timer_template.read_text(), root / "current", args.state_dir)
+
+    # The template's own claim, checked against the destination rather than
+    # asserted in a comment: the renderer refuses to write into a directory that
+    # is not a checkout, so an install pointing `--out` back inside the revision
+    # would produce a unit that fails every morning. Caught here, where the
+    # operator is still looking, instead of at 08:17 tomorrow.
+    resolved_out = args.out.resolve()
+    if resolved_out == rev_dir.resolve() or rev_dir.resolve() in resolved_out.parents:
+        print(f"REFUSED --out {args.out} is inside the revision {rev_dir}.", file=sys.stderr)
+        print("        A render is refused there by name, so the timer would fail "
+              "every morning. Choose a directory outside the artifact.", file=sys.stderr)
+        return 1
+
+    if args.dry_run:
+        print(f"would install  {args.unit_dir / DAILY_SERVICE_NAME}")
+        print(f"would install  {args.unit_dir / DAILY_TIMER_NAME}")
+        print(f"  revision     {current}")
+        print(f"  destination  {args.out}")
+        exec_line = next((l for l in service_text.splitlines()
+                          if l.startswith("ExecStart=")), "")
+        print(f"  {exec_line}")
+        print("  NOT enabled  (--enable arms it)")
+        return 0
+
+    args.unit_dir.mkdir(parents=True, exist_ok=True)
+    args.out.mkdir(parents=True, exist_ok=True)
+    (args.unit_dir / DAILY_SERVICE_NAME).write_text(service_text)
+    (args.unit_dir / DAILY_TIMER_NAME).write_text(timer_text)
+    print(f"installed      {args.unit_dir / DAILY_SERVICE_NAME}")
+    print(f"installed      {args.unit_dir / DAILY_TIMER_NAME}")
+    print(f"  revision     {current}")
+    print(f"  destination  {args.out}")
+
+    if args.no_reload:
+        print("  not enabled. Nothing is rendered on a schedule until you arm it:")
+        print(f"    systemctl --user enable --now {DAILY_TIMER_NAME}")
+        print(f"  or run it once, by hand:")
+        print(f"    systemctl --user start {DAILY_SERVICE_NAME}")
+        return 0
+    subprocess.run(["systemctl", "--user", "daemon-reload"], check=False)
+    if not args.enable:
+        print("  installed and NOT enabled. §8 lists enabling a daily task as an "
+              "act needing separate approval, so this install does not do it:")
+        print(f"    systemctl --user enable --now {DAILY_TIMER_NAME}")
+        print(f"  run it once, by hand, without arming anything:")
+        print(f"    systemctl --user start {DAILY_SERVICE_NAME}")
+        return 0
+    done = subprocess.run(["systemctl", "--user", "enable", "--now", DAILY_TIMER_NAME],
+                          check=False)
+    print(f"  enabled      {DAILY_TIMER_NAME} "
+          f"({'ok' if done.returncode == 0 else f'exit {done.returncode}'})")
+    if done.returncode != 0:
+        print("  The unit and the timer are installed and the timer is NOT "
+              "running. Nothing is rendered on a schedule; `systemctl --user "
+              "status " + DAILY_TIMER_NAME + "` says why.", file=sys.stderr)
+        return 1
+    return 0
+
+
 def main() -> int:
     home = Path.home()
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
@@ -643,6 +784,26 @@ def main() -> int:
     p.add_argument("--no-enable", action="store_true",
                    help="write the units but do not enable or start the timer")
     p.set_defaults(func=cmd_alert_worker)
+
+    p = sub.add_parser(
+        "daily-task",
+        help="§8 · install the daily workbench render (a oneshot and its timer), "
+             "DISABLED. Separate from promote for the same reason, and off by "
+             "default because §8 lists enabling a daily task as an approved act")
+    common(p)
+    p.add_argument("--out", type=Path, required=True,
+                   help="where the daily render writes. Required and not "
+                        "defaulted: the default is the revision's own "
+                        "`workbench/`, which is a hash-verified directory the "
+                        "next update replaces wholesale, and which the renderer "
+                        "refuses to write into from an installation")
+    p.add_argument("--enable", action="store_true",
+                   help="ALSO enable and start the timer. Absent by default, so "
+                        "the install is inert until somebody arms it — the "
+                        "opposite polarity from `alert-worker --no-enable`, "
+                        "because §8 puts a daily task on the approved list and "
+                        "putting it on the list is the whole reason it exists")
+    p.set_defaults(func=cmd_daily_task)
 
     args = ap.parse_args()
     return args.func(args)

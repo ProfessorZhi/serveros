@@ -4454,6 +4454,48 @@ def cmd_work_item(args) -> int:
     return EXIT_OK
 
 
+def cmd_workbench(args) -> int:
+    """§6 — the START-HERE set, rendered from this node rather than written by hand.
+
+    The renderer lives in `runtime/workbench.py` and is loaded here rather than
+    restated: a second implementation of "what the documents say" would be a
+    second answer, and the drift between them would be invisible because both
+    would look like markdown.
+
+    `check` is the half that matters. A rendered set that nobody re-renders is a
+    screenshot; a set with a check is a claim that can go red on its own, which
+    is the only kind of claim worth publishing.
+    """
+    module = _load_module_from(REPO_ROOT / "runtime" / "workbench.py",
+                               "serveros_workbench")
+    argv = ["--write"] if args.workbench_verb == "render" else ["--check"]
+    if args.out:
+        argv += ["--out", args.out]
+    if args.projects:
+        argv += ["--projects", *args.projects]
+    if args.project:
+        argv += ["--project", args.project]
+    if args.item:
+        argv += ["--item", args.item]
+    if args.quay_run:
+        argv += ["--quay-run", args.quay_run]
+    if args.ability_repo:
+        argv += ["--ability-repo", args.ability_repo]
+    if args.reports_dir:
+        argv += ["--reports-dir", *args.reports_dir]
+    if args.release_root:
+        argv += ["--release-root", args.release_root]
+    if args.documents:
+        argv += ["--documents", *args.documents]
+    if args.stdout:
+        argv += ["--stdout", args.stdout]
+    try:
+        return module.main(argv)
+    except SystemExit as exc:          # argparse refusals arrive this way
+        sys.stderr.write(f"serverosctl: workbench {args.workbench_verb}: {exc}\n")
+        return EXIT_COULD_NOT_ANSWER
+
+
 def cmd_work_skeleton(args) -> int:
     """§8 — print the shape of one document, so a person writes to it.
 
@@ -5788,6 +5830,66 @@ def build_parser() -> argparse.ArgumentParser:
         **_COMMON)
     _add_work_roots(wk_cov, project_required=True)
     wk_cov.set_defaults(func=_workchain_refusals(cmd_work_coverage))
+
+    workbench = sub.add_parser(
+        "workbench",
+        help="§6's START-HERE set: one entry point a person opens to inspect "
+             "what this node can actually reach", **_COMMON)
+    workbench_sub = workbench.add_subparsers(dest="workbench_verb", required=True)
+
+    def _add_workbench(parser_):
+        """The inputs a rendered document can need, plus the subset selectors.
+
+        They are options and not defaults, deliberately: a default pointing at one
+        round's scratch directory would render a Quay section out of a store that
+        happens to still be on this disk, and would do it on this node only. An
+        input that is absent produces a section saying it has no answer, which is
+        the honest rendering of not having been told.
+        """
+        parser_.add_argument("--out", default="",
+                             help="where to write (default: <repo>/workbench)")
+        parser_.add_argument("--projects", nargs="*", default=None,
+                             help="the projects the coverage page reads")
+        parser_.add_argument("--project", default=None,
+                             help="the project the Item chain is read from")
+        parser_.add_argument("--item", default=None, help="the Item id")
+        parser_.add_argument("--quay-run", default=None,
+                             help="a directory holding a quay workspace (`ws/`)")
+        parser_.add_argument("--ability-repo", default=None,
+                             help="the ability-management clone to render the "
+                                  "capability-family view from. This module does "
+                                  "not reimplement that renderer")
+        parser_.add_argument("--documents", nargs="*", default=None,
+                             help="render only these documents. A subset renders "
+                                  "in well under a second, which is what makes a "
+                                  "targeted test of the check affordable; the full "
+                                  "set re-runs every command its pages read from")
+        parser_.add_argument("--reports-dir", nargs="*", default=None, metavar="DIR",
+                             help="directories holding a run's daily reports, "
+                                  "searched for files named *daily-report* in "
+                                  "addition to <repo>/docs, <repo>/workbench and "
+                                  "--quay-run. A run's reports live in the run's "
+                                  "own directory, which is never a default")
+        parser_.add_argument("--stdout", default=None,
+                             help="print one document, write nothing")
+        parser_.add_argument("--release-root", default=None,
+                             help="an isolated runtime root's COMPOSITION directory "
+                                  "(the one holding `current` and `previous`), for "
+                                  "the manifest's install section. Never the live "
+                                  "one, and not the `current` symlink: the panel "
+                                  "reads `current`/`previous` beneath the path it "
+                                  "is given")
+
+    wb_render = workbench_sub.add_parser(
+        "render", help="write the documents", **_COMMON)
+    _add_workbench(wb_render)
+    wb_render.set_defaults(func=cmd_workbench)
+
+    wb_check = workbench_sub.add_parser(
+        "check", help="fail if the documents on disk no longer match the "
+                      "commands that produced them", **_COMMON)
+    _add_workbench(wb_check)
+    wb_check.set_defaults(func=cmd_workbench)
 
     taxonomy = sub.add_parser(
         "taxonomy",

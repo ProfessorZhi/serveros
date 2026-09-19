@@ -1,0 +1,36 @@
+[Unit]
+Description=Re-render the ServerOS workbench once a day
+
+[Timer]
+# 08:17, and the time is a measurement rather than a taste. The offsets of the
+# timers already on this host:
+#
+#   hwz-monitor.timer      :00 :30   takes a ~15 s sampling window (CPU 2 s,
+#                                    network 5 s, docker stats); its own header
+#                                    records that sampling pollution is
+#                                    ACCEPTED at those minutes
+#   serveros-alert-sync     :04 :09 :14 …   five-minute stride
+#
+# A render is the heaviest thing in this set — it runs the entry point about
+# seventy times and reads the work-engine store, the alert ledger and the
+# capability projection while it does. Landing it inside the monitor's sampling
+# window would put its own load into the numbers that monitor is measuring, and
+# the monitor is the thing a person reads. 08:17 is inside neither stride.
+#
+# Morning rather than midnight: the documents are for a person to read during
+# the day, and a set rendered at 00:00 is stale by the time anyone opens it.
+OnCalendar=*-*-* 08:17:00
+AccuracySec=1min
+# `Persistent=true`, and the sibling timer reaches the OPPOSITE answer for the
+# same kind of question — worth stating rather than copying. `serveros-alert-sync`
+# is `Persistent=false` because its queue is the REGISTER: a missed delivery is
+# still pending, so a catch-up rescues nothing and a burst of cards is worse than
+# the next ordinary tick. There is no register here. A missed render is simply a
+# day's set that was never produced, and catching it up produces a current set
+# LATE rather than a burst of anything. The one cost is a render at an odd hour
+# on a machine that has just come back, which is one render.
+Persistent=true
+Unit=serveros-daily.service
+
+[Install]
+WantedBy=timers.target
