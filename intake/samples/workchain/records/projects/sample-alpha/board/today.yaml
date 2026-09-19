@@ -1,0 +1,7 @@
+schema: serveros/today.v1
+project: sample-alpha
+date: '2026-09-20'
+items:
+- SAMP-0002
+note: 'SAMPLE fixture: one item in flight, deliberately chosen.'
+authored_by: sample-fixture

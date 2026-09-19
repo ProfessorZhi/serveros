@@ -1,0 +1,13 @@
+schema: serveros/item.v2
+id: SAMP-0003
+project: sample-alpha
+kind: feature
+title: 示例：已交付但 PR 未合并
+aliases: []
+source_refs:
+  - locator: "sample:SAMP-0003"
+    because: "this row exists only in the fixture; it cites no real source"
+acceptance:
+  - "the fixture exercises the state this Item declares"
+expected_deliverables: []
+created_at: "2026-09-01T00:00:00+00:00"

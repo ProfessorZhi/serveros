@@ -1,0 +1,215 @@
+# §8 — the shape of each document in the chain, and what a checker can ask of it.
+#
+# WHY THIS EXISTS AT ALL
+# ----------------------
+# `workchain-contract.yaml` says WHICH document an Item is expected to have at
+# which state. It says nothing about what is IN one. Without that, "brief.md is
+# present" is the whole answer, and a file containing one line of apology reads
+# exactly like a brief — which makes the board's `●` a claim about a filename
+# rather than about a document.
+#
+# WHAT THIS FILE IS NOT
+# ---------------------
+# Not a template engine and not a linter. It declares the HEADINGS a document of
+# each kind could carry, and the one thing each heading is for. It does not read
+# the prose, score it, or have an opinion about the writing — a skeleton that
+# graded prose would be a second authority on quality, and there is already a
+# person for that.
+#
+# ONE ENTRY HERE IS NOT A DOCUMENT. `understanding` declares a FAMILY of four
+# scopes whose shapes genuinely differ from one another, so it carries
+# `scopes` with the headings OBSERVED in the node's own documents instead of
+# `sections` with headings proposed by this file. The distinction is visible in
+# both consumers: `work skeleton understanding` prints the four scopes, and the
+# checker answers `NOT_CHECKED` for such an entry rather than `MATCHES` — a
+# shape that declares no headings is missing none of them and checking nothing
+# must not read as everything being fine.
+#
+# The `because` on each heading is the part a person actually uses: it is what
+# `serverosctl work skeleton <name>` prints, so somebody starting a `brief.md`
+# gets the SHAPE and the reason for each part rather than a blank file.
+#
+# THESE HEADINGS ARE A PROPOSAL, AND THE FIRST VERSION OF THIS FILE LIED ABOUT IT
+# -----------------------------------------------------------------------------
+# The checker in `intake/workchain.py` first reported a document `INCOMPLETE`
+# when it lacked these headings — and then it was run against this node, where
+# 21 real `brief.md` files use headings like `## 定性`, `## 判据与证据` and
+# `## 背景与问题陈述`, and NONE of them use the ones below. It reported every
+# real brief as five-of-five incomplete. That is a rule invented in this file
+# and reported as a fact about somebody's work, which is the precise failure
+# this whole tree is arranged to avoid.
+#
+# So the headings below are what they always were: a proposed shape, marked as
+# unapproved. The checker reports the DIVERGENCE, with the document's own
+# headings beside it, and never calls a document broken for not using them. A
+# well-structured brief that chose its own sections is a brief that chose its
+# own sections. The one thing the checker does call a defect is an EMPTY
+# document, because that is a fact and not a standard.
+#
+# LENGTH IS NOT MEASURED, on purpose. The shortest real brief on this node is
+# 106 characters and says what the work is, why it is worth doing and what it
+# excludes. A character floor would have flagged six real briefs as stubs —
+# false alarms on real work, which is how a board becomes one nobody reads.
+schema: serveros/document-skeletons.v1
+status: PROPOSED_NOT_APPROVED
+until_approved: >-
+  No document on this node uses these headings. `work skeleton <id>` prints them
+  as a starting shape; the checker reports the divergence and not a verdict.
+
+# Every document this fabric names, with the hop that produces it. The ids match
+# `workchain-contract.yaml#chain`, and `tests/test_workchain.py` checks that
+# they do — a skeleton for a hop that does not exist is a shape nothing writes.
+documents:
+  - id: brief
+    file: brief.md
+    hop: item-brief
+    is: one requirement, expanded, after it was chosen
+    # Chosen, and the brief says by whom. §6's ordering constraint is that a
+    # candidate enters the board BEFORE a brief exists, so the brief is the
+    # first document that can name a decision and it must.
+    sections:
+      - heading: 需求
+        because: what is being asked for, in the requester's own terms
+      - heading: 为什么现在
+        because: >-
+          what makes this worth a slot today rather than later. A brief that
+          cannot answer this is a brief for a backlog item.
+      - heading: 验收
+        because: >-
+          what will be true when it is done, written so somebody else can check
+          it. §6's 已完成 is this list met and not "the run exited 0".
+      - heading: 边界
+        because: what this does NOT cover, so the next document cannot widen it
+      - heading: 未知
+        because: >-
+          what is not known yet. An empty 未知 section is a claim, and a
+          reader is entitled to see it made rather than left out.
+
+  - id: design
+    file: design
+    hop: design-and-plan
+    is: how it will be built
+    sections:
+      - heading: 现状
+        because: what is true now, with the evidence a reader can re-run
+      - heading: 方案
+        because: the approach, and the alternative that was rejected with why
+      - heading: 影响面
+        because: what else this touches — files, services, other Items
+      - heading: 风险
+        because: what could go wrong, and what would tell us it had
+
+  - id: plan
+    file: plan
+    hop: design-and-plan
+    is: in what order
+    sections:
+      - heading: 步骤
+        because: the parts, in the order they have to happen
+      - heading: 判据
+        because: >-
+          how each step is known to be done. A step whose completion cannot be
+          observed is a step that will be reported as done because time passed.
+      - heading: 回退
+        because: >-
+          how to undo it. Empty for a change that cannot be undone is a
+          different statement from empty because nobody thought about it.
+
+  - id: report
+    file: report
+    hop: report
+    is: what happened, with the evidence a reader can re-run
+    sections:
+      - heading: 结论
+        because: the outcome, stated before the evidence rather than after it
+      - heading: 证据
+        because: >-
+          the commands, revisions and artifacts that produced the conclusion.
+          "退出 0 不等于通过" — an exit code is not this section.
+      - heading: 与计划的差异
+        because: >-
+          where the work diverged from plan.md, and whether the divergence was
+          the plan being wrong or the work being wrong
+      - heading: 未完成
+        because: what is NOT done, named. A report with no such section reads
+          as a report about a finished thing.
+
+  - id: understanding
+    file: understanding.md
+    hop: structured-understanding
+    is: what is now understood, and what changed
+    scope: node
+    # FOUR SCOPES AND NOT ONE DOCUMENT, which a first version of this file got
+    # wrong: it declared `records/projects/<project>/context/understanding.md`
+    # and no such file exists on this node — nor should one. The real layout is
+    # `records/information/understanding/{people,projects,topics,responsibilities}/`,
+    # under `records/` beside `projects/` rather than inside a project, because
+    # understanding is a property of what is understood and not of whoever is
+    # carrying the work today. `understanding/README.md` says why in its own
+    # words: understanding is what we currently know, `raw` is what happened,
+    # and `projects/<p>/context` is where understanding goes once it has
+    # stopped moving.
+    #
+    # The headings below were READ FROM THE DOCUMENTS on this node (2 project
+    # cards, 5 topic cards, 4 people cards, 1 responsibilities README) and not
+    # proposed by this file. They are listed per scope because the scopes
+    # genuinely differ — there is no one shape here to propose, and inventing
+    # one is how the brief checker called 21 real briefs broken.
+    root: records/information/understanding
+    scopes:
+      - id: projects
+        is: one card per business, updated as what we know changes
+        observed_headings: [当前职责, 当前系统, 当前主要问题, 当前优先方向, 尚未确定, Sources]
+        read_from: 2 份文档
+      - id: topics
+        is: cross-project subject matter, where the shapes differ most
+        observed_headings: [核心, 平台难点, Sources]
+        also_seen: [架构, 产出, 数据/权限, 已确认事实, 当前认识, 受控实验约束, 证据与观察缺口, 职责主线, 环境, 常见问题与处置]
+        read_from: 5 份文档
+      - id: people
+        is: a person's role, how they work with me, and what they decide
+        observed_headings: []
+        read_from: 4 份文档，没有一份带二级小节
+      - id: responsibilities
+        is: what I am accountable for across repositories
+        observed_headings: [分层说明, 产物边界]
+        read_from: 1 份文档
+    # NOT a list of sections to check a document against. These are observations
+    # of what is written, so that `work coverage` can say what the layer holds
+    # and `work skeleton understanding` can print a starting shape. Nothing here
+    # is required of any document, and the checker in `intake/workchain.py` is
+    # never pointed at these.
+    traceability:
+      heading: Sources
+      because: >-
+        `understanding/README.md` — 每份认识必须能溯源到 raw source. It is the
+        node's own red line, so `work coverage` counts how many documents carry
+        it. It is counted and not graded: 5 of the 12 documents here are people
+        and responsibilities cards that do not use it, and calling those
+        defective would be this file inventing a standard one scope over.
+
+  - id: daily-report
+    file: daily-report.md
+    hop: report
+    is: one day across every Item, for a reader who was not there
+    # NOT per Item, which is why it is not in `item_documents`. It is declared
+    # here so `work skeleton daily-report` can print it, and it is listed in
+    # `workchain-contract.yaml#not_implemented` because nothing generates one
+    # yet: a generator would have to read the day's Runs, and reading the
+    # work-engine store from this repository is the boundary the whole module is
+    # arranged to keep.
+    scope: node
+    sections:
+      - heading: 今日重点
+        because: what was chosen, from `today.yaml`, and what it cost to choose
+      - heading: 实际推进
+        because: what actually moved, from Items and Runs and not from memory
+      - heading: 卡住
+        because: what did not move, and what it is waiting on
+      - heading: 认识变化
+        because: >-
+          what is now understood that was not understood this morning. A day
+          that produced no change here is a day that produced no understanding,
+          which is worth seeing stated.
+      - heading: 明天
+        because: the 1-2 things worth carrying, which is tomorrow's selection
