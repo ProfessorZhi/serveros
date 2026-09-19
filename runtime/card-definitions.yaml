@@ -1,0 +1,172 @@
+# The definition catalogue the alert presentation model reads.
+#
+# WHY THIS FILE EXISTS
+#
+# An alert row carries a `code` — `HIGH_MEMORY_SUSTAINED`, `TUNNEL_UNHEALTHY` —
+# and a person reading a card is owed a sentence in their own language. The two
+# obvious ways to produce one are both wrong:
+#
+#   * Let a model write it. §4 forbids it: "不能靠 LLM 自由生成根因". A sentence
+#     generated per alert is a sentence nobody reviewed, and the reviewer who
+#     would have caught "restart failed, so the network is down" is not in the
+#     loop at 03:00.
+#   * Rephrase the code inside `notifications.render`. `notification-contract.yaml`
+#     forbids that too, for a different reason: "a sentence that rephrases the
+#     code is a sentence two people will disagree about". That sentence is the
+#     *notification*, and it must name the code verbatim.
+#
+# So the sentence lives here instead: a declared, reviewable, versioned table,
+# separate from the notification and separate from any model. This is the
+# "定义目录" that OBSERVABILITY-CARDS.md §4 names as an input to the
+# presentation model.
+#
+# WHAT A `what` LINE MAY SAY
+#
+# Only what was measured. Every `what` below restates the code's own name and
+# nothing further, because the code IS the finding: the detector that opened
+# the alert decided the meaning already, and this file is not a second opinion
+# on it.
+#
+# Cause words are forbidden and the ban is enforced by
+# `tests/test_presentation.py::DefinitionCatalogueTests`, not by review. The
+# specific failure it prevents is the one §4 names by hand: reading `restart
+# failed` as `network fault`. A definition may never connect two facts.
+#
+# WHAT AN `impact` LINE MAY SAY
+#
+# Nothing, unless the contract already states it. An entry may omit `impact`,
+# and the model then renders "影响尚未确认" — §4: "没有影响证据时明确影响尚未确认".
+# Writing a plausible impact for a code is how a card starts asserting harm
+# that nobody measured. Two entries below carry one; both restate a claim the
+# managed-runtime contract makes itself.
+#
+# `action` is likewise optional and defaults to `alerting.recommendation(severity)`.
+# Nothing here may name an operation. The catalogue is display text; §15's
+# `alert != authorization` is kept by the model having no code path in which
+# any word in this file reaches a machine.
+schema: serveros/card-definitions.v1
+
+# Which codes this catalogue is allowed to define. Read by
+# `tests/test_presentation.py` against `anomaly.SEVERITY` and
+# `resource_anomaly.CODES`; a definition for a code outside these sets is an
+# invented code, and a test fails rather than a reader discovering it.
+sources:
+  - runtime/anomaly.py#SEVERITY
+  - runtime/resource_anomaly.py#CODES
+
+codes:
+
+  # -- process trees and attribution --------------------------------------
+  ORPHAN_PROCESS_TREE:
+    what: 有一组进程尚未归属到任何受管工作
+    impact: 未关联受管工作本身不构成危险，也不表示泄漏
+  EXTERNAL_PROCESS_TREE:
+    what: 有一组进程属于本节点之外的用户会话
+  EXTERNAL_SYSTEM_PROCESS_TREE:
+    what: 有一组进程属于系统层，不在任何用户会话的范围内
+  UNKNOWN_OWNER_LONG_RUNNING:
+    what: 有一个长时间运行的对象，其归属无法确认
+  RUNTIME_UNOWNED:
+    what: 有一个受管运行时没有声明归属
+  RUNTIME_ORPHANED:
+    what: 有一个受管运行时的归属对象已经不在了
+  RUNTIME_OUTLIVED_OWNER:
+    what: 有一个受管运行时比它的归属对象活得更久
+  TASK_IDLE_PROCESS_ACTIVE:
+    what: 有一个已闲置的任务，其进程仍在占用资源
+  TASK_CLOSED_RESOURCE_RUNNING:
+    what: 有一个已关闭的任务，其资源仍在运行
+  STOPPED_REVIEW_CANDIDATE:
+    what: 有一个已停止的对象符合待复核的条件
+  AGE_WITHOUT_ACTIVITY:
+    what: 有一个对象存在了很久，而这段时间里没有活动迹象
+  SESSION_OWNED_DURABLE_RESOURCE:
+    what: 有一个需要长期存在的资源，其归属写的是一个会话
+  UNDECLARED_DURABLE_RESOURCE:
+    what: 有一个长期存在的资源没有出现在声明里
+  PERSISTENT_RUNTIME_FLOATING_DEPENDENCY:
+    what: 有一个常驻运行时依赖了一个未固定版本的组件
+  PROTECTION_LOST_ON_IDENTITY_SWITCH:
+    what: 有一个受保护对象的身份发生变化，保护标记不再覆盖它
+
+  # -- resource pressure ---------------------------------------------------
+  HIGH_CPU_SUSTAINED:
+    what: 有一个进程组持续占用 CPU
+  HIGH_MEMORY_SUSTAINED:
+    what: 有一个进程组持续占用内存
+  MEMORY_PRESSURE:
+    what: 整机内存使用达到告警阈值
+  SWAP_PRESSURE:
+    what: 交换区使用达到告警阈值
+  DISK_WARNING:
+    what: 有一个文件系统的使用率进入告警档
+  DISK_CRITICAL:
+    what: 有一个文件系统的使用率进入严重档
+  INODE_CRITICAL:
+    what: 有一个文件系统的 inode 使用率达到严重档
+  ROOT_FS_PRESSURE:
+    what: 系统卷的使用率达到告警阈值
+  DATA_FS_PRESSURE:
+    what: 数据卷的使用率达到告警阈值
+  DOCKER_STORAGE_HIGH:
+    what: Docker 存储占用达到告警阈值
+  BUILD_CACHE_HIGH:
+    what: Docker 构建缓存占用达到告警阈值
+  CONTAINER_LOG_LARGE:
+    what: 有一个容器的日志体积达到告警阈值
+  CONTAINER_WRITABLE_LAYER_LARGE:
+    what: 有一个容器的可写层体积达到告警阈值
+
+  # -- containers, tunnels, declarations -----------------------------------
+  STALE_CONTAINER:
+    what: 有一个容器符合陈旧候选的条件
+  PROTECTED_RESOURCE_AT_RISK:
+    what: 有一个受保护资源所在的文件系统正在被填满
+    impact: 受保护资源与它所在的卷是两件事，卷满会让它无法写入
+  TUNNEL_UNHEALTHY:
+    what: 有一条隧道的转发进程存在，而通道状态未通过
+  TUNNEL_OWNER_MISSING:
+    what: 有一条隧道没有声明归属
+  DESIRED_ACTUAL_MISMATCH:
+    what: 有一个对象的实际状态与声明的期望状态不一致
+
+  # -- functional probes ---------------------------------------------------
+  FUNCTIONAL_PROBE_FAILED:
+    what: 有一个资源的声明探针没有通过
+  MCP_PROCESS_ALIVE_BUT_UNAVAILABLE:
+    what: 有一个 MCP 服务的进程还在，而它没有应答
+  REPEATED_ERROR_LOOP:
+    what: 有一个对象在持续重复产生错误
+
+# What a person might look at next, where that is unambiguous, and a plain
+# refusal to name one everywhere else.
+#
+# Every line here is an observation instruction — a thing to look at. None of
+# them is an operation, and none of them may become one: §15's `alert !=
+# authorization` holds because no word in this file reaches a machine, and
+# `tests/test_presentation.py` asserts the model has no code path that would
+# let it. A code absent from this map gets the model's own default, which names
+# no action at all.
+actions:
+  ORPHAN_PROCESS_TREE: 无需动作；归属未知不等于必须清理
+  EXTERNAL_PROCESS_TREE: 无需动作；这是本节点之外用户的进程
+  EXTERNAL_SYSTEM_PROCESS_TREE: 无需动作；这是系统层的进程
+  UNKNOWN_OWNER_LONG_RUNNING: 查看该对象的归属线索；本卡不会终止它
+  HIGH_CPU_SUSTAINED: 查看该进程组的归属与占用贡献者
+  HIGH_MEMORY_SUSTAINED: 查看该进程组的归属与占用贡献者
+  DISK_WARNING: 查看该文件系统的占用构成
+  DISK_CRITICAL: 查看该文件系统的占用构成，并核对受保护资源是否落在这里
+  ROOT_FS_PRESSURE: 查看系统卷的占用构成
+  DATA_FS_PRESSURE: 查看数据卷的占用构成
+  INODE_CRITICAL: 查看该文件系统的 inode 占用构成
+  TUNNEL_UNHEALTHY: 检查该隧道两端的连通性；本卡不会重建它
+  TUNNEL_OWNER_MISSING: 为该隧道声明归属
+  FUNCTIONAL_PROBE_FAILED: 查看该资源声明的探针与它最近一次的结果
+  MCP_PROCESS_ALIVE_BUT_UNAVAILABLE: 检查该 MCP 服务自身是否应答
+  REPEATED_ERROR_LOOP: 查看该对象的错误输出
+  DESIRED_ACTUAL_MISMATCH: 核对声明的期望状态与实测状态哪个需要改
+  PERSISTENT_RUNTIME_FLOATING_DEPENDENCY: 把该依赖固定到一个具体版本
+  UNDECLARED_DURABLE_RESOURCE: 决定它的归属与生命周期，并写进声明
+  SESSION_OWNED_DURABLE_RESOURCE: 把它改成不随会话消失的归属
+  PROTECTION_LOST_ON_IDENTITY_SWITCH: 核对新身份是否仍应受保护
+

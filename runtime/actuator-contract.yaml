@@ -540,6 +540,37 @@ actuators:
       - {file: scripts/release.py, symbols: [cmd_promote, cmd_rollback, cmd_alert_worker]}
 
   # ---------------------------------------------------------------------
+  # The card source. The card is a consumer, and a consumer that imports
+  # its producer measures the import rather than the promise.
+  # ---------------------------------------------------------------------
+  - id: card-source-asks-the-cli
+    kind: unresolved_argv
+    verb: <argv0>
+    why: >-
+      `subprocess.run([sys.executable, str(_REPO / "bin" / "serverosctl"),
+      *argv, "--json"])` in `runtime/card_source.py`'s `_default_run`. The
+      scanner reads neither `sys.executable` nor the `str(...)` of the entry
+      path, so the argv is reported rather than assumed. What it cannot show is
+      the part that matters: `argv` is one of `DEFAULT_READS`'s four read
+      subcommands — `resource summary`, `resource top`, `resource
+      user-services`, `runtime list` — every one of which is a read this
+      product already ships, and the entry point is the revision's OWN shim,
+      one component under this file. `--json` is appended after the `*argv`, so
+      no word a caller passes can displace it or reach a subcommand that did
+      not come from that tuple; the four are literal string tuples in the same
+      module, which is where this scanner reads them.
+      WHY A SUBPROCESS AT ALL, since the alternative looks cheaper:
+      `card status` is itself `serverosctl`, so this makes the command invoke
+      its own CLI once per read. That is the deliberate half. The command is
+      the supported interface — a card that called `resource_summary()` in
+      process would be asserting what the code does today instead of what the
+      command promises, and the two diverge the day a payload key moves. The
+      cost is four interpreter starts on a card render, which is a surface a
+      person looks at and no timer spins on.
+    sites:
+      - {file: runtime/card_source.py, symbols: [_default_run]}
+
+  # ---------------------------------------------------------------------
   # The MCP layer. §18's rule lives here.
   # ---------------------------------------------------------------------
   - id: mcp-agent-session-ends-its-own-child

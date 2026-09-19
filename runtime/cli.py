@@ -3172,6 +3172,139 @@ def cmd_alert_digest_record(args) -> int:
 
 
 # ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# The card surfaces — one model, a Feishu payload and a preview
+# ---------------------------------------------------------------------------
+#
+# Three commands, one renderer, and a rule about what they are NOT: none of
+# them sends anything. §6 of the observability design asks for a JSON payload
+# and a visual preview from the same renderer, and it says in as many words
+# that a rendered preview is evidence of what the renderer produces and not of
+# what a conversation looks like. Actually sending stays with the transport
+# that already holds it, so that "look at this card" never becomes "send this
+# card to somebody".
+
+
+def _card_modules():
+    """The three modules the card surfaces need, loaded as siblings."""
+    return (_load_module_from(REPO_ROOT / "runtime" / "card_source.py",
+                              "serveros_runtime_card_source"),
+            _load_module_from(REPO_ROOT / "runtime" / "presentation.py",
+                              "serveros_runtime_presentation"),
+            _load_module_from(REPO_ROOT / "runtime" / "cards.py",
+                              "serveros_runtime_cards"))
+
+
+def _card_common(args) -> tuple[dict, str]:
+    """The model and its caption, gathered the one way the card knows how."""
+    source, presentation, _cards = _card_modules()
+    at = (getattr(args, "at", "") or
+          datetime.datetime.now(datetime.timezone.utc).astimezone().strftime(
+              "%Y-%m-%d %H:%M:%S %Z"))
+    kind = args._card_kind
+    if kind == "status":
+        binding = source.load_binding(getattr(args, "gateway_binding", "") or None,
+                                      device_ref=getattr(args, "device_ref", "") or None)
+        snapshot = source.snapshot(
+            source.gather(), at=at,
+            node_label=getattr(args, "device_ref", "") or None, binding=binding)
+        model = presentation.status_model(snapshot, at=at, binding=binding,
+                                          sample=bool(args.sample))
+        caption = ("status card — three blocks and the line above them. "
+                   "The gateway block is UNBOUND unless a service binding names it")
+    else:
+        document = _read_card_document(args)
+        if isinstance(document, tuple):
+            return document  # an (error_payload, ...) short circuit
+        if kind == "alert":
+            model = presentation.alert_model(document, at=at,
+                                             sample=bool(args.sample))
+            caption = "alert card — at most three events, and what did not fit"
+        else:
+            model = presentation.recovery_model(document, at=at,
+                                                sample=bool(args.sample))
+            caption = ("recovery card — only what was announced, and only what "
+                       "has since recovered")
+    return model, caption
+
+
+def _read_card_document(args):
+    """The digest document, read whole from a file or produced by the command."""
+    path = getattr(args, "digest", "") or ""
+    if path:
+        try:
+            document = json.loads(Path(path).read_text(encoding="utf-8"))
+        except (OSError, ValueError) as exc:
+            return (_card_error("CARD_DIGEST_UNREADABLE",
+                                f"{path}: {type(exc).__name__}: {exc}"), EXIT_FAULT)
+        if not isinstance(document, dict):
+            return (_card_error("CARD_DIGEST_NOT_A_DOCUMENT",
+                                f"{path} holds a {type(document).__name__}; a card "
+                                "is rendered from the digest document, not from a "
+                                "bare row list"), EXIT_FAULT)
+        return document
+    payload, code = _digest_answer("alert.digest", {})
+    if code != EXIT_OK:
+        return (_card_error("CARD_DIGEST_UNAVAILABLE",
+                            str(payload.get("message") or payload)), code)
+    return payload
+
+
+def _card_error(code: str, detail: str) -> dict:
+    """A failure with a name, so nothing is rendered from a document nobody read.
+
+    The alternative — rendering an empty card when the digest did not arrive —
+    is the "quiet machine" reading arrived at by accident, which is the one
+    mistake an alert surface cannot make.
+    """
+    return {"schema": "serveros/card-error.v1", "code": code, "detail": detail,
+            "note": ("这张卡没有渲染。诊断没有到达时渲染一张空卡，会让人读成"
+                     "“没有异常”，而真实情况是“没有人问过”。")}
+
+
+def _emit_card(args) -> int:
+    model, caption = _card_common(args)
+    if isinstance(model, dict) and model.get("schema") == "serveros/card-error.v1":
+        emit(model, as_json=True)
+        return EXIT_FAULT
+    _source, _presentation, cards = _card_modules()
+    rendered = cards.preview(model, caption=caption)
+    if getattr(args, "html_out", ""):
+        Path(args.html_out).write_text(rendered["html"], encoding="utf-8")
+    emit(rendered["card"], as_json=True,
+         lines=[f"card      {rendered['card']['header']['title']['content']}",
+                f"template  {rendered['card']['header']['template']}",
+                f"html      {args.html_out or '（未写出；用 --html-out 落盘）'}",
+                "",
+                "本命令不发送任何东西。预览证明 renderer 产出什么，不证明飞书"
+                "怎么显示；发送由已经持有 transport 的命令负责。"])
+    return EXIT_OK
+
+
+def _card_entry(kind: str):
+    """One entry point per card kind, sharing the emit path above."""
+    def run(args) -> int:
+        args._card_kind = kind
+        return _emit_card(args)
+    run.__name__ = f"cmd_card_{kind}"
+    return run
+
+
+def cmd_card_status(args) -> int:
+    """§2/§3 — the three blocks, and a gateway only a binding can name."""
+    return _card_entry("status")(args)
+
+
+def cmd_card_alert(args) -> int:
+    """§1/§4 — at most three events, each with its own evidence."""
+    return _card_entry("alert")(args)
+
+
+def cmd_card_recovery(args) -> int:
+    """§1/§5 — only what was announced and has since recovered."""
+    return _card_entry("recovery")(args)
+
+
 # §14/§15/§16/§16A/§17 — the five surfaces this round added
 # ---------------------------------------------------------------------------
 #
@@ -4456,6 +4589,54 @@ def build_parser() -> argparse.ArgumentParser:
                            "to do, and which level offers each", **_COMMON)
     con_ops.add_argument("--level", default="L2", choices=["L0", "L1", "L2", "L3"])
     con_ops.set_defaults(func=cmd_console_operations)
+
+    card = sub.add_parser(
+        "card", help="what a person is shown: one model, a Feishu payload and "
+                     "a preview, and NOTHING is sent", **_COMMON)
+    card_sub = card.add_subparsers(dest="subcommand", required=True)
+
+    def _add_card(name: str, func, help_text: str, *, from_digest: bool) -> None:
+        """Every card kind gets the same four flags and the same default.
+
+        `--html-out` rather than `--preview` because the preview is a FILE a
+        person opens, and a command that printed HTML to a terminal would be a
+        preview nobody can look at.
+        """
+        parser_ = card_sub.add_parser(name, help=help_text, **_COMMON)
+        if from_digest:
+            parser_.add_argument(
+                "--digest", default="",
+                help="a `serverosctl alert digest --json` document on disk. "
+                     "Omitted means the digest is produced now")
+        parser_.add_argument(
+            "--html-out", default="", metavar="PATH",
+            help="write the standalone HTML preview (390px frame beside a "
+                 "desktop one) to this path")
+        parser_.add_argument(
+            "--sample", action="store_true",
+            help="mark the card 示例 / 尚未发送. Every layout fixture uses it")
+        parser_.add_argument("--at", default="", help="override the timestamp")
+        parser_.set_defaults(func=func)
+
+    _add_card("status", cmd_card_status,
+              "the three blocks and the env-health line above them — the shared "
+              "gateway is shown only when a service binding names it",
+              from_digest=False)
+    card_sub.choices["status"].add_argument(
+        "--gateway-binding", default="", metavar="PATH",
+        help="the service-binding document that names this node's shared AI "
+             "gateway. Without one the block renders UNBOUND")
+    card_sub.choices["status"].add_argument(
+        "--device-ref", default="", metavar="REF",
+        help="which device's binding to read, e.g. device:tokyo-shared-dev-01")
+    _add_card("alert", cmd_card_alert,
+              "at most three events, each with its what/impact/certainty/"
+              "action/evidence fields, and a count of what did not fit",
+              from_digest=True)
+    _add_card("recovery", cmd_card_recovery,
+              "only what was announced and has since recovered — never a "
+              "resolution nobody was told about",
+              from_digest=True)
 
     alert = sub.add_parser(
         "alert", help="§21 · what this node has found, and what it has told "
