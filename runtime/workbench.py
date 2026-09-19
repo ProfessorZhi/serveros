@@ -712,9 +712,12 @@ def doc_manifest(when, release_root, pins):
         "",
         section("pin 与可达性", "\n".join([
             table(["名字", "repo", "revision", "可达性", "证据"], rows), "",
-            "可达性是**跑出来**的：对每个 pin 执行一次 `git cat-file -e <sha>^{commit}`，"
-            "对远端分支再执行一次 `git ls-remote --heads`。`unreachable` 不是警告，"
-            "是这一页的 FAIL。",
+            "可达性是**跑出来**的，而且是「能不能取到」而不是「head 相不相等」："
+            "对每个 pin 执行一次 `git cat-file -e <sha>^{commit}`，对远端分支执行 "
+            "`git ls-remote --heads`，再执行一次 `git merge-base --is-ancestor "
+            "<pin> <远端 head>`。分支 head 会随每次提交移动，包含关系不会 —— 一个 "
+            "revision 一旦被推上去的分支包含，就永远被它包含。`不存在`/`不含 pin` "
+            "不是警告，是这一页的 FAIL。",
         ]), 3),
         section("隔离安装（本轮的 promote 目标）", "\n".join([
             f"runtime root：`{release_root}`",
@@ -749,10 +752,24 @@ def _reachable(pin):
         if not line:
             remote = f"`{pin['branch']}` **远端不存在**"
         else:
-            sha = line.split()[0]
-            remote = (f"`{pin['branch']}` = `{sha[:12]}`"
-                      + ("（**与 pin 不同**）" if not sha.startswith(pin["revision"][:12])
-                         else "（= pin）"))
+            head = line.split()[0]
+            # The question §6 asks is "is this pin REACHABLE", which is ancestry,
+            # not equality. This column used to print the branch's head and call a
+            # moved head a divergence — so the page went red on every commit, on a
+            # `claim` page compared in full, for a reason that was not a defect. It
+            # was the flap DOC_KINDS exists to stop, inside the one page that cannot
+            # use the escape. Ancestry is the right predicate and it is STABLE: once
+            # a pushed branch contains a revision it contains it forever.
+            anc = sp.run(["git", "-C", str(src), "merge-base", "--is-ancestor",
+                          pin["revision"], head], capture_output=True, text=True)
+            if anc.returncode == 0:
+                remote = f"`{pin['branch']}` ⊇ pin"
+            elif anc.returncode == 1:
+                remote = (f"`{pin['branch']}` **不含 pin** —— 分支在远端，但这个 "
+                          f"revision 从它取不到")
+            else:
+                remote = (f"`{pin['branch']}` 存在（远端 head 的对象不在本地，"
+                          f"包含关系未验证）")
     return [pin["name"], pin["repo"].replace("/data/home/vince/", "~/"),
             f"`{pin['revision'][:12]}`", local, remote]
 

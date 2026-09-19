@@ -1,4 +1,4 @@
-<!-- ⟦snapshot⟧ rendered 2026-09-19T19:12:33+00:00 by `runtime/workbench.py` from ~/workspace/worktrees/serveros/foundation-skeleton -->
+<!-- ⟦snapshot⟧ rendered 2026-09-19T19:15:42+00:00 by `runtime/workbench.py` from ~/workspace/worktrees/serveros/foundation-skeleton -->
 
 # RECOVERY-PREVIEW
 
@@ -37,7 +37,7 @@ serverosctl card recovery	0
         "tag": "markdown"
       },
       {
-        "content": "\u672c\u6279\u6062\u590d\u603b\u6570 1155 \u00b7 \u5176\u4e2d\u5df2\u544a\u77e5 14 \u00b7 \u91c7\u96c6 2026-09-20 03:12:37 CST",
+        "content": "\u672c\u6279\u6062\u590d\u603b\u6570 1155 \u00b7 \u5176\u4e2d\u5df2\u544a\u77e5 14 \u00b7 \u91c7\u96c6 2026-09-20 03:15:46 CST",
         "tag": "markdown"
       },
       {
@@ -51,7 +51,7 @@ serverosctl card recovery	0
   },
   "header": {
     "subtitle": {
-      "content": "2026-09-20 03:12:37 CST \u66f4\u65b0",
+      "content": "2026-09-20 03:15:46 CST \u66f4\u65b0",
       "tag": "plain_text"
     },
     "template": "green",
@@ -88,7 +88,7 @@ serverosctl card recovery	0
         "tag": "markdown"
       },
       {
-        "content": "本批恢复总数 1155 · 其中已告知 14 · 采集 2026-09-20 03:12:37 CST",
+        "content": "本批恢复总数 1155 · 其中已告知 14 · 采集 2026-09-20 03:15:46 CST",
         "tag": "markdown"
       },
       {
@@ -102,7 +102,7 @@ serverosctl card recovery	0
   },
   "header": {
     "subtitle": {
-      "content": "2026-09-20 03:12:37 CST 更新",
+      "content": "2026-09-20 03:15:46 CST 更新",
       "tag": "plain_text"
     },
     "template": "green",

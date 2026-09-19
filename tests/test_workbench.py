@@ -43,6 +43,7 @@ import importlib.util
 import io
 import contextlib
 import shutil
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -323,6 +324,73 @@ class TheCommittedSetNamesNoNodeAbsolutePath(unittest.TestCase):
         self.assertNotIn(str(Path.home()), rendered)
         self.assertIn("~/", rendered, "the transform removed the paths rather than "
                                       "shortening them, which is a different defect")
+
+
+class ReachabilityMeansAncestryNotEquality(unittest.TestCase):
+    """§6 asks whether every pin is REACHABLE. The column used to print the
+    branch's head and call a moved head a divergence, which made a `claim` page
+    — compared in full — go red on every commit for a reason that was not a
+    defect. The predicate is `merge-base --is-ancestor`, and this watches all
+    three of its answers on a real repository rather than asserting them."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        base = Path(self.tmp.name)
+        self.repo = base / "repo"
+        self.repo.mkdir()
+        self.remote = base / "origin.git"
+        git = lambda *a, cwd=None: subprocess.run(  # noqa: E731
+            ["git", *a], cwd=str(cwd or self.repo), capture_output=True, text=True)
+        git("init", "-q", "-b", "main")
+        git("config", "user.email", "t@example.invalid")
+        git("config", "user.name", "t")
+        (self.repo / "f").write_text("1")
+        git("add", "f")
+        git("commit", "-q", "-m", "first")
+        self.on_branch = git("rev-parse", "HEAD").stdout.strip()
+        (self.repo / "f").write_text("2")
+        git("commit", "-qam", "second")
+        self.tip = git("rev-parse", "HEAD").stdout.strip()
+        git("init", "-q", "--bare", str(self.remote))
+        git("remote", "add", "origin", str(self.remote))
+        git("push", "-q", "origin", "main")
+        # A revision that is NOT on the pushed branch: committed, then reset away.
+        git("checkout", "-q", "-b", "side", self.on_branch)
+        (self.repo / "g").write_text("x")
+        git("add", "g")
+        git("commit", "-q", "-m", "unpushed")
+        self.off_branch = git("rev-parse", "HEAD").stdout.strip()
+        git("checkout", "-q", "main")
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def _row(self, revision):
+        return wb._reachable({"name": "n", "repo": str(self.repo),
+                              "revision": revision, "branch": "main"})
+
+    def test_a_revision_the_branch_contains_reads_reachable(self):
+        """Even though the head has moved past it — which is the whole point."""
+        self.assertIn("⊇ pin", self._row(self.on_branch)[4])
+
+    def test_a_revision_the_branch_does_not_contain_is_a_failure(self):
+        self.assertIn("不含 pin", self._row(self.off_branch)[4])
+
+    def test_a_branch_that_is_not_on_the_remote_is_a_failure(self):
+        row = wb._reachable({"name": "n", "repo": str(self.repo),
+                             "revision": self.on_branch, "branch": "no-such-branch"})
+        self.assertIn("远端不存在", row[4])
+
+    def test_the_column_carries_no_head_sha(self):
+        """The MOVING head is what made the page flap; it must not come back.
+
+        The pin's own revision is printed — that is the column's subject. What
+        must not be printed is the branch tip, because it changes on every commit
+        and this page is compared in full."""
+        row = self._row(self.on_branch)
+        joined = " ".join(row)
+        self.assertNotIn(self.tip[:12], joined)
+        self.assertIn(self.on_branch[:12], joined)
 
 
 class TheReportsSectionReadsTheDirectoryItIsGiven(unittest.TestCase):
