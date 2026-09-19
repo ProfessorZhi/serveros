@@ -3305,6 +3305,370 @@ def cmd_card_recovery(args) -> int:
     return _card_entry("recovery")(args)
 
 
+# ---------------------------------------------------------------------------
+# The registration loop: observed → candidate → a person's scope → plan
+# ---------------------------------------------------------------------------
+#
+# `runtime/registration.py` answers the question in the middle — *should this be
+# registered at all, and by whose authority* — and until this group existed,
+# nothing called it. A module with no caller is a schema, and the loop is not
+# closed by the module being right. It is closed by a person being able to run
+# it end to end, which is what the design asks for:
+#
+#     发现 / 受信启动记录 → 候选 → 用户范围选择 → 合法登记 → 重新解析
+#
+# Three commands, and none of them writes. `plan` produces a validated document
+# and stops there; the write stays with whatever owns the registry file, so
+# "propose a registration" can never quietly become "register".
+
+LAUNCH_RECORD_SCHEMA = "serveros/launch-records.v1"
+
+
+def _registration_module():
+    return _load_module_from(REPO_ROOT / "runtime" / "registration.py",
+                             "serveros_runtime_registration")
+
+
+def _now_text() -> str:
+    return datetime.datetime.now(datetime.timezone.utc).astimezone().strftime(
+        "%Y-%m-%d %H:%M:%S %Z")
+
+
+def _observed_without_a_registration(reg) -> dict:
+    """What this node can see, and which of it no registration names.
+
+    Both halves come from surfaces that already hold the verdict.
+    `container_attribution` answers per container whether any registered
+    resource names it — `registry_anchors_tried` is present exactly when the
+    answer is no — and `port_ownership` answers per endpoint who claims it. A
+    second matcher here would be a second answer to a question this tree has
+    already answered once, and the two would disagree the first time either
+    side learned something.
+
+    What is deliberately NOT attempted: user units. The tree has a per-unit
+    verdict for a unit that IS registered (that is `desired_actual`'s job) and
+    none at all for one that is not, so this function reports the count it can
+    see and names the gap instead of inventing a name-matching rule.
+    """
+    containers = view_mod.container_attribution(registry=reg)
+    ports = view_mod.port_ownership(registry_doc=reg,
+                                    containers_document=containers)
+    unregistered = []
+    for row in containers.get("containers") or []:
+        if not row.get("registry_anchors_tried"):
+            continue
+        unregistered.append({
+            "kind": "container",
+            "evidence_key": row.get("ref"),
+            "label": row.get("container") or row.get("ref"),
+            "detail": {
+                "disposition": row.get("disposition"),
+                "disposition_because": row.get("disposition_because"),
+                # The anchors the tree tried, carried through so that the
+                # person reading the discovery can see the registry was
+                # consulted and what it failed to match on. A rename lands
+                # here, and the registry naming the OLD name is the signature
+                # of that rather than of a container nobody registered.
+                "registry_anchors_tried": row.get("registry_anchors_tried"),
+                "state": row.get("state"),
+            },
+        })
+    for row in ports.get("ports") or []:
+        # An endpoint becomes a question only when something on this node
+        # already claims it — a container or a tunnel — and no owner is
+        # recorded. A port nobody claims is a fact to count, not a question to
+        # ask: this node has 62 unattributed listeners, and 62 questions with
+        # nothing in them is how the four real findings above get lost in the
+        # scroll. The count is printed, so nobody reads the short list as a
+        # quiet machine.
+        claimant = row.get("container_ref") or row.get("tunnel_ref")
+        if row.get("owner_ref") or not claimant:
+            continue
+        unregistered.append({
+            "kind": "transport-endpoint",
+            "evidence_key": row.get("port_ref"),
+            "label": row.get("port_ref"),
+            "detail": {"owner_ref": row.get("owner_ref"),
+                       "confidence": row.get("confidence"),
+                       "container_ref": row.get("container_ref"),
+                       "tunnel_ref": row.get("tunnel_ref"),
+                       "state": row.get("state")},
+        })
+    units = inventory_mod.Inventory().user_services_list()
+    return {
+        "unregistered": unregistered,
+        "counts": {
+            "containers_observed": len(containers.get("containers") or []),
+            "containers_unregistered": sum(
+                1 for r in unregistered if r["kind"] == "container"),
+            "endpoints_observed": ports.get("port_count"),
+            "endpoints_unregistered": sum(
+                1 for r in unregistered if r["kind"] == "transport-endpoint"),
+            # What the endpoint rule above left out, and why. Printed rather
+            # than dropped: an endpoint with no visible holder is not nothing,
+            # it is a fact this command declines to turn into a question.
+            "endpoints_with_no_visible_holder":
+                (ports.get("coverage") or {}).get("listening_with_no_visible_holder"),
+            "units_observed": len(units.get("units") or []),
+            "units_unregistered": None,
+            "registered": len(reg.all()),
+        },
+        "observed_at": ports.get("measured_at") or containers.get("measured_at"),
+        "gap": ("未登记的用户单元数没有值：容器与端口各自有逐条的登记判定，"
+                "用户单元只有已登记那一侧的判定（由 registration resolve 给出）。"
+                "本命令不发明一套按名字匹配的规则来填这个空"),
+    }
+
+
+def _read_launch_records(path: str | None) -> dict:
+    """The trusted records a client wrote, keyed by evidence key.
+
+    Absent is the normal case on this node, and it is not an error: without a
+    launch record nothing can carry an owner, so every observation is a
+    discovery note. That is the honest output for a node where nobody has said
+    what these things are for.
+    """
+    if not path:
+        return {}
+    document = json.loads(Path(path).read_text(encoding="utf-8"))
+    if document.get("schema") != LAUNCH_RECORD_SCHEMA:
+        raise ValueError(
+            f"{path} declares schema {document.get('schema')!r}, not "
+            f"{LAUNCH_RECORD_SCHEMA!r}. A record in an unknown dialect is not a "
+            "launch record, and treating one as trusted is how a scan acquires "
+            "an owner it never had.")
+    return {r["evidence_key"]: r for r in document.get("records") or []
+            if r.get("evidence_key")}
+
+
+def cmd_registration_discover(args) -> int:
+    """§B — what is observed and unregistered, as questions or as notes."""
+    registration = _registration_module()
+    reg = load_registry(args.registry)
+    observed = _observed_without_a_registration(reg)
+    records = _read_launch_records(args.launch_records)
+    device_ref = args.device or reg.device_ref
+    at = args.at or _now_text()
+
+    candidates = []
+    for item in observed["unregistered"]:
+        record = records.get(item["evidence_key"])
+        if record:
+            candidate = registration.from_launch_record(
+                device_ref=device_ref, kind=item["kind"],
+                owner=record.get("owner"), launched_by=record.get("launched_by"),
+                evidence_key=item["evidence_key"],
+                observed_at=record.get("observed_at") or observed["observed_at"],
+                detail=item["detail"])
+        else:
+            candidate = registration.observe(
+                device_ref=device_ref, kind=item["kind"],
+                evidence_key=item["evidence_key"],
+                observed_at=observed["observed_at"], owner=None,
+                detail=item["detail"])
+        candidates.append(candidate)
+
+    counts = dict(observed["counts"])
+    counts["candidates"] = len(candidates)
+    counts["candidates_with_an_owner"] = sum(
+        1 for c in candidates if not c.deferrable)
+    counts["discovery_notes"] = sum(1 for c in candidates if c.deferrable)
+
+    document = {
+        "schema": registration.SCHEMA,
+        "at": at,
+        "device_ref": device_ref,
+        "candidates": [c.as_dict() for c in candidates],
+        "counts": counts,
+        "launch_records": sorted(records),
+        "gap": observed["gap"],
+        "note": ("这里没有被写入任何登记。带 owner 的是候选，可以交给 registration "
+                 "plan 去回答；owner 未知的是发现记录，它停在这里而不是被猜一个"
+                 "所有者。两种都在这里，因为把后者藏起来会让一个没有答案的节点"
+                 "看起来像一个没有问题的节点。"),
+    }
+
+    if args.out:
+        Path(args.out).write_text(
+            json.dumps(document, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    lines = [
+        f"device     {device_ref}",
+        f"collect at {at}",
+        f"已登记     {counts['registered']}",
+        f"观测到     {counts['containers_observed']} 个容器 · "
+        f"{counts['endpoints_observed']} 个监听端点 · "
+        f"{counts['units_observed']} 个用户单元",
+        f"未被登记   {len(candidates)} 条（容器 {counts['containers_unregistered']}"
+        f" · 端口 {counts['endpoints_unregistered']}）",
+        f"未变成问题 {(counts['endpoints_with_no_visible_holder'] or 0)} 个监听端点"
+        f"没有任何可见持有者（已观测、已计数、未提问）",
+        "",
+    ]
+    if not candidates:
+        lines.append("本节点没有“看得见、却没有任何登记指向它、并且有人能回答”的东西。")
+    for candidate in candidates:
+        state = ("候选，已有所有者" if not candidate.deferrable
+                 else "发现记录，所有者未知 —— 停在这里")
+        lines.append(f"{candidate.id}  {candidate.kind}  {state}")
+        lines.append(f"    {candidate.evidence.source}: {candidate.evidence.key}")
+        if candidate.discovery_note:
+            lines.append(f"    {candidate.discovery_note}")
+        lines.append(f"    {candidate.why}")
+    lines.append("")
+    lines.append(f"提交凭证   {', '.join(sorted(records)) or '无（因此没有任何候选拿到所有者）'}")
+    lines.append(f"空缺       {document['gap']}")
+    lines.append("")
+    lines.append(document["note"])
+    if args.out:
+        lines.append(f"已写出     {args.out}")
+    emit(document, as_json=args.json, lines=lines)
+    return EXIT_OK
+
+
+def _candidate_from_document(document: dict, evidence_key: str):
+    registration = _registration_module()
+    for payload in document.get("candidates") or []:
+        if (payload.get("evidence") or {}).get("key") == evidence_key:
+            return registration.Candidate.from_dict(payload)
+    raise KeyError(
+        f"{evidence_key!r} is not in this document "
+        f"({len(document.get('candidates') or [])} candidates). A plan is an "
+        "answer about a thing somebody was shown, so it is built from the "
+        "document they read rather than re-observed here.")
+
+
+def cmd_registration_plan(args) -> int:
+    """§B — a person's scope, turned into a validated registration. Not written."""
+    registration = _registration_module()
+    document = json.loads(Path(args.candidates).read_text(encoding="utf-8"))
+    at = args.at or _now_text()
+    try:
+        candidate = _candidate_from_document(document, args.evidence_key)
+    except KeyError as exc:
+        emit({"schema": "serveros/registration-error.v1",
+              "code": "CANDIDATE_NOT_IN_DOCUMENT", "detail": str(exc)},
+             as_json=True)
+        return EXIT_FAULT
+
+    try:
+        decision = registration.authorize(
+            candidate, args.scope, actor=args.actor, at=at,
+            note=args.note or "", recovery=args.recovery)
+    except registration.RegistrationError as exc:
+        emit({"schema": "serveros/registration-error.v1",
+              "code": "DECISION_REFUSED", "detail": str(exc)},
+             as_json=True)
+        return EXIT_FAULT
+
+    # `probes` is not passed: the plan carries the registration the registry
+    # validated, and a probe is a separate declaration a person adds to the
+    # registry deliberately. Inventing one here would register a claim about
+    # how to measure the thing into the same act as registering the thing.
+    plan = registration.plan(candidate, decision, resource_id=args.id)
+    payload = {"schema": registration.SCHEMA, "at": at,
+               "device_ref": document.get("device_ref"),
+               "plan": plan.as_dict()}
+
+    lines = [
+        f"candidate  {candidate.id}  ({candidate.kind})",
+        f"scope      {decision.scope}  by {decision.actor}",
+        f"admissible {plan.admissible}",
+    ]
+    if plan.refusal:
+        lines.append(f"refused    {plan.refusal}")
+    if plan.because:
+        lines += ["", plan.because]
+    for record in plan.as_dict()["records"]:
+        lines += ["", json.dumps(record, ensure_ascii=False, indent=2)]
+    for entry in plan.defer:
+        lines += ["", f"defer  {json.dumps(entry, ensure_ascii=False)}"]
+    lines += ["", ("本命令不写任何登记。写回 registry 由持有该文件的一方执行；"
+                   "这里给出的是它已经校验过的内容。")]
+    emit(payload, as_json=args.json, lines=lines)
+    return EXIT_OK
+
+
+def cmd_registration_resolve(args) -> int:
+    """§B — 重新解析: every registration against what was measured about it."""
+    registration = _registration_module()
+    reg = load_registry(args.registry)
+    # The clock is ISO, and not the display string the other commands use.
+    # `resolve` ages every observation against it, and `graph.freshness_of`
+    # parses what it is given — handed "2026-09-20 01:22:00 CST" it cannot tell
+    # the age of anything and answers UNKNOWN for all four registrations, which
+    # renders as four "nobody looked" where the truth was one unparseable
+    # argument. Formatting is for the line; the computation gets the value.
+    now = args.at or datetime.datetime.now(datetime.timezone.utc).isoformat()
+    at = now
+    measured = view_mod.desired_actual(registry_doc=reg)
+    satisfies = (registry_mod.contract().get("desired_actual") or {}).get("satisfies") or {}
+    running_words = set(satisfies.get("running") or ())
+    stopped_words = set(satisfies.get("stopped") or ())
+
+    observations: dict[str, dict] = {}
+    not_decisive = []
+    for row in measured.get("comparisons") or []:
+        state = row.get("actual_state")
+        entry = {"observed_at": row.get("measured_at")}
+        if state in running_words:
+            observations[row["resource_id"]] = {**entry, "running": True}
+        elif state in stopped_words:
+            observations[row["resource_id"]] = {**entry, "running": False}
+        else:
+            # Neither side established it. Left OUT of the join rather than
+            # passed as `running: False`: absent and "looked and could not
+            # tell" are different facts, and the contract names the second one
+            # (`not_comparable`). It is reported beside the readings, never
+            # behind them — an empty reading list means one thing when
+            # everything was compared and another when nothing was.
+            not_decisive.append({"resource_id": row.get("resource_id"),
+                                 "actual_state": state,
+                                 "verdict": row.get("verdict"),
+                                 "why": row.get("why")})
+
+    result = registration.resolve(reg.all(), observations, now=at)
+    counts: dict[str, int] = {}
+    for reading in result["readings"]:
+        counts[reading["state"]] = counts.get(reading["state"], 0) + 1
+    payload = {**result, "device_ref": reg.device_ref,
+               "measured_at": measured.get("measured_at"),
+               "counts": counts, "not_decisive": not_decisive,
+               "coverage": {
+                   "registered": len(reg.all()),
+                   "joined": len(observations),
+                   "not_decisive": len(not_decisive),
+                   "unchecked": len(measured.get("unchecked") or []),
+               }}
+
+    lines = [f"device      {reg.device_ref}",
+             f"collect at  {at}",
+             f"measured at {measured.get('measured_at') or 'UNKNOWN'}",
+             f"registrations {len(reg.all())}   joined {len(observations)}   "
+             f"not decisive {len(not_decisive)}   unchecked "
+             f"{len(measured.get('unchecked') or [])}",
+             "",
+             f"{'RESOURCE':<34} {'READING':<12} {'DESIRED':<10} FRESHNESS"]
+    for reading in result["readings"]:
+        freshness = reading.get("freshness") or {}
+        lines.append(f"{reading['resource_ref']:<34} {reading['state']:<12} "
+                     f"{str(reading['desired']):<10} "
+                     f"{freshness.get('state')}"
+                     # An UNKNOWN freshness names its reason here. Without it
+                     # the line says "nobody looked" and the reason it cannot
+                     # say that is a property of the clock this command was
+                     # given, which is the reader's to repair.
+                     + (f" —— {freshness['why']}" if freshness.get("why") else ""))
+    for entry in not_decisive:
+        lines.append(f"{entry['resource_id']:<34} {'未判定':<12} "
+                     f"{'':<10} {entry['actual_state']} —— {entry['why']}")
+    lines += ["", result["note"], "",
+              "每条读数都是 false 的 actionable：看到不等于可以动手，"
+              "看不见也不等于已经结束。"]
+    emit(payload, as_json=args.json, lines=lines)
+    return EXIT_OK
+
+
 # §14/§15/§16/§16A/§17 — the five surfaces this round added
 # ---------------------------------------------------------------------------
 #
@@ -4637,6 +5001,73 @@ def build_parser() -> argparse.ArgumentParser:
               "only what was announced and has since recovered — never a "
               "resolution nobody was told about",
               from_digest=True)
+
+    registration = sub.add_parser(
+        "registration", help="the loop from 'something is running' to a "
+                             "registration a person authorized. Nothing here "
+                             "writes anything", **_COMMON)
+    registration_sub = registration.add_subparsers(dest="subcommand",
+                                                   required=True)
+
+    rg_disc = registration_sub.add_parser(
+        "discover", help="what is observed and named by no registration: a "
+                         "candidate when a launch record carries an owner, a "
+                         "discovery note when it does not", **_COMMON)
+    rg_disc.add_argument("--device", default="",
+                         help="override the device ref the registry declares")
+    rg_disc.add_argument(
+        "--launch-records", default="", metavar="PATH",
+        help=f"a {LAUNCH_RECORD_SCHEMA} document written by the client that "
+             "started the things. Without one nothing can carry an owner, so "
+             "every observation is a discovery note")
+    rg_disc.add_argument("--out", default="", metavar="PATH",
+                         help="write the candidate document that "
+                              "`registration plan` reads back")
+    rg_disc.add_argument("--at", default="")
+    rg_disc.set_defaults(func=cmd_registration_discover)
+
+    rg_plan = registration_sub.add_parser(
+        "plan", help="a person's scope, turned into a registration the "
+                     "registry has already validated — and not written",
+        **_COMMON)
+    rg_plan.add_argument("--candidates", required=True, metavar="PATH",
+                         help="the document `registration discover --out` wrote")
+    rg_plan.add_argument(
+        "--evidence-key", required=True, metavar="REF",
+        help="which candidate in it to answer, by its evidence key")
+    rg_plan.add_argument(
+        "--scope", required=True,
+        choices=["session", "project", "node", "external", "ignore"],
+        help="session/project/node write a resource; external records a "
+             "dependency and writes nothing; ignore remembers the answer")
+    rg_plan.add_argument(
+        "--actor", required=True,
+        help="the subject giving the answer. A scope that writes a resource "
+             "refuses without one")
+    rg_plan.add_argument("--id", default="", metavar="RESOURCE_ID",
+                         help="the name a person will read in an alert. A "
+                              "writing scope refuses without one rather than "
+                              "deriving an opaque hash")
+    rg_plan.add_argument("--note", default="")
+    rg_plan.add_argument(
+        "--recovery", default=None,
+        # The closed set is the contract's, read here rather than retyped. A
+        # restated vocabulary is one that agrees today: `redeclare` and
+        # `reauthorize` are the two models where acting on the resource is
+        # acting on the wrong object, and a hand-written list would be exactly
+        # the place they went missing.
+        choices=[model["id"] for model in
+                 (registry_mod.contract().get("recovery_models") or [])],
+        help="separate from the scope on purpose: registering a node-scoped "
+             "resource does not authorize restarting it")
+    rg_plan.add_argument("--at", default="")
+    rg_plan.set_defaults(func=cmd_registration_plan)
+
+    rg_res = registration_sub.add_parser(
+        "resolve", help="every registration against what was measured about "
+                        "it: OBSERVED / ABSENT / STALE / UNREPORTED", **_COMMON)
+    rg_res.add_argument("--at", default="")
+    rg_res.set_defaults(func=cmd_registration_resolve)
 
     alert = sub.add_parser(
         "alert", help="§21 · what this node has found, and what it has told "
