@@ -1,0 +1,280 @@
+# The six situations a card has to survive, as input documents.
+#
+# WHY THIS IS DATA AND NOT A TEST HELPER
+#
+# The same six documents have two consumers and they must not drift: the tests
+# that assert the cards behave, and the previews a person is asked to look at
+# before approving any of this. If the previews were generated from one set of
+# inputs and the tests asserted against another, a reviewer would be approving
+# a card the suite never ran — and the difference would be invisible, because
+# both would look like cards.
+#
+# WHAT SAMPLE MEANS HERE
+#
+# §6: "下例全部是布局示意，不是实时测量。实现后的预览必须带 SAMPLE 标识与源数据。"
+# So every scenario carries a `source` line that says where its shape came
+# from, and the card renders that line. The distinction the `source` field is
+# making:
+#
+#   * `measured` — the shape was taken from this node and the numbers are this
+#     node's. `mixed_alerts` is one of these: the three events below are three
+#     real rows out of the live register, and the omission counts are the live
+#     counts.
+#   * `constructed` — the situation has not occurred here, or has not been
+#     captured, and the document was written to exercise a path. These are the
+#     ones a reviewer should read as "the card would look like this", not "the
+#     node looks like this".
+#
+# A constructed scenario is not evidence that the path works. The tests are
+# what assert behaviour; these are what a person looks at. Both exist, and
+# neither substitutes for the other.
+schema: serveros/card-scenarios.v1
+
+# The `at` every scenario is rendered against. Fixed rather than "now", so that
+# a preview is reproducible and a duration printed on a card can be checked by
+# hand against the timestamps in the same document.
+at: "2026-09-20 14:20:00 JST"
+device_ref: device:tokyo-shared-dev-01
+
+scenarios:
+
+  # -- §6's six, in the order the design lists them -------------------------
+
+  - name: normal
+    card: status
+    title: 正常
+    source: constructed — 三项均已读到且无异常。本节点此刻的真实卡片不是这一张
+      （共享网关尚未有 binding），这一张用来说明三项都读到时长什么样。
+    snapshot:
+      node_label: device:tokyo-shared-dev-01
+      gaps: []
+      mine:
+        state: OK
+        lines:
+          - 账户 uid 1002 · 进程数 71
+          - CPU 占整机 0.1%（0.09 核等效 / 共 128 核）
+          - 内存 7.6 GiB · 占整机 3.1%
+          - 配额 /data（/dev/vdb） 已用 52.9 GiB / 软限 450.0 GiB（10.6%）
+          - 本账户 systemd 用户单元 13 个（其中 active 3） · linger yes
+      host:
+        state: OK
+        lines:
+          - CPU 128 逻辑核 · 型号 AMD EPYC 9K65 192-Core Processor
+          - 负载 3.43 / 3.36 / 3.04 · 可运行 2/7599
+          - 内存 已用 35.9 GiB / 247.0 GiB · 可用 211.1 GiB
+          - 文件系统 /（ROOT_FS） 已用 48.3% · inode 5.8%
+          - 文件系统 /data（DOCKER_FS / STATE_FS / ARTIFACTS_FS） 已用 5.9%
+      gateway:
+        state: BOUND
+        maintainer: （由 service binding 声明，不是授权）
+        endpoint: http://127.0.0.1:<port>（按 binding 解析；此处为示例端口）
+        probe:
+          text: 探针 PASSED · 观测于 2026-09-20 14:19:41 JST
+          state: PASSED
+          observed_at: "2026-09-20 14:19:41 JST"
+        providers:
+          - text: 声明的 provider 1（名字来自 gateway 自身报告，本文件不猜）
+          - text: 声明的 provider 2
+    binding:
+      service_ref: service:tokyo-shared-ai-gateway
+      source: 本节为示例 binding；真实文件尚未写入 ~/.serveros/
+      gateway:
+        state: BOUND
+        maintainer: （由 service binding 声明，不是授权）
+        endpoint: http://127.0.0.1:<port>
+        probe:
+          text: 探针 PASSED · 观测于 2026-09-20 14:19:41 JST
+          state: PASSED
+          observed_at: "2026-09-20 14:19:41 JST"
+        providers:
+          - text: 声明的 provider 1
+          - text: 声明的 provider 2
+
+  - name: partial_unknown
+    card: status
+    title: 部分未知 / 过期
+    source: measured — 形状取自本节点 2026-09-20 14:20 的真实卡片：共享网关没有
+      binding，因此该栏为 UNBOUND；其余两项已读到。
+    snapshot:
+      node_label: device:tokyo-shared-dev-01
+      gaps: []
+      mine:
+        state: OK
+        lines:
+          - 账户 uid 1002 · 进程数 71
+          - CPU 占整机 0.1%（0.09 核等效 / 共 128 核）
+          - 内存 7.6 GiB · 占整机 3.1%
+          - 配额 /data（/dev/vdb） 已用 52.9 GiB / 软限 450.0 GiB（10.6%）
+      host:
+        state: OK
+        lines:
+          - CPU 128 逻辑核 · 型号 AMD EPYC 9K65 192-Core Processor
+          - 内存 已用 35.9 GiB / 247.0 GiB · 可用 211.1 GiB
+          - 文件系统 /（ROOT_FS） 已用 48.3% · inode 5.8%
+    binding: null
+
+  - name: one_critical
+    card: alert
+    title: 单个严重异常
+    source: constructed — 本节点当前没有 high 档事件；这条用 DISK_CRITICAL 说明
+      单个严重异常在卡上的样子，时间与引用是示例值。
+    digest:
+      counts: {new: 1, escalated: 0, reopened: 0}
+      severity_counts: {high: 1}
+      more: 0
+      backlog: 0
+      silent_resolutions: 0
+      rows:
+        - key: alert:example0000000001
+          kind: NEW
+          code: DISK_CRITICAL
+          severity: high
+          severity_word: CRITICAL
+          subject_ref: "filesystem:mount:/data"
+          resource_ref: "filesystem:mount:/data"
+          first_seen: "2026-09-20T05:12:00+00:00"
+          resolved_at: null
+          occurrence_count: 3
+          state: OPEN
+          owner: {type: serveros, ref: "serveros:node"}
+          provenance:
+            freshness: FRESH
+            source: host-filesystem
+            observed_at: "2026-09-20T05:19:00Z"
+
+  - name: observer_failure
+    card: status
+    title: 观测器失败
+    source: constructed — 本节点今天没有出现过采集全失败。这一张说明读到的东西
+      比读不到的东西少时卡会怎么说：三项都未读到，且缺口逐条点名。
+    snapshot:
+      node_label: device:tokyo-shared-dev-01
+      gaps:
+        - summary（resource summary）未读到：exit 2
+        - top（resource top）未读到：exit 2
+        - user_services（resource user-services）未读到：exit 2
+        - runtime_list（runtime list）未读到：exit 2
+      mine: null
+      host: null
+    binding: null
+
+  - name: mixed
+    card: alert
+    title: 混合异常 + 恢复
+    source: measured — 三个事件是 2026-09-20 01:13 实时 digest 里真实进入卡面的前
+      三条，省略计数（245 / 1370 / 113 / 18）也是该次运行的真实计数。数值会
+      随节点变化而变，形状不变。
+    digest:
+      counts: {new: 3, escalated: 0, reopened: 0}
+      severity_counts: {medium: 3}
+      more: 1370
+      backlog: 113
+      silent_resolutions: 18
+      rows:
+        - key: alert:2d78bf9461e7bca6
+          kind: NEW
+          code: HIGH_MEMORY_SUSTAINED
+          severity: medium
+          severity_word: WARNING
+          subject_ref: "runtime-group:process-tree:session-11127:pid1533977"
+          first_seen: "2026-09-18T06:15:57.175939+00:00"
+          resolved_at: null
+          occurrence_count: 1
+          state: OPEN
+          owner: {type: serveros, ref: "session:11127"}
+        - key: alert:813fd81cdb193552
+          kind: NEW
+          code: HIGH_MEMORY_SUSTAINED
+          severity: medium
+          severity_word: WARNING
+          subject_ref: "runtime-group:process-tree:system.slice:docker:491d41804a0e"
+          first_seen: "2026-09-18T06:35:10.798465+00:00"
+          resolved_at: null
+          occurrence_count: 7
+          state: OPEN
+          owner: {type: serveros, ref: "session:11127"}
+        - key: alert:fe3a7cf437529387
+          kind: NEW
+          code: ORPHAN_PROCESS_TREE
+          severity: medium
+          severity_word: WARNING
+          subject_ref: "runtime-group:process-tree:session-11127:pid1533980"
+          first_seen: "2026-09-18T06:43:16.462862+00:00"
+          resolved_at: null
+          occurrence_count: 2044
+          state: OPEN
+          owner: {type: serveros, ref: "session:11127"}
+
+  - name: recovery_only
+    card: recovery
+    title: 仅恢复
+    source: measured 形状 / 缩减计数 — 三条已告知且已恢复的条目取自本节点
+      2026-09-20 01:13 的实时 digest。该次运行真实计数为 1127 条恢复、其中 13 条
+      已告知、1114 条从未告知过；卡片上的计数由 rows 推出，因此本文件按比例缩减
+      为五条，以便把这条规则本身展现出来：从未告知过的恢复不上卡。
+    digest:
+      rows:
+        - key: alert:1a2b3c4d5e6f0001
+          kind: RECOVERED
+          code: ORPHAN_PROCESS_TREE
+          severity: medium
+          severity_word: WARNING
+          subject_ref: "runtime-group:process-tree:session-11127:pid1533977"
+          first_seen: "2026-09-19T02:17:52.150459+00:00"
+          resolved_at: "2026-09-19T02:18:52.173855+00:00"
+          occurrence_count: 1
+          state: RESOLVED
+          was_announced: true
+        - key: alert:1a2b3c4d5e6f0002
+          kind: RECOVERED
+          code: ORPHAN_PROCESS_TREE
+          severity: medium
+          severity_word: WARNING
+          subject_ref: "runtime-group:process-tree:session-11127:pid1787070"
+          first_seen: "2026-09-19T05:53:36.348097+00:00"
+          resolved_at: "2026-09-19T05:54:36.848350+00:00"
+          occurrence_count: 1
+          state: RESOLVED
+          was_announced: true
+        - key: alert:1a2b3c4d5e6f0003
+          kind: RECOVERED
+          code: ORPHAN_PROCESS_TREE
+          severity: medium
+          severity_word: WARNING
+          subject_ref: "runtime-group:process-tree:session-11127:pid2869410"
+          first_seen: "2026-09-19T07:13:38.018927+00:00"
+          resolved_at: "2026-09-19T07:14:38.582548+00:00"
+          occurrence_count: 1
+          state: RESOLVED
+          was_announced: true
+        # Not padding: this pair is the scenario's point. A recovery card that
+        # showed only the three above would be a card that looks complete while
+        # hiding the rule that decides what a person is told, and the rule is
+        # only visible on a card where both kinds of row are present and only
+        # one of them is printed.
+        - key: alert:1a2b3c4d5e6f0004
+          kind: RECOVERED
+          code: HIGH_MEMORY_SUSTAINED
+          severity: medium
+          severity_word: WARNING
+          subject_ref: "runtime-group:process-tree:session-11127:pid2900001"
+          first_seen: "2026-09-19T09:01:00.000000+00:00"
+          resolved_at: "2026-09-19T09:02:00.000000+00:00"
+          occurrence_count: 1
+          state: RESOLVED
+          was_announced: false
+        - key: alert:1a2b3c4d5e6f0005
+          kind: RECOVERED
+          code: HIGH_MEMORY_SUSTAINED
+          severity: medium
+          severity_word: WARNING
+          subject_ref: "runtime-group:process-tree:session-11127:pid2900002"
+          first_seen: "2026-09-19T09:11:00.000000+00:00"
+          resolved_at: "2026-09-19T09:12:00.000000+00:00"
+          occurrence_count: 1
+          state: RESOLVED
+          was_announced: false
+
+# What the rendered previews are, in one sentence, for whoever opens them.
+preview_note: 下列预览由同一 renderer 从上面这些文档生成，用于检查布局；它们不是
+  实时测量，也不代表任何东西已被发送。手机窄屏按 390px 渲染。
