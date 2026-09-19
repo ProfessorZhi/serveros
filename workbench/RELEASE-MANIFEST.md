@@ -1,4 +1,4 @@
-<!-- ⟦snapshot⟧ rendered 2026-09-19T19:12:33+00:00 by `runtime/workbench.py` from ~/workspace/worktrees/serveros/foundation-skeleton -->
+<!-- ⟦snapshot⟧ rendered 2026-09-19T19:15:42+00:00 by `runtime/workbench.py` from ~/workspace/worktrees/serveros/foundation-skeleton -->
 
 # RELEASE-MANIFEST
 
@@ -16,13 +16,13 @@
 
 | 名字 | repo | revision | 可达性 | 证据 |
 |---|---|---|---|---|
-| serveros | ~/workspace/worktrees/serveros/foundation-skeleton | `01f5480` | 存在 | `serveros/foundation-skeleton` **远端不存在** |
-| ability-management | ~/workspace/worktrees/ability-management/foundation-skeleton | `fbd0b1a` | 存在 | `serveros/foundation-skeleton` **远端不存在** |
+| serveros | ~/workspace/worktrees/serveros/foundation-skeleton | `01f5480` | 存在 | `serveros/foundation-skeleton` ⊇ pin |
+| ability-management | ~/workspace/worktrees/ability-management/foundation-skeleton | `fbd0b1a` | 存在 | `serveros/foundation-skeleton` ⊇ pin |
 | quay（工作包 E 固定的版本） | ~/workspace/worktrees/quay/foundation-skeleton | `ddc4fb40f` | 存在 | — |
 | quay（本轮 Goal 闭环用的版本） | ~/workspace/worktrees/quay/foundation-skeleton-develop | `8bb184ef3` | 存在 | — |
-| design package | ~/workspace/worktrees/serveros/foundation-skeleton | `e1f7de4d5` | 存在 | `docs/foundation-skeleton-20260920` = `e1f7de4d53e9`（= pin） |
+| design package | ~/workspace/worktrees/serveros/foundation-skeleton | `e1f7de4d5` | 存在 | `docs/foundation-skeleton-20260920` ⊇ pin |
 
-可达性是**跑出来**的：对每个 pin 执行一次 `git cat-file -e <sha>^{commit}`，对远端分支再执行一次 `git ls-remote --heads`。`unreachable` 不是警告，是这一页的 FAIL。
+可达性是**跑出来**的，而且是「能不能取到」而不是「head 相不相等」：对每个 pin 执行一次 `git cat-file -e <sha>^{commit}`，对远端分支执行 `git ls-remote --heads`，再执行一次 `git merge-base --is-ancestor <pin> <远端 head>`。分支 head 会随每次提交移动，包含关系不会 —— 一个 revision 一旦被推上去的分支包含，就永远被它包含。`不存在`/`不含 pin` 不是警告，是这一页的 FAIL。
 
 ### 隔离安装（本轮的 promote 目标）
 

@@ -1,4 +1,4 @@
-<!-- ⟦snapshot⟧ rendered 2026-09-19T19:12:33+00:00 by `runtime/workbench.py` from ~/workspace/worktrees/serveros/foundation-skeleton -->
+<!-- ⟦snapshot⟧ rendered 2026-09-19T19:15:42+00:00 by `runtime/workbench.py` from ~/workspace/worktrees/serveros/foundation-skeleton -->
 
 # ALERT-PREVIEW
 
@@ -27,7 +27,7 @@ serverosctl card alert	0
         },
         "elements": [
           {
-            "content": "**\u53d1\u751f\u4e86\u4ec0\u4e48** \u6709\u4e00\u4e2a\u8fdb\u7a0b\u7ec4\u6301\u7eed\u5360\u7528\u5185\u5b58\n**\u4e8b\u4ef6\u7c7b\u578b** NEW \u00b7 **\u539f\u4e25\u91cd\u5ea6** WARNING\uff08medium\uff09\n**\u5f71\u54cd** \u5f71\u54cd\u5c1a\u672a\u786e\u8ba4\n**\u786e\u5b9a\u6027** UNKNOWN \u2014\u2014 \u751f\u4ea7\u8005\u5728\u8fd9\u4e00\u884c\u6ca1\u6709\u8bb0\u5f55 freshness\uff0c\u56e0\u6b64\u8fd9\u6b21\u8bfb\u6570\u662f\u5426\u4ecd\u7136\u65b0\u9c9c\u65e0\u6cd5\u5224\u5b9a \u00b7 \u6765\u6e90 \u672a\u8bb0\u5f55\n**\u5efa\u8bae** REVIEW \u2014\u2014 \u67e5\u770b\u8be5\u8fdb\u7a0b\u7ec4\u7684\u5f52\u5c5e\u4e0e\u5360\u7528\u8d21\u732e\u8005\n**\u5efa\u8bae\u7684\u6548\u529b** \u5efa\u8bae\uff0c\u4e0d\u662f\u6388\u6743\uff1b\u6ca1\u6709\u4efb\u4f55\u52a8\u4f5c\u4f1a\u56e0\u6b64\u53d1\u751f\n**\u9996\u6b21\u89c2\u6d4b** 2026-09-18T06:15:57.175939+00:00 \u00b7 **\u6700\u8fd1** 2026-09-20 03:12:33 CST\n**\u6301\u7eed\u65f6\u95f4** \u672a\u77e5\uff08\u6ca1\u6709\u53ef\u89e3\u6790\u7684 at \u4f5c\u4e3a\u8ba1\u91cf\u7ec8\u70b9\uff09\n**\u5f15\u7528** alert:2d78bf9461e7bca6\n**\u8bc1\u636e\u4e0e\u8be6\u60c5**\nWARNING \u00b7 medium\nmeasured: no measurement \u2014 this code is a declaration\nobserved: no timestamp (unknown, source unknown)\nduration: unknown (seen 1 times)\nrecommendation: REVIEW \u00b7 nothing was stopped, restarted or removed",
+            "content": "**\u53d1\u751f\u4e86\u4ec0\u4e48** \u6709\u4e00\u4e2a\u8fdb\u7a0b\u7ec4\u6301\u7eed\u5360\u7528\u5185\u5b58\n**\u4e8b\u4ef6\u7c7b\u578b** NEW \u00b7 **\u539f\u4e25\u91cd\u5ea6** WARNING\uff08medium\uff09\n**\u5f71\u54cd** \u5f71\u54cd\u5c1a\u672a\u786e\u8ba4\n**\u786e\u5b9a\u6027** UNKNOWN \u2014\u2014 \u751f\u4ea7\u8005\u5728\u8fd9\u4e00\u884c\u6ca1\u6709\u8bb0\u5f55 freshness\uff0c\u56e0\u6b64\u8fd9\u6b21\u8bfb\u6570\u662f\u5426\u4ecd\u7136\u65b0\u9c9c\u65e0\u6cd5\u5224\u5b9a \u00b7 \u6765\u6e90 \u672a\u8bb0\u5f55\n**\u5efa\u8bae** REVIEW \u2014\u2014 \u67e5\u770b\u8be5\u8fdb\u7a0b\u7ec4\u7684\u5f52\u5c5e\u4e0e\u5360\u7528\u8d21\u732e\u8005\n**\u5efa\u8bae\u7684\u6548\u529b** \u5efa\u8bae\uff0c\u4e0d\u662f\u6388\u6743\uff1b\u6ca1\u6709\u4efb\u4f55\u52a8\u4f5c\u4f1a\u56e0\u6b64\u53d1\u751f\n**\u9996\u6b21\u89c2\u6d4b** 2026-09-18T06:15:57.175939+00:00 \u00b7 **\u6700\u8fd1** 2026-09-20 03:15:43 CST\n**\u6301\u7eed\u65f6\u95f4** \u672a\u77e5\uff08\u6ca1\u6709\u53ef\u89e3\u6790\u7684 at \u4f5c\u4e3a\u8ba1\u91cf\u7ec8\u70b9\uff09\n**\u5f15\u7528** alert:2d78bf9461e7bca6\n**\u8bc1\u636e\u4e0e\u8be6\u60c5**\nWARNING \u00b7 medium\nmeasured: no measurement \u2014 this code is a declaration\nobserved: no timestamp (unknown, source unknown)\nduration: unknown (seen 1 times)\nrecommendation: REVIEW \u00b7 nothing was stopped, restarted or removed",
             "tag": "markdown"
           }
         ],
@@ -57,7 +57,7 @@ serverosctl card alert	0
         },
         "elements": [
           {
-            "content": "**\u53d1\u751f\u4e86\u4ec0\u4e48** \u6709\u4e00\u4e2a\u8fdb\u7a0b\u7ec4\u6301\u7eed\u5360\u7528\u5185\u5b58\n**\u4e8b\u4ef6\u7c7b\u578b** NEW \u00b7 **\u539f\u4e25\u91cd\u5ea6** WARNING\uff08medium\uff09\n**\u5f71\u54cd** \u5f71\u54cd\u5c1a\u672a\u786e\u8ba4\n**\u786e\u5b9a\u6027** UNKNOWN \u2014\u2014 \u751f\u4ea7\u8005\u5728\u8fd9\u4e00\u884c\u6ca1\u6709\u8bb0\u5f55 freshness\uff0c\u56e0\u6b64\u8fd9\u6b21\u8bfb\u6570\u662f\u5426\u4ecd\u7136\u65b0\u9c9c\u65e0\u6cd5\u5224\u5b9a \u00b7 \u6765\u6e90 \u672a\u8bb0\u5f55\n**\u5efa\u8bae** REVIEW \u2014\u2014 \u67e5\u770b\u8be5\u8fdb\u7a0b\u7ec4\u7684\u5f52\u5c5e\u4e0e\u5360\u7528\u8d21\u732e\u8005\n**\u5efa\u8bae\u7684\u6548\u529b** \u5efa\u8bae\uff0c\u4e0d\u662f\u6388\u6743\uff1b\u6ca1\u6709\u4efb\u4f55\u52a8\u4f5c\u4f1a\u56e0\u6b64\u53d1\u751f\n**\u9996\u6b21\u89c2\u6d4b** 2026-09-18T06:35:10.798465+00:00 \u00b7 **\u6700\u8fd1** 2026-09-20 03:12:33 CST\n**\u6301\u7eed\u65f6\u95f4** \u672a\u77e5\uff08\u6ca1\u6709\u53ef\u89e3\u6790\u7684 at \u4f5c\u4e3a\u8ba1\u91cf\u7ec8\u70b9\uff09\n**\u5f15\u7528** alert:813fd81cdb193552\n**\u8bc1\u636e\u4e0e\u8be6\u60c5**\nWARNING \u00b7 medium\nmeasured: no measurement \u2014 this code is a declaration\nobserved: no timestamp (unknown, source unknown)\nduration: unknown (seen 7 times)\nrecommendation: REVIEW \u00b7 nothing was stopped, restarted or removed",
+            "content": "**\u53d1\u751f\u4e86\u4ec0\u4e48** \u6709\u4e00\u4e2a\u8fdb\u7a0b\u7ec4\u6301\u7eed\u5360\u7528\u5185\u5b58\n**\u4e8b\u4ef6\u7c7b\u578b** NEW \u00b7 **\u539f\u4e25\u91cd\u5ea6** WARNING\uff08medium\uff09\n**\u5f71\u54cd** \u5f71\u54cd\u5c1a\u672a\u786e\u8ba4\n**\u786e\u5b9a\u6027** UNKNOWN \u2014\u2014 \u751f\u4ea7\u8005\u5728\u8fd9\u4e00\u884c\u6ca1\u6709\u8bb0\u5f55 freshness\uff0c\u56e0\u6b64\u8fd9\u6b21\u8bfb\u6570\u662f\u5426\u4ecd\u7136\u65b0\u9c9c\u65e0\u6cd5\u5224\u5b9a \u00b7 \u6765\u6e90 \u672a\u8bb0\u5f55\n**\u5efa\u8bae** REVIEW \u2014\u2014 \u67e5\u770b\u8be5\u8fdb\u7a0b\u7ec4\u7684\u5f52\u5c5e\u4e0e\u5360\u7528\u8d21\u732e\u8005\n**\u5efa\u8bae\u7684\u6548\u529b** \u5efa\u8bae\uff0c\u4e0d\u662f\u6388\u6743\uff1b\u6ca1\u6709\u4efb\u4f55\u52a8\u4f5c\u4f1a\u56e0\u6b64\u53d1\u751f\n**\u9996\u6b21\u89c2\u6d4b** 2026-09-18T06:35:10.798465+00:00 \u00b7 **\u6700\u8fd1** 2026-09-20 03:15:43 CST\n**\u6301\u7eed\u65f6\u95f4** \u672a\u77e5\uff08\u6ca1\u6709\u53ef\u89e3\u6790\u7684 at \u4f5c\u4e3a\u8ba1\u91cf\u7ec8\u70b9\uff09\n**\u5f15\u7528** alert:813fd81cdb193552\n**\u8bc1\u636e\u4e0e\u8be6\u60c5**\nWARNING \u00b7 medium\nmeasured: no measurement \u2014 this code is a declaration\nobserved: no timestamp (unknown, source unknown)\nduration: unknown (seen 7 times)\nrecommendation: REVIEW \u00b7 nothing was stopped, restarted or removed",
             "tag": "markdown"
           }
         ],
@@ -87,7 +87,7 @@ serverosctl card alert	0
         },
         "elements": [
           {
-            "content": "**\u53d1\u751f\u4e86\u4ec0\u4e48** \u6709\u4e00\u4e2a\u8fdb\u7a0b\u7ec4\u6301\u7eed\u5360\u7528\u5185\u5b58\n**\u4e8b\u4ef6\u7c7b\u578b** NEW \u00b7 **\u539f\u4e25\u91cd\u5ea6** WARNING\uff08medium\uff09\n**\u5f71\u54cd** \u5f71\u54cd\u5c1a\u672a\u786e\u8ba4\n**\u786e\u5b9a\u6027** UNKNOWN \u2014\u2014 \u751f\u4ea7\u8005\u5728\u8fd9\u4e00\u884c\u6ca1\u6709\u8bb0\u5f55 freshness\uff0c\u56e0\u6b64\u8fd9\u6b21\u8bfb\u6570\u662f\u5426\u4ecd\u7136\u65b0\u9c9c\u65e0\u6cd5\u5224\u5b9a \u00b7 \u6765\u6e90 \u672a\u8bb0\u5f55\n**\u5efa\u8bae** REVIEW \u2014\u2014 \u67e5\u770b\u8be5\u8fdb\u7a0b\u7ec4\u7684\u5f52\u5c5e\u4e0e\u5360\u7528\u8d21\u732e\u8005\n**\u5efa\u8bae\u7684\u6548\u529b** \u5efa\u8bae\uff0c\u4e0d\u662f\u6388\u6743\uff1b\u6ca1\u6709\u4efb\u4f55\u52a8\u4f5c\u4f1a\u56e0\u6b64\u53d1\u751f\n**\u9996\u6b21\u89c2\u6d4b** 2026-09-18T06:43:16.462862+00:00 \u00b7 **\u6700\u8fd1** 2026-09-20 03:12:33 CST\n**\u6301\u7eed\u65f6\u95f4** \u672a\u77e5\uff08\u6ca1\u6709\u53ef\u89e3\u6790\u7684 at \u4f5c\u4e3a\u8ba1\u91cf\u7ec8\u70b9\uff09\n**\u5f15\u7528** alert:fe3a7cf437529387\n**\u8bc1\u636e\u4e0e\u8be6\u60c5**\nWARNING \u00b7 medium\nmeasured: no measurement \u2014 this code is a declaration\nobserved: no timestamp (unknown, source unknown)\nduration: unknown (seen 2163 times)\nrecommendation: REVIEW \u00b7 nothing was stopped, restarted or removed",
+            "content": "**\u53d1\u751f\u4e86\u4ec0\u4e48** \u6709\u4e00\u4e2a\u8fdb\u7a0b\u7ec4\u6301\u7eed\u5360\u7528\u5185\u5b58\n**\u4e8b\u4ef6\u7c7b\u578b** NEW \u00b7 **\u539f\u4e25\u91cd\u5ea6** WARNING\uff08medium\uff09\n**\u5f71\u54cd** \u5f71\u54cd\u5c1a\u672a\u786e\u8ba4\n**\u786e\u5b9a\u6027** UNKNOWN \u2014\u2014 \u751f\u4ea7\u8005\u5728\u8fd9\u4e00\u884c\u6ca1\u6709\u8bb0\u5f55 freshness\uff0c\u56e0\u6b64\u8fd9\u6b21\u8bfb\u6570\u662f\u5426\u4ecd\u7136\u65b0\u9c9c\u65e0\u6cd5\u5224\u5b9a \u00b7 \u6765\u6e90 \u672a\u8bb0\u5f55\n**\u5efa\u8bae** REVIEW \u2014\u2014 \u67e5\u770b\u8be5\u8fdb\u7a0b\u7ec4\u7684\u5f52\u5c5e\u4e0e\u5360\u7528\u8d21\u732e\u8005\n**\u5efa\u8bae\u7684\u6548\u529b** \u5efa\u8bae\uff0c\u4e0d\u662f\u6388\u6743\uff1b\u6ca1\u6709\u4efb\u4f55\u52a8\u4f5c\u4f1a\u56e0\u6b64\u53d1\u751f\n**\u9996\u6b21\u89c2\u6d4b** 2026-09-18T06:43:16.462862+00:00 \u00b7 **\u6700\u8fd1** 2026-09-20 03:15:43 CST\n**\u6301\u7eed\u65f6\u95f4** \u672a\u77e5\uff08\u6ca1\u6709\u53ef\u89e3\u6790\u7684 at \u4f5c\u4e3a\u8ba1\u91cf\u7ec8\u70b9\uff09\n**\u5f15\u7528** alert:fe3a7cf437529387\n**\u8bc1\u636e\u4e0e\u8be6\u60c5**\nWARNING \u00b7 medium\nmeasured: no measurement \u2014 this code is a declaration\nobserved: no timestamp (unknown, source unknown)\nduration: unknown (seen 2166 times)\nrecommendation: REVIEW \u00b7 nothing was stopped, restarted or removed",
             "tag": "markdown"
           }
         ],
@@ -115,7 +115,7 @@ serverosctl card alert	0
         "tag": "markdown"
       },
       {
-        "content": "\u91c7\u96c6 2026-09-20 03:12:33 CST \u00b7 \u8bbe\u5907 device:tokyo-shared-dev-01",
+        "content": "\u91c7\u96c6 2026-09-20 03:15:43 CST \u00b7 \u8bbe\u5907 device:tokyo-shared-dev-01",
         "tag": "markdown"
       },
       {
@@ -129,7 +129,7 @@ serverosctl card alert	0
   },
   "header": {
     "subtitle": {
-      "content": "2026-09-20 03:12:33 CST \u66f4\u65b0",
+      "content": "2026-09-20 03:15:43 CST \u66f4\u65b0",
       "tag": "plain_text"
     },
     "template": "orange",
@@ -156,7 +156,7 @@ serverosctl card alert	0
         },
         "elements": [
           {
-            "content": "**发生了什么** 有一个进程组持续占用内存\n**事件类型** NEW · **原严重度** WARNING（medium）\n**影响** 影响尚未确认\n**确定性** UNKNOWN —— 生产者在这一行没有记录 freshness，因此这次读数是否仍然新鲜无法判定 · 来源 未记录\n**建议** REVIEW —— 查看该进程组的归属与占用贡献者\n**建议的效力** 建议，不是授权；没有任何动作会因此发生\n**首次观测** 2026-09-18T06:15:57.175939+00:00 · **最近** 2026-09-20 03:12:33 CST\n**持续时间** 未知（没有可解析的 at 作为计量终点）\n**引用** alert:2d78bf9461e7bca6\n**证据与详情**\nWARNING · medium\nmeasured: no measurement — this code is a declaration\nobserved: no timestamp (unknown, source unknown)\nduration: unknown (seen 1 times)\nrecommendation: REVIEW · nothing was stopped, restarted or removed",
+            "content": "**发生了什么** 有一个进程组持续占用内存\n**事件类型** NEW · **原严重度** WARNING（medium）\n**影响** 影响尚未确认\n**确定性** UNKNOWN —— 生产者在这一行没有记录 freshness，因此这次读数是否仍然新鲜无法判定 · 来源 未记录\n**建议** REVIEW —— 查看该进程组的归属与占用贡献者\n**建议的效力** 建议，不是授权；没有任何动作会因此发生\n**首次观测** 2026-09-18T06:15:57.175939+00:00 · **最近** 2026-09-20 03:15:42 CST\n**持续时间** 未知（没有可解析的 at 作为计量终点）\n**引用** alert:2d78bf9461e7bca6\n**证据与详情**\nWARNING · medium\nmeasured: no measurement — this code is a declaration\nobserved: no timestamp (unknown, source unknown)\nduration: unknown (seen 1 times)\nrecommendation: REVIEW · nothing was stopped, restarted or removed",
             "tag": "markdown"
           }
         ],
@@ -186,7 +186,7 @@ serverosctl card alert	0
         },
         "elements": [
           {
-            "content": "**发生了什么** 有一个进程组持续占用内存\n**事件类型** NEW · **原严重度** WARNING（medium）\n**影响** 影响尚未确认\n**确定性** UNKNOWN —— 生产者在这一行没有记录 freshness，因此这次读数是否仍然新鲜无法判定 · 来源 未记录\n**建议** REVIEW —— 查看该进程组的归属与占用贡献者\n**建议的效力** 建议，不是授权；没有任何动作会因此发生\n**首次观测** 2026-09-18T06:35:10.798465+00:00 · **最近** 2026-09-20 03:12:33 CST\n**持续时间** 未知（没有可解析的 at 作为计量终点）\n**引用** alert:813fd81cdb193552\n**证据与详情**\nWARNING · medium\nmeasured: no measurement — this code is a declaration\nobserved: no timestamp (unknown, source unknown)\nduration: unknown (seen 7 times)\nrecommendation: REVIEW · nothing was stopped, restarted or removed",
+            "content": "**发生了什么** 有一个进程组持续占用内存\n**事件类型** NEW · **原严重度** WARNING（medium）\n**影响** 影响尚未确认\n**确定性** UNKNOWN —— 生产者在这一行没有记录 freshness，因此这次读数是否仍然新鲜无法判定 · 来源 未记录\n**建议** REVIEW —— 查看该进程组的归属与占用贡献者\n**建议的效力** 建议，不是授权；没有任何动作会因此发生\n**首次观测** 2026-09-18T06:35:10.798465+00:00 · **最近** 2026-09-20 03:15:42 CST\n**持续时间** 未知（没有可解析的 at 作为计量终点）\n**引用** alert:813fd81cdb193552\n**证据与详情**\nWARNING · medium\nmeasured: no measurement — this code is a declaration\nobserved: no timestamp (unknown, source unknown)\nduration: unknown (seen 7 times)\nrecommendation: REVIEW · nothing was stopped, restarted or removed",
             "tag": "markdown"
           }
         ],
@@ -216,7 +216,7 @@ serverosctl card alert	0
         },
         "elements": [
           {
-            "content": "**发生了什么** 有一个进程组持续占用内存\n**事件类型** NEW · **原严重度** WARNING（medium）\n**影响** 影响尚未确认\n**确定性** UNKNOWN —— 生产者在这一行没有记录 freshness，因此这次读数是否仍然新鲜无法判定 · 来源 未记录\n**建议** REVIEW —— 查看该进程组的归属与占用贡献者\n**建议的效力** 建议，不是授权；没有任何动作会因此发生\n**首次观测** 2026-09-18T06:43:16.462862+00:00 · **最近** 2026-09-20 03:12:33 CST\n**持续时间** 未知（没有可解析的 at 作为计量终点）\n**引用** alert:fe3a7cf437529387\n**证据与详情**\nWARNING · medium\nmeasured: no measurement — this code is a declaration\nobserved: no timestamp (unknown, source unknown)\nduration: unknown (seen 2163 times)\nrecommendation: REVIEW · nothing was stopped, restarted or removed",
+            "content": "**发生了什么** 有一个进程组持续占用内存\n**事件类型** NEW · **原严重度** WARNING（medium）\n**影响** 影响尚未确认\n**确定性** UNKNOWN —— 生产者在这一行没有记录 freshness，因此这次读数是否仍然新鲜无法判定 · 来源 未记录\n**建议** REVIEW —— 查看该进程组的归属与占用贡献者\n**建议的效力** 建议，不是授权；没有任何动作会因此发生\n**首次观测** 2026-09-18T06:43:16.462862+00:00 · **最近** 2026-09-20 03:15:42 CST\n**持续时间** 未知（没有可解析的 at 作为计量终点）\n**引用** alert:fe3a7cf437529387\n**证据与详情**\nWARNING · medium\nmeasured: no measurement — this code is a declaration\nobserved: no timestamp (unknown, source unknown)\nduration: unknown (seen 2166 times)\nrecommendation: REVIEW · nothing was stopped, restarted or removed",
             "tag": "markdown"
           }
         ],
@@ -244,7 +244,7 @@ serverosctl card alert	0
         "tag": "markdown"
       },
       {
-        "content": "采集 2026-09-20 03:12:33 CST · 设备 device:tokyo-shared-dev-01",
+        "content": "采集 2026-09-20 03:15:42 CST · 设备 device:tokyo-shared-dev-01",
         "tag": "markdown"
       },
       {
@@ -258,7 +258,7 @@ serverosctl card alert	0
   },
   "header": {
     "subtitle": {
-      "content": "2026-09-20 03:12:33 CST 更新",
+      "content": "2026-09-20 03:15:42 CST 更新",
       "tag": "plain_text"
     },
     "template": "orange",

@@ -1,4 +1,4 @@
-<!-- ⟦snapshot⟧ rendered 2026-09-19T19:12:33+00:00 by `runtime/workbench.py` from ~/workspace/worktrees/serveros/foundation-skeleton -->
+<!-- ⟦snapshot⟧ rendered 2026-09-19T19:15:42+00:00 by `runtime/workbench.py` from ~/workspace/worktrees/serveros/foundation-skeleton -->
 
 # ENVIRONMENT
 
@@ -13,7 +13,7 @@ serverosctl device show --json	0
 ### 能力树（本节点的投影）
 
 来源 `~/state/serveros/abilities/effective.json` @ `fa784d228eb54c10180e928e6a04f602140ab307`，权威是 `ability-management`，基数 `domain.primary`。
-能力 30 个，已归类 19 个；这个读数的年龄 209105 秒。
+能力 30 个，已归类 19 个；这个读数的年龄 209295 秒。
 
 **这份投影可能过期。** 它不自己去读权威；`serverosctl ability refresh` 才会。
 
@@ -299,15 +299,15 @@ _无：每个 pack 成员都在 manifest 里。_
       "state": "UNAVAILABLE"
     },
     "load": {
-      "load1": 3.57,
-      "load15": 3.27,
-      "load5": 3.35,
-      "runnable": "3/7767"
+      "load1": 2.39,
+      "load15": 3.13,
+      "load5": 2.94,
+      "runnable": "4/7732"
     },
     "memory": {
-      "available_bytes": 225665368064,
-      "cached_bytes": 162954301440,
-      "free_bytes": 51991990272,
+      "available_bytes": 225648123904,
+      "cached_bytes": 163056173056,
+      "free_bytes": 51851628544,
       "swap": {
         "free_bytes": 17169920000,
         "total_bytes": 17179865088,
@@ -315,9 +315,9 @@ _无：每个 pack 成员都在 manifest 里。_
         "used_percent": 0.1
       },
       "total_bytes": 265182715904,
-      "used_bytes": 39517347840
+      "used_bytes": 39534592000
     },
-    "uptime_seconds": 388919.04
+    "uptime_seconds": 389108.37
   },
   "managed_resources": {
     "automatable": 0,
