@@ -4479,6 +4479,8 @@ def cmd_workbench(args) -> int:
         argv += ["--item", args.item]
     if args.quay_run:
         argv += ["--quay-run", args.quay_run]
+    if args.quay_bin:
+        argv += ["--quay-bin", args.quay_bin]
     if args.ability_repo:
         argv += ["--ability-repo", args.ability_repo]
     if args.reports_dir:
@@ -5853,6 +5855,10 @@ def build_parser() -> argparse.ArgumentParser:
         parser_.add_argument("--project", default=None,
                              help="the project the Item chain is read from")
         parser_.add_argument("--item", default=None, help="the Item id")
+        parser_.add_argument("--quay-bin", default=None,
+                             help="the Quay CLI the results page asks for the goal "
+                                  "store. A fact about THIS node, so no default: "
+                                  "the renderer bakes in no path")
         parser_.add_argument("--quay-run", default=None,
                              help="a directory holding a quay workspace (`ws/`)")
         parser_.add_argument("--ability-repo", default=None,

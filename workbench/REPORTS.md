@@ -1,4 +1,4 @@
-<!-- ⟦snapshot⟧ rendered 2026-09-19T19:15:42+00:00 by `runtime/workbench.py` from ~/workspace/worktrees/serveros/foundation-skeleton -->
+<!-- ⟦snapshot⟧ rendered 2026-09-19T19:39:00+00:00 by `runtime/workbench.py` from ~/workspace/worktrees/serveros/foundation-skeleton · inputs: projects=serveros,litellm,multi-user-claw; project=litellm; item=LIT-0101; quay-run=~/artifacts/skills/serveros/RUN-20260920-foundation-skeleton-f/quay; quay-bin=~/workspace/worktrees/quay/foundation-skeleton-develop/packages/quay/dist/quay.js; ability-repo=~/workspace/worktrees/ability-management/foundation-skeleton; reports-dir=~/artifacts/skills/serveros/RUN-20260920-foundation-skeleton-f; release-root=~/artifacts/skills/serveros/RUN-20260920-foundation-skeleton-f/release/hwz-server-os/serveros-linux-work -->
 
 # REPORTS
 
@@ -12,7 +12,9 @@
 
 ### 日报
 
-- `~/artifacts/skills/serveros/RUN-20260920-foundation-skeleton-e/daily-report-quay.md` （6887 bytes）
+没有找到任何日报文件。**这一栏因此是空的，不是绿的。**
+
+日报由每一轮留在它自己的运行目录里，本仓不含它们，所以这里搜的是 `<repo>/docs`、`<repo>/workbench` 与 `--quay-run`。把某一轮的目录用 `--reports-dir <dir>` 指过来即可；搜的是其中名为 `*daily-report*` 的文件。
 
 ### Decision Packet
 
