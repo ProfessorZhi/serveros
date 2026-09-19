@@ -1,0 +1,301 @@
+# §6/§8 — the chain from authorized information to a delivered report, and the
+# documents a person reads at each hop.
+#
+# WHY THIS FILE EXISTS WHEN `board-contract.yaml` IS ALREADY HERE
+# --------------------------------------------------------------
+# `board-contract.yaml` declares the three NOUNS (requirement-source,
+# work-item, requirement-board) and the global board's generation rule. It does
+# not declare the chain's SHAPE: which document carries the brief, which
+# document an Item is expected to have at which state, or in what order a
+# person's own board reads. That shape is what this file is, and it is separate
+# because the global board is a projection of the authority while the personal
+# board is a projection of the authority PLUS documents a human wrote. Merging
+# them would put a person's judgement inside a document whose value is that it
+# is derived and never edited.
+#
+# WHAT THIS FILE DOES NOT DECIDE
+# ------------------------------
+# Priority. §6 asks the personal board to keep a source priority and a personal
+# priority. Neither field exists anywhere in this fabric, and
+# `intake/global_board.py` already states in as many words that introducing one
+# "has to be decided by a person". So the two columns are declared, rendered,
+# and left `UNPRODUCED` with that reason until somebody approves the field — see
+# `card_extension`. A board that filled them by bucketing `kind` or `state`
+# would be inventing a taxonomy in the one column whose meaning is priority.
+schema: serveros/workchain-contract.v1
+
+# ---------------------------------------------------------------------------
+# The chain, in the order a person walks it. Every hop names the authority it
+# reads and the entry point that produces its output on this node.
+# ---------------------------------------------------------------------------
+chain:
+  - id: authorized-input
+    is: an approved input, or a pointer to one, with its depth and its provenance
+    reads: "the source itself; records/ hold locators and never a copy"
+    entry: {surface: information-management, live: false}
+    output: "a snapshot envelope — what was read, at what revision, and what was not"
+    gap: >-
+      The live fetch is NOT implemented. Nothing in this round calls a cloud
+      API, and the file that would is not written. What exists is the contract
+      the adapter has to satisfy and a sample envelope, so the rest of the chain
+      runs offline against a declared input rather than against a stub that
+      pretends to have fetched something.
+
+  - id: structured-understanding
+    is: facts, inferences, conflicts, decisions and candidates, each traceable to a locator
+    reads: "the snapshot envelope above, plus records/information/understanding/"
+    entry: {surface: information-management, live: false}
+    output: "records/information/understanding/ + the candidate rows"
+    gap: >-
+      The live fetch is NOT implemented here either, and neither is a WRITER of
+      understanding: this round reads the layer and counts it, and writes
+      nothing into it. The category set is `board-contract.yaml`'s
+      `requirement-source.supported_kinds`, which is not restated here.
+    layout: >-
+      Under `records/` BESIDE `projects/` and not inside one, in four scopes
+      (`people/`, `projects/`, `topics/`, `responsibilities/`). A first version
+      of `document-skeletons.yaml` named
+      `records/projects/<project>/context/understanding.md`, which is the same
+      composed-path defect this module's four path bugs were: a layout inferred
+      from a design document and reported about a node that has a different
+      one. `understanding/README.md` states the boundary — understanding is
+      what we currently know, and `projects/<p>/context` is where it goes once
+      it has stopped moving.
+
+  - id: candidate-board
+    is: candidates in a cross-project view, before any of them has a brief
+    reads: "work-engine item_candidates, through serveros-work-mcp"
+    entry: {surface: serverosctl, command: "work board"}
+    output: "the personal board, §6's sections in §6's order"
+    rule: >-
+      A candidate enters the board on a stable identity, a source, a summary,
+      a value, a priority and its unknowns. It does NOT require a brief first.
+      This is the ordering constraint the design states in as many words, and
+      the code enforces it by asking for `card.yaml` and nothing else at the
+      entry states.
+
+  - id: today-selection
+    is: the 1-2 items a person chose to carry today
+    reads: "the board above"
+    entry: {surface: a person, command: "serverosctl work today --select"}
+    output: "records/projects/<project>/board/today.yaml"
+    rule: >-
+      Authored, not derived. The selection is a decision, and a derived file
+      cannot hold one — a regenerated board that re-derived the choice would
+      silently overwrite the only record of who chose what. The file is
+      declared here, written by a person's command, and read by the board.
+
+  - id: item-brief
+    is: one requirement, expanded, after it was chosen
+    reads: "the card, and the candidate it came from"
+    entry: {surface: serverosctl, command: "work item <ID>"}
+    output: "records/projects/<project>/items/<ID>/brief.md"
+
+  - id: design-and-plan
+    is: how it will be built, and in what order
+    reads: "brief.md"
+    entry: {surface: serverosctl, command: "work item <ID>"}
+    output: "design.md, plan.md"
+
+  - id: execution
+    is: the Run, its Evidence and its Deliverable
+    reads: "plan.md"
+    entry: {surface: serveros-work-mcp, live: true}
+    output: "artifacts/work-items/<project>/<ITEM>/<RUN>/"
+    note: >-
+      This hop is the one that already exists end to end. `tests/work_delivery_slice.py`
+      walks it with every root redirected, and this file does not restate its
+      stages — work-engine's own README is where the ten are stated.
+
+  - id: report
+    is: what happened, with the evidence a reader can re-run
+    reads: "the Run, its Evidence and its Deliverable"
+    entry: {surface: serverosctl, command: "work item <ID>"}
+    output: "report.md"
+
+  - id: feedback
+    is: the observation a finished Item produces
+    reads: "report.md"
+    entry: {surface: serveros-work-mcp, live: true}
+    output: "a new observation, which is where this chain re-enters the top"
+
+# ---------------------------------------------------------------------------
+# The documents an Item carries, and when each one is required.
+#
+# `required_at` reads work-engine's OWN states (`workengine.model.ItemState`).
+# Nothing here invents a state, and the list is written out rather than
+# expressed as "and later states", because the states are not a line: WAITING
+# and NEEDS_HUMAN sit off the mainline and DELIVERED sits before CLOSED, so a
+# rule phrased as an ordering would be wrong for three of the ten.
+# ---------------------------------------------------------------------------
+# `resolved_by` is TRIED IN ORDER against the Item's own directory, and it is
+# declared here because a first draft hard-coded `design.md`/`plan.md`/
+# `report.md` and was wrong about this node. The real records hold `brief.md` as
+# a file and `design/`, `plan/` and `report/` as DIRECTORIES of documents
+# (`design/PR4-DESIGN.md`, `plan/2026-09-01-PR4-…md`, `report/PR4-CONCLUSION.md`
+# under MUC-0104). The `.md` spelling is kept as the LAST rule rather than
+# dropped, because a fabric that moved from directories to files should read as
+# present rather than as a regression, and because the contract should say which
+# spellings it accepts instead of leaving the reader to infer it from a blank.
+# A directory counts only when it HOLDS something: an empty `design/` is a
+# directory somebody made, not a design somebody wrote.
+item_documents:
+  - {name: card.yaml,  resolved_by: [exact-file], written_by: a person or an ability, required_at: [INBOX, AVAILABLE, READY, ACTIVE, WAITING, NEEDS_HUMAN, DELEGATED, DELIVERED, CLOSED]}
+  - {name: brief.md,   resolved_by: [exact-file], written_by: a person or an ability, required_at: [READY, ACTIVE, WAITING, NEEDS_HUMAN, DELEGATED, DELIVERED, CLOSED]}
+  - {name: design,     resolved_by: [exact-file, directory, suffixed-file], written_by: a person or an ability, required_at: [ACTIVE, DELIVERED, CLOSED]}
+  - {name: plan,       resolved_by: [exact-file, directory, suffixed-file], written_by: a person or an ability, required_at: [ACTIVE, DELIVERED, CLOSED]}
+  - {name: report,     resolved_by: [exact-file, directory, suffixed-file], written_by: a person or an ability, required_at: [DELIVERED, CLOSED]}
+
+# A document that is not required yet is `NOT_YET_REQUIRED` and is not a gap.
+# A document that is required and absent is `MISSING` and IS a gap. The two are
+# told apart because collapsing them makes every young Item look incomplete,
+# and a board where everything is amber is a board nobody reads.
+document_states: [PRESENT, MISSING, NOT_YET_REQUIRED, UNREADABLE]
+
+# ---------------------------------------------------------------------------
+# The personal board. §6's layout, in §6's order, top to bottom.
+#
+# `selects` is read against work-engine's states. `priority` is read against
+# the card and is `UNPRODUCED` when the card declares nothing — never a
+# default, and never inferred from `kind` or `state`.
+# ---------------------------------------------------------------------------
+personal_board:
+  schema: serveros/personal-board.v1
+  sections:
+    - {id: today,     title: 今日重点,        selects: {today: true},        authored: true}
+    # §6's list has no home for an Item that is already running, and work-engine
+    # has ten states. Nine of them fall into §6's eight sections; ACTIVE is the
+    # one left over, and leaving it unplaced is the worst of the three available
+    # answers — the live board proved it by reporting four in-flight Items as
+    # claimed by nobody. Filing it under 今日重点 would report a Run the
+    # execution authority started as a choice the person made, and would break
+    # §6's own "1-2 项" constraint on that section. Filing it under 待排期 would
+    # say work in flight has not been scheduled yet, which inverts the state.
+    # So it gets a section of its own, placed second because what is actually
+    # running is the first thing a person needs to see, and the addition is
+    # declared HERE so the rendered board can mark it as added rather than
+    # showing a list that looks uniformly §6's.
+    - {id: in_flight, title: 进行中,          selects: {state: [ACTIVE], today: false},
+       because: "§6 的栏目里没有已经跑起来的条目安放处；这里新增一节，而不是让在飞的工作无人认领"}
+    - {id: p0,        title: P0,              selects: {priority: P0, today: false}}
+    - {id: p1,        title: P1,              selects: {priority: P1, today: false}}
+    - {id: backlog,   title: 待排期,          selects: {state: [INBOX, AVAILABLE, READY], today: false}}
+    # DELEGATED sits off work-engine's mainline and §6 names it nowhere. It is
+    # placed with 等待 rather than with 进行中 because the state means the work
+    # left this person's hands and what is awaited is somebody else — which is
+    # the same thing 等待/待决定 says. Declared as an interpretation, not read
+    # off §6, so a reader can disagree with the filing and see that it was a
+    # decision.
+    - {id: waiting,   title: 等待 / 待决定,   selects: {state: [WAITING, NEEDS_HUMAN, DELEGATED], today: false},
+       because: "§6 只写了「等待 / 待决定」，没有写 DELEGATED；把 DELEGATED 归到这里是一个判断，不是照抄"}
+    - {id: delivered, title: 已交付待验收 / 待合并, selects: {state: [DELIVERED], today: false}}
+    - {id: cancelled, title: 取消 / 替代,     selects: {state: [CANCELLED], today: false}}
+    - {id: done,      title: 已完成,          selects: {state: [CLOSED], today: false}, struck_through: true, last: true}
+  # Every one of `workengine.model.ItemState`'s ten values is named by a section
+  # above, and the check is mechanical: `tests/test_workchain.py` reads the
+  # states out of work-engine and fails if any of them names no section. The
+  # list is therefore pinned to the authority rather than to this comment.
+  #
+  # A non-priority bucket is still filled from the states named above and never
+  # from "everything not in another bucket": an Item in a state work-engine adds
+  # LATER has to be visible as an unplaced Item, not silently dropped into 待排期
+  # where it would read as scheduled.
+  # `today: false` on every section but 今日重点. The section is the authored cut
+  # across ALL states, so without the filter an Item a person chose would appear
+  # twice — once as their focus and once in the state bucket it also belongs to —
+  # and the section counts would sum to more than the Item count. With it, every
+  # Item is placed exactly once, which is what makes the sum checkable.
+  unplaced_is_named: true
+
+  row:
+    fields: [id, project, kind, title, state, outcome, source_priority, personal_priority, documents, today]
+
+  # §6: 已完成 means the Item's own agreed acceptance was met. Not "the run
+  # exited 0", not "the PR was opened", and not "a Quay Task closed". A Quay
+  # Task is a step inside an Item and is never counted as a second outcome —
+  # counting it twice would make one piece of work look like two deliverables
+  # and would put a number on the board that no Item can explain.
+  completion:
+    states: [CLOSED]
+    requires: "outcome is set, and report.md is present"
+    not_completion: [DELIVERED, CANCELLED]
+    quay_task_counts_as_an_outcome: false
+
+# ---------------------------------------------------------------------------
+# The two priorities, and why nothing writes them yet.
+# ---------------------------------------------------------------------------
+card_extension:
+  proposed_schema: serveros/item.v3
+  status: PROPOSED_NOT_APPROVED
+  additive_over: serveros/item.v2
+  fields:
+    - name: source_priority
+      shape: "P0..P4, or absent"
+      because: "the level the source itself assigned, when the source said one"
+    - name: personal_priority
+      shape: "P0..P4, or absent"
+      because: "the level the person carrying the work assigned, which may differ"
+    - name: superseded_by
+      shape: "an Item id, or absent"
+      because: >-
+        §6 asks for 取消/替代 as one section. Cancellation is a state
+        work-engine already has; being REPLACED is a reference, and a reference
+        needs a field. Without it the section can only say an Item was
+        cancelled, never what took its place.
+  until_approved: >-
+    A v2 card is read as `UNPRODUCED` for both priorities and NOT as unreadable.
+    Nothing in this repository writes a v3 field, and no card on this node has
+    one. The columns render with §S's reason attached so a reader sees a
+    decision waiting to be made rather than a board that failed to load.
+
+# ---------------------------------------------------------------------------
+# Coverage. Every map carries a denominator and counts its unknowns, because a
+# map that reports only what it found cannot be told from one that looked at
+# nothing.
+# ---------------------------------------------------------------------------
+coverage:
+  - id: disk
+    is: the roles this node's root contract binds, and where each one lands
+    entry: {surface: serverosctl, command: "work coverage"}
+    reads: "runtime/paths.py role resolution, plus the workspace-management skill's own checkers"
+    live: true
+    reuses: [workspace-management/scripts/map_check.py, workspace-management/scripts/capacity_check.py]
+    note: >-
+      Invoked, never reimplemented — `architecture_check.py` already carries
+      that rule as executable code, and a second implementation of a map
+      checker is a second answer to "where does this go".
+
+  - id: feishu-spaces
+    is: the three cloud surfaces, kept separate because they are separate
+    surfaces: [知识库, 云盘, 我的文档库]
+    entry: {surface: serverosctl, command: "work coverage"}
+    reads: "an authored source list; no cloud call"
+    live: false
+    denominator: "the number of surfaces NAMED, which is three, and not the number of objects in them"
+    note: >-
+      The counts below each surface are `UNKNOWN` with a reason. A cloud
+      inventory is not something this round performs, and reporting 0 objects
+      would say the spaces are empty — which is a claim about the world made by
+      a program that never looked. §7's boundary: no full enterprise crawl, no
+      tidying somebody else's cloud tree.
+
+  - id: followed-sources
+    is: the sources a person follows, each with why and how deep
+    entry: {surface: serverosctl, command: "work coverage"}
+    reads: "records/projects/<project>/context/sources.yaml"
+    live: false
+    fields: [identity, because, refresh, depth, credential_ref, publishable]
+    note: >-
+      `credential_ref` is a REFERENCE and never a value. No credential reaches
+      this repository, and the field exists so that an adapter knows which
+      secret to ask for by name rather than being handed one.
+
+# ---------------------------------------------------------------------------
+# What this round did not build. Named, so that a reader finds the absence here
+# instead of discovering it as a blank in a document that looks complete.
+# ---------------------------------------------------------------------------
+not_implemented:
+  - "the live Feishu fetch: no cloud call, no cursor, no paging. The offline contract and its sample run."
+  - "the work-engine store writer: this repository still reads projections and writes no Item."
+  - "priority: the field is proposed and unwritten, and both columns render UNPRODUCED."
+  - "the daily schedule: templates only, disabled by default, and they call no model."

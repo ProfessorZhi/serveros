@@ -1,0 +1,56 @@
+{
+  "schema": "serveros/board.v3",
+  "project": "sample-beta",
+  "generated_at": "2026-09-20T00:00:00+09:00",
+  "generation_source_revision": "SAMPLE-FIXTURE-NOT-A-REVISION",
+  "items": [
+    {
+      "id": "SAMP-0101",
+      "kind": "investigation",
+      "title": "示例：等待他人回复",
+      "state": "WAITING",
+      "outcome": null,
+      "card_locator": "records/projects/sample-beta/items/SAMP-0101/card.yaml",
+      "activities": [
+        {
+          "runs": []
+        }
+      ],
+      "deliverables": []
+    },
+    {
+      "id": "SAMP-0102",
+      "kind": "feature",
+      "title": "示例：已委派出去",
+      "state": "DELEGATED",
+      "outcome": null,
+      "card_locator": "records/projects/sample-beta/items/SAMP-0102/card.yaml",
+      "activities": [
+        {
+          "runs": []
+        }
+      ],
+      "deliverables": []
+    },
+    {
+      "id": "SAMP-0103",
+      "kind": "decision",
+      "title": "示例：需要人回答才能继续",
+      "state": "NEEDS_HUMAN",
+      "outcome": null,
+      "card_locator": "records/projects/sample-beta/items/SAMP-0103/card.yaml",
+      "activities": [],
+      "deliverables": []
+    },
+    {
+      "id": "SAMP-0104",
+      "kind": "analysis",
+      "title": "示例：卡片身份与位置不符，应当报 UNREADABLE",
+      "state": "INBOX",
+      "outcome": null,
+      "card_locator": "records/projects/sample-beta/items/SAMP-0104/card.yaml",
+      "activities": [],
+      "deliverables": []
+    }
+  ]
+}

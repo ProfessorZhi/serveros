@@ -1,0 +1,117 @@
+{
+  "schema": "serveros/board.v3",
+  "project": "sample-alpha",
+  "generated_at": "2026-09-20T00:00:00+09:00",
+  "generation_source_revision": "SAMPLE-FIXTURE-NOT-A-REVISION",
+  "items": [
+    {
+      "id": "SAMP-0001",
+      "kind": "investigation",
+      "title": "示例：候选条目（只有卡片）",
+      "state": "INBOX",
+      "outcome": null,
+      "card_locator": "records/projects/sample-alpha/items/SAMP-0001/card.yaml",
+      "activities": [],
+      "deliverables": []
+    },
+    {
+      "id": "SAMP-0002",
+      "kind": "feature",
+      "title": "示例：进行中，design 有、plan 缺",
+      "state": "ACTIVE",
+      "outcome": null,
+      "card_locator": "records/projects/sample-alpha/items/SAMP-0002/card.yaml",
+      "activities": [
+        {
+          "runs": []
+        },
+        {
+          "runs": []
+        }
+      ],
+      "deliverables": []
+    },
+    {
+      "id": "SAMP-0003",
+      "kind": "feature",
+      "title": "示例：已交付但 PR 未合并",
+      "state": "DELIVERED",
+      "outcome": null,
+      "card_locator": "records/projects/sample-alpha/items/SAMP-0003/card.yaml",
+      "activities": [
+        {
+          "runs": []
+        },
+        {
+          "runs": []
+        },
+        {
+          "runs": []
+        }
+      ],
+      "deliverables": [
+        {}
+      ]
+    },
+    {
+      "id": "SAMP-0004",
+      "kind": "feature",
+      "title": "示例：唯一一条完整闭环",
+      "state": "CLOSED",
+      "outcome": "SUCCESS",
+      "card_locator": "records/projects/sample-alpha/items/SAMP-0004/card.yaml",
+      "activities": [
+        {
+          "runs": []
+        },
+        {
+          "runs": []
+        },
+        {
+          "runs": []
+        },
+        {
+          "runs": []
+        }
+      ],
+      "deliverables": [
+        {},
+        {}
+      ]
+    },
+    {
+      "id": "SAMP-0005",
+      "kind": "bug",
+      "title": "示例：已取消，并被 SAMP-0006 替代",
+      "state": "CANCELLED",
+      "outcome": "INCONCLUSIVE",
+      "card_locator": "records/projects/sample-alpha/items/SAMP-0005/card.yaml",
+      "activities": [
+        {
+          "runs": []
+        }
+      ],
+      "deliverables": []
+    },
+    {
+      "id": "SAMP-0006",
+      "kind": "feature",
+      "title": "示例：替代 SAMP-0005 的那一条",
+      "state": "READY",
+      "outcome": null,
+      "card_locator": "records/projects/sample-alpha/items/SAMP-0006/card.yaml",
+      "activities": [],
+      "deliverables": []
+    },
+    {
+      "id": "SAMP-0007",
+      "title": "示例：进行中，plan 写了一个空文件",
+      "kind": "feature",
+      "state": "ACTIVE",
+      "outcome": null,
+      "card_locator": "records/projects/sample-alpha/items/SAMP-0007/card.yaml",
+      "activities": [],
+      "deliverables": []
+    }
+  ]
+}

@@ -4118,6 +4118,557 @@ def cmd_requirement_board(args) -> int:
 
 
 # ---------------------------------------------------------------------------
+# §6/§8 — the personal board, and the documents behind each row
+# ---------------------------------------------------------------------------
+#
+# NOT `requirement board`. The two read the same projections and answer
+# different questions, and the split is §8's: the requirement board is the
+# global projection and has no authority; the personal board is what a person
+# carries today, and it reads a file a person WROTE. Folding the second into
+# the first would put a decision inside the document whose whole value is that
+# it is derived and never edited.
+#
+# Neither one opens the work-engine store. `state/boards/<project>/current.json`
+# is the only path by which Item state reaches either of them, which is the
+# boundary `intake/board-contract.yaml` and `fleet/mcp-contract.yaml` both draw.
+# ---------------------------------------------------------------------------
+
+
+def _workchain_module():
+    return _load_module_from(REPO_ROOT / "intake" / "workchain.py",
+                             "serveros_intake_workchain")
+
+
+def _workchain_skeletons(chain):
+    """The declared document shapes, or None when the file is not here.
+
+    `None` rather than an empty dict, because the two mean different things
+    downstream: an empty dict would make every present document read
+    `NOT_CHECKED` with the reason "no skeleton declares this document", which is
+    a sentence about a missing FILE reported as a claim about a document.
+    """
+    path = REPO_ROOT / "intake" / "document-skeletons.yaml"
+    return chain.load_skeletons(path) if path.is_file() else None
+
+
+def _workchain_roots(args) -> tuple[Path, Path, Path] | tuple[None, None, None]:
+    """The roots the chain reads, all overridable and all absolute.
+
+    `--records-root` and `--workspace-root` exist because a fixture has to be
+    able to run this against a directory it owns. They are two roots and not
+    one because they answer two questions: the records root is where an Item's
+    documents are looked for when nothing better is known, and the workspace
+    root is what a RELATIVE `card_locator` is relative to. Composing a card path
+    from the records root alone — which a first version did — dropped the
+    `projects/` segment the locators carry and put all 17 real cards in the
+    missing bucket.
+    """
+    paths = paths_mod.Paths()
+    workspace = Path(getattr(args, "workspace_root", "") or
+                     paths.root("workspace"))
+    boards = Path(getattr(args, "boards_root", "") or
+                  paths.resolve("state/boards")["path"])
+    records = Path(getattr(args, "records_root", "") or workspace / "records")
+    for label, root in (("--boards-root", boards), ("--records-root", records),
+                        ("--workspace-root", workspace)):
+        if not root.is_absolute():
+            sys.stderr.write(
+                f"serverosctl: {label} must be absolute, got {root}. A board "
+                f"composed from whatever directory the caller was standing in "
+                f"is a board nobody else can reproduce.\n")
+            return None, None, None
+    return boards, records, workspace
+
+
+def _today_for(chain, records_root: Path, projects) -> dict:
+    """One authored selection per project, or an explicit statement of none.
+
+    Read per project because the selection is per project: `today.yaml` sits
+    beside that project's board, and a person carrying two projects chose
+    separately in each. Merging the files first and reading once would make a
+    single unreadable file look like a whole-node answer.
+
+    The path comes from `chain.today_path` rather than being composed here, so
+    the writer and this reader cannot disagree about where the file is. They
+    DID disagree: this function looked at `<records>/<project>/board/` while the
+    writer wrote `<records>/projects/<project>/board/`, and the board said
+    "nobody has chosen" about a project where somebody had.
+    """
+    out = {}
+    for project in projects:
+        name = project["project"]
+        out[name] = chain.load_today(chain.today_path(records_root, name))
+    return out
+
+
+def _workchain_refusals(fn):
+    """Turn a `workchain.Refused` into the sentence it was written to be.
+
+    `Refused` is this module's way of saying "I will not answer this, and here
+    is why" — an unknown resolution rule, a contract that names no sections, a
+    skeleton file present but naming no scopes. Each of those messages was
+    written to be read. Without this wrapper they arrive as a traceback, which
+    is the same information with the explanation buried under a stack, and the
+    one thing a traceback does not do is tell a reader which of their own files
+    to look at.
+    """
+    def run(args):
+        try:
+            return fn(args)
+        except _workchain_module().Refused as exc:
+            sys.stderr.write(f"serverosctl: {exc}\n")
+            return EXIT_FAULT
+    run.__name__ = getattr(fn, "__name__", "run")
+    return run
+
+
+def cmd_work_board(args) -> int:
+    """§6 — the personal board: 今日重点 through 已完成, in §6's order."""
+    chain = _workchain_module()
+    boards, records, workspace = _workchain_roots(args)
+    if boards is None:
+        return EXIT_FAULT
+    contract = chain.load_contract(
+        REPO_ROOT / "intake" / "workchain-contract.yaml")
+    projects = chain.load_projects(
+        boards_root=boards,
+        projects=(args.project.split(",") if getattr(args, "project", "") else None))
+    board = chain.compose_board(contract=contract, projects=projects,
+                                records_root=records,
+                                workspace_root=workspace,
+                                skeletons=_workchain_skeletons(chain),
+                                today_by_project=_today_for(chain, records, projects))
+
+    if args.write:
+        output = Path(args.output_dir) if args.output_dir else (
+            Path(paths_mod.Paths().resolve("state/workchain")["path"]))
+        if not output.is_absolute():
+            sys.stderr.write(
+                f"serverosctl: --output-dir must be absolute, got {output}. A "
+                f"board written into the caller's cwd is a second board nobody "
+                f"knows about.\n")
+            return EXIT_FAULT
+        output.mkdir(parents=True, exist_ok=True)
+        (output / "board.json").write_text(
+            json.dumps(board, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        (output / "board.md").write_text(_work_board_markdown(board), encoding="utf-8")
+        board = {**board, "written_to": str(output)}
+
+    emit(board, as_json=args.json,
+         lines=_work_board_lines(board))
+    return EXIT_OK
+
+
+def _work_board_lines(board: dict) -> list[str]:
+    counts = board["counts"]
+    today = board["today"]
+    if today["state"] == "SELECTED":
+        head = f"今日重点   {len(today['items'])} 项：{'、'.join(today['items'])}"
+    elif today["state"] == "EMPTY":
+        head = "今日重点   已记录，未选任何项 —— 是「选了空」，不是「还没选」"
+    elif today["state"] == "UNPRODUCED":
+        head = "今日重点   未记录选择 —— 不是没有重点，是还没有人选"
+    else:
+        head = f"今日重点   {today['state']}：{today['why']}"
+    lines = [head,
+             f"项目       {counts['projects_read']} 读到 / "
+             f"{counts['projects_unread']} 未读到",
+             f"条目       {counts['items']}"]
+    for project in board["projects"]:
+        if project["state"] != "READ":
+            lines.append(f"  {project['project']}  {project['state']} —— "
+                         f"{project['why']}")
+            lines.append(f"      看的路径 {project['path']}")
+    for section in board["sections"]:
+        lines += ["", f"— {section['title']}（{len(section['rows'])}）"]
+        if section.get("because"):
+            # A section this contract ADDED to §6's list says so on the board
+            # itself. A reader who disagrees with the filing needs to be able
+            # to see it was a decision rather than read it as §6's own order.
+            lines.append(f"    〔本节的来源：{section['because']}〕")
+        if not section["rows"]:
+            lines.append("    （无）")
+            continue
+        for row in section["rows"]:
+            title = row["title"] or ""
+            if section["struck_through"]:
+                title = "".join(f"{ch}̶" for ch in title)
+            lines.append(f"    {row['id']:<12} {row['state']:<11} "
+                         f"{row['priority']['personal']['state']:<11} {title}")
+    if board["unplaced"]:
+        lines += ["", f"— 未被任何栏目认领（{len(board['unplaced'])}）"]
+        for row in board["unplaced"]:
+            lines.append(f"    {row['id']:<12} {row['state']:<11} {row['why']}")
+    lines += ["",
+              # NOT "0 missing, of which 1 unreadable". An unreadable card is
+              # not a subset of the missing ones — it is there and cannot be
+              # read — so the parenthetical that read as a fraction of the
+              # first number was arithmetic over an empty set.
+              f"缺卡       {counts['cards_missing']} 张",
+              f"卡片不可读   {counts['cards_unreadable']} 张",
+              f"缺文档     {counts['documents_missing']} 份（仅计入当前状态已要求的）",
+              f"空文档     {counts.get('documents_empty', 0)} 份 —— "
+              f"这一项才是缺陷；另有 {counts.get('documents_diverging', 0)} 份"
+              f"用的是自有小节，提案小节见 `work skeleton`，不计为缺陷",
+              f"优先级     未产出 {counts['priorities_unproduced']} 处 —— "
+              f"字段本身还没有人批准，见 intake/workchain-contract.yaml#card_extension"]
+    if counts.get("cards_rebased") or counts.get("cards_unresolved"):
+        # Not folded into 缺卡. A card that resolved under another rule is
+        # present and correct while the locator beside it is still wrong, and a
+        # reader who saw only "0 缺卡" would have no reason to go and fix the
+        # pointer that would have sent them to the wrong machine.
+        lines.append(
+            f"卡片定位   改挂 {counts.get('cards_rebased', 0)} 张、"
+            f"无法定位 {counts.get('cards_unresolved', 0)} 张 —— "
+            f"改挂 = locator 写的是另一台机器的路径，按本机 workspace 重挂；"
+            f"用 `work item <ID>` 看原 locator 与改挂原因")
+    return lines
+
+
+def _work_board_markdown(board: dict) -> str:
+    """The same board as a document, and the same sections in the same order.
+
+    Generated from the model rather than from the lines above, so the two
+    outputs cannot disagree about a row — the same reason the status card
+    renders its JSON and its HTML from one model.
+    """
+    lines = ["# 个人看板", "",
+             f"生成：`{board['at']}`", ""]
+    today = board["today"]
+    lines += [f"**今日重点** {today['state']}"
+              + (f" — {'、'.join(today['items'])}" if today["items"] else
+                 (f" — {today['why']}" if today["why"] else "")), ""]
+    for section in board["sections"]:
+        lines.append(f"## {section['title']}（{len(section['rows'])}）")
+        lines.append("")
+        if section.get("because"):
+            lines.append(f"> 本节的来源：{section['because']}")
+            lines.append("")
+        if not section["rows"]:
+            lines.append("（无）")
+            lines.append("")
+            continue
+        lines.append("| Item | 状态 | 个人优先级 | 标题 | 文档 |")
+        lines.append("|---|---|---|---|---|")
+        for row in section["rows"]:
+            title = row["title"] or ""
+            if section["struck_through"]:
+                title = f"~~{title}~~"
+            docs = "".join(
+                "●" if d["state"] == "PRESENT" else
+                ("○" if d["state"] == "NOT_YET_REQUIRED" else "×")
+                for d in row["documents"])
+            lines.append(f"| {row['id']} | {row['state']} | "
+                         f"{row['priority']['personal']['state']} | {title} | {docs} |")
+        lines.append("")
+    if board["unplaced"]:
+        lines.append(f"## 未被任何栏目认领（{len(board['unplaced'])}）")
+        lines.append("")
+        for row in board["unplaced"]:
+            lines.append(f"- `{row['id']}`（{row['project']}）{row['state']} — {row['why']}")
+        lines.append("")
+    order = " → ".join(
+        d["document"] for d in board["sections"][0]["rows"][0]["documents"]
+    ) if any(s["rows"] for s in board["sections"]) else "card.yaml → brief.md …"
+    lines += [f"> 文档列按 `{order}` 的顺序；`●` 已有 · `○` 此状态还不要求 · "
+              f"`×` 此状态要求但缺", ""]
+    return "\n".join(lines)
+
+
+def cmd_work_item(args) -> int:
+    """§6 — one Item's chain: which document exists, and where it stops."""
+    chain = _workchain_module()
+    boards, records, workspace = _workchain_roots(args)
+    if boards is None:
+        return EXIT_FAULT
+    contract = chain.load_contract(
+        REPO_ROOT / "intake" / "workchain-contract.yaml")
+    projects = chain.load_projects(boards_root=boards)
+    item = chain.compose_item(contract=contract, records_root=records,
+                              workspace_root=workspace,
+                              skeletons=_workchain_skeletons(chain),
+                              project=args.project, item_id=args.item,
+                              projects=projects)
+    if not item["found"]:
+        emit(item, as_json=args.json,
+             lines=[f"未找到     {args.item} —— {item['why']}"]
+             + [f"  {p['project']}  {p['state']}"
+                + (f" —— {p['why']}" if p["why"] else "") for p in item["projects"]])
+        return EXIT_COULD_NOT_ANSWER
+    lines = [f"{item['item']}  {item['state']}" + (f" / {item['outcome']}"
+                                                   if item["outcome"] else ""),
+             f"标题       {item['title']}",
+             f"项目       {item['project']} · 类型 {item['kind']}",
+             f"来源优先级 {item['priority']['source']['state']}"
+             + (f" —— {item['priority']['source']['why']}"
+                if item["priority"]["source"]["why"] else ""),
+             f"个人优先级 {item['priority']['personal']['state']}",
+             f"Run        {item['runs']} · 制品 {item['deliverables']}", ""]
+    for document in item["documents"]:
+        mark = {"PRESENT": "●", "MISSING": "×", "NOT_YET_REQUIRED": "○"}.get(
+            document["state"], "?")
+        # How it resolved and how much it holds, because `design/` with three
+        # research notes and `design.md` with one line are not the same answer,
+        # and a reader deciding whether a design exists needs both.
+        shape = ""
+        if document["state"] == "PRESENT":
+            shape = ("  ← 目录，共 %d 份" % document["count"]
+                     if document["resolved_by"] == "directory" else
+                     "  ← %s" % document["resolved_by"])
+        lines.append(f"{mark} {document['document']:<12} {document['state']:<17}"
+                     + f"{shape or (' ' + document['why'] if document['why'] else '')}")
+        check = document.get("skeleton") or {}
+        if check.get("state") == "EMPTY":
+            lines.append(f"     ↳ 空文件 —— {check['why']}")
+        elif check.get("state") == "DIVERGES":
+            # Reported, and marked as ordinary. The proposed headings are
+            # `PROPOSED_NOT_APPROVED` and no document on this node uses them, so
+            # this line appears on nearly every real row and must not read as an
+            # alarm — a reader needs to see the document HAS a structure.
+            lines.append(f"     ↳ 自有小节 {len(check['own_headings'])} 个："
+                         f"{'、'.join(check['own_headings'][:4])}"
+                         + ("…" if len(check["own_headings"]) > 4 else "")
+                         + f"（提案小节缺 {len(check['missing'])} 个，非缺陷）")
+    checks = [d.get("skeleton") or {} for d in item["documents"]]
+    empty = sum(1 for c in checks if c.get("state") == "EMPTY")
+    diverging = sum(1 for c in checks if c.get("state") == "DIVERGES")
+    matching = sum(1 for c in checks if c.get("state") == "MATCHES")
+    unchecked = sum(1 for c in checks if c.get("state") == "NOT_CHECKED")
+    # Said out loud, because the per-document line appears only for a document
+    # with something to report and silence would otherwise be ambiguous.
+    lines.append(
+        f"形状检查   空文件 {empty} · 符合提案小节 {matching} · 自有小节 "
+        f"{diverging}（非缺陷）· 未核对 {unchecked} —— 未核对的是目录形态，"
+        f"那是多份文档合起来的一件事，标题检查无从下手")
+    lines.append(f"卡片       {item['card']['how']}"
+                 + (f" —— {item['card']['resolution_why']}"
+                    if item["card"]["resolution_why"] else ""))
+    lines.append(f"卡片定位   {item['card']['path']}")
+    if item["superseded_by"]:
+        lines.append(f"\n被替代     {item['superseded_by']}")
+    if item["undecided"]:
+        lines += ["", "链条停在这里："]
+        for row in item["undecided"]:
+            lines.append(f"  {row['document']} —— {row['because']}")
+    emit(item, as_json=args.json, lines=lines)
+    return EXIT_OK
+
+
+def cmd_work_skeleton(args) -> int:
+    """§8 — print the shape of one document, so a person writes to it.
+
+    This is the consumer the skeleton file needed. A declared shape that only a
+    checker reads would tell a person their brief was incomplete without ever
+    telling them what complete looked like — the shape would exist to grade
+    work rather than to start it. With no `--name`, every declared document is
+    listed, which is the answer to "what am I supposed to write".
+    """
+    chain = _workchain_module()
+    skeletons = _workchain_skeletons(chain)
+    if skeletons is None:
+        sys.stderr.write(
+            f"serverosctl: {REPO_ROOT / 'intake' / 'document-skeletons.yaml'} "
+            f"is not present, so there is no shape to print. This is a missing "
+            f"file and not an empty set of documents.\n")
+        return EXIT_FAULT
+    documents = skeletons.get("documents") or []
+    if not args.name:
+        lines = ["本文档形状（intake/document-skeletons.yaml）", ""]
+        for entry in documents:
+            sections = [s.get("heading") for s in entry.get("sections") or []]
+            lines.append(f"{entry.get('id'):<14} {entry.get('file'):<16} "
+                         f"→ {entry.get('hop')}")
+            lines.append(f"    {entry.get('is')}")
+            if sections:
+                lines.append(f"    {len(sections)} 节："
+                             f"{'、'.join(str(x) for x in sections)}")
+            elif entry.get("scopes"):
+                # A document family, not a document. Saying "0 节" would read
+                # as a shape nobody filled in, when the truth is that this one
+                # has no single shape to declare.
+                names = "、".join(str(x.get("id")) for x in entry["scopes"])
+                lines.append(f"    {len(entry['scopes'])} 个 scope：{names}"
+                             f"（每一类的小节各不相同，见 "
+                             f"`work skeleton {entry.get('id')}`）")
+        lines += ["", "用法：`serverosctl work skeleton <id>` 打印完整形状"]
+        emit({"schema": "serveros/document-skeletons.v1",
+              "documents": documents}, as_json=args.json, lines=lines)
+        return EXIT_OK
+    entry = chain.skeleton_of(skeletons, args.name)
+    if entry is None:
+        known = ", ".join(str(e.get("id")) for e in documents)
+        emit({"schema": "serveros/document-skeletons.v1", "id": args.name,
+              "found": False, "known": known},
+             as_json=args.json,
+             lines=[f"未声明     {args.name} —— 没有给这个文档声明形状；"
+                    f"已声明的是 {known}"])
+        return EXIT_COULD_NOT_ANSWER
+    lines = [f"{entry.get('file')}  （{entry.get('hop')}）",
+             f"是什么     {entry.get('is')}", ""]
+    for section in entry.get("sections") or []:
+        lines.append(f"  ## {section.get('heading')}")
+        lines.append(f"     {section.get('because')}")
+    for scope in entry.get("scopes") or []:
+        lines.append("")
+        lines.append(f"  [{scope.get('id')}]  {scope.get('is')}")
+        observed = [str(x) for x in scope.get("observed_headings") or []]
+        if observed:
+            lines.append(f"     这些小节是本机上已有的文档在用的，"
+                         f"不是本文档提出的：{'、'.join('## ' + x for x in observed)}")
+        else:
+            lines.append(f"     本机上这一类的文档没有二级小节")
+        if scope.get("read_from"):
+            lines.append(f"     读自：{scope['read_from']}")
+        if scope.get("also_seen"):
+            lines.append(f"     还见到过："
+                         f"{'、'.join('## ' + str(x) for x in scope['also_seen'])}")
+    traceability = entry.get("traceability") or {}
+    if traceability:
+        lines.append("")
+        lines.append(f"  溯源要求：每份文档带一个 `## "
+                     f"{traceability.get('heading')}` 小节")
+        lines.append(f"     {traceability.get('because')}")
+    if entry.get("root"):
+        lines.append("")
+        lines.append(f"  位置：{entry['root']}/ —— 在 records/ 下、projects/ 旁边，"
+                     f"不是某个项目里的一个文件")
+    if entry.get("scope"):
+        lines.append("")
+        lines.append(f"  范围：{entry['scope']}（不是逐 Item 的文档）")
+    emit(entry, as_json=args.json, lines=lines)
+    return EXIT_OK
+
+
+def cmd_work_today(args) -> int:
+    """§6 — record the 1-2 Items a person is carrying today.
+
+    Authored, and the command says so in its own output. This is the one
+    writing command in the group and it writes a SELECTION, not a state: the
+    Item's state belongs to work-engine and nothing here touches it.
+    """
+    chain = _workchain_module()
+    if not args.select:
+        sys.stderr.write(
+            "serverosctl: `work today` records a person's selection and "
+            "requires `--select`. Reading today without choosing is `work "
+            "board`, which reports whether a selection exists.\n")
+        return EXIT_FAULT
+    items = [x for x in args.select.split(",") if x]
+    if len(items) > 2:
+        sys.stderr.write(
+            f"serverosctl: {len(items)} Items were named and §6 asks for 1-2. "
+            f"A today list that can hold everything is a backlog with a "
+            f"different title.\n")
+        return EXIT_FAULT
+    _, records, workspace = _workchain_roots(args)
+    if records is None:
+        return EXIT_FAULT
+    written = chain.write_today(
+        records_root=records, project=args.project, items=items,
+        date=args.date or datetime.date.today().isoformat(),
+        note=args.note or "", actor=args.actor or "")
+    document = written["document"]
+    emit({**document, "written_to": written["path"]}, as_json=args.json,
+         lines=[f"已记录     {written['path']}", f"日期       {document['date']}",
+                f"今日重点   {len(items)} 项：{'、'.join(items)}",
+                "这是一个人写下选择，不是状态变更：work-engine 的 Item 状态没有被这里写过"])
+    return EXIT_OK
+
+
+def cmd_work_coverage(args) -> int:
+    """§7/§8 — the three maps, each with its denominator and its unknowns."""
+    chain = _workchain_module()
+    boards, records, workspace = _workchain_roots(args)
+    if boards is None:
+        return EXIT_FAULT
+    contract = chain.load_contract(
+        REPO_ROOT / "intake" / "workchain-contract.yaml")
+    paths = paths_mod.Paths()
+
+    authored = chain.load_sources(records_root=records, project=args.project)
+    disk = chain.disk_coverage(
+        paths=paths,
+        role_names=sorted(paths_mod.SEMANTIC_ROLES),
+        # The refs §8 names as the places this work lands. Named rather than
+        # derived from every root, because `state/runtime` and `state/boards`
+        # are the two this chain actually reads and a map of all of them would
+        # be a map of the root contract rather than of the work.
+        refs=("state/boards", "state/requirement-board", "state/workchain",
+              "state/serveros", "artifacts/work-items"))
+    feishu = chain.feishu_coverage(sources=authored["sources"], contract=contract)
+    followed = chain.source_coverage(contract=contract, sources=authored["sources"])
+    understanding = chain.understanding_coverage(
+        records_root=records, skeletons=_workchain_skeletons(chain))
+    payload = {"schema": "serveros/workchain-coverage.v1",
+               "project": args.project or None,
+               "sources_file": authored["path"],
+               "sources_state": authored["state"],
+               "sources_why": authored["why"],
+               "understanding": understanding,
+               "disk": disk, "feishu_spaces": feishu, "followed_sources": followed}
+    lines = ["磁盘根与角色"]
+    for entry in disk["entries"]:
+        place = entry["path"] or entry.get("value_as_composed") or ""
+        lines.append(f"  {entry['name']:<34} {entry['kind']:<5} "
+                     f"{entry['state']:<11} {place}")
+        if entry["why"]:
+            lines.append(f"      {entry['why']}")
+    entries = disk.get("coverage") or {}
+    lines.append(f"  分母：{entries.get('names')} 个名字 · 命中 {entries.get('present')} · "
+                 f"缺失 {entries.get('missing')} · 无人回答 {entries.get('unbound')}")
+    lines += ["", f"飞书三空间   {feishu['state']} —— 分母：{feishu['denominator']}"]
+    for row in feishu["surfaces"]:
+        lines.append(f"  {row['surface']:<12} 对象数 {row['objects']} "
+                     f"· 已关注 {row['followed']}")
+    # The reason is the same for all three surfaces and is stated once here
+    # rather than three times beside three identical `None`s — a note repeated
+    # per row reads as three separate findings when it is one boundary.
+    if feishu["surfaces"]:
+        lines.append(f"  注：{feishu['surfaces'][0]['because']}")
+    # The row's OWN state and reason, from `source_coverage` — not the
+    # authored file's. They differ: a file that reads fine (`READ`) can hold a
+    # row with a missing field, and printing the file's verdict beside a row's
+    # name would say the row was fine because the FILE was.
+    # 理解变化 is not a row under a project: it is four scopes under `records/`.
+    # Counted per scope with the traceability rule the layer's own README states
+    # — and the count is of documents CARRYING the heading, never a verdict on
+    # the ones that do not.
+    lines += ["", f"结构化认识   {understanding['state']} —— "
+              + (f"分母：{understanding['denominator']} · "
+                 if understanding.get("denominator") else "")
+              + f"{understanding['root']}"]
+    if not understanding["scopes"]:
+        lines.append(f"  注：{understanding['why']}")
+    traceable_key = "with_" + understanding["traceability_heading"].lower()
+    for row in understanding["scopes"]:
+        counts = (f"{row['documents']} 份 · 带 "
+                  f"## {understanding['traceability_heading']} 的 "
+                  f"{row.get(traceable_key, 0)} 份")
+        lines.append(f"  {row['scope']:<17} {row['state']:<10} {counts}")
+        if row.get("is"):
+            lines.append(f"      {row['is']}")
+    if understanding["undeclared_scopes"]:
+        lines.append(f"  未申报的 scope："
+                     f"{'、'.join(understanding['undeclared_scopes'])} —— "
+                     f"有人在认识层加了目录而 skeleton 没有申明它")
+    lines.append(f"  注：{understanding['traceability_because']}")
+
+    lines += ["", f"关注源       {followed['state']}"
+              + (f" —— {followed['why']}" if followed["why"] else "")]
+    for row in followed["rows"]:
+        lines.append(f"  {row.get('identity') or '(未命名)'}  {row['state']}"
+                     + (f" —— {row['why']}" if row["why"] else ""))
+        if row.get("missing_fields"):
+            lines.append(f"      缺字段 {', '.join(row['missing_fields'])}")
+    if followed["rows"]:
+        coverage = followed["coverage"]
+        lines.append(f"  分母：{coverage['authored']} 条 · 完整 {coverage['complete']} · "
+                     f"被拒 {coverage['refused']}")
+    emit(payload, as_json=args.json, lines=lines)
+    return EXIT_OK
+
+
+# ---------------------------------------------------------------------------
 # network
 # ---------------------------------------------------------------------------
 
@@ -5164,6 +5715,79 @@ def build_parser() -> argparse.ArgumentParser:
              "root. Must be absolute; a board that landed in the caller's cwd "
              "would be a second board nobody knows about")
     rq_board.set_defaults(func=cmd_requirement_board)
+
+    work = sub.add_parser(
+        "work", help="the personal board, one Item's chain of documents, and "
+                     "the coverage maps (§6/§7/§8)", **_COMMON)
+    work_sub = work.add_subparsers(dest="subcommand", required=True)
+
+    def _add_work_roots(parser_, *, project_required: bool) -> None:
+        """The three roots every `work` verb reads, plus the project.
+
+        All three are on all four verbs because a fixture has to be able to run
+        the whole group against a directory it owns, and a flag that exists on
+        three of them is a flag somebody will expect on the fourth and get the
+        node's real records instead.
+
+        `--workspace-root` is the third and not a synonym for `--records-root`:
+        it is what a relative `card_locator` is resolved against, and on this
+        node the cards live under `workspace/records/projects/...` — one segment
+        below the records root a caller passes.
+        """
+        if project_required:
+            parser_.add_argument("--project", required=True)
+        else:
+            parser_.add_argument("--project", default="")
+        parser_.add_argument("--boards-root", default="")
+        parser_.add_argument("--records-root", default="")
+        parser_.add_argument("--workspace-root", default="",
+                             help="what a relative `card_locator` resolves "
+                                  "against (default: this node's workspace root)")
+
+    wk_board = work_sub.add_parser(
+        "board", help="§6's sections in §6's order: 今日重点 → P0 → P1 → 待排期 "
+                      "→ 等待 → 待验收 → 取消 → 已完成", **_COMMON)
+    _add_work_roots(wk_board, project_required=False)
+    wk_board.add_argument("--write", action="store_true",
+                          help="persist board.{json,md} under "
+                               "`state/workchain` unless --output-dir is given")
+    wk_board.add_argument("--output-dir", default="")
+    wk_board.set_defaults(func=_workchain_refusals(cmd_work_board))
+
+    wk_item = work_sub.add_parser(
+        "item", help="one Item's chain: which document exists, which is "
+                     "required at this state, and where the chain stops",
+        **_COMMON)
+    _add_work_roots(wk_item, project_required=True)
+    wk_item.add_argument("item")
+    wk_item.set_defaults(func=_workchain_refusals(cmd_work_item))
+
+    wk_today = work_sub.add_parser(
+        "today", help="record the 1-2 Items a person is carrying today. This "
+                      "is the one verb here that writes, and what it writes is "
+                      "a selection: no Item state is touched", **_COMMON)
+    _add_work_roots(wk_today, project_required=True)
+    wk_today.add_argument("--select", default="",
+                          help="comma-separated Item ids. Required — reading "
+                               "today without choosing is `work board`")
+    wk_today.add_argument("--date", default="")
+    wk_today.add_argument("--note", default="")
+    wk_today.add_argument("--actor", default="")
+    wk_today.set_defaults(func=_workchain_refusals(cmd_work_today))
+    wk_skel = work_sub.add_parser(
+        "skeleton", help="§8 — the shape of each document in the chain, and "
+                         "why each part is there", **_COMMON)
+    wk_skel.add_argument("name", nargs="?", default="",
+                         help="a document id (brief, design, plan, report, "
+                              "daily-report); omit to list them all")
+    wk_skel.set_defaults(func=_workchain_refusals(cmd_work_skeleton))
+
+    wk_cov = work_sub.add_parser(
+        "coverage", help="the disk map, the three feishu surfaces and the "
+                         "followed-source list, each with its denominator",
+        **_COMMON)
+    _add_work_roots(wk_cov, project_required=True)
+    wk_cov.set_defaults(func=_workchain_refusals(cmd_work_coverage))
 
     taxonomy = sub.add_parser(
         "taxonomy",

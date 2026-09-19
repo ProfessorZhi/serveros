@@ -1,0 +1,20 @@
+# SAMPLE — the followed-source list: one complete row, one refused row.
+#
+# The second row is refused ON PURPOSE. `credential_ref` holds a REFERENCE and
+# never a value; the string below could BE a secret, so the coverage renderer
+# refuses the row rather than storing it. It is a fixture string and no
+# credential of any kind — see `_looks_like_a_reference` in `intake/workchain.py`.
+schema: serveros/sources.v1
+sources:
+  - identity: "sample:knowledge-base/reading-list"
+    because: "SAMPLE fixture row: a page a person reads every week"
+    refresh: "weekly"
+    depth: "titles and links; bodies only when an Item needs one"
+    credential_ref: "vault:feishu/sample-reader"
+    publishable: true
+  - identity: "sample:space/some-group"
+    because: "SAMPLE fixture row: refused on purpose, to exercise the check"
+    refresh: "daily"
+    depth: "summaries"
+    credential_ref: "Bearer sk-sample-fixture-not-a-real-key"
+    publishable: false
