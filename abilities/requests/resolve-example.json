@@ -1,0 +1,22 @@
+{
+  "_why": [
+    "A request document for `serverosctl ability resolve`, and deliberately a",
+    "MINIMAL one. The resolver takes eight inputs; this file supplies three and",
+    "names none of the other five.",
+    "",
+    "That is the point. `abilities/resolver.py` records which of the eight it",
+    "could read (`inputs_seen`) and which it could not (`inputs_missing`),",
+    "because a confident AVAILABLE computed from whichever inputs happened to be",
+    "readable is the failure the kernel exists to prevent. A request that filled",
+    "in all eight would demonstrate the resolver agreeing with its own caller;",
+    "this one demonstrates it saying what it could not see.",
+    "",
+    "Until now the resolver had no example request anywhere in the tree, so the",
+    "only callers were its own tests. §45's question — can THIS device do THIS",
+    "thing, now, and if not why not — could not be asked from the CLI by anybody",
+    "who had not first read resolver.py."
+  ],
+  "ability": "runtime-management",
+  "device_ref": "device:tokyo-shared-dev-01",
+  "runtime": "claude-code"
+}
