@@ -405,6 +405,37 @@ namespaces:
     # exits COULD_NOT_ANSWER rather than OK when the record it was asked about is
     # not there.
     absent_means: NOTHING_VERIFIED_YET
+  recipes:
+    class: authority
+    holds: >
+      one record per §7 loop per scope per period: the claim written before the
+      first step, the outcome written after the last one, what the run read,
+      what it spent and — when it stopped — the word it stopped with
+    producer: runtime/recipes.py
+    required: false
+    # A RECORD OF A PAST ACT, like an approval and like `verification`. Nothing
+    # can re-derive it: whether a period was advanced, and how far, is not
+    # recoverable from the tree afterwards, which is why it is written down
+    # rather than recomputed.
+    #
+    # The path is the key. `recipes/<recipe>/<scope>/<period>.json` means a
+    # person asking "has this period been done" answers by looking at one file,
+    # and it means the loop's own re-entrancy rule -- a restart does not
+    # dispatch one work twice -- is enforced by the filesystem rather than by a
+    # check inside the loop.
+    #
+    # Empty is the ordinary state of a node that has run nothing, and it is not
+    # a clean bill: a namespace with no record answers "nobody ran this", which
+    # is why `serverosctl recipe status` exits COULD_NOT_ANSWER rather than OK
+    # for a period in which no loop has a record.
+    #
+    # `schedules.yaml` and `model-binding.yaml` live under this namespace too,
+    # and they are the two authored files in it: an operator writes the
+    # instance's timezone, window, recipients, data scope and cost ceiling, and
+    # a loop driven by `--schedule` refuses rather than inferring a window when
+    # that file is absent. §7: the bindings are made by hand, and no timer is
+    # enabled by this repository.
+    absent_means: NO_RECIPE_HAS_RUN
   requirement-board:
     class: projection
     holds: §S's Global Requirement Board — every project's Items in one view

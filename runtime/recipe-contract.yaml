@@ -1,0 +1,383 @@
+# recipe-contract -- §7's three finite loops, and exactly what each may do.
+#
+# WHY THIS FILE EXISTS
+# --------------------
+# §7 names three loops and, for each, a trigger, an action and the condition
+# under which it stops normally. A reader can hold that table in their head and
+# still not be able to say whether a given run did the right thing, because the
+# table does not say what a loop may spend, what makes two runs the same run, or
+# what happens when the thing it would call is not bound on this node.
+#
+# So the vocabulary lives here rather than in `recipes.py`: `stops` below is a
+# closed set, and a reason that is not in it is a bug in the engine rather than
+# a new word. Every `means` is the sentence a person reads, which is why they
+# are written as sentences and not as labels.
+schema: serveros/recipe-contract.v1
+
+# ---------------------------------------------------------------------------
+# Key: what makes two runs the same run
+# ---------------------------------------------------------------------------
+#
+# §7: "single-flight key 按 recipe+scope+period，持久 last-success/cursor；
+# 重启不把一个工作重复派两次". Restating that as three fields:
+#
+#   recipe  what the loop is for.
+#   scope   what it ranges over. Part of the key because §7 also says a source
+#           change recomputes the affected claims and not the whole library:
+#           one cursor per scope is what lets one scope move without
+#           invalidating another's last-success.
+#   period  which window this run is about. Supplied, never chosen -- see
+#           `period.because_supplied`.
+#
+# The key is not a hash. It is the path the record is written to, so that a
+# person asked "has this period been done" answers by looking at one file
+# rather than by trusting a field inside another one.
+key:
+  formula: "recipe + scope + period"
+  identity: >
+    the record path. Two runs with the same key are the same run, and the
+    second one finds the first one's file.
+
+# ---------------------------------------------------------------------------
+# Period: where a window comes from
+# ---------------------------------------------------------------------------
+period:
+  requires_offset: true
+  because_supplied: >
+    A loop that picks its own window writes a record about a period nobody
+    chose, and that record reads exactly like one that was chosen. The same
+    rule `report daily` already enforces for --start/--end, applied here
+    because the failure is the same failure.
+  id: "YYYYMMDDThhmm+zzzz-YYYYMMDDThhmm+zzzz"
+  from_a_schedule: >
+    A timer does not supply a window either -- it supplies a schedule id, and
+    the schedule is a binding a person authored. `schedules` below is where
+    that binding lives and `NO_SCHEDULE_BOUND` is what an unbound one answers.
+
+schedules:
+  path: state/serveros/recipes/schedules.yaml
+  authored: true
+  # An operator writes this file: the timezone, the window, the recipients, the
+  # data scope and the cost ceiling, bound to this instance. §7 is explicit
+  # that these "必须真实绑定后才启用，不能从机器名猜用户时间", and that "本轮架构
+  # 写入本身不启用任何定时器".
+  #
+  # The default is therefore NOT a default schedule. It is an absence with a
+  # name, and a run driven by `--schedule` refuses rather than falling back to
+  # the host clock's idea of what window it is.
+  absent_means: NO_SCHEDULE_BOUND
+  required_fields: [timezone, window, scope, budget, recipients]
+  because_these: >
+    `timezone` and `window` are what turn "a timer fired" into a period, and
+    they are the reason a schedule is a binding rather than a convenience: a
+    window taken from the HOST's clock is a window nobody chose, and on a shared
+    machine the host's timezone is a fact about the machine and not about the
+    person the report is for. `window` is `"HH:MM-HH:MM"` LOCAL to `timezone`,
+    and the period's offset comes from that timezone rather than from whatever
+    offset this process happens to be running at.
+  example:
+    # NOT a default and NOT shipped as a file: an operator authors
+    # `state/serveros/recipes/schedules.yaml`, and a fixture in the revision
+    # would be a schedule nobody bound that every node would inherit.
+    daily-report:
+      timezone: Asia/Tokyo
+      window: "08:00-09:00"
+      scope: project:example
+      budget: 0
+      recipients: [someone]
+      channel: null
+
+# ---------------------------------------------------------------------------
+# Scope: what a loop ranges over
+# ---------------------------------------------------------------------------
+scopes:
+  - id: node
+    reads: >
+      this node's own declaration of what it follows. Nothing is inferred from
+      the machine name or from a directory listing.
+    unproduced_means: SOURCES_UNPRODUCED
+  - id: project
+    reads: >
+      records/projects/<project>/context/sources.yaml -- §7's 关注源清单, read
+      through `intake/workchain.py#load_sources`, which already distinguishes
+      "nobody authored a list" from "the list is empty" from "the file did not
+      parse". This contract does not re-read that file.
+    unproduced_means: SOURCES_UNPRODUCED
+  - id: item
+    reads: >
+      the Item's own record and the worktrees it declares.
+    unproduced_means: SOURCES_UNPRODUCED
+
+# ---------------------------------------------------------------------------
+# Stop reasons: the closed set
+# ---------------------------------------------------------------------------
+#
+# §7's own table gives the normal stop per loop: Perception "无增量、达到本轮预算、
+# 源暂不可用", Work "完成、无新进展、待决策、权限/预算边界", Report "本期生成完；
+# 投递未知先 reconcile，不重复发". Those are `normal: true` below -- the loop ran
+# and stopped for a reason it declared in advance.
+#
+# The rest are `normal: false`: the loop could not tell. They exit
+# COULD_NOT_ANSWER, because the difference between "this period had nothing in
+# it" and "nobody could read the input" is the difference this whole product
+# exists to keep, and a cron log that shows 0 for both destroys it.
+stops:
+  NO_CHANGE:
+    normal: true
+    means: >
+      nothing this loop follows has moved since its last success. No work was
+      done, and in particular no model was called: the increment gate is
+      upstream of the model step, not a check inside it.
+  ALREADY_DONE:
+    normal: true
+    means: >
+      this key was completed by an earlier run, and nothing was done a second
+      time. The key is the record path, so a restart finds the record rather
+      than repeating the work -- this word is that property showing up as an
+      outcome instead of as an absence.
+  COMPLETED:
+    normal: true
+    means: "the finite step list ran to its end."
+  NO_PROGRESS:
+    normal: true
+    means: >
+      a source answered and reported nothing in this window. Answered-zero,
+      which is not the same as an unanswered question -- `progress_verdict` in
+      the daily report already draws that line and this reads its verdict
+      rather than drawing a second one.
+  BUDGET_EXHAUSTED:
+    normal: true
+    means: >
+      the next step needs a model and this run's ceiling is spent. The ceiling
+      is given, not defaulted: a budget a loop picked for you is one nobody
+      agreed to.
+  NEEDS_DECISION:
+    normal: true
+    means: >
+      every remaining entry of the queue is parked on a person. This is the
+      loop stopping with nothing to do, not an error.
+  SOURCE_UNAVAILABLE:
+    normal: true
+    means: "a source this loop follows did not answer this time."
+  QUEUE_UNPRODUCED:
+    normal: false
+    means: >
+      nobody has authored this project's selection for today. `today.yaml` is
+      absent or unreadable, and the work loop will not treat that as a queue
+      with nothing in it: "I have not chosen yet" and "I chose nothing" are
+      the two readings `intake/workchain.py#load_today` exists to keep apart.
+  SOURCES_UNPRODUCED:
+    normal: false
+    means: >
+      no list of what to follow was authored for this scope. This is a finding
+      about the instance, not about the sources: the loop cannot measure a
+      delta against a list nobody wrote.
+  NO_SCHEDULE_BOUND:
+    normal: false
+    means: >
+      this run was asked to take its window from a schedule that this instance
+      has not bound. Refused rather than defaulted.
+  DECISION_SCOPE_UNKNOWN:
+    normal: false
+    means: >
+      an entry is parked on a person and the entries do not declare what
+      depends on it. Proceeding would either do work the decision may forbid or
+      stop work the decision does not touch, and both are guesses. §7's clause
+      is that a pending decision blocks only its dependents; that clause can
+      only be honored when the dependents are written down.
+  WORK_ENGINE_UNBOUND:
+    normal: false
+    means: >
+      the next step for an approved entry belongs to the work-engine, and this
+      node has no work-engine to ask. Naming where it would be asked is the
+      answer; inventing a next activity would not be.
+  MODEL_UNBOUND:
+    normal: false
+    means: >
+      a step that requires a model is warranted and no transport for one is
+      bound on this node. The step is recorded along with what it would have
+      been asked, and nothing is sent -- §B does not authorize a new paid
+      service, and a loop that treats an unbound transport as "nothing to do"
+      would report a clean period it never actually examined.
+  IN_FLIGHT_OR_ABANDONED:
+    normal: false
+    means: >
+      a claim for this key exists and was never completed. Nobody can say from
+      the record whether the earlier run finished its work, so this is not a
+      success and not a no-op: it is a question for a person, or `--retake`.
+  DELIVERY_UNRECONCILED:
+    normal: false
+    means: >
+      a receipt for this period exists and does not say the report was
+      delivered. §7: "投递未知先 reconcile，不重复发". Re-publishing would
+      produce a second document for a period that may already have one in
+      somebody's hands.
+  FAULT:
+    normal: false
+    means: "a step raised. The traceback is the detail; this is the label."
+
+# ---------------------------------------------------------------------------
+# The record: a claim, then an outcome
+# ---------------------------------------------------------------------------
+records:
+  path: state/serveros/recipes/<recipe>/<scope>/<period>.json
+  lock: "<the same path>.lock"
+  states: [CLAIMED, DONE, STOPPED]
+  # CLAIMED is written BEFORE the first step and rewritten at the end, which is
+  # what makes a restart safe: a run that dies mid-flight leaves CLAIMED behind,
+  # and the next run of that key reports IN_FLIGHT_OR_ABANDONED rather than
+  # either repeating the work or calling it finished. `agent_control_store`'s
+  # reasons for the sidecar lock hold here unchanged -- the record file is
+  # replaced wholesale, so a lock taken on it would be a lock on a different
+  # inode each time.
+  absent_means: NEVER_RUN
+  retake: >
+    `--retake` proceeds over a CLAIMED record and writes `retook_at`. It does
+    not erase the earlier claim: the record keeps every timestamp it has been
+    given, because "this period was attempted twice, at these two times" is the
+    fact a reader needs after a crash. The claim being retaken moves into
+    `previous_claims` as `{claimed_at, claimed_by, retaken_at}` rather than
+    being overwritten by the new one -- a record that kept only the second
+    timestamp would say this period was attempted once.
+
+# ---------------------------------------------------------------------------
+# The model boundary
+# ---------------------------------------------------------------------------
+model:
+  # A step either needs a model or it does not, and saying which is the whole
+  # of the gate. `no change` is decided BEFORE this boundary is reached, so a
+  # quiet period never consults it.
+  rule: >
+    A step carrying `needs_model: true` may not run without a bound transport
+    and a remaining budget. Both refusals happen before anything is sent, and
+    the run records what the step would have been asked.
+  transports: []
+  # EMPTY, and this is the reading rather than a placeholder: no model transport
+  # exists in this product yet. A binding that names one of nothing is
+  # MODEL_UNBOUND, which is why the list is here instead of a `if transport is
+  # None` in the engine -- an engine that can call anything typed into a config
+  # file is a remote execution surface wearing a configuration's clothes.
+  binding:
+    path: state/serveros/recipes/model-binding.yaml
+    absent_means: MODEL_UNBOUND
+  budget:
+    counts: model_steps
+    required: true
+    default: none
+    may_come_from: ["--budget", "a bound schedule's own `budget`"]
+    # Two ways in and no third, mirroring the period. A scheduled run is not
+    # asked for its ceiling a second time: `budget` is one of the fields
+    # `schedules.required_fields` binds, and a required field the scheduled
+    # path had to be told again is a field nobody reads.
+    #
+    # Where the number came from is recorded with it (`budget.from`), because
+    # "the operator typed this for this run" and "this schedule binds it" are
+    # different facts that render identically as an integer -- and a reader
+    # deciding whether a spent budget was the agreed one needs the difference.
+  # What the engine does with a `--budget 0` run is worth stating: it is a
+  # complete run of every step that does not need a model. That is the ordinary
+  # shape of a scheduled perception pass, and it is why the ceiling is an
+  # integer rather than a boolean.
+
+# ---------------------------------------------------------------------------
+# The three loops
+# ---------------------------------------------------------------------------
+recipes:
+  - id: perception
+    name: 增量感知
+    loop: §7 Perception
+    trigger: "授权源事件，或一次增量定时"
+    action: "source delta -> filtered understanding -> candidate refresh"
+    stops: [NO_CHANGE, BUDGET_EXHAUSTED, SOURCE_UNAVAILABLE, SOURCES_UNPRODUCED,
+            MODEL_UNBOUND]
+    steps:
+      - id: sources
+        does: "read the scope's authored list of what it follows"
+      - id: observe
+        does: "read each source's revision now"
+      - id: delta
+        does: >
+          compare against this scope's cursor. Nothing moved -> NO_CHANGE, and
+          the model step below is never reached.
+      - id: refresh
+        does: "turn the delta into candidates"
+        needs_model: true
+        # The step that would turn a source delta into candidate Items. This is
+        # the only place a model is warranted in this loop, and it is downstream
+        # of `delta` on purpose.
+
+  - id: work
+    name: 执行
+    loop: §7 Work
+    trigger: "已批准的 Today / 队列"
+    action: "当前 checkpoint -> 下一 Activity -> 实施/Quay -> verify -> progress"
+    stops: [COMPLETED, NO_PROGRESS, NEEDS_DECISION, DECISION_SCOPE_UNKNOWN,
+            BUDGET_EXHAUSTED, QUEUE_UNPRODUCED, WORK_ENGINE_UNBOUND,
+            SOURCE_UNAVAILABLE, MODEL_UNBOUND]
+    steps:
+      - id: queue
+        does: "read the authored selection for this project (today.yaml)"
+      - id: classify
+        does: >
+          per entry: is it parked on a person, does it depend on one that is,
+          and are its dependents declared at all
+      - id: progress
+        does: >
+          this window's real delta, through the daily report's own measurement
+          and its three-valued verdict
+      - id: advance
+        does: "the next Activity for each ready entry"
+        needs_model: true
+
+  - id: report
+    name: 汇报
+    loop: §7 Report
+    trigger: "到达约定窗口"
+    action: "durable work delta -> 生成/更新报告 -> 发布 receipt"
+    stops: [COMPLETED, SOURCE_UNAVAILABLE, NO_SCHEDULE_BOUND,
+            DELIVERY_UNRECONCILED, ALREADY_DONE]
+    # NOT NO_PROGRESS, and the omission is deliberate. §7's normal stop for this
+    # loop is "本期生成完", and a report is exactly what a quiet period most
+    # needs: suppressing it would make the quiet period invisible in the one
+    # artifact whose job is to show it. The verdict is recorded in the document
+    # (the daily report has a whole section for 无进展) and does not stop here.
+    steps:
+      - id: window
+        does: "the period, from a bound schedule or given explicitly"
+      - id: receipts
+        does: "an existing receipt for this period, and what it says happened"
+      - id: measure
+        does: "the worktree delta and the Quay gate ledger, this window"
+      - id: compose
+        does: "the daily report's own composition, render and receipt"
+    # No step here carries `needs_model: true`, and that is a property of the
+    # loop rather than an omission: a report is composed from measurements that
+    # were already taken. It is also why this loop needs no budget and can run
+    # on a node with no model transport at all.
+
+# ---------------------------------------------------------------------------
+# Dependencies: what a pending decision blocks
+# ---------------------------------------------------------------------------
+decisions:
+  awaiting_field: awaiting
+  # Where an entry says it is parked on a person. Read from the Item's own
+  # record, which `intake/board-contract.yaml` already names as "the only
+  # authority on its own state".
+  absent_awaiting_means: NOT_AWAITING
+  because: >
+    A decision is an event. It is recorded when it happens, and a record
+    without one is the ordinary case rather than an unanswered question -- the
+    same reading `today.yaml` gets when it is absent, applied to a field whose
+    absence is genuinely ordinary. `depends_on` below is the opposite case and
+    is treated the opposite way.
+
+  depends_on_field: depends_on
+  declared_none: "an empty list"
+  absent_depends_on_means: UNKNOWN
+  because_unknown: >
+    A relation is not an event. "This Item has no dependents" and "nobody wrote
+    down whether it has any" are different facts that render identically as an
+    absent key, and only the first one makes it safe to proceed past a pending
+    decision on the other. An undeclared edge matters ONLY when there is an
+    open decision: with nothing pending, nothing is being blocked either way,
+    and the run proceeds with the undeclared edges recorded as a note.

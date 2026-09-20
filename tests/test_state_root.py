@@ -177,13 +177,22 @@ def test_the_declared_namespaces_agree_and_the_shape_is_pinned():
     possible for it and none was wanted: the directory does not exist yet, and
     the point of declaring it before a producer writes it is that the producer
     (`scripts/verify.py`) then refuses to write anywhere else.
+
+    SYS-17 widened it by one more, and `recipes` is the first entry that is an
+    authority for an ABSENCE as much as for a presence: §7's loops answer
+    "has this period been done" by whether a record exists at a path, so
+    NEVER_RUN has to be a reading this vocabulary can produce rather than an
+    error a missing directory raises. Declaring it matters more here than for
+    the namespaces above, because a loop that wrote a record nobody had
+    declared is a loop whose no-op could not be told from its failure — the
+    same `None`-versus-`0` distinction the record's own `states` list keeps.
     """
     contract = state_root.load_contract()
     top = set(contract["namespaces"])
     assert top == {"node", "context", "abilities", "runtime", "fleet",
                    "source-index", "locks", "projections",
                    "boards", "federation", "work-items", "resource-leases",
-                   "requirement-board", "verification"}
+                   "requirement-board", "verification", "recipes"}
     # And the tuple the resolver actually enforces is the same set — two
     # declarations of one shape is the defect this whole round is about.
     assert top == set(paths_mod.STATE_SERVEROS_TOP_LEVEL)
