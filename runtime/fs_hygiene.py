@@ -12,17 +12,51 @@ the answer is obvious. A classifier that could act would be asked to act on the
 strength of a name, which is the failure mode §17 spends its whole length
 refusing one level down.
 
-Two roots, classified together
-------------------------------
-`/home/hwz` and `$DATA_ROOT` are classified in one pass because the explanation
-for an entry in one of them is often a fact in the other. `$DATA_ROOT/
-.vscode-server` is a 6.4 GB tree at DATA_ROOT's top level whose name is not in
-`DATA_ROOT_TOP_LEVEL` — undeclared, apparently drift. It is not: `~/.vscode-
-server` is a symlink pointing at it, which is a deliberate relocation of a
-multi-gigabyte tool cache off HOME. A classifier that looked at DATA_ROOT alone
+Several roots, grouped by the directory they resolve to
+-------------------------------------------------------
+HOME and DATA_ROOT are classified in one pass because the explanation for an
+entry in one of them is often a fact in the other. `$DATA_ROOT/.vscode-server`
+is a multi-gigabyte tree at DATA_ROOT's top level whose name is not in
+`DATA_ROOT_TOP_LEVEL` — undeclared, apparently drift. It is not: the same
+entry seen from HOME is a symlink pointing at it, which is a deliberate
+relocation of a tool cache off HOME. A classifier that looked at DATA_ROOT alone
 would report that as misplaced on every run, and a report that is wrong about
 the same thing every run is a report nobody reads. So the symlink relation
-between the two roots is a first-class input here, not a footnote.
+between the roots is a first-class input here, not a footnote.
+
+The root NAMES, though, are not the roots. This module used to scan `home` and
+`data` as two directories, and on a host where `HOME == DATA_ROOT` — which is
+this host, and is what the machine policy states — that meant one directory
+scanned twice. The second pass had no vocabulary for `home`, so the same
+entries came out once as UNKNOWN and once against DATA_ROOT's declared set;
+`find_duplicate_semantic_roots` saw DATA_ROOT's twelve declared names under a
+root that did not own them and reported twelve duplicates of a root with
+itself; and §16B's three HOME exceptions, being found by two passes, counted
+six times. Every one of those was an artefact of evaluating a name instead of a
+place.
+
+So the names are resolved to directories and grouped, and each group is
+evaluated once. `paths.group_physical_roots` performs the grouping and
+`paths.CO_BINDING_ROOT_GROUPS` declares which names may share a directory: two
+roles answered by one place is a legitimate binding (§25 — a role is what
+something IS, a root is where it is), while two roots merely comparing equal is
+not automatically legitimate and is reported as `co_binding: false`. Rows carry
+`bound_roles` and `alias_of` so a reader can see which names are one place
+rather than two.
+
+`TOOL_OWNED_DOTDIR` is a DECLARATION, not a dotfile rule
+--------------------------------------------------------
+Where a tool keeps its own state, the tool resolves the location — by
+convention, by an environment variable with a documented default, or by a
+published specification. Those entries are not drift and this module no longer
+calls them so. What it must never do is decide that from the leading dot:
+`name.startswith(".")` would exempt every dotfile that ever appears, including
+the one invented tomorrow, silently and for good. Membership in
+`TOOL_OWNED_DOTDIRS` requires a named owner, a named provider and the evidence
+that establishes it, and a dotdir no declaration covers stays UNKNOWN. The
+class is placement only: entries carry their protection attribute through
+untouched, because "this is where the tool keeps its state" is not a statement
+about whether anything may be read, moved or deleted.
 
 `RETENTION_REQUIRED` is in the vocabulary because §16A names it, and it is NOT
 a synonym for LEGACY
@@ -38,14 +72,22 @@ target as debris, which is how a rollback target gets deleted.
 
 What is NOT established here, and is said rather than implied
 ------------------------------------------------------------
-HOME's top level has no declared vocabulary on this node. `paths.py` declares
-closed sets for DATA_ROOT, WORKSPACE_ROOT and `state/serveros`, and for HOME it
-declares only the `~/.serveros` allow-list and a refusal of `~/files` — so
-`~/`'s sixty-odd entries are largely unchecked by construction, and an entry
-there cannot be MISPLACED against a list that does not exist. This module
-reports that gap instead of inventing a list to close it, because a list
-invented here would be a second statement of HOME's shape authored by the
+`paths.py` declares no top-level vocabulary for HOME. It declares closed sets
+for DATA_ROOT, WORKSPACE_ROOT and `state/serveros`, and for HOME only the
+`~/.serveros` allow-list and a refusal of `~/files`. Where HOME is its own
+directory, its entries are therefore largely unchecked by construction and an
+entry there cannot be MISPLACED against a list that does not exist — this
+module reports that gap rather than inventing a list to close it, because a
+list invented here would be a second statement of HOME's shape authored by the
 module that is supposed to be checking it.
+
+Where HOME and DATA_ROOT resolve to ONE directory — this host — the gap
+disappears for the reason the defect did: the directory is the DATA_ROOT, it
+has a declared closed top level, and that is the vocabulary applied to it. The
+report says so per role: `coverage['home']['declared_top_level']` is empty on a
+host where HOME is its own directory and DATA_ROOT's twelve names on a host
+where it is not, and either way the field states the rule that was actually
+applied rather than the rule this module would have preferred.
 
 There is likewise no per-directory size producer in this product, so `sizes` is
 an INPUT. When none is supplied the row says `size_unmeasured` and the
@@ -81,6 +123,7 @@ paths = _load("serveros_runtime_paths", "paths.py")
 
 CANONICAL = "CANONICAL"
 ALLOWED_EXCEPTION = "ALLOWED_EXCEPTION"
+TOOL_OWNED_DOTDIR = "TOOL_OWNED_DOTDIR"
 LEGACY = "LEGACY"
 MISPLACED = "MISPLACED"
 OVERSIZED = "OVERSIZED"
@@ -88,8 +131,8 @@ DUPLICATE_SEMANTIC_ROOT = "DUPLICATE_SEMANTIC_ROOT"
 RETENTION_REQUIRED = "RETENTION_REQUIRED"
 UNKNOWN = "UNKNOWN"
 
-CLASSES = (CANONICAL, ALLOWED_EXCEPTION, LEGACY, MISPLACED, OVERSIZED,
-           DUPLICATE_SEMANTIC_ROOT, RETENTION_REQUIRED, UNKNOWN)
+CLASSES = (CANONICAL, ALLOWED_EXCEPTION, TOOL_OWNED_DOTDIR, LEGACY, MISPLACED,
+           OVERSIZED, DUPLICATE_SEMANTIC_ROOT, RETENTION_REQUIRED, UNKNOWN)
 
 # Classes this round may never act on. All of them, listed explicitly so that
 # adding one forces the decision rather than inheriting it. §22 and §16B both
@@ -117,6 +160,337 @@ HOME_ALLOWED_EXCEPTIONS = {
     ".config": ("The XDG config root, named by a published specification rather "
                 "than by this product. Half the tools on this host resolve "
                 "`$XDG_CONFIG_HOME` or default to it"),
+}
+
+# ---------------------------------------------------------------------------
+# Tool-owned dot directories
+# ---------------------------------------------------------------------------
+#
+# `~/.cache`, `~/.npm`, `~/.ssh` are not drift. They are where a tool keeps its
+# own state, and the tool resolves the location itself — by convention, by an
+# environment variable with a documented default, or by a published
+# specification (`$XDG_CACHE_HOME`, `$XDG_DATA_HOME`, `$GNUPGHOME`, `~/.ssh`).
+# A classifier that called them MISPLACED would be describing its own
+# vocabulary rather than the filesystem.
+#
+# What this is NOT: `if name.startswith(".")`. That rule would pass every
+# dotfile that ever appears, which is the exact failure this round exists to
+# remove — a `.foo` invented tomorrow would be governance-exempt on sight,
+# silently and for good. Membership here is a DECLARATION: a named owner, a
+# named provider, the evidence that establishes it, and the reason the location
+# is the tool's to choose rather than this product's. A dotdir this table does
+# not name stays UNKNOWN, and
+# `test_an_undeclared_dotdir_is_not_excused_by_being_a_dotdir` holds that line.
+#
+# `protection` is an ORTHOGONAL attribute carried through, never decided here.
+# Placement says where a thing is; it says nothing about whether the thing may
+# be read, moved or deleted, and the protection registry answers that question
+# on its own. The field exists so that a reader of a placement row can see the
+# row did NOT clear the entry — §E of this round's criteria — and so that
+# nobody reads "this is where the tool keeps state" as "this is safe to touch".
+#
+# Protection is set from an OBSERVED artifact, never from convention. A tool
+# whose directory this module listed without seeing a key, token, secret or
+# device-binding file in it is UNPROTECTED here, and its `why` says what was
+# observed. Guessing upward would make SECRET mean "somebody was cautious" and
+# cost the mark the only thing it is worth.
+#
+# §16B's three (`.claude`, `.codex`, `.config`) are deliberately ABSENT. They
+# already have a class of their own with its own reasons, and a second, weaker
+# claim about the same fact is how two answers start disagreeing.
+SECRET = "SECRET"
+IDENTITY = "IDENTITY"
+UNPROTECTED = "UNPROTECTED"
+
+TOOL_OWNED_DOTDIRS = {
+    ".bash_completion.d": {
+        "owner": "the shell completion convention",
+        "provider": "whichever CLI installs a per-user completion fragment; "
+                    "`opencli` is the one on this host",
+        "evidence": "holds exactly one entry, `opencli` — a completion "
+                    "fragment, which a state directory would not resemble",
+        "protection": UNPROTECTED,
+        "why": "`/etc/bash_completion.d` is the system location and "
+               "`~/.bash_completion.d` is its per-user counterpart, sourced by "
+               "the completion loader; the loader names the directory, so "
+               "relocating it disables completion silently instead of failing "
+               "loudly",
+    },
+    ".botmux": {
+        "owner": "Botmux",
+        "provider": "the `botmux` plugin, which writes its registry and "
+                    "dashboard state here",
+        "evidence": "`bots.json`, `bots/`, `claude-plugin/`, `bin/`, and the "
+                    "dashboard files beside them",
+        "protection": SECRET,
+        "protection_basis": "`.dashboard-token` and `.dashboard-secret` are "
+                            "credential files for the plugin's own dashboard; "
+                            "names observed, contents never read",
+        "why": "one tool's complete user root — registry, plugins, fonts, "
+               "logs, usage — named after the tool. Nothing here is a path "
+               "this product chose or that this product may choose",
+    },
+    ".cache": {
+        "owner": "the XDG cache root",
+        "provider": "every tool honouring `$XDG_CACHE_HOME`; on this host at "
+                    "least `claude-cli-nodejs` and `copilot`",
+        "evidence": "`claude-cli-nodejs/` and `copilot/` — tool-named cache "
+                    "subdirectories",
+        "protection": UNPROTECTED,
+        "why": "named by the XDG Base Directory specification rather than by "
+               "this product, and by definition disposable state a tool may "
+               "recreate. Its contents are NOT all cache — the listing carries "
+               "a set of loose `*.sh` scratch scripts — and that is a separate "
+               "finding about what was written INTO this directory. It is "
+               "recorded here because the two would otherwise be confused, and "
+               "it is not a reason to relocate a root the tools resolve "
+               "themselves",
+    },
+    ".claude-server-commander": {
+        "owner": "claude-server-commander",
+        "provider": "that server's own runtime",
+        "evidence": "`config.json`, `feature-flags.json`, "
+                    "`claude_tool_call.log`, `tool-history.jsonl`, "
+                    "`puppeteer-cache/`",
+        "protection": UNPROTECTED,
+        "why": "the tool names the directory after itself and keeps config, "
+               "request history and its browser cache in it together. A name "
+               "the tool chose for itself is not a path this product may "
+               "rename under it",
+    },
+    ".copilot": {
+        "owner": "GitHub Copilot CLI",
+        "provider": "the Copilot CLI",
+        "evidence": "`config.json`, `ide/`, `logs/`",
+        "protection": UNPROTECTED,
+        "why": "the same shape as `~/.claude` and `~/.codex`: a CLI's user "
+               "root, resolved by the CLI, whose absence it reports as its own "
+               "unconfigured state rather than as a missing file",
+    },
+    ".desktop-commander-device": {
+        "owner": "desktop-commander",
+        "provider": "that tool's device adapter",
+        "evidence": "three entries, and all three are `device.json` or a "
+                    "`*.beijing-20260918` / `*.beijing-20260919` sidecar of it "
+                    "left by the migration — a directory whose entire contents "
+                    "are one device binding, twice copied",
+        "protection": IDENTITY,
+        "protection_basis": "`device.json` is a device binding; §41 keeps "
+                            "identity out of placement decisions, and this row "
+                            "does not rule on it",
+        "why": "the directory holds one file, and the file is this host's "
+               "binding to the tool rather than a place a document lives. The "
+               "name says `-device` because the tool resolved a per-device "
+               "location, which is the tool's decision to make",
+    },
+    ".docker": {
+        "owner": "the Docker CLI",
+        "provider": "`docker login` and buildx",
+        "evidence": "`buildx/`, `.token_seed`, `.token_seed.lock`",
+        "protection": SECRET,
+        "protection_basis": "`.token_seed` is registry-auth material and "
+                            "`.token_seed.lock` is its lock; moving or "
+                            "rotating these is a credential operation, which "
+                            "this module may not perform",
+        "why": "`$DOCKER_CONFIG` defaults here and the CLI reads it before any "
+               "registry operation; the directory is the tool's, and it is the "
+               "one this report can only describe",
+    },
+    ".dotnet": {
+        "owner": ".NET SDK",
+        "provider": "the `dotnet-install` script and the SDK",
+        "evidence": "one subdirectory, `corefx/`, which is the SDK's own "
+                    "name for its assembly cache and not a name this product "
+                    "or a migration produced",
+        "protection": UNPROTECTED,
+        "why": "the install script and `DOTNET_CLI_HOME` both default here on "
+               "Linux, and the SDK resolves it without being told",
+    },
+    ".gnupg": {
+        "owner": "GnuPG",
+        "provider": "`gpg`",
+        "evidence": "`pubring.kbx`, `trustdb.gpg`",
+        "protection": SECRET,
+        "protection_basis": "the public keyring and the web-of-trust database "
+                            "are the directory's whole purpose; `GNUPGHOME` "
+                            "defaults here, so relocating it orphans every "
+                            "existing signature check rather than reporting an "
+                            "error",
+        "why": "a published default of the tool itself. This is the shape the "
+               "module must not call drift: nothing here was placed by this "
+               "product, and nothing here is this product's to move",
+    },
+    ".hermes": {
+        "owner": "Hermes, the agent runtime",
+        "provider": "the Hermes gateway",
+        "evidence": "`config.yaml`, `gateway_state.json`, `sessions/`, `cron/`, "
+                    "`memories/`, `skills/`, `state.db`, `pairing/`",
+        "protection": SECRET,
+        "protection_basis": "`pairing/` holds paired-device trust material and "
+                            "`gateway_state.json` the gateway's own state; "
+                            "names observed, contents never read",
+        "why": "the complete user root of a long-running service — config, "
+               "session store, scheduler, memory and skills — all resolved by "
+               "the service at startup. A directory this tool reconstructs its "
+               "identity from is not a directory this product relocates",
+    },
+    ".lark-cli": {
+        "owner": "the Lark/Feishu CLI",
+        "provider": "that CLI's own installer and update check",
+        "evidence": "`config.json`, `cache/`, `locks/`, `logs/`, "
+                    "`update-state.json`",
+        "protection": UNPROTECTED,
+        "why": "a CLI's user root with the usual four parts — config, cache, "
+               "locks, logs — plus its update state. No credential artifact was "
+               "observed in the listing and the file contents were not read, "
+               "so the protection mark is what was seen rather than what the "
+               "tool's name might suggest",
+    },
+    ".local": {
+        "owner": "the XDG data root and the user install prefix",
+        "provider": "`pip install --user`, `cargo install`, `uv tool install`, "
+                    "and every tool honouring `$XDG_DATA_HOME`",
+        "evidence": "`bin/`, `lib/`, `share/`, `state/`",
+        "protection": UNPROTECTED,
+        "why": "`~/.local/bin` is on this host's PATH and is where user-level "
+               "installs put their executables, and `share/`/`state/` are the "
+               "XDG defaults. Relocating the directory does not move the PATH "
+               "entry, so the tools would stop being found while still being "
+               "installed",
+    },
+    ".npm": {
+        "owner": "npm",
+        "provider": "the `npm` CLI",
+        "evidence": "`_cacache/`, `_logs/`, `_npx/`",
+        "protection": UNPROTECTED,
+        "why": "npm's documented cache and npx staging area. npm computes the "
+               "location itself and there is no configuration on this host "
+               "pointing it elsewhere, so a report that called it misplaced "
+               "would be describing this module's vocabulary",
+    },
+    ".opencli": {
+        "owner": "OpenCLI",
+        "provider": "the `opencli` installer and its adapter set",
+        "evidence": "`package.json`, `clis/`, `node_modules/`, "
+                    "`adapter-manifest.json`, `cache/`, `locks/`",
+        "protection": SECRET,
+        "protection_basis": "`spotify.env` is an environment file holding a "
+                            "service credential; name observed, contents never "
+                            "read",
+        "why": "a tool's own installation root — it owns an adapter manifest, "
+               "a CLI collection and a node_modules beside its cache. A "
+               "directory holding an installation is not state this product "
+               "created, and the credential file inside it is why the row "
+               "carries a protection mark a placement verdict cannot clear",
+    },
+    ".playwright-cli": {
+        "owner": "the Playwright CLI",
+        "provider": "`playwright-cli` browser sessions",
+        "evidence": "`console-*.log` and `page-*.yml` at the top level",
+        "protection": UNPROTECTED,
+        "why": "session output the tool writes where it runs. The entries are "
+               "the CLI's own dumps and are dated rather than named, which is "
+               "what a per-session output directory looks like",
+    },
+    ".playwright-mcp": {
+        "owner": "the Playwright MCP server",
+        "provider": "the `playwright-mcp` server's sessions",
+        "evidence": "223 entries, all `console-*.log` and `page-*.yml`",
+        "protection": UNPROTECTED,
+        "why": "the MCP server's per-session output directory, the same shape "
+               "as `.playwright-cli` for a different consumer. Large and "
+               "entirely reproducible, which makes it a retention question and "
+               "not a placement one",
+    },
+    ".secrets": {
+        "owner": "the credential vault",
+        "provider": "the operator, who stores credentials here by policy",
+        "evidence": "`vault/`, holding per-service `.env` files",
+        "protection": SECRET,
+        "protection_basis": "the machine policy names this exact path as where "
+                            "credentials live — `~/.secrets/vault/` — so the "
+                            "protection here is declared rather than inferred",
+        "why": "the one entry on this list whose owner is stated by policy "
+               "instead of deduced from its contents. The policy states it as "
+               "a LOCATION, which is why it is also a placement fact, and "
+               "stating where it is does not make it this product's to move",
+    },
+    ".serveros": {
+        "owner": "the ServerOS node-root contract",
+        "provider": "`fleet/node.py`, which reads `NODE_FILE` and `TARGETS_FILE`",
+        "evidence": "`node.yaml` and `targets.yaml` — exactly "
+                    "`paths.HOME_DOT_SERVEROS_ALLOWED` minus `controller.yaml`, "
+                    "which no host has",
+        "protection": IDENTITY,
+        "protection_basis": "§38/§41 make this root identity and binding only, "
+                            "and `paths.admit` refuses any other write to it; "
+                            "its contents ARE the identity, so placement and "
+                            "protection cannot be separated for this one",
+        "why": "this is the entry whose authority is a file in this repository "
+               "rather than a convention: `fleet/node-root-contract.yaml` "
+               "declares what may live here, `paths.VOCABULARIES['home']` "
+               "transcribes it, and `paths.admit` enforces it on write. A "
+               "directory whose shape this product declares and enforces is "
+               "owned by the tool that reads it",
+    },
+    ".ssh": {
+        "owner": "OpenSSH",
+        "provider": "`ssh`, `ssh-keygen`, `ssh-agent`",
+        "evidence": "`authorized_keys`, `config`, and several private keys with "
+                    "their `.pub` siblings",
+        "protection": IDENTITY,
+        "protection_basis": "`~/.ssh` holds private keys. §E of this round's "
+                            "criteria: the placement verdict must not lower the "
+                            "protection, and a classifier in the business of "
+                            "saying where things belong is exactly the one that "
+                            "would",
+        "why": "a published default of the client, whose config, known-hosts "
+               "and keys the client resolves itself. This entry is on the list "
+               "to make the list explicit, not because its ownership was ever "
+               "in question",
+    },
+    ".vscode-server": {
+        "owner": "VS Code Remote server",
+        "provider": "the server the IDE downloads and runs on this host",
+        "evidence": "`cli/`, `code-<commit>/` per version, `data/`, "
+                    "`extensions/`, and per-session `*.token` / `*.pid` files",
+        "protection": SECRET,
+        "protection_basis": "the server writes a connection token per running "
+                            "session; they are ephemeral, but they are "
+                            "credentials while the server is up and this "
+                            "module will not be the thing that decides they are "
+                            "not",
+        "why": "the server names the directory, keys it by its own version "
+               "hash, and will re-download into it. It is also the entry most "
+               "likely to be mistaken for drift on a host with an IDE "
+               "attached, which is why it is declared here by name",
+    },
+}
+
+# Dot directories this module LOOKED AT and declined to declare.
+#
+# A name absent from `TOOL_OWNED_DOTDIRS` is an unanswered question. A name
+# here is the answer, and it is recorded because the next reader will otherwise
+# re-open it — or, worse, add it to the registry to clear a count. Declining is
+# a decision and it belongs in the code beside the declarations it declines to
+# make, not only in a report, which is the artifact nobody reads when they are
+# editing this table.
+#
+# These stay UNKNOWN. They are not MISPLACED either: MISPLACED asserts that
+# this product declares a shape the entry violates, and for these the honest
+# statement is that no shape has been established at all.
+UNDECLARED_ON_PURPOSE = {
+    ".ability-management": (
+        "nothing on this node declares what owns `~/.ability-management`. "
+        "`src/ability-management` is the canonical clone and this is not it — "
+        "it holds `keys/`, `snapshots/` and no `.git`, so it is neither a "
+        "checkout nor a declared install location. It is UNKNOWN rather than "
+        "TOOL_OWNED_DOTDIR deliberately: a placement ruling made here would be "
+        "a ruling about a key store this module has not read, and declaring the "
+        "name tool-owned to clear a count would spend the declaration on the "
+        "entry that can least afford it. The ruler is not widened to fit the "
+        "entry"
+    ),
 }
 
 # A retained sibling of a `current` pointer: `.prev-<version>`, `.build-<name>`.
@@ -255,12 +629,20 @@ def symlink_relations(*, home: Path, data: Path) -> dict:
 
 def classify_entry(entry: dict, *, root_name: str, vocabulary: tuple[str, ...],
                    relations: dict, sizes: dict, oversized_bytes: int,
-                   duplicates: set, is_role_location: bool = False) -> dict:
+                   duplicates: set, is_role_location: bool = False,
+                   roles: tuple = (), evaluating_role: str = None) -> dict:
     """One entry's class, plus every other class its facts support.
 
     `matches` keeps the weaker answers visible for the same reason §16 keeps
     `also_matches`: MISPLACED and UNKNOWN are routinely true of the same entry,
     and a single word that hid the second would hide the question.
+
+    `roles` is every root name bound to the physical directory this entry was
+    found in, and `evaluating_role` is the one whose vocabulary was applied.
+    They are equal, one long, for an ordinary root. Where they differ, the two
+    names are aliases of one directory and the row says so — because a row that
+    named only the role that happened to sort first would leave the reader
+    unable to tell an alias from a second, unexplained root.
     """
     name = entry["name"]
     matches: list[tuple] = []
@@ -277,6 +659,8 @@ def classify_entry(entry: dict, *, root_name: str, vocabulary: tuple[str, ...],
     explained = relations.get(os.path.realpath(entry["path"]))
     in_vocabulary = name in vocabulary
     awaiting = AWAITING_A_RULING.get(name)
+    declined = UNDECLARED_ON_PURPOSE.get(name)
+    tool_owned = TOOL_OWNED_DOTDIRS.get(name)
 
     if in_vocabulary:
         matches.append((CANONICAL, (
@@ -308,6 +692,20 @@ def classify_entry(entry: dict, *, root_name: str, vocabulary: tuple[str, ...],
     if name in HOME_ALLOWED_EXCEPTIONS:
         matches.append((ALLOWED_EXCEPTION, HOME_ALLOWED_EXCEPTIONS[name]))
 
+    if tool_owned:
+        matches.append((TOOL_OWNED_DOTDIR, (
+            f"`{name}` is a declared tool-owned directory: "
+            f"{tool_owned['owner']}. {tool_owned['why']}. Declared in this "
+            f"module's `TOOL_OWNED_DOTDIRS` with the evidence that establishes "
+            f"it — {tool_owned['evidence']} — so the exemption is a statement "
+            f"about a named tool and a named provider, not about the dot the "
+            f"name begins with"
+            + (f". Classifying it here moves where it sits in this report and "
+               f"nothing else: it is {tool_owned['protection']} — "
+               f"{tool_owned['protection_basis']}"
+               if tool_owned["protection"] != UNPROTECTED else "")
+        )))
+
     if name in duplicates:
         matches.append((DUPLICATE_SEMANTIC_ROOT, (
             f"`{name}` is a declared root name and it is materialized under "
@@ -326,7 +724,8 @@ def classify_entry(entry: dict, *, root_name: str, vocabulary: tuple[str, ...],
 
     if (entry["is_dir"] and vocabulary and not in_vocabulary
             and not explained and name not in HOME_ALLOWED_EXCEPTIONS
-            and not is_retained and not awaiting):
+            and not is_retained and not awaiting and not declined
+            and not tool_owned):
         matches.append((MISPLACED, (
             f"`{name}` is a DIRECTORY under a root whose top level this product "
             f"declares a closed set of {len(vocabulary)}, and it is not one of "
@@ -341,6 +740,7 @@ def classify_entry(entry: dict, *, root_name: str, vocabulary: tuple[str, ...],
     if not matches:
         matches.append((UNKNOWN, (
             (awaiting + ". " if awaiting else "")
+            + (declined + ". " if declined else "")
             + f"nothing established where `{name}` belongs: it is not in "
             + (f"this root's declared top level {list(vocabulary)}" if vocabulary
                else f"any declared top level for {root_name!r}, because this "
@@ -357,10 +757,14 @@ def classify_entry(entry: dict, *, root_name: str, vocabulary: tuple[str, ...],
         )))
 
     primary, why = matches[0]
+    bound_roles = tuple(roles) or (root_name,)
     return {
         "name": name,
         "path": entry["path"],
         "root": root_name,
+        "bound_roles": list(bound_roles),
+        "alias_of": (evaluating_role
+                     if evaluating_role and evaluating_role != root_name else None),
         "kind": ("symlink" if entry["is_symlink"] else
                  "directory" if entry["is_dir"] else
                  "file" if entry["is_file"] else "unknown"),
@@ -370,6 +774,12 @@ def classify_entry(entry: dict, *, root_name: str, vocabulary: tuple[str, ...],
         "matches": [{"class": c, "why": w} for c, w in matches],
         "also_matches": [c for c, _ in matches[1:]],
         "in_declared_vocabulary": in_vocabulary,
+        "tool_owned": ({"owner": tool_owned["owner"],
+                        "provider": tool_owned["provider"],
+                        "evidence": tool_owned["evidence"],
+                        "protection": tool_owned["protection"]}
+                       if tool_owned else None),
+        "protected": bool(tool_owned and tool_owned["protection"] != UNPROTECTED),
         "size_bytes": size,
         "size_note": size_note,
         "actionable": False,
@@ -377,7 +787,7 @@ def classify_entry(entry: dict, *, root_name: str, vocabulary: tuple[str, ...],
     }
 
 
-def find_duplicate_semantic_roots(roots: dict, *, root_names) -> dict:
+def find_duplicate_semantic_roots(groups) -> dict:
     """Declared root names materialized under a root that does not own them.
 
     `artifacts` appears in DATA_ROOT's vocabulary; if it also appears under
@@ -385,32 +795,48 @@ def find_duplicate_semantic_roots(roots: dict, *, root_names) -> dict:
     and it is precisely what `~/files` and `workspace/artifacts` were. The
     check is by NAME against every declared vocabulary, so a new root name
     added to `paths.py` is covered without a second list here.
+
+    The question is asked per PHYSICAL directory, of the union of the roles
+    bound to it: does any role bound here declare this name? Asking it per role
+    name instead is what produced twelve false findings on this host. `home`
+    and `data` resolve to one directory, `home` is deliberately absent from
+    `ROOT_VOCABULARY`, and so every name the DATA_ROOT vocabulary declares was
+    reported as an impostor — under the same directory, seen from its other
+    name. A duplicate is a real disagreement about WHERE a thing is; a name
+    that is simply one of the scanned root's own top-level names is not one.
+
+    `owned_by` maps a declared name to the root NAMES that declare it, so the
+    intersection that decides this is against the group's roles — not against
+    the names those roles declare. Getting that backwards reports every name
+    in the OTHER roots' vocabularies, which is the same defect one level along.
     """
-    declared = set()
-    for attribute in set(ROOT_VOCABULARY.values()):
-        declared |= set(getattr(paths, attribute))
-    # A name is only duplicated if it appears somewhere OTHER than the root
-    # whose vocabulary declares it. Compiling that ownership from the same
-    # attribute map keeps one source: add a root to `paths.py` and this follows.
+    # A name is only duplicated if it appears somewhere OTHER than a root that
+    # declares it. Compiling ownership from the same attribute map keeps one
+    # source: add a root to `paths.py` and this follows.
     owned_by = {}
     for root_name, attribute in ROOT_VOCABULARY.items():
         for name in getattr(paths, attribute):
             owned_by.setdefault(name, set()).add(root_name)
+    declared = set(owned_by)
 
     found: dict[str, list[dict]] = {}
-    for root_name in root_names:
-        root = Path(roots[root_name])
+    for group in groups:
+        root = Path(group["physical_root"])
         if not root.is_dir():
             continue
         for entry in _scan(root):
             name = entry["name"]
             if name not in declared or not entry["is_dir"]:
                 continue
-            if root_name in owned_by.get(name, set()):
+            owners = owned_by.get(name, set())
+            if owners & set(group["roles"]):
                 continue
             found.setdefault(name, []).append({
-                "root": root_name, "path": entry["path"],
-                "belongs_under": sorted(owned_by.get(name, ())),
+                "root": group["roles"][0],
+                "bound_roles": list(group["roles"]),
+                "physical_root": group["physical_root"],
+                "path": entry["path"],
+                "belongs_under": sorted(owners),
             })
     return found
 
@@ -506,6 +932,14 @@ def report(*, home=None, data=None, sizes=None, oversized_bytes=None) -> dict:
     A root that is not there is reported as `absent` with its reason rather
     than omitted: a report over one root that reads as a report over two is
     how a check stops covering half of what it claims.
+
+    The four root NAMES are resolved to their directories and then grouped by
+    the directory they resolve to, and each group is scanned and classified
+    ONCE. Two names for one place are two names for one place: scanning twice
+    produced a second, vocabulary-less observation of the same entries and, in
+    `find_duplicate_semantic_roots`, twelve findings about a root disagreeing
+    with itself. The grouping is `paths.group_physical_roots`, so which names
+    may share a directory is the contract's statement and not this module's.
     """
     home = Path(home) if home else Path(paths.Paths().roots["home"])
     data = Path(data) if data else Path(paths.Paths().roots["data"])
@@ -513,40 +947,95 @@ def report(*, home=None, data=None, sizes=None, oversized_bytes=None) -> dict:
     oversized_bytes = oversized_bytes if oversized_bytes is not None else DEFAULT_OVERSIZED_BYTES
     relations = symlink_relations(home=home, data=data)
     root_names = ("home", "data", "workspace", "state")
-    roots = {"home": str(home), "data": str(data),
-             "workspace": str(data / "workspace"), "state": str(data / "state/serveros")}
-    duplicates = find_duplicate_semantic_roots(roots, root_names=root_names)
+    locations = {"home": str(home), "data": str(data),
+                 "workspace": str(data / "workspace"), "state": str(data / "state/serveros")}
+    groups = paths.group_physical_roots(locations, names=root_names)
+    duplicates = find_duplicate_semantic_roots(groups)
 
     classified = []
     coverage = {}
-    for root_name in root_names:
-        directory = Path(roots[root_name])
-        vocabulary = _vocabulary(root_name)
+    physical_roots = []
+    for group in groups:
+        # Which bound role's vocabulary applies. The first role in declaration
+        # order that HAS one, else the first role: deterministic, and it needs
+        # no table of its own because the vocabularies are the contract's.
+        evaluating_role = next(
+            (role for role in group["roles"] if _vocabulary(role)), group["roles"][0])
+        vocabulary = _vocabulary(evaluating_role)
+        directory = Path(group["physical_root"])
+        groupsummary = {
+            "physical_root": group["physical_root"],
+            "roles": list(group["roles"]),
+            "co_binding": group["co_binding"],
+            "co_binding_declared": group["co_binding_declared"],
+            "evaluated_with_vocabulary_of": evaluating_role,
+            "permitted_bindings": [list(g) for g in paths.CO_BINDING_ROOT_GROUPS],
+            "why": (
+                (f"{' and '.join('`' + r + '`' for r in group['roles'])} all resolve "
+                 f"to {group['physical_root']}, so it is scanned and classified "
+                 f"once. They are several semantic roles answered by one physical "
+                 f"root, which §25 permits and `CO_BINDING_ROOT_GROUPS` declares")
+                + (". This combination is NOT among the declared ones: it is "
+                   "reported as a merge nobody declared rather than grouped "
+                   "away, because `WORKSPACE_ROOT=$DATA_ROOT` would apply "
+                   "WORKSPACE_TOP_LEVEL to the home directory and a rule that "
+                   "accepted any coincidence could not say so"
+                   if not group["co_binding_declared"] else "")
+                if len(group["roles"]) > 1 else
+                f"`{group['roles'][0]}` is the only role bound to this directory"),
+        }
+        physical_roots.append(groupsummary)
+
         if not directory.is_dir():
-            coverage[root_name] = {"state": "absent", "path": str(directory),
-                                   "entries": 0,
-                                   "why": "this node has no such root; nothing here"}
+            for role in group["roles"]:
+                coverage[role] = {"state": "absent", "path": str(directory),
+                                  "entries": 0, "physical_root": group["physical_root"],
+                                  "bound_roles": list(group["roles"]),
+                                  "why": "this node has no such root; nothing here"}
             continue
+
         entries = []
+        unreadable = None
         for entry in _scan(directory):
             if entry.get("name") is None:
-                coverage[root_name] = {"state": "unreadable", "path": str(directory),
-                                       "entries": 0, "why": entry.get("error")}
+                unreadable = entry.get("error")
                 break
             entries.append(classify_entry(
-                entry, root_name=root_name, vocabulary=vocabulary,
+                entry, root_name=evaluating_role, vocabulary=vocabulary,
                 relations=relations, sizes=sizes, oversized_bytes=oversized_bytes,
-                duplicates=set(duplicates)))
-        else:
-            coverage[root_name] = {
+                duplicates=set(duplicates), roles=group["roles"],
+                evaluating_role=evaluating_role))
+        if unreadable is not None:
+            for role in group["roles"]:
+                coverage[role] = {"state": "unreadable", "path": str(directory),
+                                  "entries": 0, "physical_root": group["physical_root"],
+                                  "bound_roles": list(group["roles"]),
+                                  "why": unreadable}
+            continue
+
+        for role in group["roles"]:
+            is_alias = role != evaluating_role
+            coverage[role] = {
                 "state": "read", "path": str(directory), "entries": len(entries),
+                "physical_root": group["physical_root"],
+                "bound_roles": list(group["roles"]),
+                "alias_of": evaluating_role if is_alias else None,
                 "declared_top_level": list(vocabulary),
-                "vocabulary_enforced_on_write": root_name in ENFORCED_BY_ADMIT,
-                "why": (None if vocabulary else
-                        "this root has no declared top-level vocabulary, so an "
-                        "entry here cannot be MISPLACED against a list that does "
-                        "not exist. Recorded rather than closed: a list invented "
-                        "here would be authored by the module that checks it"),
+                "vocabulary_enforced_on_write": evaluating_role in ENFORCED_BY_ADMIT,
+                "why": (
+                    f"`{role}` and `{evaluating_role}` resolve to one directory, so "
+                    f"its {len(entries)} entries are scanned and classified once "
+                    f"and reported once, under `{evaluating_role}`. This row is the "
+                    f"other name for the same place: its count is NOT additional to "
+                    f"`{evaluating_role}`'s, and the two must not be added together. "
+                    f"The vocabulary applied is `{evaluating_role}`'s because "
+                    f"`{role}` has none and one directory cannot have two shapes"
+                    if is_alias else
+                    None if vocabulary else
+                    "this root has no declared top-level vocabulary, so an "
+                    "entry here cannot be MISPLACED against a list that does "
+                    "not exist. Recorded rather than closed: a list invented "
+                    "here would be authored by the module that checks it"),
             }
         classified.extend(entries)
 
@@ -582,11 +1071,25 @@ def report(*, home=None, data=None, sizes=None, oversized_bytes=None) -> dict:
 
     open_questions = [row for row in classified
                       if row["class"] in (MISPLACED, DUPLICATE_SEMANTIC_ROOT, LEGACY)]
+    by_role = {role: summary for summary in physical_roots
+               for role in summary["roles"]}
     return {
         "schema": "serveros/fs-hygiene-report.v1",
-        "roots": {name: {"path": roots[name],
-                         "class": _vocabulary(name) and "DECLARED_CLOSED" or "NO_VOCABULARY"}
-                  for name in root_names},
+        "roots": {
+            role: {
+                "path": locations[role],
+                "physical_root": by_role[role]["physical_root"],
+                "class": ("DECLARED_CLOSED"
+                          if _vocabulary(by_role[role]["evaluated_with_vocabulary_of"])
+                          else "NO_VOCABULARY"),
+                "bound_roles": by_role[role]["roles"],
+                "evaluated_with_vocabulary_of": by_role[role]["evaluated_with_vocabulary_of"],
+                "co_binding": by_role[role]["co_binding"],
+                "co_binding_declared": by_role[role]["co_binding_declared"],
+            }
+            for role in root_names
+        },
+        "physical_roots": physical_roots,
         "coverage": coverage,
         "entries": classified,
         "counts": counts,
@@ -611,6 +1114,12 @@ def report(*, home=None, data=None, sizes=None, oversized_bytes=None) -> dict:
             "a move made on the strength of a name. `.botmux-clone.log` and "
             "`.ccbridge-bridge.log` are classified and left alone by name. "
             "Retained release artifacts are RETENTION_REQUIRED, which is the "
-            "opposite of LEGACY"
+            "opposite of LEGACY. Root names are grouped by the directory they "
+            "resolve to and each group is evaluated once, so `coverage` carries "
+            "one row per name and the counts belong to the DIRECTORY, not to "
+            "the name: add up `counts`, never `coverage`. TOOL_OWNED_DOTDIR "
+            "entries are declared in `TOOL_OWNED_DOTDIRS` with an owner, a "
+            "provider and the evidence for each, and their protection attribute "
+            "is carried through rather than decided here"
         ),
     }

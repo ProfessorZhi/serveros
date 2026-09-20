@@ -3,14 +3,24 @@
 
 The detector, and the fact that it is only a detector.
 
-Three of the tests below are regressions on defects this module had on the day
-it was written, all three found by running it against the real roots and
-reading the counts rather than by reading the code: `$DATA_ROOT/.vscode-server`
-reported MISPLACED while the same fact was used correctly from the HOME side,
-the two `state/serveros` names the contract has not ruled on reported
-MISPLACED because the module knew better than the contract, and
-RETENTION_REQUIRED was structurally unreachable because the retained artifacts
-live one level below the root the report walked.
+Four of the tests below are regressions on defects this module had, all four
+found by running it against the real roots and reading the counts rather than
+by reading the code: `$DATA_ROOT/.vscode-server` reported MISPLACED while the
+same fact was used correctly from the HOME side, the two `state/serveros` names
+the contract has not ruled on reported MISPLACED because the module knew better
+than the contract, RETENTION_REQUIRED was structurally unreachable because the
+retained artifacts live one level below the root the report walked, and — the
+fourth, and the largest — a host where `HOME == DATA_ROOT` had that one
+directory scanned twice, once under each name, which produced twelve
+`DUPLICATE_SEMANTIC_ROOT` findings about a root disagreeing with itself, six
+§16B exceptions instead of three, and a whole second copy of the top level
+classified against no vocabulary at all.
+
+The four share a cause worth naming, because the fifth will look like
+something else: each was found by the report disagreeing with the filesystem,
+and each was fixed in the model rather than in the output. The alternative —
+filtering the duplicate rows, or widening a list until the count fell — leaves
+the model wrong and the next question wrong with it.
 """
 from __future__ import annotations
 
@@ -23,8 +33,7 @@ import pytest
 REPO = Path(__file__).resolve().parent.parent
 RUNTIME = REPO / "runtime"
 
-HOME = Path("/home/hwz")
-DATA = Path("/opt/applications/data/home-hwz")
+# This node's roots, resolved below from the contract rather than written down.
 
 
 def _load(name: str, filename: str):
@@ -39,6 +48,18 @@ def _load(name: str, filename: str):
 
 fh = _load("serveros_runtime_fs_hygiene", "fs_hygiene.py")
 paths = _load("serveros_runtime_paths", "paths.py")
+
+# This node's roots, RESOLVED FROM THE CONTRACT rather than written down.
+#
+# These two lines used to be `/home/hwz` and `/opt/applications/data/home-hwz`
+# — the other node's — and every live test below is gated on `DATA.is_dir()`.
+# On this node that path does not exist, so five live gates reported SKIP and
+# the suite reported success. A gate that silently skips on the node it exists
+# to guard is worse than no gate, and it is the same defect the report had: a
+# fact about a device written where a fact about the contract belongs.
+_LIVE = paths.Paths()
+HOME = Path(_LIVE.root("home"))
+DATA = Path(_LIVE.root("data"))
 
 
 # ---------------------------------------------------------------------------
@@ -66,11 +87,25 @@ def entry(name, *, is_dir=True, is_file=False, is_symlink=False, resolved=None):
 
 
 def classify(name, *, root_name="data", vocabulary=(), relations=None, sizes=None,
-             duplicates=(), is_role_location=False, **entry_kwargs):
+             duplicates=(), is_role_location=False, roles=(), evaluating_role=None,
+             **entry_kwargs):
     return fh.classify_entry(
         entry(name, **entry_kwargs), root_name=root_name, vocabulary=tuple(vocabulary),
         relations=relations or {}, sizes=sizes or {}, oversized_bytes=1 << 30,
-        duplicates=set(duplicates), is_role_location=is_role_location)
+        duplicates=set(duplicates), is_role_location=is_role_location,
+        roles=tuple(roles), evaluating_role=evaluating_role)
+
+
+def make_single_root(tmp_path, *, entries=()):
+    """A host of the shape this one actually has: `HOME == DATA_ROOT == one
+    directory`. The other fixture keeps the two apart, and both shapes need
+    covering — a report that only worked for one of them is the defect here."""
+    root = tmp_path / "single"
+    (root / "workspace").mkdir(parents=True)
+    (root / "state/serveros").mkdir(parents=True)
+    for name in entries:
+        (root / name).mkdir()
+    return root
 
 
 # ---------------------------------------------------------------------------
@@ -94,7 +129,7 @@ def test_every_class_this_module_can_produce_is_never_actionable():
     for name in fh.CLASSES:
         assert name in fh.NEVER_ACTIONABLE, name
     assert fh.NEVER_ACTIONABLE == frozenset(fh.CLASSES)
-    assert len(fh.CLASSES) == 8
+    assert len(fh.CLASSES) == 9
 
 
 def test_no_entry_row_claims_to_be_actionable():
@@ -294,11 +329,20 @@ def test_each_permitted_home_root_is_an_allowed_exception(name):
 
 
 def test_a_dotfile_that_is_not_one_of_the_three_is_not_an_exception():
-    """`~/.cache`, `~/.npm`, `~/.local` are real and are NOT on the list. If
-    everything under HOME with a dot in front were an exception the list would
-    mean nothing."""
+    """`~/.cache`, `~/.npm`, `~/.local` are real and are NOT on the §16B list.
+    If everything under HOME with a dot in front were an exception the list
+    would mean nothing.
+
+    They are accounted for elsewhere — `TOOL_OWNED_DOTDIRS` — and that being a
+    DIFFERENT table with different reasons is the point: §16B's three are
+    excluded from HOME cleanup consideration, while a tool-owned dotdir is a
+    placement fact about a named tool. `.bashrc` is in neither, because a file
+    is not covered by either list and stays UNKNOWN."""
     for name in (".cache", ".npm", ".local", ".docker", ".bashrc"):
         assert name not in fh.HOME_ALLOWED_EXCEPTIONS
+    for name in (".cache", ".npm", ".local", ".docker"):
+        assert name in fh.TOOL_OWNED_DOTDIRS
+    assert ".bashrc" not in fh.TOOL_OWNED_DOTDIRS
 
 
 def test_the_coverage_says_which_roots_have_a_vocabulary_and_which_do_not(tmp_path):
@@ -394,13 +438,14 @@ def test_the_threshold_is_reported_beside_the_verdict_it_produced(tmp_path):
 
 @pytest.mark.parametrize("class_name", list(fh.CLASSES))
 def test_every_class_is_reachable(class_name):
-    """Eight words, and a fact set that produces each. A vocabulary with a word
+    """Nine words, and a fact set that produces each. A vocabulary with a word
     no input reaches is the "declared but nothing emits it" shape this round
     keeps finding — RETENTION_REQUIRED was exactly that until the role-location
     pass was added."""
     REACHES = {
         fh.CANONICAL: dict(name="artifacts", vocabulary=("artifacts",)),
         fh.ALLOWED_EXCEPTION: dict(name=".claude", root_name="home"),
+        fh.TOOL_OWNED_DOTDIR: dict(name=".ssh", root_name="home"),
         fh.LEGACY: dict(name="legacy", root_name="data"),
         fh.MISPLACED: dict(name="drifted", root_name="workspace",
                            vocabulary=("src",)),
@@ -430,10 +475,11 @@ def fixture_roots(tmp_path):
     `artifacts_root`, `toolchains_root` — and NOT the root names `ROOTS` is
     keyed by. `Paths({"data": ...})` looks like it redirects DATA_ROOT and does
     not: `_expand` reads `roots.get("data_root")`, ignores the unknown key, and
-    falls back to the real `/opt/applications/data/home-hwz`, so a fixture path
-    is under no root and every write reads as refused. Passing the whole
-    contract means a test asserts about the rule rather than about this host's
-    layout.
+    falls back to whatever THIS host's DATA_ROOT is, so a fixture path is under
+    no root and every write reads as refused — a failure that does not announce
+    itself as a wiring mistake, because it reads as "the rule refused it", which
+    is the answer the test was hoping for. Passing the whole contract means a
+    test asserts about the rule rather than about this host's layout.
     """
     base = tmp_path / "roots"
     return paths.Paths({
@@ -528,17 +574,29 @@ def test_the_live_roots_are_classified_and_the_counts_add_up():
 
 
 @pytest.mark.skipif(not DATA.is_dir(), reason="this node has no DATA_ROOT")
-def test_every_allowed_exception_in_the_data_root_is_explained_by_a_symlink():
+def test_every_allowed_exception_on_the_live_node_is_explained_by_something():
     """The regression gate for the live defect: `$DATA_ROOT/.vscode-server` was
     reported MISPLACED while `~/.vscode-server` was reported ALLOWED_EXCEPTION,
-    which is one entry seen from two roots. An ALLOWED_EXCEPTION in the data
-    root that no relation explains would mean the two views have diverged
-    again."""
+    which is one entry seen from two roots.
+
+    There are exactly two declared mechanisms that may produce the class — a
+    symlink relation, or §16B naming the entry — and every exception must be
+    accounted for by one of them, with the row saying which. The row's `why`
+    for a §16B name must be §16B's own reason verbatim: a class that appeared
+    with a reason nobody wrote is the divergence this test exists to catch, and
+    on a host where HOME and DATA_ROOT are one directory it is also what the
+    second, vocabulary-less scan used to produce — six exceptions where three
+    exist."""
     report = fh.report()
     relations = report["symlinks_into_data_root"]
     for row in report["entries"]:
-        if row["root"] == "data" and row["class"] == fh.ALLOWED_EXCEPTION:
-            assert any(row["path"] == target for target in relations), row["path"]
+        if row["class"] != fh.ALLOWED_EXCEPTION:
+            continue
+        by_link = any(row["path"] == target for target in relations)
+        by_name = row["name"] in fh.HOME_ALLOWED_EXCEPTIONS
+        assert by_link or by_name, row["path"]
+        if by_name:
+            assert row["why"] == fh.HOME_ALLOWED_EXCEPTIONS[row["name"]], row["name"]
 
 
 @pytest.mark.skipif(not DATA.is_dir(), reason="this node has no DATA_ROOT")
@@ -570,3 +628,411 @@ def test_the_live_retained_artifacts_are_reachable_and_untouched():
         for name in [p.name for p in distribution.iterdir()
                      if fh.RETAINED_PATTERN.match(p.name)]:
             assert (distribution / name).exists(), f"{name} was moved or removed"
+
+
+# ---------------------------------------------------------------------------
+# A · several semantic roles, one physical root
+# ---------------------------------------------------------------------------
+
+
+def test_two_names_for_one_directory_are_scanned_once_and_are_not_duplicates(tmp_path):
+    """The defect, stated as the property that fixes it.
+
+    `home` and `data` are two roles. On a host where they resolve to one
+    directory, the report must produce ONE observation per entry, apply ONE
+    vocabulary, and report no duplicate — a root cannot disagree with itself.
+    Before this, the same directory was read twice: once with no vocabulary
+    (every entry UNKNOWN) and once against DATA_ROOT's declared set (every
+    declared name CANONICAL, everything else MISPLACED), and the twelve
+    declared names seen through the vocabulary-less pass were reported as
+    duplicates of the root that owns them."""
+    root = make_single_root(tmp_path, entries=["artifacts", "downloads"])
+    report = fh.report(home=root, data=root)
+
+    assert report["duplicate_semantic_roots"] == {}
+    for name in ("artifacts", "downloads"):
+        rows = [r for r in report["entries"] if r["name"] == name]
+        assert len(rows) == 1, f"{name} was observed {len(rows)} times"
+
+    # `state` and `workspace` are declared names too: three entries, one row
+    # each, from one scan of one directory — not three from two.
+    assert len(report["entries"]) == 4
+
+    for name in ("artifacts", "downloads"):
+        row = next(r for r in report["entries"] if r["name"] == name)
+        assert row["class"] == fh.CANONICAL
+        assert row["bound_roles"] == ["home", "data"]
+        assert row["root"] == "data", "the role with a vocabulary evaluates"
+        assert row["alias_of"] is None, "the evaluating role is not an alias"
+
+    groups = report["physical_roots"]
+    assert [g["roles"] for g in groups] == [["home", "data"], ["workspace"], ["state"]]
+    assert groups[0]["co_binding"] is True
+    assert groups[0]["co_binding_declared"] is True
+    assert groups[0]["evaluated_with_vocabulary_of"] == "data"
+
+
+def test_the_alias_is_reported_per_name_without_double_counting(tmp_path):
+    """`coverage` is keyed by name because callers ask by name, so both names
+    keep a row — and the alias row must say that its count is the shared
+    directory's and is not additional to the other's. A reader who added the
+    two would otherwise get twice the top level of one directory, which is how
+    the previous version's 197 entries became 123."""
+    root = make_single_root(tmp_path, entries=["artifacts"])
+    report = fh.report(home=root, data=root)
+
+    assert report["coverage"]["home"]["alias_of"] == "data"
+    assert report["coverage"]["data"]["alias_of"] is None
+    assert report["coverage"]["home"]["entries"] == report["coverage"]["data"]["entries"] == 3
+    assert report["coverage"]["home"]["physical_root"] == report["coverage"]["data"]["physical_root"]
+    assert "NOT additional" in report["coverage"]["home"]["why"]
+    assert "NOT additional" not in (report["coverage"]["data"]["why"] or "")
+
+    # And the report says the same thing about the two names at the top.
+    assert report["roots"]["home"]["bound_roles"] == report["roots"]["data"]["bound_roles"]
+    assert report["roots"]["home"]["class"] == report["roots"]["data"]["class"] == "DECLARED_CLOSED"
+    assert report["roots"]["home"]["evaluated_with_vocabulary_of"] == "data"
+
+    # The counts are over entries, so they must add up to what was emitted.
+    assert sum(report["counts"].values()) == len(report["entries"]) == 3
+
+
+# ---------------------------------------------------------------------------
+# B · two different physical roots claiming one name is still a conflict
+# ---------------------------------------------------------------------------
+
+
+def test_two_physical_roots_claiming_one_declared_name_is_still_a_duplicate(tmp_path):
+    """The false-negative risk of the alias rule: once `home` and `data` may
+    share a directory, a fix that shrugged at any coincidence would stop
+    reporting the substitute-root shape. `artifacts` declared under DATA_ROOT
+    and materialized under HOME is that shape and must still be reported."""
+    home, data = make_roots(tmp_path, home_entries=["artifacts"],
+                            data_entries=["artifacts"])
+    report = fh.report(home=home, data=data)
+
+    assert "artifacts" in report["duplicate_semantic_roots"]
+    found = report["duplicate_semantic_roots"]["artifacts"]
+    assert len(found) == 1, "only the root that does not declare it is an impostor"
+    assert found[0]["root"] == "home"
+    assert found[0]["bound_roles"] == ["home"]
+    assert found[0]["belongs_under"] == ["data"]
+
+    row = next(r for r in report["entries"] if r["root"] == "home" and r["name"] == "artifacts")
+    assert row["class"] == fh.DUPLICATE_SEMANTIC_ROOT
+    assert row["actionable"] is False
+
+
+def test_a_merge_the_contract_does_not_permit_is_reported_as_undeclared(tmp_path):
+    """`home`/`data` may share a directory because the contract says so. Two
+    roots that merely compare equal may not, and the report says which it is
+    looking at — `WORKSPACE_ROOT=$DATA_ROOT` would apply WORKSPACE_TOP_LEVEL to
+    the home directory, and a grouping rule that accepted any coincidence could
+    not say so."""
+    groups = paths.group_physical_roots(
+        {"home": "/x", "data": "/y", "workspace": "/y", "state": "/z"},
+        names=("home", "data", "workspace", "state"))
+    by_roles = {tuple(g["roles"]): g for g in groups}
+
+    assert by_roles[("home",)]["co_binding"] is False
+    assert by_roles[("home",)]["co_binding_declared"] is True
+    merged = by_roles[("data", "workspace")]
+    assert merged["co_binding"] is True
+    assert merged["co_binding_declared"] is False
+    assert merged["undeclared_with"] == ["data", "workspace"]
+
+
+def test_the_report_of_a_merge_nobody_declared_says_so(tmp_path):
+    root = make_single_root(tmp_path, entries=["artifacts"])
+    report = fh.report(home=root, data=root)
+    declared = [g for g in report["physical_roots"] if g["co_binding"]][0]
+    assert declared["co_binding_declared"] is True
+    assert "NOT among the declared ones" not in declared["why"]
+    assert declared["permitted_bindings"] == [["home", "data"]]
+
+    merged = paths.group_physical_roots(
+        {"home": "/x", "data": "/y", "workspace": "/y", "state": "/z"},
+        names=("home", "data", "workspace", "state"))
+    group = [g for g in merged if g["co_binding"]][0]
+    assert group["co_binding_declared"] is False
+    assert group["undeclared_with"] == ["data", "workspace"]
+
+
+# ---------------------------------------------------------------------------
+# C · a declared tool-owned dotdir is not drift
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("name", sorted(fh.TOOL_OWNED_DOTDIRS))
+def test_every_declared_tool_owned_dotdir_is_declared_and_not_misplaced(name):
+    """Each entry is a DECLARATION, so each is held to what a declaration needs:
+    an owner, a provider, the evidence establishing it, and a reason the
+    location is the tool's. A stub entry fails here, which is the point — the
+    table is the ruler and a ruler with an unexplained mark on it is a ruler
+    nobody can use to measure."""
+    declaration = fh.TOOL_OWNED_DOTDIRS[name]
+    assert name.startswith(".")
+    for field in ("owner", "provider", "evidence", "why"):
+        assert declaration[field].strip(), f"{name} has no {field}"
+        assert declaration[field].strip().lower() not in ("todo", "tbd", "?", "n/a"), \
+            f"{name}'s {field} is a placeholder"
+    # No length floor on `owner`: "npm" is the correct owner and a three-letter
+    # name is not a stub. The floors are where a stub would actually show — a
+    # `why` that does not argue and an `evidence` that does not name anything.
+    assert len(declaration["why"]) > 60, f"{name}'s why does not argue"
+    assert len(declaration["evidence"]) > 20, f"{name}'s evidence names nothing"
+    assert declaration["protection"] in (fh.SECRET, fh.IDENTITY, fh.UNPROTECTED)
+    if declaration["protection"] != fh.UNPROTECTED:
+        assert declaration["protection_basis"], name
+
+    row = classify(name, root_name="data", vocabulary=("artifacts", "caches"))
+    assert row["class"] == fh.TOOL_OWNED_DOTDIR
+    assert fh.MISPLACED not in row["also_matches"]
+    assert row["tool_owned"]["owner"] == declaration["owner"]
+    assert "start with" not in row["why"]
+
+
+def test_the_two_tables_do_not_overlap():
+    """§16B's three and the tool-owned dotdirs are different claims about
+    different things: the first is an exclusion from HOME cleanup
+    consideration, the second a statement about which tool owns a location. A
+    name in both would be two answers to one question, and the §16B answer
+    would win in the match order — so the second would be a claim nothing reads
+    while looking like a claim that holds."""
+    assert not (set(fh.TOOL_OWNED_DOTDIRS) & set(fh.HOME_ALLOWED_EXCEPTIONS))
+    assert not (set(fh.TOOL_OWNED_DOTDIRS) & set(fh.AWAITING_A_RULING))
+    assert not (set(fh.TOOL_OWNED_DOTDIRS) & set(fh.UNDECLARED_ON_PURPOSE))
+
+
+# ---------------------------------------------------------------------------
+# D · an undeclared dotdir does not become an exception by being a dotdir
+# ---------------------------------------------------------------------------
+
+
+def test_an_undeclared_dotdir_is_not_excused_by_being_a_dotdir():
+    """The line the whole table exists to hold. A `.foo` invented tomorrow must
+    be exactly as undeclared tomorrow as `.npm` would be without its entry:
+    MISPLACED under a declared vocabulary, UNKNOWN where there is none, and in
+    neither case an exemption."""
+    row = classify(".unknown-tool", root_name="data", vocabulary=("artifacts",))
+    assert row["class"] == fh.MISPLACED
+    assert row["tool_owned"] is None
+    assert row["protected"] is False
+
+    no_vocabulary = classify(".unknown-tool", root_name="home", vocabulary=())
+    assert no_vocabulary["class"] == fh.UNKNOWN
+    assert no_vocabulary["tool_owned"] is None
+
+    # And the exemption is reached through the declaration, not through the dot.
+    assert ".unknown-tool" not in fh.TOOL_OWNED_DOTDIRS
+    for name in (".bashrc", ".profile", ".gitconfig", ".vimrc"):
+        assert name not in fh.TOOL_OWNED_DOTDIRS, name
+        assert classify(name, root_name="data", vocabulary=("artifacts",))["tool_owned"] is None
+
+
+def test_an_undeclared_dotdir_under_a_declared_vocabulary_says_nothing_explains_it():
+    row = classify(".unknown-tool", root_name="data", vocabulary=("artifacts",))
+    assert "nothing explains it" in row["why"]
+
+
+def test_a_declined_dotdir_is_unknown_and_says_the_declining_was_deliberate():
+    """`.ability-management` is the entry that must NOT be declared to make a
+    count fall. It stays UNKNOWN, it is not MISPLACED either, and the reason it
+    is undeclared is in the code rather than only in a report — because the
+    next reader's instinct will be to add it to the registry."""
+    for name in sorted(fh.UNDECLARED_ON_PURPOSE):
+        assert name not in fh.TOOL_OWNED_DOTDIRS
+        row = classify(name, root_name="data", vocabulary=("artifacts",))
+        assert row["class"] == fh.UNKNOWN
+        assert fh.MISPLACED not in row["also_matches"]
+        assert "declined" in row["why"] or "not read" in row["why"]
+
+
+# ---------------------------------------------------------------------------
+# E · the protection survives the placement verdict
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("name,expected", [(".secrets", fh.SECRET), (".ssh", fh.IDENTITY),
+                                           (".gnupg", fh.SECRET), (".docker", fh.SECRET),
+                                           (".serveros", fh.IDENTITY),
+                                           (".desktop-commander-device", fh.IDENTITY)])
+def test_a_protected_dotdir_keeps_its_protection_through_the_placement_verdict(name, expected):
+    """§E: reclassifying an entry's PLACEMENT must not lower its PROTECTION. The
+    two are orthogonal, and a classifier in the business of saying where things
+    belong is exactly the one that would confuse them — "this is where the tool
+    keeps its state" reads like "this is safe to touch".
+
+    The row carries the mark, the row says the verdict did not clear it, and
+    the SAME entry is still refused by §16B when a write into it is proposed."""
+    row = classify(name, root_name="data", vocabulary=("artifacts",))
+    assert row["class"] == fh.TOOL_OWNED_DOTDIR
+    assert row["protected"] is True
+    assert row["tool_owned"]["protection"] == expected
+    assert expected in row["why"], "the reason must carry the protection it does not clear"
+    assert "nothing else" in row["why"]
+    assert row["actionable"] is False, "protected and actionable cannot both be true"
+
+
+def test_the_placement_gate_governs_homes_shape_and_not_a_protected_dotdirs_contents(tmp_path):
+    """What §16B's gate actually protects, measured rather than assumed.
+
+    Writing this test the obvious way failed, and the failure is worth keeping:
+    a write into `~/.secrets/addendum` is ADMITTED. `admit` refuses a NEW
+    top-level name under HOME — HOME's shape is not ServerOS's to extend — and
+    it consults a vocabulary only for `~/.serveros`. A path inside an existing
+    top-level directory is inside a shape it already has, so there is nothing
+    for that rule to refuse.
+
+    So the protection on `.secrets`, `.ssh` and `.gnupg` is NOT this gate. It
+    is the protection registry, the file modes, and the fact that nothing in
+    this module can act. A round that wants §16B's gate to protect them has to
+    declare a top-level vocabulary for HOME, which is the open question the
+    report already records — and it must not be closed by assuming the gate
+    covers it, because it does not. Both directions are asserted here so the
+    assumption cannot come back."""
+    registry, base = fixture_roots(tmp_path)
+    (base / "home").mkdir(parents=True)
+    for name in (".secrets", ".ssh", ".gnupg", ".serveros", ".npm"):
+        (base / "home" / name).mkdir()
+
+    # The one HOME root with a declared vocabulary is the one the gate refuses
+    # inside of.
+    refused = fh.placement(base / "home/.serveros/not-declared", paths_registry=registry)
+    assert refused["admitted"] is False
+    assert refused["automatic_action"] is None
+
+    # The rest are admitted, and the verdict does not pretend to be a
+    # protection decision: it reports what the contract classified and nothing
+    # about whether the write is safe.
+    for name in (".secrets", ".ssh", ".gnupg", ".npm"):
+        verdict = fh.placement(base / "home" / name / "addendum", paths_registry=registry)
+        assert verdict["admitted"] is True, name
+        assert verdict["automatic_action"] is None
+        assert "protection" not in verdict, name
+        assert not (base / "home" / name / "addendum").exists(), (
+            "a verdict is not a write, and this module cannot write")
+
+
+def test_an_unprotected_tool_dotdir_is_not_marked_protected():
+    """The mark has to mean something: an entry whose declaration observed no
+    credential or identity artifact must not carry it, or SECRET degrades into
+    "somebody was cautious" and stops being worth reading."""
+    for name in (".npm", ".cache", ".local", ".dotnet"):
+        row = classify(name, root_name="data", vocabulary=("artifacts",))
+        assert row["protected"] is False, name
+        assert row["tool_owned"]["protection"] == fh.UNPROTECTED, name
+        assert "nothing else" not in row["why"], name
+
+
+# ---------------------------------------------------------------------------
+# F · one physical path, one row, for every class
+# ---------------------------------------------------------------------------
+
+
+def test_an_allowed_exception_on_a_shared_physical_root_is_reported_once(tmp_path):
+    """The class that was doubled: §16B's three were found by both scans, so a
+    host with one directory reported six exceptions where three entries exist.
+    The count is over entries, and there are three."""
+    root = make_single_root(tmp_path, entries=[".claude", ".codex", ".config", ".bashrc"])
+    report = fh.report(home=root, data=root)
+
+    for name in (".claude", ".codex", ".config"):
+        rows = [r for r in report["entries"] if r["name"] == name]
+        assert len(rows) == 1, f"{name} was observed {len(rows)} times"
+        assert rows[0]["class"] == fh.ALLOWED_EXCEPTION
+    assert report["counts"][fh.ALLOWED_EXCEPTION] == 3
+    assert report["counts"][fh.DUPLICATE_SEMANTIC_ROOT] == 0
+    assert report["counts"][fh.TOOL_OWNED_DOTDIR] == 0
+
+
+def test_no_entry_name_is_emitted_twice_from_one_physical_root(tmp_path):
+    """The general form, over every class rather than the ones that happened to
+    be wrong: entries are keyed by (physical root, name), and nothing may
+    appear twice under one physical root. A `set(path)` over the output would
+    hide a real conflict between two observations of two DIFFERENT roots; this
+    asserts the property that makes deduplication unnecessary in the first
+    place."""
+    root = make_single_root(tmp_path,
+                            entries=["artifacts", ".claude", ".ssh", "drifted-thing", ".npm"])
+    report = fh.report(home=root, data=root)
+    seen = {}
+    for row in report["entries"]:
+        key = (report["roots"][row["root"]]["physical_root"], row["name"])
+        assert key not in seen, f"{key} emitted twice: {seen[key]} vs {row['class']}"
+        seen[key] = row["class"]
+    assert len(seen) == len(report["entries"])
+
+
+def test_an_independent_root_is_still_scanned_separately(tmp_path):
+    """The alias must not collapse the roots that are NOT aliases: `workspace`
+    and `state` are their own directories with their own vocabularies, and
+    folding them into the home group would silence their findings."""
+    root = make_single_root(tmp_path, entries=["artifacts"])
+    (root / "workspace" / "substitute").mkdir()
+    (root / "state/serveros" / "stray").mkdir()
+    report = fh.report(home=root, data=root)
+
+    assert report["coverage"]["workspace"]["physical_root"] == str(root / "workspace")
+    assert report["coverage"]["state"]["physical_root"] == str(root / "state/serveros")
+    found = {r["name"]: r["class"] for r in report["entries"]}
+    assert found["substitute"] == fh.MISPLACED
+    assert found["stray"] == fh.MISPLACED
+    duplicate_roots = {tuple(g["roles"]) for g in report["physical_roots"]}
+    assert duplicate_roots == {("home", "data"), ("workspace",), ("state",)}
+
+
+# ---------------------------------------------------------------------------
+# G · a host is not hardcoded, and this host's shape is covered
+# ---------------------------------------------------------------------------
+
+
+def test_neither_the_module_nor_the_contract_carries_a_device_path_in_its_logic():
+    """This release is one artifact for a fleet. A root is resolved from the
+    environment and the device's Profile; a device's absolute path in the
+    module is a fact about a host where a fact about the contract belongs — and
+    it is the shape that made the live gates below skip on this node for as
+    long as they did."""
+    for filename in ("fs_hygiene.py", "paths.py"):
+        source = (RUNTIME / filename).read_text()
+        for line in source.splitlines():
+            stripped = line.strip()
+            if stripped.startswith("#") or '"""' in stripped:
+                continue
+            for device_path in ("/data/home/vince", "/home/hwz", "/opt/applications"):
+                assert device_path not in stripped, f"{filename}: {stripped}"
+
+
+def test_a_host_whose_home_is_its_persistent_root_is_handled_and_says_so(tmp_path):
+    """The shape this node actually has, asserted as the shape rather than as
+    this node: HOME == DATA_ROOT, one directory, and the report must work from
+    the paths it is handed. Nothing in the check may key on the host, and the
+    single-root case must not be a special case — the grouping comes from the
+    contract's declaration, so a host of this shape needs no code that knows
+    about it."""
+    root = make_single_root(tmp_path, entries=["artifacts", "downloads"])
+    report = fh.report(home=root, data=root)
+    assert len(report["physical_roots"]) == 3
+    assert report["physical_roots"][0]["roles"] == ["home", "data"]
+    assert report["coverage"]["home"]["declared_top_level"], (
+        "the shared directory has a declared vocabulary and the home row must "
+        "say which one was applied")
+    assert report["coverage"]["home"]["declared_top_level"] == \
+        report["coverage"]["data"]["declared_top_level"]
+    assert not [r for r in report["entries"] if r["class"] == fh.MISPLACED]
+
+
+def test_a_host_whose_home_is_not_its_persistent_root_still_reports_no_vocabulary(tmp_path):
+    """The other shape, which must not regress: where HOME is its own
+    directory, `paths.py` declares no top level for it, and the report says so
+    instead of inventing a list. Both shapes are in the suite because a report
+    that worked for one of them is what the defect was."""
+    home, data = make_roots(tmp_path, home_entries=["Documents"],
+                            data_entries=["artifacts"])
+    report = fh.report(home=home, data=data)
+    assert report["coverage"]["home"]["declared_top_level"] == []
+    assert "no declared top-level vocabulary" in report["coverage"]["home"]["why"]
+    assert report["coverage"]["home"]["alias_of"] is None
+    row = next(r for r in report["entries"] if r["name"] == "Documents")
+    assert row["class"] == fh.UNKNOWN
+    assert report["duplicate_semantic_roots"] == {}
