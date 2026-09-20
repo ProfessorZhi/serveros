@@ -1,4 +1,4 @@
-<!-- ⟦snapshot⟧ rendered 2026-09-20T11:56:36+00:00 by `runtime/workbench.py` from ~/workspace/worktrees/serveros/SRV-0011 · inputs: projects=serveros,litellm,multi-user-claw; project=litellm; item=LIT-0101; quay-run=~/artifacts/work-items/serveros/SRV-0011/RUN-0001/quay-run; quay-bin=~/workspace/worktrees/quay/foundation-skeleton/plugin/vendor/quay/dist/quay.js; ability-repo=~/workspace/worktrees/ability-management/SRV-0011; reports-dir=~/artifacts/work-items/serveros/SRV-0011/RUN-0001; release-root=~/artifacts/work-items/serveros/SRV-0011/RUN-0001/release/dist/serveros-linux-work -->
+<!-- ⟦snapshot⟧ rendered 2026-09-20T12:06:45+00:00 by `runtime/workbench.py` from ~/workspace/worktrees/serveros/SRV-0011 · inputs: projects=serveros,litellm,multi-user-claw; project=litellm; item=LIT-0101; quay-run=~/artifacts/work-items/serveros/SRV-0011/RUN-0001/quay-run; quay-bin=~/workspace/worktrees/quay/foundation-skeleton/plugin/vendor/quay/dist/quay.js; ability-repo=~/workspace/worktrees/ability-management/SRV-0011; reports-dir=~/artifacts/work-items/serveros/SRV-0011/RUN-0001; release-root=~/artifacts/work-items/serveros/SRV-0011/RUN-0001/release/dist/serveros-linux-work -->
 
 # RELEASE-MANIFEST
 
@@ -16,11 +16,11 @@
 
 | 名字 | repo | revision | 可达性 | 证据 |
 |---|---|---|---|---|
-| serveros | ~/workspace/worktrees/serveros/SRV-0011 | `60da36f3` | 存在 | `serveros/system-v1-20260920` **远端不存在** |
-| ability-management | ~/workspace/worktrees/ability-management/SRV-0011 | `fbd0b1a7` | 存在 | `serveros/system-v1-20260920` **远端不存在** |
-| work-engine | ~/workspace/worktrees/work-engine/SRV-0011 | `65e9b56c` | 存在 | `serveros/system-v1-20260920` **远端不存在** |
-| hwz-ops | ~/workspace/worktrees/hwz-ops/SRV-0011 | `790bca27` | 存在 | `serveros/system-v1-20260920` **远端不存在** |
-| Claude/Codex adapter | ~/workspace/worktrees/serveros/SRV-0011 | `60da36f3` | 存在 | `serveros/system-v1-20260920` **远端不存在** |
+| serveros | ~/workspace/worktrees/serveros/SRV-0011 | `60da36f3` | 存在 | `serveros/system-v1-20260920` ⊇ pin |
+| ability-management | ~/workspace/worktrees/ability-management/SRV-0011 | `fbd0b1a7` | 存在 | `serveros/system-v1-20260920` ⊇ pin |
+| work-engine | ~/workspace/worktrees/work-engine/SRV-0011 | `65e9b56c` | 存在 | `serveros/system-v1-20260920` ⊇ pin |
+| hwz-ops | ~/workspace/worktrees/hwz-ops/SRV-0011 | `790bca27` | 存在 | `serveros/system-v1-20260920` ⊇ pin |
+| Claude/Codex adapter | ~/workspace/worktrees/serveros/SRV-0011 | `60da36f3` | 存在 | `serveros/system-v1-20260920` ⊇ pin |
 | quay（工作包 E 固定的版本） | ~/workspace/worktrees/quay/foundation-skeleton | `ddc4fb40f` | 存在 | — |
 | quay（本轮 Goal 闭环用的版本） | ~/workspace/worktrees/quay/foundation-skeleton | `8bb184ef3` | 存在 | — |
 | design package（本轮固定版本） | ~/workspace/worktrees/serveros/SRV-0011 | `c01d2a0d` | 存在 | `docs/final-architecture-20260920` ⊇ pin |
