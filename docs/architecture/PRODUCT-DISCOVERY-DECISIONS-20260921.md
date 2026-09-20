@@ -23,15 +23,26 @@ The primary promise is:
 > retrieve the right memory, discover the right capability and environment, and
 > continue work without the user re-explaining yesterday.
 
-The three highest-value automatic capabilities are:
+The first screen of the product must communicate **both** the daily work
+experience and the architectural philosophy that makes that experience fast.
 
-1. **right context**
-2. **right memory**
-3. **right capability**
+The core design philosophy remains:
+
+- **Environment** — prepare the right place and resources for this work.
+- **Context** — provide the smallest correct working context for the current
+  intent.
+- **Capabilities** — make the right Ability / Provider discoverable and usable
+  when needed.
+- **Progressive disclosure** — do not preload the world. Start thin, then expand
+  context, memory, provider details, Skills and schemas only on demand.
+
+The highest-value automatic outcomes are therefore **right context, right
+memory, right capability and right environment at the right time**.
 
 The system must strengthen Claude Code / Codex rather than become a ceremony
 around them. A large installed system must still expose a **small active
-context**.
+context**. The daily operating loop in §3 is the user experience built on top
+of these principles; it does not replace them.
 
 ## 2. Layer 0 — compliance and non-interference
 
