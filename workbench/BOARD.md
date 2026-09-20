@@ -1,4 +1,4 @@
-<!-- ⟦snapshot⟧ rendered 2026-09-20T12:06:45+00:00 by `runtime/workbench.py` from ~/workspace/worktrees/serveros/SRV-0011 · inputs: projects=serveros,litellm,multi-user-claw; project=litellm; item=LIT-0101; quay-run=~/artifacts/work-items/serveros/SRV-0011/RUN-0001/quay-run; quay-bin=~/workspace/worktrees/quay/foundation-skeleton/plugin/vendor/quay/dist/quay.js; ability-repo=~/workspace/worktrees/ability-management/SRV-0011; reports-dir=~/artifacts/work-items/serveros/SRV-0011/RUN-0001; release-root=~/artifacts/work-items/serveros/SRV-0011/RUN-0001/release/dist/serveros-linux-work -->
+<!-- ⟦snapshot⟧ rendered 2026-09-20T14:06:52+00:00 by `runtime/workbench.py` from ~/workspace/worktrees/serveros/SRV-0011 · inputs: projects=serveros,litellm,multi-user-claw; project=litellm; item=LIT-0101; quay-run=~/artifacts/work-items/serveros/SRV-0011/RUN-0001/quay-run; quay-bin=~/workspace/worktrees/quay/foundation-skeleton/plugin/vendor/quay/dist/quay.js; ability-repo=~/workspace/worktrees/ability-management/SRV-0011; reports-dir=~/artifacts/work-items/serveros/SRV-0011/RUN-0001; release-root=~/artifacts/work-items/serveros/SRV-0011/RUN-0001/release/dist/serveros-linux-work -->
 
 # BOARD
 
@@ -36,7 +36,7 @@ Item 17 个：活跃 10，已完成 7，没有卡的 8。
 
 ### 个人看板（§6 的分节与顺序）
 
-读数时间 `2026-09-20T20:06:46+08:00`。
+读数时间 `2026-09-20T22:06:53+08:00`。
 
 | section | rows | 划线 | 为什么在这一节 |
 |---|---|---|---|
