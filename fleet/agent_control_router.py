@@ -1362,6 +1362,31 @@ def request_from_payload(payload: Mapping) -> AgentControlRequest:
             not isinstance(item, (dict, str)) for item in approvals):
         raise Rejected("approvals must be a list of approval records or refs")
 
+    # `idempotency_key` on the envelope is the ROUTER's handle on a retry — the
+    # key `_replay` answers from — and the action's own parameter is the
+    # PROVIDER's: `session.create` takes `idempotency_key` and `session.send`
+    # takes `turn_idempotency_key`, and those travel in `params` to the provider
+    # that deduplicates on them.
+    #
+    # The envelope key is derived from the parameter when a caller supplied only
+    # the parameter, and that is a fix, not a convenience. Both mean "this
+    # intent, once", and before this the router's guard fired only when a caller
+    # happened to set the envelope too: `{"action": "agent.session.send",
+    # "params": {"turn_idempotency_key": "t-1"}}` — a request that names the key
+    # exactly as the contract names it — dispatched with NO replay guard at all,
+    # so a retry was a second turn. The MCP surface never met this only because
+    # `agent_mcp._payload` copies the parameter onto the envelope itself, which
+    # made one request mean two things depending on which surface it arrived at.
+    #
+    # An envelope key that is present is left alone rather than cross-checked
+    # against the parameter. They are two different handles for two different
+    # layers and a caller may legitimately set both; the parameter still reaches
+    # the provider, so neither is dropped and neither answers for the other.
+    idempotency_key = payload.get("idempotency_key")
+    if not idempotency_key and _mutating(control_actions()[action]):
+        idempotency_key = params.get("idempotency_key") or params.get(
+            "turn_idempotency_key")
+
     return AgentControlRequest(
         action=action, device_ref=str(payload["device_ref"]),
         agent_runtime=str(payload["agent_runtime"]), params=params,
@@ -1371,7 +1396,7 @@ def request_from_payload(payload: Mapping) -> AgentControlRequest:
         session_role=payload.get("session_role"),
         bound_item_ref=payload.get("bound_item_ref"),
         correlation_id=str(payload.get("correlation_id") or ""),
-        idempotency_key=payload.get("idempotency_key"),
+        idempotency_key=idempotency_key,
         timeout_s=float(payload.get("timeout_s") or 60.0),
     )
 
