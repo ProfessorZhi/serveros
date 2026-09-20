@@ -150,19 +150,54 @@ ability_projection_mod = _load("serveros_ability_projection", "ability_projectio
 # failing on a value that is the right type — and the arm below catches
 # `Rejected` by name.
 #
-# Legitimate for this process to hold, by the test the comment above states for
-# the projection: `abilities/resolver.py` is PURE (its own docstring: "no
-# filesystem, no network, no clock"), it is in `CORE_MODULES` so it is present
-# in a built artifact, and it consults no authority. What the daemon does NOT
-# do is assemble the inputs — see `_r_ability_resolve`.
-_ability_resolver_path = _HERE.parent / "abilities" / "resolver.py"
-if "serveros_ability_resolver" not in sys.modules:
-    _ar_spec = importlib.util.spec_from_file_location(
-        "serveros_ability_resolver", _ability_resolver_path)
-    _ar_module = importlib.util.module_from_spec(_ar_spec)
-    sys.modules["serveros_ability_resolver"] = _ar_module
-    _ar_spec.loader.exec_module(_ar_module)
-ability_resolver_mod = sys.modules["serveros_ability_resolver"]
+# LOADED ON FIRST USE, NOT AT IMPORT — and that is §24's property, not tidiness.
+# §1 freezes this process as the core and §24 says it must START with none of
+# the systems it governs. The lines that used to stand here executed the
+# resolver's module body while `daemon.py` was still being imported, so a node
+# whose `abilities/resolver.py` was missing or unreadable did not come up at
+# all: the core depending on the fabric for its own existence, which is the
+# one thing the boundary is drawn to prevent. Measured rather than argued —
+# `tests/loader_graph.py` is a static scan and reads a loader call inside a
+# function exactly as it reads one at module level, so laziness does not move
+# that measurement, and
+# `tests/test_core_ability_boundary.py::AStartedCoreHasLoadedNoFabric` is a
+# second, dynamic check that importing this module executes nothing under
+# `abilities/`.
+#
+# Legitimate for this process to hold once a caller asks, by the test the
+# comment above states for the projection: `abilities/resolver.py` is PURE (its
+# own docstring: "no filesystem, no network, no clock"), it is in
+# `CORE_MODULES` so it is present in a built artifact, it consults no authority
+# — and `fleet/mcp-contract.yaml` names THIS process as the one that runs it,
+# because `mcp/node_mcp.py` forwards `ability.resolve` here over the socket
+# rather than holding a second kernel of its own.
+# `tests/test_core_ability_boundary.py::TheCoresCrossingsAreRecorded` records
+# the edge, so it is a deliberate entry in a named constant and not a line
+# nobody reviews.
+_ABILITY_RESOLVER_PATH = _HERE.parent / "abilities" / "resolver.py"
+#: The synthetic name, spelled once. `runtime/cli.py` uses this same string for
+#: the same file, and that identity is load-bearing: two names are two module
+#: objects, and the arm below catches `Rejected` by name.
+_ABILITY_RESOLVER_NAME = "serveros_ability_resolver"
+
+
+def _ability_resolver():
+    """The ability resolution kernel, loaded once and held.
+
+    A function rather than a module-level binding because the only caller is a
+    request handler: the load happens at the first `ability.resolve` and not
+    before it. Both halvings of the name are written to `sys.modules` before
+    the body runs, which is the ordinary idiom and also what keeps a second
+    caller from loading a second copy.
+    """
+    module = sys.modules.get(_ABILITY_RESOLVER_NAME)
+    if module is None:
+        spec = importlib.util.spec_from_file_location(
+            _ABILITY_RESOLVER_NAME, _ABILITY_RESOLVER_PATH)
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[_ABILITY_RESOLVER_NAME] = module
+        spec.loader.exec_module(module)
+    return module
 
 
 class DaemonError(Exception):
@@ -1523,9 +1558,10 @@ class Daemon:
             "runtime": params["runtime"],
             "device_ref": params.get("device") or self.registry.device_ref,
         }
+        resolver_mod = _ability_resolver()
         try:
-            record = ability_resolver_mod.resolve(request)
-        except ability_resolver_mod.Rejected as exc:
+            record = resolver_mod.resolve(request)
+        except resolver_mod.Rejected as exc:
             # A malformed request, not a "no". The kernel's own distinction:
             # "no" is an answer and is returned rather than raised.
             raise ValueError(str(exc)) from exc
