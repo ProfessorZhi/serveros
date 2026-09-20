@@ -113,6 +113,19 @@ STATE_SERVEROS_TOP_LEVEL = (
     #                         which is why `status` answers COULD_NOT_ANSWER
     #                         for a record that is not there instead of OK.
     "verification",
+    #   recipes               §7's three finite loops, one record per recipe per
+    #                         scope per period. A record of a past act like
+    #                         `verification`: whether a period was advanced, and
+    #                         how far, is not recoverable from the tree
+    #                         afterwards. The PATH is the single-flight key, so
+    #                         a run of a period that already has a record finds
+    #                         it rather than repeating the work. Produced by
+    #                         `runtime/recipes.py`; the two authored files in it
+    #                         (`schedules.yaml`, `model-binding.yaml`) are
+    #                         written by an operator, and a loop refuses rather
+    #                         than inventing a window or a model transport when
+    #                         they are absent.
+    "recipes",
 )
 STATE_SERVEROS_RUNTIME = (
     "registry", "observed", "health", "hygiene", "resources",

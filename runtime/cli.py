@@ -300,6 +300,191 @@ def cmd_report_daily(args) -> int:
     return EXIT_OK
 
 
+def _recipes_module():
+    return _load_module_from(REPO_ROOT / "runtime" / "recipes.py",
+                             "serveros_runtime_recipes")
+
+
+def cmd_recipe_list(args) -> int:
+    """§7's three loops, as the contract states them.
+
+    Reads the contract and stops. It does not measure this node, and that is
+    deliberate: this is the verb a person runs BEFORE anything has ever run,
+    so a version of it that needed a state root would be unusable at exactly
+    the moment it is worth something.
+
+    The stops are printed with their exit code, because the contract's own
+    distinction is that some of them mean "the loop ran and stopped for a
+    reason it declared" (0) and the rest mean "the loop could not tell" (2).
+    A listing that showed only the words would leave that out, and it is the
+    part a cron log renders.
+    """
+    mod = _recipes_module()
+    try:
+        document = mod.listing()
+    except mod.Refused as exc:
+        sys.stderr.write(f"serverosctl: {exc}\n")
+        return EXIT_FAULT
+
+    lines = [f"key         {document['key_formula']} — {document['period_id']}"]
+    for scope in document["scopes"]:
+        lines.append(f"scope       {scope['id']:<8} {scope['reads']}")
+    transports = document["model"]["transports"]
+    lines.append("model       "
+                 + (f"transports {transports}"
+                    if transports else
+                    "no transport is bound on this node, so every step that "
+                    "needs a model stops MODEL_UNBOUND and sends nothing"))
+    for entry in document["recipes"]:
+        lines.append("")
+        lines.append(f"{entry['id']} — {entry['loop']}  ({entry['name']})")
+        lines.append(f"  trigger   {entry['trigger']}")
+        lines.append(f"  action    {entry['action']}")
+        for step in entry["steps"]:
+            mark = "model" if step["needs_model"] else "     "
+            lines.append(f"  step      [{mark}] {step['id']}: {step['does']}")
+        for stop in entry["stops"]:
+            lines.append(f"  stop      {stop['exit_code']}  {stop['reason']} — "
+                         f"{stop['means']}")
+    emit(document, as_json=args.json, lines=lines)
+    return EXIT_OK
+
+
+def cmd_recipe_run(args) -> int:
+    """One loop, one scope, one period -- and the record of what happened.
+
+    EXIT CODES, and they are the contract's, not rearranged here:
+
+      0  the loop ran and stopped for a reason it declared in advance. That
+         includes every reason that means it did nothing: NO_CHANGE and
+         ALREADY_DONE are answers, and a scheduler that saw them as failures
+         would be told to retry work that is already correct.
+      2  the loop could not tell. An unbound schedule, an unauthored source
+         list, a claim with no outcome, a step warranted with no transport.
+         `recipe status` names what it was.
+      1  a fault, or a refusal of the arguments themselves. A caller's typo
+         must not read as a result.
+
+    A run that cannot even be given a key -- no period, or a period from a
+    schedule this instance has not bound -- writes NO record, because there is
+    no key to write it under. That is why the refusals below happen before the
+    engine exists: a record written for a period nobody chose would be read
+    later as though somebody had.
+    """
+    mod = _recipes_module()
+    if args.recipe == "report" and not args.out_dir:
+        # Checked here rather than left to the loop, so that a missing --out-dir
+        # writes NO record: a key claimed for a run that could never have
+        # produced a document would sit there as IN_FLIGHT_OR_ABANDONED and
+        # read as a crash. An argument nobody supplied is not a run.
+        sys.stderr.write(
+            "serverosctl: `recipe run --recipe report` writes a document and a "
+            "receipt, so --out-dir is required, absolute, and outside this "
+            "repository\n")
+        return EXIT_FAULT
+    try:
+        state_root = mod.state_root_for(args.state_root)
+        period = mod.period_from_args(args, state_root)
+        budget, budget_from = mod.budget_from_args(args, state_root)
+        transport = mod.transport_for(state_root)
+    except mod.Refused as exc:
+        sys.stderr.write(f"serverosctl: {exc}\n")
+        return EXIT_FAULT
+    except mod.Unbound as exc:
+        # NO_SCHEDULE_BOUND. The reason is in the vocabulary, so its exit code
+        # is the contract's; `exit_code_for` refuses a word that is not.
+        sys.stderr.write(f"serverosctl: {exc.reason}: {exc.why}\n")
+        return mod.exit_code_for(exc.reason)
+
+    revision, revision_why = mod.checkout_revision(args.worktree)
+    try:
+        engine = mod.Engine(
+            state_root=state_root, scope=args.scope, period=period,
+            model=mod.default_model_invoker, transport=transport,
+            records_root=args.records_root, workspace_root=args.workspace_root,
+            worktree=args.worktree, run_dir=args.run_dir, out_dir=args.out_dir,
+            recipient=args.recipient, channel=args.channel,
+            publication_state=args.publication_state,
+            work_engine=args.work_engine)
+        result = engine.run(recipe_id=args.recipe, budget=budget,
+                            budget_from=budget_from,
+                            retake=args.retake, revision=revision)
+    except mod.Refused as exc:
+        sys.stderr.write(f"serverosctl: {exc}\n")
+        return EXIT_FAULT
+
+    ceiling = result["budget"]
+    lines = [
+        f"recipe      {result['recipe']}",
+        f"key         {result.get('key')}",
+        f"period      {period['start']} → {period['end']}  ({period['source']})",
+        f"record      {result['path']}",
+        f"state       {result['state']}  previous {result.get('previous_state')}",
+        f"stopped     {result.get('stopped_because')} — "
+        f"{result.get('stopped_why')}",
+        # `given: None` is not `given: 0`. A run that stopped before any step
+        # had no ceiling of its own, and printing "a ceiling of 0" would report
+        # a ceiling somebody agreed to where nobody agreed to one.
+        ("model       no step ran against a ceiling "
+         f"(the number would have come from {ceiling['from']})"
+         if ceiling.get("given") is None else
+         f"model       {result['model_calls']} call(s) of a ceiling of "
+         f"{ceiling['given']} from {ceiling['from']}"),
+        f"revision    {revision or '—'}"
+        + ("" if revision else f"  · GAP: {revision_why}"),
+    ]
+    for entry in result["steps"]:
+        lines.append(f"step        {entry['step']}: {entry['did']}")
+    if result.get("would_call"):
+        # Reported on its own line rather than folded into the stop, because it
+        # is the one thing a person needs when a loop stops for a missing
+        # transport: what it was about to ask.
+        lines.append(f"would call  {result['would_call']['step']}: "
+                     f"{result['would_call']['why']}")
+    for note in result["notes"]:
+        lines.append(f"note        {note}")
+    emit(result, as_json=args.json, lines=lines)
+    return result["exit_code"]
+
+
+def cmd_recipe_status(args) -> int:
+    """What every loop recorded for one key, or the absence of a record.
+
+    The absent reading is the whole point and it is why an empty answer exits
+    2 rather than 0: "no loop has been run for this scope and period" is not
+    "this period had nothing in it", and a status verb that rendered the first
+    as the second would be the one place a person looks to tell them apart.
+    """
+    mod = _recipes_module()
+    try:
+        state_root = mod.state_root_for(args.state_root)
+        period = mod.period_from_args(args, state_root)
+        document = mod.status(state_root=state_root, scope_ref=args.scope,
+                              period=period)
+    except mod.Refused as exc:
+        sys.stderr.write(f"serverosctl: {exc}\n")
+        return EXIT_FAULT
+    except mod.Unbound as exc:
+        sys.stderr.write(f"serverosctl: {exc.reason}: {exc.why}\n")
+        return mod.exit_code_for(exc.reason)
+
+    lines = [f"scope       {document['scope']}",
+             f"period      {period['start']} → {period['end']}  "
+             f"({period['source']})"]
+    for recipe_id, entry in document["recipes"].items():
+        lines.append(f"{recipe_id:<11} {entry['state']}"
+                     + (f" — {entry['stopped_because']}: "
+                        f"{entry.get('stopped_why')}"
+                        if entry.get("stopped_because") else "")
+                     + (f"  · {entry['means']}" if entry.get("means") else ""))
+        lines.append(f"{'':<11} {entry['path']}")
+    summary = document["summary"]
+    lines.append("summary     "
+                 + ", ".join(f"{name} {count}" for name, count in summary.items()))
+    emit(document, as_json=args.json, lines=lines)
+    return document["exit_code"]
+
+
 def cmd_document_resolve(args) -> int:
     """SYS-10 — one document's identity, its authoritative revision, and
     whether the copy in hand is a derivation of it.
@@ -6595,6 +6780,100 @@ def build_parser() -> argparse.ArgumentParser:
     rp_daily.add_argument("--attempted-at", default=None,
                           help="when the caller attempted delivery, if it did")
     rp_daily.set_defaults(func=cmd_report_daily)
+
+    recipe = sub.add_parser(
+        "recipe", help="§7's three finite loops, and what each run recorded",
+        **_COMMON)
+    recipe_sub = recipe.add_subparsers(dest="recipe_verb", required=True)
+
+    rc_list = recipe_sub.add_parser(
+        "list", help="Perception, Work and Report, with the stops each one "
+                     "declares in advance. Reads the contract and stops there",
+        **_COMMON)
+    rc_list.set_defaults(func=cmd_recipe_list)
+
+    rc_run = recipe_sub.add_parser(
+        "run",
+        help="one loop, one scope, one period. The key is those three, so a "
+             "run of a key that already has a record does nothing a second "
+             "time — and `no change` is decided before the model boundary is "
+             "reached, so a quiet period calls no model", **_COMMON)
+    rc_run.add_argument("--recipe", required=True,
+                        choices=["perception", "work", "report"],
+                        help="which of §7's loops")
+    rc_run.add_argument(
+        "--scope", required=True,
+        help="node, project:<name>, or item:<ITEM>. The scope is part of the "
+             "key: §7 recomputes the affected claims and not the whole library, "
+             "and one cursor per scope is what lets one move without "
+             "invalidating another's last-success")
+    rc_run.add_argument(
+        "--budget", default=None, type=int,
+        help="model steps this run may take. Required in effect and never "
+             "defaulted: a ceiling a loop picked for itself is one nobody "
+             "agreed to. Omit it only when --schedule supplies one, since a "
+             "schedule binds its own budget; with neither, the run is refused "
+             "rather than given a ceiling of this machine's choosing. "
+             "`--budget 0` is a complete run of every step that needs no model")
+    rc_run.add_argument("--period-start", default=None,
+                        help="window start, ISO-8601 WITH an offset. Either "
+                             "this pair or --schedule is required: a loop that "
+                             "picks its own window writes a record about a "
+                             "period nobody chose")
+    rc_run.add_argument("--period-end", default=None,
+                        help="window end, ISO-8601 with an offset, >= start")
+    rc_run.add_argument(
+        "--schedule", default=None,
+        help="take the window from a schedule this INSTANCE has bound "
+             "(state/serveros/recipes/schedules.yaml). An unbound schedule "
+             "refuses rather than falling back to the host clock — §7 binds the "
+             "timezone, window, recipients, data scope and cost ceiling by "
+             "hand, and this repository enables no timer")
+    rc_run.add_argument("--state-root", default=None,
+                        help="where run records live. Default: the declared "
+                             "`recipes` namespace of this node's state root")
+    rc_run.add_argument("--records-root", default=None,
+                        help="the records root the scope's authored inputs are "
+                             "read from (sources.yaml, today.yaml)")
+    rc_run.add_argument("--workspace-root", default=None)
+    rc_run.add_argument("--worktree", default=None,
+                        help="the checkout a period's real work delta is read "
+                             "from. A path that is not a checkout is reported "
+                             "as a GAP, not as zero commits")
+    rc_run.add_argument("--run-dir", default=None,
+                        help="a round's directory holding `.quay/gate-events.jsonl`. "
+                             "Optional; its absence is a GAP rather than an "
+                             "empty ledger")
+    rc_run.add_argument("--out-dir", default=None,
+                        help="where `report` writes its document and receipt. "
+                             "Absolute and outside this repository")
+    rc_run.add_argument("--recipient", default=None)
+    rc_run.add_argument("--channel", default=None)
+    rc_run.add_argument(
+        "--publication-state", default=None,
+        help="what the CALLER says happened to the report — one of "
+             "runtime/notification-contract.yaml#alerts.delivery.values. "
+             "Default UNKNOWN: writing the file is not delivering it")
+    rc_run.add_argument("--work-engine", default=None,
+                        help="the work-engine command a `work` run would ask for "
+                             "the next Activity. Absent or not a file on this "
+                             "node is reported as WORK_ENGINE_UNBOUND rather "
+                             "than as an Item with nothing to do")
+    rc_run.add_argument("--retake", action="store_true",
+                        help="proceed over a claim that was never completed. "
+                             "The record keeps both timestamps")
+    rc_run.set_defaults(func=cmd_recipe_run)
+
+    rc_status = recipe_sub.add_parser(
+        "status", help="what every loop recorded for one key. A period no loop "
+                       "has a record for exits COULD_NOT_ANSWER — 'nobody ran "
+                       "this' is not 'nothing happened'", **_COMMON)
+    rc_status.add_argument("--scope", required=True)
+    rc_status.add_argument("--period-start", default=None)
+    rc_status.add_argument("--period-end", default=None)
+    rc_status.add_argument("--schedule", default=None)
+    rc_status.add_argument("--state-root", default=None)
+    rc_status.set_defaults(func=cmd_recipe_status)
 
     document = sub.add_parser(
         "document", help="document identity and authority (§10)", **_COMMON)
