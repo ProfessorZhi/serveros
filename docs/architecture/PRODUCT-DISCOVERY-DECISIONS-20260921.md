@@ -410,6 +410,51 @@ require one unless needed.
 
 Parallel isolation = worktree + writer lease + resource lease + checkpoint/event.
 
+## 16. Repository roles and the Bridge pattern
+
+A repository owned by another person, team or organization is not automatically
+a writable ServerOS workspace merely because the user can clone or read it.
+
+When the user needs to develop against such a project, prefer an owned **Bridge
+repository** under the user's GitHub namespace.
+
+Typical shape:
+
+```text
+upstream / enterprise repo
+    role: upstream-readonly
+    remote: upstream
+            │
+            ▼
+ProfessorZhi/<project>-bridge
+    role: bridge-writable
+    remote: origin
+    tracks explicit upstream revision / branch
+            │
+            ├── Item worktrees
+            ├── experiments / integration changes
+            ├── evidence and reviewable commits
+            └── GitHub-visible collaboration with ChatGPT / other Agents
+```
+
+Existing examples include `litellm-bridge` and `muc-bridge`. The same pattern
+may be used for Quay or another externally-owned project if the user needs to
+modify it.
+
+Bridge rules:
+
+- preserve upstream provenance and pinned revision;
+- do not pretend the bridge is upstream authority;
+- do not push to protected/foreign upstream by default;
+- ServerOS resolves `project -> upstream repo(s) + writable bridge repo(s)`;
+- GPT/ChatGPT may review the private bridge through the connected GitHub surface;
+- delivery back upstream is an explicit PR/export/promotion step, not an
+  automatic mirror.
+
+Repository role is therefore first-class context:
+
+`owned-canonical | bridge-writable | upstream-readonly | publication | tool`.
+
 ## 16. Capability discovery and acquisition
 
 Ability search is built into the ServerOS bootstrap surface; a Skill is not
