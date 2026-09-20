@@ -799,14 +799,45 @@ def doc_manifest(when, release_root, pins):
         "跨 repo 不是原子事务：这个文件不声称它们是。它声称的是，每一半单独可达，"
         "并且没有任何一半是在未验证的情况下被写进 active pointer 的。",
         "",
-        section("pin 与可达性", "\n".join([
-            table(["名字", "repo", "revision", "可达性", "证据"], rows), "",
-            "可达性是**跑出来**的，而且是「能不能取到」而不是「head 相不相等」："
-            "对每个 pin 执行一次 `git cat-file -e <sha>^{commit}`，对远端分支执行 "
-            "`git ls-remote --heads`，再执行一次 `git merge-base --is-ancestor "
-            "<pin> <远端 head>`。分支 head 会随每次提交移动，包含关系不会 —— 一个 "
-            "revision 一旦被推上去的分支包含，就永远被它包含。`不存在`/`不含 pin` "
-            "不是警告，是这一页的 FAIL。",
+        section("pin 与可达性（两列，两个问题，互不冒充）", "\n".join([
+            table(["名字", "repo", "revision", "本地对象",
+                   "revision_remote_reachable", "designated_release_ref"], rows), "",
+            "**左边一列问「这个 revision 从远端取不取得到」** —— 注意它问的是"
+            "revision，不是分支名。它把远端 advertise 的**全部 ref** 取回来"
+            "（`git ls-remote --heads --tags`），先用 `git cat-file --batch-check` 留下"
+            "本地**真的持有**的那些，再用一次 "
+            "`git rev-list <pin> --not <所有能判定的 ref>` 定案：空输出就是可达。"
+            "**它不读任何手写字段**，也不打印 ref 名 —— 这一页是"
+            "整页比对的，而「包含某个 revision 的 ref 集合」会随别人建分支而增长，"
+            "ref 名写进格子里会让这一页因为一件与 release 无关的事变红。"
+            "ref 的归属是右边那一列的事。",
+            "",
+            "这一列**刻意不用 `--ignore-missing`**，理由是本机实测的：对一个克隆里"
+            "没有的对象，`git rev-list --ignore-missing <sha>` **退出码 0 且输出为空**"
+            "（那个 flag 的意思是「打不开的跳过」），而空输出正是本列读作可达的东西。"
+            "那个 flag 看起来像宽容，实际是一处假绿：一个**哪里都不存在**的 revision "
+            "会被印成同一行里「本地对象=不存在」旁边写着「可达」——这不是舍入误差，"
+            "是一行内部自相矛盾。去掉它，同一条命令对同一个输入退出 128，拒绝作答"
+            "才是这里诚实的答案；而 `--not` 名单里的 ref 已经预先筛成本地持有的对象，"
+            "那个 flag 在这条路径上本来也没买到任何东西。",
+            "",
+            "**右边一列问「这个 release 声明自己在哪个 ref 发布，那个 ref 含不含它」**"
+            " —— 它是关于**声明**的一句话，不是关于 release 真假的一句话。"
+            "没声明发布点的行写 `未指定` 而不是画一个 `—`：**未声明是一个结论**，"
+            "而 `—` 是「没有结论」被渲染成「没有发现」的样子。",
+            "",
+            "把这两问压进同一格，两个方向会同时出错，而本轮两个都发生了："
+            "一个真的发布在别的 ref 上的 revision 会被读成**悬空**（四仓里有三仓的 "
+            "pin 一直在各自默认分支上，列却写 `远端不存在`，因为那个 pin 点名的分支"
+            "那些仓从来没建过）；而**事后补一个同名分支**就能让它变绿、release 本身"
+            "什么都没变 —— 本轮正是这么做的，`serveros/system-v1-20260920` 在四个"
+            "远端被创建，其中三个的 tip 本来就是那个远端的 HEAD，于是页面读成"
+            "「五条 pin 全部可达」，那是一句关于**名字**的话被当成了一句关于**发行**的话。",
+            "",
+            "判读：`不可达` / `未判定` / `远端未答` 是这一页的 FAIL —— 最后一个尤其"
+            "不要读成前两个，**远端没答和远端答了「没有」是两条不同的发现**。"
+            "`未指定` 是缺口，不是 FAIL。`不含 pin` 也不是 FAIL：它是"
+            "「可达，但发布点在别处」，而这件事只有在两列分开之后才首次说得出来。",
         ]), 3),
         section("revision 与 hash（每一类都要有）", "\n".join([
             table(["名字", "类别", "revision", "树 hash"], _identity_rows(pins)), "",
@@ -974,35 +1005,61 @@ def _top_level(text: str, key: str):
 
 
 def _reachable(pin, *, seen=None):
-    """One pin's row. `seen` memoises the remote question across pins.
+    """One pin's row: TWO columns, because there are two questions.
 
-    Several pins legitimately name the SAME repo and branch — the adapter is
-    built from the same revision as the code it adapts, and two design packages
-    live in one repository. Asking the remote once per row asks the identical
-    question three times and pays a network round trip for each, which is how a
-    page that renders in five seconds starts rendering in forty.
+    This row used to answer one question and print it as the other. The single
+    evidence column ran `git ls-remote --heads origin <pin["branch"]>` — it
+    asked whether a branch NAME, typed by hand into `workbench_sources.PINS`,
+    existed on the remote, and the page read the answer as "this pin is
+    reachable". Two failures followed, in opposite directions, and this round
+    produced both:
 
-    The memo is per render and is passed in, never module-global: a cached
-    "this branch is not on origin" that outlived the push that fixed it would
-    be a wrong answer that never expires, and this page's whole subject is
-    answers that stopped being true without saying so.
+      * A revision genuinely published under another ref read as 悬空. Three of
+        the four repositories in this round had their pin on the remote's own
+        default branch the whole time; the column said `远端不存在` because the
+        pin named a branch those repositories had never created.
+      * Creating the missing branch turned the column green while publishing
+        nothing. This round did exactly that — `serveros/system-v1-20260920`
+        was created on all four remotes and on three of them its tip was
+        already that remote's HEAD. The page then read「五条 refs pin 全部
+        ⊇ pin」, which is a statement about a NAME presented as a statement
+        about a release.
+
+    So the two questions are separated, and neither can impersonate the other.
+    A branch created after the fact can now change only the column that is
+    about that branch.
+
+    Column 1, `revision_remote_reachable` — a property of the REVISION. Asked
+    against the refs the remote ADVERTISES, never against a field somebody
+    typed. It prints a verdict and never a ref name: this page is compared in
+    full, and the set of refs containing a revision grows, so a ref name in
+    the cell would rewrite it without anything about the release changing. Ref
+    identity belongs to column 2, where a human declared it.
+
+    Column 2, `designated_release_ref` — a property of the DECLARATION. Which
+    ref this release says it publishes at, and whether that ref carries the
+    pin. A pin that designates nothing says 未指定 instead of rendering a
+    dash: an undeclared publication point is a finding, and a dash is how the
+    absence of a finding gets rendered as though it were one.
+
+    `seen` memoises the remote answers across pins, for the reason given in
+    `_advertised_refs`.
     """
     import subprocess as sp
     src = Path(pin["repo"])
     if not (src / ".git").exists() and not (src / "HEAD").exists():
-        return [pin["name"], pin["repo"], pin["revision"], "**repo 不可读**", str(src)]
+        # `rel_home` here too. This branch returned the raw path, and the test
+        # that renders the whole page and asserts no home prefix passes only
+        # because no pin currently names an unreadable repository — the hole
+        # was latent, not absent.
+        unreadable = "**repo 不可读**"
+        return [pin["name"], rel_home(pin["repo"]), f"`{pin['revision'][:12]}`",
+                unreadable, unreadable, rel_home(str(src))]
     c = sp.run(["git", "-C", str(src), "cat-file", "-e", f"{pin['revision']}^{{commit}}"],
                capture_output=True, text=True)
     local = "存在" if c.returncode == 0 else "**不存在**"
-    remote = "—"
-    if pin.get("branch"):
-        key = (str(src), pin["branch"])
-        if seen is not None and key in seen:
-            remote = seen[key]
-        else:
-            remote = _remote_answer(sp, src, pin)
-            if seen is not None:
-                seen[key] = remote
+    reach = _remote_reachable(sp, src, pin, present=c.returncode == 0, seen=seen)
+    designated = _designated_ref(sp, src, pin, seen=seen)
     # `rel_home` and not an inline `.replace(<home> + "/", "~/")`, which is what
     # stood here first: the redaction was already written as a function for the
     # whole set, and spelling the home directory out to redo it locally is the
@@ -1011,34 +1068,155 @@ def _reachable(pin, *, seen=None):
     # comment from code and a rule that has to be read is not a rule a scanner
     # can hold.
     return [pin["name"], rel_home(pin["repo"]),
-            f"`{pin['revision'][:12]}`", local, remote]
+            f"`{pin['revision'][:12]}`", local, reach, designated]
 
 
-def _remote_answer(sp, src, pin):
-    """Whether a remote branch exists, and whether it contains this revision.
+def _advertised_refs(sp, src, seen):
+    """Every ref the remote advertises, or None when it did not answer.
 
-    The question §6 asks is "is this pin REACHABLE", which is ancestry, not
-    equality. This column used to print the branch's head and call a moved head
-    a divergence — so the page went red on every commit, on a `claim` page
-    compared in full, for a reason that was not a defect. It was the flap
-    DOC_KINDS exists to stop, inside the one page that cannot use the escape.
-    Ancestry is the right predicate and it is STABLE: once a pushed branch
-    contains a revision it contains it forever.
+    `ls-remote` and not `fetch`: this asks the remote a question and writes
+    nothing, which is what a check inside a shipped renderer is allowed to do.
+    A remote that did not answer and a remote that answered "nothing contains
+    it" are different findings, and returning None for the first is what stops
+    them from being rendered the same way.
+
+    Memoised per render on the repository, because several pins legitimately
+    name the same one — the adapter is built from the revision it adapts, and
+    two design packages live in a single repository. Asking once per row is how
+    a page that renders in five seconds starts rendering in forty. The memo is
+    passed in, never module-global: a cached "this is not on origin" that
+    outlived the push that fixed it would be a wrong answer that never expires,
+    and this page's whole subject is answers that stopped being true without
+    saying so.
     """
-    r = sp.run(["git", "-C", str(src), "ls-remote", "--heads", "origin", pin["branch"]],
-               capture_output=True, text=True, timeout=90)
-    line = r.stdout.strip()
-    if not line:
-        return f"`{pin['branch']}` **远端不存在**"
-    head = line.split()[0]
+    key = ("refs", str(src))
+    if seen is not None and key in seen:
+        return seen[key]
+    r = sp.run(["git", "-C", str(src), "ls-remote", "--heads", "--tags", "origin"],
+               capture_output=True, text=True, timeout=180)
+    refs = None
+    if r.returncode == 0:
+        refs = []
+        for line in r.stdout.splitlines():
+            parts = line.split()
+            # `^{}` peels a tag to the object it names. Keeping both would ask
+            # the identical ancestry question twice for one tag.
+            if len(parts) == 2 and not parts[1].endswith("^{}"):
+                refs.append((parts[0], parts[1]))
+    if seen is not None:
+        seen[key] = refs
+    return refs
+
+
+def _refs_we_hold(sp, src, refs, seen):
+    """The advertised refs whose objects this clone actually has.
+
+    Ancestry is a LOCAL computation. A remote can advertise a ref this node has
+    never fetched, and `git rev-list --ignore-missing` drops such a ref
+    silently — which would turn "no ref we can check contains it" into "no ref
+    contains it". Counting the refs we CAN decide against is what keeps those
+    two apart.
+    """
+    key = ("held", str(src))
+    if seen is not None and key in seen:
+        return seen[key]
+    held = []
+    if refs:
+        p = sp.run(["git", "-C", str(src), "cat-file", "--batch-check"],
+                   input="\n".join(sha for sha, _ in refs) + "\n",
+                   capture_output=True, text=True)
+        present = {f[0] for f in (line.split() for line in p.stdout.splitlines())
+                   if len(f) > 1 and f[1] == "commit"}
+        held = [(sha, ref) for sha, ref in refs if sha in present]
+    if seen is not None:
+        seen[key] = held
+    return held
+
+
+def _remote_reachable(sp, src, pin, *, present, seen):
+    """Column 1 — is this REVISION obtainable from the remote at all.
+
+    One `rev-list <pin> --not <every ref we hold>` answers it for the whole
+    set: empty output means the pin is reachable from at least one of them.
+    The per-ref `merge-base --is-ancestor` loop this replaces was correct and
+    paid a subprocess per advertised ref, on a page that already shells out
+    once per pin.
+
+    **`--ignore-missing` must not be used here, and this is the reason it is
+    absent.** Measured on this node: `git rev-list --ignore-missing <sha>` for
+    an object the clone does not have exits **0 with empty output**, because
+    the flag means "skip what you cannot open" — and empty output is exactly
+    what this function reads as 可达. The flag looks like tolerance and is a
+    false green: a revision that exists nowhere would have been printed as
+    `本地对象=不存在` beside `revision_remote_reachable=可达`, which is not a
+    rounding error but a contradiction inside one row. Without the flag the
+    same command exits 128 for the same input, and refusal is the honest
+    answer. Every ref in the `--not` list is pre-filtered to objects this
+    clone holds, so the flag was never buying anything here either.
+
+    `present` is the readability of the PIN's own object, already computed for
+    the row's `本地对象` cell. Passing it in keeps this function from having to
+    re-ask, and it lets the refusal name the real cause.
+    """
+    refs = _advertised_refs(sp, src, seen)
+    if refs is None:
+        return "**远端未答** —— 不是「不可达」，是这次没问到"
+    held = _refs_we_hold(sp, src, refs, seen)
+    if not held:
+        return "**未判定** —— 远端答了，但它 advertise 的对象本地一个都没有"
+    if not present:
+        return ("**未判定** —— 本地没有这个 revision 的对象，"
+                "「它是不是被某个 ref 包含」无从问起")
+    r = sp.run(["git", "-C", str(src), "rev-list",
+                pin["revision"], "--not", *[sha for sha, _ in held]],
+               capture_output=True, text=True)
+    if r.returncode != 0:
+        return "**未判定** —— rev-list 拒绝了这个 revision，可达性无从判定"
+    if not r.stdout.strip():
+        # A positive needs no caveat: containment in ANY held ref is a proof of
+        # reachability, and consulting fewer refs cannot weaken a proof. The
+        # caveat belongs on the refusal, where the missing refs could have
+        # overturned it.
+        return "可达"
+    if len(held) < len(refs):
+        return (f"**不可达** —— 远端答了，本地持有的 {len(held)} 个 ref 没有一个"
+                f"包含它；另 {len(refs) - len(held)} 个 ref 的对象本地没有，"
+                f"这一次没判")
+    return "**不可达** —— 远端答了，没有任何 ref 包含它"
+
+
+def _designated_ref(sp, src, pin, *, seen):
+    """Column 2 — which ref this release SAYS it publishes at, and does that
+    ref carry the pin.
+
+    All three verdicts are about the declaration rather than about whether the
+    release is real: `未发布` means the named ref is not on the remote, `⊇ pin`
+    means it is and carries this revision, `不含 pin` means it is and does not.
+    The last is the state the old single column could not express at all —
+    reachable through some other ref while the designated one does not carry it
+    — and it is now readable as exactly that, because column 1 answers the
+    reachability half independently.
+    """
+    ref = pin.get("release_ref")
+    if not ref:
+        if pin.get("publishes") is False:
+            return "—（本节点持有，不声称发布）"
+        return "**未指定** —— 这一行没有声明发布点"
+    refs = _advertised_refs(sp, src, seen)
+    if refs is None:
+        return f"`{ref}` **远端未答**"
+    wanted = {ref, f"refs/heads/{ref}", f"refs/tags/{ref}"}
+    head = next((sha for sha, name in refs if name in wanted), None)
+    if head is None:
+        return f"`{ref}` **未发布**"
     anc = sp.run(["git", "-C", str(src), "merge-base", "--is-ancestor",
                   pin["revision"], head], capture_output=True, text=True)
     if anc.returncode == 0:
-        return f"`{pin['branch']}` ⊇ pin"
+        return f"`{ref}` ⊇ pin"
     if anc.returncode == 1:
-        return (f"`{pin['branch']}` **不含 pin** —— 分支在远端，但这个 "
-                f"revision 从它取不到")
-    return (f"`{pin['branch']}` 存在（远端 head 的对象不在本地，包含关系未验证）")
+        return (f"`{ref}` **不含 pin** —— 作为发布点的这个 ref 在远端，"
+                f"但这个 revision 从它取不到")
+    return (f"`{ref}` 存在（远端 head 的对象不在本地，包含关系未验证）")
 
 
 def _release_status(release_root):

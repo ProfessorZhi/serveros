@@ -431,12 +431,23 @@ class TheCommittedSetNamesNoNodeAbsolutePath(unittest.TestCase):
                                       "shortening them, which is a different defect")
 
 
-class ReachabilityMeansAncestryNotEquality(unittest.TestCase):
-    """§6 asks whether every pin is REACHABLE. The column used to print the
-    branch's head and call a moved head a divergence, which made a `claim` page
-    — compared in full — go red on every commit for a reason that was not a
-    defect. The predicate is `merge-base --is-ancestor`, and this watches all
-    three of its answers on a real repository rather than asserting them."""
+class TheTwoColumnsAskTwoQuestions(unittest.TestCase):
+    """§6 asks whether every pin is REACHABLE. One column used to answer, and it
+    asked a different question: *does a ref with the name typed into
+    `workbench_sources.PINS` exist on the remote*. It was wrong in both
+    directions, and both were seen on this round's real inputs — a revision that
+    WAS published, whose pin named a ref nobody had created, read as a dangling
+    pin; and a ref created after the fact, pointing at anything at all, turned
+    the page green without making the pin one bit more obtainable.
+
+    So there are two columns, and neither implies the other.
+    `revision_remote_reachable` is a property of the REVISION, asked against the
+    refs the remote advertises. `designated_release_ref` is a property of the
+    DECLARATION — which ref this pin says it publishes at, and whether that ref
+    carries the revision. This class watches each answer its own question on a
+    real repository, the two directions of the old false verdict among them,
+    plus the case where the remote does not answer at all — which is neither
+    可达 nor 不可达."""
 
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -446,6 +457,7 @@ class ReachabilityMeansAncestryNotEquality(unittest.TestCase):
         self.remote = base / "origin.git"
         git = lambda *a, cwd=None: subprocess.run(  # noqa: E731
             ["git", *a], cwd=str(cwd or self.repo), capture_output=True, text=True)
+        self.git = git
         git("init", "-q", "-b", "main")
         git("config", "user.email", "t@example.invalid")
         git("config", "user.name", "t")
@@ -459,7 +471,7 @@ class ReachabilityMeansAncestryNotEquality(unittest.TestCase):
         git("init", "-q", "--bare", str(self.remote))
         git("remote", "add", "origin", str(self.remote))
         git("push", "-q", "origin", "main")
-        # A revision that is NOT on the pushed branch: committed, then reset away.
+        # A revision no advertised ref carries: committed, then left behind.
         git("checkout", "-q", "-b", "side", self.on_branch)
         (self.repo / "g").write_text("x")
         git("add", "g")
@@ -470,29 +482,115 @@ class ReachabilityMeansAncestryNotEquality(unittest.TestCase):
     def tearDown(self):
         self.tmp.cleanup()
 
-    def _row(self, revision):
+    def _row(self, revision, release_ref=None, publishes=None):
         return wb._reachable({"name": "n", "repo": str(self.repo),
-                              "revision": revision, "branch": "main"})
+                              "revision": revision, "release_ref": release_ref,
+                              "publishes": publishes})
 
-    def test_a_revision_the_branch_contains_reads_reachable(self):
+    # ── column 1 · is this REVISION obtainable from the remote at all ─────────
+    #
+    # `可达` is a substring of `不可达`, so the reachable case is written with
+    # assertEqual and never with assertIn: an assertIn here would pass on the
+    # very value it exists to exclude.
+
+    def test_a_revision_an_advertised_ref_carries_is_reachable(self):
         """Even though the head has moved past it — which is the whole point."""
-        self.assertIn("⊇ pin", self._row(self.on_branch)[4])
+        self.assertEqual("可达", self._row(self.on_branch, "main")[4])
 
-    def test_a_revision_the_branch_does_not_contain_is_a_failure(self):
-        self.assertIn("不含 pin", self._row(self.off_branch)[4])
+    def test_a_revision_no_advertised_ref_carries_is_unreachable(self):
+        row = self._row(self.off_branch, "main")
+        self.assertIn("不可达", row[4])
+        self.assertIn("没有任何 ref 包含它", row[4])
 
-    def test_a_branch_that_is_not_on_the_remote_is_a_failure(self):
-        row = wb._reachable({"name": "n", "repo": str(self.repo),
-                             "revision": self.on_branch, "branch": "no-such-branch"})
-        self.assertIn("远端不存在", row[4])
+    def test_a_revision_this_clone_does_not_have_is_not_called_reachable(self):
+        """A false green found while writing this repair, on this node.
 
-    def test_the_column_carries_no_head_sha(self):
+        `git rev-list --ignore-missing <sha>` exits 0 with EMPTY OUTPUT for an
+        object the clone does not have — it means "skip what you cannot open",
+        and empty output is what this column reads as 可达. The flag looked like
+        tolerance and would have printed `本地对象=不存在` beside
+        `revision_remote_reachable=可达` inside one row. The command is now run
+        without it, and it refuses instead."""
+        row = self._row("deadbeef" * 5, "main")
+        self.assertIn("不存在", row[3])
+        self.assertTrue(row[4].startswith("**未判定**"), row[4])
+        self.assertNotEqual("可达", row[4])
+
+    def test_a_remote_that_does_not_answer_is_not_unreachable(self):
+        """A source that says "no such thing" is an answer; a source that did
+        not answer is a gap. Rendering them alike is how a broken remote becomes
+        a dangling pin — and 未答 must never be printed as 不可达."""
+        self.git("remote", "set-url", "origin",
+                 str(Path(self.tmp.name) / "no-such-remote"))
+        row = self._row(self.on_branch, "main")
+        # The verdict is the cell's LEADING token. It is not asserted by
+        # substring absence: this cell deliberately names 不可达 in its prose —
+        # "不是「不可达」" — which is the page explaining the distinction a
+        # person needs, and a test demanding the word be absent would be asking
+        # the page to stop explaining itself.
+        self.assertTrue(row[4].startswith("**远端未答**"), row[4])
+        self.assertTrue(row[5].startswith("`main` **远端未答**"), row[5])
+
+    def test_a_remote_whose_refs_we_do_not_hold_is_undecided(self):
+        """The remote answered, and answered about objects this clone does not
+        have — so the ancestry question cannot be asked at all. That is 未判定,
+        and it is not 不可达 either: it is a third state and it says so."""
+        other = Path(self.tmp.name) / "other"
+        subprocess.run(["git", "clone", "-q", str(self.remote), str(other)],
+                       capture_output=True, text=True)
+        for k, v in (("user.email", "o@example.invalid"), ("user.name", "o")):
+            self.git("config", k, v, cwd=other)
+        (other / "h").write_text("y")
+        self.git("add", "h", cwd=other)
+        self.git("commit", "-qam", "moved on", cwd=other)
+        self.git("push", "-q", "origin", "main", cwd=other)
+        self.assertTrue(self._row(self.on_branch, "main")[4].startswith("**未判定**"))
+
+    # ── column 2 · what this pin SAYS it publishes at ────────────────────────
+
+    def test_a_revision_published_behind_an_uncreated_ref_is_still_reachable(self):
+        """The false red this repair removes. `release_ref` names a ref nobody
+        created; the revision is on `main` and column 1 says so. Column 2
+        reports its own finding — 未发布 — and does not overwrite column 1."""
+        row = self._row(self.on_branch, "no-such-ref")
+        self.assertEqual("可达", row[4])
+        self.assertIn("未发布", row[5])
+
+    def test_a_ref_created_after_the_fact_changes_only_column_two(self):
+        """The repair's own control.
+
+        A ref pushed later, carrying only what it carries, must move column 2
+        and must NOT move column 1. This is the assertion that a 补同名 branch
+        cannot manufacture a 悬空 pin 已修复: the ref exists in both rows below,
+        and the two rows disagree about reachability because the revisions are
+        different — not because a name was created."""
+        self.git("push", "-q", "origin", f"{self.tip}:refs/heads/late-line")
+        unreachable = self._row(self.off_branch, "late-line")
+        self.assertIn("不可达", unreachable[4])
+        self.assertIn("不含 pin", unreachable[5])
+        reachable = self._row(self.on_branch, "late-line")
+        self.assertEqual("可达", reachable[4])
+        self.assertIn("⊇ pin", reachable[5])
+
+    def test_a_pin_that_declares_no_publication_point_is_a_gap(self):
+        """An undeclared publication point is a missing declaration, not a
+        failed one, and the two must not print alike."""
+        row = self._row(self.on_branch)
+        self.assertEqual("可达", row[4])
+        self.assertIn("未指定", row[5])
+
+    def test_a_pin_held_without_claiming_publication_says_so(self):
+        """`publishes=False` is a DECISION and it is distinguishable from having
+        said nothing — which is the whole reason the flag exists."""
+        self.assertIn("不声称发布", self._row(self.on_branch, publishes=False)[5])
+
+    def test_the_columns_carry_no_head_sha(self):
         """The MOVING head is what made the page flap; it must not come back.
 
-        The pin's own revision is printed — that is the column's subject. What
-        must not be printed is the branch tip, because it changes on every commit
-        and this page is compared in full."""
-        row = self._row(self.on_branch)
+        The pin's own revision is printed — that is the row's subject. What must
+        not be printed is a ref tip, because it changes on every commit and this
+        page is compared in full."""
+        row = self._row(self.on_branch, "main")
         joined = " ".join(row)
         self.assertNotIn(self.tip[:12], joined)
         self.assertIn(self.on_branch[:12], joined)

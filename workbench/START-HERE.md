@@ -1,11 +1,11 @@
-<!-- ⟦snapshot⟧ rendered 2026-09-20T12:06:45+00:00 by `runtime/workbench.py` from ~/workspace/worktrees/serveros/SRV-0011 · inputs: projects=serveros,litellm,multi-user-claw; project=litellm; item=LIT-0101; quay-run=~/artifacts/work-items/serveros/SRV-0011/RUN-0001/quay-run; quay-bin=~/workspace/worktrees/quay/foundation-skeleton/plugin/vendor/quay/dist/quay.js; ability-repo=~/workspace/worktrees/ability-management/SRV-0011; reports-dir=~/artifacts/work-items/serveros/SRV-0011/RUN-0001; release-root=~/artifacts/work-items/serveros/SRV-0011/RUN-0001/release/dist/serveros-linux-work -->
+<!-- ⟦snapshot⟧ rendered 2026-09-20T14:06:52+00:00 by `runtime/workbench.py` from ~/workspace/worktrees/serveros/SRV-0011 · inputs: projects=serveros,litellm,multi-user-claw; project=litellm; item=LIT-0101; quay-run=~/artifacts/work-items/serveros/SRV-0011/RUN-0001/quay-run; quay-bin=~/workspace/worktrees/quay/foundation-skeleton/plugin/vendor/quay/dist/quay.js; ability-repo=~/workspace/worktrees/ability-management/SRV-0011; reports-dir=~/artifacts/work-items/serveros/SRV-0011/RUN-0001; release-root=~/artifacts/work-items/serveros/SRV-0011/RUN-0001/release/dist/serveros-linux-work -->
 
 # START-HERE
 
 > **主张** — 本页内容由命令的判定产生，重跑应当复现。状态矩阵是 23 条命令的判定，不是读数。渲染时会重跑它们并比对同一份判定块。`serverosctl workbench check` 会整页比对。
 
 <!-- ⟦answers⟧
-serverosctl status --json	0
+serverosctl status --json	2
 serverosctl device show --json	0
 serverosctl resource summary --json	0
 serverosctl process top --json	0
@@ -32,7 +32,7 @@ serverosctl workspace overview --json	0
 -->
 
 <!-- ⟦verdicts⟧
-runtime=OK
+runtime=FAILING
 device=OK
 resource=OK
 process=OK
@@ -87,11 +87,11 @@ workspace=OK
 | [RELEASE-MANIFEST](RELEASE-MANIFEST.md) | pin、摘要与可达性 | `git cat-file, git ls-remote, 隔离 root 自身的符号链接结构` |
 | [DEPLOYMENT](DEPLOYMENT.md) | 待部署清单（未执行） | `作者输入 runtime/workbench_sources.py` |
 
-### 状态矩阵（24 条 OK，0 条 FAILING）
+### 状态矩阵（23 条 OK，1 条 FAILING）
 
 | id | 主张 | 命令 | 实测 |  |
 |---|---|---|---|---|
-| runtime | serverosd 在跑，并且报告它最后一次看的时间 | `serverosctl status --json` | exit 0 | OK |
+| runtime | serverosd 在跑，并且报告它最后一次看的时间 | `serverosctl status --json` | exit 2 | **FAILING** |
 | device | 这台设备的 CPU/内存/load/GPU/磁盘事实 | `serverosctl device show --json` | exit 0 | OK |
 | resource | 按 role 分的资源压力（根盘 vs 数据盘） | `serverosctl resource summary --json` | exit 0 | OK |
 | process | 进程按 group/session/container/role 归属 | `serverosctl process top --json` | exit 0 | OK |

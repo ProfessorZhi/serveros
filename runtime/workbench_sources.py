@@ -293,10 +293,30 @@ DEPLOYMENT = [
 # the revision — which is the identity this row is about. Found by writing the
 # release criterion that greps the shipped tree for exactly this path.
 #
-# `branch` is present only where the pin is also meant to exist on a remote. §6
-# asks for a reachability check because a manifest can name a revision nobody can
-# fetch and still read as a release; a pin with no `branch` is one this node holds
-# locally and does not claim to publish.
+# `release_ref` IS A DECLARATION, NOT THE REACHABILITY CHECK, AND THE SPLIT IS A
+# REPAIR. This field used to be called `branch` and it was the ONLY input to the
+# manifest's reachability column — so that column answered "does the branch I
+# typed exist on the remote", and printed the answer as "this pin is reachable".
+# §6 asks for a reachability check because a manifest can name a revision nobody
+# can fetch and still read as a release; what it did not ask for is a check that
+# a hand-typed NAME can satisfy on its own.
+#
+# Both directions went wrong in one round. Three of the four repositories below
+# had their pin on the remote's own default branch the entire time and read as
+# `远端不存在`, because the name in this field had never been created there. Then
+# the name was created on all four remotes — and on three of them the tip was
+# already that remote's HEAD, so nothing was published and the page went green.
+#
+# The column now asks the remote for its ADVERTISED REFS and decides ancestry
+# against those (`runtime/workbench.py:_remote_reachable`); a name in this file
+# cannot manufacture or destroy that verdict. `release_ref` is what it always
+# should have been: which ref this release says it publishes at, rendered in its
+# own column beside the reachability answer rather than standing in for it.
+#
+# A pin with no `release_ref` and `publishes=False` is one this node holds
+# locally and does not claim to publish. A pin with neither renders `未指定`,
+# because an undeclared publication point is a finding and a dash would render
+# the absence of a finding as though it were one.
 #
 # `kind` NAMES THE CLASS, AND THE CLASS IS THE POINT. This list used to hold
 # five rows and every one of them was `code` or a work package — the
@@ -315,16 +335,16 @@ DEPLOYMENT = [
 PINS = [
     dict(name="serveros", kind="code",
          repo=str(ROOT),
-         revision="60da36f3", branch="serveros/system-v1-20260920"),
+         revision="60da36f3", release_ref="serveros/system-v1-20260920"),
     dict(name="ability-management", kind="ability",
          repo="/data/home/vince/workspace/worktrees/ability-management/SRV-0011",
-         revision="fbd0b1a7", branch="serveros/system-v1-20260920"),
+         revision="fbd0b1a7", release_ref="serveros/system-v1-20260920"),
     dict(name="work-engine", kind="code",
          repo="/data/home/vince/workspace/worktrees/work-engine/SRV-0011",
-         revision="65e9b56c", branch="serveros/system-v1-20260920"),
+         revision="65e9b56c", release_ref="serveros/system-v1-20260920"),
     dict(name="hwz-ops", kind="ops",
          repo="/data/home/vince/workspace/worktrees/hwz-ops/SRV-0011",
-         revision="790bca27", branch="serveros/system-v1-20260920"),
+         revision="790bca27", release_ref="serveros/system-v1-20260920"),
     # The adapter is BUILT from `plugin/`, so its revision is a serveros
     # revision — and it is still its own row, because the artifact that lands on
     # a node is the composed plugin, not the checkout. `composition` names which
@@ -333,10 +353,16 @@ PINS = [
     # not a reason to leave the row out.
     dict(name="Claude/Codex adapter", kind="adapter",
          repo=str(ROOT),
-         revision="60da36f3", branch="serveros/system-v1-20260920"),
+         revision="60da36f3", release_ref="serveros/system-v1-20260920"),
+    # `publishes=False` rather than an absent field: a toolchain this node holds
+    # and does not claim to publish is a DECISION, and it renders as one. The
+    # difference matters because `release_ref` absent WITH this flag is 本节点
+    # 持有，不声称发布, and absent WITHOUT it is 未指定 — a gap. Collapsing the
+    # two would let a row that simply forgot to declare a publication point
+    # render exactly like a row that decided not to have one.
     dict(name="quay（工作包 E 固定的版本）", kind="toolchain",
          repo="/data/home/vince/workspace/worktrees/quay/foundation-skeleton",
-         revision="ddc4fb40f", branch=None),
+         revision="ddc4fb40f", publishes=False),
     # This row used to name `worktrees/quay/foundation-skeleton-develop`, which
     # no longer exists — so the pin printed `**repo 不可读**` forever while the
     # revision it names was sitting in the sibling clone all along. Both fixed
@@ -345,13 +371,13 @@ PINS = [
     # actually needs.
     dict(name="quay（本轮 Goal 闭环用的版本）", kind="toolchain",
          repo="/data/home/vince/workspace/worktrees/quay/foundation-skeleton",
-         revision="8bb184ef3", branch=None),
+         revision="8bb184ef3", publishes=False),
     dict(name="design package（本轮固定版本）", kind="design",
          repo=str(ROOT),
-         revision="c01d2a0d", branch="docs/final-architecture-20260920"),
+         revision="c01d2a0d", release_ref="docs/final-architecture-20260920"),
     dict(name="design package（本轮从它继续）", kind="design",
          repo=str(ROOT),
-         revision="e1f7de4d5", branch="docs/foundation-skeleton-20260920"),
+         revision="e1f7de4d5", release_ref="docs/foundation-skeleton-20260920"),
 ]
 
 # ── DOC_KINDS ─────────────────────────────────────────────────────────────────

@@ -1,4 +1,4 @@
-<!-- ⟦snapshot⟧ rendered 2026-09-20T12:06:45+00:00 by `runtime/workbench.py` from ~/workspace/worktrees/serveros/SRV-0011 · inputs: projects=serveros,litellm,multi-user-claw; project=litellm; item=LIT-0101; quay-run=~/artifacts/work-items/serveros/SRV-0011/RUN-0001/quay-run; quay-bin=~/workspace/worktrees/quay/foundation-skeleton/plugin/vendor/quay/dist/quay.js; ability-repo=~/workspace/worktrees/ability-management/SRV-0011; reports-dir=~/artifacts/work-items/serveros/SRV-0011/RUN-0001; release-root=~/artifacts/work-items/serveros/SRV-0011/RUN-0001/release/dist/serveros-linux-work -->
+<!-- ⟦snapshot⟧ rendered 2026-09-20T14:06:52+00:00 by `runtime/workbench.py` from ~/workspace/worktrees/serveros/SRV-0011 · inputs: projects=serveros,litellm,multi-user-claw; project=litellm; item=LIT-0101; quay-run=~/artifacts/work-items/serveros/SRV-0011/RUN-0001/quay-run; quay-bin=~/workspace/worktrees/quay/foundation-skeleton/plugin/vendor/quay/dist/quay.js; ability-repo=~/workspace/worktrees/ability-management/SRV-0011; reports-dir=~/artifacts/work-items/serveros/SRV-0011/RUN-0001; release-root=~/artifacts/work-items/serveros/SRV-0011/RUN-0001/release/dist/serveros-linux-work -->
 
 # RELEASE-MANIFEST
 
@@ -12,21 +12,29 @@
 
 跨 repo 不是原子事务：这个文件不声称它们是。它声称的是，每一半单独可达，并且没有任何一半是在未验证的情况下被写进 active pointer 的。
 
-### pin 与可达性
+### pin 与可达性（两列，两个问题，互不冒充）
 
-| 名字 | repo | revision | 可达性 | 证据 |
-|---|---|---|---|---|
-| serveros | ~/workspace/worktrees/serveros/SRV-0011 | `60da36f3` | 存在 | `serveros/system-v1-20260920` ⊇ pin |
-| ability-management | ~/workspace/worktrees/ability-management/SRV-0011 | `fbd0b1a7` | 存在 | `serveros/system-v1-20260920` ⊇ pin |
-| work-engine | ~/workspace/worktrees/work-engine/SRV-0011 | `65e9b56c` | 存在 | `serveros/system-v1-20260920` ⊇ pin |
-| hwz-ops | ~/workspace/worktrees/hwz-ops/SRV-0011 | `790bca27` | 存在 | `serveros/system-v1-20260920` ⊇ pin |
-| Claude/Codex adapter | ~/workspace/worktrees/serveros/SRV-0011 | `60da36f3` | 存在 | `serveros/system-v1-20260920` ⊇ pin |
-| quay（工作包 E 固定的版本） | ~/workspace/worktrees/quay/foundation-skeleton | `ddc4fb40f` | 存在 | — |
-| quay（本轮 Goal 闭环用的版本） | ~/workspace/worktrees/quay/foundation-skeleton | `8bb184ef3` | 存在 | — |
-| design package（本轮固定版本） | ~/workspace/worktrees/serveros/SRV-0011 | `c01d2a0d` | 存在 | `docs/final-architecture-20260920` ⊇ pin |
-| design package（本轮从它继续） | ~/workspace/worktrees/serveros/SRV-0011 | `e1f7de4d5` | 存在 | `docs/foundation-skeleton-20260920` ⊇ pin |
+| 名字 | repo | revision | 本地对象 | revision_remote_reachable | designated_release_ref |
+|---|---|---|---|---|---|
+| serveros | ~/workspace/worktrees/serveros/SRV-0011 | `60da36f3` | 存在 | 可达 | `serveros/system-v1-20260920` ⊇ pin |
+| ability-management | ~/workspace/worktrees/ability-management/SRV-0011 | `fbd0b1a7` | 存在 | 可达 | `serveros/system-v1-20260920` ⊇ pin |
+| work-engine | ~/workspace/worktrees/work-engine/SRV-0011 | `65e9b56c` | 存在 | 可达 | `serveros/system-v1-20260920` ⊇ pin |
+| hwz-ops | ~/workspace/worktrees/hwz-ops/SRV-0011 | `790bca27` | 存在 | 可达 | `serveros/system-v1-20260920` ⊇ pin |
+| Claude/Codex adapter | ~/workspace/worktrees/serveros/SRV-0011 | `60da36f3` | 存在 | 可达 | `serveros/system-v1-20260920` ⊇ pin |
+| quay（工作包 E 固定的版本） | ~/workspace/worktrees/quay/foundation-skeleton | `ddc4fb40f` | 存在 | 可达 | —（本节点持有，不声称发布） |
+| quay（本轮 Goal 闭环用的版本） | ~/workspace/worktrees/quay/foundation-skeleton | `8bb184ef3` | 存在 | 可达 | —（本节点持有，不声称发布） |
+| design package（本轮固定版本） | ~/workspace/worktrees/serveros/SRV-0011 | `c01d2a0d` | 存在 | 可达 | `docs/final-architecture-20260920` ⊇ pin |
+| design package（本轮从它继续） | ~/workspace/worktrees/serveros/SRV-0011 | `e1f7de4d5` | 存在 | 可达 | `docs/foundation-skeleton-20260920` ⊇ pin |
 
-可达性是**跑出来**的，而且是「能不能取到」而不是「head 相不相等」：对每个 pin 执行一次 `git cat-file -e <sha>^{commit}`，对远端分支执行 `git ls-remote --heads`，再执行一次 `git merge-base --is-ancestor <pin> <远端 head>`。分支 head 会随每次提交移动，包含关系不会 —— 一个 revision 一旦被推上去的分支包含，就永远被它包含。`不存在`/`不含 pin` 不是警告，是这一页的 FAIL。
+**左边一列问「这个 revision 从远端取不取得到」** —— 注意它问的是revision，不是分支名。它把远端 advertise 的**全部 ref** 取回来（`git ls-remote --heads --tags`），先用 `git cat-file --batch-check` 留下本地**真的持有**的那些，再用一次 `git rev-list <pin> --not <所有能判定的 ref>` 定案：空输出就是可达。**它不读任何手写字段**，也不打印 ref 名 —— 这一页是整页比对的，而「包含某个 revision 的 ref 集合」会随别人建分支而增长，ref 名写进格子里会让这一页因为一件与 release 无关的事变红。ref 的归属是右边那一列的事。
+
+这一列**刻意不用 `--ignore-missing`**，理由是本机实测的：对一个克隆里没有的对象，`git rev-list --ignore-missing <sha>` **退出码 0 且输出为空**（那个 flag 的意思是「打不开的跳过」），而空输出正是本列读作可达的东西。那个 flag 看起来像宽容，实际是一处假绿：一个**哪里都不存在**的 revision 会被印成同一行里「本地对象=不存在」旁边写着「可达」——这不是舍入误差，是一行内部自相矛盾。去掉它，同一条命令对同一个输入退出 128，拒绝作答才是这里诚实的答案；而 `--not` 名单里的 ref 已经预先筛成本地持有的对象，那个 flag 在这条路径上本来也没买到任何东西。
+
+**右边一列问「这个 release 声明自己在哪个 ref 发布，那个 ref 含不含它」** —— 它是关于**声明**的一句话，不是关于 release 真假的一句话。没声明发布点的行写 `未指定` 而不是画一个 `—`：**未声明是一个结论**，而 `—` 是「没有结论」被渲染成「没有发现」的样子。
+
+把这两问压进同一格，两个方向会同时出错，而本轮两个都发生了：一个真的发布在别的 ref 上的 revision 会被读成**悬空**（四仓里有三仓的 pin 一直在各自默认分支上，列却写 `远端不存在`，因为那个 pin 点名的分支那些仓从来没建过）；而**事后补一个同名分支**就能让它变绿、release 本身什么都没变 —— 本轮正是这么做的，`serveros/system-v1-20260920` 在四个远端被创建，其中三个的 tip 本来就是那个远端的 HEAD，于是页面读成「五条 pin 全部可达」，那是一句关于**名字**的话被当成了一句关于**发行**的话。
+
+判读：`不可达` / `未判定` / `远端未答` 是这一页的 FAIL —— 最后一个尤其不要读成前两个，**远端没答和远端答了「没有」是两条不同的发现**。`未指定` 是缺口，不是 FAIL。`不含 pin` 也不是 FAIL：它是「可达，但发布点在别处」，而这件事只有在两列分开之后才首次说得出来。
 
 ### revision 与 hash（每一类都要有）
 
