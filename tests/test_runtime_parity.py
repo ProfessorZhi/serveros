@@ -325,9 +325,65 @@ class CliTests(unittest.TestCase):
              "device", "agents", "--json"],
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         record = json.loads(proc.stdout)
-        paths = [a.get("path") for a in record["acknowledged"]]
-        self.assertTrue(paths, "no observed surface reached the record")
+        rows = record["observed_surfaces"]
+        self.assertTrue(rows, "no observed surface reached the record")
+        paths = [row["path"] for row in rows]
         self.assertTrue(all(p and p.startswith("/") for p in paths))
+        # The assertion above would also hold for a record that echoed the
+        # contract's declared spec list back, because those paths are absolute
+        # too. This is what separates the two: a declared path is one the
+        # contract names; an observed one is one this run actually read. So
+        # re-read the filesystem here and require the record to agree with it.
+        for row in rows:
+            self.assertIsInstance(row["present"], bool)
+            self.assertEqual(row["present"], Path(row["path"]).exists(),
+                             f"{row['path']} is reported present="
+                             f"{row['present']} but the filesystem says "
+                             f"{Path(row['path']).exists()}")
+        # And the record must carry the field each row belongs to, or a reader
+        # cannot tell an instruction surface from an MCP one.
+        self.assertTrue(all(row["field"] for row in rows))
+
+
+class ObservedSurfaceRowsTest(unittest.TestCase):
+    """The machine-readable half of "say what you looked at".
+
+    This class exists because the API-level assertion above is **vacuous on
+    this host**: all seven rows here are `present: True`, so "the record agrees
+    with the filesystem" cannot tell a record that measured from one that
+    writes `True` unconditionally. A synthetic observation with one missing
+    path is what gives that sentence teeth — and, more to the point, it is the
+    only place the absence branch is exercised at all.
+    """
+
+    def test_a_path_that_was_read_and_is_absent_is_a_finding_with_a_reason(self):
+        observed = {"claude-code": {"instruction_surfaces": [
+            {"path": "/data/home/vince/CLAUDE.md", "present": True},
+            {"path": "/data/home/vince/gone.md", "present": False},
+        ]}}
+        rows = parity.observed_surface_rows(observed, ["claude-code"])
+        self.assertEqual([r["path"] for r in rows],
+                         ["/data/home/vince/CLAUDE.md",
+                          "/data/home/vince/gone.md"])
+        self.assertIsNone(rows[0]["because"])
+        self.assertEqual(rows[1]["because"],
+                         "the path was read and is not there")
+
+    def test_a_runtime_that_was_never_observed_produces_no_row(self):
+        """"没有测量"不得渲染成"测量到不存在"。前者是缺口，后者是发现。"""
+        self.assertEqual(parity.observed_surface_rows({}, ["claude-code"]), [])
+
+    def test_a_row_carries_the_field_it_belongs_to(self):
+        """少了 field，读者分不出 instruction surface 和 MCP surface。"""
+        observed = {"r": {"mcp_surfaces": [{"path": "/x", "present": True}]}}
+        rows = parity.observed_surface_rows(observed, ["r"])
+        self.assertEqual(rows[0]["field"], "mcp_surfaces")
+        self.assertEqual(rows[0]["runtime"], "r")
+
+    def test_the_surfaces_are_a_closed_set(self):
+        """一个没声明的 field 不会被当成新的一类悄悄放行。"""
+        observed = {"r": {"something_new": [{"path": "/x", "present": True}]}}
+        self.assertEqual(parity.observed_surface_rows(observed, ["r"]), [])
 
 
 if __name__ == "__main__":

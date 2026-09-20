@@ -766,5 +766,101 @@ class BuildTests(unittest.TestCase):
         self.assertTrue((self.out / "mcp/bin/serveros-node-mcp").is_file())
 
 
+class TheBuildRefusesToShipACredential(unittest.TestCase):
+    """§28's scan as a GATE, with the control that makes it a gate.
+
+    `scripts/scan_secrets.py` has said since it was written that it exists "so a
+    release can fail instead of shipping one", and nothing in `build.py` or
+    `release.py` called it. A docstring is not a check — the same sentence
+    `scripts/publication.py` writes about its own rules — so the scan is now
+    inside `build()` and these tests are what separates "the build scans" from
+    "the build claims to scan".
+
+    The gate is deliberately paired with a clean build in the same test. A gate
+    that is only ever observed refusing is indistinguishable from a gate that
+    refuses everything.
+    """
+
+    # Assembled at runtime so this file carries no matchable credential shape
+    # of its own — otherwise the fixture that proves the scanner works is
+    # itself a finding when the scanner is pointed at the repository.
+    FAKE_AWS_KEY = "AKIA" + "IOSFODNN7EXAMPLE"
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.base = Path(self._tmp.name)
+        self.repo, self.rev = make_ability_repo(self.base)
+        self.contract = write_pack_contract(self.base)
+        self.out = self.base / "dist/current"
+        self.marketplace = self.base / "dist/.agents/plugins/marketplace.json"
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def args_for(self, repo: Path, rev: str, *extra: str) -> list[str]:
+        return [
+            "--ability-repo", str(repo),
+            "--ability-rev", rev,
+            "--output", str(self.out),
+            "--marketplace-path", str(self.marketplace),
+            "--pack-contract", str(self.contract),
+            *extra,
+        ]
+
+    def args(self, *extra: str) -> list[str]:
+        return self.args_for(self.repo, self.rev, *extra)
+
+    def _repo_carrying(self, payload_text: str) -> tuple[Path, str]:
+        """The synthetic catalogue with one more committed payload file."""
+        target = (self.repo / "skills" / "runtime-management" / "payload"
+                  / "case-notes.md")
+        target.write_text(payload_text, encoding="utf-8")
+        _git(self.repo, "add", "-A")
+        _git(self.repo, "commit", "--quiet", "-m", "payload")
+        return self.repo, _git(self.repo, "rev-parse", "HEAD")
+
+    def test_a_clean_composition_is_written_and_a_credentialed_one_is_not(self):
+        # Control: the same build, without the credential, succeeds.
+        self.assertEqual(
+            run_build(self.args_for(*self._repo_carrying("# notes\nnothing here\n"))
+                      + ["--write"]).returncode, 0)
+        before = {p.relative_to(self.out): p.read_bytes()
+                  for p in self.out.rglob("*") if p.is_file()}
+        self.assertTrue(before)
+
+        repo, rev = self._repo_carrying(
+            f"# notes\n\naws_access_key_id = {self.FAKE_AWS_KEY}\n")
+        result = run_build(self.args_for(repo, rev) + ["--write"])
+
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertIn("SECRET", result.stderr)
+        self.assertIn("aws-access-key-id", result.stderr)
+        self.assertIn("REFUSING", result.stderr)
+        # Nothing was written. The composition is judged before the output
+        # directory is pruned, so a refusal cannot have already deleted files.
+        after = {p.relative_to(self.out): p.read_bytes()
+                 for p in self.out.rglob("*") if p.is_file()}
+        self.assertEqual(before, after,
+                         "the build refused but had already changed the artifact")
+
+    def test_check_finds_a_credential_standing_in_the_artifact(self):
+        """The half an operator runs against a promoted node.
+
+        `--write` judges the composition in memory; `--check` also judges the
+        tree on disk, because a file nobody composed into the artifact is
+        exactly where one would be hiding and `--check` is the mode that looks
+        at a node rather than at a source tree.
+        """
+        self.assertEqual(run_build(self.args("--write")).returncode, 0)
+        stray = self.out / "context/stray.toml"
+        stray.write_text(f'key = "{self.FAKE_AWS_KEY}"\n', encoding="utf-8")
+
+        result = run_build(self.args("--check"))
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("SECRET context/stray.toml:1 aws-access-key-id", result.stderr)
+        # And it is still reported as unexpected, because it is both things.
+        self.assertIn("DRIFT unexpected context/stray.toml", result.stderr)
+
+
 if __name__ == "__main__":
     unittest.main()

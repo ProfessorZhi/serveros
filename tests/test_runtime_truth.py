@@ -124,13 +124,19 @@ class RuntimeTruthTests(unittest.TestCase):
         # asserted at all — the same "asserting a pristine machine" problem the
         # HOST_ROWS note below was written about, one axis further out.
         self.serveros = self.base / "serveros"
-        (self.serveros / "scripts").mkdir(parents=True)
-        shutil.copy2(ROOT / "scripts/build.py", self.serveros / "scripts/build.py")
-        # The inspector loads release.py from the source checkout, because the
-        # staged tree hash it verifies was computed by that file and a second
-        # implementation of the recipe would produce a correct number that
-        # cannot be compared with the recorded one.
-        shutil.copy2(ROOT / "scripts/release.py", self.serveros / "scripts/release.py")
+        # The whole directory, rather than the two files this used to name.
+        # `build.py` loads `scan_secrets.py` by path at build time, so the moment
+        # the credential gate was wired into `build()` the hand-written pair fell
+        # behind and all 37 tests in this file died on
+        # `FileNotFoundError: scripts/scan_secrets.py` — the same silent drift the
+        # composition below was re-written to stop, one file over.
+        #
+        # They are copies and not re-implementations: `release.py` computes the
+        # staged tree hash the inspector verifies, and a second implementation of
+        # the recipe would produce a correct number that cannot be compared with
+        # the recorded one.
+        shutil.copytree(ROOT / "scripts", self.serveros / "scripts",
+                        ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
         # The composition is read from the bundle, not restated here. As a
         # literal tuple it was a second copy of a vocabulary the bundle already
         # owns, and it silently fell behind the moment a member was added: the

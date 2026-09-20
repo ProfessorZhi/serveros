@@ -192,6 +192,43 @@ class DefinitionCatalogueTests(unittest.TestCase):
 # §5 · certainty and duration
 # ---------------------------------------------------------------------------
 
+    def test_the_gateway_wording_is_declared_and_connects_nothing(self):
+        """A gateway line is a sentence a person reads, so the ban applies to it.
+
+        This block is NOT under `codes:` — a provider line is not a finding a
+        detector opened, and filing it there would make every routed model look
+        like an alert. But the rule §4 states is about sentences, not about
+        which table they live in. Leaving the new table unscanned would make
+        `gateway:` the one place a cause word could be added without anything
+        going red, which is the shape of the defect this class exists to catch.
+        """
+        gateway = _catalogue().get("gateway") or {}
+        providers = gateway.get("providers") or {}
+        self.assertTrue(
+            str(providers.get("line") or "").strip(),
+            "gateway providers have no declared `line`; the wording would have "
+            "to come from whatever measured the number, which is the second "
+            "presentation authority this table exists to remove")
+        for field, template in providers.items():
+            for word in FORBIDDEN_CAUSE:
+                with self.subTest(field=field, word=word):
+                    self.assertNotIn(word, str(template))
+        words = gateway.get("state_words") or {}
+        self.assertTrue(words, "no gateway state words are declared")
+        for state, word in words.items():
+            with self.subTest(state=state):
+                self.assertTrue(str(word).strip(), f"{state} has an empty word")
+                for banned in FORBIDDEN_CAUSE:
+                    self.assertNotIn(banned, str(word))
+        probes = gateway.get("probes") or {}
+        self.assertTrue(probes, "no probe wording is declared")
+        for state, line in probes.items():
+            with self.subTest(probe=state):
+                self.assertTrue(str(line).strip(), f"probe {state} has no line")
+                for banned in FORBIDDEN_CAUSE:
+                    self.assertNotIn(banned, str(line))
+
+
 class CertaintyTests(unittest.TestCase):
     def test_a_row_with_no_recorded_freshness_is_unknown(self):
         """The live register is full of these, so this is the common case."""
@@ -447,6 +484,171 @@ class GatewayBindingTests(unittest.TestCase):
         for needle in ("ubuntu", "litellm-shared", "SHARED_GATEWAY_OWNER"):
             with self.subTest(needle=needle):
                 self.assertEqual([s for s in literals if needle in s], [])
+
+    def test_the_provider_line_comes_from_the_declared_table(self):
+        """The proof is a mutation, not a reading of the output.
+
+        Asserting that the rendered line *looks* right would pass just as well
+        if the sentence were assembled inside this module — which is precisely
+        the arrangement being removed. So the declared template is swapped for
+        a recognisable one, and the rendered line is required to follow it.
+        """
+        provider = {"family": "DeepSeek", "state": "RECENT_SUCCESS",
+                    "requests": 412, "ok": 410, "failed": 2, "p95_ms": 900}
+        before = presentation._gateway_provider_line(provider)
+        self.assertIn("412", before, "the declared line did not render the count")
+        self.assertIn("900", before, "the p95 suffix was not rendered")
+
+        original = presentation._catalogue
+
+        def swapped() -> dict:
+            return {"gateway": {
+                "providers": {"line": "SWAPPED {family} {requests}"},
+                "state_words": {"RECENT_SUCCESS": "SWAPPED-STATE"}}}
+
+        try:
+            presentation._catalogue = swapped
+            after = presentation._gateway_provider_line(provider)
+        finally:
+            presentation._catalogue = original
+        self.assertEqual(
+            after, "SWAPPED DeepSeek 412",
+            "the rendered line did not follow the declared template — the "
+            "wording is being decided somewhere other than card-definitions.yaml")
+
+    def test_a_provider_with_no_traffic_is_not_rendered_as_a_success(self):
+        """§6, applied to a rate: silence is not good news.
+
+        A model with no traffic in the window is UNKNOWN and gets its own
+        sentence. Rendering it through the ordinary line would put a "成功 0"
+        in front of somebody and invite them to read a dead route as a quiet one.
+        """
+        line = presentation._gateway_provider_line(
+            {"family": "GPT", "state": "UNKNOWN", "requests": 0, "ok": 0,
+             "failed": 0})
+        self.assertIn("没有流量", line)
+        self.assertNotIn("成功", line)
+
+    def test_a_provider_that_only_has_text_still_reaches_the_card(self):
+        """The fallback is narrow on purpose: hiding a real reading would be a
+        worse answer than an inconsistently-worded one."""
+        line = presentation._gateway_provider_line({"text": "旧形状的一行"})
+        self.assertEqual(line, "旧形状的一行")
+        self.assertIsNone(presentation._gateway_provider_line({}))
+        self.assertIsNone(presentation._gateway_provider_line("not a row"))
+
+    def test_the_probe_line_is_declared_and_a_failed_probe_is_not_a_broken_service(self):
+        """The probe is run by whoever can reach the gateway, so its wording is
+        declared here like everything else in this block.
+
+        The distinction being pinned is the one §18 names: a probe that could
+        not connect has established something about the probe, not about the
+        service. A line that read `UNKNOWN` as a fault would turn one
+        observation error into an accusation.
+        """
+        self.assertIn("连不上", presentation._gateway_probe_line({"state": "UNKNOWN"}))
+        self.assertNotIn(
+            "未就绪", presentation._gateway_probe_line({"state": "UNKNOWN"}),
+            "UNKNOWN is being rendered with the DEGRADED line — a probe that "
+            "could not connect is not a probe that found the service not ready")
+        self.assertIn("未就绪", presentation._gateway_probe_line({"state": "DEGRADED"}))
+        # An undeclared state word is rendered verbatim rather than blanked:
+        # the probe said something, and the card does not get to decide it said
+        # nothing.
+        self.assertEqual(presentation._gateway_probe_line({"state": "NEW_WORD"}),
+                         "NEW_WORD")
+        self.assertEqual(presentation._gateway_probe_line({"text": "旧形状"}),
+                         "旧形状")
+        self.assertIsNone(presentation._gateway_probe_line({}))
+
+    # -- what the section hands the card ------------------------------------
+    #
+    # The two tests below were both written against defects that reading the
+    # source did not reveal and running it did. Neither was caught by a test
+    # that asserted the block "renders"; both are about a value that was
+    # computed, carried, and then dropped on the way to the card.
+
+    def _bound(self, **gateway):
+        """A snapshot whose gateway block carries what a binding composed."""
+        return {"mine": {"state": "OK", "lines": []},
+                "host": {"state": "OK", "lines": []},
+                "gateway": {"endpoint": "http://127.0.0.1:26510", **gateway}}
+
+    def test_a_bound_gateway_reports_what_was_measured_not_the_word_bound(self):
+        """`state` says whether a binding exists; it is not a reading.
+
+        `gateway_section` marks a bound section `BOUND`, and `_gateway_state`
+        used to read the card's state out of that same key. `env_health` has no
+        opinion about the word `BOUND` — it is not in the faulted list and not
+        in the unread list — so a bound gateway fell between the two and the
+        verdict above it said "三项均已读到且无异常". A gateway measured
+        ATTENTION reported as fine, in green, which is the exact false-green §6
+        exists to forbid.
+        """
+        model = presentation.status_model(
+            self._bound(state="ATTENTION"), at="now",
+            binding={"service_ref": "service:x"})
+        self.assertEqual(model["sections"]["gateway"]["state"], "ATTENTION",
+                         "the card is reporting the binding marker instead of "
+                         "the measured state")
+        self.assertEqual(model["env_health"]["verdict"], presentation.ATTENTION,
+                         "a gateway in ATTENTION was not reported as needing "
+                         "attention")
+
+    def test_a_binding_with_no_reading_is_unknown_and_never_ok(self):
+        """The other half of the same key. A binding names a gateway; it does
+        not measure one. With no `state` measured, the section is UNKNOWN —
+        never OK, because "we know which gateway it is" is not evidence that it
+        works."""
+        model = presentation.status_model(
+            {"mine": {"state": "OK", "lines": []},
+             "host": {"state": "OK", "lines": []},
+             "gateway": {"endpoint": "http://127.0.0.1:26510"}},
+            at="now", binding={"service_ref": "service:x"})
+        self.assertEqual(model["sections"]["gateway"]["state"], presentation.UNKNOWN)
+        self.assertEqual(model["env_health"]["verdict"], presentation.UNCONFIRMED)
+
+    def test_the_window_line_actually_reaches_the_card(self):
+        """`窗口 N 分钟` was a line that could never appear on any card.
+
+        `_gateway_state` reads `window_minutes` off the section it is handed and
+        renders it through the declared template; `gateway_section` builds that
+        section and did not put the key in it. So the line was unreachable — the
+        worst kind of dead code, because the card it produces is merely shorter
+        than intended and nothing anywhere says a line is missing.
+        """
+        model = presentation.status_model(
+            self._bound(state="OK", window_minutes=15,
+                        providers=[{"family": "DeepSeek", "state": "RECENT_SUCCESS",
+                                    "requests": 412, "ok": 410, "failed": 2}]),
+            at="now", binding={"service_ref": "service:x"})
+        lines = model["sections"]["gateway"]["lines"]
+        self.assertIn("窗口 15 分钟", lines,
+                      "the window line did not render — the section dropped "
+                      "window_minutes on the way to the card")
+
+    def test_a_route_that_was_asked_about_and_had_no_traffic_still_gets_a_line(self):
+        """The row shape `gateway_binding.py` in the ops repository emits for a
+        family on the declared watch list with no traffic in the window.
+
+        Pinned here as a literal because the producer is in another repository
+        and the two halves are joined only by this shape: the composer hands
+        over `requests: 0` and a state word, and this file decides the words.
+        Drop the row and the block goes silent — "asked and answered zero"
+        becomes indistinguishable from "nobody built this".
+        """
+        model = presentation.status_model(
+            self._bound(state="OK", window_minutes=15, providers=[
+                {"family": "DeepSeek", "requests": 0, "ok": 0, "failed": 0,
+                 "p95_ms": None, "state": "UNKNOWN", "last_ok": None,
+                 "models": [], "measured": False}]),
+            at="now", binding={"service_ref": "service:x"})
+        lines = model["sections"]["gateway"]["lines"]
+        self.assertTrue(any("DeepSeek" in line for line in lines),
+                        f"the watched family vanished from the card: {lines}")
+        self.assertFalse(any("成功" in line for line in lines),
+                         "a family with no traffic was reported with a success "
+                         "count")
 
 
 # ---------------------------------------------------------------------------

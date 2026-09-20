@@ -165,6 +165,56 @@ class ClaimsAreComparedInFull(unittest.TestCase):
         self.assertIn("DEPLOYMENT: 不存在", err)
 
 
+class TheSnapshotHeaderDoesNotSurviveNormalisation(unittest.TestCase):
+    """`--check` strips clock-derived values from both sides before comparing.
+    The snapshot header is the line that CARRIES the clock, so it is the line
+    that has to go.
+
+    It did not. The VOLATILE pass rewrites the timestamp to `<volatile>` first,
+    and the pattern that removed the header was `<!-- ⟦snapshot⟧[^>]*-->` — a
+    character class that cannot cross the `>` of the `<volatile>` it had just
+    produced, so `-->` was never reached and the substitution matched nothing at
+    all. Measured on a rendered START-HERE: the header came through whole, its
+    worktree path and its inputs included, inside the one function whose entire
+    job is to make two renders comparable.
+
+    The tests below are the two consequences rather than the pattern: the header
+    is gone, and two checkouts of the same page normalise the same.
+    """
+
+    BODY = "# START-HERE\n\nthe page\n"
+
+    @staticmethod
+    def header(when="2026-09-20T11:02:13+00:00",
+               checkout="~/workspace/worktrees/serveros/SRV-0011"):
+        return (f"<!-- ⟦snapshot⟧ rendered {when} by `runtime/workbench.py` from "
+                f"{checkout} · inputs: project=litellm; item=LIT-0101 -->")
+
+    def test_the_header_is_gone_after_normalising(self):
+        out = wb.normalize(self.header() + "\n" + self.BODY)
+        self.assertNotIn("⟦snapshot⟧", out)
+        self.assertNotIn("worktrees", out)
+        self.assertEqual(out.strip(), self.BODY.strip())
+
+    def test_two_checkouts_of_the_same_page_normalise_the_same(self):
+        """The false DRIFT. An unchanged set rendered in a second worktree
+        differs only in the header's path, and a check that compares the header
+        reports every page in the set as drifted — for a reason no page is
+        about."""
+        a = self.header(checkout="~/workspace/worktrees/serveros/SRV-0011")
+        b = self.header(checkout="~/workspace/worktrees/serveros/SRV-0011-copy")
+        self.assertEqual(wb.normalize(a + "\n" + self.BODY),
+                         wb.normalize(b + "\n" + self.BODY))
+
+    def test_an_unterminated_header_does_not_swallow_the_page(self):
+        """Why the pattern may not become `.*?` under DOTALL. A header with no
+        `-->` has to leave its own line standing rather than eat every line up
+        to the next `-->` in the document — which is what this page has."""
+        text = ("<!-- ⟦snapshot⟧ rendered 2026-09-20T11:02:13+00:00\n"
+                + self.BODY + "\n<!-- a later comment -->\n")
+        self.assertIn("# START-HERE", wb.normalize(text))
+
+
 class ReadingsAreCheckedByTheirCommands(unittest.TestCase):
     """The half that had to be re-designed, exercised on a page with a small
     command set and a trimmed matrix so the test stays affordable.
@@ -210,6 +260,40 @@ class ReadingsAreCheckedByTheirCommands(unittest.TestCase):
         # The summary must not let "compared" and "not compared" look the same.
         self.assertIn("主张整页比对", out)
         self.assertIn("重跑它们各自记录的来源命令", out)
+
+
+class ARowsExpectationIsCheckedAgainstItsOwnCommand(unittest.TestCase):
+    """A row's `expect` is the row's whole content, and only `check` reads it.
+
+    `check` compares the rendered set against a fresh render, so what it catches
+    is a row that MOVED. It cannot catch a row whose declared expectation was
+    wrong from the start: the document says FAILING, the re-run says FAILING, and
+    the two agree with each other about a claim that is simply false. Measured,
+    not reasoned about — flipping the catalogue row's `expect` from 2 to 1
+    changes no byte length, reddens no test in this file, and leaves `check`
+    exiting 0 with a FAILING row inside a document it calls consistent.
+
+    So the rows this round added are pinned to their commands here. The set is
+    derived from the ids rather than listed, so a third `ability-resolve` row
+    would be covered by having been added rather than by being remembered.
+
+    Two rows, not twenty-four: the file's docstring says why the expensive cases
+    take a subset, and this class is about the mechanism — that a declared
+    expectation is re-run — not about the state of all twenty-four rows, which is
+    what the rendered START-HERE is for and what the round's integration run
+    reads."""
+
+    def test_the_ability_resolve_rows_return_the_code_they_declare(self):
+        rows = [r for r in SRC.STATE_MATRIX
+                if str(r.get("id", "")).startswith("ability-resolve")]
+        self.assertTrue(rows, "the matrix carries no ability-resolve row at all")
+        for row in rows:
+            code, good, err, _ = wb.row_verdict(row)
+            self.assertTrue(
+                good,
+                f"{row['id']} declares expect={row['expect']!r} and got exit {code}"
+                + (f", stderr={err!r}" if err else "")
+                + " — the row is a published claim and it is false")
 
 
 class TheCheckRefusesRatherThanGuessing(unittest.TestCase):
@@ -262,6 +346,25 @@ class TheVerdictBlockNamesTheRowThatMoved(unittest.TestCase):
 
     def test_a_row_added_or_removed_is_reported_as_a_row_count(self):
         self.assertIn("行数不同", wb._first_verdict_change("a=OK", "a=OK\nb=OK"))
+
+    def test_a_row_inserted_in_the_middle_is_named_as_added(self):
+        """The shape the append-only test above could not reach, and the shape
+        this round actually produced: START-HERE's verdict block gained
+        `ability-resolve-catalogue` in the middle, and the position-paired
+        comparison reported `registration-discover: 盘中 OK → 现在 OK` — a row
+        that had not moved, named with two identical verdicts."""
+        older, fresh = "a=OK\nregistration-discover=OK", \
+            "a=OK\nability-resolve-catalogue=OK\nregistration-discover=OK"
+        change = wb._first_verdict_change(older, fresh)
+        self.assertIn("行数不同（2 → 3）", change)
+        self.assertIn("新增 ability-resolve-catalogue", change)
+        self.assertNotIn("registration-discover:", change)
+
+    def test_a_row_removed_from_the_middle_is_named_as_removed(self):
+        change = wb._first_verdict_change("a=OK\nb=OK\nc=OK", "a=OK\nc=OK")
+        self.assertIn("行数不同（3 → 2）", change)
+        self.assertIn("移除 b", change)
+        self.assertNotIn("c:", change)
 
 
 class AnswersBlocksParseBackToWhatWasRun(unittest.TestCase):

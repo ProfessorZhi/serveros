@@ -455,10 +455,33 @@ class StatusSourceTests(unittest.TestCase):
                                binding=binding)
         self.assertIn("gateway", snap)
         model = presentation.status_model(snap, at=snap["at"], binding=binding)
-        self.assertNotEqual(model["sections"]["gateway"]["state"],
-                            presentation.UNKNOWN)
-        self.assertIn("http://127.0.0.1:1",
-                      " ".join(model["sections"]["gateway"]["lines"]))
+        section = model["sections"]["gateway"]
+        # §3's marker, asserted where it actually lives. This used to be written
+        # as `assertNotEqual(section["state"], UNKNOWN)`, and it passed for the
+        # wrong reason: the section's `state` was the word `BOUND`, so the check
+        # was `"BOUND" != "UNKNOWN"` — true on every card ever rendered, and
+        # silent about the gateway it claimed to be checking.
+        self.assertEqual(section["detail"]["state"], presentation.GATEWAY_BOUND)
+        self.assertEqual(section["detail"]["service_ref"], "service:x")
+        self.assertIn("http://127.0.0.1:1", " ".join(section["lines"]))
+
+    def test_a_binding_without_a_measurement_is_not_reported_as_ok(self):
+        """A binding names a gateway; it does not measure one.
+
+        §2 gives the binding the job of saying *which* gateway this node's is,
+        and nothing else. A card that read the presence of a binding as a
+        reading about the service would put green over a service nobody has
+        checked — and the repair for "we have not looked" and the repair for
+        "it is broken" are different errands for different people.
+        """
+        binding = {"service_ref": "service:x",
+                   "gateway": {"endpoint": "http://127.0.0.1:1"}}
+        snap = source.snapshot(self._gather(), at="2026-09-20 12:00:00 JST",
+                               binding=binding)
+        model = presentation.status_model(snap, at=snap["at"], binding=binding)
+        self.assertEqual(model["sections"]["gateway"]["state"],
+                         presentation.UNKNOWN)
+        self.assertNotEqual(model["env_health"]["verdict"], presentation.OK)
 
     def test_no_binding_is_not_a_failure_here(self):
         """The binding file does not exist on this node yet. `None` is the
