@@ -324,6 +324,27 @@ may satisfy an Item. A test may send work back to design.
 Structured Understanding is the durable, current model of the user's work
 world.
 
+It is project-first and **claim-based rather than overwrite-based**.
+
+Important facts are represented as versioned Claims with provenance. When new
+evidence conflicts with old understanding, ServerOS preserves both until the
+conflict is reconciled instead of silently replacing history.
+
+A durable Claim may therefore carry:
+
+```text
+subject / predicate / value
+source / provenance
+observed_at
+effective_from / effective_to when known
+confidence
+status
+supersedes / conflicts_with
+```
+
+Current Understanding is a projection over these Claims, not a mutable
+paragraph that forgets how it got there.
+
 It is project-first.
 
 A project view may include:
@@ -365,6 +386,12 @@ DEFERRED_WITH_REASON
 ```
 
 The output is an **Understanding Checkpoint**.
+
+Daily reconciliation still happens when the system finds no material delta.
+In that case ServerOS presents the current structured understanding and a
+concise "no material change detected" view so the user can discuss, correct or
+confirm it. Reconciliation is therefore a daily alignment ritual, not merely an
+exception inbox.
 
 An unresolved understanding delta does not freeze unrelated, already-approved
 Items.
@@ -682,6 +709,18 @@ interfaces.
 This does not violate the small-core rule because it is a Provider/Managed
 Runtime, not part of `serverosd`.
 
+The Memory Provider is **important but non-blocking**. If it is unavailable,
+ServerOS enters a degraded-memory mode and still starts work from:
+
+```text
+approved Structured Understanding
++ Item checkpoint
++ durable documents / code / decisions
++ native Session history when available
+```
+
+Memory outage must not turn the whole Work OS into a single point of failure.
+
 Preferred composition:
 
 ```text
@@ -719,16 +758,34 @@ applies_to: device:<id>
 This matters for operational memories ("this Windows path works") without
 fragmenting project/personal memory by machine.
 
-### 7.3 Memory scopes
+### 7.3 Memory scopes and precedence
 
 Memory may cover:
 
-- Personal;
+- Personal / global;
 - Role;
 - People / Organization;
 - Project;
 - Item;
 - Session / Experience.
+
+When several scopes provide applicable guidance, more specific scope refines
+broader scope rather than destroying it:
+
+```text
+global / personal
+      ↓
+role / organization
+      ↓
+project
+      ↓
+Item
+      ↓
+Session / current execution
+```
+
+A narrower memory may override or qualify a broader preference for its scope,
+while provenance/history remain available.
 
 ### 7.4 Automatic vs governed memory
 
@@ -756,6 +813,26 @@ can expand when needed.
 
 Memory retrieval must preserve provenance and avoid turning an old inference
 into current truth.
+
+### 7.6 Knowledge freshness is a generic capability, domain curation is not
+
+ServerOS may provide generic mechanics for:
+
+```text
+knowledge source linkage
+version/applicability metadata
+last_verified
+STALE_SUSPECT detection
+change impact assessment
+draft update proposal
+```
+
+For example, a code/version/config change may make linked knowledge suspect.
+
+But ServerOS does **not** own the domain-specific knowledge product. LiteLLM
+Support KB curation, classification and publishing remain responsibilities of
+the Support/Knowledge project. ServerOS supplies the generic change/freshness
+machinery and routes resulting proposals to the owning project.
 
 ---
 
@@ -788,6 +865,19 @@ Projects are filters/relationships, not separate truth islands.
 
 Source signals, incidents, ideas and understanding changes create Candidates.
 
+ServerOS may also **proactively infer Candidate work** from repeated or
+cross-source evidence, for example:
+
+```text
+same support problem appears repeatedly
++ related logs show rising frequency
++ recent project change is relevant
+→ propose one coarse-grained Candidate with evidence
+```
+
+The proposal must retain source/evidence links and confidence. It still does not
+become an Item automatically.
+
 Only human selection promotes a Candidate into a durable Item.
 
 This preserves board granularity.
@@ -817,6 +907,28 @@ The user selects today's work.
 
 That selection is durable enough to drive background continuation but remains
 human-owned.
+
+### 8.5 Project lifecycle
+
+Projects are not simply present or deleted.
+
+At minimum:
+
+```text
+ACTIVE
+→ DORMANT
+→ ARCHIVED
+```
+
+Dormant/Archived projects remain searchable through Memory, Knowledge, GitHub
+and records, but are excluded from default Daily Understanding, Personal Board
+and Context unless relevant.
+
+A meaningful new source signal may create a **Reactivate Project** proposal for
+daily reconciliation.
+
+Reactivation restores the project to active daily context; it does not create a
+new project identity.
 
 ---
 
@@ -924,6 +1036,22 @@ This belongs in the Ability/Coordination layers, not in `serverosd`.
 
 Until a direct provider exists, the human remains the transport between CC and
 GPT.
+
+For the user's own work environment, the default future policy is that **work
+content may be sent to the trusted GPT reasoning Provider**, including code,
+Feishu-derived work information, logs, decisions and project documents.
+
+Capability secrets remain a different class: credentials, private keys, access
+tokens and authorization material are not normal reasoning context and are not
+propagated merely because the work content itself is allowed.
+
+Project/source policy may still narrow this if a future source carries an
+external restriction.
+
+Automated CC↔GPT review, when a direct Provider exists, should use a bounded
+review cycle. A reasonable default is **2–3 autonomous review/revision rounds**.
+If material disagreement, scope expansion or unresolved decision remains after
+the convergence guard, escalate to the user.
 
 ServerOS prepares clean Context/Decision Packets instead of forcing GPT to
 re-read raw work history.
@@ -1324,10 +1452,25 @@ It is optional: ServerOS must continue functioning without it.
 Useful roles:
 
 - private device reachability;
-- CloudCLI access;
+- **phone → CloudCLI private access**;
+- CloudCLI access from laptops/Windows;
 - private services;
 - optional SSH reachability;
 - future A2A transport.
+
+The phone is a first-class Human Client:
+
+```text
+Phone Tailscale client
+      ↓ tailnet
+Tokyo private endpoint / Tailscale Serve
+      ↓
+CloudCLI
+      ↓
+ServerOS / Claude / Codex sessions
+```
+
+The preferred path does not require opening CloudCLI to the public Internet.
 
 On Tokyo, prefer userspace/isolated deployment where feasible. Kernel routing,
 subnet-router, exit-node, firewall and similar host mutations require explicit
@@ -1420,6 +1563,11 @@ CloudCLI already provides valuable UI primitives:
 - browser;
 - Web/mobile access;
 - plugin capability.
+
+The mobile experience is not merely monitoring. From a phone connected through
+the private connectivity layer, the user should be able to open CloudCLI,
+inspect/switch work, continue a Session when the provider supports it, approve
+decisions and review evidence.
 
 ServerOS should integrate rather than fork/reimplement those surfaces where
 possible.
@@ -1785,7 +1933,10 @@ authorized source delta
 → Candidate Board refresh
 ```
 
-No-change skips unnecessary LLM work.
+No-change skips unnecessary source-analysis LLM work, **but not the daily human
+alignment checkpoint**. The daily reconciliation can truthfully say "no
+material delta detected" and still allow the user to inspect/correct current
+Understanding.
 
 ### Work Advancement Loop
 
@@ -1936,14 +2087,16 @@ Large remaining design work is subsystem-detail work, especially:
 1. exact Session record schema and cross-device attachment/handoff contract;
 2. MetaCC-to-ServerOS history/intelligence adapter;
 3. OpenViking deployment/binding/backup contract and device provenance fields;
-4. information-flow policy vocabulary and enforcement points;
-5. Feishu inventory/blacklist/Follow policy;
-6. CloudCLI Project → Item → Session plugin surfaces;
-7. external reasoning / future CC↔GPT Provider contract and Skills;
-8. Tokyo Tailscale userspace deployment and network admission;
-9. A2A adapter timing/mapping;
-10. dynamic environment Attachment/lease/refcount behavior;
-11. E2E evidence schema and provider adapters.
+4. versioned Claim/conflict projection and reconciliation schema;
+5. information-flow policy vocabulary and enforcement points;
+6. Feishu inventory/blacklist/Follow policy;
+7. Project lifecycle and reactivation projection;
+8. CloudCLI Project → Item → Session mobile/desktop plugin surfaces;
+9. external reasoning / future CC↔GPT Provider contract, Skills and 2–3 round convergence guard;
+10. Tokyo Tailscale userspace deployment and phone/private-CloudCLI access;
+11. A2A adapter timing/mapping;
+12. dynamic environment Attachment/lease/refcount behavior;
+13. E2E evidence schema and provider adapters.
 
 Those details may refine contracts. They do not reopen the product definition.
 
