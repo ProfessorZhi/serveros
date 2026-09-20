@@ -208,6 +208,29 @@ KNOWN_UNREAD = {
                    "the resolver's own record, which has no `request` field.",
         "disposition": "NEEDS_HUMAN",
     },
+    "recipients": {
+        "declared_at": ("runtime/recipe-contract.yaml.schedules",),
+        "because": "The NAME is enforced and is never spelled in code, which is "
+                   "why the detector above cannot see it: "
+                   "`runtime/recipes.py:93 required_schedule_fields()` reads "
+                   "`schedules.required_fields` and `:1345` raises "
+                   "`NO_SCHEDULE_BOUND` for every field in it that "
+                   "`_binds()` does not find, generically, for all five. What "
+                   "has no reader is the VALUE, and the reason is a fact about "
+                   "this round rather than about the field: §7 says "
+                   "「本轮架构写入本身不启用任何定时器」, no delivery path exists, "
+                   "and §7 also requires 接收人 to be really bound before a "
+                   "timer is switched on — so the list is a binding waiting "
+                   "for its consumer, not a decorative required field. The "
+                   "other four (`timezone`, `window`, `scope`, `budget`) are "
+                   "read: `recipes.py:1357 _window_of` and `:1452 "
+                   "budget_from_args` take the period and the ceiling from the "
+                   "schedule. Deleting this one from `required_fields` would be "
+                   "the wrong exit — it would let a loop be enabled under a "
+                   "schedule that names nobody to report to, which is a report "
+                   "nobody receives.",
+        "disposition": "NEEDS_HUMAN",
+    },
 }
 
 # ---------------------------------------------------------------------------
