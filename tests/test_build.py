@@ -311,6 +311,19 @@ class BuildTests(unittest.TestCase):
         self.assertTrue((self.out / "space/resolver.py").is_file())
         self.assertTrue((self.out / "space/vocabulary.json").is_file())
 
+    def test_intake_ships_inside_the_artifact(self):
+        """§J's support chain reads its contract out of the artifact.
+
+        The contract is a `.yaml` beside the module, and the builder excludes
+        only byte-code -- so the module shipping while its contract did not
+        would be a runtime that reads an empty rule set and answers nothing,
+        which is the failure mode that looks like a knowledge base with no
+        entries in it.
+        """
+        self.assertEqual(run_build(self.args("--write")).returncode, 0)
+        self.assertTrue((self.out / "intake/support.py").is_file())
+        self.assertTrue((self.out / "intake/support-contract.yaml").is_file())
+
     def test_relations_ships_inside_the_artifact(self):
         self.assertEqual(run_build(self.args("--write")).returncode, 0)
         self.assertTrue((self.out / "relations/project.py").is_file())
