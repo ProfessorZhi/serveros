@@ -1,691 +1,190 @@
-# Architecture
+# ServerOS — 广义产品架构基线 v1
 
-> **This is the single canonical architecture statement.** Where any other
-> document, diagram, README section or generated payload describes the shape of
-> ServerOS differently, that document is wrong and this one is right. There is
-> no second statement that is "also correct for a different audience".
+> Design ID: `serveros-system-v1` · 2026-09-20
+>
+> 本文件是本分支的唯一总体架构入口。它定义要实现的产品，不宣称这些能力已经安装、验证或上线。当前实现状态只由代码、固定 revision 的验证及现场证据证明。
+>
+> 本版依据用户授权收敛整个 ServerOS 体系，而非仅 daemon 或插件。它取代此前 proposal 中互相重叠的目标描述；旧研究、旧实现事实、旧失败记录保留在 Git 历史及原文档中，不应被抹掉。
 
-## The definition (frozen)
+## 1. 产品是什么
 
-**ServerOS = a user-space Agent Operating Fabric.**
+**ServerOS = user-space Agent Operating Fabric。**
 
-It does not schedule the kernel, it does not supervise every process on the
-machine, and it is not a workflow engine. It is the layer between an Agent
-runtime and a machine that makes *what an Agent can do here, right now, without
-surprising anyone* answerable — which machine this is, which ability is actually
-available on it, what durable memory the work already has, and who owns the
-resource that is running.
+它让 Agent 在一个真实、动态、多人并行使用的环境里，快速回答：当前是什么工作；已有何种认识；需要哪些能力；它们通过什么执行；此刻能否执行、是否获准；结果应落在哪里；下一步可否自动推进。
 
-**This supersedes the earlier sentence "ServerOS = a user-space Agent control
-plane".** That sentence was not wrong, it was incomplete in a way that cost real
-time: it named the daemon's job and called it the product, so every question
-about abilities, memory or a second device was answered by pointing at the
-registry. The control plane is now exactly one of four planes — the Node Runtime
-Plane — and the other three are not new machinery bolted on beside it. They are
-the parts the control-plane framing left out and that three live failures ran
-into:
+所有有目标的工作都适用：文档维护、技术支持、调研、需求讨论、方案/测试方案、开发、构建、部署、运维、沟通与汇报。不以“写代码”作为进入工作系统的条件，也不为每件杂事单独造引擎。
 
-```text
-Case A  a tunnel required by a task vanished when an unrelated Agent session
-        ended. Nothing was broken and nothing was wrong on the machine: the
-        tunnel had been registered with session lifetime, so it was retired
-        exactly on time.
-Case B  127.0.0.1:17890 is the documented outbound tunnel on the Linux node.
-        It exists in a `.bashrc` comment. There is no listener, no service
-        owner, and no declaration anywhere that says it should exist.
-Case C  the Dell node reached Playwright through `npx @playwright/mcp@latest`,
-        a dependency that floats by design and resolves to something new on
-        every start.
-```
+**产品完整性**意味着每个本版要求都有真实入口、执行路径、失败语义、可审阅产物及相应验证；不意味着安装所有外部工具、拥有所有企业资料、自动控制全部设备。
 
-Each is a capability that was *stated* and not *bound*: to a lifetime, to an
-owner, or to a version. The four planes are the four places a capability has to
-be bound before a device can be said to have it.
+## 2. 最终产品形式
 
-```text
-Node Runtime Plane      what is running here, who owns it, is it healthy
-Ability Fabric          what this machine can do, and through which provider
-Memory-Context Fabric   what the work remembers, across sessions and devices
-Coordination Fabric     what several devices do together
-```
+| 产品面 | 职责 | 不能承担的职责 |
+|---|---|---|
+| ServerOS Core | `serverosd`、统一 `serverosctl`、本地事实/准入/有限维护 | LLM planner、企业内容处理、Web UI |
+| ServerOS Agent Kit | Claude Code 插件、Codex 插件/适配器；薄 bootstrap、生命周期接口、按需能力入口 | 第二套业务状态、全量 Skills/MCP 注入 |
+| Ability Fabric | 身份/版本/兼容/安装、能力搜索、操作解析与分发 | 项目状态机、设备事实的替代品 |
+| Work & Knowledge Fabric | 信息认识、候选/Item、执行/交付/报告的协作层 | 内核调度器、另起通用工作流平台 |
+| Human Control | 飞书播报/告警/轻量控制、审批与决策 | 因“消息发到了”而授予权限 |
+| Optional Console | CloudCLI 类 Web/mobile 控制台、CLI/TUI、原生终端入口 | 不可替换的 ServerOS 主体 |
 
-ServerOS consists of exactly these parts:
+Agent 默认安装**一个 ServerOS 入口插件**，不是每个 Ability 一个插件。各 runtime 使用其真实支持的 manifest、Skills、MCP、hooks 机制；不假设两个 runtime 文件格式或热加载语义相同。
 
-```text
-small node runtime          serverosd — the local control loop
-semantic services           the read-only decision kernels and projections
-Agent-facing MCP            a thin stdio adapter over the node runtime
-bootstrap Skill             what an agent reads first
-Ability-driven procedures   specialist procedures, resolved on demand
-Plugin composition          what gets packaged and installed per runtime
-optional Fleet              topology across devices, when a device declares it
-```
+CloudCLI 不存在或离线时，CLI、Agent 和定时工作仍可运行。飞书离线不终止已获准的本地工作。tmux 是终端承载，不能成为 Item 或 Agent Session 主键。
 
-The parts do not change. What changes is that the four planes are now named, and
-each of the three planes that were implicit gets a resolver, a schema and a
-refusal rule of its own — see [`docs/ability-fabric.md`](docs/ability-fabric.md),
-[`docs/memory-fabric.md`](docs/memory-fabric.md) and
-[`docs/runtime-resources.md`](docs/runtime-resources.md). An abstract plane with
-no resolver is exactly the defect these documents exist to stop repeating.
+## 3. 设计哲学
 
-**Availability is per-device declared.** ServerOS is not a product-global
-always-on promise. A device declares whether it runs the node runtime, which
-abilities it composes, and which resources it is willing to reconcile. A
-machine with no `serverosd` is a supported configuration, not a broken one.
+1. **严格事实，快速默认路径**：不知道就具名返回；不因不知道一项而全盘扫描。
+2. **一个常驻核心，多个按需能力**：唯一 resident core 是 `serverosd`；外部 Provider、Web 服务、系统调度器可有进程，但不是新增语义 daemon。
+3. **安装丰富，活跃上下文少**：目录可大，当前上下文只拿与当前动作有关的少量内容。
+4. **职责单一而不是进程繁殖**：resolver/schema/operation 不自动对应新服务、新 repo、新 Skill。
+5. **声明、事实、授权不同**：Profile 是 should-be，内核/Provider 是 observed；两者都不是授权。
+6. **一类事实一个 authority**：允许不同领域各有权威；禁止把所有真相集中复制成第二数据库。
+7. **操作级可用性**：`support != readiness != authorization`，必须对实际 operation 判定。
+8. **人参与有价值的判断**：目标、需求、技术选型、架构取舍集中讨论；批准的执行边界内不逐命令请示。
+9. **验证按风险和影响面**：最少充分验证；不是跳过关键验收，也不是每步全套测试。
+10. **并行工作优先于目录整洁**：ACTIVE/未知归属/租用中的工作不得为了变绿而清理。
+11. **先候选看板，后需求展开**：一条消息不等于一个 Item，一个 Item 不等于五篇文档。
+12. **授权范围内自动推进**：无输入变化不重复重算；无进展不无限循环；无权限不换身份绕过。
+13. **隐私最小化**：能用元数据/引用就不复制正文，能不用录音就不抓音频；无关内容不进入记忆。
+14. **表面可替换，语义不分叉**：飞书、Web、CLI、Agent 使用同样的对象与准入，不能四套逻辑。
+15. **范围闭合而非虚假全绿**：本版全部要求须落地；外部权限阻塞如实列出，不能把 fixture 当 live。
 
-The path `information → requirement → analysis/design → development → test →
-report` describes a *common* route, not a state machine. An agent may skip
-steps, go back, work in parallel, re-analyze after testing, or ship a Milestone
-and keep developing.
+## 4. 四个问题平面、两大能力家族
 
-## The resident surface (frozen)
+保持四个问题平面：Node Runtime、Ability、Memory-Context、Coordination。Work Fabric 是协作与工作状态的产品组合，**不是第五个常驻核心**。
 
-**Exactly one thing is resident, and it is `serverosd`.**
+两大 Ability 家族是面向使用者的导航：
 
-This is frozen because the pressure against it is steady and each step is
-individually reasonable. Discovery feels like it deserves a supervisor; memory
-feels like it deserves a writer; coordination feels like it deserves a
-scheduler. Each of those is a *semantic service* — a resolver, a schema, a
-refusal rule — and none of them is a process. A service that answers in-process
-becomes a question that can be unanswered the moment it is given a process, and
-"the answer is unavailable" is the one output this product exists to make
-impossible.
+- **A 工作基础设施**：环境、能力、空间、会话、记忆、测试环境、文档生命周期、构建发布、人类控制与合规。
+- **B 信息到交付**：输入/认识、候选/工作、需求、研究/设计、实施、质量、支持/沟通、委派与汇报。
 
-```text
-serverosd          resident, supervised by systemd (§20)
-serverosctl        on demand — the operator surface
-serveros-*-mcp     on demand — spawned per Agent session, owned by that session
+家族分类与磁盘目录、repo、进程、工作状态均正交。物理 `skills/<stable-id>/payload/` 继续扁平；跨家族复用引用同一能力，不复制。
 
-refused as resident units, by name:
-  abilityd                 discovery is a resolver, not a supervisor
-  memoryd                  the ledger is written by the operation that needs it
-  coordinationd            bindings are a durable record, not a running thing
-  resource-governanced     observation is a tick, and admission is a policy read
-  feishud                  Feishu is a Provider, reached when a command needs it
-```
+详见 [能力家族与边界](docs/architecture/ABILITY-FAMILIES.md)。
 
-Each refused name is the obvious way to make one of the four semantic services
-into a process. Refusing them is not a claim that a second resident unit could
-never be justified — it is that the justification would have to survive this
-paragraph, in a diff, with a name.
-
-**What may be a process is a Provider or a Managed Runtime, and both live
-outside the core.** BotMux, the Codex App Server, Docker, Feishu and OpenViking
-are reached through a module under `mcp/` or `abilities/`; the core's loader
-closure may not reach any of them, and `serverosd` starts with every one of
-them absent. `tests/test_core_freeze.py` asserts the surface is exactly the
-three rows above, that no refused name has appeared on it, and that none of
-these outer systems is in the core's closure. `tests/test_core_ability_boundary.py`
-asserts the closure itself.
-
-## The node control loop (frozen)
-
-`serverosd` is small on purpose, and its responsibilities are closed:
+## 5. serverosd 基本核：封闭职责
 
 ```text
 serverosd
-├── Host Inventory
-├── Managed Runtime Registry
-├── Probe Engine
-├── Runtime Attribution / Graph
-├── Anomaly / Hygiene
-├── Policy / Admission
-├── Reconciler
-├── Observation / Provenance
-└── Local IPC
+├── Host Inventory（设备身份引用、用户/整机/文件系统事实）
+├── Managed Runtime Registry（owner、desired、lifecycle、依赖、保护）
+├── Probe Engine（有预算的本地检查与 Provider 观测接收）
+├── Runtime Attribution / Graph（进程、容器、环境引用）
+├── Anomaly / Hygiene（事实、稳定 alert identity、状态与待投递 intent）
+├── Policy / Admission（带 actor/scope 的操作准入）
+├── Reconciler（仅明确可管理对象、有界重试）
+├── Observation / Provenance（时间、来源、覆盖、新鲜度）
+└── Local IPC（查询、操作请求、受限事件读取）
 ```
 
-Context / Path / Fleet may be **exposed as ServerOS services**, but they may
-not inflate the control loop. A new entry in the list above is an architecture
-change, not an implementation detail.
+### IN
 
-The loop is one direction and one shape:
+主机和用户资源；真实挂载/配额/inode/shm；可观察进程、容器与受管 runtime；liveness/transport/functional/readiness 四轴；设备级 desired runtime；Attachment 引用/lease 的运行语义；局部异常与事件；权限、预算、保护状态；有限自愈；自健康。
 
-```text
-Inventory ─▶ Probe ─▶ Attribution ─▶ Policy/Admission ─▶ Reconciler
-     ▲                                                        │
-     └──────────────── Observation / Provenance ◀─────────────┘
-                            │
-                            ▼
-                        Local IPC  ──  serverosctl / Agent-facing MCP
-```
+记录内核 UID 所有权与业务 Item/Session ownership 的区别。进程名称、cwd、tmux pane、容器名称可以是线索，但不能凭名称授予业务 ownership 或回收权。
 
-Every actuator decision is gated by admission, every admission decision is
-bounded by a retry budget, and an exhausted budget escalates to a person rather
-than looping. Nothing in the loop reaches the network or a cloud API.
+本地事实采集保持低成本、有采样窗口和覆盖分母。CPU utilization 不用 load 代替；RSS 明示估算；磁盘与配额分开；同挂载多 role 不重复累计。失败/无样本不是零或绿色。
 
-## Core-2, and what composes around it
+### OUT
 
-There is **one** Core list. It has two members:
+LLM 推理/规划、源内容抓取、飞书/GitHub SDK、报告正文生成、完整 Skill 目录、向量索引、Work Item 状态机、Quay 调度算法、UI、任意远程 shell、全机进程托管、Docker 编排平台、秘密数据库、通用 scheduler。
 
-```text
-Core
-├── serveros             product entry, composition authority, bootstrap Skill,
-│                        Context / Space / Relations kernels, deterministic build
-└── ability-management   Capability / Ability registry, reusable Skill canonical
-                         source, revision / compatibility / discovery / reconcile
-```
+外部业务与网络 Provider 在 daemon 闭包外运行，通过定义明确的观测与操作边界连接。不能因为新增飞书/浏览器就把其 SDK import 进常驻核心。
 
-`workspace-management` is an important specialist capability, **not** a third
-Core module. Everything below Core is an Ability, resolved when a node reaches
-for it:
+### 进程与存储约束
 
-```text
-ServerOS product baseline     serveros bootstrap + runtime-management
-Linux work profile            serveros-core + workspace-management + test-management
-everything else              information-management, document-stewardship,
-                             corporate and engineering abilities — on demand
-```
+systemd 用户 timer（或目标 OS 原生 scheduler）调用 oneshot recipe/worker。daemon 不运行模型。已有 store 能表达的状态复用已有 store；默认不引入 Kafka、Redis、工作流集群或图数据库。
 
-A composition is not a fork and not a checkout. `plugin/bundle.yaml` is the
-`serveros-core` composition; `plugin/profiles/*.yaml` are wider sets that
-`extends:` it, carry no payload of their own, and copy nothing they inherit — so
-two compositions cannot disagree about a member they share. Members a
-composition does not ship are `recommended` and resolved per node; the builder
-refuses both a recommendation that cannot be resolved and a stale `missing`
-marker. **Nothing eagerly bundles the catalogue.**
+运行事实缓存可以重建；**授权记录、工作状态、人工决策、消费游标、投递 receipt、引用所有权不都是可丢缓存**，必须按域持久化和备份。`state/` 不能一律清空。
 
-There is no second Core list, no `seven-service` variant, and no always-on
-bundle. If you find one, it is retired.
+常驻核心唯一不表示必须拒绝长期运行的 Provider；Provider 的生命周期和权限须单独声明。
 
-## Two runtime adapters, one world
+## 6. Authority 和仓库职责
 
-> **Same capability, same semantics, same context; different runtime adapter
-> only.**
-
-```text
-              serveros deterministic builder
-                         │
-                pinned ability revision
-                         │
-                  ┌──────┴──────┐
-                  ▼             ▼
-              Claude Code      Codex
-              adapter/runtime  adapter/runtime
-```
-
-Claude Code and Codex must see the same `DATA_ROOT` / `WORKSPACE_ROOT`, the same
-project / Item identity, repo role, worktree and test-env placement, artifacts
-contract, generated map projections, `serverosctl`, Skill semantics and
-concurrency protection. The only permitted differences are runtime adapters —
-`.claude-plugin/` + `CLAUDE.md` versus `.codex-plugin/` + `AGENTS.md`. Adapters
-must never evolve into two copies of business logic.
-
-Dual-runtime does **not** mean every task runs twice. It means whichever runtime
-the user picks can take over the *same* Item without re-initializing anything.
-
-## Component boundaries
-
-| Component | Owns | Does not own |
+| 领域 | 唯一写权威/所有者 | 派生面 |
 |---|---|---|
-| `serveros` | architecture contract; hwz-server-os composition; bootstrap Skill; Context/Space/Relations kernels; node runtime; deterministic build | reusable Skill source, runtime state, machine topology instance, Item state |
-| `ability-management` | Capability/Ability registry; reusable Skill source; revisions; compatibility; discovery; reconcile; installation/distribution | plugin composition, bootstrap Skill source, runtime state, machine topology instance, Item state |
-| `workspace-management` | workspace governance/reconcile specialist capability | Core membership, plugin composition |
-| `work-engine` | `serverosctl`: deterministic control plane — Item/Activity/Run/lease state, board projection | Skill content, topology, cloud objects, placement policy |
-| `hwz-ops` | this machine's topology/policies and projection targets | Skill content, runtime installation, plugin composition |
-| `records` | human-readable work records (cards, briefs, board views) | machine state, cloud bodies |
-| `feishu-space-management` | Feishu placement, maps, drift, lifecycle | semantic interpretation of Feishu content |
-| `information-management` | raw observations, traceable claims, understanding | Item lifecycle, test environments |
+| 总体架构、bootstrap、composition、通用语义适配 | `ProfessorZhi/serveros` | 插件发行包、CLI/MCP/UI adapter |
+| Ability registry/revision/compatibility/installation、可复用 payload | `ProfessorZhi/ability-management` | 索引、能力地图、安装投影 |
+| Item/Activity/Run 生命周期、工作租约、工作事件 | `ProfessorZhi/work-engine` | Board、Today、日报视图 |
+| 本机政策、roots、保护对象、来源/接收人绑定 | `ProfessorZhi/hwz-ops` 的实例策略及受保护 local-only 配置 | 环境/治理地图 |
+| 本机当前资源事实 | `serverosd` 的观察 | 状态卡、readiness |
+| 原生 Agent session/transcript | 对应 Agent Provider | ServerOS 规范化会话视图 |
+| 文档内容 | 每份文档声明的唯一 `authoring_surface` | 其他面上的预览/发布副本 |
+| 原始云内容 | 原 Provider；授权快照有独立 revision | 结构化认识、相关索引 |
+| 决策/交付证据 | records/证据库的固定版本记录 | 检索索引、报告 |
 
-### Two decision kernels, one ownership rule
+Core-2 仍指 `serveros + ability-management` 的产品与能力治理关系，不意味着两个 daemon。`workspace-management` 是 specialist。三个或更多仓库协作不创建第二 Item 状态库。
 
-`context/` (what is my working environment) and `space/` (where does this object
-canonically belong) are deterministic, read-only resolvers shipped inside the
-runtime artifact. Neither may hold a tenant-specific path or call a cloud API —
-that is an **adapter** concern, and adapters live with the capability that owns
-the surface. See [`docs/space-resolver.md`](docs/space-resolver.md).
+## 7. 对象模型
 
-## Four planes
+**Ability 侧**：Ability/Operation、Revision、Provider、Binding、Attachment。Profile/Adapter 是配置或实现描述，不再各造一套生命周期引擎。
 
-The planes divide *questions*, not directories — that is why they are planes
-and not folders. Storage is a separate, older taxonomy that stays as it was:
+外部产品语言的 Ability 是 WHAT；现有 registry 的 artifact identity 仍保留 `(type, canonical identity)`。Skill/MCP/plugin 同源不能无证据合并；语义能力经显式 artifact/provider 关系解析，名字或路径不作为同一身份的证明。
 
 ```text
-Planes — the questions
-
-Node Runtime Plane      what is running here, who owns it, is it healthy
-Ability Fabric          what this machine can do, and through which provider
-Memory-Context Fabric   what the work remembers, across sessions and devices
-Coordination Fabric     what several devices do together
-
-Storage — where the answers are kept
-
-Control         state/serveros/                                       node runtime state
-Human           records/projects/<project>/                          cards, briefs, board views
-Evidence        artifacts/work-items/<project>/<ITEM>/<RUN>/
-Cloud           Feishu / GitHub                                       bodies stay with the owner
+Ability#Operation -> Provider -> Binding(device, instance)
+                                  ^
+                    Attachment(Agent/Session/Item, scope, lease)
 ```
 
-The two taxonomies are deliberately not aligned. One question may be answered
-from two stores — "who owns this tunnel" is control state, "when was it
-promised" is an evidence Run — and forcing them into one tree is how a
-projection becomes a second authority.
-
-A board view is a *recomputable projection* of card + state + claims. It is
-never a second state database.
-
-### The invariants
-
-These are the properties a change must not break. They are stated as invariants
-rather than as advice because every one of them has already been violated once.
-An invariant that no test or resolver enforces is where the next violation
-lands, so each names the enforcement that exists today.
-
-```text
-1  One architecture statement.        ARCHITECTURE.md is it; other documents link, never restate.
-2  Mechanism, API, procedure, package stay apart.
-                                      serverosd / MCP / Skill / Plugin, one job each.
-3  Nothing is authority by being written down.
-                                      maps, projections and summaries are regenerated, never hand-fixed.
-4  Device identity is authored.       A hostname, UUID or address is a route, never a key.
-5  Availability is per-device declared.
-                                      A machine with no serverosd is supported, not broken.
-6  Nothing beyond a session boundary may be owned by that session.
-                                      See the ownership rule below. Case A.
-7  A durable resource declares durable desired state.
-                                      A comment is not a declaration. Case B.
-8  A managed dependency is pinned or refused.
-                                      Floating versions are admitted, never silent. Case C.
-9  An ability is not available because it is documented.
-                                      Availability is resolved against a device, or it is UNKNOWN.
-10 Evidence is written once, at a path derived from identity.
-                                      project / Item / Run, never from cwd or a guess.
-11 An unavailable provider is not an empty answer.
-                                      runtime/resource_anomaly.py grades only what it could evaluate.
-12 Unattributed is not reclaimable.   A resource with no proven owner may be reported,
-                                      never proposed for removal. runtime/hygiene.py admission.
-13 An irreversible action needs evidence this is not the only copy.
-                                      runtime/hygiene.py — REMOVE_VOLUME without a verified
-                                      backup is refused, with approval or without it.
-14 Unsupported is refused by name, never degraded quietly.
-                                      HumanControlUnsupported · ActionNotSupported ·
-                                      per-verb action_support on the provider instance.
-15 Every place the code can change the world is declared once, and checked in
-   both directions.                   skills/serveros/scripts/mutation_guard.py ·
-                                      runtime/actuator-contract.yaml.
-16 The surface that decides is not the surface that delivers.
-                                      serverosd evaluates and records an intent and
-                                      holds no transport; `serverosctl alert sync` is
-                                      the only surface that does, and it cannot act.
-                                      tests/test_core_freeze.py (the daemon's closure)
-                                      · tests/test_alert_authorization.py.
-17 A worker is not a daemon.           Exactly one resident unit exists, and every
-                                      other unit in the tree is provably
-                                      non-resident — `Type=`/`Restart=`, read rather
-                                      than trusted. tests/test_core_freeze.py::The
-                                      ResidentSurfaceIsClosed ·
-                                      runtime/serveros-alert-sync.{service,timer}.
-18 An operation is priced on its own provider action, and on nothing else.
-                                      runtime/human_console.py#_assert_no_borrowed_support
-                                      refuses a state map in which one operation's
-                                      entry carries another's action — §M's
-                                      "close must not be reported as interrupt".
-                                      tests/test_human_console.py::CloseIsNever
-                                      ReportedAsInterrupt.
-19 Selecting is not rebinding.          A selection moves which session a
-                                      conversation is addressing; it may not change
-                                      a session's identity or move a thread to
-                                      another Item. Held by shape rather than by
-                                      rule: SELECTION_FIELDS and
-                                      THREAD_BINDING_FIELDS are disjoint, the store
-                                      refuses a selection carrying a binding field
-                                      even when assembled by hand, and the builder
-                                      has no field to put one in.
-                                      tests/test_human_console.py::SelectingIs
-                                      NotRebinding.
-20 A join may not substitute an empty answer for an unread one.
-                                      A binding store that did not answer is
-                                      binding_state UNKNOWN with the exception
-                                      text, never an empty map — an empty map reads
-                                      as "no thread has a purpose" and would show
-                                      every session as a coordinator. Contrast
-                                      invariant 11, which is the same rule one
-                                      plane down. mcp/agent_mcp.py#agent_console ·
-                                      tests/test_human_console.py::TheConsoleAnswers
-                                      EndToEnd::test_a_binding_store_that_did_not_
-                                      answer_says_so.
-```
-
-Invariants 1–5 and 10 were already implicit in the frozen statement and are
-written down here so that "it was always understood" stops being an argument.
-Invariants 6–9 are new, and each is a real failure rather than a hypothetical:
-they are Cases A, B and C, and the last is the `declared-but-absent` pattern
-this product has now hit often enough to name.
-
-Invariants 11–15 arrived with the resource-observation round, and they are
-different in kind from 6–9 in one way worth stating: each is the *fixed* form
-of a defect that round found **in this product's own readers**, not in the
-world it observes. Seven of those readers answered a question nobody had asked
-them — a timeout reported as an empty cache, an unreadable log as a small one,
-a comparison in which every row failed as "every registration is in desired
-state" — and the test suite was green through all seven. 11 is that whole
-family, named once.
-
-Invariants 16–17 arrived with the delivery runtime. **16 is enforced more
-weakly than it reads, and the difference is measured rather than glossed**: the
-daemon's loader closure retains the *capability* to reach the network —
-`runtime/probes.py` opens an outbound connection for the `http-health` and
-`mcp-tools-list` probe kinds — and the property holds today **by registry
-contents and not by construction**: none of the seven live registrations
-declares either kind, so no HTTP probe runs, and adding one registration is all
-it would take to make one run. The gate therefore does not claim "nothing in
-the closure can reach the network". It claims the set of things that can is
-exactly the set somebody has looked at and written down, so a second one is a
-red test. Repairing it properly is an architecture change — moving the HTTP
-probes behind a provider, or refusing those kinds from the daemon's own probe
-engine — and is recorded in the roadmap rather than improvised here.
-
-Invariants 18–20 arrived with the Remote Console, and each is a statement about
-a **plane that joins others and must not absorb them**. 18 is §M's sentence
-made checkable, and it is written down here because the first version of that
-guard was **itself an instance of the pathology this document exists to name**:
-it checked whether two operations shared a provider action, which no two of them
-ever do, so it could not fire. A guard whose condition cannot be true is the
-same defect as a feature nobody wired — declared, unreachable, and green. 19
-holds a prohibition by making the forbidden thing unrepresentable rather than
-forbidden; a rule that says "do not put an Item here" is one caller away from
-being violated by somebody who did not read it. 20 is invariant 11 one plane
-down, and it earned its place by being the shape the console's first draft got
-wrong.
-
-### The ownership rule (new)
-
-> **Anything that must outlive the Agent session that caused it requires an
-> explicit durable owner and an explicit lifecycle. An Agent session may cause
-> creation; it may not be the owner of record.**
-
-That single sentence is what Case A needed. The tunnel was not misconfigured —
-it was correctly configured for the lifecycle it had been given, and nobody had
-ever asked it to be anything else. The rule makes the question compulsory at
-registration: a resource whose only owner is a session is either refused or
-downgraded to `disposable`, and it is never the one a task depends on.
-
-### What ServerOS does not promise
-
-ServerOS does not promise that an ability works. It promises that a question
-about an ability has an answer: available, degraded, unavailable, incompatible,
-or unknown — and *why*. A node that cannot resolve an ability says `UNKNOWN`
-with a reason. It never says nothing, and it never says "should work".
-
-ServerOS does not promise durable memory is complete. It promises that memory
-has a named authority, a version, and a rebuild path, so that a projection can
-always be discarded and recomputed rather than argued with.
-
-## Unify the control plane, not the execution personality (frozen)
-
-> **One identity, one ability vocabulary, one memory, one set of device and
-> resource facts, one ownership rule, one safety boundary, one coordination
-> model — and as many ways of executing as there are runtimes and devices.**
-
-This is what the four planes are an implementation of, and it is written down
-because it is the one thing a product of this shape gets wrong by default.
-
-Unifying execution is easy to attempt and impossible to finish. Claude Code and
-Codex do not have the same tool surface; the Linux node and the Windows node do
-not have the same filesystem; an Agent turned loose on a machine genuinely
-needs to use what that machine has. A product that tries to make those agree
-ends up maintaining a second, worse copy of each runtime — which is the
-`declared-but-absent` pattern with a maintainer attached.
-
-So the line is drawn by **question**, not by capability:
-
-```text
-Unified — declared once; every runtime and device gets the same answer
-  identity        which machine, which Item, which Run, which session
-  ability         what a kind of work is, and how it is resolved here
-  memory          what the work remembers, and which layer is its authority
-  device facts    what this machine is, and what it is willing to own
-  ownership       who owns a resource, and since when
-  safety          what may be done without a person, and what may not
-  coordination    what several devices do together
-
-Free — varies per runtime and per device, and must stay free
-  how an Agent is invoked, and what one turn looks like
-  which provider implements an ability on this machine
-  where a device keeps its source, toolchain, evidence and state
-  how a runtime materializes an MCP server or a Skill
-  how a device is administered
-```
-
-Two consequences follow, and both are refusals rather than features.
-
-**A capability difference is a resolution, not a second identity.** Codex and
-Claude Code are one ability question answered twice, not two products. When a
-runtime-only difference changes what a node can do, it belongs in **that
-device's binding** — the same ability, resolved differently here — and never in
-a new top-level name for the runtime. The identity is the runtime *family*;
-per-surface differences are data about one installation, and they are resolved
-per device, per operation. This is developed in
-[`docs/agent-runtime-model.md`](docs/agent-runtime-model.md).
-
-**A device difference is a path, not a semantic.** The nodes converge on the
-same questions and not on the same directories. `fleet/profiles.yaml` binds one
-closed role vocabulary to unrelated physical paths per device, so a consumer
-asks for `workspace.src` and never learns whether that is a POSIX path or a
-drive letter.
-
-The test for any proposal under this principle is which list it touches.
-Unifying one of the freedoms is how the second copy gets built. Preserving a
-difference in the unified list is how the four-plane framing is quietly
-abandoned — and that is not hypothetical either: it is what "ServerOS = a
-control plane" did to abilities, memory and a second device, and each of those
-had to be re-derived from a live failure.
-
-### Where the unified answers are not yet real
-
-Naming a question as unified does not make it answered, and this product has a
-documented tendency to let the declaration run ahead of the mechanism. Two of
-the seven above are, today, **statements of intent with no resolver behind
-them**, and they are listed here so that reading this section does not confer
-on them a status they do not have:
-
-```text
-runtime facts   version and features are declared fields with no reader.
-```
-
-The two that were on this list until v1.2 are worth keeping in view, because
-each one closed by shrinking the claim rather than by widening the code:
-
-```text
-coordination    CLOSED (§17) — session_role at create, an immutable Item for
-                an execution thread, and three refusals. It was not answered
-                by a schema; it was answered by discovering that a session
-                must say what it is FOR before anything can be enforced.
-memory recall   CLOSED (§18) — memory/scope.py. It was not answered by an
-                access-control layer; it was answered by one field on the
-                record and a required `reader` on the read path, because the
-                phrase the prose had used all along was "the promotion is the
-                consent, and it is recorded".
-```
-
-[`docs/fabric-v1-roadmap.md`](docs/fabric-v1-roadmap.md) is the ledger: what
-exists, what is missing, which real failure each gap answers, and what has to
-happen first. A unified answer that is not in that ledger's "exists" column is
-not a unified answer yet.
-
-## Canonical ownership and distribution
-
-```text
-serveros/skills/serveros/                 bootstrap Skill canonical
-serveros/plugin/bundle.yaml               serveros-core composition canonical
-serveros/plugin/profiles/*.yaml           wider compositions, each `extends:` core
-serveros/runtime/                         node runtime canonical (control_plane.py)
-ability-management/skills/<id>/payload    reusable Skill canonical
-ability-management/plugins/<id>/          plugin canonical
-ability-management/mcps/<id>/             MCP canonical
-```
-
-**No reusable Ability payload is ever copied into a plugin source tree.** A
-composition names an Ability by `AbilityRef` + pinned revision; the build
-materializes the payload from that revision. A checked-in copy of a payload
-inside a plugin tree is a second source of truth and is removed, not
-documented-around. Any generated payload carries `GENERATED — DO NOT EDIT`;
-nothing in a distribution artifact is edited in place and synced back.
-
-Generation is one-way. Nothing under a materialization directory may become
-authority, and `sync-self` / manifest fingerprints must describe the payload the
-build actually materializes — never a stale copy that happens to sit nearby.
-
-## The fleet (optional)
-
-```text
-ServerOS owns the questions, not the paths:
-which machine is this · where does its source/toolchain/evidence live ·
-how may another authorized agent reach it · what is protected
-```
-
-Ability Management references a stable `device:<id>` and owns capability
-desired/observed state; it does not keep a second device list. Fleet is
-**optional per device**: a device that declares no fleet participation is a
-normal ServerOS node that simply has no topology neighbours.
-
-```text
-One ServerOS product
-One ServerOS node per participating device
-One device profile per node
-Different physical directories
-Different desired ability graphs
-Same semantic contracts
-```
-
-**Stable boundaries, adaptive interiors.** The machines are not meant to
-converge on the same directories. They converge on the same *questions*:
-`fleet/profiles.yaml` binds one closed role vocabulary to unrelated physical
-paths per device, so a consumer asks for `workspace.src` and never learns
-whether that is a POSIX path or a drive letter.
-
-Device identity is **authored, not discovered**. A hostname, computer name or
-relay UUID is a route, not a name — it is recorded as an observation and never
-used to key, join or deduplicate a device. Rename adds an alias so earlier
-Installation and Revision evidence keeps resolving.
-
-## Vocabulary boundaries (frozen)
-
-```text
-ServerOS    product / control model   decides identity, policy, desired state
-Skill       procedural knowledge      decides when and how
-MCP         typed tool/context boundary   an interface, never an authority
-Plugin      packaging / distribution  carries the others to a runtime
-Transport   execution backend         moves bytes, decides nothing
-A2A         Agent ↔ Agent delegation  preferred over remote shell
-```
-
-Two rules make this enforceable rather than aspirational:
-
-- **MCP carries no policy of its own.** A rule that exists only inside an MCP
-  server is not a ServerOS rule, because no other consumer will honor it.
-- **Remote execution is admitted by intent level**, not by raw command. There
-  is no default `remote.shell(device, arbitrary_command)` agent API.
-
-## Authority
-
-```text
-ServerOS              top-level product and control model
-ability-management    capability control plane
-onboard knowledge     corporate knowledge source — not a control plane
-agent runtimes        materialization only — they execute, they do not decide
-maps                  generated projections — never authority
-```
-
-There is no second MASTER CONTROL PLANE. A document, a directory or a server
-that describes the fleet is a source, an observation or a projection; none of
-them acquires authority by being written down. When a projection and its source
-disagree, the projection is regenerated — never hand-corrected.
-
-## NOT SERVEROS RESPONSIBILITY
-
-This list is closed. It exists so these do not grow back.
-
-```text
-kernel scheduling
-system-wide process supervision
-container orchestration
-generic workflow execution
-generic job scheduler
-secret storage
-full APM
-metrics warehouse
-automatic destructive cleanup
-```
-
-ServerOS observes all of these and may attribute them to an owner. It does not
-*implement* them, and a proposal to implement one is an architecture change that
-this list exists to reject.
-
-Consequences worth stating explicitly, because they are the ones most likely to
-be re-proposed:
-
-- No global workflow engine and no forced Activity pipeline.
-- No new daemon, lease system, approval layer, or directory layer beyond the
-  frozen `serverosd` above.
-- No second source of truth for Skills, maps, or Item state.
-- No automatic deletion, prune, or volume/container cleanup. Docker and disk
-  findings are **observed and attributed**; acting on them is a person's call.
-- No documentation manufactured merely to close a schema.
-
-Before adding anything, ask: **does this improve Environment, Context, or
-Capabilities — and which real failure case fails without it?** If neither has an
-answer, it is not ServerOS.
-
----
-
-## Status of this document
-
-Round 9 froze this statement and closed with **"no more architecture
-expansion"**. This is the round that supersedes that sentence, and it does so
-openly rather than by quietly editing around it.
-
-Round 9 was right about the thing it was protecting. What it called expansion
-was Core design with no failure case behind it, and there was plenty of that —
-the four-plane framing is not a licence to resume it. The two rounds differ in
-one testable way: **every plane named above arrived with a failure that already
-happened, and left with a resolver, a schema and a refusal.** The Node Runtime
-Plane already had all three. The other three did not, which is why the failures
-were possible.
-
-The freeze is therefore amended, not lifted:
-
-```text
-Closed       the four planes and the invariants above.
-Closed       a plane may not be added without a named real failure.
-Open         the resolvers, schemas, adapters and fixtures that make each
-             plane answerable — and nothing else.
-Closed again anything that improves none of the three answers:
-             can this machine do it · does the work remember it · who owns it.
-```
-
-### The Fabric V1 round, and what it added
-
-The round after the release added one thing and refused several, and the way it
-added it is the part worth recording. A full product-architecture design was
-written for the next version — runtime families, per-device bindings, an
-ability operation vocabulary, five memory semantics, coordination, human
-control, monitoring and alerts. It was **not** integrated as written, for the
-reason the whole document exists:
-
-```text
-it described mechanisms as though they were present
-```
-
-The design was checked against the tree, line by line, and the result is worth
-stating plainly: most of its fabric was already built — the four-plane framing,
-the eight-axis resolver, the five words, the three memory layers, the pack
-contract, the HumanControl capability table with its honest `UNKNOWN`s — and
-three of its planes were **not built at all**, not even as a contract. So the
-round split the design in two:
-
-```text
-frozen here    the principles that decisions must be consistent with, and
-               the invariants that already name an enforcement
-recorded there the mechanisms that do not exist yet, each with the failure it
-               answers and what has to be true first — docs/fabric-v1-roadmap.md
-```
-
-The unifying principle above is frozen. The roadmap is explicitly **not** a
-commitment that any of it will be built. A gap that is written down is a
-question; the same gap written as architecture is a lie with a maintainer.
-
-The next permitted actions are the ones in this round's implementation order,
-then promotion / cutover of the built candidate, then porting a new device
-profile. A new Core module, a fifth plane, or a service added because it would
-be tidy is still refused by the same test Round 9 used.
+对 operation 分别输出：support、readiness、authorization、reason、observed_at/source。未知、明确不支持、当前不可用、拒绝、未配置、无数据和不适用不可混淆。具体 wire enum 保留版本兼容，升级须明确映射；禁止靠换术语掩盖没有实现。
+
+**Work 侧**：Source/有版本的 Snapshot、来源可追溯的 Claim、Candidate、Item、Activity、Run、Deliverable。Understanding 是可修正的 Claim 集合；Board 是投影；Decision/Checkpoint/Report 是带类型的工作记录或文档，不为每个名词建立服务。Execution Envelope 是 Item/Activity 的授权范围记录，不是新引擎。
+
+## 8. 发现、上下文与权限
+
+默认路径：thin bootstrap -> 当前 context -> 小集合 search -> inspect/resolve -> 按需加载 -> 执行。已知能力可以直达；不强迫每步额外 API 往返。
+
+小型本地 lexical/tag 索引优先；需要时才引入 embedding。索引是缓存，保留 source revision。Skill 正文、MCP schema、Provider 启动、全文证据分别按需。并非所有 Agent 都支持相同的动态 attach；采用真实 runtime 能力，无法热加载时具名提示或复用受控工具边界，不能假装成功。
+
+读取同样受 scope/ACL/脱敏限制；“只读”不等于任何资料都可读。重权限或有费用的 probe 也需预算/授权。共享终端/CloudCLI 文件写入若绕过 ServerOS，不能宣称已受 ServerOS 完全准入；需 native permissions、sandbox/OS 隔离或明确 external/unmanaged 标记。
+
+详见 [Agent 与人类使用面](docs/architecture/AGENT-EXPERIENCE.md)。
+
+## 9. 动态环境与自动推进
+
+Desired = 已批准的 Session/Item/Project/Device 需求引用；Observed = 当前观察；Effective = desired、observed、兼容与政策共同解析的结果，不是把列表拼在一起。
+
+新发现 MCP/runtime 仅为 candidate。Session/Item/Project/Device-persistent/External 的范围由明确选择或预授权 recipe 决定。最后一个消费者退出也只有在 owner、lease、grace 和 retain policy 均允许时才停资源；观察失联不等于引用归零。持久资源不能仅归短命 session 所有。
+
+自动工作是三种外部有限 recipe：输入与认识更新、获准工作推进、日报/周报生成。优先增量/事件，定时补扫；无变化跳过；有预算/单次锁/幂等/检查点。Human 与 ChatGPT 参与优先级、需求、技术选型与设计；Claude/Codex 执行；Quay 承接有界子任务，Task done 不关闭父 Item。
+
+详见 [工作与信息链](docs/architecture/INFORMATION-WORK.md)。
+
+## 10. 空间与内容治理
+
+目录按用途和生命周期管理，不要求所有目录或仓库 clean 才能开发。保留 Tokyo 的长期 roles；新增本轮目录只登记真实 owner/purpose/lifecycle，不迁移并行业务工作面。
+
+飞书“云文档”是产品总称；用户需要的云文档、云盘、我的文档三个入口均纳入 inventory，但不假造三个互不重叠数据库。Wiki 节点树、Drive 文件夹、My Docs 页面树、Minutes 原生对象按 Provider 事实建模，同一云对象按 ID 去重。
+
+会议录音、转写、自动摘要、人工摘要和引用是一个逻辑 MeetingBundle。无关环境录音不得自动进入认识/候选/日报。闭麦只是线索，不等于没有支持工作；Marek 开麦例外须精确绑定。过滤内容与删除原件是两条独立决策。
+
+详见 [磁盘、飞书与内容保留](docs/architecture/SPACE-AND-RETENTION.md)。
+
+## 11. 产品输出
+
+Status：现在怎么样，固定“我的资源 / 整机资源 / 共享 AI 网关”，顶部给当前工作环境 readiness。
+
+Alert：发生什么、对象、影响、确定程度、建议；无关总账不占第一屏。Recovery：只针对该接收面之前成功通知的问题，有肯定恢复证据才可说恢复。Work/Decision：今天重点、阻塞、需要选择。Report：真实进展差量、交付/证据、决策、阻塞、Quay 贡献；没有进展要如实说，不编造完成百分比。
+
+一种语义 presentation model，多种 renderer/transport。原始告警 code、baseline、generation 和全历史计数放诊断详情。UI 不可显示没有后端的假按钮。
+
+## 12. 本版范围与完成标准
+
+本版覆盖两大家族中全部必需职责及其真实调用链，不以“新增 Skill 文件”“map 中 PRESENT”“CLI exit 0”代替可用。
+
+目标设备为 Tokyo；Claude/Codex 的支持与验证分别记录；其他设备给合法 profile/拒绝语义，不谎称部署。CloudCLI 是可选消费面，相关 adapter/隔离说明须完成，不要求开发第二 IDE。
+
+遵循 [完整验收矩阵](docs/architecture/ACCEPTANCE.md)。必须逐行报告 CODE、INTEGRATION、LIVE，真实外部阻塞不偷改为 PASS；也不能因一项阻塞放弃其余能力。
+
+[CC 执行任务书](docs/execution/CC-PROMPT.md)规定实施授权、验证预算、并行保护和交付方式，不另定义一套架构。
+
+## 13. 仍然禁止
+
+新增语义 daemon、全量启动上下文、每能力一个插件、随意任意 shell 控制面、全局 workspace-clean 前置、自动 destructive cleanup、为填图造 fake abilities、并行项目重构、无证据的可用性/完成度、无限验证/重试、把原始录音当用户指令、向非授权渠道发布私有资料。
+
+## 14. 文档地位
+
+本版明确修正旧措辞中“地图全是生成物”“state 全可重建”“只读不需要权限”“所有 Provider 都可由统一热加载控制”“UI 只是无副作用显示器”等过宽简化。L1/L2 语义地图可人工维护；L3 是 observed/projection；各域保留自身 authority。
+
+历史入口 `docs/fabric-v1-roadmap.md` 与旧 proposal 用于理解既有实现/失败，不扩大也不缩小本版验收范围。规范冲突以本文件及其专题章节为目标基线，实际代码/现场状态照实记录；禁止通过修改证据来迎合设计。
