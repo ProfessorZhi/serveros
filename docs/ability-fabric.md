@@ -208,6 +208,119 @@ single-parent tree would force a false choice. The projection carries both. The
 authority is `ability-management/abilities-manifest.yaml`; the projection is
 generated and carries `GENERATED — DO NOT EDIT`.
 
+## The ability logic view
+
+Abilities are **parallel physically and a tree logically**, and that is not a
+figure of speech — it is the rule stated above, and the reason it holds is
+narrower than it looks. The physical layout cannot be nested because the
+directory is a *materialization address*: a nested tree would mean a
+reorganization that moves nothing on disk still invalidates every pinned
+revision path. The tree therefore lives where it can be reorganized for free —
+in the logical projection.
+
+What that view has to show, and the one thing it must not imply:
+
+```text
+ServerOS — product / control model        decides identity, policy, desired state
+│
+├── Core                                    ONE Core list, TWO members
+│   ├── serveros              product entry · composition authority · bootstrap Skill
+│   │                         Context/Space/Relations kernels · deterministic build
+│   └── ability-management    Capability/Ability registry · reusable Skill canonical
+│                             source · revision/compatibility/discovery/reconcile
+│
+└── Composition                             what gets packaged and installed per runtime
+    ├── plugin/bundle.yaml        serveros-core              plugin name hwz-server-os
+    └── plugin/profiles/*.yaml    `extends:` core            plugin name hwz-server-os-linux-work
+        │
+        │  A composition's members come in three shapes. There is no fourth,
+        │  and these are not "modes" a member can be switched between.
+        │
+        ├── skills:   name + source                  procedural knowledge
+        │     serveros ............... source: local               ← canonical in THIS repo
+        │     runtime-management ..... source: ability-management  ← read from a PINNED revision
+        │     ability-management ..... source: ability-management
+        │
+        ├── mcp: servers:  name + command + entry    an interface, never an authority
+        │     serveros-node .......... strictly read-only node surface
+        │     serveros-agent ......... may call provider APIs after serverosd admission
+        │
+        └── path: <module>                           copied into the artifact
+              context space relations fleet abilities memory intake documents runtime bin
+        │
+        ▼
+    Two runtime adapters, one world           Claude Code  |  Codex
+    one build renders .claude-plugin/ and .codex-plugin/ from the same inputs
+```
+
+Below the composition is the only layer where abilities actually live, and it is
+flat:
+
+```text
+Abilities — physically parallel, logically placed
+
+PHYSICAL   exactly one directory level, always
+           ability-management/skills/<ability-id>/
+           each ability carries its own identity  ProfessorZhi/<name>  and its own pinned revision
+              runtime-management · workspace-management · test-management · … 51 names in the manifest
+           nesting is refused: the directory is an address, not a taxonomy
+
+LOGICAL    the tree an Agent reasons with
+           Domain → optional Subdomain → Ability          max depth three
+```
+
+### The two trees answer different questions
+
+There is more than one tree, and they are allowed to disagree in *shape*. They
+are not allowed to disagree about which abilities exist or where they are
+placed — `serverosctl taxonomy validate` fails closed if they do.
+
+```text
+serverosctl ability tree     placement    "what IS under this node"       basis: domain.primary
+serverosctl taxonomy tree    navigation   "what COULD be, and where"       basis: abilities/taxonomy.v2.yaml
+```
+
+The difference is not cosmetic. The placement tree is derived, so a node with
+nothing under it does not exist in it. The navigation tree is declared, so it
+can carry a family that is declared and **not yet occupied** — a reader asking
+"where would safety work live" gets an answer even when no safety ability exists
+yet. Without the declared tree the honest answer is "nowhere, the node does not
+exist", which reads as *this fabric has no safety concept* when the true finding
+is *the concept is declared and empty*. Those are different findings and only
+one of them is true.
+
+A node's occupancy is therefore one of four states, and they are not
+interchangeable:
+
+```text
+OCCUPIED       something is placed here
+EMPTY          declared, nothing under it yet
+SURFACE_ONLY   declared and unoccupied on purpose — a named surface, not a gap
+(v1 container) grouping carried over from the older vocabulary, NOT a family
+```
+
+### Where the word "family" is already taken
+
+`family` is load-bearing in this product and it does **not** mean "a cluster of
+abilities". Two things are already called a family, and neither is a taxonomy
+cluster:
+
+```text
+runtime family        Claude Code | Codex — the identity an installation is a binding OF
+seed family           the ten top-level nodes of the declared taxonomy
+                      (agent · creative · human · information · memory · network ·
+                       runtime · safety · security · work) — "seed", not "family", is the
+                      field name precisely because the other sense owns the word
+```
+
+The ability's own placement fields are `domain.primary` and `taxonomy_refs`, and
+their authority is `ability-management/abilities-manifest.yaml`. A work-
+navigation reading that groups abilities into named clusters also exists
+(`CAPABILITY-FAMILIES.md` in `ability-management`), and it says of itself that
+it is a *view*: the only thing it declares is which cluster an ability is
+navigated under, and a cluster with no member is a named gap rather than a work
+item. It is not a second catalogue, and it is not this taxonomy.
+
 ## Packs
 
 A pack is a named set of abilities for a purpose. It carries **no payload** —

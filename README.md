@@ -1,5 +1,8 @@
 # ServerOS
 
+> 中文译文：[`README.zh.md`](README.zh.md) — this English file is canonical; the
+> translation links to the same places and states nothing of its own.
+
 ServerOS is a lightweight **user-space Agent Operating Fabric** for Claude Code,
 Codex, and future coding agents — an Agent Engineering Workbench built on it.
 
