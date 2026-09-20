@@ -344,21 +344,53 @@ def test_the_moving_host_case_says_so_out_loud():
 def test_the_daemon_is_not_blind_to_a_class_of_processes():
     """The process set may churn; it may not collapse.
 
-    `top` is a ranking, so the two samples legitimately differ by a few rows —
-    this machine is shared and CPU changes between them. What must NOT happen
-    is the daemon seeing a tiny fraction of what the CLI sees, which is what
-    the namespace defect produced: 4 visible where 63 existed.
+    `top` is a ranking, so two samples legitimately differ by a few rows — this
+    machine is shared and CPU changes between them. What must NOT happen is the
+    daemon seeing a tiny fraction of what the CLI sees, which is what the
+    namespace defect produced: 4 visible where 63 existed.
+
+    WHY THE REFERENCE IS THREE SAMPLES AND NOT TWO. This test used to compare
+    the daemon's set against ONE CLI sample and require half of those pids to
+    appear in both. Its comment said that floor was "far below the churn two
+    adjacent samples produce". On 2026-09-21, during a full-suite run on this
+    host, the two readings were 50 pids and 50 pids with ZERO overlap: measured
+    here, `stable` between two adjacent CLI samples is 31-44 of 50 even when
+    the machine is quiet, and during the suite the run's own short-lived
+    subprocesses dominate a ranking by CPU — so two adjacent samples can be two
+    entirely different generations. The comment was a claim about the world
+    nobody had measured under the condition where it mattered, which is the
+    defect this round keeps finding, here in a test rather than in a parser.
+
+    So the reference is the set that SURVIVED between two adjacent CLI samples.
+    A daemon blind to a class of processes misses members of that set and fails;
+    a host that churned every pid away skips and prints the reading it could not
+    stand behind, which is the honest outcome and not a green one.
     """
+    before = _rows(_cli("process", "top", "--limit", "50"), "processes", "rows")
     live = _rows(_ipc("process.top", {"limit": 50})["result"], "processes", "rows")
-    direct = _rows(_cli("process", "top", "--limit", "50"), "processes", "rows")
-    if not direct:
+    after = _rows(_cli("process", "top", "--limit", "50"), "processes", "rows")
+    if not before or not after:
         pytest.skip("no processes visible to compare")
+    stable = ({row.get("pid") for row in before}
+              & {row.get("pid") for row in after})
+    if not stable:
+        pytest.skip(
+            "the host churned every pid in a 50-row ranking between two "
+            "adjacent CLI samples, so there is no surviving set to hold the "
+            f"daemon against; it read {len(live)} processes and this run "
+            "cannot say whether it missed any")
     daemon_pids = {row.get("pid") for row in live}
-    direct_pids = {row.get("pid") for row in direct}
-    overlap = len(daemon_pids & direct_pids)
-    # Half is a deliberately loose floor: it is far below the churn two
-    # adjacent samples produce, and far above the near-zero the blindness bug
-    # produced.
-    assert overlap >= max(1, len(direct_pids) // 2), (
-        f"daemon and CLI process sets barely overlap: "
-        f"daemon={len(daemon_pids)} direct={len(direct_pids)} overlap={overlap}")
+    overlap = len(daemon_pids & stable)
+    # Two thirds, and the floor was set by measuring rather than by taste.
+    # Against this live daemon the overlap is 100% of `stable` — 31/31, 44/44,
+    # 41/41, 49/49 across four runs — so a floor of HALF, which is what this
+    # test used to carry, passes a daemon that has lost every second row.
+    # Measured, on a synthetic halving of the live answer: 25 of 50 rows, 25 of
+    # 49 stable, floor 24, PASS. That is the hole this number closes, and the
+    # slack that is left is for the real reason the two rankings may differ:
+    # both are `top`, so a pid can be ranked in by one and out by the other
+    # without anything being blind.
+    assert overlap >= max(1, len(stable) * 2 // 3), (
+        f"the daemon does not see processes the CLI saw twice running: "
+        f"stable={len(stable)} overlap={overlap} daemon={len(daemon_pids)} "
+        f"missed={sorted(stable - daemon_pids)[:8]}")
