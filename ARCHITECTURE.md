@@ -274,8 +274,24 @@ policy rather than assuming "I was allowed to read it, therefore I may copy it".
 
 ServerOS is not only a runtime helper. It maintains a daily work loop.
 
+ServerOS is **demand-driven**. It does not create work merely because it can
+imagine something useful to do.
+
+Primary work-demand inputs are:
+
 ```text
-Feishu / Docs / Wiki / Minutes / GitHub / Sessions
+Feishu online messages / requests
+offline conversations → recording / transcription / minutes
+direct user oral additions / corrections
+existing project requirements / incidents / routines
+```
+
+Most projects are stable and explicitly known. A new project is created or
+reactivated because the user recognizes a real work demand, not because ServerOS
+autonomously invents one.
+
+```text
+Feishu / Transcripts / Minutes / User Input / GitHub / Sessions
                     ↓
            Incremental Source Capture
                     ↓
@@ -445,6 +461,8 @@ Possible sources:
 - Feishu chat;
 - Feishu document;
 - Wiki subtree;
+- offline conversation transcript / meeting minutes;
+- explicit user oral/manual input;
 - GitHub repository / issue / release;
 - external research source.
 
@@ -855,6 +873,43 @@ Source
 `work-engine` remains the durable Item/Activity/Run control plane. ServerOS
 does not create a second workflow database.
 
+**Item means an approved requirement / durable work package.** It does not mean
+"code change" and it does not mean "every action the Agent performs".
+
+An Item may deliver:
+
+```text
+code / PR
+deployment / configuration change
+document / guide / report
+analysis / findings / evidence
+test / benchmark / validation
+operational change
+other acceptance-backed deliverable
+```
+
+The current company-work domain has three primary work classes:
+
+```text
+1. Development & Operations
+2. Log Analysis / Observability
+3. Technical Support
+```
+
+These are work modes, not three separate workflow engines.
+
+**Development & Operations** commonly produces durable Items and may include
+code, deployment, infrastructure/configuration, verification and documentation.
+
+**Log Analysis / Observability** may be an Item when there is a formal
+requirement/deliverable, or a Routine/ad-hoc analysis when there is not. Its
+deliverable may be findings/evidence/report with no code change.
+
+**Technical Support** is normally conversational and does **not** create an
+Item. GPT/Agents may answer using repositories, logs, knowledge and tools.
+Only a durable engineering follow-up, repeated product problem or explicit
+requirement is promoted to Candidate → Item.
+
 ### 8.1 One Personal Board
 
 The default work surface is one personal cross-project board.
@@ -863,19 +918,21 @@ Projects are filters/relationships, not separate truth islands.
 
 ### 8.2 Candidate before Item
 
-Source signals, incidents, ideas and understanding changes create Candidates.
+Explicit human demand, incidents and reconciled understanding changes may create
+Candidates.
 
-ServerOS may also **proactively infer Candidate work** from repeated or
-cross-source evidence, for example:
+ServerOS may consolidate repeated **human-demand signals** into a coarse-grained
+Candidate, for example several support requests that point to the same product
+problem. Logs/telemetry may strengthen the evidence, but ServerOS does not scan
+for arbitrary opportunities simply to manufacture work.
 
 ```text
-same support problem appears repeatedly
-+ related logs show rising frequency
-+ recent project change is relevant
-→ propose one coarse-grained Candidate with evidence
+repeated human/support demand
++ related logs/evidence
+→ propose one coarse-grained Candidate
 ```
 
-The proposal must retain source/evidence links and confidence. It still does not
+The proposal retains source/evidence links and confidence. It still does not
 become an Item automatically.
 
 Only human selection promotes a Candidate into a durable Item.
@@ -908,7 +965,37 @@ The user selects today's work.
 That selection is durable enough to drive background continuation but remains
 human-owned.
 
-### 8.5 Project lifecycle
+### 8.5 Not every operation is an Item
+
+A durable requirement becomes an Item. A small operational/support action may
+not.
+
+Examples:
+
+```text
+"upgrade this service safely"
+→ durable requirement
+→ Candidate / Item
+
+"restart this already-owned failed disposable runtime"
+→ bounded incident/maintenance action
+→ no new Item required
+
+"answer this support question"
+→ Support interaction
+→ no Item required
+
+"produce this deployment guide"
+→ durable deliverable requirement
+→ Item
+```
+
+Therefore ServerOS does **not** introduce a separate `EnvironmentChange`
+work-object. Environment/tool/software changes are either part of an approved
+Item, a Routine, or a bounded Incident/Maintenance action depending on why the
+change exists.
+
+### 8.6 Project lifecycle
 
 Projects are not simply present or deleted.
 
@@ -1192,7 +1279,30 @@ Typical structure:
 The default format is public-quality/professional even when the primary audience
 is the user.
 
+### 13.1 Communication is cross-cutting
+
+Outbound communication is a reusable Ability, not duplicated separately inside
+Support, Incident, Reporting and Engineering.
+
+Possible operations include:
+
+```text
+communication.draft
+communication.review
+communication.send
+communication.reply
+communication.publish
+```
+
+Providers may include Feishu, GitHub, email or other approved channels.
+
+Low-risk notifications/report delivery may eventually be automated by policy.
+External commitments, sensitive statements or other high-impact communication
+may require explicit confirmation.
+
 ---
+
+
 
 ## 14. Workspace and placement
 
@@ -1266,6 +1376,13 @@ Missing roots resolve to explicit UNBOUND, never to a guessed fallback.
 
 Project != repository.
 
+Projects and their repository relationships are normally **explicitly
+designated by the user** and change infrequently.
+
+ServerOS may resolve and remember those mappings, but it does not auto-adopt a
+repository, create a Bridge or invent a Project merely because an Agent opened
+or inspected a repo.
+
 A project may span many repos and one repo may serve several work contexts.
 
 Repository roles:
@@ -1280,8 +1397,9 @@ tool
 
 ### 15.1 Bridge repository pattern
 
-When the user needs to develop against an upstream/enterprise repository that
-is not their writable authority, prefer an owned Bridge repository.
+When the user explicitly needs to develop against an upstream/enterprise
+repository that is not their writable authority, prefer an owned Bridge
+repository. Repository inspection alone never creates a Bridge.
 
 ```text
 upstream / enterprise repo
@@ -1492,18 +1610,29 @@ Bidirectional device access requires:
 For the intended topology, Tailscale reachability + explicitly enabled SSH is
 cleaner than long-lived reverse tunnels.
 
-### 18.3 RDC
+### 18.3 Remote assistance / device control
 
-Remote Desktop / Desktop Commander is a device-control Provider.
+Remote assistance is a Provider/recipe boundary, not a reason to enroll every
+other person's computer into the user's long-lived Fleet.
 
-It is attached on demand for:
+For ordinary colleague/user assistance, the current practical tool is typically
+**Sunlogin (向日葵)**. RDC/Desktop Commander may still be used where appropriate
+for Agent-controlled Windows workflows.
 
-- Windows-specific workflows;
-- GUI interaction;
-- local files/apps;
-- user assistance.
+Typical support flow:
 
-It is not Agent-to-Agent communication.
+```text
+support conversation
+→ temporary remote assistance when needed
+→ bounded action
+→ verify
+→ return answer/result
+```
+
+A temporarily assisted third-party device does not automatically become a
+persistent ServerOS device.
+
+Remote assistance is not Agent-to-Agent communication.
 
 ### 18.4 A2A
 
@@ -1916,9 +2045,31 @@ work detection and delegation depth.
 
 ---
 
-## 27. Scheduled operating recipes
+## 27. Routine and scheduled operating recipes
 
 No `workflowd` exists.
+
+A lightweight **Routine** represents recurring work that should run repeatedly
+without inventing a new Requirement/Item each time.
+
+```text
+Routine
+├── purpose / scope
+├── schedule or trigger
+├── policy / authorization
+└── Runs
+```
+
+A Routine Run may produce a report/result directly. If it discovers durable
+work that requires prioritization, it produces a Candidate:
+
+```text
+Routine Run
+→ result / evidence
+→ optional Candidate
+→ human selection
+→ Item
+```
 
 Finite OS-scheduled recipes drive recurring work.
 
@@ -1987,14 +2138,18 @@ B · Information → Delivery
 ├── Source Capture / Follow
 ├── Structured Understanding / Reconciliation
 ├── Work Discovery / Personal Board
-├── Idea / Requirement Discovery
 ├── Requirements Engineering
+├── Development & Operations
+├── Log Analysis / Observability
+├── Technical Support
 ├── Research / Evidence Acquisition
 ├── Decision / Architecture
-├── Execution
+├── Verification / E2E
+├── Routine
 ├── Incident / Operations
 ├── Knowledge Stewardship
-├── Remote User Assistance
+├── Remote Assistance
+├── Communication
 └── Reporting / Publication
 ```
 
@@ -2031,6 +2186,10 @@ Runtime differences belong in adapters/bindings, not duplicated business logic.
 ---
 
 ## 30. Non-goals
+
+Current product scope is the user's **company-development/work environment**.
+The underlying primitives may generalize later, but the architecture should not
+add lifestyle/personal-domain complexity before a real need exists.
 
 ServerOS does not become:
 
