@@ -162,9 +162,44 @@ principal       ubuntu only for that target/scope
 This does **not** grant authority over arbitrary `ubuntu` files, processes,
 containers, repositories or services.
 
+Delegated authority is never a blanket Session capability. It is bound to:
+
+```text
+principal
++ target
++ operation
++ scope
++ expiry / validity
+```
+
+Changing Item, target or operation does not silently carry elevated authority
+forward.
+
 Privilege is target-scoped, not username-scoped.
 
-### 2.3 Network safety
+### 2.3 Policy inheritance
+
+Compliance policy composes from broad to narrow:
+
+```text
+global personal policy
+        ↓
+host / device profile
+        ↓
+project / environment policy
+        ↓
+target-specific delegated exception
+        ↓
+per-operation admission
+```
+
+Narrower layers may add constraints or explicitly delegated exceptions; they do
+not redefine ServerOS's generic safety semantics.
+
+This keeps Tokyo, Windows, future servers and production/jump hosts consistent
+without copying an unrelated policy file per machine.
+
+### 2.4 Network safety
 
 Network mutation on a shared host is high risk.
 
@@ -195,7 +230,7 @@ A netshadow-style conflict check is a hard gate.
 
 Unknown/incomplete policy fails closed.
 
-### 2.4 Shared host safety
+### 2.5 Shared host safety
 
 Default expectations:
 
@@ -207,6 +242,31 @@ Default expectations:
 - loopback-only service bind unless a wider bind is explicitly intended;
 - no assumption that file mode alone provides isolation from other privileged
   users on the host.
+
+### 2.6 Information-flow policy
+
+Read authorization and propagation authorization are different.
+
+A source may be readable for a task while still being ineligible for Memory,
+GitHub, reports, publication or export.
+
+ServerOS therefore models information-flow permissions separately from mutation
+permissions. At minimum, policy must be able to distinguish:
+
+```text
+readable
+retrievable
+memory-eligible
+report-eligible
+publishable
+exportable
+```
+
+The exact vocabulary may evolve, but the distinction is an invariant.
+
+Raw sensitive material should remain in its protected source/archive boundary.
+Derived Context, Memory, reports and GitHub artifacts must respect propagation
+policy rather than assuming "I was allowed to read it, therefore I may copy it".
 
 ---
 
@@ -415,14 +475,50 @@ recorded.
 
 ## 6. Session Fabric
 
-Session is a first-class ServerOS resource.
+Session is a first-class ServerOS resource, but it is **not the primary
+long-term continuity authority**.
 
-A Session answers:
+Long-lived work continuity is anchored by:
 
-> Which Agent work thread is this, what is it for, where is it running, what
-> does it belong to, and how can it continue?
+```text
+Project / Item
++ durable documents
++ code / artifacts
++ Memory
++ decisions / checkpoints
+```
 
-### 6.1 Logical roles
+A Session is a bounded, relatively clean **working context** attached to that
+durable work.
+
+This deliberately prefers:
+
+```text
+one Item
+  → many focused Sessions
+```
+
+over one enormous transcript that must survive for months.
+
+### 6.1 Session hierarchy in the human UI
+
+The default human navigation is semantic:
+
+```text
+Project
+└── Work / Item
+    └── Sessions
+```
+
+CloudCLI may naturally discover/group native sessions by working directory or
+project path, but ServerOS adds the semantic overlay: Project, Item, role,
+device and current checkpoint. Native directory grouping is useful evidence,
+not the work model itself.
+
+Top-level views should emphasize the Coordinator and recently active work rather
+than dumping every native session into one flat list.
+
+### 6.2 Logical roles
 
 Common roles:
 
@@ -432,21 +528,28 @@ Common roles:
 
 These are semantic roles, not mandatory process classes.
 
-### 6.2 One Item may have many sessions
+A Coordinator is a role and continuity pattern, not a requirement to keep one
+native Claude/Codex transcript alive forever. A fresh Coordinator Session can
+recover from durable understanding, board state, Memory and checkpoints.
+
+### 6.3 One Item may have many sessions
 
 Example:
 
 ```text
 SRV-0123
+├── product/requirement discussion
 ├── implementation session
 ├── research session
 ├── verification session
 └── review session
 ```
 
-The system does not force one Item into one ever-growing transcript.
+Each Session may carry a narrower context than the Item as a whole.
 
-### 6.3 Live Session and history are separate
+The durable Item is the continuity anchor; Session turnover is expected.
+
+### 6.4 Live Session and history are separate
 
 **ServerOS Agent Session** owns live control semantics:
 
@@ -458,14 +561,15 @@ The system does not force one Item into one ever-growing transcript.
 - result;
 - interrupt;
 - stop;
-- handoff.
+- handoff;
+- remote attach when the Provider supports it.
 
 A stable ServerOS session ref is not a PID, tmux session, chat thread or native
 provider ID.
 
 Provider-native IDs remain locators.
 
-### 6.4 MetaCC is the preferred Session History / Intelligence Provider
+### 6.5 MetaCC is the preferred Session History / Intelligence Provider
 
 ServerOS should not reimplement the mature parts of MetaCC.
 
@@ -483,17 +587,61 @@ MetaCC already provides useful Claude/Codex history semantics including:
 
 MetaCC observations do not become live-session authority.
 
-### 6.5 Cross-device continuation
+Subagents and Quay runs are normally shown underneath their parent
+Session/Activity rather than promoted into the top-level Session list. If a
+delegated thread becomes independently durable work, it may be promoted to its
+own Session/Item relationship.
 
-Preferred order:
+### 6.6 Cross-device operation has two different meanings
 
-1. native resume if continuity is real and supported;
-2. otherwise checkpoint + Context Capsule + new session;
-3. both preserve the same project/Item work identity.
+ServerOS must support both when the underlying Providers allow them.
 
-A session must not silently rebind from one Item to another.
+**Remote attach to the same running Session**
 
-### 6.6 Session archival
+```text
+Session runs on Tokyo
+      ↓
+CloudCLI / Tailscale / remote transport
+      ↓
+user or Agent interacts from Windows/phone
+```
+
+Execution location did not move.
+
+**Work handoff to another device**
+
+```text
+Tokyo Session
+→ checkpoint / memory extraction
+→ new Windows Session
+→ same Project / Item
+```
+
+The native Session changes; durable work identity does not.
+
+Handoff normally prefers a fresh Session with Memory/Checkpoint links because it
+keeps context cleaner. Native resume remains available when it is genuinely the
+better option.
+
+A Session must not silently rebind from one Item to another.
+
+### 6.7 Device provenance
+
+Session and history records carry device provenance.
+
+At minimum:
+
+```text
+execution_device_ref
+provider/runtime
+native_session_ref
+origin / predecessor / handoff refs
+```
+
+Device provenance is metadata about where work happened, not a reason to split
+the user's global work history into device silos.
+
+### 6.8 Session archival and raw history
 
 Raw Claude/Codex transcripts are intended for long-term retention.
 
@@ -502,10 +650,22 @@ Policy:
 - Session Intelligence may propose archival;
 - archival requires user confirmation;
 - raw deletion is a separate destructive/retention action;
-- checkpoint and useful memory extraction may happen before archival;
-- published/cross-boundary copies must be sanitized appropriately.
+- checkpoint and useful memory extraction may happen before archival.
 
-Session may end while its work memory survives.
+For sensitive history, prefer:
+
+```text
+immutable/protected raw transcript
+        ↓
+sanitized projection
+        ↓
+Memory / GitHub / report / publication as permitted
+```
+
+A secret or restricted datum accidentally printed into a Session does not grant
+permission to propagate it.
+
+Session may end while its durable Item/Memory continuity survives.
 
 ---
 
@@ -531,7 +691,35 @@ ServerOS plugin
 └── Memory Provider (OpenViking-like service / MCP)
 ```
 
-### 7.2 Memory scopes
+### 7.2 Memory topology and device provenance
+
+Memory is logically global to the user's work, not one isolated memory database
+per device.
+
+The preferred topology is a central Memory Provider on the primary Linux/Tokyo
+node, with other devices accessing it through an approved private path when
+needed.
+
+Memory entries may carry device metadata such as:
+
+```text
+origin_device_ref
+observed_runtime
+source_session_ref
+```
+
+and, where relevant, applicability such as:
+
+```text
+applies_to: all devices
+applies_to: windows
+applies_to: device:<id>
+```
+
+This matters for operational memories ("this Windows path works") without
+fragmenting project/personal memory by machine.
+
+### 7.3 Memory scopes
 
 Memory may cover:
 
@@ -542,7 +730,7 @@ Memory may cover:
 - Item;
 - Session / Experience.
 
-### 7.3 Automatic vs governed memory
+### 7.4 Automatic vs governed memory
 
 Low-risk memories may be promoted automatically, for example:
 
@@ -559,7 +747,7 @@ High-impact durable claims enter reconciliation:
 - major project facts;
 - meaningful personal preference changes.
 
-### 7.4 Memory retrieval is progressive
+### 7.5 Memory retrieval is progressive
 
 Default retrieval should be metadata/abstract-first.
 
@@ -708,7 +896,34 @@ ChatGPT is a first-class reasoning/review participant for:
 - trade-offs;
 - evidence/deliverable review.
 
-Near term, GitHub documents/Decision Packets are the durable bridge.
+Near term, each GPT round still requires human participation and GitHub
+documents/Decision Packets are the durable bridge.
+
+The target architecture should nevertheless model **external reasoning
+collaboration** as an Ability/Provider boundary rather than hard-code one manual
+workflow.
+
+Useful semantic operations include:
+
+```text
+reasoning.consult
+reasoning.requirement_review
+reasoning.design_review
+reasoning.research_synthesis
+reasoning.challenge
+reasoning.evidence_review
+reasoning.decision_review
+```
+
+A future ChatGPT-capable Provider may implement some or all of these operations.
+Skills/recipes teach Claude/Codex **when and how to ask GPT well**: what packet
+to prepare, what question to ask, what evidence to include and how to consume
+the response.
+
+This belongs in the Ability/Coordination layers, not in `serverosd`.
+
+Until a direct provider exists, the human remains the transport between CC and
+GPT.
 
 ServerOS prepares clean Context/Decision Packets instead of forcing GPT to
 re-read raw work history.
@@ -1209,11 +1424,22 @@ CloudCLI already provides valuable UI primitives:
 ServerOS should integrate rather than fork/reimplement those surfaces where
 possible.
 
-A ServerOS CloudCLI plugin should expose:
+A ServerOS CloudCLI plugin should preserve CloudCLI's useful native
+project/directory grouping while adding a semantic work hierarchy:
+
+```text
+Project
+→ Item / durable work
+→ Sessions
+→ delegated Runs/Subagents
+```
+
+It should expose:
 
 - Today / Personal Board;
 - Understanding / Reconciliation;
-- Sessions;
+- Project → Item → Sessions;
+
 - Decisions / approvals;
 - Memory;
 - Quay;
@@ -1520,17 +1746,25 @@ Envelope:
 - understanding proposals;
 - report preparation.
 
-Stop/escalate on:
+The Execution Envelope therefore includes an **Autonomy Guard**, not only
+permission scope.
+
+Stop/escalate on signals such as:
 
 - decision gate;
+- repeated same failure;
+- no-progress rounds;
+- acceptance moving backwards;
+- unexpected scope growth;
+- new repository / host / credential boundary;
+- abnormal cost/token growth;
+- verification confidence falling;
 - blocker;
-- no progress;
-- budget/retry guard;
 - production/destructive/high-risk boundary.
 
 Important work does not need an artificially tiny monetary budget, but it must
-have runaway controls such as maximum retries, no-progress rounds and delegation
-depth.
+have runaway controls such as maximum retries, no-progress rounds, duplicate
+work detection and delegation depth.
 
 ---
 
@@ -1699,15 +1933,17 @@ The product shape in this document is now the architecture baseline.
 
 Large remaining design work is subsystem-detail work, especially:
 
-1. exact Session logical schema and Coordinator lifecycle;
+1. exact Session record schema and cross-device attachment/handoff contract;
 2. MetaCC-to-ServerOS history/intelligence adapter;
-3. OpenViking deployment/binding/backup contract;
-4. Feishu inventory/blacklist/Follow policy;
-5. CloudCLI ServerOS plugin surfaces;
-6. Tokyo Tailscale userspace deployment and network admission;
-7. A2A adapter timing/mapping;
-8. dynamic environment Attachment/lease/refcount behavior;
-9. E2E evidence schema and provider adapters.
+3. OpenViking deployment/binding/backup contract and device provenance fields;
+4. information-flow policy vocabulary and enforcement points;
+5. Feishu inventory/blacklist/Follow policy;
+6. CloudCLI Project → Item → Session plugin surfaces;
+7. external reasoning / future CC↔GPT Provider contract and Skills;
+8. Tokyo Tailscale userspace deployment and network admission;
+9. A2A adapter timing/mapping;
+10. dynamic environment Attachment/lease/refcount behavior;
+11. E2E evidence schema and provider adapters.
 
 Those details may refine contracts. They do not reopen the product definition.
 
