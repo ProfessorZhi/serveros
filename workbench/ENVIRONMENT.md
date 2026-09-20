@@ -1,4 +1,4 @@
-<!-- ⟦snapshot⟧ rendered 2026-09-19T19:39:00+00:00 by `runtime/workbench.py` from ~/workspace/worktrees/serveros/foundation-skeleton · inputs: projects=serveros,litellm,multi-user-claw; project=litellm; item=LIT-0101; quay-run=~/artifacts/skills/serveros/RUN-20260920-foundation-skeleton-f/quay; quay-bin=~/workspace/worktrees/quay/foundation-skeleton-develop/packages/quay/dist/quay.js; ability-repo=~/workspace/worktrees/ability-management/foundation-skeleton; reports-dir=~/artifacts/skills/serveros/RUN-20260920-foundation-skeleton-f; release-root=~/artifacts/skills/serveros/RUN-20260920-foundation-skeleton-f/release/hwz-server-os/serveros-linux-work -->
+<!-- ⟦snapshot⟧ rendered 2026-09-20T11:29:56+00:00 by `runtime/workbench.py` from ~/workspace/worktrees/serveros/SRV-0011 · inputs: projects=serveros,litellm,multi-user-claw; project=litellm; item=LIT-0101; quay-run=; quay-bin=; ability-repo=~/workspace/worktrees/ability-management/SRV-0011; reports-dir=~/artifacts/work-items/serveros/SRV-0011/RUN-0001; release-root=~/artifacts/work-items/serveros/SRV-0011/RUN-0001/release/dist/serveros-linux-work -->
 
 # ENVIRONMENT
 
@@ -13,7 +13,7 @@ serverosctl device show --json	0
 ### 能力树（本节点的投影）
 
 来源 `~/state/serveros/abilities/effective.json` @ `fa784d228eb54c10180e928e6a04f602140ab307`，权威是 `ability-management`，基数 `domain.primary`。
-能力 30 个，已归类 19 个；这个读数的年龄 210693 秒。
+能力 30 个，已归类 19 个；这个读数的年龄 267750 秒。
 
 **这份投影可能过期。** 它不自己去读权威；`serverosctl ability refresh` 才会。
 
@@ -57,7 +57,7 @@ serverosctl device show --json	0
 
 ### 两大家族视图
 
-渲染自 `~/workspace/worktrees/ability-management/foundation-skeleton` 的 `scripts/render_capability_families.py`。该渲染器有 `--check`，会因漂移而失败。
+渲染自 `~/workspace/worktrees/ability-management/SRV-0011` 的 `scripts/render_capability_families.py`。该渲染器有 `--check`，会因漂移而失败。
 
 ```
 <!-- GENERATED FILE - DO NOT EDIT BY HAND -->
@@ -299,25 +299,36 @@ _无：每个 pack 成员都在 manifest 里。_
       "state": "UNAVAILABLE"
     },
     "load": {
-      "load1": 2.99,
-      "load15": 3.19,
-      "load5": 3.05,
-      "runnable": "6/7779"
+      "load1": 13.88,
+      "load15": 21.26,
+      "load5": 24.0,
+      "runnable": "4/9572"
     },
     "memory": {
-      "available_bytes": 224995192832,
-      "cached_bytes": 163442044928,
-      "free_bytes": 50768936960,
+      "available_bytes": 215975960576,
+      "cached_bytes": 170289504256,
+      "free_bytes": 34061262848,
       "swap": {
-        "free_bytes": 17169920000,
+        "free_bytes": 17141522432,
         "total_bytes": 17179865088,
-        "used_bytes": 9945088,
-        "used_percent": 0.1
+        "used_bytes": 38342656,
+        "used_percent": 0.2
       },
       "total_bytes": 265182715904,
-      "used_bytes": 40187523072
+      "used_bytes": 49206755328
     },
-    "uptime_seconds": 390506.24
+    "shm": {
+      "mount": {
+        "free_bytes": 132591333376,
+        "path": "/dev/shm",
+        "total_bytes": 132591357952,
+        "used_bytes": 24576,
+        "used_percent": 0.0
+      },
+      "shmem_bytes": 287318016,
+      "state": "PRESENT"
+    },
+    "uptime_seconds": 447564.29
   },
   "managed_resources": {
     "automatable": 0,

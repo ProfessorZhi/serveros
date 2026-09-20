@@ -1,4 +1,4 @@
-<!-- ⟦snapshot⟧ rendered 2026-09-19T19:39:00+00:00 by `runtime/workbench.py` from ~/workspace/worktrees/serveros/foundation-skeleton · inputs: projects=serveros,litellm,multi-user-claw; project=litellm; item=LIT-0101; quay-run=~/artifacts/skills/serveros/RUN-20260920-foundation-skeleton-f/quay; quay-bin=~/workspace/worktrees/quay/foundation-skeleton-develop/packages/quay/dist/quay.js; ability-repo=~/workspace/worktrees/ability-management/foundation-skeleton; reports-dir=~/artifacts/skills/serveros/RUN-20260920-foundation-skeleton-f; release-root=~/artifacts/skills/serveros/RUN-20260920-foundation-skeleton-f/release/hwz-server-os/serveros-linux-work -->
+<!-- ⟦snapshot⟧ rendered 2026-09-20T11:29:56+00:00 by `runtime/workbench.py` from ~/workspace/worktrees/serveros/SRV-0011 · inputs: projects=serveros,litellm,multi-user-claw; project=litellm; item=LIT-0101; quay-run=; quay-bin=; ability-repo=~/workspace/worktrees/ability-management/SRV-0011; reports-dir=~/artifacts/work-items/serveros/SRV-0011/RUN-0001; release-root=~/artifacts/work-items/serveros/SRV-0011/RUN-0001/release/dist/serveros-linux-work -->
 
 # START-HERE
 
@@ -16,7 +16,8 @@ serverosctl tunnel list --json	0
 serverosctl ability list --json	0
 serverosctl ability tree --json	0
 serverosctl taxonomy tree --json	0
-serverosctl ability resolve --request abilities/requests/resolve-example.json --json	1
+serverosctl ability resolve --request abilities/requests/resolve-example.json --json	2
+serverosctl ability resolve --request abilities/requests/resolve-example.json --catalogue abilities/requests/catalogue-example.txt --json	2
 serverosctl registration discover --json	0
 serverosctl registration resolve --json	0
 serverosctl card status --json	0
@@ -43,6 +44,7 @@ ability=OK
 ability-tree=OK
 taxonomy=OK
 ability-resolve=OK
+ability-resolve-catalogue=OK
 registration-discover=OK
 registration-resolve=OK
 card-status=OK
@@ -85,7 +87,7 @@ workspace=OK
 | [RELEASE-MANIFEST](RELEASE-MANIFEST.md) | pin、摘要与可达性 | `git cat-file, git ls-remote, 隔离 root 自身的符号链接结构` |
 | [DEPLOYMENT](DEPLOYMENT.md) | 待部署清单（未执行） | `作者输入 runtime/workbench_sources.py` |
 
-### 状态矩阵（23 条 OK，0 条 FAILING）
+### 状态矩阵（24 条 OK，0 条 FAILING）
 
 | id | 主张 | 命令 | 实测 |  |
 |---|---|---|---|---|
@@ -100,7 +102,8 @@ workspace=OK
 | ability | 本节点的能力投影，以及它有多新鲜 | `serverosctl ability list --json` | exit 0 | OK |
 | ability-tree | 从分类元数据派生的能力树（不看文件位置） | `serverosctl ability tree --json` | exit 0 | OK |
 | taxonomy | 声明的导航 DAG，投影成树 | `serverosctl taxonomy tree --json` | exit 0 | OK |
-| ability-resolve | 八输入相交：它回答，并把看不见的输入具名列出 | `serverosctl ability resolve --request abilities/requests/resolve-example.json --json` | exit 1 | OK |
+| ability-resolve | 八输入一个未给：UNKNOWN，且把八个输入全部具名列出 | `serverosctl ability resolve --request abilities/requests/resolve-example.json --json` | exit 2 | OK |
+| ability-resolve-catalogue | 给了 catalogue 之后：它读到了它，然后只指出剩下没给的 | `serverosctl ability resolve --request abilities/requests/resolve-example.json --catalogue abilities/requests/catalogue-example.txt --json` | exit 2 | OK |
 | registration-discover | 观察到却没有注册的东西，具名列出 | `serverosctl registration discover --json` | exit 0 | OK |
 | registration-resolve | 每条注册对照实测：OBSERVED/ABSENT/STALE/UNREPORTED | `serverosctl registration resolve --json` | exit 0 | OK |
 | card-status | 状态卡：一个模型，Feishu JSON，一个预览 | `serverosctl card status --json` | exit 0 | OK |
@@ -131,8 +134,8 @@ workspace=OK
 - `~/artifacts/skills/serveros/RUN-20260920-foundation-skeleton-f/quay/ws`（存在）— Quay Goal/AC/Task 记录与 GateEvent 账本（本轮真实执行）。`quay goal write` / `quay goal gate` / `quay task` 在隔离 workspace 里跑出来的
 - `~/artifacts/skills/serveros/RUN-20260920-foundation-skeleton-f/quay/probe-deeper/a/b/ws2`（存在）— 负控：同一份 config 放深两级的 workspace。复现 provider `path` 的深度依赖（`spawn node ENOENT`）
 - `~/artifacts/skills/serveros/RUN-20260920-foundation-skeleton-e/negative`（存在）— 工作包 E 的三个负控：陈旧 revision / 子任务缺席 / complete 事件被删。每个负控单独 exit 1 并给出具名原因；未做手脚的副本 exit 0
-- `~/workspace/worktrees/serveros/foundation-skeleton/runtime/card-scenarios.yaml`（存在）— 六类卡片场景（正常/部分未知/单异常/观测失败/混合/仅恢复）。测试与预览读同一份输入，所以审阅的卡片就是测试跑过的卡片
-- `~/workspace/worktrees/serveros/foundation-skeleton/runtime/workbench_sources.py`（存在）— 工作台里不是由命令产生的**那一半**：状态矩阵的主张、九条取舍、待部署清单、pin。这一页与它背后的文档由 `serverosctl workbench render` 生成；作者输入在这里，所以「这条主张是谁写的」有答案，而不是藏在生成器里。**本文件集自身不作为样例列出**，因为 `render` 第一次写它时它还不存在，把自己作为存在性样例会让首次 `render` 之后的 `check` 必红一次
+- `~/workspace/worktrees/serveros/SRV-0011/runtime/card-scenarios.yaml`（存在）— 六类卡片场景（正常/部分未知/单异常/观测失败/混合/仅恢复）。测试与预览读同一份输入，所以审阅的卡片就是测试跑过的卡片
+- `~/workspace/worktrees/serveros/SRV-0011/runtime/workbench_sources.py`（存在）— 工作台里不是由命令产生的**那一半**：状态矩阵的主张、九条取舍、待部署清单、pin。这一页与它背后的文档由 `serverosctl workbench render` 生成；作者输入在这里，所以「这条主张是谁写的」有答案，而不是藏在生成器里。**本文件集自身不作为样例列出**，因为 `render` 第一次写它时它还不存在，把自己作为存在性样例会让首次 `render` 之后的 `check` 必红一次
 
 ### live 未验证
 
