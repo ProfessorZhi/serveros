@@ -1,0 +1,63 @@
+{
+  "schema": "serveros/execution-inputs.v1",
+  "design_id": "serveros-system-v1",
+  "meaning": "Pinned design inputs, not installed runtime versions or permission grants",
+  "normative_design": {
+    "repository": "ProfessorZhi/serveros",
+    "commit": "ef4386e21c2ed4be65ea9d538308c46925cba966",
+    "entry": "ARCHITECTURE.md",
+    "topics": [
+      "docs/architecture/ABILITY-FAMILIES.md",
+      "docs/architecture/AGENT-EXPERIENCE.md",
+      "docs/architecture/INFORMATION-WORK.md",
+      "docs/architecture/SPACE-AND-RETENTION.md",
+      "docs/architecture/ACCEPTANCE.md"
+    ]
+  },
+  "companion_contracts": [
+    {
+      "repository": "ProfessorZhi/ability-management",
+      "commit": "c976cdff9a94ccd587956c1f99fa825b9f25f3ee",
+      "entry": "design/serveros-system-v1.md",
+      "pr": 2
+    },
+    {
+      "repository": "ProfessorZhi/work-engine",
+      "commit": "f6be3383b41244045d043f0c3c121ea9709257f7",
+      "entry": "docs/serveros-system-v1-work-contract.md",
+      "pr": 1
+    },
+    {
+      "repository": "ProfessorZhi/hwz-ops",
+      "commit": "472554dcea1a63a8d8fa8560d49a74d3f5828254",
+      "entry": "docs/serveros-system-v1-instance-contract.md",
+      "pr": 2
+    }
+  ],
+  "implementation_seed_hints": [
+    {
+      "repository": "ProfessorZhi/serveros",
+      "branch": "serveros/foundation-skeleton",
+      "status": "HISTORICAL_HINT_RECHECK_BEFORE_USE"
+    },
+    {
+      "repository": "ProfessorZhi/ability-management",
+      "branch": "serveros/foundation-skeleton",
+      "status": "HISTORICAL_HINT_RECHECK_BEFORE_USE"
+    }
+  ],
+  "research_archive": {
+    "latest_deep_research_verbatim_report": "NOT_RETRIEVED",
+    "saved_synthesis": "docs/research/2026-09-20-product-design-synthesis.md",
+    "synthesis_is_not_verbatim_archive": true
+  },
+  "protected_workloads": {
+    "marketops": ["ProfessorZhi/marketops-research-pipeline", "ProfessorZhi/marketops"],
+    "support_bot_code": "ProfessorZhi/litellm-support-bot",
+    "support_bot_knowledge": "ProfessorZhi/troublebuddy-kb-bridge"
+  },
+  "meeting_policy_bindings": {
+    "marek_open_mic_exception": "UNBOUND_REVIEW_NO_DELETE",
+    "cloud_delete_policy": "DISABLED_PENDING_EXPLICIT_SCOPE"
+  }
+}
