@@ -68,10 +68,19 @@ TOOLS: tuple[dict, ...] = (
     {
         "name": "context.current",
         "description": (
-            "The ServerOS roots and the current project / item / run context "
-            "for this node, resolved from the root contract."
+            "The ServerOS roots, and the Item inferred from a working "
+            "directory YOU state. Roots come from the root contract and never "
+            "from a directory. The Item is UNKNOWN unless `cwd` is given: this "
+            "surface will not infer one from the daemon's own directory, "
+            "because an artifact written to a guessed Item is the failure this "
+            "answer exists to prevent. Pass your cwd to get your Item."
         ),
-        "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False},
+        "inputSchema": {
+            "type": "object",
+            "properties": {"cwd": {"type": "string",
+                                   "description": "the caller's working directory; omit and the Item is UNKNOWN"}},
+            "additionalProperties": False,
+        },
     },
     {
         "name": "path.resolve",
@@ -217,6 +226,66 @@ TOOLS: tuple[dict, ...] = (
             "type": "object",
             "properties": {"name": {"type": "string"}},
             "required": ["name"],
+            "additionalProperties": False,
+        },
+    },
+    # -- §45/§46: the Agent fast path ----------------------------------------
+    #
+    # The two questions an Agent has before it can start, and the reason they
+    # are here rather than in the catalogue it would otherwise read: which of
+    # these fifty-odd names is mine, and can THIS node do it now. Both are
+    # read-only, both answer from what this node already holds, and neither
+    # loads the catalogue into the caller's context.
+    {
+        "name": "ability.search",
+        "description": (
+            "Find the few abilities a task needs, by substring, in this "
+            "node's local projection. Returns compact rows and says how many "
+            "matched beside how many it returned, so a truncated list never "
+            "reads as a complete one. `matched` is null — not 0 — for an empty "
+            "query and for no projection: neither is a search that came back "
+            "empty. Ask a question; this surface deliberately does not serve "
+            "the whole catalogue, because loading it is the cost this exists "
+            "to remove."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string",
+                          "description": "e.g. 'document', 'test', 'runtime', a repo name, a domain"},
+                "limit": {"type": "integer",
+                          "description": "max rows to return; default 8, ceiling 50"},
+            },
+            "required": ["query"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "ability.resolve",
+        "description": (
+            "Can THIS device do THIS thing, now, and if not why not — the pure "
+            "resolver run with the inputs this node can supply by itself "
+            "(its own identity, plus the ability and runtime you name). It "
+            "supplies THREE OF EIGHT inputs and passes the kernel's "
+            "`inputs_seen` / `inputs_missing` through unchanged: read "
+            "`inputs_missing` before the status, because a verdict computed "
+            "from whichever inputs happened to be readable is what the kernel "
+            "exists to refuse. `runtime` has no default — this node holds no "
+            "declaration of what is installed, and a default would be a guess "
+            "about you printed as your own answer. An ability reference may "
+            "carry an operation: `ability:<id>#<verb>`."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "ability": {"type": "string",
+                            "description": "a reference, e.g. 'ability:runtime-management' or 'ability:team-document-management#restore'"},
+                "runtime": {"type": "string",
+                            "description": "the Agent runtime asking, e.g. 'claude-code' or 'codex'"},
+                "device": {"type": "string",
+                           "description": "defaults to THIS node; state one to ask about another"},
+            },
+            "required": ["ability", "runtime"],
             "additionalProperties": False,
         },
     },

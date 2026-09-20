@@ -36,12 +36,14 @@ serverosctl path contract                     # 完整契约
 ```
 
 ```text
-HOME=/home/hwz
-DATA_ROOT=/opt/applications/data/home-hwz
+DATA_ROOT
 WORKSPACE_ROOT=$DATA_ROOT/workspace     # 只含 src/ worktrees/ test-envs/ ops/ knowledge/ records/
 ARTIFACTS_ROOT=$DATA_ROOT/artifacts
 TOOLCHAINS_ROOT=$DATA_ROOT/toolchains
 ```
+
+**这五个值由节点自己回答，不要抄别人机器上的数字**（`serverosctl path contract`）。
+本 skill 的旧版本把另一台机器的绝对路径印在这里，读到的人会把别的根的数值当成这里的契约。
 
 - `artifacts/ toolchains/ envs/ runtime-assets/ caches/ data/ state/ logs/` 位于 `DATA_ROOT`，**不在** workspace。
 - 禁止创建 `workspace/artifacts`、`workspace/toolchains`、`~/files` 等替代根；`admit` 会拒绝它们，
@@ -92,6 +94,25 @@ ownership 只有两个来源：registry 登记，或显式 `serveros.owner=<type
 | 日报、周报、里程碑报告发布 | `feishu-report` |
 
 ServerOS 只编排关系与交接，**不抢占以上 owner 的数据权威**。
+
+### 4.1 快路径：先搜再问，不读目录
+
+`serveros-node-mcp` 上只需要这四个工具，按顺序用。**不要**为了找一条 ability 去加载整个目录
+——目录会随能力数增长，一次问对的成本不会：
+
+| 工具 | 它回答的问题 |
+|---|---|
+| `context.current` | 我在哪。roots 来自根契约；**Item 只从你给的 `cwd` 推断**，不给就是 UNKNOWN，不会替你猜 |
+| `ability.search` | 哪个 ability 可能管这件事。子串匹配 name / id / repo path / domain / agents，默认返回 ≤8 行 |
+| `ability.inspect` | 这一条是什么。单条完整记录；它**不**判断能不能执行 |
+| `ability.resolve` | 这台机器**现在**能不能做，以及**缺哪些输入**。先读 `inputs_missing`，再读 `status` |
+
+- `matched: null` 不是 `matched: 0`：前者是「没得搜 / 没搜」，后者是「搜了，没有」。
+- `ability.resolve` 只补三个输入（ability / runtime / 本机身份），其余五个它**明说不看**。
+  `UNKNOWN` + `inputs_missing` 是诚实答案，不是失败；要补齐就跑
+  `serverosctl ability resolve --request <file>`。
+- 能力可以是**操作级**的：`ability:<id>#<verb>`。verb 不进入 catalogue key。
+- 这一层全是只读。它没有、也不会长出一个 `restart` / `stop` / `reclaim`。
 
 `ability-management` 是 Capability / Ability Authority。本机只有一份**本地观测投影**
 （`state/serveros/abilities/effective.*`），它可能过时，`registry_status` 会说。用它做 bootstrap，

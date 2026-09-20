@@ -1641,6 +1641,400 @@ def test_operations_declared_is_null_and_never_false(daemon_factory, tmp_path, m
         assert result["operations_declared_by"].startswith("serverosctl ability resolve")
 
 
+# ---------------------------------------------------------------------------
+# the Agent fast path · search, resolve, and the Item a caller is standing in
+# ---------------------------------------------------------------------------
+#
+# The unit of progress these three methods are measured against is not "is the
+# catalogue complete" but "can a real Agent finish a real piece of work without
+# spending its context reading the catalogue". So the assertions below are about
+# COST and about UNKNOWNS, not about coverage: how many rows a search returns,
+# what a search hit does not carry, and which of the resolver's eight inputs the
+# node refuses to invent.
+
+
+def test_a_search_returns_rows_and_the_count_that_makes_them_readable(
+        daemon_factory, tmp_path, monkeypatch):
+    """`matched` beside `matches`, because a truncated list is indistinguishable
+    from a complete one until somebody says which it is."""
+    _state_root(tmp_path, monkeypatch, [
+        {"name": "test-management", "id": "ProfessorZhi/test-management",
+         "path": "skills/test-management", "type": "skill", "version": "1.2.0",
+         "domain": {"primary": "serveros.operations.test"},
+         "taxonomy_refs": ["serveros.engineering.quality"],
+         "agents": ["claude-code"], "fingerprint": "sha256:" + "a" * 64,
+         "revisions_installed": 3},
+        {"name": "runtime-management", "id": "ProfessorZhi/runtime-management",
+         "path": "skills/runtime-management", "type": "skill",
+         "domain": {"primary": "serveros.operations.runtime"}},
+    ])
+    result = daemon_factory(a_resource("thing-one")).handle(
+        {"method": "ability.search", "params": {"query": "management"}})["result"]
+
+    assert result["matched"] == 2
+    assert result["returned"] == len(result["matches"]) == 2
+    assert result["truncated"] is False
+    assert result["catalogue_size"] == 2
+    # §27/§28 still hold on this surface: it searches a local projection and
+    # says so, so a hit is never read as the authority's confirmation.
+    assert result["authority"] == "ability-management"
+    assert result["registry_status"] == "FRESH"
+
+    # A hit is a pointer, not a record. The fingerprint, the revision count and
+    # the installation count are what `ability.inspect` is for — one ability, to
+    # a caller that has already decided which one it is asking about — and
+    # carrying them in eight rows is the cost the search exists to remove.
+    hit = result["matches"][0]
+    assert set(hit) == {"name", "id", "type", "path", "domain",
+                        "taxonomy_refs", "agents"}
+    assert "fingerprint" not in json.dumps(result["matches"])
+
+
+def test_a_search_that_matches_nothing_says_zero_and_not_null(
+        daemon_factory, tmp_path, monkeypatch):
+    """"I looked and there is none" is a finding; "nobody looked" is not, and
+    the two must not render the same. This is the 0 the neighbouring tests keep
+    apart from None — asserted here on the side where 0 is the true answer, so
+    that a future edit removing the distinction fails in both directions."""
+    _state_root(tmp_path, monkeypatch, [
+        {"name": "shared-memory", "id": "x", "path": "skills/shared-memory"},
+    ])
+    result = daemon_factory(a_resource("thing-one")).handle(
+        {"method": "ability.search", "params": {"query": "nothing-like-this"}})["result"]
+    assert result["matched"] == 0
+    assert result["matches"] == []
+    assert result["catalogue_size"] == 1
+
+
+def test_an_empty_query_is_refused_rather_than_answered_with_the_catalogue(
+        daemon_factory, tmp_path, monkeypatch):
+    """The tempting implementation returns everything for `""`, which is the
+    catalogue read the tool exists to replace — and the caller cannot tell it
+    asked for nothing."""
+    _state_root(tmp_path, monkeypatch, [
+        {"name": "shared-memory", "id": "x", "path": "skills/shared-memory"},
+    ])
+    daemon = daemon_factory(a_resource("thing-one"))
+    for query in ("", "   ", None):
+        params = {} if query is None else {"query": query}
+        result = daemon.handle({"method": "ability.search", "params": params})["result"]
+        assert result["matched"] is None, query
+        assert result["matches"] is None, query
+        assert result["refused"] == "EMPTY_QUERY", query
+        # Not None: the catalogue IS materialized, so its size is known and is
+        # what tells the caller how much it just declined to read.
+        assert result["catalogue_size"] == 1, query
+
+
+def test_a_search_with_no_projection_is_null_and_not_an_empty_catalogue(
+        daemon_factory, tmp_path, monkeypatch):
+    """The reasoning `ability.tree` and `ability.list` already carry, applied
+    where it is easiest to lose: a search with nothing to search FROM would
+    otherwise return the same `[]` as a real search that found nothing."""
+    empty = tmp_path / "state"
+    empty.mkdir()
+
+    class Paths:
+        def root(self, name):
+            assert name == "state"
+            return empty
+
+    monkeypatch.setattr(daemon_mod.paths_mod, "Paths", Paths)
+    result = daemon_factory(a_resource("thing-one")).handle(
+        {"method": "ability.search", "params": {"query": "anything"}})["result"]
+    assert result["matched"] is None and result["matches"] is None
+    assert result["catalogue_size"] is None
+    assert "no projection is not an empty catalogue" in result["note"]
+    assert result["registry_status"] == "NOT_MATERIALIZED"
+
+
+def test_a_search_limit_is_clamped_and_the_value_used_is_reported(
+        daemon_factory, tmp_path, monkeypatch):
+    """A malformed limit is a reason not to honour the request, not a reason to
+    refuse a search that could have been answered — and the caller has to be
+    able to see which of the two happened."""
+    _state_root(tmp_path, monkeypatch, [
+        {"name": f"ability-{n:02d}", "id": f"x/{n}", "path": f"skills/a{n}"}
+        for n in range(20)
+    ])
+    daemon = daemon_factory(a_resource("thing-one"))
+    ask = lambda limit: daemon.handle(  # noqa: E731
+        {"method": "ability.search",
+         "params": {"query": "ability", **({} if limit is None else {"limit": limit})}})["result"]
+
+    assert ask(None)["limit"] == daemon_mod.DEFAULT_ABILITY_SEARCH_LIMIT
+    assert ask("many")["limit"] == daemon_mod.DEFAULT_ABILITY_SEARCH_LIMIT
+    assert ask(3)["returned"] == 3 and ask(3)["matched"] == 20
+    assert ask(3)["truncated"] is True
+    assert ask(999)["limit"] == daemon_mod.MAX_ABILITY_SEARCH_LIMIT
+    # Not 0 and not a refusal: a limit of zero rows is not a limit, it is a
+    # request to be told nothing, and the answer says what was actually done.
+    assert ask(0)["returned"] == 1
+    assert daemon_mod.MAX_ABILITY_SEARCH_LIMIT < 51, (
+        "the ceiling exists so that one search cannot become the catalogue read "
+        "it replaces; a ceiling at or above the catalogue size does not do that"
+    )
+
+
+def test_a_search_matches_the_repository_name_as_well_as_the_ability_name(
+        daemon_factory, tmp_path, monkeypatch):
+    """A caller usually knows the repository it saw and not the ability's own
+    name — and a query is not a digest, so the fingerprint is deliberately not
+    searched."""
+    _state_root(tmp_path, monkeypatch, [
+        {"name": "convergence", "id": "ProfessorZhi/marketops",
+         "path": "worktrees/marketops/repository-convergence",
+         "fingerprint": "sha256:deadbeefcafe"},
+    ])
+    daemon = daemon_factory(a_resource("thing-one"))
+    for query in ("MARKETOPS", "repository-convergence", "Convergence"):
+        result = daemon.handle({"method": "ability.search",
+                                "params": {"query": query}})["result"]
+        assert result["matched"] == 1, query
+    # The fingerprint is in the row the search reads and not in what it matches:
+    # a hit returned for a reason the caller cannot see in the result.
+    assert daemon.handle({"method": "ability.search",
+                          "params": {"query": "deadbeef"}})["result"]["matched"] == 0
+
+
+def test_the_four_fast_path_methods_are_the_ones_a_bootstrap_needs(daemon_factory):
+    """The surface itself, asserted rather than documented.
+
+    A bootstrap that has to enumerate the catalogue before it can call anything
+    is not a bootstrap. These four are what an Agent needs to locate itself, find
+    the few abilities that could own its question, look at one of them, and ask
+    whether this node can do it now — in that order, none of them requiring the
+    others' full output.
+    """
+    daemon = daemon_factory(a_resource("thing-one"))
+    names = daemon.handler_map()
+    assert {"context.current", "ability.search", "ability.inspect",
+            "ability.resolve"} <= set(names)
+    assert set(daemon._methods()) == set(names)
+
+
+def test_ability_resolve_refuses_to_invent_the_runtime_it_is_asked_about(
+        daemon_factory):
+    """There is no default, and the reason is a fact about this process rather
+    than a preference: the host profile states the managed-runtime registry is
+    empty, so there is no declaration of installed runtimes to default FROM. A
+    default here would print a guess about the caller as the caller's own
+    answer."""
+    daemon = daemon_factory(a_resource("thing-one"))
+    response = daemon.handle({"method": "ability.resolve",
+                              "params": {"ability": "runtime-management"}})
+    assert response["ok"] is False
+    assert response["error"]["code"] == "ValueError"
+    assert "no declaration of which Agent runtimes are installed" in response["error"]["message"]
+
+    empty = daemon.handle({"method": "ability.resolve",
+                           "params": {"ability": "", "runtime": "claude-code"}})
+    assert empty["ok"] is False
+    assert "missing required parameter 'ability'" in empty["error"]["message"]
+
+
+def test_ability_resolve_supplies_three_inputs_and_names_the_other_five(
+        daemon_factory):
+    """The whole point of putting this on the node surface is that it answers
+    WITHOUT the rest — and says which ones it did not have. `inputs_seen` is
+    empty, and that is not a defect: the eight are documents (a catalogue, a
+    device's capabilities, a policy), and the three required scalars are not
+    among them. So the honest answer is UNKNOWN naming five questions, which is
+    still useful: it says what to go and find."""
+    daemon = daemon_factory(a_resource("thing-one"))
+    result = daemon.handle({"method": "ability.resolve",
+                            "params": {"ability": "runtime-management",
+                                       "runtime": "claude-code"}})["result"]
+
+    assert result["status"] == "UNKNOWN"
+    assert result["inputs_seen"] == []
+    assert result["inputs_missing"] == [
+        "ability", "device_capability", "device_profile", "device_binding",
+        "agent_runtime", "runtime_health", "policy", "task_context"]
+    # Provenance for the three scalars is kept OUT of the kernel's two lists —
+    # a field whose job is to say how much of the intersection was evaluated
+    # must not start carrying a second kind of thing.
+    assert result["asked_as"]["runtime_from"] == "caller"
+    assert result["asked_as"]["runtime"] == "claude-code"
+    assert result["asked_as"]["device_ref"] == daemon.registry.device_ref
+    assert result["asked_as"]["device_ref_from"] == "serverosd"
+    assert result["device_ref"] == daemon.registry.device_ref
+
+
+def test_ability_resolve_keeps_the_verb_out_of_the_catalogue_key(daemon_factory):
+    """`<id>#<verb>` splits once, here as everywhere: the ability is the identity
+    that must not change when a caller asks about an operation."""
+    result = daemon_factory(a_resource("thing-one")).handle(
+        {"method": "ability.resolve",
+         "params": {"ability": "runtime-management#restart",
+                    "runtime": "claude-code",
+                    "device": "device:elsewhere-01"}})["result"]
+    assert result["ability"] == "runtime-management"
+    assert result["operation"] == "restart"
+    # A device the caller named is the caller's claim, and is labelled as such:
+    # this surface does not adopt it as its own observation.
+    assert result["device_ref"] == "device:elsewhere-01"
+    assert result["asked_as"]["device_ref_from"] == "caller"
+
+
+def test_a_malformed_resolve_request_is_an_error_and_a_no_is_an_answer(
+        daemon_factory):
+    """`resolver.py`'s own distinction, kept at the layer above it. A "no" is
+    returned; only a form it cannot parse raises — and the node surface does not
+    launder either one into the other: a malformed request is an ERROR, and a
+    resolved-to-UNKNOWN request is a RESULT the caller can read."""
+    daemon = daemon_factory(a_resource("thing-one"))
+    response = daemon.handle({"method": "ability.resolve",
+                              "params": {"ability": "x#a#b",
+                                         "runtime": "claude-code"}})
+    assert response["ok"] is False
+    assert response["error"]["code"] == "ValueError"
+    assert "more than one operation" in response["error"]["message"]
+
+    # …and a request the kernel merely cannot answer is the other thing: OK,
+    # with UNKNOWN and the reason inside it. A caller that got an error for a
+    # "no" would go looking for a bug in its own syntax.
+    answered = daemon.handle({"method": "ability.resolve",
+                              "params": {"ability": "x", "runtime": "claude-code"}})
+    assert answered["ok"] is True
+    assert answered["result"]["status"] == "UNKNOWN"
+
+
+def test_context_current_will_not_infer_the_item_from_its_own_directory(
+        daemon_factory, tmp_path, monkeypatch):
+    """The caller's cwd is a parameter with no default, on purpose.
+
+    `serverosd` runs from wherever its unit started it. Inferring the Item from
+    that directory would answer "which Item am I in" with a directory the caller
+    has never been in — and a context guessed from a cwd is how an artifact
+    lands in the wrong Item."""
+    empty = tmp_path / "state"
+    empty.mkdir()
+
+    class Paths:
+        names = ("state", "workspace")
+
+        def root(self, name):
+            return empty if name == "state" else tmp_path / "workspace"
+
+    monkeypatch.setattr(daemon_mod.paths_mod, "Paths", Paths)
+    result = daemon_factory(a_resource("thing-one")).handle(
+        {"method": "context.current"})["result"]
+
+    assert result["cwd"] is None
+    assert result["inferred_item"] is None
+    assert "will not infer one from the daemon's own directory" in result["inference_note"]
+    # The roots are still answered: they come from the contract and never from
+    # cwd, which is why half the question can be answered and the other half
+    # refused.
+    assert result["roots"] == {"state": str(empty), "workspace": str(tmp_path / "workspace")}
+    assert set(result["state_runtime"]) == set(daemon_mod.paths_mod.STATE_SERVEROS_RUNTIME)
+
+
+def test_context_current_infers_the_item_from_the_cwd_the_caller_stated(
+        daemon_factory, tmp_path, monkeypatch):
+    """A cwd under the worktree layout infers its Item; a cwd outside every
+    layout is UNKNOWN with the reason, rather than a plausible-looking Item."""
+    # Named with a `root_` prefix so the class bodies below can read them: a
+    # class body that assigns `worktrees` cannot also READ a `worktrees` from
+    # the enclosing function, because the assignment makes it a name the body
+    # is itself defining.
+    root_worktrees = tmp_path / "workspace" / "worktrees"
+    inside = root_worktrees / "serveros" / "SRV-0011"
+    (inside / "runtime").mkdir(parents=True)
+    elsewhere = tmp_path / "scratch"
+    elsewhere.mkdir()
+
+    real_infer = daemon_mod.resolver_mod.infer_item
+
+    class Paths:
+        names = ("state",)
+
+        def root(self, name):
+            return tmp_path / "state"
+
+    class Roots:
+        worktrees = root_worktrees
+        test_envs = tmp_path / "workspace" / "test-envs"
+        artifacts_root = tmp_path / "artifacts"
+
+        @classmethod
+        def from_env(cls):
+            return cls
+
+    # Attributes assigned AFTER the class body on purpose: inside it, `Roots`
+    # is a name the body is itself defining, so `Roots = Roots` is a NameError
+    # rather than a reference to the one above. The real `infer_item` is the
+    # point of this test — the daemon is being checked for asking the resolver
+    # the caller's cwd, not for re-implementing the layout rules.
+    class Shim:
+        pass
+
+    Shim.Roots = Roots
+    Shim.infer_item = staticmethod(real_infer)
+
+    monkeypatch.setattr(daemon_mod.paths_mod, "Paths", Paths)
+    monkeypatch.setattr(daemon_mod, "resolver_mod", Shim)
+    daemon = daemon_factory(a_resource("thing-one"))
+
+    # Deeper paths still resolve: the check is on position, not on the path
+    # ending there — the Item is inferred from a directory INSIDE a Run.
+    result = daemon.handle({"method": "context.current",
+                            "params": {"cwd": str(inside / "runtime")}})["result"]
+    assert result["inferred_item"] == "SRV-0011"
+    assert result["cwd"] == str(inside / "runtime")
+    assert result["inference_note"] == "SRV-0011"
+
+    # A cwd outside every layout is UNKNOWN with the reason. The resolver
+    # RAISES here rather than returning None — "cannot infer an Item from
+    # <path>" names the path the caller gave, which is what makes it actionable
+    # — and the answer reports it: `inferred_item` is null and the reason is in
+    # `inference_note`, so a caller can branch on the fact instead of parsing a
+    # string.
+    outside = daemon.handle({"method": "context.current",
+                             "params": {"cwd": str(elsewhere)}})["result"]
+    assert outside["inferred_item"] is None
+    assert outside["inference_note"].startswith("UNKNOWN (ValueError:")
+    assert "cannot infer an Item from" in outside["inference_note"]
+    assert str(elsewhere) in outside["inference_note"]
+
+
+def test_context_current_reports_an_inference_failure_instead_of_raising(
+        daemon_factory, tmp_path, monkeypatch):
+    """An unreadable cwd is a fact about the question, not a crash: the caller
+    still needs the roots, and the failure is named rather than swallowed."""
+    class Paths:
+        names = ("state",)
+
+        def root(self, name):
+            return tmp_path / "state"
+
+    class Boom(Exception):
+        pass
+
+    class Roots:
+        @classmethod
+        def from_env(cls):
+            raise Boom("no root contract")
+
+    class Shim:
+        @staticmethod
+        def infer_item(roots, cwd):
+            raise AssertionError("unreachable: from_env raised first")
+
+    Shim.Roots = Roots  # see the note on the same pattern above
+
+    monkeypatch.setattr(daemon_mod.paths_mod, "Paths", Paths)
+    monkeypatch.setattr(daemon_mod, "resolver_mod", Shim)
+    result = daemon_factory(a_resource("thing-one")).handle(
+        {"method": "context.current",
+         "params": {"cwd": str(tmp_path)}})["result"]
+
+    assert result["inferred_item"] is None
+    assert result["inference_note"] == "UNKNOWN (Boom: no root contract)"
+    assert result["roots"] == {"state": str(tmp_path / "state")}
+
+
 def test_observation_get_before_a_tick_is_not_an_empty_healthy_answer(daemon_factory):
     """Absence has a name. An empty observation set must never read as a
     clean bill of health."""
@@ -1798,6 +2192,7 @@ def test_no_memory_provider_import_reaches_the_daemon():
     ("runtime.explain", "id"),
     ("path.resolve", "ref"),
     ("path.admit", "path"),
+    ("ability.resolve", "ability"),
 ])
 def test_a_missing_parameter_is_refused_in_a_sentence(daemon_factory, method, param):
     """Found by calling the live socket by hand.
@@ -1825,6 +2220,7 @@ def test_a_missing_parameter_is_refused_in_a_sentence(daemon_factory, method, pa
     ("runtime.explain", "id"),
     ("path.resolve", "ref"),
     ("path.admit", "path"),
+    ("ability.resolve", "ability"),
 ])
 def test_an_empty_string_parameter_is_refused_the_same_way(daemon_factory, method, param):
     """`""` is not an id. A falsy value that reaches the registry produces the

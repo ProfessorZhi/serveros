@@ -150,6 +150,10 @@ def test_every_declared_tool_forwards_to_a_daemon_method_of_the_same_name(server
             payload["arguments"] = {"name": "x"}
         if name == "ability.inspect":
             payload["arguments"] = {"name": "x"}
+        if name == "ability.search":
+            payload["arguments"] = {"query": "x"}
+        if name == "ability.resolve":
+            payload["arguments"] = {"ability": "ability:x", "runtime": "claude-code"}
         if name == "path.resolve":
             payload["arguments"] = {"ref": "state/runtime/observed"}
         if name == "path.admit":
