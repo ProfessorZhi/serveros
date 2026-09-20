@@ -103,6 +103,16 @@ STATE_SERVEROS_TOP_LEVEL = (
     #                         second board somebody writes elsewhere under a
     #                         name of their own choosing.
     "requirement-board",
+    #   verification          what was verified against which bytes, and
+    #                         whether those bytes still stand. An authority for
+    #                         the same reason an approval is one: the inputs a
+    #                         test read when it passed cannot be re-derived
+    #                         later, so the record is written down rather than
+    #                         recomputed. Produced by `scripts/verify.py`, and
+    #                         empty means nobody has recorded a verification —
+    #                         which is why `status` answers COULD_NOT_ANSWER
+    #                         for a record that is not there instead of OK.
+    "verification",
 )
 STATE_SERVEROS_RUNTIME = (
     "registry", "observed", "health", "hygiene", "resources",

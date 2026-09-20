@@ -166,13 +166,24 @@ def test_the_declared_namespaces_agree_and_the_shape_is_pinned():
     four were — the alternative is an exemption excusing a directory somebody
     already writes, and a namespace nobody declared is a namespace nobody can
     refuse a second writer of.
+
+    SYS-09 widened it by one more, and `verification` is the first entry whose
+    contents are a RECORD OF AN ACT rather than a derived view or a live state:
+    what each test read at the moment it passed, and the fingerprint of those
+    bytes. It is an authority for the reason an approval is one — nothing can
+    re-derive it later — and it is the namespace the third clause of SYS-09's
+    criterion needs, since "the fixture changed and the verdict should have
+    stopped standing" has nowhere to be recorded otherwise. No exemption was
+    possible for it and none was wanted: the directory does not exist yet, and
+    the point of declaring it before a producer writes it is that the producer
+    (`scripts/verify.py`) then refuses to write anywhere else.
     """
     contract = state_root.load_contract()
     top = set(contract["namespaces"])
     assert top == {"node", "context", "abilities", "runtime", "fleet",
                    "source-index", "locks", "projections",
                    "boards", "federation", "work-items", "resource-leases",
-                   "requirement-board"}
+                   "requirement-board", "verification"}
     # And the tuple the resolver actually enforces is the same set — two
     # declarations of one shape is the defect this whole round is about.
     assert top == set(paths_mod.STATE_SERVEROS_TOP_LEVEL)

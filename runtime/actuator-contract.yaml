@@ -127,6 +127,11 @@ actuators:
       - {file: runtime/daily_report.py, symbols: [_git]}
       - {file: runtime/workspace.py, symbols: [_git]}
       - {file: scripts/build.py, symbols: [_git]}
+      # SYS-09: `revision_of` records WHICH revision a verification ran at.
+      # `git rev-parse HEAD`, one argument, no repository write — and the
+      # revision is recorded for a reader, never used to decide validity, so a
+      # failed or absent git is `UNKNOWN` rather than a refusal.
+      - {file: scripts/verify.py, symbols: [revision_of]}
       - {file: scripts/runtime_truth.py, symbols: [_git, _git_object_at, _ability_payload_root, pin_superseded, canonical_provenance]}
       - {file: skills/serveros/scripts/architecture_check.py, symbols: [_git]}
       - {file: skills/serveros/scripts/map_projection.py, symbols: [_git]}
@@ -343,6 +348,30 @@ actuators:
     sites:
       - {file: runtime/cli.py, symbols: [_probe_cli_version], verb: "<argv0>"}
 
+  - id: verification-census-chokepoint
+    kind: unresolved_argv
+    verb: subprocess.run
+    why: >-
+      `scripts/verify.py`'s `measure` runs ONE test file in a child process to
+      census what it reads, and the argv0 is a variable for the only reason the
+      census can work at all: the child must run under an interpreter that HAS
+      pytest, which is the caller's `--python` and not necessarily the one
+      running the tool. The argv is otherwise fixed and entirely this file's —
+      `[<interpreter>, <this file>, __census__, --test <one test file>, --repo
+      <root>, --out, --junit]` — with no shell, no interpolation, and no
+      argument taken from a device, a session or a caller's instruction. It is
+      an exec by shape and a read by effect: the child writes one report into a
+      temporary directory, and the pytest run inside it is the same run a person
+      would have made by hand.
+
+      The distinction from `daemon-actuator-chokepoint` is the point of this
+      entry being separate. That chokepoint is where commands the product ACTS
+      with leave the process; this one is a measurement of a test run, and
+      merging them would put "runs the tests" and "restarts a container" behind
+      one declaration.
+    sites:
+      - {file: scripts/verify.py, symbols: [measure], verb: "<argv0>"}
+
   # ---------------------------------------------------------------------
   # Writes that delete, and the two different reasons a delete is allowed.
   # ---------------------------------------------------------------------
@@ -352,14 +381,21 @@ actuators:
     why: >-
       The failure half of write-temp-then-rename. The unlink removes the
       temporary file this same function created one statement earlier, on the
-      path where the rename did not happen. It is the only automatic delete in
-      the state root and it cannot reach a file it did not write: the name is
-      a fresh temporary path, not a caller-supplied one.
+      path where the rename did not happen. It cannot reach a file it did not
+      write: the name is a fresh temporary path, not a caller-supplied one.
+
+      `runtime/lease_store.py` is the same function under the same guarantee,
+      and it is the newest here — SYS-02's store. It was written in that round
+      and declared in this one, because this round's run of the guard is the
+      first that included it: the site existed for a round before the
+      declaration did, which is a fact worth leaving in the file rather than
+      tidying away.
     sites:
       - {file: relations/project.py, symbols: [write]}
       - {file: runtime/ability_projection.py, symbols: [write_atomic]}
       - {file: runtime/agent_control_store.py, symbols: [_atomic_write]}
       - {file: runtime/daemon.py, symbols: [_atomic_write]}
+      - {file: runtime/lease_store.py, symbols: [_atomic_write]}
       # daily_report 的文本那一半：与 agent_control_store 的写法同一决定，
       # 但 `_atomic_write` 只处理 JSON，日报写的是文本，所以是另一个符号。
       - {file: runtime/daily_report.py, symbols: [_atomic_write_text]}
@@ -391,7 +427,9 @@ actuators:
       - {file: runtime/agent_control_store.py, symbols: [_atomic_write]}
       - {file: runtime/daily_report.py, symbols: [_atomic_write_text]}
       - {file: runtime/daemon.py, symbols: [_atomic_write, Budget._save], verb: ".replace()"}
+      - {file: runtime/lease_store.py, symbols: [_atomic_write]}
       - {file: scripts/release.py, symbols: [_symlink_swap]}
+      - {file: scripts/verify.py, symbols: [write_record]}
       - {file: intake/global_board.py, symbols: [render], verb: ".replace()"}
 
   - id: daemon-owns-its-socket
@@ -406,6 +444,25 @@ actuators:
       from a live listener, which is why it is removed rather than left.
     sites:
       - {file: runtime/daemon.py, symbols: [Daemon._prepare_socket, Daemon._release_socket]}
+
+  - id: lease-release-removes-the-last-record
+    kind: fs_mutation
+    verb: .unlink()
+    why: >-
+      The resource-leases namespace's one delete, and it is a RELEASE rather
+      than a cleanup: `LeaseStore.release` removes a resource's record only when
+      no reference to it is left AND the kernel's verdict is ALLOW. Both
+      conditions are refusals by default — a record with an expired reference
+      keeps its file on purpose, because that file is the only evidence a holder
+      ever existed, and turning it into an absence is how a crashed holder comes
+      to look like an idle node. The path is `path_for(self.root, resource)`,
+      derived by this module from its own namespace root and a resource name it
+      validates, so it cannot reach a file it was not given. `absent_means:
+      NO_LEASES_HELD` in the root contract stays true when the file is gone,
+      which is why this delete does not leave the namespace making a claim it
+      cannot support.
+    sites:
+      - {file: runtime/lease_store.py, symbols: [LeaseStore.release]}
 
   - id: daemon-socket-permissions
     kind: fs_mutation
