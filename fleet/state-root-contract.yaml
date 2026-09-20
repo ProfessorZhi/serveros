@@ -202,6 +202,19 @@ namespaces:
         # One file, not two. Contexts and approvals are written in the same
         # transaction when an approval is consumed, and two files written
         # together are two files that can disagree after a crash.
+        #
+        # The namespace also holds `<file>.lock` beside the store, created on
+        # the first write. It is not a record, it never becomes one, and it is
+        # listed here because a reader who finds a file in an authority
+        # namespace is entitled to know what it is. It is what
+        # `runtime/agent_control_store.py` takes an exclusive kernel lock on
+        # while a mutation is applied, so that two writers cannot each write a
+        # document missing the other's records. Deliberately never unlinked, and
+        # its presence says nothing about whether a lock is held — the kernel
+        # drops the lock when the holder exits, however it exits. Not the same
+        # thing as the `locks/` namespace below, where a file IS a holder's
+        # claim; a lock file whose existence is the lock is the reading
+        # `runtime/state_root.py` warns about, and this is the other kind.
         not_a_claim: >
           not a source of identity, and not readable as one. Nothing here may
           be used to answer "who is this"; a context is evidence about one

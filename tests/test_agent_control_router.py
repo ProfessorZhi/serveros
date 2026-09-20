@@ -900,6 +900,72 @@ class TestIdempotency(unittest.TestCase):
         self.assertEqual(declared["scope"], "in-process, per router instance")
         self.assertIn("NOT durable", declared["durability"])
 
+    def test_the_actions_own_key_parameter_is_the_replay_key_too(self):
+        """A caller who names the key the way the CONTRACT names it gets the guard.
+
+        `agent.session.send` takes `turn_idempotency_key` as a parameter, and a
+        request carrying it in `params` and nothing on the envelope used to
+        dispatch with no replay guard at all — the retry became a second turn
+        while the caller had said, in the only spelling this contract defines,
+        that it was one intent. The MCP surface never met this because it copies
+        the parameter onto the envelope itself, which is exactly what made the
+        same request mean two different things on two surfaces.
+        """
+        svc = RecordingService()
+        r = router(svc)
+        request = payload(MUTATING, LOCAL, context_ref=CONTEXT_REF,
+                          params={"instruction": "more", "turn_idempotency_key": "t-1"})
+
+        first = r.route(router_mod.request_from_payload(request))
+        second = r.route(router_mod.request_from_payload(request))
+
+        self.assertTrue(first.ok)
+        self.assertTrue(second.result.get("idempotent_replay"))
+        self.assertFalse(second.dispatched)
+        self.assertEqual(svc.names(), ["send"])
+
+    def test_a_derived_key_conflicts_the_same_way_an_envelope_key_does(self):
+        """The derived key is the key, so a different intent under it is refused."""
+        r = router(RecordingService())
+        r.route(router_mod.request_from_payload(payload(
+            MUTATING, LOCAL, context_ref=CONTEXT_REF,
+            params={"instruction": "more", "turn_idempotency_key": "t-same"})))
+
+        with self.assertRaises(target.Rejected) as caught:
+            r.route(router_mod.request_from_payload(payload(
+                "agent.session.create", LOCAL, context_ref=CONTEXT_REF,
+                session_role="coordinator",
+                params={"agent_id": "codex-app-server", "instruction": "hi",
+                        "idempotency_key": "t-same"})))
+        self.assertIn("a key identifies one intent", str(caught.exception))
+
+    def test_a_read_is_not_given_a_replay_key_by_the_derivation(self):
+        """Only mutations are derived for; a read has nothing to deduplicate."""
+        request = router_mod.request_from_payload(payload(
+            READ_ONLY, LOCAL, session_ref="session:a:b:c"))
+        self.assertIsNone(request.idempotency_key)
+
+    def test_the_mutating_actions_with_no_key_parameter_are_named_in_the_contract(self):
+        """The gap is stated where a reader of the guard will find it.
+
+        Four mutating actions take no key on any surface, so a retry of one is
+        a second effect this guard cannot see. The list is computed rather than
+        copied, so adding a key parameter to one of them — or adding a fifth
+        mutating action — makes this test say so instead of leaving the
+        contract quietly describing a guard that covers less than it reads as
+        covering.
+        """
+        keyed = {name for name, params in router_mod.action_params().items()
+                 if "idempotency_key" in params or "turn_idempotency_key" in params}
+        mutating = {name for name, verb in router_mod.control_actions().items()
+                    if router_mod._mutating(verb)}
+        self.assertEqual(sorted(mutating - keyed),
+                         ["agent.session.handoff", "agent.session.interrupt",
+                          "agent.session.resume", "agent.session.stop"])
+        source = (ROOT / "fleet" / "agent-control-contract.yaml").read_text(encoding="utf-8")
+        self.assertIn("take no key", source)
+        self.assertIn("this guard cannot see it", source)
+
 
 # ---------------------------------------------------------------------------
 # §9: handoff. The order is the safety property.

@@ -204,6 +204,21 @@ transports:
 idempotency:
   scope: in-process, per router instance
   applies_to: mutating actions only
+  # Where the key comes from, since there are two and they are for two layers.
+  # `idempotency_key` on the request envelope is the ROUTER's handle and is what
+  # `_replay` answers from; the action's own parameter (`idempotency_key` on
+  # `session.create`, `turn_idempotency_key` on `session.send`) travels in
+  # `params` to the provider, which deduplicates on it. The envelope key is
+  # derived from the parameter by `request_from_payload` when a caller supplied
+  # only the parameter — without that, a request naming the key exactly as this
+  # contract names it dispatched with no replay guard at all.
+  #
+  # NOT every mutating action has a key to derive: `session.handoff`,
+  # `session.interrupt`, `session.resume` and `session.stop` take no key
+  # parameter on any surface, so a retry of one of them is a second effect and
+  # this guard cannot see it. That is a gap in this contract and not a property
+  # of the guard; it is stated here rather than left for a reader to discover
+  # from the parameter list.
   why_not_reads: >-
     Replaying a read from memory answers with an observation that has aged since
     it was taken. A stale answer is worse than a slow one, and the caller asked
