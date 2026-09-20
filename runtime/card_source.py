@@ -53,11 +53,20 @@ _REPO = _HERE.parent
 
 SCHEMA = "serveros/card-snapshot.v1"
 
-#: The binding document §2 asks for. It does not exist on this node yet, and
-#: that is the honest starting state: `load_binding` returning None is what
-#: makes the gateway block UNBOUND rather than filled from a lookalike. The
-#: proposed file ships as a reviewable artifact for approval; nothing here
-#: writes it.
+#: The binding document §2 asks for. `load_binding` returning None is what
+#: makes the gateway block UNBOUND rather than filled from a lookalike, and
+#: None is the honest answer on a node where nobody has authored one.
+#:
+#: WHERE IT LIVES, AND WHY NOT HERE. This comment used to say the proposed
+#: file "ships as a reviewable artifact for approval". It did not, and it still
+#: does not: no `service-bindings.yaml` exists anywhere in this tree. The
+#: sentence described an intention as an artifact, which is the same defect as
+#: a placeholder that renders — a reader goes looking for a file that was never
+#: written. The instance contract gives bindings to the ops repository (§6
+#: "ops 只配置 binding/recipient/cadence", §7 lists the values that must be
+#: bound rather than guessed), so the artifact belongs there and nothing in
+#: this repository writes one. `--gateway-binding PATH` is how an authored
+#: binding reaches this module.
 BINDING_SCHEMA = "serveros/service-bindings.v1"
 DEFAULT_BINDING_PATH = Path.home() / ".serveros" / "service-bindings.yaml"
 

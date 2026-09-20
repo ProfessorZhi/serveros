@@ -601,6 +601,15 @@ def gateway_section(snapshot: dict, *, binding: dict | None) -> dict:
         }
     gateway = snapshot.get("gateway") or {}
     return {
+        # `state` here answers ONE question — is there a binding — and it must
+        # keep answering only that. Two keys, two questions, and conflating
+        # them was a real defect rather than a hypothetical one: `_gateway_state`
+        # used to read the card's state out of this key, so a bound gateway
+        # rendered the word "BOUND" as its state. `env_health` does not know
+        # that word, so a bound gateway was neither faulted nor unread — it fell
+        # through to "三项均已读到且无异常" and a gateway in ATTENTION reported
+        # as fine. Seven words of green over a measured fault, which is exactly
+        # the false-green §6 forbids.
         "state": GATEWAY_BOUND,
         "why": "",
         "service_ref": binding.get("service_ref"),
@@ -611,6 +620,17 @@ def gateway_section(snapshot: dict, *, binding: dict | None) -> dict:
         "endpoint": gateway.get("endpoint"),
         "probe": gateway.get("probe"),
         "providers": list(gateway.get("providers") or []),
+        # What was OBSERVED about the gateway, as distinct from whether anyone
+        # wrote down which gateway it is. OK / ATTENTION / UNKNOWN, computed by
+        # whoever could reach the gateway's own accounting.
+        "observed_state": gateway.get("state"),
+        # The window every count above is a count over. Carried because the
+        # renderer prints it and, before this line, could not: `_gateway_state`
+        # read `window_minutes` from the section it is handed, and this function
+        # did not put it there, so `窗口 N 分钟` was a line that could never
+        # appear on any card. Dead code that renders as a shorter card rather
+        # than as an error is the kind that stays dead.
+        "window_minutes": gateway.get("window_minutes"),
     }
 
 
@@ -710,6 +730,97 @@ def _section(name: str, payload: dict | None, gaps: list) -> dict:
             "why": payload.get("why") or "", "detail": payload.get("detail") or {}}
 
 
+def _gateway_language() -> dict:
+    """The declared wording for the gateway block, or an empty declaration.
+
+    Same shape as `codes:` above and for the same reason: the sentence a person
+    reads is declared, not generated, and it lives next to the other declared
+    sentences rather than inside whichever module happened to measure the
+    number.
+    """
+    return _catalogue().get("gateway") or {}
+
+
+def _gateway_provider_line(provider: dict) -> str | None:
+    """One provider family, as a sentence, from the declared wording.
+
+    An evidence provider hands over MEASUREMENTS -- a family, four counts, a
+    p95, a state word. The sentence is built here, from `card-definitions.yaml`,
+    so that the wording of a gateway line has exactly one home. The shape this
+    replaces was one `text` string per provider, written by the measurer, which
+    is where two presenters begin to disagree about the same number.
+
+    Two fallbacks, both deliberate and both narrow:
+
+      * a provider with no `family` is an older or differently-shaped provider,
+        and whatever `text` it carries is returned as-is. Dropping it would
+        hide a reading to win an argument about formatting;
+      * a template with a slot this module does not fill is a bug in the
+        catalogue, and a card is the wrong place to raise it. The measurement
+        itself is returned, which is at least true.
+
+    No cause words: the same ban as `codes:`, enforced by the same test. In
+    particular `requests == 0` must not become "the provider is down" -- this
+    node has had a gateway whose container was Up while every route was dead.
+    """
+    if not isinstance(provider, dict):
+        return None
+    language = _gateway_language()
+    templates = language.get("providers") or {}
+    family = str(provider.get("family") or "").strip()
+    if not family:
+        text = provider.get("text")
+        return str(text) if str(text or "").strip() else None
+    state = str(provider.get("state") or "").strip() or UNKNOWN
+    state_word = (language.get("state_words") or {}).get(state) or state
+
+    def _count(name: str) -> int:
+        try:
+            return int(provider.get(name) or 0)
+        except (TypeError, ValueError):
+            return 0
+
+    requests = _count("requests")
+    # A window with no traffic is its own sentence rather than the line above
+    # with a zero in it: "nobody used it" and "every request worked" are
+    # different readings, and only one of them is good news.
+    template = (templates.get("no_traffic") if requests <= 0
+                else templates.get("line")) or "{family}"
+    p95 = ""
+    ms = provider.get("p95_ms")
+    if requests > 0 and isinstance(ms, int) and ms > 0 and templates.get("p95"):
+        p95 = str(templates["p95"]).format(ms=ms)
+    try:
+        return str(template).format(
+            family=family, state=state_word, requests=requests,
+            ok=_count("ok"), failed=_count("failed"), p95=p95)
+    except (KeyError, IndexError, ValueError):
+        return f"{family}：{requests} 次请求"
+
+
+def _gateway_probe_line(probe: dict) -> str | None:
+    """The functional probe's line, from the declared wording.
+
+    The declared `probes` table is keyed by the probe's own state word. A state
+    word the table does not declare is rendered verbatim rather than blanked:
+    an undeclared word is still a reading, and dropping it would turn "the
+    probe said something I do not know" into "the probe said nothing".
+    """
+    if not isinstance(probe, dict):
+        return None
+    declared = (_gateway_language().get("probes") or {})
+    state = str(probe.get("state") or "").strip()
+    if state and declared.get(state):
+        return str(declared[state])
+    text = probe.get("text")
+    if str(text or "").strip():
+        return str(text)
+    # The word itself, not None: an undeclared state word is still a reading,
+    # and returning nothing would render "the probe said something this card
+    # does not know" as "the probe said nothing".
+    return state or None
+
+
 def _gateway_state(section: dict) -> dict:
     if section["state"] == GATEWAY_UNBOUND:
         return {"name": "gateway", "state": UNKNOWN, "lines": [],
@@ -719,14 +830,27 @@ def _gateway_state(section: dict) -> dict:
     lines = []
     if gateway.get("endpoint"):
         lines.append(f"本机入口 {gateway['endpoint']}")
-    if probe.get("text"):
-        lines.append(str(probe["text"]))
+    probe_line = _gateway_probe_line(probe)
+    if probe_line:
+        lines.append(probe_line)
     for provider in gateway.get("providers") or []:
-        if provider.get("text"):
-            lines.append(str(provider["text"]))
+        line = _gateway_provider_line(provider)
+        if line:
+            lines.append(line)
+    # The window is what every count above is a count *over*, so it is printed
+    # once, under them. A rate with no window is a number with no denominator.
+    window_template = (_gateway_language().get("providers") or {}).get("window")
+    window = gateway.get("window_minutes")
+    if window and window_template:
+        lines.append(str(window_template).format(minutes=window))
     if gateway.get("maintainer"):
         lines.append(f"负责人 {gateway['maintainer']}")
-    return {"name": "gateway", "state": gateway.get("state") or UNKNOWN,
+    # `observed_state`, NOT `state`. `state` on this section says whether a
+    # binding named a gateway; this one says how the gateway is. Reading the
+    # first here made every bound gateway report the word "BOUND" as its state,
+    # which `env_health` does not recognise and therefore never faulted.
+    # Absent readings stay UNKNOWN and never OK.
+    return {"name": "gateway", "state": gateway.get("observed_state") or UNKNOWN,
             "lines": lines, "why": "", "detail": gateway}
 
 

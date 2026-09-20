@@ -129,7 +129,7 @@ def _git(repo: Path, *args: str) -> bytes:
 # composition is assembled, and it is no longer the statement of what is
 # required.
 CORE_MODULES = ("context", "space", "relations", "mcp", "runtime", "bin",
-                "abilities", "memory", "fleet", "intake")
+                "abilities", "memory", "fleet", "intake", "documents")
 
 
 def resolve_ability_rev(repo: Path, rev: str) -> str:
@@ -377,6 +377,66 @@ def _packs_module():
     sys.modules[name] = module
     spec.loader.exec_module(module)
     return module
+
+
+def _secrets_module():
+    """`scripts/scan_secrets.py`, loaded by path, for the reason `_packs_module`
+    states: this directory is not a package and is not on `sys.path`."""
+    import importlib.util
+
+    name = "serveros_scan_secrets"
+    if name in sys.modules:
+        return sys.modules[name]
+    spec = importlib.util.spec_from_file_location(
+        name, Path(__file__).resolve().parent / "scan_secrets.py")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+def scan_composed(files, manifests, readme) -> list[dict]:
+    """Credential findings in the bytes this build is about to write.
+
+    §28 asks for the scan as a GATE, and until this existed the scanner was a
+    tool with a docstring that said "so a release can fail instead of shipping
+    one" while nothing in `build.py` or `release.py` called it. That is the
+    pathology `scripts/publication.py` names in its own words — a promise in a
+    docstring is not a check — arriving in the one place where failing to keep
+    it means a credential leaves the node.
+
+    Reads the composition in memory rather than the output directory, because
+    the order matters: the caller writes only after this returns clean. A gate
+    that must write first and check second reports the credential it has
+    already shipped.
+
+    The exemption list is deliberately not consulted. It names repository paths
+    whose purpose is to hold fake credentials so that redaction can be tested;
+    a release artifact is not a place any of that belongs, so an artifact
+    finding is a finding whether or not some source file of the same name is
+    exempt.
+    """
+    mod = _secrets_module()
+    body = [(content, rel) for content, rel, _executable in files]
+    for rel, value in manifests.items():
+        body.append((_json_bytes(value), Path(rel)))
+    body.append((readme.encode("utf-8"), Path("README.md")))
+
+    findings: list[dict] = []
+    for content, rel in body:
+        if rel.suffix not in mod.TEXT_SUFFIXES:
+            continue
+        if len(content) > mod.MAX_BYTES:
+            continue
+        try:
+            text = content.decode("utf-8", errors="strict")
+        except UnicodeDecodeError:
+            # A binary is not evidence either way, and the composition is text
+            # by construction — the same reason `scan_file` stays quiet here.
+            continue
+        for hit in mod.scan_text(text):
+            findings.append({"path": rel.as_posix(), **hit})
+    return findings
 
 
 def validate_packs(contract_path: Path, ability_repo: Path, ability_rev: str) -> dict:
@@ -772,6 +832,31 @@ def build(bundle_path: Path, ability_repo: Path, ability_rev: str, output: Path,
 
     expected_files = {rel for _content, rel, _executable in files} | set(manifests) | {Path("README.md")}
 
+    # Before either branch, and before anything is written or deleted.
+    # `--check` also scans the tree on disk, because a file nobody composed
+    # into this artifact is exactly where a credential would be hiding and
+    # `--check` is the mode an operator runs against a promoted node.
+    secrets = scan_composed(files, manifests, readme)
+    if not write and output.exists():
+        for hit in _secrets_module().scan(output)["findings"]:
+            secrets.append(hit)
+
+    def report_secrets() -> None:
+        # A credential is not drift. `DRIFT` means the artifact differs from
+        # what this composition says it should be, which is a state an operator
+        # resolves by rebuilding; this is a state they resolve by rotating. One
+        # word for two problems sends the reader to the wrong one.
+        for hit in secrets:
+            print(f"SECRET {hit['path']}:{hit['line']} {hit['rule']}", file=sys.stderr)
+
+    if secrets and write:
+        # Refuse BEFORE the prune below, so a refusal cannot have already
+        # deleted the artifact it is refusing to replace.
+        report_secrets()
+        print(f"REFUSING: {len(secrets)} credential-shaped string(s) in the "
+              f"composition. Nothing was written.", file=sys.stderr)
+        return 1
+
     if not write:
         # A bare exit code is not actionable. Name every drifted path, so that a
         # red `--check` says what to fix rather than only that something changed.
@@ -796,9 +881,14 @@ def build(bundle_path: Path, ability_repo: Path, ability_rev: str, output: Path,
             drifted.add(f"missing {marketplace_path}")
         elif marketplace_path.read_bytes() != _json_bytes(marketplace):
             drifted.add(f"content {marketplace_path}")
+        # Both classes are reported in one run. `--check` writes nothing, so
+        # stopping at the credential would only make the operator run it twice
+        # to learn the rest — and the second run would report the same
+        # credential first, every time.
+        report_secrets()
         for reason in sorted(drifted):
             print(f"DRIFT {reason}", file=sys.stderr)
-        return int(bool(drifted))
+        return int(bool(drifted or secrets))
 
     # The output directory is generated-only: remove everything not in the
     # expected set, then prune directories left empty so no residue of excluded

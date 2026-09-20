@@ -124,6 +124,7 @@ actuators:
       - {file: context/resolver.py, symbols: [_git]}
       - {file: runtime/ability_projection.py, symbols: [_git]}
       - {file: runtime/cli.py, symbols: [_ledger_revision]}
+      - {file: runtime/daily_report.py, symbols: [_git]}
       - {file: runtime/workspace.py, symbols: [_git]}
       - {file: scripts/build.py, symbols: [_git]}
       - {file: scripts/runtime_truth.py, symbols: [_git, _git_object_at, _ability_payload_root, pin_superseded, canonical_provenance]}
@@ -359,6 +360,9 @@ actuators:
       - {file: runtime/ability_projection.py, symbols: [write_atomic]}
       - {file: runtime/agent_control_store.py, symbols: [_atomic_write]}
       - {file: runtime/daemon.py, symbols: [_atomic_write]}
+      # daily_report 的文本那一半：与 agent_control_store 的写法同一决定，
+      # 但 `_atomic_write` 只处理 JSON，日报写的是文本，所以是另一个符号。
+      - {file: runtime/daily_report.py, symbols: [_atomic_write_text]}
 
   - id: atomic-write-commit
     kind: fs_mutation
@@ -385,6 +389,7 @@ actuators:
       - {file: relations/project.py, symbols: [write]}
       - {file: runtime/ability_projection.py, symbols: [write_atomic]}
       - {file: runtime/agent_control_store.py, symbols: [_atomic_write]}
+      - {file: runtime/daily_report.py, symbols: [_atomic_write_text]}
       - {file: runtime/daemon.py, symbols: [_atomic_write, Budget._save], verb: ".replace()"}
       - {file: scripts/release.py, symbols: [_symlink_swap]}
       - {file: intake/global_board.py, symbols: [render], verb: ".replace()"}

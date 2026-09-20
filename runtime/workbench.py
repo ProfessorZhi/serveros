@@ -773,12 +773,28 @@ def doc_manifest(when, release_root, pins):
 
     §6 of the plan puts the reachability check in the same sentence as the pins
     ("要验证所有 pin 可达"), because a manifest naming a revision nobody can fetch
-    is a manifest that reads as a release and resolves as nothing."""
+    is a manifest that reads as a release and resolves as nothing.
+
+    §24 of ACCEPTANCE asks for more than that in one sentence, and this page
+    used to deliver only its first third:
+
+        release manifest 固定所有代码/能力/策略/adapter revision 与 hash、
+        schema 版本和恢复信息。
+
+    Read as a list, that is four things: every class of revision (a manifest
+    that pins the code and silently omits the ability source, the ops repo and
+    the adapter it ships is COMPLETE-LOOKING and incomplete), a hash per
+    revision, the schema versions the release speaks, and what recovery
+    actually restores. Three of the four were absent, and their absence was
+    invisible for the same reason every absence here is: a five-row table with
+    every row green does not look like a table with three classes missing from
+    it. The missing rows are the ones nobody could see were missing."""
     rows = []
+    seen: dict = {}
     for pin in pins:
-        rows.append(_reachable(pin))
+        rows.append(_reachable(pin, seen=seen))
     body = [
-        "产物摘要与代码/能力/fixture revision 固定在这里，并且**每一条 pin 都被验证过可达**。",
+        "产物摘要与代码/能力/**策略**/**adapter** revision 固定在这里，并且**每一条 pin 都被验证过可达**。",
         "",
         "跨 repo 不是原子事务：这个文件不声称它们是。它声称的是，每一半单独可达，"
         "并且没有任何一半是在未验证的情况下被写进 active pointer 的。",
@@ -791,6 +807,28 @@ def doc_manifest(when, release_root, pins):
             "<pin> <远端 head>`。分支 head 会随每次提交移动，包含关系不会 —— 一个 "
             "revision 一旦被推上去的分支包含，就永远被它包含。`不存在`/`不含 pin` "
             "不是警告，是这一页的 FAIL。",
+        ]), 3),
+        section("revision 与 hash（每一类都要有）", "\n".join([
+            table(["名字", "类别", "revision", "树 hash"], _identity_rows(pins)), "",
+            "**hash 是 git 自己对那棵树的散列**（`git rev-parse <rev>^{tree}`），"
+            "不是这里另算的第二个数。两个人为同一次 revision 各算一个摘要，"
+            "迟早会有一个不再匹配，而那时没有任何东西会报错 —— 所以这里印的是 git 的。",
+            "",
+            "树 hash 覆盖的是**树**：它证明两个 revision 的内容相同或不同，"
+            "它不覆盖 packfile、远端配置或工作树里未提交的东西。一行写着 hash 的"
+            "清单很容易被读成「整台机器都被验证过了」，所以这一行说的正是它不覆盖什么。",
+            "",
+            "**类别这一列是这一节存在的理由。** 一份只固定了 code 的清单，"
+            "和一份固定了全部四类的清单，在没有这一列的时候长得一模一样："
+            "读者只能看见表里有什么，看不见表里**该有什么**。策略与 adapter 不是"
+            "代码的附属物 —— 它们各自有自己的 revision，也各自能单独地过时。",
+        ]), 3),
+        section("schema 版本", "\n".join([
+            _schema_versions(release_root), "",
+            "从 shipped tree 里**读出来**的，不是在这里重复一遍的：每个 "
+            "`runtime/*.yaml` 抬头声明的 `schema:`，加上 plugin composition 声明的 "
+            "bundle schema。一份手抄的 schema 清单会在有人改 schema 的那一天"
+            "开始说旧话，而那一天不会有任何东西变红。",
         ]), 3),
         section("隔离安装（本轮的 promote 目标）", "\n".join([
             f"runtime root：`{release_root}`",
@@ -805,11 +843,150 @@ def doc_manifest(when, release_root, pins):
             "**这不是线上 runtime root。** 这一轮的 promote 落在运行产物目录下的隔离 root，"
             "线上指针没有动过。线上切换是 [DEPLOYMENT.md](DEPLOYMENT.md) 的 P1。",
         ]), 3),
+        section("恢复信息", "\n".join([
+            "回滚**恢复的是 revision 指针，不是状态**。这两件事必须分开写下来，"
+            "因为一句「可以回滚」在读者那里同时意味着两件事，而其中只有一件是真的。",
+            "",
+            code_block("\n".join([
+                "回滚恢复：",
+                "  <runtime root>/current  →  <runtime root>/previous",
+                "  以及随它一起被引用的那棵 shipped tree",
+                "",
+                "回滚不恢复、也不该恢复：",
+                "  state root       —— 授权、工作记录、receipt、观察结果都在这里",
+                "  worktree / 制品   —— 回滚不动任何人的工作树",
+                "  Quay 的工作区     —— 闸门账本属于那一轮，不属于这次发行",
+            ])),
+            "",
+            "**状态不在 revision 里，这正是回滚能救回工作的前提。** 如果授权与 receipt "
+            "是随 revision 一起发的，那么一次回滚就会把它们一起倒回去 —— 于是"
+            "「回滚到上一个可用版本」会顺手丢掉期间产生的批准，而这件事不会表现为"
+            "一次失败，只会表现为批准变少了。`state` 目录落在 runtime root 之外，"
+            "由 `SERVEROS_STATE_DIR` 指向，回滚不碰它。",
+            "",
+            "所以恢复的完整性检查不是「指针动没动」，而是回滚之后去 state root 里"
+            "读一次授权、读一次 receipt：**它们还在，才叫恢复了。**",
+        ]), 3),
     ]
     return "\n".join(body)
 
 
-def _reachable(pin):
+def _identity_rows(pins):
+    """One row per pin: what class it is, and git's own hash of its tree.
+
+    A pin whose revision cannot be resolved gets `—` in the hash column rather
+    than an empty cell, for the reason `_reachable` gives: an empty cell and a
+    hash that could not be computed look the same in a table.
+    """
+    import subprocess as sp
+    rows = []
+    for pin in pins:
+        src = Path(pin["repo"])
+        kind = pin.get("kind") or "—"
+        tree = "**读不了 repo**"
+        if (src / ".git").exists() or (src / "HEAD").exists():
+            c = sp.run(["git", "-C", str(src), "rev-parse",
+                        f"{pin['revision']}^{{tree}}"],
+                       capture_output=True, text=True)
+            tree = c.stdout.strip()[:12] if c.returncode == 0 else "**该 revision 不在这个 repo 里**"
+        rows.append([pin["name"], kind, pin["revision"], tree])
+    return rows
+
+
+def _schema_versions(release_root):
+    """Every `schema:` the shipped release declares, read from the artifact.
+
+    Two sources, both of them the artifact's own words: the shipped
+    `runtime/*.yaml` headers, and the plugin composition's `bundle.v1`.
+
+    When the release root is not there, this says so. It does not fall back to
+    reading the CHECKOUT this renderer is running from — that would report the
+    schemas of the tree being built as the schemas of the tree being shipped,
+    which are the same thing right up until the build is stale, and then it is
+    a wrong answer wearing a right one's clothes.
+    """
+    # `--release-root` has no default, so "not given" is the ordinary case and
+    # it has to render like every other absent input rather than raise. This
+    # reached `Path(None)` on the first run and took the whole document set down
+    # with it — one input's absence is never a reason to stop writing the set.
+    if not release_root:
+        return ("没有给 `--release-root`，所以这一节**没有读**。"
+                "这不是「这个发行版没有 schema」——是没有人指出要读哪一个产物。")
+    root = Path(release_root)
+    current = root / "current"
+    if not current.exists():
+        return (f"`{current}` 不存在，所以这一节**读不到 shipped tree 的 schema**。"
+                f"这不是「这个发行版没有 schema」，是这一次没有读成 —— "
+                f"没读成和读到零在这一页里必须是两句话。")
+    try:
+        shipped = current.resolve()
+    except OSError as exc:
+        return unreadable("shipped tree", exc)
+    rows = []
+    for path in sorted((shipped / "runtime").glob("*.yaml")):
+        try:
+            text = path.read_text(encoding="utf-8")
+        except OSError as exc:
+            rows.append([path.name, unreadable("这一份", exc).splitlines()[0]])
+            continue
+        declared = _top_level(text, "schema")
+        if declared:
+            rows.append([path.name, declared])
+    # The composition files are listed whether or not they are there. They were
+    # skipped when absent, and that is the defect this whole page is about: a
+    # section that silently omits a source it did not find is indistinguishable
+    # from a section whose source had nothing to declare. `plugin/` is NOT in
+    # the runtime artifact — the plugin is a separate build from the same tree
+    # (`plugin/bundle.yaml` says so, and `~/.claude/plugins/` holds the other
+    # one) — so this row is absent on every correct install, and the page has to
+    # say that rather than look like it never looked.
+    for rel in ("plugin/bundle.yaml", "plugin/profiles/linux-work.yaml"):
+        path = shipped / rel
+        if not path.is_file():
+            rows.append([rel, ("**不在这个产物里** —— `plugin/` 是与 runtime "
+                               "分开的另一次构建，不随本产物发行")])
+            continue
+        try:
+            text = path.read_text(encoding="utf-8")
+        except OSError as exc:
+            rows.append([rel, unreadable("这一份", exc).splitlines()[0]])
+            continue
+        composition = _top_level(text, "composition") or "?"
+        rows.append([f"{rel}（composition {composition}）",
+                     _top_level(text, "schema") or "**没有声明**"])
+    if not rows:
+        return f"`{shipped}` 里没有读到任何 `schema:` 声明。"
+    return table(["文件", "schema"], sorted(rows))
+
+
+def _top_level(text: str, key: str):
+    """A `key: value` at column 0, without a YAML parser.
+
+    Read with a regex on purpose. This renderer ships inside the artifact, and
+    two of the things it must not do are: depend on a module the artifact may
+    not carry, and depend on one whose VERSION changes what parses. PyYAML is
+    both. `schema:` and `composition:` are single scalars at column 0 in every
+    file this reads — a mapping or a list would need a parser, and would also
+    be a different claim from the one this section makes.
+    """
+    match = re.search(rf"^{re.escape(key)}:[ \t]*(\S.*?)[ \t]*$", text, re.MULTILINE)
+    return match.group(1) if match else None
+
+
+def _reachable(pin, *, seen=None):
+    """One pin's row. `seen` memoises the remote question across pins.
+
+    Several pins legitimately name the SAME repo and branch — the adapter is
+    built from the same revision as the code it adapts, and two design packages
+    live in one repository. Asking the remote once per row asks the identical
+    question three times and pays a network round trip for each, which is how a
+    page that renders in five seconds starts rendering in forty.
+
+    The memo is per render and is passed in, never module-global: a cached
+    "this branch is not on origin" that outlived the push that fixed it would
+    be a wrong answer that never expires, and this page's whole subject is
+    answers that stopped being true without saying so.
+    """
     import subprocess as sp
     src = Path(pin["repo"])
     if not (src / ".git").exists() and not (src / "HEAD").exists():
@@ -819,30 +996,13 @@ def _reachable(pin):
     local = "存在" if c.returncode == 0 else "**不存在**"
     remote = "—"
     if pin.get("branch"):
-        r = sp.run(["git", "-C", str(src), "ls-remote", "--heads", "origin", pin["branch"]],
-                   capture_output=True, text=True, timeout=90)
-        line = r.stdout.strip()
-        if not line:
-            remote = f"`{pin['branch']}` **远端不存在**"
+        key = (str(src), pin["branch"])
+        if seen is not None and key in seen:
+            remote = seen[key]
         else:
-            head = line.split()[0]
-            # The question §6 asks is "is this pin REACHABLE", which is ancestry,
-            # not equality. This column used to print the branch's head and call a
-            # moved head a divergence — so the page went red on every commit, on a
-            # `claim` page compared in full, for a reason that was not a defect. It
-            # was the flap DOC_KINDS exists to stop, inside the one page that cannot
-            # use the escape. Ancestry is the right predicate and it is STABLE: once
-            # a pushed branch contains a revision it contains it forever.
-            anc = sp.run(["git", "-C", str(src), "merge-base", "--is-ancestor",
-                          pin["revision"], head], capture_output=True, text=True)
-            if anc.returncode == 0:
-                remote = f"`{pin['branch']}` ⊇ pin"
-            elif anc.returncode == 1:
-                remote = (f"`{pin['branch']}` **不含 pin** —— 分支在远端，但这个 "
-                          f"revision 从它取不到")
-            else:
-                remote = (f"`{pin['branch']}` 存在（远端 head 的对象不在本地，"
-                          f"包含关系未验证）")
+            remote = _remote_answer(sp, src, pin)
+            if seen is not None:
+                seen[key] = remote
     # `rel_home` and not an inline `.replace(<home> + "/", "~/")`, which is what
     # stood here first: the redaction was already written as a function for the
     # whole set, and spelling the home directory out to redo it locally is the
@@ -852,6 +1012,33 @@ def _reachable(pin):
     # can hold.
     return [pin["name"], rel_home(pin["repo"]),
             f"`{pin['revision'][:12]}`", local, remote]
+
+
+def _remote_answer(sp, src, pin):
+    """Whether a remote branch exists, and whether it contains this revision.
+
+    The question §6 asks is "is this pin REACHABLE", which is ancestry, not
+    equality. This column used to print the branch's head and call a moved head
+    a divergence — so the page went red on every commit, on a `claim` page
+    compared in full, for a reason that was not a defect. It was the flap
+    DOC_KINDS exists to stop, inside the one page that cannot use the escape.
+    Ancestry is the right predicate and it is STABLE: once a pushed branch
+    contains a revision it contains it forever.
+    """
+    r = sp.run(["git", "-C", str(src), "ls-remote", "--heads", "origin", pin["branch"]],
+               capture_output=True, text=True, timeout=90)
+    line = r.stdout.strip()
+    if not line:
+        return f"`{pin['branch']}` **远端不存在**"
+    head = line.split()[0]
+    anc = sp.run(["git", "-C", str(src), "merge-base", "--is-ancestor",
+                  pin["revision"], head], capture_output=True, text=True)
+    if anc.returncode == 0:
+        return f"`{pin['branch']}` ⊇ pin"
+    if anc.returncode == 1:
+        return (f"`{pin['branch']}` **不含 pin** —— 分支在远端，但这个 "
+                f"revision 从它取不到")
+    return (f"`{pin['branch']}` 存在（远端 head 的对象不在本地，包含关系未验证）")
 
 
 def _release_status(release_root):
@@ -1165,18 +1352,48 @@ def _answers_moved(rows):
     return ""
 
 
+def _verdict_rows(block):
+    """`row=VERDICT` lines as an ordered id -> verdict mapping.
+
+    Ordered because `_first_verdict_change` owes the reader the FIRST row that
+    moved, and "first" has to mean first in the block as printed."""
+    rows = {}
+    for line in block.splitlines():
+        if "=" in line:
+            key, _, value = line.partition("=")
+            rows[key] = value
+    return rows
+
+
 def _first_verdict_change(older, fresh):
     """Name the FIRST row that moved, not a count of moves.
 
     The verdicts are a list of independent claims about independent verbs; "3 rows
     changed" turns four separate findings into one number, and the row that went
-    red is the thing somebody has to go and look at."""
+    red is the thing somebody has to go and look at.
+
+    Paired by ROW ID, not by position — `zip` was the first version, and it named
+    a row that had not moved. Inserting one row shifts every row below it, so each
+    of them is compared against its neighbour; an insertion in the middle of the
+    block came out as `registration-discover: 盘中 OK → 现在 OK`, a sentence that
+    contradicts itself, about a row whose verdict never changed. Measured on this
+    round's own START-HERE, whose block gained a row. The `行数不同` branch that
+    was supposed to catch added and removed rows was reachable only when the row
+    was appended or dropped at the END, which is also the only shape its test
+    exercised."""
     if older is None or fresh is None:
         return "一侧没有判定块"
-    for a, b in zip(older.splitlines(), fresh.splitlines()):
-        if a != b:
-            return f"{a.split('=')[0]}: 盘中 {a.split('=')[1]} → 现在 {b.split('=')[1]}"
-    return f"行数不同（{len(older.splitlines())} → {len(fresh.splitlines())}）"
+    a, b = _verdict_rows(older), _verdict_rows(fresh)
+    added = [k for k in b if k not in a]
+    removed = [k for k in a if k not in b]
+    if added or removed:
+        parts = ([f"新增 {', '.join(added)}"] if added else []) + \
+                ([f"移除 {', '.join(removed)}"] if removed else [])
+        return f"行数不同（{len(a)} → {len(b)}）：" + "；".join(parts)
+    for key in a:
+        if a[key] != b[key]:
+            return f"{key}: 盘中 {a[key]} → 现在 {b[key]}"
+    return "块相同"
 
 
 
@@ -1184,8 +1401,19 @@ def _first_verdict_change(older, fresh):
 def normalize(text):
     for pattern, _ in VOLATILE:
         text = pattern.sub("<volatile>", text)
-    text = re.sub(r"<!-- ⟦snapshot⟧[^>]*-->", "", text)
-    return text
+    # NOT `[^>]*`, which is what stood here. The VOLATILE pass above runs FIRST,
+    # so by the time this line sees the header its timestamp has already become
+    # `<volatile>` — a `>` the old class refused to cross, which meant `-->` was
+    # never reached and the substitution matched NOTHING AT ALL. Measured on a
+    # rendered START-HERE: the header survived normalisation whole, worktree path
+    # and all, inside the one function whose entire job is to make two renders
+    # comparable. `--check` then compared a line it had declared it strips.
+    #
+    # `[^\n]*?` rather than `.*?` with DOTALL: a header whose `-->` is missing
+    # must leave its own line in place, not swallow the document up to the next
+    # `-->` somewhere below. The comment that reads the inputs one function down
+    # already matched this way; only the one that removes it did not.
+    return re.sub(r"\A<!--\s*⟦snapshot⟧[^\n]*?-->\n?", "", text, count=1)
 
 
 def main(argv=None):

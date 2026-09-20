@@ -1,0 +1,372 @@
+# Meeting relevance / retention schema.
+#
+# The Space Resolver is the placement counterpart of the Context Capsule. This is
+# the MEANING counterpart of the MeetingBundle: it answers "what does this
+# meeting contribute to the user's work, and what may be done to it afterwards".
+#
+# Like the Capsule and the Space Resolver it is a READ-ONLY DECISION KERNEL. It
+# is given inputs and returns a record. It opens no socket, calls no model,
+# mutates nothing, scans no tree, reads no clock, and knows nothing about any one
+# cloud provider. Applying a decision is somebody else's job — the surface
+# adapters, the receipt store, the recycle bin and the index rebuild.
+#
+# Two questions live here, and they are deliberately NOT one question:
+#
+#   1. classify()      — what is this bundle to the user's work?
+#   2. plan_cleanup()  — what may be done to these objects?
+#
+# The first cannot answer the second. SPACE-AND-RETENTION section 7 names
+# relevance, ownership, retention, legal/organizational hold and deletability as
+# five independent axes, so the kernel is built so they cannot be collapsed:
+# classify() reports `deletability: NOT_EVALUATED` and `cleanup: null` for every
+# input that exists, and plan_cleanup() never reads a relevance verdict.
+schema: serveros/meeting-relevance-decision.v1
+
+request:
+  kind:                        # relevance (default) | cleanup
+    type: string
+  # ---- kind: relevance
+  bundle:
+    bundle_ref:                # the stable id of the MeetingBundle
+      type: string
+    scope:                     # WHICH source this is; the only thing a rule matches on
+      tenant_ref:              # a real stable id, never a wildcard
+        type: string|null
+      chat_ref:
+        type: string|null
+      meeting_ref:
+        type: string|null
+    signals:                   # recorded, and recorded as INSUFFICIENT. Nothing reads them.
+      audio_duration_s:
+        type: number|null
+      user_muted:
+        type: boolean|null
+      language:
+        type: string|null
+      title:
+        type: string|null
+      participants:
+        type: array|null
+      auto_summary:
+        type: string|null
+    content:                   # read only within the policy's allowed_content_depth
+      transcript_segments:     # time locations + provenance + a DECLARED tie. No text.
+        type: array
+        items:
+          start_s:
+            type: number
+          end_s:
+            type: number
+          provenance:
+            type: string
+          tie:                 # {kind, ref} — declared by the producer, never inferred here
+            type: object|null
+    work_relation:
+      references:              # work that NAMES this bundle: a tie that is not a segment
+        type: array
+    dependants:                # work that USED this bundle
+      type: array
+      items:
+        kind:                  # claim | item | report | draft
+          type: string
+        ref:
+          type: string
+        human_approved:        # a human owns this text; it is never silently rewritten
+          type: boolean
+        published:
+          type: boolean
+    ownership:                 # an axis, reported and never consulted for relevance
+      type: string
+    hold:                      # an axis, reported and never consulted for relevance
+      type: string
+  policies:                    # every policy available to match; [] means none
+    type: array
+  as_of:                       # ISO-8601 UTC instant; REQUIRED to evaluate any expiry
+    type: string|null
+  # ---- kind: cleanup
+  level:                       # CONTENT_ISOLATION | REBUILDABLE_ARTIFACT_CLEANUP
+    type: string               #   | CLOUD_RECOVERABLE_DISPOSAL | IRREVERSIBLE_DELETE
+  objects:                     # explicit object refs. A cleanup is never "everything".
+    type: array
+    items:
+      object_ref:
+        type: string
+      object_type:             # recording | transcript | summary | minute | document ...
+        type: string
+      scope:                   # the object's own stable identity
+        type: object
+      ownership:               # OWNED | SHARED | OTHER_OWNER | UNKNOWN
+        type: string
+      permission_confirmed:
+        type: boolean
+      revision:                # current revision, read now
+        type: string|null
+      planned_revision:        # the revision the plan was written against
+        type: string|null
+      holds:                   # [] means "no hold was found", not "no hold exists"
+        type: array
+      references:              # anything still naming this object
+        type: array
+      human_unique_edits:
+        type: boolean
+      rebuildable:             # level B acts only on what the producer can regenerate
+        type: boolean
+      observed:                # what a previous attempt, read back, says
+        status:                # NOT_ATTEMPTED | EXECUTED | RESTORED | PERMISSION_DENIED | FAILED
+          type: string
+        receipt:
+          type: string|null
+  provider:                    # the real provider's semantics, as established — not assumed
+    recycle_bin:               # true | false | null(not established)
+      type: boolean|null
+    restore:
+      type: boolean|null
+  authorization:               # required for IRREVERSIBLE_DELETE, and only from a human
+    kind:                      # PER_OPERATION
+      type: string
+    operation_ref:
+      type: string
+    approved_by:
+      type: string
+    expires_at:
+      type: string
+  retry_budget:                # how many re-attempts this run may spend
+    type: integer
+
+policy:                        # ONE shape for every operation, so a policy read as a
+  policy_revision:             # classification policy cannot be re-read as a destructive one
+    type: string
+  source_selector:             # {kind, id} — a real stable id. Null or wildcard selects NOTHING.
+    type: object|null
+  operation:                   # must equal the level's own operation
+    type: string
+  scope:                       # the tenant/chat/meeting the policy governs
+    type: object
+  owner_constraint:            # SELF_ONLY | SYSTEM_OWNED_ONLY | NONE
+    type: string
+  protected_exceptions:        # refs of the declared exceptions this policy honours
+    type: array
+  relevance_rule:              # a key of vocabulary.relevance_rules
+    type: string
+  retention_window:
+    approved_policy_ref:       # null means no human approved a period. NOT consent.
+      type: string|null
+    days:                      # null means no period was agreed. NOT a default.
+      type: integer|null
+  allowed_content_depth:       # METADATA_ONLY | TRANSCRIPT | FULL
+    type: string
+  delete_mode:                 # NO_DELETE | RECYCLE_BIN | PERMANENT, fixed by the level
+    type: string
+  approval:                    # NONE | PROPOSAL_ONLY | EXPLICIT
+    type: string
+  binding_state:               # BOUND | UNBOUND. A destructive policy must be BOUND.
+    type: string
+  expires_at:                  # ISO-8601 UTC instant
+    type: string
+  references_holds_checks:     # the checks the policy CLAIMS to perform
+    type: array
+  restore_capability:          # what restoring this system's own action would take
+    type: object
+  receipt_store:               # where the receipt of each mutation is written
+    type: string
+
+response:
+  # A relevance request answers with serveros/meeting-relevance-decision.v1. A
+  # cleanup request answers with serveros/meeting-cleanup-plan.v1, whose fields
+  # are the ones from `objects` and `authorization` below plus the per-object
+  # intent, result and receipt.
+  schema:
+    type: string               # serveros/meeting-relevance-decision.v1
+                               # | serveros/meeting-cleanup-plan.v1
+  bundle_ref:
+    type: string
+  decision:                    # INCLUDE_SEGMENTS | EXCLUDE_FROM_WORK | REVIEW |
+    type: string               #   REVIEW_NO_DELETE | REVIEW_RELEVANT_SEGMENTS |
+                               #   REVIEW_PENDING | PLAN | PARTIAL | PROPOSAL_REQUIRED |
+                               #   REFUSAL | UNSUPPORTED | UNKNOWN | REJECTED
+  relevance:                   # RELEVANT | MIXED | IRRELEVANT | UNKNOWN
+    type: string
+  stages:                      # all five, in order, each with a state and a detail
+    type: array
+  axes:                        # relevance, ownership, retention, hold, deletability
+    type: object
+  segments:                    # time locations kept, with provenance and tie. No text.
+    type: array
+  excluded_segments:
+    type: object|null
+  exclusions:                  # understanding | board | report, and the way back
+    type: object
+  work_evidence:               # the NON-AUDIO path, first-class
+    type: object
+  audio_fetch:                 # ALLOW | DENY
+    type: string
+  signals:                     # echoed back, always marked RECORDED_INSUFFICIENT
+    type: object
+  protected_exceptions:
+    type: array
+  cleanup:                     # ALWAYS null from classify()
+    type: null
+  delta:                       # what changed for dependants; mutation is NONE
+    type: object|null
+  reason:                      # why, as a list of statements — never empty
+    type: list[string]
+  confidence:                  # high | medium | low
+    type: string
+  approval:                    # none-required | policy-approved | explicit
+    type: string
+
+rules:
+  - "The pipeline is a pipeline. metadata/scope, policy_match, bounded_content,
+     relevance and action each report a state, and all five are reported even
+     when the first one had nothing to work with. A stage reports NO_INPUT when
+     it had none of ITS OWN inputs, and the verdict that follows can only come
+     from a stage that did have input: when the relevance stage reports NO_INPUT
+     the verdict is UNKNOWN — never RELEVANT and never IRRELEVANT — and when a
+     verdict is reached from somewhere other than the content, the stage detail
+     names what reached it (the confirmed source rule, or the work reference that
+     names the bundle). The absence of content is never itself the reason for an
+     exclusion. 'We did not look' and 'we looked and there was nothing' are
+     different answers and this kernel does not merge them."
+
+  - "Five axes stay five axes. Relevance, ownership, retention, legal or
+     organizational hold and deletability are independent, and deletability is
+     NOT derived from relevance. The mechanism is not a promise: classify()
+     returns `cleanup: null` and `axes.deletability: NOT_EVALUATED` on every
+     path, plan_cleanup() does not read a relevance verdict at all, and a request
+     that supplies one is told in `eligibility_inputs_ignored` that it was
+     recorded and not consulted. An IRRELEVANT bundle is therefore not a
+     candidate for anything: classification has no vocabulary in which to say
+     so."
+
+  - "No single signal proves 'no business value'. Audio duration, the
+     user-muted boolean, the language, the title, the participant list and the
+     automatic summary are recorded and marked RECORDED_INSUFFICIENT. No branch
+     of the kernel reads one: setting all six to their most damning values
+     produces the same record as setting them to their most flattering ones. The
+     most they can reach, by themselves, is the REVIEW family."
+
+  - "A source is matched by STABLE IDENTIFIER, never by name. A selector that is
+     absent, null or a wildcard selects NOTHING and is reported as inert rather
+     than read as 'everything'. There is no title matcher, no language matcher
+     and no participant matcher in this module, so 'marek', 'Polish' and a
+     participant list cannot select an exception even accidentally."
+
+  - "The user's declared exception `support:marek-open-mic` is UNBOUND: no
+     stable id for that group has been obtained, and a guess would silently
+     admit the wrong microphone. While it is UNBOUND its action is
+     REVIEW_NO_DELETE, its `action_when_bound` is unreachable — there is one
+     function that reads it and one condition that guards it — and every level
+     that removes material fails closed with a refusal, because such a plan could
+     not show that its objects are not the exception's. With the file that ships,
+     only CONTENT_ISOLATION plans at all, and that is the correct reading rather
+     than a gap: implement the mechanism, keep it fail-closed, and obtain the
+     identifier from the user; never widen the selector to make a test pass."
+
+  - "Muted does not mean irrelevant. A confirmed muted support source excludes
+     incidental audio from understanding, the board and reports — and the
+     counterparty's support question can still be relevant. Support work is
+     evidenced by chat, the request, configuration diffs, tests and the
+     counterparty's confirmation of the outcome, so `work_evidence` is a
+     first-class field rather than an inference. Excluding audio must not delete
+     the work."
+
+  - "MIXED keeps the time-located segments that are tied to a support request or
+     a decision, each with its provenance and its tie, and drops the rest. What
+     is dropped is dropped for a stated reason and the original is untouched.
+     Other people's chatter does not become the user's responsibilities, todos or
+     completed outcomes."
+
+  - "Human-approved material is never silently rewritten. When a now-excluded
+     source was used by a Claim, an Item or a published report, those dependants
+     are marked REVIEW_PENDING and given a delta describing what changed, with
+     `mutation: NONE`. Machine-generated drafts are recomputable and may be
+     rebuilt. The distinction is carried by the dependant's own declarations,
+     not by a guess about which is which."
+
+  - "The four cleanup levels are a closed set and a ladder: CONTENT_ISOLATION,
+     REBUILDABLE_ARTIFACT_CLEANUP, CLOUD_RECOVERABLE_DISPOSAL,
+     IRREVERSIBLE_DELETE. No rung implies the next, so a policy's `operation` and
+     `delete_mode` must equal the level's own; a mismatch is a REFUSAL. Level A
+     deletes nothing and consults no ownership, hold or reference, because
+     isolating is not acting on anybody's object; the other three do. The
+     object's current revision IS checked at every level including A: a plan
+     written against a revision that has since changed is wrong everywhere, not
+     only where something is removed."
+
+  - "IRREVERSIBLE_DELETE requires a PER_OPERATION authorization supplied in the
+     request itself, naming this operation, approved by a human and unexpired at
+     `as_of`. The relevance classifier can never supply one, so no
+     classification reaches level D — that is the point of separating the two
+     questions rather than a side effect of them."
+
+  - "An unbound destructive policy FAILS CLOSED. It returns a refusal, not a
+     plan: `binding_state` must be BOUND, `expires_at` must be evaluable and
+     unexpired, and every declared protected exception must be resolvable
+     against the objects. `as_of` is supplied by the caller because this kernel
+     reads no clock; an expiry that cannot be evaluated is not an expiry that has
+     not passed."
+
+  - "A missing field is a refusal that NAMES the field. All fifteen required
+     policy fields are required for every operation, because one policy shape
+     means a policy read as a classification policy cannot later be re-read as
+     one that may dispose of objects with the destructive fields left blank."
+
+  - "No default retention. `retention_window.days: null` is not consent and never
+     becomes thirty days. `retention_window.approved_policy_ref: null` means no
+     human has approved a period for this operation, so the levels that remove
+     material answer PROPOSAL_REQUIRED — a question for a human — while
+     CONTENT_ISOLATION, which deletes nothing, is not gated on it. The shipped
+     template is exactly this shape: disabled, unbound, empty selectors, no
+     retention."
+
+  - "Partial failure is a first-class outcome. Each object carries its own
+     intent, its own eligibility, its own reason and — once the adapter has run
+     it — its own receipt; an overall PARTIAL names how many did not proceed. A
+     re-entry reads back the objects that already executed and does NOT retry a
+     deletion that already succeeded. A restored object requires its derived
+     indexes to be rebuilt and is recorded in
+     `suppress_candidate_regeneration`, so the candidate does not regrow from an
+     index that still remembers it."
+
+  - "A weaker action is never dressed as a stronger one. When the provider's
+     recycle and restore support was not established the answer is UNKNOWN;
+     when it was established and is absent the answer is UNSUPPORTED. Neither is
+     a permanent delete wearing a recycle's name — the objects are left where
+     they are."
+
+  - "A 401 or 403 is recorded as blocked and is not retried under another
+     identity. Escalating the caller to get past a permission denial is exactly
+     the confused-deputy move this kernel exists to make impossible."
+
+  - "`REJECTED` is a caller bug — an undeclared vocabulary value, a malformed
+     selector, a segment that ends before it starts, a policy whose shape is
+     wrong. `PROPOSAL_REQUIRED`, `REVIEW` and `REFUSAL` are questions for a
+     human, and they are successful determinations: the CLI exits 0 for them and
+     2 for REJECTED. Conflating the two hides caller bugs inside governance."
+
+verification:
+  # Every rule above that can be checked by machine should be, because a rule
+  # that is only prose drifts. See tests/test_meeting_relevance.py.
+  - "meeting-vocabulary.json is a closed set: every decision the kernel can
+     return is a declared value, every dimension value it reports is declared,
+     and policy_required_fields lists exactly the fifteen fields of section 9."
+  - "meeting_relevance.py imports only argparse, json and pathlib."
+  - "No code literal in meeting_relevance.py names a clock, a random source, a
+     network client, a cloud SDK or a CLI to shell out to."
+  - "classify() never returns a non-null `cleanup`, and `axes.deletability` is
+     NOT_EVALUATED on every path it can reach."
+  - "No branch of classify() reads `bundle.signals`: the record is identical
+     when all six signals are set against the bundle and when they are set for
+     it."
+  - "`action_when_bound` is read in exactly one function, behind one binding
+     check, and is absent from every record whose declaration is UNBOUND."
+  - "Every record carries a non-empty `reason`, a decision drawn from the
+     declared set, and all five pipeline stages in order."
+  - "plan_cleanup() refuses a policy missing any required field, naming the
+     field; refuses IRREVERSIBLE_DELETE without a per-operation authorization
+     naming the operation; and refuses every destructive level while a declared
+     protected exception is UNBOUND."
+  - "A null or wildcard selector matches nothing: a policy declaring one is
+     reported inert and never absorbs an unmatched bundle, and a protected
+     exception declaring one never applies."
+  - "The same request returns the same record."

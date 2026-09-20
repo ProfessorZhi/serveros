@@ -136,6 +136,21 @@ memory:
 intake:
   path: intake
 
+# Document identity and authority. `runtime/cli.py` loads
+# `documents/document_governance.py` at call time for
+# `serverosctl document resolve`, so this directory is on the production loader
+# closure and the artifact has to carry it. The kernel is the fourth instance of
+# the C4 defect named above `CORE_MODULES`: written, tested, and reachable from
+# no artifact and no product surface, which is indistinguishable on an installed
+# node from never having been written.
+#
+# The vocabulary ships beside the kernel rather than being an operator input.
+# A judgement read against a different closed set is a different judgement, and
+# `default_vocabulary_path()` resolves it relative to the module so an installed
+# node judges by the same set a source checkout does.
+documents:
+  path: documents
+
 # The node runtime, shipped for the reason the `mcp` block below states and for
 # one more that the artifact was getting wrong.
 #

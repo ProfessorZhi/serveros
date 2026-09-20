@@ -170,3 +170,65 @@ actions:
   SESSION_OWNED_DURABLE_RESOURCE: 把它改成不随会话消失的归属
   PROTECTION_LOST_ON_IDENTITY_SWITCH: 核对新身份是否仍应受保护
 
+# -- the shared gateway's provider lines ------------------------------------
+#
+# WHY THIS IS NOT IN `codes:`
+#
+# A `code` is a finding a detector opened. A provider line is a measurement
+# about traffic: "DeepSeek, 412 requests, 410 ok". Nothing opened it and
+# nothing will resolve it, so it has no lifecycle and no severity, and filing
+# it under `codes:` would make every routed family look like an alert.
+#
+# WHY THE SENTENCE IS HERE AND NOT IN THE THING THAT MEASURES
+#
+# The gateway's traffic can only be read by whoever can reach the gateway's own
+# accounting, and that is not ServerOS: this node's ServerOS observes the
+# container, never whether a request succeeded. So the evidence arrives from
+# outside -- and the shape it arrived in was one `text` string per provider,
+# which put the WORDING inside the measurer. That is exactly the second
+# presentation authority §E of the round's brief forbids: two places deciding
+# how a number is described, disagreeing the first time one of them is edited.
+#
+# An evidence provider now hands over measurements only. `{family}` and the
+# four counts are things it read; the line a person reads is declared here, so
+# a change of wording is a change in this file and nowhere else. `text` is
+# still honoured when it is all a provider has (see `_gateway_provider_line`),
+# because refusing to render an older provider would hide a real reading.
+#
+# NO CAUSE WORDS. The same ban as `codes:` above, enforced by the same test. A
+# line may not connect two facts, and "0 requests in the window" must never
+# become "the provider is down" -- this node has already had one gateway whose
+# container was Up while every route was dead, which is the case §18 of the
+# observability design names by hand.
+gateway:
+  providers:
+    # `{state}` is the evidence provider's own state word, rendered through
+    # `state_words` below. It is carried verbatim when it is not declared here:
+    # an unknown state word on the card is a reading, and blanking it would be
+    # the card deciding it knew what the provider meant.
+    line: "{family}（{state}）：{requests} 次请求，成功 {ok}，失败 {failed}{p95}"
+    p95: "，P95 {ms} ms"
+    # A family with no traffic in the window. Deliberately its own sentence
+    # rather than the line above with a zero in it: §6 "未知用中性而非正常绿",
+    # and "nobody used it" is not the same reading as "every request worked".
+    no_traffic: "{family}（{state}）：本窗口内没有流量"
+    window: "窗口 {minutes} 分钟"
+  # The functional probe's line. It is declared here for the same reason the
+  # traffic lines are: the probe is run by whoever can reach the gateway, and
+  # its wording must not travel back with its result.
+  #
+  # `UNKNOWN` is deliberately not "failed". A probe that could not connect
+  # establishes nothing about the service -- it is a fact about the probe -- and
+  # a line that conflated the two would turn one observation error into an
+  # accusation against a gateway nobody has shown to be broken.
+  probes:
+    OK: "功能探针：全部路径就绪"
+    DEGRADED: "功能探针：有路径未就绪"
+    UNKNOWN: "功能探针：连不上；连接失败是对探针的观测，不是对服务的判断"
+  state_words:
+    RECENT_SUCCESS: 近期成功
+    DEGRADED: 有失败
+    FAILED: 全都失败
+    UNKNOWN: 没有观测到
+    UNAVAILABLE: 取不到记账
+

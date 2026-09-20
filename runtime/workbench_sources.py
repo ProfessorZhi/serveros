@@ -68,15 +68,38 @@ STATE_MATRIX = [
          command=["serverosctl", "ability", "tree", "--json"], expect=0),
     dict(id="taxonomy", claim="声明的导航 DAG，投影成树",
          command=["serverosctl", "taxonomy", "tree", "--json"], expect=0),
-    # `expect=1` because UNAVAILABLE is a real answer and the CLI says so with a
-    # fault code. The claim is therefore not "it is available" — it is "it
-    # answers, and it names every input it could not see", which `contains`
-    # checks. A row asserting exit 0 here would be asserting a verdict about this
-    # node's catalogue inside a document about whether the verb is reachable.
-    dict(id="ability-resolve", claim="八输入相交：它回答，并把看不见的输入具名列出",
+    # Two rows, because there are two answers and the difference between them is
+    # the whole point of the verb.
+    #
+    # Neither is `expect=0`: this verb's exit codes are the kernel's own, and
+    # `EXIT_COULD_NOT_ANSWER` is what it returns for UNKNOWN. The claim is
+    # therefore not "it is available" — asserting that here would be asserting a
+    # verdict about this node's catalogue inside a document about whether the
+    # verb is reachable. The claim is "it answers, and it names what it could not
+    # see", which `contains` checks.
+    #
+    # The first row supplies no catalogue and no provider set. It used to be the
+    # only row and it used to come back `UNAVAILABLE · PROVIDER_NOT_INSTALLED`,
+    # green, while `inputs_seen` was `[]` and the sentence on `detail` was
+    # "runtime-management is not in the pinned catalogue" — a finding about a
+    # catalogue nobody had handed over. Two rows now hold that apart: no
+    # catalogue is a GAP and says so; a catalogue that was read and missed is a
+    # FINDING, and the second row is the one that reads one.
+    dict(id="ability-resolve", claim="八输入一个未给：UNKNOWN，且把八个输入全部具名列出",
          command=["serverosctl", "ability", "resolve",
                   "--request", "abilities/requests/resolve-example.json",
-                  "--json"], expect=1, contains="inputs_missing"),
+                  "--json"], expect=2, contains="inputs_missing"),
+    # `--catalogue` rather than `--ability-repo`: the latter needs an absolute
+    # checkout path, this row is re-run by `workbench check` on machines that do
+    # not have this one's layout, and `rel_home` rewrites the displayed path to
+    # `~` without the shell ever expanding it. The example catalogue is a couple
+    # of lines in the repo, so this row exercises input 1 and stays portable.
+    dict(id="ability-resolve-catalogue",
+         claim="给了 catalogue 之后：它读到了它，然后只指出剩下没给的",
+         command=["serverosctl", "ability", "resolve",
+                  "--request", "abilities/requests/resolve-example.json",
+                  "--catalogue", "abilities/requests/catalogue-example.txt",
+                  "--json"], expect=2, contains="inputs_missing"),
 
     # §5-B: the registration loop.
     dict(id="registration-discover", claim="观察到却没有注册的东西，具名列出",
@@ -274,20 +297,59 @@ DEPLOYMENT = [
 # asks for a reachability check because a manifest can name a revision nobody can
 # fetch and still read as a release; a pin with no `branch` is one this node holds
 # locally and does not claim to publish.
+#
+# `kind` NAMES THE CLASS, AND THE CLASS IS THE POINT. This list used to hold
+# five rows and every one of them was `code` or a work package — the
+# `work-engine`, `hwz-ops` and adapter classes were absent from a document whose
+# acceptance sentence reads「固定所有代码/能力/策略/**adapter** revision」. A
+# five-row table where every row is green does not look like a table with three
+# classes missing from it; that is what made the omission durable rather than
+# merely wrong. The column was added so that a reader can see what the table
+# SHOULD contain, not only what it does.
+#
+# EACH `kind` IS A SEPARATE THING THAT CAN GO STALE ON ITS OWN. The ability
+# source, the ops repo and the adapter each carry their own revision and each
+# can drift while the others hold still. A manifest that pins only the code is
+# one that reports "the release is pinned" during exactly the period an
+# unpinned ability source is being built into it.
 PINS = [
-    dict(name="serveros",
+    dict(name="serveros", kind="code",
          repo=str(ROOT),
-         revision="01f5480", branch="serveros/foundation-skeleton"),
-    dict(name="ability-management",
-         repo="/data/home/vince/workspace/worktrees/ability-management/foundation-skeleton",
-         revision="fbd0b1a", branch="serveros/foundation-skeleton"),
-    dict(name="quay（工作包 E 固定的版本）",
+         revision="60da36f3", branch="serveros/system-v1-20260920"),
+    dict(name="ability-management", kind="ability",
+         repo="/data/home/vince/workspace/worktrees/ability-management/SRV-0011",
+         revision="fbd0b1a7", branch="serveros/system-v1-20260920"),
+    dict(name="work-engine", kind="code",
+         repo="/data/home/vince/workspace/worktrees/work-engine/SRV-0011",
+         revision="65e9b56c", branch="serveros/system-v1-20260920"),
+    dict(name="hwz-ops", kind="ops",
+         repo="/data/home/vince/workspace/worktrees/hwz-ops/SRV-0011",
+         revision="790bca27", branch="serveros/system-v1-20260920"),
+    # The adapter is BUILT from `plugin/`, so its revision is a serveros
+    # revision — and it is still its own row, because the artifact that lands on
+    # a node is the composed plugin, not the checkout. `composition` names which
+    # one: this row is the identity the installed plugin must match, and the
+    # gap between it and what is installed is a fact for ENVIRONMENT to report,
+    # not a reason to leave the row out.
+    dict(name="Claude/Codex adapter", kind="adapter",
+         repo=str(ROOT),
+         revision="60da36f3", branch="serveros/system-v1-20260920"),
+    dict(name="quay（工作包 E 固定的版本）", kind="toolchain",
          repo="/data/home/vince/workspace/worktrees/quay/foundation-skeleton",
          revision="ddc4fb40f", branch=None),
-    dict(name="quay（本轮 Goal 闭环用的版本）",
-         repo="/data/home/vince/workspace/worktrees/quay/foundation-skeleton-develop",
+    # This row used to name `worktrees/quay/foundation-skeleton-develop`, which
+    # no longer exists — so the pin printed `**repo 不可读**` forever while the
+    # revision it names was sitting in the sibling clone all along. Both fixed
+    # versions live in ONE repository; two rows pointing at it with two
+    # revisions is the accurate shape, and it is what the reachability check
+    # actually needs.
+    dict(name="quay（本轮 Goal 闭环用的版本）", kind="toolchain",
+         repo="/data/home/vince/workspace/worktrees/quay/foundation-skeleton",
          revision="8bb184ef3", branch=None),
-    dict(name="design package",
+    dict(name="design package（本轮固定版本）", kind="design",
+         repo=str(ROOT),
+         revision="c01d2a0d", branch="docs/final-architecture-20260920"),
+    dict(name="design package（本轮从它继续）", kind="design",
          repo=str(ROOT),
          revision="e1f7de4d5", branch="docs/foundation-skeleton-20260920"),
 ]

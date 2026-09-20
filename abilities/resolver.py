@@ -317,6 +317,20 @@ def _input_ability(request: dict, ability: str) -> dict | None:
 
     The catalogue is a statement about abilities, not about verbs: an operation
     is resolved against the provider that implements it, one layer down.
+
+    This function is only reached with a catalogue in hand. `request.get
+    ("abilities") or {}` renders an input NOBODY SUPPLIED as an empty one, and
+    an empty catalogue misses every ability — so a request carrying no
+    catalogue at all used to come back `UNAVAILABLE · PROVIDER_NOT_INSTALLED ·
+    "<ability> is not in the pinned catalogue"`, in the same record whose
+    `inputs_missing` names `ability`. A finding about a set that was never
+    consulted, which is the defect `_evaluate_one` names from the other side
+    ("an input nobody supplied is not an input that agreed") arriving in the
+    REFUSAL direction, where that guard does not reach. `resolve()` settles the
+    absent case before calling here; a supplied-but-empty catalogue is a
+    published closed list with nothing in it, and a miss against it is a
+    finding, exactly as "absent from a published closed list is a no" rules one
+    bracket up.
     """
     catalogue = request.get("abilities") or {}
     if ability not in catalogue:
@@ -653,7 +667,17 @@ def resolve(request: dict) -> dict:
     # decided anything, because a confident answer computed from the inputs
     # that happened to be readable is the failure this field exists to expose.
     for name, present in (
-        ("ability", bool(request.get("abilities"))),
+        # `is not None`, not truthiness, and only here. An empty mapping is a
+        # published closed list with nothing in it — a thing a caller can mean —
+        # so `{}` is a catalogue that was read and missed, not one that was
+        # never supplied. Read with `bool()`, the record contradicted itself in
+        # that case: `inputs_missing` named `ability` while the refusal above
+        # said the ability "is not in the pinned catalogue", i.e. that it had
+        # been looked up. The other seven keep the truthiness test, because for
+        # them an empty mapping carries no fact at all: `device_capabilities:
+        # {}` states nothing about the device, and calling that "consulted"
+        # would be the mirror error.
+        ("ability", request.get("abilities") is not None),
         ("device_capability", bool(request.get("device_capabilities"))),
         ("device_profile", request.get("profile") is not None),
         ("device_binding", request.get("instances") is not None),
@@ -665,18 +689,64 @@ def resolve(request: dict) -> dict:
     ):
         (record["inputs_seen"] if present else record["inputs_missing"]).append(name)
 
-    # The ability itself is settled once, before any provider is considered.
-    # It is not a property of a provider: a provider for an ability that is not
-    # in the pinned catalogue is a provider for something that does not exist,
-    # and the finding is about the catalogue, not about the provider.
-    catalogue_refusal = _input_ability(request, ability)
-    if catalogue_refusal is not None:
-        return {**record, **catalogue_refusal, "candidates": []}
+    # Two things are settled here rather than per provider, and both can be
+    # ABSENT rather than false.
+    #
+    #   * input 1 — the catalogue the ability is looked up in.
+    #   * the provider set — NOT one of the eight inputs, because it is not
+    #     consulted against the device. It is named in the detail and in nothing
+    #     else: adding it to `inputs_seen` would turn the field whose whole job
+    #     is to say how much of the intersection was evaluated into a list of
+    #     things of two different kinds, which is what the module docstring
+    #     refuses for the operation axis, and for the same reason.
+    #
+    # Neither absence is a finding. "Absent from a published closed list is a
+    # no; a missing list is nobody asked" is this module's own rule, stated
+    # above for operations, and it was not applied to the two lists this
+    # function reads first: a request supplying neither came back `UNAVAILABLE`
+    # with one sentence blaming the catalogue and another blaming the providers,
+    # and `inputs_seen: []` printed beside them. Both sentences were findings
+    # about sets nobody had handed over. "Nobody asked" and "there is nothing
+    # there" call for opposite actions — the provider contract says so where it
+    # rules on the operation axis — and UNKNOWN is the status reserved for the
+    # first. It carries no `reason`, because there is no finding to name.
+    unsupplied = []
+    if request.get("abilities") is None:
+        unsupplied.append("the ability catalogue")
+    else:
+        # The ability itself is settled once, before any provider is
+        # considered, and BEFORE the gap below. It is not a property of a
+        # provider: a provider for an ability that is not in the pinned
+        # catalogue is a provider for something that does not exist, and the
+        # finding is about the catalogue, not about the provider.
+        #
+        # Settling it first is not a preference. An ability that is not in the
+        # catalogue cannot be made to exist by any provider set, however
+        # complete, so a miss here is DEFICIENT whatever else is missing — the
+        # rule `_evaluate_one` states and `IntersectionTests` pins, where a
+        # definite refusal outranks an input nobody supplied. Asking about the
+        # provider set first would turn every catalogue miss into a shrug.
+        catalogue_refusal = _input_ability(request, ability)
+        if catalogue_refusal is not None:
+            return {**record, **catalogue_refusal, "candidates": []}
+
+    if request.get("providers") is None:
+        unsupplied.append("the provider set")
+    if unsupplied:
+        return {**record, **_refusal(
+            "UNKNOWN", None,
+            "no input refused, and these were never supplied: "
+            + ", ".join(unsupplied)), "candidates": []}
 
     if not providers:
+        # Reached only with a provider set that WAS supplied and holds nothing
+        # for this ability: an empty list is a published closed list with
+        # nothing in it, and entries for other abilities are a set that does not
+        # mention this one. Both are findings, and saying "supplied" keeps them
+        # distinguishable from the gap above.
         return {**record, "status": "UNAVAILABLE",
                 "reason": "PROVIDER_NOT_INSTALLED",
-                "detail": f"no provider implements {ability}",
+                "detail": f"no supplied provider implements {ability}",
                 "candidates": []}
 
     candidates = []
