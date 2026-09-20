@@ -1,4 +1,4 @@
-<!-- ⟦snapshot⟧ rendered 2026-09-20T11:29:56+00:00 by `runtime/workbench.py` from ~/workspace/worktrees/serveros/SRV-0011 · inputs: projects=serveros,litellm,multi-user-claw; project=litellm; item=LIT-0101; quay-run=; quay-bin=; ability-repo=~/workspace/worktrees/ability-management/SRV-0011; reports-dir=~/artifacts/work-items/serveros/SRV-0011/RUN-0001; release-root=~/artifacts/work-items/serveros/SRV-0011/RUN-0001/release/dist/serveros-linux-work -->
+<!-- ⟦snapshot⟧ rendered 2026-09-20T11:56:36+00:00 by `runtime/workbench.py` from ~/workspace/worktrees/serveros/SRV-0011 · inputs: projects=serveros,litellm,multi-user-claw; project=litellm; item=LIT-0101; quay-run=~/artifacts/work-items/serveros/SRV-0011/RUN-0001/quay-run; quay-bin=~/workspace/worktrees/quay/foundation-skeleton/plugin/vendor/quay/dist/quay.js; ability-repo=~/workspace/worktrees/ability-management/SRV-0011; reports-dir=~/artifacts/work-items/serveros/SRV-0011/RUN-0001; release-root=~/artifacts/work-items/serveros/SRV-0011/RUN-0001/release/dist/serveros-linux-work -->
 
 # RECOVERY-PREVIEW
 
@@ -33,11 +33,11 @@ serverosctl card recovery	0
         "tag": "markdown"
       },
       {
-        "content": "\u53e6\u6709 9 \u4ef6\u5df2\u544a\u77e5\u7684\u6062\u590d\u672a\u8fdb\u5361\u9762 \u00b7 1450 \u4ef6\u4ece\u672a\u544a\u77e5\u8fc7\uff0c\u4e0d\u8ba1\u5165\u6062\u590d\uff08\u4eba\u4e0d\u80fd\u88ab\u901a\u77e5\u4e00\u4e2a\u4ed6\u4ece\u6765\u6ca1\u6536\u5230\u8fc7\u7684\u574f\u6d88\u606f\uff09",
+        "content": "\u53e6\u6709 9 \u4ef6\u5df2\u544a\u77e5\u7684\u6062\u590d\u672a\u8fdb\u5361\u9762 \u00b7 1457 \u4ef6\u4ece\u672a\u544a\u77e5\u8fc7\uff0c\u4e0d\u8ba1\u5165\u6062\u590d\uff08\u4eba\u4e0d\u80fd\u88ab\u901a\u77e5\u4e00\u4e2a\u4ed6\u4ece\u6765\u6ca1\u6536\u5230\u8fc7\u7684\u574f\u6d88\u606f\uff09",
         "tag": "markdown"
       },
       {
-        "content": "\u672c\u6279\u6062\u590d\u603b\u6570 1462 \u00b7 \u5176\u4e2d\u5df2\u544a\u77e5 12 \u00b7 \u91c7\u96c6 2026-09-20 19:30:02 CST",
+        "content": "\u672c\u6279\u6062\u590d\u603b\u6570 1469 \u00b7 \u5176\u4e2d\u5df2\u544a\u77e5 12 \u00b7 \u91c7\u96c6 2026-09-20 19:56:39 CST",
         "tag": "markdown"
       },
       {
@@ -51,7 +51,7 @@ serverosctl card recovery	0
   },
   "header": {
     "subtitle": {
-      "content": "2026-09-20 19:30:02 CST \u66f4\u65b0",
+      "content": "2026-09-20 19:56:39 CST \u66f4\u65b0",
       "tag": "plain_text"
     },
     "template": "green",
@@ -84,11 +84,11 @@ serverosctl card recovery	0
         "tag": "markdown"
       },
       {
-        "content": "另有 9 件已告知的恢复未进卡面 · 1450 件从未告知过，不计入恢复（人不能被通知一个他从来没收到过的坏消息）",
+        "content": "另有 9 件已告知的恢复未进卡面 · 1457 件从未告知过，不计入恢复（人不能被通知一个他从来没收到过的坏消息）",
         "tag": "markdown"
       },
       {
-        "content": "本批恢复总数 1462 · 其中已告知 12 · 采集 2026-09-20 19:30:02 CST",
+        "content": "本批恢复总数 1469 · 其中已告知 12 · 采集 2026-09-20 19:56:39 CST",
         "tag": "markdown"
       },
       {
@@ -102,7 +102,7 @@ serverosctl card recovery	0
   },
   "header": {
     "subtitle": {
-      "content": "2026-09-20 19:30:02 CST 更新",
+      "content": "2026-09-20 19:56:39 CST 更新",
       "tag": "plain_text"
     },
     "template": "green",
