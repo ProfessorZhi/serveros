@@ -1,186 +1,459 @@
 # ServerOS
 
-> 中文译文：[`README.zh.md`](README.zh.md) — this English file is canonical; the
-> translation links to the same places and states nothing of its own.
+> 中文入口：[`README.zh.md`](README.zh.md). This English file is canonical.
+>
+> **Canonical architecture:** [`ARCHITECTURE.md`](ARCHITECTURE.md)
 
-ServerOS is a lightweight **user-space Agent Operating Fabric** for Claude Code,
-Codex, and future coding agents — an Agent Engineering Workbench built on it.
+ServerOS is a **personal user-space Agent Work OS** for Claude Code, Codex and
+other coding agents.
 
-The full definition is in [`ARCHITECTURE.md`](ARCHITECTURE.md) and is stated
-once. The earlier phrasing "Agent control plane" was not wrong — the control
-plane is now precisely the Node Runtime Plane, one of four.
+Its job is simple to state:
 
-Its job is not to prescribe how an agent works.
+> Give the Agent the **right environment, right context, right memory and right
+> capability at the right time**, while keeping the active context small.
 
-Its job is to give the agent the right:
+ServerOS is intentionally large in installed capability and small in what it
+shows to an Agent. It strengthens Claude Code / Codex; it must never become a
+ceremony that makes them slower.
 
-- **Environment**
-- **Context**
-- **Capabilities**
+## What ServerOS should feel like
 
-ServerOS optimizes for a small happy-path context and progressive,
-on-demand expansion.
+A normal day should look like this:
 
-> Give the agent the minimum correct context required to start working,
-> then let the agent discover and load additional capabilities when needed.
+```text
+Yesterday's Feishu / Docs / Wiki / Minutes / GitHub / Agent sessions
+                              ↓
+                   incremental source capture
+                              ↓
+                 Structured Understanding delta
+                              ↓
+              morning reconciliation with Coordinator
+                              ↓
+                    Personal Work Board
+                              ↓
+                  choose today's requirements
+                              ↓
+               Agent elicits missing intent
+                              ↓
+              CC drafts requirement / GPT reviews
+                              ↓
+                 research / design / decision
+                              ↓
+                    CC + optional Quay
+                              ↓
+                    E2E + strong evidence
+                              ↓
+                 Item report + Daily Report
+```
 
-ServerOS is a capability map and workbench, **not a workflow state machine**.
+At any point, opening a fresh Claude Code or Codex session should also work:
+
+```text
+new session
+  → tiny ServerOS bootstrap
+  → user says what they want
+  → ServerOS resolves intent / project / Item
+  → loads only the relevant Context Capsule + memory
+  → discovers the few needed abilities
+  → work starts
+```
+
+The user should not have to re-explain yesterday.
 
 ---
 
-## 1. Why ServerOS
+## The design philosophy
 
-A coding agent dropped onto a shared server starts from zero: it does not know
-which directory is canonical, where its work belongs, which sibling resources
-belong to someone else, or what the delivery target is. The usual fixes —
-a giant onboarding prompt, a full filesystem scan, a per-agent private
-workspace — all fail the same way: they make the agent's *first minute* slow,
-and they let each agent invent its own world.
+### Environment
 
-ServerOS exists so that **any** agent, on **any** runtime, can be handed a
-small, correct, task-scoped context and start working — without the human
-re-explaining the project.
+Prepare the correct place and resources for the work:
 
-## 2. Environment / Context / Capabilities
+- project / repo role;
+- owned Item worktree when code changes are needed;
+- test environment;
+- toolchains;
+- ports / containers / browser / remote device;
+- evidence and artifact location;
+- delivery target.
 
-**Environment** — prepare the right place to work: canonical source repo, Item
-worktree, test environment, toolchains, ports and runtime resources, evidence
-location, delivery target.
+> Where should I work, where should outputs go, and how do I avoid interfering
+> with somebody else?
 
-> Where do I work, where does output go, and how do I avoid touching someone
-> else's resources?
+### Context
 
-**Context** — hand the agent a small, accurate, task-relevant *Context Capsule*:
-project, current Item, objective and acceptance, current milestone,
-development repo, owned worktree, test-env, evidence path, relevant source
-locators, delivery target, protected concurrent resources.
+Give the Agent the smallest correct *working* context:
 
-> Who am I, what am I doing, what is already known, and what must I not touch?
+- current intent;
+- project;
+- Item, if any;
+- objective and acceptance;
+- current checkpoint;
+- relevant constraints and decisions;
+- important source locators;
+- protected concurrent work.
 
-**Capabilities** — supply, on demand, what the current task needs: Skills,
-`serverosctl`, Feishu, GitHub, test tools, workspace tools, information tools.
+> What am I doing, what is already known, and what matters now?
 
-> Which reliable capabilities does this task need?
+### Memory
 
-ServerOS deliberately does **not** decide the agent's internal method — whether
-to grep or read docs first, test-first or experiment-first, whether to use
-subagents, or in what order to analyze / design / build / verify. That stays
-with Claude Code and Codex.
+Recover useful continuity without dumping history:
 
-See [`ARCHITECTURE.md`](ARCHITECTURE.md).
+- personal work preferences;
+- role / responsibility knowledge;
+- people and organization context;
+- project memory;
+- Item checkpoints and decisions;
+- session-derived experience.
 
-## 3. Architecture
+Memory retrieval is not truth authority. Durable understanding and important
+changes remain governed and traceable.
 
-→ **[`ARCHITECTURE.md`](ARCHITECTURE.md) is the single canonical architecture
-statement.** This README does not restate it; a second statement that is "also
-correct" is the drift that document exists to prevent.
+### Capabilities
 
-In one line: ServerOS is a user-space Agent Operating Fabric — a small node
-runtime (`serverosd`), semantic services, an Agent-facing MCP, a bootstrap
-Skill, on-demand Ability-driven procedures, plugin composition, and an optional
-Fleet. Availability is **per-device declared**, not a product-global always-on
-promise. The four planes are the Node Runtime Plane, the Ability Fabric, the
-Memory-Context Fabric and the Coordination Fabric.
+Resolve what the current task needs:
 
-Component boundaries are also machine-readable in
-[`integration/components.yaml`](integration/components.yaml).
+- Skills and procedures;
+- MCPs;
+- Providers;
+- GitHub / Feishu;
+- test and E2E tools;
+- browser / remote device;
+- Quay;
+- build / release;
+- specialist project abilities.
 
-## 4. Context Capsule
+### Progressive disclosure
 
-The Context Capsule is the contract between ServerOS and any agent. It is a
-small, stable schema — not a dump of maps, history, or Skill documentation.
-
-→ [`docs/context-capsule.md`](docs/context-capsule.md)
-
-## 4b. Space Resolver
-
-Where the Capsule answers *"what is my working environment"*, the Space Resolver
-answers *"where does this object canonically belong, and does it need to move"*.
-It is a deterministic, read-only kernel: it reads no network, no database and no
-map, and it invents no cloud path. Applying its decision — the actual MOVE, the
-actual index write — is an adapter's job.
-
-→ [`docs/space-resolver.md`](docs/space-resolver.md)
-
-## 4c. Fleet (optional)
-
-Fleet is **optional per device**. A device that declares no fleet participation
-is a normal ServerOS node with no topology neighbours, not a broken one.
-
-Where a device does participate, ServerOS owns stable device identity and fleet
-topology. Device connection locators and credentials stay local-only;
-capabilities installed on each device are owned by `ability-management`
-observations and projected back into the Fleet view.
-
-→ [`fleet/README.md`](fleet/README.md)
-
-## 5. Native-first Skill Discovery
-
-ServerOS **strengthens** each runtime's native Skill discovery. It never
-replaces it, and it never narrows it.
-
-→ [`docs/capability-discovery.md`](docs/capability-discovery.md)
-
-## 6. Claude / Codex parity
-
-> Same capability, same semantics, same context; different runtime adapter
-> only.
-
-→ [`docs/claude-codex-parity.md`](docs/claude-codex-parity.md)
-
-## 7. Workspace layout
+**Do not preload the world.**
 
 ```text
-HOME=/home/hwz
-DATA_ROOT=/opt/applications/data/home-hwz
-WORKSPACE_ROOT=$DATA_ROOT/workspace
-ARTIFACTS_ROOT=$DATA_ROOT/artifacts
-STATE_ROOT=$DATA_ROOT/state/serveros
+L0  thin bootstrap
+ ↓
+L1  working Context Capsule
+ ↓
+L2  relevant memory / ability / provider details
+ ↓
+L3  deep source evidence only when needed
 ```
 
-- `WORKSPACE_ROOT` carries only `src/ worktrees/ test-envs/ ops/ knowledge/ records/`.
-- `src/` = canonical Git repositories.
-- `worktrees/<repo>/<ITEM>/` = per-Item development checkouts.
-- `test-envs/<repo>/<ITEM>/` = per-Item test environment definitions.
-- Evidence lives under `DATA_ROOT`, never under `WORKSPACE_ROOT`.
+A large installation must still have a small happy path.
 
-## 8. Maps
+---
 
-`HWZ-MAP` (structure) · `TREE-MAP` (semantics) · `FEISHU-MAP` · `GITHUB-MAP`.
+## Personal work model
 
-Maps are **generated projection views**, not independent authorities. Their
-inputs are machine contracts / semantic registries / observed inventory; the
-projection compiler renders the human map regions from those inputs. A normal
-session does not load maps wholesale: the Context Capsule projects only the
-small slice relevant to the current task.
+ServerOS is designed for one primary user and that user's devices, projects and
+work. It is not a multi-tenant SaaS platform.
 
-## 9. Safety and concurrency
+The main work lifecycle is:
 
-The server is shared by concurrent agents and Items.
+```text
+Source
+  → Observation / Archive
+  → Structured Understanding
+  → Candidate
+  → human selection
+  → Item
+  → requirement / research / design
+  → Activity / Run
+  → Evidence
+  → Deliverable
+  → Report / Knowledge / Memory
+```
 
-→ [`docs/safety-and-concurrency.md`](docs/safety-and-concurrency.md)
+**Candidate is not Item.** A source message, incident or idea may create a
+candidate, but long-lived work becomes an Item only after the user selects it.
 
-## 10. Repository and component boundaries
+The Personal Board stays coarse-grained: requirements and meaningful work
+packages belong there; implementation steps belong below an Item as Activities.
 
-| Repository | Role |
+---
+
+## Sessions are first-class resources
+
+ServerOS treats a Session as a work resource, not just a transcript file.
+
+Logical roles include:
+
+- **Coordinator Session** — reconciliation, board, project switching, work
+  routing;
+- **Execution Session** — project / Item work;
+- **Maintenance Session** — incident diagnosis and repair.
+
+One Item may have multiple sessions.
+
+Live control and history are separate:
+
+- ServerOS Agent Session owns create / resume / send / result / interrupt /
+  stop / handoff semantics;
+- **MetaCC** is the preferred Session History / Session Intelligence Provider
+  for Claude + Codex history, lineage, compaction, timeline, errors, work
+  patterns and edit sequences.
+
+Native provider session IDs remain provider locators; ServerOS owns the logical
+work relationship.
+
+---
+
+## Memory is a Provider, not a second truth system
+
+A long-lived memory engine such as **OpenViking** may run independently on the
+primary Linux node and be consumed through MCP.
+
+```text
+approved work truth / understanding
+              │
+              ├──────────────┐
+              ▼              ▼
+        durable records   Memory Provider
+              │          extraction/retrieval
+              └──────┬───────┘
+                     ▼
+               Context Resolver
+                     ▼
+               Context Capsule
+```
+
+ServerOS owns scope, provenance, promotion, reconciliation and conflict
+semantics. The memory engine owns efficient memory extraction and retrieval.
+
+---
+
+## Human + GPT + Agents
+
+The intended collaboration is:
+
+```text
+                         Human
+                        /     \
+                       /       \
+                  ChatGPT     ServerOS
+              reasoning/review    │
+                       \          │
+                        \         ▼
+                         Claude Code / Codex
+                              │
+                              └── Quay
+```
+
+ChatGPT is especially useful for requirement clarification, product discovery,
+research synthesis, technology choice, architecture, trade-offs and review.
+
+Claude Code / Codex are the local execution agents.
+
+Quay is a bounded delegation provider for useful parallel work such as
+reproduction, independent verification, test matrices, parallel research and
+small implementation slices.
+
+GitHub is the near-term durable collaboration bridge between these actors.
+
+---
+
+## Human interfaces
+
+**CloudCLI is the preferred rich console.**
+
+A ServerOS CloudCLI integration should expose:
+
+- Today / Personal Board;
+- Understanding / reconciliation;
+- Sessions;
+- decisions / approvals;
+- Memory;
+- Quay;
+- E2E evidence;
+- environment / health;
+- reports.
+
+**Feishu is primarily a work-information and lightweight human-control surface:**
+
+- source capture;
+- notifications;
+- reconciliation reminders;
+- decisions that need attention;
+- alerts / recovery;
+- daily reports;
+- lightweight mobile interaction.
+
+A full Feishu terminal is not required.
+
+tmux / SSH remain raw fallbacks, not Session identity authorities.
+
+---
+
+## Connectivity
+
+ServerOS separates reachability, device control and Agent-to-Agent semantics:
+
+```text
+Tailscale       private device-to-device reachability
+A2A             Agent-to-Agent delegation / communication
+RDC             Agent-to-device GUI / files / terminal, on demand
+GitHub          durable async collaboration
+SSH / tmux      raw transport / fallback
+```
+
+Tailscale is the preferred private connectivity provider, but ServerOS does not
+depend on it.
+
+On shared hosts such as Tokyo, kernel/network mutation is high-risk. A userspace
+or otherwise isolated Tailscale deployment is preferred unless an explicit
+network change is approved.
+
+---
+
+## Repository roles and Bridge repositories
+
+Project != repository.
+
+A project may use several repository roles:
+
+```text
+owned-canonical
+bridge-writable
+upstream-readonly
+publication
+tool
+```
+
+When the user needs to develop against somebody else's or an enterprise
+upstream repository, prefer an owned **Bridge repository** such as
+`litellm-bridge` or `muc-bridge`.
+
+The bridge is the writable, GitHub-visible engineering surface for Item
+worktrees, experiments, evidence, Agent collaboration and GPT review. It does
+not become upstream authority.
+
+---
+
+## Compliance comes first
+
+ServerOS must not turn visibility into ownership.
+
+On shared infrastructure:
+
+- default principal is the user's own account;
+- foreign and unknown-owned resources are protected;
+- destructive shared Docker / storage / network operations fail closed;
+- network changes require preflight and conflict checks;
+- production promotion requires human approval;
+- target-scoped delegated exceptions do not grant general identity escalation.
+
+For the Tokyo instance, the shared AI gateway is an explicit target-scoped
+maintenance exception; that does not grant general authority over other
+`ubuntu` resources.
+
+---
+
+## The small core
+
+ServerOS has **one resident core daemon by default: `serverosd`**.
+
+`serverosd` stays mechanical:
+
+```text
+observe
+→ attribute
+→ admit
+→ bounded reconcile of explicitly-owned desired resources
+→ emit observations / events
+```
+
+It does not run an LLM planner.
+
+Provider services and managed runtimes such as OpenViking, CloudCLI, Docker,
+BotMux or Codex App Server may be long-lived, but they remain outside the
+ServerOS core.
+
+The product composition Core has two canonical members:
+
+```text
+Core
+├── serveros
+└── ability-management
+```
+
+See [`ARCHITECTURE.md`](ARCHITECTURE.md) for the full boundaries and
+invariants.
+
+---
+
+## Ability model
+
+External semantics:
+
+```text
+Ability#Operation
+      ↓
+Provider
+      ↓
+Binding(device, instance)
+      ↓
+Attachment(session / Item / scope / lease)
+```
+
+Three axes remain distinct:
+
+- **Support** — is this operation implemented by this provider?
+- **Readiness** — can it work now?
+- **Authorization** — may this caller do it?
+
+Installation alone never means readiness or authorization.
+
+Ability discovery is native-first and progressive. If a local ability does not
+exist, ServerOS may discover candidate capabilities through trusted external
+sources, evaluate provenance / compatibility / risk, and attach them
+temporarily or propose long-term adoption.
+
+---
+
+## Verification and delivery
+
+An Item is done when its own acceptance is satisfied with evidence.
+
+```text
+acceptance
++ verification
++ E2E evidence where appropriate
++ deliverable
++ final report
+```
+
+Unit tests, a green command, a PR or a Quay task are not by themselves Item
+completion.
+
+Build / TEST deployment / E2E may advance automatically inside the approved
+Execution Envelope. Production promotion remains human-approved.
+
+---
+
+## Canonical repositories
+
+| Repository | Responsibility |
 |---|---|
-| `ProfessorZhi/serveros` | product entry; **composition canonical** (`plugin/bundle.yaml` = `serveros-core`, `plugin/profiles/*.yaml` = wider sets that `extends:` it); bootstrap Skill; Context/Space/Relations kernels; deterministic build |
-| `ProfessorZhi/ability-management` | Capability/Ability registry; **reusable Skill canonical source**; revision/compatibility/discovery/reconcile/installation/distribution |
-| `ProfessorZhi/work-engine` | `serverosctl` deterministic control plane for Item/Activity/Run state and projections |
-| `ProfessorZhi/hwz-ops` | this machine's topology/policy instance and map projection targets |
+| `ProfessorZhi/serveros` | product architecture, composition, bootstrap, node runtime and deterministic kernels |
+| `ProfessorZhi/ability-management` | reusable Ability registry, revisions, compatibility, discovery, installation and distribution |
+| `ProfessorZhi/work-engine` | durable Item / Activity / Run state and board projections |
+| `ProfessorZhi/hwz-ops` | Tokyo instance topology, policy and operational bindings |
+| `ProfessorZhi/hwz-records` | work / information / understanding records |
 
-`ability-management/plugins/hwz-server-os` is only a transitional/generated
-compatibility surface. It is not a second plugin canonical.
+The detailed ownership rules are in [`ARCHITECTURE.md`](ARCHITECTURE.md).
 
-Repo *relationships* are not workspace *ownership* — see
-[`docs/repository-roles.md`](docs/repository-roles.md).
+---
 
-## 11. Non-goals
+## Non-goals
 
-The closed list lives in [`ARCHITECTURE.md`](ARCHITECTURE.md) under
-**NOT SERVEROS RESPONSIBILITY**, and is not restated here. It exists so these
-do not grow back.
+ServerOS is not:
 
-Before adding anything, ask: **does this improve Environment, Context, or
-Capabilities — and which real failure case fails without it?** If neither has an
-answer, it is not ServerOS.
+- a second operating system;
+- a generic workflow engine;
+- a second Claude/Codex planner;
+- a generic process supervisor;
+- a universal remote shell;
+- a replacement for GitHub, Feishu, CloudCLI, MetaCC or OpenViking;
+- a reason to create a daemon, repository or Skill for every box in a diagram.
+
+Before adding machinery, ask:
+
+> Does this materially improve the Agent's environment, context, memory,
+> capability, continuity or safety — while keeping the default path fast?
