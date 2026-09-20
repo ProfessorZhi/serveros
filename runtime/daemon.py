@@ -144,6 +144,25 @@ resolver_mod = sys.modules["_serveros_context_resolver"]
 # refresh`'s job (§28), and a daemon that could reach another repository's git
 # objects would make this loop's latency depend on that repository.
 ability_projection_mod = _load("serveros_ability_projection", "ability_projection.py")
+# §45/§46. The ability RESOLVER, loaded rather than restated, and under the
+# SAME synthetic name `runtime/cli.py` gives it on purpose: two names for one
+# module are two module objects, which is how an `isinstance` check starts
+# failing on a value that is the right type — and the arm below catches
+# `Rejected` by name.
+#
+# Legitimate for this process to hold, by the test the comment above states for
+# the projection: `abilities/resolver.py` is PURE (its own docstring: "no
+# filesystem, no network, no clock"), it is in `CORE_MODULES` so it is present
+# in a built artifact, and it consults no authority. What the daemon does NOT
+# do is assemble the inputs — see `_r_ability_resolve`.
+_ability_resolver_path = _HERE.parent / "abilities" / "resolver.py"
+if "serveros_ability_resolver" not in sys.modules:
+    _ar_spec = importlib.util.spec_from_file_location(
+        "serveros_ability_resolver", _ability_resolver_path)
+    _ar_module = importlib.util.module_from_spec(_ar_spec)
+    sys.modules["serveros_ability_resolver"] = _ar_module
+    _ar_spec.loader.exec_module(_ar_module)
+ability_resolver_mod = sys.modules["serveros_ability_resolver"]
 
 
 class DaemonError(Exception):
@@ -911,6 +930,17 @@ class Daemon:
             # was a richer answer to give.
             "ability.tree": self._r_ability_tree,
             "ability.inspect": self._r_ability_inspect,
+            # §45/§46, and the Agent fast path §24 asks for: find the few
+            # abilities a task needs, and ask whether this device can do one of
+            # them now. Both are READ-ONLY and both are pure-with-respect-to-
+            # the-world: `ability.search` reads the local projection this node
+            # already holds, and `ability.resolve` runs the pure kernel with
+            # the inputs this process can supply and NAMES the ones it cannot.
+            # Neither writes, neither reaches ability-management, and neither
+            # is a new authority — the header of every answer still says whose
+            # registry this is a projection of.
+            "ability.search": self._r_ability_search,
+            "ability.resolve": self._r_ability_resolve,
             # Internal policy primitive used by the dedicated Agent Session MCP.
             # The daemon decides intent only and never calls an Agent provider.
             "agent.action.admit": self._r_agent_action_admit,
@@ -1043,7 +1073,8 @@ class Daemon:
                 "runtime.list", "runtime.status", "runtime.explain",
                 "resource.summary", "resource.hygiene", "observation.get",
                 "ability.list", "ability.status", "ability.tree",
-                "ability.inspect", "agent.action.admit",
+                "ability.inspect", "ability.search", "ability.resolve",
+                "agent.action.admit",
                 "runtime.groups", "runtime.group", "runtime.tree",
                 "runtime.budget", "process.top", "process.trace",
                 "anomaly.list", "anomaly.explain", "container.attribution",
@@ -1363,6 +1394,150 @@ class Daemon:
             ),
         }
 
+    def _r_ability_search(self, params) -> dict:
+        """Which of these fifty-odd names is mine — asked without reading them all.
+
+        This is the tool the fast path is built on, and the reason it exists
+        rather than a catalogue read is the reason ServerOS itself exists: an
+        Agent that loads every ability record to find the one it needs has
+        spent its context answering a question it does not have. A search
+        returns ROWS, and how many rows is the caller's to keep small —
+        `matched` is reported beside them so a truncated list never reads as a
+        complete one.
+
+        `matched` is None rather than 0 in the two cases where "no matches"
+        would be a claim about a set nobody searched: an empty query, and no
+        materialized projection. Everywhere else in this product `0` and
+        `unknown` are kept apart, and a search is where collapsing them is
+        easiest and most convincing.
+
+        It searches the LOCAL projection and says so in its header, exactly as
+        `ability.list` does: availability is a per-device observation, not a
+        product-global fact.
+        """
+        view = self._capability_view()
+        header = self._projection_header(view)
+        raw_query = params.get("query")
+        query = str(raw_query or "").strip()
+        limit = _bounded_int(params.get("limit"), DEFAULT_ABILITY_SEARCH_LIMIT,
+                             MAX_ABILITY_SEARCH_LIMIT)
+        materials = view.get("abilities")
+        if not query:
+            return {
+                **header, "query": raw_query, "limit": limit,
+                "matched": None, "returned": None, "matches": None,
+                "truncated": None, "refused": "EMPTY_QUERY",
+                "catalogue_size": None if materials is None else len(materials),
+                "note": (
+                    "an empty query is not a search. This surface does not "
+                    "serve the catalogue: returning every row would cost the "
+                    "caller the context the search exists to save, and the "
+                    "caller would have no way to tell that it had asked for "
+                    "nothing. Ask a question, or use `ability.list` if the "
+                    "whole projection is genuinely what is wanted."
+                ),
+            }
+        if materials is None:
+            return {
+                **header, "query": query, "limit": limit,
+                "matched": None, "returned": None, "matches": None,
+                "truncated": None, "catalogue_size": None,
+                "note": (
+                    "no local capability projection has been materialized, so "
+                    "there is nothing to search FROM. `matched` is null rather "
+                    "than 0: no projection is not an empty catalogue, and the "
+                    "two would render identically as an empty list."
+                ),
+            }
+        needle = query.lower()
+        hits = [row for row in materials
+                if isinstance(row, dict) and needle in _ability_searchable(row)]
+        rows = [_ability_row_compact(row) for row in hits[:limit]]
+        return {
+            **header, "query": query, "limit": limit,
+            "catalogue_size": len(materials),
+            "matched": len(hits), "returned": len(rows),
+            "truncated": len(hits) > len(rows),
+            "matches": rows,
+            "note": (
+                "substring match, case-insensitive, over name / id / path / "
+                "type / version / domain / taxonomy refs / agents. It is not a "
+                "ranking and not a semantic search: there is no relevance "
+                "score to distrust because there is no score. `matched` is how "
+                "many rows matched; `returned` is how many are in `matches`."
+            ),
+        }
+
+    def _r_ability_resolve(self, params) -> dict:
+        """Can THIS node do THIS thing now — asked from where the device is.
+
+        §45/§46. `serverosctl ability resolve` has answered this since it was
+        written, and it takes a request DOCUMENT: a caller who has not read
+        `resolver.py` cannot ask the question, and the resolver had no caller
+        outside its own tests until the CLI verb was added. The node surface
+        can ask it, because two of the three required inputs are about the
+        caller and the node rather than about a second repository.
+
+        What it deliberately does NOT do is fill in the other five. Each is a
+        device fact whose producer this process does not hold, and a daemon
+        that guessed at them would return a confident AVAILABLE computed from
+        inputs nobody supplied — the exact failure `resolver.py` was written to
+        prevent, reintroduced at the layer above it. `inputs_seen` and
+        `inputs_missing` are passed through UNCHANGED, so an UNKNOWN naming
+        five inputs is the honest answer and is still a useful one: it says
+        which question to go and answer.
+
+        `runtime` is required and has no default ON PURPOSE. It is tempting to
+        default it to the Agent runtime installed here, and this node cannot:
+        there is no declaration of installed runtimes to read (the host profile
+        states the managed-runtime registry is empty), so a default would be a
+        guess about the caller printed in the caller's own answer. The caller
+        always knows which runtime it is; nobody else does.
+        """
+        ability = _required(params, "ability")
+        if not params.get("runtime"):
+            raise ValueError(
+                "missing required parameter 'runtime'. This node holds no "
+                "declaration of which Agent runtimes are installed, so it "
+                "cannot supply one on the caller's behalf — and a default here "
+                "would be a guess about the caller rendered as the caller's own "
+                "answer. State it, e.g. `claude-code` or `codex`."
+            )
+        request = {
+            "ability": ability,
+            "runtime": params["runtime"],
+            "device_ref": params.get("device") or self.registry.device_ref,
+        }
+        try:
+            record = ability_resolver_mod.resolve(request)
+        except ability_resolver_mod.Rejected as exc:
+            # A malformed request, not a "no". The kernel's own distinction:
+            # "no" is an answer and is returned rather than raised.
+            raise ValueError(str(exc)) from exc
+        device_from = "caller" if params.get("device") else ANSWERED_BY
+        return {
+            **record,
+            # Provenance for the three inputs, kept OUT of the kernel's two
+            # lists: `inputs_seen` is about the eight the intersection consults,
+            # and adding a fourth kind of thing to it is how a field whose job
+            # is to say how much was evaluated stops meaning that.
+            "asked_as": {
+                "device_ref": request["device_ref"],
+                "device_ref_from": device_from,
+                "runtime": request["runtime"],
+                "runtime_from": "caller",
+            },
+            "note": (
+                "the kernel's `inputs_seen` / `inputs_missing` are reported "
+                "unchanged. Read `inputs_missing` before the status: a status "
+                "computed from whichever inputs happened to be readable is what "
+                "`resolver.py` exists to refuse, and this method supplies three "
+                "of the eight. To supply the rest, run `serverosctl ability "
+                "resolve --request <file>` with a catalogue named by "
+                "--ability-repo/--ability-rev."
+            ),
+        }
+
     def _r_node_status(self, params) -> dict:
         """The node runtime, describing itself.
 
@@ -1428,9 +1603,53 @@ class Daemon:
         }
 
     def _r_context_current(self, params) -> dict:
+        """cwd, the Item inferred from it, and the roots — the CLI's answer.
+
+        This served `roots` alone, and the missing half is the one an Agent
+        needs first: which Item it is inside decides where its output is
+        allowed to go. `serverosctl context current` has answered the whole
+        question all along by running `context/resolver.py`, which this process
+        already loads; the surface simply did not ask it.
+
+        The caller's cwd is a PARAMETER and deliberately has no default. This
+        process is not the caller: inferring the Item from the daemon's own
+        working directory would answer "which Item am I in" with a directory
+        the caller has never been in, and `cmd_context_current`'s own docstring
+        names the consequence — a context guessed from a cwd is how an artifact
+        lands in the wrong item. Absent, the Item is UNKNOWN with the reason,
+        which is a fact the caller can branch on rather than a plausible lie.
+        """
         paths = paths_mod.Paths()
-        return {"roots": {n: str(paths.root(n)) for n in paths.names},
-                "note": "ServerOS roots are derived from the root contract, not from cwd"}
+        cwd = params.get("cwd")
+        inferred_item = None
+        if not cwd:
+            note = ("UNKNOWN — the caller did not state a cwd, and this surface "
+                    "will not infer one from the daemon's own directory")
+        else:
+            try:
+                item = resolver_mod.infer_item(resolver_mod.Roots.from_env(),
+                                               Path(str(cwd)))
+            except Exception as exc:  # noqa: BLE001 - reported, never hidden
+                note = f"UNKNOWN ({type(exc).__name__}: {exc})"
+            else:
+                inferred_item = item
+                note = item or "UNKNOWN (no item inferred from this directory)"
+        return {
+            "cwd": str(cwd) if cwd else None,
+            "inferred_item": inferred_item,
+            "inference_note": note,
+            "roots": {n: str(paths.root(n)) for n in paths.names},
+            "state_runtime": {
+                name: str(paths.root("state") / "runtime" / name)
+                for name in paths_mod.STATE_SERVEROS_RUNTIME
+            },
+            "note": (
+                "roots come from the root contract and never from cwd; the Item "
+                "is inferred from the cwd the CALLER stated and is UNKNOWN when "
+                "none was stated. Not guessed, because an artifact written to a "
+                "guessed Item is the failure this answer exists to prevent."
+            ),
+        }
 
     def _r_path_resolve(self, params) -> dict:
         return paths_mod.Paths().resolve(_required(params, "ref"))
@@ -2637,6 +2856,71 @@ def _required(params: dict, name: str):
             f"'nothing to report'."
         )
     return params[name]
+
+
+# How many rows `ability.search` returns when the caller does not say, and the
+# most it will return when they do. Both are bounded because the point of the
+# search is that the caller does NOT read the whole catalogue: an unbounded
+# default would re-create, one call later, the cost the tool exists to remove.
+# Truncation is reported (`matched` beside `returned`) rather than silent.
+DEFAULT_ABILITY_SEARCH_LIMIT = 8
+MAX_ABILITY_SEARCH_LIMIT = 50
+
+
+def _bounded_int(raw, default: int, ceiling: int) -> int:
+    """A caller-supplied limit, clamped. Garbage is the default, not an error.
+
+    A malformed limit is not a reason to refuse a search that could have been
+    answered; it is a reason not to honour it. The value actually used is
+    reported back in the answer, so a caller that asked for
+    `"limit": "many"` can see it got the default.
+    """
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        return default
+    return max(1, min(value, ceiling))
+
+
+def _ability_searchable(row: dict) -> str:
+    """The fields a query is matched against, as one lowercased string.
+
+    `path` and `id` are in it because a caller often knows the repository name
+    and not the ability name. The fingerprint is deliberately NOT: a query is
+    not a digest, and matching one would return a row for a reason the caller
+    cannot see in the result.
+    """
+    parts = [row.get("name"), row.get("id"), row.get("path"), row.get("type"),
+             row.get("version")]
+    domain = row.get("domain")
+    if isinstance(domain, dict):
+        parts.append(domain.get("primary"))
+    for key in ("taxonomy_refs", "agents"):
+        value = row.get(key)
+        if isinstance(value, list):
+            parts.extend(v for v in value if isinstance(v, str))
+    return " ".join(str(p) for p in parts if p).lower()
+
+
+def _ability_row_compact(row: dict) -> dict:
+    """One search hit, small enough that eight of them are still cheap.
+
+    The projection row carries a fingerprint, a revision count and an
+    installation count. None of those help a caller decide whether this is the
+    ability it wants, and all of them cost context. `ability.inspect` serves
+    the full row on purpose — one ability at a time, to a caller that has
+    already decided which one it is asking about.
+    """
+    domain = row.get("domain")
+    return {
+        "name": row.get("name"),
+        "id": row.get("id"),
+        "type": row.get("type"),
+        "path": row.get("path"),
+        "domain": domain.get("primary") if isinstance(domain, dict) else None,
+        "taxonomy_refs": row.get("taxonomy_refs") or [],
+        "agents": row.get("agents") or [],
+    }
 
 
 MAX_PROJECTION_AGE_SECONDS = 24 * 3600

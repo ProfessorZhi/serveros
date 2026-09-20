@@ -37,6 +37,19 @@ RESPONSIBILITIES = {
     "capability resolve": r"abilities/effective|capability",
     "load specialist": r"runtime-management|workspace-management|test-management",
     "policy": r"protected|protection",
+    # §24's Agent fast path, by tool name rather than by prose. A bootstrap that
+    # describes capability discovery without naming the four tools an Agent can
+    # actually call leaves the reader to find them, which is the context cost
+    # the fast path exists to remove — and the tool names are exactly what
+    # drifts when the surface changes, so they are what a gate has to read.
+    "fast path · context.current": r"`context\.current`",
+    "fast path · ability.search": r"`ability\.search`",
+    "fast path · ability.inspect": r"`ability\.inspect`",
+    "fast path · ability.resolve": r"`ability\.resolve`",
+    # The Item is inferred from a cwd the CALLER states and never from the
+    # process's own directory. Stated in the Skill because it is the one thing
+    # an Agent can get wrong here without any error being raised.
+    "fast path · the Item comes from the stated cwd": r"cwd",
 }
 
 # Mutating actions that belong to a specialist, not to the bootstrap. Each may
