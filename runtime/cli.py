@@ -305,6 +305,96 @@ def _recipes_module():
                              "serveros_runtime_recipes")
 
 
+def _support_module():
+    return _load_module_from(REPO_ROOT / "intake" / "support.py",
+                             "serveros_intake_support")
+
+
+def _support_call(args, build):
+    """One support verb: build the reading, print it, return its exit code.
+
+    The four verbs share this because they share a failure mode worth having in
+    one place -- the module reads a knowledge base in a PROTECTED repository,
+    and every path out of it is either a named reading or a `Refused`. There is
+    no path that raises into a traceback a person would read as "the tool is
+    broken".
+    """
+    mod = _support_module()
+    try:
+        payload, outcome = build(mod)
+    except mod.Refused as exc:
+        sys.stderr.write(f"serverosctl: {exc}\n")
+        return EXIT_FAULT
+    # `.splitlines()`, because `emit` iterates `lines`: handing it one string
+    # prints the answer one character per line, which is what the first version
+    # of this did.
+    emit(payload, as_json=args.json,
+         lines=mod.render(args.support_verb, payload).splitlines())
+    return mod.exit_code_for(outcome)
+
+
+def cmd_support_entries(args) -> int:
+    """Every formal entry, and what the glob read and did not read.
+
+    Exists so that "the knowledge base has 21 entries" is a measurement rather
+    than a belief. It is also the reading that shows what the exclusions cost:
+    `99_待整理样本` and the analysis file are listed as read-and-not-entries,
+    which is a different fact from a root whose glob matched nothing.
+    """
+    def build(mod):
+        payload = mod.listing(args.kb_root)
+        return payload, ("KB_UNREADABLE" if payload["unreadable"] else "ANSWERED")
+    return _support_call(args, build)
+
+
+def cmd_support_match(args) -> int:
+    """Which entry a question reaches, and by which of the KB's own rules.
+
+    The outcome is the answer, not an implementation detail: `ANSWERED` and
+    `ANSWERED_FROM_AUXILIARY` are different words for a reason, and
+    `NEEDS_MORE_INPUT` exists so that a question missing one field gets that
+    field named rather than a knowledge dump.
+    """
+    def build(mod):
+        payload = mod.match(args.kb_root, status_code=args.status_code,
+                            message=args.message, code_root=args.code_root)
+        return payload, payload["outcome"]
+    return _support_call(args, build)
+
+
+def cmd_support_answer(args) -> int:
+    """A reply a person can send, and the improvement it implies.
+
+    The two halves are one invocation deliberately. A chain that answered and
+    left the follow-up to somebody's memory would produce the answer and lose
+    the improvement, which is how a knowledge base stops growing. Nothing is
+    written: the candidate is a record the caller may act on.
+    """
+    def build(mod):
+        payload = mod.answer(args.kb_root, status_code=args.status_code,
+                             message=args.message, code_root=args.code_root)
+        return payload, payload["outcome"]
+    return _support_call(args, build)
+
+
+def cmd_support_check(args) -> int:
+    """The index against the entries.
+
+    The exit code says only whether the check could run. A check that exited
+    non-zero on findings would make "the index has drifted" and "the knowledge
+    base could not be read" the same status, and those are the two readings
+    this whole product exists to keep apart.
+    """
+    def build(mod):
+        payload = mod.check(args.kb_root, as_of=args.as_of, code_root=args.code_root)
+        outcome = payload["outcome"]
+        # `CHECKED` is the check having run. Its FINDINGS are not a failure of
+        # the check, so a check with 8 findings and a check with 0 exit the
+        # same. Only "could not read it" is a non-zero, and it says so.
+        return payload, ("ANSWERED" if outcome == "CHECKED" else outcome)
+    return _support_call(args, build)
+
+
 def cmd_recipe_list(args) -> int:
     """§7's three loops, as the contract states them.
 
@@ -6874,6 +6964,60 @@ def build_parser() -> argparse.ArgumentParser:
     rc_status.add_argument("--schedule", default=None)
     rc_status.add_argument("--state-root", default=None)
     rc_status.set_defaults(func=cmd_recipe_status)
+
+    support = sub.add_parser(
+        "support",
+        help="a support question, and where the answer is allowed to come "
+             "from (§J). Reads a knowledge base in another repository and "
+             "writes nothing", **_COMMON)
+    support_sub = support.add_subparsers(dest="support_verb", required=True)
+
+    def _roots(parser):
+        # On every verb rather than on the group, because `support --kb-root X
+        # entries` and `support entries --kb-root X` are two different readings
+        # of one command line and only the second is the one this tree's other
+        # groups use. `--kb-root` is required and never defaulted: the
+        # knowledge base belongs to another author on another schedule, and a
+        # path baked into a module answers for the machine it was written on.
+        parser.add_argument(
+            "--kb-root", required=True,
+            help="the knowledge base checkout to read. Required and undefaulted")
+        parser.add_argument(
+            "--code-root", default=None,
+            help="the support CODE checkout, passed only so that it can be "
+                 "COMPARED with --kb-root. Nothing is read from it. If the two "
+                 "are one repository the call is refused: §J's 双仓边界")
+        return parser
+
+    sp_entries = _roots(support_sub.add_parser(
+        "entries", help="every formal entry the glob reads, with what it "
+                        "excluded and why", **_COMMON))
+    sp_entries.set_defaults(func=cmd_support_entries)
+
+    sp_match = _roots(support_sub.add_parser(
+        "match", help="which entry a question reaches, and by which of the "
+                      "knowledge base's own rules", **_COMMON))
+    sp_match.add_argument("--status-code", type=int, default=None)
+    sp_match.add_argument("--message", default=None)
+    sp_match.set_defaults(func=cmd_support_match)
+
+    sp_answer = _roots(support_sub.add_parser(
+        "answer", help="a reply assembled only from formal entries, with its "
+                       "provenance, and the knowledge-improvement candidate it "
+                       "implies", **_COMMON))
+    sp_answer.add_argument("--status-code", type=int, default=None)
+    sp_answer.add_argument("--message", default=None)
+    sp_answer.set_defaults(func=cmd_support_answer)
+
+    sp_check = _roots(support_sub.add_parser(
+        "check", help="the index against the entries. Reports drift; a finding "
+                      "is not a non-zero exit", **_COMMON))
+    sp_check.add_argument(
+        "--as-of", default=None,
+        help="the date to judge staleness against. Never read from the clock: "
+             "a check whose answer depends on when it ran cannot be compared "
+             "against a recorded one")
+    sp_check.set_defaults(func=cmd_support_check)
 
     document = sub.add_parser(
         "document", help="document identity and authority (§10)", **_COMMON)

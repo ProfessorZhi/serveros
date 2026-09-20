@@ -1,0 +1,525 @@
+# support-contract -- a support question, and where the answer is allowed to come from.
+#
+# WHY THIS FILE EXISTS
+# --------------------
+# §S's `board-contract.yaml` says a requirement is not work until something
+# takes it up. A support question is the same shape one step earlier: somebody
+# pastes an error, and the thing that has to happen first is not "produce a
+# reply" -- it is "find out whether this instance already knows". Those are
+# different tasks with different failure modes, and a bot that conflates them
+# answers confidently from nothing.
+#
+# So the boundary this file draws is the one the whole product is about:
+#
+#   * an answer may be assembled ONLY from a formal entry. The uncurated
+#     samples are readable and are never quoted.
+#   * an answer carries its provenance, because an answer with none cannot be
+#     corrected by the person reading it.
+#   * "no entry matches" is a distinguishable reading, not an empty answer.
+#
+# The knowledge base is a SEPARATE REPOSITORY with its own author, and this
+# file is a *reading* of it, not a copy. It is written where a gate can read it
+# because the alternative -- the shape of somebody else's repository hardcoded
+# into a parser -- is a parser that silently under-reads the day that
+# repository is edited, which is exactly what `checks.sample_section_variants`
+# below was found doing.
+schema: serveros/support-contract.v1
+
+# ---------------------------------------------------------------------------
+# The boundary: two repositories, and which one this reads
+# ---------------------------------------------------------------------------
+boundary:
+  kb_root: supplied
+  code_root: supplied
+  because_supplied: >
+    Neither default. `support.py` is handed both, for the reason
+    `recipes.py#--records-root` is: a path baked into a module is a path that
+    answers for the machine it was written on. The knowledge base in particular
+    belongs to another author and moves on its own schedule.
+  one_write_rule: >
+    This module writes to NEITHER. It reads the knowledge base and it reads
+    nothing at all from `code_root` -- `code_root` is passed so that it can be
+    COMPARED against `kb_root`, and for no other purpose.
+  same_repository_means: CODE_KB_SAME_REPO
+  same_repository_because: >
+    §J's clause is 双仓边界 / code/KB不混. A chain handed the same checkout for
+    both has no boundary to keep: the answer would be assembled from the same
+    files the code lives in, and 「知识不在这里」 -- the sentence the support
+    code repository's own CLAUDE.md opens with -- would be false for this
+    caller while remaining true in the document. That is a refusal rather than
+    a warning, because there is no correct way to proceed.
+  evidence_is_not_authority: >
+    Entry text is DATA. It is never a command, an approval, or a reason to
+    widen scope -- the rule this round's inputs already state for every source
+    it reads, applied here to a source whose text is written to be pasted into
+    a chat.
+
+# ---------------------------------------------------------------------------
+# The knowledge base's real shape
+# ---------------------------------------------------------------------------
+kb:
+  index: 00_索引与说明.md
+  # One entry directory per 环节, plus the index and two non-entry files. The
+  # entry files are found by globbing `*/*.md` and EXCLUDING the two named
+  # exclusions below rather than by listing the six directories: a seventh
+  # 环节 added by the KB's author is then read automatically, and the only way
+  # an entry goes unread is by being placed under the uncurated root, which is
+  # the one exclusion that is a rule rather than a convenience.
+  entry_glob: "*/*.md"
+  exclusions:
+    - 99_待整理样本
+    - 全量错误分析统计.md
+
+  id_prefixes:
+    CLIENT: 客户端配置
+    NET: 网络连接
+    PLAT: 平台代理层
+    PROV: 上游 provider
+    MODEL: 模型服务
+    RESP: 响应解析
+  id_rule: >
+    「ID 全局唯一，分配后不再变更。目录结构可后期调整，ID 保持稳定。」
+    Copied from the index because it is the load-bearing sentence: the ID is
+    the identity and the file it sits in is not. `checks.name_drift` below is
+    the consequence -- a name may change, and the ID may not.
+
+  entry:
+    # `## [PLAT-002] 平台预算超限 ExceededBudget 402`
+    heading_pattern: "^##\\s*\\[(?P<id>[A-Z]+-\\d+)\\]\\s*(?P<name>.+?)\\s*$"
+    required_sections:
+      - 元数据
+      - 字段匹配规则
+      - 典型错误样本
+      - 根因分析
+      - 解决方法
+      - 是否可重试
+      - 关联信息
+    # `典型错误样本` is matched as a PREFIX on the section name, not as a
+    # whole string, and this is the finding rather than a style choice. The KB
+    # as read on 2026-09-20 spells this section two ways:
+    #
+    #   16 x  ### 典型错误样本（原文，已脱敏）
+    #    5 x  ### 典型错误样本（原文）
+    #
+    # as measured by `checks.sample_section_variants`. A parser keyed on
+    # either exact string reads 5 entries or 16 and reports success, which is
+    # the silent lower bound `runtime/verify.py` exists to catch -- and a
+    # support chain reading 5 of 21 entries would answer 16 questions with "no
+    # entry matches". The variant is a finding, not a fault: the KB's own
+    # maintenance rules never required uniformity. But the fact that the two
+    # spellings exist is what makes the prefix match load-bearing rather than
+    # tidy.
+    sample_section_prefix: 典型错误样本
+    metadata_field_pattern: "^-\\s*(?P<key>[^：:]+)[：:]\\s*(?P<value>.*)$"
+    metadata_fields: [所属环节, 错误类型, 置信度, 出现频率, 最后更新]
+    file_stamp_pattern: "^>\\s*最后更新[：:]\\s*(?P<date>\\S+)"
+
+  index_table:
+    columns: [错误ID, 名称, 状态码, 环节, 所在文件, 置信度, 出现频率]
+    # Every one of these is a PROJECTION of a fact whose home is the entry, and
+    # each one drops something:
+    #
+    #   名称      drops nothing, and has already drifted in 4 of 21 rows.
+    #   状态码    drops the surrounding prose.
+    #   置信度    drops the EVIDENCE COUNT. The entry says
+    #             `已确认（来自 1,064 条平台实际报错）`; the column says `已确认`.
+    #   最后更新  is not carried in the index at all.
+    #
+    # So `check()` compares the level, not the string. Comparing the raw values
+    # would report 21 false mismatches on a knowledge base that is correct, and
+    # a check that cries wolf 21 times is one somebody turns off.
+    projected: [名称, 状态码, 置信度]
+
+# ---------------------------------------------------------------------------
+# Confidence, and what an answer does with it
+# ---------------------------------------------------------------------------
+confidence:
+  levels: [已确认, 高概率, 推测]
+  from_index: >
+    「**已确认**：来自平台实际日志/多条一致案例/官方文档实锤 / **高概率**：多个
+    案例一致但未官方确认 / **推测**：单案例，可能不准，agent 回答时需标注"可能
+    是"」
+  entry_value_is_richer: >
+    An entry's `置信度` carries the count behind it -- `已确认（来自 529 条平台
+    实际报错）`. That count is the most useful thing in the record for a reader
+    deciding whether to believe it, and it exists ONLY in the entry. So the
+    level decides the hedging and the whole value travels into the answer.
+  hedge:
+    推测: 可能是
+    # The index asks for the marker only on 推测, and this is that marker. It is
+    # carried as a FIELD (`answer` below) rather than prepended to the prose:
+    # a hedge spliced into the first sentence is invisible to anything that
+    # reads the answer as data, which includes the next model in the chain.
+  unknown_level_means: UNKNOWN_CONFIDENCE
+
+# ---------------------------------------------------------------------------
+# Matching: which entries a question can reach
+# ---------------------------------------------------------------------------
+match:
+  # The label of a rule line is matched by SUBSTRING, and the reason is a
+  # measurement rather than a preference. The 字段匹配规则 sections of the 21
+  # entries as read on 2026-09-20 carry these labels for the corroborating
+  # rule:
+  #
+  #     辅助匹配                          x18
+  #     辅助匹配（内层真实错误）             x1
+  #     GLM/智谱辅助匹配                    x1
+  #     GLM 辅助匹配                        x1
+  #     其他辅助匹配                        x1
+  #
+  # Three of those five END with `辅助匹配` rather than starting with it, so a
+  # prefix test reads 18 of 22 rule lines and reports success -- the same
+  # silent subset the sample-section heading has, in the same file set, found
+  # by looking rather than by assuming. `rule_labels_matched_by` is the setting
+  # that would otherwise have been a `str.startswith` in the parser.
+  rule_labels_matched_by: substring
+  primary_label: 主匹配
+  auxiliary_label: 辅助匹配
+  # A rule line whose label is one of these is not evidence ABOUT the entry; it
+  # is an instruction to go somewhere else. It names another entry with the
+  # KB's own `[ID]` reference syntax.
+  #
+  #   PROV-006  排除：`Authentication Error - Expired Key` 属于平台 Key 过期，按 [PLAT-005] 处理
+  #   CLIENT-003 若命中 `code=1210`，优先归入 [CLIENT-001]
+  #   MODEL-001  若错误是 `No deployments available...`，优先按 [PLAT-003]
+  #   NET-001    若明确是流式响应已经开始后中断，优先按 [RESP-001]
+  #   RESP-001   若错误发生在请求尚未建立连接阶段，优先按 [NET-001]
+  #
+  # NET-001 and RESP-001 point at each other, which is not a defect: each
+  # redirect is conditional on a DIFFERENT literal, so resolving a real
+  # question moves it one way or the other and never in a circle. Redirects are
+  # therefore applied ONCE and not to a fixpoint -- a second pass would be
+  # resolving a cycle silently, and a cycle is a question about the knowledge
+  # base.
+  redirect_labels: [排除, 优先归入, 优先按]
+  reference_pattern: "\\[([A-Z]+-\\d+)\\]"
+
+  # The literals a rule is written with. Three quote styles appear in the KB,
+  # measured rather than assumed:
+  #
+  #     `code=1210`                        backticked  -- the common case
+  #     `message` 包含 "ExceededBudget"     ASCII double quotes
+  #     错误包含“请使用 low、high 或 max”    full-width quotes
+  #
+  # A backticked token that is exactly one of `fields` is a FIELD NAME, not a
+  # literal: `` `message` 包含 "X" `` says "in the field message, X appears".
+  # `` `code=1210` `` contains `=` and is a literal. So the field test is an
+  # exact match against a closed set rather than a pattern.
+  fields: [message, status_code, error, code, model, llm_provider]
+  literal_pattern: "`([^`]+)`|\"([^\"]+)\"|“([^”]+)”"
+  comparison_pattern: "^(?P<field>[a-z_]+)\\s*==\\s*(?P<value>.+)$"
+  # Conjuncts joined by AND. Everything else is a list of alternatives within
+  # one conjunct, matching if ANY of them appears -- which is the reading 辅助匹配
+  # needs (it corroborates; requiring every listed literal would make it a
+  # second identity rule) and the reading `` `A`、`B` 或 `C` `` plainly has.
+  and_tokens: ["&&", "且"]
+  # A rule is three-valued, not two. `status_code == 402` cannot be evaluated
+  # when the caller did not supply a status code, and "I cannot evaluate this"
+  # is neither "it fires" nor "it does not". Reporting it as NO would make an
+  # entry silently unreachable for a question that simply omitted one field;
+  # reporting it as FIRES would be an answer assembled from a guess.
+  verdicts: [FIRES, NO, MAYBE]
+
+  outcomes:
+    ONE_PRIMARY: ANSWERED
+    NO_PRIMARY_ONE_AUXILIARY: ANSWERED_FROM_AUXILIARY
+    NO_PRIMARY_PRIMARY_INCOMPLETE: NEEDS_MORE_INPUT
+    NO_PRIMARY_NO_AUXILIARY: NO_ENTRY_MATCHES
+    MANY_PRIMARY: AMBIGUOUS_MATCH
+    REDIRECTS_DROPPED_EVERYTHING: REDIRECTED_TO_NOTHING
+    # Both names are new, and both were added after a live reading was wrong.
+    # `--message '用户额度不足'` with no status code fires the 辅助匹配 rules of
+    # PROV-001, PROV-002 and PROV-005. The module first ranked those leads by the
+    # number of auxiliary LINES each entry carries -- a property of the document's
+    # formatting, not of the question -- and reported AMBIGUOUS_MATCH. The question
+    # was not ambiguous; it was incomplete, and the status code that would settle
+    # it is a reply the person can send.
+    NO_PRIMARY_MANY_AUXILIARY_INCOMPLETE: NEEDS_MORE_INPUT
+    NO_PRIMARY_MANY_AUXILIARY_NO_FIELD: AMBIGUOUS_MATCH
+  auxiliary_leads_are_not_ranked_by:
+    line_count: >
+      how many 辅助匹配 bullets an entry happens to carry. Among several leads
+      there is no entry-property to rank on, because 辅助匹配 corroborates and does
+      not identify -- so the only honest choice is between "a reply would narrow
+      this" and "nothing you could say would".
+  corroboration:
+    ANSWERED_FROM_AUXILIARY_carries: corroborated_by_primary
+    value_when_false: >
+      the entry's 主匹配 did NOT fire. An auxiliary hit is a lead, and a lead that
+      is only ever reported as `matched_by` is one a reader can mistake for an
+      identification.
+  many_primary_because: >
+    The KB's design is that 主匹配 identifies an entry and 辅助匹配 corroborates
+    it. Two entries whose 主匹配 rule both fire is therefore not a tie to break
+    by picking the first, the longer, or the more recently updated one -- those
+    are three different guesses wearing one answer's clothes, and the reader
+    cannot tell which was made.
+
+  tie_break:
+    # The KB states a precedence rule of its own, in
+    # `全量错误分析统计.md`#结果使用规则:
+    #
+    #   「正式条目优先解释错误链中最内层的真实根因，外层 HTTP 状态码和
+    #     fallback/重试信息作为辅助信息。」
+    #
+    # It is quoted here rather than paraphrased because it is the AUTHORITY for
+    # the resolution below, and a resolution with no citable authority is a
+    # heuristic. The rule is not this module's invention: an error chain has an
+    # outer layer (a status code, a fallback failure) and an inner root cause,
+    # and the KB says the inner one is what the entry is about.
+    authority: 全量错误分析统计.md
+    quote: >
+      正式条目优先解释错误链中最内层的真实根因，外层 HTTP 状态码和 fallback/
+      重试信息作为辅助信息
+    rule: most_specific_firing_primary_wins
+    specificity: >
+      the number of AND-conjuncts in the 主匹配 rule that fired. A rule that
+      had to satisfy `status_code == 500` AND `message 包含
+      "litellm.APIConnectionError"` AND `message 包含 "AnthropicException"` is
+      naming a chain of three facts; a rule that had to satisfy one literal is
+      naming one. Measured live: NET-001's single-literal rule and PROV-001's
+      three-conjunct rule both fire on `500 + litellm.APIConnectionError +
+      AnthropicException`, which is exactly the outer-layer/inner-cause pair
+      the KB's sentence is about, and PROV-001 is the answer.
+    equal_specificity_means: AMBIGUOUS_MATCH
+    reported_as: TIE_BROKEN_BY_SPECIFICITY
+    must_be_reported: >
+      The tie-break is recorded in the result with the runner-up and the
+      sentence it was resolved by. A resolution that was applied and not
+      mentioned is indistinguishable from a matcher that picked the first
+      candidate -- which is the thing `many_primary_because` refuses.
+  needs_more_input_because: >
+    The cheapest thing this chain can do for a person is name the ONE fact it
+    is missing. `NEEDS_MORE_INPUT` carries `missing` -- the field names that
+    would move an incomplete primary rule to a verdict -- so the reply is
+    "give me the HTTP status code" rather than a knowledge dump. This is the
+    difference the governing directive asks for: not more documentation, a
+    smaller next step.
+  what_is_not_evaluated: >
+    The predicates are matched textually against the question and are NOT
+    executed. A knowledge base is a document somebody else can edit, and
+    turning `主匹配` into an evaluator would make 「a document may run code here」
+    true of a repository whose entire purpose is to be read. What this buys is
+    a matcher that can be wrong in the direction of not matching -- which is
+    the direction that reports a gap -- rather than one that can be wrong by
+    running something.
+  prose_in_a_rule_means: RULE_CONTAINS_PROSE
+  prose_in_a_rule_because: >
+    One entry in 21 writes its primary rule with a fragment no machine can
+    evaluate: PROV-006's 「`litellm.AuthenticationError` 且包含 Provider 异常」
+    -- 「Provider 异常」 names a class of things rather than a string. Such a rule
+    can never fire here, and an entry whose primary rule can never fire is an
+    entry this chain will answer around while reporting success. It is
+    reported as a finding against the KNOWLEDGE BASE -- a candidate for
+    rewriting the rule as literals -- and never as a silent FALSE.
+
+# ---------------------------------------------------------------------------
+# Assembling an answer
+# ---------------------------------------------------------------------------
+answer:
+  sections_used: [根因分析, 解决方法, 是否可重试]
+  # NOT 字段匹配规则: it is why this entry was reached, and it is reported as
+  # provenance (`matched_by`) rather than as content. NOT 典型错误样本: it holds
+  # the raw error text, which is the one thing a person reading the reply
+  # already has.
+  never_from: [99_待整理样本]
+  never_from_because: >
+    「本目录内容为未验证的原始数据，agent 回答时不应直接引用」and「回答员工时优先
+    匹配正式条目的字段规则，不直接引用待整理样本」. A sample is evidence that an
+    error happened; an entry is a claim about what it means. The difference is
+    the entire product, and an answer sourced from a sample would have the
+    shape of knowledge with none of the backing.
+  must_carry: [provenance, confidence, related]
+  provenance_is:
+    - "the entry ID"
+    - "the file it was read from, relative to the knowledge base root"
+    - "the entry's 最后更新 date"
+    - "which rule fired -- 主匹配 or 辅助匹配"
+  redaction:
+    # 「报错信息中的 User=ou_xxx 是用户内部标识，回答时不要完整回显，可脱敏处理」
+    # plus the stronger rule the analysis file states: 「用户 ID、Token、Key、请求
+    # ID、金额和时间戳仅用于归一化，不写入正式知识条目」.
+    required: true
+    patterns:
+      # No length floor, and the absence is the finding: this was first written
+      # as `{6,}`, which the KB's own redaction example -- 「报错信息中的
+      # `User=ou_xxx`」, three characters -- does not satisfy. Measured live: a
+      # question carrying `ou_x` came back with it intact in the improvement
+      # candidate, so the pattern was a redactor that passed its own fixture and
+      # leaked the shape the KB was actually warning about. `ou_`/`op_` are
+      # prefixes, not words, and nothing else on this platform starts with them.
+      内部用户标识 ou_: "\\bou_[0-9a-zA-Z]+"
+      内部用户标识 op_: "\\bop_[0-9a-zA-Z]+"
+      API Key: "\\bsk-[0-9a-zA-Z_-]{12,}\\b"
+      Bearer 凭据: "(?i)\\bbearer\\s+[0-9a-zA-Z._\\-]{12,}"
+      邮箱: "\\b[0-9a-zA-Z._%+\\-]+@[0-9a-zA-Z.\\-]+\\.[a-zA-Z]{2,}\\b"
+    replaces_with: "<已脱敏>"
+    because: >
+      An answer is about to be pasted into a chat that other people can read.
+      The KB itself redacts its own samples; a chain that un-redacts by
+      reprinting them would be undoing the one thing the knowledge base's
+      author did to make them publishable.
+  ambiguous_wording: >
+    None. An answer is either assembled from a named entry, or it is the
+    NO_ENTRY_MATCHES reading. There is no third path that produces fluent
+    prose from a partial match.
+
+# ---------------------------------------------------------------------------
+# The knowledge-improvement half: an answer is also a finding about the KB
+# ---------------------------------------------------------------------------
+improvement:
+  # This is the link §J asks for -- 「一项技术支持输入到答复/知识改进的链」 -- and
+  # it is deliberately the SAME invocation. A chain that required somebody to
+  # remember to file a follow-up would produce the answer and lose the
+  # improvement, which is how a knowledge base stops growing.
+  produced_when:
+    NO_ENTRY_MATCHES: >
+      the question reached no entry. The candidate names the ID prefix the
+      question's shape belongs under, the next free ID for it, and the file
+      that ID would go into. Nothing is written: `next_id` OFFERS an ID, and an
+      ID 「分配后不再变更」 is a commitment that a person makes, not a parser.
+    ANSWERED_BUT_VARIANT_UNSEEN: >
+      an entry matched, and the question's own error text does not appear in
+      that entry's sample section. The KB's own promotion rule counts
+      recurrences -- 「出现 ≥ 2 次的错误，写成正式条目草稿」 -- so a second
+      sighting of a known error is exactly the evidence that rule is waiting
+      for. The candidate says which entry and which section.
+  candidate_carries: [kind, question_shape, kb_file, id_prefix, offered_id, why]
+  seen_by: containment
+  seen_because: >
+    Whether a question line has been seen is decided by containment in either
+    direction, not by set membership against the sample's lines. Measured live:
+    `--status-code 402 --message 'ExceededBudget'` was reported as UNSEEN against
+    a sample whose first two words are `ExceededBudget: User=<USER>` -- the sample
+    is built on that token, and a finding that fires on the thing it exists to
+    recognise is not a finding. Containment errs toward silence, which is the
+    direction that reports a gap rather than one that reports a phantom.
+  seen_after_normalising:
+    placeholders: '<...> spans collapse, as they do for redaction'
+    digits: >
+      runs of digits collapse to `<*>`. Two occurrences of ONE error differ in
+      their volatile values and agree in their words -- PLAT-002's sample line is
+      `Spend=20.09863283999999` and a recurrence carries some other amount -- so a
+      comparison on literal text calls every recurrence a new variant. That is the
+      same "a finding that always fires" defect as the set-membership bug, one
+      level deeper.
+    what_this_gives_up: >
+      a line differing only in a numeric `code=` value reads as seen, so that
+      variant is not reported. This is the direction the module prefers to be
+      wrong in -- a matcher that reports a gap rather than one that reports a
+      phantom -- and it is named here rather than left to be discovered.
+  never_writes: true
+  because_never_writes: >
+    This module has no write path to either root. A candidate is a record a
+    caller may act on; §B authorizes source changes in this round's worktree
+    and nothing in a protected repository, and the KB is a protected
+    repository.
+
+# ---------------------------------------------------------------------------
+# Checks: what `check()` looks at, and what each finding is
+# ---------------------------------------------------------------------------
+checks:
+  # The tree's "two declarations of one shape" pattern, with the asymmetry this
+  # particular pair has: the entry is the authority and the index is a
+  # projection of it, so every finding is phrased in that direction.
+  codes:
+    INDEX_MISSING: >
+      a formal entry exists and the index has no row for it. The index is the
+      entry point a person reads, so the entry is invisible where it counts.
+    INDEX_ORPHAN: >
+      the index has a row for an ID no entry file carries.
+    INDEX_COUNT_DISAGREES: >
+      the two totals differ. Reported separately from the two above because a
+      matched pair of errors -- one missing, one orphan -- leaves this check
+      clean while the totals disagree, and the totals are what a person quotes.
+    FILE_MISSING: >
+      an index row names a file that is not in the knowledge base.
+    ID_NOT_IN_NAMED_FILE: >
+      the named file exists and does not carry that ID. This is the row that
+      looks right and points somewhere else, which is worse than an absent row.
+    STATUS_CODE_DISAGREES: >
+      the index's 状态码 column and the entry's own 主匹配 rule name different
+      codes. One of the two is how a person will find this entry; they cannot
+      both be.
+    CONFIDENCE_LEVEL_DISAGREES: >
+      the index's level is not the entry's level. Compared as levels, not as
+      strings -- see `index_table.projected`.
+    CONFIDENCE_LEVEL_UNKNOWN: >
+      a level in neither the entry nor the index is one of the three declared.
+      An unrecognised level is a gap, not a fourth level.
+    NAME_DRIFT: >
+      the index's 名称 and the entry's heading differ. NOT a fault: the ID is
+      the identity and the name is a label. It is reported because 4 of 21 rows
+      have drifted, and a reader searching the index by the string they saw in
+      the entry will not find it.
+    SAMPLE_SECTION_VARIANTS: >
+      the sample section is spelled more than one way. NOT a fault -- the
+      maintenance rules never required uniformity -- but a parser keyed on one
+      spelling silently reads a subset, so the variants are reported with their
+      counts rather than smoothed over.
+    SECTION_MISSING: >
+      an entry lacks one of `required_sections`.
+    RULE_CONTAINS_PROSE: >
+      a 主匹配 line, or the condition of a 排除 / 优先归入 / 优先按 line, carries a
+      fragment this matcher cannot evaluate -- see `match.prose_in_a_rule_because`.
+      Reported so that an entry which can never be reached says so, rather than
+      being counted as covered.
+    # A code for "evaluable only when the caller supplies a field" was drafted
+    # here and REMOVED rather than shipped. Every comparison in all 21 entries
+    # is on `status_code` or `message`, and a caller asking a support question
+    # supplies one of those, so the code would have fired on 21 correct entries
+    # and carried no information -- a check that always fires is one somebody
+    # turns off, and it takes the others with it. What that code was for,
+    # naming the one fact a question is missing, is what `NEEDS_MORE_INPUT`
+    # reports at runtime about a real question rather than about a catalogue.
+    REDIRECT_TARGET_MISSING: >
+      a 排除 / 优先归入 / 优先按 line names an ID no entry carries. The KB's own
+      rule is that an ID 「分配后不再变更」, so a reference to one that is not
+      there is a reference to something that was renamed or never written.
+    FILE_STAMP_OLDER_THAN_ENTRY: >
+      a file's `> 最后更新` predates an entry inside it. The other direction is
+      ordinary -- editing one entry touches the file -- so only this one is a
+      finding.
+    STALE: >
+      an entry's 最后更新 is older than `staleness_days` as of the `as_of` the
+      caller gave. 「每条错误带"最后更新"日期，超过 3 个月未更新的需复核」
+  staleness_days: 90
+  as_of: supplied
+  as_of_because: >
+    Supplied, and never read from the clock: a check whose answer depends on
+    when it ran cannot be compared against a recorded one. Same rule, and the
+    same reason, as `space/meeting_relevance.py#classify(as_of=...)`.
+  unreadable_is_not_clean: >
+    A knowledge base that cannot be read does not produce `findings: []`. It
+    produces `KB_UNREADABLE`, because "I checked and found nothing" and "I
+    could not check" are the two readings this product exists to keep apart,
+    and an empty list is what both of them render as.
+
+# ---------------------------------------------------------------------------
+# Exit codes
+# ---------------------------------------------------------------------------
+# The same three, and the same meanings, as `runtime/cli.py` and
+# `runtime/recipes.py`. Named here so a cron line reading this tool's exit does
+# not have to import a Python module to learn them.
+exit_codes:
+  ANSWERED: 0
+  ANSWERED_FROM_AUXILIARY: 0
+  # The chain ran and stopped for a reason it declared in advance. A weak match
+  # is an outcome, and it says so in `matched_by`.
+  NO_ENTRY_MATCHES: 2
+  NEEDS_MORE_INPUT: 2
+  AMBIGUOUS_MATCH: 2
+  REDIRECTED_TO_NOTHING: 2
+  KB_UNREADABLE: 2
+  # "no entry matches" is not "here is your answer", exactly as `recipe status`
+  # refuses to render NEVER_RUN as an empty period. A support chain that
+  # answered 0 to both would be indistinguishable in a log from one that
+  # answered.
+  #
+  # NEEDS_MORE_INPUT shares the code with NO_ENTRY_MATCHES and is a different
+  # word, which is the point: a caller reading only the exit learns "no answer
+  # came back", and a caller reading the outcome learns which of the two
+  # happened. Collapsing them to one word would be the defect; sharing a code
+  # is how every other three-way reading in this tree is reported.
+  CODE_KB_SAME_REPO: 1
+  UNKNOWN_CONFIDENCE: 1
