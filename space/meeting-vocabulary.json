@@ -1,0 +1,455 @@
+{
+  "schema": "serveros/meeting-vocabulary.v1",
+
+  "_comment": [
+    "Controlled vocabulary for the ServerOS Meeting relevance / retention kernel.",
+    "This file is DATA. It declares the closed sets the kernel decides in, the",
+    "relevance rules a policy may name, and the user's declared protected",
+    "exception. It carries no observed state: no counts, no hashes, no meeting",
+    "ids, no chat bodies, no credentials. See space/meeting-policy.schema.yaml",
+    "for the reasoning, and tests/test_meeting_relevance.py for the assertions",
+    "that hold this file to it."
+  ],
+
+  "dimensions": {
+    "relevance": {
+      "_comment": [
+        "SPACE-AND-RETENTION 7's content verdict. UNKNOWN is a real answer: it",
+        "means a stage had no input, and it is never a default to RELEVANT or to",
+        "IRRELEVANT."
+      ],
+      "values": {
+        "RELEVANT": "the bundle carries content the user's work needs",
+        "MIXED": "part of the bundle is tied to work and part is not",
+        "IRRELEVANT": "a confirmed rule excludes the bundle from work",
+        "UNKNOWN": "no stage produced enough input to classify it"
+      }
+    },
+
+    "decision": {
+      "_comment": [
+        "The closed set every record's `decision` is drawn from. The three",
+        "SPACE-AND-RETENTION 7 pipeline actions come first, then the REVIEW",
+        "family, then the cleanup and failure answers.",
+        "REJECTED is a caller bug. PROPOSAL_REQUIRED is a question for a human.",
+        "They are different answers and are never conflated."
+      ],
+      "values": {
+        "INCLUDE_SEGMENTS": "relevant content enters work, with its provenance",
+        "EXCLUDE_FROM_WORK": "a confirmed rule excludes it; the original is untouched",
+        "REVIEW": "a human decides",
+        "REVIEW_NO_DELETE": "a human decides, and deletion is forbidden while undecided",
+        "REVIEW_RELEVANT_SEGMENTS": "a bound protected exception admits relevant segments only",
+        "REVIEW_PENDING": "human-approved work depends on a now-excluded source; delta issued, nothing mutated",
+        "PLAN": "every object in the cleanup plan is eligible",
+        "PARTIAL": "some objects are eligible and some are not; per-object state is reported",
+        "PROPOSAL_REQUIRED": "a rule a human must author is missing",
+        "REFUSAL": "the request is refused; the policy or the object set does not permit it",
+        "UNSUPPORTED": "the provider has no such action; a weaker action is never dressed as it",
+        "UNKNOWN": "the operator could not be established",
+        "REJECTED": "the request is malformed: a caller bug"
+      }
+    },
+
+    "cleanup_level": {
+      "_comment": "SPACE-AND-RETENTION 8. A closed set of four, in ascending severity.",
+      "values": {
+        "CONTENT_ISOLATION": "exclude from work indexes and generated input; the original is untouched",
+        "REBUILDABLE_ARTIFACT_CLEANUP": "clear this system's own stale caches, exports and superseded rebuildable drafts",
+        "CLOUD_RECOVERABLE_DISPOSAL": "move objects this system owns into a provider recycle bin that really exists",
+        "IRREVERSIBLE_DELETE": "permanently destroy recordings, transcripts, human documents or shared objects"
+      }
+    },
+
+    "stage": {
+      "_comment": "SPACE-AND-RETENTION 7's pipeline, in order. Every stage is reported.",
+      "values": [
+        "metadata/scope",
+        "policy_match",
+        "bounded_content",
+        "relevance",
+        "action"
+      ]
+    },
+
+    "stage_state": {
+      "values": {
+        "PRODUCED": "the stage had the input it needed",
+        "NO_INPUT": "the stage had no input; what follows it is UNKNOWN, never a default",
+        "NO_MATCH": "no rule matched",
+        "AMBIGUOUS": "more than one rule matched; a human resolves it",
+        "NOT_PERMITTED": "the policy's allowed_content_depth forbids reading this content"
+      }
+    },
+
+    "ownership": {
+      "_comment": "An axis independent of relevance. UNKNOWN defers.",
+      "values": {
+        "OWNED": "the user or this system owns the object and holds permission",
+        "SHARED": "a shared session or a shared object",
+        "OTHER_OWNER": "someone else's object",
+        "UNKNOWN": "ownership was not established"
+      }
+    },
+
+    "hold": {
+      "_comment": "An axis independent of relevance, and of ownership.",
+      "values": {
+        "NONE": "no hold is recorded",
+        "LEGAL_HOLD": "a legal hold requires preservation",
+        "ORGANIZATIONAL_HOLD": "an organizational rule requires preservation",
+        "UNKNOWN": "whether a hold exists was not established"
+      }
+    },
+
+    "deletability": {
+      "_comment": [
+        "An axis independent of relevance, and the axis SPACE-AND-RETENTION 7",
+        "says must not be derived from it. The relevance kernel never evaluates",
+        "it: it reports NOT_EVALUATED. Only plan_cleanup() produces the others,",
+        "and only from its own eligibility inputs."
+      ],
+      "values": {
+        "NOT_EVALUATED": "the relevance kernel does not evaluate deletability at all",
+        "NOT_A_CANDIDATE": "an eligibility input blocks it",
+        "ELIGIBLE": "every eligibility input permits it",
+        "BLOCKED": "the level or the provider refuses it"
+      }
+    },
+
+    "content_depth": {
+      "_comment": "How deep a policy allows the kernel to read. METADATA_ONLY reads no content.",
+      "values": {
+        "METADATA_ONLY": "identity, participants, title and durations; no transcript and no audio",
+        "TRANSCRIPT": "the provider's transcript, with time locations",
+        "FULL": "transcript plus audio, when the policy's audio path permits it"
+      }
+    },
+
+    "delete_mode": {
+      "_comment": "What a policy authorises. The ladder is deliberate: no level implies the next.",
+      "values": {
+        "NO_DELETE": "no cloud or irreversible deletion is authorised",
+        "RECYCLE_BIN": "a provider recycle bin the operator verified exists",
+        "PERMANENT": "irreversible destruction, always needing this operation's own approval"
+      }
+    },
+
+    "delete_mode_for_level": {
+      "_comment": "The only delete_mode each level may run under. A mismatch is a refusal.",
+      "CONTENT_ISOLATION": "NO_DELETE",
+      "REBUILDABLE_ARTIFACT_CLEANUP": "NO_DELETE",
+      "CLOUD_RECOVERABLE_DISPOSAL": "RECYCLE_BIN",
+      "IRREVERSIBLE_DELETE": "PERMANENT"
+    },
+
+    "operation_for_level": {
+      "_comment": "The policy operation each level requires. A policy is not reusable across levels.",
+      "CONTENT_ISOLATION": "CONTENT_ISOLATION",
+      "REBUILDABLE_ARTIFACT_CLEANUP": "REBUILDABLE_ARTIFACT_CLEANUP",
+      "CLOUD_RECOVERABLE_DISPOSAL": "CLOUD_RECOVERABLE_DISPOSAL",
+      "IRREVERSIBLE_DELETE": "IRREVERSIBLE_DELETE"
+    },
+
+    "operation": {
+      "values": {
+        "RELEVANCE_CLASSIFICATION": "classify a bundle; nothing is mutated",
+        "CONTENT_ISOLATION": "level A",
+        "REBUILDABLE_ARTIFACT_CLEANUP": "level B",
+        "CLOUD_RECOVERABLE_DISPOSAL": "level C",
+        "IRREVERSIBLE_DELETE": "level D",
+        "RESTORE": "bring an object back from a provider recycle bin",
+        "REINDEX": "rebuild a derived index after a restore"
+      }
+    },
+
+    "binding_state": {
+      "_comment": [
+        "Whether a selector names a real tenant/chat/meeting. UNBOUND is not a",
+        "placeholder to be filled in later by a guess: while it is UNBOUND the",
+        "declaration selects nothing and the destructive path fails closed."
+      ],
+      "values": {
+        "BOUND": "a real stable identifier is declared and approved",
+        "UNBOUND": "no stable identifier exists yet"
+      }
+    },
+
+    "evidence_path": {
+      "_comment": [
+        "SPACE-AND-RETENTION 7: support work is evidenced by chat, request,",
+        "configuration, test and result confirmation - not only by audio. The",
+        "non-audio path is first-class here, so excluding incidental audio does",
+        "not delete the work."
+      ],
+      "values": {
+        "SUPPORT_CHAT": "the support conversation itself",
+        "CONFIG_DIFF": "a configuration change made while solving the problem",
+        "TEST_RESULT": "a test or reproduction that shows the behaviour",
+        "RESULT_CONFIRMATION": "the counterparty confirming the problem is solved",
+        "MEETING_AUDIO": "the meeting recording or its transcript"
+      }
+    },
+
+    "observed_status": {
+      "_comment": "What a previous attempt, read back from the provider, says about one object.",
+      "values": {
+        "NOT_ATTEMPTED": "nothing was attempted for this object",
+        "EXECUTED": "the action succeeded and a receipt exists",
+        "RESTORED": "the object was disposed of and has since been restored",
+        "PERMISSION_DENIED": "the provider answered 401/403",
+        "FAILED": "the action failed for a reason that may be transient"
+      }
+    },
+
+    "intent": {
+      "_comment": "What the plan intends for one object. ALREADY_EXECUTED is never retried.",
+      "values": {
+        "ISOLATE": "level A: exclude from work indexes; the original stays",
+        "CLEAN_REBUILDABLE": "level B: clear a cache, export or superseded rebuildable draft",
+        "DISPOSE": "level C/D: act on the object",
+        "ALREADY_EXECUTED": "read back as already done; not retried",
+        "BLOCKED_PERMISSION_DENIED": "401/403; never retried under another identity",
+        "REINDEX_REQUIRED": "restored; derived indexes must be rebuilt and the candidate must not regrow",
+        "REFUSED": "an eligibility input forbids this object",
+        "SKIP": "eligible, but nothing is attempted this time"
+      }
+    },
+
+    "owner_constraint": {
+      "_comment": "Whose objects a policy may touch. NONE refuses the destructive levels outright.",
+      "values": {
+        "SELF_ONLY": "only objects the user personally owns (owner_ref = self)",
+        "SYSTEM_OWNED_ONLY": "only objects this system generated and can rebuild (owner_ref = system)",
+        "NONE": "no constraint declared; the destructive path refuses"
+      }
+    },
+
+    "object_type": {
+      "_comment": "What one MeetingBundle member physically is.",
+      "values": [
+        "recording",
+        "transcript",
+        "summary",
+        "minute",
+        "document",
+        "attachment",
+        "cache",
+        "export"
+      ]
+    },
+
+    "dependant_kind": {
+      "_comment": [
+        "Work that used this bundle. A human-approved dependant is never silently",
+        "rewritten; a machine-generated draft is recomputable."
+      ],
+      "values": ["claim", "item", "report", "draft"]
+    },
+
+    "approval_mode": {
+      "_comment": "What a policy demands before a level may run.",
+      "values": {
+        "NONE": "the policy demands no approval",
+        "PROPOSAL_ONLY": "a human approves the proposal",
+        "EXPLICIT": "this operation's own explicit approval is required"
+      }
+    },
+
+    "record_approval": {
+      "_comment": "What the decision record says it is standing on.",
+      "values": {
+        "none-required": "nothing is mutated",
+        "policy-approved": "a human-approved rule already covers this",
+        "explicit": "a human must answer before anything follows from this record"
+      }
+    },
+
+    "acceptance": {
+      "_comment": "Whether a signal was even consulted. It never is.",
+      "values": {
+        "RECORDED_INSUFFICIENT": "recorded, and insufficient on its own to prove anything about business value"
+      }
+    }
+  },
+
+  "policy_required_fields": {
+    "_comment": [
+      "SPACE-AND-RETENTION 9. One policy shape for every operation, so a policy",
+      "that was read as a classification policy cannot later be re-read as one",
+      "that may dispose of objects without the destructive fields being filled.",
+      "An absent or null field is a REFUSAL that names the field."
+    ],
+    "values": [
+      "policy_revision",
+      "source_selector",
+      "operation",
+      "scope",
+      "owner_constraint",
+      "protected_exceptions",
+      "relevance_rule",
+      "retention_window",
+      "allowed_content_depth",
+      "delete_mode",
+      "approval",
+      "expires_at",
+      "references_holds_checks",
+      "restore_capability",
+      "receipt_store"
+    ]
+  },
+
+  "reference_checks": {
+    "_comment": "The checks a policy declares it performs before an object may be acted on.",
+    "values": [
+      "CURRENT_OBJECT_REVISION",
+      "CONFIRMED_OWNER_AND_PERMISSION",
+      "NO_ACTIVE_OR_DURABLE_REFERENCES_REQUIRING_PRESERVATION",
+      "NO_HUMAN_UNIQUE_EDITS",
+      "NO_ORGANIZATIONAL_HOLD",
+      "PROTECTED_EXCEPTIONS_RESOLVED",
+      "PROVIDER_ACTION_SUPPORT_VERIFIED",
+      "ACTUAL_RECOVERY_SEMANTICS_VERIFIED"
+    ]
+  },
+
+  "retention_levels": {
+    "_comment": [
+      "Levels that remove or dispose of material, and therefore need an approved",
+      "retention. CONTENT_ISOLATION is not among them: it deletes nothing."
+    ],
+    "values": [
+      "REBUILDABLE_ARTIFACT_CLEANUP",
+      "CLOUD_RECOVERABLE_DISPOSAL",
+      "IRREVERSIBLE_DELETE"
+    ]
+  },
+
+  "review_actions": {
+    "_comment": [
+      "The only actions an unmatched bundle may receive. A policy cannot declare",
+      "unmatched: EXCLUDE_FROM_WORK or anything that deletes: unmatched means",
+      "unknown, and unknown is reviewed."
+    ],
+    "values": ["REVIEW", "REVIEW_NO_DELETE"]
+  },
+
+  "unmatched_default": "REVIEW_NO_DELETE",
+
+  "relevance_rules": {
+    "_comment": [
+      "What a matched, confirmed source rule permits. `source_confirmed: false`",
+      "means the rule cannot exclude anything: the fail-closed direction is",
+      "REVIEW."
+    ],
+    "values": {
+      "confirmed-muted-support-source": {
+        "source_confirmed": true,
+        "audio_fetch": "DENY",
+        "incidental_audio_to_understanding": "EXCLUDE",
+        "incidental_audio_to_board": "EXCLUDE",
+        "incidental_audio_to_report": "EXCLUDE",
+        "support_evidence_authority": "KEEP_IF_RELEVANT",
+        "evidence_paths": ["SUPPORT_CHAT", "CONFIG_DIFF", "TEST_RESULT", "RESULT_CONFIRMATION"],
+        "note": "An accurately identified muted support source: incidental audio is excluded from understanding, board and report, and the work is evidenced without it."
+      },
+      "confirmed-open-source": {
+        "source_confirmed": true,
+        "audio_fetch": "ALLOW",
+        "incidental_audio_to_understanding": "KEEP_IF_RELEVANT",
+        "incidental_audio_to_board": "KEEP_IF_RELEVANT",
+        "incidental_audio_to_report": "KEEP_IF_RELEVANT",
+        "support_evidence_authority": "KEEP_IF_RELEVANT",
+        "evidence_paths": ["SUPPORT_CHAT", "CONFIG_DIFF", "TEST_RESULT", "RESULT_CONFIRMATION", "MEETING_AUDIO"],
+        "note": "A confirmed source whose audio is admitted within the policy's allowed depth."
+      },
+      "unconfirmed-source": {
+        "source_confirmed": false,
+        "audio_fetch": "DENY",
+        "incidental_audio_to_understanding": "REVIEW",
+        "incidental_audio_to_board": "REVIEW",
+        "incidental_audio_to_report": "REVIEW",
+        "support_evidence_authority": "REVIEW",
+        "evidence_paths": [],
+        "note": "No confirmed rule covers this source, so nothing may be excluded and no evidence path is opened on its behalf."
+      }
+    }
+  },
+
+  "protected_exceptions": [
+    {
+      "ref": "support:marek-open-mic",
+      "_comment": [
+        "The user's one explicitly declared exception: a support group where the",
+        "microphone is open, so its audio is admitted. It is NOT 'everyone named",
+        "Marek' and NOT 'Polish in general'. No stable id for that group has been",
+        "obtained, so the declaration is UNBOUND and selects nothing at all.",
+        "title_or_name_matching_allowed is false, and this kernel has no title or",
+        "name matcher to allow: matching is by stable identifier only."
+      ],
+      "binding_state": "UNBOUND",
+      "tenant_ref": null,
+      "chat_ref": null,
+      "meeting_selector": null,
+      "title_or_name_matching_allowed": false,
+      "action_when_bound": "REVIEW_RELEVANT_SEGMENTS",
+      "action_when_unbound": "REVIEW_NO_DELETE"
+    }
+  ],
+
+  "templates": [
+    {
+      "_comment": [
+        "CONTRACT-hwz-ops section 4, carried as a DISABLED declaration. It is not",
+        "installed, it authorises nothing, and it deliberately fails the",
+        "executable-policy checks: its selectors are empty and its retention has",
+        "no approved policy and no days. A template is not consent."
+      ],
+      "schema": "serveros/meeting-policy-target.v1",
+      "status": "TEMPLATE_NOT_INSTALLED",
+      "policy_ref": "meeting:technical-support",
+      "binding_state": "UNBOUND",
+      "automation_enabled": false,
+      "source_selectors": [],
+      "content_default": "METADATA_ONLY",
+      "unmatched": "REVIEW_NO_DELETE",
+      "muted_support": {
+        "require_confirmed_source_policy": true,
+        "audio_fetch": "DENY_BY_DEFAULT",
+        "incidental_audio_to_understanding": "EXCLUDE",
+        "incidental_audio_to_board": "EXCLUDE",
+        "incidental_audio_to_report": "EXCLUDE",
+        "support_chat_and_execution_evidence": "KEEP_IF_RELEVANT"
+      },
+      "protected_exceptions": ["support:marek-open-mic"],
+      "retention": {
+        "approved_policy_ref": null,
+        "days": null,
+        "generated_local_cache_cleanup": "REQUIRES_REGENERABILITY_AND_POLICY",
+        "cloud_recycle": "DISABLED_PENDING_EXPLICIT_SCOPE",
+        "permanent_delete": "PER_OPERATION_APPROVAL_REQUIRED"
+      },
+      "eligibility_requires": [
+        "CURRENT_OBJECT_REVISION",
+        "CONFIRMED_OWNER_AND_PERMISSION",
+        "NO_ACTIVE_OR_DURABLE_REFERENCES_REQUIRING_PRESERVATION",
+        "NO_HUMAN_UNIQUE_EDITS",
+        "NO_ORGANIZATIONAL_HOLD",
+        "PROTECTED_EXCEPTIONS_RESOLVED",
+        "PROVIDER_ACTION_SUPPORT_VERIFIED",
+        "ACTUAL_RECOVERY_SEMANTICS_VERIFIED"
+      ],
+      "receipts": "REQUIRED_FOR_EACH_MUTATION"
+    }
+  ],
+
+  "signals": {
+    "_comment": [
+      "SPACE-AND-RETENTION 7: audio duration, the user-muted boolean, language,",
+      "title, the participant list and the automatic summary each cannot on their",
+      "own prove that content has no business value. They are recorded and",
+      "recorded as insufficient. The kernel has no branch that reads them."
+    ],
+    "values": ["audio_duration_s", "user_muted", "language", "title", "participants", "auto_summary"]
+  }
+}

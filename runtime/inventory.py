@@ -465,10 +465,69 @@ class Inventory:
 
     # -- host --------------------------------------------------------------
 
+    def _shm(self) -> dict:
+        """POSIX shared memory, read in the two places it is visible.
+
+        These are two different measurements and reporting one as the other is
+        how this column goes wrong:
+
+          * `Shmem` in /proc/meminfo is how much memory tmpfs currently holds.
+            It is not scoped to /dev/shm: other tmpfs mounts and memfd hold
+            shared memory too, so it can be large on a machine whose /dev/shm
+            is empty.
+          * the /dev/shm mount is the budget a container actually runs into. A
+            process writing to /dev/shm is bounded by *that* number, and a
+            report carrying only the Shmem counter would have called a full
+            /dev/shm healthy.
+
+        Measured on this host, 2026-09-20: /dev/shm at 24K used while Shmem was
+        264420 kB — a factor of about ten thousand between the two, both true.
+        Neither is "the" shared-memory number, which is why both are carried.
+
+        A host with no /dev/shm gets a named reason rather than zeros: an
+        absent /dev/shm and an empty one are different facts, and only one of
+        them is a container that will fail on its first write.
+        """
+        shmem = None
+        text = self.host.read_text("/proc/meminfo")
+        if text is not None:
+            for line in text.splitlines():
+                key, _, rest = line.partition(":")
+                if key.strip() == "Shmem":
+                    parts = rest.split()
+                    if parts and parts[0].isdigit():
+                        # /proc/meminfo is in kB.
+                        shmem = int(parts[0]) * 1024
+        mount = self.host.statvfs("/dev/shm")
+        if mount is None:
+            return _unavailable(
+                "/dev/shm is not a filesystem this process can measure; an "
+                "absent /dev/shm and an empty one are different facts",
+                shmem_bytes=shmem)
+        used = mount.total - mount.free
+        return {
+            "state": "PRESENT",
+            # Not folded into `mount`: see the docstring. Null when meminfo did
+            # not answer, which is a gap and not a zero.
+            "shmem_bytes": shmem,
+            "mount": {
+                "path": "/dev/shm",
+                "total_bytes": mount.total,
+                "free_bytes": mount.free,
+                "used_bytes": used,
+                "used_percent": (round(100.0 * used / mount.total, 1)
+                                 if mount.total else None),
+            },
+        }
+
     def host_summary(self) -> dict:
         return {
             "cpu": self._cpu(),
             "memory": self._memory(),
+            # §SYS-01 names shm as its own column rather than a field of
+            # memory, because a container that dies on a full /dev/shm dies
+            # for a reason the RAM numbers do not show.
+            "shm": self._shm(),
             "load": self._load(),
             "uptime_seconds": self._uptime(),
             "gpu": self._gpu(),

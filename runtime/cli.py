@@ -179,6 +179,193 @@ def human_bytes(n) -> str:
 # ---------------------------------------------------------------------------
 
 
+def _shm_line(shm) -> str:
+    """The shm column, printed as the two facts it is.
+
+    Both numbers appear because neither is "the" shared-memory number: the
+    /dev/shm mount is what a container runs into, and `Shmem` is what tmpfs
+    holds across every mount. On this host they read 24K and 258 MiB at the
+    same instant, and a line showing only one of them would be read as the
+    other.
+
+    An unmeasurable /dev/shm prints its reason. It does not print a zero — an
+    absent /dev/shm and an empty one are different, and only one of them is a
+    container that will fail on its first write.
+    """
+    if not shm:
+        return "shm         UNKNOWN (no shm measurement was taken)"
+    if shm.get("state") != "PRESENT":
+        return f"shm         {shm.get('state')} ({shm.get('reason', 'no reason given')})"
+    mount = shm["mount"]
+    shmem = shm.get("shmem_bytes")
+    return (f"shm         /dev/shm {human_bytes(mount['used_bytes'])} used of "
+            f"{human_bytes(mount['total_bytes'])} · tmpfs Shmem "
+            + (human_bytes(shmem) if shmem is not None
+               else "UNKNOWN (meminfo did not report Shmem)"))
+
+
+def cmd_report_daily(args) -> int:
+    """SYS-23 — one period's real work diff plus Quay's own records.
+
+    Three things this command refuses to decide for the caller, because
+    deciding them is how a daily report stops being true:
+
+      * whether the work happened — it reads `git` and Quay's gate ledger and
+        reports what those said. A period with nothing in it is written down as
+        nothing, not filled in;
+      * whether the report was delivered — `--publication-state` is the
+        caller's fact and defaults to UNKNOWN. Writing the file is not
+        delivering it, and the receipt says so;
+      * where the report goes — `--out-dir` is required and must be absolute
+        and outside this repository. A report written into the revision is
+        replaced wholesale by the next one while looking exactly like a report
+        that is kept.
+
+    What it will not read at all is any input outside the contract's accepted
+    kinds. That boundary is a whitelist rather than a list of forbidden names:
+    a name-based rule only stops the names somebody thought of, and the thing
+    that must not enter a work report is whatever has no checkable relation to
+    the period's work — which includes names nobody has invented yet.
+    """
+    mod = _load_module_from(REPO_ROOT / "runtime" / "daily_report.py",
+                            "serveros_daily_report")
+    out_dir = Path(args.out_dir)
+    try:
+        window = mod.period_window({"start": args.start, "end": args.end})
+        fallbacks = mod.Fallbacks()
+        work = mod.measure_worktree(Path(args.worktree), window, fallbacks)
+        if args.run_dir:
+            quay = mod.measure_quay(Path(args.run_dir), window, fallbacks)
+        else:
+            # Not a measurement of "no gates this period". Quay's ledger lives
+            # in Quay's own workspace and is not in this repository, so a
+            # default pointing at one round's scratch directory would read a
+            # store that happens to still be on this disk and report it as this
+            # period's execution record. Absent input, absent answer.
+            quay = {"root": None, "ledger": None, "tasks_dir": None,
+                    "answered": False, "gates": [], "tasks": [], "problems": [],
+                    "notes": [], "out_of_window": 0, "unknown_verdicts": [],
+                    "why": ("没有给 --run-dir，这一次没有读 Quay 的账本。"
+                            "这是缺口，不是「本周期没有闸门记录」")}
+        document = mod.compose(period={"start": args.start, "end": args.end},
+                               work_delta=work, quay=quay, focus=args.focus,
+                               generated_at=args.generated_at,
+                               fallbacks=fallbacks)
+        text = mod.render(document, mod.skeleton())
+        receipt_payload = mod.receipt(
+            document, text, out_dir=out_dir, recipient=args.recipient,
+            channel=args.channel, state=args.publication_state,
+            attempted_at=args.attempted_at)
+        written = mod.publish(document, text, receipt_payload, out_dir)
+    except mod.Refused as exc:
+        # A refusal here is a refusal to produce a document that would look
+        # like a report while being about something else. Exit 1 with the
+        # reason, and nothing half-written on disk: every refusal the module
+        # raises fires before the two writes, so there is no partial pair.
+        sys.stderr.write(f"serverosctl: {exc}\n")
+        return EXIT_FAULT
+
+    lines = [
+        f"period      {document['period']['start']} → {document['period']['end']}",
+        f"progress    {document['progress']} — {document['progress_because']}",
+        f"work        {len(work['commits'])} commit(s)"
+        + (f", {len(work['uncommitted'])} uncommitted path(s)"
+           if work["uncommitted"] else "")
+        + ("" if work["answered"] else f"  · GAP: {work['why']}"),
+        f"quay        {len(quay['gates'])} gate record(s)"
+        + (f", {quay['out_of_window']} outside the window"
+           if quay["out_of_window"] else "")
+        + ("" if quay["answered"] else f"  · GAP: {quay['why']}"),
+        f"blocked     {len(document['blocking'])} named"
+        + (f", {len(document['claimed_done_without_a_pass'])} claimed done "
+           f"with no passing gate" if document["claimed_done_without_a_pass"]
+           else ""),
+        f"document    {written['document']}",
+        f"receipt     {written['receipt']}",
+        f"published   {receipt_payload['publication']['state']} — "
+        f"{receipt_payload['publication']['why']}",
+    ]
+    if document["fallbacks"]:
+        # Reported, not swallowed. A fallback reads exactly like a fact in the
+        # body of the document, so the count has to appear next to the document
+        # itself or nobody will ever look for it.
+        lines.append(f"fallbacks   {len(document['fallbacks'])} substituted")
+    emit(document, as_json=args.json, lines=lines)
+    return EXIT_OK
+
+
+def cmd_document_resolve(args) -> int:
+    """SYS-10 — one document's identity, its authoritative revision, and
+    whether the copy in hand is a derivation of it.
+
+    This is the product entry point for `documents/document_governance.py`.
+    Before it existed the kernel had exactly one way to be run — `python
+    documents/document_governance.py --request …` from a source checkout — and
+    that is the same as having none: a module nothing loads ships in no
+    artifact, so on an installed node the verb was not missing, it was
+    unnameable.
+
+    Exit codes are the kernel's own, not rearranged here:
+
+      0  a decision was reached, whatever it was. `NOT_DECLARED` and
+         `SOURCE_UNAVAILABLE` are answers — the first is a finding about the
+         document, the second is a gap in the asking — and a verb that exits
+         non-zero on them makes a legitimate reading look like a failure.
+         The two are told apart by `is_finding` / `is_gap` in the record and by
+         the two words on the line, not by the status.
+      2  the request itself is malformed or unreadable. A caller's typo must
+         not look like an answer.
+
+    `document_governance.main()` names a `1` for "判定失败" in a comment and
+    no path in `answer()` produces it. This verb does not invent one: a status
+    that nothing can be observed emitting is worse than no status, because it
+    reads as a check.
+    """
+    mod = _load_module_from(REPO_ROOT / "documents" / "document_governance.py",
+                            "serveros_document_governance")
+    try:
+        vocabulary = mod.load_vocabulary(args.vocabulary)
+        request = json.loads(Path(args.request).read_text(encoding="utf-8"))
+        out = mod.answer(request, vocabulary)
+    except mod.Rejected as exc:
+        sys.stderr.write(f"serverosctl: {exc}\n")
+        return EXIT_COULD_NOT_ANSWER
+    except (OSError, json.JSONDecodeError) as exc:
+        # An unreadable request is not a request that named a document nobody
+        # declared. One is a gap in the asking, the other is a finding.
+        sys.stderr.write(f"serverosctl: cannot read {args.request}: {exc}\n")
+        return EXIT_COULD_NOT_ANSWER
+
+    record = out["record"]
+    kind = ("GAP" if record["is_gap"]
+            else "FINDING" if record["is_finding"]
+            else "ANSWER")
+    lines = [
+        f"ref         {record['ref']}",
+        f"decision    {record['decision']}  ({kind})",
+        f"source       {record['authority']['source_ref']} — {record['source_state']}",
+        f"authority   {'this is it' if record['is_the_authority'] else 'not it'}"
+        + (f"  ·  copy of {record['copied_from']}" if record["copied_from"] else ""),
+        f"citation    {out['citation']}",
+    ]
+    if record["owner"]:
+        lines.append(f"owner       {record['owner']}"
+                     + (f"  ·  item {record['item']}" if record["item"] else ""))
+    if record["fallbacks"]:
+        # Reported, not swallowed: `source:unstated` is a constant standing in
+        # for a source that signed nothing, and a record that uses it without
+        # saying so attributes a conclusion to nobody.
+        lines.append(f"fallbacks   {len(record['fallbacks'])} substituted: "
+                     + ", ".join(f["field"] for f in record["fallbacks"]))
+    if "chain" in out:
+        chain = out["chain"]
+        lines.append(f"chain       {' -> '.join(chain['chain'])}"
+                     f"  ::  {chain['terminus']}"
+                     f"  ({'canonical root' if chain['root_is_canonical'] else 'no canonical root'})")
+    emit(out, as_json=args.json, lines=lines)
+    return EXIT_OK
+
+
 def cmd_device_show(args) -> int:
     reg = load_registry(args.registry)
     inv = inventory_mod.Inventory()
@@ -204,6 +391,7 @@ def cmd_device_show(args) -> int:
         f"memory      {human_bytes(host['memory']['total_bytes'])} total · "
         f"{human_bytes(host['memory']['available_bytes'])} available",
         f"gpu         {host['gpu']['state']} ({host['gpu'].get('reason', 'present')})",
+        _shm_line(host.get("shm")),
         f"load        {host['load']['load1']} / {host['load']['load5']} / {host['load']['load15']}",
         f"managed     {len(reg)} registered · {len(reg.protected())} protected · "
         f"{len(reg.automatable())} automatable",
@@ -938,14 +1126,27 @@ def cmd_device_agents(args) -> int:
     result["bindings"] = _bindings_for(registry, device_ref, observations,
                                        because)
 
+    # What was observed goes into the record, not only into the prose.
+    #
+    # It used not to. The surface rows were built inside the prose renderer
+    # below and nowhere else, so `--json` answered with a verdict and no
+    # observation behind it — the exact shape this command exists to refuse:
+    # a machine-readable record that cannot say what it looked at.
+    # `tests/test_runtime_parity.py` asked for these rows and had been red since
+    # it was written, which was the right reading of a real gap rather than a
+    # stale test. Built once here and read by both renderers, so the two cannot
+    # drift apart while each stays defensible on its own.
+    observed_surfaces = parity_mod.observed_surface_rows(observed,
+                                                         result["runtimes"])
+    result["observed_surfaces"] = observed_surfaces
+
     lines = [f"runtimes    {', '.join(result['runtimes'])}",
              f"compared    {', '.join(result['compared_fields'])}",
              f"may differ  {', '.join(result['allowed_differences'])}"]
-    for runtime in result["runtimes"]:
-        for field in parity_mod.OBSERVABLE_SURFACES:
-            for surface in (observed.get(runtime) or {}).get(field) or []:
-                mark = "present" if surface["present"] else "MISSING"
-                lines.append(f"  {runtime:<12} {field:<20} {mark}  {surface['path']}")
+    for surface in observed_surfaces:
+        mark = "present" if surface["present"] else "MISSING"
+        lines.append(f"  {surface['runtime']:<12} {surface['field']:<20} "
+                     f"{mark}  {surface['path']}")
     lines.append(f"verdict     {result['verdict']}")
     for finding in result["findings"]:
         lines.append(f"  finding   {finding['code']}: {finding['detail']}")
@@ -985,6 +1186,134 @@ def cmd_device_agents(args) -> int:
     return EXIT_OK if result["verdict"] == "CONFORMANT" else EXIT_FAULT
 
 
+def _named_catalogue(args) -> tuple[dict | None, str | None, str | None]:
+    """input 1 — a catalogue NAMED by the caller, from one of two places.
+
+    Returns `(catalogue, provenance, why_not)`. Exactly one of the last two is
+    set: `why_not` is a line for stderr when the catalogue could not be read,
+    and `provenance` is what was read, for the `note` on the answer.
+
+    Copied in shape from `cmd_ability_pack`, deliberately, because it is the
+    same decision: a verdict computed against a catalogue nobody read is a
+    verdict about nothing, and the pack verb has said so since before this one
+    existed. What differs is the failure. A pack verdict has nowhere to record
+    "no catalogue", so it refuses; a resolution does — UNKNOWN with `ability`
+    in `inputs_missing` — so this returns the gap to be answered rather than
+    raised, and only an operator who NAMED a catalogue and could not get it
+    gets an error.
+
+    The manifest is read through `ability_projection.read_manifest`, out of a
+    git object at a revision, and the RESOLVED full SHA is what the note names
+    — not what the operator typed, because `--ability-rev` may be a branch or a
+    short SHA and a catalogue that cannot be produced again is not a catalogue
+    a verdict may cite.
+    """
+    if args.ability_repo and args.ability_rev:
+        projection_mod = _load_module_from(
+            REPO_ROOT / "runtime" / "ability_projection.py",
+            "serveros_ability_projection")
+        try:
+            manifest, resolved = projection_mod.read_manifest(
+                args.ability_repo, args.ability_rev)
+        except projection_mod.AuthorityUnreachable as exc:
+            return None, None, (
+                f"cannot read the catalogue at {args.ability_repo} "
+                f"@{args.ability_rev} — {exc}. This is an answer, not a "
+                f"failure to compute one: a resolution against a catalogue "
+                f"nobody read would be a verdict about nothing.")
+        # The manifest names abilities by their bare id, so the reference is
+        # composed here. This is the one branch that composes.
+        keys = [f"ability:{name}" for name in
+                (str(a.get("name")) for a in (manifest.get("abilities") or [])
+                 if isinstance(a, dict) and a.get("name"))]
+        where = f"ability-repo {args.ability_repo}@{resolved[:12]}"
+        # What the collapse below is, in this branch's own words. The canonical
+        # manifest lists an ability once per SOURCE, so `mcps/X` and `plugins/X`
+        # are two entries and one ability — its header says so: `path = storage
+        # locator（name != identity != path）`, `跨渠道 ≠ 不同 Ability`. Measured
+        # at fbd0b1a7, the pinned revision this round resolves against: 56
+        # entries, 51 distinct names.
+        unit, collapse = (
+            "manifest entries",
+            "which the manifest itself calls one ability at a second path")
+    else:
+        try:
+            keys = [line.strip() for line in
+                    args.catalogue.read_text(encoding="utf-8").splitlines()
+                    if line.strip() and not line.startswith("#")]
+        except OSError as exc:
+            return None, None, f"cannot read {args.catalogue} — {exc}"
+        where = f"catalogue {args.catalogue}"
+        unit, collapse = "lines", "which are the same key written twice"
+
+    if not keys:
+        # An empty catalogue is not a permissive one. Handed through it makes
+        # every ability a MISS, and the answer reads `PROVIDER_NOT_INSTALLED ·
+        # "<ability> is not in the pinned catalogue"` — a definite finding
+        # about a list nobody meant to publish, manufactured by a blank file.
+        # `resolver._input_ability` is right to read a supplied empty mapping
+        # as a closed list with nothing in it; the mistake is upstream, and
+        # this is the only place that can tell the two apart, because the
+        # intent to name a catalogue is on the command line.
+        return None, None, (
+            f"{where} names no abilities, so answering against it would report "
+            f"every ability as absent from a catalogue nobody wrote. Refusing "
+            f"rather than answering against it.")
+
+    # A file names the catalogue's KEYS — references — while the manifest names
+    # bare ids, and this is the one place that can hold the two apart. Written
+    # without this check, a file listing `ability:runtime-management` gets
+    # prefixed into `ability:ability:runtime-management` and misses everything:
+    # a definite catalogue finding, produced by a doubled `ability:`. Measured
+    # rather than imagined — that is what the first draft of the example
+    # catalogue did.
+    for key in keys:
+        if "#" in key:
+            return None, None, (
+                f"{key!r} in {where} names an operation. The catalogue is keyed "
+                f"by the bare ability — the operation is split off the reference "
+                f"before the lookup, so `ability:x#read` and `ability:x` are the "
+                f"same entry and a key carrying a verb can never be asked for.")
+        if not key.startswith("ability:"):
+            return None, None, (
+                f"{key!r} in {where} is not an ability reference. Catalogue keys "
+                f"are written `ability:<id>`; `{key}` written bare is a "
+                f"different key and would miss every entry in a catalogue keyed "
+                f"by reference.")
+    distinct = sorted(set(keys))
+    if len(distinct) == len(keys):
+        counted = f"{len(distinct)} {'ability' if len(distinct) == 1 else 'abilities'}"
+    else:
+        # Both numbers, because both are true of the same object and they answer
+        # different questions. A note that printed only `51` would leave a reader
+        # unable to tell a de-duplication from five abilities lost on the way in
+        # — and the two readings are 56 and 51 of one manifest, which is exactly
+        # the kind of pair that gets resolved by guessing when only one is shown.
+        lost = len(keys) - len(distinct)
+        counted = (
+            f"{len(distinct)} {'ability' if len(distinct) == 1 else 'abilities'}, "
+            f"composed from {len(keys)} {unit} — {lost} of them "
+            f"{'names' if lost == 1 else 'name'} an ability another one "
+            f"already names, {collapse}")
+    return ({key: {} for key in distinct}, f"{where} ({counted})", None)
+
+
+def _catalogue_from_names(names) -> dict:
+    """Bare ability ids in, the resolver's input 1 out.
+
+    Keyed `ability:<id>`, which is the identity `parse_ability_ref` splits an
+    operation off — a catalogue keyed by anything else misses every ability
+    whose reference the caller happened to write with a verb on it.
+
+    The value is empty on purpose. `resolver._input_ability` asks one question
+    of this mapping (is the ability in it), and inventing a `revision` field
+    here would put a number in the record that nothing read. The revision this
+    catalogue was read AT belongs on the answer's `note`, where it is the
+    revision of the thing that was actually read.
+    """
+    return {f"ability:{name}": {} for name in sorted(set(names))}
+
+
 def cmd_ability_resolve(args) -> int:
     """§45/§46 — can THIS device do THIS thing, now, and if not why not.
 
@@ -1002,10 +1331,28 @@ def cmd_ability_resolve(args) -> int:
     the same shape as `admission()`, and the reason the test for this asserts
     the wiring rather than the logic.
 
-    The inputs come from `--request`, and deliberately from nowhere else yet.
-    Assembling them from live state is the next stage; a version of this that
-    guessed at them would produce a confident `AVAILABLE` computed from inputs
-    nobody supplied, which is precisely what the kernel now refuses to do.
+    Input 1 has a producer now, and the other seven do not
+    ------------------------------------------------------
+    This used to say the inputs come from `--request` "and deliberately from
+    nowhere else yet", which was true and was read by callers as "the request
+    is where the catalogue goes" — so the shipped example request, which
+    supplies no catalogue, came back asserting that its ability was not in the
+    pinned catalogue. `ability pack` had already refused that exact shape, in
+    its own words, one verb over: the local projection "is what this NODE has
+    observed, and resolving a pack against it reports every pack UNAVAILABLE as
+    though that were a finding about the catalogue". A resolution has the same
+    problem and a third option the pack verdict does not — it can say so.
+
+    So a catalogue is named the same two ways it is named there: a file of
+    ability names, or the canonical manifest at a revision. Neither is a
+    default. Supplying neither is not an error, because the resolver answers
+    UNKNOWN and names the gap; it is merely an answer that costs a second run
+    to replace, so the ways of supplying one are printed when it happens.
+
+    Nothing here assembles the other seven. Each of them is a device fact, and
+    a CLI that guessed at them would produce a confident `AVAILABLE` computed
+    from inputs nobody supplied — which is what the kernel refuses to do, and
+    what this command would be reintroducing at the layer above it.
     """
     resolver_mod = _load_module_from(REPO_ROOT / "abilities" / "resolver.py",
                                      "serveros_ability_resolver")
@@ -1017,11 +1364,39 @@ def cmd_ability_resolve(args) -> int:
     if args.runtime:
         request["runtime"] = args.runtime
 
+    catalogue_note = None
+    if args.catalogue or (args.ability_repo and args.ability_rev):
+        catalogue, provenance, why_not = _named_catalogue(args)
+        if catalogue is None:
+            sys.stderr.write(f"serverosctl: {why_not}\n")
+            return EXIT_COULD_NOT_ANSWER
+        request["abilities"] = catalogue
+        catalogue_note = provenance
+    elif request.get("abilities") is None:
+        # Advice, not a verdict. The resolver's UNKNOWN is the answer; this
+        # says how to make the next one a finding.
+        sys.stderr.write(
+            "serverosctl: no ability catalogue was supplied, so the answer is "
+            "UNKNOWN and `inputs_missing` names `ability`. Supply one with "
+            "--ability-repo and --ability-rev (the canonical manifest at a "
+            "revision), or with --catalogue (a file of ability names).\n")
+
     try:
         record = resolver_mod.resolve(request)
     except resolver_mod.Rejected as exc:
         sys.stderr.write(f"serverosctl: {exc}\n")
         return EXIT_COULD_NOT_ANSWER
+
+    # Where input 1 came from, recorded on the answer. Without it a resolution
+    # naming an ability as absent from the catalogue says nothing about WHICH
+    # catalogue — and a caller cannot tell a miss against the pinned revision
+    # from a miss against a file of names somebody typed. Stored, not derived:
+    # the resolver reads a catalogue and cannot know its provenance, and the
+    # `revision` this names is the SHA `read_manifest` resolved, not the ref
+    # the operator passed.
+    if catalogue_note:
+        record["note"] = (record.get("note") or "") + \
+            f"input 1 read from: {catalogue_note}"
 
     lines = [
         f"ability     {record['ability']}",
@@ -5262,6 +5637,26 @@ def build_parser() -> argparse.ArgumentParser:
               "operations table."))
     ab_resolve.add_argument("--device", help="override request.device_ref")
     ab_resolve.add_argument("--runtime", help="override request.runtime")
+    # input 1, named the two ways `ability pack` names a catalogue. Neither has
+    # a default: the local projection is what this NODE has observed, and it
+    # answers "is this installed here" — which is `device_binding`, input 4.
+    # Reading it as the catalogue would make input 1 and input 4 the same
+    # question, and would report every ability the authority lists but this
+    # device lacks as absent from a catalogue nobody read.
+    ab_resolve.add_argument(
+        "--catalogue", type=Path,
+        help=("a file of ability names, one per line, `#` for comments. Sets "
+              "request.abilities. Mutually usable with --ability-repo/--ability-rev, "
+              "which take precedence when both are given."))
+    ab_resolve.add_argument(
+        "--ability-repo", type=Path,
+        help=("the canonical ability-management checkout to read the catalogue "
+              "from. Needs --ability-rev."))
+    ab_resolve.add_argument(
+        "--ability-rev",
+        help=("the pinned revision the manifest is read at; a branch or short "
+              "SHA is resolved to the full SHA, and that resolved SHA is what "
+              "the answer names."))
     ab_resolve.set_defaults(func=cmd_ability_resolve)
     ab_refresh = ability_sub.add_parser(
         "refresh",
@@ -5896,6 +6291,81 @@ def build_parser() -> argparse.ArgumentParser:
                       "commands that produced them", **_COMMON)
     _add_workbench(wb_check)
     wb_check.set_defaults(func=cmd_workbench)
+
+    report = sub.add_parser(
+        "report", help="periodic reports (§23)", **_COMMON)
+    report_sub = report.add_subparsers(dest="report_verb", required=True)
+    rp_daily = report_sub.add_parser(
+        "daily",
+        help="one period's real work diff plus Quay's own gate ledger, as a "
+             "canonical document and a publication receipt. This command writes "
+             "two files and sends nothing", **_COMMON)
+    rp_daily.add_argument(
+        "--start", required=True,
+        help="window start, ISO-8601 WITH an offset. Required and undefaulted: "
+             "a generator that picks its own window writes a report about a "
+             "period nobody chose, and it reads exactly like a normal one")
+    rp_daily.add_argument("--end", required=True,
+                          help="window end, ISO-8601 with an offset, >= --start")
+    rp_daily.add_argument(
+        "--worktree", required=True,
+        help="the checkout the period's work diff is read from. A path that is "
+             "not a checkout is reported as a GAP, not as zero commits")
+    rp_daily.add_argument(
+        "--run-dir", default=None,
+        help="a round's directory holding `.quay/gate-events.jsonl`. Optional, "
+             "and its absence is recorded as a GAP rather than as an empty "
+             "ledger — Quay's records are not in this repository")
+    rp_daily.add_argument("--focus", nargs="*", default=None,
+                          help="the Item ids this period was aimed at. Absent "
+                               "means nobody wrote one down, which is not the "
+                               "same as there having been none")
+    rp_daily.add_argument("--generated-at", default=None,
+                          help="ISO-8601 instant to stamp the document with. "
+                               "Default: read the host clock and say so in the "
+                               "document, because a defaulted clock is a "
+                               "different kind of reading from a supplied one")
+    rp_daily.add_argument("--out-dir", required=True,
+                          help="where to write the document and its receipt. "
+                               "Must be absolute and outside this repository: a "
+                               "report written into the revision is replaced "
+                               "wholesale by the next one while looking exactly "
+                               "like one that is kept")
+    rp_daily.add_argument("--recipient", default=None,
+                          help="who the report is for. Required in practice for "
+                               "a DELIVERED state: a delivery that cannot say "
+                               "who it went to is one this producer cannot "
+                               "corroborate")
+    rp_daily.add_argument("--channel", default=None, help="the channel or transport")
+    rp_daily.add_argument(
+        "--publication-state", default=None,
+        help="what the CALLER says happened to this report — one of the words "
+             "in runtime/notification-contract.yaml#alerts.delivery.values. "
+             "Default UNKNOWN. Writing the file is not delivering it, so this "
+             "command never infers this value from having succeeded")
+    rp_daily.add_argument("--attempted-at", default=None,
+                          help="when the caller attempted delivery, if it did")
+    rp_daily.set_defaults(func=cmd_report_daily)
+
+    document = sub.add_parser(
+        "document", help="document identity and authority (§10)", **_COMMON)
+    document_sub = document.add_subparsers(dest="document_verb", required=True)
+    doc_resolve = document_sub.add_parser(
+        "resolve",
+        help="one ref and one source answer in, one identity record out. Reads "
+             "a request file and answers; it declares nothing and writes "
+             "nothing", **_COMMON)
+    doc_resolve.add_argument(
+        "--request", required=True,
+        help="path to a request JSON. Required and undefaulted: there is no "
+             "useful default ref, and a defaulted one would answer about a "
+             "document nobody asked after")
+    doc_resolve.add_argument(
+        "--vocabulary", default=None,
+        help="the vocabulary to read the declaration against. Default: the one "
+             "that ships beside the kernel, so an installed node judges by the "
+             "same closed set a source checkout does")
+    doc_resolve.set_defaults(func=cmd_document_resolve)
 
     taxonomy = sub.add_parser(
         "taxonomy",

@@ -80,6 +80,43 @@ def _finding(code: str, detail: str, **extra) -> dict:
     return {"code": code, "detail": detail, **extra}
 
 
+def observed_surface_rows(observed: dict, runtimes) -> list:
+    """The measured surfaces, flattened into rows a caller can read.
+
+    This exists because the rows used to be built inside one renderer, and a
+    second renderer that needed the same facts had no way to get them: the
+    JSON record carried a verdict with no observation behind it, so the
+    machine-readable answer to "what did this look at" was silence. Two
+    renderers deriving one fact independently is how they drift while each
+    stays defensible, so the derivation lives here and both read it.
+
+    A row says `present: False` when the path was read and is not there. That
+    is a finding. `observed` naming no entry for a runtime at all is a gap,
+    and it produces no row — an absence of measurement must not be rendered
+    as a measurement of absence.
+    """
+    rows = []
+    for runtime in runtimes or ():
+        for field in OBSERVABLE_SURFACES:
+            for surface in (observed.get(runtime) or {}).get(field) or []:
+                present = bool(surface.get("present"))
+                rows.append({
+                    "runtime": runtime,
+                    "field": field,
+                    "present": present,
+                    "path": surface.get("path"),
+                    # Carried so a caller can answer a per-feature question
+                    # without pairing this list against the contract by index.
+                    "role": surface.get("role"),
+                    "relative": surface.get("relative"),
+                    # A bare `present: False` cannot tell "read it and it is
+                    # not there" from "did not read it", and those are a
+                    # finding and a gap respectively.
+                    "because": None if present else "the path was read and is not there",
+                })
+    return rows
+
+
 def check_contract(contract: dict) -> list[dict]:
     """Is the contract internally consistent?
 

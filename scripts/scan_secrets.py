@@ -80,6 +80,23 @@ def is_fixture(path: Path, roots: list[Path]) -> bool:
     return False
 
 
+def scan_text(text: str) -> list[dict]:
+    """The decision core: text in, findings out. No filesystem, no policy.
+
+    Split out of `scan_file` so the build can judge what it is *about to write*
+    as well as what is already on disk. `scripts/build.py` composes every file
+    in memory and only afterwards touches the output directory; a gate that
+    could only read paths would have to write first and check second, which is
+    the order that ships a credential when the check fails.
+    """
+    found = []
+    for lineno, line in enumerate(text.splitlines(), start=1):
+        for name, pattern in RULES:
+            if pattern.search(line):
+                found.append({"rule": name, "line": lineno})
+    return found
+
+
 def scan_file(path: Path) -> list[dict]:
     try:
         if path.stat().st_size > MAX_BYTES:
@@ -89,12 +106,7 @@ def scan_file(path: Path) -> list[dict]:
         # A binary or unreadable file is not evidence either way. The tree this
         # runs on is text by construction, so reporting here would be noise.
         return []
-    found = []
-    for lineno, line in enumerate(text.splitlines(), start=1):
-        for name, pattern in RULES:
-            if pattern.search(line):
-                found.append({"rule": name, "line": lineno})
-    return found
+    return scan_text(text)
 
 
 # Trees that are never part of a release and are large enough to matter.

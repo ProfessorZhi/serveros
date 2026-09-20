@@ -14,9 +14,18 @@
     "Until now the resolver had no example request anywhere in the tree, so the",
     "only callers were its own tests. §45's question — can THIS device do THIS",
     "thing, now, and if not why not — could not be asked from the CLI by anybody",
-    "who had not first read resolver.py."
+    "who had not first read resolver.py.",
+    "",
+    "`ability` is written as a REFERENCE (`ability:<id>`), which is what every",
+    "caller and every fixture in the product writes. It was written here as a",
+    "bare id, and that one spelling made this file demonstrate the opposite of",
+    "what it claims: the catalogue is keyed by reference, so the lookup missed",
+    "whatever catalogue the caller supplied, and the answer said `RUNTIME-",
+    "MANAGEMENT is not in the pinned catalogue` — a definite finding about a",
+    "catalogue that contains it. See `capability-contract.yaml#inputs[0]`,",
+    "where the key shape is now declared."
   ],
-  "ability": "runtime-management",
+  "ability": "ability:runtime-management",
   "device_ref": "device:tokyo-shared-dev-01",
   "runtime": "claude-code"
 }

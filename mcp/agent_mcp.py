@@ -988,7 +988,8 @@ def build(*, daemon=None, providers=None, registry=None, local_device_ref=None):
         local_device_ref=device_ref, transports=[loopback, node],
         registry=registry, context_store=DaemonContexts(daemon),
     )
-    view = view_mod.FleetView(routing=router, sessions=_sessions_for(service))
+    view = view_mod.FleetView(routing=router,
+                              sessions=_sessions_for(service, device_ref))
     # §M/§P. The console's two inputs. `bindings` is the SAME daemon handle the
     # loopback uses, so a selection recorded through the console is read back by
     # the path that gates turns, and there is no second writer. `registry` is
@@ -1011,14 +1012,36 @@ def _remote_refs(registry=None) -> tuple[str, ...]:
     return tuple(device.device_ref.ref for device in registry.all())
 
 
-def _sessions_for(service):
+def _sessions_for(service, local_device_ref: str):
     """What the view asks about sessions: a callable, not a store.
 
     The view takes a callable so that it cannot grow its own session ledger,
     which would be a second record of what the providers own. This one answers
     for the device it was built for and knows nothing about any other.
+
+    "Knows nothing about any other" is now enforced rather than asserted. This
+    closure used to accept a `device_ref` and answer anyway: the parameter was
+    received, ignored, and `service.session_list()` was called for whatever the
+    view asked about. A call for `device:server-beijing` therefore came back
+    `{"state": "KNOWN", "sessions": []}` — this node's empty session list,
+    wearing a remote device's name. `fleet/view.py` says the opposite in the
+    same words ("Local for the node this process is on; typed-unavailable
+    otherwise"), so the two files had agreed on the contract and disagreed on
+    the behaviour, which is the failure this round keeps recording.
+
+    The damage was not a missing answer but a wrong one. `state: KNOWN` with an
+    empty list reads as "that device has no active sessions" — a claim about a
+    machine nobody asked. UNKNOWN with a reason is the honest reading of the
+    same situation, and it is what the view's own vocabulary is for.
     """
     def sessions(device_ref: str) -> dict:
+        if str(device_ref) != local_device_ref:
+            return view_mod.unknown(
+                "this session source answers for one device only, and this is "
+                "not it",
+                detail=(f"the view asked about {device_ref}; this control plane "
+                        f"owns {local_device_ref}. Reaching another device's "
+                        f"sessions needs a transport that has actually asked it"))
         listing = service.session_list()
         sessions = listing.get("sessions")
         if sessions is None:

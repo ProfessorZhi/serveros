@@ -26,6 +26,25 @@ inputs:
     source: "ability-management manifest, pinned revision"
     refuses_when: "no such ability at the pinned revision"
     reason: PROVIDER_NOT_INSTALLED
+    # Keyed by the REFERENCE, not by the bare id: `ability:<id>`, exactly the
+    # key `request.ability` carries once `parse_ability_ref` has split any
+    # `#<verb>` off it. Declared here because nothing said it, and the result
+    # was two incompatible readings of the same field — the tests keyed by
+    # reference, the shipped example request wrote a bare id, and the pair
+    # produced `not in the pinned catalogue` for an ability that is in it.
+    # The reference is the right key rather than the id: it is what every
+    # caller and every fixture in the product already writes
+    # (`abilities/resolver.py#parse_ability_ref` says so), and keying by it is
+    # what makes `ability:x#read` and `ability:x` the same lookup.
+    catalogue_key: "ability:<id>"
+    # Two shapes are readable and only one of them can hit this catalogue. A
+    # bare id is accepted by the parser — deliberately, since normalising it
+    # would rewrite an input nobody asked to have rewritten — and then misses
+    # every entry, reporting a definite finding about the catalogue that is
+    # really a finding about how the caller spelled the ref. Naming the gap
+    # rather than closing it: refusing a bare ref is a change to the accepted
+    # input set, and this round did not make it.
+    known_gap: "a bare `<id>` ref is accepted and can never match a ref-keyed catalogue"
   - name: device_capability
     source: "fleet/registry.yaml device record + observed facts"
     refuses_when: "a declared requirement is absent"

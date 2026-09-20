@@ -1,0 +1,157 @@
+{
+  "schema": "serveros/document-vocabulary.v1",
+
+  "_comment": [
+    "SYS-10 文档治理的显式闭词表。它是 DATA：本文件声明判断可以落在哪些值上，",
+    "而判断本身在 documents/document_governance.py 里。",
+    "",
+    "为什么要单独一个文件：一份文档的身份必须能被回答两次而得到同一个答案。如果",
+    "'派生物'这个词只活在某个函数的一个 else 分支里，那么第二个人读到的就不是同一个",
+    "词，而是一个碰巧同名的分支。声明放在这里，判断读到的是一个它们共同引用的集合。",
+    "",
+    "为什么没有'其它'这一类：闭词表的价值全在'未声明即拒绝'上。留一个 OTHER 兜底，",
+    "等于把每一个还没想过的类别都静默收下，而收下之后没有任何一处能说出它是什么。",
+    "遇到未声明的值，内核拒绝并同时说出'给的是哪个、声明里有哪几个'。",
+    "",
+    "本文件不携带任何一份具体文档：没有 ref、没有 locator、没有 owner。谁拥有哪份",
+    "文档是源（registry / index）的事，不是词表的事。"
+  ],
+
+  "sources": [
+    "intake/document-skeletons.yaml#documents",
+    "intake/workchain-contract.yaml#item_documents",
+    "space/vocabulary.json#dimensions.surface.values"
+  ],
+
+  "dimensions": {
+
+    "kind": {
+      "_comment": [
+        "文档的种类。这份名单不是本文件想出来的：它是 fabric 自己已经做出的两份声明的",
+        "并集 —— `document-skeletons.yaml#documents` 的 id（brief/design/plan/report/",
+        "understanding/daily-report）与 `workchain-contract.yaml#item_documents` 的 name",
+        "（card.yaml 是其中唯一没有 skeleton 的一份）。tests/test_document_governance.py",
+        "双向核对这两份文件，所以任何一边增删一份文档，这里会红，而不是悄悄漏掉。",
+        "",
+        "因此仓库级的文档（ARCHITECTURE.md、各 *-contract.yaml）目前不在这个集合里，",
+        "引用它们会被拒绝而不是被兜底收下。这是诚实的状态而不是缺陷：一份新种类的文档",
+        "要先被声明才能被治理，而'声明'就是在这里加一行。"
+      ],
+      "values": {
+        "card": "一个 Item 的卡：本次工作的身份与状态",
+        "brief": "被选定之后展开的一条需求",
+        "design": "打算怎么建",
+        "plan": "按什么顺序建",
+        "report": "发生了什么，附上读者能自己再跑一遍的证据",
+        "understanding": "现在理解了什么，以及变了什么；节点级，不属于任何 Item",
+        "daily-report": "一天里所有 Item 的横切；节点级，不属于任何 Item"
+      }
+    },
+
+    "kind_scope": {
+      "_comment": [
+        "每一种文档属于一个 Item，还是属于整个节点。这张表把两份声明里本来就有的区分",
+        "写实：`workchain-contract.yaml#item_documents` 列出的都是 Item 文档，",
+        "`document-skeletons.yaml` 里写 `scope: node` 的是 understanding 与 daily-report。",
+        "",
+        "为什么要写死而不是让源自己声明：源的 record 里也有 scope，两份一对照，",
+        "'brief 声明自己是节点级文档'就成了一条能被拒绝的矛盾，而不是一条被照抄的字段。"
+      ],
+      "brief": "item",
+      "card": "item",
+      "design": "item",
+      "plan": "item",
+      "report": "item",
+      "daily-report": "node",
+      "understanding": "node"
+    },
+
+    "scope": {
+      "_comment": "文档归属的粒度。一个值都不多：'既属于 Item 又属于节点'是两组所有权，不是三档。",
+      "values": {
+        "item": "这份文档属于一个 Item，record 必须说出是哪一个",
+        "node": "这份文档属于整个节点，不属于任何 Item；record 说出 Item 就是自相矛盾"
+      }
+    },
+
+    "standing": {
+      "_comment": [
+        "这份 ref 本身是不是权威版本。这一维是本模块最要紧的一条线：",
+        "把 DERIVATIVE 读成 CANONICAL，会让一份副本被当成权威引用出去，",
+        "而引用它的人没有任何办法知道自己在读副本。"
+      ],
+      "values": {
+        "CANONICAL": "这个 ref 就是这份文档的权威版本所在处",
+        "DERIVATIVE": "这个 ref 是一份副本或派生物；权威版本在别处，由 copied_from 指出"
+      }
+    },
+
+    "surface": {
+      "_comment": [
+        "权威版本落在哪一种表面上。这一维照抄 `space/vocabulary.json#dimensions.surface`：",
+        "文档治理与 Space 解析器共用同一套表面名，否则同一份文档在两处会被叫成两种表面。",
+        "测试只查单向包含（这里声明的表面必须在 Space 那边仍然存在），因为 Space 新增一种",
+        "表面不会使这里出错，而这里凭空多出一种表面则一定是我写错了。",
+        "",
+        "locator 是字符串，由源给出、被逐字携带：内核不构造 locator、不解析路径、不打开",
+        "文件。空间解析器已经定过这条边界——具体定位是适配器的事。"
+      ],
+      "values": {
+        "local": "本地文件系统，WORKSPACE_ROOT 或 DATA_ROOT 之下",
+        "git": "本地 Git 工作树或 worktree",
+        "github": "GitHub 上的远端对象",
+        "wiki": "飞书 Wiki 空间树",
+        "drive": "飞书 Drive 文件或目录树",
+        "minutes": "飞书妙记对象（没有目录层级）",
+        "mydocs": "飞书个人文档库（space_type=my_library）"
+      }
+    },
+
+    "source_state": {
+      "_comment": [
+        "三段，而且是本模块要分开的两件事的全部：'源答了没有' 与 '源答了什么'。",
+        "UNANSWERED 是缺口，ANSWERED_ABSENT 是发现；两者都缺一个具体值，",
+        "而缺口与发现有各自不同的下游后果，所以它们不是同一个值的两种说法。"
+      ],
+      "values": {
+        "ANSWERED_DECLARED": "源答了，而且它手里有这份文档",
+        "ANSWERED_ABSENT": "源答了，而且它答的是：没有这样一份文档",
+        "UNANSWERED": "源没有回答；关于这份文档一个结论也没有建立起来"
+      }
+    },
+
+    "decision": {
+      "_comment": [
+        "内核能返回的全部判断结果。测试对照本集合，所以内核新增一个返回值而词表没有，",
+        "是构建失败而不是读的人的发现。",
+        "",
+        "REJECTED 是唯一的例外，而且它在这里是对的：它作为异常抛出，不进入任何记录 ——",
+        "畸形请求与一个判定结果是两件不同的事，把它也做成一条记录，会让一次调用方的",
+        "拼写错误和一次「答案是拒绝」在下游看起来一样。所以测记录的用例集合是",
+        "DECISIONS - {REJECTED}，而 REJECTED 由 test_*_is_rejected 那一组覆盖。"
+      ],
+      "values": {
+        "CANONICAL": "源答了：这个 ref 是权威版本",
+        "DERIVATIVE": "源答了：这个 ref 是派生物，权威版本由 copied_from 指出",
+        "NOT_DECLARED": "源答了：它手里没有这样一份文档。这是发现，不是缺口",
+        "SOURCE_UNAVAILABLE": "源没有回答。这是缺口，不是关于这份文档的结论",
+        "REJECTED": "请求本身畸形：调用方的 bug，不是'答案是拒绝'"
+      }
+    },
+
+    "terminus": {
+      "_comment": [
+        "沿 copied_from 走到头时停在哪一种终点。DEPTH_LIMIT 与 CYCLE 都在这里声明，",
+        "而不是抛一个异常：循环是一条关于声明本身的发现，把它变成异常会让'跑不动'",
+        "和'数据有问题'看起来一样。"
+      ],
+      "values": {
+        "CANONICAL": "走到了权威版本",
+        "NOT_DECLARED": "链上某一环没有任何声明在管它",
+        "SOURCE_UNAVAILABLE": "链上某一环的源没有回答；链断在缺口上",
+        "CYCLE": "copied_from 指回了链上已经出现过的一个 ref",
+        "DEPTH_LIMIT": "在限定的步数内没有走到头；这是缺口，因为停止的是查找而不是文档"
+      }
+    }
+  }
+}

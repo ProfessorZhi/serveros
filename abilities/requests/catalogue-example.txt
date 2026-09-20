@@ -1,0 +1,20 @@
+# An example ability catalogue — the input `ability resolve` calls "input 1".
+#
+# This is NOT this node's catalogue, and it is not the authority's. The
+# authority is the ability-management manifest at a pinned revision, and the
+# way to resolve against it is:
+#
+#   serverosctl ability resolve --request abilities/requests/resolve-example.json \
+#       --ability-repo <checkout> --ability-rev <revision>
+#
+# This file exists so the same resolution can be demonstrated from a document
+# with no absolute path in it — the workbench state matrix re-runs its rows, and
+# a row naming one machine's checkout is a row that fails on the next machine.
+#
+# The keys are references (`ability:<id>`), which is what
+# `capability-contract.yaml#inputs[0]` declares the catalogue is keyed by. Names
+# are real ids from the ability-management manifest, so the example resolves
+# against a world that exists rather than one invented here.
+ability:ability-management
+ability:runtime-management
+ability:session-manager
