@@ -382,6 +382,29 @@ namespaces:
     # the ordinary reading on an idle node. Read by
     # ops/workspace/serveros/resources.yaml.
     absent_means: NO_LEASES_HELD
+  verification:
+    class: authority
+    holds: >
+      which test files were verified, what each of them read, and the
+      fingerprints of those bytes at the moment the verdict was recorded
+    producer: scripts/verify.py
+    required: false
+    # A RECORD OF A PAST ACT, like an approval — and it is an authority for the
+    # same reason an approval is: nothing can re-derive it. The bytes a test
+    # read at the moment it passed are not recoverable from the tree later,
+    # which is exactly why they are written down here rather than recomputed on
+    # demand.
+    #
+    # It is NOT an authority about whether the code is correct. `CURRENT` means
+    # nothing this verdict was a statement about has moved; it does not mean the
+    # test still covers what changed, and it is not a substitute for the run.
+    #
+    # Empty is the ordinary state of a node that has verified nothing, and it is
+    # also the state a reader must not mistake for a clean one: a namespace with
+    # no record answers "nobody looked", which is why `scripts/verify.py status`
+    # exits COULD_NOT_ANSWER rather than OK when the record it was asked about is
+    # not there.
+    absent_means: NOTHING_VERIFIED_YET
   requirement-board:
     class: projection
     holds: §S's Global Requirement Board — every project's Items in one view
