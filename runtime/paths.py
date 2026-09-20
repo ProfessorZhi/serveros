@@ -199,6 +199,85 @@ SEMANTIC_ROLES = {
     "runtime.browser-distribution": "{DATA_ROOT}/runtime-assets/browsers",
 }
 
+# Root names that may legitimately resolve to ONE physical directory.
+#
+# `HOME` and `DATA_ROOT` are two names for one fact on a single-root host, and
+# this node is one: both are `/data/home/vince`. That is several semantic roles
+# answered by one place, which §25 permits — a role is what something IS, a root
+# is where it is, and nothing says two roles need two directories. The machine
+# policy at `~/CLAUDE.md` states both bindings as one block, so this is the
+# contract's own reading of this host rather than a concession made to it.
+#
+# It is NOT the substitute-root shape §16A forbids. That shape is one NAME
+# materialized under two DIFFERENT roots — `workspace/artifacts` beside
+# `$DATA_ROOT/artifacts` — and it stays reportable and stays reported.
+#
+# Declared, rather than derived from path equality, on purpose. Two roots that
+# merely happen to compare equal are not thereby a legitimate binding:
+# `WORKSPACE_ROOT=$DATA_ROOT` would apply WORKSPACE_TOP_LEVEL to the home
+# directory, and `state` resolving onto `home` would make the runtime's own
+# state a home directory entry. A rule that accepted any coincidence could not
+# report either of those. Only the groups below co-bind, and a coincidence
+# outside them is a conflict.
+CO_BINDING_ROOT_GROUPS = (
+    ("home", "data"),
+)
+
+
+def co_binding_roles(name: str) -> frozenset:
+    """Every root name declared able to share one directory with `name`."""
+    for group in CO_BINDING_ROOT_GROUPS:
+        if name in group:
+            return frozenset(group) - {name}
+    return frozenset()
+
+
+def group_physical_roots(locations: dict, *, names) -> list:
+    """Root names grouped by the physical directory each one resolves to.
+
+    A group holding one role is an ordinary root. A group holding several is
+    several claims about one directory, and this function does not rule on
+    whether that is legitimate: it reports the group, with `co_binding` saying
+    only that several names are here, and `co_binding_declared` saying whether
+    their combination is one the contract permits. The ruling stays where a
+    reader looks for policy (`CO_BINDING_ROOT_GROUPS`) instead of hiding in a
+    grouping helper — and a merge nobody declared stays visible as
+    `co_binding: true, co_binding_declared: false` rather than being either
+    silently accepted or silently dropped.
+
+    Identity is the RESOLVED path, not the string. A role reaching the same
+    directory through a symlink is the same directory, and treating it as a
+    second one is how one place gets scanned twice under two names — which is
+    the defect this function exists to remove, not a new spelling of it.
+    """
+    groups: dict = {}
+    for name in names:
+        location = str(locations[name])
+        group = groups.setdefault(os.path.realpath(location), {
+            "physical_root": os.path.realpath(location),
+            "roles": [],
+            "paths": {},
+        })
+        group["roles"].append(name)
+        group["paths"][name] = location
+
+    out = []
+    for group in groups.values():
+        roles = tuple(group["roles"])
+        # Every ORDERED PAIR of distinct roles must be declared, not every role
+        # against a flattened list of the others — the flattened form asks
+        # whether `home` may share with `home`, which is false and would make
+        # every group undeclared.
+        declared = all(other in co_binding_roles(role)
+                       for role in roles for other in roles if other != role)
+        group["roles"] = roles
+        group["co_binding"] = len(roles) > 1
+        group["co_binding_declared"] = declared
+        group["undeclared_with"] = [] if declared else sorted(set(roles))
+        out.append(group)
+    return out
+
+
 # Suffixes that must never be created under DATA_ROOT (§34, §42): a
 # near-canonical directory is worse than a wrong one, because it survives.
 #
@@ -311,6 +390,16 @@ _SEED_ENV = {"home": "HOME", "data_root": "DATA_ROOT",
 # `HOME` is `/home/hwz` and `DATA_ROOT` is `/opt/applications/data/home-hwz` —
 # different directories with different lifetimes — so deriving either from the
 # other is the mistake §0.A names.
+#
+# The two roles stay separate even on a node where they resolve to the SAME
+# directory, which is the node this contract is being read on now: both are
+# `/data/home/vince` there. The distinction is not decorative. A contract that
+# collapsed `home` into `data_root` because they coincide here would derive one
+# from the other on the node above, where they do not — and it would have no
+# way to name the case where a node's HOME is not its persistent root at all.
+# Keeping both roles and recording that they MAY co-bind
+# (`CO_BINDING_ROOT_GROUPS`) states the coincidence as a fact about a node
+# instead of encoding it as a rule about the contract.
 _SEED_ROLE = {"data_root": "data_root",
               "home": "home",
               "artifacts_root": "artifacts",
