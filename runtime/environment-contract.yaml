@@ -1,0 +1,181 @@
+# environment-contract.yaml — §SYS-02 动态环境的封闭词表
+#
+# 契约在这里，代码读它，而不是在 Python 里再抄一份。理由和
+# `ownership-contract.yaml` 的 `code_precedence` 一样：一份会被重新排序而
+# 另一份不会的两份清单，迟早互相矛盾，而矛盾的那天没人知道哪一份是被执行的。
+#
+# 这一层只回答「一个动态的 desired 引用是什么、它的生命周期有几段、它退出时
+# 谁有权动资源」。它不回答「这个资源现在健康吗」（`runtime/health.py` 四轴），
+# 也不回答「注册声明的状态和实测是否一致」（`runtime/desired.py` §15）。三件事
+# 三个模块，因为一个模块回答两个问题就会在某一处给出两个答案。
+#
+# 命名冲突的预防，先写在这里：本文件里的 `scope` **不是**注册表的
+# `managed-runtime-contract.yaml#scopes`（那是 `user / system` 权限域），也
+# **不是** `memory/scope.py` 的 `(ITEM, PROJECT, USER)`（那是记忆召回域）。
+# 本文件的 scope 是 §6 的附着域：一个引用挂在谁身上。
+
+schema: serveros/environment.v1
+source: docs/proposals/2026-09-20-final-serveros-architecture.md §6
+
+# ---------------------------------------------------------------------------
+# 引用挂在谁身上
+# ---------------------------------------------------------------------------
+#
+# 五段，从最短命到最长命，再到不是我们的。顺序有意义：`release` 的默认裁决
+# 沿这条轴从「可以回收」走到「绝不自动回收」，所以重排它就是在重排一个策略。
+scopes:
+  session:
+    means: 一个活会话持有它；会话结束引用就该没了
+    release_default: 引用退出即可回收
+  work-item:
+    means: 一个 Work Item 持有它；Item 关闭时回收
+    release_default: 引用退出即可回收
+  project:
+    means: 一个项目持有它；比 Item 长，回收要理由
+    release_default: 需人确认
+  device-persistent:
+    means: 这台机器的持续环境；重启后仍在，不为任何单个任务而存在
+    release_default: 不因引用退出而停止
+  external:
+    means: 所有权不在我们这里。一个引用可以指向它，我们永远不是它的回收者
+    release_default: 不因引用退出而停止
+
+# ---------------------------------------------------------------------------
+# 同一个资源被多个持有者要的时候怎么办
+# ---------------------------------------------------------------------------
+#
+# 这份词表**不是这里发明的**：它逐字来自真实消费者
+# `ops/workspace/serveros/resources.yaml`（`resource_classes.*.sharing`），
+# 那份文件同时把动态占用指向 `state/serveros/resource-leases/`。抄一份改过名字
+# 的词表，等于让生产者和消费者各说各话。
+sharing:
+  shared:
+    means: 一份实例，多方复用（浏览器二进制、缓存、venv）
+    holders: many
+    release: 最后一个引用退出也**不停**——它不是为某个引用而起的
+  exclusive:
+    means: 一份实例，同一时刻只能一个持有者（需要登录态的持久 profile）
+    holders: one
+    release: 最后一个引用退出后由裁决决定；独占不等于可回收
+  clone-per-run:
+    means: 每个持有者一份副本（storage state、按 run 隔离的 live app）
+    holders: many
+    release: 只释放该持有者自己的副本
+  partitioned:
+    means: 每个持有者一份独立实例，从同一池子里切分（compose project、端口）
+    holders: many
+    release: 只释放该持有者的分区
+
+# ---------------------------------------------------------------------------
+# 一个引用的三段生命
+# ---------------------------------------------------------------------------
+reference_states:
+  LIVE:
+    means: 已声明，且未过自己的 expires_at
+  EXPIRED:
+    means: 已声明，且 expires_at 已过。持有者可能崩了——这只是「可能」，
+          # 所以它被**报出来**并带上持有者名字，绝不被静默丢掉或静默转成 LIVE
+  RETIRED:
+    means: 持有者自己撤销了
+
+# ---------------------------------------------------------------------------
+# 一个资源的占用读起来是什么
+# ---------------------------------------------------------------------------
+#
+# 由 LIVE 引用数和释放裁决共同决定，**不落盘**：一个派生字段存下来就有了和
+# 它的输入不一致的自由。
+attachment_states:
+  HELD:
+    means: 至少一个 LIVE 引用
+  RELEASABLE:
+    means: 一个 LIVE 引用都不剩，但这件事还没了结。三种情况都落到这里：资源
+           # 还在（shared / persistent 按定义不动）、有一个 EXPIRED 的引用还没
+           # 被处理（持有者可能崩了，而这是唯一记着它来过的证据）、或者**没人
+           # 观测过它是否还在**——「不知道没了」不是「没了」，报成没了正是那个
+           # 会删东西的默认值
+  UNATTACHED:
+    means: 引用为空、没有未了结的 EXPIRED 引用，**且**有人看过并确认它不在了。
+           # 只有三种里最窄的这一种。这个状态不产生文件：`resource-leases` 的
+           # `absent_means: NO_LEASES_HELD` 说的就是它
+
+# ---------------------------------------------------------------------------
+# 释放的裁决
+# ---------------------------------------------------------------------------
+#
+# 判决词与 `ownership-contract.yaml#decisions` 是同一套（ALLOW /
+# REQUIRE_APPROVAL / DENY），本模块不新增第四个词。`RETAIN` 是这里唯一新增的
+# 一个，而且它不是裁决的第四档——它是「本来就不该发生释放这个动作」的记录，
+# 用在 shared 与 device-persistent 上，见下面 retention。
+verdicts:
+  ALLOW:
+    means: 释放可以执行
+  REQUIRE_APPROVAL:
+    means: 没有规则拒绝它，但它不能由请求者自己授权
+  DENY:
+    means: 有一条规则拒绝了它
+  RETAIN:
+    means: 引用退出不等于资源该停。没有东西被释放，因为按定义没有东西该被释放
+
+# 释放是 destructive 动作——它停止或移除一个附着。`ownership-contract.yaml`
+# 的 decision_table 就是按 destructive/additive 分档的，所以这里声明档位而不是
+# 让调用者现场决定：一个没人命名的档位，是移除动作绕过一条为移除而写的策略的
+# 方式。
+release_action:
+  kind: destructive
+
+# ---------------------------------------------------------------------------
+# 什么时候「引用退出」不构成停止的理由
+# ---------------------------------------------------------------------------
+#
+# 这是 SYS-02 的必需反例之一：不误停持久共享资源。规则按顺序读，第一条命中
+# 即生效；每条都写明它来自哪里。
+#
+# **顺序本身是策略，不是排版。** 所有权与保护排在共享与持久之前，抄的是
+# `ownership-contract.yaml` 自己的纪律：`eligible: false` 的判定「之后任何策略
+# 都不再被咨询，因为一条够得到的后续策略就是一条能推翻它的策略」。所以一个既
+# shared 又归属未知的资源，答案是 OWNER_UNKNOWN，不是 RETAIN——不是因为
+# RETAIN 会误停它（两者都不会碰它），而是因为「不知道是谁的」比「不是为引用而
+# 起的」是更强的、也更需要人看的一句话。两个裁决都不动资源；哪一个被报出来，
+# 决定了人下一次去哪里看。
+retention:
+  - when: owner_class == "UNKNOWN"
+    verdict: DENY
+    code: OWNER_UNKNOWN
+    because: >
+      未归属是 DEFER，永远不是回收候选。这是
+      `attribution-contract.yaml` 的句子，`ownership-contract.yaml` 的
+      decision_table 把它放成第一行，本表不重复它的权重，只重复它的顺序
+  - when: owner_class == "EXTERNAL"
+    verdict: DENY
+    code: OWNER_EXTERNAL
+    because: >
+      所有权不在我们这里。一个引用指向它，从不能使我们成为它的回收者。
+      `ownership-contract.yaml#decision_table` 的 OWNER_EXTERNAL 行逐字如此
+  - when: protection is True
+    verdict: DENY
+    code: PROTECTED_SUBJECT
+    because: >
+      protection 不是提示。`hygiene.TIER_POLICY` 与 `admission` 的
+      DENY_PROTECTED：没有任何自动路径在任何触发下够到它，被请求的路径也不行
+  - when: scope == "external"
+    verdict: DENY
+    code: OWNER_EXTERNAL
+    because: >
+      声明自己 scope 是 external 的资源，即使所有权证据没有直接说
+      EXTERNAL，它自己也已经声明了不是我们的。这一条是上一类的自述版本
+  - when: sharing == "shared"
+    verdict: RETAIN
+    code: SHARED_RESOURCE_NOT_REFERENCE_OWNED
+    because: >
+      `ops/workspace/serveros/resources.yaml` 把 browser / playwright_venv /
+      caches 声明为 shared，并写明「复用 MUC E2E 既有 browser lease 机制，不
+      重写」。shared 的实例不是为某个引用而起的，最后一个引用退出时把它停掉，
+      是让下一个引用为前一个引用的结束付代价
+  - when: scope == "device-persistent"
+    verdict: RETAIN
+    code: DEVICE_PERSISTENT_NOT_REFERENCE_OWNED
+    because: >
+      它比任何引用都长命。`managed-runtime-contract.yaml#lifecycle_classes`
+      把 persistent 定义为「survive a reboot of the user session」，而
+      `Resource.automatability()` 已经拒绝自动化一个非 persistent 之外的持续
+      资源——这条规则是同一句在引用层的写法

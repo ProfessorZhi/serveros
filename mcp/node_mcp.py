@@ -444,6 +444,38 @@ TOOLS: tuple[dict, ...] = (
         ),
         "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False},
     },
+    # -- §6/SYS-02 -----------------------------------------------------------
+    #
+    # The fact SYS-02's dynamic environment produces had no way for an agent to
+    # ask for it. An agent about to take a browser, a port or a profile can ask
+    # what is already recorded against it, instead of discovering the conflict
+    # by failing — which is the cheaper of the two ways to learn it.
+    #
+    # No argument, for the reason the group above gives: there is no parameter
+    # through which a caller could assert an ownership class or a reference
+    # count and have the daemon relay it as a measurement of this host. The
+    # read is served from the daemon's own state directory, so a daemon started
+    # with `--state-dir` answers about THAT directory.
+    #
+    # `environment.effective` is not here on purpose: three of its four terms
+    # are not gathered by this process yet, so it would answer
+    # `DENY / OWNER_UNKNOWN` for every resource on the node.
+    {
+        "name": "environment.leases",
+        "description": (
+            "Every resource in this node's `state/serveros/resource-leases/` "
+            "namespace with something recorded against it: the desirable "
+            "references (who wants it, in which scope, until when), and — where "
+            "a release has happened — the verdict on whether the last reference "
+            "out may let it go. A resource with no record is NO_LEASES_HELD. "
+            "`recorded` is the number of records and NOT the number in use: a "
+            "record exists for a crashed holder's expired claim and for a "
+            "shared resource nobody currently wants, so read the references "
+            "rather than the count. Nothing here stops, removes or restarts "
+            "anything."
+        ),
+        "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False},
+    },
     {
         "name": "runtime.hygiene",
         "description": (

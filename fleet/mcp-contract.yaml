@@ -119,6 +119,31 @@ surfaces:
       # the tool only names the question.
       - ports.ownership
       - desired.actual
+      # From §6/SYS-02. What is recorded in `state/serveros/resource-leases/`:
+      # who wants which resource, and whether the last one out may let it go.
+      #
+      # This is the read SYS-02's dynamic environment exists to answer, and
+      # until now the fact had a producer and no way for an agent to ask for
+      # it — the shape this round keeps finding. An agent about to take a
+      # browser, a port or a profile can ask what is already recorded against
+      # it instead of discovering the conflict by failing.
+      #
+      # No argument, and that is the rule this surface holds: a caller cannot
+      # supply an ownership class, a protection claim or a reference count
+      # through a parameter and have the daemon relay it as an observation of
+      # the host. The record is read from the daemon's own state directory, so
+      # a daemon started with `--state-dir` answers about THAT directory and
+      # not about the live machine.
+      #
+      # `environment.effective` — the §6 equation over those records — is
+      # deliberately NOT here. Three of its four terms (`observed`,
+      # `ownership`, `policy`) are not gathered by this process yet, so a tool
+      # would answer `DENY / OWNER_UNKNOWN` for every resource on the node: an
+      # answer whose only content is which input was not collected. It stays
+      # on the socket, where its payload names the missing inputs under
+      # `inputs_not_gathered`, and it joins this surface when the daemon can
+      # supply the terms.
+      - environment.leases
       - runtime.hygiene
       - fs.hygiene
       - protection.resolve
