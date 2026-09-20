@@ -1740,7 +1740,93 @@ Feishu is primarily:
 
 A full remote terminal inside Feishu is not required by the core product.
 
-### 20.3 tmux
+### 20.3 Human Presentation Model
+
+ServerOS machine truth is not the same thing as human UI.
+
+The same underlying fact may be rendered differently for CloudCLI, Feishu,
+CLI and reports, but all presentations must derive from the same authoritative
+state.
+
+```text
+ServerOS fact / Alert state
+        ↓
+Human Presentation Model
+        ↓
+┌────────────┬──────────┬──────────────┬──────────┐
+│ CloudCLI   │ Feishu   │ CLI          │ Reports  │
+└────────────┴──────────┴──────────────┴──────────┘
+```
+
+The presentation model may add human-oriented semantics such as:
+
+```text
+human_title
+human_summary
+impact
+attention
+recommended_action
+target_display
+category
+technical_details
+```
+
+These fields may be derived from an Alert/Event taxonomy plus current facts.
+Renderers must not independently invent different meanings for the same code.
+
+Machine identifiers such as raw alert codes, subject refs, PIDs, generations
+and registry counters belong in progressive-disclosure detail unless they are
+directly actionable.
+
+### 20.4 Alert / notification UX
+
+Alert UI is optimized for human decisions, not database inspection.
+
+The first screen answers:
+
+```text
+1. Do I need to care now?
+2. What happened?
+3. What is affected?
+4. What should I do?
+```
+
+Technical detail comes later.
+
+A useful attention axis is separate from machine severity:
+
+```text
+ACTION_REQUIRED
+REVIEW
+WATCH
+INFORMATIONAL
+NONE
+```
+
+For example, a high-severity historical/known event may deserve less immediate
+attention than a new medium-severity event requiring a user decision.
+
+Notifications should distinguish at least:
+
+```text
+Immediate Alert
+  urgent / user action needed
+
+Change Digest
+  meaningful changes, not necessarily urgent
+
+Daily Health Summary
+  periodic compact health/progress view
+```
+
+Historical backlog and resolved counts remain available but should not dominate
+the visual hierarchy of an incremental notification.
+
+Feishu cards should use progressive disclosure: top-level human summary,
+actionable items, compact current health, then collapsed history/technical
+details.
+
+### 20.5 tmux
 
 tmux remains a useful persistent raw-shell fallback.
 
