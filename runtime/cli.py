@@ -38,6 +38,7 @@ import os
 import socket
 import sys
 import textwrap
+import time
 from pathlib import Path
 
 _HERE = Path(__file__).resolve().parent
@@ -66,6 +67,11 @@ infra_mod = _load("serveros_runtime_infrastructure", "infrastructure.py")
 # socket cannot produce two different answers — only two measurements taken at
 # two moments, which is what `answered_by` and `measured_at` are for.
 view_mod = _load("serveros_runtime_view", "view.py")
+# SYS-02. The kernel and its durable producer, under the same synthetic names
+# `runtime/daemon.py` uses — a caller that asks the CLI and a caller that asks
+# the socket must be answered by one module, not two objects that agree today.
+environment_mod = _load("serveros_runtime_environment", "environment.py")
+lease_store_mod = _load("serveros_runtime_lease_store", "lease_store.py")
 
 EXIT_OK = 0
 EXIT_FAULT = 1
@@ -1670,6 +1676,176 @@ def cmd_path_conformance(args) -> int:
     if any(row["id"] == "DECLARATION_AUTHORITY_UNREADABLE" for row in report["findings"]):
         return EXIT_COULD_NOT_ANSWER
     return EXIT_FAULT if report["summary"]["blocking_open"] else EXIT_OK
+
+
+# ---------------------------------------------------------------------------
+# lease — SYS-02's dynamic environment
+#
+# Four verbs: two reads and two writes. The two writes are the ONLY producers of
+# `state/serveros/resource-leases/`, and neither of them touches a resource: a
+# lease record says who wants something and whether it may be let go. Deciding
+# to actually stop or remove a resource is `serverosd`'s gated reconcile, which
+# is the one code path in this product that acts, and adding a second one here
+# would be the mistake the `new-lease-system` non-goal was written about.
+# ---------------------------------------------------------------------------
+
+LEASE_OWNER_CLASSES = ("UNKNOWN", "EXTERNAL", "MANAGED")
+
+
+def _lease_lines(record: dict) -> list[str]:
+    rows = [f"{record['resource']}  [{record['scope']} / {record['sharing']}]"]
+    references = record.get("references")
+    if references is None:
+        rows.append("  references  (not measured)")
+        return rows
+    if not references:
+        rows.append("  references  none")
+    for reference in references:
+        state = environment_mod.reference_state(reference, now=time.time())
+        rows.append(f"  {state:<8} {reference.get('scope')}:{reference.get('holder')}"
+                    f"  expires_at={reference.get('expires_at')}")
+    for orphan in record.get("orphaned") or []:
+        rows.append(f"  ORPHAN   {orphan['scope']}:{orphan['holder']}  {orphan['why']}")
+    if record.get("release_verdict"):
+        verdict = record["release_verdict"]
+        rows.append(f"  last release  {verdict['verdict']} {verdict['code'] or ''}")
+    return rows
+
+
+def cmd_lease_list(args) -> int:
+    try:
+        payload = view_mod.environment_leases(state_dir=args.state_dir,
+                                              answered_by="serverosctl")
+    except lease_store_mod.LeaseError as exc:
+        # Exit 2, not 0-with-an-empty-list. `held: 0` is the claim
+        # `NO_LEASES_HELD`, and a namespace nobody could read must not make
+        # that claim on the node's behalf.
+        emit({"leases": None, "error": str(exc)}, as_json=args.json,
+             lines=[f"COULD NOT ANSWER  {exc}"])
+        return EXIT_COULD_NOT_ANSWER
+    if args.json:
+        emit(payload, as_json=True)
+    else:
+        records = payload["leases"]
+        sys.stdout.write(f"{payload['root']}\n"
+                         f"{payload['recorded']} resource(s) recorded "
+                         f"({payload['answered_by']} at {payload['measured_at']})\n")
+        for record in records:
+            for line in _lease_lines(record):
+                sys.stdout.write(f"  {line}\n")
+    return EXIT_OK
+
+
+def cmd_lease_inspect(args) -> int:
+    store = lease_store_mod.open_store(args.state_dir, now=time.time)
+    try:
+        record = store.get(args.resource)
+    except lease_store_mod.LeaseError as exc:
+        emit({"resource": args.resource, "error": str(exc)}, as_json=args.json,
+             lines=[f"COULD NOT ANSWER  {exc}"])
+        return EXIT_COULD_NOT_ANSWER
+    if record is None:
+        # An ANSWER, not a fault: nothing is declared for this resource, so
+        # nothing holds it. Exit 0 and say which question was answered.
+        emit({"resource": args.resource, "lease": None, "held": False,
+              "note": "nothing is declared for this resource"},
+             as_json=args.json,
+             lines=[f"{args.resource}: nothing declared "
+                    f"(NO_LEASES_HELD for this resource)"])
+        return EXIT_OK
+    emit(record, as_json=args.json, lines=_lease_lines(record))
+    return EXIT_OK
+
+
+def cmd_lease_declare(args) -> int:
+    store = lease_store_mod.open_store(args.state_dir, now=time.time)
+    try:
+        result = store.declare(
+            args.resource, scope=args.scope, holder=args.holder,
+            sharing=args.sharing, ttl_s=args.ttl, note=args.note or "")
+    except (environment_mod.Rejected, lease_store_mod.LeaseError) as exc:
+        payload = {"resource": args.resource, "declared": False,
+                   "refused": type(exc).__name__, "reason": str(exc)}
+        emit(payload, as_json=args.json,
+             lines=[f"REFUSED  {args.resource}", f"         {exc}"])
+        return EXIT_FAULT
+    emit(result, as_json=args.json,
+         lines=[f"{result['act']:<8} {args.resource}  {args.scope}:{args.holder}",
+                f"         {store.root}"])
+    return EXIT_OK
+
+
+def cmd_lease_release(args) -> int:
+    store = lease_store_mod.open_store(args.state_dir, now=time.time)
+    protection = None
+    if args.protected:
+        protection = True
+    elif args.not_protected:
+        protection = False
+    try:
+        result = store.release(args.resource, scope=args.scope, holder=args.holder,
+                               owner_class=args.owner_class, protection=protection)
+    except (environment_mod.Rejected, lease_store_mod.LeaseError) as exc:
+        payload = {"resource": args.resource, "released": False,
+                   "refused": type(exc).__name__, "reason": str(exc)}
+        emit(payload, as_json=args.json,
+             lines=[f"REFUSED  {args.resource}", f"         {exc}"])
+        return EXIT_FAULT
+    lines = [f"{args.resource}  {args.scope}:{args.holder}",
+             f"  released   {result['released']}"]
+    if result.get("verdict"):
+        lines.append(f"  verdict    {result['verdict']['verdict']} "
+                     f"{result['verdict']['code'] or ''}")
+    if "removed" in result:
+        lines.append(f"  record     {'removed' if result['removed'] else 'kept'}")
+    if result.get("reason"):
+        lines.append(f"  reason     {result['reason']}")
+    if result.get("note"):
+        lines.append(f"  note       {result['note']}")
+    emit(result, as_json=args.json, lines=lines)
+    return EXIT_OK
+
+
+def cmd_lease_environment(args) -> int:
+    """The §6 equation, read from the durable record and nothing else.
+
+    There is no verb here that declares or releases. A read that could write
+    would be a read whose answer depends on whether it was asked, and the two
+    asymmetries `environment.effective` exists to keep — observed never becomes
+    desired, and an unmeasured reference count is never zero — both depend on
+    this command being unable to change what it reports.
+    """
+    try:
+        payload = view_mod.environment_effective(state_dir=args.state_dir,
+                                                 answered_by="serverosctl")
+    except lease_store_mod.LeaseError as exc:
+        emit({"environment": None, "error": str(exc)}, as_json=args.json,
+             lines=[f"COULD NOT ANSWER  {exc}"])
+        return EXIT_COULD_NOT_ANSWER
+    if args.json:
+        emit(payload, as_json=True)
+    else:
+        counts = payload["counts"]
+        sys.stdout.write(
+            f"{payload['root']}\n"
+            f"declared {counts['declared']}  held {counts['held']}  "
+            f"releasable {counts['releasable']}  orphaned {counts['orphaned']}  "
+            f"unmeasured {counts['unmeasured']}\n")
+        if payload["inputs_not_gathered"]:
+            # Printed because it changes what the verdicts below MEAN. With
+            # ownership ungathered every release reads DENY/OWNER_UNKNOWN, and
+            # a reader who took that for a fact about the resources would be
+            # reading an absent input as a property of the world.
+            sys.stdout.write(
+                f"  not gathered here: {', '.join(payload['inputs_not_gathered'])} "
+                f"— every release below is refused for the input this command "
+                f"did not collect\n")
+        for row in payload["resources"]:
+            release = row.get("release") or {}
+            sys.stdout.write(
+                f"  {row['resource']:<32} {str(row['attachment_state']):<12} "
+                f"refs={row['ref_count']} {release.get('verdict') or ''}\n")
+    return EXIT_OK
 
 
 # ---------------------------------------------------------------------------
@@ -5417,6 +5593,79 @@ def build_parser() -> argparse.ArgumentParser:
     p_conform = path_sub.add_parser(
         "conformance", help="the declared contract against the directories on disk", **_COMMON)
     p_conform.set_defaults(func=cmd_path_conformance)
+
+    # SYS-02. `lease` and not `resource`: the resource group is about what is on
+    # the host, and this is about who wants it. Putting the two under one verb
+    # would make "browser=clone-per-run" look like a fact about the browser.
+    lease = sub.add_parser(
+        "lease", help="dynamic environment: who wants a resource, and may it go (§SYS-02)",
+        **_COMMON)
+    lease_sub = lease.add_subparsers(dest="subcommand", required=True)
+
+    def _lease_parser(name: str, help_text: str):
+        parser = lease_sub.add_parser(name, help=help_text, parents=[common])
+        # The default is the root contract's, and the override exists for the
+        # same reason `--registry` does: an isolated run needs a namespace of
+        # its own, and the alternative — tests writing into the node's live
+        # `state/serveros/resource-leases/` — is a test that changes what it
+        # measures. It does not make the composed path legitimate: `paths.py`
+        # is still the only thing that says where this namespace IS.
+        #
+        # It means the RUNTIME state dir, exactly what `serverosd --state-dir`
+        # takes, and NOT the namespace root. Both verbs of a read/write pair
+        # take the same value and reach the same directory through
+        # `lease_store.namespace_root`; spelling this as the namespace root
+        # is how the two verbs came to address different directories while
+        # both reporting success.
+        parser.add_argument(
+            "--state-dir", default=None,
+            help="the runtime state dir, e.g. <data>/state/serveros/runtime — "
+                 "the same value serverosd takes. The resource-leases "
+                 "namespace is its sibling. Default: this node's root contract. "
+                 "For an isolated run, not for a durable one.")
+        return parser
+
+    l_list = _lease_parser("list", "every resource with something recorded")
+    l_list.set_defaults(func=cmd_lease_list)
+    l_inspect = _lease_parser("inspect", "one resource's references and release verdict")
+    l_inspect.add_argument("resource", help="e.g. browser:chromium")
+    l_inspect.set_defaults(func=cmd_lease_inspect)
+    l_env = _lease_parser(
+        "environment",
+        "the §6 equation over what is recorded: desired + observed + "
+        "ownership/policy + context. Read-only.")
+    l_env.set_defaults(func=cmd_lease_environment)
+    l_declare = _lease_parser("declare", "this holder needs this resource")
+    l_declare.add_argument("resource")
+    l_declare.add_argument("--scope", required=True)
+    l_declare.add_argument("--holder", required=True,
+                           help="who holds it — a conversation, a session, a Run")
+    l_declare.add_argument("--sharing", required=True)
+    l_declare.add_argument("--ttl", type=float, default=None,
+                           help="seconds until this reference stops being backed "
+                                "by its holder. Omitted means it lasts until the "
+                                "holder retires it, which is a declaration and "
+                                "not a missing value.")
+    l_declare.add_argument("--note", default="")
+    l_declare.set_defaults(func=cmd_lease_declare)
+    l_release = _lease_parser("release", "retire one reference and get the verdict")
+    l_release.add_argument("resource")
+    l_release.add_argument("--scope", required=True)
+    l_release.add_argument("--holder", required=True)
+    l_release.add_argument("--owner-class", choices=LEASE_OWNER_CLASSES, default="MANAGED",
+                           help="from decisive evidence. UNKNOWN and EXTERNAL both "
+                                "refuse the release; the default is the one that "
+                                "does not require the caller to have looked.")
+    protection = l_release.add_mutually_exclusive_group()
+    protection.add_argument(
+        "--protected", action="store_true", default=None,
+        help="protection.resolve said True")
+    protection.add_argument(
+        "--not-protected", action="store_true", default=False,
+        help="protection.resolve said False, i.e. a declaration was available and "
+             "named nothing. Omitted means protection is UNDECLARED, which is a "
+             "third value and not the same as unprotected.")
+    l_release.set_defaults(func=cmd_lease_release)
 
     resource = sub.add_parser("resource", help="host resource facts (§12)", **_COMMON)
     resource_sub = resource.add_subparsers(dest="subcommand", required=True)

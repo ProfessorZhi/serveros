@@ -532,6 +532,18 @@ NETWORK_MODULES = ("urllib", "http", "requests", "httpx", "xmlrpc", "ftplib",
 #   runtime/agent_sessions.py  from urllib.parse import quote, unquote
 #   runtime/probes.py          import urllib.error / import urllib.request
 #
+# RE-MEASURED 2026-09-20 — 36 modules, four naming a network module. The fourth
+# arrived with SYS-02's producer:
+#
+#   runtime/lease_store.py     from urllib.parse import quote
+#
+# It escapes a resource name into a filename (`browser:chromium` ->
+# `browser%3Achromium.json`), which is the same string handling the other two
+# entries do and opens nothing. The closure grew from 30 to 36 modules for
+# other reasons as well; recorded here rather than quietly corrected, because
+# the count is the only thing that shows an allow-list being widened one
+# plausible entry at a time.
+#
 # `urllib.parse` is string handling and opens nothing. `runtime/probes.py` is
 # the real one, and it is a FINDING rather than something this round repaired:
 # `Probes.http_get` and `McpToolsList` open an outbound HTTP connection, so the
@@ -556,6 +568,7 @@ NETWORK_CAPABLE = {
     "runtime/probes.py": "http_get / McpToolsList open an outbound connection",
     "context/actor.py": "urllib.parse only — no I/O",
     "runtime/agent_sessions.py": "urllib.parse only — no I/O",
+    "runtime/lease_store.py": "urllib.parse only — no I/O",
 }
 
 # The one module that can actually open a connection, as opposed to parsing a

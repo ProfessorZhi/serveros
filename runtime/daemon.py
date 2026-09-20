@@ -965,6 +965,10 @@ class Daemon:
             # the answer to the other one.
             "ports.ownership": self._r_ports_ownership,
             "desired.actual": self._r_desired_actual,
+            # SYS-02. Reads only; the two writes are the CLI's, on purpose —
+            # `_methods()` above argues why.
+            "environment.leases": self._r_environment_leases,
+            "environment.effective": self._r_environment_effective,
             "runtime.hygiene": self._r_runtime_hygiene,
             "fs.hygiene": self._r_fs_hygiene,
             "protection.resolve": self._r_protection_resolve,
@@ -1127,7 +1131,18 @@ class Daemon:
                 # local command that reaches the ledger through it. What is
                 # absent is again the point — the node MCP still declares
                 # `alert.list` and `alert.inspect` and nothing else.
-                "alert.digest", "alert.digest-baseline", "alert.digest-record")
+                "alert.digest", "alert.digest-baseline", "alert.digest-record",
+                # SYS-02. Two READS and no write, and that is a decision rather
+                # than an unfinished edge. Declaring and releasing a desired
+                # reference are acts a caller performs on its own behalf, and
+                # both are `serverosctl lease declare|release` — which reach
+                # this same namespace through `lease_store`. Putting a write on
+                # the socket would give the control plane a second producer for
+                # one record, and the two could then disagree about who holds
+                # what. What the daemon is asked for here is the reading, so
+                # that a question asked over the socket and the same question
+                # asked by the CLI come from one implementation.
+                "environment.leases", "environment.effective")
 
     # -- the local capability view (§27/§28) --------------------------------
 
@@ -2550,6 +2565,32 @@ class Daemon:
         return view_mod.desired_actual(registry_doc=self.registry,
                                        probes_host=self.host,
                                        answered_by=ANSWERED_BY)
+
+    def _r_environment_leases(self, params) -> dict:
+        """SYS-02 — what is recorded in `state/serveros/resource-leases/`.
+
+        Forwarded to the shared answer layer, and the namespace is derived from
+        THIS daemon's state dir rather than from the ambient environment, for
+        the reason `_item_roots` below spells out: a daemon started with
+        `--state-dir /tmp/...` must not answer about the live machine. A
+        `LeaseError` is not caught here — `handle()` turns it into the
+        `{ok: false, error: {...}}` envelope, so a namespace that could not be
+        read is a refusal rather than the claim `NO_LEASES_HELD`.
+        """
+        return view_mod.environment_leases(state_dir=self.state_dir,
+                                           answered_by=ANSWERED_BY)
+
+    def _r_environment_effective(self, params) -> dict:
+        """SYS-02 — the §6 equation over the recorded references.
+
+        `observed`, `ownership` and `policy` are not gathered here this round,
+        and the payload names them under `inputs_not_gathered` rather than
+        leaving a reader to infer an absence from a verdict: with ownership
+        ungathered every release reads DENY/OWNER_UNKNOWN, and that is a
+        statement about the input, not about the resource.
+        """
+        return view_mod.environment_effective(state_dir=self.state_dir,
+                                              answered_by=ANSWERED_BY)
 
     def _r_runtime_hygiene(self, params) -> dict:
         return view_mod.runtime_hygiene(registry_doc=self.registry,

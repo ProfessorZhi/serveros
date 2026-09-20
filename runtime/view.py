@@ -81,6 +81,12 @@ runtime_hygiene_mod = _load("serveros_runtime_runtime_hygiene", "runtime_hygiene
 hygiene_mod = _load("serveros_runtime_hygiene", "hygiene.py")
 resource_anomaly_mod = _load("serveros_runtime_resource_anomaly", "resource_anomaly.py")
 resource_policy_mod = _load("serveros_runtime_resource_policy", "resource_policy.py")
+# SYS-02. The kernel and the producer of `state/serveros/resource-leases/`,
+# loaded under the names `daemon.py` and `cli.py` already give them. The kernel
+# is pure and holds no root; the store is the only thing here that reads the
+# namespace, so there is exactly one place that knows where it is.
+environment_mod = _load("serveros_runtime_environment", "environment.py")
+lease_store_mod = _load("serveros_runtime_lease_store", "lease_store.py")
 
 FACT = attribution.FACT
 INFERRED = attribution.INFERRED
@@ -117,6 +123,16 @@ def _now_iso() -> str:
     import datetime
 
     return datetime.datetime.now(datetime.timezone.utc).isoformat()
+
+
+def _now() -> float:
+    """The epoch clock, for the one question that needs a comparison rather
+    than a stamp: whether a lease reference is past its own `expires_at`.
+    `_now_iso` above is for records; a TTL cannot be evaluated against text.
+    """
+    import time
+
+    return time.time()
 
 
 def _envelope(payload: dict, *, answered_by: str, measured_at: str | None = None) -> dict:
@@ -1275,6 +1291,98 @@ def desired_actual(*, registry_doc=None, probes_host=None, measured=None,
                 "signals": [desired_mod.signal_of(row)
                             for row in document.get("mismatches", [])]}
     return _envelope(document, answered_by=answered_by)
+
+
+# ---------------------------------------------------------------------------
+# SYS-02 · the dynamic environment
+# ---------------------------------------------------------------------------
+
+def _lease_store(state_dir=None, *, root=None):
+    """The resource-leases namespace, resolved by `lease_store.namespace_root`.
+
+    Deliberately a thin forwarder and not a second derivation. The CLI's write
+    verbs build their store from the same function, so a `lease declare` and a
+    `lease list` given the same `--state-dir` cannot address two directories —
+    which they did, silently, until a daemon-socket test compared them.
+
+    `state_dir` is the RUNTIME state dir (`state/serveros/runtime`), the same
+    value `serverosd --state-dir` takes, so the daemon's `environment.leases`
+    and the CLI's `lease list` answer about the same namespace. `root` names the
+    namespace outright, for a test or an isolated run.
+    """
+    return lease_store_mod.open_store(state_dir, root=root, now=_now)
+
+
+def environment_leases(*, state_dir=None, root=None,
+                       answered_by: str = DEFAULT_MEASURER) -> dict:
+    """Every resource with something recorded against it.
+
+    `held: 0` and `unreadable: true` are different answers and this layer keeps
+    them apart. An unreadable namespace raises rather than returning an empty
+    list: an empty list is the claim `NO_LEASES_HELD`, and a namespace nobody
+    could read must not make that claim on the node's behalf. The caller that
+    cannot handle an exception gets one — which is the honest outcome, and the
+    reason this function is not wrapped in a `try` that returns `[]`.
+    """
+    store = _lease_store(state_dir, root=root)
+    records = store.records()
+    return _envelope({
+        "schema": lease_store_mod.SCHEMA,
+        "namespace": lease_store_mod.NAMESPACE_REF,
+        "root": str(store.root),
+        # `recorded` and NOT `held`. A record exists as soon as anything is
+        # recorded against a resource, and a record can exist with no live
+        # reference at all — a crashed holder's expired claim, or a shared
+        # resource nobody currently wants. `HELD` is the contract's word for
+        # "at least one LIVE reference", so a count under that name would
+        # report a resource as in use on the strength of a claim its holder
+        # already stopped backing. `environment.effective` computes `held`
+        # properly, from the references, and that is the only place it means
+        # what it says.
+        "recorded": len(records),
+        "absent_means": "NO_LEASES_HELD",
+        "leases": records,
+    }, answered_by=answered_by)
+
+
+def environment_effective(*, state_dir=None, root=None, observed=None,
+                          ownership=None, policy=None, context=None,
+                          answered_by: str = DEFAULT_MEASURER) -> dict:
+    """The §6 equation over what is recorded.
+
+    `observed`, `ownership` and `policy` are inputs this layer does not gather
+    itself this round, and it says so rather than filling them: a resource whose
+    ownership nobody resolved is `UNKNOWN` and its release is refused, which is
+    the safe direction. The alternative — treating "we did not look" as
+    "nothing owns it" — is the default value that releases somebody else's
+    resource.
+
+    `context` is the caller's own (device, session, conversation). It is
+    reported and changes no verdict: §6 lists Context as a term of the equation
+    because the SAME desired and observed state can mean different things in
+    different conversations, and the term this round can honestly contribute is
+    the caller's statement of where they are asking from.
+    """
+    store = _lease_store(state_dir, root=root)
+    records = store.records()
+    desired = {
+        record["resource"]: {
+            "scope": record["scope"],
+            "sharing": record["sharing"],
+            "references": list(record["references"]),
+        }
+        for record in records
+    }
+    payload = environment_mod.effective(
+        desired=desired, observed=observed or {}, ownership=ownership or {},
+        policy=policy or {}, context=context or {}, now=_now())
+    payload["namespace"] = lease_store_mod.NAMESPACE_REF
+    payload["root"] = str(store.root)
+    payload["inputs_not_gathered"] = sorted(
+        name for name, value in
+        (("observed", observed), ("ownership", ownership), ("policy", policy))
+        if not value)
+    return _envelope(payload, answered_by=answered_by)
 
 
 # The classification inputs §16 reads, and which of them this layer can gather.
