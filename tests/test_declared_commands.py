@@ -77,6 +77,7 @@ import argparse
 import importlib.util
 import re
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -105,10 +106,26 @@ KNOWN_ABSENT = {
 
 # Where a declaration may appear. Contracts state interfaces; skills and docs
 # tell a reader what to type. All three are promises to the same reader.
+#
+# `workbench/` was the fourth and was missing, which is the shape this file
+# exists to catch rather than an example of it. The set was hand-listed, and a
+# hand-listed set is a declaration like any other: it can drift from the thing
+# it describes, and the drift is silent, because a directory nobody added is
+# not merely unscanned — it is invisible to a scan that iterates this tuple.
+# The pages under `workbench/` are the ones a reader is handed first, so a
+# command that is wrong there is wrong in the most expensive place, and the
+# gate stayed green while they were outside its reach.
+#
+# Two tests carry the control:
+# `test_the_workbench_surface_is_inside_the_scan` fails if the line below is
+# removed, and `test_a_workbench_page_declaring_an_absent_command_is_caught`
+# fails if the scanner goes blind. Without them, adding a directory here would
+# be an unverifiable claim that it is now covered.
 SCANNED = tuple(
     sorted(p for p in REPO.glob("*/*.yaml"))
     + sorted(p for p in REPO.glob("skills/**/*.md"))
     + sorted(p for p in REPO.glob("docs/*.md"))
+    + sorted(p for p in REPO.glob("workbench/*.md"))
 )
 
 _REF = re.compile(r"serverosctl\s+([a-z][a-z0-9-]*)(?:\s+([a-z][a-z0-9-]*))?")
@@ -150,14 +167,25 @@ def real_commands() -> set[tuple[str, ...]]:
     return found
 
 
-def declared_commands() -> dict[tuple[str, ...], list[str]]:
-    """Every `serverosctl ...` a reader is told to run, and where."""
+def declared_commands(paths=None) -> dict[tuple[str, ...], list[str]]:
+    """Every `serverosctl ...` a reader is told to run, and where.
+
+    `paths` exists so a control can point the same scanner at a file it wrote
+    itself. A scanner that can only be run against the corpus it is supposed to
+    judge cannot be shown to work: the only evidence available is that it found
+    nothing wrong, which is also what a broken one reports.
+    """
     found: dict[tuple[str, ...], list[str]] = {}
-    for path in SCANNED:
+    for path in (SCANNED if paths is None else paths):
         if not path.is_file():
             continue
         text = path.read_text(encoding="utf-8", errors="replace")
-        rel = str(path.relative_to(REPO))
+        try:
+            rel = str(path.relative_to(REPO))
+        except ValueError:
+            # A control's own file is not under REPO. Naming it by its real
+            # path keeps the report useful instead of raising here.
+            rel = str(path)
 
         def record(verb: str, sub: str | None, *, at: str):
             parts = (verb,) if sub is None else (verb, sub)
@@ -253,6 +281,64 @@ class DeclaredCommandsExist(unittest.TestCase):
                           f"the scanner has gone blind to {name}")
             self.assertNotIn(parts, real,
                              f"{name} resolves after all; the control is stale")
+
+    def test_the_workbench_surface_is_inside_the_scan(self):
+        """The structural half of the workbench control.
+
+        `workbench/*.md` was outside `SCANNED`, and the way that failed is not
+        that the gate said the wrong thing — it said nothing, because a
+        directory the tuple does not name is invisible to a scan that iterates
+        the tuple. The pages are generated, so nobody hand-edits a bad command
+        into them today; the point is that a generator change can, and the
+        gate's job is to be looking when it does.
+
+        This asserts the surface is non-empty and that every one of its files
+        is in the scan. Removing `workbench/*.md` from `SCANNED` turns this
+        red, which is what makes the line above it a check rather than a
+        comment.
+        """
+        pages = sorted(REPO.glob("workbench/*.md"))
+        self.assertTrue(pages,
+                        "workbench/ has no pages; this control proves nothing "
+                        "and the surface it guards has moved")
+        missing = [str(p.relative_to(REPO)) for p in pages if p not in SCANNED]
+        self.assertEqual(missing, [],
+                         "these workbench pages are outside SCANNED, so a "
+                         "command they name could be absent and the gate would "
+                         "never look: " + ", ".join(missing))
+
+    def test_a_workbench_page_declaring_an_absent_command_is_caught(self):
+        """The behavioural half: point the same scanner at a page that lies.
+
+        A positive control is the only evidence that separates "found nothing
+        wrong" from "cannot see". This writes a page naming `serverosctl work
+        frobnicate`, which no parser accepts, and asserts the scanner reports
+        it — the same judgement the first test in this class makes, applied to
+        a document this test wrote rather than to one the repository happens to
+        contain.
+
+        The name is deliberately not in `KNOWN_ABSENT`, so the result cannot be
+        excused by an exemption.
+        """
+        self.assertNotIn(("work", "frobnicate"), real_commands())
+
+        with tempfile.TemporaryDirectory() as tmp:
+            page = Path(tmp) / "FABRICATED.md"
+            page.write_text(
+                "# a page that tells a reader to run something that is not there\n"
+                "\n"
+                "```\n"
+                "serverosctl work frobnicate --json\n"
+                "```\n"
+                "`serverosctl work | alert list | document resolve`\n",
+                encoding="utf-8")
+            found = declared_commands(paths=[page])
+
+        self.assertIn(("work", "frobnicate"), found,
+                      "the scanner is blind to a plain `serverosctl a b` line")
+        # And to the elided form, which is how the original defect hid.
+        self.assertIn(("alert", "list"), found,
+                      "the scanner missed the segments after a `|`")
 
     def test_the_contracts_own_pointer_line_names_real_commands(self):
         """The specific instance that started this file. The startup view's

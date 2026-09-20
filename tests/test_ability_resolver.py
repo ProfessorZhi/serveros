@@ -19,6 +19,7 @@ import importlib.util
 import json
 import subprocess
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -173,6 +174,115 @@ class IntersectionTests(unittest.TestCase):
         self.assertIn("policy", record["inputs_missing"])
         self.assertEqual(len(record["inputs_seen"]) + len(record["inputs_missing"]),
                          len(resolver.INPUT_ORDER))
+
+
+class ANobodyAskedInputIsNotANoEither(unittest.TestCase):
+    """The intersection's guard, in the REFUSAL direction.
+
+    `IntersectionTests` guards the yes: it fails if an absent input is read as
+    agreement. Nothing guarded the no. A request supplying no catalogue and no
+    provider set used to come back
+
+        status UNAVAILABLE · reason PROVIDER_NOT_INSTALLED
+        detail "runtime-management is not in the pinned catalogue"
+        inputs_seen [] · inputs_missing [all eight]
+
+    — two sentences, each a definite finding about a set that was never handed
+    over, printed on the same record whose `inputs_seen` is empty. `inputs_seen`
+    said "nothing was consulted" while `detail` said "this was looked up and it
+    is not there", and a reader takes the sentence, not the field.
+
+    The four cases below are two pairs. Within each pair the ONLY difference is
+    whether the set was supplied, and the two must not answer alike — which is
+    the property, not either answer on its own. A test that only asserted the
+    new UNKNOWN would be satisfied by a resolver that had stopped refusing
+    altogether.
+    """
+
+    def test_a_request_supplying_no_catalogue_is_not_a_catalogue_miss(self):
+        request_without_catalogue = request()
+        del request_without_catalogue["abilities"]
+        record = resolver.resolve(request_without_catalogue)
+        self.assertEqual(record["status"], "UNKNOWN")
+        self.assertIsNone(record["reason"])
+        self.assertNotIn("ability", record["inputs_seen"])
+        self.assertIn("ability", record["inputs_missing"])
+        self.assertIn("the ability catalogue", record["detail"])
+        # The sentence that used to be here, and the reason it was wrong: it
+        # names a finding about a catalogue this request never carried.
+        self.assertNotEqual(record["reason"], "PROVIDER_NOT_INSTALLED")
+        self.assertNotIn("is not in the pinned catalogue", record["detail"])
+
+    def test_a_catalogue_that_was_supplied_and_misses_is_still_a_finding(self):
+        """The contrast. Same ability, same absence of providers — only the
+        catalogue is now in hand, and a miss against a list somebody handed
+        over is what `PROVIDER_NOT_INSTALLED` is for."""
+        record = resolver.resolve(request(ability="ability:not-a-real-ability"))
+        self.assertEqual(record["status"], "UNAVAILABLE")
+        self.assertEqual(record["reason"], "PROVIDER_NOT_INSTALLED")
+        self.assertIn("pinned catalogue", record["detail"])
+        self.assertIn("ability", record["inputs_seen"])
+
+    def test_a_request_supplying_no_provider_set_is_not_a_provider_miss(self):
+        """The second pair, and the one the shipped example request lands in:
+        a catalogue in hand, no providers at all. The old answer was
+        `UNAVAILABLE · "no provider implements runtime-management"` with
+        `inputs_seen: ["ability"]` — a definite finding about a provider set
+        nobody supplied, decided on the strength of the one input that was."""
+        request_without_providers = request()
+        del request_without_providers["providers"]
+        record = resolver.resolve(request_without_providers)
+        self.assertEqual(record["status"], "UNKNOWN")
+        self.assertIsNone(record["reason"])
+        self.assertIn("ability", record["inputs_seen"])
+        self.assertIn("the provider set", record["detail"])
+        self.assertFalse(record["candidates"])
+
+    def test_a_provider_set_that_was_supplied_and_does_not_match_is_a_finding(self):
+        """Supplied and empty, or supplied for other abilities, are both a
+        published closed list that does not mention this ability. Either way
+        the list was in hand, and the answer is a finding rather than a gap."""
+        for providers in ([], [provider(ability="ability:test-management")]):
+            with self.subTest(providers=len(providers)):
+                record = resolver.resolve(request(providers=providers))
+                self.assertEqual(record["status"], "UNAVAILABLE")
+                self.assertEqual(record["reason"], "PROVIDER_NOT_INSTALLED")
+                self.assertIn("supplied", record["detail"])
+
+    def test_an_explicitly_empty_catalogue_was_read_and_misses(self):
+        """`{}` is a published closed list with nothing in it — a thing a caller
+        can mean — so it is a catalogue that was READ, and the answer is a
+        finding against it rather than a gap about it.
+
+        Read with `bool()` instead of `is not None`, the record contradicted
+        itself in this one case: `inputs_missing` named `ability` while the
+        refusal above said the ability "is not in the pinned catalogue", which
+        is a statement that it was looked up. The CLI will not manufacture this
+        input — a file of no names is a mistake, and it refuses rather than
+        answering against one — so the case is reachable through the resolver's
+        own API, which is where this test puts it.
+        """
+        record = resolver.resolve(request(abilities={}))
+        self.assertEqual(record["status"], "UNAVAILABLE")
+        self.assertEqual(record["reason"], "PROVIDER_NOT_INSTALLED")
+        self.assertIn("ability", record["inputs_seen"])
+        self.assertNotIn("ability", record["inputs_missing"])
+
+    def test_the_provider_set_is_not_a_ninth_input(self):
+        """It is named in the detail and nowhere else. `inputs_seen` is the
+        field that says how much of the eight-way intersection was evaluated,
+        and a ninth entry of a different kind would make it say something else.
+        """
+        request_without_providers = request()
+        del request_without_providers["providers"]
+        record = resolver.resolve(request_without_providers)
+        self.assertNotIn("providers", record["inputs_seen"])
+        self.assertNotIn("provider_set", record["inputs_missing"])
+        self.assertEqual(
+            len(record["inputs_seen"]) + len(record["inputs_missing"]),
+            len(resolver.INPUT_ORDER))
+        for name in record["inputs_seen"] + record["inputs_missing"]:
+            self.assertIn(name, resolver.INPUT_ORDER)
 
 
 class ReasonTests(unittest.TestCase):
@@ -721,6 +831,219 @@ class CliTests(unittest.TestCase):
                 stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         self.assertEqual(proc.returncode, 2)
         self.assertEqual(proc.stdout, "")
+
+
+class TheCliNamesInputOne(unittest.TestCase):
+    """`serverosctl ability resolve` — where input 1 comes from.
+
+    The resolver is pure and takes a catalogue in a request. The CLI is the
+    layer that can go and find one, and until now it could not: the verb's own
+    docstring said the inputs come from `--request` "and deliberately from
+    nowhere else yet", so the shipped example request — which supplies no
+    catalogue — came back asserting that its ability was not in the pinned
+    catalogue. `ability pack` had refused that exact shape one verb over.
+
+    These run the real entry point against real files, because the defect was
+    not in the resolver's logic: it was in what the CLI handed it.
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.dir = Path(self.tmp.name)
+        self.request_path = self.dir / "request.json"
+        self.request_path.write_text(json.dumps({
+            "ability": ABILITY,
+            "device_ref": "device:server-beijing",
+            "runtime": "claude-code",
+        }), encoding="utf-8")
+
+    def cli(self, *args):
+        return subprocess.run(
+            [sys.executable, str(ROOT / "bin" / "serverosctl"),
+             "ability", "resolve", "--request", str(self.request_path),
+             *args, "--json"],
+            cwd=str(ROOT), stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            text=True, timeout=120)
+
+    def catalogue_file(self, *lines, name="catalogue.txt"):
+        path = self.dir / name
+        path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        return path
+
+    def test_no_catalogue_named_is_unknown_and_says_how_to_name_one(self):
+        """The example request's answer, at the CLI. `inputs_seen: []` and
+        `inputs_missing` naming `ability` is a GAP; the sentence that used to be
+        printed instead was a finding."""
+        proc = self.cli()
+        self.assertEqual(proc.returncode, 2, proc.stderr)
+        record = json.loads(proc.stdout)
+        self.assertEqual(record["status"], "UNKNOWN")
+        self.assertIsNone(record["reason"])
+        self.assertIn("ability", record["inputs_missing"])
+        self.assertNotIn("is not in the pinned catalogue", record.get("detail") or "")
+        # The advice, because an UNKNOWN that does not say how to replace
+        # itself costs the caller a second run to discover the same gap.
+        self.assertIn("--ability-repo", proc.stderr)
+        self.assertIn("--catalogue", proc.stderr)
+
+    def test_a_catalogue_of_references_is_read_and_the_gap_shrinks(self):
+        path = self.catalogue_file("# a catalogue", f"{ABILITY}")
+        proc = self.cli("--catalogue", str(path))
+        self.assertEqual(proc.returncode, 2, proc.stderr)
+        record = json.loads(proc.stdout)
+        self.assertEqual(record["inputs_seen"], ["ability"])
+        self.assertNotIn("ability", record["inputs_missing"])
+        self.assertEqual(
+            len(record["inputs_seen"]) + len(record["inputs_missing"]),
+            len(resolver.INPUT_ORDER))
+        # The provenance, on the answer: a resolution that says an ability is
+        # absent from "the catalogue" and does not say WHICH catalogue cannot
+        # be told apart from one computed against a file somebody typed.
+        self.assertIn(str(path), record["note"])
+
+    def test_a_catalogue_that_was_read_and_misses_is_a_finding_not_a_gap(self):
+        path = self.catalogue_file("ability:something-else")
+        proc = self.cli("--catalogue", str(path))
+        self.assertEqual(proc.returncode, 1, proc.stderr)
+        record = json.loads(proc.stdout)
+        self.assertEqual(record["status"], "UNAVAILABLE")
+        self.assertEqual(record["reason"], "PROVIDER_NOT_INSTALLED")
+        self.assertIn("ability", record["inputs_seen"])
+
+    def test_a_bare_name_in_a_catalogue_file_is_refused(self):
+        """The trap this check was written for, measured: the first draft of the
+        shipped example catalogue listed `ability:runtime-management` as a NAME,
+        which the composing branch prefixed into `ability:ability:runtime-
+        management` — a definite catalogue miss produced by one doubled word."""
+        path = self.catalogue_file(ABILITY.removeprefix("ability:"))
+        proc = self.cli("--catalogue", str(path))
+        self.assertEqual(proc.returncode, 2)
+        self.assertIn("is not an ability reference", proc.stderr)
+        self.assertEqual(proc.stdout, "")
+
+    def test_a_key_carrying_a_verb_is_refused(self):
+        """The catalogue is keyed by the bare ability — the operation is split
+        off the reference BEFORE the lookup, which is the whole point of
+        `test_the_catalogue_is_keyed_by_the_bare_ability`. A key carrying a verb
+        can therefore never be asked for."""
+        path = self.catalogue_file(f"{ABILITY}#read")
+        proc = self.cli("--catalogue", str(path))
+        self.assertEqual(proc.returncode, 2)
+        self.assertIn("names an operation", proc.stderr)
+
+    def test_an_empty_catalogue_file_is_refused_rather_than_answered_against(self):
+        path = self.catalogue_file("# only a comment")
+        proc = self.cli("--catalogue", str(path))
+        self.assertEqual(proc.returncode, 2)
+        self.assertIn("names no abilities", proc.stderr)
+        self.assertEqual(proc.stdout, "")
+
+    def test_a_catalogue_that_cannot_be_read_is_an_answer_and_not_a_crash(self):
+        proc = self.cli("--catalogue", str(self.dir / "absent.txt"))
+        self.assertEqual(proc.returncode, 2)
+        self.assertIn("cannot read", proc.stderr)
+
+    def test_a_manifest_is_read_at_the_revision_that_was_resolved(self):
+        """`--ability-repo` + `--ability-rev`: the design's own source for input
+        1 (`ability-management manifest, pinned revision`). Asserts the note
+        names the RESOLVED full SHA — `--ability-rev` may be a branch, and a
+        catalogue that cannot be produced again is not one an answer may cite.
+        """
+        import yaml
+        repo = self.dir / "ability-management"
+        repo.mkdir()
+
+        def commit(document):
+            (repo / "abilities-manifest.yaml").write_text(
+                yaml.safe_dump(document, sort_keys=False))
+            subprocess.run(["git", "-C", str(repo), "add", "-A"], check=True,
+                           stdout=subprocess.DEVNULL)
+            subprocess.run(["git", "-C", str(repo), "-c", "user.email=t@x.invalid",
+                            "-c", "user.name=t", "commit", "-m", "manifest"],
+                           check=True, stdout=subprocess.DEVNULL,
+                           stderr=subprocess.DEVNULL)
+            return subprocess.run(["git", "-C", str(repo), "rev-parse", "HEAD"],
+                                  check=True, capture_output=True,
+                                  text=True).stdout.strip()
+
+        subprocess.run(["git", "init", "-q", str(repo)], check=True)
+        sha = commit({"abilities": [{"name": ABILITY.removeprefix("ability:")}]})
+
+        proc = self.cli("--ability-repo", str(repo), "--ability-rev", "HEAD")
+        self.assertEqual(proc.returncode, 2, proc.stderr)
+        record = json.loads(proc.stdout)
+        self.assertEqual(record["inputs_seen"], ["ability"])
+        self.assertIn(sha[:12], record["note"])
+
+        # And a revision that does not name an ability is a finding against the
+        # catalogue that WAS read — the contrast that keeps the pair apart.
+        sha2 = commit({"abilities": [{"name": "something-else"}]})
+        proc = self.cli("--ability-repo", str(repo), "--ability-rev", sha2)
+        self.assertEqual(proc.returncode, 1, proc.stderr)
+        self.assertEqual(json.loads(proc.stdout)["reason"], "PROVIDER_NOT_INSTALLED")
+
+    def test_a_manifest_that_names_one_ability_twice_says_so(self):
+        """The canonical manifest lists an ability once per SOURCE, and its own
+        header says so: `path = storage locator（name != identity != path）`,
+        `跨渠道 ≠ 不同 Ability`. Composing catalogue keys by name therefore
+        collapses two entries into one ability, and the collapse is right.
+
+        Doing it SILENTLY is not. Measured at the revision this round pins,
+        `fbd0b1a72257`: 56 entries, 51 distinct names. A note reporting only
+        `51 abilities` cannot be told apart from five abilities lost on the way
+        in — same number, two readings, nothing to choose between them. Both
+        counts are printed, so the collapse is visible as a decision.
+        """
+        import yaml
+        repo = self.dir / "ability-management"
+        repo.mkdir()
+        subprocess.run(["git", "init", "-q", str(repo)], check=True)
+        bare = ABILITY.removeprefix("ability:")
+        (repo / "abilities-manifest.yaml").write_text(yaml.safe_dump({
+            "abilities": [
+                {"name": bare, "path": "mcps/x"},
+                {"name": bare, "path": "plugins/x"},
+                {"name": "another-ability", "path": "skills/y"},
+            ]}, sort_keys=False), encoding="utf-8")
+        subprocess.run(["git", "-C", str(repo), "add", "-A"], check=True,
+                       stdout=subprocess.DEVNULL)
+        subprocess.run(["git", "-C", str(repo), "-c", "user.email=t@x.invalid",
+                        "-c", "user.name=t", "commit", "-m", "manifest"],
+                       check=True, stdout=subprocess.DEVNULL,
+                       stderr=subprocess.DEVNULL)
+
+        proc = self.cli("--ability-repo", str(repo), "--ability-rev", "HEAD")
+        self.assertEqual(proc.returncode, 2, proc.stderr)
+        note = json.loads(proc.stdout)["note"]
+        self.assertIn("2 abilities", note)
+        self.assertIn("3 manifest entries", note)
+        self.assertIn("1 of them names", note)
+
+    def test_the_shipped_example_request_uses_a_reference(self):
+        """The example is the product's own claim about how the verb is called,
+        and it was the one object in the tree that wrote a bare id. It failed by
+        a different route than a wrong answer: the lookup missed a catalogue
+        that contains the ability."""
+        example = json.loads(
+            (ROOT / "abilities" / "requests" / "resolve-example.json")
+            .read_text(encoding="utf-8"))
+        self.assertTrue(example["ability"].startswith("ability:"),
+                        "the example names an ability the way no caller does")
+
+    def test_the_shipped_example_catalogue_matches_the_key_shape_it_declares(self):
+        """The workbench state matrix re-runs a row against this file, so a file
+        that drifts from the declared key shape turns a green row red — which is
+        the check, not an accident."""
+        lines = [ln.strip() for ln in
+                 (ROOT / "abilities" / "requests" / "catalogue-example.txt")
+                 .read_text(encoding="utf-8").splitlines()
+                 if ln.strip() and not ln.startswith("#")]
+        self.assertTrue(lines)
+        for key in lines:
+            self.assertTrue(key.startswith("ability:"),
+                            f"{key} is not the key shape the contract declares")
+            self.assertNotIn("#", key)
 
 
 if __name__ == "__main__":

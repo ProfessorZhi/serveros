@@ -922,5 +922,71 @@ class TestTheProtocolSurface(unittest.TestCase):
             self.assertIn(name, out.getvalue())
 
 
+class TheSessionSourceAnswersForOneDevice(unittest.TestCase):
+    """`_sessions_for` answers about the device it was built for, and no other.
+
+    Two files promised this in prose and neither was tested, which is how the
+    behaviour drifted: the callable accepted a `device_ref`, ignored it, and
+    called `service.session_list()` for whatever the view asked about. A live
+    call for a REMOTE device came back `{"state": "KNOWN", "sessions": []}` —
+    this node's empty list wearing another machine's name.
+
+    `state: KNOWN` is the damaging half. An empty list says "that device has no
+    active sessions", which is a claim about a machine nobody asked, and no
+    downstream reader can tell it apart from a device that really was asked and
+    really was empty.
+
+    The pair below is the point: the local ref answers, the remote ref does
+    not, and the two readings differ in KIND rather than in value. A test that
+    only asserted the remote case would pass against an implementation that
+    refused the local one too.
+    """
+
+    def source(self, listing=None):
+        service = fake_service(listing)
+        return agent_mcp._sessions_for(service, LOCAL)
+
+    def test_the_local_device_is_answered_by_the_local_service(self):
+        answer = self.source({"sessions": [{"session_id": "s-1"}]})(LOCAL)
+        self.assertEqual(answer["state"], "KNOWN")
+        self.assertEqual(answer["sessions"], [{"session_id": "s-1"}])
+
+    def test_a_remote_device_is_unknown_and_not_an_empty_list(self):
+        for remote in (FJ, DELL):
+            with self.subTest(device=remote):
+                answer = self.source({"sessions": [{"session_id": "s-1"}]})(remote)
+                self.assertEqual(answer["state"], "UNKNOWN")
+                # NOT `KNOWN` with `sessions: []`. The distinction is the whole
+                # test: the fixture's service HAS a session, so an
+                # implementation that leaked through would report it here and
+                # be caught rather than accidentally looking right.
+                self.assertNotIn("sessions", answer)
+                self.assertIn(remote, answer["detail"])
+                self.assertIn(LOCAL, answer["detail"])
+
+    def test_a_device_that_is_not_a_ref_at_all_is_refused_by_the_source(self):
+        """Not merely "not local": a name that is not a device ref is not a
+        device. The source's answer must not depend on whether the string
+        happens to look like something the registry would accept."""
+        answer = self.source({"sessions": []})("server-beijing")
+        self.assertEqual(answer["state"], "UNKNOWN")
+        self.assertNotIn("sessions", answer)
+
+    def test_an_unreadable_listing_passes_its_own_state_through(self):
+        """The local device's own failure is still reported as the service
+        reported it, not flattened into UNKNOWN by this wrapper."""
+        answer = self.source({"state": "NOT_RUNNING",
+                              "reason": "no provider is live"})(LOCAL)
+        self.assertEqual(answer["state"], "NOT_RUNNING")
+        self.assertEqual(answer["reason"], "no provider is live")
+
+
+def fake_service(listing):
+    class _Service:
+        def session_list(self):
+            return listing
+    return _Service()
+
+
 if __name__ == "__main__":
     unittest.main()
