@@ -1371,10 +1371,11 @@ An Item is complete when:
 
 ```text
 its acceptance is satisfied
++ expected deliverables exist
 + sufficient verification exists
 + evidence is durable
-+ deliverable exists
 + final report exists
++ business/adoption outcome is recorded when relevant
 ```
 
 None of these alone imply Item completion:
@@ -2010,6 +2011,21 @@ The enterprise/upstream checkout such as `litellm-fjd` may still be cloned or
 used locally for read-only comparison, integration validation and direct test
 execution when needed. That does not make it the normal long-lived writable
 development surface.
+
+The Bridge must remain synchronized with the enterprise/upstream lineage closely
+enough that new Item work and PR preparation start from a known current base.
+Synchronization is explicit and provenance-preserving:
+
+```text
+enterprise/upstream revision
+→ refresh/compare
+→ update Bridge tracked base
+→ Item branch/worktree
+→ implementation + GPT review
+→ PR back to enterprise/upstream
+```
+
+Bridge synchronization does not make the Bridge upstream authority.
 
 Bridge rules:
 
@@ -2761,6 +2777,109 @@ Observed Live Revision
 
 Build PASS != deploy PASS != LIVE PASS.
 
+### 25.1 Expected deliverables are part of the requirement
+
+Before execution, an Item should state the intended delivery outcome at the
+appropriate level of detail.
+
+Examples:
+
+```text
+code change + upstream PR
+configuration change
+image / package / release artifact
+TEST deployment
+production-ready runbook
+document / guide
+analysis report
+knowledge update
+```
+
+This prevents "code exists" from being mistaken for "the requirement was
+delivered".
+
+The Item lifecycle remains unified across work types. Different Item types
+produce different evidence/deliverables; they do not need separate workflow
+engines.
+
+### 25.2 Code-changing Items require a PR
+
+For current company development, a code-changing Item is not complete at a
+local commit or Bridge branch.
+
+```text
+Bridge implementation
+→ review / E2E / evidence
+→ PR to enterprise/upstream repository
+→ adoption outcome recorded
+```
+
+A real PR is a required deliverable for code changes.
+
+PR **adoption** is a separate business outcome from completion of the requested
+engineering work. A PR may be rejected/not adopted because:
+
+- another person implemented the same requirement;
+- the upstream owner chose a different solution;
+- the requirement was superseded or withdrawn;
+- priorities changed.
+
+In those cases the Item can close with an explicit outcome such as
+`NOT_ADOPTED`, `SUPERSEDED` or `IMPLEMENTED_ELSEWHERE` plus evidence. It
+must not claim the change is LIVE when it was never adopted.
+
+### 25.3 Test environments are ephemeral by default
+
+Where feasible, an Item should use an isolated test lifecycle:
+
+```text
+worktree / revision
+→ create isolated test environment
+→ deploy/start target
+→ E2E / verification
+→ preserve evidence
+→ cleanup/release resources
+```
+
+Persistent shared TEST environments remain valid when a Project actually needs
+them. They are not required merely because an Item exists.
+
+### 25.4 Code and configuration changes have equal provenance requirements
+
+Configuration is a first-class change surface.
+
+For meaningful configuration/deployment changes, evidence should answer:
+
+```text
+before
+after
+why
+owning Item / requirement
+approval when required
+verification / observed result
+```
+
+This applies to model/provider mappings, environment configuration, Docker
+configuration, gateway settings and similar operational state. Secret values
+remain redacted/protected even when the change itself is auditable.
+
+### 25.5 High-risk migration/destructive work uses the Execution Envelope
+
+Database migrations, destructive operations and irreversible changes do not
+need a separate workflow engine.
+
+Their Execution Envelope carries stronger gates such as:
+
+```text
+impact/preconditions
+backup or recovery plan
+rollback feasibility
+explicit approval
+postcondition verification
+```
+
+### 25.6 Automation boundary
+
 Generic build/release capability must exist independently of any project-
 specific image-build recipe.
 
@@ -2775,9 +2894,42 @@ Inside an approved envelope, automation may perform:
 - isolated install;
 - TEST deploy;
 - E2E;
-- rollback testing.
+- rollback testing;
+- preparation of production runbooks/artifacts;
+- post-change verification/observation.
 
-Production promotion remains human-approved.
+Production promotion is human-approved by default. After approval, Projects may
+allow automated production deployment and bounded rollback when explicitly
+covered by policy.
+
+Two current target-specific exceptions are stricter:
+
+```text
+LiteLLM production
+Tokyo shared AI gateway
+```
+
+For these targets, the **production mutation/cutover is user-executed**.
+Claude/Codex may prepare the exact change, artifacts, checks and rollback plan;
+after the user performs the production action, Agents may verify, observe and
+report. Any production rollback/mutation follows the same target-specific human
+gate unless explicitly authorized otherwise.
+
+### 25.7 Knowledge/document impact scan at closure
+
+A meaningful code/config/service change should check linked documentation and
+knowledge before closure:
+
+```text
+change
+→ identify linked docs / Wiki / KB / runbooks
+→ assess staleness/impact
+→ update directly when in scope or propose update
+→ verify links/publication
+```
+
+ServerOS owns the generic impact/freshness mechanism. Domain-specific knowledge
+curation remains with the owning Project (for example Support Bot/Support KB).
 
 ---
 
@@ -3057,7 +3209,9 @@ Large remaining design work is subsystem-detail work, especially:
 13. dynamic environment Attachment/lease/refcount behavior;
 14. E2E Item Verification / Campaign contract, scenario matrix and evidence schema;
 15. execution placement / Tokyo→Windows handoff contract;
-16. Repo→Artifact→Service×Environment→Runtime provenance and presentation model.
+16. Repo→Artifact→Service×Environment→Runtime provenance and presentation model;
+17. Bridge↔enterprise synchronization, mandatory code PR delivery and adoption outcome;
+18. target-specific production gates and post-deploy LIVE verification.
 
 Those details may refine contracts. They do not reopen the product definition.
 
