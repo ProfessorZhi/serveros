@@ -186,6 +186,43 @@ second workflow engine.
 
 ---
 
+### 1.6 Hard invariants, policy and heuristics are different
+
+ServerOS must not let a recommendation quietly become a business law.
+
+Every durable mechanism should be understandable as one of:
+
+```text
+Hard invariant
+  identity / provenance / ownership / authorization / acceptance truth /
+  immutable happened facts / non-interference
+
+Policy
+  current user or Project preference about what is allowed, preferred or gated
+
+Heuristic
+  ranking / likely relevance / suggested placement / recommended Provider /
+  likely next action
+```
+
+Hard invariants may fail closed. Policy may be changed without migrating work.
+Heuristics may be ignored by Claude Code/Codex when current evidence is better.
+
+Strict state machines are appropriate mainly for **mechanical resources and
+facts** such as leases, installed revisions, approvals, publication receipts and
+release/runtime states. They are not the default representation for creative
+business work.
+
+A useful architecture test is:
+
+> If the Agent chooses a different sensible method, does ServerOS still preserve
+> identity, safety, evidence and continuity?
+
+If the answer is no, the mechanism is probably constraining thinking rather than
+constraining risk.
+
+---
+
 ## 2. Layer 0 — Compliance and non-interference
 
 Compliance precedes every other capability.
@@ -654,65 +691,98 @@ private/direct repo reference
 A group-chat mention does not automatically trigger a clone. Inspection does not
 create a Project, Bridge or Item. Those remain explicit user decisions.
 
-### 5.3 Feishu surfaces have different jobs
+### 5.3 Feishu information and document fabric
 
-ServerOS does not flatten Feishu into one fake filesystem.
+ServerOS does not flatten Feishu into one fake filesystem and does not infer a
+document's meaning from the space that happens to contain it.
 
-The three primary human content spaces are:
-
-- **My Docs** — the user's active private workbench;
-- **Drive** — files, attachments and binary deliverables;
-- **Wiki / Knowledge Base** — curated long-lived human knowledge.
-
-My Docs is not modeled as a Drive-style folder filesystem. Its useful structure
-is a document/subpage hierarchy plus search/recency; physical folder placement
-belongs to Drive.
-
-**Minutes / 妙记 is a separate source surface**, not a Drive folder. A Minute
-may have related recording/transcript/summary objects and derived notes, but its
-source identity remains Minutes-native.
-
-Recommended semantic use:
+The current semantic model distinguishes at least:
 
 ```text
-My Docs
-  active private work
-  daily reconciliation
-  drafts
-  decision packets
-  temporary analysis
-  inbox / unclassified notes
+Source Archive
+  IM / Minutes / transcripts / original discussion
 
-Drive
-  attachments
-  PDFs / spreadsheets / slides / images / archives
-  project files
-  meeting files
-  deliverable binaries
-  temporary staging
+Private Workbench
+  My Document Library current work, daily alignment, project workbench
 
-Wiki
-  project home
-  architecture / decisions
-  runbooks
-  project knowledge
-  confirmed meeting notes
-  reports / reusable documentation
+Work Reporting
+  Item Final Reports, daily reports, weekly reports, special reports
 
-Minutes
-  recording / transcript / AI summary source
-  meeting metadata
-  source provenance
+Private Knowledge
+  user-owned curated long-term knowledge (currently e.g. 个人笔记)
+
+Published Knowledge
+  user-owned reference documentation for a broader internal audience
+  (currently e.g. 公开文档)
+
+External / Shared Knowledge
+  documents owned elsewhere that the user may read, follow, contribute to or
+  help maintain
+
+Drive Assets
+  files / screenshots / traces / attachments / evidence / delivered binaries
 ```
 
-ServerOS may maintain locators, semantic roles and local snapshots across these
-surfaces.
+These are semantic roles, not a requirement to create matching Feishu roots.
 
-Objects owned by other people or external/shared spaces are not blindly moved.
-Owned personal My Docs/Drive content may be reorganized automatically under
-stable rules when the action does not affect other users.
+My Document Library is a Feishu Wiki-provider space
+(`space_type=my_library`) with node/subpage hierarchy, not a Drive-style
+folder filesystem.
 
-### 5.4 Knowledge promotion and freshness
+Recommended product use:
+
+```text
+My Document Library
+  private active human work
+  current Project workbenches
+  daily alignment
+  durable work-reporting subtree
+
+Private Knowledge
+  curated reusable personal knowledge
+  methods / architecture / tool knowledge
+
+Published Knowledge
+  reader-first guides / configuration docs / runbooks intended for a broader
+  internal audience
+
+External / Shared Knowledge
+  keep the external canonical location
+  index / follow / contribute according to stewardship
+  do not copy merely to make ServerOS's tree uniform
+
+Drive
+  file/evidence asset surface
+
+Minutes
+  meeting source authority
+```
+
+A space name such as "公开文档" does **not** imply Internet-public access.
+ServerOS records intended audience and observed permissions separately.
+
+### 5.4 Document profile, knowledge promotion and freshness
+
+Durable document meaning belongs in ServerOS records, not as control-plane
+metadata pasted into the human document body.
+
+A lightweight Document Profile may describe:
+
+```text
+document_ref / locator
+semantic role
+audience intent
+authority / canonical relationship
+stewardship relationship
+Project / Item relationships
+applicability
+freshness / last_verified
+observed permissions
+equivalent / supersedes relationships
+```
+
+The profile is a sidecar/projection. The Feishu document should still read like
+a normal human document.
 
 A conversation, hypothesis or draft does not become Knowledge merely because it
 was captured.
@@ -720,57 +790,121 @@ was captured.
 ```text
 Source / discussion
 → Observation / provisional understanding
-→ human alignment when material
-→ confirmed reusable content
-→ Knowledge / Wiki
+→ alignment when material
+→ reusable content
+→ Private Knowledge or Published Knowledge when there is a real audience
 ```
 
-My Docs is the normal drafting/workbench surface. Confirmed reusable material
-may be promoted into Wiki. Agents may organize, rewrite and maintain the user's
-own content aggressively, but the promotion semantics must remain visible.
+This is not a mandatory `DRAFT → REVIEW → PUBLISHED` workflow. The Agent may
+promote, restructure or leave material in place according to evidence, audience
+and authority.
 
-Large knowledge bases should not be recopied in full on every cycle.
-
-Use:
+Typical distinction:
 
 ```text
-metadata inventory
-+ Follow
-+ revision/change detection
-+ changed-page archive
-+ meaningful delta
-+ reconciliation / knowledge update
+private reusable method / personal architecture note
+→ Private Knowledge
+
+reader-first setup guide / product usage guide / broadly reused runbook
+→ Published Knowledge
 ```
 
-Code/config/service/version changes should trigger a generic knowledge impact
-scan. Linked documents may become `STALE_SUSPECT`; the Agent verifies them and
-may update user-owned internal documentation automatically when the evidence is
-clear, otherwise it proposes a correction.
+Large knowledge bases should not be recopied in full on every cycle. Use
+metadata inventory, Follow, revision/change detection and targeted expansion.
 
-The separate Support/Support Bot project owns its own support-knowledge
-publication lifecycle. General Project Knowledge and Support Knowledge are not
-one product merely because both are documents.
+Code/config/service/version changes may trigger a generic knowledge-impact scan.
+A linked document may become `STALE_SUSPECT`; applicability matters more than
+a recent edit timestamp.
 
-### 5.4.1 Knowledge spaces are audience/authority boundaries
+### 5.4.1 Audience, authority, permission and stewardship are independent
 
-A Feishu Wiki **knowledge space** is not merely a folder above Projects.
-
-ServerOS may use:
+For documents, ServerOS keeps four questions separate:
 
 ```text
-Private work knowledge space
-  internal cross-project notes / architecture / meetings / reports
+Role
+  why does this document exist?
 
-Project publication knowledge space (only when needed)
-  public/team-consumed configuration, usage, runbooks or product docs
+Audience
+  who is it written for?
 
-External corporate knowledge spaces
-  read/index/follow sources; never reorganized by ServerOS
+Authority
+  which copy/location is canonical for this subject?
+
+Stewardship
+  what responsibility/operations does the user have over it?
 ```
 
-A Project does not automatically receive its own knowledge space. A separate
-space is created only when that Project has a real published/team knowledge
-surface, such as configuration or user-facing documentation.
+Observed edit permission does not imply ownership, publication authority or
+permission to move a shared document.
+
+A stewardship relationship may grant operations such as read, contribute,
+maintain, publish or own. Those names are convenient profiles over allowed
+operations and expected responsibility, not a rigid hierarchy.
+
+Examples:
+
+```text
+user-owned published guide
+  authority = canonical
+  stewardship = owner/publisher
+
+externally owned guide the user helps maintain
+  authority = external canonical
+  stewardship = contributor/maintainer
+
+company policy / foreign Wiki
+  authority = external canonical
+  stewardship = reader/follower
+```
+
+Moving a document between shared knowledge spaces may change audience,
+publication authority and other people's navigation. Treat such a move as an
+authority/publication-boundary operation, not ordinary tidying.
+
+External canonical documents normally remain where their owner maintains them.
+The user's workbench may contain an entry/link/current responsibility view
+without copying the body.
+
+### 5.4.2 Duplicate and document-family handling
+
+Same-title documents are not assumed identical.
+
+ServerOS may relate documents with lightweight relationships such as:
+
+```text
+equivalent_to
+superseded_by
+canonical_for
+derived_from
+```
+
+Content fingerprints, revision history, source links and human rulings may help
+establish the relationship. Search/retrieval should avoid presenting known
+superseded copies as independent current authorities.
+
+### 5.4.3 Human-surface cleanliness
+
+Human-facing Feishu spaces are clean projections, not migration journals.
+
+Operational material such as migration journals, verification hashes, probe
+nodes, temporary cleanup lists, object-token diagnostics and placement
+experiments belongs in local artifacts, records and Git/ops history unless a
+human genuinely needs it in a work document.
+
+Preserving provenance does not require leaving construction debris in the
+user's document tree.
+
+### 5.4.4 Knowledge spaces are audience/authority boundaries
+
+A Feishu Wiki knowledge space is not merely a folder above Projects.
+
+A separate knowledge space is justified by a real audience, ownership,
+permission or lifecycle boundary. A Project does not automatically receive its
+own knowledge space.
+
+The product may therefore have distinct spaces for private curated knowledge,
+user-owned published documentation and externally owned/shared knowledge
+without forcing their internal taxonomies to match.
 
 ### 5.5 Meetings / Minutes
 
@@ -1514,6 +1648,51 @@ new project identity.
 
 ---
 
+### 8.8 Durable work facts versus mutable working structures
+
+The Work Fabric deliberately permits sparse paths.
+
+```text
+Item
+  durable identity / goal / acceptance / authority / current checkpoint
+
+Activity
+  optional mutable decomposition
+
+Run
+  happened fact / immutable historical evidence
+```
+
+A small Item may go directly `Item → Run`; it does not need placeholder
+Activities. Activities may be added, reordered, collapsed, replaced or abandoned
+without migrating the Item.
+
+Evidence may come from a Run or directly from an authoritative external source,
+runtime observation, PR, document or prior verified artifact. Deliverables may
+also be external objects linked by identity rather than recopied.
+
+Work classes such as research, experiment, development, support or operations
+may improve retrieval, presentation and Recipe selection, but must not decide a
+mandatory execution path.
+
+Unknown future work types must remain executable using:
+
+```text
+Intent / Goal
++ Acceptance
++ Authority / Constraints
++ Context / Sources
++ Environment
++ Abilities
++ Checkpoint
++ Evidence
+```
+
+If adding a new work type requires editing ServerOS Core's lifecycle logic, the
+design should first be treated as suspect.
+
+---
+
 ## 9. Idea / Requirement Discovery
 
 A first-class Ability exists to **elicit the user's actual intent** before
@@ -1716,30 +1895,107 @@ Human re-entry is required when execution discovers:
 - a permission boundary;
 - production/destructive/high-risk scope.
 
-### 11.1 Quay
+### 11.1 Quay as an Execution Accelerator
 
-Quay is a bounded delegation Provider.
+Quay is a first-class **Execution Accelerator / Delegation Runtime** for
+Claude Code rather than a second ServerOS work authority.
 
-High-value use cases:
+High-value use cases include:
 
-- reproduction;
-- independent verification;
-- test matrices;
-- parallel research;
-- bounded implementation slices.
+```text
+fresh-context implementation slices
+parallel research / experiments
+reproduction
+test matrices
+independent verification
+adversarial audit
+touch-disjoint concurrent execution
+bounded recurring execution mechanics
+```
 
-ServerOS/CC may recommend Quay automatically.
+Within an already approved Item and Execution Envelope, Claude Code may choose
+Quay autonomously when delegation is likely to improve throughput, isolation or
+independence. It does not need a fresh human approval merely because Quay is
+used.
 
-Current policy: the user decides whether a proposed slice is delegated.
+Human re-entry is still required when delegation would cross a new authority,
+repository, host, credential, production/destructive, external-communication or
+material cost boundary.
+
+The authority split is:
+
+```text
+ServerOS Item
+  durable work identity / requirement / acceptance / authority
+
+Claude Code / Codex
+  primary reasoning and execution strategy
+
+Quay
+  subordinate execution/delegation runtime
+
+Quay Goal/Task
+  provider-native delegated execution unit
+```
 
 Quay Task done != Item done.
 
-Quay's native Goal/Task/result records remain Quay authority; ServerOS stores
-the mapping back to parent Item/Activity/Run and evidence.
+ServerOS does **not** mirror Quay's task lifecycle into Item states. Quay's
+native Goal/Task/gate/result records remain Quay authority; ServerOS stores only
+the relationship back to the parent Item/Run plus useful evidence.
 
-Daily reporting should show real Quay contribution, not decorative usage.
+A delegation boundary should be compact.
+
+```text
+Delegation Packet
+  parent Item/Run
+  objective
+  relevant acceptance subset
+  minimum needed context
+  Environment
+  Execution Envelope
+  expected evidence
+
+        ↓ Quay
+
+Delegation Result
+  Quay refs
+  result summary
+  commits/diffs/artifacts
+  gate/audit results
+  evidence refs
+  human-intervention count
+  unresolved questions
+```
+
+ServerOS absorbs the result; it does not copy the whole Quay board.
+
+Quay gates/auditors may implement Verification abilities and Quay concurrency
+may implement parallel-execution abilities. This reuse is preferred to building
+a second multi-agent execution framework inside ServerOS.
+
+The installed Quay plugin revision/provider readiness participates in normal
+Ability Binding/Readiness. Quay WebUI is a secondary execution-inspection
+surface; CloudCLI remains the main user work console.
+
+Do not inject Quay's full methodology into every project by default. The normal
+ServerOS posture is:
+
+```text
+Quay installed / discoverable
++ MCP / Skills available
++ selective delegation on demand
+
+full Quay methodology / Tier-3 style workspace adoption
+→ explicit Project choice
+```
+
+This prevents Quay's own task/lifecycle machinery from becoming a mandatory
+business workflow for ServerOS.
 
 ---
+
+## 12. Verification, E2E and Evidence
 
 ## 12. Verification, E2E and Evidence
 
@@ -1910,26 +2166,81 @@ Evidence can include:
 
 ---
 
-## 13. Reporting
+## 13. Reporting and publication
 
-Reports are projections of durable work/evidence, not session-memory summaries.
+Reports are projections of durable work/evidence, not session-memory summaries
+and not a second truth database.
 
-Daily Report should be understandable by someone who did not watch the terminal.
+ServerOS uses **document intent + audience + source facts + presentation
+policy**, rather than one generic `generate_report(Item)` function.
 
-Typical structure:
+Important intents include:
+
+```text
+Item Final Report
+  Item-centric closure artifact
+  primary audience: user / future Agent / future maintainer
+  high information density; technical detail and unresolved evidence are welcome
+
+Daily Report
+  formal short communication of today's outcomes/progress
+  primary audience: colleagues / manager / project stakeholders
+
+Weekly Report
+  synthesized professional summary across the week
+  primary audience: colleagues / manager
+
+Special Report
+  topic/audience-centric synthesis that may span multiple Items
+
+Published Guide / Runbook
+  reader-first reference content that should stand without project-history context
+```
+
+An Item Final Report and a Special Report are not the same object. The former is
+one work package's closure view; the latter may synthesize several Items or a
+cross-cutting topic.
+
+Daily/weekly/special reports should default to a professional, externally
+readable internal style: result-first, concise, technically accurate and
+without unnecessary implementation noise. Final Reports may be denser and more
+direct because they are also continuity artifacts.
+
+A Presentation Profile may encode reusable styles such as `internal-work`,
+`team-report` and `published-guide`. Profiles influence rendering, not work
+lifecycle.
+
+### 13.1 Reports derive from structured facts
+
+Periodic reports should normally synthesize from:
+
+```text
+Item checkpoints
+Run/Evidence facts
+Decisions
+PR/adoption state
+E2E/verification
+Quay contribution
+Understanding deltas
+user corrections
+```
+
+The Agent should not re-read every raw chat each day merely to compose prose.
+
+Typical Daily/Weekly output includes:
 
 - outcomes;
 - Item progress/completion;
-- decisions;
+- meaningful decisions;
 - verification/E2E;
-- Quay contribution;
-- blockers;
-- next suggested work.
+- Quay/delegated contribution where material;
+- blockers/risks;
+- next expected work.
 
-The default format is public-quality/professional even when the primary audience
-is the user.
+Report generation must preserve uncertainty. A professional tone is not
+permission to turn PARTIAL/UNKNOWN into PASS.
 
-### 13.1 Communication is cross-cutting
+### 13.2 Communication is cross-cutting
 
 Outbound communication is a reusable Ability, not duplicated separately inside
 Support, Incident, Reporting and Engineering.
@@ -1945,24 +2256,19 @@ communication.publish
 ```
 
 Feishu is the first-class communication Provider for the current product.
-
 GitHub PR/issue/comment actions remain part of normal engineering work.
-Email or other channels are future Providers and do not need pre-built product
-machinery merely for completeness.
+
+Low-risk report delivery/notifications may be automated by policy. External
+commitments, sensitive statements or other high-impact communication may
+require explicit confirmation.
 
 Support Bot automatic Hosting replies remain owned by the separate Support Bot
 project; ServerOS supplies generic Communication, Context, Knowledge and
 Evidence capabilities.
 
-Providers may include Feishu, GitHub and future approved channels.
-
-Low-risk notifications/report delivery may eventually be automated by policy.
-External commitments, sensitive statements or other high-impact communication
-may require explicit confirmation.
-
 ---
 
-
+## 14. Workspace and placement
 
 ## 14. Workspace and placement
 
@@ -2368,12 +2674,13 @@ touches:
 Do not split one coherent requirement into artificial Items merely because it
 crosses repositories or Services.
 
-### 15.7 Project Home in Wiki
+### 15.7 Project Home is a logical view, not necessarily a Wiki page
 
-Each active Project may have one stable Wiki **Project Home** as the main human
-entry point.
+Each active Project may have one stable **Project Home** as the main human entry
+point, but its physical surface follows audience and ownership.
 
-Typical sections:
+For the current personal-work product, the default current-work Project Home is
+in My Document Library / CloudCLI:
 
 ```text
 Project Home
@@ -2383,19 +2690,17 @@ Project Home
 ├── key links / repositories
 ├── Services / Environments
 ├── people / responsibilities
-├── meetings
-├── knowledge / runbooks
-└── deliverables / reports
+└── reports / deliverables
 ```
 
-The Project Home is a Current View generated/maintained from ServerOS durable
-facts and curated knowledge. It is not a second state database and does not
-duplicate every Item artifact.
+Published/team knowledge remains a separate surface when the Project actually
+has an audience for it. Do not move active private work into a knowledge space
+merely to make the hierarchy symmetric.
 
-Because it is the user's own derived view, ServerOS may maintain it proactively:
-completed/started Items, accepted decisions, important meetings, Service/
-Environment changes and key links may update the page automatically from
-durable facts.
+The Project Home is generated/maintained from durable facts and links. It is not
+a second state database and does not duplicate every Item artifact.
+
+### 15.8 Repository relationships
 
 ### 15.8 Repository relationships
 
@@ -2499,13 +2804,13 @@ Agent sessions. It does not make Claude Code itself the user-facing support bot.
 External semantic model:
 
 ```text
-Ability        WHAT
+Ability        WHAT reusable capability exists
 Operation      semantic verb
-Provider       HOW
+Provider       HOW the operation is implemented
 Binding        concrete provider instance on a device/environment
 Attachment     current consumer relationship
 Revision       pinned managed artifact version
-Profile        declarative configuration
+Profile        known-good combination/configuration
 Adapter        how an Agent runtime consumes the Provider
 ```
 
@@ -2516,10 +2821,63 @@ Ability#Operation
       ↓
 Provider
       ↓
-Binding(device, instance)
+Binding(device, instance, environment)
       ↓
 Attachment(Agent / Session / Item / scope / lease)
 ```
+
+### 16.0 Global registry, local availability, contextual attachment
+
+The core rule is:
+
+> **Ability Registry is global; Ability availability is local; Ability
+> attachment is contextual.**
+
+`ability-management` is the shared cross-device Ability Registry / package
+control plane. An Ability may be authored by the user, a colleague, an external
+open-source author or a vendor. Registration means ServerOS knows its identity,
+source, revision, compatibility and trust/provenance; it does not claim
+authorship.
+
+Devices do not maintain independent catalogues. Each device derives a
+**Device Capability Projection** from:
+
+```text
+global Registry
++ Device Profile / OS / Agent runtime
++ compatible Revisions
++ Installations
++ local Bindings
++ readiness probes
++ authorization policy
++ current Project / Environment
+```
+
+The result can be presented as a device Ability tree/family/cluster without
+changing Ability identity.
+
+For example, a Windows projection may expose production log inspection and
+blue/green deployment operations while Tokyo exposes Quay, Feishu, browser/E2E
+and primary runtime operations. Device/OS does not become part of the Ability
+identity merely because the Binding differs.
+
+Families, clusters and Packs are navigation/composition views. A Pack states
+what abilities are useful/required for a purpose; materializing a Pack does not
+grant authorization.
+
+Normal progressive disclosure may therefore look like:
+
+```text
+global Registry: many Abilities
+        ↓
+device projection: compatible/ready subset
+        ↓
+intent projection: Project/Environment-relevant subset
+        ↓
+Session Attachment: a few abilities actually exposed now
+```
+
+### 16.1 Three distinct axes
 
 ### 16.1 Three distinct axes
 
@@ -2639,6 +2997,64 @@ Do not create a Skill merely because a procedure occurred once. A Skill is
 worth preserving when repeated evidence shows that explicit guidance improves
 quality, reliability, latency, autonomy or safety over native Agent behavior.
 
+### 16.4.1 Ability experience is Binding-aware
+
+Experience must not collapse different devices/environments into one misleading
+success rate.
+
+Useful evidence keys include:
+
+```text
+Ability
+Operation
+Provider/Profile
+Binding
+Device
+Environment
+success/failure
+human intervention
+latency/cost
+failure mode
+evidence
+```
+
+The same logical Ability may be excellent through a Windows production Binding
+and unavailable on Tokyo. Ranking should learn that difference.
+
+### 16.4.2 Capability and authorization are separate at operation level
+
+An Ability may support a high-risk operation without granting permission to run
+it.
+
+For example a production-operations Ability may expose:
+
+```text
+logs.inspect
+deployment.prepare
+deployment.cutover
+deployment.verify
+deployment.rollback
+```
+
+while current policy yields:
+
+```text
+logs.inspect         ALLOW
+deployment.prepare   ALLOW
+deployment.verify    ALLOW
+deployment.cutover   USER_EXECUTED / ASK
+deployment.rollback  USER_EXECUTED / ASK
+```
+
+This is especially important for production abilities. Provenance/trust,
+readiness and authorization all remain explicit.
+
+Executable third-party abilities that can reach production require stronger
+admission/provenance than text-only guidance. Discovery success never silently
+turns an unreviewed executable into a trusted production capability.
+
+
+
 ### 16.5 Physical vs logical topology
 
 Ability payload paths stay physically flat.
@@ -2694,66 +3110,139 @@ Dynamic readiness is checked on demand, not globally on every Agent turn.
 
 ## 18. Connectivity and devices
 
-Connectivity is Provider territory, not identity authority.
+Connectivity is Provider territory, not identity or authorization authority.
 
 Preferred layers:
 
 ```text
-Tailscale       private device-to-device reachability
-A2A             Agent-to-Agent semantic delegation/communication
+Tailscale       default personal private reachability / service publication
+A2A             Agent-to-Agent semantic delegation/communication over a transport
 RDC             Agent-to-device GUI/files/terminal, on demand
 GitHub          durable asynchronous collaboration
-SSH/tmux        raw transport / fallback
+SSH/tmux        shell/session transport and fallback
+special tunnel  exception for needs Tailscale reachability alone cannot satisfy
 ```
 
-### 18.1 Tailscale
-
-Tailscale is the preferred personal private-network Provider.
-
-It is optional: ServerOS must continue functioning without it.
-
-Useful roles:
-
-- private device reachability;
-- **phone → CloudCLI private access**;
-- CloudCLI access from laptops/Windows;
-- private services;
-- optional SSH reachability;
-- future A2A transport.
-
-The phone is a first-class Human Client:
+The current active personal topology is intentionally small:
 
 ```text
-Phone Tailscale client
-      ↓ tailnet
-Tokyo private endpoint / Tailscale Serve
-      ↓
-CloudCLI
-      ↓
-ServerOS / Claude / Codex sessions
+Tokyo    primary ServerOS / Agent / private-service node
+Windows  specialist work/production-access device
+Phone    human client
+Beijing  retired / historical, not a normal placement fallback
 ```
 
-The preferred path does not require opening CloudCLI to the public Internet.
+### 18.1 Tailnet-first private connectivity
 
-On Tokyo, prefer userspace/isolated deployment where feasible. Kernel routing,
-subnet-router, exit-node, firewall and similar host mutations require explicit
-network admission.
+Tailscale is the default Personal Private Network Provider.
 
-Tailscale Serve is preferred over public exposure for private UI/services.
+The rule is:
 
-Funnel is default-deny.
+> **Tailnet-first, tunnel-by-exception.**
 
-### 18.2 SSH
+A new private-service need should first ask whether the devices are already
+reachable on the tailnet. Long-lived `ssh -L`, `ssh -R`, autossh and ad-hoc
+reverse tunnels are not the default merely because a service listens on
+localhost.
 
-SSH is directional per connection.
+Tailscale may provide:
 
-Bidirectional device access requires:
+- private device reachability;
+- MagicDNS / stable device addressing;
+- phone → CloudCLI private access;
+- Windows ↔ Tokyo private access;
+- private Quay/ServerOS service access;
+- optional SSH transport;
+- future A2A transport.
 
-- both sides exposing reachable SSH services, or
-- a reverse tunnel.
+Tailscale solves **reachability**, not ownership or authorization. A shared or
+foreign service does not become appropriate to publish to the user's personal
+tailnet simply because the networking works.
 
-For the intended topology, Tailscale reachability + explicitly enabled SSH is
-cleaner than long-lived reverse tunnels.
+### 18.1.1 Private service publication
+
+User-owned localhost services should normally remain bound to localhost and be
+published privately through a Tailscale-backed binding such as Serve when that
+is the safer/cleaner shape.
+
+Conceptually:
+
+```text
+Service
+  ↓
+Local Endpoint
+  ↓
+Private Publication Binding
+  ↓
+Tailscale Provider
+```
+
+Architecture does not hard-code today's ports. Device/instance configuration
+owns concrete endpoints.
+
+A useful visibility distinction is:
+
+```text
+LOCAL_ONLY
+PRIVATE_PERSONAL
+SHARED_ORGANIZATIONAL
+PUBLIC
+```
+
+CloudCLI, Quay and user-owned private control surfaces are natural
+`PRIVATE_PERSONAL` candidates. Shared organizational gateways remain governed
+by their own ownership/audience policy.
+
+### 18.1.2 Tokyo Tailscale is a Managed Runtime
+
+On Tokyo, prefer userspace networking where feasible to minimize kernel/routing
+interference.
+
+Tailscale must nevertheless be operational infrastructure, not a hand-started
+process. Desired state includes:
+
+```text
+pinned/known revision
+userspace socket/state directory
+authenticated node identity
+supervised/autostart behavior
+health/readiness observation
+required private-publication bindings
+restart/reboot recovery
+```
+
+A tunnel is not considered replaced until the tailnet path survives the relevant
+cold-start/restart verification.
+
+Kernel routes, subnet routers, exit nodes, firewall mutation and public Funnel
+remain stronger network-boundary operations and require explicit admission.
+
+### 18.2 SSH and special tunnels
+
+SSH remains useful for remote shell and fallback, preferably over existing
+tailnet reachability for personal devices.
+
+A special tunnel remains valid when reachability alone is insufficient, for
+example:
+
+- a target cannot join the tailnet;
+- public webhook/ingress is required;
+- protocol/port translation is required;
+- a third-party device must not join the personal tailnet;
+- a temporary exceptional network path is justified.
+
+Existing tunnels should be auditable as:
+
+```text
+REPLACED_BY_TAILSCALE
+STILL_REQUIRED
+UNKNOWN
+```
+
+The goal is not "zero tunnels"; it is removing tunnels whose only job was
+private reachability.
+
+### 18.3 Remote assistance / device control
 
 ### 18.3 Remote assistance / device control
 
@@ -3118,7 +3607,7 @@ Component ownership:
 | Component | Owns | Does not own |
 |---|---|---|
 | `serveros` | product architecture, composition, bootstrap, deterministic Context/Space/Relations kernels, node runtime | reusable Ability source, Item state, cloud content |
-| `ability-management` | Ability identity, Revision, compatibility, discovery, installation/distribution | product composition, Item lifecycle |
+| `ability-management` | global Ability identity, Revision, provenance, compatibility, packs/families, installation/distribution | product composition, Item lifecycle, per-operation authorization policy |
 | `work-engine` | Item/Activity/Run durable state, board/work projections, execution envelope facts | Skills, topology, cloud bodies |
 | `hwz-ops` | Tokyo instance policy/topology/bindings | generic product semantics |
 | `hwz-records` | work/information/understanding records | machine runtime authority |
@@ -3509,6 +3998,86 @@ work detection and delegation depth.
 
 ---
 
+### 26.3 Human attention contract
+
+Background autonomy should optimize for **few high-value interruptions**, not
+maximum silence and not constant permission prompts.
+
+Inside the same approved goal, acceptance and Execution Envelope, the Agent may
+normally continue without asking when it is:
+
+- reading/researching;
+- using already-authorized abilities/resources;
+- revising its own mutable plan;
+- running reversible experiments/tests;
+- delegating to Quay within the same envelope;
+- preparing reports/evidence;
+- recovering from ordinary non-destructive failures.
+
+Human attention is required when the work encounters a real decision/authority
+boundary, not merely uncertainty that can be investigated.
+
+Before asking the user a factual question, the Agent should try to resolve it
+from authoritative evidence. Conflicting board/brief/runtime claims are first an
+evidence-resolution problem; they become a human decision only when the
+remaining question is actually about intent, preference or authority.
+
+A useful presentation axis remains:
+
+```text
+NONE
+INFORMATIONAL
+WATCH
+REVIEW
+ACTION_REQUIRED
+```
+
+Typical behavior:
+
+```text
+NONE
+  continue silently
+
+INFORMATIONAL
+  include in digest/report; no interruption
+
+WATCH
+  continue while monitoring a bounded risk
+
+REVIEW
+  work may continue where independent; surface for timely review
+
+ACTION_REQUIRED
+  pause only the affected boundary and ask for the smallest needed decision
+```
+
+Unrelated approved work should not freeze because one Item has an unresolved
+gate.
+
+### 26.4 Background wake, checkpoint and interruption economy
+
+Long-running/background work needs durable wake/checkpoint semantics rather than
+an assumption that one native Session stays alive forever.
+
+At meaningful boundaries or before suspension:
+
+```text
+checkpoint
+→ what changed
+→ evidence
+→ current blockers/gates
+→ next safe continuation
+```
+
+Notifications should be deduplicated and bundled when possible. Repeated
+low-value "still working" messages are a product failure unless explicitly
+requested.
+
+A background task that reaches `ACTION_REQUIRED` should preserve enough state
+that the user can decide later without reconstructing the whole investigation.
+
+---
+
 ## 27. Routine and scheduled operating recipes
 
 No `workflowd` exists.
@@ -3728,7 +4297,7 @@ Large remaining design work is subsystem-detail work, especially:
 8. Project lifecycle plus Person/Role, Service, Environment and runtime attribution model;
 9. CloudCLI Project → Item → Session mobile/desktop plugin surfaces;
 10. external reasoning / future CC↔GPT Provider contract, Skills and 2–3 round convergence guard;
-11. Tokyo Tailscale userspace deployment and phone/private-CloudCLI access;
+11. tailnet-first connectivity, supervised Tokyo userspace Tailscale, private service publication and tunnel retirement;
 12. A2A adapter timing/mapping;
 13. dynamic environment Attachment/lease/refcount behavior;
 14. E2E Item Verification / Campaign contract, scenario matrix and evidence schema;
@@ -3737,7 +4306,7 @@ Large remaining design work is subsystem-detail work, especially:
 17. Bridge↔enterprise synchronization, mandatory code PR delivery and adoption outcome;
 18. target-specific production gates and post-deploy LIVE verification;
 19. cross-surface retrieval/ranking with provenance and contextual authority;
-20. My Docs→Wiki promotion, generic knowledge freshness and Project Home maintenance;
+20. Document & Publication Fabric: MyDocs reporting/workbench, private/published/external knowledge, stewardship, freshness and clean human surfaces;
 21. human work-document/处理站 projection and docs-first Item presentation;
 22. GitHub Work Packet CC↔GPT handoff and automatic design-to-execution continuation;
 23. E2E environment discovery, browser-provider selection, identity handling and screenshot-rich report;
@@ -3745,7 +4314,13 @@ Large remaining design work is subsystem-detail work, especially:
 25. Memory Federation, bounded retrieval and native-memory authority boundaries;
 26. native-first Ability discovery, acquisition risk tiers and automatic Session checkpoints;
 27. anti-rigidity kernel: constraint-driven execution, mutable Activities and acceptance-driven completion;
-28. Ability Experience / Capability Profiles / candidate-vs-stable promotion and unattended-work metrics.
+28. Ability Experience / Capability Profiles / candidate-vs-stable promotion and unattended-work metrics;
+29. global Ability Registry → Device Capability Projection → intent-scoped Session Attachment;
+30. operation-level authorization/trust for production-capable Abilities and Binding-aware experience;
+31. Quay Execution Accelerator integration, Delegation Packet/Result and non-mirrored task authority;
+32. Tailnet-first Device Fabric with Tokyo primary, Windows specialist and phone human-client roles;
+33. audience-aware report rendering plus Final/Daily/Weekly/Special/Published document intents;
+34. Human Attention Contract for background autonomy, evidence-first clarification and interruption economy.
 
 Those details may refine contracts. They do not reopen the product definition.
 
