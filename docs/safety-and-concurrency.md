@@ -1,73 +1,78 @@
 # Safety and Concurrency
 
-The server is shared by concurrent agents, Items, containers, and test
-environments. Directory governance is **not** an exclusive maintenance window:
-business Items may create worktrees, test-envs, containers, browser profiles
-and Run evidence in parallel, and governance must not interrupt them for the
-sake of tidiness.
+Product authority: [ARCHITECTURE.md](../ARCHITECTURE.md), sections 2, 5, 14 and 23.
 
-## Freshness
+Directory governance is not an exclusive maintenance window. MarketOps, Support Bot,
+knowledge work and other approved Items may create resources concurrently. Their
+continuity takes precedence over tidiness.
 
-Every move / delete / retire decision must re-resolve:
+## Ownership and scope
 
-```text
-project / Item / Activity / Run / process / container / git worktree / open-file
-```
+Visibility, age, a familiar path or an empty child list does not prove a resource
+is disposable. Protect active/resumable work, unknown-owned resources and resources
+with valid consumers. Resolve the current ownership/reference state for the exact
+candidate before a consequential mutation.
 
-and read the **current** Item/lease state, `git worktree list`, container /
-process, and open-file references.
+Do not reset, stash, clean, force-push, move or overwrite another actor's WIP.
+Code changes default to isolated worktrees with one integration writer. A request
+to converge main is not permission to edit the shared canonical src checkout.
+Stage only scoped paths; do not sweep unrelated changes into a commit.
 
-> An earlier ownership snapshot must never be reused.
+## Concurrency is more than Git
 
-Each cleanup proposal's re-inspection is valid only for that candidate and that
-evidence.
+Use the owning provider's concurrency primitive where possible: database transaction,
+OS lock, Git/blob revision or native conditional write. Cooperative writer/resource
+leases coordinate Agents but do not magically restrict arbitrary shell processes.
 
-## Protection
+Reserve ports, databases, containers, browser profiles and shared test identities as
+well as worktrees. Lease expiry permits reconciliation, not blind process termination.
+A stop request is distinct from an observed stop; retain exclusion until the writer
+has actually relinquished the resource.
 
-- `ACTIVE`, resumable-waiting, unknown-owner, and active-lease resources are
-  always **PROTECT or DEFER**.
-- Idleness, an old date, a path name, or an old branch name is **not** evidence
-  that a resource is reclaimable.
-- Named strong-protection sets cover, for each protected Item, its
-  `worktree / test-env / records card / artifacts / current development branch`.
-  For these, `rename / move / delete / checkout / reset / clean / stash /
-  rebase / cherry-pick / write` are forbidden, as is modifying their Git refs.
-- The protected set is **resolved dynamically from current state** — not
-  hardcoded into a global `CLAUDE.md` / `AGENTS.md`.
+## Planning and applying
 
-## Proposal-only
+The Space Resolver remains a deterministic placement/advice authority. A provider
+adapter applies an operation only under its actual authorization. Personal owned
+organization may be automated under standing policy; not every move needs another
+human question. Destructive effects, foreign/shared scope and production use their
+stricter rules.
 
-- Only after a fresh re-resolution confirms `confirmed_stale=true`, all
-  reference checks are empty, and the proposal carries evidence, may a `RETIRE`
-  be *proposed*. The policy layer generates proposals; it does not implement
-  destructive apply.
-- Cleanup stays proposal-only until explicitly approved.
-- Historical evidence is preserved regardless of old naming. Legacy names
-  (REQ / WI / run-001 forms) are historical evidence, **not** deletion signals.
+Prior to deletion, inspect the object's own body/attachments, descendants and
+remaining references, preserve required recovery evidence and persist the intent.
+Independent readback verifies the result. Never infer empty body from no children.
+A transient read error or partial inventory is not an empty object.
 
-## Cloud objects
+MeetingBundle is a relationship among source and derivatives, not a demand to delete
+all components together. Retaining original Minutes while organizing derived files
+is normal. No derivative cleanup silently grants authority to delete the source.
 
-Feishu and GitHub objects follow the same shape:
-**inventory → classify → proposal**. A MeetingBundle (minute, audio,
-transcript, summary) is atomic — components may not be deleted separately.
+## Production and credentials
 
-## Git safety
+Tokyo defaults to vince. The ubuntu shared-gateway exception is target/operation
+scoped. Current LiteLLM and shared-gateway production changes are user-executed.
+Permission to inspect, draft a runbook or review a card does not authorize cutover,
+live config mutation, restart or rollback.
 
-- Never reset, clean, stash, discard, or force-push another actor's WIP.
-- Never `git add .`.
-- Do not modify canonical checkouts; work in Item worktrees.
-- Protected remotes are denied push unless explicitly authorized per operation.
-- Structural changes to an existing repo stop at an isolated worktree plus
-  tests, behind a commit decision gate.
+A verb named prepare can still mutate production; evaluate real effects. Read-only
+queries must respect data and load limits. Network changes inspect relevant current
+routes, networks and listeners without scanning unrelated users. No mandatory
+netshadow installation is implied.
 
-## Secrets
+Credentials stay in protected vault/native stores. Secret values must not enter
+ordinary registry metadata, prompts, Git, logs, report bodies or screenshots. If a
+worker can directly read an unrestricted production credential, a Skill instruction
+alone cannot truthfully be called a hard enforcement boundary.
 
-Never expose or commit credentials, tokens, cookies, private keys, secrets, or
-raw hardware identifiers. Secret *values* never enter Git, state, or evidence.
+## Unknown effects and recovery
 
-## Conflict resolution
+An external timeout after sending a write leaves effect status unknown. Reconcile
+actual target state before retry; do not duplicate a document, PR, message or deployment.
+Use action IDs, provider idempotency where available, revision guards and receipts.
+There is no promised global transaction across GitHub, Feishu, Git and local state.
 
-> Business execution continuity takes priority over topology convergence.
+## Human surfaces
 
-When governance conflicts with active business work, mark `DEFER` and do not
-stop or move the business environment.
+Keep migration/probe journals and detailed verification records under operational
+evidence. Human documents should contain current useful content, not empty-container
+inventories or stale pending-deletion notes. Clean presentation never justifies losing
+source material or hiding an unresolved data-loss finding.
