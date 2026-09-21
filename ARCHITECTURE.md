@@ -1074,6 +1074,60 @@ is desired and healthy. Avoid competing restart loops. An Agent diagnosis runs i
 bounded Maintenance Session, not inside the daemon. Generic on-demand readonly CLI
 inspection remains possible if daemon observation is unavailable, with provenance.
 
+## The resident surface (frozen)
+
+*Unnumbered on purpose.* Every other section here is a design that changes; this
+one is a refusal that is supposed to be hard to change, and a numbered section
+sits in a document whose whole convention is that numbers move.
+
+**Exactly one thing is resident, and it is `serverosd`.**
+
+This is frozen because the pressure against it is steady and each step is
+individually reasonable. Discovery feels like it deserves a supervisor; memory
+feels like it deserves a writer; coordination feels like it deserves a
+scheduler. Each of those is a *semantic service* — a resolver, a schema, a
+refusal rule — and none of them is a process. A service that answers in-process
+becomes a question that can be unanswered the moment it is given a process, and
+"the answer is unavailable" is the one output this product exists to make
+impossible.
+
+```text
+serverosd          resident, supervised by systemd (§20)
+serverosctl        on demand — the operator surface
+serveros-*-mcp     on demand — spawned per Agent session, owned by that session
+
+refused as resident units, by name:
+  abilityd                 discovery is a resolver, not a supervisor
+  memoryd                  the ledger is written by the operation that needs it
+  coordinationd            bindings are a durable record, not a running thing
+  resource-governanced     observation is a tick, and admission is a policy read
+  feishud                  Feishu is a Provider, reached when a command needs it
+```
+
+Each refused name is the obvious way to make one of the four semantic services
+into a process. Refusing them is not a claim that a second resident unit could
+never be justified — it is that the justification would have to survive this
+paragraph, in a diff, with a name.
+
+**What may be a process is a Provider or a Managed Runtime, and both live
+outside the core.** BotMux, the Codex App Server, Docker, Feishu and OpenViking
+are reached through a module under `mcp/` or `abilities/`; the core's loader
+closure may not reach any of them, and `serverosd` starts with every one of
+them absent. `tests/test_core_freeze.py` asserts the surface is exactly the
+three rows above, that no refused name has appeared on it, and that none of
+these outer systems is in the core's closure. `tests/test_core_ability_boundary.py`
+asserts the closure itself.
+
+**This section was deleted from the document and is restored here on
+2026-09-22.** The gate that holds it — `test_the_refusal_is_written_down`, whose
+own failure message is "the freeze was deleted rather than changed" — stayed in
+the tree and stayed red while the text was gone. Nothing in the refusal had
+become false: `test_no_such_daemon_exists` never stopped passing, and no refused
+name has appeared since. What went missing was the paragraph a person reads
+before proposing the sixth one, which is the only thing the section was ever
+for. The subsection above is where the refusal lives; this one is why it is
+still refused.
+
 ## 22. Core composition and component boundaries
 
 The product's two canonical Core members remain **serveros + ability-management**.
