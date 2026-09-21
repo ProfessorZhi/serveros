@@ -8,6 +8,8 @@ architecture**, consolidated on 2026-09-21. Neither README is a second authority
 
 | Document | Purpose |
 |---|---|
+| [Daily Work Cycle](daily-work-cycle.md) | low-intervention daily understanding, two-objective focus, native GPT review and bounded execution |
+| [Integration readiness](integration-readiness-20260922.md) | measured native GPT/Quay/browser/Windows/cloud/knowledge results and unverified deployment boundaries |
 | [Context Capsule](context-capsule.md) | intent-first, sparse context, provenance, budget and recovery |
 | [Capability Discovery](capability-discovery.md) | native-first discovery, typed identity, scoped loading and acquisition |
 | [Claude/Codex Parity](claude-codex-parity.md) | shared semantics without invented native feature parity |

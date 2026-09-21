@@ -196,23 +196,35 @@ containment and owner notification; redacting a later report does not undo leaka
 
 ## 3. Daily operating model
 
-Feishu is the near-exclusive enterprise demand source. Offline conversations are
-normally recorded/transcribed into Feishu; the user can add or correct context.
-GitHub and sessions supply engineering evidence and explicitly followed signals,
-not an independent machine for inventing work.
+Feishu remains the primary enterprise source; GitHub, native Sessions and registered
+records provide engineering evidence. The Coordinator is a replaceable Session role,
+not an immortal transcript or a second business scheduler.
 
-The Coordinator is a replaceable Session role, not a permanently growing transcript.
-Each day it presents important changes plus the current understanding. The user
-can correct facts, reject false requirements and choose a small focus set.
+The user-selected **Daily Work Cycle** profile incrementally updates understanding,
+reconciles work, selects a focus of up to two authorized objectives in the evening,
+uses GPT deeply for research/design and independent plan review, and advances qualified
+work the next day through native agents/Quay, testing and reports. This is a default
+operating rhythm for this user, not a mandatory lifecycle for every ServerOS task.
 
-A daily alignment opportunity is required even with no detected changes. If the
-user is absent, record alignment as pending; never fabricate approval or freeze
-unrelated approved Items. Schedule and timezone are instance policy, not literals
-in Core. The user may reconcile at additional times.
+Existing unfinished, delegated, waiting, cancelling or uncertain-effect focus work
+counts toward the limit. Do not invent two new tasks per day or manufacture Quay
+activity. A focus can be parked only with an explicit disposition, checkpoint and
+confirmed worker/resource release; parking is not a new Item-state enum.
 
-One cross-project Board is authoritative. Project views filter the same entries.
-Human presentation is **处理站 / 未完成 / 已完成**; the focus set is not copied into
-independent task records. No fixed three-to-five-item quota is imposed by Core.
+A standing, revocable delegation defines eligible projects/candidates, effects, budgets
+and publication targets. It may authorize routine selection and plan refinement without
+repeated human prompts; model text, missing human attendance and source messages do
+not mint grants. Material business changes, disputed intent, sensitive-data expansion
+and protected production mutation still need human action.
+
+Daily agent reconciliation and the opportunity for human correction both remain.
+`agent_reconciled` is never reported as `user_confirmed`. Human absence does not freeze
+unrelated already-authorized work. One Board and the existing work store own work state;
+no additional daily task database or fixed quota is introduced into Core.
+
+See [Daily Work Cycle](docs/daily-work-cycle.md) for the phase contracts and
+[measured integration status](docs/integration-readiness-20260922.md) for what is and
+is not actually verified. Schedule, timezone and budget remain instance policy.
 
 ## 4. Structured Understanding
 
@@ -529,13 +541,26 @@ write. Reconcile concurrent edits; never force-push to solve docs/implementation
 coordination. Freeze code inputs per Run; integrate current upstream changes at a
 safe boundary. Do not replace another CC thread's worktree or WIP.
 
-### 10.3 External reasoning boundary
+### 10.3 Native GPT reasoning and human-mediated ChatGPT
 
-Near-term GPT rounds are human-mediated through GitHub; no unattended ChatGPT session
-control is assumed. A future authorized reasoning provider may automate bounded
-review, normally two or three rounds, with the same context and authority boundary.
-GPT can participate during requirements, experiments, design, debugging or review;
-there is no mandatory fixed CC -> GPT -> CC stage order.
+Two paths coexist. Human-mediated ChatGPT uses versioned GitHub work packets.
+Unattended bounded GPT reasoning may use an authorized native Codex/API Provider;
+this does not mean ServerOS controls the ChatGPT GUI. The 2026-09-22 inspection
+successfully exercised a native Codex high-reasoning call using the user's existing
+login; a successful call is not proof that every review or the daily loop is live.
+
+The Daily Work Cycle requests a verified model and explicit high reasoning rather
+than inheriting a low-latency user default. Design and independent plan-review Sessions
+are distinct. A trusted invoker binds the result to scope, source/design/plan/baseline
+hashes, model configuration, actual Session and time. Exit 0 without a completed turn
+and valid final result is INCOMPLETE, never approval.
+
+A review is not authorization. The existing control plane re-checks current grants,
+revocation, artifacts, environment and resource reservations at admission. Important
+input changes invalidate affected reviews. Failed or incomplete reviews stop that
+branch with evidence instead of silently downgrading models or accepting no answer.
+
+This profile does not impose a universal CC -> GPT -> CC order on other work.
 
 ## 11. Execution and Quay
 
@@ -1248,27 +1273,36 @@ checkpoint. Do not deliver a screen of raw failure codes.
 
 ## 27. Routines and scheduling
 
-A Routine has objective, trigger/timezone, scope/envelope, selected execution profile,
-output contract and continuation policy. Its internal tactics can be Agent-chosen or
-deterministic; no mandatory workflow DAG and no new workflowd.
+A Routine has objective, trigger/timezone, scoped grant, selected execution profile,
+output/receipt contract and continuation policy. The user-selected Daily Work Cycle
+composes existing information, work, research, testing and reporting abilities; it
+is neither a new workflowd nor a new authoritative state machine.
 
-Use the OS scheduler to start finite workers. One authority owns each trigger; a
-ServerOS timer and Quay routine must not both independently dispatch the same job.
-The existing work/control store holds job leases, cursors and receipts.
+Use one authorized scheduler per trigger to start finite workers. A ServerOS timer
+and Quay routine must not independently dispatch the same job. The existing work
+store owns business leases/cursors/receipts; component receipts describe effects,
+not a second version of Item status. The old daily workbench-render unit alone does
+not update understanding, select work or implement requirements.
 
-Defaults: one active run per routine key unless explicit parallelism; coalesce missed
-runs to the latest necessary work rather than replay a backlog storm; defer when
-required targets are unavailable. Retry an idempotent step, not a whole partially
-published workflow. Persist wait conditions and checkpoints so a fresh Session can
-continue without an immortal conversation.
+Coalesce missed triggers, preserve checkpoints, and reconcile unknown effects before
+retrying. Do not release resources solely because a Run says cancelled. Bound each
+phase's time, output, attempts and cumulative costs; stop on real failures without
+hiding them. Model IO does not enter serverosd's tick or startup requirements.
 
-Core routines include source delta capture, understanding preparation, approved work
-advancement, report generation, document freshness checks and bounded maintenance.
-No source change avoids redundant analysis, not the daily alignment opportunity.
+Optional OpenViking, Windows-only execution and production access gate only the
+steps that need them. Tokyo work can continue from records/checkpoints and existing
+tools. Publication without proven conflict protection must not overwrite shared
+human-authored text. Daily source changes are evidence, not automatic permission
+for new commitments or wider collection.
 
-MarketOps may evolve from experiments into its own unattended product. ServerOS
-provides environment, scheduling/delegation, evidence and notification primitives;
-it does not embed MarketOps business logic or take over its production roadmap.
+Normal operation avoids repeated approvals inside the accepted envelope. Human
+attention is reserved for material intent/policy conflicts, incomplete required
+reviews, product verification failures and protected effects. Production cutover
+and rollback remain human-executed under current policy.
+
+See the Daily Work Cycle contract for selection, review and end-to-end activation
+criteria. Neither code helpers, green fixtures nor an installed timer alone prove
+that unattended business delivery is live.
 
 ## 28. Ability families and product coverage
 
