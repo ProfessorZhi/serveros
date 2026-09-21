@@ -466,6 +466,218 @@ alerts:
       - "agent reasoning between the register and the transport"
       - "one message per alert on a host with a backlog"
 
+  # §20.2 of ARCHITECTURE.md — the five attention levels are named there, and
+  # the axis below is the axis that decides whether any of the above is worth a
+  # person's attention. This block cited "§20.3 / §20.4" until now: §20.3 is
+  # "Actions are not credentials" and §20.4 does not exist, so the citation was
+  # to a section that says the opposite thing and to one that says nothing.
+  #
+  # THE RULE, in one sentence, because everything below is only its spelling:
+  #
+  #     告警 = 实际状态违反了一个明确的预期状态，而且这个偏差值得人知道。
+  #
+  # Two halves, and dropping either produces a different wrong system. Drop
+  # "预期状态" and every detector record becomes an alert — which is what the
+  # 542 held OPEN rows on this node already were: all medium, none of them
+  # carrying a `measured` block, none of them a thing anybody could act on.
+  # Drop "值得人知道" and the axis collapses into `severity_words` restated.
+  #
+  # This is NOT severity and it does not replace it. `severity` answers "how bad
+  # is what was measured"; attention answers "may this person be interrupted".
+  # A CRITICAL disk nobody is using and a NOTICE about a service that is
+  # supposed to be running are both correctly levelled, and only one of them is
+  # news. The two axes are read together and neither is derived from the other.
+  #
+  # NO OTHER FILE MAY ASSIGN AN ATTENTION LEVEL. `presentation.attention_of`
+  # reads this table and reports; `cards.py` renders what it reported. A
+  # renderer that picked a level from a string shape or a colour would be a
+  # second authority over one axis, and two authorities over one axis drift in
+  # exactly the way this contract exists to prevent.
+  attention:
+    # Most urgent first. The order is the reading order and it is also the sort
+    # order, so a card cannot accidentally print a WATCH above a REVIEW.
+    axis: [ACTION_REQUIRED, REVIEW, WATCH, INFORMATIONAL, NONE]
+    # What each level is called on a card. Here and not in the renderer,
+    # because these are the axis's own names and a renderer holding its own
+    # copy is how ACTION_REQUIRED comes to read as "warning" on one surface and
+    # "critical" on another. A level with no word here renders as itself rather
+    # than being given a friendlier one.
+    words:
+      ACTION_REQUIRED: 需要处理
+      REVIEW: 需要确认
+      WATCH: 值得留意
+      INFORMATIONAL: 供参考
+      NONE: 无事
+
+    # What may count as the "明确的预期状态" half. Three kinds, and a finding
+    # that has none of them is history rather than an alert.
+    expectation:
+      declared: >-
+        something on this node declares what the subject's state should be:
+        a registry registration's `desired.state`, a task's claim on a process
+        it owns, a tunnel's declaration that it exists, a protection label that
+        is supposed to survive a rename. The declaration is the expectation and
+        the observation is what disagrees with it. This is the only kind that
+        can reach ACTION_REQUIRED, because it is the only kind where the node
+        has already said out loud what it wants.
+      boundary: >-
+        a measurement has crossed a threshold written for the SUBJECT ITSELF —
+        a filesystem whose job is not to fill up, a device whose inodes should
+        not run out, docker storage whose job is to hold containers. The
+        threshold is the expectation and it is declared in
+        `attribution-contract.yaml#thresholds`; nothing here restates a number.
+      observability: >-
+        we should be able to observe X, we no longer can, and the loss blocks a
+        judgement about something that is still supposed to be there. BOTH
+        halves are required. "We cannot see it" alone is not a fault and is not
+        reportable: a subject last seen an hour ago, about which nothing
+        declares it should exist, is history. That is the difference between a
+        monitoring-integrity finding and a stale row, and conflating them is
+        how 542 held entries came to read as 542 current problems.
+      sources:
+        - "runtime/registry.py#Resource.desired"
+        - "runtime/anomaly.py#SEVERITY (the codes marked `declared` below)"
+        - "runtime/attribution-contract.yaml#thresholds"
+        - "runtime/graph.py#freshness_of (a declared window, never a default)"
+
+    # The closed mapping. Every code in `anomaly.SEVERITY` and
+    # `resource_anomaly.CODES` appears in exactly one bucket; a code that
+    # appears in none is a code nobody decided about, and `test_attention.py`
+    # fails on one rather than letting it default to something quiet.
+    codes:
+      # The declaration is on the other side of the comparison. These are the
+      # only codes that can be escalated by `criticality` below.
+      declared:
+        DESIRED_ACTUAL_MISMATCH: REVIEW
+        FUNCTIONAL_PROBE_FAILED: REVIEW
+        MCP_PROCESS_ALIVE_BUT_UNAVAILABLE: REVIEW
+        TASK_CLOSED_RESOURCE_RUNNING: REVIEW
+        TASK_IDLE_PROCESS_ACTIVE: REVIEW
+        RUNTIME_OUTLIVED_OWNER: REVIEW
+        SESSION_OWNED_DURABLE_RESOURCE: REVIEW
+        UNDECLARED_DURABLE_RESOURCE: REVIEW
+        PERSISTENT_RUNTIME_FLOATING_DEPENDENCY: REVIEW
+        PROTECTION_LOST_ON_IDENTITY_SWITCH: REVIEW
+        TUNNEL_UNHEALTHY: REVIEW
+        TUNNEL_OWNER_MISSING: REVIEW
+      # A threshold written for the subject itself. The level is the tier the
+      # code already carries in `resource_anomaly.ADMISSION_LEVELS`: a code
+      # that refuses admission has crossed the line a person cares about, and
+      # an advisory one is the declared "approaching" tier. Neither number is
+      # repeated here.
+      boundary:
+        DISK_CRITICAL: REVIEW
+        INODE_CRITICAL: REVIEW
+        MEMORY_PRESSURE: REVIEW
+        SWAP_PRESSURE: REVIEW
+        # The §17 spellings of the same two facts: `ROOT_FS_PRESSURE` is the
+        # root filesystem and `DATA_FS_PRESSURE` is any non-`/` mount, and both
+        # are graded against the same `filesystem_percent_high` that
+        # `DISK_WARNING` is. They are levelled apart from `DISK_WARNING`
+        # because they arrive from the other detector and at `high`, and a
+        # filesystem one code calls a warning and another calls a pressure is
+        # not a reason to interrupt somebody less.
+        ROOT_FS_PRESSURE: REVIEW
+        DATA_FS_PRESSURE: REVIEW
+        DISK_WARNING: WATCH
+        DOCKER_STORAGE_HIGH: WATCH
+      # Graded measurements of one resource's own consumption, and the reason
+      # the live alert card on this node was unreadable. A process using more
+      # memory than `memory_rss_high_bytes` is a true reading and it is not a
+      # violated expectation: the threshold is a generic default applied to
+      # every process, not a statement that this process should not exceed it.
+      # WATCH carries them, counted, off the face.
+      consumption:
+        HIGH_CPU_SUSTAINED: WATCH
+        HIGH_MEMORY_SUSTAINED: WATCH
+        REPEATED_ERROR_LOOP: WATCH
+        BUILD_CACHE_HIGH: WATCH
+        CONTAINER_LOG_LARGE: WATCH
+        CONTAINER_WRITABLE_LAYER_LARGE: WATCH
+        PROTECTED_RESOURCE_AT_RISK: WATCH
+      # No expectation of any kind. These stay alert truth, stay in the
+      # register, and stay visible in `serverosctl alert list` — and they do
+      # not interrupt anybody, because "there is a record of this" is not the
+      # same sentence as "this is wrong now".
+      history:
+        AGE_WITHOUT_ACTIVITY: INFORMATIONAL
+        STALE_CONTAINER: INFORMATIONAL
+        STOPPED_REVIEW_CANDIDATE: INFORMATIONAL
+        EXTERNAL_SYSTEM_PROCESS_TREE: INFORMATIONAL
+        EXTERNAL_PROCESS_TREE: INFORMATIONAL
+        UNKNOWN_OWNER_LONG_RUNNING: INFORMATIONAL
+        RUNTIME_UNOWNED: INFORMATIONAL
+        RUNTIME_ORPHANED: INFORMATIONAL
+        ORPHAN_PROCESS_TREE: INFORMATIONAL
+
+    # Which levels may occupy a line on the alert face. WATCH and below are
+    # COUNTED on the card and never printed as events: §5's "静默不等于没事"
+    # is served by the count, and printing them is what made the card a dump.
+    on_the_face: [ACTION_REQUIRED, REVIEW]
+
+    # The one escalation. `declared` plus a registration that is
+    # `criticality: critical` is the case the node has said out loud it cares
+    # about most, and it is stated once, here, rather than being re-derived by
+    # whichever surface is rendering.
+    escalation:
+      when: >-
+        expectation is `declared` AND the subject resolves to a registered
+        resource whose `criticality` is `critical`
+      from: REVIEW
+      to: ACTION_REQUIRED
+      because: >-
+        the declaration is not merely present, it is marked critical, so the
+        gap between it and the observation is the gap somebody wrote down in
+        advance that they would want to be told about
+      unknown_criticality: >-
+        when no registration is reachable the level stays REVIEW. Absence of a
+        criticality is not evidence of importance and not evidence of
+        unimportance, and escalation on a missing field would make every
+        unregistered subject look critical.
+
+    # What makes a held row a monitoring-integrity finding, and what makes it
+    # merely a stale one. AC6 and AC20 are the same rule read from two sides.
+    monitoring_integrity:
+      is_a_finding_when:
+        - "the row is OPEN with a `hold_reason` that says the subject stopped being measured"
+        - "AND its code carries a `declared` expectation, so there is evidence this thing should still exist"
+      is_not_a_finding_when:
+        - "the subject's code carries no expectation — nothing says it should still be there"
+        - "the row resolved"
+      aggregate: >-
+        MANY findings with one cause are ONE line. The card states how many
+        subjects lost observation and which declaration is unverified by the
+        loss; it does not enumerate them. 500 stale objects are one finding,
+        not 500 faults, and a card that printed them would be the dump this
+        section exists to remove.
+      # WHY THE SENTENCE IS DECLARED HERE AND NOT IN THE RENDERER
+      #
+      # The same reason the shared gateway's provider line is declared in
+      # `card-definitions.yaml` rather than in the thing that measured it. An
+      # aggregate finding has no detector and therefore no code, so it has no
+      # row in `card-definitions.yaml#codes` and cannot borrow one: a code is
+      # something a detector opened, and `sources:` there admits only the
+      # detector tables. Left in the renderer, the wording would live in the one
+      # place §E forbids — a second authority that decides how a number is
+      # described, and disagrees the first time somebody edits either copy.
+      #
+      # `{count}` is an integer this finding computed. `{code}` is one held
+      # row's anomaly code, shown because it is the evidence for the claim and
+      # not because it is the subject. No cause words: the finding says a
+      # judgement became unavailable, never why.
+      what: "{count} 个本应有状态声明的主体本次未被观测到"
+      impact: >-
+        观测本身在这一段窗口里不可信：没有异常不等于一切正常，因为判断正常
+        所需要的数据没有到达。这一条说的是判断不可用，不是说这些主体已经故障。
+      action: >-
+        确认采集侧（serverosd 与观测 provider）是否仍在运行，而不是去处理被
+        观测的对象。恢复观测后本条自行消失。
+      never: >-
+        never escalated to ACTION_REQUIRED on staling alone. Losing sight of
+        something is not the same as something being broken, and the honest
+        level for it is REVIEW at most — the reader is being told a judgement
+        is unavailable, not that the world is on fire.
+
   # §13. What the sentence may contain. A person reads this on a phone.
   text:
     headline_from: events.templates

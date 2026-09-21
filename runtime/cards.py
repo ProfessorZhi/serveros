@@ -37,6 +37,7 @@ import html as _html
 import importlib.util
 import json
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
 _HERE = Path(__file__).resolve().parent
@@ -153,68 +154,232 @@ def _footnote(model: dict) -> list[dict]:
 # ---------------------------------------------------------------------------
 
 def alert_card(model: dict) -> dict:
-    """At most three events, each with the §4 fields, and what did not fit.
+    """What a person may be interrupted for, and nothing else.
 
-    §1's two prohibitions shape this: the card carries no copy of the status
-    card's three blocks, and no all-history OPEN/RESOLVED totals. What it
-    carries instead of the second is how much was left out, because a short
-    card is otherwise read as a quiet machine.
+    The card this replaces printed the alert register. Its first three lines on
+    this node were three `HIGH_MEMORY_SUSTAINED` warnings about process trees —
+    all true, none of them a violated expectation, and the sentence that
+    mattered was below the fold. What changed is not the styling: the events
+    here have already been filtered by the declared attention axis
+    (`presentation.alert_model`), so the card can be short without being
+    selective.
+
+    Three things a reader gets in the first screen, in this order: what is
+    wrong, what was lost sight of, and what a person might do. The §4 field set
+    is still complete — it is inside the fold, one tap down, where a person who
+    wants the ref, the raw code and the evidence can get them.
     """
     events = model.get("events") or []
+    integrity = model.get("integrity")
+    watch = model.get("watch") or {}
+    undecided = model.get("undecided") or {}
+    recovery = model.get("recovery") or {}
     omitted = model.get("omitted") or {}
-    template, icon = _template(
-        "CRITICAL" if any(e["severity"]["level"] == "high" for e in events)
-        else ("ATTENTION" if events else "OK"))
-    title = _titled(f"{icon} 需要关注 · {len(events)} 件" if events
-                    else f"{icon} 没有需要处理的新变化", model)
+
+    # Colour follows ATTENTION, not severity. A card whose colour came from
+    # severity would paint a node red for a WARNING nobody may act on, which is
+    # the reading that made the old card look alarming on a quiet hour.
+    template, icon = _template(_face_verdict(events, integrity))
+    title = _titled(_face_title(events, integrity), model)
 
     els: list[dict] = _sample_line(model)
     # The title is NOT repeated here. It is already the header, and the first
     # draft printed it twice — once in the coloured bar and once as the first
     # body line — which on a 390px screen spends the most valuable line of the
     # card saying what the line above it just said.
-    if not events:
+    if not events and not integrity:
         # An empty alert card is a real answer and it is only honest with the
         # counts beside it. "没有新变化" over a register with 113 backlogged
         # entries and 1112 never-announced resolutions is true and misleading.
-        els.append(md(_quiet_line(omitted)))
+        els.append(md(_quiet_line(omitted, watch)))
 
     for event in events:
-        els.append(panel(_event_title(event), _event_lines(event), expanded=True))
+        # THE FACE IS NOT THE PANEL HEADER. The first version of this put the
+        # four face lines INSIDE the collapsible panel, which on a 390px screen
+        # with nothing expanded means a person sees the header and nothing
+        # else — the situation, the impact and the suggestion were all one tap
+        # away and the card was as unreadable as the one it replaced, in a
+        # tidier font. The face is markdown, always visible; the §4 detail is
+        # the panel, and it is collapsed.
+        els.append(md(_event_face(event)))
+        els.append(panel(_detail_title(event), _event_detail(event),
+                         expanded=False))
 
-    if events:
-        els.append(md(_omitted_line(model)))
-    els.append(md(f"采集 {model.get('at')} · 设备 {model.get('device_ref') or '未知'}"))
+    if integrity:
+        # Same split as an event, and for the same reason: the finding is one
+        # sentence a person has to be able to read without tapping anything.
+        els.append(md(_integrity_face(integrity)))
+        els.append(panel("技术详情 · 监控完整性", _integrity_detail(integrity),
+                         expanded=False))
+
+    els.append(md(_summary_line(model, watch, recovery)))
+    if undecided.get("count"):
+        els.append(md(_undecided_line(undecided)))
+    els.append(md(f"采集 {_stamp(model)} · 设备 {model.get('device_ref') or '未知'}"))
     els.extend(_footnote(model))
     return _card(template, title, els, model)
 
 
+def _face_levels(events: list[dict], integrity: dict | None) -> list[str]:
+    """Every attention level the face is about to carry, sorted by the axis.
+
+    The sort is `presentation.AXIS`'s order and not this module's: the contract
+    says the axis order is the reading order, and a renderer that re-sorted
+    would be re-ranking the axis at the point where the re-ranking is least
+    visible.
+    """
+    levels = [str(e["attention"]["level"]) for e in events]
+    if integrity:
+        levels.append(str((integrity.get("attention") or {}).get("level") or ""))
+    order = list(presentation.AXIS)
+    return sorted((lvl for lvl in levels if lvl in order),
+                  key=order.index)
+
+
+def _face_verdict(events: list[dict], integrity: dict | None) -> str:
+    """The card's colour, from the axis rather than from the severity levels.
+
+    ACTION_REQUIRED is the only level that paints the card red, and it is
+    reachable only through a declaration somebody marked critical. Everything
+    else that reaches the face is orange, and a face with nothing on it is
+    green — including a face whose news was entirely recoveries.
+    """
+    levels = _face_levels(events, integrity)
+    if "ACTION_REQUIRED" in levels:
+        return "CRITICAL"
+    if levels:
+        return "ATTENTION"
+    return "OK"
+
+
+def _face_title(events: list[dict], integrity: dict | None) -> str:
+    """One sentence, carrying the WORST level's own word.
+
+    Not a count with a fixed word beside it: "1 件需要确认" over a row the
+    contract levelled ACTION_REQUIRED would be the renderer softening the axis,
+    and the word is the contract's precisely so that cannot happen here.
+    """
+    levels = _face_levels(events, integrity)
+    parts = []
+    if events:
+        parts.append(f"{len(events)} 件")
+    if integrity:
+        parts.append(f"{integrity['count']} 个主体失去观测")
+    if not parts:
+        return "✅ 没有需要处理的变化"
+    icon = "🚨" if _face_verdict(events, integrity) == "CRITICAL" else "⚠️"
+    return f"{icon} {presentation.attention_word(levels[0])} · " + " · ".join(parts)
+
+
 def _event_title(event: dict) -> str:
-    severity = event["severity"]["word"]
-    subject = event["subject"]["text"]
-    return f"{severity} · {subject}"
+    """`<attention word> · <subject>` — the subject named, not its ref.
+
+    The subject is the whole point of the line: "内存占用持续偏高" over
+    `491d41804a0e` tells a person nothing they can act on, and the same
+    sentence over `litellm-shared-postgres` tells them which service to look
+    at. `presentation.name_index` is what makes the second one possible, and
+    when it has no answer this stays an id rather than becoming a guess.
+    """
+    return (f"{presentation.attention_word(event['attention']['level'])}"
+            f" · {event['subject']['text']}")
 
 
-def _event_lines(event: dict) -> list[str]:
-    """The §4 field set, in the order §4 lists it, one field per line.
+def _detail_title(event: dict) -> str:
+    """What the fold is called. Not the event's own title, which is above it.
 
-    "发生了什么 · 对象显示名 · 事件类型 · 原严重度 · 影响 · 确定性/证据质量 ·
-    建议 · 首次/最近观测 · 持续时间 · 引用" — the order is kept because it is
-    the order a reader needs it in: what, about what, then how bad, then
-    whether to believe it.
+    A panel headed with the event's title would put the same line on the card
+    twice — once visible and once as the thing you tap — and a reader who taps
+    it would find the sentence they had already read.
+    """
+    return f"技术详情 · {event['subject']['text']}"
+
+
+def _event_face(event: dict) -> str:
+    """The first screen: what happened, what it means, what to do. Four lines.
+
+    Four and not ten, and VISIBLE rather than folded. The field set §4 lists
+    has ten members and a person on a phone reads four of them before the taxi
+    arrives; the other six are in `_event_detail`, which is the same event one
+    tap down. Nothing is removed — it is ordered.
+
+    Line one is `_event_title`'s, because the subject is what makes the other
+    three actionable. On a container finding it is the name the registration
+    gave the service, and the twelve hex characters a person cannot use are in
+    the detail with the ref.
+    """
+    what = event["what"]
+    times = event["times"]
+    impact = event["impact"]
+    lines = [
+        f"**{_event_title(event)}**",
+        f"**发生了什么** {what['text'] or what['code']}",
+        f"**影响** {_impact_text(impact['text'])}",
+        f"**建议** {event['action']['text']}",
+        # The local time, because a person reading this is in a place. The ISO
+        # instant is in the detail for anything that has to be matched against
+        # a log.
+        f"**持续** {times['duration_text'] or '时长未知'}"
+        + (f" · 自 {_local(times['first_seen'])}" if _local(times['first_seen']) else ""),
+    ]
+    named = _owner_line(event["subject"].get("owner"))
+    if named:
+        lines.append(named)
+    return "\n".join(lines)
+
+
+def _impact_text(text: str) -> str:
+    """The impact, without the placeholder reading as a stutter.
+
+    `presentation.IMPACT_UNCONFIRMED` is "影响尚未确认", and a card that prints
+    it after the label renders `**影响** 影响尚未确认` — four characters of the
+    same word twice, which is what the first render of this card did on both of
+    its face events. The placeholder is kept verbatim in the model, the JSON
+    payload and the CLI, because that is the value §4 names; only the human
+    line drops the repeated word, and it adds what "unconfirmed" is claiming,
+    which the bare phrase did not.
+    """
+    if text == presentation.IMPACT_UNCONFIRMED:
+        return "尚未确认 —— 本卡没有这条代码的影响证据，也不从代码本身推后果"
+    return text
+
+
+def _owner_line(owner: dict | None) -> str:
+    """The producer's own attribution, when it said anything a person can use.
+
+    Returns nothing rather than an empty labelled line. A `**归属** ` with
+    nothing after it is on the face as a field a reader has to interpret as
+    absent — which is what the first draft of this printed on every event whose
+    owner block was present but empty.
+    """
+    if not owner:
+        return ""
+    named = " · ".join(str(owner.get(k)) for k in ("class", "role", "session", "unit")
+                       if owner.get(k))
+    return f"**归属** {named}" if named else ""
+
+
+def _event_detail(event: dict) -> list[str]:
+    """Everything §4 asks for, including what must never be on the first screen.
+
+    The rule this satisfies is a test and not a convention: the face carries no
+    raw pid, no alert ref, no anomaly code and no registry counter, and this
+    carries all four. A card that leaked them to the face would be a card whose
+    first line is an identifier nobody can read, which is the failure this
+    round exists to remove.
     """
     what = event["what"]
     certainty = event["certainty"]
     times = event["times"]
     lines = [
-        f"**发生了什么** {what['text'] or what['code']}",
-        f"**事件类型** {event['event']} · **原严重度** {event['severity']['word']}"
+        f"**异常代码** {what['code']}",
+        f"**事件类型** {event['event']} · **机器严重度** {event['severity']['word']}"
         f"（{event['severity']['level']}）",
-        f"**影响** {event['impact']['text']}",
+        f"**注意力** {event['attention']['level']}"
+        + (f" —— {event['attention']['because']}" if event["attention"].get("because")
+           else ""),
         f"**确定性** {certainty['state']}"
         + (f" —— {certainty['why']}" if certainty["why"] else "")
-        + f" · 来源 {certainty['source'] or '未记录'}"
-        + (f" · 观测于 {certainty['observed_at']}" if certainty["observed_at"] else ""),
+        + f" · 来源 {certainty['source'] or '未记录'}",
         f"**建议** {event['action']['word']} —— {event['action']['text']}",
         f"**建议的效力** {event['action']['authority']}",
         f"**首次观测** {times['first_seen'] or '未记录'}"
@@ -222,35 +387,161 @@ def _event_lines(event: dict) -> list[str]:
         f"**持续时间** {times['duration_text']}"
         + (f"（按 {times['duration']['basis']} 计）" if times["duration"]["basis"]
            else f"（{times['duration'].get('why') or '无法计算'}）"),
-        f"**引用** {event['ref'] or '未记录'}",
+        f"**引用** {event['ref'] or '未记录'}"
+        f" · **对象引用** {event['subject']['ref'] or '未记录'}",
     ]
     if event["subject"]["owner"]:
         owner = event["subject"]["owner"]
-        lines.append("**归属（生产者原始字段）** " + " · ".join(
-            f"{k} {owner.get(k)}" for k in
-            ("class", "role", "lifecycle", "uid", "session", "unit")
-            if owner.get(k)))
+        raw = " · ".join(f"{k} {owner.get(k)}" for k in
+                         ("class", "role", "lifecycle", "uid", "session", "unit")
+                         if owner.get(k))
+        # An owner block that arrived with none of the six fields is a block
+        # that says nothing, and printing its label over an empty value puts a
+        # question on the card that the reader has to answer themselves.
+        if raw:
+            lines.append("**归属（生产者原始字段）** " + raw)
     lines.append("**证据与详情**\n" + (event.get("evidence") or ""))
     return lines
 
 
-def _omitted_line(model: dict) -> str:
+#: How many distinct codes the integrity heading names before it stops. The
+#: live finding this was written against was 542 rows; a heading that listed
+#: every code behind them would be the register dump the aggregation rule
+#: exists to prevent, one line further up the card.
+INTEGRITY_CODES_SHOWN = 3
+
+
+def _integrity_heading(finding: dict) -> str:
+    """Which declarations lost observation — the one thing the header cannot say.
+
+    The header already carries both the level and the count ("⚠️ 需要确认 · 3 个
+    主体失去观测"), so a first body line repeating either spends the most
+    valuable line of a 390px card on what the line above it just said. The
+    first draft of this face did exactly that — a bold count — and the render
+    put the same number on the card three times in four lines. What the header
+    cannot carry is WHICH expectations are now unverified, and that is what a
+    heading is for.
+    """
+    counts = finding.get("by_code") or {}
+    ordered = sorted(counts.items(), key=lambda pair: (-pair[1], pair[0]))
+    # `×1` is dropped rather than printed. Every code carries a count and most
+    # carry one, and three `×1`s on a heading cost a line of a 390px screen to
+    # say nothing; a number appears exactly where it is the interesting part,
+    # which is a code standing behind more than one subject.
+    shown = " · ".join(f"{code} ×{n}" if n > 1 else code
+                       for code, n in ordered[:INTEGRITY_CODES_SHOWN])
+    rest = len(ordered) - INTEGRITY_CODES_SHOWN
+    if rest > 0:
+        shown += f" · 等 {rest} 类"
+    return f"**监控完整性 · {shown}**" if shown else "**监控完整性**"
+
+
+def _integrity_face(finding: dict) -> str:
+    """The same labelled lines an event gets, for the same reason.
+
+    The first version of this left the finding inside a collapsed panel, which
+    on a 390px screen meant the card's own headline — "3 个主体失去观测" — was
+    visible and every word explaining it was not. A person who reads only the
+    header of that card learns that something is wrong and not what, which is
+    the failure mode this round exists to remove. The face says which
+    declarations went unverified and what that means; the panel below is the
+    enumeration.
+    """
+    return "\n".join([
+        _integrity_heading(finding),
+        f"**发生了什么** {finding['text']}",
+        f"**影响** {finding['impact']}",
+        f"**建议** {finding['action']}",
+    ])
+
+
+def _integrity_detail(finding: dict) -> list[str]:
+    """One finding, however many subjects it is made of.
+
+    §5's aggregation rule: 500 stale objects are one line, not 500 faults. What
+    the card states is how many declared subjects lost observation and which
+    kinds of declaration are therefore unverified — the enumeration belongs in
+    `serverosctl alert list`, where a person who wants it can get it.
+    """
+    by_code = finding.get("by_code") or {}
+    return [
+        finding["text"],
+        "**按异常代码** " + " · ".join(f"{code} ×{n}"
+                                       for code, n in sorted(by_code.items())),
+        "**这意味着** 本卡无法判断这些主体的当前状态。观测恢复前，"
+        "「未再观测到」不等于「已恢复正常」。",
+        f"**不作为故障计数** {finding['not_a_finding']['note']}"
+        f"（{finding['not_a_finding']['count']} 条）",
+        f"**注意力** {(finding.get('attention') or {}).get('because') or ''}"
+        .rstrip(),
+    ]
+
+
+def _summary_line(model: dict, watch: dict, recovery: dict) -> str:
+    """The line that keeps a short card honest.
+
+    Every count here is a thing the card did NOT print. "静默不等于没事" is
+    the misreading a short card invites, and a count is the cheapest thing that
+    stops it without turning the card back into a register dump.
+    """
     omitted = model.get("omitted") or {}
     parts = []
-    if omitted.get("rows"):
-        parts.append(f"另有 {omitted['rows']} 条同类事件未进卡面")
+    if watch.get("count"):
+        parts.append(f"另有 {watch['count']} 条低于打断级别（值得留意，未占卡面）")
+    if recovery.get("announced"):
+        parts.append(f"{recovery['announced']} 条此前报告过的问题已恢复")
     if omitted.get("beyond_card_cap"):
         parts.append(f"{omitted['beyond_card_cap']} 条在更早的批次里已被计数")
     if omitted.get("backlog"):
         parts.append(f"{omitted['backlog']} 条在投递基线之前就已存在（积压，不重复播报）")
     if omitted.get("silent_resolutions"):
         parts.append(f"{omitted['silent_resolutions']} 条从未告知过，不计入恢复")
+    if omitted.get("rows"):
+        parts.append(f"另有 {omitted['rows']} 条同类事件未进卡面")
     return " · ".join(parts) if parts else "没有未进卡面的条目"
 
 
-def _quiet_line(omitted: dict) -> str:
-    return (f"本批没有新增、升级或复发。登记表中仍有 "
+def _undecided_line(undecided: dict) -> str:
+    return (f"⚠️ {undecided['count']} 条事件的 code 没有在注意力表里被决定过"
+            f"（{'、'.join(undecided.get('codes') or [])}）。"
+            f"未决定不等于不重要——这是声明里的一个洞。")
+
+
+def _quiet_line(omitted: dict, watch: dict | None = None) -> str:
+    extra = f"另有 {watch['count']} 条低于打断级别。" if (watch or {}).get("count") else ""
+    return (f"本批没有需要确认的变化。{extra}登记表中仍有 "
             f"{omitted.get('backlog') or 0} 条积压未播报 —— 安静不等于没事。")
+
+
+def _stamp(model: dict) -> str:
+    """When this card was made, in the form a person reads.
+
+    `at` arrives as the ISO instant the ledger recorded — the same shape the
+    digest publishes — and "采集 2026-09-21T18:41:33.327665+00:00" is the
+    ledger's spelling of it, not a person's. Falls back to the raw value
+    because a card with no timestamp at all is worse than an ugly one.
+    """
+    raw = model.get("at")
+    return _local(raw) or str(raw or "未知")
+
+
+def _local(instant: str | None) -> str:
+    """An ISO instant as a local time a person reads, or nothing.
+
+    Nothing rather than the raw string when it will not parse: a card that
+    printed `2026-09-20T05:12:00+00:00` where a reader expects "13:12" has
+    quietly moved the ISO instant onto the face, which is the thing the
+    separation is for. The unparsed value is still in the detail, whole.
+    """
+    if not instant:
+        return ""
+    try:
+        moment = datetime.fromisoformat(str(instant).replace("Z", "+00:00"))
+    except ValueError:
+        return ""
+    if moment.tzinfo is None:
+        moment = moment.replace(tzinfo=timezone.utc)
+    return moment.astimezone().strftime("%m-%d %H:%M")
 
 
 # ---------------------------------------------------------------------------
@@ -292,7 +583,7 @@ def recovery_card(model: dict) -> dict:
     if tail:
         els.append(md(" · ".join(tail)))
     els.append(md(f"本批恢复总数 {counts.get('recovered') or 0} · "
-                  f"其中已告知 {counts.get('announced') or 0} · 采集 {model.get('at')}"))
+                  f"其中已告知 {counts.get('announced') or 0} · 采集 {_stamp(model)}"))
     els.extend(_footnote(model))
     return _card(template, title, els, model)
 
@@ -318,7 +609,12 @@ def status_card(model: dict) -> dict:
     """
     health = model.get("env_health") or {}
     template, icon = _template(health.get("verdict"))
-    title = _titled(f"{icon} {model.get('node_label') or '本机'} · 环境状态", model)
+    # The title names the broadcast, not a finding. "环境状态" read as a
+    # classification and sat beside an alert card whose title also read as one,
+    # so the two faces looked like the same product saying two things. This one
+    # is the hourly dashboard and it says so; silence about problems belongs to
+    # the alert face, which exists for exactly that.
+    title = _titled(f"{icon} {model.get('node_label') or '本机'} · 资源播报", model)
 
     els: list[dict] = _sample_line(model)
     els.append(md(f"**环境可用性** {health.get('verdict_text')}\n"
@@ -340,7 +636,7 @@ def status_card(model: dict) -> dict:
                              expanded=False))
     if health.get("gaps"):
         els.append(md("**采集缺口** " + "；".join(str(g) for g in health["gaps"])))
-    els.append(md(f"采集时间 {model.get('at')} · 观测范围 "
+    els.append(md(f"采集时间 {_stamp(model)} · 观测范围 "
                   f"{'、'.join(health.get('sections_read') or []) or '无'}"
                   + (f" · 未读到 {'、'.join(health.get('sections_unread') or [])}"
                      if health.get("sections_unread") else "")))
@@ -358,7 +654,7 @@ def _card(template: str, title: str, els: list[dict], model: dict) -> dict:
         "header": {
             "template": template,
             "title": {"tag": "plain_text", "content": title},
-            "subtitle": {"tag": "plain_text", "content": f"{model.get('at')} 更新"},
+            "subtitle": {"tag": "plain_text", "content": f"{_stamp(model)} 更新"},
         },
         "body": {"direction": "vertical", "elements": els},
     }

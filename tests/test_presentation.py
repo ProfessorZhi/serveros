@@ -192,6 +192,80 @@ class DefinitionCatalogueTests(unittest.TestCase):
 # §5 · certainty and duration
 # ---------------------------------------------------------------------------
 
+    def test_a_says_word_is_held_to_the_same_bans_as_a_what_line(self):
+        """§4's ban is about sentences, not about which field they live in.
+
+        `says` was added for AC19 and would otherwise have been the one place a
+        cause word could be written without anything noticing — the same hole
+        the gateway block above had, in the same shape.
+        """
+        words = 0
+        for code, entry in (_catalogue().get("codes") or {}).items():
+            for rule in entry.get("says") or []:
+                words += 1
+                for word in (str(rule.get("word") or ""),):
+                    for banned in FORBIDDEN_CAUSE + MACHINE_OPS:
+                        with self.subTest(code=code, word=word, banned=banned):
+                            self.assertNotIn(banned, word)
+                with self.subTest(code=code, rule=rule):
+                    self.assertTrue(str(rule.get("word") or "").strip())
+                    self.assertTrue(rule.get("desired"))
+                    self.assertTrue(rule.get("actual"))
+        self.assertGreater(words, 0, "no `says` rule exercises this test")
+
+    def test_every_pair_the_comparison_can_emit_has_a_word(self):
+        """The positive half of AC19, checked against the producer's mapping.
+
+        Which pairs a mismatch can carry is decided by
+        `managed-runtime-contract.yaml`'s `desired_actual.mismatch_states` and
+        nowhere else — `desired.py` refuses to call anything a mismatch unless
+        that map names it. So this test reads the map rather than a list, and a
+        contract change that added a mismatch state without a word for it would
+        fail here instead of reaching a card as the generic sentence.
+
+        The other direction is asserted below, and it is why the second
+        `NOT_READY` rule is not dead code pretending to be live.
+        """
+        import yaml
+        contract = yaml.safe_load(
+            (RUNTIME / "managed-runtime-contract.yaml").read_text(encoding="utf-8"))
+        mismatches = (contract.get("desired_actual") or {}).get("mismatch_states") or {}
+        self.assertTrue(mismatches, "the contract names no mismatch state")
+        emit_able = {(declared, derived) for derived, declared in mismatches.items()}
+        declared = set()
+        for entry in (_catalogue().get("codes") or {}).values():
+            for rule in entry.get("says") or []:
+                for desired in rule.get("desired") or ():
+                    for actual in rule.get("actual") or ():
+                        declared.add((str(desired), str(actual)))
+        self.assertEqual(emit_able - declared, set(),
+                         "a pair the producer emits has no declared word")
+
+    def test_the_one_declared_pair_the_comparison_cannot_emit_is_named(self):
+        """AC19 says 「不可用/未就绪」, and only the first half is reachable.
+
+        `mismatch_states` names `NOT_RUNNING` alone, so a registered resource
+        that is alive and not answering never reaches this comparison — the
+        probe codes report it instead (`FUNCTIONAL_PROBE_FAILED`, whose live
+        row carries `liveness: RUNNING, functional: FAILED`). The `NOT_READY`
+        word is kept because a widened contract should not also need a card
+        change, and this test is where "declared but not reachable today" is
+        written down rather than discovered. Widening the contract is an
+        alerting-semantics decision with an alert-volume cost, so it is not
+        made here.
+        """
+        self.assertEqual(
+            presentation.comparison_word("DESIRED_ACTUAL_MISMATCH",
+                                         desired="running", actual="NOT_READY"),
+            "未就绪")
+        import yaml
+        contract = yaml.safe_load(
+            (RUNTIME / "managed-runtime-contract.yaml").read_text(encoding="utf-8"))
+        mismatches = (contract.get("desired_actual") or {}).get("mismatch_states") or {}
+        self.assertNotIn("NOT_READY", mismatches,
+                         "the contract now names NOT_READY: this test and the "
+                         "card's reachability note are both out of date")
+
     def test_the_gateway_wording_is_declared_and_connects_nothing(self):
         """A gateway line is a sentence a person reads, so the ban applies to it.
 
