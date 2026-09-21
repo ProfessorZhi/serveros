@@ -448,6 +448,55 @@ Work           what we choose to do next
 
 Collapsing these concepts creates false authority.
 
+### 4.3 Source authority is contextual, not last-write-wins
+
+A newer message does not automatically replace stronger evidence.
+
+Typical authority depends on the question:
+
+```text
+explicit user confirmation
+  → highest business-intent/alignment authority
+
+approved project docs / decisions
+  → intended policy/design authority
+
+Git / code / configuration
+  → implementation authority
+
+runtime observation / E2E
+  → current LIVE-behavior authority
+
+Feishu discussion / meeting source
+  → evidence, request, hypothesis or intent input
+
+Memory
+  → retrieval/experience aid, never automatic truth authority
+```
+
+Conflicts remain explicit until the relevant authority question is resolved.
+
+### 4.4 Location-independent retrieval
+
+The user should not need to remember where a fact was stored.
+
+A Project-aware search/retrieval path may federate across:
+
+```text
+Feishu IM
+Minutes
+My Docs
+Wiki
+Drive metadata
+GitHub / Bridge
+local records / knowledge
+MetaCC session history
+Memory Provider
+```
+
+Results preserve source/provenance and should prefer authoritative/current
+sources over merely semantically similar ones.
+
 ---
 
 ## 5. Source capture, Follow and Feishu
@@ -491,6 +540,15 @@ A shallow message archive should prefer:
 
 Large files, video/audio and expensive linked content are not downloaded merely
 because a message exists; deeper capture is demand/relevance driven.
+
+Raw work information is **retention-first**. Feishu messages, real work Minutes
+and source documents normally remain in their native system as canonical
+sources. ServerOS keeps locators, indexes and only the snapshots needed for
+continuity/search/provenance.
+
+Deletion/cleanup is reserved for clearly identified garbage such as empty/test
+meeting records, probe artifacts and disposable temporary content. "No longer
+important to today's work" is not by itself a deletion reason.
 
 ### 5.2 Follow
 
@@ -584,7 +642,22 @@ Objects owned by other people or external/shared spaces are not blindly moved.
 Owned personal My Docs/Drive content may be reorganized automatically under
 stable rules when the action does not affect other users.
 
-### 5.4 Knowledge-base watching is incremental
+### 5.4 Knowledge promotion and freshness
+
+A conversation, hypothesis or draft does not become Knowledge merely because it
+was captured.
+
+```text
+Source / discussion
+→ Observation / provisional understanding
+→ human alignment when material
+→ confirmed reusable content
+→ Knowledge / Wiki
+```
+
+My Docs is the normal drafting/workbench surface. Confirmed reusable material
+may be promoted into Wiki. Agents may organize, rewrite and maintain the user's
+own content aggressively, but the promotion semantics must remain visible.
 
 Large knowledge bases should not be recopied in full on every cycle.
 
@@ -598,6 +671,15 @@ metadata inventory
 + meaningful delta
 + reconciliation / knowledge update
 ```
+
+Code/config/service/version changes should trigger a generic knowledge impact
+scan. Linked documents may become `STALE_SUSPECT`; the Agent verifies them and
+may update user-owned internal documentation automatically when the evidence is
+clear, otherwise it proposes a correction.
+
+The separate Support/Support Bot project owns its own support-knowledge
+publication lifecycle. General Project Knowledge and Support Knowledge are not
+one product merely because both are documents.
 
 ### 5.5 Meetings / Minutes
 
@@ -1963,6 +2045,11 @@ The Project Home is a Current View generated/maintained from ServerOS durable
 facts and curated knowledge. It is not a second state database and does not
 duplicate every Item artifact.
 
+Because it is the user's own derived view, ServerOS may maintain it proactively:
+completed/started Items, accepted decisions, important meetings, Service/
+Environment changes and key links may update the page automatically from
+durable facts.
+
 ### 15.8 Repository relationships
 
 Project != repository.
@@ -3211,7 +3298,9 @@ Large remaining design work is subsystem-detail work, especially:
 15. execution placement / Tokyo→Windows handoff contract;
 16. Repo→Artifact→Service×Environment→Runtime provenance and presentation model;
 17. Bridge↔enterprise synchronization, mandatory code PR delivery and adoption outcome;
-18. target-specific production gates and post-deploy LIVE verification.
+18. target-specific production gates and post-deploy LIVE verification;
+19. cross-surface retrieval/ranking with provenance and contextual authority;
+20. My Docs→Wiki promotion, generic knowledge freshness and Project Home maintenance.
 
 Those details may refine contracts. They do not reopen the product definition.
 
