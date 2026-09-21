@@ -828,6 +828,68 @@ pack. Relevant dependency/schema changes must still be checked. This is a target
 contract requiring an explicit upgrade of any older whole-manifest pin rule, not
 permission to skip the currently enforced verifier.
 
+### 16.6 Ability engineering is research-first
+
+The quality goal is not to maximize the number of in-house Skills. Before adding a
+significant Ability implementation, research the native runtime, project-native
+tools, existing registry, official/vendor solutions and mature open source.
+
+Default preference:
+
+~~~text
+USE_NATIVE
+-> ADOPT_UPSTREAM
+-> WRAP with thin ServerOS boundary/evidence adapter
+-> COMPOSE existing providers
+-> maintained fork only when justified
+-> BUILD only genuine missing glue
+~~~
+
+A reusable Skill should teach judgment, ownership and composition. Upstream manuals
+remain upstream. Registration preserves original authorship/provenance; it does not
+claim the implementation is ours.
+
+Executable/production-capable Abilities require proportionately stronger research:
+source/maintenance/licence, compatibility, actual effects, failure modes, observability
+and sandbox evidence. A new catalogue name is not justification for new code.
+
+The focused design standard and portfolio live in ProfessorZhi/ability-management:
+
+- design/ABILITY-DESIGN-STANDARD.md
+- design/ABILITY-PORTFOLIO.md
+- design/AUTOMATED-TESTING-ABILITY.md
+- design/PRODUCTION-OPERATIONS-ABILITY.md
+- design/REPORTING-PUBLICATION-ABILITY.md
+
+Those documents guide registration/implementation without becoming a second product
+architecture.
+
+### 16.7 Execution Terminal and device Ability projection
+
+Ability availability is computed for an execution context, not merely a machine:
+
+~~~text
+Execution Terminal
+= Device
++ Principal
++ Agent Runtime revision
++ current Project / Environment / Target
+~~~
+
+The same Windows device can expose different native/plugin capability to Claude Code
+and Codex; the same logical production Ability can have Windows and later Tokyo
+Bindings without becoming two identities.
+
+A phone is normally a Human Terminal: it can discuss, inspect, approve and read
+reports through CloudCLI/Feishu without installing production tooling locally.
+
+Remote Ability use is valid when the destination Binding, data-flow policy, readiness
+and operation authorization are explicit and the request/result is durably related to
+the same work. It is not native support merely because another device can perform it.
+
+The focused target profiles live in
+ProfessorZhi/ability-management/design/TERMINAL-CAPABILITY-PROFILES.md.
+
 ## 17. Dynamic Environment and resource lifecycle
 
 Desired Environment comes from references held by Sessions, Items, Routines and
