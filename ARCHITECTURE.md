@@ -131,11 +131,58 @@ Claude Code / Codex decide how to reason and execute:
 
 - grep vs docs;
 - experiment vs static analysis;
+- research vs prototype vs implementation;
 - test-first vs another local method;
-- subagents;
-- implementation strategy.
+- which native Skill/MCP/tool to use;
+- whether to create subagents;
+- decomposition and implementation strategy.
 
 ServerOS must not force ceremony that makes the Agent worse.
+
+### 1.5 ServerOS is constraint-driven, not workflow-driven
+
+The business world is fluid. The same Item may move naturally through:
+
+```text
+conversation
+→ research
+→ experiment
+→ implementation
+→ test
+→ more research
+→ redesign
+→ documentation
+→ operational follow-up
+```
+
+or skip most of those entirely.
+
+ServerOS therefore does **not** encode a mandatory global lifecycle such as
+`RESEARCH → DESIGN → BUILD → TEST → RELEASE`.
+
+Its durable kernel should capture only what remains meaningful across changing
+methods:
+
+```text
+identity
+intent / requirement / acceptance
+authority / constraints
+current checkpoint
+relationships / provenance
+evidence / deliverables
+resource ownership / leases
+decisions / outcomes
+```
+
+Plans, Activities, experiment sequences, research tactics and tool choices are
+Agent working structures and may be created, revised, abandoned or replaced
+without migrating the durable work object.
+
+Execution Envelopes define **what may be affected and what gates apply**, not
+the exact sequence of steps the Agent must follow.
+
+Recipes and Skills are optional accelerators for recurring patterns, never a
+second workflow engine.
 
 ---
 
@@ -1651,10 +1698,15 @@ for the user to manually retransmit it.
 
 ## 11. Execution and Quay
 
-After requirement/design acceptance, Claude Code/Codex may autonomously split
-the Item into Activities.
+Claude Code/Codex may autonomously split an Item into Activities whenever that
+helps execution.
 
-Planning is an execution tool, not a mandatory human approval ceremony.
+Activities are **mutable working decomposition**, not a fixed lifecycle. The
+Agent may reorder, add, collapse, replace or abandon Activities as evidence
+changes, provided durable acceptance, authority and provenance remain intact.
+
+Planning is an execution tool, not a mandatory human approval ceremony and not
+a durable workflow contract.
 
 Human re-entry is required when execution discovers:
 
@@ -2541,7 +2593,53 @@ C  new MCP / Plugin / executable / daemon / credential / new network boundary
    → explicit approval when policy requires
 ```
 
-### 16.4 Physical vs logical topology
+### 16.4 Capability Intelligence learns from use
+
+Ability discovery is not only a catalogue lookup.
+
+ServerOS may retain **Ability Experience** from real Runs:
+
+```text
+semantic operation
+context / environment
+Provider / model / Skill / configuration
+success / failure
+human intervention
+latency / cost
+failure modes
+evidence
+```
+
+This experience influences future ranking but never silently overrides current
+readiness, authorization or an explicit user choice.
+
+A **Capability Profile** is a named/reproducible combination of model,
+Providers, Skills and configuration for a semantic task. It is not a new
+top-level work object.
+
+Capability exploration stays inside ordinary Items/Runs:
+
+```text
+baseline
+→ candidate profile A
+→ candidate profile B
+→ controlled comparison
+→ evidence
+→ selected stable profile
+```
+
+The comparison should hold task/acceptance conditions stable where practical and
+treat human-intervention rate as a first-class metric for unattended work.
+
+Candidate and stable profiles are separate. New tools/models/Skills may be
+tested automatically inside authorized experimental scope, but production
+profiles are promoted explicitly and traceably.
+
+Do not create a Skill merely because a procedure occurred once. A Skill is
+worth preserving when repeated evidence shows that explicit guidance improves
+quality, reliability, latency, autonomy or safety over native Agent behavior.
+
+### 16.5 Physical vs logical topology
 
 Ability payload paths stay physically flat.
 
@@ -3418,6 +3516,15 @@ No `workflowd` exists.
 A lightweight **Routine** represents recurring work that should run repeatedly
 without inventing a new Requirement/Item each time.
 
+A Routine is normally created only after the work pattern has enough evidence
+to justify operationalization. Exploration may be Agent-heavy; a mature Routine
+should make stable/mechanical steps deterministic where useful and retain Agent
+reasoning only where judgment adds value.
+
+A Routine is still not a rigid workflow engine. It may call an Agent with an
+objective/checkpoint and let that Agent choose tactics inside the approved
+Execution Envelope.
+
 ```text
 Routine
 ├── purpose / scope
@@ -3636,7 +3743,9 @@ Large remaining design work is subsystem-detail work, especially:
 23. E2E environment discovery, browser-provider selection, identity handling and screenshot-rich report;
 24. thin default Session bootstrap + intent-first Context Capsule contract;
 25. Memory Federation, bounded retrieval and native-memory authority boundaries;
-26. native-first Ability discovery, acquisition risk tiers and automatic Session checkpoints.
+26. native-first Ability discovery, acquisition risk tiers and automatic Session checkpoints;
+27. anti-rigidity kernel: constraint-driven execution, mutable Activities and acceptance-driven completion;
+28. Ability Experience / Capability Profiles / candidate-vs-stable promotion and unattended-work metrics.
 
 Those details may refine contracts. They do not reopen the product definition.
 
