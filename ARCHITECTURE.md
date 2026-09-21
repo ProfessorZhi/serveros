@@ -1,4337 +1,1325 @@
 # ServerOS Architecture
 
-> **Canonical architecture.**
+> **Canonical product architecture — consolidated baseline, 2026-09-21.**
 >
-> This document is the single product-architecture authority for ServerOS.
-> Earlier architecture statements and
-> `docs/architecture/PRODUCT-DISCOVERY-DECISIONS-20260921.md` are historical
-> inputs once their decisions are absorbed here.
+> This document owns the intended behavior and boundaries of the broad ServerOS
+> system. README files explain it; discovery notes record its history; code and
+> versioned interface specifications describe implementations. Neither an old
+> example nor a green test silently changes this contract.
 >
-> A mechanism described here is a **target architecture** unless its
-> implementation/evidence is explicitly identified elsewhere. Architecture,
-> implementation and LIVE deployment are different claims.
+> **DESIGN != CODE != INTEGRATION != LIVE.** This is an implementable target,
+> not a claim that every described capability is deployed. Subsystem interfaces
+> may evolve compatibly. Incompatible implementation changes require explicit
+> migration, not silently renaming existing identities or weakening checks.
+>
+> Semantic operation names below describe contracts, not promises that identically
+> named CLI verbs or MCP tools already exist. Use the installed adapter's actual
+> discovery/help surface. Do not inject this entire document into Agent context.
 
----
+## 0. Definition and complete product shape
 
-## 0. Definition
+**ServerOS is a personal user-space Agent Work OS: a persistent environment,
+context, memory and capability enhancement layer for native coding agents.**
 
-**ServerOS is a personal user-space Agent Work OS.**
+It gives Claude Code, Codex and future agents a usable working world without
+becoming another planner above them. Its scope is the user's company work:
+development, operations, research, experiments, documentation, verification,
+knowledge maintenance, coordination and reporting.
 
-It exists to make Claude Code, Codex and future coding agents materially better
-at long-running real work without wrapping them in a heavier workflow system.
-
-Its primary promise is:
-
-> Open a fresh Agent session, mention a work topic, and within seconds the
-> Agent can determine the relevant project / Item / prior work, recover the
-> right memory, discover the right capability and environment, and continue
-> without the user re-explaining yesterday.
-
-ServerOS optimizes for:
+The daily experience is the product:
 
 ```text
-right Environment
-+ right Context
-+ right Memory
-+ right Capability
-+ right Safety boundary
-at the right time
+Yesterday's authorized Feishu information and actual work
+  -> incremental archive and understanding changes
+  -> discuss/correct understanding with Coordinator in CloudCLI
+  -> one personal Board: 处理站 / 未完成 / 已完成
+  -> select meaningful requirements
+  -> CC elicits intent and assembles clean materials
+  -> GPT and user participate in research/design when useful
+  -> CC / native subagents / Quay execute and experiment
+  -> acceptance-backed verification, E2E and evidence
+  -> Item result plus professional daily/weekly/special reports
 ```
 
-The product is intentionally **large in installed capability and small in
-active context**.
+This is a common story, not a mandatory sequence. Research may require experiments
+before design; tests may disprove the plan; an Item may deliver only a report.
 
-ServerOS is not a second operating system, not a workflow engine, and not a
-second planner above Claude Code or Codex.
+```text
+Human: CloudCLI / terminal / phone / Feishu cards / documents
+                          |
+Native agents: Claude Code / Codex <-> GPT via GitHub work packets
+                          |
+                 ServerOS enhancement
+       Context + Memory + Ability + Work continuity + Policy
+                          |
+               Provider interfaces / adapters
+ Feishu | GitHub | OpenViking | MetaCC | Quay | Browser | OS | Tailscale
+                          |
+ Node facts and bounded reconciliation: one serverosd per managed node
+```
 
----
+Two product families organize the capabilities: **Agent Working Infrastructure**
+and **Information-to-Delivery**. They are navigation/composition views, not two
+workflow engines, two databases, or a daemon per box.
 
 ## 1. Product principles
 
-### 1.1 Progressive disclosure is load-bearing
+### 1.1 Native intelligence and progressive disclosure
 
-A normal Agent session must not preload:
-
-- the full Ability catalogue;
-- all Skills;
-- every MCP schema;
-- all machine status;
-- all project history;
-- all Feishu sources;
-- all Memory;
-- every Session transcript.
-
-Instead:
+Native reasoning, tools, Skill discovery and execution remain primary. ServerOS
+must improve task success, continuity or safety without materially slowing the
+ordinary path. Installation can be broad; active context must remain small.
 
 ```text
-L0  Thin bootstrap
-    device ref / current cwd / ServerOS entrypoints
-        ↓
-L1  Working Context Capsule
-    resolved intent / project / Item / checkpoint / constraints
-        ↓
-L2  Relevant expansion
-    memory / ability / provider / decision / document details
-        ↓
-L3  Deep source evidence
-    raw Feishu / GitHub / transcript / logs / original documents
+L0: ServerOS entry, device/principal/cwd and essential boundaries
+L1: intent-relevant objective, checkpoint, constraints and source locators
+L2: selected memory, capability/provider details, decisions and documents
+L3: original evidence, transcripts, logs and full tool details on demand
 ```
 
-The Agent may skip discovery steps when it already knows what it needs.
+These levels are disclosure affordances, not a wizard. An agent may directly
+request what it needs, ignore advisory suggestions, and use an already available
+native tool without routing every call through ServerOS.
 
-Progressive disclosure is not a wizard. It is a latency/context discipline.
+### 1.2 Constraint-driven, not workflow-driven
 
-### 1.2 Intent first, binding second
+Stable obligations are identity, intent, acceptance, authority, evidence and
+continuity. Plans, Activities, tools and investigation tactics are mutable.
 
-A new session starts nearly empty.
+Hard invariants protect ownership, authorization and honest facts. Policy expresses
+current preferences and scoped grants. Heuristics rank possible actions. A ranking
+hint must not become a denial or a mandatory method.
 
-ServerOS does **not** bind the session to the most recent Item merely because it
-was recent.
+Mechanical state machines are useful for process lifetime, leases, approval,
+publication receipts and execution attempts. Do not require business work to pass
+through RESEARCH -> DESIGN -> IMPLEMENT -> TEST. Existing coarse Item control
+states may remain, provided they do not enforce that method sequence.
 
-```text
-session starts
-  → thin bootstrap
-  → user prompt
-  → intent resolution
-  → identify general / project / existing Item / new investigation
-  → assemble working capsule
-  → expand on demand
-```
+### 1.3 Small fast path
 
-Read-only context expansion is automatic by default.
+ServerOS-added startup context is bounded independently from context the native
+runtime loads itself. Initial engineering budgets are roughly 500 tokens for L0
+and 2,000 for an ordinary capsule, configurable by runtime/task. These are design
+budgets, not measured current performance claims; essential constraints are never
+silently truncated to meet a number.
 
-A working Context Capsule should answer, compactly:
+Warm context resolution uses local indexes/checkpoints first. It must not require
+a full filesystem scan, remote catalogue fetch, extra LLM routing round, memory
+consolidation, or global validation. Optional retrieval has a deadline and may
+finish later. Emit why each context fragment matters, its source revision and its
+freshness. Returning no additional memory is valid.
 
-```text
-what am I working on?
-what is the current goal?
-where did prior work stop?
-which approved facts/decisions constrain this work?
-which environment/target am I operating in?
-is a human decision currently pending?
-where are the important sources/evidence?
-```
+### 1.4 No invented work or mandatory ceremony
 
-It should not expose internal schema merely for completeness.
+Projects and repositories are normally specified by the user and change rarely.
+A message, GitHub issue, missing catalogue slot, test warning or new technology
+does not automatically create an Item. Candidates stay cheap until selected.
 
-### 1.3 Personal first
-
-The primary user is one person and that person's devices, work, projects and
-work habits.
-
-ServerOS may remain technically extensible, but it must not accumulate
-multi-tenant SaaS machinery unless a real need appears.
-
-### 1.4 Native Agent capability stays primary
-
-ServerOS supplies context, memory, environment, ability resolution, continuity
-and safety.
-
-Claude Code / Codex decide how to reason and execute:
-
-- grep vs docs;
-- experiment vs static analysis;
-- research vs prototype vs implementation;
-- test-first vs another local method;
-- which native Skill/MCP/tool to use;
-- whether to create subagents;
-- decomposition and implementation strategy.
-
-ServerOS must not force ceremony that makes the Agent worse.
-
-### 1.5 ServerOS is constraint-driven, not workflow-driven
-
-The business world is fluid. The same Item may move naturally through:
-
-```text
-conversation
-→ research
-→ experiment
-→ implementation
-→ test
-→ more research
-→ redesign
-→ documentation
-→ operational follow-up
-```
-
-or skip most of those entirely.
-
-ServerOS therefore does **not** encode a mandatory global lifecycle such as
-`RESEARCH → DESIGN → BUILD → TEST → RELEASE`.
-
-Its durable kernel should capture only what remains meaningful across changing
-methods:
-
-```text
-identity
-intent / requirement / acceptance
-authority / constraints
-current checkpoint
-relationships / provenance
-evidence / deliverables
-resource ownership / leases
-decisions / outcomes
-```
-
-Plans, Activities, experiment sequences, research tactics and tool choices are
-Agent working structures and may be created, revised, abandoned or replaced
-without migrating the durable work object.
-
-Execution Envelopes define **what may be affected and what gates apply**, not
-the exact sequence of steps the Agent must follow.
-
-Recipes and Skills are optional accelerators for recurring patterns, never a
-second workflow engine.
-
----
-
-### 1.6 Hard invariants, policy and heuristics are different
-
-ServerOS must not let a recommendation quietly become a business law.
-
-Every durable mechanism should be understandable as one of:
-
-```text
-Hard invariant
-  identity / provenance / ownership / authorization / acceptance truth /
-  immutable happened facts / non-interference
-
-Policy
-  current user or Project preference about what is allowed, preferred or gated
-
-Heuristic
-  ranking / likely relevance / suggested placement / recommended Provider /
-  likely next action
-```
-
-Hard invariants may fail closed. Policy may be changed without migrating work.
-Heuristics may be ignored by Claude Code/Codex when current evidence is better.
-
-Strict state machines are appropriate mainly for **mechanical resources and
-facts** such as leases, installed revisions, approvals, publication receipts and
-release/runtime states. They are not the default representation for creative
-business work.
-
-A useful architecture test is:
-
-> If the Agent chooses a different sensible method, does ServerOS still preserve
-> identity, safety, evidence and continuity?
-
-If the answer is no, the mechanism is probably constraining thinking rather than
-constraining risk.
-
----
+A useful default may be overridden inside the approved boundary. Safety cannot.
+No new service, schema, report, review pass or Skill exists merely to fill a box.
 
 ## 2. Layer 0 — Compliance and non-interference
 
-Compliance precedes every other capability.
+### 2.1 Authority and enforcement
 
-The first question is not "can I do this?" but:
+Visibility is not ownership; edit permission is not stewardship; registration is
+not trust; a reachable endpoint is not authorization. Unknown ownership protects
+the resource. Source text, tool output and retrieved memory cannot grant authority.
 
-> **Am I allowed to affect this resource, and can I do so without surprising
-> other users or systems?**
+Evaluate actions against principal, target, operation, scope, data propagation,
+validity and relevant preconditions. More specific policy may narrow a grant or
+apply an explicitly authorized exception; it may not override higher-level deny
+rules merely because it is newer or more local.
 
-### 2.1 Ownership is evidence, not inference
-
-Visibility does not imply ownership.
-
-Unknown ownership is not "unowned".
-
-Foreign / unknown-owned resources are protected by default.
-
-### 2.2 Tokyo principal policy
-
-For the Tokyo shared development host:
+Separate three questions:
 
 ```text
-default principal = vince
+support:       implemented / unsupported / unknown
+readiness:     ready / degraded / not-ready / unknown
+authorization: allow / ask / deny / unknown
 ```
 
-Current explicit exception:
+Execution mode is another attribute: **agent-executed** or **human-executed**.
+USER_EXECUTED is not a fourth authorization result and does not mean an approval
+button authorizes the Agent to perform the production action.
 
-```text
-target          shared AI gateway
-system owner    ubuntu
-maintenance     explicitly delegated to Vince
-principal       ubuntu only for that target/scope
-```
+Prompt/Skill instructions are cooperative controls. A hard enforcement claim
+requires a real boundary: restricted credentials, OS permissions, provider-side
+checks or a tested runtime interception point. Native shell and UI tools can bypass
+ServerOS wrappers; the product must disclose uncovered paths rather than claim
+total mediation. Full personal-work autonomy is compatible with strict shared and
+production boundaries.
 
-This does **not** grant authority over arbitrary `ubuntu` files, processes,
-containers, repositories or services.
+### 2.2 Tokyo and production policy
 
-Delegated authority is never a blanket Session capability. It is bound to:
+Tokyo's normal principal is **vince**. The shared AI gateway has an explicit,
+target-scoped maintenance exception using **ubuntu**; this is not authority over
+arbitrary ubuntu-owned processes, files or services.
 
-```text
-principal
-+ target
-+ operation
-+ scope
-+ expiry / validity
-```
+Current **LiteLLM production** and **Tokyo shared AI gateway production changes**
+are human-executed. Agents may inspect within read policy, build elsewhere,
+prepare instructions/artifacts, and verify after the user acts. Cutover, restart,
+live config writes, traffic changes and production rollback remain user actions
+unless the user explicitly changes this standing policy.
 
-Changing Item, target or operation does not silently carry elevated authority
-forward.
+A verb named prepare or verify is not automatically harmless. If it writes a live
+configuration, provisions production resources, sends real messages, or creates
+significant load, apply its actual effect policy. Read-only production queries
+must still be scoped and resource-bounded.
 
-Privilege is target-scoped, not username-scoped.
+### 2.3 Network and shared-host safety
 
-### 2.3 Policy inheritance
+Before changing network state, inspect the relevant routes, Docker networks,
+reserved/used CIDRs, listeners, ownership and planned effects. Check conflicts and
+recovery before changes to routes, subnet/exit-node settings, firewall, Docker
+networking or non-loopback publication. This is a capability contract, **not a
+mandatory dependency on a tool named netshadow**.
 
-Compliance policy composes from broad to narrow:
+No global prune, shared-volume cleanup, host daemon reconfiguration or privileged
+package installation by convenience. Prefer user-space tooling. Do not scan or
+modify unrelated users' data. A file mode is not isolation from host administrators.
 
-```text
-global personal policy
-        ↓
-host / device profile
-        ↓
-project / environment policy
-        ↓
-target-specific delegated exception
-        ↓
-per-operation admission
-```
+### 2.4 Information-flow and third-party content
 
-Narrower layers may add constraints or explicitly delegated exceptions; they do
-not redefine ServerOS's generic safety semantics.
+Read, retrieve, store in memory, report, publish and export are separate permissions.
+Work material may reach the user's authorized GPT/GitHub collaboration surface
+where project/source policy permits it; credential bytes are excluded.
 
-This keeps Tokyo, Windows, future servers and production/jump hosts consistent
-without copying an unrelated policy file per machine.
+Treat external Skills, documents, IM, websites and MCP annotations as untrusted
+inputs until assessed for their use. Text-only Skills can still contain prompt
+injection. Provenance and review are proportional to effects; do not silently run
+installation hooks or commands found in retrieved text.
 
-### 2.4 Network safety
-
-Network mutation on a shared host is high risk.
-
-Changes involving any of the following require a network preflight:
-
-- Docker network creation/change;
-- route changes;
-- iptables/nftables;
-- VPN / Tailscale kernel routing;
-- subnet routers / exit nodes;
-- reverse tunnels;
-- new non-loopback listeners;
-- shared proxy/gateway mutation.
-
-Preflight must consider at least:
-
-```text
-current routes
-+ existing Docker networks
-+ reserved / real destination CIDRs
-+ current listeners/tunnels/VPNs
-+ ownership
-+ planned bind address/subnet
-+ rollback
-```
-
-A netshadow-style conflict check is a hard gate.
-
-Unknown/incomplete policy fails closed.
-
-### 2.5 Shared host safety
-
-Default expectations:
-
-- no global Docker prune;
-- no destructive shared-volume cleanup;
-- no daemon reconfiguration without approval;
-- no system package/service mutation without approval;
-- user-space tooling preferred;
-- loopback-only service bind unless a wider bind is explicitly intended;
-- no assumption that file mode alone provides isolation from other privileged
-  users on the host.
-
-### 2.6 Information-flow policy
-
-Read authorization and propagation authorization are different.
-
-A source may be readable for a task while still being ineligible for Memory,
-GitHub, reports, publication or export.
-
-ServerOS therefore models information-flow permissions separately from mutation
-permissions. At minimum, policy must be able to distinguish:
-
-```text
-readable
-retrievable
-memory-eligible
-report-eligible
-publishable
-exportable
-```
-
-The exact vocabulary may evolve, but the distinction is an invariant.
-
-Raw sensitive material should remain in its protected source/archive boundary.
-Derived Context, Memory, reports and GitHub artifacts must respect propagation
-policy rather than assuming "I was allowed to read it, therefore I may copy it".
-
----
+Secrets live in the protected vault or existing native stores. Avoid secret values
+in command arguments, logs, screenshots, prompts and Git. A leaked value requires
+containment and owner notification; redacting a later report does not undo leakage.
 
 ## 3. Daily operating model
 
-ServerOS is not only a runtime helper. It maintains a daily work loop.
+Feishu is the near-exclusive enterprise demand source. Offline conversations are
+normally recorded/transcribed into Feishu; the user can add or correct context.
+GitHub and sessions supply engineering evidence and explicitly followed signals,
+not an independent machine for inventing work.
 
-ServerOS is **demand-driven**. It does not create work merely because it can
-imagine something useful to do.
+The Coordinator is a replaceable Session role, not a permanently growing transcript.
+Each day it presents important changes plus the current understanding. The user
+can correct facts, reject false requirements and choose a small focus set.
 
-Primary work-demand inputs are:
+A daily alignment opportunity is required even with no detected changes. If the
+user is absent, record alignment as pending; never fabricate approval or freeze
+unrelated approved Items. Schedule and timezone are instance policy, not literals
+in Core. The user may reconcile at additional times.
 
-```text
-Feishu online messages / requests
-offline conversations → recording / transcription / minutes
-direct user oral additions / corrections
-existing project requirements / incidents / routines
-```
-
-Most projects are stable and explicitly known. A new project is created or
-reactivated because the user recognizes a real work demand, not because ServerOS
-autonomously invents one.
-
-```text
-Feishu / Transcripts / Minutes / User Input / GitHub / Sessions
-                    ↓
-           Incremental Source Capture
-                    ↓
-              Archive / Observation
-                    ↓
-         Provisional Understanding
-                    ↓
-             Understanding Delta
-                    ↓
-          Human Reconciliation
-                    ↓
-       Approved Understanding Checkpoint
-                    ↓
-            Personal Candidate Board
-                    ↓
-        ServerOS priority suggestions
-                    ↓
-              Human selects Today
-                    ↓
-              Candidate → Item
-                    ↓
-        Idea / Requirement Discovery
-                    ↓
-             Requirement Draft
-                    ↓
-              GPT Review / Decision
-                    ↓
-        Research / Design / Architecture
-                    ↓
-           Agent Execution + Quay
-                    ↓
-          Verification / E2E Evidence
-                    ↓
-           Item Report + Daily Report
-```
-
-This is a product loop, not a forced state machine.
-
-Small work may skip steps. Research may not produce code. A no-code validation
-may satisfy an Item. A test may send work back to design.
-
----
+One cross-project Board is authoritative. Project views filter the same entries.
+Human presentation is **处理站 / 未完成 / 已完成**; the focus set is not copied into
+independent task records. No fixed three-to-five-item quota is imposed by Core.
 
 ## 4. Structured Understanding
 
-Structured Understanding is the durable, current model of the user's work
-world.
+Understanding is a versioned model of the user's role, projects, people,
+responsibilities, commitments, constraints, decisions and open questions.
 
-It is project-first and **claim-based rather than overwrite-based**.
+### 4.1 Claims and alignment
 
-Important facts are represented as versioned Claims with provenance. When new
-evidence conflicts with old understanding, ServerOS preserves both until the
-conflict is reconciled instead of silently replacing history.
+A Claim retains subject, assertion, provenance, observed time, applicability,
+confidence and its confirmation/conflict/supersession relationship. Records own
+confirmed semantic content; work-engine owns associated work/control transitions.
+Do not maintain independently editable copies of the same fact in both.
 
-A durable Claim may therefore carry:
+Machine observations may be recorded automatically. Interpreting a message as a
+new commitment, changed responsibility, new requirement or strategic decision
+requires alignment unless already covered by an explicit delegation.
 
-```text
-subject / predicate / value
-source / provenance
-observed_at
-effective_from / effective_to when known
-confidence
-status
-supersedes / conflicts_with
-```
+A material delta ends as accepted, corrected, rejected or deferred with a reason.
+Keep conflicting evidence visible until resolved. A human confirmation determines
+business intent; it does not make an unobserved deployment a live fact.
 
-Current Understanding is a projection over these Claims, not a mutable
-paragraph that forgets how it got there.
-
-It is project-first.
-
-A project view may include:
-
-- current state;
-- responsibilities;
-- people and their project roles;
-- commitments;
-- requirements / candidates;
-- decisions;
-- risks / unknowns;
-- important knowledge;
-- recent deltas.
-
-People and role information are relational: the same person may play different
-roles in different projects.
-
-### 4.1 Reconciliation is mandatory for important understanding changes
-
-Important deltas do not silently become durable truth.
-
-Examples that require reconciliation:
-
-- responsibility changes;
-- project status changes;
-- people/ownership changes;
-- commitments;
-- new requirements;
-- priority changes;
-- durable project facts.
-
-Reconciliation continues until every required delta is in a clear state:
+### 4.2 Authority is question-specific
 
 ```text
-ACCEPTED
-EDITED
-REJECTED
-DEFERRED_WITH_REASON
+business intent       -> explicit user/authorized stakeholder decision
+intended design       -> accepted design and project policy
+implemented change    -> exact Git/config/artifact revision
+current live behavior -> fresh observations and target-scoped verification
+historical events     -> original sources and recorded evidence
+recall/experience     -> memory, with provenance; not overriding authority
 ```
 
-The output is an **Understanding Checkpoint**.
+Do not use last-write-wins across these categories. Corrections preserve history
+and invalidate affected projections/memory references. Do not repeatedly surface
+a rejected demand unless material new evidence changes it.
 
-Daily reconciliation still happens when the system finds no material delta.
-In that case ServerOS presents the current structured understanding and a
-concise "no material change detected" view so the user can discuss, correct or
-confirm it. Reconciliation is therefore a daily alignment ritual, not merely an
-exception inbox.
+### 4.3 Reconciliation documents
 
-An unresolved understanding delta does not freeze unrelated, already-approved
-Items.
-
-### 4.1.1 Reconciliation documents
-
-The human-facing reconciliation surface uses **one document per day** plus a
-long-lived master document/index.
-
-```text
-Daily Reconciliation / YYYY-MM-DD
-  current understanding summary
-  material deltas
-  corrections / accepted edits
-  candidate work
-  unresolved questions
-  checkpoint result
-
-Reconciliation Index / Master
-  date index
-  short daily summaries
-  major decision/understanding links
-  links to each daily document
-```
-
-The daily document is the discussion/confirmation surface. The master document
-is navigation and longitudinal summary, not a second truth database.
-
-The normal interaction happens conversationally in CloudCLI with the
-Coordinator. The user corrects/approves in natural language; ServerOS updates
-the day's document and structured checkpoint as a consequence. Feishu documents
-are durable human-readable outputs, not mandatory form-entry UI.
-
-### 4.2 Archive, Understanding, Knowledge, Memory and Work are different
-
-```text
-Archive        what happened
-Understanding  what we currently believe reality is
-Knowledge      what we curate for future reuse
-Memory         how Agents efficiently recall the above + prior experience
-Work           what we choose to do next
-```
-
-Collapsing these concepts creates false authority.
-
-### 4.3 Source authority is contextual, not last-write-wins
-
-A newer message does not automatically replace stronger evidence.
-
-Typical authority depends on the question:
-
-```text
-explicit user confirmation
-  → highest business-intent/alignment authority
-
-approved project docs / decisions
-  → intended policy/design authority
-
-Git / code / configuration
-  → implementation authority
-
-runtime observation / E2E
-  → current LIVE-behavior authority
-
-Feishu discussion / meeting source
-  → evidence, request, hypothesis or intent input
-
-Memory
-  → retrieval/experience aid, never automatic truth authority
-```
-
-Conflicts remain explicit until the relevant authority question is resolved.
-
-### 4.4 Location-independent retrieval
-
-The user should not need to remember where a fact was stored.
-
-A Project-aware search/retrieval path may federate across:
-
-```text
-Feishu IM
-Minutes
-My Docs
-Wiki
-Drive metadata
-GitHub / Bridge
-local records / knowledge
-MetaCC session history
-Memory Provider
-```
-
-Results preserve source/provenance and should prefer authoritative/current
-sources over merely semantically similar ones.
-
----
+Keep one daily human document and one master index containing daily summaries and
+links. Conversation in CloudCLI updates these outputs and an understanding
+checkpoint. They are not forms the user must fill or a second truth database.
 
 ## 5. Source capture, Follow and Feishu
 
-Feishu is the **primary enterprise information and work-demand source family**
-for the current product.
-
-Most relevant external work information arrives through:
-
-```text
-Feishu IM
-Feishu My Docs / Drive / Wiki
-Feishu Minutes / meeting transcripts
-offline conversations uploaded/transcribed into Feishu
-explicit user corrections / additions
-repo/document links mentioned in Feishu
-```
-
-GitHub does not independently create work merely because an issue/repo exists.
-A GitHub object becomes work context because an existing Project, Follow,
-Requirement or explicit human instruction references it.
-
-### 5.1 Source capture
-
-ServerOS may shallow-archive authorized Feishu chat sources by default.
-
-The archive policy is source-scoped and supports an explicit blacklist.
-
-Blacklist authority uses stable chat/app IDs, not display names.
-
-A shallow message archive should prefer:
-
-- native chat/message ID;
-- timestamp;
-- sender identity/type;
-- text;
-- reply/thread relation;
-- message type;
-- attachment locator and metadata;
-- provenance/cursor.
-
-Large files, video/audio and expensive linked content are not downloaded merely
-because a message exists; deeper capture is demand/relevance driven.
-
-Raw work information is **retention-first**. Feishu messages, real work Minutes
-and source documents normally remain in their native system as canonical
-sources. ServerOS keeps locators, indexes and only the snapshots needed for
-continuity/search/provenance.
-
-Deletion/cleanup is reserved for clearly identified garbage such as empty/test
-meeting records, probe artifacts and disposable temporary content. "No longer
-important to today's work" is not by itself a deletion reason.
-
-### 5.2 Follow
-
-A durable `Follow` relationship answers:
-
-> What should ServerOS continue watching?
-
-Possible sources:
-
-- Feishu chat;
-- Feishu document;
-- Wiki subtree;
-- offline conversation transcript / meeting minutes;
-- explicit user oral/manual input;
-- GitHub repository / issue / release;
-- external research source.
-
-Follow records source identity, scope/project, snapshot policy, understanding
-policy and notification policy.
-
-### 5.2.1 Repository links mentioned in Feishu
-
-Repository URLs mentioned in Feishu are evidence/context, not automatic Project
-or work adoption.
-
-For direct/private messages where a repository is intentionally sent to the
-user, ServerOS may surface an **inspection proposal**:
-
-```text
-private/direct repo reference
-→ show user
-→ user confirms inspection
-→ temporary clone/read-only analysis
-→ optional recommendation
-```
-
-A group-chat mention does not automatically trigger a clone. Inspection does not
-create a Project, Bridge or Item. Those remain explicit user decisions.
-
-### 5.3 Feishu information and document fabric
-
-ServerOS does not flatten Feishu into one fake filesystem and does not infer a
-document's meaning from the space that happens to contain it.
-
-The current semantic model distinguishes at least:
-
-```text
-Source Archive
-  IM / Minutes / transcripts / original discussion
-
-Private Workbench
-  My Document Library current work, daily alignment, project workbench
-
-Work Reporting
-  Item Final Reports, daily reports, weekly reports, special reports
-
-Private Knowledge
-  user-owned curated long-term knowledge (currently e.g. 个人笔记)
-
-Published Knowledge
-  user-owned reference documentation for a broader internal audience
-  (currently e.g. 公开文档)
-
-External / Shared Knowledge
-  documents owned elsewhere that the user may read, follow, contribute to or
-  help maintain
-
-Drive Assets
-  files / screenshots / traces / attachments / evidence / delivered binaries
-```
-
-These are semantic roles, not a requirement to create matching Feishu roots.
-
-My Document Library is a Feishu Wiki-provider space
-(`space_type=my_library`) with node/subpage hierarchy, not a Drive-style
-folder filesystem.
-
-Recommended product use:
-
-```text
-My Document Library
-  private active human work
-  current Project workbenches
-  daily alignment
-  durable work-reporting subtree
-
-Private Knowledge
-  curated reusable personal knowledge
-  methods / architecture / tool knowledge
-
-Published Knowledge
-  reader-first guides / configuration docs / runbooks intended for a broader
-  internal audience
-
-External / Shared Knowledge
-  keep the external canonical location
-  index / follow / contribute according to stewardship
-  do not copy merely to make ServerOS's tree uniform
-
-Drive
-  file/evidence asset surface
-
-Minutes
-  meeting source authority
-```
-
-A space name such as "公开文档" does **not** imply Internet-public access.
-ServerOS records intended audience and observed permissions separately.
-
-### 5.4 Document profile, knowledge promotion and freshness
-
-Durable document meaning belongs in ServerOS records, not as control-plane
-metadata pasted into the human document body.
-
-A lightweight Document Profile may describe:
-
-```text
-document_ref / locator
-semantic role
-audience intent
-authority / canonical relationship
-stewardship relationship
-Project / Item relationships
-applicability
-freshness / last_verified
-observed permissions
-equivalent / supersedes relationships
-```
-
-The profile is a sidecar/projection. The Feishu document should still read like
-a normal human document.
-
-A conversation, hypothesis or draft does not become Knowledge merely because it
-was captured.
-
-```text
-Source / discussion
-→ Observation / provisional understanding
-→ alignment when material
-→ reusable content
-→ Private Knowledge or Published Knowledge when there is a real audience
-```
-
-This is not a mandatory `DRAFT → REVIEW → PUBLISHED` workflow. The Agent may
-promote, restructure or leave material in place according to evidence, audience
-and authority.
-
-Typical distinction:
-
-```text
-private reusable method / personal architecture note
-→ Private Knowledge
-
-reader-first setup guide / product usage guide / broadly reused runbook
-→ Published Knowledge
-```
-
-Large knowledge bases should not be recopied in full on every cycle. Use
-metadata inventory, Follow, revision/change detection and targeted expansion.
-
-Code/config/service/version changes may trigger a generic knowledge-impact scan.
-A linked document may become `STALE_SUSPECT`; applicability matters more than
-a recent edit timestamp.
-
-### 5.4.1 Audience, authority, permission and stewardship are independent
-
-For documents, ServerOS keeps four questions separate:
-
-```text
-Role
-  why does this document exist?
-
-Audience
-  who is it written for?
-
-Authority
-  which copy/location is canonical for this subject?
-
-Stewardship
-  what responsibility/operations does the user have over it?
-```
-
-Observed edit permission does not imply ownership, publication authority or
-permission to move a shared document.
-
-A stewardship relationship may grant operations such as read, contribute,
-maintain, publish or own. Those names are convenient profiles over allowed
-operations and expected responsibility, not a rigid hierarchy.
-
-Examples:
-
-```text
-user-owned published guide
-  authority = canonical
-  stewardship = owner/publisher
-
-externally owned guide the user helps maintain
-  authority = external canonical
-  stewardship = contributor/maintainer
-
-company policy / foreign Wiki
-  authority = external canonical
-  stewardship = reader/follower
-```
-
-Moving a document between shared knowledge spaces may change audience,
-publication authority and other people's navigation. Treat such a move as an
-authority/publication-boundary operation, not ordinary tidying.
-
-External canonical documents normally remain where their owner maintains them.
-The user's workbench may contain an entry/link/current responsibility view
-without copying the body.
-
-### 5.4.2 Duplicate and document-family handling
-
-Same-title documents are not assumed identical.
-
-ServerOS may relate documents with lightweight relationships such as:
-
-```text
-equivalent_to
-superseded_by
-canonical_for
-derived_from
-```
-
-Content fingerprints, revision history, source links and human rulings may help
-establish the relationship. Search/retrieval should avoid presenting known
-superseded copies as independent current authorities.
-
-### 5.4.3 Human-surface cleanliness
-
-Human-facing Feishu spaces are clean projections, not migration journals.
-
-Operational material such as migration journals, verification hashes, probe
-nodes, temporary cleanup lists, object-token diagnostics and placement
-experiments belongs in local artifacts, records and Git/ops history unless a
-human genuinely needs it in a work document.
-
-Preserving provenance does not require leaving construction debris in the
-user's document tree.
-
-### 5.4.4 Knowledge spaces are audience/authority boundaries
-
-A Feishu Wiki knowledge space is not merely a folder above Projects.
-
-A separate knowledge space is justified by a real audience, ownership,
-permission or lifecycle boundary. A Project does not automatically receive its
-own knowledge space.
-
-The product may therefore have distinct spaces for private curated knowledge,
-user-owned published documentation and externally owned/shared knowledge
-without forcing their internal taxonomies to match.
-
-### 5.5 Meetings / Minutes
-
-Original Minutes objects remain canonical source objects.
-
-A real work meeting normally creates a **MeetingBundle relationship** rather
-than physically forcing every artifact into one folder:
-
-```text
-Minute source
-├── recording
-├── transcript
-├── AI summary / chapters / todos
-├── meeting/calendar metadata
-└── derived Meeting Note
-```
-
-For relevant work meetings, ServerOS should by default create a **Meeting Note
-draft** containing:
-
-- project classification;
-- summary;
-- decisions;
-- actions / commitments;
-- people / ownership changes;
-- requirements / candidate work;
-- open questions;
-- relevant excerpts;
-- source locator.
-
-The draft enters the daily reconciliation flow. After the user aligns/corrects
-it, the durable human-facing note is promoted into the owning project's Wiki
-meeting area and Structured Understanding is updated from the confirmed
-interpretation.
-
-Minutes source objects remain where Feishu owns them. ServerOS organizes their
-meaning and indexes, not by pretending Minutes is a normal Drive folder.
-
-Meeting relevance and retention remain separate from deletion authority.
-
-Incidental audio does not become work understanding merely because it was
-recorded.
-
----
+### 5.1 Two acquisition paths
+
+**IM shallow archive:** capture authorized messages incrementally, including stable
+chat/message IDs, sender, timestamps, text, edits, reply/thread relationships and
+attachment locators. Blacklists use stable chat/app IDs; names only help discovery.
+The Agent may propose an initial blacklist for user correction.
+
+**Followed documents and Wiki subtrees:** maintain metadata/revision inventories
+and archive the selected pages or changed parts. Follow is not permission to clone
+an entire large knowledge base. New descendants and expensive linked material obey
+the declared scope and expansion policy. Uncertainty goes to review.
+
+Use page/cursor checkpoints, overlap windows where needed, stable-ID deduplication
+and source revisions. A failed or partial fetch does not advance a completed
+coverage watermark or replace the last good snapshot. An empty response may mean
+no data, insufficient permission, a wrong scope or a transient error; preserve the
+distinction. Store original source references even when a local snapshot is kept.
+
+Directly shared repository links may lead to a user-confirmed inspection. Reading
+or cloning for inspection never adopts a repository, creates a Project or creates
+a Bridge automatically. A group-chat mention alone does not trigger cloning.
+
+### 5.2 Meetings and incidental speech
+
+Minutes is a separate source domain. Recording, transcript, AI summary and derived
+notes form a **MeetingBundle relationship**, not necessarily a physical folder.
+
+The user's support sessions are commonly muted and may record nearby unrelated
+conversation. Classify meaningful content with source/context evidence; do not turn
+incidental speech into requirements, knowledge, reports or commitments. The known
+Marek/Polish-group open-microphone exception is an instance rule bound to actual
+source IDs, not a universal name-matching rule. Ambiguity means review, not deletion.
+
+Relevant meeting interpretation enters MyDocs/Understanding for alignment.
+Attachments and selected sidecars belong in Drive. Only reusable confirmed knowledge
+is published to an appropriate knowledge space. **Do not automatically move every
+confirmed meeting note into Wiki.** Original Minutes remains the source.
+
+### 5.3 Semantic roles and physical surfaces
+
+| Surface | Normal role | Not its responsibility |
+|---|---|---|
+| My Document Library | private working documents, understanding views, requirements, reports | raw execution archive or compulsory draft-to-Wiki staging |
+| Personal Knowledge, currently 个人笔记 | curated private methods and reusable knowledge | daily task ledger or migration scratch |
+| Published Knowledge, currently 公开文档 | reader-facing maintained guides for a broader audience | automatic Internet-public access |
+| External/shared documents | followed source or authorized maintenance target | content to take over or move for tidiness |
+| Drive | files, attachments, selected screenshots/traces and deliverables | authoritative personal Board |
+| IM / Minutes | original work information | approved business conclusions merely because it exists |
+
+My Document Library uses the Wiki provider's my_library space and supports
+node/subpage organization; Drive uses file/folder organization. Product roles stay
+distinct even when an API adapter is shared. Names and locations do not determine
+ACLs, ownership or canonical status.
+
+### 5.4 Document Stewardship and canonical content
+
+A lightweight record relates a document to role, audience, canonical source,
+stewardship, project/Item, applicability, freshness and locator. Maintenance authority
+may cover an external owner's document without permitting move, rename of shared
+navigation, ownership change or permission expansion.
+
+Same title or same bytes does not choose a canonical copy. Relate equivalent,
+derived and superseded objects, and retain an unresolved canonical choice when the
+owner has not decided. Do not promote the copy in our own space by location alone.
+
+For engineering work packets, GitHub normally owns the versioned body. For a
+published Feishu-native guide, its Feishu object may own the body. Each document
+has one declared authoring authority; other copies are revision-linked projections
+or snapshots. A human edit to a projection is a correction to reconcile, not content
+to overwrite silently on the next render.
+
+### 5.5 Mutation, publication and cleanliness
+
+Before a cloud write, bind the operation to an exact object and baseline revision.
+Afterward read back the target content/location. Cross-space moves additionally
+check owner, inherited and explicit sharing, target audience and old entry links;
+unchanged explicit collaborators alone do not prove effective access is preserved.
+
+Use a provider revision guard when supported. Otherwise serialize managed writes,
+read immediately before/after, and report the remaining race; do not claim atomic
+CAS over an API that lacks it. On a concurrent edit, rebase the intended change or
+ask about the actual conflict, not replace the entire body blindly.
+
+Record intent before destructive actions. A parent with zero children is not an
+empty document: inspect its own body, attachments and external references. Unknown
+residual content blocks deletion. Prefer recoverable removal when available.
+Migration journals, hashes, probe nodes and cleanup lists stay in local evidence,
+not the visible knowledge tree. Historical useful content is not garbage.
+
+Published support knowledge is a **separate project product**. ServerOS supplies
+acquisition, provenance, publishing and freshness primitives; Support Bot/KB owns
+its own review, release and retrieval eligibility rules.
 
 ## 6. Session Fabric
 
-Session is a first-class ServerOS resource, but it is **not the primary
-long-term continuity authority**.
-
-### 6.0 Every Agent Session enters ServerOS through a thin bootstrap
-
-Claude Code / Codex sessions should see ServerOS by default, but startup context
-must remain intentionally tiny.
-
-```text
-L0 bootstrap
-  ServerOS available
-  device / principal / cwd
-  small semantic entrypoints
-
-user prompt
-  ↓
-intent resolution
-  ↓
-Project / Item / general-work resolution
-  ↓
-L1 Context Capsule
-  ↓
-Agent starts real work
-  ↓
-L2/L3 expansion on demand
-```
-
-The bootstrap does not preload Project history, Memory, Ability catalogues,
-Skills, MCP schemas or recent Sessions.
-
-Intent authority is ordered roughly as:
-
-```text
-explicit current user intent
-> explicit Item/worktree identity
-> cwd Project relationship
-> recent Session/history hints
-```
-
-A repository cwd may strongly resolve Project/Repository but does not by itself
-bind an Item. A ServerOS-managed Item worktree may resolve both Project and Item.
-
-Dynamic work state does not belong in `CLAUDE.md`. Stable repository/project
-instructions may live there; current Item/checkpoint/decision state comes from
-ServerOS Context.
-
-Long-lived work continuity is anchored by:
-
-```text
-Project / Item
-+ durable documents
-+ code / artifacts
-+ Memory
-+ decisions / checkpoints
-```
-
-A Session is a bounded, relatively clean **working context** attached to that
-durable work.
-
-This deliberately prefers:
-
-```text
-one Item
-  → many focused Sessions
-```
-
-over one enormous transcript that must survive for months.
-
-### 6.1 Session hierarchy in the human UI
-
-The default human navigation is semantic:
-
-```text
-Project
-└── Work / Item
-    └── Sessions
-```
-
-CloudCLI may naturally discover/group native sessions by working directory or
-project path, but ServerOS adds the semantic overlay: Project, Item, role,
-device and current checkpoint. Native directory grouping is useful evidence,
-not the work model itself.
-
-Top-level views should emphasize the Coordinator and recently active work rather
-than dumping every native session into one flat list.
-
-### 6.2 Logical roles
-
-Common roles:
-
-- **Coordinator Session** — reconciliation, board, project switching, routing;
-- **Execution Session** — project/Item implementation, research or test work;
-- **Maintenance Session** — incident diagnosis and repair.
-
-These are semantic roles, not mandatory process classes.
-
-A Coordinator is a role and continuity pattern, not a requirement to keep one
-native Claude/Codex transcript alive forever. A fresh Coordinator Session can
-recover from durable understanding, board state, Memory and checkpoints.
-
-### 6.3 One Item may have many sessions
-
-Example:
-
-```text
-SRV-0123
-├── product/requirement discussion
-├── implementation session
-├── research session
-├── verification session
-└── review session
-```
-
-Each Session may carry a narrower context than the Item as a whole.
-
-The durable Item is the continuity anchor; Session turnover is expected.
-
-### 6.3.1 Automatic checkpoints
-
-A Session should produce a compact checkpoint automatically at meaningful
-boundaries such as completion, handoff, compaction or clean shutdown.
-
-Checkpoint semantics:
-
-```text
-what changed
-current state
-important evidence
-what was learned
-next likely step
-unresolved blocker / decision gate
-```
-
-Checkpoint routing:
-
-```text
-work continuity
-  → Item checkpoint
-
-episodic / procedural experience
-  → Memory candidate
-
-high-impact business fact
-  → Understanding Delta
-
-raw transcript
-  → MetaCC / native history
-```
-
-The user should not need to ask the Agent to summarize before a Session can be
-continued elsewhere.
-
-### 6.4 Live Session and history are separate
-
-**ServerOS Agent Session** owns live control semantics:
-
-- discover;
-- inspect;
-- create;
-- resume;
-- send;
-- result;
-- interrupt;
-- stop;
-- handoff;
-- remote attach when the Provider supports it.
-
-A stable ServerOS session ref is not a PID, tmux session, chat thread or native
-provider ID.
-
-Provider-native IDs remain locators.
-
-### 6.5 MetaCC is the preferred Session History / Intelligence Provider
-
-ServerOS should not reimplement the mature parts of MetaCC.
-
-MetaCC already provides useful Claude/Codex history semantics including:
-
-- metadata-first session discovery;
-- exact session ID targeting;
-- provider normalization;
-- project/cwd boundaries;
-- active/archive distinction;
-- parent/subagent lineage;
-- compaction/lifecycle awareness;
-- error/timeline/work-pattern/token analysis;
-- edit sequence analysis.
-
-MetaCC observations do not become live-session authority.
-
-### 6.5.1 Agent Improvement through MetaCC
-
-The separate Log Analysis project targets organization/user workload logs and is
-not ServerOS's own telemetry subsystem.
-
-For ServerOS self-improvement, first use MetaCC over the user's own Claude/Codex
-sessions.
-
-A periodic improvement recipe may analyze:
-
-```text
-repeated tool failures
-compaction / oversized sessions
-repeated human corrections
-poor handoffs
-duplicated investigation
-slow capability discovery
-unproductive retry patterns
-editing / verification patterns
-```
-
-and produce **Improvement Findings** with evidence.
-
-```text
-MetaCC session history
-→ analysis
-→ recurring friction / success pattern
-→ Improvement Finding
-→ optional Candidate
-→ user selection
-→ ServerOS/Ability improvement Item
-```
-
-It does not silently change prompts, Skills or runtime configuration merely
-because a pattern was detected.
-
-Subagents and Quay runs are normally shown underneath their parent
-Session/Activity rather than promoted into the top-level Session list. If a
-delegated thread becomes independently durable work, it may be promoted to its
-own Session/Item relationship.
-
-### 6.6 Cross-device operation has two different meanings
-
-ServerOS must support both when the underlying Providers allow them.
-
-**Remote attach to the same running Session**
-
-```text
-Session runs on Tokyo
-      ↓
-CloudCLI / Tailscale / remote transport
-      ↓
-user or Agent interacts from Windows/phone
-```
-
-Execution location did not move.
-
-**Work handoff to another device**
-
-```text
-Tokyo Session
-→ checkpoint / memory extraction
-→ new Windows Session
-→ same Project / Item
-```
-
-The native Session changes; durable work identity does not.
-
-Handoff normally prefers a fresh Session with Memory/Checkpoint links because it
-keeps context cleaner. Native resume remains available when it is genuinely the
-better option.
-
-A Session must not silently rebind from one Item to another.
-
-### 6.7 Device provenance
-
-Session and history records carry device provenance.
-
-At minimum:
-
-```text
-execution_device_ref
-provider/runtime
-native_session_ref
-origin / predecessor / handoff refs
-```
-
-Device provenance is metadata about where work happened, not a reason to split
-the user's global work history into device silos.
-
-### 6.8 Session archival and raw history
-
-Raw Claude/Codex transcripts are intended for long-term retention.
-
-Policy:
-
-- Session Intelligence may propose archival;
-- archival requires user confirmation;
-- raw deletion is a separate destructive/retention action;
-- checkpoint and useful memory extraction may happen before archival.
-
-For sensitive history, prefer:
-
-```text
-immutable/protected raw transcript
-        ↓
-sanitized projection
-        ↓
-Memory / GitHub / report / publication as permitted
-```
-
-A secret or restricted datum accidentally printed into a Session does not grant
-permission to propagate it.
-
-Session may end while its durable Item/Memory continuity survives.
-
----
-
-## 7. Memory
-
-### 7.0 Memory Federation, not one competing memory database
-
-ServerOS coordinates several memory/continuity authorities without pretending
-they are interchangeable:
-
-```text
-Hot working context
-  current Claude/Codex Session
-
-Native near-memory
-  provider-native project/session memory and stable instructions
-
-Durable approved truth
-  Structured Understanding / decisions / checkpoints / code/runtime facts
-
-Associative long-term memory
-  OpenViking-like episodic/procedural/entity memory
-
-Raw session history/intelligence
-  MetaCC + provider-native transcripts
-```
-
-OpenViking and native Agent memory are retrieval aids, not business truth
-authorities.
-
-Normal Context Assembly retrieves only a small relevant slice; Memory has a
-bounded context budget rather than a fixed requirement to inject N memories.
-Zero retrieved memories is a valid result.
-
-ServerOS does not continuously copy dynamic business facts into CLAUDE.md or
-provider-native memory. High-impact facts become Understanding Deltas and are
-reconciled before becoming durable truth.
-
--Context Fabric
-
-Memory is powerful, but it is not the system of record.
-
-### 7.1 Independent Memory Provider
-
-A mature memory engine such as **OpenViking** may run as an independent,
-long-lived Provider on the primary Linux/Tokyo node and expose MCP/HTTP
-interfaces.
-
-This does not violate the small-core rule because it is a Provider/Managed
-Runtime, not part of `serverosd`.
-
-The Memory Provider is **important but non-blocking**. If it is unavailable,
-ServerOS enters a degraded-memory mode and still starts work from:
-
-```text
-approved Structured Understanding
-+ Item checkpoint
-+ durable documents / code / decisions
-+ native Session history when available
-```
-
-Memory outage must not turn the whole Work OS into a single point of failure.
-
-Preferred composition:
-
-```text
-ServerOS plugin
-├── memory governance Skill
-├── memory adapter
-└── Memory Provider (OpenViking-like service / MCP)
-```
-
-### 7.2 Memory topology and device provenance
-
-Memory is logically global to the user's work, not one isolated memory database
-per device.
-
-The preferred topology is a central Memory Provider on the primary Linux/Tokyo
-node, with other devices accessing it through an approved private path when
-needed.
-
-Memory entries may carry device metadata such as:
-
-```text
-origin_device_ref
-observed_runtime
-source_session_ref
-```
-
-and, where relevant, applicability such as:
-
-```text
-applies_to: all devices
-applies_to: windows
-applies_to: device:<id>
-```
-
-This matters for operational memories ("this Windows path works") without
-fragmenting project/personal memory by machine.
-
-### 7.3 Memory scopes and precedence
-
-Memory may cover:
-
-- Personal / global;
-- Role;
-- People / Organization;
-- Project;
-- Item;
-- Session / Experience.
-
-When several scopes provide applicable guidance, more specific scope refines
-broader scope rather than destroying it:
-
-```text
-global / personal
-      ↓
-role / organization
-      ↓
-project
-      ↓
-Item
-      ↓
-Session / current execution
-```
-
-A narrower memory may override or qualify a broader preference for its scope,
-while provenance/history remain available.
-
-### 7.4 Automatic vs governed memory
-
-Low-risk memories may be promoted automatically, for example:
-
-- tool usage experience;
-- Item checkpoint;
-- known successful local procedure;
-- recurring workflow preference.
-
-High-impact durable claims enter reconciliation:
-
-- responsibilities;
-- commitments;
-- people ownership;
-- major project facts;
-- meaningful personal preference changes.
-
-### 7.5 Memory retrieval is progressive
-
-Default retrieval should be metadata/abstract-first.
-
-A Context Capsule should contain only a few highly relevant memories. The Agent
-can expand when needed.
-
-Memory retrieval must preserve provenance and avoid turning an old inference
-into current truth.
-
-### 7.6 Knowledge freshness is a generic capability, domain curation is not
-
-ServerOS may provide generic mechanics for:
-
-```text
-knowledge source linkage
-version/applicability metadata
-last_verified
-STALE_SUSPECT detection
-change impact assessment
-draft update proposal
-```
-
-For example, a code/version/config change may make linked knowledge suspect.
-
-But ServerOS does **not** own the domain-specific knowledge product. LiteLLM
-Support KB curation, classification and publishing remain responsibilities of
-the Support/Knowledge project. ServerOS supplies the generic change/freshness
-machinery and routes resulting proposals to the owning project.
-
----
+### 6.1 Session identity and native control
+
+One Item may have many focused Sessions. A Session may start unbound, serve general
+work, or switch its work context explicitly. Project, Item, Session, native thread
+ID, OS process and tmux pane are different identities.
+
+The Session record needs only logical ID, device/runtime, native locator, current
+work reference, predecessor/parent, controlling actor and last observed state.
+Provider adapters declare which operations they actually support: discover,
+inspect, start, send, stream/result, resume, interrupt, stop and remote attach.
+An unsupported operation is not emulated by claiming success.
+
+Multiple clients may observe one Session. At most one active control lease sends
+mutating input at a time; request IDs deduplicate messages. UI disconnect means
+loss of observation, not automatic cancellation. A lost heartbeat is UNKNOWN until
+reconciled, not proof the worker is dead.
+
+### 6.2 Bootstrap and context switching
+
+Every enrolled CC/Codex Session gets the thin entry by default. Native instruction
+and auto-memory loading remain native; ServerOS cannot promise an actually empty
+runtime context.
+
+Current explicit intent outranks a managed Item/worktree identity, which outranks
+repository/cwd hints, which outrank recent history. Cwd alone normally identifies
+Project/Repository, not Item. Ambiguous resolution stays unbound or asks one focused
+question. A topic switch changes logical context visibly; it must not let MarketOps
+writes occur inside a LiteLLM worktree because the shell cwd was left there.
+
+### 6.3 Checkpoints, history and handoff
+
+Checkpoint at meaningful progress, handoff, compaction when supported, and graceful
+completion. Include changed facts, exact revisions, evidence, unresolved effects,
+next safe action and pending decisions. Hook failure or abrupt process death may
+prevent a final checkpoint: recover from the last durable one and observed effects,
+never promise lossless summary on every shutdown.
+
+MetaCC is the preferred session-history/intelligence provider. Native transcripts
+remain the raw record; MetaCC indexes/analyzes them, not controls live process
+lifetime. Retain history long-term; archival requires user confirmation and deletion
+is separate. Scope retrieval to the relevant project/Item/device when appropriate.
+
+Remote attach from a phone/Windows leaves execution on Tokyo. Handoff to Windows
+creates or attaches a different native Session for the same work. Before transferring
+writer authority, save the source checkpoint, resolve destination paths/abilities,
+confirm target acceptance, then transfer the lease. Do not share a writable SQLite
+database or copy the entire .claude/.codex profile between devices.
+
+## 7. Memory-Context Fabric
+
+### 7.1 One logical memory world, several sources
+
+| Source | Owns | Does not override |
+|---|---|---|
+| native current context | immediate reasoning and tool interaction | durable accepted decisions |
+| CLAUDE.md / AGENTS.md / native rules | stable repository/runtime instructions | live work state |
+| native auto memory | local learned convenience | current authoritative evidence |
+| records/checkpoints | confirmed understanding, decisions and continuity | fresh runtime facts with contrary evidence |
+| OpenViking-like provider | associative/episodic/procedural retrieval | registry identity, permissions or business authority |
+| MetaCC/native transcripts | historical discovery and analysis | live-session ownership |
+
+OpenViking is the selected default Memory Provider direction, independently
+deployable on Tokyo and exposed through an adapter/MCP as supported. It is not a
+serverosd subsystem and not a required second catalogue of Skills. It may index
+Skill descriptions as recall material; ability-management still owns registration.
+
+### 7.2 Retrieval and lifecycle
+
+Scopes include personal preferences, role, people, Project, Item and Session-derived
+experience. Device metadata describes provenance/applicability, not a separate
+memory universe. Normal assembly selects a small relevant slice, deduplicates
+repeated instructions and keeps provenance visible. Zero matches is valid.
+
+Experience may be recorded automatically within policy. Commitments, responsibility
+changes and important project facts become Understanding Deltas. Do not full-sync
+native memory, OpenViking and records in both directions.
+
+Corrections and withdrawals propagate to derived indexes/memories using stable
+source links and revision/invalidation markers. Deleted/restricted material must
+not reappear from embeddings or summaries that escaped the original boundary.
+Index refresh and consolidation are asynchronous, not startup work.
+
+When the memory provider is unavailable, work continues from approved records,
+checkpoints, code and native history. Preserve failed memory writes for bounded
+retry; do not block Item progress or pretend memory was committed.
 
 ## 8. Work Fabric
 
-The durable work model is:
+### 8.1 Minimal durable model
+
+work-engine owns Candidate/Item/control state, Run receipts and Board projection.
+records owns human-authored semantic documents and stable work intent in the existing
+record contract. Work-engine-controlled fields have one writer; rendered documents
+are not independent competing state machines.
 
 ```text
-Source
-→ Snapshot / Observation
-→ Claim
-→ Candidate
-→ Item
-→ Activity
-→ Run
-→ Evidence
-→ Deliverable
+Candidate: cheap sourced suggestion; no automatic worktree or full document pack
+Item: one user-approved durable requirement, owning Project, acceptance and scope
+Activity: optional mutable decomposition, not a required stage
+Run: one execution attempt with append-only events and evidence
+Outcome: business/adoption result, separate from execution status
 ```
 
-`work-engine` remains the durable Item/Activity/Run control plane. ServerOS
-does not create a second workflow database.
+A Run can make progress and finish: its historical events are immutable, not every
+field of the in-progress record. Corrections append a superseding event. Do not erase
+failed attempts. Existing implementation states are compatible only insofar as they
+control execution rather than dictate research/design/test ordering.
 
-**Item means an approved requirement / durable work package.** It does not mean
-"code change" and it does not mean "every action the Agent performs".
+Approved small work can go directly Item -> Run. Routine, maintenance and acquisition
+operations may produce evidence without a fabricated business Item. Where an existing
+API requires an Item-bound Run, evolve its evidence-parent contract explicitly; do
+not forge a Run simply to refresh a map.
 
-An Item may deliver:
+### 8.2 Scope, planning and completion
+
+An Item has one owning Project but may touch multiple repos, services, environments,
+Sessions and deliverables. Relationships may be sparse: research need not invent a
+Service or deployment environment. Plans and Activities can be replaced freely
+inside the accepted goal/scope; actual effects remain recorded.
+
+Completion means acceptance verdicts, expected deliverables, sufficient verification,
+durable evidence and a readable result. Every durable Item has a concise final
+summary; small work need not generate several new documents. A final report does
+not itself close the Item.
+
+Business closure can be NOT_ADOPTED, SUPERSEDED, CANCELLED or IMPLEMENTED_ELSEWHERE
+without pretending technical acceptance or live delivery passed. Record engineering
+results and business outcome separately. Reopening is explicit.
+
+## 9. Idea and requirement discovery
+
+CC helps uncover the user's actual intent, especially for greenfield work: clarify
+purpose, gather original company sources, challenge assumptions, compare tradeoffs
+and surface decisions before freezing technology.
+
+Research, prototypes and controlled experiments may precede a finished design.
+Requirements describe the goal, evidence-backed context, acceptance, exclusions and
+expected deliverables at the necessary depth. They do not dictate every method.
+
+GPT is a first-class reasoning/review participant. The user decides material business
+choices, priorities, scope expansion and protected operations. Repeatedly asking the
+user factual questions available in source records is a failure of evidence gathering.
+
+## 10. Research, decisions and GitHub collaboration
+
+### 10.1 Work Packet and authoring authority
+
+Substantial work normally uses a small packet in hwz-records:
 
 ```text
-code / PR
-deployment / configuration change
-document / guide / report
-analysis / findings / evidence
-test / benchmark / validation
-operational change
-other acceptance-backed deliverable
+projects/<project>/items/<ITEM>/
+  brief.md       need, context, sources, acceptance and exclusions
+  design.md      research synthesis, decisions and solution
+  execution.md   compact Agent checkpoint, not an endless transcript
+  report.md      verification, deliverables, adoption and final result
 ```
 
-The current company-work domain has three primary work classes:
-
-```text
-1. Development & Operations
-2. Log Analysis / Observability
-3. Technical Support
-```
-
-These are work modes, not three separate workflow engines.
-
-**Development & Operations** commonly produces durable Items and may include
-code, deployment, infrastructure/configuration, verification and documentation.
-
-**Log Analysis / Observability** may be an Item when there is a formal
-requirement/deliverable, or a Routine/ad-hoc analysis when there is not. Its
-deliverable may be findings/evidence/report with no code change.
-
-**Technical Support** is normally conversational and does **not** create an
-Item.
-
-Claude Code / Codex are not the primary end-user support responders. Their main
-role in the support ecosystem is to maintain the product, support knowledge,
-configuration, evidence and the systems that make support reliable.
-
-The separate Hosting / Support Bot project owns automatic end-user Q&A and
-reply behavior. ServerOS supplies reusable Context, Knowledge, Evidence,
-Communication and project/service resolution capabilities to that project.
-
-Only a durable engineering follow-up, knowledge-maintenance requirement,
-repeated product problem or explicit requirement is promoted to Candidate →
-Item.
-
-### 8.1 Human work board is a simple work document
-
-The durable underlying board remains cross-project, but the primary human view
-should feel like a concise work document rather than Jira/Kanban.
-
-A Project work document may use:
-
-```text
-处理站 / Today's Focus
-  a small set intentionally selected for current attention
-
-未完成
-  remaining accepted requirements/work, ordered by current importance
-
-已完成
-  completed/closed outcomes, kept after unfinished work for history
-```
-
-Each day, reconciliation may propose a few unfinished entries for the
-**处理站**; the user confirms the focus set. There is no need to expose every
-internal state as a board column.
-
-Projects remain filters/relationships, not separate truth islands.
-
-### 8.2 Candidate before Item
-
-Explicit human demand, incidents and reconciled understanding changes may create
-Candidates.
-
-ServerOS may consolidate repeated **human-demand signals** into a coarse-grained
-Candidate, for example several support requests that point to the same product
-problem. Logs/telemetry may strengthen the evidence, but ServerOS does not scan
-for arbitrary opportunities simply to manufacture work.
-
-```text
-repeated human/support demand
-+ related logs/evidence
-→ propose one coarse-grained Candidate
-```
-
-The proposal retains source/evidence links and confidence. It still does not
-become an Item automatically.
-
-Only human selection promotes a Candidate into a durable Item.
-
-This preserves board granularity.
-
-### 8.3 Board granularity
-
-The board should resemble meaningful work in a real work document:
-
-- "LiteLLM long-term log storage";
-- "upgrade LiteLLM";
-- "ServerOS Session Management";
-- "Support Bot".
-
-It should not become:
-
-- "edit function X";
-- "restart container Y";
-- "change config line Z".
-
-Those belong to Activities/Runs.
-
-### 8.4 Today
-
-After reconciliation, ServerOS may suggest priorities.
-
-The user selects today's work.
-
-That selection is durable enough to drive background continuation but remains
-human-owned.
-
-### 8.5 Item is internal continuity; documents are the primary human surface
-
-Item remains the durable work/control identity, but the user is not expected to
-live in Item-detail pages.
-
-The normal human-facing materials are:
-
-```text
-Requirement / Brief
-Structured Understanding / project context
-Design / Decision
-Final Report / Verification Report
-```
-
-Agent-facing execution/checkpoint material may exist underneath without becoming
-a primary user UI.
-
-Board entries should link to the relevant human documents. The Item id is stable
-metadata/continuity, not the product experience itself.
-
-### 8.6 Not every operation is an Item
-
-A durable requirement becomes an Item. A small operational/support action may
-not.
-
-Examples:
-
-```text
-"upgrade this service safely"
-→ durable requirement
-→ Candidate / Item
-
-"restart this already-owned failed disposable runtime"
-→ bounded incident/maintenance action
-→ no new Item required
-
-"answer this support question"
-→ Support interaction
-→ no Item required
-
-"produce this deployment guide"
-→ durable deliverable requirement
-→ Item
-```
-
-Therefore ServerOS does **not** introduce a separate `EnvironmentChange`
-work-object. Environment/tool/software changes are either part of an approved
-Item, a Routine, or a bounded Incident/Maintenance action depending on why the
-change exists.
-
-### 8.7 Project lifecycle
-
-Projects are not simply present or deleted.
-
-At minimum:
-
-```text
-ACTIVE
-→ DORMANT
-→ ARCHIVED
-```
-
-Dormant/Archived projects remain searchable through Memory, Knowledge, GitHub
-and records, but are excluded from default Daily Understanding, Personal Board
-and Context unless relevant.
-
-A meaningful new source signal may create a **Reactivate Project** proposal for
-daily reconciliation.
-
-Reactivation restores the project to active daily context; it does not create a
-new project identity.
-
----
-
-### 8.8 Durable work facts versus mutable working structures
-
-The Work Fabric deliberately permits sparse paths.
-
-```text
-Item
-  durable identity / goal / acceptance / authority / current checkpoint
-
-Activity
-  optional mutable decomposition
-
-Run
-  happened fact / immutable historical evidence
-```
-
-A small Item may go directly `Item → Run`; it does not need placeholder
-Activities. Activities may be added, reordered, collapsed, replaced or abandoned
-without migrating the Item.
-
-Evidence may come from a Run or directly from an authoritative external source,
-runtime observation, PR, document or prior verified artifact. Deliverables may
-also be external objects linked by identity rather than recopied.
-
-Work classes such as research, experiment, development, support or operations
-may improve retrieval, presentation and Recipe selection, but must not decide a
-mandatory execution path.
-
-Unknown future work types must remain executable using:
-
-```text
-Intent / Goal
-+ Acceptance
-+ Authority / Constraints
-+ Context / Sources
-+ Environment
-+ Abilities
-+ Checkpoint
-+ Evidence
-```
-
-If adding a new work type requires editing ServerOS Core's lifecycle logic, the
-design should first be treated as suspect.
-
----
-
-## 9. Idea / Requirement Discovery
-
-A first-class Ability exists to **elicit the user's actual intent** before
-design on ambiguous/greenfield work.
-
-Useful operations include:
-
-- clarify;
-- probe;
-- surface assumptions;
-- surface trade-offs;
-- find missing cases;
-- challenge contradictions;
-- summarize;
-- confirm.
-
-Completion is semantic: enough product ambiguity has converged to enter design.
-
-The long-term default is:
-
-```text
-CC elicits / drafts requirement
-       ↓
-GPT reviews
-       ↓
-human handles meaningful remaining decisions
-```
-
-The purpose is to reduce low-value human participation, not remove human
-judgment from important decisions.
-
----
-
-## 10. Research, evidence and decisions
-
-Project decisions must use local truth, not web research alone.
-
-Web research is a generic Evidence Acquisition capability available across
-Development & Operations, Technical Support and analysis work. The current
-baseline may be simple search/browser use; richer online-research Providers can
-be added later without changing the work model.
-
-ServerOS does not need a separate "research platform" to support this.
-
-A research packet may combine:
-
-- local repositories;
-- runtime observations;
-- test/experiment evidence;
-- Feishu raw information;
-- Structured Understanding;
-- existing decisions;
-- external research.
-
-Evidence acquisition preserves provenance and distinguishes discovery hints from
-literal evidence.
-
-Meaningful product/technology/architecture choices create lightweight Decision
-Records by default:
-
-```text
-question
-context
-options
-chosen
-why
-consequences
-evidence
-supersedes?
-```
-
-### 10.1 ChatGPT
-
-ChatGPT is a first-class reasoning/review participant for:
-
-- requirement clarification;
-- product discovery;
-- research synthesis;
-- technology selection;
-- architecture;
-- trade-offs;
-- evidence/deliverable review.
-
-Near term, each GPT round still requires human participation and GitHub
-documents/Decision Packets are the durable bridge.
-
-The target architecture should nevertheless model **external reasoning
-collaboration** as an Ability/Provider boundary rather than hard-code one manual
-workflow.
-
-Useful semantic operations include:
-
-```text
-reasoning.consult
-reasoning.requirement_review
-reasoning.design_review
-reasoning.research_synthesis
-reasoning.challenge
-reasoning.evidence_review
-reasoning.decision_review
-```
-
-A future ChatGPT-capable Provider may implement some or all of these operations.
-Skills/recipes teach Claude/Codex **when and how to ask GPT well**: what packet
-to prepare, what question to ask, what evidence to include and how to consume
-the response.
-
-This belongs in the Ability/Coordination layers, not in `serverosd`.
-
-Until a direct provider exists, the human remains the transport between CC and
-GPT.
-
-For the user's own work environment, the default future policy is that **work
-content may be sent to the trusted GPT reasoning Provider**, including code,
-Feishu-derived work information, logs, decisions and project documents.
-
-Capability secrets remain a different class: credentials, private keys, access
-tokens and authorization material are not normal reasoning context and are not
-propagated merely because the work content itself is allowed.
-
-Project/source policy may still narrow this if a future source carries an
-external restriction.
-
-Automated CC↔GPT review, when a direct Provider exists, should use a bounded
-review cycle. A reasonable default is **2–3 autonomous review/revision rounds**.
-If material disagreement, scope expansion or unresolved decision remains after
-the convergence guard, escalate to the user.
-
-ServerOS prepares clean Context/Decision Packets instead of forcing GPT to
-re-read raw work history.
-
-### 10.2 GitHub Work Packet: CC → GPT → CC
-
-For substantial Items, durable reasoning material lives in an owned records/docs
-repository (for example `hwz-records`), while implementation remains in the
-Bridge/code repository.
-
-A deliberately small packet is preferred:
-
-```text
-brief.md       requirement / background / source links / acceptance
-design.md      research synthesis / decision / design
-execution.md   agent checkpoint / implementation notes (primarily agent-facing)
-report.md      verification / E2E / delivery / final outcome
-```
-
-Large research may split into `research.md`; do not create files merely to
-mirror workflow states.
-
-Target loop:
-
-```text
-CC
-→ collect Feishu/context/code evidence
-→ maintain brief/work packet in GitHub
-
-GPT
-→ read Work Packet + Bridge code
-→ research/challenge/decide/design
-→ write design/decision material back to owned docs/records main
-
-CC
-→ observe approved design revision
-→ refresh Context Capsule
-→ implement in Bridge worktree/branch
-→ test / E2E / PR
-→ maintain execution/report
-
-GPT
-→ optional final design/evidence review
-```
-
-GPT may directly write owned reasoning/docs records where authorized. Code still
-follows normal branch/worktree/PR delivery and GPT does not directly replace
-code-main authority.
-
-If the design contains no unresolved `HUMAN_DECISION_REQUIRED` gate, CC should
-be able to continue automatically from the accepted design instead of waiting
-for the user to manually retransmit it.
-
----
+Use existing equivalent filenames through locators; do not rename past Items merely
+to match this example. Large research may split into research.md. Small work may use
+one document. Implementation remains in the designated code/Bridge repository.
+
+CC prepares grounded context; GPT reads GitHub code/packet, researches, reviews and
+writes design material back. CC consumes the revision and continues. GPT may write
+owned docs/records main where authorized; code changes still use worktree/branch/PR.
+
+### 10.2 Accepted revisions, not magic status text
+
+READY_FOR_EXECUTION is a presentation signal, not authority. Continuation also checks
+accepted goal/acceptance revision, accepted design reference, actor/standing policy
+and remaining gates. A random document edit cannot authorize a production action.
+An older queued design cannot override a newer accepted one.
+
+GitHub collaboration uses current blob SHA/revision guards and a fresh read before
+write. Reconcile concurrent edits; never force-push to solve docs/implementation
+coordination. Freeze code inputs per Run; integrate current upstream changes at a
+safe boundary. Do not replace another CC thread's worktree or WIP.
+
+### 10.3 External reasoning boundary
+
+Near-term GPT rounds are human-mediated through GitHub; no unattended ChatGPT session
+control is assumed. A future authorized reasoning provider may automate bounded
+review, normally two or three rounds, with the same context and authority boundary.
+GPT can participate during requirements, experiments, design, debugging or review;
+there is no mandatory fixed CC -> GPT -> CC stage order.
 
 ## 11. Execution and Quay
 
-Claude Code/Codex may autonomously split an Item into Activities whenever that
-helps execution.
-
-Activities are **mutable working decomposition**, not a fixed lifecycle. The
-Agent may reorder, add, collapse, replace or abandon Activities as evidence
-changes, provided durable acceptance, authority and provenance remain intact.
-
-Planning is an execution tool, not a mandatory human approval ceremony and not
-a durable workflow contract.
-
-Human re-entry is required when execution discovers:
-
-- a changed goal;
-- changed acceptance;
-- a new strategic/architecture decision;
-- a permission boundary;
-- production/destructive/high-risk scope.
-
 ### 11.1 Quay as an Execution Accelerator
 
-Quay is a first-class **Execution Accelerator / Delegation Runtime** for
-Claude Code rather than a second ServerOS work authority.
+Quay is a first-class, bounded execution/delegation provider, not the ServerOS Item
+store. Prefer meaningful use for independent research, experiments, repro, E2E,
+verification and bounded implementation. Do not create decorative tasks for usage
+metrics or daily reports.
 
-High-value use cases include:
-
-```text
-fresh-context implementation slices
-parallel research / experiments
-reproduction
-test matrices
-independent verification
-adversarial audit
-touch-disjoint concurrent execution
-bounded recurring execution mechanics
-```
-
-Within an already approved Item and Execution Envelope, Claude Code may choose
-Quay autonomously when delegation is likely to improve throughput, isolation or
-independence. It does not need a fresh human approval merely because Quay is
-used.
-
-Human re-entry is still required when delegation would cross a new authority,
-repository, host, credential, production/destructive, external-communication or
-material cost boundary.
-
-The authority split is:
+Within an approved Item/envelope, CC may delegate without a new question. Native
+direct execution remains appropriate when delegation costs more than it helps.
+Quay runs on its supported native harness; Codex must use a verified delegation
+adapter to a Quay-capable runtime, not assume Claude-specific plugins/subagent APIs
+work inside Codex.
 
 ```text
-ServerOS Item
-  durable work identity / requirement / acceptance / authority
-
-Claude Code / Codex
-  primary reasoning and execution strategy
-
-Quay
-  subordinate execution/delegation runtime
-
-Quay Goal/Task
-  provider-native delegated execution unit
+Packet: parent work, objective, acceptance subset, minimum context,
+        exact code/environment inputs, effect boundary, resource/evidence limits
+Quay:   native Goal/Task/worker/gate/audit records and supported execution behavior
+Result: native refs, actual artifacts/revisions, verdicts, evidence,
+        cost/time/intervention where observed, unresolved issues
 ```
 
-Quay Task done != Item done.
+ServerOS stores relationships and absorbs evidence; it does not mirror the entire
+Quay board or translate every Quay status into Item state. Quay done != Item done.
+A provider's needs-human is first an execution condition to interpret; the coordinator
+may investigate or retry safely within policy rather than automatically page the user.
 
-ServerOS does **not** mirror Quay's task lifecycle into Item states. Quay's
-native Goal/Task/gate/result records remain Quay authority; ServerOS stores only
-the relationship back to the parent Item/Run plus useful evidence.
+### 11.2 Avoid two orchestrators
 
-A delegation boundary should be compact.
+For a delegated slice, choose one owner of worker dispatch/worktree allocation and
+one integration owner. If Quay creates worktrees, integrate those through the shared
+placement/lease contract instead of also creating a second ServerOS worktree layer.
+Only declared, necessary environment material crosses into workers; never copy all
+untracked files or the user's vault by default.
 
-```text
-Delegation Packet
-  parent Item/Run
-  objective
-  relevant acceptance subset
-  minimum needed context
-  Environment
-  Execution Envelope
-  expected evidence
+Do not install Quay's full methodology into every repository. Use its supported
+selective configuration and native gates; do not bypass upstream invariants through
+ad-hoc edits. Reuse matching verification receipts instead of rerunning an identical
+full suite merely because a second framework owns another checkbox.
 
-        ↓ Quay
-
-Delegation Result
-  Quay refs
-  result summary
-  commits/diffs/artifacts
-  gate/audit results
-  evidence refs
-  human-intervention count
-  unresolved questions
-```
-
-ServerOS absorbs the result; it does not copy the whole Quay board.
-
-Quay gates/auditors may implement Verification abilities and Quay concurrency
-may implement parallel-execution abilities. This reuse is preferred to building
-a second multi-agent execution framework inside ServerOS.
-
-The installed Quay plugin revision/provider readiness participates in normal
-Ability Binding/Readiness. Quay WebUI is a secondary execution-inspection
-surface; CloudCLI remains the main user work console.
-
-Do not inject Quay's full methodology into every project by default. The normal
-ServerOS posture is:
-
-```text
-Quay installed / discoverable
-+ MCP / Skills available
-+ selective delegation on demand
-
-full Quay methodology / Tier-3 style workspace adoption
-→ explicit Project choice
-```
-
-This prevents Quay's own task/lifecycle machinery from becoming a mandatory
-business workflow for ServerOS.
-
----
+CLI, UI, provider and driver revisions are independently observed and pinned to a
+tested compatible composition. Reading the same task IDs is not sufficient upgrade
+verification. In-flight jobs retain their pinned composition; do not silently follow
+whatever plugin cache directory sorts as latest.
 
 ## 12. Verification, E2E and Evidence
 
-## 12. Verification, E2E and Evidence
+### 12.1 Minimum sufficient assurance
 
-Verification is a core infrastructure capability.
+Verification derives from acceptance, changed surface and risk, not a fixed work
+class. A small document edit may need content/link checks; a research prototype may
+need genuine browser E2E. Full regression belongs at relevant integration/release
+boundaries, not every small edit or report update.
 
-An Item is complete when:
+Record target revision, environment/identity, test definition, result and evidence.
+Reuse an existing result only when those inputs and the affected dependency surface
+still match. A different revision, relevant configuration change, stale live evidence
+or discovered defect invalidates the appropriate result, not every test in the world.
 
-```text
-its acceptance is satisfied
-+ expected deliverables exist
-+ sufficient verification exists
-+ evidence is durable
-+ final report exists
-+ business/adoption outcome is recorded when relevant
-```
+Do not chase test-count changes or unrelated skips unless they affect confidence in
+the changed surface. Missing test tooling is an environment gap, not PASS and not
+proof the patch is defective. Prepare a declared test environment instead of silently
+changing the host or substituting prose for runnable tests.
 
-None of these alone imply Item completion:
+### 12.2 Autonomous E2E
 
-- code written;
-- command exit 0;
-- unit tests green;
-- PR opened/merged;
-- Quay task done.
+Support Item verification and a branch/release/scenario campaign using the same Run
+and evidence model. Campaign is a grouping, not another business lifecycle.
 
-### 12.1 Minimum sufficient validation
+Discover/reuse a suitable isolated environment, resolve tool prerequisites, establish
+a known target, choose identity, execute actual journeys and collect assertions,
+screenshots, traces and bounded logs. Selection is risk/coverage-driven, not a full
+Cartesian product by default. Shared test accounts, browser profiles, ports and data
+stores need explicit ownership/leases.
 
-Validation scales with change/risk.
+Playwright native execution is a preferred starting point for deterministic tests;
+Playwright MCP supports adaptive exploration; OpenCLI or another provider may reuse
+a permitted real browser state. These are defaults to measure, not universal speed
+rankings or hard-coded executors.
 
-```text
-read/reason
-  → source/version/permission checks
+Dedicated test identities are preferred. Real-user identities are available within
+explicit target/action scope; their existence does not authorize real sends, deletes,
+purchases or production changes. Preserve test data boundaries and clean only owned
+fixtures. Never use a fixture, screenshot or HTTP 200 alone as proof of live acceptance.
 
-tiny docs/config
-  → diff + targeted structure/link checks
+### 12.3 Evidence-rich human report
 
-small local behavior
-  → nearest unit/static/type regression
+Capture meaningful before/after and journey checkpoints, especially failure states.
+The report shows acceptance coverage, PASS/FAIL/BLOCKED/NOT_RUN, actual target and
+identity class, key screenshots, reproduction and evidence links, plus a clear
+conclusion. Screenshots supplement assertions; they are not a substitute.
 
-cross-module
-  → affected integration path
-
-contract/release
-  → contract + integration + required wider regression
-
-high-risk/live
-  → fresh target/owner/approval/recovery + postcondition
-```
-
-Do not run the whole world merely because tests exist.
-
-### 12.2 E2E is a first-class Ability
-
-E2E is not merely the last command in a development recipe.
-
-It supports at least two major modes:
-
-```text
-Item Verification
-  prove one Requirement/Item acceptance end to end
-
-E2E Campaign
-  verify a branch / release / migration candidate
-  across a large scenario matrix
-```
-
-A campaign may vary:
-
-```text
-scenario
-feature/acceptance point
-provider/model
-device
-browser
-configuration
-test environment
-version/branch
-```
-
-The goal is to minimize routine human participation:
-
-```text
-acceptance / branch target
-→ plan scenario matrix
-→ prepare isolated environments
-→ execute
-→ observe
-→ capture evidence
-→ compare expected/actual
-→ verdict
-→ cleanup
-→ concise report
-```
-
-Human involvement is reserved for ambiguous acceptance, authorization gates,
-environment constraints and unexpected product decisions.
-
-E2E should discover and provision the required test environment as
-automatically as possible, then resolve browser/test tooling through the Ability
-Fabric rather than hard-coding one executor.
-
-Preferred browser strategy:
-
-```text
-Playwright native/CLI
-  default deterministic and fast executor
-  machine-readable assertions / traces / screenshots
-
-Playwright MCP
-  interactive Agent exploration/debugging/adaptive browser control
-
-OpenCLI / real browser profile
-  specialized path for reusing a real logged-in browser/session when needed
-  useful but potentially slower than fresh deterministic Playwright
-```
-
-Screenshots are first-class evidence and should be captured generously at
-meaningful journey checkpoints, especially for real UI E2E. They complement
-machine-readable assertions; screenshots alone do not prove PASS.
-
-E2E may run with a dedicated test identity or a real user identity. Identity is
-part of the test-environment contract and evidence, not an implicit browser
-accident. A test identity is preferred for repeatable/isolation-sensitive flows;
-real identity may be required when acceptance specifically depends on real
-permissions/account state.
-
-Every substantial E2E verification/campaign produces a readable report with:
-
-```text
-target revision / branch
-environment
-identity type used
-scenario / acceptance matrix
-PASS / FAIL / BLOCKED
-key screenshots
-machine-readable assertions
-reproduction/evidence links
-final verdict
-```
-
-The user may still inspect the live CC/terminal interaction; the report is the
-durable acceptance artifact.
-
-An E2E Campaign is a verification plan/run grouping, not a new top-level work
-object. It belongs to an Item/Release/explicit verification target.
-
-E2E may orchestrate Providers such as:
-
-- Browser;
-- containers;
-- test environment;
-- Feishu TEST;
-- GitHub;
-- Windows/RDC;
-- Tailscale;
-- Quay;
-- serverosd.
-
-Evidence can include:
-
-- revision;
-- commands/actions;
-- test result;
-- E2E result;
-- screenshots/readback;
-- bounded logs;
-- deployment state;
-- acceptance mapping.
-
----
+Keep raw evidence locally under the owning Run. Publish selected/redacted artifacts
+to Drive where useful; do not upload secrets, broad production logs or unrelated
+personal content. The user may inspect CC's terminal throughout.
 
 ## 13. Reporting and publication
 
-Reports are projections of durable work/evidence, not session-memory summaries
-and not a second truth database.
+Reports derive from checkpoints, observed work, decisions, PR/adoption, verification,
+Quay results and user corrections. Avoid rereading all chat history to write prose.
 
-ServerOS uses **document intent + audience + source facts + presentation
-policy**, rather than one generic `generate_report(Item)` function.
+| Intent | Primary reader and form |
+|---|---|
+| Item final report | self/future maintainer; concise technical closure and honest unknowns |
+| Daily report | colleagues/manager; formal, results-first account of actual daily progress |
+| Weekly report | colleagues/manager; synthesis across days, not concatenated daily logs |
+| Special report | topic/stakeholders; may span several Items |
+| Published guide | independent reader; prerequisites, applicability, steps and validation |
 
-Important intents include:
+Daily reconciliation is not a daily report. Final report is not synonymous with a
+special report. Professional writing never converts an unverified result into success.
 
-```text
-Item Final Report
-  Item-centric closure artifact
-  primary audience: user / future Agent / future maintainer
-  high information density; technical detail and unresolved evidence are welcome
+The daily report includes a substantive Quay section based on evidence: what was
+delegated, what resulted, whether useful and any remaining issue. If no useful Quay
+work occurred, say so rather than manufacture activity. A report can remain private
+while written for colleagues; **generation, publication and sending are separate
+effects with separate audience/recipient policy**.
 
-Daily Report
-  formal short communication of today's outcomes/progress
-  primary audience: colleagues / manager / project stakeholders
-
-Weekly Report
-  synthesized professional summary across the week
-  primary audience: colleagues / manager
-
-Special Report
-  topic/audience-centric synthesis that may span multiple Items
-
-Published Guide / Runbook
-  reader-first reference content that should stand without project-history context
-```
-
-An Item Final Report and a Special Report are not the same object. The former is
-one work package's closure view; the latter may synthesize several Items or a
-cross-cutting topic.
-
-Daily/weekly/special reports should default to a professional, externally
-readable internal style: result-first, concise, technically accurate and
-without unnecessary implementation noise. Final Reports may be denser and more
-direct because they are also continuity artifacts.
-
-A Presentation Profile may encode reusable styles such as `internal-work`,
-`team-report` and `published-guide`. Profiles influence rendering, not work
-lifecycle.
-
-### 13.1 Reports derive from structured facts
-
-Periodic reports should normally synthesize from:
-
-```text
-Item checkpoints
-Run/Evidence facts
-Decisions
-PR/adoption state
-E2E/verification
-Quay contribution
-Understanding deltas
-user corrections
-```
-
-The Agent should not re-read every raw chat each day merely to compose prose.
-
-Typical Daily/Weekly output includes:
-
-- outcomes;
-- Item progress/completion;
-- meaningful decisions;
-- verification/E2E;
-- Quay/delegated contribution where material;
-- blockers/risks;
-- next expected work.
-
-Report generation must preserve uncertainty. A professional tone is not
-permission to turn PARTIAL/UNKNOWN into PASS.
-
-### 13.2 Communication is cross-cutting
-
-Outbound communication is a reusable Ability, not duplicated separately inside
-Support, Incident, Reporting and Engineering.
-
-Possible operations include:
-
-```text
-communication.draft
-communication.review
-communication.send
-communication.reply
-communication.publish
-```
-
-Feishu is the first-class communication Provider for the current product.
-GitHub PR/issue/comment actions remain part of normal engineering work.
-
-Low-risk report delivery/notifications may be automated by policy. External
-commitments, sensitive statements or other high-impact communication may
-require explicit confirmation.
-
-Support Bot automatic Hosting replies remain owned by the separate Support Bot
-project; ServerOS supplies generic Communication, Context, Knowledge and
-Evidence capabilities.
-
----
+Use a stable report identity by Item or period/audience, a source revision set and
+publication receipt. Retries update the same intended object, not duplicate daily
+reports. Preserve deliberate human edits through managed sections or revision-aware
+reconciliation. Previously issued reports can receive explicit corrections without
+erasing their publication history. Ordinary prose should not expose tokens, hashes,
+raw event codes or migration paperwork.
 
 ## 14. Workspace and placement
 
-## 14. Workspace and placement
+### 14.1 One placement authority
 
-Workspace Management exists primarily for **placement and isolation**.
+ServerOS Space resolves logical role/ownership/lifecycle to a device-bound root or
+cloud destination. Instance policy binds concrete paths/tokens. Workspace Skills,
+work-engine and Quay consume this contract; they must not define parallel root rules.
+A missing binding returns a specific need, not a guessed fallback directory.
 
-It answers:
+A device's already declared temporary workspace can host an authorized experiment
+without global catalogue/Project registration. This is a resolved temporary scope,
+not an ungoverned directory invented to bypass placement.
 
-> Where should this object go, and how can parallel Agents work without
-> damaging each other?
+### 14.2 Parallel execution
 
-Priority:
+Code changes default to isolated worktrees. Read-only research and small docs work
+need isolation only where concurrency or fixed revisions justify it.
 
-1. placement resolver;
-2. project/repo resolution;
-3. worktree isolation;
-4. writer/resource leases;
-5. test environment;
-6. evidence/artifact path;
-7. branch lifecycle;
-8. commit/push/PR convenience;
-9. cleanup.
+Protect repository worktrees, files with concurrent writers, ports, containers, test
+DBs, accounts, browser profiles and devices. Leases identify owner, resource and
+validity. Expiry permits reconciliation, not immediate destruction of a possibly
+live worker. Native OS locks/transactions implement exclusion where available;
+cooperative leases must not be described as mandatory isolation from arbitrary tools.
 
-### 14.1 Code worktrees
+Use one integration writer per branch/target; parallel workers return commits/diffs
+for serial integration. A source checkout stays canonical; an instruction to keep
+main converged does not authorize editing shared src checkouts directly.
 
-Code-changing Items default to dedicated worktrees.
+### 14.3 Safe organization
 
-Research/docs/support do not require worktrees unless isolation is useful.
+Move only resolved owned objects; retain identity and update locators/references.
+Do not infer duplicate content from names or count reductions. Deletion inspects
+own body and descendants, captures necessary recovery evidence, journals intent and
+verifies independently. Do not remove active WIP or unknown-owned material.
 
-### 14.2 Parallel isolation
-
-Parallel Agent safety is more than Git worktrees:
-
-```text
-worktree
-+ writer lease
-+ resource lease
-+ checkpoint/event
-```
-
-Resource leases may cover:
-
-- ports;
-- containers;
-- test databases;
-- browser profiles;
-- shared test credentials;
-- TEST Feishu bot;
-- special devices.
-
-### 14.3 Placement
-
-Agents should not invent output paths.
-
-Placement semantics cover:
-
-- source;
-- worktrees;
-- test definitions;
-- artifacts;
-- durable documents;
-- temporary files;
-- cache;
-- runtime state;
-- downloads.
-
-Missing roots resolve to explicit UNBOUND, never to a guessed fallback.
-
-### 14.4 Space Fabric
-
-Space governance is shared across Local, Git and Feishu surfaces.
-
-The core resolver answers logical placement:
-
-```text
-what is this object?
-which Project / Item does it belong to?
-why does it exist?
-what lifecycle does it have?
-which surface is canonical?
-```
-
-It does **not** hard-code today's filesystem path, Wiki token or Drive folder.
-
-```text
-                         Space Fabric
-                              │
-                         space.resolve
-                              │
-          ┌───────────────────┼───────────────────┐
-          │                   │                   │
-        Local                Git               Feishu
-          │                   │                   │
-   Workspace adapter     Repo adapter    ┌────────┼────────┬────────┐
-                                         │        │        │        │
-                                      My Docs   Drive     Wiki    Minutes
-```
-
-The same semantic identity may therefore have different physical shapes on
-different surfaces without copying one directory tree everywhere.
-
-Example:
-
-```text
-Project: LiteLLM
-Item: LIT-0123
-
-Local     code / worktree / evidence
-My Docs   draft / reconciliation / decision packet
-Drive     attachments / binary deliverables
-Wiki      confirmed guide / meeting note / project knowledge
-Minutes   source recording / transcript
-```
-
-Shared keys such as `project_ref` and `item_ref` connect the objects. Physical
-folder trees do not need to mirror each other.
-
-Do not create another local `workspace/projects/<project>` symlink/index tree
-merely for convenience. The role-based physical layout plus semantic resolver
-is sufficient; Project views belong in CloudCLI/Wiki/search, not as another
-filesystem hierarchy.
-
-### 14.5 Inbox is a placement state, not a junk drawer
-
-Each relevant surface may expose an Inbox/unclassified entry point:
-
-```text
-Local       downloads / intake
-My Docs     Inbox
-Drive       Inbox
-Minutes     unclassified/recent logical view
-```
-
-Inbox means "captured but not yet confidently placed".
-
-Stable classification may move owned content automatically. Ambiguous objects
-enter reconciliation rather than being guessed into a permanent location.
-
-### 14.6 Space Stewardship recipe
-
-Automatic organization is a recipe over existing owners, not a second
-Workspace Manager.
-
-```text
-Inventory / new object
-        ↓
-Information Management
-  identify / classify / project / Item / semantic role
-        ↓
-space.resolve
-        ↓
-KEEP / INDEX / MOVE / PROPOSAL_REQUIRED
-        ↓
-correct surface adapter
-        ↓
-verify
-        ↓
-update locator / index / provenance
-```
-
-Responsibilities remain separated:
-
-- **Information Management** — what the object means and what work it belongs to;
-- **Workspace Management** — local disk, repos, worktrees, artifacts;
-- **Feishu Space Management** — My Docs, Drive, Wiki and Minutes locators;
-- **Space Resolver** — deterministic logical placement.
-
-### 14.7 Automation authority for owned personal spaces
-
-For content clearly owned by the user, ServerOS may have high automation
-authority to organize:
-
-- personal My Docs;
-- personal Drive;
-- local user files;
-- local downloads / intake / temporary staging.
-
-The governing invariant is **non-interference with others**, not manual approval
-for every move.
-
-Shared/external objects remain proposal/index-first.
-
-Physical deletion remains lifecycle/policy governed and must not be inferred
-from "misplaced".
-
-### 14.8 Periodic local housekeeping
-
-A Routine may periodically organize clearly-owned cold/unbound inputs and
-temporary content such as:
-
-- downloads;
-- local intake;
-- tmp;
-- expired staging;
-- orphaned generated outputs with known provenance.
-
-It must not casually rewrite or clean:
-
-- active repositories;
-- dirty worktrees;
-- live runtime state;
-- unknown-owned files;
-- other users' data.
-
-The goal is semantic convergence, not making directory counts look clean.
-
----
+Maps have authored desired policy and timestamped observed projections. Generated
+views never manufacture observations or require deletion to make counts green.
+Partial inventory is explicit; old good observations remain timestamped, not relabeled
+fresh. Legacy locations remain readable until their explicit retirement.
 
 ## 15. Project world model
 
-Project is one of the main long-lived organizing objects in ServerOS.
+Project is a stable, user-designated work domain, not a repository. It relates to
+People/roles, Sources, Repositories, Services, Environments, Items, Knowledge,
+credentials by reference, deliverables and runtime evidence.
+
+Person identity is lightweight and reused across projects. Confirmed responsibilities
+belong in Understanding; softer communication experience may live in memory with
+provenance. Source-to-project and repo-to-context relationships may be many-to-many.
+
+Service is a stable business/operational identity; process/container/endpoint is a
+current runtime realization. Environment describes risk, data and target context;
+DEV/TEST/STAGING/PROD are customary labels, not an exhaustive enum or a requirement
+that every Project have all four.
 
 ```text
-Project
-├── People / project roles
-├── Sources
-├── Repositories
-├── Services
-├── Environments
-├── Items
-├── Knowledge
-├── Credentials / vault refs
-├── Deliverables
-└── Runtime / evidence relationships
+repository revision -> artifact digest -> Service x Environment
+                    -> runtime instance -> observations/evidence
 ```
 
-A Project is a stable business/work domain, not a requirement and not a
-repository. Projects are explicitly created/confirmed by the user and change
-infrequently. Normal work changes Items inside an existing Project; it does not
-rebuild Project topology.
-
-Examples include LiteLLM, ServerOS, LiteLLM Log Analysis, Support Bot and
-MarketOps.
-
-ServerOS may resolve and remember Project relationships, but it does not
-auto-adopt a repository, create a Bridge or invent a Project merely because an
-Agent opened or inspected a repo.
-
-### 15.1 People and Project Roles
-
-Person identity is lightweight and reusable across Projects.
-
-The durable relationship is:
-
-```text
-Person ↔ Project Role
-```
-
-Examples:
-
-```text
-requester
-owner
-developer
-operator
-stakeholder
-reviewer
-support contact
-```
-
-Structured Understanding stores confirmed person/project-role facts and their
-provenance. Richer soft context about people — recurring preferences,
-communication patterns, prior interactions and similar experience — may live in
-the Memory Provider such as OpenViking.
-
-Memory does not override confirmed responsibility/ownership facts.
-
-### 15.2 Sources belong to Projects by relationship, not by physical move
-
-Feishu chats, documents, Wiki nodes, Minutes and other sources may relate to one
-or more Projects.
-
-```text
-Source ↔ Project
-```
-
-is many-to-many.
-
-A group/chat/document is not physically "moved into" a Project merely because
-some of its content is relevant. Message/document-level relevance and
-provenance determine what enters Structured Understanding.
-
-### 15.3 Service is a first-class semantic object
-
-A **Service** is the stable operational/business thing being built, operated,
-observed or supported.
-
-Examples inside a Project may include:
-
-```text
-LiteLLM API
-shared AI gateway
-PostgreSQL
-OpenSearch
-MinIO
-Support Bot
-log pipeline
-```
-
-Service is not a process, container or host.
-
-```text
-Service
-= stable semantic identity
-
-Runtime Resource
-= current concrete process/container/unit/endpoint instance
-```
-
-This separation lets ServerOS translate low-level runtime evidence into useful
-human context.
-
-Example:
-
-```text
-service: litellm-api
-    ↓ deployed into
-environment: PROD
-    ↓ realized by
-container/runtime resources
-```
-
-Alerts, E2E, deploys and support context should prefer Project / Service /
-Environment names over raw runtime IDs when attribution evidence allows it.
-
-### 15.4 Environment is a first-class risk/execution context
-
-An **Environment** describes the operational context in which a Service is
-built/tested/deployed/run.
-
-Typical labels may include:
-
-```text
-DEV
-TEST
-STAGING
-PROD
-LOCAL/TOKYO
-```
-
-No Project is required to have all of them.
-
-Environment carries meaning for:
-
-- authorization/risk;
-- data sensitivity;
-- deployment target;
-- test isolation;
-- runtime bindings;
-- verification expectations.
-
-For example, TEST may allow broad autonomous execution while PROD promotion
-remains a human gate.
-
-### 15.5 Repo → Artifact → Service × Environment → Runtime
-
-The engineering chain is:
-
-```text
-Repository revision
-        ↓ build
-Release Artifact
-        ↓ deploy
-Service × Environment
-        ↓
-Runtime Resource(s)
-        ↓
-Observation / Evidence / Alert
-```
-
-This chain is the basis for tracing code to LIVE behavior without confusing any
-two layers.
-
-### 15.6 Item ownership and cross-cutting relationships
-
-An Item has exactly one owning Project for board/understanding purposes.
-
-It may relate to multiple:
-
-- repositories;
-- Services;
-- Environments;
-- Sessions;
-- Runs;
-- Deliverables.
-
-Example:
-
-```text
-Project: LiteLLM
-Item: upgrade LiteLLM
-
-touches:
-  litellm-bridge
-  litellm-fjd validation checkout
-  litellm-api
-  gateway
-  TEST
-  PROD
-  docs
-  E2E campaign
-```
-
-Do not split one coherent requirement into artificial Items merely because it
-crosses repositories or Services.
-
-### 15.7 Project Home is a logical view, not necessarily a Wiki page
-
-Each active Project may have one stable **Project Home** as the main human entry
-point, but its physical surface follows audience and ownership.
-
-For the current personal-work product, the default current-work Project Home is
-in My Document Library / CloudCLI:
-
-```text
-Project Home
-├── current state
-├── current requirements / work
-├── important decisions
-├── key links / repositories
-├── Services / Environments
-├── people / responsibilities
-└── reports / deliverables
-```
-
-Published/team knowledge remains a separate surface when the Project actually
-has an audience for it. Do not move active private work into a knowledge space
-merely to make the hierarchy symmetric.
-
-The Project Home is generated/maintained from durable facts and links. It is not
-a second state database and does not duplicate every Item artifact.
-
-### 15.8 Repository relationships
-
-### 15.8 Repository relationships
-
-Project != repository.
-
-A project may span many repos and one repo may serve several work contexts.
-
-Repository roles:
-
-```text
-owned-canonical
-bridge-writable
-upstream-readonly
-publication
-tool
-```
-
-### 15.9 Bridge repository pattern
-
-When the user explicitly needs to develop against an upstream/enterprise
-repository that is not their writable authority, prefer an owned Bridge
-repository. Repository inspection alone never creates a Bridge.
-
-```text
-upstream / enterprise repo
-  role: upstream-readonly
-        ↓ explicit tracked revision
-ProfessorZhi/<project>-bridge
-  role: bridge-writable
-        ↓
-Item worktrees / experiments / commits / evidence / GPT review
-```
-
-Existing examples include `litellm-bridge` and `muc-bridge`.
-
-For development work, the Bridge is normally the writable engineering surface
-used for:
-
-- Item worktrees;
-- implementation;
-- commits/branches;
-- mock/simulated PR preparation;
-- GPT review through the GitHub connector;
-- durable collaboration evidence.
-
-The enterprise/upstream checkout such as `litellm-fjd` may still be cloned or
-used locally for read-only comparison, integration validation and direct test
-execution when needed. That does not make it the normal long-lived writable
-development surface.
-
-The Bridge must remain synchronized with the enterprise/upstream lineage closely
-enough that new Item work and PR preparation start from a known current base.
-Synchronization is explicit and provenance-preserving:
-
-```text
-enterprise/upstream revision
-→ refresh/compare
-→ update Bridge tracked base
-→ Item branch/worktree
-→ implementation + GPT review
-→ PR back to enterprise/upstream
-```
-
-Bridge synchronization does not make the Bridge upstream authority.
-
-Bridge rules:
-
-- preserve upstream provenance;
-- do not claim upstream authority;
-- do not push to foreign/protected upstream by default;
-- delivery back upstream is an explicit PR/export/promotion step;
-- GitHub makes the writable engineering state visible to ChatGPT and other
-  Agents.
-
-### 15.10 Project context resolution
-
-Given an incoming work demand, ServerOS should be able to resolve a compact
-Project Context using the stable world model.
-
-Example operations/support-system context:
-
-```text
-Project: LiteLLM
-Service: API / Gateway
-Environment: PROD
-Requester: <person>
-Relevant docs / knowledge
-Recent deploys
-Relevant logs/evidence
-Known issues
-Current Items
-```
-
-This is reusable infrastructure for Hosting/Support Bot, operations and human
-Agent sessions. It does not make Claude Code itself the user-facing support bot.
-
----
+Project Home is a logical current view in MyDocs/CloudCLI by default, not a compulsory
+Wiki page. It links to authoritative sources, work and reports; publication knowledge
+is a separate audience surface.
+
+### 15.1 Bridge repositories and parallel business lines
+
+Bridge is the writable, GitHub-visible engineering surface for collaboration with
+GPT. Synchronize against an explicit enterprise/upstream baseline without overwriting
+WIP. The enterprise checkout may still serve comparisons and isolated direct tests.
+Code-changing company Items deliver an actual PR to the agreed target; a mock PR or
+local commit is not the final submission. Submission, merge, adoption and live release
+are separate outcomes.
+
+Current identities to preserve in instance/project records:
+
+| Work domain | Repository relationship |
+|---|---|
+| MarketOps | marketops-research-pipeline is the stated main research/pipeline repo; the active marketops repository-convergence checkout is a protected separate development surface until its owner closes it |
+| Support Bot code | ProfessorZhi/litellm-support-bot |
+| Support Bot knowledge | ProfessorZhi/troublebuddy-kb-bridge |
+| LiteLLM shallow support archive | ProfessorZhi/litellm-support; not the Bot code repo |
+| LiteLLM engineering | designated litellm-bridge plus enterprise litellm-fjd validation/delivery relationship |
+
+MarketOps experimentation and Support Bot/KB development remain independent projects
+with their own concurrent CC threads. ServerOS supplies reusable infrastructure;
+it does not take over their roadmaps, test data, secrets or production decisions.
+Hosting/Support Bot answers end users; CC primarily develops and maintains supporting
+code, configuration and knowledge.
 
 ## 16. Ability Fabric
 
-External semantic model:
+### 16.1 Shared catalogue and unambiguous terms
+
+**Registry is global; availability is device-bound; attachment is contextual.**
+
+Preserve existing registry identities. In ability-management an Ability record is a
+typed artifact identity (type + canonical source/identity); Skill, plugin and MCP
+records are not collapsed merely because names match. Capability/Operation describes
+the semantic need; an Ability advertises what it provides. Earlier WHAT shorthand
+must not erase this distinction.
 
 ```text
-Ability        WHAT reusable capability exists
-Operation      semantic verb
-Provider       HOW the operation is implemented
-Binding        concrete provider instance on a device/environment
-Attachment     current consumer relationship
-Revision       pinned managed artifact version
-Profile        known-good combination/configuration
-Adapter        how an Agent runtime consumes the Provider
+semantic need / operation
+  -> matching registered Abilities / native capabilities
+  -> Provider implementation
+  -> Binding(device, target, configuration, revision)
+  -> current readiness + authorization
+  -> Session attachment/use
 ```
 
-Resolution chain:
-
-```text
-Ability#Operation
-      ↓
-Provider
-      ↓
-Binding(device, instance, environment)
-      ↓
-Attachment(Agent / Session / Item / scope / lease)
-```
-
-### 16.0 Global registry, local availability, contextual attachment
-
-The core rule is:
-
-> **Ability Registry is global; Ability availability is local; Ability
-> attachment is contextual.**
-
-`ability-management` is the shared cross-device Ability Registry / package
-control plane. An Ability may be authored by the user, a colleague, an external
-open-source author or a vendor. Registration means ServerOS knows its identity,
-source, revision, compatibility and trust/provenance; it does not claim
-authorship.
-
-Devices do not maintain independent catalogues. Each device derives a
-**Device Capability Projection** from:
-
-```text
-global Registry
-+ Device Profile / OS / Agent runtime
-+ compatible Revisions
-+ Installations
-+ local Bindings
-+ readiness probes
-+ authorization policy
-+ current Project / Environment
-```
-
-The result can be presented as a device Ability tree/family/cluster without
-changing Ability identity.
-
-For example, a Windows projection may expose production log inspection and
-blue/green deployment operations while Tokyo exposes Quay, Feishu, browser/E2E
-and primary runtime operations. Device/OS does not become part of the Ability
-identity merely because the Binding differs.
-
-Families, clusters and Packs are navigation/composition views. A Pack states
-what abilities are useful/required for a purpose; materializing a Pack does not
-grant authorization.
-
-Normal progressive disclosure may therefore look like:
-
-```text
-global Registry: many Abilities
-        ↓
-device projection: compatible/ready subset
-        ↓
-intent projection: Project/Environment-relevant subset
-        ↓
-Session Attachment: a few abilities actually exposed now
-```
-
-### 16.1 Three distinct axes
-
-### 16.1 Three distinct axes
-
-Never collapse:
-
-```text
-Support        SUPPORTED / UNSUPPORTED / UNKNOWN
-Readiness      READY / DEGRADED / NOT_READY / UNKNOWN
-Authorization  ALLOW / ASK / DENY / UNKNOWN
-```
-
-Installation is one input, not the answer.
-
-### 16.2 Native-first discovery
-
-ServerOS strengthens Claude/Codex native discovery rather than replacing it.
-
-If the Agent already sees an appropriate native Skill, Plugin, MCP or tool and
-knows how to use it, it may use it directly. ServerOS is not a mandatory proxy
-for every tool call.
-
-ServerOS becomes important when the Agent needs to:
-
-```text
-search for an unknown capability
-choose among multiple Providers
-recover a previously successful capability profile
-evaluate readiness / authorization
-acquire a missing capability
-```
-
-The bootstrap must expose a small read path such as:
-
-- `context.current`;
-- `ability.search`;
-- `ability.inspect`;
-- `ability.resolve`.
-
-Normal search returns a small top-k set.
-
-### 16.3 Capability acquisition
-
-If local abilities do not solve a need:
-
-```text
-local search
-→ native tools/providers
-→ remote discovery (GitHub / registries / web)
-→ provenance / compatibility / risk evaluation
-→ temporary attach/install
-→ repeated value may become Candidate Ability
-```
-
-The mechanism is builtin. A `find-capability` Skill may teach the procedure.
-
-Executable MCP/plugin/hook acquisition is more restrictive than text-only Skill
-discovery.
-
-Default acquisition tiers:
-
-```text
-A  text-only Skill / instruction content
-   low-risk provenance-checked discovery
-   → may be temporarily attached automatically
-
-B  already-installed / already-authorized executable Provider
-   → may be attached/used automatically within current policy
-
-C  new MCP / Plugin / executable / daemon / credential / new network boundary
-   → admission + provenance/trust check
-   → explicit approval when policy requires
-```
-
-### 16.4 Capability Intelligence learns from use
-
-Ability discovery is not only a catalogue lookup.
-
-ServerOS may retain **Ability Experience** from real Runs:
-
-```text
-semantic operation
-context / environment
-Provider / model / Skill / configuration
-success / failure
-human intervention
-latency / cost
-failure modes
-evidence
-```
-
-This experience influences future ranking but never silently overrides current
-readiness, authorization or an explicit user choice.
-
-A **Capability Profile** is a named/reproducible combination of model,
-Providers, Skills and configuration for a semantic task. It is not a new
-top-level work object.
-
-Capability exploration stays inside ordinary Items/Runs:
-
-```text
-baseline
-→ candidate profile A
-→ candidate profile B
-→ controlled comparison
-→ evidence
-→ selected stable profile
-```
-
-The comparison should hold task/acceptance conditions stable where practical and
-treat human-intervention rate as a first-class metric for unattended work.
-
-Candidate and stable profiles are separate. New tools/models/Skills may be
-tested automatically inside authorized experimental scope, but production
-profiles are promoted explicitly and traceably.
-
-Do not create a Skill merely because a procedure occurred once. A Skill is
-worth preserving when repeated evidence shows that explicit guidance improves
-quality, reliability, latency, autonomy or safety over native Agent behavior.
-
-### 16.4.1 Ability experience is Binding-aware
-
-Experience must not collapse different devices/environments into one misleading
-success rate.
-
-Useful evidence keys include:
-
-```text
-Ability
-Operation
-Provider/Profile
-Binding
-Device
-Environment
-success/failure
-human intervention
-latency/cost
-failure mode
-evidence
-```
-
-The same logical Ability may be excellent through a Windows production Binding
-and unavailable on Tokyo. Ranking should learn that difference.
-
-### 16.4.2 Capability and authorization are separate at operation level
-
-An Ability may support a high-risk operation without granting permission to run
-it.
-
-For example a production-operations Ability may expose:
-
-```text
-logs.inspect
-deployment.prepare
-deployment.cutover
-deployment.verify
-deployment.rollback
-```
-
-while current policy yields:
-
-```text
-logs.inspect         ALLOW
-deployment.prepare   ALLOW
-deployment.verify    ALLOW
-deployment.cutover   USER_EXECUTED / ASK
-deployment.rollback  USER_EXECUTED / ASK
-```
-
-This is especially important for production abilities. Provenance/trust,
-readiness and authorization all remain explicit.
-
-Executable third-party abilities that can reach production require stronger
-admission/provenance than text-only guidance. Discovery success never silently
-turns an unreviewed executable into a trusted production capability.
-
-
-
-### 16.5 Physical vs logical topology
-
-Ability payload paths stay physically flat.
-
-Logical navigation may group:
-
-```text
-Domain → optional Subdomain → Ability
-```
-
-The logical tree is navigation, not package ownership.
-
----
+Authorship, registration, distribution and installation are separate. External
+sources remain attributed; prefer pinned references to licensed upstream artifacts
+rather than copying every third-party implementation into our repository. Signatures
+are useful evidence where available, not a demand that every third-party author join
+our device-signing scheme. A device signature proves a device claim, not code safety.
+
+### 16.2 Discovery without hijacking native agents
+
+Known native tools may be used directly. Local catalogue search augments discovery;
+network acquisition is needed only for missing capabilities. An unfamiliar capability
+may be tried in an authorized temporary scope without first expanding the global
+semantic vocabulary. Promote repeated useful capability deliberately.
+
+Registration does not imply install, enable, attach, load, trust or permission.
+Third-party text needs provenance/prompt-injection review; executable packages,
+hooks, MCPs and new network/credential scopes need stronger admission.
+
+Avoid duplicate exposure when a native plugin already supplies a tool. ServerOS's
+index may point to it instead of registering another identical MCP server. Hot
+attachment is used only if the installed runtime supports it; otherwise checkpoint
+and start an appropriate new Session, or use an available safe native/CLI interface.
+
+### 16.3 Global families, device projections and Packs
+
+Keep payload paths flat within their existing type namespace. Domains/families/
+clusters are many-to-many navigation metadata. Device projections can emphasize
+Windows production observation or Tokyo E2E/Quay without redefining global identity.
+No new registry per device and no physical nesting merely to mirror a taxonomy.
+
+Packs describe selected dependencies; Profiles combine model, harness, providers,
+Skills, parameters and relevant environment choices. Neither grants permission.
+A Session sees only the useful subset; global search remains available.
+
+### 16.4 Experiments and experience
+
+Ordinary Items/Runs support baseline, variants, comparable tasks and an evidence-backed
+comparison. Hold conditions stable where practical; record unavoidable confounders,
+web freshness and repeated-trial variance. Measure quality, provenance, latency/cost,
+failure recovery and human intervention for unattended work. A Skill is retained
+when evidence shows value, not simply because a procedure happened once.
+
+Experience is keyed by operation, artifact/profile revision, Binding and environment.
+Do not average incompatible devices/contexts into a misleading global success rate.
+Stable and candidate Profiles are distinct. Local authorized overrides do not rewrite
+the stable one. Promotion is explicit and revisioned; experimentation can continue.
+
+### 16.5 Distribution without catalogue-wide breakage
+
+A release lock identifies the selected artifacts and their transitive dependencies
+at reproducible revisions/digests. A harmless addition elsewhere in the global
+catalogue must not invalidate a running device profile or trigger a rebuild of every
+pack. Relevant dependency/schema changes must still be checked. This is a target
+contract requiring an explicit upgrade of any older whole-manifest pin rule, not
+permission to skip the currently enforced verifier.
 
 ## 17. Dynamic Environment and resource lifecycle
 
-Environment capabilities are resources, not static documentation.
+Desired Environment comes from references held by Sessions, Items, Routines and
+persistent instance policy. Observed Environment comes from real providers/kernel/
+filesystem. Ownership and policy determine permitted reconciliation; Effective
+Environment describes actual usable capability and gaps, never fabricated reality.
 
-Typical flow:
+Resolve -> inspect -> admit -> acquire/attach -> verify -> release is a resource
+protocol, not a work-method sequence. Bindings record owner, configuration/revision,
+health source and dependents. Two consumers sharing a resource prevent its retirement
+when only one exits.
 
-```text
-Session/Item needs Browser/MCP/TestEnv/Tunnel/Device
-        ↓
-Desired reference
-        ↓
-Provider/Binding resolution
-        ↓
-Admission
-        ↓
-Attachment / lease / refcount
-        ↓
-READY
-        ↓
-consumer ends
-        ↓
-release according to scope/policy
-```
+A zero reference count makes a resource eligible for scope-aware retirement; it does
+not authorize deleting browser state, tasks, databases or human documents. Persistent
+provider state survives process restarts. Runtime candidates discovered by an Agent
+can be session-only, project-scoped, persistent, external or ignored; discovery alone
+never permanently adopts them.
 
-Scopes may include:
-
-- turn;
-- session;
-- Item;
-- user;
-- persistent.
-
-A resource required by two consumers must not disappear when only one consumer
-ends.
-
-Dynamic readiness is checked on demand, not globally on every Agent turn.
-
----
+Repairs use bounded attempts/backoff and a known owner. Loss of policy blocks new
+risky effects, not harmless read-only reasoning. Do not create a feedback loop where
+a failing probe continuously creates replacement processes or alerts.
 
 ## 18. Connectivity and devices
 
-Connectivity is Provider territory, not identity or authorization authority.
-
-Preferred layers:
-
-```text
-Tailscale       default personal private reachability / service publication
-A2A             Agent-to-Agent semantic delegation/communication over a transport
-RDC             Agent-to-device GUI/files/terminal, on demand
-GitHub          durable asynchronous collaboration
-SSH/tmux        shell/session transport and fallback
-special tunnel  exception for needs Tailscale reachability alone cannot satisfy
-```
-
-The current active personal topology is intentionally small:
-
-```text
-Tokyo    primary ServerOS / Agent / private-service node
-Windows  specialist work/production-access device
-Phone    human client
-Beijing  retired / historical, not a normal placement fallback
-```
-
-### 18.1 Tailnet-first private connectivity
-
-Tailscale is the default Personal Private Network Provider.
-
-The rule is:
-
-> **Tailnet-first, tunnel-by-exception.**
-
-A new private-service need should first ask whether the devices are already
-reachable on the tailnet. Long-lived `ssh -L`, `ssh -R`, autossh and ad-hoc
-reverse tunnels are not the default merely because a service listens on
-localhost.
-
-Tailscale may provide:
-
-- private device reachability;
-- MagicDNS / stable device addressing;
-- phone → CloudCLI private access;
-- Windows ↔ Tokyo private access;
-- private Quay/ServerOS service access;
-- optional SSH transport;
-- future A2A transport.
-
-Tailscale solves **reachability**, not ownership or authorization. A shared or
-foreign service does not become appropriate to publish to the user's personal
-tailnet simply because the networking works.
-
-### 18.1.1 Private service publication
-
-User-owned localhost services should normally remain bound to localhost and be
-published privately through a Tailscale-backed binding such as Serve when that
-is the safer/cleaner shape.
-
-Conceptually:
-
-```text
-Service
-  ↓
-Local Endpoint
-  ↓
-Private Publication Binding
-  ↓
-Tailscale Provider
-```
-
-Architecture does not hard-code today's ports. Device/instance configuration
-owns concrete endpoints.
-
-A useful visibility distinction is:
-
-```text
-LOCAL_ONLY
-PRIVATE_PERSONAL
-SHARED_ORGANIZATIONAL
-PUBLIC
-```
-
-CloudCLI, Quay and user-owned private control surfaces are natural
-`PRIVATE_PERSONAL` candidates. Shared organizational gateways remain governed
-by their own ownership/audience policy.
-
-### 18.1.2 Tokyo Tailscale is a Managed Runtime
-
-On Tokyo, prefer userspace networking where feasible to minimize kernel/routing
-interference.
-
-Tailscale must nevertheless be operational infrastructure, not a hand-started
-process. Desired state includes:
-
-```text
-pinned/known revision
-userspace socket/state directory
-authenticated node identity
-supervised/autostart behavior
-health/readiness observation
-required private-publication bindings
-restart/reboot recovery
-```
-
-A tunnel is not considered replaced until the tailnet path survives the relevant
-cold-start/restart verification.
-
-Kernel routes, subnet routers, exit nodes, firewall mutation and public Funnel
-remain stronger network-boundary operations and require explicit admission.
-
-### 18.2 SSH and special tunnels
-
-SSH remains useful for remote shell and fallback, preferably over existing
-tailnet reachability for personal devices.
-
-A special tunnel remains valid when reachability alone is insufficient, for
-example:
-
-- a target cannot join the tailnet;
-- public webhook/ingress is required;
-- protocol/port translation is required;
-- a third-party device must not join the personal tailnet;
-- a temporary exceptional network path is justified.
-
-Existing tunnels should be auditable as:
-
-```text
-REPLACED_BY_TAILSCALE
-STILL_REQUIRED
-UNKNOWN
-```
-
-The goal is not "zero tunnels"; it is removing tunnels whose only job was
-private reachability.
-
-### 18.3 Remote assistance / device control
-
-### 18.3 Remote assistance / device control
-
-Remote assistance is a Provider/recipe boundary, not a reason to enroll every
-other person's computer into the user's long-lived Fleet.
-
-For ordinary colleague/user assistance, the current practical tool is typically
-**Sunlogin (向日葵)**. RDC/Desktop Commander may still be used where appropriate
-for Agent-controlled Windows workflows.
-
-Typical support flow:
-
-```text
-support conversation
-→ temporary remote assistance when needed
-→ bounded action
-→ verify
-→ return answer/result
-```
-
-A temporarily assisted third-party device does not automatically become a
-persistent ServerOS device.
-
-Remote assistance is not Agent-to-Agent communication.
-
-### 18.4 A2A
-
-A2A is a future structured Agent-to-Agent adapter.
-
-Primary use should be task delegation/handoff; free-form Agent chatter is
-secondary because it can waste tokens without improving work.
-
-### 18.5 Linux primary, Windows specialist
-
-Linux/Tokyo is the primary development/control node.
-
-Windows is an on-demand specialist device for Windows-specific builds/tests,
-desktop software and workflows requiring local GUI/configuration.
-
-Windows does not need a duplicate global ServerOS authority.
-
-### 18.6 Execution placement and handoff
-
-ServerOS may automatically **recommend execution placement** based on:
-
-```text
-required Ability/Provider
-device readiness
-OS/platform requirement
-current environment
-data locality
-compliance
-resource availability
-```
-
-Tokyo is the normal default.
-
-When an Activity reaches a Windows-specific boundary, the Tokyo Agent may
-propose a handoff:
-
-```text
-Tokyo CC detects Windows requirement
-→ prepares checkpoint/context
-→ prompts for Windows handoff
-→ Windows accepts
-→ new/attached Windows Session continues the same Item
-→ evidence/checkpoint returns to Item
-```
-
-The placement recommendation is automatic; a cross-device handoff that changes
-the active execution context is explicit and visible.
-
-Execution placement belongs to the Agent/Work coordination layer, not Fleet
-topology itself.
-
----
-
-## 19. Runtime configuration
-
-Runtime configuration is per-device/per-runtime state, not blind cross-device
-synchronization.
-
-Current pattern can legitimately differ:
-
-- Windows Codex / WorkBuddy may depend on CC Switch;
-- Windows Claude Code may use its own settings;
-- Tokyo Claude/Codex use Tokyo-specific providers/network paths.
-
-Runtime Configuration Management models:
-
-- desired configuration;
-- observed configuration;
-- shared preference;
-- device-specific override;
-- diff;
-- plan;
-- reconcile;
-- verify.
-
-Cross-device work handoff synchronizes project/Item/checkpoint/intent, not
-necessarily provider/proxy/credential bytes.
-
----
+### 18.1 Tailnet-first, tunnel-by-exception
+
+Current personal execution topology is Tokyo primary, Windows specialist and phone
+human client. Beijing is retired historical/reference material, not a normal fallback.
+The generic architecture permits later devices without hard-coded hostnames.
+
+Tailscale is the selected default private-network Provider. SSH is a remote protocol;
+tmux preserves a terminal; RDC is on-demand device control; GitHub is asynchronous
+collaboration; a future A2A adapter supplies delegation semantics. They are not
+interchangeable layers and installing Tailscale does not install an Agent endpoint.
+
+### 18.2 Endpoint publication and verification
+
+Tokyo prefers supervised user-space Tailscale where feasible. Service records bind
+a real local endpoint to a private publication method such as Serve. Do not infer
+that all localhost ports are reachable just because the node is online; do not infer
+that all ingress is impossible just because no TUN exists. Verify the actual path.
+
+Check from the intended Windows/phone client: target DNS/IP, protocol, application
+identity, authentication and relevant WebSocket/stream behavior. Account for proxies,
+VS Code forwarding and redirects. HTTP 200 or TCP connect alone is not proof of the
+intended application path. Distinguish local endpoint, private advertised endpoint,
+configured publication and observed reachability.
+
+A 0.0.0.0 listener is wider-bound, not by itself proof of public Internet exposure;
+routes, firewall and cloud policy also matter. Prefer authenticated private HTTPS
+for human control surfaces where supported. Tailnet membership is not unrestricted
+shell authorization.
+
+### 18.3 Operations and exceptions
+
+Tailscaled and required services need an actual supervisor/startup contract, persistent
+identity/state, bounded recovery and endpoint verification. User-unit enablement
+alone does not prove boot-without-login behavior; verify the allowed host mechanism.
+Serve background persistence and tailscaled process supervision are separate.
+Do not alter shared-host linger/network policy without admission.
+
+Retire old tunnels only after the replacement path is verified and dependencies are
+known, with a controlled rollback path. No mass tunnel deletion and no restart of
+unrelated services. Shared gateway publication to a personal tailnet is a separate
+scope/ACL decision, not permission implied by gateway maintenance rights.
+
+Special tunnels remain valid for non-enrolled targets, constrained protocols or
+approved public ingress. Funnel is default-deny. RDC and Sunlogin remain on-demand
+remote-assistance providers; assisting a colleague does not enroll their machine.
+Network unavailability does not prevent local work using an approved local binding.
+
+## 19. Runtime configuration and compatibility
+
+Device-local provider settings are not blindly synchronized. Windows CC Switch,
+Codex/WorkBuddy configuration, Tokyo endpoints and local paths may legitimately
+differ while sharing the same work/capability identities.
+
+Every adapter records tested runtime/version support for session control, metadata
+loading, Skill invocation, MCP connection, cancellation and result collection.
+Missing support is visible. Do not emit a fictitious Codex plugin manifest merely
+because the Claude plugin format exists.
+
+Changes prepare/validate a new revision before activation, preserve old bindings for
+in-flight work where needed, and roll back configuration separately from durable
+state. Executable revisions are pinned; deliberate updates occur at safe boundaries.
+Native auth caches and browser profiles remain native, protected and unsynchronized
+unless a scoped supported transfer is explicitly required.
 
 ## 20. Human interfaces
 
-### 20.1 CloudCLI is the primary rich console
+### 20.1 CloudCLI and terminal
 
-CloudCLI already provides valuable UI primitives:
+Preserve CloudCLI's native project/session/chat/files/shell/Git experience. Add a
+ServerOS contextual integration using supported plugin surfaces; do not require a
+fork or global homepage rewrite. The user mainly discusses work in CloudCLI or CC's
+terminal and reads understanding, requirements, design and final reports.
 
-- Claude/Codex chat/session surfaces;
-- terminal;
-- files;
-- Git;
-- browser;
-- Web/mobile access;
-- plugin capability.
+The integration links relevant work, sessions, pending decisions, environment,
+Quay inspection and evidence. It does not replicate an entire Quay board or expose
+Activity/Run/lease bureaucracy by default. Quay Dashboard is a secondary drill-down.
+Phone access is a real interaction path, not merely a monitoring screenshot.
 
-The mobile experience is not merely monitoring. From a phone connected through
-the private connectivity layer, the user should be able to open CloudCLI,
-inspect/switch work, continue a Session when the provider supports it, approve
-decisions and review evidence.
+### 20.2 Feishu cards and clean presentation
 
-ServerOS should integrate rather than fork/reimplement those surfaces where
-possible.
+Use one reusable presentation model over facts, with six useful intents: Status,
+Alert, Work progress, Reconciliation, Decision and Report. This does not require six
+services or six lifecycle engines.
 
-A ServerOS CloudCLI plugin should preserve CloudCLI's useful native
-project/directory grouping while adding a semantic work hierarchy:
+Status answers now: **我的资源 / 整机资源 / 共享 AI 网关**, optionally environment
+readiness. Alert answers the change: what happened, what is affected, why it matters,
+confidence/freshness and what to do. Work/Report cards summarize outcomes and link to
+human documents; Reconciliation/Decision cards link into the correct session/context.
 
-```text
-Project
-→ Item / durable work
-→ Sessions
-→ delegated Runs/Subagents
-```
+Severity and human attention are independent. Default attention is none, informational,
+watch, review or action-required. Deduplicate by condition/object and update the same
+incident thread; use hysteresis and bounded reminders, not raw open/resolved counts
+or generation/PID lists. Preserve technical details behind a link or expansion.
 
-It should expose:
+### 20.3 Actions are not credentials
 
-- Today / Personal Board;
-- Understanding / Reconciliation;
-- Project → Item → Sessions;
+A card button identifies an intended operation and expected state; its callback
+reauthenticates the actor, checks scope/expiry/current state, records a decision and
+then executes only if authorized. Old/replayed cards cannot repeat a cutover or cloud
+write. For human-executed production, the button opens instructions/context; it is
+not a hidden Agent execution grant.
 
-- Decisions / approvals;
-- Memory;
-- Quay;
-- E2E evidence;
-- Environment / health;
-- Reports.
-
-CloudCLI native shell/Git/files may perform operations outside ServerOS semantic
-APIs; the product must not falsely claim total interception.
-
-The initial product should preserve CloudCLI's default home/sidebar/session UX.
-CloudCLI's plugin system is sufficient for ServerOS contextual tabs and backend
-integration; replacing/reordering the global home page is not required. A core
-CloudCLI fork/change should only happen later if a real product need cannot be
-served by plugins.
-
-### 20.2 Feishu is a lightweight human-control and information surface
-
-Feishu is primarily:
-
-- source capture;
-- notifications;
-- reconciliation/decision reminders;
-- alerts/recovery;
-- reports;
-- lightweight mobile actions.
-
-A full remote terminal inside Feishu is not required by the core product.
-
-### 20.3 Human Presentation Model
-
-ServerOS machine truth is not the same thing as human UI.
-
-The same underlying fact may be rendered differently for CloudCLI, Feishu,
-CLI and reports, but all presentations must derive from the same authoritative
-state.
-
-```text
-ServerOS fact / Alert state
-        ↓
-Human Presentation Model
-        ↓
-┌────────────┬──────────┬──────────────┬──────────┐
-│ CloudCLI   │ Feishu   │ CLI          │ Reports  │
-└────────────┴──────────┴──────────────┴──────────┘
-```
-
-The presentation model may add human-oriented semantics such as:
-
-```text
-human_title
-human_summary
-impact
-attention
-recommended_action
-target_display
-category
-technical_details
-```
-
-These fields may be derived from an Alert/Event taxonomy plus current facts.
-Renderers must not independently invent different meanings for the same code.
-
-Machine identifiers such as raw alert codes, subject refs, PIDs, generations
-and registry counters belong in progressive-disclosure detail unless they are
-directly actionable.
-
-### 20.4 Alert / notification UX
-
-Alert UI is optimized for human decisions, not database inspection.
-
-The first screen answers:
-
-```text
-1. Do I need to care now?
-2. What happened?
-3. What is affected?
-4. What should I do?
-```
-
-Technical detail comes later.
-
-A useful attention axis is separate from machine severity:
-
-```text
-ACTION_REQUIRED
-REVIEW
-WATCH
-INFORMATIONAL
-NONE
-```
-
-For example, a high-severity historical/known event may deserve less immediate
-attention than a new medium-severity event requiring a user decision.
-
-Notifications should distinguish at least:
-
-```text
-Immediate Alert
-  urgent / user action needed
-
-Change Digest
-  meaningful changes, not necessarily urgent
-
-Daily Health Summary
-  periodic compact health/progress view
-```
-
-Historical backlog and resolved counts remain available but should not dominate
-the visual hierarchy of an incremental notification.
-
-Feishu cards should use progressive disclosure: top-level human summary,
-actionable items, compact current health, then collapsed history/technical
-details.
-
-### 20.5 tmux
-
-tmux remains a useful persistent raw-shell fallback.
-
-It is not Session identity authority and does not need to wrap every Agent
-session.
-
----
+Feishu interaction is optional beyond sources/notifications/reports. A full terminal
+inside Feishu is not required. A unavailable renderer may show a safe deterministic
+summary; LLM unavailability must not suppress an important machine alert.
 
 ## 21. Node Runtime — serverosd
 
-There is exactly **one resident ServerOS core daemon by default: `serverosd`**.
+Exactly one resident ServerOS core daemon is active per managed node/runtime scope
+in normal operation. Provider processes may be long-lived separately.
 
-Provider/Managed Runtime processes may also be long-lived outside the core.
+serverosd owns mechanical local observations, attribution, admission at its boundaries,
+managed-environment references, bounded reconciliation, local IPC and self-health.
+It does not own business planning, semantic memory extraction, report writing,
+Feishu workflows, Quay worker planning or a second process supervisor.
 
-`serverosd` stays small and mechanical.
+Observe self, user, host, managed runtime, filesystem, quota/inodes and shared memory
+where available. Every result carries source, observed time, freshness and scope.
+A profile states intent; live observation states reality. Permission-denied or absent
+probes remain unavailable/unknown, not invented healthy values.
 
-Closed responsibilities:
+Use bounded/cached sampling, timeouts and backpressure. Observe CPU/memory/queue age
+of the daemon itself. Production and test instances need separate sockets and state;
+a lifetime lock prevents accidental duplicate writers for one scope. Stale PID files
+alone do not justify killing a process.
 
-```text
-Device / Host identity references
-Host/User resource observation
-filesystem/quota/inode/shm facts
-process/runtime/container observations
-Managed Runtime Registry
-ownership / attribution graph
-Probe Engine
-desired runtime/environment records
-runtime anomaly/event facts
-Policy / Admission
-bounded Reconciler
-Observation / Provenance / Freshness
-Local IPC
-core runtime references / leases needed for lifecycle
-essential self-health
-```
-
-It does not contain:
-
-- Feishu business logic;
-- GitHub business workflow;
-- Quay planning;
-- LLM planning;
-- semantic memory generation;
-- Work Item planning;
-- report generation;
-- generic process supervision;
-- generic container orchestration;
-- arbitrary remote shell.
-
-The control loop is mechanical:
-
-```text
-Inventory
-  → Probe
-  → Attribution
-  → Policy / Admission
-  → bounded Reconcile
-  → Observation / Event
-  → Local IPC
-```
-
-No LLM planner runs inside the daemon.
-
-### 21.1 Self-healing
-
-Repair tiers:
-
-```text
-T0 deterministic owned repair
-   explicit ServerOS-owned disposable resource
-   → bounded auto repair + verify + notify
-
-T1 Agent repair
-   diagnosis required, within approved scope
-   → Maintenance Session + verify + report
-
-T2 delegated exception
-   exact approved shared target (for example shared gateway)
-   → exact delegated principal/scope
-
-T3 shared/foreign/network/production/destructive
-   → no autonomous mutation without explicit policy/approval
-```
-
-Hooks are Agent lifecycle integration; infrastructure anomalies are Events.
-Do not misuse Agent hooks as the monitoring/event bus.
-
----
+The OS supervisor owns process lifetime; serverosd owns whether a declared resource
+is desired and healthy. Avoid competing restart loops. An Agent diagnosis runs in a
+bounded Maintenance Session, not inside the daemon. Generic on-demand readonly CLI
+inspection remains possible if daemon observation is unavailable, with provenance.
 
 ## 22. Core composition and component boundaries
 
-The product composition Core has exactly two canonical members:
+The product's two canonical Core members remain **serveros + ability-management**.
+This is source/composition membership, not two resident daemons.
 
-```text
-Core
-├── serveros
-└── ability-management
-```
+| Owner | Authority |
+|---|---|
+| serveros | product architecture, composition, bootstrap, Context/Space/Relations contracts and node runtime |
+| ability-management | typed Ability/Capability registry, provenance/revisions, reusable Skill source and distribution |
+| work-engine | durable work/control transitions, Run and effect receipts, Board and work projections |
+| hwz-records | approved understanding, stable work intent, designs, reports and human semantic records |
+| hwz-ops | instance roots, topology, concrete targets/bindings, local policy and observed maps |
+| native providers | their actual sessions, task stores, cloud bodies, runtime facts and supported effects |
 
-This does not mean every useful capability is in Core.
+One public serverosctl entry dispatches to the owning component; two repositories
+must not compete for the same installed executable. work-engine may consume a
+placement interface without implementing a second placement authority or importing
+the entire product back into itself. CLI and MCP adapters share the owning use-case
+contract rather than duplicate business decisions.
 
-Component ownership:
+ServerOS plugin packages the bootstrap and selected reusable capabilities. A local
+bootstrap Skill may live in serveros; reusable Skill canonical sources remain in
+ability-management. Composition references external plugins rather than pretending
+they are authored here. Knowledge, session data, credentials and live maps are not
+plugin payloads. Package presence is not runtime availability.
 
-| Component | Owns | Does not own |
-|---|---|---|
-| `serveros` | product architecture, composition, bootstrap, deterministic Context/Space/Relations kernels, node runtime | reusable Ability source, Item state, cloud content |
-| `ability-management` | global Ability identity, Revision, provenance, compatibility, packs/families, installation/distribution | product composition, Item lifecycle, per-operation authorization policy |
-| `work-engine` | Item/Activity/Run durable state, board/work projections, execution envelope facts | Skills, topology, cloud bodies |
-| `hwz-ops` | Tokyo instance policy/topology/bindings | generic product semantics |
-| `hwz-records` | work/information/understanding records | machine runtime authority |
-| Workspace capability | placement/isolation/reconcile | Ability registry |
-| Feishu capability | cloud placement/lifecycle | semantic truth |
-| MetaCC | session history/intelligence | live session authority |
-| Memory Provider | memory extraction/retrieval | approved understanding authority |
-| CloudCLI | UI / Agent console | ServerOS semantic authority |
+## 23. Internal planes and effect protocol
 
-Do not create a second source of truth to make integration convenient.
+The internal planes remain Node Runtime, Ability, Memory-Context and Coordination.
+They partition questions, not create new services. Use existing Python/SQLite/files
+and OS scheduling where sufficient; no new distributed database or message broker
+is required by this architecture.
 
----
+### 23.1 Shared boundary contract
 
-## 23. Four internal planes
+An effectful request needs a stable request/action ID, actor, target, operation,
+work reference when any, input revisions, authorization/envelope reference and
+expected state where concurrency matters. A result reports acceptance vs completion,
+actual effect, outputs, evidence, retryability and unresolved uncertainty.
 
-The earlier four-plane model remains valid, but it is now an **internal
-architecture decomposition**, not the top-level product story.
+An accepted asynchronous job is not completed work. A command exit code is not the
+business verdict. Check JSON/tool error envelopes as well as transport/exit status.
+An unavailable provider never returns fabricated empty success.
 
-```text
-Node Runtime Plane
-  what is running here, who owns it, is it healthy?
+### 23.2 Retry, cancellation and crash recovery
 
-Ability Fabric
-  what can this device do, through which provider/operation?
+Persist intent before a risky external effect and persist its receipt after observed
+completion. Deduplicate by request/action ID and the provider's native idempotency
+feature when available. Where the remote service lacks it, reconcile actual state
+before retry. Timeout-after-send means **effect unknown**, not safe-to-repeat.
 
-Memory-Context Fabric
-  what does the work remember, and what context should be loaded now?
+Cancellation distinguishes request accepted from worker actually stopped. Do not
+release an exclusive resource until stop/relinquish is observed. Reconcile orphaned
+workers with exact ownership and runtime evidence.
 
-Coordination Fabric
-  how do devices/sessions/handoffs/delegations relate?
-```
+There is no global transaction across GitHub, Feishu, Git and local state. Persist
+partial progress and repair each boundary. An outbox/receipt table in the existing
+owning store is enough; do not add an event platform for conceptual neatness.
 
-These planes divide questions, not directories or daemons.
+### 23.3 Authoring and caches
 
-No new plane is added merely for taxonomy neatness.
-
----
+Content edits and control-state changes use version guards at the real authority.
+Views carry source revisions and freshness. A stale projection can inform reading
+but cannot authorize a fresh risky write. Derived rendering failure leaves the
+source intact and queues a bounded refresh, not a second competing state database.
 
 ## 24. Storage and authority
 
-Storage roles remain explicit.
-
-Typical user-space topology is role/lifecycle-based:
+Physical roots are role/lifecycle based and bound per device. Do not add a duplicate
+workspace/projects symlink forest or require identical Windows/Linux paths.
 
 ```text
 workspace/
-  src/                canonical / bridge / tool repositories
-  worktrees/          Item code workspaces
-  test-envs/          Item test definitions/environments
-  ops/                instance governance
-  knowledge/          durable local knowledge/indexes
-  records/            structured records / Understanding
-
+  src/           canonical/Bridge/tool checkouts
+  worktrees/     isolated work, governed by actual repo/Item identity
+  test-envs/     environment definitions and declared fixtures
+  ops/           instance governance
+  records/       structured understanding and work packets
+  knowledge/     reusable local knowledge/index material
 artifacts/
-  work-items/<project>/<ITEM>/<RUN>/
-  reports/
-  e2e/
-  repro/
-  releases/
-  skills/
-  ops/
-
-data/
-  source-archive/     large raw sources not suited to Git
-  provider-data/      durable provider-owned bulk data
-
-state/
-  serveros/
-  ability-management/
-  memory/
-  browser/
-  ...
-
-runtime-assets/
-  ServerOS/plugin revisions
-  Ability artifacts
-
-vault/                centralized user-owned credentials/secrets
-downloads/            unclassified/new inputs
-logs/
-caches/
-tmp/                  disposable/transient
-envs/
-toolchains/
-software/
+  work-items/    Run outputs and verification evidence
+  ops/           operational and migration evidence
+  repro/         reproducibility evidence
+  serveros-releases/  installed/build/release evidence where bound
+data/            large source archives and provider bulk data
+state/           operational persistence, cursors, receipts and memory state
+runtime-assets/  installed managed revisions
+vault/           protected secrets or locator to existing approved secret store
+logs/ downloads/ caches/ tmp/ envs/ toolchains/ software/
 ```
 
-The important distinction is semantic:
+Examples are not instructions to move existing roots. Persistent state is not cache.
+Keep SQLite local to its owning service; other devices use an authenticated interface
+or durable handoff, not network-share writes. Simple known-state snapshots/recovery
+are required; active-active multi-node disaster machinery is not.
+
+### 24.1 Local, GitHub and Feishu placement
+
+| Material | Normal authority and publication |
+|---|---|
+| source code | designated Git repository; not copied to Feishu |
+| brief/design/execution/report packet | records/GitHub; MyDocs may render selected human views |
+| understanding | confirmed records; MyDocs/CloudCLI current projection |
+| raw IM/Minutes snapshots and large logs | protected source archive; not automatically published |
+| E2E screenshots/traces | local artifact; selected safe files to Drive |
+| readable Item result | one logical report with revision-linked GitHub/MyDocs renderings |
+| daily/weekly/special report | formal MyDocs reporting surface, recipient delivery separately governed |
+| personal reusable method | Personal Knowledge |
+| maintained broad-audience guide | Published Knowledge or the external canonical location |
+| credentials/native auth state | vault/native store only |
+
+### 24.2 Desired human navigation
 
 ```text
-records     durable structured meaning / claims / work facts
-data        large raw source material
-artifacts   outputs/evidence tied to a Run/Item
-state       durable machine/provider operational state
-vault       centralized secret material used by the user's Agents/tools
+My Document Library
+  工作台
+  每日对齐 / 总览 / 年月 / 当日文档
+  项目 / <Project> / 工作台、结构化认识、需求、报告
+  汇报 / 日报 / 年月
+       / 周报 / 年
+       / 专项汇报
+  Inbox
+  归档  (useful historical snapshots only)
+
+Personal Knowledge: curated topics; no operational scratch archive
+Published Knowledge: reader-oriented guides; no empty taxonomy scaffolding
+Drive: 收件箱 / 工作资料 / 临时 / 归档
+  工作资料 / <Project> / 输入、会议、测试与 E2E、交付 as needed
 ```
 
-### 24.1 Vault
+An existing Item report bundle may contain its final report and supporting reports.
+Do not create near-duplicate sibling pages to satisfy a naming template. Create
+folders/pages only when real content or a real entrypoint needs them. File identity,
+semantic role and links survive relocation; exact tokens belong to instance records.
 
-The current design intentionally keeps credential storage simple.
+## 25. Build, release, deploy and rollback
+
+### 25.1 Artifact-centered delivery
 
 ```text
-/data/home/vince/vault/
+source revisions -> reproducible artifact + selected dependency lock/digests
+                 -> installed revision -> actual running revision -> evidence
 ```
 
-is the primary centralized secret directory for the user's Tokyo environment.
+Code/config changes share provenance requirements: before, after, reason, owner,
+Item/scope, approval when needed and verification. Ordinary build capability is
+independent from a specialist image-build Skill. No arbitrary toolchain installation
+or registry edits merely to prove a concept.
 
-Rules:
+A release combines exact compatible code, abilities and adapters. Availability is
+proved by fetching pinned content from a durable permitted source, not by requiring
+all repositories to have identically named branches. Mutable distribution branches
+need captured artifact digests/revisions. Published, installed and live are separate.
 
-- user-owned and access-restricted on disk;
-- never committed to Git;
-- never treated as ordinary Memory/Knowledge/Report content;
-- Claude Code / Codex running as the authorized user may directly read needed
-  secret files for approved work;
-- secret bytes do not need a separate ServerOS Vault service;
-- ServerOS may maintain a lightweight semantic index without duplicating the
-  secret value.
+### 25.2 Promotion and recovery
 
-Useful metadata may include:
+Prepare a candidate separately, test the relevant contracts, then activate the managed
+revision at a safe boundary. Existing Runs retain their inputs. Runtime rollback
+must not rewind business records, receipts or secrets. State migration compatibility
+and recovery must be checked before activation; do not claim rollback merely because
+a symlink can point to an old binary.
 
-```text
-secret_ref / file
-Project
-Service
-Environment
-purpose / used_for
-owner
-last_verified
-```
+TEST execution and bounded rollback are autonomous inside scope. General production
+follows its target policy. LiteLLM/shared-gateway user-executed rules in section 2
+remain stricter. Destructive/data migrations require explicit impact, preconditions,
+recovery feasibility and authorization. Observation windows are target/risk-specific;
+never claim LIVE solely because the container started.
 
-This lets an Agent find the correct credential among many files while keeping
-actual secret bytes only in the vault directory.
+### 25.3 Closure
 
-This is centralized operational storage, not a generic enterprise Secret
-Manager product.
-
-Not all state is disposable.
-
-Durable examples include:
-
-- authorization/work state;
-- human decisions;
-- cursors;
-- delivery receipts;
-- ownership/reference state;
-- Item/Run facts.
-
-Observed caches may be rebuildable.
-
-Provider-native sensitive state such as `~/.claude`, `~/.codex`, browser
-profiles and secret stores remain provider-native.
-
-IPC should use an OS runtime directory such as `$XDG_RUNTIME_DIR/serveros`
-rather than durable storage.
-
----
-
-## 25. Build, Release, Deploy and Rollback
-
-Release correctness is artifact/revision centric:
-
-```text
-Source Revision
-      ↓ build
-Release Artifact + Manifest + Digest
-      ↓ install
-Installed Revision
-      ↓ start
-Observed Live Revision
-```
-
-Build PASS != deploy PASS != LIVE PASS.
-
-### 25.1 Expected deliverables are part of the requirement
-
-Before execution, an Item should state the intended delivery outcome at the
-appropriate level of detail.
-
-Examples:
-
-```text
-code change + upstream PR
-configuration change
-image / package / release artifact
-TEST deployment
-production-ready runbook
-document / guide
-analysis report
-knowledge update
-```
-
-This prevents "code exists" from being mistaken for "the requirement was
-delivered".
-
-The Item lifecycle remains unified across work types. Different Item types
-produce different evidence/deliverables; they do not need separate workflow
-engines.
-
-### 25.2 Code-changing Items require a PR
-
-For current company development, a code-changing Item is not complete at a
-local commit or Bridge branch.
-
-```text
-Bridge implementation
-→ review / E2E / evidence
-→ PR to enterprise/upstream repository
-→ adoption outcome recorded
-```
-
-A real PR is a required deliverable for code changes.
-
-PR **adoption** is a separate business outcome from completion of the requested
-engineering work. A PR may be rejected/not adopted because:
-
-- another person implemented the same requirement;
-- the upstream owner chose a different solution;
-- the requirement was superseded or withdrawn;
-- priorities changed.
-
-In those cases the Item can close with an explicit outcome such as
-`NOT_ADOPTED`, `SUPERSEDED` or `IMPLEMENTED_ELSEWHERE` plus evidence. It
-must not claim the change is LIVE when it was never adopted.
-
-### 25.3 Test environments are ephemeral by default
-
-Where feasible, an Item should use an isolated test lifecycle:
-
-```text
-worktree / revision
-→ create isolated test environment
-→ deploy/start target
-→ E2E / verification
-→ preserve evidence
-→ cleanup/release resources
-```
-
-Persistent shared TEST environments remain valid when a Project actually needs
-them. They are not required merely because an Item exists.
-
-### 25.4 Code and configuration changes have equal provenance requirements
-
-Configuration is a first-class change surface.
-
-For meaningful configuration/deployment changes, evidence should answer:
-
-```text
-before
-after
-why
-owning Item / requirement
-approval when required
-verification / observed result
-```
-
-This applies to model/provider mappings, environment configuration, Docker
-configuration, gateway settings and similar operational state. Secret values
-remain redacted/protected even when the change itself is auditable.
-
-### 25.5 High-risk migration/destructive work uses the Execution Envelope
-
-Database migrations, destructive operations and irreversible changes do not
-need a separate workflow engine.
-
-Their Execution Envelope carries stronger gates such as:
-
-```text
-impact/preconditions
-backup or recovery plan
-rollback feasibility
-explicit approval
-postcondition verification
-```
-
-### 25.6 Automation boundary
-
-Generic build/release capability must exist independently of any project-
-specific image-build recipe.
-
-A specialist `litellm-image-build` ability may preserve LiteLLM-specific
-knowledge, but ServerOS must still be able to build ordinary Docker/project
-artifacts without it.
-
-Inside an approved envelope, automation may perform:
-
-- build;
-- package;
-- isolated install;
-- TEST deploy;
-- E2E;
-- rollback testing;
-- preparation of production runbooks/artifacts;
-- post-change verification/observation.
-
-Production promotion is human-approved by default. After approval, Projects may
-allow automated production deployment and bounded rollback when explicitly
-covered by policy.
-
-Two current target-specific exceptions are stricter:
-
-```text
-LiteLLM production
-Tokyo shared AI gateway
-```
-
-For these targets, the **production mutation/cutover is user-executed**.
-Claude/Codex may prepare the exact change, artifacts, checks and rollback plan;
-after the user performs the production action, Agents may verify, observe and
-report. Any production rollback/mutation follows the same target-specific human
-gate unless explicitly authorized otherwise.
-
-### 25.7 Knowledge/document impact scan at closure
-
-A meaningful code/config/service change should check linked documentation and
-knowledge before closure:
-
-```text
-change
-→ identify linked docs / Wiki / KB / runbooks
-→ assess staleness/impact
-→ update directly when in scope or propose update
-→ verify links/publication
-```
-
-ServerOS owns the generic impact/freshness mechanism. Domain-specific knowledge
-curation remains with the owning Project (for example Support Bot/Support KB).
-
----
+Code work has an actual PR deliverable. PR rejection or another implementation is a
+recorded business result, not manufactured adoption. Check linked docs/knowledge for
+real impact; do not rewrite every Wiki because one file changed. Release installers
+and uninstallers act only on owned, receipt-tracked files/resources and preserve
+persistent/native state.
 
 ## 26. Incidents and autonomous background work
 
-### 26.1 Incident is not automatically Item
-
-A short incident may be:
-
-```text
-detect
-→ deterministic repair
-→ verify
-→ Incident record
-→ report
-```
-
-No Item is required.
-
-If the issue needs durable engineering/follow-up:
-
-```text
-Incident
-→ Candidate
-→ Personal Board
-→ human selection
-→ Item
-```
-
-### 26.2 Background autonomy
-
-Approved Items may continue in the background/night inside their Execution
-Envelope:
-
-- research;
-- implementation;
-- tests/E2E;
-- Quay;
-- build;
-- understanding proposals;
-- report preparation.
-
-The Execution Envelope therefore includes an **Autonomy Guard**, not only
-permission scope.
-
-Stop/escalate on signals such as:
-
-- decision gate;
-- repeated same failure;
-- no-progress rounds;
-- acceptance moving backwards;
-- unexpected scope growth;
-- new repository / host / credential boundary;
-- abnormal cost/token growth;
-- verification confidence falling;
-- blocker;
-- production/destructive/high-risk boundary.
-
-Important work does not need an artificially tiny monetary budget, but it must
-have runaway controls such as maximum retries, no-progress rounds, duplicate
-work detection and delegation depth.
-
----
-
-### 26.3 Human attention contract
-
-Background autonomy should optimize for **few high-value interruptions**, not
-maximum silence and not constant permission prompts.
-
-Inside the same approved goal, acceptance and Execution Envelope, the Agent may
-normally continue without asking when it is:
-
-- reading/researching;
-- using already-authorized abilities/resources;
-- revising its own mutable plan;
-- running reversible experiments/tests;
-- delegating to Quay within the same envelope;
-- preparing reports/evidence;
-- recovering from ordinary non-destructive failures.
-
-Human attention is required when the work encounters a real decision/authority
-boundary, not merely uncertainty that can be investigated.
-
-Before asking the user a factual question, the Agent should try to resolve it
-from authoritative evidence. Conflicting board/brief/runtime claims are first an
-evidence-resolution problem; they become a human decision only when the
-remaining question is actually about intent, preference or authority.
-
-A useful presentation axis remains:
-
-```text
-NONE
-INFORMATIONAL
-WATCH
-REVIEW
-ACTION_REQUIRED
-```
-
-Typical behavior:
-
-```text
-NONE
-  continue silently
-
-INFORMATIONAL
-  include in digest/report; no interruption
-
-WATCH
-  continue while monitoring a bounded risk
-
-REVIEW
-  work may continue where independent; surface for timely review
-
-ACTION_REQUIRED
-  pause only the affected boundary and ask for the smallest needed decision
-```
-
-Unrelated approved work should not freeze because one Item has an unresolved
-gate.
-
-### 26.4 Background wake, checkpoint and interruption economy
-
-Long-running/background work needs durable wake/checkpoint semantics rather than
-an assumption that one native Session stays alive forever.
-
-At meaningful boundaries or before suspension:
-
-```text
-checkpoint
-→ what changed
-→ evidence
-→ current blockers/gates
-→ next safe continuation
-```
-
-Notifications should be deduplicated and bundled when possible. Repeated
-low-value "still working" messages are a product failure unless explicitly
-requested.
-
-A background task that reaches `ACTION_REQUIRED` should preserve enough state
-that the user can decide later without reconstructing the whole investigation.
-
----
-
-## 27. Routine and scheduled operating recipes
-
-No `workflowd` exists.
-
-A lightweight **Routine** represents recurring work that should run repeatedly
-without inventing a new Requirement/Item each time.
-
-A Routine is normally created only after the work pattern has enough evidence
-to justify operationalization. Exploration may be Agent-heavy; a mature Routine
-should make stable/mechanical steps deterministic where useful and retain Agent
-reasoning only where judgment adds value.
-
-A Routine is still not a rigid workflow engine. It may call an Agent with an
-objective/checkpoint and let that Agent choose tactics inside the approved
-Execution Envelope.
-
-```text
-Routine
-├── purpose / scope
-├── schedule or trigger
-├── policy / authorization
-└── Runs
-```
-
-A Routine Run may produce a report/result directly. If it discovers durable
-work that requires prioritization, it produces a Candidate:
-
-```text
-Routine Run
-→ result / evidence
-→ optional Candidate
-→ human selection
-→ Item
-```
-
-Finite OS-scheduled recipes drive recurring work.
-
-### Perception / Understanding Loop
-
-```text
-authorized source delta
-→ snapshot/observation
-→ relevance/privacy filter
-→ understanding proposal
-→ reconciliation queue
-→ Candidate Board refresh
-```
-
-No-change skips unnecessary source-analysis LLM work, **but not the daily human
-alignment checkpoint**. The daily reconciliation can truthfully say "no
-material delta detected" and still allow the user to inspect/correct current
-Understanding.
-
-### Work Advancement Loop
-
-```text
-Today / approved Items
-→ current checkpoint
-→ next approved Activity
-→ direct Agent or approved Quay
-→ targeted verification
-→ evidence/checkpoint
-→ continue or stop
-```
-
-### Reporting Loop
-
-```text
-durable work facts
-+ evidence
-+ decisions
-+ Quay ledger
-→ Daily / Weekly / Decision report
-→ publication/delivery receipt
-```
-
-Use OS schedulers such as systemd user timers; do not create another resident
-business scheduler.
-
----
-
-## 28. Ability navigation view
-
-The product can be reasoned about in two broad families.
-
-This is navigation, not physical nesting and not a daemon list.
-
-```text
-A · Agent Working Infrastructure
-├── Compliance & Safety
-├── Runtime / Session
-├── Context & Memory
-├── Capability Fabric
-├── Workspace / Isolation / Space Stewardship
-├── Connectivity / Device / UI
-├── Verification / E2E / Release
-└── Node Runtime / Operations
-
-B · Information → Delivery
-├── Source Capture / Follow
-├── Structured Understanding / Reconciliation
-├── Project World Model / Service / Environment
-├── Work Discovery / Personal Board
-├── Requirements Engineering
-├── Development & Operations
-├── Log Analysis / Observability
-├── Technical Support
-├── Agent Improvement / Session Intelligence
-├── Research / Evidence Acquisition / Web Research
-├── Decision / Architecture
-├── Verification / E2E
-├── Routine
-├── Incident / Operations
-├── Knowledge Stewardship
-├── Remote Assistance
-├── Communication
-└── Reporting / Publication
-```
-
-Do not mechanically create one Skill/repository/daemon for every box.
-
-Several boxes are recipes over common primitives.
-
----
-
-## 29. Claude Code / Codex parity
-
-One world, two runtime adapters.
-
-They should share:
-
-- project/Item identity;
-- workspace semantics;
-- Context Capsule semantics;
-- Memory scopes;
-- Ability identities;
-- evidence/artifact contract;
-- safety/admission semantics.
-
-They may differ in:
-
-- native plugin packaging;
-- hot-attach capability;
-- native session APIs;
-- configuration format;
-- provider-specific features.
-
-Runtime differences belong in adapters/bindings, not duplicated business logic.
-
----
+A short owned incident can be observed, repaired under policy and reported without a
+new Item. A durable fix becomes a sourced Candidate for prioritization. New autonomous
+work must not silently rewrite the user's priorities.
+
+Approved work may continue while the user is away. Inside the same scope the Agent
+may change method, experiment, test, delegate, repair ordinary transient failures and
+prepare reports. Pause the affected boundary for changed goal/acceptance, new
+privilege/target, destructive effects or material unresolved decisions.
+
+Use bounded retry/backoff, no-progress detection, concurrency/delegation limits and
+cost visibility. Do not hard-code a tiny budget for every important task; do not allow
+runaway work. A cancelled/paused Item stops new dispatch but existing effects still
+need reconciliation. Other independent approved Items continue.
+
+Before asking a factual question, search the relevant code, records and observed
+state. UNKNOWN with a feasible investigation is not automatically HUMAN_REQUIRED.
+On escalation, give the smallest decision, recommended option, consequence and
+checkpoint. Do not deliver a screen of raw failure codes.
+
+## 27. Routines and scheduling
+
+A Routine has objective, trigger/timezone, scope/envelope, selected execution profile,
+output contract and continuation policy. Its internal tactics can be Agent-chosen or
+deterministic; no mandatory workflow DAG and no new workflowd.
+
+Use the OS scheduler to start finite workers. One authority owns each trigger; a
+ServerOS timer and Quay routine must not both independently dispatch the same job.
+The existing work/control store holds job leases, cursors and receipts.
+
+Defaults: one active run per routine key unless explicit parallelism; coalesce missed
+runs to the latest necessary work rather than replay a backlog storm; defer when
+required targets are unavailable. Retry an idempotent step, not a whole partially
+published workflow. Persist wait conditions and checkpoints so a fresh Session can
+continue without an immortal conversation.
+
+Core routines include source delta capture, understanding preparation, approved work
+advancement, report generation, document freshness checks and bounded maintenance.
+No source change avoids redundant analysis, not the daily alignment opportunity.
+
+MarketOps may evolve from experiments into its own unattended product. ServerOS
+provides environment, scheduling/delegation, evidence and notification primitives;
+it does not embed MarketOps business logic or take over its production roadmap.
+
+## 28. Ability families and product coverage
+
+These clusters cover the intended work, not mandatory packages or stages. Implement
+using existing abilities where possible; register gaps honestly rather than creating
+empty Skills to make a coverage table green.
+
+| A — Agent Working Infrastructure | Responsibility |
+|---|---|
+| Compliance and credentials | effective policy, target-scoped authority, safe information flow |
+| Runtime and resource | node facts, dynamic desired environment, supervised providers |
+| Session and handoff | native sessions, checkpoints, observation/control ownership |
+| Context and memory | intent resolution, bounded retrieval, native-memory coordination |
+| Ability management | global catalogue, provenance, discovery, selective distribution |
+| Workspace and Git | correct placement, worktrees, concurrency, integration and PR |
+| Tools/build/test environments | resolve and prepare actual dependencies and fixtures |
+| Verification and E2E | acceptance-derived tests, independent evidence, readable reports |
+| Connectivity and remote devices | Tailscale/Serve, SSH/RDC, Windows specialty access |
+| Documentation engineering | small-change guidance, maintained guides, links and publication |
+| Release and operations | reproducible builds, compatible promotion, observation and recovery |
+
+| B — Information-to-Delivery | Responsibility |
+|---|---|
+| Source acquisition/Follow | Feishu IM plus selected docs/Wiki/Minutes and referenced engineering sources |
+| Understanding/alignment | project/role/person model, conflict resolution and user feedback |
+| Board and requirement discovery | coarse candidates, daily focus, elicitation and requirement writing |
+| Research and decisions | original evidence, comparison/experiments, GPT review and design |
+| Execution and delegation | native CC/Codex plus bounded Quay contribution |
+| Knowledge/document stewardship | private/published/external content maintenance within authority |
+| Reporting/communication | Item final, daily, weekly, special reports and audience-aware delivery |
+| Routines and improvement | unattended approved objectives and evidence-backed enhancement proposals |
+
+E2E, research and communication are cross-cutting reusable capabilities. Reusing a
+cluster in both families does not create two implementations. Family membership is
+metadata and views, not hard-coded renderer membership inside Core.
+
+## 29. Claude Code / Codex and provider compatibility
+
+One work world, runtime-specific adapters. Share identity, intent, evidence, policy,
+placement and memory scopes. Do not require identical plugin packaging, hooks, MCP
+hot-load behavior, native memory paths or subagent APIs.
+
+For each runtime revision, test the actual entrypoints and report supported features.
+Claude-specific Quay execution may be consumed through a compatible delegated CC
+runtime; it is not automatically a native Codex capability. Public provider docs are
+inputs to adapter design, not proof that the user's installed version has every
+feature.
+
+Native tools remain usable when an optional memory/search/UI provider is down. When
+an authorization boundary cannot be enforced or a required target cannot be observed,
+block the risky effect specifically, not all reasoning or read-only work.
 
 ## 30. Non-goals
 
-Current product scope is the user's **company-development/work environment**.
-The underlying primitives may generalize later, but the architecture should not
-add lifestyle/personal-domain complexity before a real need exists.
+Do not build another general workflow/BPM engine, multi-tenant SaaS platform,
+universal registry, distributed database, VPN protocol, secret-management product,
+container orchestrator, generic supervisor, remote shell or planner above CC.
+Do not replace GitHub, Feishu, CloudCLI, MetaCC, OpenViking or Quay where an adapter
+is enough. Do not require active-active multi-node recovery for this personal setup.
 
-ServerOS does not become:
+Do not preload the catalogue, mirror every native state store, expose migration
+scratch to humans, invent business work, copy all historical sources to every device,
+or turn validation into the main workload.
 
-- a kernel/OS scheduler;
-- a generic process supervisor;
-- a generic workflow platform;
-- a second Claude/Codex planner;
-- a universal MCP registry;
-- a generic secret store;
-- a generic remote shell;
-- a full container orchestrator;
-- a replacement for GitHub;
-- a replacement for Feishu;
-- a replacement for CloudCLI;
-- a replacement for MetaCC;
-- a replacement for a memory engine;
-- an excuse to duplicate provider-native functionality.
+## 31. Architecture change and conformance test
 
-It also does not:
+A change must identify its real user failure, owner, smallest effective mechanism,
+non-interference boundary, fast-path cost and unavailable/degraded behavior. Removing
+an optional recipe/provider must not destroy work identity or evidence.
 
-- preload every capability/history into every session;
-- automatically delete cloud/local history to make maps clean;
-- manufacture documentation to satisfy a schema;
-- treat unsupported/unverified behavior as LIVE;
-- let a green test replace acceptance/evidence;
-- let a Quay task close a parent Item;
-- let an unknown owner become a cleanup target;
-- let a bridge repository silently become upstream authority.
+The following are product-level acceptance scenarios, not requirements to run every
+suite on every edit:
 
----
+| Scenario | Required behavior |
+|---|---|
+| Fresh Session, vague prompt | thin bootstrap, no invented Item; resolve or clarify narrowly |
+| Prompt contradicts cwd | correct topic, safe destination, no wrong-repo writes |
+| Research -> experiment -> redesign | same work identity, freely revised plan, retained failed evidence |
+| Memory/provider unavailable | explicit degradation; continue from durable sources where safe |
+| New external Skill/MCP | native discovery preserved, provenance/effect policy, no implicit trust |
+| Windows-only production access | correct device/target, scoped readonly observation; cutover remains human |
+| Parallel workers | independent workspaces/resources and one safe integration writer |
+| Quay returns done | result/evidence absorbed; parent acceptance assessed independently |
+| Process dies after cloud write | reconcile actual effect; no duplicate publish or blind retry |
+| Concurrent GPT/CC/human edits | revision-aware reconciliation, no lost update or force overwrite |
+| Garbage meeting transcript | excluded from understanding/work; no unsupported destructive cleanup |
+| Partial Follow inventory | honest coverage/cursor, no fabricated fresh/full snapshot |
+| E2E with real identity | scoped effects, genuine target evidence, useful safe screenshots |
+| Report generation | formal factual daily/weekly prose, real Quay contribution, no duplicate send |
+| Tailnet node online | endpoint-specific remote verification, not automatic all-port readiness |
+| Runtime restart | one writer per scope, preserved durable state, no restart storm |
+| Routine overdue or cancelled | no duplicate backlog launch; persisted continuation and effect accounting |
+| Catalogue unrelated change | current selected composition remains reproducible and usable |
+| Human surfaces | current useful documents, no probe/journal construction debris |
+| Business projects concurrent | MarketOps and Support Bot/KB work remains untouched by ServerOS governance |
 
-## 31. Architecture change test
-
-Before adding new core machinery, answer all of:
-
-1. Which real user/work failure does this fix?
-2. Why cannot an existing Provider/Ability/recipe solve it?
-3. Does it improve Environment, Context, Memory, Capability, continuity or
-   safety?
-4. Does it keep the default Agent path fast?
-5. What is the authority/source of truth?
-6. How is it removed or degraded when unavailable?
-
-If those answers are weak, the machinery does not belong in ServerOS.
-
----
+Failures are assigned to the owning contract. Structural docs checks run on docs
+changes; affected code tests run on code changes; full release/live scenarios run at
+appropriate integration/promotion boundaries. No false equivalence between these.
 
 ## 32. Current design status
 
-The product shape in this document is now the architecture baseline.
+This baseline closes the product-level choices for the current scope: small Core,
+native-first context/memory/capabilities, flexible work and experiments, safe shared
+execution, cross-device connectivity, Feishu/document stewardship, Quay, reporting
+and unattended routines.
 
-Large remaining design work is subsystem-detail work, especially:
+The remaining task is implementation/conformance against these contracts, not another
+unbounded architecture questionnaire. Unknown installed capabilities, credentials,
+source IDs, environment facts and deployment permissions remain **instance facts to
+verify**, never invented architecture constants.
 
-1. exact Session record schema and cross-device attachment/handoff contract;
-2. MetaCC-to-ServerOS history/intelligence adapter and Agent Improvement recipe;
-3. OpenViking deployment/binding/backup contract and device provenance fields;
-4. versioned Claim/conflict projection and reconciliation schema;
-5. information-flow policy vocabulary and enforcement points;
-6. Feishu inventory/blacklist/Follow policy and My Docs/Drive/Wiki/Minutes adapters;
-7. Space Stewardship automation policy, Inbox classification and local housekeeping;
-8. Project lifecycle plus Person/Role, Service, Environment and runtime attribution model;
-9. CloudCLI Project → Item → Session mobile/desktop plugin surfaces;
-10. external reasoning / future CC↔GPT Provider contract, Skills and 2–3 round convergence guard;
-11. tailnet-first connectivity, supervised Tokyo userspace Tailscale, private service publication and tunnel retirement;
-12. A2A adapter timing/mapping;
-13. dynamic environment Attachment/lease/refcount behavior;
-14. E2E Item Verification / Campaign contract, scenario matrix and evidence schema;
-15. execution placement / Tokyo→Windows handoff contract;
-16. Repo→Artifact→Service×Environment→Runtime provenance and presentation model;
-17. Bridge↔enterprise synchronization, mandatory code PR delivery and adoption outcome;
-18. target-specific production gates and post-deploy LIVE verification;
-19. cross-surface retrieval/ranking with provenance and contextual authority;
-20. Document & Publication Fabric: MyDocs reporting/workbench, private/published/external knowledge, stewardship, freshness and clean human surfaces;
-21. human work-document/处理站 projection and docs-first Item presentation;
-22. GitHub Work Packet CC↔GPT handoff and automatic design-to-execution continuation;
-23. E2E environment discovery, browser-provider selection, identity handling and screenshot-rich report;
-24. thin default Session bootstrap + intent-first Context Capsule contract;
-25. Memory Federation, bounded retrieval and native-memory authority boundaries;
-26. native-first Ability discovery, acquisition risk tiers and automatic Session checkpoints;
-27. anti-rigidity kernel: constraint-driven execution, mutable Activities and acceptance-driven completion;
-28. Ability Experience / Capability Profiles / candidate-vs-stable promotion and unattended-work metrics;
-29. global Ability Registry → Device Capability Projection → intent-scoped Session Attachment;
-30. operation-level authorization/trust for production-capable Abilities and Binding-aware experience;
-31. Quay Execution Accelerator integration, Delegation Packet/Result and non-mirrored task authority;
-32. Tailnet-first Device Fabric with Tokyo primary, Windows specialist and phone human-client roles;
-33. audience-aware report rendering plus Final/Daily/Weekly/Special/Published document intents;
-34. Human Attention Contract for background autonomy, evidence-first clarification and interruption economy.
+Earlier detailed specs and discovery notes must be interpreted with this baseline.
+When a legacy API or implementation conflicts, record the exact compatibility gap and
+migrate that interface deliberately. Do not satisfy this architecture by relabeling
+old tests, silently weakening a check, or claiming a doc edit deployed functionality.
 
-Those details may refine contracts. They do not reopen the product definition.
-
-The implementation must continue to distinguish:
-
-```text
-ARCHITECTURE
-CODE
-INTEGRATION
-LIVE
-```
-
-A design statement is not implementation evidence, and implementation is not
-LIVE proof.
+A separate review record identifies inspected sources, concrete corrected defects and
+remaining implementation verification. Future changes refine this baseline from real
+work evidence, with one authority and a proportionate change surface.
