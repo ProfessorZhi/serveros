@@ -7365,12 +7365,76 @@ def build_parser() -> argparse.ArgumentParser:
                          help="list up to 50 dirty paths per checkout")
     w_drift.set_defaults(func=cmd_workspace)
 
+    architecture = sub.add_parser(
+        "architecture",
+        help="the §15/§31 gates over the whole tree: what the declarations "
+             "agree with, and what the human maps should say (§15, §31–§42)",
+        **_COMMON)
+    architecture_sub = architecture.add_subparsers(dest="subcommand", required=True)
+
+    def _architecture_verb(verb: str, help_text: str):
+        """One checker, with its own argv surface forwarded rather than re-declared.
+
+        The tail is NOT declared here. Declaring the checker's flags as well
+        would be a second parser for the same interface, which
+        `architecture_check.py` names as a design rule it does not do and which
+        drifts the first time a flag is added on one side. So the verb declares
+        no arguments at all and instead sets `accepts_unknown_argv`, which
+        `main` reads to hand this handler the leftovers it would otherwise
+        refuse (see `main`). What this costs is that `--help` after the verb
+        reaches the CHECKER and prints its own usage; that is the surface a
+        reader of these two verbs wants, and the wrapper's own help is the line
+        above.
+        """
+        created = architecture_sub.add_parser(
+            verb, help=help_text,
+            description=f"Runs the checker beside the serveros skill with the "
+                        f"arguments after `{verb}` passed through unchanged. "
+                        f"Roots resolve from this node's host profile when no "
+                        f"flag is given.",
+            **_COMMON)
+        created.set_defaults(**{
+            "accepts_unknown_argv": True,
+            "func": cmd_architecture_check if verb == "check"
+                    else cmd_architecture_project})
+        return created
+
+    _architecture_verb(
+        "check",
+        "do the declarations agree with each other and with the world — the "
+        "observed-side conformance report, warn-only")
+    _architecture_verb(
+        "project",
+        "regenerate each human map's machine-owned region as a candidate. "
+        "Writes candidates to --out; never rewrites a map in place")
+
     return parser
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
-    args = parser.parse_args(argv)
+    args, unknown = parser.parse_known_args(argv)
+    # Almost every verb's argv surface is closed, and a misspelled flag has to
+    # be an error rather than a silently ignored argument — that is the whole
+    # value of `parse_args` here. The one exception is `architecture`, whose two
+    # verbs forward their tail to a checker whose flags this file deliberately
+    # does not re-declare, and which therefore asks for the leftovers by name.
+    #
+    # `nargs=argparse.REMAINDER` was the obvious way to express "everything
+    # after this point, options included", and it does not work: argparse does
+    # not match a REMAINDER positional when the first token is an option
+    # (bpo-17050), so `architecture project --out d` parsed as an empty tail
+    # plus one unrecognized argument. Measured, not assumed. The leftovers come
+    # back from argparse in the order they were typed, which is what a forwarded
+    # argv requires and what a per-positional reconstruction would lose.
+    if unknown:
+        if not getattr(args, "accepts_unknown_argv", False):
+            parser.error("unrecognized arguments: " + " ".join(unknown))
+        args.checker_argv = unknown
+    elif getattr(args, "accepts_unknown_argv", False):
+        # Set even when empty, so the handler never has to tell "no tail" from
+        # "this verb was reached some other way".
+        args.checker_argv = []
     # Both global flags are declared with `default=SUPPRESS` (see
     # build_parser), so an unused one is simply absent. Normalized here, once.
     if not hasattr(args, "json"):
