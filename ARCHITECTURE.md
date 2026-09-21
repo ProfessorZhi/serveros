@@ -436,6 +436,11 @@ Reconciliation Index / Master
 The daily document is the discussion/confirmation surface. The master document
 is navigation and longitudinal summary, not a second truth database.
 
+The normal interaction happens conversationally in CloudCLI with the
+Coordinator. The user corrects/approves in natural language; ServerOS updates
+the day's document and structured checkpoint as a consequence. Feishu documents
+are durable human-readable outputs, not mandatory form-entry UI.
+
 ### 4.2 Archive, Understanding, Knowledge, Memory and Work are different
 
 ```text
@@ -598,6 +603,10 @@ The three primary human content spaces are:
 - **Drive** — files, attachments and binary deliverables;
 - **Wiki / Knowledge Base** — curated long-lived human knowledge.
 
+My Docs is not modeled as a Drive-style folder filesystem. Its useful structure
+is a document/subpage hierarchy plus search/recency; physical folder placement
+belongs to Drive.
+
 **Minutes / 妙记 is a separate source surface**, not a Drive folder. A Minute
 may have related recording/transcript/summary objects and derived notes, but its
 source identity remains Minutes-native.
@@ -680,6 +689,27 @@ clear, otherwise it proposes a correction.
 The separate Support/Support Bot project owns its own support-knowledge
 publication lifecycle. General Project Knowledge and Support Knowledge are not
 one product merely because both are documents.
+
+### 5.4.1 Knowledge spaces are audience/authority boundaries
+
+A Feishu Wiki **knowledge space** is not merely a folder above Projects.
+
+ServerOS may use:
+
+```text
+Private work knowledge space
+  internal cross-project notes / architecture / meetings / reports
+
+Project publication knowledge space (only when needed)
+  public/team-consumed configuration, usage, runbooks or product docs
+
+External corporate knowledge spaces
+  read/index/follow sources; never reorganized by ServerOS
+```
+
+A Project does not automatically receive its own knowledge space. A separate
+space is created only when that Project has a real published/team knowledge
+surface, such as configuration or user-facing documentation.
 
 ### 5.5 Meetings / Minutes
 
@@ -1163,11 +1193,29 @@ Only a durable engineering follow-up, knowledge-maintenance requirement,
 repeated product problem or explicit requirement is promoted to Candidate →
 Item.
 
-### 8.1 One Personal Board
+### 8.1 Human work board is a simple work document
 
-The default work surface is one personal cross-project board.
+The durable underlying board remains cross-project, but the primary human view
+should feel like a concise work document rather than Jira/Kanban.
 
-Projects are filters/relationships, not separate truth islands.
+A Project work document may use:
+
+```text
+处理站 / Today's Focus
+  a small set intentionally selected for current attention
+
+未完成
+  remaining accepted requirements/work, ordered by current importance
+
+已完成
+  completed/closed outcomes, kept after unfinished work for history
+```
+
+Each day, reconciliation may propose a few unfinished entries for the
+**处理站**; the user confirms the focus set. There is no need to expose every
+internal state as a board column.
+
+Projects remain filters/relationships, not separate truth islands.
 
 ### 8.2 Candidate before Item
 
@@ -1218,7 +1266,27 @@ The user selects today's work.
 That selection is durable enough to drive background continuation but remains
 human-owned.
 
-### 8.5 Not every operation is an Item
+### 8.5 Item is internal continuity; documents are the primary human surface
+
+Item remains the durable work/control identity, but the user is not expected to
+live in Item-detail pages.
+
+The normal human-facing materials are:
+
+```text
+Requirement / Brief
+Structured Understanding / project context
+Design / Decision
+Final Report / Verification Report
+```
+
+Agent-facing execution/checkpoint material may exist underneath without becoming
+a primary user UI.
+
+Board entries should link to the relevant human documents. The Item id is stable
+metadata/continuity, not the product experience itself.
+
+### 8.6 Not every operation is an Item
 
 A durable requirement becomes an Item. A small operational/support action may
 not.
@@ -1248,7 +1316,7 @@ work-object. Environment/tool/software changes are either part of an approved
 Item, a Routine, or a bounded Incident/Maintenance action depending on why the
 change exists.
 
-### 8.6 Project lifecycle
+### 8.7 Project lifecycle
 
 Projects are not simply present or deleted.
 
@@ -1403,6 +1471,55 @@ the convergence guard, escalate to the user.
 ServerOS prepares clean Context/Decision Packets instead of forcing GPT to
 re-read raw work history.
 
+### 10.2 GitHub Work Packet: CC → GPT → CC
+
+For substantial Items, durable reasoning material lives in an owned records/docs
+repository (for example `hwz-records`), while implementation remains in the
+Bridge/code repository.
+
+A deliberately small packet is preferred:
+
+```text
+brief.md       requirement / background / source links / acceptance
+design.md      research synthesis / decision / design
+execution.md   agent checkpoint / implementation notes (primarily agent-facing)
+report.md      verification / E2E / delivery / final outcome
+```
+
+Large research may split into `research.md`; do not create files merely to
+mirror workflow states.
+
+Target loop:
+
+```text
+CC
+→ collect Feishu/context/code evidence
+→ maintain brief/work packet in GitHub
+
+GPT
+→ read Work Packet + Bridge code
+→ research/challenge/decide/design
+→ write design/decision material back to owned docs/records main
+
+CC
+→ observe approved design revision
+→ refresh Context Capsule
+→ implement in Bridge worktree/branch
+→ test / E2E / PR
+→ maintain execution/report
+
+GPT
+→ optional final design/evidence review
+```
+
+GPT may directly write owned reasoning/docs records where authorized. Code still
+follows normal branch/worktree/PR delivery and GPT does not directly replace
+code-main authority.
+
+If the design contains no unresolved `HUMAN_DECISION_REQUIRED` gate, CC should
+be able to continue automatically from the accepted design instead of waiting
+for the user to manually retransmit it.
+
 ---
 
 ## 11. Execution and Quay
@@ -1539,6 +1656,52 @@ acceptance / branch target
 
 Human involvement is reserved for ambiguous acceptance, authorization gates,
 environment constraints and unexpected product decisions.
+
+E2E should discover and provision the required test environment as
+automatically as possible, then resolve browser/test tooling through the Ability
+Fabric rather than hard-coding one executor.
+
+Preferred browser strategy:
+
+```text
+Playwright native/CLI
+  default deterministic and fast executor
+  machine-readable assertions / traces / screenshots
+
+Playwright MCP
+  interactive Agent exploration/debugging/adaptive browser control
+
+OpenCLI / real browser profile
+  specialized path for reusing a real logged-in browser/session when needed
+  useful but potentially slower than fresh deterministic Playwright
+```
+
+Screenshots are first-class evidence and should be captured generously at
+meaningful journey checkpoints, especially for real UI E2E. They complement
+machine-readable assertions; screenshots alone do not prove PASS.
+
+E2E may run with a dedicated test identity or a real user identity. Identity is
+part of the test-environment contract and evidence, not an implicit browser
+accident. A test identity is preferred for repeatable/isolation-sensitive flows;
+real identity may be required when acceptance specifically depends on real
+permissions/account state.
+
+Every substantial E2E verification/campaign produces a readable report with:
+
+```text
+target revision / branch
+environment
+identity type used
+scenario / acceptance matrix
+PASS / FAIL / BLOCKED
+key screenshots
+machine-readable assertions
+reproduction/evidence links
+final verdict
+```
+
+The user may still inspect the live CC/terminal interaction; the report is the
+durable acceptance artifact.
 
 An E2E Campaign is a verification plan/run grouping, not a new top-level work
 object. It belongs to an Item/Release/explicit verification target.
@@ -1736,6 +1899,11 @@ Minutes   source recording / transcript
 
 Shared keys such as `project_ref` and `item_ref` connect the objects. Physical
 folder trees do not need to mirror each other.
+
+Do not create another local `workspace/projects/<project>` symlink/index tree
+merely for convenience. The role-based physical layout plus semantic resolver
+is sufficient; Project views belong in CloudCLI/Wiki/search, not as another
+filesystem hierarchy.
 
 ### 14.5 Inbox is a placement state, not a junk drawer
 
@@ -2483,6 +2651,12 @@ It should expose:
 
 CloudCLI native shell/Git/files may perform operations outside ServerOS semantic
 APIs; the product must not falsely claim total interception.
+
+The initial product should preserve CloudCLI's default home/sidebar/session UX.
+CloudCLI's plugin system is sufficient for ServerOS contextual tabs and backend
+integration; replacing/reordering the global home page is not required. A core
+CloudCLI fork/change should only happen later if a real product need cannot be
+served by plugins.
 
 ### 20.2 Feishu is a lightweight human-control and information surface
 
@@ -3300,7 +3474,10 @@ Large remaining design work is subsystem-detail work, especially:
 17. Bridge↔enterprise synchronization, mandatory code PR delivery and adoption outcome;
 18. target-specific production gates and post-deploy LIVE verification;
 19. cross-surface retrieval/ranking with provenance and contextual authority;
-20. My Docs→Wiki promotion, generic knowledge freshness and Project Home maintenance.
+20. My Docs→Wiki promotion, generic knowledge freshness and Project Home maintenance;
+21. human work-document/处理站 projection and docs-first Item presentation;
+22. GitHub Work Packet CC↔GPT handoff and automatic design-to-execution continuation;
+23. E2E environment discovery, browser-provider selection, identity handling and screenshot-rich report.
 
 Those details may refine contracts. They do not reopen the product definition.
 
