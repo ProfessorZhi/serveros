@@ -452,6 +452,24 @@ Collapsing these concepts creates false authority.
 
 ## 5. Source capture, Follow and Feishu
 
+Feishu is the **primary enterprise information and work-demand source family**
+for the current product.
+
+Most relevant external work information arrives through:
+
+```text
+Feishu IM
+Feishu My Docs / Drive / Wiki
+Feishu Minutes / meeting transcripts
+offline conversations uploaded/transcribed into Feishu
+explicit user corrections / additions
+repo/document links mentioned in Feishu
+```
+
+GitHub does not independently create work merely because an issue/repo exists.
+A GitHub object becomes work context because an existing Project, Follow,
+Requirement or explicit human instruction references it.
+
 ### 5.1 Source capture
 
 ServerOS may shallow-archive authorized Feishu chat sources by default.
@@ -492,6 +510,25 @@ Possible sources:
 
 Follow records source identity, scope/project, snapshot policy, understanding
 policy and notification policy.
+
+### 5.2.1 Repository links mentioned in Feishu
+
+Repository URLs mentioned in Feishu are evidence/context, not automatic Project
+or work adoption.
+
+For direct/private messages where a repository is intentionally sent to the
+user, ServerOS may surface an **inspection proposal**:
+
+```text
+private/direct repo reference
+→ show user
+→ user confirms inspection
+→ temporary clone/read-only analysis
+→ optional recommendation
+```
+
+A group-chat mention does not automatically trigger a clone. Inspection does not
+create a Project, Bridge or Item. Those remain explicit user decisions.
 
 ### 5.3 Feishu surfaces have different jobs
 
@@ -719,6 +756,42 @@ MetaCC already provides useful Claude/Codex history semantics including:
 - edit sequence analysis.
 
 MetaCC observations do not become live-session authority.
+
+### 6.5.1 Agent Improvement through MetaCC
+
+The separate Log Analysis project targets organization/user workload logs and is
+not ServerOS's own telemetry subsystem.
+
+For ServerOS self-improvement, first use MetaCC over the user's own Claude/Codex
+sessions.
+
+A periodic improvement recipe may analyze:
+
+```text
+repeated tool failures
+compaction / oversized sessions
+repeated human corrections
+poor handoffs
+duplicated investigation
+slow capability discovery
+unproductive retry patterns
+editing / verification patterns
+```
+
+and produce **Improvement Findings** with evidence.
+
+```text
+MetaCC session history
+→ analysis
+→ recurring friction / success pattern
+→ Improvement Finding
+→ optional Candidate
+→ user selection
+→ ServerOS/Ability improvement Item
+```
+
+It does not silently change prompts, Skills or runtime configuration merely
+because a pattern was detected.
 
 Subagents and Quay runs are normally shown underneath their parent
 Session/Activity rather than promoted into the top-level Session list. If a
@@ -1144,6 +1217,13 @@ judgment from important decisions.
 
 Project decisions must use local truth, not web research alone.
 
+Web research is a generic Evidence Acquisition capability available across
+Development & Operations, Technical Support and analysis work. The current
+baseline may be simple search/browser use; richer online-research Providers can
+be added later without changing the work model.
+
+ServerOS does not need a separate "research platform" to support this.
+
 A research packet may combine:
 
 - local repositories;
@@ -1321,7 +1401,54 @@ high-risk/live
 
 Do not run the whole world merely because tests exist.
 
-### 12.2 E2E
+### 12.2 E2E is a first-class Ability
+
+E2E is not merely the last command in a development recipe.
+
+It supports at least two major modes:
+
+```text
+Item Verification
+  prove one Requirement/Item acceptance end to end
+
+E2E Campaign
+  verify a branch / release / migration candidate
+  across a large scenario matrix
+```
+
+A campaign may vary:
+
+```text
+scenario
+feature/acceptance point
+provider/model
+device
+browser
+configuration
+test environment
+version/branch
+```
+
+The goal is to minimize routine human participation:
+
+```text
+acceptance / branch target
+→ plan scenario matrix
+→ prepare isolated environments
+→ execute
+→ observe
+→ capture evidence
+→ compare expected/actual
+→ verdict
+→ cleanup
+→ concise report
+```
+
+Human involvement is reserved for ambiguous acceptance, authorization gates,
+environment constraints and unexpected product decisions.
+
+An E2E Campaign is a verification plan/run grouping, not a new top-level work
+object. It belongs to an Item/Release/explicit verification target.
 
 E2E may orchestrate Providers such as:
 
@@ -1382,7 +1509,17 @@ communication.reply
 communication.publish
 ```
 
-Providers may include Feishu, GitHub, email or other approved channels.
+Feishu is the first-class communication Provider for the current product.
+
+GitHub PR/issue/comment actions remain part of normal engineering work.
+Email or other channels are future Providers and do not need pre-built product
+machinery merely for completeness.
+
+Support Bot automatic Hosting replies remain owned by the separate Support Bot
+project; ServerOS supplies generic Communication, Context, Knowledge and
+Evidence capabilities.
+
+Providers may include Feishu, GitHub and future approved channels.
 
 Low-risk notifications/report delivery may eventually be automated by policy.
 External commitments, sensitive statements or other high-impact communication
@@ -1893,6 +2030,40 @@ desktop software and workflows requiring local GUI/configuration.
 
 Windows does not need a duplicate global ServerOS authority.
 
+### 18.6 Execution placement and handoff
+
+ServerOS may automatically **recommend execution placement** based on:
+
+```text
+required Ability/Provider
+device readiness
+OS/platform requirement
+current environment
+data locality
+compliance
+resource availability
+```
+
+Tokyo is the normal default.
+
+When an Activity reaches a Windows-specific boundary, the Tokyo Agent may
+propose a handoff:
+
+```text
+Tokyo CC detects Windows requirement
+→ prepares checkpoint/context
+→ prompts for Windows handoff
+→ Windows accepts
+→ new/attached Windows Session continues the same Item
+→ evidence/checkpoint returns to Item
+```
+
+The placement recommendation is automatic; a cross-device handoff that changes
+the active execution context is explicit and visible.
+
+Execution placement belongs to the Agent/Work coordination layer, not Fleet
+topology itself.
+
 ---
 
 ## 19. Runtime configuration
@@ -2254,6 +2425,7 @@ runtime-assets/
   ServerOS/plugin revisions
   Ability artifacts
 
+vault/                centralized user-owned credentials/secrets
 downloads/            unclassified/new inputs
 logs/
 caches/
@@ -2270,7 +2442,32 @@ records     durable structured meaning / claims / work facts
 data        large raw source material
 artifacts   outputs/evidence tied to a Run/Item
 state       durable machine/provider operational state
+vault       centralized secret material used by the user's Agents/tools
 ```
+
+### 24.1 Vault
+
+The current design intentionally keeps credential storage simple.
+
+```text
+/data/home/vince/vault/
+```
+
+is the primary centralized secret directory for the user's Tokyo environment.
+
+Rules:
+
+- user-owned and access-restricted on disk;
+- never committed to Git;
+- never treated as ordinary Memory/Knowledge/Report content;
+- Claude Code / Codex running as the authorized user may directly read needed
+  secret files for approved work;
+- secret bytes do not need a separate ServerOS Vault service;
+- ServerOS may index only enough metadata to explain purpose/owner/target if
+  useful, without duplicating the secret value.
+
+This is centralized operational storage, not a generic enterprise Secret
+Manager product.
 
 Not all state is disposable.
 
@@ -2487,7 +2684,8 @@ B · Information → Delivery
 ├── Development & Operations
 ├── Log Analysis / Observability
 ├── Technical Support
-├── Research / Evidence Acquisition
+├── Agent Improvement / Session Intelligence
+├── Research / Evidence Acquisition / Web Research
 ├── Decision / Architecture
 ├── Verification / E2E
 ├── Routine
@@ -2589,7 +2787,7 @@ The product shape in this document is now the architecture baseline.
 Large remaining design work is subsystem-detail work, especially:
 
 1. exact Session record schema and cross-device attachment/handoff contract;
-2. MetaCC-to-ServerOS history/intelligence adapter;
+2. MetaCC-to-ServerOS history/intelligence adapter and Agent Improvement recipe;
 3. OpenViking deployment/binding/backup contract and device provenance fields;
 4. versioned Claim/conflict projection and reconciliation schema;
 5. information-flow policy vocabulary and enforcement points;
@@ -2601,7 +2799,8 @@ Large remaining design work is subsystem-detail work, especially:
 11. Tokyo Tailscale userspace deployment and phone/private-CloudCLI access;
 12. A2A adapter timing/mapping;
 13. dynamic environment Attachment/lease/refcount behavior;
-14. E2E evidence schema and provider adapters.
+14. E2E Item Verification / Campaign contract, scenario matrix and evidence schema;
+15. execution placement / Tokyo→Windows handoff contract.
 
 Those details may refine contracts. They do not reopen the product definition.
 
