@@ -5048,22 +5048,36 @@ def _workchain_refusals(fn):
     return run
 
 
-def cmd_work_board(args) -> int:
-    """§6 — the personal board: 今日重点 through 已完成, in §6's order."""
+def _work_board_document(args):
+    """The composed personal board, shared by every verb that reads it.
+
+    Factored rather than composed twice. `work board` and `work focus` must see
+    the same Items, and two compositions would be two answers to "which Items
+    exist" — the pair only has to disagree once, and the disagreement would show
+    up as a focus selection that names an Item the board does not print, or
+    omits one it does.
+    """
     chain = _workchain_module()
     boards, records, workspace = _workchain_roots(args)
     if boards is None:
-        return EXIT_FAULT
+        return None
     contract = chain.load_contract(
         REPO_ROOT / "intake" / "workchain-contract.yaml")
     projects = chain.load_projects(
         boards_root=boards,
         projects=(args.project.split(",") if getattr(args, "project", "") else None))
-    board = chain.compose_board(contract=contract, projects=projects,
-                                records_root=records,
-                                workspace_root=workspace,
-                                skeletons=_workchain_skeletons(chain),
-                                today_by_project=_today_for(chain, records, projects))
+    return chain.compose_board(contract=contract, projects=projects,
+                               records_root=records,
+                               workspace_root=workspace,
+                               skeletons=_workchain_skeletons(chain),
+                               today_by_project=_today_for(chain, records, projects))
+
+
+def cmd_work_board(args) -> int:
+    """§6 — the personal board: 今日重点 through 已完成, in §6's order."""
+    board = _work_board_document(args)
+    if board is None:
+        return EXIT_FAULT
 
     if args.write:
         output = Path(args.output_dir) if args.output_dir else (
@@ -5199,6 +5213,124 @@ def _work_board_markdown(board: dict) -> str:
     lines += [f"> 文档列按 `{order}` 的顺序；`●` 已有 · `○` 此状态还不要求 · "
               f"`×` 此状态要求但缺", ""]
     return "\n".join(lines)
+
+
+def cmd_work_focus(args) -> int:
+    """§12 — which two objectives the next cycle may carry, and why not more.
+
+    The one verb that points `intake/daily_cycle.select_focus` at a projection a
+    producer actually rendered. It decides nothing on its own: `select_focus`
+    returns `admission_required: True`, and the authority for admitting work is
+    work-engine's atomic admission, not this printout.
+
+    What it refuses to paper over, all three measured on this node:
+
+      * a projection whose FACTS are old. The board composes in this second, so
+        a reader who takes the composition time for the observation time gets a
+        fresh-looking answer built on files last written on 2026-09-10. The age
+        used here is the oldest underlying projection, and a stale one produces
+        STALE_BOARD naming the age rather than a selection.
+      * an age nobody can state — an unreadable or undated projection — which
+        is `PROJECTION_AGE_UNKNOWN` and not "fresh enough".
+      * grants. None exist on this node, so every candidate is reported
+        un-authorized. Printing an empty `selected` beside that reason is the
+        honest pair; printing it alone would read as "nothing to do".
+    """
+    board = _work_board_document(args)
+    if board is None:
+        return EXIT_FAULT
+    focus_mod = _load_module_from(REPO_ROOT / "intake" / "focus_source.py",
+                                 "serveros_intake_focus_source")
+    cycle = _load_module_from(REPO_ROOT / "intake" / "daily_cycle.py",
+                              "serveros_intake_daily_cycle")
+    try:
+        composed = focus_mod.compose(board)
+    except focus_mod.Refused as exc:
+        sys.stderr.write(f"serverosctl: {exc}\n")
+        return EXIT_FAULT
+
+    grants: dict = {}
+    if getattr(args, "grants", ""):
+        path = Path(args.grants)
+        if not path.is_absolute():
+            sys.stderr.write(
+                f"serverosctl: --grants must be absolute, got {path}. A grant "
+                f"file resolved against the caller's cwd is a grant nobody else "
+                f"can find.\n")
+            return EXIT_FAULT
+        try:
+            grants = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError) as exc:
+            sys.stderr.write(f"serverosctl: cannot read --grants {path}: {exc}\n")
+            return EXIT_FAULT
+        if not isinstance(grants, dict):
+            sys.stderr.write(
+                f"serverosctl: --grants {path} must hold an object keyed by grant "
+                f"ref, got {type(grants).__name__}\n")
+            return EXIT_FAULT
+
+    now = datetime.datetime.now(datetime.timezone.utc)
+    lines = [
+        f"board       {composed['board_at']} (composed now)",
+        f"observed    {composed['observed_at'] or 'unknown'} (oldest projection)",
+        f"now         {now.isoformat()}",
+        f"ttl         {args.ttl}s",
+        f"projects    {len(composed['projects'])}: "
+        + ", ".join(f"{name} {stamp or 'undated'}"
+                    for name, stamp in sorted(composed["projection_times"].items())),
+        f"rows        {len(composed['rows'])}",
+        f"grants      {len(grants)} supplied"
+        + ("" if grants else " — no grant authority exists on this node"),
+    ]
+    if composed["observed_at"] is None:
+        decision = {"status": "BLOCKED", "reason": "PROJECTION_AGE_UNKNOWN",
+                    "selected": [], "carryover": []}
+    else:
+        decision = cycle.select_focus(
+            composed["rows"], grants, now=now,
+            observed_at=composed["observed_at"],
+            ttl_seconds=args.ttl, limit=args.limit)
+    lines.append(f"decision    {decision['status']}")
+    if decision.get("reason"):
+        lines.append(f"reason      {decision['reason']}")
+    lines.append("")
+
+    by_id = {row["id"]: row for row in composed["rows"]}
+    selected = decision.get("selected") or []
+    lines.append(f"selected    {len(selected)}")
+    for item_id in selected:
+        row = by_id.get(item_id, {})
+        lines.append(f"  {item_id:<10} {row.get('state','?'):<11} "
+                     f"{row.get('priority') or 'no priority'}  {row.get('title','')}")
+    because = decision.get("carryover_because") or {}
+    lines.append("")
+    lines.append(f"carryover   {len(decision.get('carryover') or [])} "
+                 f"(slots {args.limit}) — unresolved, each holding a slot")
+    for item_id in decision.get("carryover") or []:
+        row = by_id.get(item_id, {})
+        lines.append(f"  {item_id:<10} {row.get('state','?'):<11} "
+                     f"{because.get(item_id,'')}")
+    lines.append("")
+    lines.append(f"excluded    {len(decision.get('excluded') or [])}")
+    for entry in decision.get("excluded") or []:
+        row = by_id.get(entry["id"], {})
+        lines.append(f"  {entry['id']:<10} {row.get('state','?'):<11} {entry['reason']}")
+    unevaluated = decision.get("unevaluated") or []
+    if unevaluated:
+        lines.append("")
+        lines.append(f"unevaluated {len(unevaluated)} — no producer states whether a "
+                     f"worker is still held; state decided")
+        for entry in unevaluated[:5]:
+            lines.append(f"  {entry['id']:<10} {','.join(entry['fields'])}")
+        if len(unevaluated) > 5:
+            lines.append(f"  … {len(unevaluated) - 5} more, same two fields")
+    if not grants:
+        lines.append("")
+        lines.append("no grant authority: " +
+                     composed["not_produced_elsewhere"]["grants"])
+    emit({"decision": decision, "focus": composed, "grants_supplied": len(grants)},
+         as_json=args.json, lines=lines)
+    return EXIT_OK
 
 
 def cmd_work_item(args) -> int:
@@ -5764,6 +5896,84 @@ def cmd_workspace(args) -> int:
     except workspace_mod.WorkspaceError as exc:
         sys.stderr.write(f"serverosctl: {exc}\n")
         return EXIT_COULD_NOT_ANSWER
+
+
+# ---------------------------------------------------------------------------
+# architecture
+# ---------------------------------------------------------------------------
+
+# The two checkers live beside the skill that owns them, not under `runtime/`,
+# because they are §15/§31 gates over the WHOLE tree rather than node-runtime
+# behaviour. They have been runnable by path all along and were named to
+# readers as `serverosctl architecture project` in two places — a comment
+# `map_projection.py` emits into every map it cannot anchor, and
+# `architecture_check.py`'s `refresh_via` on a MAP_VIEW_UNBOUND finding.
+#
+# That named verb did not exist. Nothing caught it, and the reason is worth
+# recording, because it is the same shape this repository keeps meeting: the
+# gate that checks declared commands (`tests/test_declared_commands.py`) scans
+# *.yaml, skills/**/*.md, docs/*.md and workbench/*.md, and its own comment
+# says why the set is hand-listed. A command a reader is told to run is
+# usually a line in a document. Here it was a string emitted from a `.py`, and
+# a `.py` is not in the tuple — so the declaration was invisible to the scan
+# and the scan was, by its own standard, indistinguishable from a clean one.
+#
+# These wrappers are the missing verb, and they are deliberately the thinnest
+# thing that could be: the scripts already have their own argv surface, their
+# own root resolution (this node's host profile, with no flag needed — measured
+# 2026-09-22) and their own exit codes. `architecture_check.py`'s own design
+# rule is "no second parser", so this adds none: it forwards the tail verbatim
+# and returns the checker's exit code.
+
+_ARCHITECTURE_SCRIPTS = {
+    "check": ("architecture_check.py", "serveros_architecture_check"),
+    "project": ("map_projection.py", "serveros_map_projection"),
+}
+
+
+def _architecture_checker(verb: str):
+    """The checker module for `verb`, or None with the reason written to stderr.
+
+    A wrapper whose target is absent must say so. Returning 0 here would report
+    "nothing found to fix" for a revision that has nothing to run — the exact
+    conflation of an empty answer with a clean one that both checkers spend
+    their docstrings refusing.
+    """
+    filename, module_name = _ARCHITECTURE_SCRIPTS[verb]
+    path = REPO_ROOT / "skills" / "serveros" / "scripts" / filename
+    if not path.is_file():
+        sys.stderr.write(
+            f"serverosctl: architecture {verb}: {path} is not in this "
+            f"revision. This verb is a wrapper over the checker that ships "
+            f"beside the serveros skill; a wrapper whose target is absent "
+            f"answers nothing rather than reporting a clean tree.\n")
+        return None
+    return _load_module_from(path, module_name)
+
+
+def _cmd_architecture(args, verb: str) -> int:
+    module = _architecture_checker(verb)
+    if module is None:
+        return EXIT_COULD_NOT_ANSWER
+    forwarded: list[str] = []
+    # REMAINDER means a flag typed after the verb reaches the checker rather
+    # than this parser, which is what keeps the checker's `--help` and its
+    # `--json` its own. The global form still works, and it is merged here
+    # rather than in the parser so that the two positions cannot both claim it.
+    if getattr(args, "json", False):
+        forwarded.append("--json")
+    forwarded.extend(getattr(args, "checker_argv", None) or [])
+    return module.main(forwarded)
+
+
+def cmd_architecture_check(args) -> int:
+    """§31–§42 conformance over the live tree; reports, never repairs."""
+    return _cmd_architecture(args, "check")
+
+
+def cmd_architecture_project(args) -> int:
+    """§15 the machine-owned region of each human map, regenerated as a candidate."""
+    return _cmd_architecture(args, "project")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -6716,6 +6926,22 @@ def build_parser() -> argparse.ArgumentParser:
                                "`state/workchain` unless --output-dir is given")
     wk_board.add_argument("--output-dir", default="")
     wk_board.set_defaults(func=_workchain_refusals(cmd_work_board))
+
+    wk_focus = work_sub.add_parser(
+        "focus", help="§12 — at most two objectives for the next cycle, decided "
+                      "from the board's own rows over the oldest projection's "
+                      "age. Reads; admits nothing", **_COMMON)
+    _add_work_roots(wk_focus, project_required=False)
+    wk_focus.add_argument("--grants", default="",
+                          help="absolute path to a JSON object keyed by grant "
+                               "ref. No grant authority exists on this node "
+                               "yet, so omitting it reports every candidate as "
+                               "un-authorized rather than selecting one")
+    wk_focus.add_argument("--ttl", type=int, default=900,
+                          help="how old the underlying projection may be, in "
+                               "seconds (default 900)")
+    wk_focus.add_argument("--limit", type=int, default=2)
+    wk_focus.set_defaults(func=_workchain_refusals(cmd_work_focus))
 
     wk_item = work_sub.add_parser(
         "item", help="one Item's chain: which document exists, which is "

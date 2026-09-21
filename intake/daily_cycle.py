@@ -14,6 +14,19 @@ ELIGIBLE = frozenset({"AVAILABLE", "READY"})
 TERMINAL = frozenset({"CLOSED", "DELIVERED", "CANCELLED"})
 PROTECTED_EFFECTS = frozenset({"production.cutover", "production.rollback", "production.mutate"})
 
+# The two fields a projection may carry about whether something is still held
+# on an Item's behalf. Neither is produced anywhere on this node as of
+# 2026-09-22: `intake/focus_source.py` reads the personal board, which carries
+# neither, and says so per row. See `liveness` for why their absence is not
+# read as evidence.
+LIVENESS_FIELDS = ("worker_stopped", "resources_released")
+# The accepted priority vocabulary. A row whose `priority` is not one of these
+# strings has no established priority — checked with `isinstance` rather than
+# with a bare membership test, because the personal board publishes priority as
+# a `{personal, source}` object and `{...} in {"P0"}` raises TypeError: a
+# projection this policy is pointed at must not crash it.
+PRIORITY_LEVELS = frozenset({"P0", "P1", "P2", "P3", "P4"})
+
 
 def instant(value: str) -> datetime:
     parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
@@ -60,12 +73,58 @@ def grant_reason(grant: dict, *, item: dict, action: str, now: datetime) -> str 
     return None
 
 
+def liveness(row: dict) -> tuple[bool | None, list[str]]:
+    """Is something still held on this Item's behalf, and on whose word.
+
+    THREE-valued, and the third value is the point. `True` and `False` are the
+    row saying so; `None` is the row not saying. Only fields that are actually
+    present are read, so a projection that carries one of the two answers about
+    that one.
+
+    The version this replaces was a single expression —
+    `row.get("worker_stopped") is not True or row.get("resources_released") is
+    not True` — which collapses "the field is absent" into "the field is False"
+    and makes a silent projection read as a live worker. Measured against the
+    live 17-row personal board, that returned all 17 rows as carryover,
+    including the 7 CLOSED and 4 DELIVERED ones, and reported a node with four
+    Items in flight as OVER_CAPACITY on the strength of fourteen that had
+    finished. `tests/test_focus_source.py` carries that measurement against the
+    captured board; the direction is not a matter of taste, because a
+    projection that is silent about a worker is not evidence of one.
+    """
+    present = [(field, row[field]) for field in LIVENESS_FIELDS
+               if row.get(field) is not None]
+    if not present:
+        return None, []
+    held = [field for field, value in present if value is not True]
+    return bool(held), held
+
+
 def select_focus(rows: list[dict], grants: dict[str, dict], *, now: datetime,
                  observed_at: str, ttl_seconds: int = 900, limit: int = 2) -> dict:
     """At most two root objectives INCLUDING unresolved work already in progress.
 
-    Rows are normalized by the existing board adapter; absence is not an empty
-    project. PARKED requires no remaining worker or reservation before replacement.
+    Rows are normalized by the board adapter (`intake/focus_source.py`, reached
+    as `serverosctl work focus`); absence is not an empty project. PARKED
+    requires positive evidence that no worker or reservation is still held
+    before it releases its slot.
+
+    Two things this reads in the three-valued way rather than the permissive
+    one:
+
+      * `worker_stopped` / `resources_released` — see `liveness`. Where a
+        projection is silent, `state` is what decides: work-engine's state
+        machine is the authority for whether work is in progress, and these two
+        fields are a secondary alarm, read only when the row actually asserts
+        them. Rows whose liveness was not decidable are listed in
+        `unevaluated`, so a reader is told rather than reassured.
+      * `TERMINAL` was declared and never consulted. 11 of the 17 live rows are
+        in a terminal state (7 CLOSED, 4 DELIVERED) and each of them used to be
+        reported as in flight. A terminal row now leaves the decision with the
+        reason `TERMINAL_STATE`: it neither holds a slot nor accepts new work.
+        DELIVERED is in that set deliberately — an Item delivered and not yet
+        closed has finished its implementation, and what it is waiting for is
+        acceptance, which is not something this function can start.
     """
     if type(limit) is not int or not 0 < limit <= 2:
         raise ValueError("this profile supports one or two focus objectives")
@@ -74,24 +133,51 @@ def select_focus(rows: list[dict], grants: dict[str, dict], *, now: datetime,
     ids = [r.get("id") for r in rows]
     if any(not isinstance(i, str) or not i for i in ids) or len(ids) != len(set(ids)):
         raise ValueError("missing or duplicate canonical Item ID")
-    carry, candidates, excluded = [], [], []
+    carry, candidates, excluded, unevaluated = [], [], [], []
+    carryover_because: dict[str, str] = {}
     for row in rows:
-        live = row.get("worker_stopped") is not True or row.get("resources_released") is not True
+        held, held_fields = liveness(row)
         state = row.get("state")
         parked = (row.get("focus_disposition") == "PARKED" and
-                  row.get("parking_acknowledged") is True and not live)
-        if (state in BUSY and not parked) or live:
+                  row.get("parking_acknowledged") is True)
+        if held:
             carry.append(row["id"])
+            carryover_because[row["id"]] = (
+                f"WORKER_OR_RESERVATION_HELD:{','.join(held_fields)}")
             continue
-        if parked or state not in ELIGIBLE:
-            excluded.append({"id": row["id"], "reason": "NOT_AVAILABLE"})
+        if parked and held is not False:
+            # Undoing a park needs positive evidence that nothing is held any
+            # more. The board carries no liveness field, so on this node a
+            # parked row never releases its slot by being read — which is the
+            # answer the design asks for: parking is acknowledged, not asserted.
+            carry.append(row["id"])
+            carryover_because[row["id"]] = "PARKED_RELEASE_UNCONFIRMED"
             continue
+        if state in TERMINAL:
+            excluded.append({"id": row["id"], "reason": "TERMINAL_STATE"})
+            continue
+        if parked:
+            excluded.append({"id": row["id"], "reason": "PARKED_NOT_ELIGIBLE"})
+            continue
+        if state in BUSY:
+            carry.append(row["id"])
+            carryover_because[row["id"]] = "STATE_HOLDS_SLOT"
+            continue
+        if state not in ELIGIBLE:
+            excluded.append({"id": row["id"], "reason": "STATE_NOT_ELIGIBLE"})
+            continue
+        if held is None:
+            unevaluated.append({
+                "id": row["id"], "fields": list(LIVENESS_FIELDS),
+                "because": "this projection carries neither field, so whether a "
+                           "worker still holds the Item was not decided here; "
+                           "the Item's own state is what admitted it"})
         action = row.get("next_action", "research")
         reason = ("HUMAN_EXECUTED" if action in PROTECTED_EFFECTS else
                   grant_reason(grants.get(row.get("grant_ref"), {}), item=row,
                                action=action, now=now))
         priority = row.get("priority")
-        if priority not in {"P0", "P1", "P2", "P3", "P4"}:
+        if not (isinstance(priority, str) and priority in PRIORITY_LEVELS):
             reason = reason or "PRIORITY_NOT_ESTABLISHED"
         if row.get("blocked_by"):
             reason = reason or "DEPENDENCY_BLOCKED"
@@ -105,6 +191,7 @@ def select_focus(rows: list[dict], grants: dict[str, dict], *, now: datetime,
     chosen = candidates[:slots]
     return {"status": "OVER_CAPACITY" if len(carry) > limit else "PLANNED",
             "selected": [r["id"] for r in chosen], "carryover": carry,
+            "carryover_because": carryover_because, "unevaluated": unevaluated,
             "unused_slots": max(0, slots-len(chosen)), "excluded": excluded,
             "selection_digest": fingerprint({"selected": chosen, "carryover": carry,
                                               "observed_at": observed_at}),
