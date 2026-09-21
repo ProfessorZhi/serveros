@@ -412,6 +412,30 @@ exception inbox.
 An unresolved understanding delta does not freeze unrelated, already-approved
 Items.
 
+### 4.1.1 Reconciliation documents
+
+The human-facing reconciliation surface uses **one document per day** plus a
+long-lived master document/index.
+
+```text
+Daily Reconciliation / YYYY-MM-DD
+  current understanding summary
+  material deltas
+  corrections / accepted edits
+  candidate work
+  unresolved questions
+  checkpoint result
+
+Reconciliation Index / Master
+  date index
+  short daily summaries
+  major decision/understanding links
+  links to each daily document
+```
+
+The daily document is the discussion/confirmation surface. The master document
+is navigation and longitudinal summary, not a second truth database.
+
 ### 4.2 Archive, Understanding, Knowledge, Memory and Work are different
 
 ```text
@@ -469,20 +493,59 @@ Possible sources:
 Follow records source identity, scope/project, snapshot policy, understanding
 policy and notification policy.
 
-### 5.3 Feishu's real content surfaces remain real
+### 5.3 Feishu surfaces have different jobs
 
-ServerOS does not invent a fake cloud hierarchy.
+ServerOS does not flatten Feishu into one fake filesystem.
 
-The three major Feishu surfaces remain:
+The three primary human content spaces are:
 
-- **My Docs**;
-- **Drive**;
-- **Wiki / Knowledge Base**.
+- **My Docs** — the user's active private workbench;
+- **Drive** — files, attachments and binary deliverables;
+- **Wiki / Knowledge Base** — curated long-lived human knowledge.
 
-ServerOS may maintain locators, semantic roles and local snapshots across those
+**Minutes / 妙记 is a separate source surface**, not a Drive folder. A Minute
+may have related recording/transcript/summary objects and derived notes, but its
+source identity remains Minutes-native.
+
+Recommended semantic use:
+
+```text
+My Docs
+  active private work
+  daily reconciliation
+  drafts
+  decision packets
+  temporary analysis
+  inbox / unclassified notes
+
+Drive
+  attachments
+  PDFs / spreadsheets / slides / images / archives
+  project files
+  meeting files
+  deliverable binaries
+  temporary staging
+
+Wiki
+  project home
+  architecture / decisions
+  runbooks
+  project knowledge
+  confirmed meeting notes
+  reports / reusable documentation
+
+Minutes
+  recording / transcript / AI summary source
+  meeting metadata
+  source provenance
+```
+
+ServerOS may maintain locators, semantic roles and local snapshots across these
 surfaces.
 
-It does not blindly move other people's documents.
+Objects owned by other people or external/shared spaces are not blindly moved.
+Owned personal My Docs/Drive content may be reorganized automatically under
+stable rules when the action does not affect other users.
 
 ### 5.4 Knowledge-base watching is incremental
 
@@ -501,15 +564,40 @@ metadata inventory
 
 ### 5.5 Meetings / Minutes
 
-Original Minutes objects remain canonical.
+Original Minutes objects remain canonical source objects.
 
-Useful meeting content may produce a derived project note with:
+A real work meeting normally creates a **MeetingBundle relationship** rather
+than physically forcing every artifact into one folder:
 
+```text
+Minute source
+├── recording
+├── transcript
+├── AI summary / chapters / todos
+├── meeting/calendar metadata
+└── derived Meeting Note
+```
+
+For relevant work meetings, ServerOS should by default create a **Meeting Note
+draft** containing:
+
+- project classification;
 - summary;
 - decisions;
-- actions;
+- actions / commitments;
+- people / ownership changes;
+- requirements / candidate work;
+- open questions;
 - relevant excerpts;
 - source locator.
+
+The draft enters the daily reconciliation flow. After the user aligns/corrects
+it, the durable human-facing note is promoted into the owning project's Wiki
+meeting area and Structured Understanding is updated from the confirmed
+interpretation.
+
+Minutes source objects remain where Feishu owns them. ServerOS organizes their
+meaning and indexes, not by pretending Minutes is a normal Drive folder.
 
 Meeting relevance and retention remain separate from deletion authority.
 
@@ -1370,6 +1458,139 @@ Placement semantics cover:
 
 Missing roots resolve to explicit UNBOUND, never to a guessed fallback.
 
+### 14.4 Space Fabric
+
+Space governance is shared across Local, Git and Feishu surfaces.
+
+The core resolver answers logical placement:
+
+```text
+what is this object?
+which Project / Item does it belong to?
+why does it exist?
+what lifecycle does it have?
+which surface is canonical?
+```
+
+It does **not** hard-code today's filesystem path, Wiki token or Drive folder.
+
+```text
+                         Space Fabric
+                              │
+                         space.resolve
+                              │
+          ┌───────────────────┼───────────────────┐
+          │                   │                   │
+        Local                Git               Feishu
+          │                   │                   │
+   Workspace adapter     Repo adapter    ┌────────┼────────┬────────┐
+                                         │        │        │        │
+                                      My Docs   Drive     Wiki    Minutes
+```
+
+The same semantic identity may therefore have different physical shapes on
+different surfaces without copying one directory tree everywhere.
+
+Example:
+
+```text
+Project: LiteLLM
+Item: LIT-0123
+
+Local     code / worktree / evidence
+My Docs   draft / reconciliation / decision packet
+Drive     attachments / binary deliverables
+Wiki      confirmed guide / meeting note / project knowledge
+Minutes   source recording / transcript
+```
+
+Shared keys such as `project_ref` and `item_ref` connect the objects. Physical
+folder trees do not need to mirror each other.
+
+### 14.5 Inbox is a placement state, not a junk drawer
+
+Each relevant surface may expose an Inbox/unclassified entry point:
+
+```text
+Local       downloads / intake
+My Docs     Inbox
+Drive       Inbox
+Minutes     unclassified/recent logical view
+```
+
+Inbox means "captured but not yet confidently placed".
+
+Stable classification may move owned content automatically. Ambiguous objects
+enter reconciliation rather than being guessed into a permanent location.
+
+### 14.6 Space Stewardship recipe
+
+Automatic organization is a recipe over existing owners, not a second
+Workspace Manager.
+
+```text
+Inventory / new object
+        ↓
+Information Management
+  identify / classify / project / Item / semantic role
+        ↓
+space.resolve
+        ↓
+KEEP / INDEX / MOVE / PROPOSAL_REQUIRED
+        ↓
+correct surface adapter
+        ↓
+verify
+        ↓
+update locator / index / provenance
+```
+
+Responsibilities remain separated:
+
+- **Information Management** — what the object means and what work it belongs to;
+- **Workspace Management** — local disk, repos, worktrees, artifacts;
+- **Feishu Space Management** — My Docs, Drive, Wiki and Minutes locators;
+- **Space Resolver** — deterministic logical placement.
+
+### 14.7 Automation authority for owned personal spaces
+
+For content clearly owned by the user, ServerOS may have high automation
+authority to organize:
+
+- personal My Docs;
+- personal Drive;
+- local user files;
+- local downloads / intake / temporary staging.
+
+The governing invariant is **non-interference with others**, not manual approval
+for every move.
+
+Shared/external objects remain proposal/index-first.
+
+Physical deletion remains lifecycle/policy governed and must not be inferred
+from "misplaced".
+
+### 14.8 Periodic local housekeeping
+
+A Routine may periodically organize clearly-owned cold/unbound inputs and
+temporary content such as:
+
+- downloads;
+- local intake;
+- tmp;
+- expired staging;
+- orphaned generated outputs with known provenance.
+
+It must not casually rewrite or clean:
+
+- active repositories;
+- dirty worktrees;
+- live runtime state;
+- unknown-owned files;
+- other users' data.
+
+The goal is semantic convergence, not making directory counts look clean.
+
 ---
 
 ## 15. Project and repository model
@@ -1385,6 +1606,28 @@ or inspected a repo.
 
 A project may span many repos and one repo may serve several work contexts.
 
+### 15.1 Project Home in Wiki
+
+Each active Project may have one stable Wiki **Project Home** as the main human
+entry point.
+
+Typical sections:
+
+```text
+Project Home
+├── current state
+├── current requirements / work
+├── important decisions
+├── key links / repositories
+├── meetings
+├── knowledge / runbooks
+└── deliverables / reports
+```
+
+The Project Home is a Current View generated/maintained from ServerOS durable
+facts and curated knowledge. It is not a second state database and does not
+duplicate every Item artifact.
+
 Repository roles:
 
 ```text
@@ -1395,7 +1638,7 @@ publication
 tool
 ```
 
-### 15.1 Bridge repository pattern
+### 15.2 Bridge repository pattern
 
 When the user explicitly needs to develop against an upstream/enterprise
 repository that is not their writable authority, prefer an owned Bridge
@@ -1976,41 +2219,57 @@ No new plane is added merely for taxonomy neatness.
 
 Storage roles remain explicit.
 
-Typical user-space topology:
+Typical user-space topology is role/lifecycle-based:
 
 ```text
 workspace/
-  src/
-  worktrees/
-  test-envs/
+  src/                canonical / bridge / tool repositories
+  worktrees/          Item code workspaces
+  test-envs/          Item test definitions/environments
+  ops/                instance governance
+  knowledge/          durable local knowledge/indexes
+  records/            structured records / Understanding
+
+artifacts/
+  work-items/<project>/<ITEM>/<RUN>/
+  reports/
+  e2e/
+  repro/
+  releases/
+  skills/
   ops/
-  knowledge/
-  records/
+
+data/
+  source-archive/     large raw sources not suited to Git
+  provider-data/      durable provider-owned bulk data
 
 state/
   serveros/
   ability-management/
+  memory/
   browser/
+  ...
 
 runtime-assets/
   ServerOS/plugin revisions
   Ability artifacts
 
-artifacts/
-  work-items/
-  skills/
-  ops/
-  repro/
-  serveros-releases/
-
-caches/
-data/
-downloads/
-envs/
+downloads/            unclassified/new inputs
 logs/
-software/
+caches/
+tmp/                  disposable/transient
+envs/
 toolchains/
-tmp/
+software/
+```
+
+The important distinction is semantic:
+
+```text
+records     durable structured meaning / claims / work facts
+data        large raw source material
+artifacts   outputs/evidence tied to a Run/Item
+state       durable machine/provider operational state
 ```
 
 Not all state is disposable.
@@ -2215,7 +2474,7 @@ A · Agent Working Infrastructure
 ├── Runtime / Session
 ├── Context & Memory
 ├── Capability Fabric
-├── Workspace / Isolation
+├── Workspace / Isolation / Space Stewardship
 ├── Connectivity / Device / UI
 ├── Verification / E2E / Release
 └── Node Runtime / Operations
@@ -2334,14 +2593,15 @@ Large remaining design work is subsystem-detail work, especially:
 3. OpenViking deployment/binding/backup contract and device provenance fields;
 4. versioned Claim/conflict projection and reconciliation schema;
 5. information-flow policy vocabulary and enforcement points;
-6. Feishu inventory/blacklist/Follow policy;
-7. Project lifecycle and reactivation projection;
-8. CloudCLI Project → Item → Session mobile/desktop plugin surfaces;
-9. external reasoning / future CC↔GPT Provider contract, Skills and 2–3 round convergence guard;
-10. Tokyo Tailscale userspace deployment and phone/private-CloudCLI access;
-11. A2A adapter timing/mapping;
-12. dynamic environment Attachment/lease/refcount behavior;
-13. E2E evidence schema and provider adapters.
+6. Feishu inventory/blacklist/Follow policy and My Docs/Drive/Wiki/Minutes adapters;
+7. Space Stewardship automation policy, Inbox classification and local housekeeping;
+8. Project lifecycle and reactivation projection;
+9. CloudCLI Project → Item → Session mobile/desktop plugin surfaces;
+10. external reasoning / future CC↔GPT Provider contract, Skills and 2–3 round convergence guard;
+11. Tokyo Tailscale userspace deployment and phone/private-CloudCLI access;
+12. A2A adapter timing/mapping;
+13. dynamic environment Attachment/lease/refcount behavior;
+14. E2E evidence schema and provider adapters.
 
 Those details may refine contracts. They do not reopen the product definition.
 
