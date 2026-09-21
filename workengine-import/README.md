@@ -1,157 +1,118 @@
 # ServerOS work engine
 
-`work-engine` is the ServerOS v3 runtime control plane. It joins information
-intake, executable work, execution evidence, and feedback without taking over
-the native facts owned by Git, GitHub, Feishu, or local execution systems:
+work-engine owns durable work/control transitions, execution receipts and Board
+projections for broad ServerOS. It is not the Agent's planner or a second general
+workflow engine.
 
-```text
-Source → Observation → Claim → Candidate Item → Item
-       → Activity → Run → Evidence → Deliverable → Feedback
-                                                └→ new Observation
-```
-
-An Item is not a PR and does not require a worktree. One Item may own zero or
-more repo contexts, test environments, Runs, and deliverables. Git worktrees
-are preferred only when source isolation or a fixed revision is required.
+Product authority: [serveros/ARCHITECTURE.md](https://github.com/ProfessorZhi/serveros/blob/main/ARCHITECTURE.md), especially sections 8, 14, 22, 23 and 27.
 
 ## Authority boundaries
 
-- stable Item intent: `records/projects/<project>/items/<ITEM>/card.yaml`
-- runtime state: `<state_root>/serveros.db`
-- evidence: `<artifacts_root>/work-items/<project>/<ITEM>/<RUN>/`
+Existing record/storage contracts distinguish:
 
-`state_root`, `artifacts_root`, `workspace_root` and `runtime_assets_root`
-are asked of the device that is running, in this order: an explicit argument,
-the role's environment variable, the device host profile's `node.roots.<role>`.
-A role the device does not bind raises rather than defaulting -- a default root
-resolves, and that is what makes it worse than an error.
-- code truth: Git
-- test environment definition: `workspace/test-envs/<repo>/<ITEM>/`
+- stable Item intent: records/projects/<project>/items/<ITEM>/card.yaml;
+- runtime/control state: <state_root>/serveros.db;
+- evidence: <artifacts_root>/work-items/<project>/<ITEM>/<RUN>/;
+- human reasoning documents: records work packets;
+- code and repository revision: Git;
+- actual cloud bodies, task stores and native sessions: their providers.
 
-Relative state and artifact roots are rejected. The old v0 JSON format is not
-read by normal commands; filesystem cutovers use the explicit migration
-journal only.
+A stable intent field and its database projection are not independently editable
+truths. Owning APIs govern controlled fields; human documents supply revisioned
+semantic content. Report/render failure does not authorize replacing the source.
 
-## CLI
+Roots are resolved from explicit arguments, existing role environment variables or
+the executing device profile. Unknown/unbound roots fail specifically rather than
+inventing a fallback. ServerOS Space owns semantic placement; work-engine consumes
+its contract and does not implement a second directory policy.
 
-Both entry points invoke the v3 CLI; `serverosctl` is canonical.
+The installed product has one serverosctl dispatcher. A component may expose its
+own library/compatibility entry internally, but two packages must not fight for the
+same public executable. This is a composition requirement, not an assertion that
+all current installations have already converged.
+
+## Flexible work semantics
+
+```text
+Candidate   cheap sourced suggestion; human selection creates durable work
+Item        accepted goal, owning Project, acceptance, envelope and checkpoint
+Activity    optional mutable decomposition, not a business stage
+Run         execution attempt; immutable historical events, progressing live state
+Outcome     business/adoption result, independent of execution state
+```
+
+An Item may touch zero or many repositories, environments, Sessions and deliverables.
+Research, experiments, design, implementation and tests can be interleaved or skipped
+according to the accepted goal. Do not use Item.kind to choose a compulsory workflow.
+
+Code changes normally use worktrees; every read-only action does not need one.
+Plans may change; events that actually happened and failed attempts must remain.
+A Quay Task is provider-native delegated work, not a mirror of Item lifecycle.
+
+## Current CLI and state compatibility
+
+The repository's existing v3 CLI remains the implementation interface until explicitly
+migrated. These examples describe that interface, not new verbs introduced by this
+document change:
 
 ```bash
-serverosctl --json item create \
-  --project serveros --prefix SRV --title "Converge workflows" --kind ops
-
+serverosctl --json item create --project serveros --prefix SRV --title "Converge work control" --kind ops
 serverosctl --json activity add SRV-0001 implement --kind develop
-
-serverosctl --json context attach SRV-0001 implement \
-  --repo work-engine --mode develop --revision "$(git rev-parse HEAD)" \
-  --worktree "$WORKSPACE_ROOT/worktrees/work-engine/SRV-0001"
-
-serverosctl --json run begin SRV-0001 implement \
-  --worker codex --idempotency-key srv-0001-control-plane
-
-serverosctl --json item outcome SRV-0001 --set SUCCESS
-serverosctl --json deliverable add SRV-0001 \
-  --kind report --locator /absolute/path/report.md
-serverosctl --json feedback record SRV-0001 \
-  --observation obs-codex-run-0001 \
-  --kind agent-verification --locator /absolute/path/feedback.json
-serverosctl --json board render --project serveros \
-  --output-dir /absolute/path/records/projects/serveros/board
-
-# Register a metadata-only Feishu or GitHub inventory and generate drift proposals.
-serverosctl --json federation feishu inventory \
-  --source /absolute/path/inventory/feishu-objects.jsonl \
-  --target "$SERVEROS_STATE_DIR/federation/feishu/current.jsonl" \
-  --evidence-run SRV-0001/RUN-0001
-serverosctl --json federation feishu proposal \
-  --observed /absolute/path/inventory/feishu-objects.jsonl \
-  --desired /absolute/path/feishu-desired.jsonl \
-  --evidence-run SRV-0001/RUN-0001
+serverosctl --json run begin SRV-0001 implement --worker codex --idempotency-key srv-0001-control-plane
+serverosctl --json board render --project serveros --output-dir /absolute/path/records/projects/serveros/board
 ```
 
-The information-to-work handoff is explicit: `source`, `observation`, and
-`claim` preserve provenance; `candidate` records matching, promotion, merge,
-rejection, or deferral before an Item is created. `federation` accepts only
-metadata and locators, writes a latest successful projection atomically, and
-records its projection hash and evidence Run in a publication receipt. Drift
-commands emit schema-valid proposals rather than changing Feishu or GitHub.
-Inventory rows are validated against the bundled copy of the hwz-ops
-`federation-object.v1` contract before the current projection is touched.
-Publication uses a same-directory stage, process lock, backup, and recovery
-journal. The journal binds a versioned transaction nonce, canonical target,
-restricted same-directory stage/backup names, old/new hashes, and the previous
-file metadata. Recovery rejects corrupt or forged journals without modifying
-the current file. A receipt failure restores the previous bytes, mode, times,
-owner/group, and extended attributes; an interrupted publication can only
-resume with the same evidence Run and hash, while a different payload for an
-existing publication identity fails closed. The Python `inventory()` helper is
-validation-and-hashing only; safe publication is exposed through the managed
-CLI path, which supplies the durable receipt callbacks.
+Current coarse Item states include INBOX, AVAILABLE, READY, ACTIVE, DELIVERED and
+CLOSED. Waiting/delegation/human-attention conditions carry reasons and continuation
+information. These states may remain as control semantics; they must not be read as
+mandatory research/design/test phases. Reopening and outcome changes remain explicit.
 
-Execution-context revisions remain authoritative per repo. The revision passed
-to `run finalize` describes the aggregate Run evidence and does not rewrite the
-0..N attached repo contexts.
+Current Runs use ALLOCATED, PREPARING, RUNNING and FINALIZING plus terminal verdicts.
+Finalize owns success/failure verdicts; cancellation/abandonment records actor/reason.
+Cancelling a control-plane Run does not by itself prove its native worker stopped or
+permit resource cleanup. Execution-context revisions remain authoritative per repo;
+an aggregate Run revision must not overwrite the attached repo contexts.
 
-Item states are:
+## Boundary contracts to implement without shortcuts
 
-```text
-INBOX → AVAILABLE → READY → ACTIVE → DELIVERED → CLOSED
-```
+The consolidated architecture requires these behaviors where older interfaces do
+not yet provide them:
 
-`WAITING`, `NEEDS_HUMAN`, and `DELEGATED` require a reason, return state,
-and unblock condition. `CANCELLED` and `CLOSED` can only be restored through an
-explicit reopen event. `outcome` is independent from state.
+- Small approved work may go directly Item -> Run without fake Activities.
+- Routine, maintenance and source-observation evidence may have a legitimate non-Item
+  parent. Do not fabricate a business Item/Run to refresh a map or publish inventory.
+- Requests distinguish accepted, completed, failed and effect-unknown results.
+- External effects carry stable action IDs, input revisions, authority and receipts.
+- Timeout-after-send reconciles actual provider state before retry.
+- One trigger owner and one lease prevent duplicate routine/background dispatch.
+- Concurrent edits use native revision guards or an explicitly weaker serialized
+  fallback, never a false promise of distributed atomicity.
 
-Run states are strongly linear:
+These are **target compatibility gaps**, not permission to bypass current validation
+or to claim the new API already works. Change versioned contracts and consumers
+together, with affected tests and honest implementation status.
 
-```text
-ALLOCATED → PREPARING → RUNNING → FINALIZING
-          → SUCCEEDED | FAILED | CANCELLED | INVALID
-```
+## Federation and publication
 
-`SUCCEEDED` and `FAILED` are verdicts produced by `run finalize`. `CANCELLED`
-and `INVALID` are operator terminations and are reached only through
-`run cancel` or `run abandon`, which require a reason and an actor and append a
-`run_terminated` record to the Item's event history. `run advance` refuses them,
-so a termination can never be recorded without why and by whom.
+Existing federation commands ingest metadata and locators, validate the documented
+contract and publish an observed projection with evidence/receipt linkage. Drift
+output is a proposal, not an automatic Feishu/GitHub mutation.
 
-`run advance` refuses `SUCCEEDED` for the same reason in the other direction: a
-verdict is not a step. It also refuses `FAILED` from `FINALIZING`, where
-`finalize_run` is the producer and records the verdict, exit code and revision
-behind the claim. `FAILED` from `PREPARING` or `RUNNING` still works — that is an
-abort rather than a judgement, and `finalize_run` requires `FINALIZING`, so
-refusing it would remove a capability instead of redirecting one.
+Do not couple observation freshness to a fabricated work hierarchy. Partial reads
+keep honest coverage and do not relabel the last good projection as fresh. External
+publication is not a transaction with the local store: preserve progress and receipts,
+then reconcile missing writes or unknown outcomes.
 
-`abandon` is not a state: it is the operation that lands in `CANCELLED` with
-`reason_code=ABANDONED`. Terminating a Run is a control-plane fact only — it
-never changes the Item, deletes artifacts or worktrees, or touches any runtime
-resource. `CANCELLED` and `INVALID` are legal from every non-terminal state;
-`INVALID` records that the Run's result must not count. A Run in `RUNNING`
-additionally requires `--acknowledge-active-worker`, because the control plane
-holds no worker handle and cannot observe or stop a worker process.
+Existing filesystem migration uses a planned journal and content verification.
+Future changes must preserve its crash/concurrency safety. No body/descendant loss
+may be hidden by a green node-count comparison or a rewritten acceptance criterion.
 
-## Migration journal
+## Verification and operating boundary
 
-Migration manifests are JSON and contain absolute move operations. Layered
-targets are allowed only when the parent move comes first and the nested target
-is new. `plan` hashes every source and refuses occupied or unsafe targets.
-`apply` persists a cursor after every move and uses copy/hash/fsync/atomic
-publish across filesystems, so a new process can resume. `compensate` reverses
-only hash-matching completed operations.
+Run tests relevant to the changed interface. Full integration/release checks belong
+at their boundary; do not run every suite for a reporting or README edit. A missing
+pytest environment is an explicit environment gap, not PASS.
 
-```bash
-serverosctl --json migrate plan --manifest /absolute/path/migration.json
-serverosctl --json migrate apply multi-user-claw
-serverosctl --json migrate verify multi-user-claw
-```
-
-## Verification
-
-```bash
-python3 -m unittest discover -s tests -v
-```
-
-The suite exercises real SQLite files and real filesystem moves, including
-concurrent Item allocation, DAG cycle rejection, idempotent Run begin,
-cross-process resume, strict artifact boundaries, crash recovery, and reverse
-compensation.
+This documentation alignment changes no Python code, state schema, CLI behavior,
+active worker, schedule, repository worktree or live cloud object. Implementation
+and LIVE evidence remain separate from the accepted design.
