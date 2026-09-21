@@ -379,9 +379,27 @@ def _owner_of(alert: dict) -> dict | None:
     }
 
 
+#: The comparison's own fields, carried from the register when the alert has
+#: them. §15's code is the one whose `what` cannot be written without both
+#: sides: "有一个对象的实际状态与声明的期望状态不一致" is equally true of a
+#: stopped container and of a failed probe, and a person has to be told which
+#: service and in what way. They sit on the register row as `measured`, because
+#: that is where the signal put them.
+#:
+#: `actual_derived_state` and not `actual_state`: the derived word is the one
+#: the health model classified (`NOT_RUNNING`), and the liveness word beside it
+#: (`STOPPED`) means "at rest" on its own. A renderer that read the liveness
+#: word would print a service as stopped that the comparison just called out of
+#: its desired state.
+COMPARISON_FIELDS = ("desired_state", "actual_state",
+                     "actual_derived_state", "actual_raw")
+
+
 def _row_of(alert: dict, *, at: str, ranks: dict, words: dict) -> dict:
     duration = _seconds_between(alert.get("first_seen"), at)
     severity = str(alert.get("severity") or "")
+    measured = alert.get("measured")
+    measured = measured if isinstance(measured, dict) else {}
     return {
         "key": alert.get("alert_ref"),
         "code": alert.get("code"),
@@ -400,6 +418,25 @@ def _row_of(alert: dict, *, at: str, ranks: dict, words: dict) -> dict:
         # back to the subject if it is not -- the card is allowed to be older
         # than the daemon, and this field is what makes that safe.
         "owner": _owner_of(alert),
+        # Where the reading came from and when. Carried because the layer above
+        # reads it: `presentation.certainty_of` answers "how much is this
+        # evidence worth" from `provenance`, and its own default is UNKNOWN.
+        # Leaving the field off this projection did not make the card say
+        # UNKNOWN out loud, it made the question unanswerable one layer down
+        # while looking, from the reader's side, exactly like a producer that
+        # had recorded nothing.
+        "provenance": alert.get("provenance"),
+        # Qualified evidence. §15 attaches a caveat to a mismatch resting on a
+        # process match, because on this host that negative result has two
+        # readings -- the process is gone, or it is running behind a visibility
+        # boundary -- and the comparison cannot tell them apart. It travels
+        # inside `measured`, which is the only part of a signal `alerting`
+        # copies onto the record.
+        "caveat": measured.get("caveat"),
+        # Present on every row and null where the alert has no comparison. A
+        # missing key and a null key read differently, and only one of them
+        # says "this code has no such measurement".
+        **{field: measured.get(field) for field in COMPARISON_FIELDS},
     }
 
 
@@ -427,6 +464,7 @@ def deltas(store, cursor: DeliveryCursor, *, at: str,
             "without one is the backlog being announced as news")
 
     rows: list[dict] = []
+    held: list[dict] = []
     silent_resolutions = 0
     backlog = 0
     standing: dict[str, int] = {}
@@ -441,6 +479,30 @@ def deltas(store, cursor: DeliveryCursor, *, at: str,
         record = known.get(ref)
         was_announced = bool((record or {}).get("announced"))
         first_seen = str(alert.get("first_seen") or "")
+
+        # Still open, and the last pass could not close it. Carried as a
+        # SEPARATE list from `rows` because it is not a delta — nothing about
+        # it changed — and the only reason to carry it at all is that one of
+        # its kinds is a loss of observation that nothing else reports. It is
+        # never announced: an open alert that was not worth saying last hour is
+        # not news this hour for being an hour older.
+        #
+        # `hold_kind` and not `hold_reason`: the two kinds that mean nobody
+        # looked and the kind that means somebody looked and the value is still
+        # up are opposite facts in similar prose, and a consumer that had to
+        # tell them apart by matching sentences would break the first time one
+        # was reworded.
+        if state == "OPEN" and alert.get("hold_kind"):
+            held.append({
+                "alert_ref": ref, "code": alert.get("code"),
+                "subject_ref": alert.get("subject_ref"),
+                "severity": alert.get("severity"),
+                "hold_kind": alert.get("hold_kind"),
+                "hold_reason": alert.get("hold_reason"),
+                "first_seen": first_seen,
+                "occurrence_count": alert.get("occurrence_count"),
+                "was_announced": was_announced,
+            })
 
         # Open, never announced, and it was already open when the baseline was
         # taken. That is the backlog, and it is counted rather than announced.
@@ -501,6 +563,7 @@ def deltas(store, cursor: DeliveryCursor, *, at: str,
         "at": at,
         "baseline_at": baseline,
         "rows": rows,
+        "held": held,
         "counts": {kind: sum(1 for r in rows if r["kind"] == kind) for kind in KINDS},
         "severity_counts": {sev: sum(1 for r in rows if r["severity"] == sev)
                             for sev in ("high", "medium", "low")},
@@ -538,6 +601,12 @@ def compose(store, cursor: DeliveryCursor, *, at: str, device_ref: str,
         "counts": found["counts"],
         "severity_counts": found["severity_counts"],
         "rows": found["rows"],
+        # Open alerts the last pass could not close, with the machine-readable
+        # reason. NOT deltas and never announced — see `deltas`. They are here
+        # because two of the five kinds are a loss of observation, and a
+        # monitoring-integrity finding cannot be built from a document that
+        # does not carry them.
+        "held": found["held"],
         "shown": shown,
         "shown_keys": [row["key"] for row in shown],
         "more": max(0, len(found["rows"]) - len(shown)),
