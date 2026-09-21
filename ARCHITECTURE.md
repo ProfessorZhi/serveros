@@ -100,6 +100,20 @@ session starts
 
 Read-only context expansion is automatic by default.
 
+A working Context Capsule should answer, compactly:
+
+```text
+what am I working on?
+what is the current goal?
+where did prior work stop?
+which approved facts/decisions constrain this work?
+which environment/target am I operating in?
+is a human decision currently pending?
+where are the important sources/evidence?
+```
+
+It should not expose internal schema merely for completeness.
+
 ### 1.3 Personal first
 
 The primary user is one person and that person's devices, work, projects and
@@ -760,6 +774,49 @@ recorded.
 Session is a first-class ServerOS resource, but it is **not the primary
 long-term continuity authority**.
 
+### 6.0 Every Agent Session enters ServerOS through a thin bootstrap
+
+Claude Code / Codex sessions should see ServerOS by default, but startup context
+must remain intentionally tiny.
+
+```text
+L0 bootstrap
+  ServerOS available
+  device / principal / cwd
+  small semantic entrypoints
+
+user prompt
+  ↓
+intent resolution
+  ↓
+Project / Item / general-work resolution
+  ↓
+L1 Context Capsule
+  ↓
+Agent starts real work
+  ↓
+L2/L3 expansion on demand
+```
+
+The bootstrap does not preload Project history, Memory, Ability catalogues,
+Skills, MCP schemas or recent Sessions.
+
+Intent authority is ordered roughly as:
+
+```text
+explicit current user intent
+> explicit Item/worktree identity
+> cwd Project relationship
+> recent Session/history hints
+```
+
+A repository cwd may strongly resolve Project/Repository but does not by itself
+bind an Item. A ServerOS-managed Item worktree may resolve both Project and Item.
+
+Dynamic work state does not belong in `CLAUDE.md`. Stable repository/project
+instructions may live there; current Item/checkpoint/decision state comes from
+ServerOS Context.
+
 Long-lived work continuity is anchored by:
 
 ```text
@@ -830,6 +887,41 @@ SRV-0123
 Each Session may carry a narrower context than the Item as a whole.
 
 The durable Item is the continuity anchor; Session turnover is expected.
+
+### 6.3.1 Automatic checkpoints
+
+A Session should produce a compact checkpoint automatically at meaningful
+boundaries such as completion, handoff, compaction or clean shutdown.
+
+Checkpoint semantics:
+
+```text
+what changed
+current state
+important evidence
+what was learned
+next likely step
+unresolved blocker / decision gate
+```
+
+Checkpoint routing:
+
+```text
+work continuity
+  → Item checkpoint
+
+episodic / procedural experience
+  → Memory candidate
+
+high-impact business fact
+  → Understanding Delta
+
+raw transcript
+  → MetaCC / native history
+```
+
+The user should not need to ask the Agent to summarize before a Session can be
+continued elsewhere.
 
 ### 6.4 Live Session and history are separate
 
@@ -987,7 +1079,42 @@ Session may end while its durable Item/Memory continuity survives.
 
 ---
 
-## 7. Memory-Context Fabric
+## 7. Memory
+
+### 7.0 Memory Federation, not one competing memory database
+
+ServerOS coordinates several memory/continuity authorities without pretending
+they are interchangeable:
+
+```text
+Hot working context
+  current Claude/Codex Session
+
+Native near-memory
+  provider-native project/session memory and stable instructions
+
+Durable approved truth
+  Structured Understanding / decisions / checkpoints / code/runtime facts
+
+Associative long-term memory
+  OpenViking-like episodic/procedural/entity memory
+
+Raw session history/intelligence
+  MetaCC + provider-native transcripts
+```
+
+OpenViking and native Agent memory are retrieval aids, not business truth
+authorities.
+
+Normal Context Assembly retrieves only a small relevant slice; Memory has a
+bounded context budget rather than a fixed requirement to inject N memories.
+Zero retrieved memories is a valid result.
+
+ServerOS does not continuously copy dynamic business facts into CLAUDE.md or
+provider-native memory. High-impact facts become Understanding Deltas and are
+reconciled before becoming durable truth.
+
+-Context Fabric
 
 Memory is powerful, but it is not the system of record.
 
@@ -2358,6 +2485,20 @@ Installation is one input, not the answer.
 
 ServerOS strengthens Claude/Codex native discovery rather than replacing it.
 
+If the Agent already sees an appropriate native Skill, Plugin, MCP or tool and
+knows how to use it, it may use it directly. ServerOS is not a mandatory proxy
+for every tool call.
+
+ServerOS becomes important when the Agent needs to:
+
+```text
+search for an unknown capability
+choose among multiple Providers
+recover a previously successful capability profile
+evaluate readiness / authorization
+acquire a missing capability
+```
+
 The bootstrap must expose a small read path such as:
 
 - `context.current`;
@@ -2384,6 +2525,21 @@ The mechanism is builtin. A `find-capability` Skill may teach the procedure.
 
 Executable MCP/plugin/hook acquisition is more restrictive than text-only Skill
 discovery.
+
+Default acquisition tiers:
+
+```text
+A  text-only Skill / instruction content
+   low-risk provenance-checked discovery
+   → may be temporarily attached automatically
+
+B  already-installed / already-authorized executable Provider
+   → may be attached/used automatically within current policy
+
+C  new MCP / Plugin / executable / daemon / credential / new network boundary
+   → admission + provenance/trust check
+   → explicit approval when policy requires
+```
 
 ### 16.4 Physical vs logical topology
 
@@ -3477,7 +3633,10 @@ Large remaining design work is subsystem-detail work, especially:
 20. My Docs→Wiki promotion, generic knowledge freshness and Project Home maintenance;
 21. human work-document/处理站 projection and docs-first Item presentation;
 22. GitHub Work Packet CC↔GPT handoff and automatic design-to-execution continuation;
-23. E2E environment discovery, browser-provider selection, identity handling and screenshot-rich report.
+23. E2E environment discovery, browser-provider selection, identity handling and screenshot-rich report;
+24. thin default Session bootstrap + intent-first Context Capsule contract;
+25. Memory Federation, bounded retrieval and native-memory authority boundaries;
+26. native-first Ability discovery, acquisition risk tiers and automatic Session checkpoints.
 
 Those details may refine contracts. They do not reopen the product definition.
 
