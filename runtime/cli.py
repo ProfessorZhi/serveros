@@ -25,8 +25,20 @@ answerable by a shell:
 Nothing in this file mutates anything. `runtime register` and `runtime
 reconcile` are NOT implemented here: registration is an authored act on a
 machine-state document (§B), and reconciliation needs an admission path that
-does not exist for anything above STOP this round. A command that is not
-implemented says so and exits 2, rather than being quietly absent.
+does not exist for anything above STOP this round.
+
+They are also NOT DECLARED, and that is the choice rather than an oversight:
+`tests/test_serverosctl.py::test_no_subcommand_mutates_anything` requires both
+names to be absent from the parser, on the argument that "a command that is
+absent is a clearer fact than one that exists and refuses". Measured 2026-09-22
+while acting on this paragraph: neither verb appeared anywhere in the parser
+tree, and this paragraph said the opposite --
+"A command that is not implemented says so and exits 2, rather than being
+quietly absent" -- which was false about `register` and `reconcile` and true
+about nothing else either, since no unimplemented verb is declared. The
+sentence was removed rather than implemented, because implementing it means
+overruling that test, and a gate that encodes a safety property is not
+weakened to make a sentence in a docstring come true.
 """
 from __future__ import annotations
 
