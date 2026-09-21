@@ -2011,12 +2011,21 @@ used locally for read-only comparison, integration validation and direct test
 execution when needed. That does not make it the normal long-lived writable
 development surface.
 
+Bridge rules:
+
+- preserve upstream provenance;
+- do not claim upstream authority;
+- do not push to foreign/protected upstream by default;
+- delivery back upstream is an explicit PR/export/promotion step;
+- GitHub makes the writable engineering state visible to ChatGPT and other
+  Agents.
+
 ### 15.10 Project context resolution
 
 Given an incoming work demand, ServerOS should be able to resolve a compact
 Project Context using the stable world model.
 
-Example support/operations context:
+Example operations/support-system context:
 
 ```text
 Project: LiteLLM
@@ -2032,15 +2041,6 @@ Current Items
 
 This is reusable infrastructure for Hosting/Support Bot, operations and human
 Agent sessions. It does not make Claude Code itself the user-facing support bot.
-
-Bridge rules:
-
-- preserve upstream provenance;
-- do not claim upstream authority;
-- do not push to foreign/protected upstream by default;
-- delivery back upstream is an explicit PR/export/promotion step;
-- GitHub makes the writable engineering state visible to ChatGPT and other
-  Agents.
 
 ---
 
