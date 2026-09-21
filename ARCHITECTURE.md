@@ -1067,9 +1067,19 @@ requirement/deliverable, or a Routine/ad-hoc analysis when there is not. Its
 deliverable may be findings/evidence/report with no code change.
 
 **Technical Support** is normally conversational and does **not** create an
-Item. GPT/Agents may answer using repositories, logs, knowledge and tools.
-Only a durable engineering follow-up, repeated product problem or explicit
-requirement is promoted to Candidate → Item.
+Item.
+
+Claude Code / Codex are not the primary end-user support responders. Their main
+role in the support ecosystem is to maintain the product, support knowledge,
+configuration, evidence and the systems that make support reliable.
+
+The separate Hosting / Support Bot project owns automatic end-user Q&A and
+reply behavior. ServerOS supplies reusable Context, Knowledge, Evidence,
+Communication and project/service resolution capabilities to that project.
+
+Only a durable engineering follow-up, knowledge-maintenance requirement,
+repeated product problem or explicit requirement is promoted to Candidate →
+Item.
 
 ### 8.1 One Personal Board
 
@@ -1730,20 +1740,205 @@ The goal is semantic convergence, not making directory counts look clean.
 
 ---
 
-## 15. Project and repository model
+## 15. Project world model
 
-Project != repository.
+Project is one of the main long-lived organizing objects in ServerOS.
 
-Projects and their repository relationships are normally **explicitly
-designated by the user** and change infrequently.
+```text
+Project
+├── People / project roles
+├── Sources
+├── Repositories
+├── Services
+├── Environments
+├── Items
+├── Knowledge
+├── Credentials / vault refs
+├── Deliverables
+└── Runtime / evidence relationships
+```
 
-ServerOS may resolve and remember those mappings, but it does not auto-adopt a
-repository, create a Bridge or invent a Project merely because an Agent opened
-or inspected a repo.
+A Project is a stable business/work domain, not a requirement and not a
+repository. Projects are explicitly created/confirmed by the user and change
+infrequently. Normal work changes Items inside an existing Project; it does not
+rebuild Project topology.
 
-A project may span many repos and one repo may serve several work contexts.
+Examples include LiteLLM, ServerOS, LiteLLM Log Analysis, Support Bot and
+MarketOps.
 
-### 15.1 Project Home in Wiki
+ServerOS may resolve and remember Project relationships, but it does not
+auto-adopt a repository, create a Bridge or invent a Project merely because an
+Agent opened or inspected a repo.
+
+### 15.1 People and Project Roles
+
+Person identity is lightweight and reusable across Projects.
+
+The durable relationship is:
+
+```text
+Person ↔ Project Role
+```
+
+Examples:
+
+```text
+requester
+owner
+developer
+operator
+stakeholder
+reviewer
+support contact
+```
+
+Structured Understanding stores confirmed person/project-role facts and their
+provenance. Richer soft context about people — recurring preferences,
+communication patterns, prior interactions and similar experience — may live in
+the Memory Provider such as OpenViking.
+
+Memory does not override confirmed responsibility/ownership facts.
+
+### 15.2 Sources belong to Projects by relationship, not by physical move
+
+Feishu chats, documents, Wiki nodes, Minutes and other sources may relate to one
+or more Projects.
+
+```text
+Source ↔ Project
+```
+
+is many-to-many.
+
+A group/chat/document is not physically "moved into" a Project merely because
+some of its content is relevant. Message/document-level relevance and
+provenance determine what enters Structured Understanding.
+
+### 15.3 Service is a first-class semantic object
+
+A **Service** is the stable operational/business thing being built, operated,
+observed or supported.
+
+Examples inside a Project may include:
+
+```text
+LiteLLM API
+shared AI gateway
+PostgreSQL
+OpenSearch
+MinIO
+Support Bot
+log pipeline
+```
+
+Service is not a process, container or host.
+
+```text
+Service
+= stable semantic identity
+
+Runtime Resource
+= current concrete process/container/unit/endpoint instance
+```
+
+This separation lets ServerOS translate low-level runtime evidence into useful
+human context.
+
+Example:
+
+```text
+service: litellm-api
+    ↓ deployed into
+environment: PROD
+    ↓ realized by
+container/runtime resources
+```
+
+Alerts, E2E, deploys and support context should prefer Project / Service /
+Environment names over raw runtime IDs when attribution evidence allows it.
+
+### 15.4 Environment is a first-class risk/execution context
+
+An **Environment** describes the operational context in which a Service is
+built/tested/deployed/run.
+
+Typical labels may include:
+
+```text
+DEV
+TEST
+STAGING
+PROD
+LOCAL/TOKYO
+```
+
+No Project is required to have all of them.
+
+Environment carries meaning for:
+
+- authorization/risk;
+- data sensitivity;
+- deployment target;
+- test isolation;
+- runtime bindings;
+- verification expectations.
+
+For example, TEST may allow broad autonomous execution while PROD promotion
+remains a human gate.
+
+### 15.5 Repo → Artifact → Service × Environment → Runtime
+
+The engineering chain is:
+
+```text
+Repository revision
+        ↓ build
+Release Artifact
+        ↓ deploy
+Service × Environment
+        ↓
+Runtime Resource(s)
+        ↓
+Observation / Evidence / Alert
+```
+
+This chain is the basis for tracing code to LIVE behavior without confusing any
+two layers.
+
+### 15.6 Item ownership and cross-cutting relationships
+
+An Item has exactly one owning Project for board/understanding purposes.
+
+It may relate to multiple:
+
+- repositories;
+- Services;
+- Environments;
+- Sessions;
+- Runs;
+- Deliverables.
+
+Example:
+
+```text
+Project: LiteLLM
+Item: upgrade LiteLLM
+
+touches:
+  litellm-bridge
+  litellm-fjd validation checkout
+  litellm-api
+  gateway
+  TEST
+  PROD
+  docs
+  E2E campaign
+```
+
+Do not split one coherent requirement into artificial Items merely because it
+crosses repositories or Services.
+
+### 15.7 Project Home in Wiki
 
 Each active Project may have one stable Wiki **Project Home** as the main human
 entry point.
@@ -1756,6 +1951,8 @@ Project Home
 ├── current requirements / work
 ├── important decisions
 ├── key links / repositories
+├── Services / Environments
+├── people / responsibilities
 ├── meetings
 ├── knowledge / runbooks
 └── deliverables / reports
@@ -1764,6 +1961,12 @@ Project Home
 The Project Home is a Current View generated/maintained from ServerOS durable
 facts and curated knowledge. It is not a second state database and does not
 duplicate every Item artifact.
+
+### 15.8 Repository relationships
+
+Project != repository.
+
+A project may span many repos and one repo may serve several work contexts.
 
 Repository roles:
 
@@ -1775,7 +1978,7 @@ publication
 tool
 ```
 
-### 15.2 Bridge repository pattern
+### 15.9 Bridge repository pattern
 
 When the user explicitly needs to develop against an upstream/enterprise
 repository that is not their writable authority, prefer an owned Bridge
@@ -1792,6 +1995,43 @@ Item worktrees / experiments / commits / evidence / GPT review
 ```
 
 Existing examples include `litellm-bridge` and `muc-bridge`.
+
+For development work, the Bridge is normally the writable engineering surface
+used for:
+
+- Item worktrees;
+- implementation;
+- commits/branches;
+- mock/simulated PR preparation;
+- GPT review through the GitHub connector;
+- durable collaboration evidence.
+
+The enterprise/upstream checkout such as `litellm-fjd` may still be cloned or
+used locally for read-only comparison, integration validation and direct test
+execution when needed. That does not make it the normal long-lived writable
+development surface.
+
+### 15.10 Project context resolution
+
+Given an incoming work demand, ServerOS should be able to resolve a compact
+Project Context using the stable world model.
+
+Example support/operations context:
+
+```text
+Project: LiteLLM
+Service: API / Gateway
+Environment: PROD
+Requester: <person>
+Relevant docs / knowledge
+Recent deploys
+Relevant logs/evidence
+Known issues
+Current Items
+```
+
+This is reusable infrastructure for Hosting/Support Bot, operations and human
+Agent sessions. It does not make Claude Code itself the user-facing support bot.
 
 Bridge rules:
 
@@ -2463,8 +2703,23 @@ Rules:
 - Claude Code / Codex running as the authorized user may directly read needed
   secret files for approved work;
 - secret bytes do not need a separate ServerOS Vault service;
-- ServerOS may index only enough metadata to explain purpose/owner/target if
-  useful, without duplicating the secret value.
+- ServerOS may maintain a lightweight semantic index without duplicating the
+  secret value.
+
+Useful metadata may include:
+
+```text
+secret_ref / file
+Project
+Service
+Environment
+purpose / used_for
+owner
+last_verified
+```
+
+This lets an Agent find the correct credential among many files while keeping
+actual secret bytes only in the vault directory.
 
 This is centralized operational storage, not a generic enterprise Secret
 Manager product.
@@ -2679,6 +2934,7 @@ A · Agent Working Infrastructure
 B · Information → Delivery
 ├── Source Capture / Follow
 ├── Structured Understanding / Reconciliation
+├── Project World Model / Service / Environment
 ├── Work Discovery / Personal Board
 ├── Requirements Engineering
 ├── Development & Operations
@@ -2793,14 +3049,15 @@ Large remaining design work is subsystem-detail work, especially:
 5. information-flow policy vocabulary and enforcement points;
 6. Feishu inventory/blacklist/Follow policy and My Docs/Drive/Wiki/Minutes adapters;
 7. Space Stewardship automation policy, Inbox classification and local housekeeping;
-8. Project lifecycle and reactivation projection;
+8. Project lifecycle plus Person/Role, Service, Environment and runtime attribution model;
 9. CloudCLI Project → Item → Session mobile/desktop plugin surfaces;
 10. external reasoning / future CC↔GPT Provider contract, Skills and 2–3 round convergence guard;
 11. Tokyo Tailscale userspace deployment and phone/private-CloudCLI access;
 12. A2A adapter timing/mapping;
 13. dynamic environment Attachment/lease/refcount behavior;
 14. E2E Item Verification / Campaign contract, scenario matrix and evidence schema;
-15. execution placement / Tokyo→Windows handoff contract.
+15. execution placement / Tokyo→Windows handoff contract;
+16. Repo→Artifact→Service×Environment→Runtime provenance and presentation model.
 
 Those details may refine contracts. They do not reopen the product definition.
 
