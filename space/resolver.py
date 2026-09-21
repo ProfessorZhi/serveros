@@ -2,7 +2,7 @@
 """Decide where a logical object canonically belongs.
 
     python3 resolver.py --surface mydocs --object-type document \
-        --semantic-role deliverable --project litellm
+        --semantic-role knowledge --project litellm
     python3 resolver.py --request request.json
 
 This is the ServerOS **Space Resolver**. It is the placement counterpart of the
