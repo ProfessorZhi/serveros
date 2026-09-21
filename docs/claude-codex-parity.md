@@ -1,57 +1,65 @@
-# Claude / Codex Parity
+# Claude / Codex Semantic Parity
 
-## Principle
+Product authority: [ARCHITECTURE.md](../ARCHITECTURE.md), sections 6, 19 and 29.
 
-> **Same capability, same semantics, same context; different runtime adapter
-> only.**
+**One work world; runtime-specific, version-tested adapters.**
 
-ServerOS is *one capability system with two runtime adapters* — not two systems.
+## Shared semantics
 
-## What both runtimes share
+Both runtimes use the same Project/Item identity, accepted intent, ownership/policy,
+source and evidence references, placement semantics and continuity model. A new
+Session can recover useful work without replaying the entire old transcript.
 
-- Environment contract
-- Context contract (Context Capsule schema)
-- maps
-- project / Item identity
-- worktree / test-env placement
-- evidence semantics
-- Skill semantics
-- concurrency protection
+## Legitimate differences
 
-## What may differ
+Native instruction and auto-memory loading, Skill packaging, plugin distribution,
+hooks, hot MCP attachment, native thread APIs, background execution and subagent
+support may differ. These are real adapter capability differences, not automatically
+bugs in canonical content.
 
-Only adapter files:
+Do not assume a .codex-plugin directory is a supported installation format solely
+because .claude-plugin exists. The selected Codex runtime's documented/tested
+extension interfaces decide its packaging. Preserve existing artifact identities and
+migrate older packaging deliberately.
 
-```text
-.claude-plugin/*      CLAUDE.md adapter
-.codex-plugin/*       AGENTS.md adapter
-```
+Quay's Claude-based execution may be requested by Codex through a verified delegated
+CC runtime. This is not the same as claiming the Quay Claude plugin runs natively in
+Codex. Native support, delegated support and unsupported operation remain distinct.
 
-If a behavior difference cannot be expressed as an adapter file, it is a bug in
-the canonical source, not a legitimate runtime difference.
+## Adapter evidence matrix
 
-## Dual-runtime smoke
+For each supported runtime/version, record evidence for the operations actually
+provided:
 
-Run this **once per important ServerOS / plugin release** — not per business
-task.
+| Area | What to establish |
+|---|---|
+| bootstrap | default thin ServerOS entry; native instructions preserved |
+| discovery | Skills/tools remain discoverable; no duplicate forced catalogue |
+| context | prompt resolves correct work; sparse/unbound contexts are legal |
+| start/resume | actual native Session/thread behavior, not assumed equivalence |
+| send/result | controller ownership, deduplicated input and observed completion |
+| stop | requested vs observed stop and resource release |
+| checkpoint | graceful events supported; abrupt-failure recovery is honest |
+| attachment | actual install/connect/load boundaries and fallback |
+| handoff | same durable work and exact revisions, destination-local paths |
+| safety | declared enforcement points and uncovered cooperative paths |
 
-Claude Code and Codex each verify:
+Do not turn missing support into a fabricated success or silently use a different
+identity, working directory or permission scope.
 
-1. `hwz-server-os` loads
-2. it resolves the **same** Item
-3. same `project`
-4. same `development` repo
-5. same `worktree`
-6. same `test-env` / `evidence`
-7. current milestone / source locator is visible
-8. protected concurrent work is visible
-9. native Skill discovery still works
-10. ServerOS suggestion does **not** restrict native capability
+## Dual-runtime conformance
 
-Passing is sufficient. The two runtimes are **not** required to fully execute
-the same business task.
+Run relevant adapter scenarios at important release boundaries, not after every
+business task. Check:
 
-## The real acceptance criterion
+1. Both resolve the same declared work from the same accepted inputs.
+2. Neither invents an Item from an ordinary repository cwd alone.
+3. Native Skill discovery remains available even when the ServerOS hint is wrong.
+4. A memory/optional-provider outage leaves safe direct work possible.
+5. A checkpoint produced in one runtime can continue in another without losing
+   intent, revisions, evidence or protected-resource boundaries.
+6. Same-device takeover preserves the resolved worktree when appropriate;
+   cross-device handoff resolves new local paths instead of copying absolute paths.
+7. Unsupported runtime operations are visibly unsupported.
 
-> Claude works half-way and exits; Codex can take over on the same Item,
-> worktree and evidence. And the reverse holds too.
+A successful design or generated manifest is not installation or live-session proof.
