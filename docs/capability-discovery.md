@@ -1,165 +1,86 @@
 # Capability Discovery — Native-first
 
-## The constraint
+Product authority: [ARCHITECTURE.md](../ARCHITECTURE.md), sections 1, 16 and 29.
 
-> ServerOS may only **strengthen** Claude Code's and Codex's own native Skill
-> discovery. It must never replace it.
+## The non-regression contract
 
-There is no enforced Skill Router. There is no allowlist.
+ServerOS strengthens native Claude Code/Codex discovery. A ranking hint must not
+hide a capability that the runtime could otherwise discover. The Agent may ignore
+suggestions, query the wider catalogue or use an already available native tool.
 
-## Correct model
+This is **not** a claim that every discovered tool is authorized. Discovery/ranking
+and effect authorization are separate. Security policy may deny an operation even
+when the tool remains discoverable. ServerOS is not a mandatory proxy for all native
+calls and cannot claim technical enforcement over paths it does not control.
 
-```text
-Installed native Skills
-        │
-┌───────┴────────┐
-Claude          Codex
-native          native
-discovery       discovery
-        │
-        ▼
-ServerOS advisory hints
-```
+## Preserve existing registry identities
 
-Given the Context Capsule, ServerOS may offer a hint:
+The shared ability-management catalogue identifies typed artifacts. Skill, plugin
+and MCP records retain type + canonical identity; same name is not same identity.
+Capability/Operation describes the requested effect; an artifact declares what it
+provides. Do not convert semantic WHAT shorthand into a destructive registry rename.
 
 ```text
-likely relevant:
-- test-management
-- work-management
+need
+  -> native capability or catalogue candidates
+  -> Provider / compatible revision
+  -> device/target Binding
+  -> current readiness and authorization
+  -> supported Session attachment / direct native use
 ```
 
-That hint is advisory, not a gate. The agent may always:
+Author, upstream, distribution channel, installation and execution trust remain
+independent. External sources stay attributed and pinned when selected.
 
-- discover a different Skill itself
-- ignore ServerOS's suggestion
-- query the full capability catalog
+## Global catalogue, local projection
 
-When discovery confidence is low, suggest nothing.
+Devices share one registry, not every installation. Device/Project/Environment
+projections combine compatibility, installed revisions, local target bindings,
+readiness and policy. Family/cluster membership is navigation metadata, not physical
+payload nesting or a rule to install everything everywhere.
 
-## Non-regression contract
+Registration != installation != enablement != attachment != content loading.
+Avoid duplicate MCP exposure if an existing native plugin already provides the tool.
+A selected dependency lock should not break because an unrelated catalogue record
+was added; changes to older catalogue-wide pin checks require explicit compatible
+implementation work, not bypassing their verifier.
 
-> **A ServerOS hint must never shrink the set of capabilities the native agent
-> could otherwise discover.**
+## Discovery and loading
 
-The forbidden failure mode: *"with ServerOS off, Claude Code finds the Skill;
-with ServerOS on, it is incorrectly routed away from it."*
+At startup, expose only the small ServerOS entry and essential boundaries. Do not
+require an Item/Run ID or a live global ability count before a user prompt exists.
 
-This is a hard contract, not a guideline. It is checked in the dual-runtime
-smoke ([`claude-codex-parity.md`](claude-codex-parity.md)).
+After intent resolution, relevant readonly context/ability expansion may happen
+automatically within the budget. Progressive disclosure is not a requirement to ask
+the human at every level. A runtime's own metadata loading remains native.
 
-## Skill descriptions are the discovery surface
+Skill descriptions carry triggers, useful scope and ownership boundaries. Detailed
+procedures load only when used. If an adapter supports dynamic MCP/tool discovery,
+use it; otherwise disclose the need to reconnect/start a fresh Session or use a safe
+available CLI. Do not pretend unsupported hot attachment succeeded.
 
-Because discovery is native, the `description:` field of each Skill is the
-highest-leverage text in the system. Each description should state:
+## Acquisition and improvement
 
-- **when to use** it
-- **what it owns**
-- **what it explicitly does NOT own**
-- high-value trigger terminology
+An authorized temporary experiment can try an unfamiliar capability without first
+making it a permanent registry entry. Assess provenance and effects before attaching
+it. Text-only Skills can contain malicious instructions; executables/install hooks,
+new credentials and network boundaries require stronger admission.
 
-Descriptions must **not** carry long procedures. A Skill's detailed rules
-occupy context only when the Skill is actually loaded.
+Repeated value can justify managed registration, a reusable Skill or a candidate
+Profile. Compare against a baseline and record environment, exact inputs, measured
+results and interventions. Production Profiles remain stable until deliberate
+promotion; one successful experiment is not automatic global deployment.
 
-## Big package, small context
+## Focused validation
 
-The installation unit may be large:
+At important adapter/plugin releases verify:
 
-```text
-hwz-server-os
-├── 8 Skills
-├── runtime adapters
-├── validators
-└── CLI bindings
-```
+- native discovery still finds an unrelated valid Skill;
+- no duplicate tool is injected just because ServerOS knows its identity;
+- missing provider/memory degrades honestly without blocking unrelated work;
+- an unsupported attachment is not reported ready;
+- a discovered but unauthorized production operation does not become executable;
+- global catalogue changes unrelated to the selected composition do not force churn.
 
-But a normal session must never receive all of it in the prompt. Top-level
-bootstrap stays tiny — on the order of tens of lines, not hundreds:
-
-```text
-ServerOS exists
-current context query
-capabilities known, resolved on request
-authority boundary
-load details on demand
-```
-
-This block used to name `serverosctl available`, which was never a command.
-The surface that renders it is `serverosctl context startup`; the rule it
-follows is `context/disclosure-contract.yaml`, and this section is the
-explanation of that file rather than a second copy of the rule.
-
-## Progressive disclosure
-
-There are three things an Agent can be told, and they are disclosed separately
-because they are needed at different times. Collapsing them is how a startup
-context becomes a wall of text that is read once and used never.
-
-```text
-Context      what is this session working on        needed first
-Capability   what can this machine do about it      needed when choosing an approach
-Authority    what may I do without asking           needed before acting
-```
-
-Each has four levels. Only L0 is unconditional.
-
-### Context
-
-```text
-L0  project · Item id · Run id                               always, ~5 lines
-L1  the Item's current state, milestone, and open blockers   on request
-L2  the Run's evidence locator and recent Activity           on request
-L3  the full capsule, claims and provenance                  on demand
-```
-
-### Capability
-
-```text
-L0  the count of available abilities, and that a query exists   always, 1 line
-L1  names of abilities likely relevant to this Item             on request
-L2  a specific ability's provider, status and reason            per ability, on demand
-L3  the full resolved capability set with every input           on demand
-```
-
-The L0 line is deliberately a number and not a list. A list is a menu, a menu
-invites browsing, and browsing is how a session ends up reading the catalogue
-instead of doing the work. The native agent already has its own Skill
-discovery — the number exists to tell it that ServerOS has something to say,
-not to say it.
-
-### Authority
-
-```text
-L0  the boundary in one line: what needs approval          always
-L1  the policy set that applies to this project            on request
-L2  a specific denial and its reason                       when a denial occurs
-L3  the full authority statement                           on demand
-```
-
-### The contract between levels
-
-```text
-A level is never disclosed implicitly.      Reading L3 requires asking for L3.
-A higher level never contradicts a lower.  If it does, the lower one was wrong.
-An agent may always skip levels.            Disclosure is a floor, not a ladder.
-```
-
-The last line matters: this is a description of what ServerOS *offers*, not a
-protocol an agent must walk. An agent that already knows what it needs asks for
-exactly that, and the honest response is the answer plus which level it came
-from.
-
-### What the startup view must never contain
-
-```text
-not at L0   the ability catalogue, or any ability list longer than a count
-not at L0   file trees, map contents, or generated projections
-not at L0   any per-device resolution
-not at L0   anything a previous session learned that this session has not asked for
-```
-
-The fourth line is the one that creeps back. A durable memory fabric makes it
-tempting to open a session with everything the last one knew. That is not
-context, it is a transcript, and it costs the session the ability to tell what
-is *relevant* from what is merely *remembered*. Memory is queried, not
-preloaded.
+The absence of a registered preferred method must never prohibit an otherwise
+permitted native investigation.
