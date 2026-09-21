@@ -144,22 +144,11 @@ Skill + Plugin      操作语义与发行入口
 - machine state 只在 `DATA_ROOT/state/serveros/`；`~/.serveros` 保持小。
 - 能力发布由 canonical 构建（reusable Skill 源在 `ability-management`），**禁止从 runtime 反向覆盖 canonical**。
 
-## 7. 架构自检（本仓的两道闸）
+## 7. 架构自检（两道闸，都是薄包装）
 
-这两道闸检查的是**声明之间、以及声明与机器之间是否一致**，不是「runtime 跑的是不是我们写的代码」（那个是 `runtime_truth`）。两者故意分开，因为 2026-09-11 实测过它们会给出不同答案。
+`serverosctl architecture check` 查声明之间、以及声明与机器之间是否一致（§31–§42 目录符合性，warn-only；它**不**回答「runtime 跑的是不是我们写的代码」，那是 `runtime_truth`，两者 2026-09-11 实测会给出不同答案）；`serverosctl architecture project --out <dir>` 重新生成人读地图里机器拥有的那一段。
 
-```bash
-serverosctl architecture check       # 声明一致性 + §31–§42 目录符合性；warn-only，不修
-serverosctl architecture project --out <dir>   # 重新生成人读地图里机器拥有的那一段
-```
-
-两个动词都是**薄包装**：真正的实现是 `skills/serveros/scripts/` 下的
-`architecture_check.py` 与 `map_projection.py`，参数原样转发，root 不传时按本机
-host profile 解析。`project` 只写候选到 `--out`，**从不原地改地图**——地图有并行
-写入者，一个不拥有它的工具就地重写是数据丢失机制，不是功能。
-
-`check` 退出 2 表示**答不了**（root 缺失），不是「合规」。`project` 生成的候选里，
-没有锚点的区块会带一段 `NOT APPLIED` 注释，说明该段需要人放回位置。
+实现在 `skills/serveros/scripts/{architecture_check,map_projection}.py`，参数原样转发，root 不传时按本机 host profile 解析。`check` 退出 2 是**答不了**（root 缺失），不是合规；`project` 只写候选到 `--out`，**从不原地改地图**——地图有并行写入者，一个不拥有它的工具就地重写是数据丢失机制。
 
 ---
 
