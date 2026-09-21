@@ -1,103 +1,95 @@
 # Context Capsule
 
-The Context Capsule is the contract between ServerOS and any agent runtime. Its
-purpose: let an agent start working in **tens of seconds**, without the human
-re-explaining project history.
+Product authority: [ARCHITECTURE.md](../ARCHITECTURE.md), sections 1, 6, 7 and 23.
+This is the focused semantic contract. It does not invent new installed CLI verbs
+or silently change a versioned serialization schema.
 
-## Design rule
+## Purpose
 
-> The Capsule carries the **minimum correct context required to start working**.
-> Everything else is discovered and loaded on demand.
+Give the native Agent the minimum correct context needed to begin or continue the
+current work. The capsule is a derived view, not another durable work database.
 
-## Schema
+The user does not need to remember a document's physical location, replay an old
+transcript, or start every Session inside an Item worktree.
 
-A small, stable schema. Do not extend it casually.
+## Resolve after intent
 
-```yaml
-project: litellm
+A fresh Session may be unbound. Unconditional ServerOS context contains its entry,
+current device/principal/cwd and essential boundaries, not an assumed Project/Item/Run.
+Native memory/instruction loading is separate and remains runtime-native.
 
-item:
-  id: LIT-0101
-  title: cache-read token 写入 LiteLLM SpendLogs
+After the current prompt:
 
-objective: ...
+1. Prefer explicit current intent over worktree identity, cwd and history hints.
+2. Use a managed Item worktree as strong evidence only when it matches that intent.
+3. Return a small relevant capsule, or keep the binding ambiguous and clarify.
+4. Expand sources, memory and capability details only when useful.
 
-development:
-  repo: litellm-bridge
-  worktree: /.../LIT-0101
-  branch: ...
+An intent switch does not silently move the shell or authorize writes in the old
+worktree. Resolve the correct execution destination before acting.
 
-test:
-  environment: /.../LIT-0101
+## Content, not a fixed field checklist
 
-evidence:
-  root: /.../LIT-0101/
+A normal capsule answers:
 
-delivery:
-  repo: litellm-fjd
-  target_branch: update/100-dev
+- What is the goal and current work identity, if any?
+- What has already been decided and where did work stop?
+- What must not be changed or assumed?
+- What environment, writer/resource boundaries and human gates apply?
+- Which exact source, design, code and evidence references are useful next?
 
-current_milestone:
-  locator: ...
+Project, Item, repository context, test environment, delivery target and Run may be
+absent. Pure research must not fabricate development/test/delivery objects. A routine
+or maintenance operation can have a legitimate non-Item work reference.
 
-relevant_sources:
-  - ...
+When present, context can include several repositories, not one assumed development
+repo. Paths are device-bound locators; checkpoints also preserve stable identity and
+revision so a receiving Windows Session resolves its own valid paths.
 
-protected:
-  - LIT-0103
-  - LIT-0104
+## Sources and truth
 
-suggested_capabilities:
-  - work-management
-  - test-management
-```
+| Fragment | Authority |
+|---|---|
+| work intent/acceptance | approved records and owning work contract |
+| current control/checkpoint | owning work/session state |
+| repository revision | Git and the declared execution context |
+| runtime/target readiness | current provider observations |
+| concurrent protection | current writer/resource ownership and policy |
+| design decision | accepted document revision |
+| suggested ability/memory | advisory retrieval with provenance |
 
-## What must NOT go in the Capsule
+Capsules include source revisions/freshness and a short relevance explanation.
+They are invalidated selectively when the referenced work, policy or evidence changes.
+A stale capsule may aid reading but is not authority for a new risky operation.
 
-- full history
-- all maps
-- all Skill documentation
-- all Items
-- all GitHub repositories
-- the ServerOS architecture text
-- any secret value
+## Size and latency
 
-## Field semantics
+Initial ServerOS-added design budgets are about 500 tokens for L0 and 2,000 for an
+ordinary capsule; configuration may refine them. Do not silently omit an essential
+boundary to hit the budget. This is a target, not a current performance measurement.
 
-| Field | Meaning | Source of truth |
-|---|---|---|
-| `project` | business/governance unit | `records/projects/<project>/` |
-| `item` | stable Item identity and title | `items/<ITEM>/card.yaml` |
-| `objective` | goal + acceptance, condensed | card / brief |
-| `development` | the `development`-role repo and its owned worktree and branch | `projects.yaml` `repo_roles` + Git |
-| `test` | this Item's test environment | `test-envs/<repo>/<ITEM>/` |
-| `evidence` | absolute evidence root for this Run | `artifacts/work-items/<project>/<ITEM>/<RUN>/` |
-| `delivery` | the `delivery-target` repo and target branch | `projects.yaml` `repo_roles` |
-| `current_milestone` | stable locator of the latest milestone | records |
-| `relevant_sources` | locators worth reading, not bodies | information/understanding |
-| `protected` | concurrent resources this agent must not touch | **resolved dynamically from current state** |
-| `suggested_capabilities` | advisory hints, never an allowlist | ability registry |
+The warm path uses a local index/checkpoint. It must not invoke a full scan, remote
+catalogue refresh, unrelated validation, or an extra LLM routing call. Slow retrieval
+has a deadline and can degrade to current records/code. Zero memory results is valid.
 
-## `protected` is dynamic
+Do not include full maps, whole transcripts, the architecture document, every Skill,
+all Items, or secrets. Stable project rules belong in native instruction files;
+dynamic work state does not get rewritten into CLAUDE.md on every turn.
 
-Protected concurrent resources are **read from current state at resolve time** —
-from Item state, leases, and the protection policy. They are never hardcoded
-into a global `CLAUDE.md` / `AGENTS.md`, because a hardcoded list goes stale
-silently and then lies to the agent.
+## Recovery
 
-## `suggested_capabilities` is a hint
+Checkpoint at meaningful progress and supported compaction/handoff/completion events.
+Abrupt death may prevent the last checkpoint; reconcile actual effects against the
+last durable checkpoint before retrying. A native Session ID, PID or tmux pane is not
+sufficient continuity evidence.
 
-It is advisory. See [`capability-discovery.md`](capability-discovery.md).
+## Acceptance examples
 
-## Happy-path budget
+A blank-cwd Session can resolve a named Project without inventing an Item. A prompt
+about MarketOps from a LiteLLM cwd does not receive the wrong project history or write
+in that repo. Missing memory service does not block safe work. An unrelated catalogue
+update does not invalidate the capsule. A cross-device handoff preserves intent and
+revisions while resolving different local paths.
 
-Resolving a Capsule for an existing Item must cost:
-
-1. one context resolve
-2. a small Capsule
-3. native Skill discovery
-4. start working
-
-It must **not** trigger a full filesystem scan, a full GitHub or Feishu
-inventory, multi-reviewer passes, cleanup scans, or a full map regeneration.
-Slow governance runs when needed, or reads an existing current projection.
+These are focused integration scenarios, not a requirement to rerun all runtime
+suites for an ordinary capsule or document edit.
