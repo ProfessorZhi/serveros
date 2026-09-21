@@ -860,6 +860,10 @@ The focused design standard and portfolio live in ProfessorZhi/ability-managemen
 - design/AUTOMATED-TESTING-ABILITY.md
 - design/PRODUCTION-OPERATIONS-ABILITY.md
 - design/REPORTING-PUBLICATION-ABILITY.md
+- design/RESEARCH-EVIDENCE-ABILITY.md
+- design/BUILD-RELEASE-ABILITY.md
+- design/DOCUMENT-STEWARDSHIP-ABILITY.md
+- design/TERMINAL-CAPABILITY-PROFILES.md
 
 Those documents guide registration/implementation without becoming a second product
 architecture.
