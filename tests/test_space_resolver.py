@@ -217,6 +217,20 @@ class PlacementDecisionTest(unittest.TestCase):
         self.assertEqual(record["approval"], "none-required")
         self.assertEqual(record["index"], "deliverable-index")
 
+    def test_an_item_closure_artifact_is_also_workbench_material(self):
+        """`final-report` is the narrow sibling of `report`, and lands the same way.
+
+        It exists so a closure artifact can be named without being mistaken for a
+        second copy of the process report. It carries no rule `report` did not
+        already carry: nothing transitions, and no state machine reads this value.
+        """
+        record = resolve(surface="mydocs", object_type="document",
+                         semantic_role="final-report", context={"project": "litellm"})
+        self.assertEqual(record["decision"], "KEEP")
+        self.assertEqual(record["canonical_surface"], "mydocs")
+        self.assertEqual(record["approval"], "none-required")
+        self.assertEqual(record["index"], "deliverable-index")
+
     def test_knowledge_promotes_off_the_workbench(self):
         """The half that does move: durable knowledge is not workbench material."""
         record = resolve(surface="mydocs", object_type="document",
