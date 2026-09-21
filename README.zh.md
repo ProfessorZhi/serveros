@@ -1,173 +1,105 @@
-<!--
-TRANSLATION. This file is the Chinese translation of `README.md`. The English
-file is canonical: where the two differ, the English one is right, and a change
-to the product lands in `README.md` first.
-
-It is a translation and not a second statement. `ARCHITECTURE.md` is the single
-canonical architecture statement (invariant 1: other documents link, never
-restate), and that rule applies to a translation of a document too — this file
-links to the same places `README.md` links to, and states nothing of its own.
--->
-
 # ServerOS
 
-ServerOS 是一个轻量的 **user-space Agent Operating Fabric**，面向 Claude Code、Codex
-以及未来的编码 Agent —— 一个构建在它之上的 Agent Engineering Workbench。
+[English](README.md) · [完整架构](ARCHITECTURE.md) · [本轮架构审查](docs/architecture/CONSOLIDATION-REVIEW-20260921.md)
 
-完整定义在 [`ARCHITECTURE.md`](ARCHITECTURE.md)，**只陈述一次**。早先的措辞
-「Agent control plane」不算错 —— control plane 如今恰好是四个平面之一的
-Node Runtime Plane。
+**ServerOS 是个人用户态 Agent 工作操作系统：增强 Claude Code、Codex，而不是在它们上面再套一个更笨的调度者。**
 
-它的职责不是规定 Agent 怎么干活。
-
-它的职责是把三样东西交到 Agent 手里：
-
-- **Environment**（环境）
-- **Context**（上下文）
-- **Capabilities**（能力）
-
-ServerOS 优化的是**一条很小的 happy path**，以及**渐进的、按需展开**。
-
-> 给 Agent 开始工作所需的最小正确上下文，
-> 之后让 Agent 在需要时自己去发现并加载更多能力。
-
-ServerOS 是一张能力地图加一个工作台，**不是工作流状态机**。
-
----
-
-## 1. 为什么需要 ServerOS
-
-一个编码 Agent 被丢到共享服务器上，是从零开始的：它不知道哪个目录是 canonical、
-它的产出该放哪、哪些相邻资源属于别人、交付目标是什么。常见的解法 —— 一段巨大的
-onboarding prompt、一次全盘扫描、给每个 Agent 一个私有工作区 —— 都以同一种方式失败：
-它们让 Agent 的**第一分钟**变慢，并且让每个 Agent 各自发明一套世界。
-
-ServerOS 存在的目的，是让**任何** Agent、在**任何** runtime 上，都能被交付一份
-小而正确、限定在任务范围内的上下文，然后开始工作 —— 不需要有人重新解释一遍项目。
-
-## 2. Environment / Context / Capabilities
-
-**Environment** —— 准备好该干活的地方：canonical 源码仓、Item worktree、测试环境、
-工具链、端口与 runtime 资源、证据位置、交付目标。
-
-> 我在哪工作、产出放哪、怎么避免碰到别人的资源？
-
-**Context** —— 交给 Agent 一份小而准确、与任务相关的 *Context Capsule*：
-project、当前 Item、目标与验收、当前 milestone、开发仓、归属的 worktree、
-test-env、证据路径、相关来源 locator、交付目标、受保护的并行资源。
-
-> 我是谁、我在做什么、已经知道什么、什么不能碰？
-
-**Capabilities** —— 按需提供当前任务需要的东西：Skills、`serverosctl`、飞书、
-GitHub、测试工具、工作区工具、信息工具。
-
-> 这个任务需要哪些可靠的能力？
-
-ServerOS **刻意不**决定 Agent 的内部方法 —— 先 grep 还是先读文档、先写测试还是先做实验、
-要不要用子代理、按什么顺序分析 / 设计 / 构建 / 验证。那些留在 Claude Code 和 Codex 手里。
-
-见 [`ARCHITECTURE.md`](ARCHITECTURE.md)。
-
-## 3. 架构
-
-→ **[`ARCHITECTURE.md`](ARCHITECTURE.md) 是唯一的架构陈述。** 本 README 不重述它；
-一句「也正确」的第二陈述，正是那份文档存在的意义所要防的漂移。
-
-一句话：ServerOS 是一个 user-space Agent Operating Fabric —— 一个小型节点运行时
-（`serverosd`）、语义服务、面向 Agent 的 MCP、一个 bootstrap Skill、按需解析的
-Ability 驱动流程、插件组合，以及一个可选的 Fleet。可用性是**按设备声明的**，
-不是产品级的常开承诺。四个平面是 Node Runtime Plane、Ability Fabric、
-Memory-Context Fabric 和 Coordination Fabric。
-
-组件边界同时有机器可读版本：
-[`integration/components.yaml`](integration/components.yaml)。
-
-## 4. Context Capsule
-
-Context Capsule 是 ServerOS 与任何 Agent 之间的契约。它是一个小而稳定的 schema ——
-不是地图、历史或 Skill 文档的倾倒场。
-
-→ [`docs/context-capsule.md`](docs/context-capsule.md)
-
-## 4b. Space Resolver
-
-Capsule 回答*「我的工作环境是什么」*，Space Resolver 回答*「这个对象在 canonical 意义上
-属于哪里、需不需要移动」*。它是一个确定性的只读内核：不读网络、不读数据库、不读地图，
-也不发明任何云端路径。真正执行它的判定 —— 实际的 MOVE、实际的索引写入 —— 是 adapter 的事。
-
-→ [`docs/space-resolver.md`](docs/space-resolver.md)
-
-## 4c. Fleet（可选）
-
-Fleet 是**按设备可选的**。一台声明不参与 fleet 的设备是一个正常的 ServerOS 节点，
-只是没有拓扑邻居，不是坏掉的节点。
-
-设备参与时，ServerOS 拥有稳定的设备身份与 fleet 拓扑。设备连接 locator 与凭据只留在本地；
-每台设备上装了什么能力由 `ability-management` 的观测拥有，并投影回 Fleet 视图。
-
-→ [`fleet/README.md`](fleet/README.md)
-
-## 5. Native-first 的 Skill 发现
-
-ServerOS **强化**每个 runtime 自己的原生 Skill 发现。它从不替代它，也从不收窄它。
-
-→ [`docs/capability-discovery.md`](docs/capability-discovery.md)
-
-## 6. Claude / Codex 对等
-
-> 同样的能力、同样的语义、同样的上下文；只换 runtime adapter。
-
-→ [`docs/claude-codex-parity.md`](docs/claude-codex-parity.md)
-
-## 7. 工作区布局
+## 你每天实际得到什么
 
 ```text
-HOME=/home/hwz
-DATA_ROOT=/opt/applications/data/home-hwz
-WORKSPACE_ROOT=$DATA_ROOT/workspace
-ARTIFACTS_ROOT=$DATA_ROOT/artifacts
-STATE_ROOT=$DATA_ROOT/state/serveros
+昨天的飞书信息与真实工作
+  → ServerOS 整理认识变化
+  → 在 CloudCLI 和 Coordinator 对账、纠正
+  → 个人看板：处理站 / 未完成 / 已完成
+  → 你选今天值得推进的需求
+  → CC 挖掘意图、整理原始材料
+  → GPT 与你参与调研、方案和设计
+  → CC / 原生子代理 / Quay 实施、实验、验证
+  → 每项工作的结果与有力 E2E 证据
+  → 正式的日报、周报、专项汇报
 ```
 
-- `WORKSPACE_ROOT` 只承载 `src/ worktrees/ test-envs/ ops/ knowledge/ records/`。
-- `src/` = canonical Git 仓库。
-- `worktrees/<repo>/<ITEM>/` = 按 Item 的开发检出。
-- `test-envs/<repo>/<ITEM>/` = 按 Item 的测试环境定义。
-- 证据位于 `DATA_ROOT` 下，**从不**放在 `WORKSPACE_ROOT` 下。
+这不是固定流水线。调研可以先实验，测试可以推翻设计，交付物也可以只有报告。
+你随时新开 Session，提起某个项目或需求，Agent 就应找回相关上下文，而不是要求你重新解释全部历史。
 
-## 8. 地图
+## 核心理念
 
-`HWZ-MAP`（结构）· `TREE-MAP`（语义）· `FEISHU-MAP` · `GITHUB-MAP`。
+**正确的环境、上下文、记忆、能力与权限边界，在需要时出现。**
 
-地图是**生成的投影视图**，不是独立的权威。它们的输入是机器契约 / 语义注册表 / 观测到的清单；
-投影编译器从这些输入渲染出给人看的地图区域。普通会话不会整份加载地图：
-Context Capsule 只投影出与当前任务相关的那一小片。
+安装的能力可以很多，当前上下文必须很小。ServerOS 提供目标、已知事实、工作连续性、资源和证据；CC/Codex 决定怎么研究、实验、拆分、使用工具和迭代。
 
-## 9. 安全与并发
+```text
+默认：很薄的入口
+说出需求后：相关目标、checkpoint、约束、来源
+真正需要时：记忆详情、Skill 正文、MCP、原始证据
+```
 
-这台服务器由并发的 Agent 与 Item 共享。
+不是每步先找 ServerOS 批准方法，不是每次改文档先跑全量测试，更不是为了注册表完整制造工作。
 
-→ [`docs/safety-and-concurrency.md`](docs/safety-and-concurrency.md)
+## 一个小核，两大能力家族
 
-## 10. 仓库与组件边界
+每个受管节点/运行范围正常只有一个常驻核心 **serverosd**。它生产真实资源观察、归属、边界准入与有限的环境修复，不做 LLM 规划，也不重复实现 systemd 等进程监督器。
 
-| 仓库 | 角色 |
+产品 Core 的两个 canonical 成员是 **serveros + ability-management**；这不代表两个常驻 daemon。
+
+| 家族 | 覆盖内容 |
 |---|---|
-| `ProfessorZhi/serveros` | 产品入口；**composition canonical**（`plugin/bundle.yaml` = `serveros-core`，`plugin/profiles/*.yaml` = 通过 `extends:` 扩展它的更宽集合）；bootstrap Skill；Context/Space/Relations 内核；确定性构建 |
-| `ProfessorZhi/ability-management` | Capability/Ability 注册表；**可复用 Skill 的 canonical 源**；revision/compatibility/discovery/reconcile/installation/distribution |
-| `ProfessorZhi/work-engine` | `serverosctl` 确定性控制平面，管 Item/Activity/Run 状态与投影 |
-| `ProfessorZhi/hwz-ops` | 本机的拓扑/策略实例与地图投影目标 |
+| Agent 工作基础设施 | 合规、凭据、资源、Session、上下文与记忆、能力发现分发、Workspace/Git、构建与测试环境、E2E、跨设备连接、发布运维 |
+| 信息到交付 | 飞书归档/关注、结构化认识与对账、需求看板、需求挖掘、调研设计、CC/Quay 执行、知识与文档维护、汇报、定期任务 |
 
-`ability-management/plugins/hwz-server-os` 只是一个过渡性的、生成出来的兼容面。
-它不是第二份插件 canonical。
+家族和簇是能力导航，不是每个框都造一个仓库、Skill 或服务。
 
-仓库之间的*关系*不等于工作区的*归属* —— 见
-[`docs/repository-roles.md`](docs/repository-roles.md)。
+## 几条最重要的分工
 
-## 11. 非目标
+**Session：** 一个需求可以有多个干净 Session。原生线程 ID、进程、tmux 窗口不是 Item 身份。手机打开东京会话是远程接入；换到 Windows 执行是工作交接，二者不同。
 
-那份封闭清单在 [`ARCHITECTURE.md`](ARCHITECTURE.md) 的
-**NOT SERVEROS RESPONSIBILITY** 之下，此处不重述。它存在的目的是让这些东西不要长回来。
+**记忆：** OpenViking 是独立记忆服务的默认方向，MetaCC 用于历史和分析，CC 原生 memory 继续发挥作用。它们按需联合检索，不全量双向同步，也不覆盖已确认事实。
 
-在加任何东西之前，先问：**它改善了 Environment、Context 还是 Capabilities ——
-以及去掉它，哪个真实的失败案例会失败？** 两个问题都没有答案，它就不是 ServerOS。
+**能力：** 全设备共享 ability-management；外部作者的能力保留来源。设备根据兼容性、安装、目标、网络和授权形成能力视图，当前 Session 只加载有关部分。登记、安装、可用和授权是四件事。
+
+**Quay：** 用来完成有价值的委派、并行实验、实现和独立验证。CC 可以在已批准范围内自主使用，但 Quay Task 完成不等于业务 Item 完成，也不把全部 Quay 方法论强塞给所有项目。
+
+**后台运行：** 批准的工作可以继续。超时后的外部效果先查清再重试；需要你时保留 checkpoint，只暂停相关边界，不冻结其他项目。
+
+## 你看到的界面
+
+**CloudCLI 与 CC 终端**是主要交流界面。保留原生项目、会话、文件、Git、终端体验，优先通过受支持的插件补充 ServerOS 上下文，不要求先 fork 整个 UI。
+
+**飞书**负责信息来源、提醒、阅读和汇报：
+
+- 我的文档库：当前工作、对账、结构化认识、需求与报告。
+- 个人笔记：整理成熟的私人知识。
+- 公开文档：面向更多读者、需要维护的教程与指南；名字不自动代表互联网公开。
+- 别人的文档：留在原 canonical 位置，按维护责任参与编辑，不擅自接管。
+- 云盘：文件、附件、精选截图与证据；IM/妙记保留原始来源职责。
+
+日报、周报、专项汇报按同事可读的正式行文生成。生成报告、放到飞书和发送给别人分别受权限约束。日报记录真实 Quay 贡献，不为凑使用记录制造任务。
+
+**GitHub**是 CC/GPT 当前的版本化协作面。较大的需求通常有 brief、design、execution、report；小工作不必凑四个文件。GPT 写回被接受的设计后，CC 在原授权范围内继续，不能只凭一行 READY 就扩大权限。
+
+## 设备与合规
+
+当前拓扑：**Tokyo 主节点，Windows 专项执行节点，手机控制端，北京仅保留历史引用。**
+
+Tailscale 是默认私网 Provider：**先用 tailnet，特殊需要才开隧道**。节点在线不等于所有端口可用；替换隧道前验证实际客户端、应用、认证和流式连接，并保证服务可自启动。
+
+Tokyo 默认使用 vince。共享网关的 ubuntu 维护例外只限明确目标与操作。**LiteLLM 生产和东京共享网关的生产切换、重启、配置变更、回滚仍由你执行。** Skill 文字和“已批准”卡片本身不构成技术强制边界。
+
+## 仓库职责
+
+| 仓库 | 职责 |
+|---|---|
+| serveros | 产品架构、插件组合、入口、确定性契约与节点运行时 |
+| ability-management | 能力身份、来源、revision、可复用 Skill 与分发 |
+| work-engine | 工作控制状态、Run/动作回执、看板投影 |
+| hwz-records | 确认的认识、稳定工作意图、设计与人类记录 |
+| hwz-ops | 实例目录、拓扑、目标/Binding、策略与带时间的观察地图 |
+
+MarketOps 和 Support Bot 保持并行业务项目。Bot 代码是 litellm-support-bot，知识仓是 troublebuddy-kb-bridge；ServerOS 不接管它们的路线或正在运行的实验。
+
+## 从哪里继续
+
+[ARCHITECTURE.md](ARCHITECTURE.md) 是唯一规范性产品架构；中英文 README 都是说明入口。
+[文档索引](docs/README.md) 区分当前契约与旧实现说明。
+
+**设计完成不代表已经上线。** 实施按架构中的场景验收，分别记录 CODE、INTEGRATION、LIVE 证据，不用文件数量、注册表绿色或文档提交代替真实可用性。
