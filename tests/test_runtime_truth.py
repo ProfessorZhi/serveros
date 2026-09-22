@@ -766,6 +766,47 @@ class RuntimeTruthTests(unittest.TestCase):
         self.assertEqual(report["release"]["verdict"], truth.RELEASE_INCOMPLETE)
         self.assertEqual(report["release"]["blocking"], [truth.AXIS_PROVENANCE])
 
+    def test_a_canonical_record_that_lags_is_not_a_defect(self):
+        """The axis reads the PUBLISHED branch, not this clone's copy of it.
+
+        `refs/heads/main` in a shared canonical checkout is a working copy of
+        the canonical branch, and it lags until somebody fetches in that
+        checkout — which, on this node, is the checkout the policy says not to
+        disturb. Resolving that name therefore measured a stale record and
+        reported `PIN_NOT_CANONICAL` against a pin that is the published head
+        exactly: a false alarm on a correct release, and one whose apparent
+        remedy was to pull the one checkout nobody should be pulling.
+
+        Here the published record contains the pin and the local branch does
+        not. The release is reproducible from something that will still exist,
+        so the axis passes and says which record answered.
+        """
+        self.faithful_runtime()
+        git(self.ability, "update-ref", "refs/remotes/origin/main", self.rev)
+        git(self.ability, "update-ref", "refs/heads/main", f"{self.rev}~1")
+        report = truth.collect(self.args())
+        provenance = self.axis(report, truth.AXIS_PROVENANCE)
+        self.assertEqual(provenance["verdict"], truth.PASS,
+                         provenance["detail"])
+        self.assertEqual(provenance["ref_used"], "refs/remotes/origin/main")
+        self.assertNotIn(truth.AXIS_PROVENANCE, report["release"]["blocking"])
+
+    def test_a_commit_only_this_clone_has_is_not_canonical(self):
+        """The counterexample that keeps the rule above from being a loosening.
+
+        "Prefer the published record" would be a way of passing everything if
+        it meant "either record". It does not: a revision on the local branch
+        and on no published one is a revision that exists on this machine and
+        nowhere that will still be there, which is the question the axis asks.
+        """
+        self.faithful_runtime()
+        git(self.ability, "update-ref", "refs/remotes/origin/main", f"{self.rev}~1")
+        report = truth.collect(self.args())
+        provenance = self.axis(report, truth.AXIS_PROVENANCE)
+        self.assertEqual(provenance["verdict"], truth.FAIL)
+        self.assertEqual(provenance["drift"], truth.PIN_NOT_CANONICAL)
+        self.assertEqual(report["release"]["blocking"], [truth.AXIS_PROVENANCE])
+
     def test_an_unreachable_pin_is_named_in_the_row_too(self):
         self.faithful_runtime()
         report = truth.collect(self.args(ability_rev=self.side_branch_commit()))
