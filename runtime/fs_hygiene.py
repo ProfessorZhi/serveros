@@ -465,6 +465,81 @@ TOOL_OWNED_DOTDIRS = {
                "likely to be mistaken for drift on a host with an IDE "
                "attached, which is why it is declared here by name",
     },
+    # The five below were added 2026-09-23 (§8 disk closure). All five were on
+    # this host, owned by a named tool, and in no list — so the root scan
+    # reported each as MISPLACED, which is the class with a move behind it.
+    # Nothing here was moved. The entries say what the evidence shows and no
+    # more; where a directory holds credentials the module names the files and
+    # does not read them, which is the same practice `.vscode-server` above
+    # records.
+    ".claude-code-ui": {
+        "owner": "the `claude-code-ui` tool",
+        "provider": "whichever process runs that UI on this host; nothing in "
+                    "this repository starts it",
+        "evidence": "holds exactly one entry, `plugins/` — a plugin directory, "
+                    "which a ServerOS namespace would not resemble",
+        "protection": UNPROTECTED,
+        "why": "one tool's root, named after the tool and holding only its own "
+               "plugins. The tool resolves the path itself, so a relocation "
+               "does not fail loudly — it silently starts a second, empty one "
+               "beside the first",
+    },
+    ".cloudcli": {
+        "owner": "CloudCLI",
+        "provider": "the `cloudcli` tool's own local server and CLI",
+        "evidence": "`auth.db` with a dated `auth.db.bak-pwchange-*` sibling, "
+                    "`local-server.json`, and `start.log`",
+        "protection": SECRET,
+        "protection_basis": "`auth.db` is an authentication store by its own "
+                            "name and its sibling records a password change. "
+                            "Names observed, contents never read — this module "
+                            "will not be the one that decides the file is "
+                            "harmless",
+        "why": "a tool's complete user root — its credential store, its server "
+               "config and its log — named after the tool. Nothing in it is a "
+               "path this product chose, and the credential store in "
+               "particular is a file whose location the tool, not this "
+               "repository, decides",
+    },
+    ".crawl4ai": {
+        "owner": "Crawl4AI",
+        "provider": "the crawler, which writes fetched pages and its own "
+                    "caches here",
+        "evidence": "`cache/`, `screenshots/`, `models/`, a `crawler.log`, and "
+                    "one directory per fetch stage — `html_content/`, "
+                    "`cleaned_html/`, `markdown_content/`, "
+                    "`extracted_content/`",
+        "protection": UNPROTECTED,
+        "why": "a fetch pipeline's own layout, one directory per stage, which "
+               "is the shape of a tool's working root rather than a namespace "
+               "somebody declared. Everything under it is derived from pages "
+               "the tool fetched and can be fetched again",
+    },
+    ".cursor": {
+        "owner": "Cursor",
+        "provider": "the editor",
+        "evidence": "holds exactly one entry, `projects/` — per-project editor "
+                    "state, which is what an editor writes under its own name",
+        "protection": UNPROTECTED,
+        "why": "an editor's state root, named after the editor, and this host "
+               "has a live worktree tree that the editor indexes from it. "
+               "Relocating it would not move the state; it would make the "
+               "editor build a new index and leave the old one here",
+    },
+    ".rustup": {
+        "owner": "rustup",
+        "provider": "`rustup`, the Rust toolchain installer",
+        "evidence": "measurably empty on this host: `ls -A` returns nothing and "
+                    "its link count is 2, which is what an empty directory "
+                    "has. The tool fills it per toolchain, and only once a "
+                    "toolchain is installed",
+        "protection": UNPROTECTED,
+        "why": "the installer names this directory and is the only thing that "
+               "writes it. Its emptiness is a state rather than an absence — "
+               "removing it as an empty directory would delete a location the "
+               "tool is entitled to expect, and the next `rustup` invocation "
+               "would recreate it",
+    },
 }
 
 # Dot directories this module LOOKED AT and declined to declare.
