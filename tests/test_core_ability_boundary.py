@@ -223,6 +223,38 @@ KNOWN_CLI_CROSSINGS = {
                    "authority this round keeps removing.",
         "disposition": "REDECLARED",
     },
+    "space/resolver.py": {
+        "because": "`serverosctl space resolve` IS the Space Resolver's operator "
+                   "surface, and it is what makes the kernel nameable at all. "
+                   "`space/` ships in the artifact and nothing loaded it: the "
+                   "only way to run it was `python3 space/resolver.py --request "
+                   "…` from a source checkout, which on an installed node is "
+                   "indistinguishable from the verb not existing. §B9 asks "
+                   "where a logical object canonically belongs; the daemon "
+                   "cannot answer it, because the question is about one "
+                   "caller's request document and a daemon has no request. The "
+                   "kernel stays the authority — the CLI reads a document, hands "
+                   "it over, and renders the record it gets back, and it holds "
+                   "no placement table of its own. The kernel opens no socket "
+                   "and mutates nothing, so this crossing carries none of the "
+                   "risk the `mcp/human_control.py` one does.",
+        "disposition": "REDECLARED",
+    },
+    "space/meeting_relevance.py": {
+        "because": "`serverosctl space meeting` is the same seam for the other "
+                   "half of the Space question: what a MeetingBundle "
+                   "contributes to work, and what may be done to it afterwards. "
+                   "It was unreachable from an installed node for the same "
+                   "reason and by the same measurement — the module ships, "
+                   "nothing named it. Routing it through the daemon would be "
+                   "worse than for the resolver: this kernel evaluates expiry "
+                   "against an explicit `as_of` and fails closed when it cannot, "
+                   "and a daemon answering from its own clock would be the one "
+                   "reading §7's rule against reading a clock. The CLI passes "
+                   "the caller's document through and offers no `--as-of` of its "
+                   "own, so there is no clock for a default to come from.",
+        "disposition": "REDECLARED",
+    },
 }
 
 # `runtime/daemon.py` is the core process, and this is the only place its name
