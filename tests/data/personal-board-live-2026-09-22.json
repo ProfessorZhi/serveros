@@ -1,0 +1,377 @@
+{
+ "schema": "serveros/personal-board.v1",
+ "at": "2026-09-22T03:37:37+08:00",
+ "counts": {
+  "cards_missing": 0,
+  "cards_rebased": 8,
+  "cards_unreadable": 0,
+  "cards_unresolved": 0,
+  "documents_diverging": 21,
+  "documents_empty": 0,
+  "documents_missing": 26,
+  "items": 17,
+  "priorities_unproduced": 34,
+  "projects_read": 3,
+  "projects_unread": 0
+ },
+ "projects": [
+  {
+   "path": "/data/home/vince/state/serveros/boards/litellm/current.json",
+   "project": "litellm",
+   "state": "READ",
+   "why": ""
+  },
+  {
+   "path": "/data/home/vince/state/serveros/boards/multi-user-claw/current.json",
+   "project": "multi-user-claw",
+   "state": "READ",
+   "why": ""
+  },
+  {
+   "path": "/data/home/vince/state/serveros/boards/serveros/current.json",
+   "project": "serveros",
+   "state": "READ",
+   "why": ""
+  }
+ ],
+ "sections": [
+  {
+   "id": "today",
+   "title": "今日重点",
+   "rows": []
+  },
+  {
+   "id": "in_flight",
+   "title": "进行中",
+   "rows": [
+    {
+     "id": "LIT-0101",
+     "project": "litellm",
+     "state": "ACTIVE",
+     "kind": "feature",
+     "title": "cache-read token 写入 LiteLLM SpendLogs",
+     "priority": {
+      "personal": {
+       "state": "UNPRODUCED",
+       "why": "the card declares no `personal_priority`. The field is proposed in `intake/workchain-contract.yaml#card_extension` and is not approved, so nothing here invents one"
+      },
+      "source": {
+       "state": "UNPRODUCED",
+       "why": "the card declares no `source_priority`. The field is proposed in `intake/workchain-contract.yaml#card_extension` and is not approved, so nothing here invents one"
+      }
+     }
+    },
+    {
+     "id": "LIT-0103",
+     "project": "litellm",
+     "state": "ACTIVE",
+     "kind": "test",
+     "title": "update/100-dev 六项 P0 合并基线验收",
+     "priority": {
+      "personal": {
+       "state": "UNPRODUCED",
+       "why": "the card declares no `personal_priority`. The field is proposed in `intake/workchain-contract.yaml#card_extension` and is not approved, so nothing here invents one"
+      },
+      "source": {
+       "state": "UNPRODUCED",
+       "why": "the card declares no `source_priority`. The field is proposed in `intake/workchain-contract.yaml#card_extension` and is not approved, so nothing here invents one"
+      }
+     }
+    },
+    {
+     "id": "LIT-0104",
+     "project": "litellm",
+     "state": "ACTIVE",
+     "kind": "investigation",
+     "title": "WorkBuddy DeepSeek 缓存计费与额度扣减异常",
+     "priority": {
+      "personal": {
+       "state": "UNPRODUCED",
+       "why": "the card declares no `personal_priority`. The field is proposed in `intake/workchain-contract.yaml#card_extension` and is not approved, so nothing here invents one"
+      },
+      "source": {
+       "state": "UNPRODUCED",
+       "why": "the card declares no `source_priority`. The field is proposed in `intake/workchain-contract.yaml#card_extension` and is not approved, so nothing here invents one"
+      }
+     }
+    },
+    {
+     "id": "SRV-0003",
+     "project": "serveros",
+     "state": "ACTIVE",
+     "kind": "ops",
+     "title": "ServerOS 联邦工作流、目录与双 Agent 能力收敛",
+     "priority": {
+      "personal": {
+       "state": "UNPRODUCED",
+       "why": "the card declares no `personal_priority`. The field is proposed in `intake/workchain-contract.yaml#card_extension` and is not approved, so nothing here invents one"
+      },
+      "source": {
+       "state": "UNPRODUCED",
+       "why": "the card declares no `source_priority`. The field is proposed in `intake/workchain-contract.yaml#card_extension` and is not approved, so nothing here invents one"
+      }
+     }
+    }
+   ]
+  },
+  {
+   "id": "p0",
+   "title": "P0",
+   "rows": []
+  },
+  {
+   "id": "p1",
+   "title": "P1",
+   "rows": []
+  },
+  {
+   "id": "backlog",
+   "title": "待排期",
+   "rows": []
+  },
+  {
+   "id": "waiting",
+   "title": "等待 / 待决定",
+   "rows": [
+    {
+     "id": "LIT-0203",
+     "project": "litellm",
+     "state": "NEEDS_HUMAN",
+     "kind": "investigation",
+     "title": "接入生产只读日志源并产出真实日报",
+     "priority": {
+      "personal": {
+       "state": "UNPRODUCED",
+       "why": "the card declares no `personal_priority`. The field is proposed in `intake/workchain-contract.yaml#card_extension` and is not approved, so nothing here invents one"
+      },
+      "source": {
+       "state": "UNPRODUCED",
+       "why": "the card declares no `source_priority`. The field is proposed in `intake/workchain-contract.yaml#card_extension` and is not approved, so nothing here invents one"
+      }
+     }
+    },
+    {
+     "id": "MUC-0104",
+     "project": "multi-user-claw",
+     "state": "WAITING",
+     "kind": "feature",
+     "title": "妙记生成事件订阅与会后卡片自动推送",
+     "priority": {
+      "personal": {
+       "state": "UNPRODUCED",
+       "why": "the card declares no `personal_priority`. The field is proposed in `intake/workchain-contract.yaml#card_extension` and is not approved, so nothing here invents one"
+      },
+      "source": {
+       "state": "UNPRODUCED",
+       "why": "the card declares no `source_priority`. The field is proposed in `intake/workchain-contract.yaml#card_extension` and is not approved, so nothing here invents one"
+      }
+     }
+    }
+   ]
+  },
+  {
+   "id": "delivered",
+   "title": "已交付待验收 / 待合并",
+   "rows": [
+    {
+     "id": "LIT-0102",
+     "project": "litellm",
+     "state": "DELIVERED",
+     "kind": "investigation",
+     "title": "Codex/CC Switch 断联与原始输入输出取证",
+     "priority": {
+      "personal": {
+       "state": "UNPRODUCED",
+       "why": "the card declares no `personal_priority`. The field is proposed in `intake/workchain-contract.yaml#card_extension` and is not approved, so nothing here invents one"
+      },
+      "source": {
+       "state": "UNPRODUCED",
+       "why": "the card declares no `source_priority`. The field is proposed in `intake/workchain-contract.yaml#card_extension` and is not approved, so nothing here invents one"
+      }
+     }
+    },
+    {
+     "id": "MUC-0105",
+     "project": "multi-user-claw",
+     "state": "DELIVERED",
+     "kind": "feature",
+     "title": "用户会话历史集中归档（一期）",
+     "priority": {
+      "personal": {
+       "state": "UNPRODUCED",
+       "why": "the card declares no `personal_priority`. The field is proposed in `intake/workchain-contract.yaml#card_extension` and is not approved, so nothing here invents one"
+      },
+      "source": {
+       "state": "UNPRODUCED",
+       "why": "the card declares no `source_priority`. The field is proposed in `intake/workchain-contract.yaml#card_extension` and is not approved, so nothing here invents one"
+      }
+     }
+    },
+    {
+     "id": "SRV-0002",
+     "project": "serveros",
+     "state": "DELIVERED",
+     "kind": "ops",
+     "title": "迁移 Agent 会话归档并完善目录治理",
+     "priority": {
+      "personal": {
+       "state": "UNPRODUCED",
+       "why": "the card declares no `personal_priority`. The field is proposed in `intake/workchain-contract.yaml#card_extension` and is not approved, so nothing here invents one"
+      },
+      "source": {
+       "state": "UNPRODUCED",
+       "why": "the card declares no `source_priority`. The field is proposed in `intake/workchain-contract.yaml#card_extension` and is not approved, so nothing here invents one"
+      }
+     }
+    },
+    {
+     "id": "SRV-0005",
+     "project": "serveros",
+     "state": "DELIVERED",
+     "kind": "ops",
+     "title": "精简 E2E 证据并补充后端调用核验",
+     "priority": {
+      "personal": {
+       "state": "UNPRODUCED",
+       "why": "the card declares no `personal_priority`. The field is proposed in `intake/workchain-contract.yaml#card_extension` and is not approved, so nothing here invents one"
+      },
+      "source": {
+       "state": "UNPRODUCED",
+       "why": "the card declares no `source_priority`. The field is proposed in `intake/workchain-contract.yaml#card_extension` and is not approved, so nothing here invents one"
+      }
+     }
+    }
+   ]
+  },
+  {
+   "id": "cancelled",
+   "title": "取消 / 替代",
+   "rows": []
+  },
+  {
+   "id": "done",
+   "title": "已完成",
+   "rows": [
+    {
+     "id": "LIT-0201",
+     "project": "litellm",
+     "state": "CLOSED",
+     "kind": "analysis",
+     "title": "LiteLLM 日志四层分析 pipeline 与合成验证",
+     "priority": {
+      "personal": {
+       "state": "UNPRODUCED",
+       "why": "the card declares no `personal_priority`. The field is proposed in `intake/workchain-contract.yaml#card_extension` and is not approved, so nothing here invents one"
+      },
+      "source": {
+       "state": "UNPRODUCED",
+       "why": "the card declares no `source_priority`. The field is proposed in `intake/workchain-contract.yaml#card_extension` and is not approved, so nothing here invents one"
+      }
+     }
+    },
+    {
+     "id": "LIT-0202",
+     "project": "litellm",
+     "state": "CLOSED",
+     "kind": "report",
+     "title": "Test OpenSearch 真实日志可用性验证",
+     "priority": {
+      "personal": {
+       "state": "UNPRODUCED",
+       "why": "the card declares no `personal_priority`. The field is proposed in `intake/workchain-contract.yaml#card_extension` and is not approved, so nothing here invents one"
+      },
+      "source": {
+       "state": "UNPRODUCED",
+       "why": "the card declares no `source_priority`. The field is proposed in `intake/workchain-contract.yaml#card_extension` and is not approved, so nothing here invents one"
+      }
+     }
+    },
+    {
+     "id": "LIT-0204",
+     "project": "litellm",
+     "state": "CLOSED",
+     "kind": "analysis",
+     "title": "Production 与 Test SpendLog schema 对照",
+     "priority": {
+      "personal": {
+       "state": "UNPRODUCED",
+       "why": "the card declares no `personal_priority`. The field is proposed in `intake/workchain-contract.yaml#card_extension` and is not approved, so nothing here invents one"
+      },
+      "source": {
+       "state": "UNPRODUCED",
+       "why": "the card declares no `source_priority`. The field is proposed in `intake/workchain-contract.yaml#card_extension` and is not approved, so nothing here invents one"
+      }
+     }
+    },
+    {
+     "id": "MUC-0101",
+     "project": "multi-user-claw",
+     "state": "CLOSED",
+     "kind": "feature",
+     "title": "飞书回复合并单气泡（过程聚合 + 独立最终答案）",
+     "priority": {
+      "personal": {
+       "state": "UNPRODUCED",
+       "why": "the card declares no `personal_priority`. The field is proposed in `intake/workchain-contract.yaml#card_extension` and is not approved, so nothing here invents one"
+      },
+      "source": {
+       "state": "UNPRODUCED",
+       "why": "the card declares no `source_priority`. The field is proposed in `intake/workchain-contract.yaml#card_extension` and is not approved, so nothing here invents one"
+      }
+     }
+    },
+    {
+     "id": "MUC-0102",
+     "project": "multi-user-claw",
+     "state": "CLOSED",
+     "kind": "feature",
+     "title": "Hermes 长期闲置容器回收与登录恢复",
+     "priority": {
+      "personal": {
+       "state": "UNPRODUCED",
+       "why": "the card declares no `personal_priority`. The field is proposed in `intake/workchain-contract.yaml#card_extension` and is not approved, so nothing here invents one"
+      },
+      "source": {
+       "state": "UNPRODUCED",
+       "why": "the card declares no `source_priority`. The field is proposed in `intake/workchain-contract.yaml#card_extension` and is not approved, so nothing here invents one"
+      }
+     }
+    },
+    {
+     "id": "MUC-0103",
+     "project": "multi-user-claw",
+     "state": "CLOSED",
+     "kind": "feature",
+     "title": "部署机器资源监控与仪表盘对话次数统计",
+     "priority": {
+      "personal": {
+       "state": "UNPRODUCED",
+       "why": "the card declares no `personal_priority`. The field is proposed in `intake/workchain-contract.yaml#card_extension` and is not approved, so nothing here invents one"
+      },
+      "source": {
+       "state": "UNPRODUCED",
+       "why": "the card declares no `source_priority`. The field is proposed in `intake/workchain-contract.yaml#card_extension` and is not approved, so nothing here invents one"
+      }
+     }
+    },
+    {
+     "id": "SRV-0001",
+     "project": "serveros",
+     "state": "CLOSED",
+     "kind": "ops",
+     "title": "收敛 ServerOS 工作流与目录",
+     "priority": {
+      "personal": {
+       "state": "UNPRODUCED",
+       "why": "the card declares no `personal_priority`. The field is proposed in `intake/workchain-contract.yaml#card_extension` and is not approved, so nothing here invents one"
+      },
+      "source": {
+       "state": "UNPRODUCED",
+       "why": "the card declares no `source_priority`. The field is proposed in `intake/workchain-contract.yaml#card_extension` and is not approved, so nothing here invents one"
+      }
+     }
+    }
+   ]
+  }
+ ]
+}

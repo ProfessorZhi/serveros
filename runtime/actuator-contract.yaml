@@ -806,3 +806,79 @@ actuators:
       path, and not from any Run.
     sites:
       - {file: scripts/release.py, symbols: [cmd_daily_task]}
+
+  # ---------------------------------------------------------------------
+  # `runtime/bounded_invocation.invoke_once` — the fabric's only bounded
+  # executor, and the two reaches it needs to be one: it spawns argv it was
+  # handed, and it kills the process group it created. They are declared as
+  # two capabilities rather than one because a reviewer's two questions are
+  # different — "what may it run" and "what may it kill" — and an entry that
+  # answered both in one paragraph would be answering one of them by
+  # implication.
+  #
+  # Both entries say the same uncomfortable thing in their `why`: this call
+  # site has no production consumer today. `tests/test_bounded_invocation_paths.py`
+  # is its only caller in the tree. It is declared rather than deleted because
+  # the alternative — a module the scanner cannot see — is the failure this
+  # file exists to prevent, and because the daily loop it was written for is
+  # the thing this round is trying to reach.
+  # ---------------------------------------------------------------------
+  - id: bounded-invocation-runs-a-supplied-argv
+    kind: unresolved_argv
+    verb: subprocess.Popen
+    why: >-
+      `subprocess.Popen(argv, cwd=cwd, stdin=<regular file>, stdout=PIPE,
+      stderr=PIPE, start_new_session=True)` in `invoke_once`. The scanner
+      reports it because the argv is the function's first parameter and cannot
+      be resolved statically; what it cannot show is everything that makes the
+      reach narrow, so it is written here. The caller is a trusted, configured
+      adapter that supplies BOTH the argv and the private receipt directory —
+      the module's own docstring says it "neither authenticates a grant nor
+      sandboxes commands", and that is the design rather than a gap: the
+      authorization question belongs to the fabric's admission layer, and this
+      function's job is to make a spawned command bounded and idempotent. The
+      bounds are real and are the reason the reach is worth granting at all:
+      the receipt is written and fsynced as `STARTED` BEFORE the spawn, so a
+      crash in the window between them is visible rather than absent; the
+      action key is a 100-character `[a-zA-Z0-9_-]` token; a second call with
+      the same key and a different input digest raises instead of running; the
+      output of each stream is capped at `max_output_bytes` by the reader; and
+      the deadline is enforced by the same loop that drains the pipes, so a
+      child that never writes cannot outlive its timeout.
+      No production caller exists on this node today — measured, and stated
+      here rather than left for the next reader to discover: `invoke_once` is
+      reached from `tests/test_bounded_invocation_paths.py` and from nowhere
+      else. Nothing in the CLI, the daemon, the MCP layer or `intake/` imports
+      it. The capability is granted now because the call site exists and an
+      undeclared call site is what this checker reports; the consumer that
+      would make it live is the daily loop, and wiring that is a separate and
+      uncompleted step rather than something this entry claims.
+    sites:
+      - {file: runtime/bounded_invocation.py, symbols: [invoke_once]}
+
+  - id: bounded-invocation-kills-the-group-it-created
+    kind: process_termination
+    verb: os.killpg
+    why: >-
+      The three `os.killpg` calls in `invoke_once` — the SIGTERM and SIGKILL
+      pair on a timeout or output-limit breach, and the SIGTERM in the
+      `finally` that covers `START_FAILED` and `IO_FAILED`. §26 permits a
+      teardown of what you started, and this is that: the process is one this
+      function created one screen earlier with `start_new_session=True`, and
+      the pid comes from the `Popen` object rather than from the process table,
+      so the worst case is signalling a group that has already exited —
+      `ProcessLookupError` is caught at each site for exactly that reason. The
+      group is killed rather than the direct child because the direct child is
+      not the whole command: a shell that has backgrounded work leaves a
+      grandchild holding the pipe, and killing only the child would make the
+      timeout a lie — the caller would return `TIMED_OUT` while the work it
+      timed out went on running. `tests/test_bounded_invocation_paths.py`
+      asserts that property with a real `sleep 3; touch` that must never
+      create the file.
+      Like the entry above, this capability has no production consumer today.
+      Nothing in the product can reach it, and the `STARTED` receipt it writes
+      first means a caller that finds one must reconcile the effect rather
+      than re-run: the timeout path records `effect: UNKNOWN` with the reason
+      that no automatic retry is permitted.
+    sites:
+      - {file: runtime/bounded_invocation.py, symbols: [invoke_once]}

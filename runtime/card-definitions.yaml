@@ -129,6 +129,33 @@ codes:
     what: 有一条隧道没有声明归属
   DESIRED_ACTUAL_MISMATCH:
     what: 有一个对象的实际状态与声明的期望状态不一致
+    # AC19. "实际状态与声明的期望状态不一致" is true of a stopped service and of
+    # a half-ready one, and a person reading it still has to work out which
+    # service and in what way. When the declaration says the thing should be
+    # running and it is not, the card says so in the words a person would use,
+    # with the service named.
+    #
+    # WHY THE WORDS ARE DECLARED RATHER THAN READ OFF THE STATE
+    #
+    # `NOT_RUNNING` and `NOT_READY` are the health model's vocabulary, and a
+    # renderer that translated them itself would be a second interpretation of
+    # a vocabulary it does not own. So each pair is written down here and
+    # reviewed like any other sentence on the card. A pair nobody has written
+    # down keeps the generic `what` above -- an undeclared combination must not
+    # get a guessed word, which is the rule the attention table follows for an
+    # undecided code.
+    #
+    # `desired` is on both sides of the comparison on purpose: `STOPPED` means
+    # "at rest, and that is the desired state" for a resource declared stopped,
+    # and the same word against a declaration of `running` is a fault. Keying
+    # on the measured word alone would make one spelling mean two things.
+    says:
+      - desired: [running]
+        actual: [NOT_RUNNING]
+        word: 不可用
+      - desired: [running]
+        actual: [NOT_READY]
+        word: 未就绪
 
   # -- functional probes ---------------------------------------------------
   FUNCTIONAL_PROBE_FAILED:

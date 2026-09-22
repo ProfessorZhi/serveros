@@ -19,6 +19,8 @@ import sys
 import unittest
 from pathlib import Path
 
+import yaml
+
 REPO = Path(__file__).resolve().parent.parent
 RUNTIME = REPO / "runtime"
 
@@ -37,11 +39,20 @@ cards = _load("serveros_runtime_cards", "cards.py")
 presentation = cards.presentation
 scenarios = _load("serveros_runtime_card_scenarios", "card_scenarios.py")
 source = _load("serveros_runtime_card_source", "card_source.py")
+# Loaded for the fixture-vocabulary guard below, which derives the key sets a
+# digest row may carry by running the producer rather than by listing them.
+alerting = _load("serveros_runtime_alerting", "alerting.py")
+alert_digest = _load("serveros_runtime_alert_digest", "alert_digest.py")
+attribution = _load("serveros_runtime_attribution", "attribution.py")
 
-#: §6: "按当前 card schema/SDK 校验，不从草图发明 JSON 属性". These six are the
-#: ones already in use in the cards this node sends, so the schema version in
-#: production is known to accept them. A seventh would be a guess, and a guessed
-#: tag renders as a blank rectangle in a conversation nobody is watching.
+DEVICE = "device:tokyo-shared-dev-01"
+
+#: §6: "按当前 card schema/SDK 校验，不从草图发明 JSON 属性". These seven are
+#: the ones already in use in the cards this node sends, so the schema version in
+#: production is known to accept them. An eighth would be a guess, and a guessed
+#: tag renders as a blank rectangle in a conversation nobody is watching. The
+#: count in this sentence was wrong by one until it was counted against the set
+#: below; the set is the authority and the sentence is prose about it.
 PROVEN_TAGS = {"markdown", "hr", "plain_text", "collapsible_panel",
                "column_set", "standard_icon", "column"}
 
@@ -77,18 +88,33 @@ def _markdown(card: dict) -> list[str]:
 
 
 class ScenarioRenderTests(unittest.TestCase):
-    """All six situations, because a card that only renders on a good day is a
+    """Every situation, because a card that only renders on a good day is a
     card that is missing on the day it matters."""
 
     @classmethod
     def setUpClass(cls):
         cls.items = scenarios.rendered()
 
-    def test_there_are_six_and_they_are_the_ones_the_design_names(self):
+    def test_they_are_the_ones_the_design_and_the_criteria_name(self):
+        """§6's six, then AC18–AC21's four, then the eleventh on neither list.
+
+        The order is asserted, not just the set, because the three groups come
+        from three different places and a scenario that migrated between them
+        would be a fixture whose provenance a reviewer can no longer read off
+        the file. The list is written out rather than derived so that ADDING a
+        scenario is a deliberate edit to this test — a fixture nobody had to
+        justify is a fixture that quietly stops matching the criteria.
+        """
         self.assertEqual(
             [i["scenario"] for i in self.items],
             ["normal", "partial_unknown", "one_critical", "observer_failure",
-             "mixed", "recovery_only"])
+             "mixed", "recovery_only",
+             # AC18–AC21.
+             "pressure_boundary", "expected_service_down", "observability_loss",
+             "historical_backlog",
+             # Not named by any criterion: the only scenario that renders red.
+             # See the scenario's own comment for why it has to exist.
+             "critical_service_failed"])
 
     def test_every_scenario_renders_both_outputs(self):
         for item in self.items:
@@ -124,12 +150,84 @@ class ScenarioRenderTests(unittest.TestCase):
 
     def test_the_header_title_is_not_repeated_as_the_first_body_line(self):
         """It is the most valuable line on a 390px screen, and the first draft
-        spent it saying what the line above it had just said."""
+        spent it saying what the line above it had just said.
+
+        The sample mark is skipped. Every preview carries one, so a check
+        against `[0]` compared the header against 「🧪 示例 / 尚未发送」 and
+        passed on all eleven scenarios without ever looking at a face — the
+        kind of check that reports coverage it does not have.
+        """
         for item in self.items:
             with self.subTest(scenario=item["scenario"]):
                 title = item["card"]["header"]["title"]["content"]
                 bare = title.replace("**", "").split(" · ")[0].strip()
-                self.assertNotIn(bare, _markdown(item["card"])[0])
+                face = [line for line in _markdown(item["card"])
+                        if presentation.SAMPLE_MARK not in line]
+                self.assertTrue(face, "a card with no face")
+                self.assertNotIn(bare, face[0])
+
+    def test_the_integrity_heading_says_which_expectations_went_unverified(self):
+        """The header carries the level and the count, so the heading's job is
+        the thing the header cannot say. Its first version restated both — the
+        same number three times in four lines, which is what the 390px render
+        showed."""
+        item = next(i for i in self.items if i["scenario"] == "observability_loss")
+        model = scenarios.model_for(
+            next(s for s in scenarios.scenarios()
+                 if s["name"] == "observability_loss"), sample=False)
+        # One markdown element holds the whole face, so the lines are split out
+        # of it. Checking the element instead would have found the heading
+        # wherever it was in the block.
+        face = [line
+                for element in _markdown(item["card"]) for line in element.split("\n")]
+        heading = [line for line in face if line.startswith("**监控完整性")]
+        self.assertEqual(len(heading), 1, face)
+        for code in (model["integrity"]["by_code"] or {}):
+            with self.subTest(code=code):
+                self.assertIn(code, heading[0])
+        self.assertNotIn("本次未被观测到", heading[0])
+
+
+class IntegrityHeadingCapTests(unittest.TestCase):
+    """The cap is the aggregation rule, one line higher up the card."""
+
+    @staticmethod
+    def _finding(codes: dict) -> dict:
+        return {"kind": "monitoring-integrity", "attention": {"level": "REVIEW"},
+                "count": sum(codes.values()), "by_code": codes,
+                "text": "t", "impact": "i", "action": "a",
+                "not_a_finding": {"count": 0, "note": "n"}}
+
+    def test_it_names_at_most_the_cap_and_counts_the_rest(self):
+        heading = cards._integrity_heading(self._finding({
+            "DESIRED_ACTUAL_MISMATCH": 300, "FUNCTIONAL_PROBE_FAILED": 200,
+            "TUNNEL_UNHEALTHY": 40, "PROTECTION_LOST_ON_IDENTITY_SWITCH": 2,
+            "DESIRED_ACTUAL_MISMATCH2": 1}))
+        self.assertEqual(heading.count("×"), cards.INTEGRITY_CODES_SHOWN)
+        self.assertIn("等 2 类", heading)
+
+    def test_the_biggest_kinds_are_the_ones_kept(self):
+        """Sorted by count, not by code: the 300-row expectation is the one a
+        person needs to see, and a heading that dropped it for alphabetical
+        order would be hiding the largest hole behind the smallest."""
+        heading = cards._integrity_heading(self._finding({
+            "ZZZ_BIG": 300, "AAA_SMALL": 1, "BBB_SMALL": 1, "CCC_SMALL": 1}))
+        self.assertIn("ZZZ_BIG", heading)
+        self.assertNotIn("CCC_SMALL", heading)
+
+    def test_a_finding_with_no_codes_still_gets_a_heading(self):
+        """An aggregate with nothing to enumerate is still a block, and a block
+        with no heading merges into the event above it."""
+        self.assertEqual(cards._integrity_heading(self._finding({})),
+                         "**监控完整性**")
+
+    def test_a_count_of_one_costs_no_characters(self):
+        """A heading is the most expensive line on the card and `×1` is three
+        characters saying nothing. The number appears where it is the
+        interesting part: a code standing behind more than one subject."""
+        heading = cards._integrity_heading(self._finding({
+            "ONE": 1, "MANY": 42}))
+        self.assertEqual(heading, "**监控完整性 · MANY ×42 · ONE**")
 
     def test_every_scenario_still_says_a_sample_without_the_mark(self):
         """The mark is a flag, and the flag has to be off for the card to be
@@ -144,6 +242,271 @@ class ScenarioRenderTests(unittest.TestCase):
                                  card["header"]["title"]["content"])
                 self.assertFalse(any(presentation.SAMPLE_MARK in m
                                      for m in _markdown(card)))
+
+
+def _panels(card: dict) -> dict:
+    """Every collapsible panel, keyed by the title a person taps."""
+    out = {}
+    for element in (card.get("body") or {}).get("elements") or []:
+        if element.get("tag") != "collapsible_panel":
+            continue
+        title = ((element.get("header") or {}).get("title") or {}).get("content")
+        body = "\n".join(str(e.get("content") or "")
+                         for e in element.get("elements") or [])
+        out[str(title)] = body
+    return out
+
+
+def _detail_under(card: dict, fragment: str) -> str:
+    found = [body for title, body in _panels(card).items() if fragment in title]
+    assert found, f"no panel whose title contains {fragment!r}: {list(_panels(card))}"
+    return "\n".join(found)
+
+
+class DeclaredServiceDownTests(unittest.TestCase):
+    """AC19. A service declared `running` that is not gets named in words.
+
+    「有一个对象的实际状态与声明的期望状态不一致」 is true of every mismatch
+    this code can raise, which is exactly why it is not enough: the reader is
+    told that a comparison failed and not which service, nor in what way. The
+    words for the two declared pairs live in `card-definitions.yaml`, and the
+    cases below are the ones that could quietly stop being true — an undeclared
+    pair acquiring an invented word, a resting resource being called 不可用, and
+    a caveated comparison being resolved by one word that the evidence
+    explicitly refuses to resolve.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.scenario = next(s for s in scenarios.scenarios()
+                            if s["name"] == "expected_service_down")
+        cls.model = scenarios.model_for(cls.scenario, sample=False)
+        cls.card = cards.card_for(cls.model)
+
+    def test_the_first_screen_names_the_service_and_says_it_is_down(self):
+        event = self.model["events"][0]
+        self.assertEqual(event["what"]["text"], "container0-postgres 不可用")
+        face = "\n".join(_markdown(self.card))
+        self.assertIn("container0-postgres 不可用", face)
+        # Not merely "not the generic sentence": the generic sentence is the
+        # thing a reader was getting, so its absence is asserted too.
+        self.assertNotIn("实际状态与声明的期望状态不一致", face)
+
+    def test_the_declared_pair_is_what_selected_the_word(self):
+        """The word is read off both sides, so both sides are on the model."""
+        compared = self.model["events"][0]["what"]["compared"]
+        self.assertEqual(compared["desired"], "running")
+        self.assertEqual(compared["actual"], "NOT_RUNNING")
+        self.assertIsNone(compared["caveat"])
+
+    def test_the_technical_detail_keeps_both_sides_of_the_comparison(self):
+        """The face says 不可用; the fold says against what, and what the
+        provider itself reported. Without the second half a reader cannot tell
+        a container Docker reported as `exited` from a process match."""
+        detail = _detail_under(self.card, "技术详情")
+        self.assertIn("declared running · measured NOT_RUNNING", detail)
+        self.assertIn("provider says exited", detail)
+
+    def test_a_caveated_comparison_keeps_the_generic_sentence(self):
+        """The hidepid case, built by changing one field of the fixture above.
+
+        `_process_match_caveat` exists because on this host a failed `pgrep`
+        has two readings — the process is gone, or it is running behind a
+        boundary this uid cannot cross. Saying 不可用 there would be the card
+        settling, in two characters, the question the evidence block spends a
+        paragraph refusing to settle.
+        """
+        digest = copy.deepcopy(self.scenario["digest"])
+        digest["rows"][0]["caveat"] = CAVEAT
+        model = presentation.alert_model(
+            digest, at=self.scenario.get("at") or scenarios.document().get("at"),
+            names=presentation.name_index(attribution=self.scenario.get("attribution"),
+                                          registry=self.scenario.get("registry")))
+        card = cards.card_for(model)
+        event = model["events"][0]
+        self.assertNotIn("不可用", event["what"]["text"])
+        self.assertEqual(event["what"]["text"],
+                         presentation.definition_for(
+                             event["code"])["what"])
+        self.assertEqual(event["what"]["compared"]["caveat"], CAVEAT)
+        self.assertIn("caveat:", _detail_under(card, "技术详情"))
+
+    def test_the_generic_sentence_is_still_what_an_undeclared_pair_gets(self):
+        """The strict direction, and the reason `says` is a table rather than a
+        translation: a pair nobody wrote down must not get a guessed word."""
+        self.assertIsNone(presentation.comparison_word(
+            "DESIRED_ACTUAL_MISMATCH", desired="stopped", actual="STOPPED"))
+        self.assertIsNone(presentation.comparison_word(
+            "DESIRED_ACTUAL_MISMATCH", desired="running", actual="FUNCTIONALLY_FAILED"))
+        self.assertTrue(presentation.definition_for(
+            "DESIRED_ACTUAL_MISMATCH")["what"])
+
+
+#: A caveat of the shape `desired.py` writes. Written out rather than imported
+#: because the producer's own sentence names a file and a node, and a test that
+#: asserted on it would be asserting that the sentence was unchanged.
+CAVEAT = ("the measurement is `pgrep -f` matching 0 process(es), and on this "
+          "host that negative result has two readings that this comparison "
+          "cannot tell apart: the process is gone, or it is running behind a "
+          "visibility boundary this uid cannot cross")
+
+
+class TheFixturesSpeakTheProducersVocabularyTests(unittest.TestCase):
+    """Every key a card fixture writes is a key the producer emits.
+
+    AC14 and AC16 ask the tests to constrain the card rather than snapshot a
+    pretty sample, and a fixture is where that is easiest to fail silently: a
+    row is a dictionary, nothing checks its keys, and a key the producer never
+    writes renders as a sentence about evidence nobody collected. This file's
+    `owner` field was exactly that — `{type: serveros, ref: ...}` on four
+    fixture rows, a shape `alert_digest._owner_of` cannot produce, which the
+    card then printed as "owner: unattributed" beside an owner the fixture
+    claimed to have. Nothing failed; the preview just showed an absence.
+
+    The allowed sets are DERIVED, not listed: `deltas` is run against a real
+    store holding one alert, so a change to the projection moves these sets and
+    a fixture that did not follow fails here.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        import tempfile
+        cls.tmp = Path(tempfile.mkdtemp(prefix="cards-fixture-vocab-"))
+        cls.vocab = cls._measure()
+        cls.document = yaml.safe_load(
+            (RUNTIME / "card-scenarios.yaml").read_text(encoding="utf-8"))
+
+    @classmethod
+    def tearDownClass(cls):
+        import shutil
+        shutil.rmtree(cls.tmp, ignore_errors=True)
+
+    @staticmethod
+    def _measure() -> dict:
+        """One delta row, one held row, and the owner shape, from the producer."""
+        import datetime
+        state = TheFixturesSpeakTheProducersVocabularyTests.tmp / "alerts" / "state.json"
+        state.parent.mkdir(parents=True, exist_ok=True)
+        store = alerting.AlertStore(state)
+        cursor = alert_digest.DeliveryCursor(alert_digest.cursor_path(state))
+        at = datetime.datetime.fromtimestamp(
+            1789000000, datetime.timezone.utc).isoformat()
+        alert_digest.ensure_baseline(cursor, store, at=at, device_ref=DEVICE)
+        ownership = attribution._owner(
+            attribution.ROLE_EXTERNAL_USER_SESSION, why="the cgroup names a login",
+            slice_name="user.slice", uid="1002", session="134")
+        ref = alerting.alert_ref(alerting.identity(
+            code="ORPHAN_PROCESS_TREE", device_ref=DEVICE,
+            subject_ref="runtime-group:process-tree:session-134"))
+        alerts = store.alerts()
+        alerts[ref] = {
+            "alert_ref": ref, "code": "ORPHAN_PROCESS_TREE", "severity": "high",
+            "device_ref": DEVICE, "subject_ref": "runtime-group:process-tree:session-134",
+            "resource_ref": "runtime-group:process-tree:session-134",
+            "state": "OPEN", "first_seen": at, "resolved_at": None,
+            "occurrence_count": 1, "hold_kind": "unmeasured",
+            "hold_reason": "the measurement was not reported this tick",
+            "measured": {"ownership": ownership},
+            "provenance": {"freshness": "FRESH", "source": "host-processes",
+                           "observed_at": at},
+        }
+        store.commit(alerts)
+        document = alert_digest.deltas(store, cursor, at=at)
+        return {
+            "row": set(document["rows"][0]) if document["rows"] else set(),
+            "held": set(document["held"][0]) if document["held"] else set(),
+            "owner": set(document["rows"][0]["owner"] or {})
+                     if document["rows"] else set(),
+            "ownership": ownership,
+        }
+
+    def _alert_fixtures(self):
+        for scenario in self.document["scenarios"]:
+            if scenario.get("card") == "alert":
+                yield scenario, (scenario.get("digest") or {})
+
+    def test_the_derivation_itself_produced_something(self):
+        """The positive control. An empty allowed-set would pass every check
+        below by rejecting nothing.
+
+        `immediate` is asserted because only `deltas` writes it: a version of
+        this that reached `_row_of` alone would silently reject every fixture
+        row carrying the delta vocabulary.
+        """
+        self.assertTrue(self.vocab["row"] >= {
+            "key", "code", "severity_rank", "owner", "provenance", "caveat",
+            "desired_state", "actual_state", "actual_derived_state",
+            "actual_raw", "kind", "was_announced", "backlog", "immediate"},
+            sorted(self.vocab["row"]))
+        self.assertTrue(self.vocab["held"] >= {"alert_ref", "code", "hold_kind",
+                                               "hold_reason", "was_announced"},
+                        sorted(self.vocab["held"]))
+        self.assertEqual(len(self.vocab["owner"]), 7, sorted(self.vocab["owner"]))
+
+    def test_every_fixture_alert_row_uses_the_producers_keys(self):
+        checked = 0
+        for scenario, digest in self._alert_fixtures():
+            for row in digest.get("rows") or []:
+                checked += 1
+                with self.subTest(scenario=scenario["name"], key=row.get("key")):
+                    self.assertEqual(set(row) - self.vocab["row"], set())
+        self.assertGreater(checked, 0, "no fixture row was checked")
+
+    def test_every_fixture_held_row_uses_the_producers_keys(self):
+        checked = 0
+        for scenario, digest in self._alert_fixtures():
+            for row in digest.get("held") or []:
+                checked += 1
+                with self.subTest(scenario=scenario["name"]):
+                    self.assertEqual(set(row) - self.vocab["held"], set())
+        self.assertGreater(checked, 0, "no held row was checked")
+
+    def test_a_fixture_owner_is_a_shape_somebody_measured(self):
+        """`{type: serveros, ref: ...}` is what this caught."""
+        checked = 0
+        for scenario, digest in self._alert_fixtures():
+            for row in digest.get("rows") or []:
+                owner = row.get("owner")
+                if owner is None:
+                    continue
+                checked += 1
+                with self.subTest(scenario=scenario["name"], key=row.get("key")):
+                    self.assertEqual(set(owner) - self.vocab["owner"], set())
+                    self.assertIn(owner.get("class"),
+                                  {attribution.EXTERNAL, attribution.MANAGED,
+                                   attribution.UNKNOWN})
+                    self.assertIn(owner.get("role"), {
+                        None, attribution.ROLE_EXTERNAL_SYSTEM,
+                        attribution.ROLE_EXTERNAL_UNSLICED,
+                        attribution.ROLE_EXTERNAL_USER_MANAGER,
+                        attribution.ROLE_EXTERNAL_USER_SESSION,
+                        attribution.ROLE_MANAGED_UNIT})
+        self.assertGreater(checked, 0, "no fixture carries an owner at all")
+
+    def test_the_owner_rule_would_catch_the_shape_that_was_here(self):
+        """The negative control, on the four rows this file used to carry."""
+        self.assertEqual({"type", "ref"} - self.vocab["owner"], {"type", "ref"})
+
+    def test_a_row_that_compares_two_states_carries_both_of_them(self):
+        """AC19's input. One side alone renders the generic sentence — the word
+        is chosen from the pair — so a half comparison is a fixture that looks
+        like it demonstrates the criterion and does not."""
+        seen = 0
+        for scenario, digest in self._alert_fixtures():
+            for row in digest.get("rows") or []:
+                if row.get("desired_state") is None:
+                    continue
+                seen += 1
+                with self.subTest(scenario=scenario["name"], key=row.get("key")):
+                    self.assertTrue(row.get("actual_derived_state"))
+        self.assertGreater(seen, 0, "no fixture demonstrates a comparison")
+        self.assertIsNotNone(presentation.comparison_word(
+            "DESIRED_ACTUAL_MISMATCH",
+            desired="running",
+            actual=next(r["actual_derived_state"]
+                        for s, d in self._alert_fixtures()
+                        for r in d.get("rows") or []
+                        if r.get("code") == "DESIRED_ACTUAL_MISMATCH")))
 
 
 class ColourTests(unittest.TestCase):
@@ -166,10 +529,43 @@ class ColourTests(unittest.TestCase):
                 self.assertEqual(cards._template(word), cards.NEUTRAL_TEMPLATE)
                 self.assertNotEqual(cards._template(word)[0], "green")
 
-    def test_only_a_critical_event_makes_the_alert_card_red(self):
+    def test_a_critical_event_alone_does_not_make_the_card_red(self):
+        """The separation the whole axis exists for, on the measured case.
+
+        `one_critical` carries a CRITICAL-severity event and renders ORANGE,
+        because severity is what the detector said about the measurement and
+        attention is what the declaration says about the subject. Nothing
+        registers `/data` as a filesystem that should be in some state, so the
+        honest level is "confirm this". A card keyed on severity would have
+        painted the node red for it — which is the reading that made the old
+        card alarming on a quiet hour.
+        """
         by_name = {i["scenario"]: i["card"] for i in scenarios.rendered()}
-        self.assertEqual(by_name["one_critical"]["header"]["template"], "red")
-        self.assertEqual(by_name["mixed"]["header"]["template"], "orange")
+        self.assertEqual(by_name["one_critical"]["header"]["template"], "orange")
+        self.assertEqual(by_name["pressure_boundary"]["header"]["template"], "orange")
+
+    def test_the_red_card_is_the_escalated_one_and_says_so(self):
+        """Red has exactly one producer: a declared expectation whose subject
+        resolves to a registration marked `criticality: critical`."""
+        by_name = {i["scenario"]: i for i in scenarios.rendered()}
+        red = [name for name, item in by_name.items()
+               if item["card"]["header"]["template"] == "red"]
+        self.assertEqual(red, ["critical_service_failed"])
+        event = by_name["critical_service_failed"]["model"]["events"][0]
+        self.assertEqual(event["attention"]["level"], "ACTION_REQUIRED")
+        self.assertTrue(event["attention"]["escalated"])
+        self.assertIn("critical", event["attention"]["because"])
+
+    def test_the_measured_noise_batch_no_longer_interrupts(self):
+        """`mixed` is the real batch that motivated the round: four live rows
+        off this node's register — three `consumption` codes and one orphan
+        process tree — none of them a violated expectation. It is green now,
+        and the counts it used to print as events are still on the card as
+        counts."""
+        item = {i["scenario"]: i for i in scenarios.rendered()}["mixed"]
+        self.assertEqual(item["card"]["header"]["template"], "green")
+        self.assertEqual(item["model"]["events"], [])
+        self.assertEqual(item["model"]["watch"]["count"], 4)
 
     def test_an_unread_environment_is_grey_and_not_green(self):
         by_name = {i["scenario"]: i["card"] for i in scenarios.rendered()}
@@ -189,10 +585,10 @@ class ColourTests(unittest.TestCase):
                     self.assertNotEqual(
                         model["env_health"]["verdict"], presentation.UNCONFIRMED)
                 if template == "red":
-                    # Red is reserved for a high-severity event, and the only
-                    # card that can be red is the alert card.
+                    # Red is reserved for ACTION_REQUIRED, and the only card
+                    # that can be red is the alert card.
                     self.assertEqual(model["card"], "alert")
-                    self.assertTrue(any(e["severity"]["level"] == "high"
+                    self.assertTrue(any(e["attention"]["level"] == "ACTION_REQUIRED"
                                         for e in model["events"]))
 
 
@@ -250,8 +646,8 @@ class EscapingTests(unittest.TestCase):
     def _alert_html(self, subject_ref: str) -> str:
         model = presentation.alert_model(
             {"at": "2026-09-20T00:00:00+00:00", "device_ref": "device:stub",
-             "rows": [{"key": "alert:x", "kind": "NEW", "code": "DISK_WARNING",
-                       "severity": "medium", "severity_word": "WARNING",
+             "rows": [{"key": "alert:x", "kind": "NEW", "code": "DISK_CRITICAL",
+                       "severity": "high", "severity_word": "CRITICAL",
                        "subject_ref": subject_ref, "state": "OPEN",
                        "first_seen": "2026-09-20T00:00:00+00:00"}]},
             at="2026-09-20T00:00:00+00:00")

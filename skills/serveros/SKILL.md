@@ -144,6 +144,12 @@ Skill + Plugin      操作语义与发行入口
 - machine state 只在 `DATA_ROOT/state/serveros/`；`~/.serveros` 保持小。
 - 能力发布由 canonical 构建（reusable Skill 源在 `ability-management`），**禁止从 runtime 反向覆盖 canonical**。
 
+## 7. 架构自检（两道闸，都是薄包装）
+
+`serverosctl architecture check` 查声明之间、以及声明与机器之间是否一致（§31–§42 目录符合性，warn-only；它**不**回答「runtime 跑的是不是我们写的代码」，那是 `runtime_truth`，两者 2026-09-11 实测会给出不同答案）；`serverosctl architecture project --out <dir>` 重新生成人读地图里机器拥有的那一段。
+
+实现在 `skills/serveros/scripts/{architecture_check,map_projection}.py`，参数原样转发，root 不传时按本机 host profile 解析。`check` 退出 2 是**答不了**（root 缺失），不是合规；`project` 只写候选到 `--out`，**从不原地改地图**——地图有并行写入者，一个不拥有它的工具就地重写是数据丢失机制。
+
 ---
 
 - 机器 contract：`references/serveros-contract.json`。

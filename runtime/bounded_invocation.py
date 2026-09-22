@@ -6,16 +6,50 @@ exit is deliberately not a claim about business results or descendant terminatio
 """
 from __future__ import annotations
 import hashlib
+import importlib.util
 import json
 import os
 import re
 import selectors
 import signal
 import subprocess
+import sys
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from .agent_control_store import _atomic_write, _exclusive
+
+_HERE = Path(__file__).resolve().parent
+
+
+def _load(name: str, path: Path):
+    if name in sys.modules:
+        return sys.modules[name]
+    spec = importlib.util.spec_from_file_location(name, path)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+def _store_io():
+    """`_atomic_write` and `_exclusive`, loaded by path rather than imported.
+
+    This line read `from .agent_control_store import …` until 2026-09-22, and
+    the artifact is not a set of packages: `bin/serverosctl` puts `runtime/` on
+    `sys.path` and imports by BARE name, so there is no parent package for a
+    relative import to be relative to. In the install layout the module raised
+    `ImportError` the moment anything loaded it — measured: the seventh failing
+    test of the suite, and the reason `invoke_once` had no consumer anywhere in
+    the fabric. Under pytest, which imports `runtime.bounded_invocation` as a
+    namespace package, the same line worked, so the defect was invisible from
+    the only file that imported the module at all.
+
+    `runtime/alerting.py` and `runtime/alert_digest.py` load this same store the
+    same way, for the same reason; this is that idiom rather than a fourth
+    variant of it.
+    """
+    return _load("serveros_runtime_agent_control_store",
+                 _HERE / "agent_control_store.py")
 
 
 def invoke_once(*, key: str, argv: list[str], cwd: Path, receipts: Path,
@@ -38,7 +72,7 @@ def invoke_once(*, key: str, argv: list[str], cwd: Path, receipts: Path,
                 "input": input_text, "readonly": readonly, "timeout": timeout,
                 "max_output_bytes": max_output_bytes}, sort_keys=True).encode()).hexdigest()
     path = receipts / (key + ".json")
-    with _exclusive(receipts / (key + ".lock")):
+    with _store_io()._exclusive(receipts / (key + ".lock")):
         if path.is_symlink():
             raise ValueError("symlink receipt refused")
         if path.exists():
@@ -51,12 +85,12 @@ def invoke_once(*, key: str, argv: list[str], cwd: Path, receipts: Path,
                   "read_only_requested": readonly, "process_exit_code": None,
                   "effect": "UNKNOWN", "worker_stopped": False,
                   "direct_process_exited": False, "descendants_verified": False}
-        _atomic_write(path, record)  # Crash here requires reconciliation, never blind replay.
+        _store_io()._atomic_write(path, record)  # Crash here requires reconciliation, never blind replay.
         paths = {k: receipts / (key + "." + k) for k in ("stdin", "stdout", "stderr")}
         if any(p.exists() or p.is_symlink() for p in paths.values()):
             record.update(status="REFUSED", reason="OUTPUT_ALREADY_EXISTS")
-            _atomic_write(path, record)
-            return record
+            _store_io()._atomic_write(path, record)
+            return {**record, "replayed": False, "executed_now": False}
         def private_file(p):
             return os.fdopen(os.open(p, os.O_RDWR | os.O_CREAT | os.O_EXCL, 0o600), "w+b")
         proc = None
@@ -122,5 +156,9 @@ def invoke_once(*, key: str, argv: list[str], cwd: Path, receipts: Path,
         record["finished_at"] = datetime.now(timezone.utc).isoformat()
         record["output_sha256"] = {k:hashlib.sha256(paths[k].read_bytes()).hexdigest() for k in ("stdout", "stderr")}
         record["executed_now"] = True
-        _atomic_write(path, record)
-        return record
+        _store_io()._atomic_write(path, record)
+        # The pair every return carries, so a caller reads one shape. A first
+        # call and a replay are the two cases an idempotency check exists to
+        # tell apart, and a caller that has to use `result.get("replayed")`
+        # because the first call omits the key is a caller that will forget.
+        return {**record, "replayed": False}

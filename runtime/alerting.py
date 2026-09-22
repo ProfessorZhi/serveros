@@ -380,7 +380,7 @@ def _should_repeat(alert: dict, *, severity: str, at: str,
 
 
 def _graded_measurement(alert: dict, *, levels: dict, ungraded: dict) -> tuple:
-    """(verdict, why) for an alert whose signal did not fire this tick.
+    """(verdict, why, kind) for an alert whose signal did not fire this tick.
 
     RESOLVED, or HELD with the reason — never a guess. The three answers this
     distinguishes are the three that a single "the signal is gone" would
@@ -396,11 +396,20 @@ def _graded_measurement(alert: dict, *, levels: dict, ungraded: dict) -> tuple:
         would flap: at 84.9% the signal is absent and at 85.1% it is present,
         and a store that read absence as recovery would open and close the same
         alert on either side of one threshold.
+
+    `kind` is the machine-readable half of `why`, and it is a separate return
+    value rather than something a consumer decodes from the sentence. Two of
+    these verdicts are opposite facts wearing similar words —
+    `not_evaluated` means nobody looked and `above_floor` means somebody looked
+    and the value is still up — and a card that had to tell them apart by
+    matching prose would be a card that changed meaning when somebody fixed a
+    typo. `hold_kind` is stored on the alert; `hold_reason` stays for a person.
     """
     code, subject = alert["code"], alert["subject_ref"]
     if code in ungraded:
         return "HELD", (f"{code} was not evaluated this tick "
-                        f"({ungraded[code]}); an unmeasured code resolves nothing")
+                        f"({ungraded[code]}); an unmeasured code resolves nothing"), \
+               "not_evaluated"
     margin_key = alert.get("margin_key")
     if margin_key is None:
         # Not a measurement. A declaration either holds or it does not, and
@@ -408,26 +417,29 @@ def _graded_measurement(alert: dict, *, levels: dict, ungraded: dict) -> tuple:
         # being emitted IS the fact that it was fixed.
         return "RESOLVED", (f"{code} is not a measurement — no recovery margin "
                             f"is declared for it — so it closes when it stops "
-                            f"being reported")
+                            f"being reported"), "not_a_measurement"
     row = levels.get(f"{code}|{subject}")
     if row is None:
         return "HELD", (f"the measurement for {subject} was not reported this "
                         f"tick; a subject that stopped being measured has not "
-                        f"recovered")
+                        f"recovered"), "unmeasured"
     thresholds = _thresholds()
     margin = thresholds.get(margin_key)
     if margin is None:
         return "HELD", (f"{margin_key} is not declared, so there is no distance "
-                        f"to come back and no comparison to make")
+                        f"to come back and no comparison to make"), \
+               "margin_undeclared"
     value, threshold = row.get("value"), row.get("threshold")
     if value is None or threshold is None:
-        return "HELD", f"{code} was reported without a usable value or threshold"
+        return "HELD", \
+               f"{code} was reported without a usable value or threshold", \
+               "unusable_measurement"
     floor = threshold - float(margin)
     if float(value) <= floor:
         return "RESOLVED", (f"the measurement came back to {value} "
-                            f"(≤ {threshold} − {margin})")
+                            f"(≤ {threshold} − {margin})"), "below_floor"
     return "HELD", (f"still {value}, above the {floor} it has to come back "
-                    f"below before this closes")
+                    f"below before this closes"), "above_floor"
 
 
 _THRESHOLD_CACHE: dict = {}
@@ -571,7 +583,7 @@ def evaluate(store: AlertStore, *, detection: dict, device_ref: str, at: str,
                 "delivery_failure": None,
                 "snooze_until": None, "resolved_at": None,
                 "pending": _pending("opened", at=at),
-                "hold_reason": None,
+                "hold_reason": None, "hold_kind": None,
             }
             alert.update(current)
             alerts[ref] = alert
@@ -588,6 +600,7 @@ def evaluate(store: AlertStore, *, detection: dict, device_ref: str, at: str,
         alert["last_seen"] = at
         alert["occurrence_count"] = int(alert.get("occurrence_count") or 0) + 1
         alert["hold_reason"] = None
+        alert["hold_kind"] = None
         touched.append(ref)
 
         if alert.get("state") == "RESOLVED":
@@ -633,12 +646,14 @@ def evaluate(store: AlertStore, *, detection: dict, device_ref: str, at: str,
             # Somebody else's row. Its absence from THIS document says nothing
             # about it — this detector never looks at that code.
             continue
-        verdict, why = _graded_measurement(alert, levels=levels, ungraded=ungraded)
+        verdict, why, kind = _graded_measurement(alert, levels=levels,
+                                                 ungraded=ungraded)
         if verdict == "RESOLVED":
             alert["state"] = "RESOLVED"
             alert["resolved_at"] = at
             alert["snooze_until"] = None
             alert["hold_reason"] = None
+            alert["hold_kind"] = None
             # §10. Exactly one recovery message, and it is the reason
             # `alert.resolved` exists at all: a person who was told about a
             # problem and never told it ended reasonably concludes it did not.
@@ -646,6 +661,13 @@ def evaluate(store: AlertStore, *, detection: dict, device_ref: str, at: str,
             touched.append(ref)
         else:
             alert["hold_reason"] = why
+            # The machine-readable half. `unmeasured` and `not_evaluated` are
+            # the two that are a LOSS OF OBSERVATION rather than a result, and
+            # the only two that a monitoring-integrity finding may be built
+            # from — see `notification-contract.yaml#alerts.attention.
+            # monitoring_integrity`. `above_floor` is the opposite fact: we
+            # looked, the value is still up, and nothing is missing.
+            alert["hold_kind"] = kind
             hold(alert, "resolution", why)
 
     store.commit(alerts)
@@ -798,11 +820,35 @@ def _measurement_line(alert: dict, measured: dict) -> str:
         parts.append(f"{measured['memory_rss_bytes'] / 1048576:.1f} MB rss"
                      + (f" (threshold {threshold / 1048576:.1f} MB)"
                         if threshold is not None else ""))
+    if measured.get("desired_state") is not None \
+            or measured.get("actual_derived_state") is not None:
+        # §15. The threshold of this comparison IS the declaration, and the two
+        # sides are the whole finding. They were in `measured` and never
+        # printed: a reader of the detail block was told that a declaration and
+        # the world disagreed and not what either side said, on the one code
+        # whose entire content is those two words.
+        #
+        # The provider's own word travels beside the normalized one.
+        # `restarting` and `dead` both normalize to STOPPED and they call for
+        # different things from whoever reads this.
+        declared = measured.get("desired_state") or "undeclared"
+        actual = (measured.get("actual_derived_state")
+                  or measured.get("actual_state") or "not measured")
+        raw = measured.get("actual_raw")
+        parts.append(f"declared {declared} · measured {actual}"
+                     + (f" (provider says {raw})" if raw and str(raw) != str(actual)
+                        else ""))
     if not parts:
         # A finding that is a declaration rather than a measurement. Named as
         # such, so the reader does not go looking for a number that does not
         # exist for this code.
         parts.append(f"{alert.get('why') or 'no measurement — this code is a declaration'}")
+    caveat = measured.get("caveat")
+    if caveat:
+        # §15's qualifier, carried in full. It is a paragraph because the
+        # second reading it names is a specific measured case on this host, and
+        # a shortened version would be a sentence without its evidence.
+        parts.append(f"caveat: {caveat}")
     return ", ".join(parts)
 
 
@@ -1057,6 +1103,7 @@ def listing(store: AlertStore, *, at: str | None = None) -> dict:
             "snooze_until": row.get("snooze_until"),
             "resolved_at": row.get("resolved_at"),
             "hold_reason": row.get("hold_reason"),
+            "hold_kind": row.get("hold_kind"),
             "provenance": row.get("provenance"),
         })
     return {"schema": SCHEMA, "count": len(out),
@@ -1065,7 +1112,11 @@ def listing(store: AlertStore, *, at: str | None = None) -> dict:
             "alerts": out,
             "note": ("an open alert with a `hold_reason` is one this node has "
                      "decided not to speak about again yet, or whose closing "
-                     "condition is not met. It is not a closed one.")}
+                     "condition is not met. It is not a closed one. "
+                     "`hold_kind` is the machine-readable half: `unmeasured` "
+                     "and `not_evaluated` mean nobody looked, `above_floor` "
+                     "means somebody looked and the value is still up, and "
+                     "only the first two are a loss of observation.")}
 
 
 def main(argv: list[str] | None = None) -> int:
