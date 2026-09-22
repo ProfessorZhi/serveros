@@ -280,13 +280,35 @@ adapters:
   runtimes: [claude-code, codex]
   shape:
     runtime: claude-code
-    # Where the runtime reads its configuration, as a path role + relative.
-    surface: {path_role: home, relative: ".mcp.json"}
-    # The single key this adapter owns inside that surface.
+    # WHERE this runtime reads MCP servers is NOT declared here.
+    #
+    # It is declared once, in
+    # `abilities/agent-runtime-contract.yaml#capabilities.mcp_surfaces`, which
+    # says of itself "One key, one file" -- and that record is the one
+    # `abilities/runtime_parity.py` reads and compares against this machine.
+    # This field names it instead of copying it.
+    surface_from: "abilities/agent-runtime-contract.yaml#capabilities.mcp_surfaces.claude-code"
+    # Measured 2026-09-22. This field read
+    # `{path_role: home, relative: ".mcp.json"}` until today, and the file it
+    # names DOES NOT EXIST on this node. The runtime reads `~/.claude.json`,
+    # whose `mcpServers` object holds `playwright` -- so the `key` below was
+    # right and the filename was wrong, because `home` + `.mcp.json` mixes the
+    # user-scope path role with a plugin-root filename. Those are two different
+    # surfaces and only one of them is `home`.
+    #
+    # Nothing would have said so. No test, no checker and no module in this
+    # repository reads this `adapters` block -- `grep -rn '"adapters"' tests/`
+    # finds one unrelated hit -- so a wrong fact here is wrong silently and for
+    # as long as nobody happens to need it. That is the class of defect
+    # `tests/test_provider_adapter_surface.py` is now there to refuse.
     key: "mcpServers.playwright"
   rules:
     - "An adapter never restates a provider's rules. It says where and how one
        runtime reads them, and nothing else."
+    - "An adapter never restates a RUNTIME's surface either. `surface_from`
+       names the record that owns it; a literal `surface:` here is the second
+       copy the paragraph above forbids, and it is refused by
+       `tests/test_provider_adapter_surface.py` rather than by this comment."
     - "A runtime with no adapter for a provider is AGENT_UNSUPPORTED for that
        provider — a real status, not a missing record."
 

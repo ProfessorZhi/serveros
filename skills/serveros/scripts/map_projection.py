@@ -367,7 +367,13 @@ def render_candidate(config: dict, map_text: str, blocks: dict[str, str],
         head = ("\n\n<!-- NOT APPLIED: the blocks below have no anchor in this map. -->\n"
                 "<!-- The map restates a machine fact by hand, so the compiler cannot -->\n"
                 "<!-- know where the generated region belongs. Move these into place, -->\n"
-                "<!-- then keep them fresh with: serverosctl architecture project --apply. -->\n")
+                "<!-- then keep them fresh with: -->\n"
+                "<!--   serverosctl architecture project --out <dir> -->\n"
+                "<!-- This comment said `--apply` until 2026-09-22. No such flag has -->\n"
+                "<!-- ever existed on either side, and this compiler never writes a -->\n"
+                "<!-- map: it emits a candidate for a person to paste, because the -->\n"
+                "<!-- maps have concurrent writers. The advice a reader is handed -->\n"
+                "<!-- inside a generated comment is a promise like any other. -->\n")
         text = text.rstrip("\n") + head
         for bid in missing:
             text += f"\n\n{_begin(config, bid)}\n{blocks[bid]}\n{_end(config, bid)}\n"

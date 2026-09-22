@@ -505,6 +505,13 @@ def signal_of(row: dict) -> dict:
             # check is what the resource was measured against.
             "threshold": row["desired_state"],
             "measured_at": row["measured_at"],
+            # The qualifier the comparison earned, carried INSIDE the measured
+            # block rather than beside it. `alerting` copies `signal["measured"]`
+            # onto the alert record and nothing else from the signal's own keys,
+            # so a caveat left at the top level was written by this module and
+            # then dropped one hop later -- present in the comparison document,
+            # absent from the register, and invisible from either end.
+            "caveat": row["caveat"],
         },
         window="the interval between the registration and this observation",
         why=row["why"],

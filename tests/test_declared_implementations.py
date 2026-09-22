@@ -366,11 +366,44 @@ def _build_indexes() -> None:
             bucket.setdefault(key, []).append(where)
 
     for rel, tree in _sources():
+        # A string constant that only ever appears as an operand of a
+        # comparison is a READER of that name, not a producer of it, and the
+        # index below said otherwise until 2026-09-22. `runtime/review_receipt.py`
+        # validates an external protocol's own event stream — it asks
+        # `if "turn.completed" not in kinds`, counts the kind and takes its
+        # index — and the name-based index counted all four literal uses as
+        # producers. `test_an_event_that_gained_a_producer_must_lose_its_exemption`
+        # then demanded the `turn.completed` exemption be deleted, which would
+        # have put a claim in this repository that an event is emitted by a
+        # module that only reads it. Acting on that advice was the wrong move;
+        # the detector was.
+        #
+        # The narrow rule: a literal compared against a container
+        # (`in`/`not in`, and `==`/`!=`) or passed to `.count()`/`.index()` is
+        # a lookup key. Assignment, dict keys, call arguments and everything
+        # else still count, so `alerting.py` declaring its two event names as
+        # module constants stays a producer. Measured over the whole tree: this
+        # changes the answer for `turn.completed` and for nothing else.
+        reader_nodes: set[int] = set()
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Compare):
+                if any(isinstance(op, (ast.In, ast.NotIn, ast.Eq, ast.NotEq))
+                       for op in node.ops):
+                    operands = [node.left, *node.comparators]
+                    reader_nodes.update(
+                        id(c) for c in operands
+                        if isinstance(c, ast.Constant) and isinstance(c.value, str))
+            elif (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+                    and node.func.attr in {"count", "index"} and node.args):
+                first = node.args[0]
+                if isinstance(first, ast.Constant) and isinstance(first.value, str):
+                    reader_nodes.add(id(first))
         for node in ast.walk(tree):
             if not hasattr(node, "lineno"):
                 continue  # the Module itself, which is not a line
             where = f"{rel}:{node.lineno}"
-            if isinstance(node, ast.Constant) and isinstance(node.value, str):
+            if (isinstance(node, ast.Constant) and isinstance(node.value, str)
+                    and id(node) not in reader_nodes):
                 note(strings, node.value, where)
             if isinstance(node, ast.Subscript):
                 index = node.slice

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""The six situations, loaded and turned into models — one source for both the
+"""The eleven situations, loaded and turned into models — one source for both the
 tests and the previews a person reviews.
 
 Why one source and not two
@@ -72,7 +72,17 @@ def model_for(scenario: dict, *, at: str | None = None,
     digest.setdefault("at", at)
     digest.setdefault("device_ref", document().get("device_ref"))
     if kind == "alert":
-        return presentation.alert_model(digest, at=at, sample=sample)
+        # The name index is BUILT HERE from the scenario's own evidence rather
+        # than written into the fixture. A hand-written index would be a
+        # preview that shows a readable name while proving nothing about
+        # whether the resolver can produce one — and the resolver is the thing
+        # a reader is being asked to approve.
+        names = None
+        if scenario.get("attribution") is not None or scenario.get("registry") is not None:
+            names = presentation.name_index(
+                attribution=scenario.get("attribution"),
+                registry=scenario.get("registry"))
+        return presentation.alert_model(digest, at=at, sample=sample, names=names)
     if kind == "recovery":
         return presentation.recovery_model(digest, at=at, sample=sample)
     raise ValueError(f"scenario {scenario.get('name')!r} names card {kind!r}, "
@@ -117,7 +127,7 @@ def write(out_dir, *, sample: bool = True) -> list[Path]:
         written += [path_html, path_json]
     index = target / "README.txt"
     index.write_text(
-        "这六个文件由同一个 renderer 从 runtime/card-scenarios.yaml 生成。\n"
+        "这十一个文件由同一个 renderer 从 runtime/card-scenarios.yaml 生成。\n"
         "每个场景一对：.html 是人看的预览（含 390px 窄屏与桌面两帧），\n"
         ".json 是同一张卡实际会发出去的 payload。\n\n"
         "它们全部带 示例 / 尚未发送 标识。预览证明 renderer 产出什么，\n"
@@ -131,7 +141,7 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover - hand check
     import argparse
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--out", required=True,
-                        help="directory to write the six previews into")
+                        help="directory to write the eleven previews into")
     parser.add_argument("--unsampled", action="store_true",
                         help="omit the SAMPLE mark. For looking at layout "
                              "only; never for a file somebody reviews")

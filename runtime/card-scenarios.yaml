@@ -1,13 +1,18 @@
-# The six situations a card has to survive, as input documents.
+# The eleven situations a card has to survive, as input documents.
 #
 # WHY THIS IS DATA AND NOT A TEST HELPER
 #
-# The same six documents have two consumers and they must not drift: the tests
-# that assert the cards behave, and the previews a person is asked to look at
-# before approving any of this. If the previews were generated from one set of
-# inputs and the tests asserted against another, a reviewer would be approving
-# a card the suite never ran — and the difference would be invisible, because
-# both would look like cards.
+# The same eleven documents have two consumers and they must not drift: the
+# tests that assert the cards behave, and the previews a person is asked to look
+# at before approving any of this. If the previews were generated from one set
+# of inputs and the tests asserted against another, a reviewer would be
+# approving a card the suite never ran — and the difference would be invisible,
+# because both would look like cards.
+#
+# The count is eleven and the number is worth keeping exact. It has been wrong
+# twice already: the header said "six" while the file held ten, and the figure
+# is the only thing that tells a reviewer whether a whole class of card is
+# missing from the set they are approving. Every addition edits this line.
 #
 # WHAT SAMPLE MEANS HERE
 #
@@ -33,12 +38,30 @@ schema: serveros/card-scenarios.v1
 # The `at` every scenario is rendered against. Fixed rather than "now", so that
 # a preview is reproducible and a duration printed on a card can be checked by
 # hand against the timestamps in the same document.
-at: "2026-09-20 14:20:00 JST"
+#
+# The SHAPE is the live digest's, deliberately: `serverosctl alert digest --json`
+# publishes `at` as an ISO-8601 instant with an offset, and this fixture is
+# built from that output. An earlier revision of this file wrote it as
+# "2026-09-20 14:20:00 JST" — readable, unparseable, and the first thing it did
+# was make every duration on every preview read 未知, which looked like a
+# renderer defect and was a fixture defect. A fixture that is easier to read
+# than the thing it stands in for is a fixture that tests the wrong thing.
+#
+# The offset is the instance timezone (+08:00), which is the one the rows below
+# are measured in: they carry `+00:00` because that is what the producers write,
+# and this line is what a person set. So the stamp on every preview reads the
+# same 14:20 this line says, and the durations can be checked by hand against
+# the row timestamps in the same document.
+at: "2026-09-20T14:20:00+08:00"
 device_ref: device:tokyo-shared-dev-01
 
 scenarios:
 
-  # -- §6's six, in the order the design lists them -------------------------
+  # -- §6's six, in the order the design lists them. The four below them are
+  # -- the acceptance criteria AC18–AC21, which are NOT §6's list and are kept
+  # -- separate for that reason: if the two lists are merged, a reviewer cannot
+  # -- tell a design example from a criterion's fixture. The last one is on
+  # -- neither list and says so where it stands. Six + four + one = eleven. --
 
   - name: normal
     card: status
@@ -115,9 +138,12 @@ scenarios:
 
   - name: one_critical
     card: alert
-    title: 单个严重异常
+    title: 单个严重档事件，但没有任何声明说它该是什么
     source: constructed — 本节点当前没有 high 档事件；这条用 DISK_CRITICAL 说明
-      单个严重异常在卡上的样子，时间与引用是示例值。
+      单个严重档异常在卡上的样子，时间与引用是示例值。
+      它渲染成橙色而不是红色，这是刻意的：severity 是 CRITICAL，但没有任何
+      登记表声明 /data 这个文件系统应该处于什么状态，所以注意力是「需要确认」
+      而不是「需要处理」。红色需要一条声明，见 critical_service_failed。
     digest:
       counts: {new: 1, escalated: 0, reopened: 0}
       severity_counts: {high: 1}
@@ -136,7 +162,10 @@ scenarios:
           resolved_at: null
           occurrence_count: 3
           state: OPEN
-          owner: {type: serveros, ref: "serveros:node"}
+          # No owner: `_owner_of` reads `measured.ownership`, which the
+          # detector that raises this code does not write. Live register:
+          # 0 of this code's rows carry one.
+          owner: null
           provenance:
             freshness: FRESH
             source: host-filesystem
@@ -160,13 +189,21 @@ scenarios:
 
   - name: mixed
     card: alert
-    title: 混合异常 + 恢复
-    source: measured — 三个事件是 2026-09-20 01:13 实时 digest 里真实进入卡面的前
-      三条，省略计数（245 / 1370 / 113 / 18）也是该次运行的真实计数。数值会
-      随节点变化而变，形状不变。
+    title: 那一批真实的噪音——现在不进卡面了
+    source: measured — 四条行都是 2026-09-22 登记表里真实 OPEN 的条目，
+      ref / subject_ref / occurrence_count / provenance 逐字取自
+      runtime/alerts/state.json（前三条是 2026-09-20 01:13 那次 digest 里真实
+      进入卡面的那三条）。省略计数（245 / 1370 / 113 / 18）是该次运行的真实
+      计数；数值会随节点变化而变，形状不变。
+      这张卡现在渲染成绿色，这不是回归：前三条都是 HIGH_MEMORY_SUSTAINED，
+      注意力表把 consumption 一类定为「值得留意」；第四条 ORPHAN_PROCESS_TREE
+      被定为 INFORMATIONAL。四条都低于打断人的级别。
+      它正是这一轮要改的那个案例——同一批真实数据，原来印成一张没人读得下去
+      的清单，现在只在末尾留一个计数。把它留在预览里，是为了让审阅者能直接
+      对比，而不是只能相信注释。
     digest:
-      counts: {new: 3, escalated: 0, reopened: 0}
-      severity_counts: {medium: 3}
+      counts: {new: 4, escalated: 0, reopened: 0}
+      severity_counts: {medium: 3, high: 1}
       more: 1370
       backlog: 113
       silent_resolutions: 18
@@ -176,35 +213,85 @@ scenarios:
           code: HIGH_MEMORY_SUSTAINED
           severity: medium
           severity_word: WARNING
-          subject_ref: "runtime-group:process-tree:session-11127:pid1533977"
+          subject_ref: "runtime-group:process-tree:docker:08e734361c06f5fa9aa2b0151cb715bd60b09868a4897f1903ba8d01aa0c416d"
+          resource_ref: "runtime-group:process-tree:docker:08e734361c06f5fa9aa2b0151cb715bd60b09868a4897f1903ba8d01aa0c416d"
           first_seen: "2026-09-18T06:15:57.175939+00:00"
           resolved_at: null
           occurrence_count: 1
           state: OPEN
-          owner: {type: serveros, ref: "session:11127"}
+          # 无 owner：`_owner_of` 读的是 `measured.ownership`，这个 code 的
+          # 检测器不写它。2026-09-22 登记表实测：该 code 643 行里 0 行带。
+          owner: null
+          provenance:
+            evidence_kind: measurement
+            freshness: null
+            observed_at: "2026-09-18T06:15:58.036189+00:00"
+            source: serverosd
         - key: alert:813fd81cdb193552
           kind: NEW
           code: HIGH_MEMORY_SUSTAINED
           severity: medium
           severity_word: WARNING
-          subject_ref: "runtime-group:process-tree:system.slice:docker:491d41804a0e"
+          subject_ref: "runtime-group:process-tree:docker:491d41804a0eb141b265e6a1b81eaafb7efe5c983955d79a1cc451d242df8e8d"
+          resource_ref: "runtime-group:process-tree:docker:491d41804a0eb141b265e6a1b81eaafb7efe5c983955d79a1cc451d242df8e8d"
           first_seen: "2026-09-18T06:35:10.798465+00:00"
           resolved_at: null
           occurrence_count: 7
           state: OPEN
-          owner: {type: serveros, ref: "session:11127"}
+          # 无 owner：`_owner_of` 读的是 `measured.ownership`，这个 code 的
+          # 检测器不写它。2026-09-22 登记表实测：该 code 643 行里 0 行带。
+          owner: null
+          provenance:
+            evidence_kind: measurement
+            freshness: null
+            observed_at: "2026-09-18T06:41:15.817009+00:00"
+            source: serverosd
         - key: alert:fe3a7cf437529387
           kind: NEW
-          code: ORPHAN_PROCESS_TREE
+          code: HIGH_MEMORY_SUSTAINED
           severity: medium
           severity_word: WARNING
-          subject_ref: "runtime-group:process-tree:session-11127:pid1533980"
+          subject_ref: "runtime-group:process-tree:docker:b1e7988a3409982fd9b2b7dc1fb355358103431197a591475e60074753a1b306"
+          resource_ref: "runtime-group:process-tree:docker:b1e7988a3409982fd9b2b7dc1fb355358103431197a591475e60074753a1b306"
           first_seen: "2026-09-18T06:43:16.462862+00:00"
           resolved_at: null
-          occurrence_count: 2044
+          occurrence_count: 4128
           state: OPEN
-          owner: {type: serveros, ref: "session:11127"}
-
+          # 无 owner：`_owner_of` 读的是 `measured.ownership`，这个 code 的
+          # 检测器不写它。2026-09-22 登记表实测：该 code 643 行里 0 行带。
+          owner: null
+          provenance:
+            evidence_kind: measurement
+            freshness: null
+            observed_at: "2026-09-21T04:09:27.644675+00:00"
+            source: serverosd
+        - key: alert:3f6ce197e6813eff
+          kind: NEW
+          code: ORPHAN_PROCESS_TREE
+          severity: high
+          severity_word: CRITICAL
+          subject_ref: "runtime-group:process-tree:session-15413:pid1300360"
+          resource_ref: "runtime-group:process-tree:session-15413:pid1300360"
+          first_seen: "2026-09-20T11:24:54.754330+00:00"
+          resolved_at: null
+          occurrence_count: 1888
+          state: OPEN
+          # 这一条是全套预览里 owner 行的唯一例子，而且是真的一条：投影出的
+          # 七个字段逐字取自该行的 `measured.ownership`。没有它，技术详情里
+          # 「这是谁的」那一行就没有任何一张卡展示过。
+          owner:
+            class: EXTERNAL
+            role: EXTERNAL_USER_SESSION
+            lifecycle: OBSERVE_ONLY
+            provenance: cgroup
+            uid: "1002"
+            session: "15413"
+            unit: null
+          provenance:
+            evidence_kind: measurement
+            freshness: null
+            observed_at: "2026-09-21T19:03:42.885865+00:00"
+            source: serverosd
   - name: recovery_only
     card: recovery
     title: 仅恢复
@@ -274,6 +361,279 @@ scenarios:
           occurrence_count: 1
           state: RESOLVED
           was_announced: false
+
+  # -- AC 18–21: the four situations the acceptance criteria name -------------
+  #
+  # These four are one set and they are only meaningful together. Each of the
+  # first three is a case that MUST reach the card; the fourth is a case that
+  # must NOT, built from the same shape of evidence as the third. A suite that
+  # had only the first three could be satisfied by a rule that raised
+  # everything, and the fourth is what makes that rule fail.
+  #
+  # `attribution` and `registry` are the REAL documents, trimmed to the fields
+  # the name resolver reads — the shape is `serveros/attribution.v1` and
+  # `serveros/managed-runtime-registry.v1`. They are documents and not a
+  # pre-built index on purpose: a hand-written `names:` block would let a
+  # preview show a readable name while proving nothing about whether
+  # `presentation.name_index` can produce one from evidence.
+
+  - name: pressure_boundary
+    card: alert
+    title: 资源压力越线
+    source: constructed — 本节点内存当前远未到阈值。这一张用 MEMORY_PRESSURE
+      说明「一个测量越过为它自己写的阈值」在卡上的样子：它必须能打断人，且
+      不必读代码、不必展开任何东西就知道越线的是哪个对象。与 one_critical 用
+      不同的 code，是为了让两张预览各自证明一件不同的事，而不是同一张卡印两遍。
+    digest:
+      counts: {new: 1, escalated: 0, reopened: 0}
+      severity_counts: {high: 1}
+      more: 0
+      backlog: 113
+      silent_resolutions: 18
+      rows:
+        - key: alert:fixture0000000d01
+          kind: NEW
+          code: MEMORY_PRESSURE
+          severity: high
+          severity_word: CRITICAL
+          subject_ref: "host:memory"
+          resource_ref: "host:memory"
+          first_seen: "2026-09-20T04:05:00+00:00"
+          resolved_at: null
+          occurrence_count: 4
+          state: OPEN
+          # No owner: `_owner_of` reads `measured.ownership`, which the
+          # detector that raises this code does not write. Live register:
+          # 0 of this code's rows carry one.
+          owner: null
+          provenance:
+            freshness: FRESH
+            source: host-memory
+            observed_at: "2026-09-20T05:19:00Z"
+
+  - name: expected_service_down
+    card: alert
+    title: 预期服务宕机
+    source: constructed — 形状取自本节点真实登记表：container0-postgres 确实
+      以 criticality important 且 desired.state=running 注册，容器名与资源 id
+      同名。这一张说明「一个声明应处于 running 的受管服务实际不在」：名字来自
+      登记表，不是容器 id，也不是渲染时跑 docker inspect 猜出来的。comparison
+      的四栏照实测值填（Docker 报 exited，liveness 轴推导为 NOT_RUNNING），
+      没有 caveat —— 容器状态是单义读数，只有 pgrep 匹配那种负结果才有两种读法。
+    digest:
+      counts: {new: 1, escalated: 0, reopened: 0}
+      severity_counts: {medium: 1}
+      more: 0
+      backlog: 0
+      silent_resolutions: 0
+      rows:
+        - key: alert:fixture0000000d02
+          kind: NEW
+          code: DESIRED_ACTUAL_MISMATCH
+          severity: medium
+          severity_word: WARNING
+          subject_ref: "runtime-group:process-tree:system.slice:docker:08e734361c06aa99b1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7a8b9c0d1e2f3a4"
+          resource_ref: "runtime:container:08e734361c06"
+          # 比对的两侧。缺了它们，卡片只能说出「实际与声明不一致」这句对每一种
+          # 不一致都为真的话；AC19 要的是「<服务名> 不可用」。
+          desired_state: running
+          actual_state: STOPPED
+          actual_derived_state: NOT_RUNNING
+          actual_raw: exited
+          first_seen: "2026-09-20T05:02:00+00:00"
+          resolved_at: null
+          occurrence_count: 2
+          state: OPEN
+          owner: null
+    registry:
+      schema: serveros/managed-runtime-registry.v1
+      device_ref: device:tokyo-shared-dev-01
+      resources:
+        - id: container0-postgres
+          kind: container
+          # 声明的一半。没有它，「违反了声明的期望状态」这句话在本 fixture 里
+          # 就没有被违反的那个声明。
+          desired:
+            state: running
+          criticality: important
+          probes:
+            - container: container0-postgres
+    attribution:
+      schema: serveros/attribution.v1
+      containers:
+        - container: container0-postgres
+          ref: "runtime:container:08e734361c06"
+          evidence:
+            id: "08e734361c06"
+            name: container0-postgres
+            image: pgvector/pgvector:pg16
+          identity:
+            display_name: container0-postgres
+            anchors:
+              - anchor: container-id
+                runtime_ref: "runtime:container:08e734361c06"
+
+  - name: observability_loss
+    card: alert
+    title: 关键可观测性丢失
+    source: constructed 形状 / 真实计数 — 本节点真实存在 542 条 held OPEN 且
+      本次未再被观测到，且它们全部没有 measured 块。与历史积压不同的是：这一
+      张里的主体带着「应当存在」的声明（DESIRED_ACTUAL_MISMATCH /
+      FUNCTIONAL_PROBE_FAILED），所以观测丢失妨碍了对它们的判断。它必须成为
+      一条聚合发现，而不是 3 条故障。
+    digest:
+      counts: {new: 0, escalated: 0, reopened: 0}
+      severity_counts: {}
+      more: 0
+      backlog: 0
+      silent_resolutions: 0
+      rows: []
+      held:
+        - alert_ref: alert:fixture0000000e01
+          code: DESIRED_ACTUAL_MISMATCH
+          subject_ref: "runtime-group:process-tree:system.slice:docker:08e734361c06aa99b1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7a8b9c0d1e2f3a4"
+          severity: medium
+          hold_kind: unmeasured
+          hold_reason: the measurement for runtime-group:process-tree:system.slice:docker:08e734361c06aa99 was not reported this tick; a subject that stopped being measured has not recovered
+          first_seen: "2026-09-19T22:10:00+00:00"
+          occurrence_count: 41
+          was_announced: true
+        - alert_ref: alert:fixture0000000e02
+          code: FUNCTIONAL_PROBE_FAILED
+          subject_ref: "runtime:serveros-control-plane"
+          severity: high
+          hold_kind: not_evaluated
+          hold_reason: FUNCTIONAL_PROBE_FAILED was not evaluated this tick (probe_results not collected); an unmeasured code resolves nothing
+          first_seen: "2026-09-19T23:40:00+00:00"
+          occurrence_count: 12
+          was_announced: true
+        - alert_ref: alert:fixture0000000e03
+          code: MCP_PROCESS_ALIVE_BUT_UNAVAILABLE
+          subject_ref: "runtime:container0-litellm"
+          severity: high
+          hold_kind: unmeasured
+          hold_reason: the measurement for runtime:container0-litellm was not reported this tick; a subject that stopped being measured has not recovered
+          first_seen: "2026-09-20T00:15:00+00:00"
+          occurrence_count: 7
+          was_announced: true
+
+  - name: historical_backlog
+    card: alert
+    title: 历史积压（不应打扰）
+    source: measured 形状 — 542 条 held OPEN 中确有大量这类条目：severity 全部
+      为 medium，全部没有 measured 块，hold 原因是「本次未再观测到」。它们的
+      code 不携带任何「应当存在」的声明。这一张是对照组：同样的 held 形状、
+      同样的未观测到，但**必须不产生任何 REVIEW 级事件，也不产生监控完整性
+      发现**。如果这一张和前一张给出同样的卡，那说明规则退化成了「检测器有
+      记录 = 警报」，也就是这一轮要修掉的东西。
+    digest:
+      counts: {new: 0, escalated: 0, reopened: 0}
+      severity_counts: {}
+      more: 0
+      backlog: 542
+      silent_resolutions: 21
+      rows: []
+      held:
+        - alert_ref: alert:fixture0000000f01
+          code: HIGH_MEMORY_SUSTAINED
+          subject_ref: "runtime-group:process-tree:session-11127:pid1533977"
+          severity: medium
+          hold_kind: above_floor
+          hold_reason: still 3.1e+09, above the 2684354560.0 it has to come back below before this closes
+          first_seen: "2026-09-18T06:15:57+00:00"
+          occurrence_count: 2044
+          was_announced: false
+        - alert_ref: alert:fixture0000000f02
+          code: ORPHAN_PROCESS_TREE
+          subject_ref: "runtime-group:process-tree:session-11127:pid1533980"
+          severity: medium
+          hold_kind: unmeasured
+          hold_reason: the measurement for runtime-group:process-tree:session-11127:pid1533980 was not reported this tick; a subject that stopped being measured has not recovered
+          first_seen: "2026-09-18T06:43:16+00:00"
+          occurrence_count: 2044
+          was_announced: false
+        - alert_ref: alert:fixture0000000f03
+          code: STALE_CONTAINER
+          subject_ref: "container:b8bdd69c10ac"
+          severity: medium
+          hold_kind: unmeasured
+          hold_reason: the measurement for container:b8bdd69c10ac was not reported this tick; a subject that stopped being measured has not recovered
+          first_seen: "2026-09-17T08:00:00+00:00"
+          occurrence_count: 96
+          was_announced: false
+
+  # -- the escalation, which is the only path to a red card ----------------
+  #
+  # WHY THIS ONE EXISTS ON TOP OF THE FOUR THE CRITERIA NAME
+  #
+  # AC18–AC21 do not ask for it, and without it nothing in this file renders
+  # red. The attention axis made that true: colour follows ATTENTION, and every
+  # code the criteria name is REVIEW. ACTION_REQUIRED is reached one way only —
+  # `alerts.attention.escalation`, a `declared` expectation whose subject
+  # resolves to a registration with `criticality: critical` — so a set of
+  # previews with no such case is a set that never shows a reader the card this
+  # round exists to make trustworthy. The path most likely to be wrong is the
+  # one nothing renders.
+  - name: critical_service_failed
+    card: alert
+    title: 声明为 critical 的服务探针失败
+    source: measured — 登记表与主体拼写都取自本节点：serveros-control-plane 确实
+      以 criticality critical 注册，而实测的 FUNCTIONAL_PROBE_FAILED 行的
+      subject_ref 就是裸资源 id（见下方注释）。severity 与首次观测是示例值。
+      这一张说明注意力升级：同一条 code 在未注册的主体上是「需要确认」（橙），
+      在一个声明为 critical 的登记资源上变成「需要处理」（红）。颜色差来自
+      登记表里的声明，不来自严重度。
+    digest:
+      counts: {new: 1, escalated: 0, reopened: 0}
+      severity_counts: {high: 1}
+      more: 0
+      backlog: 0
+      silent_resolutions: 0
+      rows:
+        - key: alert:fixture0000001001
+          kind: NEW
+          code: FUNCTIONAL_PROBE_FAILED
+          severity: high
+          severity_word: CRITICAL
+          # The bare spelling, and it is not a shortcut. `serverosctl alert list`
+          # on this node returns `subject_ref: "container0-litellm"` with
+          # `resource_ref: null` for this code — a registered resource whose
+          # subject carries no prefix and no back-reference. A fixture that
+          # wrote `runtime:container:...` here would exercise an index key the
+          # live register does not produce, and the escalation rule would look
+          # like it worked.
+          subject_ref: "serveros-control-plane"
+          resource_ref: null
+          first_seen: "2026-09-20T05:44:00+00:00"
+          resolved_at: null
+          occurrence_count: 4
+          state: OPEN
+          owner: null
+          provenance:
+            freshness: FRESH
+            source: serverosd
+            observed_at: "2026-09-20T05:58:00Z"
+    registry:
+      schema: serveros/managed-runtime-registry.v1
+      device_ref: device:tokyo-shared-dev-01
+      resources:
+        - id: serveros-control-plane
+          kind: systemd-user-service
+          desired:
+            state: running
+          # This one word is what turns the level. It is a declaration in a
+          # registration, which is the only thing the escalation rule reads —
+          # not the severity of the event, and not the word "plane".
+          criticality: critical
+          probes:
+            - id: serverosd-unit-state
+              kind: systemd-unit-state
+              axis: liveness
+              unit: serverosd.service
+            - id: serverosd-socket
+              kind: socket-connect
+              axis: transport
+              path: /run/user/1002/serveros/serveros.sock
 
 # What the rendered previews are, in one sentence, for whoever opens them.
 preview_note: 下列预览由同一 renderer 从上面这些文档生成，用于检查布局；它们不是
