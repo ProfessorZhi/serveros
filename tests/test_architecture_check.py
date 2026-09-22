@@ -735,6 +735,61 @@ def test_the_environment_names_the_roots(monkeypatch, tmp_path):
     assert check.default_root("data_root") == tmp_path / "data"
 
 
+def test_a_checkout_the_environment_names_is_that_checkout(monkeypatch, tmp_path):
+    """The environment names the tree. The PROFILE names its parent.
+
+    These are two different kinds of value and the resolver gave them one
+    treatment. `SERVEROS_REPO` and `SERVEROS_ABILITY_REPO` are declared in
+    `ops/workspace/environment.yaml` as `<WORKSPACE_ROOT>/src/serveros` and
+    `<WORKSPACE_ROOT>/src/ability-management` — the checkouts themselves — and
+    three other call sites read them exactly that way: `build.py:1037`,
+    `taxonomy.py:1095` and `runtime/cli.py:9131` all take the variable's value
+    as the repository. The profile, by contrast, carries `workspace_src` =
+    `<WORKSPACE_ROOT>/src`, a parent the product layout is then appended to.
+
+    Appending the suffix on both branches made the environment branch resolve
+    `/…/src/ability-management` to `/…/src/ability-management/ability-management`
+    on this node, and the consumer said `not a git checkout` — a wrong path
+    reported as a broken repository, which is the exact confusion this checker
+    exists to find one level up.
+
+    Measured 2026-09-23: setting this variable is what makes the difference
+    visible, so a fixture that left it unset would have agreed with the bug.
+    """
+    monkeypatch.delenv(check.HOST_PROFILE_ENV, raising=False)
+    for argument, variable, leaf in (
+        ("serveros_repo", "SERVEROS_REPO", "serveros"),
+        ("ability_repo", "SERVEROS_ABILITY_REPO", "ability-management"),
+        ("ops_repo", "SERVEROS_OPS_REPO", "ops"),
+    ):
+        checkout = tmp_path / "src" / leaf
+        monkeypatch.setenv(variable, str(checkout))
+        assert check.default_root(argument) == checkout
+
+
+def test_the_profile_still_supplies_the_parent_the_layout_hangs_under(monkeypatch, tmp_path):
+    """The suffix is not wrong, it belongs to the other branch.
+
+    Deleting it outright would trade this defect for its mirror image: a profile
+    that names the source root would resolve `serveros_repo` to the source root
+    itself, and every repository the node reads would be one directory up.
+    """
+    for env_name, _, _ in check.ROOT_SOURCES.values():
+        monkeypatch.delenv(env_name, raising=False)
+    profile = tmp_path / "host-profile.yaml"
+    profile.write_text(
+        "schema: serveros/host-profile.v1\n"
+        "node:\n"
+        "  roots:\n"
+        f"    identity_home: {tmp_path}/home/x\n"
+        f"    workspace_root: {tmp_path}/home/x/workspace\n"
+        f"    workspace_src: {tmp_path}/home/x/workspace/src\n",
+        encoding="utf-8")
+    monkeypatch.setenv(check.HOST_PROFILE_ENV, str(profile))
+    assert check.default_root("ability_repo") == (
+        tmp_path / "home/x/workspace/src/ability-management")
+
+
 def test_this_hosts_profile_answers_when_the_environment_does_not(monkeypatch, tmp_path):
     """The profile is the same document `serverosd` reads for the same reason.
 

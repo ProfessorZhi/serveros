@@ -395,14 +395,80 @@ def tree_drift(expected: dict[Path, bytes], root: Path,
 
 def read_claude_install(plugins_json: Path) -> dict:
     """Claude's own record of what is installed and where it was installed from."""
+    return read_claude_plugins(plugins_json).get(CLAUDE_PLUGIN_KEY) or {}
+
+
+def read_claude_plugins(plugins_json: Path) -> dict[str, dict]:
+    """Every installed plugin Claude records, by its key.
+
+    Keyed rather than returning one because "which plugin does this node run" is
+    a per-composition fact and this file used to answer it with a literal. See
+    `plugin_key`.
+    """
     if not plugins_json.is_file():
         return {}
     try:
         data = json.loads(plugins_json.read_text())
     except (OSError, json.JSONDecodeError):
         return {}
-    entries = data.get("plugins", {}).get(CLAUDE_PLUGIN_KEY) or []
-    return entries[0] if entries else {}
+    out: dict[str, dict] = {}
+    for key, entries in (data.get("plugins") or {}).items():
+        if isinstance(entries, list) and entries and isinstance(entries[0], dict):
+            out[key] = entries[0]
+    return out
+
+
+def read_enabled_plugins(settings_json: Path) -> dict[str, bool]:
+    """Which plugins a session on this node actually LOADS.
+
+    Not the same question as the install record, and the install record cannot
+    answer it: it has no enabled field, so a plugin that is installed and
+    disabled is present there and in no session. Measured 2026-09-23 —
+    `hwz-server-os@hwz-server-os` is in `installed_plugins.json` and `false` in
+    `settings.json`'s `enabledPlugins` — which is exactly the state a migration
+    leaves behind and exactly the state a presence check calls healthy.
+    """
+    if not settings_json.is_file():
+        return {}
+    try:
+        data = json.loads(settings_json.read_text())
+    except (OSError, json.JSONDecodeError):
+        return {}
+    enabled = data.get("enabledPlugins")
+    return {k: bool(v) for k, v in enabled.items()} if isinstance(enabled, dict) else {}
+
+
+def plugin_key(composition_name: str) -> str:
+    """Claude's install-record key for a composition's plugin: `<name>@<name>`.
+
+    Both halves are the composition's declared `name`, because `build.py` names
+    the marketplace entry and the plugin entry from the bundle's own `name`. The
+    key is therefore derivable from the composition rather than being a second
+    literal that a rename has to remember.
+
+    It was one. `CLAUDE_PLUGIN_KEY = "hwz-server-os@hwz-server-os"` named the
+    core composition, and when this node migrated its default entry to the
+    `serveros-linux-work` profile the literal went on naming the composition
+    that had just been DISABLED. The report then carried a green row for a
+    plugin no session loads and no row at all for the one every session loads —
+    a checker measuring a subject the product had moved away from, which is the
+    finding this whole file exists to produce one level down.
+    """
+    return f"{composition_name}@{composition_name}"
+
+
+def composition_names(build) -> dict[str, Path]:
+    """Each declared composition's plugin NAME -> the file that declares it."""
+    out: dict[str, Path] = {}
+    for path in composition_files(build).values():
+        try:
+            document = yaml.safe_load(path.read_text(encoding="utf-8"))
+        except (OSError, yaml.YAMLError):
+            continue
+        name = document.get("name") if isinstance(document, dict) else None
+        if isinstance(name, str) and name:
+            out[name] = path
+    return out
 
 
 def read_codex_install(config_toml: Path) -> dict:
@@ -1213,6 +1279,75 @@ def collect(args) -> dict:
         row(f"{BUNDLE_NAME} @ {label}", "", "", f"sha256={tree_hash(root) or 'NONE'}",
             verdict, detail, note)
 
+    # --- the plugin the Agent actually LOADS ------------------------------
+    #
+    # The rows above measure the DISTRIBUTION this repository builds and are
+    # named `BUNDLE_NAME` because that is the distribution's own name. Which
+    # plugin a session on this node loads is a different fact, and it is a
+    # per-composition one: a node's default entry is a profile composition.
+    #
+    # This section exists because the two came apart on 2026-09-23. This node
+    # migrated its default entry from `hwz-server-os` to
+    # `hwz-server-os-linux-work`, disabling the former; the rows above went on
+    # reporting the disabled composition as though it were the node's, and the
+    # composition every session now loads had no row at all. The subject of a
+    # measurement is part of the measurement.
+    #
+    # The subject is derived, not listed: `enabledPlugins` says which plugins a
+    # session loads, and a plugin is this checker's business exactly when its
+    # name is one of the compositions THIS repository declares. Another
+    # product's plugin in the same file is skipped by that test rather than by
+    # a hardcoded ignore list.
+    enabled = read_enabled_plugins(args.claude_settings_json)
+    installed = read_claude_plugins(args.claude_plugins_json)
+    declared_names = composition_names(build)
+    for key in sorted(enabled):
+        if key.split("@")[0] not in declared_names:
+            continue
+        state = "enabled" if enabled[key] else "disabled"
+        entry = installed.get(key)
+        label = f"{key} (Claude plugin, {state})"
+        if entry is None:
+            row(label, "", "", MISSING, MISSING,
+                "declared in settings.json and absent from the install record")
+            continue
+        payload = Path(entry.get("installPath") or "")
+        if not payload.is_dir():
+            row(label, "", str(entry.get("version") or ""), MISSING, MISSING,
+                f"not present: {payload}")
+            continue
+        installed_version = str(entry.get("version") or "")
+        if not pinned or not args.ability_repo.is_dir():
+            row(label, "", "", f"version={installed_version}  sha256="
+                f"{tree_hash(payload) or 'NONE'}", UNKNOWN,
+                "cannot verify: " + recompute_blocker(build, payload))
+            continue
+        # The composition is read from the INSTALLED payload's own README, so a
+        # plugin is recomputed against what it declares rather than against the
+        # distribution that happens to sit beside it.
+        got = expected_artifact(build, args.ability_repo, pinned, payload,
+                                args.marketplace_path, layout_at=args.output)
+        if got is None:
+            row(label, "", "", f"version={installed_version}  sha256="
+                f"{tree_hash(payload) or 'NONE'}", UNKNOWN,
+                "cannot verify: " + recompute_blocker(build, payload))
+            continue
+        expected_plugin, plugin_built = got
+        # The node-runtime face of the same payload writes `RELEASE.json`; the
+        # plugin face does not. Where a marketplace source is a promoted
+        # revision directory — which it is when one payload serves both faces,
+        # exactly as both compositions here declare — the manifest arrives with
+        # the directory and is not part of the composition's content. The node
+        # row below already excludes it for the same reason; this is that
+        # decision applied to the same bytes at the other end of the same chain.
+        drift = tree_drift(expected_plugin, payload, ignore=(Path(TREE_MANIFEST),))
+        row(label, "", plugin_built, f"version={installed_version}  sha256="
+            f"{tree_hash(payload) or 'NONE'}",
+            OK if not drift else SOURCE_RUNTIME_DRIFT,
+            "" if not drift else
+            f"canonical source builds {plugin_built}, and the installed plugin "
+            f"differs in {len(drift)} path(s); e.g. {', '.join(drift[:3])}")
+
     # --- 8. the node: revision, unit, process ----------------------------
     #
     # Everything above measures the DISTRIBUTION — what a release contains and
@@ -1613,15 +1748,29 @@ def host_profile_roots() -> dict:
 
 
 def default_root(argument: str):
-    """The environment's answer, else this host's, else None. Never a guess."""
+    """The environment's answer, else this host's, else None. Never a guess.
+
+    The two sources are not interchangeable, and the difference is the suffix.
+    An environment variable names the thing itself: `SERVEROS_REPO` and
+    `SERVEROS_ABILITY_REPO` are declared in `ops/workspace/environment.yaml` as
+    the checkouts, and `build.py`, `taxonomy.py` and `runtime/cli.py` all read
+    them that way. The profile names the ROOT a thing hangs under — `workspace_src`
+    is `<WORKSPACE_ROOT>/src` — so the product layout is appended to it.
+
+    Appending on both branches resolved `…/src/ability-management` to
+    `…/src/ability-management/ability-management`, and the consumer reported
+    `not a git checkout`: a wrong path wearing a broken repository's message.
+    This is the second copy of `architecture_check.py`'s resolver; see
+    `test_the_two_copies_of_the_root_resolver_agree`, which is what keeps the
+    two from parting again.
+    """
     env_name, profile_keys, suffix = ROOT_SOURCES[argument]
     raw = os.environ.get(env_name)
     if raw:
-        base = Path(raw)
-    else:
-        roots = host_profile_roots()
-        base = next((Path(roots[key]) for key in profile_keys
-                     if isinstance(roots.get(key), str) and roots[key]), None)
+        return Path(raw)
+    roots = host_profile_roots()
+    base = next((Path(roots[key]) for key in profile_keys
+                 if isinstance(roots.get(key), str) and roots[key]), None)
     if base is None:
         return None
     return base.joinpath(*suffix) if suffix else base
@@ -1652,6 +1801,11 @@ def main() -> int:
                                  or home / ".claude/plugins/installed_plugins.json"))
     ap.add_argument("--codex-config", type=Path,
                     default=Path(os.environ.get("SERVEROS_CODEX_CONFIG") or home / ".codex/config.toml"))
+    ap.add_argument("--claude-settings-json", type=Path,
+                    default=Path(os.environ.get("SERVEROS_CLAUDE_SETTINGS_JSON")
+                                 or home / ".claude/settings.json"),
+                    help="which plugins a session actually loads; the install "
+                         "record has no enabled field, so it cannot answer this")
     ap.add_argument("--codex-cache", type=Path,
                     default=Path(os.environ.get("SERVEROS_CODEX_CACHE") or home / ".codex/plugins/cache"))
     ap.add_argument("--canonical-ref", default=os.environ.get("SERVEROS_CANONICAL_REF")

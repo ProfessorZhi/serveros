@@ -20,6 +20,7 @@ import subprocess
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 import yaml
 
@@ -208,6 +209,7 @@ class RuntimeTruthTests(unittest.TestCase):
         (self.engine_installed / "cli.py").write_text("# engine\n")
         (self.engine_installed / "federation.py").write_text("# fed\n")
         self.claude_json = self.base / "installed_plugins.json"
+        self.claude_settings = self.base / "claude-settings.json"
         self.codex_config = self.base / "config.toml"
         self.codex_cache = self.base / "codex-cache"
         # Runtime skill roots are pointed INSIDE the fixture, at paths that do
@@ -254,11 +256,33 @@ class RuntimeTruthTests(unittest.TestCase):
         git(self.ability, "show", f"{rev}:ability-packs.yaml")
         return self.contract
 
-    def install_claude(self, version: str, path: Path, rev: str | None = None):
-        self.claude_json.write_text(json.dumps({"version": 2, "plugins": {
-            truth.CLAUDE_PLUGIN_KEY: [{"scope": "user", "installPath": str(path),
-                                       "version": version,
-                                       "gitCommitSha": rev or self.rev}]}}))
+    def install_claude(self, version: str, path: Path, rev: str | None = None,
+                       key: str | None = None, enabled: bool = True,
+                       record: bool = True):
+        """Install one plugin the way the platform does, in both files.
+
+        Both, because the platform keeps the two facts apart and so must the
+        fixture: `installed_plugins.json` says what is on disk and
+        `settings.json` says what a session loads. Writing only the first left
+        the fixture unable to express the state a migration leaves behind — the
+        old plugin installed and disabled, the new one enabled — which is the
+        state this node was actually in when the plugin rows were found to be
+        looking at the wrong one.
+        """
+        key = key or truth.CLAUDE_PLUGIN_KEY
+        installed = json.loads(self.claude_json.read_text()) if self.claude_json.is_file() \
+            else {"version": 2, "plugins": {}}
+        if record:
+            installed["plugins"][key] = [{"scope": "user", "installPath": str(path),
+                                          "version": version,
+                                          "gitCommitSha": rev or self.rev}]
+        else:
+            installed["plugins"].pop(key, None)
+        self.claude_json.write_text(json.dumps(installed))
+        settings = json.loads(self.claude_settings.read_text()) \
+            if self.claude_settings.is_file() else {}
+        settings.setdefault("enabledPlugins", {})[key] = enabled
+        self.claude_settings.write_text(json.dumps(settings))
 
     def build_and_install(self, rev: str | None = None) -> str:
         """Build the artifact from `rev` and install it as that revision.
@@ -298,7 +322,9 @@ class RuntimeTruthTests(unittest.TestCase):
             serveros_repo=self.serveros, ability_repo=self.ability, ability_rev=self.rev,
             output=self.out, marketplace_path=self.marketplace,
             engine_repo=self.engine_repo, engine_installed=self.engine_installed,
-            claude_plugins_json=self.claude_json, codex_config=self.codex_config,
+            claude_plugins_json=self.claude_json,
+            claude_settings_json=self.claude_settings,
+            codex_config=self.codex_config,
             codex_cache=self.codex_cache,
             canonical_ref=truth.DEFAULT_CANONICAL_REF,
             claude_skills_root=self.claude_skills,
@@ -555,6 +581,63 @@ class RuntimeTruthTests(unittest.TestCase):
     def test_codex_config_without_the_plugin_is_not_enabled(self):
         self.codex_config.write_text("[plugins.\"other@x\"]\nenabled = true\n")
         self.assertFalse(truth.read_codex_install(self.codex_config)["enabled"])
+
+    # ---- the plugin a session actually loads -----------------------------
+
+    def test_a_disabled_plugin_is_named_disabled_rather_than_left_out(self):
+        """The state a migration leaves behind, and the one presence checks miss.
+
+        Measured on this node 2026-09-23: the old core composition stayed in
+        `installed_plugins.json` after the default entry moved to the
+        `serveros-linux-work` profile. It is installed and in no session, and
+        the install record cannot say so — it has no enabled field. Reporting it
+        as simply "installed" is how a report ends up describing a plugin that
+        nothing loads.
+        """
+        version = self.build_and_install()
+        self.install_claude(version, self.out, enabled=False)
+        report = truth.collect(self.args())
+        label = f"{truth.CLAUDE_PLUGIN_KEY} (Claude plugin, disabled)"
+        self.assertIn(label, rows_by(report))
+
+    def test_the_composition_a_session_loads_is_recomputed_not_trusted(self):
+        """The new row is a measurement, not a restatement of the version string."""
+        version = self.build_and_install()
+        self.install_claude(version, self.out)
+        rows = rows_by(truth.collect(self.args()))
+        row = rows[f"{truth.CLAUDE_PLUGIN_KEY} (Claude plugin, enabled)"]
+        self.assertEqual(row["verdict"], truth.OK)
+
+        # A payload that has the right version and the wrong bytes. The version
+        # string is untouched, so a row that read it would still say OK.
+        (self.out / "skills/runtime-management/SKILL.md").write_text("tampered\n")
+        rows = rows_by(truth.collect(self.args()))
+        row = rows[f"{truth.CLAUDE_PLUGIN_KEY} (Claude plugin, enabled)"]
+        self.assertEqual(row["verdict"], truth.SOURCE_RUNTIME_DRIFT)
+        self.assertIn("SKILL.md", row["detail"])
+
+    def test_an_enabled_plugin_nobody_can_find_is_missing_not_quiet(self):
+        self.claude_settings.write_text(json.dumps(
+            {"enabledPlugins": {truth.CLAUDE_PLUGIN_KEY: True}}))
+        rows = rows_by(truth.collect(self.args()))
+        row = rows[f"{truth.CLAUDE_PLUGIN_KEY} (Claude plugin, enabled)"]
+        self.assertEqual(row["verdict"], truth.MISSING)
+        self.assertIn("absent from the install record", row["detail"])
+
+    def test_another_products_plugin_is_not_this_checkers_subject(self):
+        """The subject is derived, so a foreign plugin is skipped by the rule.
+
+        A hardcoded list of names to ignore would be a second place the product
+        is described, and it would be wrong the moment the product gained a
+        composition. The rule is: this checker audits a plugin exactly when the
+        plugin's name is one of the compositions THIS repository declares.
+        """
+        version = self.build_and_install()
+        self.install_claude(version, self.out)
+        self.install_claude("0.11.0", self.base / "quay-payload",
+                            key="quay@quay", enabled=True)
+        report = truth.collect(self.args())
+        self.assertEqual([n for n in rows_by(report) if n.startswith("quay")], [])
 
     # ---- the two documented path traps ----------------------------------
 
@@ -1066,6 +1149,91 @@ class RuntimeTruthTests(unittest.TestCase):
         self.assertEqual(set(compositions), {"plugin payload", "node revision"})
         node_members = set(compositions["node revision"]["members"])
         self.assertTrue(node_members - set(compositions["plugin payload"]["members"]))
+
+
+    def test_the_two_copies_of_the_root_resolver_agree(self):
+        """One authority, two implementations — so the two are compared.
+
+        `runtime_truth.py` carries its own copy of `architecture_check.py`'s
+        resolver on purpose (the two ship from different roots and a shared
+        import would be a dependency between things the release may move apart).
+        The declared invariant is that they share the AUTHORITY: flags, then
+        environment, then this host's profile, then a refusal.
+
+        They did not. Both appended the layout suffix to the environment's value,
+        so `SERVEROS_ABILITY_REPO=…/src/ability-management` resolved to
+        `…/src/ability-management/ability-management` in the gauge while `build.py`,
+        `taxonomy.py` and `runtime/cli.py` read the same variable as the checkout.
+        A copy that is free to differ is a copy that will; this is the comparison
+        that makes the difference a failure rather than a discovery.
+
+        The two tables are compared as TABLES first, because the failure that
+        reached a person was a path, and the failure underneath it is that the two
+        files disagreed about what a suffix means.
+        """
+        spec = importlib.util.spec_from_file_location(
+            "serveros_architecture_check_for_agreement",
+            ROOT / "skills" / "serveros" / "scripts" / "architecture_check.py")
+        check = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(check)
+
+        shared = sorted(set(truth.ROOT_SOURCES) & set(check.ROOT_SOURCES))
+        self.assertTrue(shared, "the two tables share no argument at all")
+        for argument in shared:
+            self.assertEqual(truth.ROOT_SOURCES[argument], check.ROOT_SOURCES[argument],
+                             f"the two tables disagree about {argument}")
+
+        checkout = self.base / "src" / "ability-management"
+        # `patch.dict` restores the WHOLE environment on exit, including keys
+        # removed inside it, so the machine's own values are put back and the
+        # test cannot leak a synthetic root into a later case.
+        with mock.patch.dict(os.environ, {}, clear=False):
+            for name, _, _ in truth.ROOT_SOURCES.values():
+                os.environ.pop(name, None)
+            for name, _, _ in check.ROOT_SOURCES.values():
+                os.environ.pop(name, None)
+            os.environ.pop(truth.HOST_PROFILE_ENV, None)
+            for argument in shared:
+                variable = truth.ROOT_SOURCES[argument][0]
+                os.environ[variable] = str(checkout)
+                self.assertEqual(
+                    truth.default_root(argument), checkout,
+                    f"runtime_truth doubled the environment's value for {argument}")
+                self.assertEqual(
+                    check.default_root(argument), checkout,
+                    f"architecture_check doubled the environment's value for {argument}")
+
+    def test_the_profile_branch_appends_the_layout_to_both_copies(self):
+        """The other half of the rule, so the fix cannot be "delete the suffix".
+
+        A profile names a ROOT; the product layout hangs under it. Both copies
+        must still append, or a node configured by profile would look one
+        directory up for every repository it reads — the same defect mirrored.
+        """
+        spec = importlib.util.spec_from_file_location(
+            "serveros_architecture_check_for_profile",
+            ROOT / "skills" / "serveros" / "scripts" / "architecture_check.py")
+        check = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(check)
+
+        profile = self.base / "host-profile.yaml"
+        profile.write_text(
+            "schema: serveros/host-profile.v1\n"
+            "node:\n"
+            "  roots:\n"
+            f"    identity_home: {self.base}/home\n"
+            f"    workspace_root: {self.base}/home/workspace\n"
+            f"    workspace_src: {self.base}/home/workspace/src\n",
+            encoding="utf-8")
+        with mock.patch.dict(os.environ, {}, clear=False):
+            for name, _, _ in truth.ROOT_SOURCES.values():
+                os.environ.pop(name, None)
+            for name, _, _ in check.ROOT_SOURCES.values():
+                os.environ.pop(name, None)
+            os.environ[truth.HOST_PROFILE_ENV] = str(profile)
+            expected = self.base / "home/workspace/src" / "ability-management"
+            self.assertEqual(truth.default_root("ability_repo"), expected)
+            self.assertEqual(check.default_root("ability_repo"), expected)
 
 
 if __name__ == "__main__":
