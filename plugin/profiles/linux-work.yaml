@@ -53,7 +53,18 @@ short_description: Agent Engineering Workbench for a Linux work node
 # been released — so the bump is the author's to make, and skipping it would
 # leave an installed plugin cache serving the old payload for a version that no
 # longer describes it.
-cachebuster: srv0003.20260922a
+#
+# Moved to `23b` on 2026-09-23 for the same reason and by the same rule. The
+# promoted revision `cards-and-release-20260922@2f77b02` was built from a
+# source tree 28 commits behind canonical, and the difference is not cosmetic:
+# a fresh build of this same profile from `origin/main` adds eleven members the
+# installed payload does not have (`context/delegation.py`,
+# `intake/capture_coverage.py`, `intake/support_handoff.py`,
+# `intake/watch_coverage.py`, `runtime/report_publication.py`, and the two
+# contracts that go with them) and changes eighteen more. Rebuilding under
+# `22a` would have shipped a different payload behind a version string that
+# already names a released one.
+cachebuster: srv0003.20260923b
 
 skills:
   - name: runtime-management

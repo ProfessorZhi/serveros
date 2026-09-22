@@ -64,7 +64,15 @@ version: "3.1.0"
 # regenerated payload must invalidate an already-installed plugin cache. Leave
 # it unchanged otherwise, so that rebuilding from unchanged inputs stays
 # byte-identical.
-cachebuster: srv0003.20260915a
+#
+# Moved to `20260923a` on 2026-09-23. `15a` named the payload installed as this
+# node's plugin distribution, and that payload is stale: a fresh build from
+# `origin/main` adds 93 members it does not have (the whole `documents/`
+# module, `abilities/taxonomy.py`, `abilities/requests/`, the `intake/` set)
+# and changes 45 more. The installed directory and the marketplace both point
+# at a payload the source tree no longer builds, so the label moves with the
+# content, exactly as the field says it should.
+cachebuster: srv0003.20260923a
 
 # Skills composed into the plugin, in bundle order.
 #
