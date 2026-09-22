@@ -31,6 +31,9 @@ def _load(name: str, filename: str):
 
 paths_mod = _load("serveros_runtime_paths", "paths.py")
 cli_mod = _load("serveros_runtime_cli", "cli.py")
+# Loaded for the card-clock test, which has to ask whether the value the CLI
+# hands the card model is one the model can parse.
+presentation_mod = _load("serveros_runtime_presentation", "presentation.py")
 
 Paths = paths_mod.Paths
 PathRefused = paths_mod.PathRefused
@@ -424,6 +427,28 @@ def test_the_forbidden_verbs_are_absent_from_the_module_too():
     for name in ("cmd_runtime_stop", "cmd_runtime_remove", "cmd_runtime_prune",
                  "cmd_runtime_reconcile"):
         assert not hasattr(cli_mod, name), name
+
+
+def test_the_card_clock_is_an_instant_and_not_a_display_string():
+    """The value the card model is handed has to be one it can compute with.
+
+    `_card_common` used `_now_text()` for this — `"%Y-%m-%d %H:%M:%S %Z"` — and
+    `presentation.open_duration` ends an open row at exactly this value. The
+    parse failed, so the live alert card read 「持续 未知」 for a duration the
+    ledger held, and `cards._local` could not shorten the collection time
+    either. Both were visible on the production `card alert --json` on
+    2026-09-22 and neither was covered by a test.
+
+    The control is the display string: if it ever becomes parseable this test
+    stops being about anything, and one of the two below will say so.
+    """
+    now = cli_mod._card_clock()
+    assert presentation_mod._parse(now) is not None, (
+        f"the card clock {now!r} is not an instant, so every duration the card "
+        "computes from it is unmeasured")
+    assert presentation_mod._parse(cli_mod._now_text()) is None, (
+        "the display string became parseable, so the two are interchangeable "
+        "and this test no longer distinguishes them")
 
 
 def test_global_flags_work_on_either_side_of_the_subcommand(tmp_path, capsys):

@@ -1026,6 +1026,14 @@ def _event_of(row: dict, *, at: str, names: dict | None = None,
         "what": {
             "text": what_text,
             "definition": definition["state"],
+            # The short noun the event line wears after its subject
+            # (`Claude 会话 15413 · 遗留进程组`). Carried here and not looked up
+            # again in the renderer: the renderer may not read the catalogue
+            # (that is `presentation`'s job), and a second reader of one file is
+            # a second place its contents can be interpreted. Null on a code the
+            # catalogue does not define, which is what makes `_event_title` fall
+            # back to the subject alone rather than to an invented noun.
+            "label": definition.get("label"),
             # The comparison's two sides, when the row carries them, so a
             # reader can check what was compared against what without opening
             # the register. Null on every row that has no comparison. The
