@@ -629,6 +629,243 @@ class WhatActuallyHappened(Fixture):
 
 
 # ---------------------------------------------------------------------------
+# §4 · the receipt names the version that was sent
+# ---------------------------------------------------------------------------
+
+
+class TheReceiptNamesTheVersionThatWasSent(Fixture):
+    """The register moves between composing and recording, and must not win.
+
+    Every test here is the same shape: compose, change the world, then record.
+    Before the frozen version the recorded severity and state were read off the
+    register at record time, so each of these produced a ledger that described
+    the world after the send instead of the card that was sent — and in the
+    first three cases the difference is a state change that is then never
+    announced to anybody, because the comparison that would find it has already
+    been satisfied.
+    """
+
+    def deliver(self, document, *, generation, at=LATER(130)):
+        return digest.record(self.cursor, self.store, at=at, generation=generation,
+                             state="DELIVERED", shown=document["shown"],
+                             frozen=document["frozen"])
+
+    def test_a_send_time_escalation_stays_pending_and_is_announced_next(self):
+        ref = ref_of(FS, FS)
+        self.baseline()
+        self.put(alert(ref, severity="medium", first_seen=LATER(60)))
+        document = self.compose(at=LATER(120))
+        self.assertEqual(document["shown"][0]["severity"], "medium")
+
+        # The detector escalates while the transport is thinking.
+        self.put(alert(ref, severity="high", first_seen=LATER(60)))
+        out = self.deliver(document, generation=1)
+
+        self.assertEqual(out["payload_version"], document["frozen"]["version"])
+        self.assertEqual(self.cursor.known(ref)["severity"], "medium",
+                         "the cursor recorded a severity the card never showed")
+        self.assertEqual(self.store.get(ref)["last_notified_severity"], "medium",
+                         "`alert list` now tells a person they were told HIGH")
+        # B is a pending delta, not a consumed one.
+        self.assertEqual(self.compose(at=LATER(200))["counts"]["ESCALATED"], 1)
+
+    def test_a_send_time_resolution_becomes_a_recovery_and_not_a_silence(self):
+        ref = ref_of(FS, FS)
+        self.baseline()
+        self.put(alert(ref, first_seen=LATER(60)))
+        document = self.compose(at=LATER(120))
+
+        self.put(alert(ref, first_seen=LATER(60), state="RESOLVED",
+                       resolved_at=LATER(125)))
+        self.deliver(document, generation=1)
+
+        self.assertEqual(self.cursor.known(ref)["state"], "OPEN",
+                         "the cursor recorded a closure the card never showed")
+        # Recording RESOLVED here is what would make the recovery silent
+        # forever: the next delta compares against the recorded state.
+        self.assertEqual(self.compose(at=LATER(200))["counts"]["RECOVERED"], 1)
+
+    def test_a_send_time_reopen_is_REOPENED_and_not_swallowed(self):
+        ref = ref_of(FS, FS)
+        self.baseline()
+        self.put(alert(ref, first_seen=LATER(60)))
+        self.deliver(self.compose(at=LATER(120)), generation=1)
+
+        self.put(alert(ref, first_seen=LATER(60), state="RESOLVED",
+                       resolved_at=LATER(180)))
+        recovered = self.compose(at=LATER(200))
+        self.assertEqual(recovered["counts"]["RECOVERED"], 1)
+
+        # It fires again before the recovery card is recorded as delivered.
+        self.put(alert(ref, first_seen=LATER(210)))
+        self.deliver(recovered, generation=2, at=LATER(220))
+
+        self.assertEqual(self.cursor.known(ref)["state"], "RESOLVED",
+                         "the cursor recorded the reopen instead of the card")
+        self.assertEqual(self.compose(at=LATER(300))["counts"]["REOPENED"], 1)
+
+    def test_a_timeout_the_provider_accepted_is_recovered_by_the_retry(self):
+        """FAILED does not advance the generation, so the retry is the same
+        document and the same idempotency key — which is what lets the
+        transport collapse the two into one message."""
+        ref = ref_of(FS, FS)
+        self.baseline()
+        self.put(alert(ref, first_seen=LATER(60)))
+        document = self.compose(at=LATER(120))
+        verdict = digest.decision(document, self.cursor, at=LATER(120))
+
+        timed_out = digest.record(self.cursor, self.store, at=LATER(130),
+                                  generation=verdict["generation"],
+                                  state="FAILED", shown=document["shown"],
+                                  frozen=document["frozen"], reason="timeout")
+        self.assertFalse(timed_out["delivered"])
+        self.assertIsNone(timed_out["payload_version"])
+        self.assertIsNone(self.cursor.summary()["last_payload"],
+                          "a failed attempt recorded a version as announced")
+        self.assertEqual(self.cursor.generation(), 0)
+
+        retry = digest.record(self.cursor, self.store, at=LATER(140),
+                              generation=verdict["generation"],
+                              state="DELIVERED", shown=document["shown"],
+                              frozen=document["frozen"])
+        self.assertTrue(retry["delivered"])
+        self.assertEqual(self.cursor.generation(), verdict["generation"])
+        self.assertEqual(self.cursor.summary()["last_payload"]["payload_hash"],
+                         document["frozen"]["payload_hash"])
+        # Same generation, so the same key: the transport sees one message.
+        self.assertEqual(verdict["idempotency_key"],
+                         document["frozen"]["idempotency_key"])
+
+    def test_a_duplicate_retry_of_one_document_is_idempotent(self):
+        ref = ref_of(FS, FS)
+        self.baseline()
+        self.put(alert(ref, first_seen=LATER(60)))
+        document = self.compose(at=LATER(120))
+        first = self.deliver(document, generation=1)
+        second = self.deliver(document, generation=1, at=LATER(140))
+        self.assertEqual(first["superseded"], [])
+        self.assertEqual(second["superseded"], [],
+                         "a retry at the same generation is not stale")
+        self.assertEqual(self.cursor.known(ref)["severity"], "high")
+        self.assertEqual(self.compose(at=LATER(200))["counts"]["NEW"], 0)
+
+    def test_a_cursor_crash_re_composes_the_same_generation(self):
+        """Nothing was recorded, so nothing was told. The next digest is the
+        same generation — the same idempotency key — and the deltas are still
+        there rather than having been consumed by a send nobody recorded."""
+        ref = ref_of(FS, FS)
+        self.baseline()
+        self.put(alert(ref, first_seen=LATER(60)))
+        first = self.compose(at=LATER(120))
+        second = self.compose(at=LATER(180))
+        self.assertEqual(self.cursor.generation(), 0)
+        self.assertEqual(first["generation"], second["generation"])
+        self.assertEqual(first["frozen"]["idempotency_key"],
+                         second["frozen"]["idempotency_key"])
+        self.assertEqual(second["counts"]["NEW"], 1)
+        self.assertEqual(self.cursor.summary()["last_payload"], None)
+
+    def test_a_late_answer_does_not_overwrite_the_newer_record(self):
+        ref = ref_of(FS, FS)
+        self.baseline()
+        self.put(alert(ref, severity="medium", first_seen=LATER(60)))
+        first = self.compose(at=LATER(120))
+        self.deliver(first, generation=1)
+
+        self.put(alert(ref, severity="high", first_seen=LATER(60)))
+        second = self.compose(at=LATER(200))
+        self.deliver(second, generation=2, at=LATER(210))
+        self.assertEqual(self.cursor.known(ref)["severity"], "high")
+
+        late = self.deliver(first, generation=1, at=LATER(220))
+        self.assertEqual(late["superseded"], [ref])
+        self.assertEqual(self.cursor.known(ref)["severity"], "high",
+                         "a late answer for an older version moved the cursor back")
+        self.assertEqual(self.cursor.known(ref)["generation"], 2)
+        self.assertEqual(self.compose(at=LATER(300))["counts"]["ESCALATED"], 0,
+                         "the escalation was announced a second time")
+
+    def test_the_frozen_rows_are_the_rows_the_card_carried(self):
+        self.baseline()
+        for index in range(TOP_N + 2):
+            subject = f"filesystem:/mnt/vol{index}"
+            self.put(alert(ref_of(FS, subject), subject=subject,
+                           first_seen=LATER(60 + index)))
+        document = self.compose(at=LATER(120))
+        frozen = document["frozen"]
+        self.assertEqual(frozen["generation"], document["generation"])
+        self.assertEqual(frozen["row_count"], len(document["shown"]))
+        self.assertEqual([row["key"] for row in frozen["rows"]],
+                         document["shown_keys"])
+        self.assertNotIn("rows", frozen["payload_hash"])
+        # The hash is over the document as composed, and only over it: the
+        # frozen block is excluded so that a reader who re-serialises the
+        # document still computes the same version.
+        again = json.loads(json.dumps(document))
+        self.assertEqual(digest.freeze(again)["payload_hash"],
+                         frozen["payload_hash"])
+        self.assertEqual(digest.freeze(again)["version"], frozen["version"])
+
+    def test_a_row_that_disagrees_with_the_frozen_table_does_not_win(self):
+        """The frozen half is what the composing instant wrote down.
+
+        The message really was sent, so refusing would leave a delivery
+        unrecorded; the frozen table is recorded instead and the disagreement
+        is named in the receipt. It cannot happen on the real path — the two
+        halves are two readings of ONE document — so `disagreed` being non-empty
+        is a statement that a caller rebuilt one of them.
+        """
+        ref = ref_of(FS, FS)
+        self.baseline()
+        self.put(alert(ref, first_seen=LATER(60)))
+        document = self.compose(at=LATER(120))
+        forged = json.loads(json.dumps(document))
+        forged["shown"][0]["severity"] = "low"
+        out = self.deliver(forged, generation=1)
+        self.assertEqual(out["disagreed_rows"], [ref])
+        self.assertEqual(self.cursor.known(ref)["severity"], "high",
+                         "the edited row won over the frozen one")
+
+    def test_a_row_the_frozen_payload_does_not_name_is_not_read_from_the_register(self):
+        ref = ref_of(FS, FS)
+        self.baseline()
+        self.put(alert(ref, first_seen=LATER(60)))
+        document = self.compose(at=LATER(120))
+        extra = dict(document["shown"][0])
+        extra["key"] = ref_of(GROUP, GROUP)
+        out = digest.record(self.cursor, self.store, at=LATER(130), generation=1,
+                            state="DELIVERED",
+                            shown=document["shown"] + [extra],
+                            frozen=document["frozen"])
+        self.assertEqual(out["unnamed_rows"], [extra["key"]])
+        self.assertIsNone(self.cursor.known(extra["key"])["severity"],
+                          "a row nobody froze was recorded with a post-send value")
+
+    def test_a_document_without_a_frozen_block_is_recorded_as_legacy(self):
+        """Absent is not the same as contradictory. An older daemon's document
+        is recorded the old way, and the cursor says which way that was."""
+        ref = ref_of(FS, FS)
+        self.baseline()
+        self.put(alert(ref, first_seen=LATER(60)))
+        document = self.compose(at=LATER(120))
+        out = digest.record(self.cursor, self.store, at=LATER(130), generation=1,
+                            state="DELIVERED", shown=document["shown"])
+        self.assertIsNone(out["payload_version"])
+        self.assertFalse(self.cursor.known(ref)["frozen"])
+        self.assertTrue(self.cursor.announced(ref))
+        self.assertIsNone(self.cursor.summary()["last_payload"])
+
+    def test_a_frozen_generation_that_is_not_the_one_being_recorded_is_refused(self):
+        ref = ref_of(FS, FS)
+        self.baseline()
+        self.put(alert(ref, first_seen=LATER(60)))
+        document = self.compose(at=LATER(120))
+        with self.assertRaises(digest.DigestError) as caught:
+            self.deliver(document, generation=7)
+        self.assertIn("generation", str(caught.exception))
+
+
+# ---------------------------------------------------------------------------
 # the contract owns the numbers
 # ---------------------------------------------------------------------------
 

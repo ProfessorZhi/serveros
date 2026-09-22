@@ -102,6 +102,11 @@ alerting_mod = _load("serveros_runtime_alerting", "alerting.py")
 # in this directory, and neither is a package this daemon is allowed to import
 # by name.
 digest_mod = _load("serveros_runtime_alert_digest", "alert_digest.py")
+# §3. The card receipt ledger. Loaded the same way, for the same reason: a
+# plain module in this directory rather than a package the daemon imports by
+# name. The digest and the card receipt are two rhythms over one set of facts,
+# and the daemon is the only writer of both.
+card_delivery_mod = _load("serveros_runtime_card_delivery", "card_delivery.py")
 _ACTOR_PATH = _HERE.parent / "context" / "actor.py"
 if "_serveros_context_actor" not in sys.modules:
     _spec = importlib.util.spec_from_file_location("_serveros_context_actor", _ACTOR_PATH)
@@ -540,6 +545,11 @@ class Daemon:
         # rather than {} so that "never opened" and "opened and empty" cannot
         # be confused — an empty cursor is a real state and a loud one.
         self._delivery_cursor: object | None = None
+        # §3's card receipt ledger. A SECOND document beside that cursor, not
+        # a second key inside it: a status broadcast is produced by a clock and
+        # a digest by a delta, and one ledger would let the hourly card advance
+        # the alert delta window.
+        self._card_ledger: object | None = None
         self.last_alert_pass: dict | None = None
         # Whose connection the request in flight arrived on. Cleared by
         # `handle`; read only by `agent.context.attach`.
@@ -1074,6 +1084,14 @@ class Daemon:
             "alert.digest": self._r_alert_digest,
             "alert.digest-baseline": self._r_alert_digest_baseline,
             "alert.digest-record": self._r_alert_digest_record,
+            # §3. The OTHER rhythm over the same facts. A status broadcast is
+            # produced by a clock and a digest by a delta, so the two keep
+            # separate ledgers: one ledger would let an hourly status card
+            # advance the alert delta window and silently consume the
+            # escalations of the same hour. What they share is the shape of the
+            # claim — a send is recorded against a VERSION, not a clock.
+            "card.record-delivery": self._r_card_record_delivery,
+            "card.deliveries": self._r_card_deliveries,
         }
 
     def handle(self, request: dict, *, peer: dict | None = None) -> dict:
@@ -1167,6 +1185,13 @@ class Daemon:
                 # absent is again the point — the node MCP still declares
                 # `alert.list` and `alert.inspect` and nothing else.
                 "alert.digest", "alert.digest-baseline", "alert.digest-record",
+                # §3. The card receipt. On this socket for the same reason the
+                # three above are: `serverosctl card record-delivery` is a local
+                # command and the ledger it appends to lives beside the register
+                # the daemon owns. The node MCP still declares `alert.list` and
+                # `alert.inspect` and nothing else, so nothing here is reachable
+                # from a chat message.
+                "card.record-delivery", "card.deliveries",
                 # SYS-02. Two READS and no write, and that is a decision rather
                 # than an unfinished edge. Declaring and releasing a desired
                 # reference are acts a caller performs on its own behalf, and
@@ -2018,10 +2043,84 @@ class Daemon:
                 f"`shown` must be the list of rows the card carried, not "
                 f"{type(shown).__name__}: the cursor records what a person was "
                 f"actually told, and a scalar here would record something else")
+        # The frozen version the payload carried, when the caller had one. It
+        # is what makes the receipt name a version rather than a clock, and
+        # what lets the severity recorded per row be the one that was ON the
+        # card instead of the one the register holds by the time the transport
+        # answered. Absent is allowed and means an older document.
+        frozen = params.get("frozen")
+        if frozen is not None and not isinstance(frozen, dict):
+            raise DaemonError(
+                f"`frozen` must be the frozen block the digest document "
+                f"carried, not {type(frozen).__name__}")
         return digest_mod.record(
             self.delivery_cursor(), self.alert_store(), at=at,
             generation=int(generation), state=str(state), shown=shown,
+            reason=params.get("reason"), frozen=frozen)
+
+    def card_ledger(self):
+        """The card receipt ledger, beside the register and the digest cursor."""
+        if self._card_ledger is None:
+            path = Path(self.state_dir) / "alerts" / "state.json"
+            self._card_ledger = card_delivery_mod.CardLedger(
+                card_delivery_mod.ledger_path(path))
+        return self._card_ledger
+
+    def _r_card_record_delivery(self, params) -> dict:
+        """§3. What the transport did with the card version it was handed.
+
+        The frozen block and the card are BOTH required and are checked
+        against each other. A receipt's whole value is that its version names
+        the payload that went out, so a caller that offers one without the
+        other is asking this node to write down a claim it cannot verify.
+        """
+        at = _iso(self._now())
+        kind = _required(params, "kind")
+        state = _required(params, "state")
+        card = params.get("card")
+        frozen = params.get("frozen")
+        if not isinstance(card, dict):
+            raise DaemonError(
+                f"`card` must be the rendered payload that was sent, not "
+                f"{type(card).__name__}")
+        if not isinstance(frozen, dict):
+            raise DaemonError(
+                "`frozen` is required: a delivery is recorded against a "
+                "VERSION, and a receipt that cannot name one would make a "
+                "re-send of one card and a send of the next one read the same")
+        if card_delivery_mod.check_kind(kind) != frozen.get("kind"):
+            raise DaemonError(
+                f"the card version is a {frozen.get('kind')!r} and this "
+                f"delivery is filed under {kind!r}")
+        card_delivery_mod.verify(frozen, card)
+        return self.card_ledger().record(
+            kind, at=at, state=str(state), version=str(frozen.get("version")),
+            payload_hash=frozen.get("payload_hash"),
+            payload_bytes=frozen.get("payload_bytes"),
+            idempotency_key=(params.get("idempotency_key")
+                             or frozen.get("idempotency_key")),
             reason=params.get("reason"))
+
+    def _r_card_deliveries(self, params) -> dict:
+        """§3. What has been sent, by version. A read of the ledger."""
+        kind = params.get("kind") or None
+        if kind is not None:
+            card_delivery_mod.check_kind(kind)
+        limit = int(params.get("limit") or 10)
+        ledger = self.card_ledger()
+        rows = ledger.entries(kind)
+        return {
+            "kind": kind,
+            "entries": len(rows),
+            "recent": list(reversed(rows))[:max(0, limit)],
+            "last": ledger.last(kind),
+            "last_delivered": ledger.last_delivered(kind),
+            "note": ("A receipt list, not a historian. `last_delivered` is the "
+                     "answer to 'what did the last one that arrived carry'; a "
+                     "FAILED entry keeps its version because that is what was "
+                     "attempted, and an attempt nobody composed a card for "
+                     "would have no version at all."),
+        }
 
     def _r_alert_record_delivery(self, params) -> dict:
         """§12. What actually happened when somebody tried to say it."""
