@@ -198,6 +198,118 @@ def select_focus(rows: list[dict], grants: dict[str, dict], *, now: datetime,
             "admission_required": True}
 
 
+def admission_plan(decision: dict, rows: list[dict], grants: dict[str, dict], *,
+                   cycle_ref: str, observed_at: str, action_key: str,
+                   lease: dict) -> dict:
+    """The one record an admission is made of, or the reason there is none.
+
+    P6 asks for the selection, the budget reservation and the lease/dispatch
+    intent to be committed in one transaction. This is the half that decides
+    what those three ARE; `runtime/agent_control_store.py#admit` is the half
+    that commits them. Splitting it here rather than building the record in the
+    store is the same split `select_focus` / `work focus` already use: the
+    policy is a pure function of documents, and the store is the part with a
+    filesystem and a lock.
+
+    `decision` is `select_focus`'s own return value and `rows` the board it was
+    given, because `selected` is a list of Item ids and the grant a row runs
+    under is a field on the row.
+
+    ONE GRANT PER CYCLE, and this is a refusal rather than a merge. A cycle has
+    one action key, one lease intent and therefore one dispatch — and a
+    dispatch has one timeout and one output bound. Two grants would be two
+    answers to "what bounds this", and the record would have to pick one or
+    invent a combination rule. Neither is stated anywhere, so the two-grant
+    cycle is refused with both grants named: admitting them as two cycles says
+    what actually happened, and it is something the caller can do.
+
+    Returns the record `admit` takes, or `{"refused": <word>, "because": <one
+    sentence>}`. A refusal is RETURNED rather than raised because the caller
+    is expected to have one — most days this node has no grant at all, and that
+    is an answer, not an error.
+    """
+    selected = decision.get("selected") or []
+    if not selected:
+        return {"refused": "NOTHING_SELECTED",
+                "because": (f"the decision is {decision.get('status')}"
+                            + (f" ({decision['reason']})" if decision.get("reason") else "")
+                            + " and selected no objective, so there is nothing to "
+                              "admit. An admission with no selection would hold a "
+                              "reservation and an action key for no work")}
+    by_id = {row.get("id"): row for row in rows}
+    named: dict[str, list[str]] = {}
+    for item_id in selected:
+        row = by_id.get(item_id)
+        if row is None:
+            return {"refused": "SELECTION_NOT_ON_THE_BOARD",
+                    "because": (f"{item_id} was selected and is not among the "
+                                f"{len(rows)} rows this decision was made from, so "
+                                f"the grant it runs under cannot be read")}
+        ref = row.get("grant_ref")
+        if not ref:
+            # Selected and unsponsored, which `select_focus` cannot produce:
+            # it asks `grant_reason` about every row and a row naming no grant
+            # draws MISSING_OR_REVOKED_GRANT and is excluded. So this is the
+            # decision and the board disagreeing about one row, and it is
+            # reported as that rather than as "nothing was selected".
+            return {"refused": "SELECTION_CARRIES_NO_GRANT",
+                    "because": (f"{item_id} is in this decision's `selected` and "
+                                f"the row it was selected from names no "
+                                f"`grant_ref`, which `select_focus` excludes a row "
+                                f"for. The decision and the board disagree about "
+                                f"this row — on a board that names no grant at all "
+                                f"(the live one does not), nothing can be admitted "
+                                f"until `intake/focus_source.py`'s missing card "
+                                f"field is produced")}
+        named.setdefault(str(ref), []).append(str(item_id))
+    if len(named) > 1:
+        pairs = "; ".join(f"{ref} ({', '.join(items)})"
+                          for ref, items in sorted(named.items()))
+        return {"refused": "MULTIPLE_GRANTS_IN_ONE_CYCLE",
+                "because": (f"this cycle's objectives are authorized by {len(named)} "
+                            f"different grants — {pairs} — and a cycle has one "
+                            f"action key, one lease and therefore one dispatch, "
+                            f"which has one timeout and one output bound. Two grants "
+                            f"are two answers to what bounds it, and no rule for "
+                            f"combining them is declared: admit them as two cycles")}
+    grant_ref, items = next(iter(named.items()))
+    grant = grants.get(grant_ref, {})
+    if grant.get("ref") != grant_ref:
+        return {"refused": "GRANT_NOT_RECORDED",
+                "because": (f"{items[0]} names grant {grant_ref}, and the envelope "
+                            f"this cycle would be admitted under does not contain "
+                            f"it — so either nothing recorded that delegation or "
+                            f"its own delegation no longer authorizes. "
+                            f"`context/delegation.py` reports which")}
+    budget = grant.get("budget")
+    if not isinstance(budget, dict):
+        return {"refused": "MISSING_BOUNDED_BUDGET",
+                "because": f"grant {grant_ref} carries no budget to reserve"}
+    reservation = {}
+    for key in ("wall_seconds", "max_attempts", "max_output_bytes"):
+        if type(budget.get(key)) is not int or budget[key] <= 0:
+            return {"refused": "MISSING_BOUNDED_BUDGET",
+                    "because": (f"grant {grant_ref}'s budget has no positive "
+                                f"{key}, so there is no bound to record. "
+                                f"`grant_reason` refuses this same grant for the "
+                                f"same reason")}
+        reservation[key] = budget[key]
+    if not str(cycle_ref or "").strip():
+        return {"refused": "NO_CYCLE_REF",
+                "because": ("an admission is stored under the cycle it is for, and "
+                            "this call names none. The ref is what a resume names: "
+                            "without it the reservation can never be released")}
+    return {"cycle_ref": str(cycle_ref),
+            "grant_ref": grant_ref,
+            "reservation": reservation,
+            "lease": dict(lease),
+            "action_key": str(action_key),
+            "selection": {"selection_digest": decision["selection_digest"],
+                          "observed_at": observed_at,
+                          "selected": list(selected),
+                          "carryover": list(decision.get("carryover") or [])}}
+
+
 def review_gate(packet: dict, review: dict, grant: dict, *, now: datetime) -> dict:
     """Check a receipt from a TRUSTED review adapter, never raw model JSON alone.
 

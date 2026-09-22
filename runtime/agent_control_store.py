@@ -73,6 +73,35 @@ the actor a grant was given to appears on the record as a field. There is no
 `grants_for_actor()` and the omission is the same one as above — that method
 would answer "what may this person do", which is policy.
 
+Why admissions are stored here (P6, "原子准入")
+-----------------------------------------------
+P6 asks for one thing this store is uniquely able to give: "把相同 cycle/目标/版本
+的选择、预算预留、lease/dispatch intent 放到现有权威事务/互斥范围" — the selection, the
+budget it was admitted under, and the lease and dispatch intent it is about to
+produce belong in ONE transaction.
+
+They are three facts that only mean something together, and this is the only
+scope in the fabric that already has a real transaction over durable state: one
+document, one exclusive sidecar lock, one write. `runtime/lease_store.py` has
+its own file per resource and its own `os.replace`; `runtime/bounded_invocation`
+writes a receipt per action key. P6's own words are the rule for what to do
+about that — "多系统间用可恢复幂等关系，不假装跨库事务" — so `confirm_admission`
+records what the other two stores ANSWERED and never claims to have committed
+anything on their behalf. The relation is resumable because each phase is
+idempotent and `admit` replayed with the same inputs hands the caller back the
+phase it left off at; it is not atomic across stores because it cannot be, and
+a record that said otherwise would be the interesting kind of lie.
+
+What the admission is NOT
+-------------------------
+Not a scheduler and not an executor. It records an intent, and every module
+that could act on one disclaims acting in its own docstring for the same
+reason: `runtime/bounded_invocation` is "not a scheduler", `intake/daily_cycle`
+performs "no IO, model calls, Item writes or authorization minting". This
+method mints nothing either — the grant it names must already be recorded, and
+the selection it carries is the one `intake/daily_cycle.select_focus` produced
+from an envelope `context/delegation.py` derived.
+
 Several writers, one record at a time
 -------------------------------------
 `serverosd` holds one of these for its whole lifetime and serves one connection
@@ -106,8 +135,10 @@ lock this file could take.
 from __future__ import annotations
 
 import fcntl
+import hashlib
 import json
 import os
+import re
 import tempfile
 from contextlib import contextmanager
 from pathlib import Path
@@ -177,9 +208,129 @@ BINDING_ONLY_FIELDS = ("session_role", "bound_item_ref")
 # a new grant can have and nothing else may move it.
 REVOCATION_FIELDS = ("revoked", "revoked_at", "revoked_reason")
 
+# The three phases of one admission, in the only order they can happen. Each is
+# a DIFFERENT store's answer being reported back, which is why they are three
+# and not a boolean `done`:
+#
+#   INTENT_RECORDED  this store committed. Nothing else has happened yet.
+#   LEASE_HELD       `runtime/lease_store.py#declare` answered, and its answer
+#                    is what is recorded — not a claim that a lease exists.
+#   DISPATCHED       `runtime/bounded_invocation.invoke_once` wrote a receipt
+#                    under the action key, and the receipt's own fields are what
+#                    is recorded.
+#
+# A phase is not a permission. `LEASE_HELD` does not authorize a dispatch; it
+# records that the lease store answered one way rather than another, and the
+# reader that wants to act on that reads the lease store itself.
+ADMISSION_PHASES = ("INTENT_RECORDED", "LEASE_HELD", "DISPATCHED")
+
+# The three budget keys `intake/daily_cycle.grant_reason` requires, cited rather
+# than re-defined: that function is the authority on what a bounded budget IS,
+# and a second list here would be a second definition that can disagree with it.
+BUDGET_KEYS = ("wall_seconds", "max_attempts", "max_output_bytes")
+
+# The three fields `runtime/lease_store.py#declare` is idempotent on, plus the
+# resource it declares against. An admission intent that names fewer than these
+# cannot be resumed, because a resume that guessed the missing one would declare
+# a lease beside the one it meant.
+LEASE_INTENT_FIELDS = ("resource", "scope", "holder")
+
+# The phases a CALLER may confirm. `INTENT_RECORDED` is not among them: it is
+# the phase `admit` itself writes, so a caller confirming it would be reporting
+# this store's own act back to this store.
+CONFIRMABLE_PHASES = ADMISSION_PHASES[1:]
+
+# Every status `runtime/bounded_invocation.invoke_once` writes on its receipt,
+# cited from that module rather than chosen here: the dispatch phase records a
+# receipt the invoking helper wrote, so the only vocabulary it may accept is
+# that helper's. `tests/test_admission.py` reads the writer and fails if this
+# tuple and the statuses in that file stop agreeing — the same treatment
+# `BINDING_ONLY_FIELDS` gets, for the same reason: a copy nobody checks is a
+# copy that is wrong by the time somebody reads it.
+RECEIPT_STATUSES = ("STARTED", "EXITED", "REFUSED", "TIMED_OUT", "OUTPUT_LIMIT",
+                    "START_FAILED", "IO_FAILED")
+
 
 class StoreError(RuntimeError):
     pass
+
+
+def _intent_digest(record: dict, *, selection_digest: str, grant_ref: str,
+                   reservation: dict, lease: dict, action_key: str) -> str:
+    """The identity of one admission: cycle, objective, version and bounds.
+
+    The four inputs are P6's own list — "相同 cycle/目标/版本" plus the budget the
+    plan puts in the same transaction. Only these four go in, so a caller
+    cannot change the identity by adding a field, and a resume that reproduces
+    the same decision reproduces the same digest.
+
+    `admitted_at` is deliberately NOT an input. A retried admission happens at
+    a later instant and is still the same admission; including the time would
+    make every retry a different intent and turn idempotency into a refusal.
+    """
+    return fingerprint({"selection_digest": str(selection_digest),
+                        "grant_ref": str(grant_ref),
+                        "reservation": {k: reservation[k] for k in BUDGET_KEYS},
+                        "lease": {f: str(lease[f]) for f in LEASE_INTENT_FIELDS},
+                        "action_key": str(action_key)})
+
+
+def fingerprint(value) -> str:
+    """A stable digest of a JSON value, with no clock and no path in it.
+
+    The same construction `intake/daily_cycle.fingerprint` uses, and for the
+    same reason: two of these are compared as strings in a refusal message, so
+    a digest that varied run to run would make the message unreadable exactly
+    when somebody is reading it to find out what changed.
+    """
+    payload = json.dumps(value, sort_keys=True, separators=(",", ":"),
+                         ensure_ascii=False, allow_nan=False)
+    return hashlib.sha256(payload.encode()).hexdigest()
+
+
+def lease_evidence_conflict(record: dict, evidence: dict) -> str | None:
+    """Why this lease answer cannot belong to this admission, or None.
+
+    The lease store's own answer is `{"act": ..., "record": ...}`, and the two
+    things checked are the two that would make the answer about a DIFFERENT
+    declaration: the act must be one that helper produces, and the resource the
+    answer names must be the resource the intent named.
+    """
+    act = evidence.get("act")
+    if act not in ("DECLARE", "REFRESH"):
+        return (f"the lease evidence names act {act!r}. "
+                f"`runtime/lease_store.declare` returns DECLARE or REFRESH, and "
+                f"anything else is an answer about something other than a "
+                f"declared reference")
+    returned = evidence.get("resource")
+    if str(returned or "") != record["lease"]["resource"]:
+        return (f"the lease evidence names resource {returned!r} and this "
+                f"admission's intent names {record['lease']['resource']!r}. A "
+                f"lease held on one resource is not evidence about another")
+    return None
+
+
+def dispatch_evidence_conflict(record: dict, evidence: dict) -> str | None:
+    """Why this receipt cannot belong to this admission, or None.
+
+    The receipt's `action_key` is the join, and it is the only join there is:
+    `runtime/bounded_invocation.invoke_once` writes one receipt per key, so a
+    receipt under a different key is a different dispatch that happens to have
+    been offered as evidence for this one.
+    """
+    returned = str(evidence.get("action_key") or "")
+    if returned != record["action_key"]:
+        return (f"the receipt names action key {returned!r} and this admission's "
+                f"dispatch intent names {record['action_key']!r}. One receipt "
+                f"per action key is that helper's rule, so this receipt is "
+                f"evidence about a different dispatch")
+    status = evidence.get("status")
+    if status not in RECEIPT_STATUSES:
+        return (f"the receipt's status is {status!r}; this records a receipt "
+                f"`runtime/bounded_invocation.invoke_once` wrote, and a status "
+                f"it does not write would be a claim about an execution nobody "
+                f"performed. The ones it writes are {list(RECEIPT_STATUSES)}")
+    return None
 
 
 def _atomic_write(path: Path, payload: dict) -> None:
@@ -258,7 +409,8 @@ class AgentControlStore:
                     f"running. An empty store would say every approval it held "
                     f"had never been granted.")
             return {"schema": SCHEMA, "contexts": {}, "approvals": {},
-                    "bindings": {}, "selections": {}, "grants": {}}
+                    "bindings": {}, "selections": {}, "grants": {},
+                    "admissions": {}}
         try:
             data = json.loads(self.path.read_text(encoding="utf-8"))
         except (OSError, ValueError) as exc:
@@ -277,6 +429,7 @@ class AgentControlStore:
         data.setdefault("bindings", {})
         data.setdefault("selections", {})
         data.setdefault("grants", {})
+        data.setdefault("admissions", {})
         data["schema"] = SCHEMA
         return data
 
@@ -670,6 +823,295 @@ class AgentControlStore:
             self._flush()
             return updated
 
+    # -- admissions (P6, 原子准入) ------------------------------------------
+
+    def admit(self, record: dict) -> dict:
+        """Record one cycle's admission: selection, budget, lease and dispatch
+        intent, in a single mutation.
+
+        ONE `_mutation()` for all three, and that is the entire point of this
+        method. P6 asks for the selection, the budget reservation and the
+        lease/dispatch intent to be in one authoritative transaction, and the
+        reason is what the three are for: an admission that recorded a
+        selection and no intent would be a cycle nothing dispatches, and one
+        that recorded an intent and no selection would be a dispatch of nothing
+        in particular. Written as three mutations, the window between them is
+        where a crash leaves a reservation nobody holds.
+
+        Idempotent on the INTENT, not on the cycle. `intent_digest` is computed
+        here from the four things the plan names — cycle, objective, version
+        and bounds — so a retried admission is the same admission and returns
+        the stored record with its phase. A second admission for the same
+        `cycle_ref` with a DIFFERENT intent is refused rather than replacing
+        it: the caller is asking to make the cycle about something else, and
+        the record being replaced is the only evidence of what it was admitted
+        for. That refusal is also what makes two concurrent schedulers safe —
+        the loser is told it lost, instead of both running.
+
+        The action key is unique among OPEN admissions, for a reason that comes
+        from `runtime/bounded_invocation` rather than from taste: that helper
+        keys one receipt by `action_key` and REFUSES a second call under the
+        same key with different input while REPLAYING the first when the input
+        matches. So two open admissions sharing a key would not produce two
+        dispatches — the second would silently receive the first's result and
+        the receipt would say `replayed: True` about work it never did.
+        """
+        cycle = str(record.get("cycle_ref") or "").strip()
+        if not cycle:
+            raise StoreError(
+                "an admission without a cycle_ref cannot be stored: the cycle is "
+                "what a resume names, and an admission nobody can name again is a "
+                "reservation that can never be released")
+
+        selection = record.get("selection")
+        if not isinstance(selection, dict):
+            raise StoreError(
+                f"{cycle} carries no selection. An admission is a decision about "
+                f"what a cycle is for; without one it records that something was "
+                f"admitted and not what")
+        if not str(selection.get("selection_digest") or "").strip():
+            raise StoreError(
+                f"{cycle} names no selection_digest. That value comes from "
+                f"`intake/daily_cycle.select_focus`, which computes it over the "
+                f"selected rows and the observation they came from — it is the "
+                f"idempotency key and this store will not mint one, because a "
+                f"digest computed here would be a digest of whatever the caller "
+                f"handed over")
+        selected = selection.get("selected")
+        if not isinstance(selected, list) or not selected:
+            raise StoreError(
+                f"{cycle} selected nothing, so there is no cycle to admit. "
+                f"`select_focus` returns an empty `selected` for a stale board "
+                f"and for a board whose every row was excluded; admitting that "
+                f"would record a reservation for work no objective was chosen "
+                f"for")
+
+        grant_ref = str(record.get("grant_ref") or "").strip()
+        if not grant_ref:
+            raise StoreError(
+                f"{cycle} names no grant_ref. Every admitted cycle carries the "
+                f"delegation it runs under; a cycle admitted without one is work "
+                f"nobody authorized, which is the state this store exists to make "
+                f"impossible to record")
+        reservation = record.get("reservation")
+        if not isinstance(reservation, dict):
+            raise StoreError(
+                f"{cycle} carries no reservation. The bounds a cycle runs under "
+                f"are read from its grant at admission time and recorded with the "
+                f"selection that was admitted under them")
+        missing = [k for k in BUDGET_KEYS
+                   if type(reservation.get(k)) is not int or reservation[k] <= 0]
+        if missing:
+            raise StoreError(
+                f"{cycle}'s reservation is missing a positive "
+                f"{', '.join(missing)}. `intake/daily_cycle.grant_reason` requires "
+                f"the same three keys of a grant, and a reservation that bounded "
+                f"less than the grant would admit a cycle under limits nobody "
+                f"declared")
+
+        lease = record.get("lease")
+        if not isinstance(lease, dict):
+            raise StoreError(
+                f"{cycle} carries no lease intent. The resource this cycle is "
+                f"about to declare, and the scope and holder it will declare it "
+                f"under, are what a resume needs — `runtime/lease_store.declare` "
+                f"is idempotent on (scope, holder), so a resume that knew all "
+                f"three would refresh its own reference and one that guessed "
+                f"would declare beside it")
+        lease_missing = [f for f in LEASE_INTENT_FIELDS
+                         if not str(lease.get(f) or "").strip()]
+        if lease_missing:
+            raise StoreError(
+                f"{cycle}'s lease intent is missing {', '.join(lease_missing)}")
+
+        action_key = str(record.get("action_key") or "").strip()
+        if not re.fullmatch(r"[a-zA-Z0-9_-]{1,100}", action_key):
+            raise StoreError(
+                f"{action_key!r} is not an action key. "
+                f"`runtime/bounded_invocation.invoke_once` accepts "
+                f"[a-zA-Z0-9_-]{{1,100}} and refuses anything else, so an "
+                f"admission naming a key that helper will reject is an intent "
+                f"nothing can dispatch")
+
+        intent_digest = _intent_digest(record, selection_digest=selection["selection_digest"],
+                                       grant_ref=grant_ref, reservation=reservation,
+                                       lease=lease, action_key=action_key)
+
+        with self._mutation():
+            existing = self._data["admissions"].get(cycle)
+            if existing is not None:
+                if existing.get("intent_digest") == intent_digest:
+                    return {**existing, "replayed": True}
+                raise StoreError(
+                    f"{cycle} is already admitted under a different intent "
+                    f"({existing.get('intent_digest')} recorded, {intent_digest} "
+                    f"offered). A cycle whose objective, version or bounds changed "
+                    f"is a different admission, and replacing this one would "
+                    f"discard the only record of what was admitted and of the "
+                    f"reservation it holds. Retire it first, or admit the new "
+                    f"intent under its own cycle_ref")
+
+            holder = next((ref for ref, other in self._data["admissions"].items()
+                           if other.get("action_key") == action_key
+                           and not other.get("retired_at")), None)
+            if holder is not None:
+                raise StoreError(
+                    f"action key {action_key!r} is already held by the open "
+                    f"admission {holder!r}. `runtime/bounded_invocation` keys one "
+                    f"receipt by that value and replays it for equal input, so a "
+                    f"second admission under it would not dispatch anything — it "
+                    f"would receive the first cycle's result and the receipt would "
+                    f"say `replayed: True` about work it never did")
+
+            stored = {
+                "cycle_ref": cycle,
+                "intent_digest": intent_digest,
+                "selection_digest": str(selection["selection_digest"]),
+                "selection": dict(selection),
+                "grant_ref": grant_ref,
+                "reservation": {k: reservation[k] for k in BUDGET_KEYS},
+                "lease": {f: str(lease[f]) for f in LEASE_INTENT_FIELDS},
+                "action_key": action_key,
+                "phase": ADMISSION_PHASES[0],
+                "admitted_at": str(record.get("admitted_at") or ""),
+                "confirmations": {},
+                "retired_at": None,
+                "outcome": None,
+            }
+            self._data["admissions"][cycle] = stored
+            self._flush()
+            return {**stored, "replayed": False}
+
+    def get_admission(self, cycle_ref: str) -> dict | None:
+        """One cycle's admission as it stands, or None if it was never made.
+
+        None is a state and not a failure: most cycles have no admission,
+        because most of what a board shows is neither authorized nor eligible.
+        A caller that cannot tell that from a corrupted record would report
+        both as a store problem.
+        """
+        return self._read()["admissions"].get(str(cycle_ref))
+
+    def admissions(self) -> dict:
+        return dict(self._read()["admissions"])
+
+    def confirm_admission(self, cycle_ref: str, *, phase: str, evidence: dict,
+                          at: str) -> dict:
+        """Record one other store's answer, and advance one phase.
+
+        This is the "可恢复幂等关系" and not a distributed commit. The lease
+        and the receipt live in stores this one cannot lock and must not
+        pretend to: `runtime/lease_store.py` writes one file per resource under
+        its own namespace and `runtime/bounded_invocation` writes one per action
+        key, each with its own `os.replace`. So the caller performs the step
+        in the other store and reports back what THAT store said, and this
+        records it. A crash between the two leaves an admission whose phase
+        names exactly which half is done, and the resume is `admit` replayed
+        (which is idempotent) followed by the same step again (which is
+        idempotent in both other stores).
+
+        Phases advance one at a time and never backwards. A re-report of the
+        current phase is idempotent when the evidence is equal and refused when
+        it is not — two dispatches under one action key with different inputs
+        is the case `invoke_once` itself refuses, and this is the same refusal
+        one layer up.
+        """
+        key = str(cycle_ref or "").strip()
+        if phase not in CONFIRMABLE_PHASES:
+            raise StoreError(
+                f"{phase!r} is not a phase a caller confirms; the two are "
+                f"{list(CONFIRMABLE_PHASES)}, in that order, and each is a "
+                f"different store's answer. {ADMISSION_PHASES[0]} is what `admit` "
+                f"itself writes — a caller reporting this store's own act back to "
+                f"this store is not evidence of anything")
+        if not isinstance(evidence, dict) or not evidence:
+            raise StoreError(
+                f"confirming {key!r} at {phase} needs the evidence that store "
+                f"produced. A phase advanced on a caller's word alone would "
+                f"record that something happened without recording what said so")
+        with self._mutation():
+            record = self._data["admissions"].get(key)
+            if record is None:
+                raise StoreError(
+                    f"{key} has no admission. A confirmation is a report about "
+                    f"an admission this store made; recording one for a cycle it "
+                    f"never admitted would put a lease and a receipt on a cycle "
+                    f"with no selection behind them")
+            if record.get("retired_at"):
+                raise StoreError(
+                    f"{key} was retired at {record['retired_at']}. A retired "
+                    f"admission is what the cycle did, and a confirmation "
+                    f"arriving after that would rewrite the ending of a cycle "
+                    f"already accounted for")
+            current = record.get("phase")
+            index = ADMISSION_PHASES.index(phase)
+            current_index = ADMISSION_PHASES.index(current)
+            if index < current_index:
+                raise StoreError(
+                    f"{key} is at {current} and this reports {phase}. Phases do "
+                    f"not move backwards: the intent was already recorded, and "
+                    f"accepting this would drop the evidence that came with it")
+            if index > current_index + 1:
+                raise StoreError(
+                    f"{key} is at {current} and this reports {phase}, one phase "
+                    f"past the next. The phase in between is another store's "
+                    f"answer and nobody has reported it, so this would record a "
+                    f"dispatch under a lease this store was never told about")
+            recorded = record.setdefault("confirmations", {}).get(phase)
+            if recorded is not None:
+                if recorded == evidence:
+                    return {**record, "replayed": True}
+                raise StoreError(
+                    f"{key} already reports {phase} with different evidence. "
+                    f"Two answers from one store about one step is a question "
+                    f"for a person, and picking the newer one here would hide "
+                    f"the disagreement rather than record it")
+            conflict = {"LEASE_HELD": lease_evidence_conflict,
+                        "DISPATCHED": dispatch_evidence_conflict}[phase](record, evidence)
+            if conflict:
+                raise StoreError(f"{key} reports {phase} but {conflict}")
+            record["confirmations"][phase] = dict(evidence)
+            record["phase"] = phase
+            record["confirmed_at"] = str(at)
+            self._data["admissions"][key] = record
+            self._flush()
+            return {**record, "replayed": False}
+
+    def retire_admission(self, cycle_ref: str, *, at: str,
+                         outcome: str | None = None) -> dict:
+        """Close an admission, releasing the reservation it held.
+
+        Idempotent, and it keeps the FIRST retirement. The question a retired
+        admission answers is when the cycle stopped holding its reservation,
+        and a second call that moved that instant would move it to whenever
+        somebody last mentioned the cycle — the same defect `revoke_grant` is
+        written to avoid, one collection over.
+
+        Retiring is not un-admitting. The record stays, and it stays saying
+        what it was admitted for: `intake/daily_cycle.select_focus` computes a
+        cycle's after-the-fact review from what was selected, and a store that
+        dropped the record would make a cycle that ran indistinguishable from
+        one that was never admitted.
+        """
+        key = str(cycle_ref or "").strip()
+        if not key:
+            raise StoreError("retiring an admission needs the cycle's ref")
+        with self._mutation():
+            record = self._data["admissions"].get(key)
+            if record is None:
+                raise StoreError(
+                    f"{key} has no admission to retire; closing one this store "
+                    f"does not hold would make a released reservation look like "
+                    f"a reservation that was never taken")
+            if record.get("retired_at"):
+                return record
+            record["retired_at"] = str(at)
+            if outcome:
+                record["outcome"] = str(outcome)
+            self._data["admissions"][key] = record
+            self._flush()
+            return record
+
     def replace(self, record: dict, *, kind: str) -> dict:
         """Overwrite one record by ref. Used by consumption, and only by it.
 
@@ -724,6 +1166,17 @@ class AgentControlStore:
         drops it would report the same reason for both. Nothing is lost by
         keeping it: `context/delegation.py` re-checks the window and the
         delegation on every read, so an old grant authorizes nothing.
+
+        Admissions are never swept either, and the reason is sharper still:
+        `retired_at` is the field that frees a reservation, so a sweep that
+        dropped a retired admission would drop a released reservation — which
+        is the state nothing is waiting on — while keeping every open one, if it
+        swept by age at all. A sweep that dropped an OPEN admission would free
+        a reservation whose cycle may still be running, and the action key it
+        holds would become available to a second admission that would then
+        dispatch a different cycle under a key `invoke_once` has already
+        answered for. Release here is `retire_admission` and nothing else,
+        because it is an act with a caller, not an age.
         """
         gone = {"contexts": [], "approvals": []}
         # Under the lock, and that matters more here than anywhere else in this
@@ -778,4 +1231,15 @@ class AgentControlStore:
                 # fact about the register. Which of them still authorize is a
                 # question for the clock, and this store has none.
                 "grants_revoked": sum(1 for g in data["grants"].values()
-                                      if g.get("revoked") is True)}
+                                      if g.get("revoked") is True),
+                "admissions": len(data["admissions"]),
+                # Open means holding a reservation and an action key. Reported
+                # as a count and not as a list, like everything else here: which
+                # cycles are open is a question for a reader that can name them,
+                # and `serverosctl work admissions` is that reader.
+                "admissions_open": sum(1 for a in data["admissions"].values()
+                                       if not a.get("retired_at")),
+                "admissions_by_phase": {
+                    phase: sum(1 for a in data["admissions"].values()
+                               if a.get("phase") == phase and not a.get("retired_at"))
+                    for phase in ADMISSION_PHASES}}
