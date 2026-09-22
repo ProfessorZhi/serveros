@@ -163,6 +163,45 @@ def _load(text: str | None, fmt: str):
         return None
 
 
+def _load_detailed(text: str | None, fmt: str) -> tuple[object, dict | None]:
+    """``_load``, except a document that will not parse says why.
+
+    ``_load`` answers ``None`` for every reason at once -- empty text, malformed
+    YAML, a JSON body that is valid JSON but not the document expected. Callers
+    that only want the parsed value keep using it. A caller that is *reporting*
+    on a document cannot: "it did not parse" is not actionable, and on this node
+    it is the whole answer. hwz-ops' ``environment.yaml`` fails on a plain
+    scalar that begins with a backtick, which YAML reserves -- so the machine
+    instance was unreadable, five root tokens were reported unresolved, and
+    nothing in the report could distinguish that from five bindings nobody
+    wrote.
+
+    Only the parser's own ``problem`` and position are returned, never
+    ``str(error)``: that string carries the offending source line, and copying
+    document content into a findings report is not this checker's job. Position
+    is 1-based here, because it is meant to be opened in an editor.
+    """
+    if not text:
+        return None, {"type": "Empty", "line": None, "column": None,
+                      "problem": "the document is empty"}
+    try:
+        return (json.loads(text) if fmt == "json" else yaml.safe_load(text)), None
+    except Exception as error:  # noqa: BLE001 -- any parser failure is a reading
+        mark = getattr(error, "problem_mark", None)
+        if mark is not None:
+            line, column = mark.line + 1, mark.column + 1
+        else:
+            line, column = getattr(error, "lineno", None), getattr(error, "colno", None)
+        problem = getattr(error, "problem", None) or getattr(error, "msg", None)
+        return None, {
+            "type": type(error).__name__,
+            "line": line,
+            "column": column,
+            # The parser's own words, copied and not interpreted.
+            "problem": problem or "the parser gave no reason",
+        }
+
+
 # --------------------------------------------------------------------------
 # reused checkers (invoked, never reimplemented)
 # --------------------------------------------------------------------------
@@ -350,14 +389,51 @@ def manifest_provides(manifest: dict) -> dict:
 # (``state_root.rule`` == ``<DATA_ROOT>/state/serveros``) and checked separately
 # by the A4 block, so it is always computed here and never read from disk.
 
-def _ops_roots(ops_repo: Path, ref: str) -> tuple[dict, dict]:
-    """Read the machine root instance from hwz-ops, as a git object only."""
+def _ops_roots(ops_repo: Path, ref: str) -> tuple[dict, dict, dict]:
+    """Read the machine root instance from hwz-ops, as a git object only.
+
+    Three values out, and the third is why. All four of these used to be the
+    same empty dict, so every reader downstream was told the machine declares
+    no roots:
+
+      the locator could not be read        ``found: False``
+      it was read and would not parse      ``roots_key: "unparsed"``
+      it was read and carries no ``roots``  ``roots_key: "absent"``
+      it carries ``roots`` but not a map    ``roots_key: "not-a-mapping"``
+      it carries an empty ``roots`` map     ``roots_key: "present"``, 0 keys
+
+    The first is a statement about this node's reach. The middle ones are
+    statements about the document, and on 2026-09-22 the absent case is the one
+    that holds here: hwz-ops' ``environment.yaml`` is ``schema:
+    hwz/environment.v2``, it binds role roots through the profile
+    (``binding_authority``) and it has no ``roots`` map at all. Collapsed into
+    ``{}`` that reading came out as five unresolved tokens, each of which reads
+    as a binding somebody forgot to write -- when the actual finding is one
+    document whose shape moved and a locator that still expects the old one.
+    """
     obs = observe_object(ops_repo, ref, "workspace/environment.yaml")
     if not obs.get("found"):
-        return {}, _prov(obs)
-    doc = _load(obs.get("content"), "yaml")
-    roots = (doc or {}).get("roots") if isinstance(doc, dict) else None
-    return (roots if isinstance(roots, dict) else {}), _prov(obs)
+        return {}, _prov(obs), {"found": False, "roots_key": "unreadable",
+                                "schema": None, "keys": 0, "parse_error": None}
+    doc, parse_error = _load_detailed(obs.get("content"), "yaml")
+    if not isinstance(doc, dict):
+        return {}, _prov(obs), {"found": True, "roots_key": "unparsed",
+                                "schema": None, "keys": 0,
+                                "parse_error": parse_error}
+    roots = doc.get("roots")
+    if roots is None:
+        state = "absent"
+    elif not isinstance(roots, dict):
+        state = "not-a-mapping"
+    else:
+        state = "present"
+    read = {"found": True, "roots_key": state,
+            "schema": doc.get("schema"),
+            # Only a mapping has keys. A list here has a length, and calling
+            # that a key count would be the same class of lie as `{}` was.
+            "keys": len(roots) if isinstance(roots, dict) else 0,
+            "parse_error": None}
+    return (roots if isinstance(roots, dict) else {}), _prov(obs), read
 
 
 def root_tokens(topology: dict | None, args) -> dict:
@@ -370,7 +446,7 @@ def root_tokens(topology: dict | None, args) -> dict:
       unresolved   neither; reported as a finding, never guessed
     """
     ops_repo, ref = args.ops_repo.resolve(), args.ops_ref
-    declared_roots, ops_prov = _ops_roots(ops_repo, ref)
+    declared_roots, ops_prov, source_read = _ops_roots(ops_repo, ref)
 
     source = (topology or {}).get("roots_source") or {}
     data_root = Path(args.data_root)
@@ -442,7 +518,40 @@ def root_tokens(topology: dict | None, args) -> dict:
         "declared_roots": sorted(declared_roots),
         "roots_source": source.get("locator") or "ops/workspace/environment.yaml",
         "provenance": ops_prov,
+        # What the source itself said, kept beside what was resolved from it.
+        # `declared_roots: []` above cannot distinguish "the document declares
+        # none" from "the document was never read"; this can.
+        "source_read": source_read,
     }
+
+
+def roots_source_finding(root_map: dict) -> dict | None:
+    """One finding about the roots source, or ``None`` if it yielded a map.
+
+    Five readings, and the status split is whether the bytes were read -- not
+    how bad the news is. A document this checker reached and could not use
+    (malformed, or carrying some other shape) is a defect with a location, and
+    it opened the moment the locator resolved: OPEN / HIGH. A document it could
+    not reach is a statement about this node's reach and is recorded rather
+    than opened: OBSERVED / MEDIUM, the same way an absent registry is a
+    reading and not a defect.
+
+    The consequence -- `ROOT_TOKEN_UNRESOLVED` -- is emitted separately and
+    still stands: those tokens really do not resolve. What must not stand is a
+    reader having to infer the cause from their number.
+    """
+    source_read = root_map.get("source_read") or {}
+    if source_read.get("roots_key") == "present":
+        return None
+    reachable = bool(source_read.get("found"))
+    return finding(
+        "ROOTS_SOURCE_UNREAD", "topology",
+        "the contract's roots source yields a roots map",
+        {"locator": root_map.get("roots_source"), **source_read},
+        "topology-contract.json roots_source",
+        "HIGH" if reachable else "MEDIUM",
+        status="OPEN" if reachable else "OBSERVED",
+        observation_provenance={"roots": root_map.get("provenance")})
 
 
 def role_path(roots: dict, topology: dict | None, role: str, *,
@@ -992,13 +1101,25 @@ def collect(args) -> dict:
     # Resolve every root token the contract's roles may name. Done once, here,
     # and every path below that used to be concatenated by hand comes from this.
     root_map = root_tokens(topology, args)
+    source_read = root_map.get("source_read") or {}
+
+    # The source, reported on its own, before its consequence. `unresolved`
+    # below is a list of tokens that did not resolve; this says whether that is
+    # because the machine declares no such roots or because the document the
+    # locator names was never read in the first place. Those want opposite
+    # actions -- bind tokens, or fix the locator -- so they are not one number.
+    source_finding = roots_source_finding(root_map)
+    if source_finding is not None:
+        findings.append(source_finding)
+
     unresolved = sorted(t for t, m in root_map["mode"].items() if m == "unresolved")
     if unresolved:
         findings.append(finding(
             "ROOT_TOKEN_UNRESOLVED", "topology",
             "every root token named by a topology role resolves",
             {"unresolved": unresolved, "declared": root_map["declared_roots"],
-             "roots_source": root_map["roots_source"]},
+             "roots_source": root_map["roots_source"],
+             "source_read": source_read},
             "topology-contract.json roots_source", "HIGH",
             observation_provenance={"roots": root_map["provenance"]}))
 
