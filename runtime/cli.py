@@ -1747,6 +1747,99 @@ def _probe_cli_version(program: str) -> tuple[str | None, str | None]:
     return lines[0], None
 
 
+def _commands_under(node) -> list[str]:
+    """Every `command` string anywhere under one hook event.
+
+    Generic over the nesting rather than pinned to one shape. The nesting is
+    Claude Code's to change, and a reader that hard-coded `[].hooks[].command`
+    would report every driver unregistered on the day it changed — a false
+    alarm on the one surface whose whole purpose is to report honestly.
+    """
+    found: list[str] = []
+    if isinstance(node, dict):
+        for key, value in node.items():
+            if key == "command" and isinstance(value, str):
+                found.append(value)
+            else:
+                found.extend(_commands_under(value))
+    elif isinstance(node, list):
+        for item in node:
+            found.extend(_commands_under(item))
+    return found
+
+
+def _observe_drivers(contract: dict, paths) -> dict:
+    """What this node can measure about the declared session-start drivers.
+
+    Read-only, and it reports no hook command. A registration is found by
+    looking for the driver's marker among the `command` strings under the
+    declared event; the commands themselves are never emitted, because a hook
+    command line is a place a token can be and a report that printed them would
+    be a way to leak one, `device agents` at a time.
+
+    `state` is one of REGISTERED, NOT_REGISTERED, UNREADABLE. The third is not
+    a softer second: a file that is there and cannot be parsed is a question
+    this node could not answer, and reporting it as NOT_REGISTERED would be
+    inventing a fact about a file nobody could read.
+    """
+    parity_mod = _load_module_from(REPO_ROOT / "abilities/runtime_parity.py",
+                                   "serveros_runtime_parity")
+    out: dict[str, dict] = {}
+    for driver in parity_mod.declared_drivers(contract):
+        name = driver.get("name")
+        spec = driver.get("surface") or {}
+        program_spec = driver.get("program") or {}
+        entry = {"event": driver.get("event"), "marker": driver.get("marker"),
+                 "surface": None, "registrations": None, "program": None,
+                 "program_present": None, "because": None}
+        try:
+            base = paths.root(spec.get("path_role"))
+        except Exception:  # noqa: BLE001 - an unbound role is a finding
+            entry.update(
+                state="UNREADABLE",
+                because=(f"the path role {spec.get('path_role')!r} is not bound "
+                         "on this device, so the surface the driver would be "
+                         "registered on has no location here"))
+            out[name] = entry
+            continue
+        target = base / str(spec.get("relative"))
+        entry["surface"] = str(target)
+        if program_spec:
+            try:
+                entry["program"] = str(paths.root(program_spec.get("path_role"))
+                                       / str(program_spec.get("relative")))
+                entry["program_present"] = Path(entry["program"]).is_file()
+            except Exception:  # noqa: BLE001 - unbound role, not an answer
+                entry["program_present"] = None
+        if not target.is_file():
+            entry.update(
+                state="NOT_REGISTERED",
+                because=("the surface file does not exist on this device, so "
+                         "nothing is registered on it"))
+            out[name] = entry
+            continue
+        try:
+            document = json.loads(target.read_text(encoding="utf-8"))
+            event = ((document.get("hooks") or {}).get(driver.get("event"))
+                     or [])
+        except (OSError, ValueError) as exc:
+            entry.update(state="UNREADABLE",
+                         because=f"the surface could not be read: {exc}")
+            out[name] = entry
+            continue
+        commands = _commands_under(event)
+        marker = str(driver.get("marker"))
+        registered = [c for c in commands if marker and marker in c]
+        entry.update(
+            registrations=len(commands),
+            state="REGISTERED" if registered else "NOT_REGISTERED",
+            because=None if registered else
+            (f"{len(commands)} command(s) are registered under "
+             f"{driver.get('event')} and none names {marker}"))
+        out[name] = entry
+    return out
+
+
 def _feature_observations(contract: dict, runtime: str, measured: dict) -> dict:
     """What the surfaces already measured here say about this runtime's features.
 
@@ -1921,6 +2014,14 @@ def cmd_device_agents(args) -> int:
             entry[field] = measured
         observed[runtime] = entry
 
+    # And the drivers. Separate from the loop above rather than a third entry
+    # in `OBSERVABLE_SURFACES`, because the question is separate: those two
+    # ask whether a file is there, and this one asks whether a registration is
+    # inside a file that is there either way. Folding it in would have given
+    # this command a row that reads `present: true` while `drift_sync` fires
+    # nowhere.
+    observed_drivers = _observe_drivers(contract, paths)
+
     # --- W7: the bindings. -------------------------------------------------
     # The device this command is about. Default is this node, because this
     # node is the only machine this process can measure; `--device` names
@@ -1946,7 +2047,7 @@ def cmd_device_agents(args) -> int:
             contract, observed, device_ref)
         because = probe_because
 
-    result = parity_mod.report(contract, registry, observed)
+    result = parity_mod.report(contract, registry, observed, observed_drivers)
     result["bindings"] = _bindings_for(registry, device_ref, observations,
                                        because)
 
@@ -1963,6 +2064,13 @@ def cmd_device_agents(args) -> int:
     observed_surfaces = parity_mod.observed_surface_rows(observed,
                                                          result["runtimes"])
     result["observed_surfaces"] = observed_surfaces
+    # Same rule as the surface rows: built once, read by both renderers, so the
+    # machine-readable record can say what it looked at and the two renderers
+    # cannot drift apart. A driver that was not observed produces no row — an
+    # absence of measurement is not a measurement of absence.
+    observed_driver_rows = parity_mod.observed_driver_rows(observed_drivers,
+                                                           contract)
+    result["observed_drivers"] = observed_driver_rows
 
     lines = [f"runtimes    {', '.join(result['runtimes'])}",
              f"compared    {', '.join(result['compared_fields'])}",
@@ -1971,6 +2079,14 @@ def cmd_device_agents(args) -> int:
         mark = "present" if surface["present"] else "MISSING"
         lines.append(f"  {surface['runtime']:<12} {surface['field']:<20} "
                      f"{mark}  {surface['path']}")
+    for row in observed_driver_rows:
+        mark = {"REGISTERED": "registered", "NOT_REGISTERED": "NOT WIRED",
+                "UNREADABLE": "UNREADABLE"}.get(row["state"], str(row["state"]))
+        # No hook command is printed here, on purpose: see `_observe_drivers`.
+        lines.append(f"  driver {row['driver']:<12} {row['runtime']:<12} "
+                     f"{row['event']:<12} {mark}  {row['surface']}")
+        if row["because"]:
+            lines.append(f"           {row['because']}")
     lines.append(f"verdict     {result['verdict']}")
     for finding in result["findings"]:
         lines.append(f"  finding   {finding['code']}: {finding['detail']}")

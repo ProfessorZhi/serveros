@@ -143,10 +143,88 @@ capabilities:
         ServerOS workspace entry; Claude sessions do.
       closing_action: NEEDS_HUMAN — writing it modifies the user's Agent
         configuration, which §42 places outside this round's authority.
+    - driver: drift_sync
+      state: UNWIRED_ON_THIS_HOST
+      # Which finding this entry records. A surface gap does not have to say —
+      # a missing surface produces one code, so naming the surface names the
+      # finding — but a driver can fail two ways, and a gap that named only the
+      # driver would acknowledge both. The other one, `DRIVER_PROGRAM_ABSENT`,
+      # is not recorded here because it is not true: the collector is on the
+      # disk. If it ever stops being, this entry must not be what covers it.
+      acknowledges: [DRIVER_NOT_REGISTERED]
+      because: >
+        the collector is installed and runs by hand, and nothing fires it. The
+        only registration under this node's one `SessionStart` surface is
+        `botmux session-ready`; no `settings*.json` on this node names
+        `drift_sync.py`. So a capture in the tree is one somebody ran, and
+        "nothing has drifted" and "nothing has looked" are the same reading
+        here.
+      closing_action: NEEDS_HUMAN — writing the registration modifies the
+        user's Agent configuration, which §42 places outside this round's
+        authority. The change is already named with its rollback in
+        `runtime/workbench_sources.py` `DEPLOYMENT` P2.
   # Where MCP servers are declared, per runtime. One key, one file.
   mcp_surfaces:
     claude-code: {path_role: home, relative: ".claude.json", key: "mcpServers"}
     codex: {path_role: home, relative: ".codex/config.toml", key: "mcp_servers"}
+  # The drivers that must fire when a session starts, and where each one has to
+  # be registered for that to happen.
+  #
+  # NOT a third `*_surfaces` map, and the difference is the whole reason this
+  # block exists. `instruction_surfaces` and `mcp_surfaces` are symmetric: every
+  # runtime has both, and the question about each is "is this file here". A hook
+  # is neither. Its registration lives inside a file that already exists and is
+  # already present, so a path-presence probe answers `present: true` while the
+  # driver fires nowhere — the shape this repository keeps finding, one level
+  # down: a surface that is there, read as a thing that works. A third
+  # `*_surfaces` entry would have inherited that probe exactly, and the report
+  # would have gone on saying the node was wired.
+  #
+  # So the question is asked per DRIVER — is this one on this runtime's
+  # session-start surface, on this node — and the register is a list rather than
+  # a per-runtime map. A driver that only one runtime can fire is the ordinary
+  # case here, not an asymmetry to be explained away; a per-runtime map would
+  # have to declare an entry for the runtime that has no such driver, and the
+  # only honest value for it would be a placeholder.
+  #
+  # Every field below was measured rather than written from the convention.
+  # `~/.claude/settings.json` is the one file Claude Code reads hooks from on
+  # this node: `botmux session-ready` is registered in it under `SessionStart`
+  # and does fire — a session reads what it prints. Whether a project-level
+  # `.claude/settings.json`, a `.claude/settings.local.json`, or a plugin's own
+  # hook manifest is a hook surface as well is NOT established here; none of the
+  # three exists on this node, so none is declared. Writing them from the shape
+  # of the convention is what this file already did once with
+  # `instruction_surfaces`, and two of the four entries it produced that way
+  # were wrong.
+  session_drivers:
+    - name: drift_sync
+      runtime: claude-code
+      event: SessionStart
+      surface: {path_role: home, relative: ".claude/settings.json"}
+      # The registration is found by this substring in a `command` under that
+      # event, and by nothing else. A driver is on the surface or its marker is
+      # not there; there is no third reading of the same bytes. The commands
+      # themselves are read and never reported — a hook command line is a place
+      # a token can be, and a report that printed them would be a way to leak
+      # one, one `device agents` at a time.
+      marker: "drift_sync.py"
+      # The program the registration would call. A separate fact from the
+      # registration, because the two failures are opposite: a marker with no
+      # program behind it is a session that tries to run a script that is not
+      # there, and a program with no marker is this node's actual state.
+      program: {path_role: workspace, relative: "records/information/raw/drift_sync.py"}
+      because: >
+        `records/information/raw/drift_sync.py` is the drift collector: it
+        re-fetches the Feishu documents named in `DRIFT_WATCHLIST.txt` and
+        compares content hashes, and its own docstring declares
+        "SessionStart hook 的驱动" as how it is meant to run.
+        `serverosctl information watched` reports the follow list and whether
+        each capture is keeping up, and its answer on 2026-09-22 was
+        `OVERDUE — last re-check 2026-09-16, cutoff 2026-09-22` for the one
+        document followed. That reading cannot say whether the source is quiet
+        or nothing runs the collector, and the two call for opposite actions:
+        re-run the collector, or author the hook that runs it.
 
 # ---------------------------------------------------------------------------
 # What a runtime can be asked about, one question per axis.

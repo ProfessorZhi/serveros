@@ -629,7 +629,7 @@ MarketOps、没有两处 LiteLLM、没有 `records/` 脏资产。它正是内存
 结论写成一句：**三个都不删，理由是任何一个都存在不确定性；不确定就不动，继续做别的事。**
 这是 §5 的规则要求的结果，不是拖延。
 
-### 7.2 只剩要人做的四件（其余都已做完）
+### 7.2 只剩要人做的五件（其余都已做完）
 
 | # | 动作 | 为什么不是本轮能做的 |
 | --- | --- | --- |
@@ -637,8 +637,9 @@ MarketOps、没有两处 LiteLLM、没有 `records/` 脏资产。它正是内存
 | 2 | **把 CC marketplace `hwz-server-os` 指到新 release，并 `claude plugin update` 工作台** | 遗留目录 `hwz-server-os/current` 声明的 plugin 名是 `hwz-server-os`（3 skills），新 release 声明的名字是 `hwz-server-os-linux-work`（5 skills）。指过去等于**给已装 plugin 改名**——用户可见的身份变更，不是基础设施细节。已装那一份仍是 `3.1.0+srv0003.20260915a` |
 | 3 | **给日渲染上弦**：`systemctl --user enable --now serveros-daily.timer` | 单元已装、已手工跑通一次（§3.9），但没有启用。单元头部写明「enabling is the act §8 puts on the approved list」——自动产出与手工验证是两个动作 |
 | 4 | **装原生告警投递那一跳**：`scripts/release.py alert-worker --conversation <id>` | 它与它的 timer **从没装过**（§3.6 第 3 条），所以 701 条 `last_notified_at` 来自 `alert_digest.record()` 而不是原生投递。这个动词在没有 `--conversation` 时拒绝——而「往哪个会话发」是一次外联决定 |
+| 5 | **给漂移采集器上弦**：在 `~/.claude/settings.json` 的 `SessionStart` 下注册 `records/information/raw/drift_sync.py`（§9.20） | 两件都超出本轮：改的是用户的 Agent 配置（§42），而且**接上以后每次会话开始都会经 lark-cli 去飞书取一次**——那是一次持续的外联，不是一次配置编辑。这个缺口现在**有读数、有名字**：`serverosctl device agents` 报 `NOT WIRED`，`serverosctl information watched` 报 `OVERDUE 6 天`（`2026-09-16` → 截止 `2026-09-22`），契约把它记成 `UNWIRED_ON_THIS_HOST` / `NEEDS_HUMAN`，改动连同回滚写在 `runtime/workbench_sources.py` `DEPLOYMENT` P2 |
 
-四条都是**外部/共享面动作**，不是内部架构选择——所以它们出现在这里，而不是被包装成
+五条都是**外部/共享面动作**，不是内部架构选择——所以它们出现在这里，而不是被包装成
 「请用户决定」。其余七条已按设计落地。
 
 ## 8. 卫生发现（只给位置，不给值）
@@ -675,7 +676,7 @@ MarketOps、没有两处 LiteLLM、没有 `records/` 脏资产。它正是内存
 | P1 | 编写的 follow 源清单 | `intake/workchain.py:723` `load_sources()` 读 `<records_root>/<project>/context/sources.yaml` | `serverosctl work coverage --project` (`cli.py:5592`) | — | 有读者，**但盘上没有 `sources.yaml`**（`find` 空） |
 | P2 | 五个采集器 | `/data/home/vince/workspace/records/information/raw/{sync_feishu_chat,expand_feishu_doc,expand_feishu_files,drift_sync,_redact}.py` | 各自 `main()`；`drift_sync.py:2` 自称 SessionStart hook driver | lark-cli（`sync_feishu_chat.py:131`、`expand_feishu_doc.py:42`） | working；`information/raw/` 在 records 仓里是 clean |
 | P2 | 唯一脱敏实现 | `records/information/raw/_redact.py`（327 行，`a1c1a4d00fd798eb…`） | 库：`redact()`、`persist_secrets()` | `sync_feishu_chat.py:29`、`expand_feishu_doc.py:32`、`redact_backfill.py:54` | **盘上现在是 3 份，3 个不同哈希**（2026-09-22 重量，上一版记的是 5 份 / 2 份逐字节相同——那时还在的 `reconcile-20260922` 与 `clean-line-20260920` 两个工作树已退役）。另两份是**别的 workstream 工作树里的陈旧快照，不是竞争实现**：`worktrees/records/SRV-0003/…`（75 行，2026-09-16）、`worktrees/records/MKT-0001/…`（90 行，2026-09-20），两者都早于 `ec500a4`（12 条脱敏规则落进 records，含**口令**四种形态）。**风险是真的**：那两个工作树里的采集脚本 import 的是本地那份，跑起来用的是没有口令规则的版本。**不动它们**——不属于本轮授权范围，且它们是别人工作树里的在制品 |
-| P2 | 黑名单 | `records/information/raw/DRIFT_WATCHLIST.txt`（5 行，1 条 `wiki-litellm-work-doc`） | **两侧都有读者了**：采集器侧 `drift_sync.py:71` `load_watchlist()`（`DRIFT_WATCHLIST` 可覆写，缺失时回退内置默认，支持行内 `#` 注释）+ `locate()` 按 `link_id` 反查；ServerOS 侧**本轮补上** `serverosctl information watched`（`intake/watch_coverage.py`，§9.10） | `drift_sync.py`（自称 SessionStart hook driver） | **上一版这一格写的「not read」是错的**（采集器侧读得好好的），2026-09-22 改。**现在只剩一件真的缺**：注册 `drift_sync` 为 SessionStart hook 的 `settings*.json` 在本机 **not found**，所以它是「装好了、手动能跑、没有上弦」，与 §3.9 的日报渲染腿同一形状。上一版说「ServerOS 这一侧没有读者」时**把 `last_verified_at` 也连写了进去，那一项是错的**（`intake/capture_coverage.py:436` 一直在读，§9.6 就是为它写的）；真正零命中只有 `DRIFT_WATCHLIST` 与 `drift-sync-state` 两个串，缺的是 **watchlist 与 manifest 的 join**——本轮已补，见 §9.10 |
+| P2 | 黑名单 | `records/information/raw/DRIFT_WATCHLIST.txt`（5 行，1 条 `wiki-litellm-work-doc`） | **两侧都有读者了**：采集器侧 `drift_sync.py:71` `load_watchlist()`（`DRIFT_WATCHLIST` 可覆写，缺失时回退内置默认，支持行内 `#` 注释）+ `locate()` 按 `link_id` 反查；ServerOS 侧**本轮补上** `serverosctl information watched`（`intake/watch_coverage.py`，§9.10） | `drift_sync.py`（自称 SessionStart hook driver） | **上一版这一格写的「not read」是错的**（采集器侧读得好好的），2026-09-22 改。**那一件真的缺现在有面了**：注册 `drift_sync` 为 SessionStart hook 的 `settings*.json` 在本机 **not found**——「装好了、手动能跑、没有上弦」，与 §3.9 的日报渲染腿同一形状——而**这个事实本轮有了自己的读者**：契约加 `capabilities.session_drivers`，`serverosctl device agents` 逐 driver 报 `NOT WIRED` 并把它作为**已记录的缺口**（`UNWIRED_ON_THIS_HOST` / `NEEDS_HUMAN`）打印出来，见 §9.20。**注册本身仍是 HUMAN_EXECUTED**（改它要动用户的 Agent 配置），仍然只记不代做。上一版说「ServerOS 这一侧没有读者」时**把 `last_verified_at` 也连写了进去，那一项是错的**（`intake/capture_coverage.py:436` 一直在读，§9.6 就是为它写的）；真正零命中只有 `DRIFT_WATCHLIST` 与 `drift-sync-state` 两个串，缺的是 **watchlist 与 manifest 的 join**——本轮已补，见 §9.10 |
 | P3 | people/project/topic 卡 | 手写 markdown：`records/information/understanding/{people,projects,topics}/*.md` | **两侧都已接线**：读 `serverosctl work understanding`（`intake/understanding_delta.py`）、写 `serverosctl work understanding-patch`（`intake/understanding_patch.py`） | — | **两半都补上了**：读的一侧见 §9.7（14 份卡逐份对账到源，`BEHIND 3 · UNMEASURABLE 7 · UNTRACEABLE 4`）；写的一侧见 §9.9（15 条提议全 `AWAITING`，`--write`+`--verify` ok）。设计要的「最小 incremental writer」不再缺口。**仍未 LIVE**：没有任何消费者读这份 patch |
 | P3 | Minutes / MeetingBundle | 无 Python 类。`space/meeting-policy.schema.yaml:30` 声明结构；内核 `space/meeting_relevance.py:69`；**生产者 `space/meeting_bundle.py`（§9.15）** + 契约 `space/meeting-bundle-contract.yaml` | ~~`python3 space/meeting_relevance.py --request`（**未接 serverosctl**）~~ **已接线**：`serverosctl space meeting`（`--request` 与 `--sidecars` 两条入口） | — | 内核 working，**接线已补**（§9.5）；**生产者也补上了**（§9.15）：会议自己声明的 sidecar 现在能组装成内核收得下的 bundle，`COMPLETE` 才把问题递给内核，`INCOMPLETE`/`MIXED_SCOPE` 只给读数不给问题。**仍未 LIVE**：本机没有任何真实会议 manifest 可测，四个探针声明是合成的（`RUN-20260922-raw-coverage/meeting-bundle/*.json`） |
 | P3 | 记忆账本/投影/scope | `memory/{record,projection,scope,handoff}.py` | `serverosctl memory {audit,project,status,subject}` (`cli.py:6479`) | — | working；`docs/memory-fabric.md` 逐条点名这些模块 |
@@ -2059,6 +2060,130 @@ machine` 等），没有一条与本改动有关。所以那次多出来的 1 �
 是 `cli.py:8719`**，本工作树上是 `:8784`。旧定位符差了约 500 行，已改并标上 revision——
 这正是「行号引用只在指定 revision 时才有意义」那条的又一例。
 
+### 9.20 「装好了、手跑得动、没有上弦」第一次有了自己的面
+
+**这一节起于两处读数对不上，而不是起于一个设计。**
+
+```text
+$ bin/serverosctl information watched --before 2026-09-22
+  逾期           OVERDUE 1   —— 对 2026-09-22 而言
+      复核 RECORDED 2026-09-16  ·  漂移 DRIFTED  ·  去抖 RECORDED 2026-09-15T00:05:53
+      逾期 OVERDUE  —— last re-check 2026-09-16, cutoff 2026-09-22
+```
+
+§9.10 结尾把这件事写成一句 **「现在只剩一件真的缺：注册 `drift_sync` 为 SessionStart hook 的
+`settings*.json` 在本机 not found」**——而那一句**当时没有读者**。两处读数分开看各自都成立：
+覆盖面说「盯着的这篇六天没复核」，采集器自己的 docstring 说「我是 SessionStart hook 驱动」，
+而 `grep -rln drift_sync /data/home/vince/.claude/` 的命中**全在会话记录、粘贴缓存和文件历史里**，
+**没有一条在 settings 文件里**。合起来才是那份发现：**复核逾期不是源头安静，是没有人跑采集器。**
+这两件事要求的动作相反——重跑采集，或者去把 hook 写上。
+
+**为什么不是第三个 `*_surfaces` 条目。** `runtime_parity.py` 的
+`OBSERVABLE_SURFACES = ("instruction_surfaces", "mcp_surfaces")` 问的是「这个文件在不在」，
+而 driver 的问题**恰好不在那一层**：`/data/home/vince/.claude/settings.json` **在**（2745 B，
+`SessionStart` 下注册着 `botmux session-ready`）。把 hook 塞进那两项的形状里，探针会照抄
+`path.exists()` 得到 **`present: true`**，报告会继续说这个节点是接好的——
+**一个存在的面被读成一个在工作的面**，正是这套东西一路在抓的那个形状往下一层。
+所以问题改成 per-driver：**这个 driver 在这台机器上这个 runtime 的 session-start 面上注册了吗。**
+它还**不对称**：一份 per-runtime map 得给没有这个 driver 的 runtime 也写一条，而那条唯一的诚实值
+是个占位符——与其造占位符，不如让这张表是 driver 的清单。
+
+**只声明实测到的那一个文件。** 本机**没有** `~/.claude/settings.local.json`、**没有**工程级
+`.claude/settings.json`，插件自带的 hook manifest 也不存在——所以三个都不声明。这不是谨慎，
+是这个文件已经因为「照着惯例写」错过一次：`instruction_surfaces` 四条里错两条，
+`runtime_parity.py` 第一次跑就抓到了（`runtime_features` 上面那段注释就是那次的自述）。
+一个 driver 的 `program` 走 `path_role: workspace` + `records/information/raw/drift_sync.py`，
+因为 `path_roles` 里没有 `records` 这个角色（§9.18.2 量过）。
+
+**落点：** 契约 `abilities/agent-runtime-contract.yaml#capabilities.session_drivers`（一条：
+`drift_sync` / `claude-code` / `SessionStart` / `marker: drift_sync.py`）；
+读者 `abilities/runtime_parity.py` 新增 `declared_drivers()`、`observed_driver_rows()`、
+`check_drivers()`，`report()` 收第四个入参，`main()` 加 `--observed-drivers`；
+观测者 `runtime/cli.py` 新增 `_observe_drivers()` 与 `_commands_under()`；测试
+`tests/test_runtime_parity.py` 新增 `DriverTests`（11 条）、`DeclaredGapTests` 与 `CliTests` 各一条（23 → 36）。
+
+**三态，加两个各自独立的 finding。** `REGISTERED` / `NOT_REGISTERED` / `UNREADABLE`——
+第三个**不是**第二个的软版本：文件在而读不了，是这个节点**答不上来**，把它报成「未注册」
+是**对一份没人读得动的文件凭空断言**。`DRIVER_SURFACE_UNREADABLE` 因此走 UNKNOWN；
+`DRIVER_PROGRAM_ABSENT` 是独立一条，并带 `registered` 字段，因为
+**「注册指着一个不在的脚本」和「脚本没人注册」是相反的两个失败**，
+读的人不该靠解析句子去分。
+
+**这个面不打印 hook 命令。** 命令被读、被拿去匹配 `marker`，但**一个字都不出现在报告里**——
+一行 hook 命令是可以放 token 的地方，把它打印出来等于把泄漏做成一个 verb。
+行上只有 driver 名、event、状态、surface 路径、**注册条数**和原因。
+`_commands_under()` 也是**通用遍历**而不是写死 `[].hooks[].command`：那层嵌套是 Claude Code
+自己的形状，写死的那天它一变，这个检查会对**每一条** driver 报假警——而它存在的全部理由是如实报。
+
+**live 读数（命令逐字在
+`artifacts/skills/serveros/RUN-20260922-driver-surface/cli-readings.log`，含 exit code。
+这里**不引提交号**：那份日志连同本节一起进同一个提交，所以引用它等于引用自己，
+而引用提交号还会随 rebase 失效——读数该引的是**产出它的文件**，不是承载它的 revision）：**
+
+```text
+  driver drift_sync   claude-code  SessionStart NOT WIRED  /data/home/vince/.claude/settings.json
+           1 command(s) are registered under SessionStart and none names drift_sync.py
+verdict     CONFORMANT
+  known     DRIVER_NOT_REGISTERED: … [UNWIRED_ON_THIS_HOST, NEEDS_HUMAN — 改它要动用户的
+            Agent 配置，§42 把这件事放在本轮授权之外。改动连同回滚已写在
+            `runtime/workbench_sources.py` `DEPLOYMENT` P2]
+```
+
+那条 `registrations: 1` 就是 `botmux session-ready`——**这台机器上注册在 `SessionStart` 上的唯一一条东西**。
+
+**三条机制是被测试抓出来的，不是被想出来的。**
+
+- **`acknowledges`：一条缺口不能只按主语承认。** surface 缺口不必写它承认哪个 finding，
+  因为**一个缺掉的 surface 只产出一个 code**，点出 surface 就点出了 finding。driver 会**两种失败**，
+  一条只写 driver 名的记录会**把另一种也承认掉**——记录成了「没人记过的缺陷」的消音器。
+  所以 driver 缺口必须带 `acknowledges: [DRIVER_NOT_REGISTERED]`，不带就什么都不承认。
+- **stale 的主语必须是量过的东西。** `unobserved_declared_gaps` 原来的判据是「没被承认过」，
+  于是**一次什么都没读的运行会把缺口报成「已修或记录错了」**。这一条**在本轮之前就活着**：
+  `report(contract, observed={"codex": {}})` 把 AGENTS.md 缺口列进了 stale，
+  而那一次**一个面都没打开**。现在 stale 只对**主语真被量过**的缺口成立
+  （`_subject_was_observed()`），并补了两条判据：没量过 → 不是 stale；量过且已注册 → 是 stale。
+  测试里那个 `{"path": "/x"}` 占位 fixture 因此**成了输入的一部分**——占位路径量不出主语，
+  已改成契约真实声明的尾巴，这条也在测试的 docstring 里写明了。
+- **「量过」和「量出东西」不是一回事——这条是我自己的判据先犯的。** 变异测试里第七条
+  （`_commands_under()` 一条命令都收不到）**第一次跑是漏网的**：命令的记录变成
+  `registrations: 0` / `NOT_REGISTERED`，而那条端到端判据的独立重算拿 marker 在该 event 子树里
+  **做子串搜索**，也得 `False`——**两边一致地错**，于是绿。根因是 `drift_sync` 在这台机器上
+  **本来就没注册**，所以「读了面、没有一条命令命中」和「一条命令都没读到」产出的**是同一个状态**；
+  这条判据分辨不出**被测出来的缺席**和**空测量**，而这恰恰是整个记录赖以存在的那个区分。
+  那条判据的 docstring 自己写着它存在的理由正是「不能用被测代码去检验被测代码」，
+  而它在 `registrations` 这一维上犯了同一个毛病。
+  修法是**把计数也钉住**：测试自己遍历该 event 子树数出 `command` 字符串的条数，
+  断言它等于 `row["registrations"]`——这样**收集这一半和匹配那一半各自被独立钉住**，坏哪一半都红。
+  改完重跑，**七条全部被抓，还原后两个文件 sha256 逐字节相符**：
+
+  ```text
+  caught  M1 未注册的 driver 不再报 finding  (3 failing)
+  caught  M2 缺口按 driver 名承认一切（acknowledges 失效）  (2 failing)
+  caught  M3 stale 的主语恒为「量过」  (1 failing)
+  caught  M4 读不了的 surface 报成未注册  (1 failing)
+  caught  M5 DRIVER_PROGRAM_ABSENT 永不触发  (2 failing)
+  caught  M6 marker 匹配失效：注册条数当成了命中  (1 failing)
+  caught  M7 命令收集器找不到任何命令  (1 failing)
+  ALL SEVEN CAUGHT, tree byte-identical
+  ```
+
+  这一条值得单独写出来，因为它是一个**关于「补判据」的判据**：整套东西的论点是
+  「`present: true` 不等于面在干活」，而这一处是**同一个论点在测试自己身上的实例**——
+  一条绿了的判据不等于判据活着，**除非有人试着让它红**。
+
+**这台机器对自己报出的东西。** live 记录里 `stale gap codex workspace AGENTS.md` 仍然出现：
+契约把 codex 的 `workspace/AGENTS.md` 记成 `ABSENT_ON_THIS_HOST`，而**东京这台机器上它在**
+（`/data/home/vince/workspace/AGENTS.md`，本次 `device agents` 逐条实测 `present`）。
+也就是说那条记录**在这台机器上是错的**，而机制自己把它报了出来——这正是这个字段该有的样子。
+**本轮不改契约那一行**：它的 `because` 说的是 `/home/hwz/.codex/`，那是另一台机器的读数，
+按「行号引用只在指定 revision 时才有意义」同一条纪律，把北京那台的观测改成东京的观测
+是另一种错。记在这里，留给人。
+
+**接线同上，是自动被门覆盖的**：经 `_load_module_from` 加载，`loader_graph` 推出它，
+`test_build.py` 的产物闭包判据自动覆盖——`abilities/runtime_parity.py` 早就在闭包里，
+本轮没有新增文件。这一轮**没有写入点**（观测者只读），所以
+`runtime/actuator-contract.yaml` 不改。
+
 ## 10. 后续每包更新哪几行
 
 - 改完一个包，只更新 §3.1 里对应行的四层状态 + §5 表的增删。
@@ -2095,9 +2220,11 @@ machine` 等），没有一条与本改动有关。所以那次多出来的 1 �
 | 3 | **本节点的 root 绑定缺口**：检查器报 5 个 token 未解析，其中 2 个（`SRC_ROOT`、`KNOWLEDGE_ROOT`）是本机 Profile 其实绑了、检查器读错了文档；3 个（`OPS_ROOT`、`RECORDS_ROOT`、`TEST_ENVS_ROOT`）是本机 Profile 真没绑，而目录都在 | 修法两半：绑那三条是**事实**（仓内可做）；让 `root_tokens()` 读 Profile 需要把**三个互不同名的词表**对齐（§9.18），其中给 `workspace.ops`/`records`/`test-envs` 取名本身就是那次对齐的一部分。猜一个映射正是这个检查器拒绝做的事（「reported as unresolved, never guessed」），所以不猜 |
 | 4 | **两处量具缺陷**：`architecture_check.py` 从工作树扫代码、从 ref 的 git object 读契约（§9.18.1，ref ≠ 工作树内容时按构造报出假 HIGH）；`SERVEROS_REPO`/`SERVEROS_ABILITY_REPO` 在 `architecture_check.py:1427`、`scripts/runtime_truth.py:1588` 被当作「要再拼一层的那层」，而 `build.py:1037`、`runtime/cli.py:8911`、`abilities/taxonomy.py:1095` 当作检出本身（§9.18.2） | 9.18.2 是机械的、可做的；9.18.1 要先决定「ref 与工作树不一致时该拒绝还是照报」，而产品里已有先例（缺 root 时拒绝）。本轮**同时改代码与改量具会让「绿」无法归因给任何一边**，所以两处都不落 |
 
-### 11.4 §7.2 的四条 HUMAN_EXECUTED（原文不动，只在此处汇总指向）
+### 11.4 §7.2 的五条 HUMAN_EXECUTED（原文不动，只在此处汇总指向）
 
 重启 `serverosd.service`（PID 2615936）；把 CC marketplace `hwz-server-os` 指到新 release 并
 `claude plugin update` 工作台；`systemctl --user enable --now serveros-daily.timer`；
-装原生告警投递 `scripts/release.py alert-worker --conversation <id>`。**四条都是外部/共享面动作**，
-理由逐条写在 §7.2，不在这里重复——重复会漂移。
+装原生告警投递 `scripts/release.py alert-worker --conversation <id>`；
+在 `~/.claude/settings.json` 的 `SessionStart` 下注册 `drift_sync.py`。**五条都是外部/共享面动作**，
+理由逐条写在 §7.2，不在这里重复——重复会漂移。第五条是 2026-09-22 新加的那条，
+它在此之前**只是 §9 表格里的一句散文**（§9.20 讲了这一句怎么第一次有了读者）。
