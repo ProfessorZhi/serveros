@@ -218,6 +218,48 @@ EXCEPTIONS: dict[str, dict[str, dict]] = {
                          "yet",
             "disposition": "UNKNOWN_OWNER",
         },
+        # The two below were added 2026-09-23, and the fact that they had to be
+        # is the finding: `archive/` sat on disk from 2026-09-20 and
+        # `laya-shared/` from 2026-09-23, and neither was in this table, in
+        # `fleet/state-root-contract.yaml#preexisting`, or in the state
+        # vocabulary. Two reports read those lists and neither could say what
+        # these were, so `fs_hygiene` fell through to MISPLACED — whose
+        # disposition is a move, not a question.
+        "archive": {
+            "class": "HISTORICAL_EVIDENCE",
+            "reason": "holds one entry, `beijing-20260918/` — a byte-copy of the "
+                      "sealed Beijing node's state root (`serveros.db`, "
+                      "`federation/`, `requirement-board/`, `runtime/`, "
+                      "`abilities/`, `projections/`, each byte suffixed "
+                      "`.beijing-20260918`). A point-in-time capture of a node "
+                      "that is sealed and no longer changes, so nothing on this "
+                      "host can reproduce it",
+            "authority": "produced by the 2026-09-18 Beijing → Tokyo migration. "
+                         "No ServerOS producer writes here and no contract in "
+                         "this repository names the path",
+            "disposition": "OWNER_CHECK",
+        },
+        "laya-shared": {
+            "class": "FOREIGN_TOOL",
+            # This is the entry the round did not stop at reporting for. It is
+            # the socket root of a service that is RUNNING, and `fs_hygiene`
+            # classified it MISPLACED with `protected: false` — a cleanup acting
+            # on that classification would unlink a live service's socket. The
+            # disposition is deliberately not KEEP: whether a provider's state
+            # root belongs under ServerOS's state root is §41's boundary
+            # question, and answering it here is the fiat this table exists to
+            # avoid.
+            "reason": "holds exactly one entry, `laya.sock` — the AF_UNIX socket "
+                      "of `laya-shared.service`, active on this node. Directory "
+                      "0700 and socket 0600, both carrying the service's start "
+                      "time",
+            "authority": "the provider's own binding, "
+                         "`~/.config/serveros/laya-shared-binding.yaml`, names "
+                         "this socket path; the service belongs to "
+                         "ability-management's shared-provider contract. No "
+                         "ServerOS contract declares the directory",
+            "disposition": "OWNER_CHECK",
+        },
     },
 }
 
