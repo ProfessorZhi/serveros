@@ -771,9 +771,9 @@ ability-management 或 serveros 的测试环境**。A7 若要 LIVE 需要先有�
 
 | 对象 | 在哪 | 实测 |
 | --- | --- | --- |
-| Laya adapter | `worktrees/marketops/mvp/marketops/adapters/laya.py`，`LayaDecisionProvider:128` | **partial**：盘上**没有权重**（`find *laya*` 无模型目录），`LAYA_CHECKPOINT_DIR` 只在 `mvp/.env.example:42` 出现且为空 |
-| Jev adapter | `…/adapters/jev.py`，形状镜像 `laya.py` | **UNBOUND**：无 key，`MARKETOPS_DECISION_PROVIDER` 未设 |
-| Serper adapter | `src/marketops/marketops/search/serper.py`，`SerperSearchProvider:24` | working（adapter+port+tests）；凭据在 `~/.secrets/vault/serper.env`（0600，152 B）。**没有跑过真实查询**，所以 LIVE 不可声称 |
+| Laya adapter | `worktrees/marketops/mvp/marketops/adapters/laya.py`，`LayaDecisionProvider:128` | **partial**：~~盘上**没有权重**（`find *laya*` 无模型目录）~~ → **更正 2026-09-23**：权重在盘上，`~/caches/models/laya-multilingual/052592a15d198d9ad47da779604259b10b47b7aa/`（21 文件 / 647 MB，revision 与 `laya-shared-binding.yaml` 的 pin 一致），且已作为受管服务 `laya-shared.service` 运行。`LAYA_CHECKPOINT_DIR` 仍未设，所以**是这条适配器没接线**，不是权重不存在 |
+| Jev adapter | `…/adapters/jev.py`，形状镜像 `laya.py` | ~~**UNBOUND**：无 key~~ → **更正 2026-09-23**：`~/.secrets/vault/typesafe.env` 存在（0600，489 B，`TYPESAFE_API_KEY` 108 字符、非空，值从未输出）。它**未注入进程环境**且 `MARKETOPS_DECISION_PROVIDER` 未设，所以阻塞在**接线与出站授权**，不在凭据缺失 |
+| Serper adapter | `src/marketops/marketops/search/serper.py`，`SerperSearchProvider:24` | working（adapter+port+tests）；凭据在 `~/.secrets/vault/serper.env`（0600，152 B）。~~**没有跑过真实查询**，所以 LIVE 不可声称~~ → **更正 2026-09-23**：已跑过一次真实付费查询（走 `SerperSearchProvider.from_config(RuntimeConfig.from_env())` → `search(SearchRequest(...))`，HTTP 成功、1 条、2.31s），判 **LIVE**；额度余量/并发/长期可用性仍 NOT_MEASURED。见 `docs/shared-decision-search.md` §2 |
 | MarketOps 业务 MCP | `…/interfaces/mcp/__main__.py` + `adapters/mcp_server/*` | **没在任何地方注册**——唯一相邻的 `.mcp.json`（`worktrees/quay/marketops-goalwrite/.mcp.json`）是空表 |
 | ServerOS 侧的 decision/search 消费者 | — | **read-and-absent**：`grep -rl 'DecisionProvider\|SearchProvider' runtime/ mcp/ abilities/` → 0 文件 |
 
@@ -2599,8 +2599,8 @@ ServerOS 侧一个观测者都没有。这不是「测了没通过」，是「�
 | 对象 | 状态 |
 | --- | --- |
 | 业务 MCP（`interfaces/mcp/__main__.py` + `adapters/mcp_server/*`） | **没在任何地方注册**——唯一相邻的 `.mcp.json`（`worktrees/quay/marketops-goalwrite/.mcp.json`）是空表 |
-| Serper adapter | working（adapter + port + tests）；凭据在 `~/.secrets/vault/serper.env`（0600）。**没有跑过真实查询**，所以 LIVE 不可声称 |
-| Jev adapter | **UNBOUND**：无 key，`MARKETOPS_DECISION_PROVIDER` 未设 |
+| Serper adapter | working（adapter + port + tests）；凭据在 `~/.secrets/vault/serper.env`（0600）。~~**没有跑过真实查询**，所以 LIVE 不可声称~~ → **更正 2026-09-23**：已跑过一次真实付费查询，判 **LIVE**（见 9.4） |
+| Jev adapter | ~~**UNBOUND**：无 key~~ → **更正 2026-09-23**：key 存在于 `~/.secrets/vault/typesafe.env`（0600，`TYPESAFE_API_KEY` 非空），但**未注入环境**且 `MARKETOPS_DECISION_PROVIDER` 未设。阻塞在**接线与出站授权**，不在凭据缺失 |
 | 原 SOP | 只读 / 提案；本轮**没有**外联、没有 SMTP、没有绕 WAF，**没有**写 Docker/Compose/Hosting 生产 |
 | 并行开发 | 他人的 checkout、dirty 文件、活跃 worktree **一律不碰**（§6） |
 

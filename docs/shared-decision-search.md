@@ -108,7 +108,7 @@ MarketOps Dockerfile/Compose/镜像内模型、host-network、GPU runtime 都延
 | Laya 服务 | **部署并验收** | `laya-shared.service` active+enabled+Linger；验收跑逐行过契约 §7（PASS/FAIL/NOT_OBSERVED 三值） |
 | Laya 答案质量 | **NOT_MEASURED** | binding `verified_languages` 空表，`language_evidence` 自述未做质量评估 |
 | Serper | **LIVE** | 一次真实付费查询，走 MarketOps provider，见 §2 |
-| Jev | **BLOCKED** | 无合法绑定。按契约「没有 key 不假装调用，也不删掉集成项」，如实记 BLOCKED |
+| Jev | **BLOCKED（原因已更正）** | 2026-09-23 实测：凭据**存在**（`~/.secrets/vault/typesafe.env`，0600，`TYPESAFE_API_KEY` 非空；值从未输出），但**未注入进程环境**且 `MARKETOPS_DECISION_PROVIDER` 未设，故不是「无 key 所以 BLOCKED」。真正的阻塞是**接线未做 + 出站调用本轮未获授权**（外联不在本轮授权内）。按契约「不假装调用，也不删掉集成项」如实记 BLOCKED |
 | MarketOps 侧消费 | **未接线** | `adapters/laya.py` 是进程内的；`LAYA_*` 未设 |
 | ServerOS 侧消费 | **0，且原因已查明** | 见下 |
 
