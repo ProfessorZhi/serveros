@@ -545,10 +545,20 @@ class TheSelectionStoreMovesAttentionAndNotThreads(unittest.TestCase):
         self.assertIsNotNone(self.store.get_selection("c1"))
 
     def test_the_summary_counts_selections_and_never_returns_them(self):
+        """`s1` is the session's own name and it must not come back out.
+
+        Asserted over the summary minus `path`. The full document includes the
+        store's absolute path, and that path is a `tempfile.mkdtemp()` name — on
+        2026-09-22 a run whose scratch directory happened to be `tmph0s1lsv7`
+        failed this assertion with the selection nowhere in the payload. The
+        check is about what the summary returns, and a random directory name is
+        not something it returns.
+        """
         self.store.put_selection(self.record("s1"))
         summary = self.store.summary()
         self.assertEqual(summary["selections"], 1)
-        self.assertNotIn("s1", json.dumps(summary))
+        returned = {k: v for k, v in summary.items() if k != "path"}
+        self.assertNotIn("s1", json.dumps(returned))
 
     def test_a_selection_without_a_conversation_is_refused_by_the_store(self):
         with self.assertRaises(store_mod.StoreError):
