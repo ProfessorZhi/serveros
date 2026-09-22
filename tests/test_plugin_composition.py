@@ -45,6 +45,13 @@ IDENTITY_FILES = {
     Path(".claude-plugin/plugin.json"),
     Path(".claude-plugin/marketplace.json"),
     Path(".codex-plugin/plugin.json"),
+    # The build's own statement about the artifact. It names the composition,
+    # the artifact name, the version and the member list, so two compositions
+    # are EXPECTED to differ in it — that is what makes it an identity file
+    # rather than payload. It is in this set and not in the payload set because
+    # a profile that shipped core's `ARTIFACT.json` verbatim would be telling
+    # the release path it is core.
+    Path(build.ARTIFACT_MANIFEST_NAME),
 }
 
 
@@ -190,6 +197,7 @@ class CompositionTests(unittest.TestCase):
             "extends": "../../../../etc/passwd",
             "composition": "serveros-escaping",
             "cachebuster": "x",
+            "artifacts": ["plugin"],
         }, sort_keys=False))
         result = self.build_into("escaping", path)
         self.assertEqual(result.returncode, 2)

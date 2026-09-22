@@ -695,10 +695,10 @@ actuators:
     verb: <argv0>
     why: >-
       `subprocess.run([sys.executable, str(entry), "--help"])` in
-      `scripts/release.py`'s `verify_revision`, the check that a staged revision
-      is runnable before anything points at it. The scanner reads neither
-      `sys.executable` nor `str(entry)`, so the argv is reported rather than
-      assumed; what it cannot show is the part that matters, which is that
+      `scripts/release.py`'s `verify_node_runtime`, the check that a staged
+      revision is runnable before anything points at it. The scanner reads
+      neither `sys.executable` nor `str(entry)`, so the argv is reported rather
+      than assumed; what it cannot show is the part that matters, which is that
       `entry` is `rev_dir / "bin" / "serverosctl"` — the revision's OWN entry
       point, one component under the directory being verified, evaluated by the
       interpreter running this script. The probe imports the revision and prints
@@ -706,8 +706,17 @@ actuators:
       because this probe imports the revision's modules and would otherwise
       leave `__pycache__` inside the artifact it is checking, and `fingerprint`
       runs after it.
+      The name was `verify_revision` until the release path learned that a
+      revision can be an artifact of more than one kind: `verify_revision` is
+      now the dispatcher that picks a verifier from the artifact's declared
+      kind, and the subprocess lives in the `node-runtime` verifier it selects.
+      The PLUGIN verifier runs no subprocess at all — it reads manifests,
+      compares them against the composition, and hashes the payload — so there
+      is no second call site to declare. A plugin release therefore does not
+      need `serverosd` to be verified, which is the whole reason the two
+      verifiers were separated.
     sites:
-      - {file: scripts/release.py, symbols: [verify_revision]}
+      - {file: scripts/release.py, symbols: [verify_node_runtime]}
 
   - id: architecture-check-invokes-reused-checkers
     kind: unresolved_argv

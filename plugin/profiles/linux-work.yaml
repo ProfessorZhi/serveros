@@ -22,6 +22,16 @@ extends: ../bundle.yaml
 
 composition: serveros-linux-work
 
+# Same two faces as core, and for the reason this profile exists: a Linux work
+# node runs the daemon AND has the plugin installed, from one payload. Declared
+# here rather than inherited, because a profile that left it out would build an
+# artifact carrying no statement about what it is, and the release path would
+# then have to infer the kind from the artifact's name — the one thing §9 rules
+# out. A profile that ships no runtime would declare `[plugin]` alone.
+artifacts:
+  - node-runtime
+  - plugin
+
 # The plugin identity this composition builds. Core keeps `hwz-server-os`, which
 # is the distribution's existing name; a profile builds a different artifact and
 # so must not claim the same name, or the two would be distinguishable only by

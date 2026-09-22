@@ -37,6 +37,15 @@
 # an environment cannot reach the boundary it is supposed to test.
 schema: serveros/bundle.v1
 
+# `plugin` alone, and the omission is the same decision as the absent `extends:`
+# above. This composition ships no `runtime` and no `bin`, so there is nothing
+# for a node runtime verifier to check and no daemon for a revision to point a
+# unit at. Declaring it here is what lets `release.py` reach the plugin verifier
+# without being told the answer, and a second entry claiming `node-runtime`
+# would be a statement this payload cannot keep.
+artifacts:
+  - plugin
+
 composition: serveros-testing
 
 name: serveros-testing

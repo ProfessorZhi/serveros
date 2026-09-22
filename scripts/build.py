@@ -142,6 +142,12 @@ def resolve_ability_rev(repo: Path, rev: str) -> str:
 
 COMPOSITION_SCHEMA = "serveros/bundle.v1"
 
+# The build's statement about the artifact it produced, written beside the
+# payload. `release.py` reads it to choose a verifier, so the two files name the
+# same key: a manifest written under one name and looked for under another is a
+# release path that refuses every artifact for a reason nobody can see.
+ARTIFACT_MANIFEST_NAME = "ARTIFACT.json"
+
 # What the build is allowed to say about an ability the composition recommends
 # but does not ship. There is deliberately no "unknown": the point of naming a
 # status is that someone checked.
@@ -761,10 +767,72 @@ def build_readme(bundle: dict, version: str, skills: list[str], ability_rev: str
     )
 
 
+def declared_artifact_kinds(bundle: dict, bundle_path: Path) -> list[str]:
+    """Which artifact kinds this composition is released as.
+
+    Required, and required HERE rather than at release time, because the two
+    facts it separates were previously one fact: a composition's NAME was doing
+    double duty as "what this is" and "what may be done with it". Core and the
+    linux-work profile are both a node runtime AND a plugin payload — the same
+    bytes, two faces, released by two different paths — and a manifest that could
+    only say one of them would make the release path guess which. Guessing is what
+    this key removes.
+
+    The vocabulary of kinds is NOT defined here. This records what the composition
+    says; `release.py` owns the closed set and refuses a kind it has no verifier
+    for. Two copies of the list is how the two would drift.
+    """
+    kinds = bundle.get("artifacts")
+    if not isinstance(kinds, list) or not kinds:
+        raise ValueError(
+            f"{bundle_path} declares no `artifacts:`. Every composition states "
+            f"which artifact kinds it is released as (e.g. [node-runtime, plugin], "
+            f"or [plugin] for a payload with no daemon). Without it an artifact "
+            f"carries no statement about what it is, and the release path would "
+            f"have to infer one from its name or its contents."
+        )
+    if not all(isinstance(k, str) and k.strip() for k in kinds):
+        raise ValueError(f"{bundle_path}: `artifacts:` entries must be non-empty strings")
+    if len(set(kinds)) != len(kinds):
+        raise ValueError(f"{bundle_path}: `artifacts:` repeats a kind: {kinds}")
+    return list(kinds)
+
+
+def artifact_manifest(bundle: dict, version: str, skills: list[str],
+                      members: list[str], kinds: list[str]) -> dict:
+    """The build's statement about what it produced, written INTO the artifact.
+
+    It travels with the bytes for the same reason the composition declaration in
+    the README does: a consumer that has the artifact and not the repository is
+    the normal case for a distribution, and every fact here is one such a
+    consumer is entitled to check without a checkout.
+
+    `members` is the complete list of what was written, and it is what turns "no
+    undeclared files" into a comparison against a record instead of a rule about
+    which filenames look suspicious.
+    """
+    return {
+        "schema": "serveros/artifact.v1",
+        "composition": bundle["composition"],
+        "name": bundle["name"],
+        "version": version,
+        "cachebuster": bundle["cachebuster"],
+        "kinds": kinds,
+        "skills": sorted(skills),
+        # Names, not the entries: the release-side check asks whether the MCP
+        # manifests the payload carries declare the same SERVER NAMES as the
+        # composition, and a record of the commands would be a second copy of
+        # facts the payload already states.
+        "mcp_servers": sorted(entry["name"] for entry in _declared_servers(bundle)),
+        "members": members,
+    }
+
+
 def plan(bundle_path: Path, ability_repo: Path, ability_rev: str, output: Path,
          marketplace_path: Path):
     bundle = load_composition(bundle_path)
     version = f"{bundle['version']}+{bundle['cachebuster']}"
+    kinds = declared_artifact_kinds(bundle, bundle_path)
 
     local_root = repo_root() / "skills"
     validate_recommended(bundle, local_root, ability_repo, ability_rev)
@@ -808,6 +876,19 @@ def plan(bundle_path: Path, ability_repo: Path, ability_rev: str, output: Path,
         manifests[Path(".codex-mcp.json")] = codex_mcp_manifest(bundle)
     readme = build_readme(bundle, version, skills, ability_rev)
     marketplace = codex_marketplace(bundle, output, marketplace_path)
+
+    # The artifact manifest is one of the generated JSON files, which is what
+    # makes it written by `--write`, content-checked by `--check`, included in
+    # the expected-file set, and present in `runtime_truth`'s recomputation —
+    # all of it by being in `manifests`, rather than by four call sites each
+    # remembering it exists. The member list is the fixed point of that choice:
+    # it names the manifest itself, because a list of what was written that
+    # omitted one of the things written would be a false statement.
+    members = sorted({str(rel) for _c, rel, _e in files}
+                     | {str(rel) for rel in manifests}
+                     | {"README.md", ARTIFACT_MANIFEST_NAME})
+    manifests[Path(ARTIFACT_MANIFEST_NAME)] = artifact_manifest(
+        bundle, version, skills, members, kinds)
     return files, manifests, readme, marketplace, version
 
 

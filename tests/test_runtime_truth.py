@@ -167,6 +167,7 @@ class RuntimeTruthTests(unittest.TestCase):
             "composition": NODE_COMPOSITION,
             "name": "hwz-server-os-fixture-node",
             "cachebuster": "fixture.1",
+            "artifacts": ["plugin"],
             "skills": [
                 {"name": "runtime-management", "source": "ability-management"},
                 {"name": "workspace-management", "source": "ability-management"},
@@ -345,10 +346,19 @@ class RuntimeTruthTests(unittest.TestCase):
         root = self.runtime_root / NODE_COMPOSITION
         revisions = root / "revisions"
         revisions.mkdir(parents=True, exist_ok=True)
-        rev_dir = release.stage(artifact, revisions, label, self.base / "state", replace=True)
+        # Re-staging one label is how this fixture models a rebuild, and it is
+        # the fixture's own act rather than a flag on `stage`: `stage` refuses an
+        # existing revision and has no argument that would remove one, because a
+        # release tool that deletes a staged revision for the asking cannot tell
+        # a deliberate rebuild from another actor's release. Removing it here
+        # says which one this is.
+        if (revisions / label).exists():
+            shutil.rmtree(revisions / label)
+        rev_dir = release.stage(artifact, revisions, label)
         if manifest:
             (rev_dir / truth.TREE_MANIFEST).write_text(json.dumps({
                 "composition": NODE_COMPOSITION, "revision": label,
+                "kind": release.NODE_RUNTIME,
                 "tree_hash": release.fingerprint(artifact),
                 "runtime_root": str(root / "current"), "previous": None,
             }, indent=2) + "\n")
