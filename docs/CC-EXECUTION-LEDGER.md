@@ -32,15 +32,24 @@ implementation ledger（现有 Item/execution 记录），后续每包只更新�
 ```text
 checkout    /data/home/vince/workspace/src/serveros                     d0a94d6 [main]
 worktree    /data/home/vince/workspace/worktrees/serveros/fabric-integration-20260922
-                                                                       fb97f77 [serveros/fabric-integration-20260922]
+                                                                       40ffaa5 [serveros/fabric-integration-20260922]
 canonical   /data/home/vince/workspace/worktrees/ability-management/fabric-integration-20260922
                                                                        074a518 [integration/fabric-20260922]
 packs pin   authority.revision = e7d20f3b50e1a86c9998b5dff3f519fa52b4aa1d
 ```
 
-`fabric-integration-20260922` 是 `origin/main` + 10 个线性 commit（`b007c8c` …
-`074a518`）上的集成分支，本轮三个 commit 落在它上面（`aef122d`、`dc23707`、
-`2f77b02`、`fb97f77`），已 non-force 推到同名远端分支。
+两条集成分支各自相对自己的 `origin/main` 的关系，2026-09-22 订正后重测：
+
+| 仓 | 分支 | `origin/main` | 相对它 | 远端 | 本工作树 = 远端 |
+| --- | --- | --- | --- | --- | --- |
+| serveros | `serveros/fabric-integration-20260922` | `4d090d6` | `0 36` | 同名分支已 non-force 推 | 是（`40ffaa5` 两边逐字相同） |
+| ability-management | `integration/fabric-20260922` | `7ea44af` | `0 10` | 同名分支已推 | 那是 canonical 检出，不是本工作树 |
+
+上一版这一格写的是 worktree `fb97f77`、并说「本轮三个 commit 落在它上面
+（`aef122d`、`dc23707`、`2f77b02`、`fb97f77`）」——**同一个句子里数了三个、列了四个**，
+而且那两个数今天都不是现状（本分支已有 36 个提交，其中 10 个是集成分支带过来的、
+26 个是本轮落的）。这一格是「重测」标题下唯一一处没有跟着重测的地方，所以现在补上；
+改的是这一格，不是那些读数。
 
 **安装面与发布面原本不是同一棵树**，现在**发布面已经收敛，安装面还差一次 update**：
 
@@ -650,6 +659,7 @@ MarketOps、没有两处 LiteLLM、没有 `records/` 脏资产。它正是内存
 | `hwz-monitor.service` | dead | 死服务 |
 | `~/.claude/settings.json` | `ANTHROPIC_AUTH_TOKEN` 内联，且 `ANTHROPIC_BASE_URL=http://127.0.0.1:26500`，`permissions.defaultMode: bypassPermissions` | 明文凭据落在 HOME 下，而策略说凭据只住 vault |
 | `sanitize.default_files()` | fail-open | 脱敏失败时放行，方向反了 |
+| `runtime-assets/hwz-server-os/.candidate-074a51863d92cfbb89608a28f0779668aa448408-lw`（5.5 MB）与 `runtime-assets/hwz-server-os/serveros-testing/.candidate-074a51863d92cfbb89608a28f0779668aa448408`（32 KB） | 两个 `ARTIFACT.json` 齐全的构建输出目录（`3.1.0+srv0003.20260922a` / `1.0.0+srvtest0001.20260922b`），**以 ability 仓的 revision 命名**，顶层那个还带一个手写的 `-lw` 后缀 | **不是另一个实现，是本轮自己的构建输出**：`build.py` 的 `--output` 是必填且无缺省，所以这两个名字是**调用者起的**，仓库里没有任何代码产出 `.candidate-`（`release.py` 用的是 `.staging-<revision>`，`build.py` grep `candidate` 零命中）。`stage()` 从它们 `copytree` 进 `revisions/` 之后**没有任何东西再消费它们**。记在这里是因为：名字里的 `074a5186…` 是 ability 仓的 revision，`-lw` 是人加的消歧后缀——**名字不承载身份，`ARTIFACT.json` 才承载**，这与内存里那条「产物名只有后半截是真的」同族。**不删**：清理在本项目是 proposal-only，且它们是本轮两次已 promote 的构建的输入侧存证 |
 
 第 4 条只报行为，不报调用点——本轮没读它的调用链。
 
@@ -2042,7 +2052,15 @@ support 的读数**把问题带了两次**：`reading["question"]["message"]` �
 | 那 8 条是哪 8 条（`pytest tests/test_architecture_check.py -q -rf`） | 全在 `test_architecture_check.py`，`8 failed, 16 passed`，名字逐条在 `arch-check-eight-reds.log`；与 §5.0.1 / §11.1 那组**跨仓红**同名同源 |
 | 本模块（单独） | `35 passed, 27 subtests passed` |
 | `test_build.py` + 本模块 | `78 passed, 29 subtests passed` |
-| 突变守卫（`mutation_guard.py --root . --json`） | `status CHECKED`、`findings 0`、`undeclared 0 / stale 0 / tests_breach 0`、扫 231 个文件、生产者 `declared 25 / unresolved 0` |
+| 突变守卫（`mutation_guard.py --root . --json`） | `status CHECKED`、`findings 0`、`undeclared 0 / stale 0 / tests_breach 0`、扫 231 个文件、`counts.declared 37 / unresolved 0` |
+
+**这一格里的 `declared 25` 曾是错的，2026-09-22 订正为 37。** 订正方式是把 `5880bef`
+（写下这一格的那次提交）`git archive` 到一处临时目录、在**那个 revision** 上重跑守卫：
+`counts.declared 37 / undeclared 0 / 231 个文件`——与今天在本工作树量到的 37 一致（今天多一个
+文件，正是 §9.21 新增的 `tests/test_root_resolution.py`，231 → 232）。同一份文件里 §9.13
+记的也是 37，所以三处里两处对、这一处错。查过 37 里没有任何子集等于 25（按「站点是否全在
+产品侧」分组：37 / 37 / 0），所以 25 不是某个更窄口径的读数，是读错了。留在这里是因为它
+和这份台账反复记的那件事同形：**同一个数被写下两次，就会有一个是错的。**
 
 **与基线的差额必须逐项说清，不然「绿」是个没人能核的词。** 基线是同一棵树上
 HEAD `4fa1748`、**尚无这五个文件**时的全套读数 `8 failed, 4665 passed, 20 skipped,
@@ -2334,7 +2352,9 @@ ALL SIX CAUGHT, tree byte-identical
 
 这一节存在的唯一目的是**不让东西丢掉**。§16 要的终报里，这些必须是**单独列出**的一类，
 不与「本轮做完了什么」混在一起。凡是台账正文里写了「列入 §16」的，条目都落在这里；
-台账到 §10 就结束了，所以在此之前「§16」只是一个承诺——这一节就是那个承诺的落点。
+台账曾到 §10 就结束，所以当时「§16」只是一个承诺——这一节是那个承诺的**落点**，
+而**兑现**它的那一节是 §12（终报），二者的分工是：这里逐条记**为什么本轮做不了**，
+§12.10 只给指针与最小解除条件，不重复理由。
 
 ### 11.1 需要人（或一次授权）动**另一个仓库**的远端
 
@@ -2352,6 +2372,17 @@ ALL SIX CAUGHT, tree byte-identical
 没了（本地 `main` 会被覆盖或产生分叉）。本轮**不推它们**——它们不是本轮的工作，推等于替别人
 决定；也**不 stash、不 reset**。处置只能由那两个提交的作者做，所以它进终报的孤立清单。
 
+| # | 事实 | 实测 |
+| --- | --- | --- |
+| 2b | **七个 `archive/*` tag 的内容不在任何远端 ref 上**，而它们**只被 tag 持有**——早先那次核对用的判据是 `git log --branches --not --remotes`，**它结构上看不见 tag**，所以当时得出的「只有 3 处」窄于它被写进的那句话 | 本机 17 个 `archive/*` tag，其中 14 个远端没有同名 tag；这 14 个里 7 个的提交在远端 ref 上（同 sha），另 **7 个的提交不在任何远端 ref 且不被任何远端分支包含**：`serveros-migration-orphans-anchor`（**33 个提交不在 `origin/main`**）、`serveros-migration-localonly-anchor`（3 个）、`serveros-agent-sessions-wip`、`serveros-beijing-main-20260914`、`serveros-fs-hygiene-home-data-root-alias`、`serveros-srv-0009-wip`、`serveros-tokyo-enrollment`（各 1 个） |
+
+2b 与第 2 条**同一个类别**，理由也一样：这些是迁移期刻意留在本机的锚点（名字里
+`localonly-anchor` / `orphans-anchor` 就是作者自己写的），**推它们等于替别人决定把一个本地
+锚点变成公开引用**。当务之急不是同步，是**别把它们弄丢**：`git tag -d`、`git gc` 里任何
+把它当悬空对象的动作都会动到它们，所以本轮的处置是**什么都不做，只记下这份清单**。
+判据的教训与这份台账别处同形：**`--branches` 看不见 tag**，而「不在任何远程 ref 上」是一句
+覆盖所有 ref 的话——一个窄判据被写进一句更宽的话里，得到的绿是量具的绿。
+
 ### 11.3 本节点特有的两个缺口
 
 | # | 缺口 | 为什么需要人 |
@@ -2368,3 +2399,213 @@ ALL SIX CAUGHT, tree byte-identical
 在 `~/.claude/settings.json` 的 `SessionStart` 下注册 `drift_sync.py`。**五条都是外部/共享面动作**，
 理由逐条写在 §7.2，不在这里重复——重复会漂移。第五条是 2026-09-22 新加的那条，
 它在此之前**只是 §9 表格里的一句散文**（§9.20 讲了这一句怎么第一次有了读者）。
+
+## 12. 最终报告（计划 §16 要求的那一份）
+
+**读它之前先读这一句**：这一节不是「全系统 READY 证明」。它把**已完成的实现**、**已量到的
+集成**、**真在链路上跑的**和**被人或权限挡住的**分成四类分开说，因为把它们合成一句「做完了」
+正是这份台账从第一节起就在防的读法。逐条证据在 §3 与 §9，本节只给判词与指向；数字都是
+2026-09-22 在工作树 `40ffaa5` 上量的，读数留在
+`$ARTIFACTS_ROOT/skills/serveros/RUN-20260922-driver-surface/`。
+
+三层口径（§4 的定义，这里不重写）：`DONE`/`ENABLED` 是已落地并测过；`NOT_MEASURED`
+是**没测**，不是失败也不是通过；`NOT_ENABLED` 是明确没启用。**「代码在盘上」永远不算 LIVE。**
+
+### 12.1 21 个语义职责的四层状态
+
+`DESIGN` 这一列 21 行全 `DONE`，是**同一个判断**，所以先说清它判的是什么：设计
+（`design/ABILITY-CANONICAL-BLUEPRINT.md` 与各领域冻结文档）对每条职责都写了语义、边界与
+owner，**这一列问的是「设计有没有」，不是「provider 有没有」**。provider 的空缺在 §3.1 的
+Binding 一列，记 `UNBOUND`——把它读进 DESIGN 会让「没绑定」看起来像「没设计」。
+
+| # | 职责 | DESIGN | CODE | INTEGRATION | LIVE | 一句话 |
+| --- | --- | --- | --- | --- | --- | --- |
+| G1 | 能力治理 | DONE | DONE | DONE | ENABLED | 一个 artifact 一条 plugin 记录，成员按 composition 精确取（§3.7） |
+| A1 | 接续 | DONE | DONE | DONE | ENABLED | 实时控制与历史归档是两个 artifact，一个职责（§3.2） |
+| A2 | 记忆检索 | DONE | DONE | DONE | PARTIAL | **UNBOUND**：OpenViking provider 在本机无处可绑 |
+| A3 | Workspace/Git | DONE | DONE | DONE | ENABLED | 运行时名仍是 `workspace-management` |
+| A4 | 运行环境/Fleet | DONE | DONE | DONE | ENABLED | 环境定义**移出**测试，所以一个节点可以定义环境而从不跑 E2E（§3.8） |
+| A5 | Fleet 交接 | DONE | DONE | DONE | PARTIAL | **UNBOUND**：单设备路径可用，跨设备动词 absent |
+| A6 | 委派 | DONE | DONE | DONE | ENABLED | 真装的是 Quay 0.11.0 |
+| A7 | 自动化测试 | DONE | DONE | DONE | ENABLED | 唯一落成 **Plugin composition** 的一条，因为要装到**别的** CC 上（§3.3） |
+| A8 | 构建发布 | DONE | DONE | DONE | ENABLED | 已加进 `pack:litellm-development` |
+| A9 | 生产观察 | DONE | DONE | NOT_MEASURED | NOT_ENABLED | **UNBOUND**；不进任何 pack，这是决定不是遗漏（§3.8） |
+| A10 | 生产变更 | DONE | DONE | NOT_MEASURED | NOT_ENABLED | 同 A9；`READY ≠ 切流授权` |
+| B1 | 来源采集 | DONE | DONE | DONE | ENABLED | `records/information/raw/*` |
+| B2 | 结构化认识 | DONE | DONE | DONE | NOT_ENABLED | 读侧 §9.7、写侧 §9.9 都在；**没有消费者读那份 patch**，所以不 LIVE |
+| B3 | 需求 | DONE | DONE | DONE | ENABLED | — |
+| B4 | 工作管理 | DONE | DONE | DONE | ENABLED | — |
+| B5 | 调研 | DONE | DONE | NOT_MEASURED | NOT_ENABLED | **UNBOUND**（Serper 有 key 但没跑过真实查询） |
+| B6 | 方案 | DONE | DONE | DONE | ENABLED | 旧入口分步迁移未做 |
+| B7 | 实现 | DONE | DONE | DONE | ENABLED | 重叠旧入口未迁移 |
+| B8 | 报告发布 | DONE | DONE | PARTIAL | PARTIAL | 没有独立 artifact 是**设计选定的落法**；欠的是四处移除，被活动 consumer 挡着（§3.5） |
+| B9 | 文档维护 | DONE | DONE | NOT_MEASURED | NOT_ENABLED | 位置/ACL 侧留在 B-空间 |
+| B10 | 人机控制 | DONE | DONE | DONE | ENABLED | 告警卡面已在生产链上；status 卡面仍未接（§3.6） |
+
+数一下就得到这张表的形状：**INTEGRATION 已测 16 / 21（另 1 条 PARTIAL、4 条从未测），
+LIVE 已启用 13 / 21（另 3 条 PARTIAL、5 条 NOT_ENABLED）**。从未集成的四条是
+A9/A10/B5/B9，**它们不是「没做完」，是没有消费面**——CODE 是 DONE（artifact 在盘上并有
+测试读过），缺的是「有个真实 consumer 真去调它」。B2 是另一种形状：集成是 DONE，
+LIVE 不是——两侧都接线了，而**没有任何消费者读那份 patch**。
+
+### 12.2 ServerOS 插件：source / build / install / running —— 四个面，两个已经对齐
+
+这四个词在本机指向**四个不同的东西**，§2 把它们分开列是有原因的：
+
+| 面 | 指向 | 版本 | 状态 |
+| --- | --- | --- | --- |
+| source | `serveros/fabric-integration-20260922` @ `40ffaa5`，= `origin/main` + 36 | — | 已 non-force 推到同名远端分支，本工作树与远端逐字相同 |
+| build | `runtime-assets/hwz-server-os/serveros-linux-work/revisions/cards-and-release-20260922@2f77b02` | `3.1.0+srv0003.20260922a` | 构建产物，`kind: node-runtime`，`tree_hash 5e8694ce…` |
+| install（release 面） | 同上目录的 `current` symlink | 同上 | **已对齐**。`previous` = `noc-copy-20260922@c233946`，回滚是一条命令 |
+| install（CC 工作台面） | `~/.claude/plugins/cache/hwz-server-os/hwz-server-os/3.1.0-srv0003.20260915a` | `3.1.0+srv0003.20260915a`，3 skills | **没动，也不该由本轮动**：指过去等于给已装 plugin 改名（`hwz-server-os` → `hwz-server-os-linux-work`），是用户可见的身份变更 |
+| running | `serverosd.service` PID 2615936，起于 11:00:26 | 仍是 promote 之前那一版 | **没重启**：`current` 与新 shim 都已经是新代码，所以**新进程拿到新的、长驻进程还是旧的**——这正是「代码在盘上 ≠ LIVE」在同一个节点上的实例 |
+
+`~/.local/bin/serverosctl` 这个 shim 现在是路径跳转，指到
+`…/serveros-linux-work/revisions/cards-and-release-20260922@2f77b02/bin/serverosctl`；
+它是路径跳转，不随进程走。
+
+**所以「ServerOS 插件装了吗」这个问题有两个都对的答案**，取决于问的是哪个面：release 面
+已经对齐，工作台安装面差一次 `claude plugin update`，而那次 update 被改名这个副作用挡着
+（§7.2 第 2 条，HUMAN_EXECUTED）。daemon 的重启同理（§7.2 第 1 条）。
+
+### 12.3 `serveros-testing`：source / registry / release / install / fresh-session load
+
+五问逐条答，全部在 `2026-09-22` 实测：
+
+| 问 | 答 |
+| --- | --- |
+| source | `skills/automated-testing` + `plugin/profiles/testing.yaml`（composition `serveros-testing`） |
+| registry | **独立的第二条 plugin 记录** `plugin: serveros-testing`，`provides 2`：`automated-testing`、`test-management`。不是从别的记录并出来的（§3.7，commit `e7d20f3`） |
+| release | `build 1.0.0+srvtest0001.20260922b` → `revisions/fabric-integration-20260922@2f77b02` → `current`。`kind: plugin`、`kind_basis: chosen`——`release.py` 按 **artifact kind** 分派 verifier，不再由 node runtime 的判据替所有类型做决定（§3.3） |
+| install | `claude plugin validate` 通过 → `marketplace add …/current` → `install serveros-testing@serveros-testing`。**没有手改 `installed_plugins.json`**，**没有用 `--plugin-dir`**（那只是集成证据，不是安装证据）。落点 `~/.claude/plugins/cache/serveros-testing/serveros-testing/1.0.0-srvtest0001.20260922b` |
+| fresh-session load | 2026-09-22T15:34Z 再验一次：另起 headless 会话点名，返回 `serveros-testing:automated-testing`、`serveros-testing:test-management` 两条。§3.3 记的三次（两次列名、一次真调用）在更早的同一个 revision 上 |
+
+### 12.4 Packs：五个，两处改动，都在能力仓而非本仓
+
+| pack | 成员数 | 本轮动了什么 |
+| --- | --- | --- |
+| `pack:quality-delivery` | 4 | `automated-testing` 加为 `required` |
+| `pack:autonomous-quality-loop` | 6 | 同上 |
+| `pack:litellm-development` | 7 | 同上，且 `build-release` 加为 `required` |
+| `pack:cross-device-collaboration` | 4 | — |
+| `pack:agent-orchestration` | 6 | — |
+
+五包的 `authority.revision` 现在**同一个值** `e7d20f3b50e1a86c9998b5dff3f519fa52b4aa1d`
+（在 ability-management 的 `integration/fabric-20260922` 上逐包量过），它是读到的 revision 的
+**祖先**，且 `abilities-manifest.yaml` 在两者上逐字节相同——pack pin 的祖先规则要求的两条。
+
+**A9/A10/B5 不进任何 pack，这是决定不是遗漏**：给它们造一个空 composition 会把「还没接线」
+读成「已经承诺」（§3.8）。
+
+### 12.5 Daily Cycle：装了、手跑过一次、**没有上弦**
+
+```text
+~/.config/systemd/user/serveros-daily.service   装了
+~/.config/systemd/user/serveros-daily.timer     装了，is-enabled=disabled, is-active=inactive
+手工跑过一次   Result=success  ExecMainStatus=0  → 15 份文档到 $ARTIFACTS_ROOT/serveros/workbench
+```
+
+`START-HERE.md` 的头部记着渲染者、三组输入、23 条命令逐条的退出码，其中 `ability resolve`
+两条是 **2**——那不是失败，是「没给 ability catalogue，所以答案是 UNKNOWN，且 `inputs_missing`
+逐条点名缺哪八个输入」。**把「问不出来」记成 2 而不是 0**，是这条链要的诚实性。
+
+**为什么不上弦**：单元自己的头部写着「enabling is the act §8 puts on the approved list」。
+装上（可手工验证、不自动运行）与上弦（每天 08:17 自动产出）是两个动作；本轮只做前者，
+后者是 §7.2 第 3 条。
+
+### 12.6 Cards：告警那一面在链上，status 那一面在 ServerOS 侧已齐、在 ops 侧没接
+
+链条（§3.6 逐段核过）：
+
+```text
+anomaly(detectors) -> alert producer(身份 = code+device+subject)
+  唯一生产调用者 = daemon tick -> card model(catalogue card-definitions.yaml)
+  -> serverosctl card {status,alert,recovery}（恰好三个）
+  -> ops alert_digest_card.py 取面 -> lark-cli 发
+```
+
+- **告警卡面已经是 ServerOS 出的**：`ops/…/alert_digest_card.py:107 serveros_card()` 调
+  `serverosctl card alert --json` 并把返回的 `body` 当卡面；只有取不到才回落旧渲染器，且回落
+  会往 stderr 写一行。所以 `card` 这个面**在生产链上**。
+- **status 卡面（每小时那张主卡）没接**：`monitor_card.py` 只调 `resource summary` /
+  `resource containers` / `runtime list` / `runtime status`，从不调 `serverosctl card status`，
+  也不写 receipt。ServerOS 这一侧是齐的（`serverosctl card status --with-frozen --json` 在
+  新进程里 exit 0，给出冻结块 `status@9820fa98d597`、2967 B）；缺的只在 ops 那一跳。
+- **这一跳本轮做不了，不是因为难**：`monitor_card.py` 正被两个活动工作树压着
+  （`worktrees/hwz-ops/SRV-0011` 未提交地改它；`worktrees/hwz-ops/alert-card-v2` 是一整条独立
+  的飞书 UX 工作流）。去改同一个文件等于覆盖另一个 actor 的 WIP，所以记成**等待**。
+
+### 12.7 Laya：adapter 在、权重不在、进程不在 —— 三条都是实测
+
+| 问 | 答 |
+| --- | --- |
+| 有受管进程吗 | **没有**（`pgrep` 无命中；全机 `*laya*` 命中的只有 uv 缓存里一个同名的 PyPI 包，与本能力无关） |
+| 有 adapter 吗 | 有，在 **MarketOps 仓**：`worktrees/marketops/mvp/marketops/adapters/laya.py`，`LayaDecisionProvider:128` |
+| 有权重吗 | **没有**。`find *laya*` 无模型目录；`LAYA_CHECKPOINT_DIR` 只在 `mvp/.env.example:42` 出现且为空 |
+| ServerOS 侧有 consumers 吗 | **read-and-absent**：`grep -rl 'DecisionProvider\|SearchProvider' runtime/ mcp/ abilities/` → 0 文件 |
+
+`providers/` 这个目录**不存在**——四种独立查法确认，不是没找到。全机只有一个 provider 记录
+（`provider:openviking`，属记忆域），而它被复制进全部 10 个 serveros worktree/revision，所以它
+在每个 worktree 里都「存在」，这本身不是 10 个 provider。ServerOS 实际有的是契约与解析器
+（`abilities/provider-contract.yaml`、`abilities/resolver.py:636`、`abilities/provider_instance.py:297`），
+其中最后一个的 docstring 自己记着 `instance:` 记录「自契约写下就声明了，**而没有任何 writer**」。
+
+**P10 的完成判据（「ServerOS 和 MarketOps 同时访问同一个 Laya」）因此一条都不成立**：
+没有受管进程，没有权重，ServerOS 侧没有消费者。这不是「测了没通过」，是**被测对象不存在**。
+
+### 12.8 MarketOps：代码在，业务 MCP 没注册，SOP 只读
+
+| 对象 | 状态 |
+| --- | --- |
+| 业务 MCP（`interfaces/mcp/__main__.py` + `adapters/mcp_server/*`） | **没在任何地方注册**——唯一相邻的 `.mcp.json`（`worktrees/quay/marketops-goalwrite/.mcp.json`）是空表 |
+| Serper adapter | working（adapter + port + tests）；凭据在 `~/.secrets/vault/serper.env`（0600）。**没有跑过真实查询**，所以 LIVE 不可声称 |
+| Jev adapter | **UNBOUND**：无 key，`MARKETOPS_DECISION_PROVIDER` 未设 |
+| 原 SOP | 只读 / 提案；本轮**没有**外联、没有 SMTP、没有绕 WAF，**没有**写 Docker/Compose/Hosting 生产 |
+| 并行开发 | 他人的 checkout、dirty 文件、活跃 worktree **一律不碰**（§6） |
+
+### 12.9 并行 LiteLLM：只读，没动
+
+本机此刻跑着**两台** Postgres 支撑的网关（`litellm_container0`、`litellm_shared`），它们属于
+别人的并行工作。本轮对它们**只做只读观测**：没有重启、没有改配置、没有重跑产品验收、
+没有动 `lit-0106-*` 容器（`RESERVED_BY_OTHER_WORK`）。LiteLLM need A（toolcall/typography）
+据信已修，本轮**只验证不重实现**。
+
+### 12.10 孤立的外部权限 / HUMAN_EXECUTED —— 单独一类，不与上面混读
+
+这一类的定义是「**本轮做不了，且不是因为难**」。它们已经逐条落在 §11，这里只给指针与
+最小解除条件，不重复理由（重复会漂移）：
+
+| # | 类别 | 条目 | 最小解除条件 |
+| --- | --- | --- | --- |
+| A | **另一个仓库的远端写** | `074a518` fast-forward 到 ability-management 的 `main` | 一次 `git push origin 074a518:main`；它是 §5.0.1 那 8 条跨仓红的**唯一**解除条件（另两条路测过：快进到 `origin/main` 不够——`e7d20f3` 不在其上；在 canonical 检出切分支更差——只把量具弄绿、产品照红）。§11.1 |
+| B | **会丢失别人未推送工作的** | (i) `src/serveros` 本地 `main` 上 2 个提交不在任何远端分支上；(ii) **七个 `archive/*` tag 的内容不在任何远端 ref 上，其中 `serveros-migration-orphans-anchor` 一个就持有 33 个不在 `origin/main` 的提交** | 只能由原作者处置。**这两条都不是待办，是待保管**：本轮不推、不 stash、不 reset、不 `tag -d`、不 gc。§11.2 与 §11.2 2b——(ii) 是补量出来的：早先的核对用 `--branches`，**它看不见 tag** |
+| C | **另一个仓库的一行错** | `ops/workspace/environment.yaml` 在 line 70 column 11 有一处以反引号开头的 plain scalar，使本节点 machine instance 完全不可读 | 加一对引号；该文件在 hwz-ops，ops 策略默认只读。位置与判词已由 `serverosctl architecture check` 的 `ROOTS_SOURCE_UNREAD` 逐字给出。§11.3 3b |
+| D | **一处由现有事实决定不了的具体业务语义** | 「契约 token → Profile 路径键」的映射该由谁署名 | 契约自己那句 `note` 说 `owner: hwz-ops` 的实例文档已退役、接手的 Profile 属 serveros，所以这个映射的归属要**重新署一次名**。本轮唯一一处需要作者（而非授权）的项。§9.18.2 |
+| E | **两处量具缺陷** | ref ≠ 工作树时该拒绝还是照报（§9.18.1）；`SERVEROS_REPO` 在五处调用点有两种读法（§9.18.2） | 前者要先定极性（产品里已有先例：缺 root 时拒绝）；后者是机械的。本轮不改的理由是**在晋升链上同时改代码和改量具，就无法把「绿」归因给任何一边**。§11.3 4 |
+| F | **五条 HUMAN_EXECUTED** | 重启 `serverosd.service`；把 CC marketplace 指到新 release 并 `claude plugin update`；`enable --now serveros-daily.timer`；装原生告警投递 `release.py alert-worker --conversation <id>`；在 `~/.claude/settings.json` 的 `SessionStart` 下注册 `drift_sync.py` | 逐条见 §7.2。五条都是**外部/共享面动作**。 |
+
+**F 里第 4、第 5 条有一个共同形状**，值得单独点出来：它们是**一个设计好的投递跳从来没装过**，
+而不是装坏了。第 4 条的 drop-in 在（`10-botmux-token.conf`）、`.service` 与 `.timer` 都
+`not-found`，所以那 740 条 `last_notified_at` 来自 `alert_digest.record()` 而不是
+`alerting.record_delivery()`；第 5 条在 §9.20 之前**只是表格里的一句散文**，现在有了自己的
+读数：`serverosctl device agents` 报 `NOT WIRED`，`serverosctl information watched` 报
+`OVERDUE`，契约把它记成 `UNWIRED_ON_THIS_HOST` / `NEEDS_HUMAN`。
+
+### 12.11 本报告没有说什么
+
+- **没有说无人值守已启用**。计划 §P12 的判据是「一条完整日循环 S6 实际通过前不声称」，
+  而 S6 要求真实 delta → 认识 → current board → 授权焦点 → GPT 设计/独立审阅 → 实施/Quay →
+  验收 → 报告回流**跑通一次**。本机没有跑过那一整条，所以不声称。可以独立启用的已验证有限
+  功能（采集、个人播报的**安装**）各自标了生命周期与权限。
+- **没有把计数或费用填成估计值**。本报告里出现的数字全部来自上面点名的 log 文件。
+- **没有用 fixture 顶替无权限的 Live 场景**。§12.7 的 Laya 是这一条的例子：判词是
+  「被测对象不存在」，不是「测了没通过」。
+- **代码审阅通过不是上线证明**。本轮 A7 的 fresh-session 验证只证明**加载**，不证明任何一条
+  业务需求被自动化测试真的服务过。
+
+**这一节的边界**：它写的是**判词**。任何一条的详细证据、反例与现场输出都在 §3 与 §9 对应的
+小节里，本节不复制它们——复制会漂移。而**这次写终报的过程本身就订正了四处**，逐条记在这里，
+因为它们不是笔误，是同一族：`declared 25` → 37（读错了字段）、worktree `fb97f77` → `40ffaa5`
+（一格里数了三个列了四个，且没跟着重测）、§3.6 的两笔账（同一份台账给过相反判词）、
+以及 §11.2 2b（**判据 `--branches` 看不见 tag**，而结论句说的是「任何远程 ref」）。
+四处都会让一个读者拿着量具的绿当产品的绿。
