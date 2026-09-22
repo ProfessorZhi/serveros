@@ -507,10 +507,19 @@ class RuntimeTruthTests(unittest.TestCase):
                       rows_by(report)["hwz-server-os @ runtime-assets (built)"]["detail"])
 
     def test_a_missing_runtime_is_missing_not_ok(self):
-        self.build_artifact()
+        """Codex says enabled; the cache it names holds nothing.
+
+        The row is driven by the config's own claim rather than by the cache
+        directory existing, which is what makes the difference visible: a
+        checker that only looked for a cache would report nothing at all here,
+        and "nothing at all" reads as "fine".
+        """
+        version = self.build_artifact()
         self.install_claude("0", self.out)
+        self.install_codex(version, self.out)
         report = truth.collect(self.args(codex_cache=self.base / "nowhere"))
-        row = rows_by(report)["hwz-server-os @ Codex plugin cache"]
+        row = rows_by(report)[f"{truth.BUNDLE_NAME}@{truth.CODEX_MARKETPLACE} "
+                              "(Codex plugin, enabled)"]
         self.assertEqual(row["verdict"], truth.MISSING)
 
     # ---- installed engine drift ----------------------------------------
@@ -624,6 +633,59 @@ class RuntimeTruthTests(unittest.TestCase):
         self.assertEqual(row["verdict"], truth.MISSING)
         self.assertIn("absent from the install record", row["detail"])
 
+    def test_the_marketplace_name_mirrors_the_builders_own_rule(self):
+        """`<name>-local` is `build.codex_marketplace()`'s rule, restated here.
+
+        Restated rather than imported for the same reason the root resolver is:
+        the two files ship from different roots. A restatement that nothing
+        compares is how `CLAUDE_PLUGIN_KEY` became a literal that named a
+        disabled plugin, so this one is compared against the builder's own
+        output for every composition the repository declares.
+        """
+        for path in truth.composition_files(build).values():
+            # Through `load_composition`, because a profile's raw YAML is not a
+            # bundle: `linux-work.yaml` declares no `category` and inherits it
+            # from the file it extends. Reading the raw mapping asks the builder
+            # to render a profile that has not been resolved, and the
+            # KeyError it raises is the builder refusing a malformed input
+            # rather than a disagreement about the naming rule.
+            document = build.load_composition(path)
+            rendered = build.codex_marketplace(document, self.out, self.marketplace)
+            self.assertEqual(rendered["name"],
+                             truth.codex_marketplace_name(document["name"]),
+                             f"{path.name} disagrees with the mirrored rule")
+
+    def test_a_codex_plugin_disabled_in_the_config_is_named_disabled(self):
+        version = self.build_and_install()
+        self.install_claude(version, self.out)
+        self.install_codex(version, self.out)
+        config = self.codex_config.read_text()
+        self.assertIn("enabled = true", config)
+        self.codex_config.write_text(config.replace("enabled = true", "enabled = false"))
+        rows = rows_by(truth.collect(self.args()))
+        label = f"{truth.BUNDLE_NAME}@{truth.CODEX_MARKETPLACE} (Codex plugin, disabled)"
+        self.assertIn(label, rows)
+        self.assertEqual(rows[label]["verdict"], truth.OK)
+
+    def test_the_codex_row_is_recomputed_not_read_from_the_cache_name(self):
+        """The version dir's NAME is the payload's own version inside a payload.
+
+        A row that trusted the directory name would agree with a cache whose
+        contents had been replaced, which is the failure the Claude row's
+        twin test pins. Same assertion, other runtime.
+        """
+        version = self.build_and_install()
+        self.install_claude(version, self.out)
+        self.install_codex(version, self.out)
+        label = f"{truth.BUNDLE_NAME}@{truth.CODEX_MARKETPLACE} (Codex plugin, enabled)"
+        self.assertEqual(rows_by(truth.collect(self.args()))[label]["verdict"], truth.OK)
+
+        leaf = self.codex_cache / truth.CODEX_MARKETPLACE / truth.BUNDLE_NAME / version
+        (leaf / "skills/runtime-management/SKILL.md").write_text("tampered\n")
+        row = rows_by(truth.collect(self.args()))[label]
+        self.assertEqual(row["verdict"], truth.SOURCE_RUNTIME_DRIFT)
+        self.assertIn("SKILL.md", row["detail"])
+
     def test_another_products_plugin_is_not_this_checkers_subject(self):
         """The subject is derived, so a foreign plugin is skipped by the rule.
 
@@ -654,9 +716,17 @@ class RuntimeTruthTests(unittest.TestCase):
         self.assertTrue(
             (self.codex_cache / truth.CODEX_MARKETPLACE / truth.BUNDLE_NAME / version).is_dir())
         report = truth.collect(self.args())
-        row = rows_by(report)["hwz-server-os @ Codex plugin cache"]
+        row = rows_by(report)[f"{truth.BUNDLE_NAME}@{truth.CODEX_MARKETPLACE} "
+                              "(Codex plugin, enabled)"]
         self.assertEqual(row["verdict"], truth.OK)
-        self.assertEqual(row["installed"], f"sha256={truth.tree_hash(self.out)}")
+        # The row now reports the version the LEAF declares beside the hash of
+        # its bytes — the same two fields the Claude row carries. Before, the
+        # Codex measurement was a distribution-level row that named only a
+        # hash, so a reader could not tell which version had been hashed. This
+        # pins both halves: a leaf resolved to the wrong depth would report a
+        # different version string even if it happened to hash to something.
+        self.assertEqual(row["installed"],
+                         f"version={version}  sha256={truth.tree_hash(self.out)}")
 
 
     # ---- release axes: the chain can be perfect and the release still wrong
