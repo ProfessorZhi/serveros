@@ -14,7 +14,65 @@
     "owner": "hwz-ops",
     "locator": "ops/workspace/environment.yaml",
     "key": "roots",
+    "key_note": [
+      "Two shapes, and which one is live depends on the instance's schema.",
+      "v1 (hwz/environment.v1, the Beijing node) carries `roots` directly:",
+      "token -> absolute path, in the machine instance.",
+      "v2 (hwz/environment.v2, this node) carries NO `roots`. It declares",
+      "`binding_authority` and delegates every role root to the device profile",
+      "in the serveros repo. A reader that only looks for `roots` therefore",
+      "reads a v2 instance as silence -- which is how five bound tokens came",
+      "out unresolved on 2026-09-22 while the machine had answered the",
+      "question, elsewhere, in a document the reader never opened.",
+      "Both shapes are read now; the v2 half is `binding` below."
+    ],
     "required_keys": ["DATA_ROOT", "WORKSPACE_ROOT"],
+    "binding": {
+      "_comment": [
+        "How a v2 machine instance delegates. The instance names a profile; the",
+        "profile binds paths. The token VOCABULARY stays here (this file owns",
+        "the schema and the role vocabulary) and the PATHS stay in the profile,",
+        "so the ownership split holds in both directions: nothing absolute is",
+        "copied into hwz-ops and no second token table is invented in the reader.",
+        "",
+        "role_to_token names only the roles a profile actually binds. The",
+        "workspace children the profile has no role for -- ops, records and",
+        "test-envs -- are derived from WORKSPACE_ROOT through",
+        "`workspace_root_children` and `roles` above, both already in this file,",
+        "rather than repeated as absolutes here."
+      ],
+      "declaration_key": "binding_authority",
+      "form": "<owner>:<repo-relative file in that owner>#<profile name>",
+      "read_from": "the serveros repo, at the canonical ref",
+      "role_to_token": {
+        "data_root": "DATA_ROOT",
+        "artifacts": "ARTIFACTS_ROOT",
+        "toolchains": "TOOLCHAINS_ROOT",
+        "state": "STATE_ROOT",
+        "runtime-assets": "RUNTIME_ASSETS_ROOT",
+        "downloads": "DOWNLOADS_ROOT",
+        "workspace.src": "SRC_ROOT",
+        "workspace.worktrees": "WORKTREES_ROOT"
+      },
+      "_role_to_token_note": [
+        "`workspace.src` and `workspace.worktrees` are here because",
+        "WORKSPACE_ROOT is defined as the parent they share, so the parent cannot",
+        "be derived until those two are bound.",
+        "",
+        "NOT here: `knowledge.corporate`. The profile's role of that name is the",
+        "corporate knowledge repository; this contract's `distilled-knowledge`",
+        "role is the `knowledge` child of WORKSPACE_ROOT. They are two roles that",
+        "happen to share a directory HERE, and mapping them to one token would let",
+        "one role's UNBOUND delete a structural position the contract states in",
+        "its own right -- which is how a role vocabulary quietly loses a member.",
+        "KNOWLEDGE_ROOT therefore comes from `workspace_root_children` alone."
+      ],
+      "workspace_parent": {
+        "token": "WORKSPACE_ROOT",
+        "roles": ["workspace.src", "workspace.worktrees"],
+        "rule": "the common parent of the two roles. If they disagree the token stays unresolved rather than guessed, because taking either one alone would accept a profile whose src/ and worktrees/ are not siblings -- and this contract describes a layout in which they are."
+      }
+    },
     "note": "Machine instance. Never duplicated here. If this file grew absolute paths, the ownership split would be violated.",
 
     "derivations": {

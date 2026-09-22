@@ -24,6 +24,7 @@ at, which is the failure this whole checker exists to find one level up.
 from __future__ import annotations
 
 import importlib.util
+import json
 import subprocess
 import sys
 from pathlib import Path
@@ -254,3 +255,243 @@ def test_a_parse_failure_carries_the_parsers_reason_and_nothing_else(tmp_path):
     assert source["parse_error"]["problem"] == error.problem
     assert source["parse_error"]["line"] == error.problem_mark.line + 1
     assert source["parse_error"]["column"] == error.problem_mark.column + 1
+
+
+# ---------------------------------------------------------------------------
+# the v2 delegation: where an instance that declares no `roots` says them anyway
+# ---------------------------------------------------------------------------
+#
+# `hwz/environment.v2` answers "which role lives where" by naming a profile
+# instead of stating paths, and the reader above already reads that shape
+# correctly as `absent`. Absent is not the same as unanswered, so the second half
+# of the reading is the delegate -- and it is read from ITS owner: the token
+# vocabulary is the contract's, the paths are the profile's, and neither is
+# copied into this file or into hwz-ops.
+
+CONTRACT = json.loads(
+    (REPO / "skills/serveros/references/topology-contract.json").read_text(encoding="utf-8"))
+
+PROFILE_NAME = "linux-shared-multiuser"
+BINDING = f"serveros:fleet/profiles.yaml#{PROFILE_NAME}"
+
+
+def host() -> str:
+    return f"schema: hwz/environment.v2\ndevice_ref: device:tokyo-shared-dev-01\nbinding_authority: {BINDING}\n"
+
+
+def serveros_repo(tmp_path: Path, body: str) -> Path:
+    """A throwaway serveros repo holding only the device profile, committed.
+
+    Committed for the same reason `instance` is: the profile is read as a git
+    object at the canonical ref, so a file left in the worktree is not what a
+    consumer sees.
+    """
+    repo = tmp_path / "serveros"
+    (repo / "fleet").mkdir(parents=True, exist_ok=True)
+    (repo / "fleet" / "profiles.yaml").write_text(body, encoding="utf-8")
+    for argv in (["init", "-q", "-b", "main", str(repo)],
+                 ["-C", str(repo), "add", "-A"],
+                 ["-C", str(repo), "-c", "user.email=t@example.invalid",
+                  "-c", "user.name=t", "commit", "-q", "-m", "profile"]):
+        subprocess.run(["git", *argv], check=True,
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    return repo
+
+
+def profile_body(paths: dict, *, states=("BOUND", "UNBOUND", "NOT_APPLICABLE")) -> str:
+    return yaml.safe_dump(
+        {"schema": "serveros/fleet-profiles.v1",
+         "binding_states": list(states),
+         "profiles": {PROFILE_NAME: {"device_ref": "device:tokyo-shared-dev-01",
+                                     "paths": paths}}},
+        sort_keys=False)
+
+
+VINCE = "/data/home/vince"
+REAL_PATHS = {
+    "data_root": {"state": "BOUND", "path": VINCE},
+    "artifacts": {"state": "BOUND", "path": f"{VINCE}/artifacts"},
+    "state": {"state": "BOUND", "path": f"{VINCE}/state/serveros"},
+    "toolchains": {"state": "BOUND", "path": f"{VINCE}/toolchains"},
+    "runtime-assets": {"state": "BOUND", "path": f"{VINCE}/runtime-assets"},
+    "downloads": {"state": "BOUND", "path": f"{VINCE}/downloads"},
+    "workspace.src": {"state": "BOUND", "path": f"{VINCE}/workspace/src"},
+    "workspace.worktrees": {"state": "BOUND", "path": f"{VINCE}/workspace/worktrees"},
+    "knowledge.corporate": {"state": "BOUND", "path": f"{VINCE}/workspace/knowledge"},
+    "software.gui": {"state": "NOT_APPLICABLE"},
+}
+
+
+def bound(tmp_path: Path, *, paths=None, body=None, contract=None, serveros=True,
+          level: str = "profile"):
+    """(roots by token, reading) for a v2 instance delegating to a profile."""
+    ops = instance(tmp_path / "o", host() if body is None else body)
+    sr = serveros_repo(tmp_path / "s", body or profile_body(paths or REAL_PATHS)) if serveros else None
+    args = SimpleNamespace(ops_repo=ops, ops_ref="main",
+                           serveros_repo=sr, canonical_ref="main",
+                           data_root=Path("/caller/d"), workspace_root=Path("/caller/w"),
+                           data_root_level=level, workspace_root_level=level)
+    root_map = check.root_tokens(CONTRACT if contract is None else contract, args)
+    return root_map, root_map["binding_read"]
+
+
+def test_a_v2_instance_that_delegates_yields_a_roots_map(tmp_path):
+    """The sixth reading: a delegation that answers is not a finding.
+
+    The instance carries no `roots` **on purpose** and names the profile that
+    binds them. Calling that an unread source blames the v2 document for a reader
+    that stopped at the v1 shape -- and on 2026-09-22 that is exactly what it did,
+    as five unresolved root tokens reading like five forgotten bindings.
+    """
+    root_map, reading = bound(tmp_path)
+    assert [t for t, p in root_map["paths"].items() if p is None] == []
+    assert reading["profile"] == PROFILE_NAME
+    assert reading["reason"] is None
+    assert root_map["mode"]["KNOWLEDGE_ROOT"] == "bound"
+    assert check.roots_source_finding(root_map) is None
+
+
+def test_every_argument_the_contract_keys_on_is_actually_read(tmp_path):
+    """The role vocabulary is the contract's and the paths are the profile's.
+
+    Asserted against the REAL contract rather than a fixture, because the claim
+    is that these two documents agree: a `role_to_token` entry naming a role the
+    profile does not bind is a token that silently never resolves, and the only
+    way that goes unnoticed is a test that reads a copy.
+    """
+    root_map, reading = bound(tmp_path)
+    source = CONTRACT["roots_source"]["binding"]
+    assert set(reading["bound_roles"]) >= set(source["role_to_token"])
+    for role, token in source["role_to_token"].items():
+        expected = REAL_PATHS[role]["path"]
+        assert str(root_map["paths"][token]) == expected, f"{role} -> {token}"
+
+
+def test_the_workspace_children_the_profile_has_no_role_for_are_derived(tmp_path):
+    """ops/ records/ test-envs/ knowledge/ are contract positions, not bindings.
+
+    The profile binds `workspace.src` and `workspace.worktrees` and carries no
+    role for the other four children. They resolve anyway, because
+    `workspace_root_children` already says where they sit -- and that is not a
+    second absolute path: each is the BOUND parent plus the contract's own
+    segment, which is why the assertion is about the parent they share.
+    """
+    root_map, reading = bound(tmp_path)
+    parent = Path(root_map["paths"]["WORKSPACE_ROOT"])
+    for token, child in (("OPS_ROOT", "ops"), ("RECORDS_ROOT", "records"),
+                         ("TEST_ENVS_ROOT", "test-envs"), ("KNOWLEDGE_ROOT", "knowledge")):
+        assert root_map["paths"][token] == parent / child
+        assert root_map["mode"][token] == "bound"
+        # The profile binds none of these roles -- it binds the two children
+        # WORKSPACE_ROOT is the parent of, and the contract places the rest.
+        semantic = CONTRACT["workspace_root_children"][child]
+        assert semantic not in reading["bound_roles"]
+    assert reading["derived_from_workspace_root"] == [
+        "KNOWLEDGE_ROOT", "OPS_ROOT", "RECORDS_ROOT", "TEST_ENVS_ROOT"]
+
+
+def test_a_role_the_profile_declines_is_not_a_path(tmp_path):
+    """UNBOUND is a declared gap, not a path somebody forgot to write.
+
+    `downloads` is the clean case: the contract has no position for it, so the
+    profile binding is the ONLY source of DOWNLOADS_ROOT. Recording it UNBOUND
+    then has to leave the token unresolved -- an UNBOUND role that resolves is
+    how a directory nobody owns acquires a root token.
+
+    Asserted through `mode` rather than through `tokens`, because the token has
+    to be *asked for* before its absence means anything. The first version of
+    this test read `"DOWNLOADS_ROOT" not in binding_read["tokens"]` and passed
+    against a checker that never resolved the token at all: green on a vacancy,
+    not on a decline.
+
+    `knowledge.corporate` looks like the same case and is not: the contract
+    positions the `knowledge` child of WORKSPACE_ROOT in its own right, so
+    KNOWLEDGE_ROOT resolves whether or not the profile says anything. That is the
+    difference between a role this contract places and a path the profile alone
+    supplies.
+    """
+    paths = dict(REAL_PATHS, **{"downloads": {"state": "UNBOUND"}})
+    root_map, reading = bound(tmp_path, paths=paths)
+    assert "downloads" not in reading["bound_roles"]
+    assert root_map["mode"]["DOWNLOADS_ROOT"] == "unresolved"
+    assert root_map["paths"]["DOWNLOADS_ROOT"] is None
+    # The same token, bound, resolves -- so the assertion above is about the
+    # decline and not about a token this checker cannot reach.
+    bound_map, _reading = bound(tmp_path / "bound")
+    assert str(bound_map["paths"]["DOWNLOADS_ROOT"]) == f"{VINCE}/downloads"
+
+
+def test_a_state_the_profile_never_declared_is_reported_not_skipped(tmp_path):
+    """A vocabulary change must not read as a machine that binds nothing.
+
+    `binding_states` is the profile's own list, so it is read rather than
+    assumed. The day someone adds `PARTIAL` to it, every role using that state
+    would otherwise stop being a path in silence, and the report would say the
+    profile binds nothing instead of saying this reader is out of date.
+    """
+    paths = dict(REAL_PATHS, **{"artifacts": {"state": "PARTIAL", "path": f"{VINCE}/artifacts"}})
+    _root_map, reading = bound(tmp_path, paths=paths)
+    assert reading["states_undeclared"] == ["PARTIAL"]
+    assert "artifacts" not in reading["bound_roles"]
+
+
+def test_two_workspace_roles_that_disagree_leave_the_parent_unresolved(tmp_path):
+    """Taking either one alone would accept a layout this contract denies.
+
+    WORKSPACE_ROOT is defined as the parent `workspace.src` and
+    `workspace.worktrees` SHARE. A profile binding them to unrelated places is
+    not a profile whose WORKSPACE_ROOT can be picked from a coin -- and picking
+    one is invisible, because the token still resolves and every derived child
+    then hangs off the wrong tree. Asked of `_bound_roots` directly, because that
+    is where the rule lives: `root_tokens` would fill the gap from the
+    CLI-derived default, which is a different answer to a different question.
+    """
+    paths = dict(REAL_PATHS, **{"workspace.worktrees": {"state": "BOUND", "path": "/elsewhere/wt"}})
+    _roots, reading = bound(tmp_path, paths=paths)
+    assert reading["workspace_parent_agrees"] is False
+    assert "WORKSPACE_ROOT" not in reading["tokens"]
+
+
+def test_a_root_the_caller_passed_outranks_the_delegate(tmp_path):
+    """The declared order is flag, then environment, then the profile.
+
+    Before this, argparse's `default=` and a flag the caller typed were the same
+    object by the time the resolver saw them, so a `--data-root` passed on
+    purpose was outvoted by the machine instance -- and the run reported success
+    about a tree nobody had asked about, which is the declared-vs-actual gap this
+    checker exists to find.
+    """
+    root_map, _reading = bound(tmp_path, level="flag")
+    assert str(root_map["paths"]["DATA_ROOT"]) == "/caller/d"
+    assert root_map["mode"]["DATA_ROOT"] == "flag"
+    assert root_map["root_levels"]["WORKSPACE_ROOT"] == "flag"
+    # The derivations follow the caller's root rather than the profile's, or the
+    # two halves of one run would describe different machines.
+    assert str(root_map["paths"]["STATE_ROOT"]) == "/caller/d/state/serveros"
+
+
+def test_a_binding_of_the_wrong_shape_is_reported_rather_than_searched_for(tmp_path):
+    """`serveros:fleet/profiles.yaml` with no `#profile` names no profile.
+
+    Guessing that the last path segment is the profile would send a reader into a
+    file to look for a name nobody wrote, and would succeed often enough to look
+    like it worked.
+    """
+    _root_map, reading = bound(tmp_path, body=(
+        "schema: hwz/environment.v2\nbinding_authority: serveros:fleet/profiles.yaml\n"))
+    assert reading["file"] is None
+    assert reading["reason"] == "the binding is not of the declared form"
+    assert reading["tokens"] == []
+
+
+def test_a_delegate_with_no_repository_to_read_is_reach_not_a_defect(tmp_path):
+    """The same split `_ops_roots` makes: unreachable is a reading, not a defect.
+
+    Nothing about this node is wrong when the caller hands the checker no
+    serveros repository to read the profile out of. Reporting it as a malformed
+    binding would put a note about this run's inputs on the blocking list.
+    """
+    _root_map, reading = bound(tmp_path, serveros=False)
+    assert reading["declared"] is True
+    assert reading["reason"] == "no serveros repository was supplied to read the profile from"
+    assert reading["tokens"] == []

@@ -381,9 +381,15 @@ def manifest_provides(manifest: dict) -> dict:
 # checker exists to find, so the checker must not manufacture it.
 #
 # Resolution order, and the mode is always reported so a fallback is visible
-# rather than silent:
-#   declared   token -> ops/workspace/environment.yaml:roots
-#   fallback   token -> --data-root / --workspace-root derived defaults
+# rather than silent. The first two are answers about THIS RUN, the rest are
+# answers about a machine, and the declared order puts the run above them:
+#   flag         token -> a root flag the caller passed
+#   environment  token -> DATA_ROOT / WORKSPACE_ROOT in the environment
+#   declared     token -> ops/workspace/environment.yaml:roots   (v1 instance)
+#   bound        token -> the device profile the v2 instance delegates to
+#   derived      token -> roots_source.derivations / state_root.rule
+#   fallback     token -> --data-root / --workspace-root derived defaults
+#   unresolved   none of the above; a finding, never a guess
 #
 # STATE_ROOT is not in environment.yaml's ``roots``: it is contract-derived
 # (``state_root.rule`` == ``<DATA_ROOT>/state/serveros``) and checked separately
@@ -436,6 +442,167 @@ def _ops_roots(ops_repo: Path, ref: str) -> tuple[dict, dict, dict]:
     return (roots if isinstance(roots, dict) else {}), _prov(obs), read
 
 
+def _ops_instance(ops_repo: Path, ref: str) -> dict:
+    """The machine instance's parsed document, or ``{}``.
+
+    Split from `_ops_roots` because two different questions are asked of one
+    document: whether it carries a ``roots`` map (that function, which reports
+    why not when it does not) and whether it declares a ``binding_authority``
+    (this one). The v2 instance answers the first with "no" on purpose and the
+    second with the name of the profile that does the answering, so a reader
+    that only asks the first reads the document as silence.
+    """
+    obs = observe_object(ops_repo, ref, "workspace/environment.yaml")
+    doc, _ = _load_detailed(obs.get("content"), "yaml")
+    return doc if isinstance(doc, dict) else {}
+
+
+def _binding_target(authority) -> tuple[str, str] | None:
+    """``<owner>:<repo-relative file>#<profile>`` -> (file, profile), or ``None``.
+
+    The form is the one hwz-ops' v2 instance writes, and it is parsed rather
+    than guessed at: a string that does not carry exactly one ``,``-free
+    owner/file pair, one ``#`` and a non-empty name on both sides yields
+    nothing, and nothing is reported as an unresolved binding rather than
+    searched for.
+    """
+    text = str(authority or "").strip()
+    if text.count(":") != 1 or text.count("#") != 1:
+        return None
+    target, _, profile = text.partition("#")
+    _owner, _, path = target.partition(":")
+    path, profile = path.strip(), profile.strip()
+    return (path, profile) if path and profile else None
+
+
+def _bound_roots(serveros_repo, ref, declared: dict, topology: dict | None):
+    """(roots by token, reading) -- the role roots the DEVICE PROFILE binds.
+
+    `hwz/environment.v2` answers "which role lives where on this machine" by
+    delegating: it declares `binding_authority` and carries no `roots` map. The
+    token vocabulary is the contract's -- `roots_source.binding.role_to_token`
+    for the roles the profile names directly, and the
+    `workspace_root_children` / `roles` pair it already carries for the
+    workspace children the profile has no role for. The concrete paths are the
+    profile's, read from the serveros repo at the canonical ref.
+
+    Neither of the two things this must not become is done here: no absolute
+    path is written back into hwz-ops, and no second token table is invented in
+    this file. A role the profile marks UNBOUND or NOT_APPLICABLE is not a path
+    -- the profile declined to answer, so there is nothing to carry forward and
+    the token stays unresolved.
+    """
+    source = ((topology or {}).get("roots_source") or {}).get("binding") or {}
+    authority = declared.get(source.get("declaration_key") or "binding_authority")
+    read = {"declared": bool(authority), "authority": authority, "file": None,
+            "profile": None, "found": False, "bound_roles": [], "tokens": [],
+            "reason": None, "provenance": None}
+    if not authority:
+        read["reason"] = "the instance declares no binding"
+        return {}, read
+    target = _binding_target(authority)
+    if target is None:
+        read["reason"] = "the binding is not of the declared form"
+        return {}, read
+    path, profile_name = target
+    read["file"], read["profile"] = path, profile_name
+    if serveros_repo is None or not ref:
+        # No repository to read the delegate from. Reported as this node's reach
+        # and not as a defect in the binding, which is the same split
+        # `_ops_roots` makes for a locator nobody could reach.
+        read["reason"] = "no serveros repository was supplied to read the profile from"
+        return {}, read
+
+    obs = observe_object(Path(serveros_repo), str(ref), path)
+    read["found"] = bool(obs.get("found"))
+    read["provenance"] = _prov(obs)
+    if not obs.get("found"):
+        read["reason"] = f"{path} was not found at {ref}"
+        return {}, read
+    doc, parse_error = _load_detailed(obs.get("content"), "yaml")
+    if not isinstance(doc, dict):
+        read["reason"] = "the profile file did not parse"
+        read["parse_error"] = parse_error
+        return {}, read
+    profile = (doc.get("profiles") or {}).get(profile_name)
+    if not isinstance(profile, dict):
+        read["reason"] = f"{path} declares no profile named {profile_name}"
+        return {}, read
+
+    # The state vocabulary belongs to the profile owner, so it is read rather
+    # than assumed. A state this reader has never heard of then shows up in
+    # `states_undeclared` instead of being silently classified as "not a path",
+    # which is the failure mode where a vocabulary change looks like a machine
+    # that binds nothing.
+    states = doc.get("binding_states")
+    read["binding_states"] = states if isinstance(states, list) else None
+    if not isinstance(states, list) or not states:
+        read["reason"] = f"{path} declares no binding_states vocabulary"
+        return {}, read
+    if "BOUND" not in states:
+        read["reason"] = f"{path} does not declare BOUND among its binding states"
+        return {}, read
+
+    entries = profile.get("paths") or {}
+    seen = {str(e.get("state")) for e in entries.values() if isinstance(e, dict)}
+    read["states_seen"] = sorted(seen)
+    read["states_undeclared"] = sorted(seen - {str(s) for s in states})
+
+    bound = {}
+    for role, entry in entries.items():
+        if not isinstance(entry, dict):
+            continue
+        # BOUND is the only state that carries a path, exactly as
+        # `runtime/paths.py::_profile_roles` reads it. UNBOUND is a declared gap
+        # and NOT_APPLICABLE says the role has no meaning here; answering either
+        # with a path would answer a question the profile declined.
+        if entry.get("state") == "BOUND" and entry.get("path"):
+            bound[str(role)] = str(entry["path"])
+    read["bound_roles"] = sorted(bound)
+
+    roots = {}
+    for role, token in (source.get("role_to_token") or {}).items():
+        if role in bound:
+            roots[str(token)] = bound[role]
+
+    # WORKSPACE_ROOT is the parent the two `workspace.*` roles share, and it is
+    # stated as a rule over the two rather than read off either one: taking
+    # `workspace.src` alone would silently accept a profile whose src/ and
+    # worktrees/ are not siblings, and the layout this contract describes has
+    # them as siblings. Disagreement leaves the token unresolved, which is a
+    # reading and not a guess.
+    parent = source.get("workspace_parent") or {}
+    parent_roles = [r for r in (parent.get("roles") or []) if r in bound]
+    if parent.get("token") and parent_roles:
+        parents = {str(Path(bound[r]).parent) for r in parent_roles}
+        read["workspace_parent_agrees"] = len(parents) == 1
+        if len(parents) == 1:
+            roots[str(parent["token"])] = parents.pop()
+
+    # The workspace children the contract already enumerates. `ops`, `records`
+    # and `test-envs` have no profile role of their own -- the contract says
+    # where they sit under WORKSPACE_ROOT, so they are derived from the bound
+    # parent. A profile that does bind one of them wins, which is why this only
+    # fills a token that is not already there -- and why what it filled is
+    # recorded separately: these are positions the CONTRACT states, not roles
+    # the profile bound, and a reader who saw them only in `tokens` would take
+    # the profile for the authority on them.
+    derived = []
+    role_roots = (topology or {}).get("roles") or {}
+    workspace_root = roots.get("WORKSPACE_ROOT")
+    if isinstance(workspace_root, str):
+        for child, semantic in ((topology or {}).get("workspace_root_children") or {}).items():
+            token = (role_roots.get(semantic) or {}).get("root")
+            if token and str(token) not in roots:
+                roots[str(token)] = f"{workspace_root}/{child}"
+                derived.append(str(token))
+    read["derived_from_workspace_root"] = sorted(derived)
+
+    read["tokens"] = sorted(roots)
+    read["reason"] = None if roots else "the profile binds none of the tokens asked for"
+    return roots, read
+
+
 def root_tokens(topology: dict | None, args) -> dict:
     """Resolve every root token a role may name, plus the mode that resolved it.
 
@@ -452,12 +619,33 @@ def root_tokens(topology: dict | None, args) -> dict:
     data_root = Path(args.data_root)
     workspace_root = Path(args.workspace_root)
 
+    # A v2 instance does not carry the roots; it names the profile that binds
+    # them, and this is where that delegation is followed. `declared` still
+    # outranks `bound` below: a document that states a path outranks one that
+    # states where the path is stated.
+    bound_roots, binding_read = _bound_roots(
+        getattr(args, "serveros_repo", None),
+        getattr(args, "canonical_ref", None),
+        _ops_instance(ops_repo, ref), topology)
+
     # ``environment.yaml`` is the machine instance; the two roots below are the
     # only ones the contract marks as required, so they are the resolution base
     # if the instance could not be read at all.
+    #
+    # A root the caller passed or the environment supplied is already an answer
+    # about THIS run -- the declared order puts both above every document, which
+    # answers about a machine. `profile` is the one level that yields to the
+    # instance, because it is the same kind of answer and the instance is the
+    # more specific one. This is the whole reason `main` records a level.
+    levels = {"DATA_ROOT": getattr(args, "data_root_level", "profile"),
+              "WORKSPACE_ROOT": getattr(args, "workspace_root_level", "profile")}
+    upstream = {token for token, level in levels.items()
+                if level in ("flag", "environment")}
     base = {"DATA_ROOT": data_root, "WORKSPACE_ROOT": workspace_root}
     for key in source.get("required_keys") or ():
-        raw = declared_roots.get(key)
+        if key in upstream:
+            continue
+        raw = declared_roots.get(key) or bound_roots.get(key)
         if isinstance(raw, str) and raw:
             base[key] = Path(raw)
 
@@ -472,6 +660,17 @@ def root_tokens(topology: dict | None, args) -> dict:
     resolvable = set(base) | set(root_rules)
     for key in source.get("required_keys") or ():
         resolvable.add(key)
+    # The tokens the delegate can answer for. `role_to_token` names roles the
+    # profile binds, and without this the tokens ONLY the profile supplies --
+    # DOWNLOADS_ROOT and RUNTIME_ASSETS_ROOT -- are never asked for, so a profile
+    # that binds them and one that leaves them UNBOUND produce the same report
+    # and that half of the contract is decorative.
+    #
+    # Added only once the instance has actually delegated: on a v1 machine the
+    # profile mechanism is not in play, and growing the token set there would
+    # report a token nothing on that machine could ever answer for.
+    if binding_read.get("declared"):
+        resolvable |= {str(t) for t in (source.get("binding") or {}).get("role_to_token", {}).values()}
     # Every token actually named by a role counts, so a NEW role introducing a
     # NEW token is resolved (or reported) instead of being silently skipped.
     for entry in ((topology or {}).get("roles") or {}).values():
@@ -495,11 +694,28 @@ def root_tokens(topology: dict | None, args) -> dict:
             continue
         if token in base:
             resolved[token] = base[token]
-            mode[token] = "declared" if token in declared_roots else "fallback"
+            # The mode names WHO answered, not which line of this function ran.
+            # `fallback` used to be printed for a root the caller had passed,
+            # which reads as "nobody chose this" about a value somebody chose --
+            # and it disagreed with `root_levels` beside it, which is the same
+            # mislabelling it was supposed to prevent.
+            if token in upstream:
+                mode[token] = levels[token]
+            elif token in declared_roots:
+                mode[token] = "declared"
+            elif token in bound_roots:
+                mode[token] = "bound"
+            else:
+                mode[token] = levels[token]
             continue
         if token in root_rules:
             resolved[token] = _expand(root_rules[token])
             mode[token] = "derived" if resolved[token] is not None else "unresolved"
+            continue
+        raw = bound_roots.get(token)
+        if isinstance(raw, str) and raw:
+            resolved[token] = _expand(raw)
+            mode[token] = "bound" if resolved[token] is not None else "unresolved"
             continue
         # ``TOKEN/segment`` names a sub-root of TOKEN. Split rather than treat
         # the whole string as an unknown token -- ``DATA_ROOT/caches`` is not a
@@ -516,8 +732,17 @@ def root_tokens(topology: dict | None, args) -> dict:
         "paths": resolved,
         "mode": mode,
         "declared_roots": sorted(declared_roots),
+        # Who chose the two required roots. `mode` already carries this per
+        # token, but only for the tokens that resolved; this says it even when
+        # the answer was a refusal, which is the case a reader most needs it in.
+        "root_levels": levels,
         "roots_source": source.get("locator") or "ops/workspace/environment.yaml",
         "provenance": ops_prov,
+        # What the DELEGATE said, when the instance delegated. `source_read`
+        # above is about the document in this repository; this is about the
+        # profile it named, and collapsing them would put one file's reading
+        # under another file's name.
+        "binding_read": binding_read,
         # What the source itself said, kept beside what was resolved from it.
         # `declared_roots: []` above cannot distinguish "the document declares
         # none" from "the document was never read"; this can.
@@ -539,15 +764,30 @@ def roots_source_finding(root_map: dict) -> dict | None:
     The consequence -- `ROOT_TOKEN_UNRESOLVED` -- is emitted separately and
     still stands: those tokens really do not resolve. What must not stand is a
     reader having to infer the cause from their number.
+
+    The sixth reading is the one that is not a finding. A v2 instance carries no
+    ``roots`` map **by design** and names the profile that binds them instead;
+    once that delegation is followed and answers, the source did yield a map and
+    there is nothing to report. The locator expecting the v1 shape was the
+    defect, and it is repaired in the contract rather than reported here.
     """
     source_read = root_map.get("source_read") or {}
     if source_read.get("roots_key") == "present":
         return None
+    binding = root_map.get("binding_read") or {}
+    if binding.get("tokens"):
+        return None
     reachable = bool(source_read.get("found"))
+    observed = {"locator": root_map.get("roots_source"), **source_read}
+    if binding.get("declared"):
+        # The instance did delegate, so the reader that stopped here did not
+        # read the whole document. Say which delegate was named and why it did
+        # not answer, or the finding blames the instance for the reader's step.
+        observed["binding"] = binding
     return finding(
         "ROOTS_SOURCE_UNREAD", "topology",
         "the contract's roots source yields a roots map",
-        {"locator": root_map.get("roots_source"), **source_read},
+        observed,
         "topology-contract.json roots_source",
         "HIGH" if reachable else "MEDIUM",
         status="OPEN" if reachable else "OBSERVED",
@@ -1599,12 +1839,34 @@ def main(argv=None) -> int:
     ap.add_argument("--canonical-ref", default=os.environ.get("SERVEROS_CANONICAL_REF") or "main")
     ap.add_argument("--ability-ref", default=os.environ.get("SERVEROS_ABILITY_REF") or "main")
     ap.add_argument("--ops-ref", default=os.environ.get("SERVEROS_OPS_REF") or "main")
-    ap.add_argument("--data-root", type=Path, default=default_root("data_root"))
-    ap.add_argument("--workspace-root", type=Path, default=default_root("workspace_root"))
+    ap.add_argument("--data-root", type=Path, default=None)
+    ap.add_argument("--workspace-root", type=Path, default=None)
     ap.add_argument("--runtime-root", action="append", default=[], metavar="NAME=PATH",
                     help="a runtime skill root to observe; repeatable")
     ap.add_argument("--output", type=Path)
     args = ap.parse_args(argv)
+
+    # Where each root came from, kept as a LEVEL rather than collapsed into one
+    # value. argparse's `default=` cannot express the declared order -- flag,
+    # then environment, then this host's profile, then a refusal -- because a
+    # filled-in default and a flag the caller typed are the same object by the
+    # time the parse returns, and a `Path` does not remember who chose it.
+    # Resolving here is what lets `root_tokens` HONOUR that order rather than
+    # merely assert it: the previous shape let the machine instance outvote a
+    # --data-root the caller had passed on purpose.
+    for argument in ("data_root", "workspace_root"):
+        if getattr(args, argument) is not None:
+            level = "flag"
+        else:
+            value = default_root(argument)
+            setattr(args, argument, value)
+            if value is None:
+                level = "unbound"
+            elif os.environ.get(ROOT_SOURCES[argument][0]):
+                level = "environment"
+            else:
+                level = "profile"
+        setattr(args, argument + "_level", level)
 
     # Refused, not guessed. Every one of these five is compared against a real
     # tree below, and a wrong root produces findings about a directory nobody
