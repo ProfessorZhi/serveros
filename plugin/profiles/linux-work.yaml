@@ -64,7 +64,15 @@ short_description: Agent Engineering Workbench for a Linux work node
 # contracts that go with them) and changes eighteen more. Rebuilding under
 # `22a` would have shipped a different payload behind a version string that
 # already names a released one.
-cachebuster: srv0003.20260923b
+#
+# Moved to `23d` on 2026-09-23, after `0a0d11e`. The same commit that moved
+# core's label to `c` also changes this composition's payload, because this
+# profile inherits the `serveros` skill from core. This is the composition the
+# node's Agent sessions actually LOAD — `hwz-server-os-linux-work@…` is the
+# enabled entry in `settings.json` — so a stale label here is not bookkeeping:
+# `claude plugin update` compares version strings, and an unchanged one leaves
+# every new session running the checker from before the fix.
+cachebuster: srv0003.20260923d
 
 skills:
   - name: runtime-management

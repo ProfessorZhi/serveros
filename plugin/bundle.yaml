@@ -72,7 +72,15 @@ version: "3.1.0"
 # and changes 45 more. The installed directory and the marketplace both point
 # at a payload the source tree no longer builds, so the label moves with the
 # content, exactly as the field says it should.
-cachebuster: srv0003.20260923a
+#
+# Moved to `20260923c` the same day, after `0a0d11e`. That commit repaired the
+# shipped `architecture_check.py` — the root resolver appended the product
+# layout to the environment's value as well as the profile's — and the file is
+# a member of this composition. `a` is the version the installed plugin cache
+# holds; leaving the label alone would let `claude plugin update` see the same
+# version and keep serving the checker before the fix, which is the failure
+# this file's own rule exists to prevent.
+cachebuster: srv0003.20260923c
 
 # Skills composed into the plugin, in bundle order.
 #
