@@ -48,6 +48,12 @@ Coordinator 可自动记录可核对事实与已授权范围内的判断。`agen
 
 原生 Memory、records/checkpoint 与 MetaCC 可先满足连续性；OpenViking 是可选检索 Provider，不是每天工作的启动依赖。失效来源在调用方 recall/filter 层即排除，不能等远端索引恢复才阻止旧结论召回。
 
+## 共享决策与真实对账入口
+
+Laya 的本地共享服务和 Serper/Jev 接入见 [共享基础设施](shared-decision-search.md)。它们辅助 relevance/证据研究，不负责签发授权、决定当前状态或测试是否成功。Laya 不可用时关闭 shadow 或沿原生路径继续；不得自动把内部上下文发往 Jev。
+
+进入本 profile 前先核对 cards、当前 control store 和历史投影；旧视图零重叠不是再次选择 authority 的理由。只重新纳入当前证据支持的控制对象；历史待对账项可见但不能假装已被选择或仍有 worker。下面的“两项”指本 profile 真正选中的工作焦点，不把全部项目的每条记录都当 carryover。
+
 ## 5. 自动选两项，不把规划变成无限积压
 
 先处理本 profile 已选焦点的继续/结束/明确停放，再填空位。等待、delegated、cancelling、效果未知不能被当成“已经空闲”。明确停放是焦点选择的 disposition，不凭空增加 Work Engine 的 Item enum；必须已确认执行者停止、资源释放并留下恢复点。

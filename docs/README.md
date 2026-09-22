@@ -8,6 +8,7 @@ architecture**, consolidated on 2026-09-21. Neither README is a second authority
 
 | Document | Purpose |
 |---|---|
+| [Shared decision/search](shared-decision-search.md) | one CPU Laya service for ServerOS/MarketOps development, Serper/Jev reuse, resource/data boundaries |
 | [Daily Work Cycle](daily-work-cycle.md) | low-intervention daily understanding, two-objective focus, native GPT review and bounded execution |
 | [Integration readiness](integration-readiness-20260922.md) | measured native GPT/Quay/browser/Windows/cloud/knowledge results and unverified deployment boundaries |
 | [Context Capsule](context-capsule.md) | intent-first, sparse context, provenance, budget and recovery |
@@ -64,3 +65,7 @@ Human semantic documents live in hwz-records or their declared cloud authority.
 Do not regenerate machine declarations, refresh live observations or mutate runtime
 state merely to make this documentation look synchronized. Claims about DESIGN,
 CODE, INTEGRATION and LIVE require their own evidence.
+
+## Implementation handoff
+
+The next CC execution brief consumes the shared provider plan, complete ability realization matrix and actual repository state. A task prompt does not supersede project authority or make target interfaces live.

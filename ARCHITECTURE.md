@@ -493,6 +493,25 @@ Business closure can be NOT_ADOPTED, SUPERSEDED, CANCELLED or IMPLEMENTED_ELSEWH
 without pretending technical acceptance or live delivery passed. Record engineering
 results and business outcome separately. Reopening is explicit.
 
+### 8.3 Reconciliation is not an authority election
+
+Cards own stable semantic intent; Work Engine owns current lifecycle/control state;
+Boards join those with execution observations as rebuildable projections. A stale
+board and a newer store showing different Item sets is a migration/reconciliation
+finding, not a reason to choose a second state authority.
+
+Classify controlled-with-card, controlled-without-card, record-only and historical
+projection-only entries. Preserve historical outcomes and cancellations. Re-enrol only
+when current evidence and the legitimate migration path justify it; never import old
+ACTIVE labels as current work or resurrect cancelled objectives. Unknown records can
+remain visible for reconciliation without occupying the daily focus as invented live
+workers. Missing liveness/resource fields require actual owner evidence, not inference
+from file presence or a Run terminal label.
+
+Standing delegation extends the existing trusted actor/approval/control boundary,
+not a new grant database. A candidate recommendation is not execution admission.
+Resolve current project/Item scope, revocation, budgets and resources before effects.
+
 ## 9. Idea and requirement discovery
 
 CC helps uncover the user's actual intent, especially for greenfield work: clarify
@@ -918,6 +937,35 @@ the same work. It is not native support merely because another device can perfor
 
 The focused target profiles live in
 ProfessorZhi/ability-management/design/TERMINAL-CAPABILITY-PROFILES.md.
+
+### 16.8 Shared decision and search Providers in development
+
+The user-selected development topology is ONE governed Laya service on Tokyo,
+consumed by both ServerOS and MarketOps through light clients. Initial deployment
+uses CPU, one model process and one resident checkpoint with bounded queue, identity,
+per-consumer isolation and OS resource limits. Available whole-host capacity is not
+permission to consume it. No model work enters serverosd's tick or session bootstrap.
+
+Laya and hosted Jev implement bounded decision suggestions, not permissions, work
+state, test verdicts or factual evidence. Start shadow/advisory per evaluated task,
+checkpoint and language; reject insufficient/overlong inputs rather than silently
+truncating important constraints. High model confidence is not a safety gate.
+
+Reuse the existing Serper search adapter and protected credential binding; SERP
+snippets discover candidate URLs and do not establish final entity/contact facts.
+Jev and Serper are external data transfers: local inference privacy does not grant
+permission to send private state, raw logs or secrets to either.
+
+MarketOps keeps its own application/MCP and business truth. Development clients use
+the same Laya endpoint without importing ServerOS source or duplicating weights.
+MarketOps Docker packaging, host-network changes and production Hosting integration
+are deferred; endpoint/config boundaries are sufficient preparation for that future.
+
+See [Shared decision/search](docs/shared-decision-search.md) and the owning provider
+contract and full realization plan in ability-management/design. Shared reusable
+provider code belongs to capability infrastructure, instance bindings to ops, and
+business DecisionSpecs/validation to consumers. Do not add one MCP/plugin per vendor
+or a universal intelligence gateway merely to make the diagram symmetrical.
 
 ## 17. Dynamic Environment and resource lifecycle
 
