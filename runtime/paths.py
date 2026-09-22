@@ -83,13 +83,29 @@ STATE_SERVEROS_TOP_LEVEL = (
     #                         ops/workspace/serveros/resources.yaml; being empty
     #                         is a state, not an absence
     #
-    # Two neighbours are deliberately NOT here, because widening the vocabulary
-    # is a claim that a namespace belongs to this root's design, and these two
+    # Four neighbours are deliberately NOT here, because widening the vocabulary
+    # is a claim that a namespace belongs to this root's design, and these four
     # are unresolved rather than designed: `migrations/` is expired evidence
     # that two declarations disagree about (see conformance.EXCEPTIONS), and
     # `document-stewardship/` has a producer that only exists in an unmerged
     # worktree. Declaring them would end the question by fiat instead of
     # answering it.
+    #
+    # `archive/` and `laya-shared/` joined this list on 2026-09-23 by that same
+    # test, and they were added rather than left out because leaving them out was
+    # not neutral: a name in no list is a name no report can describe.
+    # `archive/` holds the sealed Beijing node's state root, captured by the
+    # 2026-09-18 migration — evidence, not design, and its own question (the
+    # evidence plane is where the projections contract says non-reproducible
+    # captures belong) is a ruling nobody has made. `laya-shared/` holds the
+    # socket of the running `laya-shared.service` and belongs to
+    # ability-management's shared-provider contract rather than to any ServerOS
+    # producer, so whether it sits under THIS root is §41's boundary question.
+    # While it was in no list at all, `fs_hygiene` called a live service's socket
+    # directory MISPLACED and unprotected, and a cleanup acting on that verdict
+    # would have unlinked the socket. The reasons mirror into
+    # `runtime/fs_hygiene.py#AWAITING_A_RULING`, which is the list that report
+    # actually reads.
     "boards", "federation", "resource-leases", "work-items",
     #   requirement-board     §S's Global Requirement Board, derived from the
     #                         per-project `boards` above plus two joins (Item

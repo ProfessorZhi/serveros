@@ -546,6 +546,28 @@ AWAITING_A_RULING = {
         "the open question is which declaration wins, not where the directory "
         "belongs"
     ),
+    # Added 2026-09-23. Both were absent from this list, from
+    # `conformance.EXCEPTIONS["state"]`, and from the state vocabulary, and the
+    # consequence was not a blank in a report — it was this module classifying a
+    # RUNNING service's socket root as MISPLACED. `misplaced` is the class with a
+    # move behind it, and the standing cleanup rule is proposal-only, so the
+    # verdict was one approval away from being acted on.
+    "archive": (
+        "`paths.py` records this as the sealed Beijing node's state root, "
+        "captured by the 2026-09-18 migration. UNKNOWN rather than MISPLACED "
+        "because the open question is where a non-reproducible capture belongs "
+        "(the projections contract says the evidence plane, which is a move "
+        "somebody has to rule on), not whether this directory is in the way"
+    ),
+    "laya-shared": (
+        "`paths.py` records this as the socket root of the running "
+        "`laya-shared.service`, owned by ability-management's shared-provider "
+        "contract rather than by any ServerOS producer. UNKNOWN rather than "
+        "MISPLACED because the open question is §41's boundary question — "
+        "whether a provider's state root belongs under this root at all — and "
+        "calling a live service's socket directory misplaced is this module "
+        "manufacturing a finding out of somebody else's undecided question"
+    ),
 }
 
 

@@ -486,12 +486,15 @@ namespaces:
 # `environment` is deliberately NOT listed. It was a point-in-time capture that
 # passed through this state root on its way to the evidence plane; an exception
 # for a directory that no longer exists is how an exception table stops
-# describing anything.
+# describing anything. `archive` IS listed, and the difference between the two
+# is presence rather than kind — see the note below.
 preexisting:
   source_of_truth: runtime/conformance.py#EXCEPTIONS
   entries:
     - README.md
+    - archive
     - document-stewardship
+    - laya-shared
     - migrations
     - serveros.db
     - serveros.db-shm
@@ -502,12 +505,34 @@ preexisting:
     `resource-leases`. CONTRACT_GAP means the vocabulary is behind reality and
     the fix is to widen it rather than move anything, so all four are now in
     `paths.STATE_SERVEROS_TOP_LEVEL` and are declarations instead of
-    exemptions. The four above that are FILES (README.md and the three SQLite
+    exemptions. `archive` and `laya-shared` were added on 2026-09-23, which took
+    the list back to eight; the paragraph after next says why, and neither is
+    CONTRACT_GAP — widening the vocabulary for either would assert exactly the
+    thing that is still open. The four above that are FILES (README.md and the three SQLite
     WAL artefacts) cannot be namespaces and stay listed; the two directories
-    that remain are unresolved rather than designed, and are kept out of the
+    §38 left are unresolved rather than designed, and are kept out of the
     vocabulary deliberately so the question stays open. See
     conformance.EXCEPTIONS for why each is unresolved. None of them is created
     or moved by anything here.
+
+    The 2026-09-23 pair, and why filing beats reporting. Both were on disk in
+    no list at all — not here, not in `conformance.EXCEPTIONS`, not in
+    `paths.STATE_SERVEROS_TOP_LEVEL` — and a name in no list is a name no report
+    can describe. `archive/` holds the sealed Beijing node's state root,
+    captured by the 2026-09-18 migration. That makes it the same kind of object
+    as `environment` above, a point-in-time capture, and it is listed rather
+    than moved for the reason `environment` is not listed: the two differ in
+    whether the capture is still here, not in what it is, and the ruling that
+    sent one to the evidence plane has not been applied to the other.
+    `laya-shared/` holds the socket of the running `laya-shared.service` and
+    belongs to ability-management's shared-provider contract rather than to any
+    ServerOS producer, so whether it sits under this root is a boundary
+    question. While it was undescribed, `fs_hygiene` called a live service's
+    socket directory MISPLACED and unprotected, and `misplaced` is the class
+    with a move behind it: under §1's proposal-only cleanup rule that verdict
+    was one approval away from being acted on. Filing it does not settle the
+    boundary question and is not meant to; it changes the answer from "in the
+    wrong place" to "somebody else's decision", which is the true one.
 
 # ---------------------------------------------------------------------------
 # Projections (§24)
