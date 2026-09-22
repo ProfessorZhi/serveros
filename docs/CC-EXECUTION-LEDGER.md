@@ -460,6 +460,8 @@ tests/test_declared_commands.py::DeclaredCommandsExist::test_every_declared_comm
 | serveros（终态，带 evaluator 覆盖） | **4239 passed, 23 skipped, 3704 subtests passed, 0 failed**（480.07s，`fb97f77`） | 同上 |
 | serveros（同树不带覆盖） | **8 failed, 4231 passed, 23 skipped, 3704 subtests passed**（467.10s） | 同上去掉那两个变量 |
 | serveros（本轮末，不带覆盖，含 §9.10 的 `information watched`） | **8 failed, 4480 passed, 20 skipped, 3717 subtests passed**（492.73s） | `pytest tests/ -q -p no:cacheprovider`。**8 条全部是 `tests/test_architecture_check.py` 的配对断言**（本节 §5.0 那条已定案的跨仓红），无新增失败；pass 数从 4231 涨到 4480 是本节 §9.6/§9.7/§9.9/§9.10 四轮新增的测试 |
+| serveros（§9.11 standing delegation 落盘**之前**，第一次量） | **9 failed, 4520 passed, 20 skipped, 3718 subtests passed**（490.34s） | 同上。**8 条跨仓红 + 1 条新红**：`tests/test_verification_tool.py::TheStaticGraphIsALowerBound::test_the_static_input_set_is_the_test_file_alone_for_half_the_suite`——新测试文件进套件把分母从 111 推到 112，分子 55 没动。**这一格留在这里，因为它是这一轮唯一的真红**，处置见 §9.12 |
+| serveros（§9.11 + §9.12 修正后**终态**） | **8 failed, 4521 passed, 20 skipped, 3718 subtests passed**（485.44s） | `pytest tests/ -q -p no:cacheprovider`。**回到既有的 8 条跨仓红**，无新增失败；pass 从 4480 涨到 4521 是本轮新增的 40 条 `tests/test_delegation.py` + `test_verification_tool.py` 里新增的一条判据 |
 | serveros（`dc23707`，带覆盖） | 4207 passed, 23 skipped, 3703 subtests passed, 0 failed（459.73s） | 同上 |
 | serveros（起点） | 3 failed, 4171 passed | — |
 | ability-management | **105 passed, 2 skipped**（`074a518`）；三个 renderer `--check` 干净 | 加 `SERVEROS_BUNDLE=<serveros worktree>/plugin` |
@@ -628,9 +630,9 @@ manifest 行、packs 闭包、cards。凡是「X 的渲染嵌了 X 的值」，�
 | P6 | 线程准入 / 控制存储 | `runtime/coordination.py:89,116,228`，`runtime/agent_control_store.py:86,97,103,149` | `serverosctl coordination {resolve,bind,close,list}` (`cli.py:6632`) | — | working |
 | P6 | provider 侧准入 | `mcp/agent_session_service.py:58,115,159,251` | `mcp/bin/serveros-agent-mcp` | — | working（support→readiness→admission 顺序在 `:229`） |
 | P6 | 租约 / 所有权 / 需求板 | `runtime/lease_store.py:61`，`runtime/ownership_gate.py:209`，`intake/global_board.py:84` | `serverosctl {lease,ownership,requirement}` | — | working |
-| P6 | focus 授权 | `intake/focus_source.py:56,71,83,225` | `serverosctl work focus` | — | **partial**：文件自己写着「本机没有 grant store」，`--grants` 未绑定 |
-| P6 | 委托/授权存储 | — | — | — | **not found**：只找到规则类（`runtime/agent_sessions.py:82`、`fleet/agent_control_router.py:244`） |
-| P6 | 原子准入（选择+预算+租约+派发一个事务） | 只有逐文档原语：`agent_control_store.py:103,149`、`lease_store.py:172`、`alerting.py:279`、`alert_digest.py:304`、`bounded_invocation.py:88` | — | — | **partial**：原语读过，**没有找到合并后的准入事务** |
+| P6 | focus 授权 | `intake/focus_source.py:56,71,83,225`；`context/delegation.py`（本轮新增，纯模块） | `serverosctl work focus`（不再接受 `--grants`） | `intake/daily_cycle.select_focus` ← `context/delegation.envelopes` | **本轮已修，见 §9.11**。上一版这一格写的「`--grants` 未绑定」**是错的**：那个 flag 一直绑着，绑在一个能用 JSON 文件凭空铸造授权的洞上（`intake/daily_cycle.py:51` 自己写着「Validate scope/time/budget, not the authenticity of the supplied grant」）。**洞已闭合**：flag 被删除，信封只能从存储里已记录的授权推导 |
+| P6 | 委托/授权存储 | `runtime/agent_control_store.py` 的 `grants` 集合（第五个，本轮新增 `put_grant`/`get_grant`/`grants`/`revoke_grant`） | `serverosctl work grants`（本轮新增） | `context/delegation.envelopes`、`runtime/cli.py#cmd_work_focus` | **本轮已修，见 §9.11**。上一版「not found：只找到规则类（`runtime/agent_sessions.py:82`、`fleet/agent_control_router.py:244`）」**在那一轮是对的**——规则一直在，缺的是**存储**，而规则不能代替存储 |
+| P6 | 原子准入（选择+预算+租约+派发一个事务） | 只有逐文档原语：`agent_control_store.py:103,149`、`lease_store.py:172`、`alerting.py:279`、`alert_digest.py:304`、`bounded_invocation.py:88` | — | — | **partial，本轮之后仍是 partial**：原语读过，**没有找到合并后的准入事务**。§9.11 补上的是**授权的出处**（信封从已记录的授权推导），**不是**把这四步并成一个事务——选择、预算、租约、派发今天仍是四次分别落盘，**没有**共同提交点。这一格不因为 §9.11 变绿 |
 | P7 | 已安装 Quay | `~/.claude/plugins/cache/quay/quay/0.11.0/`，`bin/quay --version` → `0.11.0-dev` | MCP：`…/0.11.0/.mcp.json` → `vendor/quay/dist/quay.js mcp` | — | working（`0.4.0` 没有 `goal`，`0.11.0` 又有了——本机至少三代并存） |
 | P7 | codex provider | `mcp/codex_app_server_provider.py:88,89,95,564,1181` | `--live` 才启动，默认只读 | `codex-cli 0.153.4`（`~/.local/bin/codex`，与 `MEASURED_AGAINST` 一致） | working |
 
@@ -1167,6 +1169,169 @@ carries keys this module has no producer for: ['why']`——`why` 忘了进 `WAT
 **接线同上，是自动被门覆盖的**：经 `_load_module_from` 加载，`loader_graph` 推出它，
 `test_build.py` 的产物闭包判据自动覆盖。这一轮**没有任何写入点**（读者只读），
 所以 `runtime/actuator-contract.yaml` 不改，`mutation_guard.py` `findings: []`。
+
+### 9.11 standing delegation：一个能凭空铸造授权的洞被结构性关掉
+
+**先分清一件事：这一轮不是 §9.5–§9.10 那种「孤岛接线」。** 那五处是**已有代码没有消费者**，
+缺的是名字；这一处是**消费者一直在，而它被喂的东西可以凭空捏造**——`serverosctl work focus`
+从未缺过入口，缺的是那个入口背后的东西有出处。所以它不并进 §9 开头那张孤岛表。
+
+**这一轮修的不是缺口，是一个洞，而且上一版台账里那句描述缺口的字是错的。**
+P6 那一格原文写着「文件自己写着『本机没有 grant store』，`--grants` 未绑定」。
+两半都不对：
+
+- **`--grants` 一直绑着。** `serverosctl work focus --grants <file>` 收一个 JSON 对象，
+  交给 `intake/daily_cycle.select_focus`。而那个模块的 `grant_reason()` 在
+  `intake/daily_cycle.py:51` 自己写着：**「Validate scope/time/budget, not the
+  authenticity of the supplied grant.」** 计划 P6 的原话是「选择/执行 envelope 必须
+  源自可信已有委托」——一个文件参数**按定义**做不到这件事。所以这一格的正确读法是
+  「绑在一个洞上」，不是「没绑定」。
+- **「本机没有 grant store」当时是真的**，写那句话的 `intake/focus_source.py:91`
+  逐字写着「there is no grant store under `state/serveros/`」。那句话在写下时是事实，
+  它也正是**每一个候选都被判 `MISSING_OR_REVOKED_GRANT`** 的原因。
+
+**闭合方式是结构性的，不是把校验加严。** `--grants` 被**删除**；信封改由
+`context/delegation.py` 从 `runtime/agent_control_store.py` 已记录的授权推导。
+于是「授权必须来自可信已有委托」不再是一条被期待的纪律，而是**没有别的入口**：
+CLI 上不再存在任何一条能把调用者手里的 JSON 变成信封的路径。
+
+**承重的那半句在 `context/delegation.py` 的 docstring 第一段，也是唯一一条别处不查的判据：**
+
+```text
+a grant is a scope on a trusted context, and it authorizes a cycle only
+while that context still IS one — whatever window the grant carries.
+```
+
+后半句是全部要点。授权自己带的 `expires_at`（测试里写的是一个月后）**不能**越过其委托
+上下文的 FRESH 窗口（`context/actor-contract.yaml`：`window_seconds: 900`、
+`stale_after_seconds: 300`）。判定直接调 `context/actor.py#authorizes`，
+**理由复制、从不转述**——这个判断只有一个模块做，第二种措辞就是第二个意见。
+
+**五个状态，四个是拒绝，分开写是因为它们是关于不同东西的不同事实：**
+
+| 状态 | 事实 | 下一个动作 |
+| --- | --- | --- |
+| `AUTHORIZED` | 根在，且现在授权 | 进信封 |
+| `DELEGATION_UNRESOLVED` | 存储里**没有** `delegated_by` 这个上下文——窗口关了被 `sweep` 掉了，或者记录被人手改过 | 重新上报上下文，**不是**重新授权 |
+| `DELEGATION_DOES_NOT_AUTHORIZE` | 根在且拒绝（STALE/EXPIRED/未 VERIFIED/非 FACT） | 刷新上下文 |
+| `GRANT_MALFORMED` | 记录无法判断：没写 `delegated_by`，或它自己两个 ref 名字打架 | 修记录 |
+| `GRANT_NOT_RECORDED` | **关于板，不关于存储**：某行点了一个 ref，存储从没听说过它 | 板的生产者缺一个卡字段 |
+
+塌成一个「没有授权」是 §5.0 那条失败族：问「这一轮为什么什么都没带」的人，会在
+「没人委托过」「授权被撤了」「证据过期了」三种答案上收到同一句话——而这三个的下一步
+是**三个不同的动作**。`GRANT_NOT_RECORDED` 单独存在也是同一理由：
+「板点不出一个授权」和「存储里没有授权」是两个缺口、两个生产者，不许印成一句。
+
+**写入侧的三条拒绝，每条都写明为什么不放在读的一侧。** `put_grant`：
+
+- **没有 `grant_ref` 拒绝**——没有名字的授权无法被撤销。
+- **没有 `delegated_by` 拒绝**——没有根的授权就是没根的授权。
+- **根的检查在 `_mutation()` 锁内、对盘上的文档做**——不在实例载入的那份副本上做。
+  对着副本查会让「这笔授权落不落盘」取决于**谁先写**（M8 就是这个变异，被抓到）。
+- **拒绝只针对根缺失**（时钟修不好的那种），**不针对陈旧**。一条派生自已变陈旧上下文
+  的授权会**被存下来并报成未授权**——「存储的记录不会变得无效，它只会变旧，而拥有时钟的是读者」。
+  durability ≠ authority，这两件事在这一层被分开。
+
+**写入是一次性的、幂等的、撤销不可逆的。** 同一个 `grant_ref` 的**相同**重报返回已记录
+的那份（不是错误）；**不同**则拒绝，且没有替换接口。撤销幂等，但**保留第一次的时间**——
+第二次撤销不许把「权力何时结束」挪到「某人最后一次提到它」的时刻（M11）。
+
+**这里当场抓到过一个真缺陷。** 第一次冒烟：**相等的重报被拒**，因为 `staged` 里带着
+`revoked: False`，而 `theirs` 排除了 `REVOCATION_FIELDS`，两边永远不可能相等。修法是
+让 `staged` 不含撤销字段、存储时再构造 `recorded = {**staged, "revoked": False}`——
+**比较的两侧都不带撤销字段**，因为撤销是存储写的，不是上报者写的。
+
+**撤销与窗口不归这个模块判。** 信封 = 推导；撤销与窗口 = `intake/daily_cycle.grant_reason`。
+所以一条**已撤销的授权在信封里**，而它被拒绝的理由来自另一个模块——这条划分有专门的
+判据固定住（`test_a_revoked_grant_is_in_the_envelope_and_grant_reason_excludes_it`，
+外加一条正向对照 `test_the_same_row_is_selected_when_the_delegation_is_live`）。
+
+**没有编造耦合。** 授权**不**要求 `approval_ref`：`runtime/agent-session-contract.yaml`
+里 `human_gated` 只有 `[session.interrupt, session.stop, session.handoff]`，要求它会让
+授权**无法铸造**，机制就靠构造永远为空。
+
+**live 层第一次跑出来的东西，而且它诚实地什么也没有。**
+存储路径 `/data/home/vince/state/serveros/runtime/agent-control/store.json`，
+`serverosctl work grants` → **记录 0 条，授权中 0 条，上下文 0 个**；
+`serverosctl work focus` → **17 行，0 条委派，0 条命名**，板是 `STALE_BOARD`
+（投影来自 2026-09-10，是**先前就有的**现场条件，不是本轮造成的）。
+两个缺口分开印：空存储是「没人做出过委托」，没有 `grant_ref` 的行是「没人构建过那个卡字段」。
+**`intake/focus_source.py` 的三处缺席格按本轮事实重写**——
+`NOT_PRODUCED` 的 `scope_digest` 与 `grant_ref` 两格、`NOT_PRODUCED_ELSEWHERE` 的
+`grants` 一格。三格都写着「本机没有 grant store」，**那句话现在不成立了**：
+存储落了地（`put_grant` 收 `scope_digests`），所以缺的生产者被改写成**卡片字段**。
+
+**十二处变异，每处都被抓到，两个文件逐字节还原。**
+`context/delegation.py 1091aae6…`、`runtime/agent_control_store.py 13b0bf31…`；
+脚本与 `RESULTS.md` 在 `artifacts/skills/serveros/RUN-20260922-raw-coverage/delegation/`。
+捕获数 M1 5 · M2 3 · M3 1 · M4 3 · M5 1 · M6 2 · M7 2 · M8 1 · M9 3 · M10 2 · M11 1 · M12 1。
+**五处只被一条测试抓到（M3/M5/M8/M11/M12），这是刻意的形状不是薄弱点**：每一处都是
+打断某一句特定句子的唯一方式，而那条以该句命名的测试是唯一站得能观察到它的位置——
+逐条读过日志确认过，没有靠推断。
+
+**这一轮把 `grep -Fc` 从变异脚本里换掉了。** 十二个锚点里有**两个跨行**，而 `grep -Fc`
+把模式里的换行读成**两个模式**、数的是**匹配的行数**。这次它错在安全的一侧，但工具是错的：
+改成 Python 里 `text.count(old) == 1` 精确子串计数，写前断言（缺或不唯一即 exit 91）。
+
+**`mutation_guard.py` `CHECKED`，`findings: []`，declared 37 / undeclared 0 / stale 0。**
+`runtime/actuator-contract.yaml` **不需要改**，而这是预期的结果而不是运气：
+`put_grant`/`revoke_grant` 落盘只经过 `_flush` → `_atomic_write`，
+本轮**没有新增任何** `os.unlink`/`os.replace` 位置。真要是有一条写路径直接摸了
+`os.replace`，这里会现出一条声明差——这个检查存在的理由就是这个。
+
+**顺带修正一处同族措辞**（上面那三格）：缺的生产者现在被指名成**卡片字段**，
+不再是「存储不存在」。把「生产者还没建」说成「东西不存在」，和本台账 §9.10 里被抓到的
+那三处是同一个方向上的假话——只是这次是「把还不存在的东西说成不存在」的反面用在了
+已经不存在的前提上。
+
+### 9.12 一条「惩罚改进」的地板，和一处 `plan` 自己已经撤回的数字
+
+**§9.11 的测试文件把 §5.0 那条基线从 8 红推到 9 红，而这一条不是跨仓库红。**
+新文件 `tests/test_delegation.py` 进套件后，
+`tests/test_verification_tool.py::TheStaticGraphIsALowerBound::test_the_static_input_set_is_the_test_file_alone_for_half_the_suite`
+失败：`only 55 of 112 test files have no statically visible inputs`。
+
+**先把机制查清，再决定改哪边。** `tests/loader_graph.py` 的 `module_refs()` 认两种边：
+`LOADER_NAMES` 调用里的**字符串字面量**参数，以及**任意** `/` 拼接的字面量链
+（`REPO_ROOT / "runtime" / "cli.py"`，只要拼出来的文件存在）。新测试文件把四个路径写成
+模块级常量（`CLI`、`MODULE`、`STORE_MODULE`、`DAILY_CYCLE`），第二种形式于是全都命中——
+`runtime/cli.py` 的闭包**就是**大半棵树。**这个文件不是盲的，它是可见的。**
+
+**所以 55 没动，112 动了。** 断言的形状是 `len(blind) >= len(suite) // 2`：**每一个
+扫描器能看见的测试文件都只给分母 +1、给分子 +0**。也就是说「加一个可见的测试文件」
+——`plan` 变**好**的那个方向——会把这条判据往失败上推。它这次就是被这么推过去的。
+它的 docstring 自己写着「The property is a FLOOR to trip, not a ratio to defend」，
+而一个比值恰恰不是地板。
+
+**改法：地板改成绝对数 `BLIND_FLOOR = 55`，判据从比值改成计数。**
+转换五个盲文件为可见文件 → 50，失败；加五十个可见文件 → 仍然 55，通过。
+**它现在只在图退化时绊倒，而那正是它在这里的唯一理由。**前两次「落地板」是同族的
+另一种情形（B2 writer 的测试文件**以盲的身份**加入），本轮的第三次是**可见**的——
+两次都不是图退化，所以两次都不该能绊倒一条地板。
+
+**重测数字（本工作树，2026-09-22）：套件 112，其中 87 个定义 `_load` helper，55 个盲。**
+三处写着旧数字的地方一起改：`scripts/verify.py` 的模块 docstring（`85 of the 110` →
+`87 of the 112`、`55 of the 110` → `55 of the 112`）、`static_inputs()` 的 docstring
+（`55 of the 110` → `55 of the 112`）。
+
+**顺带抓到一处「自己已经撤回的数字还在往外印」。** `plan` 不带记录时的 `limits` 文本
+逐字写着「defined in **91 of the 96** test files … for **52** of them」——而这**正是**
+`scripts/verify.py` 自己的模块 docstring 已经标注成 `were` 的那对旧数字
+（现行的是 85 of 110，见上一段）。**操作员读到的是一对被撤回的测量**。两处都改成
+重测后的 87 of 112 / 55，判据同步钉住。这与 §9.10 是同一族：**印出来的数字必须重测**。
+
+**这一处不是本轮新增的缺陷**，是上一轮重测时改了 docstring 而漏了输出串。
+记在这里是因为**它是被这一轮的失败顺带翻出来的**，而不是因为本轮造成的。
+
+**新的地板自己也过了一次判据，因为「对着常量做单边断言」正是会长成同义反复的形状。**
+`floor-is-live.sh`（同目录，L1/L2 两次，写前 Python 精确锚点计数、写后清 `__pycache__`、
+还原按 sha256 校验）：
+`BLIND_FLOOR = 56` → **失败**（`55 not greater than or equal to 56`，说明地板是活的）；
+`BLIND_FLOOR = 0` → **通过**（说明一条零地板会放过一切，也就是「不是判据」从里面看长什么样）。
+两次还原逐字节相同（`1b2fbbc4556ab1d6e9bcf169dbc68d5451a475188629f46e04f3cc61a6ab1ec6`）。
+
+**终态重量：8 failed, 4521 passed, 20 skipped, 3718 subtests passed（485.44s），
+8 条全部是已定案的跨仓红，无新增。**
 
 ## 10. 后续每包更新哪几行
 

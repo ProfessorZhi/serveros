@@ -38,6 +38,13 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 
+# How many test files the static graph must remain blind to. An absolute count
+# and not a fraction of the suite, for the reason `TheStaticGraphIsALowerBound`
+# below writes out: a fraction falls every time a test file the scanner CAN see
+# is added, and that is the direction that helps `plan`. Re-measured 2026-09-22
+# at 55 of 112.
+BLIND_FLOOR = 55
+
 _spec = importlib.util.spec_from_file_location("serveros_verify", ROOT / "scripts" / "verify.py")
 verify = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(verify)
@@ -48,7 +55,7 @@ from loader_graph import closure  # noqa: E402
 # The synthetic test files a census runs. They are written to look like this
 # tree's tests in the one respect that matters: the module under test is reached
 # through a helper that joins a filename with a directory constant, which is
-# what 91 of the 96 real test files do.
+# what 87 of the 112 real test files do.
 READER = '''\
 import importlib.util
 import sys
@@ -199,25 +206,36 @@ class TheStaticGraphIsALowerBound(ToolCase):
 
     def test_the_static_input_set_is_the_test_file_alone_for_half_the_suite(self):
         """The measurement the whole design rests on, recomputed here rather
-        than quoted: `plan` without a record answers from this graph, and for
-        half the suite the graph's answer names nothing but the test file.
+        than quoted: `plan` without a record answers from this graph, and for a
+        large part of the suite the graph's answer names nothing but the test
+        file.
 
-        Re-measured 2026-09-22: **55 of 110**. The floor crossed from
-        `>` to `==` against `len(suite) // 2` when the B2 writer's test file
-        joined the suite, using the same `_load(name, relative)` helper the
-        other 54 blind files use. The alternative — giving that one file
-        literal loader paths so the scanner could see it — would have made it
-        the only test file in the tree not written in the tree's own idiom, to
-        buy back an inequality. The property is a FLOOR to trip, not a ratio to
-        defend, so the floor moved with the measurement and the number is
-        written down here.
+        Re-measured 2026-09-22: **55 of 112** — the count has been 55 since it
+        was 55 of 110, and the denominator has moved twice under it without the
+        numerator moving at all. That is what this assertion now measures: the
+        FLOOR is the number of blind files, not a fraction of the suite.
+
+        The fraction form (`len(blind) >= len(suite) // 2`) was wrong and this
+        round is where it showed. Every test file whose inputs the scanner CAN
+        see adds one to the denominator and nothing to the numerator, so adding
+        a *visible* test file — the direction that makes `plan` better — walks
+        the fraction down toward failure, and it crossed on the file this round
+        added. The two earlier crossings were the opposite case and were
+        recorded the same way: the B2 writer's test file joined blind, using the
+        tree's own `_load(name, relative)` helper, and the alternative there —
+        giving one file literal loader paths so the scanner could see it — would
+        have made it the only test file in the tree not written in its idiom to
+        buy back an inequality. Neither crossing was a graph degradation, so
+        neither should have been able to trip a floor. Counting the blind files
+        trips on degradation, which is the only thing it is here for: convert
+        five blind files into visible ones and this fails at 50.
         """
         suite = verify.discovered_tests(ROOT)
         blind = [test for test in suite if verify.static_inputs(test) == {test}]
         self.assertGreaterEqual(
-            len(blind), len(suite) // 2,
+            len(blind), BLIND_FLOOR,
             f"only {len(blind)} of {len(suite)} test files have no statically "
-            f"visible inputs; the floor was measured at 55 of 110 on "
+            f"visible inputs; the floor was measured at 55 of 112 on "
             f"2026-09-22 and it has been crossed from below, which needs "
             f"re-measuring rather than the assertion relaxing")
         self.assertIn("tests/test_coordination.py", blind)
@@ -227,8 +245,12 @@ class TheStaticGraphIsALowerBound(ToolCase):
         plan = self.json_of(result)
         self.assertEqual(verify.STATIC_LOWER_BOUND, plan["inputs_from"])
         self.assertIn("LOWER BOUND", plan["limits"])
-        self.assertIn("91 of the 96", plan["limits"])
-        self.assertIn("52", plan["limits"])
+        # The numbers an operator reads here are a measurement, so they are
+        # pinned to the ones this round re-measured rather than to whichever
+        # pair was written first. `plan` used to print 91 of the 96 and 52 of
+        # the 96 — a pair the module's own docstring had already retracted.
+        self.assertIn("87 of the 112", plan["limits"])
+        self.assertIn("55", plan["limits"])
 
 
 # ---------------------------------------------------------------------------

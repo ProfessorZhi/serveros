@@ -5394,8 +5394,7 @@ def cmd_requirement_board(args) -> int:
     # rather than through a daemon call because this command has to answer
     # when the daemon does not — an absent store is "no session is bound",
     # which is a fact and not a missing measurement.
-    binding_store = Path(
-        paths.resolve("state/runtime/agent-control")["path"]) / "store.json"
+    binding_store = _agent_control_store_path()
 
     def resolve_locator(locator: str) -> str:
         """A card locator as an absolute path, relative to the WORKSPACE root.
@@ -5589,6 +5588,38 @@ def _workchain_refusals(fn):
     return run
 
 
+def _agent_control_store_path() -> Path:
+    """The one file the daemon writes control-plane state to.
+
+    Named once, here, because three verbs now read it — the board (for §17
+    bindings), `work focus` (for the delegations a cycle may be admitted
+    under) and `work grants` (for the same records, without a board). Three
+    compositions of the path would be three answers to "where is this node's
+    control-plane state", and the one that drifted would read an absent store
+    as "nothing was ever delegated".
+
+    Read directly rather than through the daemon for the reason `work board`
+    already states: a verb that has to answer when the daemon does not. An
+    absent store is a node where nothing has been recorded — a fact, not a
+    missing measurement — and the daemon's own `_load` draws that distinction
+    from the other side.
+    """
+    paths = paths_mod.Paths()
+    return Path(paths.resolve("state/runtime/agent-control")["path"]) / "store.json"
+
+
+def _control_store():
+    """The control store, opened for a verb that has to answer without the daemon.
+
+    `AgentControlStore.__init__` reads the file, so an unreadable store raises
+    here rather than silently answering empty — the module's own refusals are
+    the point and this function does not soften them.
+    """
+    mod = _load_module_from(REPO_ROOT / "runtime" / "agent_control_store.py",
+                            "serveros_runtime_agent_control_store")
+    return mod, mod.AgentControlStore(_agent_control_store_path())
+
+
 def _work_board_document(args):
     """The composed personal board, shared by every verb that reads it.
 
@@ -5773,9 +5804,11 @@ def cmd_work_focus(args) -> int:
         STALE_BOARD naming the age rather than a selection.
       * an age nobody can state — an unreadable or undated projection — which
         is `PROJECTION_AGE_UNKNOWN` and not "fresh enough".
-      * grants. None exist on this node, so every candidate is reported
-        un-authorized. Printing an empty `selected` beside that reason is the
-        honest pair; printing it alone would read as "nothing to do".
+      * grants. None are recorded on this node, and a row cannot name one — the
+        board carries no `grant_ref`. Both halves are printed as the states
+        they are, because "the board names no grant" and "the store holds none"
+        are different gaps with different producers, and one sentence covering
+        both would point a reader at the wrong one.
     """
     board = _work_board_document(args)
     if board is None:
@@ -5784,33 +5817,37 @@ def cmd_work_focus(args) -> int:
                                  "serveros_intake_focus_source")
     cycle = _load_module_from(REPO_ROOT / "intake" / "daily_cycle.py",
                               "serveros_intake_daily_cycle")
+    delegation_mod = _load_module_from(REPO_ROOT / "context" / "delegation.py",
+                                       "serveros_context_delegation")
     try:
         composed = focus_mod.compose(board)
     except focus_mod.Refused as exc:
         sys.stderr.write(f"serverosctl: {exc}\n")
         return EXIT_FAULT
 
-    grants: dict = {}
-    if getattr(args, "grants", ""):
-        path = Path(args.grants)
-        if not path.is_absolute():
-            sys.stderr.write(
-                f"serverosctl: --grants must be absolute, got {path}. A grant "
-                f"file resolved against the caller's cwd is a grant nobody else "
-                f"can find.\n")
-            return EXIT_FAULT
-        try:
-            grants = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, ValueError) as exc:
-            sys.stderr.write(f"serverosctl: cannot read --grants {path}: {exc}\n")
-            return EXIT_FAULT
-        if not isinstance(grants, dict):
-            sys.stderr.write(
-                f"serverosctl: --grants {path} must hold an object keyed by grant "
-                f"ref, got {type(grants).__name__}\n")
-            return EXIT_FAULT
-
     now = datetime.datetime.now(datetime.timezone.utc)
+    # The envelope a cycle may be admitted under. It is built from what this
+    # node RECORDED — `runtime/agent_control_store.py`'s `grants` collection —
+    # and every grant is re-checked against the delegation it derives from
+    # before it enters the map. A grant file is deliberately not an option:
+    # there is no shape of authority this fabric refuses more firmly, and no
+    # way to tell one from a file somebody edited.
+    store_mod, control = _control_store()
+    try:
+        recorded, contexts = control.grants(), control.contexts()
+    except store_mod.StoreError as exc:
+        sys.stderr.write(f"serverosctl: {exc}\n")
+        return EXIT_FAULT
+    named_by = {str(row["grant_ref"]) for row in composed["rows"]
+                if row.get("grant_ref")}
+    try:
+        delegations = delegation_mod.envelopes(
+            recorded, contexts, now=now.isoformat(), named_by=named_by)
+    except delegation_mod.Refused as exc:
+        sys.stderr.write(f"serverosctl: {exc}\n")
+        return EXIT_FAULT
+    grants = delegations["envelopes"]
+
     lines = [
         f"board       {composed['board_at']} (composed now)",
         f"observed    {composed['observed_at'] or 'unknown'} (oldest projection)",
@@ -5820,9 +5857,15 @@ def cmd_work_focus(args) -> int:
         + ", ".join(f"{name} {stamp or 'undated'}"
                     for name, stamp in sorted(composed["projection_times"].items())),
         f"rows        {len(composed['rows'])}",
-        f"grants      {len(grants)} supplied"
-        + ("" if grants else " — no grant authority exists on this node"),
+        f"delegations {delegations['summary']['recorded']} recorded · "
+        f"{delegations['summary']['authorizing']} authorizing"
+        + ("" if recorded else " — none recorded on this node"),
+        f"named       {len(named_by)} row(s) name a grant_ref"
+        + ("" if named_by else " — the board carries none"),
     ]
+    for row in delegations["rows"]:
+        lines.append(f"  {row['grant_ref']:<24} {row['state']:<30} "
+                     f"{row['because']}")
     if composed["observed_at"] is None:
         decision = {"status": "BLOCKED", "reason": "PROJECTION_AGE_UNKNOWN",
                     "selected": [], "carryover": []}
@@ -5865,11 +5908,108 @@ def cmd_work_focus(args) -> int:
             lines.append(f"  {entry['id']:<10} {','.join(entry['fields'])}")
         if len(unevaluated) > 5:
             lines.append(f"  … {len(unevaluated) - 5} more, same two fields")
-    if not grants:
+    if not named_by:
         lines.append("")
-        lines.append("no grant authority: " +
+        lines.append("no row names a grant: " +
                      composed["not_produced_elsewhere"]["grants"])
-    emit({"decision": decision, "focus": composed, "grants_supplied": len(grants)},
+    emit({"decision": decision, "focus": composed, "delegations": delegations},
+         as_json=args.json, lines=lines)
+    return EXIT_OK
+
+
+def cmd_work_grants(args) -> int:
+    """§12 — the recorded delegations, and which of them still authorize.
+
+    The half of `work focus` that answers without a board. That verb prints the
+    same rows beside the decision they produced; this one asks only the
+    delegation question, so it needs no fresh projection and can be run before
+    a cycle to see whether one may start at all. The two verbs share
+    `context/delegation.py`, so a grant cannot authorize in one and not the
+    other.
+
+    What it will not do, and the reason each is missing rather than pending:
+
+      * it writes nothing. There is no `--approve` and no way to mint a grant
+        from here — a delegation is a person's decision, and a verb that could
+        record one is a verb that could authorize work on its own.
+      * it does not print the store as a table of people. The collection is
+        keyed by `grant_ref`; the actor is a field on the record, and this
+        prints the delegation, not the delegatee.
+      * it does not treat its own output as a decision. `select_focus` returns
+        `admission_required: True` and work-engine's atomic admission is what
+        admits anything.
+    """
+    delegation_mod = _load_module_from(REPO_ROOT / "context" / "delegation.py",
+                                       "serveros_context_delegation")
+    store_mod, control = _control_store()
+    # The one place this question is answered from a clock. `--now` is offered
+    # rather than hidden because the reader's clock IS part of the answer: a
+    # grant that authorizes at one instant and not the next is the whole point
+    # of re-checking the delegation on every read.
+    raw = getattr(args, "now", "") or datetime.datetime.now(
+        datetime.timezone.utc).isoformat()
+    try:
+        stamp = datetime.datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
+    except ValueError as exc:
+        sys.stderr.write(
+            f"serverosctl: --now {raw!r} is not a timestamp ({exc}). This verb "
+            f"judges delegations against a clock; one it cannot read is not a "
+            f"clock it may fall back from.\n")
+        return EXIT_FAULT
+    if stamp.tzinfo is None:
+        sys.stderr.write(
+            f"serverosctl: --now {raw!r} carries no timezone, so the instant it "
+            f"names depends on where the reader is standing.\n")
+        return EXIT_FAULT
+    now = stamp.astimezone(datetime.timezone.utc).isoformat()
+
+    try:
+        recorded, contexts = control.grants(), control.contexts()
+    except store_mod.StoreError as exc:
+        sys.stderr.write(f"serverosctl: {exc}\n")
+        return EXIT_FAULT
+    try:
+        report = delegation_mod.envelopes(recorded, contexts, now=now)
+    except delegation_mod.Refused as exc:
+        sys.stderr.write(f"serverosctl: {exc}\n")
+        return EXIT_FAULT
+
+    summary = report["summary"]
+    lines = [f"store       {control.path}",
+             f"now         {now}",
+             f"recorded    {summary['recorded']}"
+             + ("" if summary["recorded"] else
+                " — nothing has delegated work on this node"),
+             f"authorizing {summary['authorizing']} of {summary['recorded']}"
+             + (" (the rest are excluded, each with its reason below)"
+                if summary["recorded"] else ""),
+             f"contexts    {len(contexts)} trusted context(s) held; a grant "
+             f"derives from one and cannot outlive it"]
+    if summary["states"]:
+        lines.append("states      " + ", ".join(
+            f"{state} {count}" for state, count in sorted(summary["states"].items())))
+    for row in report["rows"]:
+        lines.append("")
+        lines.append(f"{row['grant_ref']}  {row['state']}"
+                     + ("  (in the envelope)" if row["in_envelope"] else ""))
+        lines.append(f"  delegated by  {row.get('delegated_by') or '—'}")
+        if row.get("revoked") is not None:
+            lines.append(f"  revoked       {row['revoked']}"
+                         + (f" at {row.get('revoked_at')}"
+                            if row.get("revoked_at") else ""))
+        for label, field in (("window", "valid_from"), ("until", "expires_at")):
+            if row.get(field):
+                lines.append(f"  {label:<13} {row[field]}")
+        if row.get("projects"):
+            lines.append(f"  projects      {', '.join(map(str, row['projects']))}")
+        if row.get("items"):
+            lines.append(f"  items         {', '.join(map(str, row['items']))}")
+        if row.get("actions"):
+            lines.append(f"  actions       {', '.join(map(str, row['actions']))}")
+        if row.get("budget"):
+            lines.append(f"  budget        {json.dumps(row['budget'], sort_keys=True)}")
+        lines.append(f"  because       {row['because']}")
+    emit({"delegations": report, "store": str(control.path), "now": now},
          as_json=args.json, lines=lines)
     return EXIT_OK
 
@@ -7729,16 +7869,23 @@ def build_parser() -> argparse.ArgumentParser:
                       "from the board's own rows over the oldest projection's "
                       "age. Reads; admits nothing", **_COMMON)
     _add_work_roots(wk_focus, project_required=False)
-    wk_focus.add_argument("--grants", default="",
-                          help="absolute path to a JSON object keyed by grant "
-                               "ref. No grant authority exists on this node "
-                               "yet, so omitting it reports every candidate as "
-                               "un-authorized rather than selecting one")
     wk_focus.add_argument("--ttl", type=int, default=900,
                           help="how old the underlying projection may be, in "
                                "seconds (default 900)")
     wk_focus.add_argument("--limit", type=int, default=2)
     wk_focus.set_defaults(func=_workchain_refusals(cmd_work_focus))
+
+    wk_grants = work_sub.add_parser(
+        "grants", help="§12 — the standing delegations this node has recorded, "
+                       "each one re-checked against the delegation it derives "
+                       "from. Reads the control store; admits nothing",
+        **_COMMON)
+    wk_grants.add_argument("--now", default="",
+                           help="the clock to judge the delegations against "
+                                "(default: now). The store holds no clock and "
+                                "neither does `context/delegation.py`, so this "
+                                "is the one place the question is answered")
+    wk_grants.set_defaults(func=cmd_work_grants)
 
     wk_item = work_sub.add_parser(
         "item", help="one Item's chain: which document exists, which is "

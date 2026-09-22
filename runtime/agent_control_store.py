@@ -42,7 +42,36 @@ restart, and the two candidate homes were a fourth store or this one. This one,
 because a selection is the same kind of thing as the other three collections —
 control-plane state that a restart must not lose — and a second store written
 by the same code path would be a second thing that can disagree after a crash,
-which is the reason the first three share a file.
+which is the reason every collection here shares a file.
+
+Why standing delegations are stored here (§12, P6)
+--------------------------------------------------
+`intake/focus_source.py` records in its own words that nothing on this node
+mints a grant and that "there is no grant store under `state/serveros/`". That
+sentence was true until this collection existed, and it is why every candidate
+is excluded as `MISSING_OR_REVOKED_GRANT`: an objective nobody authorized may
+not be admitted, and there was nowhere for an authorization to be.
+
+The map `intake/daily_cycle.select_focus` is handed is the thing that decides
+whether a cycle may carry an objective, so it cannot be a file somebody edited
+— that is the one shape of authority this fabric refuses to accept, because
+nothing distinguishes it from a file somebody edited. A grant recorded here is
+the only thing that supplies one. `context/delegation.py` builds that map and
+drops every grant whose `delegated_by` does not resolve to a trusted context
+that `authorizes` right now, so a grant cannot outlive the delegation it
+derives from whatever its own `expires_at` says.
+
+Why a collection here and not a store of its own: a grant is the same kind of
+thing as the other four — control-plane state a restart must not lose. A
+delegation that vanished on restart would silently withdraw authority, and the
+alternative to that is not "no authority" but "authority re-minted on demand",
+which is authority nobody granted. This is §M's argument for selections, one
+step further out.
+
+The identity rule holds here too: the collection is keyed by `grant_ref`, and
+the actor a grant was given to appears on the record as a field. There is no
+`grants_for_actor()` and the omission is the same one as above — that method
+would answer "what may this person do", which is policy.
 
 Several writers, one record at a time
 -------------------------------------
@@ -141,6 +170,13 @@ def _exclusive(lock: Path):
 # Kept equal to `runtime/human_console.py#THREAD_BINDING_FIELDS` by a test.
 BINDING_ONLY_FIELDS = ("session_role", "bound_item_ref")
 
+# The fields `revoke_grant` owns, and the reason `put_grant` refuses them is the
+# reason `put_binding` refuses `state`: a grant ends by being revoked, and a
+# caller who could write `revoked` on a put could also write it back to False
+# and un-revoke a delegation by re-reporting it. The store writes the only value
+# a new grant can have and nothing else may move it.
+REVOCATION_FIELDS = ("revoked", "revoked_at", "revoked_reason")
+
 
 class StoreError(RuntimeError):
     pass
@@ -175,11 +211,15 @@ def _atomic_write(path: Path, payload: dict) -> None:
 
 
 class AgentControlStore:
-    """Trusted contexts and approvals, persisted as one small document.
+    """Control-plane state at rest, persisted as one small document.
 
-    One file, not two, because the two collections are written in the same
-    transaction when an approval is consumed — and two files that are written
-    together are two files that can disagree after a crash.
+    One file, not a directory of them, because more than one collection is
+    written in the same transaction — an approval consumed and the context it
+    was decided from, a binding and the selection that pointed at it — and two
+    files that are written together are two files that can disagree after a
+    crash. The five collections are `contexts`, `approvals`, `bindings`,
+    `selections` and `grants`; each says in its own section above why it is
+    here rather than in a store of its own.
     """
 
     def __init__(self, path: Path | str, *, now=None) -> None:
@@ -218,7 +258,7 @@ class AgentControlStore:
                     f"running. An empty store would say every approval it held "
                     f"had never been granted.")
             return {"schema": SCHEMA, "contexts": {}, "approvals": {},
-                    "bindings": {}, "selections": {}}
+                    "bindings": {}, "selections": {}, "grants": {}}
         try:
             data = json.loads(self.path.read_text(encoding="utf-8"))
         except (OSError, ValueError) as exc:
@@ -236,6 +276,7 @@ class AgentControlStore:
         data.setdefault("approvals", {})
         data.setdefault("bindings", {})
         data.setdefault("selections", {})
+        data.setdefault("grants", {})
         data["schema"] = SCHEMA
         return data
 
@@ -499,13 +540,143 @@ class AgentControlStore:
     def selections(self) -> dict:
         return dict(self._read()["selections"])
 
+    # -- standing delegations (§12, P6) ------------------------------------
+
+    def put_grant(self, record: dict) -> dict:
+        """Record a standing delegation. Write-once, on `grant_ref`.
+
+        The scope, the budget and the window are the caller's; what this method
+        decides is whether there is anything for them to be a scope ON. A grant
+        names the trusted context it was delegated in — `delegated_by` — and a
+        grant whose `delegated_by` names no context this store holds is refused.
+        That refusal is the whole reason this collection exists rather than a
+        directory of JSON files: authority with no root is authority nobody
+        granted, and no later clock can give it one.
+
+        What it does NOT check, deliberately: whether that context is still
+        fresh, and whether the scope is one a cycle may carry. Both are
+        questions about now, and this store has no clock — `authorizes` is
+        asked by the reader that has one (`context/delegation.py`), and the
+        scope is `intake/daily_cycle.grant_reason`'s. A grant recorded against
+        a context that has since gone stale is therefore STORED and reported as
+        not authorizing, which is a different answer from a refusal here and
+        the one that preserves the record of what was delegated.
+
+        Write-once for `put_binding`'s reason, arrived at from the other side:
+        a grant is the envelope a cycle was admitted under, and replacing it in
+        place would rewrite what work already done was authorized by. Extending
+        a delegation is a new grant; ending one is `revoke_grant`.
+        """
+        ref = str(record.get("grant_ref") or "").strip()
+        if not ref:
+            raise StoreError(
+                "a standing delegation without a grant_ref cannot be stored: it is "
+                "what a row names to be admitted under, and a grant nobody can name "
+                "is one no row can be admitted by")
+        delegated_by = str(record.get("delegated_by") or "").strip()
+        if not delegated_by:
+            raise StoreError(
+                "a standing delegation without a delegated_by cannot be stored. It "
+                "is a scope on a trusted context, and a grant that does not say "
+                "whose delegation it is is one that no longer has a root — which is "
+                "the state this collection exists to keep out")
+        smuggled = [f for f in REVOCATION_FIELDS
+                    if f in record and record[f] != (False if f == "revoked" else None)]
+        if smuggled:
+            raise StoreError(
+                f"a grant may not be stored carrying {', '.join(smuggled)}. A "
+                f"delegation ends by revocation (`revoke_grant`), and a grant whose "
+                f"revocation a put could write is one a second put could un-revoke")
+        staged = {k: v for k, v in record.items() if k not in REVOCATION_FIELDS}
+        with self._mutation():
+            # Under the lock, so a context another writer reported a moment ago
+            # is seen. Checked against the document on disk rather than against
+            # what this instance loaded: a grant refused because its delegation
+            # arrived since would be a refusal that depends on who wrote first.
+            if str(delegated_by) not in self._data["contexts"]:
+                raise StoreError(
+                    f"no trusted context {delegated_by!r} has been reported to this "
+                    f"store, so {ref!r} has nothing to derive from. A standing "
+                    f"delegation is a scope on a context somebody was verified in; "
+                    f"minting one against a context this store has never held is "
+                    f"authority with no root")
+            existing = self._data["grants"].get(ref)
+            if existing is not None:
+                theirs = {k: v for k, v in existing.items()
+                          if k not in REVOCATION_FIELDS}
+                # Compared WITHOUT the revocation fields on both sides: a
+                # re-report of a delegation that has since been revoked is
+                # still the same delegation, so it returns the record as it
+                # stands rather than either refusing or un-revoking it.
+                if theirs == staged:
+                    return existing
+                raise StoreError(
+                    f"{ref} already has a grant and it cannot be replaced. A "
+                    f"delegation is the envelope a cycle was admitted under; "
+                    f"changing its scope in place would rewrite what the work "
+                    f"already done was authorized by. Revoke it and record the "
+                    f"one you mean")
+            recorded = {**staged, "revoked": False}
+            self._data["grants"][ref] = recorded
+            self._flush()
+            return recorded
+
+    def get_grant(self, ref: str) -> dict | None:
+        """One recorded delegation, or None if nothing ever said.
+
+        None is not "ungranted authority for everything". The reader that hands
+        this to a cycle (`context/delegation.py`) reports a miss as
+        `MISSING_OR_REVOKED_GRANT`, because "nobody authorized this" and "any
+        authority will do" are opposite readings and only one of them is safe.
+        """
+        return self._read()["grants"].get(str(ref))
+
+    def grants(self) -> dict:
+        return dict(self._read()["grants"])
+
+    def revoke_grant(self, ref: str, *, at: str, reason: str | None = None) -> dict:
+        """End a standing delegation. Never a deletion, and never an extension.
+
+        The record stays, and it stays saying what it said. A revoked grant is
+        what makes "this was authorized when the work started and is not now"
+        answerable, and a store that dropped it on revocation would leave a
+        withdrawal indistinguishable from a delegation that never existed —
+        which is the reading that makes an audit of "who let this run"
+        impossible.
+
+        Revoking twice is idempotent and keeps the FIRST revocation time. The
+        window a cycle's after-the-fact review is computed from is when the
+        authority ended, not when somebody last mentioned it.
+        """
+        key = str(ref or "").strip()
+        if not key:
+            raise StoreError("revoking a grant needs the grant's ref")
+        with self._mutation():
+            existing = self._data["grants"].get(key)
+            if existing is None:
+                raise StoreError(
+                    f"{key} has no grant to revoke; recording a revocation of "
+                    f"something this store does not hold would make the withdrawal "
+                    f"of a delegation look the same as a delegation that was never "
+                    f"made")
+            if existing.get("revoked") is True:
+                return existing
+            updated = dict(existing)
+            updated["revoked"] = True
+            updated["revoked_at"] = str(at)
+            if reason:
+                updated["revoked_reason"] = str(reason)
+            self._data["grants"][key] = updated
+            self._flush()
+            return updated
+
     def replace(self, record: dict, *, kind: str) -> dict:
         """Overwrite one record by ref. Used by consumption, and only by it.
 
-        `binding` is deliberately absent from `collections` below: this is the
-        one method in this store that overwrites a record wholesale, and a
-        binding that could be handed to it would have an immutability rule that
-        a caller reaches around.
+        `binding` and `grant` are deliberately absent from `collections` below:
+        this is the one method in this store that overwrites a record
+        wholesale, and either of those handed to it would have an immutability
+        rule that a caller reaches around.
         """
         collections = {"context": "contexts", "approval": "approvals"}
         if kind not in collections:
@@ -544,6 +715,15 @@ class AgentControlStore:
         one that never did, and `human_console.selection_axis` reports that
         difference as `STALE` versus `NONE` — which it cannot do if this method
         has already deleted the evidence.
+
+        Grants are never swept, and this one is the sharpest of the three. A
+        grant whose window has closed is the record of what work was delegated,
+        by whom, and until when — and a cycle's envelope is read back later
+        precisely to answer that. Sweeping it would leave a grant that expired
+        and a grant that never existed looking the same, and the reader that
+        drops it would report the same reason for both. Nothing is lost by
+        keeping it: `context/delegation.py` re-checks the window and the
+        delegation on every read, so an old grant authorizes nothing.
         """
         gone = {"contexts": [], "approvals": []}
         # Under the lock, and that matters more here than anywhere else in this
@@ -591,4 +771,11 @@ class AgentControlStore:
                               if b.get("session_role") == role)
                     for role in sorted({str(b.get("session_role") or "UNKNOWN")
                                         for b in bindings.values()})},
-                "selections": len(data["selections"])}
+                "selections": len(data["selections"]),
+                "grants": len(data["grants"]),
+                # Counted rather than listed, and counted HERE rather than in
+                # the reader: how many delegations have been withdrawn is a
+                # fact about the register. Which of them still authorize is a
+                # question for the clock, and this store has none.
+                "grants_revoked": sum(1 for g in data["grants"].values()
+                                      if g.get("revoked") is True)}
