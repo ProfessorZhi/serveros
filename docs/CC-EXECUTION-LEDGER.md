@@ -220,6 +220,16 @@ DESIGN-only 变成了 CODE。`NOT_MEASURED` 与 `FAILED` 是两件事，不能�
 
 计划 P0：「测试现有受影响基线并记录，不能把旧问题带来的失败静默删掉。」
 
+### 5.0 本轮实测基线
+
+| 套件 | 结果 | 命令 |
+| --- | --- | --- |
+| serveros | **4144 passed, 23 skipped, 0 failed**（3202 subtests，464s） | `serveros-test/bin/python -m pytest tests/ -q -p no:cacheprovider` |
+| ability-management | **91 passed** | 同上，加 `SERVEROS_BUNDLE=<serveros worktree>/plugin` |
+
+serveros 那套的代价要写下来：单次 **7 分 44 秒**，且主机 load 一度到 53 时被拖到
+近乎两倍。所以「跑一套」在这台共享机上不是随手动作，改一个字面量就该只想跑受影响的那两个文件。
+
 | 红 | 位置 | 性质 | 处置 |
 | --- | --- | --- | --- |
 | `test_real_registry_matches_real_bundle` | ability-management `tests/test_materialization_contract.py` | **跨仓库**：它读 `src/serveros`，而 `plugin/profiles/testing.yaml` 只在 worktree 里，于是注册表「多」了 `automated-testing` | 已确诊：`SERVEROS_BUNDLE=<worktree>/plugin` 下全套 91 passed。修法是让 `src/serveros` 前进到含该 profile 的 revision，**不是**改测试 |
