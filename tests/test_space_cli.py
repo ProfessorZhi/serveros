@@ -205,7 +205,7 @@ class TheDecisionIsNotAFailure(unittest.TestCase):
     CASES = {
         "a canonical object already in its place": (placement("wiki", "knowledge",
                                                               project="litellm"), "KEEP"),
-        "an object on the wrong surface": (placement("mydocs", "report",
+        "an object on the wrong surface": (placement("mydocs", "knowledge",
                                                      project="litellm"), "MOVE"),
         "canonical but missing its index entry": (
             {**placement("wiki", "deliverable", project="litellm"),
@@ -327,7 +327,7 @@ class TheCliAddsNoSchema(unittest.TestCase):
 class AProposalIsNotAPermission(unittest.TestCase):
     def test_a_move_prints_its_approval(self):
         proc = cli("space", "resolve", "--request",
-                   str(request(placement("mydocs", "report", project="litellm"))))
+                   str(request(placement("mydocs", "knowledge", project="litellm"))))
         text = proc.stdout.decode()
         self.assertIn("MOVE", text)
         self.assertIn("proposal-only", text)
@@ -355,7 +355,7 @@ class AProposalIsNotAPermission(unittest.TestCase):
         refuses to synthesise one from a pattern of its own.
         """
         proc = cli("space", "resolve", "--request",
-                   str(request(placement("mydocs", "report", project="litellm"))))
+                   str(request(placement("mydocs", "knowledge", project="litellm"))))
         self.assertIn("no template in the policy", proc.stdout.decode())
 
     def test_an_undecided_placement_does_not_print_a_dash_as_a_surface(self):
