@@ -44,7 +44,7 @@ ServerOS 原生 Coordinator / Skills       MarketOps 应用 / 单一 MCP
 |---|---|---|
 | 跨项目依赖、降级、启用判据 | serveros 主架构及本说明 | 不引入每日工作第二大脑 |
 | DecisionProvider 协议、reusable Laya 适配/启动包 | ability-management；无已有等价实现时放 providers/laya/ | 这是目标源代码位置，不是已注册新 ID |
-| Laya 权重/tokenizer/校准配置 | 上游原始身份 + 受管模型缓存 | 不 vendor 大权重，不共享字体/秘密，不写入业务仓 |
+| Laya 权重/tokenizer/校准配置 | 上游原始身份 + 受管模型缓存 | 大权重与秘密不入业务仓；保留上游来源和许可证 |
 | CPU/内存/endpoint/认证引用/安装回执 | hwz-ops 与本机受保护 Binding | 不把本机绝对路径写进可移植代码 |
 | ServerOS 客户端 | 现有 provider/ability resolution 边界 | 按需调用，不进 serverosd tick、bootstrap 或强制路由 |
 | MarketOps 客户端与 DecisionSpecs | MarketOps 现有 DecisionProvider/业务模块 | 不导入 ServerOS 源树，不把业务 profile 塞进共享模型 |
