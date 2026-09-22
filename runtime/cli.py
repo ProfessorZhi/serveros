@@ -322,6 +322,33 @@ def _support_module():
                              "serveros_intake_support")
 
 
+def _support_handoff_module():
+    return _load_module_from(REPO_ROOT / "intake" / "support_handoff.py",
+                             "serveros_intake_support_handoff")
+
+
+class _AssertedQueue:
+    """A receipt the CALLER already holds, and nothing more than that.
+
+    `support handoff` has no queue client: `serveros-work-mcp` is registered in
+    no config on this node and `workengine` is not on PATH, which
+    `fleet/mcp-contract.yaml:362-366` already says out loud. So the honest thing
+    a command line can offer is for an operator who HAS a receipt to hand the
+    reference over. This adapter hands back what it was given and says so in
+    `provenance`, so a reference that came off a command line cannot pass for
+    one that came out of a call this tool made.
+    """
+
+    provenance = ("asserted on the command line by the caller; this tool has no "
+                  "queue client and called no queue")
+
+    def __init__(self, reference: str):
+        self.reference = reference
+
+    def accept(self, packet):
+        return self.reference
+
+
 def _support_call(args, build):
     """One support verb: build the reading, print it, return its exit code.
 
@@ -411,6 +438,44 @@ def cmd_support_check(args) -> int:
         # same. Only "could not read it" is a non-zero, and it says so.
         return payload, ("ANSWERED" if outcome == "CHECKED" else outcome)
     return _support_call(args, build)
+
+
+def cmd_support_handoff(args) -> int:
+    """§10's fallback: the packet, and the two receipts before 「已通知」.
+
+    The two halves are one invocation for the same reason `answer` is:
+    assembling the packet and routing it are one act, and a chain that
+    assembled one without the other is how `support.answer`'s improvement
+    candidate came to be printed and dropped for as long as it was.
+
+    This verb SENDS NOTHING. It reads the knowledge base through
+    `intake/support.py`, builds the packet, and records what each anchor
+    answered. The delivery is reported by whoever walked the delivery path —
+    the one delivery path is `runtime/notifications.py`, whose event
+    vocabulary is a closed set with no word for this. So the reading is
+    `PENDING_DELIVERY` unless an operator supplies a receipt they already hold,
+    and that is the honest reading of this node today rather than a
+    shortcoming of the verb.
+    """
+    support = _support_module()
+    module = _support_handoff_module()
+    try:
+        reading = support.answer(args.kb_root, status_code=args.status_code,
+                                 message=args.message, code_root=args.code_root)
+        payload = module.run(
+            reading, trigger=args.trigger, conversation=args.conversation,
+            queue=(_AssertedQueue(args.queue_receipt) if args.queue_receipt else None),
+            owner=args.owner,
+            delivery=({"state": args.delivery_state, "at": args.delivery_at}
+                      if args.delivery_state else None))
+    except support.Refused as exc:
+        sys.stderr.write(f"serverosctl: {exc}\n")
+        return EXIT_FAULT
+    except module.Refused as exc:
+        sys.stderr.write(f"serverosctl: {exc}\n")
+        return EXIT_FAULT
+    emit(payload, as_json=args.json, lines=module.render(payload).splitlines())
+    return module.exit_code_for(payload)
 
 
 def cmd_recipe_list(args) -> int:
@@ -8769,6 +8834,45 @@ def build_parser() -> argparse.ArgumentParser:
              "a check whose answer depends on when it ran cannot be compared "
              "against a recorded one")
     sp_check.set_defaults(func=cmd_support_check)
+
+    sp_handoff = _roots(support_sub.add_parser(
+        "handoff", help="§10's fallback: the small decision packet for a "
+                        "question nobody reached, and the two receipts it "
+                        "needs before anybody may say 「已通知」. Sends "
+                        "nothing", **_COMMON))
+    sp_handoff.add_argument("--status-code", type=int, default=None)
+    sp_handoff.add_argument("--message", default=None)
+    sp_handoff.add_argument(
+        "--trigger", default=None,
+        help="which of the contract's five fired. Undefaulted: it is derived "
+             "from the reading when the reading came from this chain, and the "
+             "other four have no producer here, so a caller who knows one names "
+             "it rather than this tool guessing")
+    sp_handoff.add_argument(
+        "--conversation", default=None,
+        help="a conversation REF, never a body. A packet leaves this machine")
+    sp_handoff.add_argument(
+        "--owner", default=None,
+        help="the bound personal work owner. Undefaulted on purpose: §10's "
+             "fallback goes 「交绑定的个人工作 owner，而非擅自指定同事或 SLA」, so "
+             "a default here would be 擅自指定同事")
+    sp_handoff.add_argument(
+        "--queue-receipt", default=None,
+        help="the reference an EXISTING queue already holds this packet under. "
+             "Supplying it asserts the queue accepted the packet: this tool has "
+             "no queue client and calls no queue, and it records that the "
+             "assertion came from the command line")
+    sp_handoff.add_argument(
+        "--delivery-state", default=None, choices=["DELIVERED", "FAILED",
+                                                   "UNSUPPORTED", "UNKNOWN"],
+        help="what the delivery path ANSWERED. This tool sends nothing, so a "
+             "caller reports it. Never recorded without --queue-receipt: §10 "
+             "orders 「先入…队列并得到回执，再…提醒」")
+    sp_handoff.add_argument(
+        "--delivery-at", default=None,
+        help="when that was recorded. Never read from the clock: a time that "
+             "is really when the tool ran is not when the thing happened")
+    sp_handoff.set_defaults(func=cmd_support_handoff)
 
     document = sub.add_parser(
         "document", help="document identity and authority (§10)", **_COMMON)
