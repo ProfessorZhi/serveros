@@ -2684,3 +2684,156 @@ ServerOS 侧一个观测者都没有。这不是「测了没通过」，是「�
 跑通并留下产物，工作半环仍卡在板投影的 producer 上。** 其余各条没有一条跑通过。
 这不是「测了没通过」——两张表分开写，是因为把它们并成一列
 `FAILED` 会让「对象不存在」看起来像「产品坏了」，而这两种状态下该做的事完全不同。
+
+---
+
+### 12.13 2026-09-23 收口轮：新增、更正与在途
+
+本节只记**上面各节还没有的**东西，不复制已经写下的结论（复制会漂移）。
+
+#### 结清一项：`FINDING-defer-objects-gone-20260920.md` 的「活风险」不成立
+
+那份 FINDING 写于 **2026-09-20 12:03**，把 4 个「仍 DEFER 却仍被认为在盘上」的对象列为
+活风险。逐条复查：**4 个全部有当日晚些时候的处置收据，且存活副本全部实测在盘上**。
+
+| FINDING 列为活风险的对象 | 处置收据 | 存活副本（本轮实测） |
+| --- | --- | --- |
+| `state/browser/history/beijing-20260918` | `wave3-state.json` `OBJECT-2`：单次 `mv`（同文件系统，inode 保留） | `state/browser/archive/beijing-20260918`，20,690 files / 3,940,834,338 B |
+| `envs/history/beijing-20260918/quay-litellm-probe` | `wave2-A.json` `task_2_quay_unique_history`：独有历史 fetch 进 `src/quay`（不 push） | durable refs `refs/heads/migration/beijing/quay-*` **8 条在**，`fsck --unreachable` **0 objects**；未跟踪态归档在 `artifacts/ops/migration/beijing-20260918/quay-litellm-probe-dotquay/`（167 files） |
+| `migration-preservation-20260918/quay-quarantine` | `wave3-coordinator-mp18-and-sudo.json`：整个 mp18 根 `RETIRE` | 同上（mp18 是 transport 侧） |
+| `migration-preservation-20260918/serveros-release` | 同上，`content_proof` 为 **sha256 逐文件比对**（1408/1408 行相同） | `artifacts/serveros-releases/beijing-20260918`，1408 files |
+
+**一条量具教训，本轮我自己差点制造的假差异**：收据记 mp18 存活副本为 33,578,681 B，
+我用 `du -sb` 读得 33,579,207 B，差 526 B，一度像是内容变了。改用
+`find -type f -printf '%s\n' | awk` 求和得 **33,578,681**，与收据逐字一致 —— 526 B 是
+`du` 的目录项开销。**字节对账必须用与记录同一个量具。** 同类前科见 memory 里
+「`git -C` 会把相对路径拼两遍」。
+
+口径与 FINDING 一致：**本轮没有测到任何缺失字节，也不主张任何对象丢失或任何 actor 的行为。**
+结论只是：FINDING 与收据的时序差是「12:03」与「当日更晚」，不是记录缺失。
+
+#### 落盘：磁盘分级提案
+
+`artifacts/ops/tokyo-convergence/STATE-ROOT-GRADED-PROPOSAL-20260923.md`。本轮快照为全新采集，
+未复用任何更早快照；该文件没有移动、重命名、chmod、删除或链接任何对象。要点：
+
+- `fs_hygiene` 94 entries：`MISPLACED 0` / `OVERSIZED 0` / `DUPLICATE_SEMANTIC_ROOT 0`。
+- `UNKNOWN 36` 不是缺口：其中 10 条是用户 shell 环境文件、7 条是发布目录族、6 条是 HOME
+  顶层历史文档。**「未声明」是正确的答案**，把它们批量升成 `CANONICAL` 才是制造事实。
+- `LEGACY 1`（`~/backups`）是本提案唯一一条「该由人决定」的正向动作。
+- 三条真边界问题（`state/serveros/{archive,document-stewardship,laya-shared}`）**不裁决**，
+  等各自的生产者/§41 收敛。
+
+#### 份清单实测并不相同，且不应相同；已加一条测试并写明它的局限
+
+`state` root 的既有名字有**三份**清单。实测：
+
+```
+① conformance.EXCEPTIONS["state"]          8: README.md archive document-stewardship laya-shared migrations serveros.db serveros.db-shm serveros.db-wal
+② state-root-contract#preexisting.entries  8: 与 ① 相同（已被 test_state_root.py 钉住）
+③ fs_hygiene.AWAITING_A_RULING             4:       archive document-stewardship laya-shared migrations
+```
+
+**差集不是遗漏，是两种例外**：① 多出的 4 项是**文件**，例外理由是「先于规则存在」；
+③ 的 4 项是**目录**，理由是「`paths.py` 明写刻意排除、裁定未下」。`paths.py:104-108` 逐字
+回指「理由镜像进 `fs_hygiene#AWAITING_A_RULING`，那才是报告实际读的列表」。
+所以断言 `③ == ①` 是**错的**（本台账上一稿就是这么写的）—— 它会当场转红，而唯一"修法"
+要么把 4 个文件谎称「待裁定」，要么让它们变成 `CONTRACT_GAP`。
+
+已加 `tests/test_fs_hygiene.py::test_every_name_awaiting_a_ruling_is_one_conformance_already_covers`，
+断言单向包含 `③ ⊆ ①`。**它的局限写在 docstring 里**：它**抓不到**产生本次修改的那次失效
+（`archive` 与 `laya-shared` 当时三份清单**全都没有**，漂移的是 `paths.py` 里的**散文**，
+没有测试能读注释）。一个读真实 `state/serveros/` 的测试才抓得到，但那是按机器而异的测试，
+不属于单元套件。**这条缝关不上，只能靠人工纪律。**
+
+今日兜底实测：`state/serveros/` 下 9 个目录**全部**落在
+`STATE_SERVEROS_TOP_LEVEL ∪ AWAITING_A_RULING` 内 —— 当前没有名字落在所有清单之外。
+但 6 个**文件**里有 2 个落在所有清单之外：`TOKYO-SERVEROS-CLOSURE.yaml` 与
+`.pre-correction-20260917`（见下条）。
+
+#### 新发现：两个 CLOSURE 文件既没有写者，也不在任何清单上，而生产卡面指向它
+
+`state/serveros/TOKYO-SERVEROS-CLOSURE.yaml`（65,177 B，2026-09-17）与它的兄弟
+`.pre-correction-20260917`。全机 grep **找不到写者**：serveros 仓零命中；唯一命中的
+`ops/scripts/tokyo-monitor/seal_card.py:84` 只是**引用**，逐字把读者指向这份文件。
+而 `content` 停在 `canonical_sha 0b2f3f5`，serveros main 现为 `8a1dace`。
+
+**生产卡面（每小时运行的 `tokyo-status-card.timer`）在把用户指向一份冻结且无人维护的记录。**
+与 `archive`/`laya-shared` 是同一种形状（名字在 state root 里、不在任何清单上），区别是它们
+是文件，`fs_hygiene` 因此判 `UNKNOWN` 而非 `MISPLACED`，没有产生「一次批准就能执行」的
+判决，所以没造成事故。**不做**：改它就是改生产卡面文案，属对外可见变更；且
+`artifacts/ops/tokyo-convergence/state-serveros-retired-20260920/` 的三份备份说明它
+**曾被有意退役过一次又被放回** —— 没弄清这段历史前不动。
+
+#### 本轮回合的更正：三行失实 + 一条在途缺陷 + 一条我上一轮的误判
+
+1. **Jev adapter「UNBOUND：无 key」失实。** 实测 `~/.secrets/vault/typesafe.env` 存在
+   （0600，489 B，`TYPESAFE_API_KEY` 108 字符、非空；**值从未输出**）。它**未注入进程环境**
+   且 `MARKETOPS_DECISION_PROVIDER` 未设。**阻塞在接线与出站授权，不在凭据缺失** ——
+   这在终报里是两句不同的话：「我们没做」对「我们没权限」。
+2. **Serper adapter「没有跑过真实查询」已过期**（`b0a4464`）。已跑过一次真实付费查询，判 LIVE。
+3. **Laya adapter「盘上没有权重」已过期。** 权重在 `~/caches/models/laya-multilingual/052592a…/`
+   （21 文件 / 647 MB，revision 与 binding 的 pin 一致），并已作为受管服务运行。
+4. **`monitor_card.py` 的生产卡面把「声明的端口」印成「观测」。** 实测：探针一次都没连上时
+   `_gateway_model()` 仍返回 `endpoint = ':26510'`，而 `_gateway_entry()` 诚实返回 `''`;
+   该 docstring 自己写着「卡上『本机入口』这一行说的是后者（观测）」。`:67` 的注释还把这件事
+   归给一个**在本文件里不存在**的 `_gateway_endpoint`（全文件 grep 只有那一行注释提到它）。
+   **在途，不由本轮修**：`worktrees/hwz-ops/SRV-0011`（分支 `serveros/system-v1-20260920`）
+   的未提交改动已在修这一段（注释改成「这是一个声明值，不是观测结果」，取值改成
+   `res.get('gateway_port') or GATEWAY_PORT`，无 `KeyError` 隐患）。按 §2，不并行改同一文件。
+   **风险**：那份修复**尚未提交**，工作树若丢则修复丢。
+5. **更正我上一轮的一条判读，并同时更正那条判读里的一个数字**：`~/CLAUDE.md` 说
+   「`.codex/skills/...` 在本机不存在」。实测 `.codex/skills` **存在**（顶层 **15** 项 ——
+   我上一轮记的「29 项」是错的），所以我曾想把它记成第二处失实。**复查后不成立**：
+   该句的实质是「策略点名的脚本没有可跑的面」，而 `.codex/skills/workspace-management/`
+   **整个 `scripts/` 子目录不存在**（`capacity_check.py` 与 `map_check.py` 都不在，连容器
+   目录都没有），所以那句的实质**成立**；一个同名目录存在不足以推翻它。
+   **只有 `HWZ-MAP.md` 那条是真矛盾**（策略说不存在、实测 15,641 B 在 `ops/maps/`，
+   mtime 2026-09-18），且 memory 已记为预期漂移（东京地图集在该 CLAUDE.md 渲染之后才编写）。
+   （这条同时说明为什么「数一下目录里有多少项」不能当判据：数出来的数本身也可能错。）
+
+#### MarketOps 侧一条架构冲突（不是接线，是按构造不同）
+
+设计说两侧共用同一个 endpoint 与**同一份 resident checkpoint**。实测：MarketOps 的
+`worktrees/marketops/mvp/marketops/adapters/laya.py` **不走共享服务** ——
+`:318 import laya`、`:142` 自述「整个进程一个 Router」、`:88` `_LOCAL_MODEL_KEY = "english"`，
+全仓 **0 处**引用 `laya-shared-binding.yaml` 或该 socket。所以它按构造会自己加载**第二份**
+resident checkpoint，且 pinned 的还不是共享服务用的 `laya-multilingual`。
+这不是「少接一根线」，是两侧的**实现形态**不同。
+
+#### §9 飞书：地图三处计数已修，L3 刷新受阻有据，最终回执未发
+
+- `hwz-ops@1993042`：空间总数 24 → **28**（4 managed + 24 external，`+space-list` 27 加
+  `My Document Library`）；`配置文档` → **`公开文档`**；`公开文档` 0 → **2 节点**；
+  `AI平台知识库` 6 → **5 节点**；两处 UNRESOLVED 关闭。
+  （附带澄清：§B 标题「8 节点」**是对的**（顶层 5 + 子孙 3），上一轮记的「8 vs 7 待裁定」
+  是**假警报**。）
+- **L3 索引刷新受阻且原因已记录**（`FEISHU-TREE-MAP.md:208`）：控制面
+  `workengine federation <domain> inventory --evidence-run …` 需要活 store 里的 Run，
+  本机 `runs` 表 0 行，且**不得伪造 Run 来点亮**。
+- **最终云端回执本轮未发**：现在 03:17，处于 `monitor_card.py:103-106` 定义的
+  `[22:00, 09:00)` 静默窗口内。**这不是缺权限，是窗口未到，且不得为收口而破静默。**
+  要发须在 09:00–22:00 之间。
+
+#### 孤立的外部权限 / 人的动作 —— 单独一类，不与上面混读
+
+这些是本轮**确实没做**的，每条都写清为什么：
+
+| 动作 | 为什么本轮不做 |
+| --- | --- |
+| 重启 `serverosd.service` | HUMAN_EXECUTED，需安全窗口（§12.2、S9） |
+| Jev 真实调用与对照实验 | **出站**，本轮授权明确不含外联 |
+| 打开 `serveros-daily.timer` | 板投影没有 producer，上弦只会产出「看起来像工作循环、`select_focus` 却每次 BLOCKED」的日产物（§12.5） |
+| `~/backups` 退役 | 需人先读清单判定唯一内容 |
+| 两个 CLOSURE 文件处置 | 改生产卡面文案，对外可见 |
+| 推进 `/data/home/vince/workspace/ops` 到 `origin/main` | 该 canonical 检出**同时是生产部署点**（`tokyo-status-card.timer` 的 `ExecStart` 就在它下面），当前 `behind 2` |
+| 合并 `SRV-0011` 的卡片修复 | 归属他人的活动工作树 |
+| `PENDING_CONSUMER` 四处移除 | 被 `srv-0005-e2e-evidence` 的活动未提交工作树挡着（§12.4 契约 `consumers:`） |
+| 发飞书最终回执 | 静默窗口内（见上） |
+| LiteLLM 生产切流 / MarketOps 外联 | §1 逐字不授权 |
+
+#### 本节没有说什么
+
+没有说 21 个职责「已完成」。没有说「仅剩外部授权」——上表之外仍有**归属他人**（SRV-0011、
+SRV-0005）与**等生产者**（板投影、document-stewardship、会议 manifest）的缺口，它们既不是
+权限问题也不是本轮能自行闭合的问题。
