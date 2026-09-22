@@ -414,18 +414,80 @@ DESIGN-only 变成了 CODE。`NOT_MEASURED` 与 `FAILED` 是两件事，不能�
 之后**才绿的。不带这个变量跑，同样这棵树会红 8 条。一条省略了环境变量的绿灯，读起来和
 一条无条件的绿灯一模一样——所以这一格现在把变量写出来。
 
+**再纠一次，同一类的第二次。** 本文件先前把 `1c36789` 记成
+「4260 passed, 0 failed」。本轮再跑同一棵树，红 **1** 条：
+
+```text
+tests/test_declared_commands.py::DeclaredCommandsExist::test_every_declared_command_is_real_or_a_recorded_gap
+`serverosctl` `cleanup` — cited in docs/CC-EXECUTION-LEDGER.md (after `|`)
+```
+
+（这一行**不是** pytest 的逐字输出：原文里那两个记号之间是一个空格。改记法的原因见下面的
+「第三次」，不是排版偏好。）
+
+`git show HEAD:docs/CC-EXECUTION-LEDGER.md | grep -n "relevance|cleanup"` → `667`，也就是说
+**这条红在 `1c36789` 那棵树里就在**。所以那份「4260 passed」不是在它被记到的 revision 上
+测出来的——套件跑完之后、提交之前，台账又被改过一次。这和上一段那条「省略了环境变量的
+绿灯」是同一族：**一条不覆盖它所标注的那棵树的绿灯，读起来和无条件的绿灯一模一样。**
+差别只在于上次漏的是环境变量，这次漏的是一次后置编辑。
+
+修的是文档不是闸门：`[--kind relevance|cleanup]` → `[--kind relevance / cleanup]`。
+闸门「`serverosctl` 后带 `|` 的分段当成另一条命令」是有意的
+（`context/disclosure-contract.yaml`、`context/disclosure.py` 靠它工作），而这个 fence 让它
+读到了一条没人写的命令。顺带记下这条闸门的一个已知弱点：同一族里
+`'record|digest-record|receipt'`（§3，`monitor_card.py` 那条 grep）也是从 fence 里读进来的，
+它**通过只因为 `digest-record` 恰好是个真动词**——一条靠巧合变绿的行，和一条红一样值得记。
+
+**第三次，同一个字面量，另一条路径。** 上面那条改完后再跑全量，同一条测试**还是红**，
+这次报的是不带 `(after `|`)` 后缀的同一句话——它不再是 fence 里 `|` 分段的误读，
+而是**本节上面那个代码块本身**：`_REF` 在 `.md` 上只要 `serverosctl` 后面跟一个词就记一条，
+不问它在不在反引号里、在不在 fence 里、是不是正被引用。于是「把修复过程写进台账」这件事
+自己又触发了一次同一条闸门——只有把引用写成两个记号才不再触发，这就是上面那行注解的来由。
+
+这一族到此的准确形状是：**闸门能看见字面量，看不见语境**。两个面都记在这里——
+`'record|digest-record|receipt'` 之所以绿，只因为 `digest-record` 恰是个真动词（巧合）；
+这条之所以红，只因为这句话在**谈论**一条命令而不是在**指示**人去跑它（引用）。
+两个方向都不是判据在起作用。不改闸门，理由和上面那条一样：它是这类缺陷唯一的自动发现机制，
+为引用开豁免会让真声明也走进豁免，而豁免名单一旦为散文增长，真的条目就不再被读。
+**留给下一个读到这里的人的判据**：本节若再出同类红，先问这行是在指示读者去跑，还是在
+谈论一条命令；只有前者该改文档。
+
 | 套件 | 结果 | 命令 |
 | --- | --- | --- |
-| serveros（再终态，带 evaluator 覆盖，含 `space` 接线） | **4260 passed, 23 skipped, 3713 subtests passed, 0 failed**（470.51s） | `SERVEROS_COMPOSITION_EVALUATOR=<worktree>/…/composition.py SERVEROS_ABILITY_REF=serveros/fabric-integration-20260922 pytest tests/ -q -p no:cacheprovider` |
+| serveros（接线终态，带 evaluator 覆盖，含 `information captured`） | **1 failed**, 4298 passed, 23 skipped, 3714 subtests passed（468.52s） | `SERVEROS_COMPOSITION_EVALUATOR=<worktree>/…/composition.py SERVEROS_ABILITY_REF=serveros/fabric-integration-20260922 pytest tests/ -q -p no:cacheprovider` |
+| serveros（同上 + 本节这次改台账） | 未整跑；**这一格只覆盖上一条**，见下方说明 | 只跑 `tests/test_declared_commands.py` → 12 passed |
+| serveros（`1c36789`，上一份记成「0 failed」的那棵） | **1 failed**, 4298 passed, 23 skipped, 3714 subtests passed（469.78s） | 同上。修文档后同树变 12 passed（`tests/test_declared_commands.py`） |
 | serveros（终态，带 evaluator 覆盖） | **4239 passed, 23 skipped, 3704 subtests passed, 0 failed**（480.07s，`fb97f77`） | 同上 |
 | serveros（同树不带覆盖） | **8 failed, 4231 passed, 23 skipped, 3704 subtests passed**（467.10s） | 同上去掉那两个变量 |
 | serveros（`dc23707`，带覆盖） | 4207 passed, 23 skipped, 3703 subtests passed, 0 failed（459.73s） | 同上 |
 | serveros（起点） | 3 failed, 4171 passed | — |
 | ability-management | **105 passed, 2 skipped**（`074a518`）；三个 renderer `--check` 干净 | 加 `SERVEROS_BUNDLE=<serveros worktree>/plugin` |
 
+**接线终态那一格为什么不是整跑的。** 全量是在「接线完成、台账还没记这次修改」那棵树上跑的，
+红 1 条，就是本节那条 `cleanup`。之后只动了一个文件：`docs/CC-EXECUTION-LEDGER.md`。
+「只动了一个文件所以不用重跑」这句话，正是本节上下两段在拆的那句谎——所以不靠断言，靠读出来的
+读者集合：`grep -rln "CC-EXECUTION-LEDGER" tests/ runtime/ skills/ docs/` 只回它自己；
+再查有没有别的测试扫 `docs/*.md`，只有 `tests/test_memory_ledger.py` 读 `docs/memory-fabric.md`
+一个具名文件。**即：`docs/CC-EXECUTION-LEDGER.md` 的自动读者只有 `tests/test_declared_commands.py`
+一个**（它经 `docs/*.md` glob 读到），而那个文件在终态上 12 passed。这就是那一格的全部依据，
+不是「应该没影响」。
+
 4239 − 4231 = 8，**正好是那 8 条配对测试**——两个数之间的差就是那一族红的全部，没有第二处。
-4260 − 4239 = **21**，正好是新增的 `tests/test_space_cli.py`（21 tests / 9 subtests），
-subtests 3704 → 3713 = **9**，也对上。加一个动词族没有让任何别的行移动。
+
+4298 − 4239 = **59**，这个数我一开始按「新增文件的行数」估成 21 + 38，**估错了**。实测是
+逐文件 collected 数在两棵树上的差（`--collect-only` 按文件计数后 diff，两份计数留在
+`artifacts/skills/serveros/RUN-20260922-raw-coverage/collect-{fb97f77,HEAD}.tsv`）：
+
+| | `fb97f77` | 终态 | 差 |
+| --- | --- | --- | --- |
+| 全量 collected | 4262 | 4322 | **60** |
+| passed | 4239 | 4298 | **59** |
+| 逐文件差 | — | 只多两条：`test_capture_coverage.py` 39、`test_space_cli.py` 21 | **60**，无第三处移动 |
+
+60 与 59 差的 1 就是全量那次红的那条：它是**既有**用例（`test_declared_commands.py`），
+不是新文件带来的。subtests 3704 → 3714 = **10**（space 9 + capture 1）。加一个动词族加一个
+读取器，没有让别的行移动。**这一格的价值不在 60，在于「无第三处」是 diff 出来的**：
+拿「新增两个文件各有多少条」相加，是在两条不相干的数之间做减法，形状和真判据一样。
 
 serveros 那套的代价要写下来：单次 **7 分 47 秒**，且主机 load 一度到 53 时被拖到
 近乎两倍。所以「跑一套」在这台共享机上不是随手动作，改一个字面量就该只想跑受影响的那两个文件。
@@ -539,7 +601,7 @@ manifest 行、packs 闭包、cards。凡是「X 的渲染嵌了 X 的值」，�
 
 | 对象 | 在哪 | 谁调它 | 判定 |
 | --- | --- | --- | --- |
-| records 的 66 份 `information/raw/**/manifest.json` | `/data/home/vince/workspace/records/information/raw/…` | **无**。`grep -rn "pagination_complete\|msg_count" --include=*.py` 在 fabric 树里零命中 | 采集写了 manifest，**ServerOS 侧没有读者**。设计要求「capture policy 与 materialized coverage 分开」，coverage 这一半没有被消费 |
+| ~~records 的 66 份 `information/raw/**/manifest.json`~~ | `/data/home/vince/workspace/records/information/raw/…` | **已接线**：`serverosctl information captured`（`intake/capture_coverage.py`）。此前 `grep -rn "pagination_complete\|msg_count" --include=*.py` 在 fabric 树里零命中 | **本轮已修**，见 §9.6。设计要求「capture policy 与 materialized coverage 分开」，此前 coverage 这一半没有被消费 |
 | ~~`space/resolver.py`（402 行，含词汇表）~~ | serveros worktree `space/resolver.py` | **已接线**：`serverosctl space resolve`（`runtime/cli.py`，`_load_module_from(REPO_ROOT / "space" / "resolver.py", …)`） | **本轮已修**，见 §9.5。此前只能 `python3 space/resolver.py --request …` 单跑——模块**在 artifact 里**而没有任何东西加载它，于是装在节点上的动词不是缺失，是**叫不出名字**。它的 docstring 自己声明「不认识 lark-cli 且永远不许认识」，所以缺的从来是**接线**不是实现 |
 
 | 包 | 对象 | source | 入口 | consumer | 判定 |
@@ -664,7 +726,7 @@ ability-management 或 serveros 的测试环境**。A7 若要 LIVE 需要先有�
 
 ```text
 serverosctl space resolve --request <json> [--vocabulary <yaml>]
-serverosctl space meeting --request <json> [--kind relevance|cleanup] [--vocabulary <yaml>]
+serverosctl space meeting --request <json> [--kind relevance / cleanup] [--vocabulary <yaml>]
 ```
 
 四条判据写在代码里，而不是写在文档里：
@@ -730,6 +792,64 @@ abilities-manifest.yaml 在两者上同 blob 4afa3a22…
 所以 §3.8 是**对的**：pin 是读到的 revision 的祖先，且 manifest 在两者上逐字节相同。
 错的是我拿 pin 当读的 revision 用。记这一笔，是因为「一次看似证据充分的自我纠错」和
 「一次真的纠错」在台账里长得一样，而这次是前者——差一点就把它写成后者。
+
+### 9.6 采集覆盖已接线：第二处孤岛关闭
+
+`space/` 是「模块在 artifact 里、没有东西加载它」。这一处是同一族的另一半：**采集器写了
+记录，ServerOS 侧没有读者**。`records/information/raw/` 下 66 份 `manifest.json`，
+`grep -rn "pagination_complete\|msg_count" --include=*.py` 在 fabric 树里零命中。
+
+`intake/workchain.py` 确实报飞书面——但它报的是**编写的** `sources.yaml`，那是**被声明**
+的一半，而盘上没有 `sources.yaml`（`sources_state = UNPRODUCED`）。声明的那一半有读者，
+落下来的那一半没有。P1 的原话是「capture policy 与 materialized coverage 分开」，
+所以补的是**分开的两半**，不是给现有 status 加字段。
+
+**`intake/capture_coverage.py`（新，约 480 行）+ `serverosctl information captured`。**
+
+四件事它在代码里拒绝做，四条各有一条测试：
+
+1. **不合并成一个 verdict。** 一份 chat manifest 可以分页完整、同时有三张附件被声明为
+   pending。对象级的一个数会是在回答没人问过的问题。分量是 `messages` / `attachments` /
+   `links` / `body` / `media`，各自带**据以判定的 facts**；`summarize` 也**按分量计**。
+   `"verdict" not in record` 是被断言的一条。
+2. **缺字段不是值。** `pagination_complete` 在这台机器上有**三态**：45 份 `true`、
+   0 份 `false`、**2 份没记**。第三态被并进任一个都会把「没人记录」读成「记录为否」或
+   「记录为是」。`sync.mode` 在 47 份里缺 37 份——`undeclared`，带理由，**不补默认值**。
+3. **一份坏的 manifest 不得缩小分母。** 读不了的文件是一条 `UNREADABLE` 记录而不是跳过：
+   返回 65 个而盘上有 66，会**恰好少报它没看的那一份**。
+4. **不读时钟。** `last_verified_at` 照着采集器写的印。它有多旧是 staleness 问题、有自己
+   的阈值，在这里回答等于让这个动词成为它并不掌握的那个事实的权威。
+
+还修了一处自己写出来的错：`read_root` 一开始 `except Refused` 把什么都吞成
+`UNREADABLE`。那样一来**本模块的缺陷会被印成「这份文件读不了」**——正是分量存在的理由是
+要防的错位，只是高了一层。现在拆成 `Malformed`（关于文件）与 `Refused`（关于读者），
+`read_root` 只吞前者，`test_a_reader_defect_is_not_reported_as_an_unreadable_manifest`
+钉住这条。
+
+**实测事实（都是真的，且都经独立复算）**：66 份 = 47 chat + 19 document；role 47 chat +
+19 link；`messages` 45 COMPLETE + 2 UNDECIDABLE；`body` 16 COMPLETE + **3 INCOMPLETE**
+（那 3 份 `content_sha256` 只有 12 位十六进制——它**命名**一个正文，不让任何人复核一个）；
+`media` 14 COMPLETE + 5 UNDECIDABLE；`复核` 61 RECORDED + **5 NOT_RECORDED**（那 5 份只有
+采集者对自己工作的自述）。`需要看的` 10 个分量、7 个对象。
+
+**artifact 级证明，不是源码检出**：`scripts/build.py --write --bundle plugin/bundle.yaml
+--ability-repo <src/ability-management> --ability-rev 074a51863d92cfbb89608a28f0779668aa448408
+--marketplace-path <scratch>/dist/.agents/plugins/marketplace.json --output <scratch>/dist/artifact`
+（227 members，`intake/capture_coverage.py` 在内），然后
+`<artifact>/bin/serverosctl information captured` → 上表 66 份的完整渲染、exit 0；
+指向一个 scratch records 树也照读（证明它读的是 `--records-root` 而不是检出）；
+`--records-root records`（相对）→ exit 1 并说明「站在哪个目录里读的覆盖数没有别人能复现」。
+
+**变异测试**：九条承重判据各自切断一次，九次全被对应的测试抓住
+（bool 当整数 / 可读的 msg_count 是可陈述的前提 / 截断的 digest / 无生产者的键 /
+读者缺陷≠文件坏 / role 来自路径 / shape 来自键 / 散文标注为散文 / 缺根≠空根），
+每次之后按 sha256 逐字节还原（`bc0f329f21c60fb4…`），`__pycache__` 每次都清。
+
+**门是自动的，不是我再记一次。** `intake/` 早在 `plugin/bundle.yaml` 里声明过，所以
+新模块随 artifact 走；而 `tests/loader_graph.py` 的 `production_closure()` 从 `cli.py` 的
+加载闭包**推出** `intake/capture_coverage.py`（87 条里的一条），
+`test_build.py::test_the_artifact_answers_the_production_loader_closure` 由此自动覆盖它——
+这一族「被 shipped surface 加载、却没有被任何东西声明」的缺陷不再需要有人记得。
 
 ## 10. 后续每包更新哪几行
 
