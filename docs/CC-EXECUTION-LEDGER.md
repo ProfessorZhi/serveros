@@ -632,7 +632,7 @@ manifest 行、packs 闭包、cards。凡是「X 的渲染嵌了 X 的值」，�
 | P6 | 租约 / 所有权 / 需求板 | `runtime/lease_store.py:61`，`runtime/ownership_gate.py:209`，`intake/global_board.py:84` | `serverosctl {lease,ownership,requirement}` | — | working |
 | P6 | focus 授权 | `intake/focus_source.py:56,71,83,225`；`context/delegation.py`（本轮新增，纯模块） | `serverosctl work focus`（不再接受 `--grants`） | `intake/daily_cycle.select_focus` ← `context/delegation.envelopes` | **本轮已修，见 §9.11**。上一版这一格写的「`--grants` 未绑定」**是错的**：那个 flag 一直绑着，绑在一个能用 JSON 文件凭空铸造授权的洞上（`intake/daily_cycle.py:51` 自己写着「Validate scope/time/budget, not the authenticity of the supplied grant」）。**洞已闭合**：flag 被删除，信封只能从存储里已记录的授权推导 |
 | P6 | 委托/授权存储 | `runtime/agent_control_store.py` 的 `grants` 集合（第五个，本轮新增 `put_grant`/`get_grant`/`grants`/`revoke_grant`） | `serverosctl work grants`（本轮新增） | `context/delegation.envelopes`、`runtime/cli.py#cmd_work_focus` | **本轮已修，见 §9.11**。上一版「not found：只找到规则类（`runtime/agent_sessions.py:82`、`fleet/agent_control_router.py:244`）」**在那一轮是对的**——规则一直在，缺的是**存储**，而规则不能代替存储 |
-| P6 | 原子准入（选择+预算+租约+派发一个事务） | 只有逐文档原语：`agent_control_store.py:103,149`、`lease_store.py:172`、`alerting.py:279`、`alert_digest.py:304`、`bounded_invocation.py:88` | — | — | **partial，本轮之后仍是 partial**：原语读过，**没有找到合并后的准入事务**。§9.11 补上的是**授权的出处**（信封从已记录的授权推导），**不是**把这四步并成一个事务——选择、预算、租约、派发今天仍是四次分别落盘，**没有**共同提交点。这一格不因为 §9.11 变绿 |
+| P6 | 原子准入（选择+预算+租约+派发一个事务） | `runtime/agent_control_store.py` 的第六个集合 `admissions`（`admit`/`get_admission`/`admissions`/`confirm_admission`/`retire_admission`）；策略那半是纯函数 `intake/daily_cycle.admission_plan`。另两条关系仍读对方自己的 store：`lease_store.py:172`、`bounded_invocation.py:88` | `serverosctl work {admit,admissions,confirm,retire}`（本轮新增，`wk_admit` **故意没有 `--grant`**） | `intake/daily_cycle.admission_plan` ← `select_focus` 的 decision 与板上的 `grant_ref` | **本轮已修，见 §9.13**。四样在**同一次 `_mutation()`** 里写入，共用那个 store 已有的 sidecar 锁；租约与派发**不在**该事务里，各自按相**读回真实 store**并只记录对方回答了什么——计划那后半句要的「可恢复幂等关系，不假装跨库事务」就是这个形状。上一版「仍是 partial」在当时是对的。**同一节记下明确没做的**：没有预算池（`exhausted` 在本仓没有写入者）、没有清扫器、`work admit` 没有调用者（§3.9 的腿没上弦） |
 | P7 | 已安装 Quay | `~/.claude/plugins/cache/quay/quay/0.11.0/`，`bin/quay --version` → `0.11.0-dev` | MCP：`…/0.11.0/.mcp.json` → `vendor/quay/dist/quay.js mcp` | — | working（`0.4.0` 没有 `goal`，`0.11.0` 又有了——本机至少三代并存） |
 | P7 | codex provider | `mcp/codex_app_server_provider.py:88,89,95,564,1181` | `--live` 才启动，默认只读 | `codex-cli 0.153.4`（`~/.local/bin/codex`，与 `MEASURED_AGAINST` 一致） | working |
 
@@ -1332,6 +1332,118 @@ while that context still IS one — whatever window the grant carries.
 
 **终态重量：8 failed, 4521 passed, 20 skipped, 3718 subtests passed（485.44s），
 8 条全部是已定案的跨仓红，无新增。**
+
+### 9.13 原子准入：一个事务，两条可恢复幂等关系，和一处不可达的句子
+
+**这一格上一版逐字写着「partial，本轮之后仍是 partial」，理由是「选择、预算、租约、
+派发今天仍是四次分别落盘，**没有**共同提交点」。那句话在写下时是对的，§9.11 也确实
+没有动它——§9.11 补的是**授权的出处**，不是提交点。本轮补的就是提交点。**
+
+计划 P6 那两句话是两件事，实现也拆成两件事：
+
+```text
+原子准入把相同 cycle/目标/版本的选择、预算预留、lease/dispatch intent 放到
+现有权威事务/互斥范围；多系统间用可恢复幂等关系，不假装跨库事务。
+```
+
+**前半句是一个事务，落在 `runtime/agent_control_store.AgentControlStore#admit`。**
+选择、预算预留、lease intent、dispatch intent 四样在**同一次 `_mutation()` 里**写入，
+共用那个 store 已有的 sidecar 锁。没有新的锁，没有新的 store——「现有权威事务/互斥范围」
+是字面执行的：`admit` 走 `_flush` → `_atomic_write`，和第五个集合 `grants` 用的是同一条路。
+策略那半是纯函数 `intake/daily_cycle.admission_plan`，无 IO，返回记录或
+`{"refused": <词>, "because": <一句话>}`；**拒绝是返回而不是抛出**，因为调用方本来就该
+预期有拒绝——本机大多数日子没有任何 grant——而那是答案不是故障。这与
+`work focus` 的 `BLOCKED STALE_BOARD` 是同一种形状，CLI 上也同样是 exit 0。
+
+**后半句是两条可恢复幂等关系，不是分布式事务，而且这一点是被结构保证的。**
+`runtime/lease_store` 和 receipts 目录都不在 `admit` 的事务里。两相各自**读回真实的那个
+store**：`LEASE_HELD` 读 `lease_store` 的引用，`DISPATCHED` 读 `bounded_invocation`
+写下的 receipt 文件。admission 只记录**对方回答了什么**，从不假装自己知道。所以
+`admit` 之后崩溃会留下一条 `INTENT_RECORDED` 的 admission 并占着 action key——
+**这是设计，不是缺口**，`work admissions` 列得出来，`work retire` 放得掉。一个按定时器
+释放 key 的清扫器**正是**这份设计拒绝的那个跨库事务。
+
+**「Idempotent on the INTENT, not on the cycle」是 `admit` docstring 里的承重句，
+也是 `_intent_digest` 不含 `admitted_at` 的理由。** 同一 intent 重放 → 返回原记录；
+不同 intent 撞同一个 cycle → 拒绝。**两个并发调度器因此安全：输的那个被告知它输了，
+而不是两个都跑。** M1（把时刻塞进 digest）被两条测试当场抓住，M2（action key 不再独占）
+和 M3（退休后仍算持有）各被一条抓住，见下。
+
+**本轮最值得记的是一条不可达的死代码，而它是被新写的测试暴露的。**
+`runtime/cli.py#_lease_answer` 原来写的是 `reference.get("retired_at")` 分支，消息在描述
+「引用被释放后确认」这个状态。**那个状态到达不了**：`runtime/lease_store.release` 先设
+`retired_at`，**再把所有已退休的行从 `references` 里删掉**才落盘——所以从这个列表里读回来
+的引用**永远不带 `retired_at`**。一句关于不可能状态的说明，读起来和一句关于真实状态的
+说明一模一样。改法是去 `history` 里找 `act == "RELEASE"` 且 scope/holder 相符的条目，
+把「从未声明」和「声明后交还」分成**两句不同的话**（一个是找错了持有人，另一个是这个
+cycle 在认领一份本节点已经记账为释放的租约）。测试随之改成**断言句子**，并另加一个
+「另一个持有人声明过」的反例，确保两句话没有被合成一句。
+
+**同一族的三处小修，都是「顺序即消息的顺序」：**
+`cmd_work_confirm` 原来先查 admission 再查 phase，无记录时给出的是错误的那句话——检查
+顺序被倒过来，并就地注释了理由。`--phase` **故意不设 `choices=`**：argparse 会在到达我的
+句子之前就拒掉 `INTENT_RECORDED`，而 argparse 的消息不解释原因。
+`test_work_admit_takes_no_grant` 用正则取选项串而不是子串匹配，**因为我自己的 `--cycle`
+帮助文本里就写着字面量 `--grant`**（「There is deliberately no --grant」）——一条被自己的
+说明文字搞红的测试。
+
+**`work admit` 故意没有 `--grant`。** 这是 §9.11 那个洞在 CLI 面上的锁：授权不能从一个
+文件参数里铸造，`admit` 只从**已经记录的** decision 和 envelope 里读。`_dispatch_answer`
+也故意没有默认的 receipts 根，并在 docstring 里写明边界：「this verb records what the
+receipts directory ANSWERS, and a caller who fabricates that file is fabricating evidence
+in the place evidence lives」。
+
+**活节点实测：拒绝不写盘。** `work focus` 仍是 17 行 / 0 delegations / 0 named /
+`BLOCKED STALE_BOARD`；`work admit` 因此 `refused NOTHING_SELECTED`，exit 0，而活 control
+store 的 sha256 **前后逐字节一致**（`dcce252f…45a13`），mtime 未变。
+
+**变异证据：三个文件、十七个变异体、17/17 被拒。**
+`artifacts/skills/serveros/RUN-20260922-raw-coverage/admission/`（`run.sh`、`mutation-run.log`、
+`RESULTS.md`、十七个 `mutant-M*.py` 与三个 `pristine` 快照）。攻击的是信任边界不是算术：
+M2/M3 是并发主张，M7/M8/M15/M16/M17 是「读一个自己不拥有的 store」的五个位置，
+M5/M6 是「已记录」可能悄悄变成「又记录一次」的两个位置，M9/M12 是「有界」可能变成
+「无界」的两个位置，M13 是本机今天真的会撞上的那一个。三条纪律照旧：**写前**在 Python 里
+断言锚点存在且唯一（`grep -Fc` 会把模式里的换行当两个模式、数的是匹配行数）、
+每次写入与还原清 `__pycache__`、还原按 ARTIFACTS_ROOT 下的快照逐字节 sha256 校验
+（不是 `git checkout --`——这棵树带着本轮未提交的改动——也不是 /tmp）。
+
+**这一轮里，锚点检查抓到的是我自己，两次。** M12 的锚点**出现两次**，因为
+`grant_reason` 与 `admission_plan` 逐字持有同一个比较（`if type(budget.get(key)) is not int
+or budget[key] <= 0:`）——这是有意的，第二处是同一个拒绝高一层，但它让单行锚点歧义，
+exit 91。M17 的锚点**出现零次**：我写了 19 个空格的缩进，文件里是 18 个。**一个基于
+grep 的 harness 会报「0 处匹配，继续」，变异体从未写入而日志说它写了**——于是 M17 会
+显示为「没抓住」，而我会得出「released/holder 的区分没被测到」这个错误结论。
+两次都记在 `run.sh` 的注释里，`mutation-run-pass2.log` 是第二遍（M12 已修、M17 还坏着），
+第一遍的日志被第二遍覆盖了，唯一独有的内容就是 M12 那次拒绝。
+
+**同族第三次：量具自己把「没有」印成了「干净」。** `final-measure.sh` 第一次跑时，
+邻域那一步点名 `tests/test_work_focus.py`，**本仓没有这个文件**；pytest 给一个不存在的
+路径是 exit 4 且 **stdout 一个字都不打**，于是 `tail -3` 把它渲染成 `no tests ran in 0.00s`。
+改正后重跑：**444 passed, 19 subtests passed**，脚本现在先断言每个路径存在。三次同形：
+**一个字面量能看见、语境看不见的量具**，和 §5.0 那一族是同一条教训。
+
+**`runtime/actuator-contract.yaml` 本轮不改，这是判据不是省事。** 契约按文件+符号声明每一个
+`os.unlink`/`os.replace` 位置；本轮没有新增位置——`admit` 经由 `_flush` 走已有的
+`_atomic_write`，新 CLI 动词是读者，`_dispatch_answer` 读 receipt 文件不写，
+`_lease_answer` 经 `lease_store.open_store` 读（它的写位置在加 `release` 那一轮已声明）。
+所以 guard 仍是 `CHECKED` / `findings: []` / declared **37** / undeclared 0 / stale 0，
+**declared 与上一轮同数**——这一点正是判据：新增一个已声明位置会把这个数字挪走。
+
+**明确没做的事，写在这里是因为这一格变绿不能把它盖住：**
+
+- **没有预算池。** grant 的 budget 三项是**一次派发**的界，reservation 就按那样记录。
+  一个 cycle 跑四次不会递减任何东西。`grant_reason` 读 `budget["exhausted"]`、
+  `admission_plan` 拷那三个界，但**本仓没有任何写入者写 `exhausted`**——所以
+  `BUDGET_UNAVAILABLE` 只对「有人录进那条字段的 grant」可达。消耗记账没实现，也没声称实现。
+- **没有清扫器。** `admit` 与 `confirm` 之间崩溃会留下一条占着 action key 的
+  `INTENT_RECORDED`，恢复是人工的（`work admissions` 列，`work retire` 放）。
+- **`work admit` 没有任何调用者。** 日循环的渲染腿装好了、手跑过一次、**没有上弦**（§3.9），
+  所以本机这四个动词可达而无人到达。
+
+**终态重量：8 failed, 4605 passed, 20 skipped, 3718 subtests passed（502.45s）。
+8 条全部是 `tests/test_architecture_check.py` 里那 8 条已定案的跨仓红，无新增。**
+与 §9.12 的 `8 failed, 4521 passed` 相比是 **+84 passed、+0 failed**，而 84 正好是本轮新增
+测试文件的大小——**这一轮加了测试，别的一个数都没动。**
 
 ## 10. 后续每包更新哪几行
 

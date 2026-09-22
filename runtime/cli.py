@@ -5787,6 +5787,68 @@ def _work_board_markdown(board: dict) -> str:
     return "\n".join(lines)
 
 
+def _focus_decision(args):
+    """The board, the envelope, and the decision — `work focus`'s whole answer.
+
+    Shared with `work admit` rather than re-derived there, and that is the point
+    of the extraction: what a cycle is admitted for must be what this verb would
+    have selected, from the same board, under the same envelope, at one instant.
+    A second composition in the admitting verb would be a second answer to one
+    question, and the two would agree only until one of them was edited.
+
+    Returns the four values, or None after writing the fault to stderr. The
+    caller returns `EXIT_FAULT`; this helper does not, because a fault path that
+    returns an exit code from two places is how one of them ends up returning
+    the wrong one.
+    """
+    board = _work_board_document(args)
+    if board is None:
+        return None
+    focus_mod = _load_module_from(REPO_ROOT / "intake" / "focus_source.py",
+                                 "serveros_intake_focus_source")
+    cycle = _load_module_from(REPO_ROOT / "intake" / "daily_cycle.py",
+                              "serveros_intake_daily_cycle")
+    delegation_mod = _load_module_from(REPO_ROOT / "context" / "delegation.py",
+                                       "serveros_context_delegation")
+    try:
+        composed = focus_mod.compose(board)
+    except focus_mod.Refused as exc:
+        sys.stderr.write(f"serverosctl: {exc}\n")
+        return None
+
+    now = datetime.datetime.now(datetime.timezone.utc)
+    # The envelope a cycle may be admitted under. It is built from what this
+    # node RECORDED — `runtime/agent_control_store.py`'s `grants` collection —
+    # and every grant is re-checked against the delegation it derives from
+    # before it enters the map. A grant file is deliberately not an option:
+    # there is no shape of authority this fabric refuses more firmly, and no
+    # way to tell one from a file somebody edited.
+    store_mod, control = _control_store()
+    try:
+        recorded, contexts = control.grants(), control.contexts()
+    except store_mod.StoreError as exc:
+        sys.stderr.write(f"serverosctl: {exc}\n")
+        return None
+    named_by = {str(row["grant_ref"]) for row in composed["rows"]
+                if row.get("grant_ref")}
+    try:
+        delegations = delegation_mod.envelopes(
+            recorded, contexts, now=now.isoformat(), named_by=named_by)
+    except delegation_mod.Refused as exc:
+        sys.stderr.write(f"serverosctl: {exc}\n")
+        return None
+
+    if composed["observed_at"] is None:
+        decision = {"status": "BLOCKED", "reason": "PROJECTION_AGE_UNKNOWN",
+                    "selected": [], "carryover": []}
+    else:
+        decision = cycle.select_focus(
+            composed["rows"], delegations["envelopes"], now=now,
+            observed_at=composed["observed_at"],
+            ttl_seconds=args.ttl, limit=args.limit)
+    return composed, delegations, decision, now
+
+
 def cmd_work_focus(args) -> int:
     """§12 — which two objectives the next cycle may carry, and why not more.
 
@@ -5810,43 +5872,13 @@ def cmd_work_focus(args) -> int:
         are different gaps with different producers, and one sentence covering
         both would point a reader at the wrong one.
     """
-    board = _work_board_document(args)
-    if board is None:
+    state = _focus_decision(args)
+    if state is None:
         return EXIT_FAULT
-    focus_mod = _load_module_from(REPO_ROOT / "intake" / "focus_source.py",
-                                 "serveros_intake_focus_source")
-    cycle = _load_module_from(REPO_ROOT / "intake" / "daily_cycle.py",
-                              "serveros_intake_daily_cycle")
-    delegation_mod = _load_module_from(REPO_ROOT / "context" / "delegation.py",
-                                       "serveros_context_delegation")
-    try:
-        composed = focus_mod.compose(board)
-    except focus_mod.Refused as exc:
-        sys.stderr.write(f"serverosctl: {exc}\n")
-        return EXIT_FAULT
-
-    now = datetime.datetime.now(datetime.timezone.utc)
-    # The envelope a cycle may be admitted under. It is built from what this
-    # node RECORDED — `runtime/agent_control_store.py`'s `grants` collection —
-    # and every grant is re-checked against the delegation it derives from
-    # before it enters the map. A grant file is deliberately not an option:
-    # there is no shape of authority this fabric refuses more firmly, and no
-    # way to tell one from a file somebody edited.
-    store_mod, control = _control_store()
-    try:
-        recorded, contexts = control.grants(), control.contexts()
-    except store_mod.StoreError as exc:
-        sys.stderr.write(f"serverosctl: {exc}\n")
-        return EXIT_FAULT
+    composed, delegations, decision, now = state
+    recorded = delegations["summary"]["recorded"]
     named_by = {str(row["grant_ref"]) for row in composed["rows"]
                 if row.get("grant_ref")}
-    try:
-        delegations = delegation_mod.envelopes(
-            recorded, contexts, now=now.isoformat(), named_by=named_by)
-    except delegation_mod.Refused as exc:
-        sys.stderr.write(f"serverosctl: {exc}\n")
-        return EXIT_FAULT
-    grants = delegations["envelopes"]
 
     lines = [
         f"board       {composed['board_at']} (composed now)",
@@ -5866,14 +5898,6 @@ def cmd_work_focus(args) -> int:
     for row in delegations["rows"]:
         lines.append(f"  {row['grant_ref']:<24} {row['state']:<30} "
                      f"{row['because']}")
-    if composed["observed_at"] is None:
-        decision = {"status": "BLOCKED", "reason": "PROJECTION_AGE_UNKNOWN",
-                    "selected": [], "carryover": []}
-    else:
-        decision = cycle.select_focus(
-            composed["rows"], grants, now=now,
-            observed_at=composed["observed_at"],
-            ttl_seconds=args.ttl, limit=args.limit)
     lines.append(f"decision    {decision['status']}")
     if decision.get("reason"):
         lines.append(f"reason      {decision['reason']}")
@@ -6011,6 +6035,394 @@ def cmd_work_grants(args) -> int:
         lines.append(f"  because       {row['because']}")
     emit({"delegations": report, "store": str(control.path), "now": now},
          as_json=args.json, lines=lines)
+    return EXIT_OK
+
+
+def cmd_work_admit(args) -> int:
+    """§12/P6 — admit one cycle: selection, reservation and intent in one write.
+
+    The verb that makes `select_focus`'s `admission_required: True` doable. It
+    adds no decision of its own: `intake/daily_cycle.admission_plan` decides
+    what the record is (and refuses, naming why, when the board cannot supply
+    one) and `runtime/agent_control_store.admit` is the transaction that commits
+    it. Between them there is nothing this function is allowed to invent.
+
+    There is deliberately NO `--grant` here, and its absence is the whole of
+    §9.11's fix kept: the grant is read off the selected row and resolved
+    through `context/delegation.py`'s envelope, so a grant file cannot make a
+    cycle admissible. A verb that could take one would be the hole again, one
+    layer up.
+
+    What it records, it does not act on. Nothing leaves this process: the
+    dispatch and the lease declaration are the next two phases, and each is
+    confirmed by the store that actually performed it.
+    """
+    state = _focus_decision(args)
+    if state is None:
+        return EXIT_FAULT
+    composed, delegations, decision, now = state
+    cycle = _load_module_from(REPO_ROOT / "intake" / "daily_cycle.py",
+                              "serveros_intake_daily_cycle")
+    plan = cycle.admission_plan(
+        decision, composed["rows"], delegations["envelopes"],
+        cycle_ref=args.cycle, observed_at=composed["observed_at"] or "",
+        action_key=args.action_key,
+        # (scope, holder) is what `runtime/lease_store.declare` is idempotent
+        # on, so the holder names the cycle: a resume under the same cycle
+        # refreshes its own reference instead of declaring beside it.
+        lease={"resource": args.resource, "scope": args.scope,
+               "holder": args.cycle})
+    if plan.get("refused"):
+        # An answer, not a fault, for the same reason `work focus` returns OK
+        # on STALE_BOARD: on a node with no recorded grant this is the ordinary
+        # outcome, and the word and the sentence are what a reader needs.
+        lines = [f"refused     {plan['refused']}", f"because     {plan['because']}",
+                 "", f"decision    {decision.get('status')}"
+                 + (f" ({decision['reason']})" if decision.get("reason") else ""),
+                 f"selected    {len(decision.get('selected') or [])}",
+                 f"grants      {delegations['summary']['authorizing']} authorizing "
+                 f"of {delegations['summary']['recorded']} recorded"]
+        emit({"plan": plan, "decision": decision,
+              "delegations": delegations["summary"]}, as_json=args.json,
+             lines=lines)
+        return EXIT_OK
+
+    record = {**plan, "admitted_at": now.isoformat()}
+    store_mod, control = _control_store()
+    try:
+        stored = control.admit(record)
+    except store_mod.StoreError as exc:
+        sys.stderr.write(f"serverosctl: {exc}\n")
+        return EXIT_FAULT
+
+    lines = [
+        f"cycle       {stored['cycle_ref']}",
+        f"grant       {stored['grant_ref']}",
+        f"intent      {stored['intent_digest']}",
+        f"selection   {stored['selection_digest']}",
+        f"observed    {stored['selection'].get('observed_at') or 'unknown'}",
+        f"objectives  {len(stored['selection'].get('selected') or [])}: "
+        + ", ".join(stored["selection"].get("selected") or []),
+        f"action key  {stored['action_key']}",
+        f"lease       {stored['lease']['resource']} in {stored['lease']['scope']}, "
+        f"holder {stored['lease']['holder']}",
+        f"reservation " + " ".join(f"{k}={stored['reservation'][k]}"
+                                   for k in sorted(stored["reservation"])),
+        f"phase       {stored['phase']}",
+        f"replayed    {'yes — same intent, same admission' if stored.get('replayed') else 'no'}",
+        "",
+        "recorded, not acted on: the lease is declared and the dispatch made by",
+        "whatever performs them, and each reports back through",
+        "`serverosctl work confirm <cycle> --phase …`. Until the dispatch phase is",
+        "confirmed the action key stays held, which is what stops a second cycle",
+        "receiving this one's receipt.",
+    ]
+    emit({"admission": stored, "store": str(control.path)}, as_json=args.json,
+         lines=lines)
+    return EXIT_OK
+
+
+def cmd_work_admissions(args) -> int:
+    """§12/P6 — the cycles currently admitted, and what each is holding.
+
+    The read half of `work admit`, and the one place a person can see what is
+    occupied rather than what is planned. `work focus` says which objectives the
+    next cycle MAY carry; this says which reservations, leases and action keys
+    something is holding right now, which is the question that is unanswerable
+    from the board.
+
+    It reads the store and nothing else — no board, no clock, no projection —
+    for the same reason `work grants` does: what is held is a stored fact, and
+    a stale projection must not be able to change the answer.
+    """
+    store_mod, control = _control_store()
+    try:
+        held = control.admissions()
+    except store_mod.StoreError as exc:
+        sys.stderr.write(f"serverosctl: {exc}\n")
+        return EXIT_FAULT
+    open_now = [a for a in held.values() if not a.get("retired_at")]
+    by_phase = {}
+    for admission in open_now:
+        by_phase[admission.get("phase")] = by_phase.get(admission.get("phase"), 0) + 1
+    lines = [f"store       {control.path}",
+             f"admissions  {len(open_now)} open of {len(held)} recorded"
+             + ("" if held else " — no cycle has been admitted on this node"),
+             f"phases      " + (", ".join(f"{p} {n}" for p, n in sorted(by_phase.items()))
+                                if by_phase else "— nothing open")]
+    for cycle_ref in sorted(held):
+        admission = held[cycle_ref]
+        retired = admission.get("retired_at")
+        lines.append("")
+        lines.append(f"{cycle_ref}  {admission.get('phase')}"
+                     + (f"  (retired {retired})" if retired else "  (holding)"))
+        lines.append(f"  admitted at   {admission.get('admitted_at') or '—'}")
+        lines.append(f"  grant         {admission.get('grant_ref')}")
+        lines.append(f"  action key    {admission.get('action_key')} — "
+                     f"held while this admission is open")
+        lines.append(f"  selection     {admission.get('selection_digest')}")
+        lines.append(f"  objectives    "
+                     + ", ".join(admission.get("selection", {}).get("selected") or []))
+        lines.append(f"  reservation   "
+                     + json.dumps(admission.get("reservation") or {}, sort_keys=True))
+        lease = admission.get("lease") or {}
+        lines.append(f"  lease intent  {lease.get('resource')} in {lease.get('scope')}"
+                     f", holder {lease.get('holder')}")
+        confirmations = admission.get("confirmations") or {}
+        for phase in sorted(confirmations):
+            # The `at` of a confirmation is NOT in its evidence. The evidence is
+            # the other store's answer — what it said — and the instant this
+            # store recorded it is a field on the admission (`confirmed_at`,
+            # which holds the latest). Printing "at —" beside each phase would
+            # invent a per-phase timestamp that was never written.
+            evidence = confirmations[phase]
+            where = evidence.get("store") or evidence.get("receipt") or "an unnamed store"
+            said = ", ".join(f"{k}={v}" for k, v in sorted(evidence.items())
+                             if k not in ("store", "receipt"))
+            lines.append(f"  confirmed     {phase} from {where}")
+            lines.append(f"                {said}")
+        if confirmations:
+            lines.append(f"  confirmed at  {admission.get('confirmed_at') or '—'}"
+                         f"  (the latest of {len(confirmations)})")
+        if admission.get("outcome"):
+            lines.append(f"  outcome       {admission['outcome']}")
+    emit({"admissions": held, "open": len(open_now), "store": str(control.path)},
+         as_json=args.json, lines=lines)
+    return EXIT_OK
+
+
+def _lease_answer(admission: dict) -> dict:
+    """What `runtime/lease_store.py` says about this admission's lease intent.
+
+    The next phase after the intent is the lease, and the admission does not
+    declare it: `runtime/lease_store.declare` is the only thing that writes a
+    reference, and this reads back what it wrote. So the evidence recorded with
+    the phase is the OTHER store's answer and not this verb's summary of one.
+
+    Raises `LookupError` when that store does not answer with a live reference
+    at the intent's `(scope, holder)`. That is not a soft case: the phase means
+    "this node is holding the resource", and a confirm that recorded it on
+    anything less would be a lease nobody took.
+
+    `act` and `declared_at` are in the evidence and `expires_at` is not. The
+    three look alike and only two are stable: a `declare` by the same holder
+    REFRESHES its reference, which moves `expires_at` on every retry of a
+    resume and would make the same fact into `different evidence` the second
+    time it was reported. `declared_at` is written once, at DECLARE.
+    """
+    intent = admission["lease"]
+    store = lease_store_mod.open_store(now=time.time())
+    record = store.get(intent["resource"])
+    if record is None:
+        raise LookupError(
+            f"`runtime/lease_store.py` holds no record for "
+            f"{intent['resource']!r}, so nothing declared it. The phase being "
+            f"confirmed says this node is holding that resource, and the store "
+            f"that would hold the reference says it is not")
+    references = [r for r in record.get("references", [])
+                  if r.get("scope") == intent["scope"]
+                  and r.get("holder") == intent["holder"]]
+    if not references:
+        # A RELEASED reference arrives here as an ABSENT one, and that was
+        # measured rather than assumed: `runtime/lease_store.release` sets
+        # `retired_at` and then drops every retired row from `references`
+        # before writing, so a `retired_at` read back from this list cannot
+        # happen. The `history` list is what tells "was never declared" apart
+        # from "was declared and handed back", and the two need different
+        # sentences: one is a wrong holder, the other is a cycle claiming a
+        # lease this node has already accounted for as free.
+        released = [h.get("at") for h in record.get("history", [])
+                    if h.get("act") == "RELEASE"
+                    and h.get("scope") == intent["scope"]
+                    and h.get("holder") == intent["holder"]]
+        if released:
+            raise LookupError(
+                f"{intent['holder']!r} released its reference on "
+                f"{intent['resource']!r} at {released[-1]}, so the lease is not "
+                f"held. A phase recorded after the release would say the cycle "
+                f"is holding a resource the lease store has already accounted "
+                f"for as free")
+        raise LookupError(
+            f"{intent['resource']!r} is declared, and not by "
+            f"{intent['holder']!r} in scope {intent['scope']!r}. "
+            f"`declare` is idempotent on `(scope, holder)` so a resumed cycle "
+            f"refreshes its own reference; this reference does not exist and "
+            f"recording the phase would credit the cycle with a lease another "
+            f"holder's")
+    reference = references[-1]
+    acts = [h.get("act") for h in record.get("history", [])
+            if h.get("scope") == intent["scope"]
+            and h.get("holder") == intent["holder"]]
+    if not acts:
+        raise LookupError(
+            f"the reference {intent['holder']!r} holds on "
+            f"{intent['resource']!r} has no history entry, and "
+            f"`runtime/lease_store.declare` writes one with every DECLARE and "
+            f"REFRESH it makes. A reference with none was not written by that "
+            f"helper, so what it means is not established here")
+    return {"act": acts[-1], "resource": record["resource"],
+            "scope": intent["scope"], "holder": intent["holder"],
+            "declared_at": reference.get("declared_at"),
+            "store": str(store.root)}
+
+
+def _dispatch_answer(admission: dict, receipts_root: str) -> dict:
+    """What the receipts directory says about this admission's action key.
+
+    `runtime/bounded_invocation.invoke_once` writes one receipt per action key
+    and this reads that file. The path is a caller's because the receipts
+    directory is where the executing side put it and this process did not
+    perform the dispatch — this is the "可恢复幂等关系" and not a distributed
+    transaction. What it means is therefore bounded and worth stating: this
+    verb records what the receipts directory ANSWERS, and a caller who
+    fabricates that file is fabricating evidence in the place evidence lives,
+    not through this verb. Three fields are taken and not the whole receipt —
+    `action_key`, `status` and `input_digest` are what identify the dispatch,
+    and the rest (timestamps, output paths) move as it runs.
+    """
+    if not receipts_root:
+        raise LookupError(
+            "confirming the dispatch phase needs `--receipts`, the directory "
+            "`runtime/bounded_invocation.invoke_once` was given. There is no "
+            "default: the one on this node is chosen by whoever dispatched, and "
+            "guessing it would read a receipt from somewhere nobody ran this")
+    path = Path(receipts_root) / (admission["action_key"] + ".json")
+    if not path.is_file():
+        raise LookupError(
+            f"{path} does not exist, so no receipt was written for action key "
+            f"{admission['action_key']!r}. The phase being confirmed says the "
+            f"cycle dispatched, and the file that records a dispatch is not "
+            f"there")
+    try:
+        receipt = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        raise LookupError(
+            f"{path} cannot be read as a receipt ({type(exc).__name__}: {exc}). "
+            f"`invoke_once` writes this file itself, so one it cannot read is "
+            f"not an answer about this dispatch") from exc
+    if not isinstance(receipt, dict):
+        raise LookupError(f"{path} is not a receipt")
+    return {"action_key": receipt.get("action_key"), "status": receipt.get("status"),
+            "input_digest": receipt.get("input_digest"),
+            "store": str(Path(receipts_root)), "receipt": str(path)}
+
+
+def _admission_or_fault(control, store_mod, cycle_ref: str):
+    """One admission, or None after writing why to stderr."""
+    try:
+        admission = control.get_admission(cycle_ref)
+    except store_mod.StoreError as exc:
+        sys.stderr.write(f"serverosctl: {exc}\n")
+        return None
+    if admission is None:
+        sys.stderr.write(
+            f"serverosctl: {cycle_ref} has no admission. `work admissions` lists "
+            f"the cycles this node has admitted; a phase on a cycle that was "
+            f"never admitted would put a lease and a receipt on work with no "
+            f"selection behind it\n")
+        return None
+    return admission
+
+
+def cmd_work_confirm(args) -> int:
+    """§12/P6 — record one other store's answer, and advance one phase.
+
+    `work admit` records the intent; the two things it is an intent ABOUT are
+    performed elsewhere — the lease by `runtime/lease_store.declare`, the
+    dispatch by `runtime/bounded_invocation.invoke_once` — and this is how each
+    reports back. It reads the store that performed the step and records what
+    that store answers, so it cannot advance a phase on a caller's word.
+
+    `INTENT_RECORDED` is not a confirmable phase and asking for it is refused:
+    `admit` itself wrote it, and a caller reporting this store's own act back to
+    this store is not evidence of anything.
+    """
+    # The phase is checked BEFORE the record, and the order is the message's:
+    # "that is not a phase this verb accepts" is a fact about the verb, true
+    # whatever the store holds, and answering "no such cycle" first would send
+    # a caller to look for an admission when what they got wrong was the verb.
+    if args.phase not in ("LEASE_HELD", "DISPATCHED"):
+        sys.stderr.write(
+            f"serverosctl: {args.phase!r} is not a phase a caller confirms. "
+            f"The two are LEASE_HELD and DISPATCHED, in that order, and each "
+            f"is a different store's answer\n")
+        return EXIT_FAULT
+    store_mod, control = _control_store()
+    admission = _admission_or_fault(control, store_mod, args.cycle)
+    if admission is None:
+        return EXIT_FAULT
+    try:
+        if args.phase == "LEASE_HELD":
+            evidence = _lease_answer(admission)
+        else:
+            evidence = _dispatch_answer(admission, args.receipts)
+    except LookupError as exc:
+        sys.stderr.write(f"serverosctl: {exc}\n")
+        return EXIT_FAULT
+
+    at = getattr(args, "at", "") or datetime.datetime.now(
+        datetime.timezone.utc).isoformat()
+    try:
+        confirmed = control.confirm_admission(args.cycle, phase=args.phase,
+                                              evidence=evidence, at=at)
+    except store_mod.StoreError as exc:
+        sys.stderr.write(f"serverosctl: {exc}\n")
+        return EXIT_FAULT
+
+    lines = [f"cycle       {confirmed['cycle_ref']}",
+             f"phase       {confirmed['phase']}"]
+    if confirmed.get("replayed"):
+        lines.append("replayed    yes — this phase already carried this same "
+                     "evidence, so nothing was written")
+    else:
+        lines.append(f"confirmed   {args.phase} at {at}")
+    for field, value in sorted(evidence.items()):
+        lines.append(f"  {field:<11} {value}")
+    lines.append("")
+    lines.append("What was recorded is what the other store answered. This "
+                 "store holds no lease and no receipt; it records which half of "
+                 "the cycle is done.")
+    emit({"admission": confirmed, "evidence": evidence, "store": str(control.path)},
+         as_json=args.json, lines=lines)
+    return EXIT_OK
+
+
+def cmd_work_retire(args) -> int:
+    """§12/P6 — close an admission, releasing the reservation and action key.
+
+    The other end of `work admit`. Until a cycle is retired its action key stays
+    held — `admit` refuses a second admission under a key an open one holds,
+    because `runtime/bounded_invocation` would replay the first receipt to the
+    second — so this is what a finished cycle runs, and it is also what a cycle
+    runs when it is abandoned.
+
+    Idempotent, and it keeps the FIRST retirement. A second call that moved the
+    instant would move it to whenever somebody last mentioned the cycle, and the
+    question a retired admission answers is when the reservation was released.
+    It is not a deletion: the record stays, saying what the cycle was admitted
+    for, because a review afterwards is computed from exactly that.
+    """
+    store_mod, control = _control_store()
+    try:
+        retired = control.retire_admission(args.cycle, at=args.at or
+                                           datetime.datetime.now(
+                                               datetime.timezone.utc).isoformat(),
+                                           outcome=args.outcome or None)
+    except store_mod.StoreError as exc:
+        sys.stderr.write(f"serverosctl: {exc}\n")
+        return EXIT_FAULT
+    lines = [f"cycle       {retired['cycle_ref']}",
+             f"phase       {retired['phase']}",
+             f"retired at  {retired['retired_at']}"]
+    if retired.get("outcome"):
+        lines.append(f"outcome     {retired['outcome']}")
+    lines.append(f"action key  {retired['action_key']} — released, so another "
+                 f"admission may hold it now")
+    lines.append("")
+    lines.append("The record stays. A retired admission is what the cycle did, "
+                 "and `work admissions` still lists it.")
+    emit({"admission": retired, "store": str(control.path)}, as_json=args.json,
+         lines=lines)
     return EXIT_OK
 
 
@@ -7886,6 +8298,67 @@ def build_parser() -> argparse.ArgumentParser:
                                 "neither does `context/delegation.py`, so this "
                                 "is the one place the question is answered")
     wk_grants.set_defaults(func=cmd_work_grants)
+
+    wk_admit = work_sub.add_parser(
+        "admit", help="§12/P6 — admit one cycle: the focus selection, its budget "
+                      "reservation and its lease/dispatch intent in one write. "
+                      "Records the intent; performs nothing", **_COMMON)
+    _add_work_roots(wk_admit, project_required=False)
+    wk_admit.add_argument("--cycle", required=True,
+                          help="the ref this cycle is admitted under, and what a "
+                               "resume names. There is deliberately no --grant: "
+                               "the grant is read off the selected row")
+    wk_admit.add_argument("--action-key", required=True,
+                          help="the key `runtime/bounded_invocation.invoke_once` "
+                               "will be called with ([a-zA-Z0-9_-]{1,100})")
+    wk_admit.add_argument("--resource", required=True,
+                          help="the resource this cycle will declare a lease on")
+    wk_admit.add_argument("--scope", required=True,
+                          help="the scope that lease is declared under; scope and "
+                               "holder are a resource's properties, not the "
+                               "caller's")
+    wk_admit.add_argument("--ttl", type=int, default=900,
+                          help="how old the underlying projection may be, in "
+                               "seconds (default 900)")
+    wk_admit.add_argument("--limit", type=int, default=2)
+    wk_admit.set_defaults(func=_workchain_refusals(cmd_work_admit))
+
+    wk_admissions = work_sub.add_parser(
+        "admissions", help="§12/P6 — the cycles currently admitted, and the "
+                           "reservation, lease and action key each is holding. "
+                           "Reads the control store", **_COMMON)
+    wk_admissions.set_defaults(func=cmd_work_admissions)
+
+    wk_confirm = work_sub.add_parser(
+        "confirm", help="§12/P6 — record the lease store's or the receipts "
+                        "directory's answer for one admission, and advance one "
+                        "phase", **_COMMON)
+    wk_confirm.add_argument("cycle")
+    # No `choices=` here, deliberately. argparse would reject INTENT_RECORDED
+    # with "invalid choice", and the reason it is not confirmable is a sentence
+    # the command writes: `admit` recorded that phase itself, and a caller
+    # reporting this store's own act back to this store is not evidence.
+    wk_confirm.add_argument("--phase", required=True,
+                            help="LEASE_HELD or DISPATCHED — the two answers a "
+                                 "store other than this one gives. INTENT_RECORDED "
+                                 "is what `work admit` writes and is refused here")
+    wk_confirm.add_argument("--receipts", default="",
+                            help="the directory `invoke_once` was given; required "
+                                 "for --phase DISPATCHED, and there is no default")
+    wk_confirm.add_argument("--at", default="",
+                            help="the instant to record (default: now)")
+    wk_confirm.set_defaults(func=cmd_work_confirm)
+
+    wk_retire = work_sub.add_parser(
+        "retire", help="§12/P6 — close an admission, releasing its reservation "
+                       "and its action key. Keeps the first retirement, and "
+                       "deletes nothing", **_COMMON)
+    wk_retire.add_argument("cycle")
+    wk_retire.add_argument("--outcome", default="",
+                           help="one word for how the cycle ended, if it ended")
+    wk_retire.add_argument("--at", default="",
+                           help="the instant to record (default: now)")
+    wk_retire.set_defaults(func=cmd_work_retire)
 
     wk_item = work_sub.add_parser(
         "item", help="one Item's chain: which document exists, which is "
