@@ -112,7 +112,7 @@ source revision 一列给的是**指纹成立的那次 revision**，也就是 pa
 | A9 | 生产观察 | production-observation | `skills/production-observation` | Skill | **ce6e103** | 既有 API/CLI/跳板 | **UNBOUND** | 无 | DONE | NOT_MEASURED | NOT_ENABLED | 未装进任何 composition |
 | A10 | 生产变更 | production-change | `skills/production-change` | Skill | **ce6e103** | 调用 A9 + 真实 Runbook | **UNBOUND** | 无 | DONE | NOT_MEASURED | NOT_ENABLED | 同 A8；且 READY≠切流授权 |
 | B1 | 来源采集 | information-management | `skills/information-management` | Skill | 早于本轮 | `records/information/raw/*` | 原生 | srv0003.20260915a | DONE | DONE | ENABLED | — |
-| B2 | 结构化认识 | information-management（共用 payload） | 无独立 artifact | — | — | affected people/project/topic | 原生 | — | PARTIAL | NOT_MEASURED | NOT_ENABLED | 设计就写「可先共用 payload」，独立重算/失效逻辑 not read |
+| B2 | 结构化认识 | information-management（共用 payload） | 无独立 artifact（读者在 `intake/understanding_delta.py`） | — | 早于本轮 | affected people/project/topic | 原生 | 未 promote（本轮新增） | PARTIAL | DONE | NOT_ENABLED | 设计就写「可先共用 payload」。**读的一侧本轮补上**（§9.7）；**写的一侧 not read**，所以 CODE 是 PARTIAL 而不是 DONE——读与写谁也不许代表谁 |
 | B3 | 需求 | product-requirements-and-design | `skills/product-requirements-and-design` | Skill | 早于本轮 | — | 原生 | srv0003.20260915a | DONE | DONE | ENABLED | — |
 | B4 | 工作管理 | work-management | `skills/work-management` | Skill | 早于本轮 | Work Engine MCP/CLI | 原生 | srv0003.20260915a | DONE | DONE | ENABLED | — |
 | B5 | 调研 | research-evidence | `skills/research-evidence` | Skill | **ce6e103** | Serper / 既有专业知识 | **UNBOUND** | 无 | DONE | NOT_MEASURED | NOT_ENABLED | 未装进任何 composition |
@@ -597,12 +597,13 @@ manifest 行、packs 闭包、cards。凡是「X 的渲染嵌了 X 的值」，�
 计划 P0 要的第三样东西：「盘点每个详细设计对应的 source、实际入口、consumer、现有字段与
 真实 producer」。下面每条都是读过盘之后写的；grep 没命中的写 `not found`，没读的写 `not read`。
 
-两条**在 fabric 树里没有消费者**的孤岛，是本轮最实的两处接线缺口：
+三处**在 fabric 树里没有消费者**的孤岛，是本轮最实的接线缺口（第三处见 §9.7）：
 
 | 对象 | 在哪 | 谁调它 | 判定 |
 | --- | --- | --- | --- |
 | ~~records 的 66 份 `information/raw/**/manifest.json`~~ | `/data/home/vince/workspace/records/information/raw/…` | **已接线**：`serverosctl information captured`（`intake/capture_coverage.py`）。此前 `grep -rn "pagination_complete\|msg_count" --include=*.py` 在 fabric 树里零命中 | **本轮已修**，见 §9.6。设计要求「capture policy 与 materialized coverage 分开」，此前 coverage 这一半没有被消费 |
 | ~~`space/resolver.py`（402 行，含词汇表）~~ | serveros worktree `space/resolver.py` | **已接线**：`serverosctl space resolve`（`runtime/cli.py`，`_load_module_from(REPO_ROOT / "space" / "resolver.py", …)`） | **本轮已修**，见 §9.5。此前只能 `python3 space/resolver.py --request …` 单跑——模块**在 artifact 里**而没有任何东西加载它，于是装在节点上的动词不是缺失，是**叫不出名字**。它的 docstring 自己声明「不认识 lark-cli 且永远不许认识」，所以缺的从来是**接线**不是实现 |
+| ~~`records/information/understanding/**/*.md` 的出处~~ | `/data/home/vince/workspace/records/information/understanding/…`（14 份卡） | **已接线**：`serverosctl work understanding`（`intake/understanding_delta.py`）。此前 `grep -rn "message_position" --include=*.py` 在 fabric 树里零命中，`workchain.py` 只数写了 `## Sources` 标题的卡 | **本轮已修**，见 §9.7。这一层的 `README.md` 要求卡可追溯，而没有东西核对过任何一条引用 |
 
 | 包 | 对象 | source | 入口 | consumer | 判定 |
 | --- | --- | --- | --- | --- | --- |
@@ -614,7 +615,7 @@ manifest 行、packs 闭包、cards。凡是「X 的渲染嵌了 X 的值」，�
 | P2 | 五个采集器 | `/data/home/vince/workspace/records/information/raw/{sync_feishu_chat,expand_feishu_doc,expand_feishu_files,drift_sync,_redact}.py` | 各自 `main()`；`drift_sync.py:2` 自称 SessionStart hook driver | lark-cli（`sync_feishu_chat.py:131`、`expand_feishu_doc.py:42`） | working；`information/raw/` 在 records 仓里是 clean |
 | P2 | 唯一脱敏实现 | `records/information/raw/_redact.py`（327 行，md5 `fa980373…`） | 库：`redact()`、`persist_secrets()` | `sync_feishu_chat.py:29`、`expand_feishu_doc.py:32`、`redact_backfill.py:54` | **盘上有 5 份**，其中 `worktrees/records/reconcile-20260922` 与主份逐字节相同，另外三份（SRV-0003 75 行 / MKT-0001 90 行 / clean-line-20260920 274 行）与已退役归档 `015de972` 不同。设计要「保留唯一 redaction 实现」，盘上现在是多份——**这是待收敛项，不是既成事实** |
 | P2 | 黑名单 | `records/information/raw/DRIFT_WATCHLIST.txt` | — | — | **not read**；注册 `drift_sync` 为 hook 的 `settings*.json` **not found** |
-| P3 | people/project/topic 卡 | 手写 markdown：`records/information/understanding/{people,projects,topics}/*.md` | — | — | **no producer found**：全 workspace 的 `*.py` 里没有生产者。设计要的「最小 incremental writer」就是这一条的缺口 |
+| P3 | people/project/topic 卡 | 手写 markdown：`records/information/understanding/{people,projects,topics}/*.md` | **读的一侧已接线**：`serverosctl work understanding`（`intake/understanding_delta.py`）。**写的一侧仍 not read** | — | **读的一半已补**（§9.7）：14 份卡逐份对账到源，`BEHIND 3 · UNMEASURABLE 7 · UNTRACEABLE 4`。设计要的「最小 incremental writer」**仍然是缺口**——这个模块读、对账、提议区间，不写一个字 |
 | P3 | Minutes / MeetingBundle | 无 Python 类。`space/meeting-policy.schema.yaml:30` 声明结构；内核 `space/meeting_relevance.py:69` | ~~`python3 space/meeting_relevance.py --request`（**未接 serverosctl**）~~ **已接线**：`serverosctl space meeting` | — | 内核 working，**接线已补**（§9.5）；bundle 的生产者仍 not found |
 | P3 | 记忆账本/投影/scope | `memory/{record,projection,scope,handoff}.py` | `serverosctl memory {audit,project,status,subject}` (`cli.py:6479`) | — | working；`docs/memory-fabric.md` 逐条点名这些模块 |
 | P4 | 文档关系边 | `relations/project.py:47`（`serveros/relations.v1`），`relations/schema.yaml:30` | `python3 project.py --records ROOT --write relations/current.jsonl` | — | **partial**：8 个谓词里只有 2 个（`belongs_to`、`derived_from`）有生产者，其余 6 个 `declared_only` |
@@ -850,6 +851,80 @@ abilities-manifest.yaml 在两者上同 blob 4afa3a22…
 加载闭包**推出** `intake/capture_coverage.py`（87 条里的一条），
 `test_build.py::test_the_artifact_answers_the_production_loader_closure` 由此自动覆盖它——
 这一族「被 shipped surface 加载、却没有被任何东西声明」的缺陷不再需要有人记得。
+
+### 9.7 认识层已对账：第三处孤岛关闭（读的一侧）
+
+§9.6 那处是「采集器写了记录，ServerOS 侧没有读者」。这一处是同一族的第三例，而且更靠里：
+**卡写了出处，没有任何东西去核对那个出处还在不在。**
+
+`records/information/understanding/` 下 14 份卡（实点：`people/` 6、`topics/` 5、
+`projects/` 3；两份 `README.md` 不算——`responsibilities/` 里只有一份 README，所以那个 scope
+**一张卡都没有**），层自己的 `README.md` 把「可追溯到 raw 源」写成硬要求。而这一层在被读之前
+是两半都不成立：`intake/workchain.py` 数的是**写了 `## Sources` 标题的卡数**——那是「把规则
+写下来的文档数」，不是可追溯性；`grep -rn "message_position" --include=*.py` 在 fabric 树里
+**零命中**。也就是说盘上 14 份卡、每份都带着位置或摘要，没有一行代码读过那些位置。
+
+**`intake/understanding_delta.py`（新，约 870 行）+ `serverosctl work understanding`。**
+
+它读每一份卡自己的引用，把**卡的引用到达处**与**源现在到达处**比。六件事各自有一条测试类，
+因为它们各自都能安静地答错：
+
+1. **两个水位不是一个。** 卡的一侧是位置、源的一侧是位置，**只有两边都是位置时才形成
+   `lag`**。`sync.msg_count` 是计数：拿它去减一个引用位置，看起来对，但这里没有可减的东西。
+2. **没有到达处的引用不是 current。** 14 份卡里有 7 份整份引用文件（没有 `message_position`），
+   没有可比的量——`UNMEASURABLE`，不是那次没人做过的比较。
+3. **已读区间内的改动。** 一条卡早就读过的位置上的消息之后被改了，`lag` 是 0，而卡是陈的。
+   这是 `STALE_IN_PLACE`，与 `BEHIND` 分开；优先级 `BEHIND` > `STALE_IN_PLACE` > `CURRENT`
+   是写出来的，不是涌现的。
+4. **它不发出任何 claim。** 它不打开消息正文，所以输出里的字段叫 `review_range`（要重读的
+   区间），没有 `claim` 这个键。这条判据查的是**报告的键**而不是报告的文本：子串版会命中
+   `UNTRACEABLE` 理由里那句「the card claims traceability」——与 §5.0 同一个族，
+   **闸门能看见字面量，看不见语境**。
+5. **`*` 不跨 `/`。** `people/*/messages.jsonl` 是「每个人的会话」，把它展开成每个人下面每一份
+   链接文档，会加进卡没有引用过的行。
+6. **读者不持时钟、不写入。** 这条用 `ast` 查，不用 grep——模块自己的文档字符串里就写着
+   「there is no `import time`」，grep 版会败在承诺这条性质的那句话上。
+
+**实测事实（14 份卡，全部经独立复算）**：`BEHIND` 3 · `UNMEASURABLE` 7 · `UNTRACEABLE` 4。
+其中三件是这一层第一次被指出来的：
+
+- `projects/litellm.md` 引用的一份权威工作文档，卡上写的是 `sha b9fe2535`，而 manifest 记的是
+  `content_sha256 = f4927de5…`（把盘上那份 13390 字节的 `content.md` 单独哈希过），
+  `prev_content_sha256 = 672cd067…`，**两个都不是**卡上那个前缀。
+- `people/zhangzhengji.md` 落后 644 个位置，且**已读区间内还有 2 条被改过**——只看 `lag`
+  会漏掉后半句。
+- `topics/` 5 份里有 4 份（`hosting-platform`、`litellm-log-analysis`、`litellm-operations`、
+  `methodology-log-analysis`）的 `Sources` 区域**一个 raw 路径都没引用**：它们声称可追溯，
+  而没有任何可核对的东西；第五份 `workbuddy-deepseek-billing` 引了 3 个源且都落后。
+
+**我写出来的三个错，都是「自信地答错」而不是崩溃**：
+
+- **坐标系统串了。** `capture_root()` 已经含 `feishu/chats`，而索引的键从
+  `information/raw` 起算，于是每个路径都 404，**14 份卡被安静地全部判成 `UNMEASURABLE`**。
+  修前摘要读作 `UNMEASURABLE 9`，修后才是 `BEHIND 3 · UNMEASURABLE 7 · UNTRACEABLE 4`。
+  一处 docstring 把这条写在函数上：一条 join 到更深的根上，「读起来像『这个源没有消息文件』，
+  而不是像一个 bug」。
+- **没有配上的引用会抛 `KeyError`。** `expand` 对非 glob 直接返回拼出来的键、不查索引，于是
+  一条指向本机没采过的源的引用在调用处崩掉——既是错的答案也是错的形状：它本该是一条
+  `UNRESOLVED` **测量**，而写那条测量的分支早就在那里。
+- **`partial` 只数了一种没核对的引用。** 卡的一条引用指向本机没有的源、另一条指向当前源且
+  两者位置一致，会报 `CURRENT` 且 `partial: false`——把「根本没读到」的那条洗成「已核对」。
+  这是同一个洗白换了一扇更窄的门，是**写测试的时候发现的**，改在模块里：`unresolved` 单列
+  一个计数，`partial` 两种都算，`why` 两种都点名。
+
+**变异测试**：五条承重判据各切断一次（`BEHIND` 永不触发 / `partial` 忽略 `unresolved` /
+位置不全也报 `DECIDABLE` / glob 跨 `/` / 未配上的路径返回拼出来的键），五次都被对应的测试抓住。
+**第四次第一次没抓住，因为变异根本没应用**——我猜的锚点文本在文件里不存在，脚本断言失败而
+pytest 那行照印「52 passed」。一个没应用的变异是一次**假绿**，与 §5.0 同族；按真锚点重跑，
+抓住了。每次之后按 sha256 逐字节还原（`c62f3df260f93eb2…`），`__pycache__` 每次都清。
+
+**接线是自动被门覆盖的，不是我再记一次。** 这个动词经 `_load_module_from` 从 `cli.py` 加载，
+`tests/loader_graph.py::production_closure()` 因此**推出** `intake/understanding_delta.py`，
+`test_build.py::test_the_artifact_answers_the_production_loader_closure` 自动覆盖它。
+
+**没做完的是写入侧。** P3 设计里的「最小 incremental writer」仍然 `not read`：这个模块读、对账、
+提议区间，**不写一个字**（`ast` 那条判据是它的证据）。所以 B2 的 CODE 仍是 `PARTIAL` ——
+读的一侧 DONE，写的一侧 not read，两者都不许互相代表。
 
 ## 10. 后续每包更新哪几行
 

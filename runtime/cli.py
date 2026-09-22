@@ -6100,6 +6100,127 @@ def cmd_work_coverage(args) -> int:
     return EXIT_OK
 
 
+def cmd_work_understanding(args) -> int:
+    """§B2/P3 — which understanding cards a source delta touches, and why.
+
+    `work coverage` counts the understanding layer by DOCUMENT — how many cards
+    exist per scope and how many carry a `## Sources` heading. That measures
+    whether the layer's rule was written down. This measures whether it is
+    true, by resolving each card's own citations against the capture tree and
+    comparing the newest position the card cites to the newest position the
+    source now holds.
+
+    What it refuses to hand back as one number:
+
+      * one watermark. The card's reach and the source's reach are printed
+        beside each other and the lag is the difference of two positions,
+        computed only when both are positions. A count is not a position.
+      * a claim. This verb reads no message body, so it proposes a range to
+        look at and never a statement about what the range says.
+      * freshness for a card that cites a source in full. A citation with no
+        reach cannot be behind, and calling it current would be the comparison
+        nobody made.
+
+    The cards are the operator's own record. This reads them and writes
+    nothing.
+    """
+    paths = paths_mod.Paths()
+    records = Path(getattr(args, "records_root", "") or
+                   Path(paths.root("workspace")) / "records")
+    if not records.is_absolute():
+        sys.stderr.write(
+            f"serverosctl: --records-root must be absolute, got {records}. A "
+            f"card tree read relative to whatever directory the caller stood in "
+            f"is a lag nobody else can reproduce.\n")
+        return EXIT_FAULT
+    capture = _load_module_from(REPO_ROOT / "intake" / "capture_coverage.py",
+                               "serveros_intake_capture_coverage")
+    delta = _load_module_from(REPO_ROOT / "intake" / "understanding_delta.py",
+                              "serveros_intake_understanding_delta")
+    try:
+        # The capture objects are read here and passed in rather than recomputed
+        # inside the other module: two readers of one tree drift, and the one
+        # that drifts is the one nobody feeds.
+        objects = capture.read_root(records)["objects"]
+        report = delta.read_and_reconcile(records, objects)
+    except (capture.Refused, delta.Refused) as exc:
+        sys.stderr.write(f"serverosctl: {exc}\n")
+        return EXIT_FAULT
+
+    summary = report["summary"]
+    lines = [
+        f"root        {report['root']}",
+        f"card        {summary['denominator']} 份  ·  "
+        + " · ".join(f"{name} {count}"
+                     for name, count in sorted(summary["by_state"].items())),
+        "",
+    ]
+    for card in report["cards"]:
+        verdict = card["judged"]
+        heading = card["card"].split("/", 3)[-1]
+        lines.append(f"{heading}  [{card['sources_marker']}]  {verdict['state']}")
+        lines.append(f"    {verdict['why']}")
+        if verdict.get("partial"):
+            # Both kinds of unchecked citation are named, because they are
+            # different answers to different questions: one named no reach, the
+            # other named a source that is not on this node. A partial line
+            # reporting only the first would read as though the rest of the card
+            # had been compared.
+            unchecked = []
+            if verdict["unmeasured"]:
+                unchecked.append(f"{verdict['unmeasured']} 条没有可比的位置")
+            if verdict.get("unresolved"):
+                unchecked.append(f"{verdict['unresolved']} 条没有对应的源")
+            lines.append(f"    部分：{verdict['measured']} 条引文可比、"
+                         + "、".join(unchecked))
+        for row in card["measurements"]:
+            lines.append("    · " + _measurement_line(row))
+        for row in verdict["review_ranges"]:
+            lines.append("    → " + _review_line(row))
+    emit(report, as_json=args.json, lines=lines)
+    return EXIT_OK
+
+
+def _measurement_line(row: dict) -> str:
+    """One citation's measurement, with the two watermarks kept apart."""
+    kind = row["kind"]
+    source = row["source"].rsplit("/", 2)[-2:]
+    where = "/".join(source)
+    if row.get("via_glob"):
+        where += "  ← glob"
+    if kind == "POSITION":
+        positions = row["source_positions"]
+        return (f"{where}  卡 {row['applied']} / 源 {positions['max']}"
+                f"（{positions['count']} 条）  落后 {row['lag']}"
+                + (f"  · 已读区间内 改 {row['revisions_in_range']['edited']} "
+                   f"删 {row['revisions_in_range']['deleted']}"
+                   if row["revisions_in_range"]["edited"]
+                   or row["revisions_in_range"]["deleted"] else ""))
+    if kind == "DIGEST":
+        agreed = row.get("lag") == 0
+        return (f"{where}  摘要 {row['cited_digest']} 与 manifest "
+                f"{'一致' if agreed else '不一致'}"
+                + (f" —— {row['digest_why']}" if row.get("digest_why") else ""))
+    if kind == "WHOLE_FILE":
+        return (f"{where}  整份引用，没有位置"
+                + (f" —— {row['unresolved_why']}" if row.get("unresolved_why") else ""))
+    return f"{where}  {row.get('unresolved_why', '')}"
+
+
+def _review_line(row: dict) -> str:
+    """One range to look at. A range, never a claim."""
+    what = ("需要往下读" if row["kind"] == "BEYOND_APPLIED"
+            else "已读区间被改动过")
+    span = (f"位置 {row['to_position']}"
+            if row["kind"] == "BEYOND_APPLIED" else
+            f"位置 {row['from_position']}–{row['to_position']}")
+    detail = (f"  改 {row['revisions']['edited']} 删 {row['revisions']['deleted']}"
+              if row.get("revisions") else
+              f"  最新 {row['latest_create_time']}" if row.get("latest_create_time")
+              else "")
+    return f"{row['card'].split('/', 3)[-1]}  {what}  {span}{detail}"
+
+
 # ---------------------------------------------------------------------------
 # network
 # ---------------------------------------------------------------------------
@@ -7462,6 +7583,20 @@ def build_parser() -> argparse.ArgumentParser:
         **_COMMON)
     _add_work_roots(wk_cov, project_required=True)
     wk_cov.set_defaults(func=_workchain_refusals(cmd_work_coverage))
+
+    # Deliberately NOT `_add_work_roots`: the understanding layer sits under
+    # `records/information/understanding/` and is not a property of a project,
+    # so `--project` would be a flag whose value this verb never reads.
+    wk_und = work_sub.add_parser(
+        "understanding", help="§B2 — which understanding cards a source delta "
+                              "touches: each card's own cited reach against the "
+                              "newest position its sources now hold. Reads no "
+                              "message body, proposes ranges and never claims, "
+                              "writes nothing", **_COMMON)
+    wk_und.add_argument("--records-root", default="",
+                        help="the records checkout to read. Default: this node's "
+                             "workspace root + /records. Must be absolute")
+    wk_und.set_defaults(func=cmd_work_understanding)
 
     workbench = sub.add_parser(
         "workbench",
