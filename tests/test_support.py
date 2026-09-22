@@ -868,6 +868,131 @@ class CheckTest(Fixture):
 
 
 # ---------------------------------------------------------------------------
+# The third reading shape: files were read and no entry came out
+# ---------------------------------------------------------------------------
+class UnrecognisedReadingTest(Fixture):
+    """`entry_glob` matching nothing and `entry_glob` matching files that carry
+    no entry are two facts, and both mean the reading did not happen.
+
+    Measured on 2026-09-22 against a second knowledge base on this host: a
+    two-level tree whose glob matched 8 files, whose headings are not the
+    contract's `## [ID] name`, and which carries no `00_索引与说明.md`. Every
+    verb read ZERO entries and reported success -- `entries` exit 0 with an
+    empty list, `check` printing `0 entries against 0 index rows` / `no
+    findings` / exit 0, `match` answering `NO_ENTRY_MATCHES` and blaming the
+    question, and `answer` proposing an improvement to a knowledge base it had
+    never read. The module's own docstring already ruled on this -- "an
+    unreadable knowledge base produces NO findings -- it produces
+    KB_UNREADABLE" -- so the guard reading only `unreadable` was an omission
+    and not a design.
+
+    The fixture is shaped like the measured one and contains no real content.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.foreign = self.root / "foreign"
+        # A two-level tree, like the measured one: entries sit in a
+        # SUBDIRECTORY, so the glob matches and the depth is not the problem.
+        for rel, text in {
+            "compatibility/COMPAT-001.md": "# 客户端接入总表\n\n## Symptoms\n\n- nothing\n",
+            "compatibility/COMPAT-002.md": "# Codex\n\n## Symptoms\n\n- nothing\n",
+            "troubleshooting/NET-001.md": "# 连接异常\n\n## Symptoms\n\n- nothing\n",
+        }.items():
+            path = self.foreign / rel
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(text, encoding="utf-8")
+
+    def test_files_were_read_and_the_reading_says_so(self):
+        reading = support.read_entries(self.foreign)
+        self.assertIsNone(reading["unreadable"])      # the glob matched
+        self.assertEqual(reading["entry_count"], 0)
+        self.assertIsNotNone(reading["unrecognised"])  # the reading did not
+        # The sentence names what was read and the pattern that matched
+        # nothing, because those are the two facts that make it actionable.
+        self.assertIn("COMPAT-001.md", reading["unrecognised"])
+        self.assertIn(support.contract()["kb"]["entry"]["heading_pattern"],
+                      reading["unrecognised"])
+
+    def test_the_two_facts_are_reported_separately_and_never_merged(self):
+        """A merged field would leave a reader unable to tell "wrong root"
+        from "same root, format this contract does not declare"."""
+        empty = self.root / "empty"
+        (empty / "knowledge").mkdir(parents=True)
+        nothing = support.read_entries(empty / "knowledge")
+        self.assertIsNotNone(nothing["unreadable"])
+        self.assertIsNone(nothing["unrecognised"])
+
+    def test_entries_is_unreadable_and_not_a_count_of_zero(self):
+        payload = support.listing(self.foreign)
+        self.assertEqual(payload["entry_count"], 0)
+        self.assertIsNotNone(payload["unrecognised"])
+        self.assertEqual(support.exit_code_for("KB_UNREADABLE"), 2)
+        self.assertIn("NO ENTRY RECOGNISED", support.render("entries", payload))
+
+    def test_check_does_not_render_two_zeros_as_a_clean_check(self):
+        check = support.check(self.foreign, as_of="2026-09-20")
+        self.assertEqual(check["outcome"], "KB_UNREADABLE")
+        self.assertEqual(check["findings"], [])
+        rendered = support.render("check", check)
+        self.assertIn("COULD NOT CHECK", rendered)
+        # The counts are None here, and "check None entries against None index
+        # rows" is a number where there is no number.
+        self.assertNotIn("None", rendered)
+
+    def test_a_missing_index_does_not_stop_a_check_that_read_entries(self):
+        """The other direction, and the reason the guard reads the READING and
+        not both sides: an empty index against entries that did read is a
+        finding, not a refusal to look.
+
+        The finding is `INDEX_MISSING` and not `INDEX_ORPHAN`, because the
+        direction is the entry's: three entries exist and the index has no row
+        for any of them.
+        """
+        kb = a_knowledge_base(self.root / "noindex", sample=None)
+        (kb / "00_索引与说明.md").unlink()
+        check = support.check(kb, as_of="2026-09-20")
+        self.assertNotEqual(check["outcome"], "KB_UNREADABLE")
+        self.assertEqual(check["entry_count"], 3)
+        self.assertEqual(check["index_row_count"], 0)
+        self.assertEqual(check["counts"].get("INDEX_MISSING"), 3)
+        self.assertIsNone(check["counts"].get("INDEX_ORPHAN"))
+
+    def test_match_does_not_blame_the_question(self):
+        result = support.match(self.foreign, status_code=402, message="budget exceeded")
+        self.assertEqual(result["outcome"], "KB_UNREADABLE")
+        self.assertNotEqual(result["outcome"], "NO_ENTRY_MATCHES")
+
+    def test_no_improvement_is_proposed_against_a_knowledge_base_never_read(self):
+        result = support.answer(self.foreign, status_code=402, message="budget exceeded")
+        self.assertEqual(result["outcome"], "KB_UNREADABLE")
+        self.assertIsNone(result["improvement"])
+        self.assertIsNone(result["answer"])
+
+    def test_no_id_is_offered_against_a_reading_that_recognised_nothing(self):
+        """An ID is a commitment and is never reused, so `PREFIX-001` offered
+        against an unread root would burn the number on the strength of "I
+        looked and found none" -- which is what this reading does NOT say."""
+        offered = support.next_id(self.foreign, "PLAT")
+        self.assertIsNone(offered["offered"])
+        self.assertIsNotNone(offered["unreadable"])
+        # And the refusal comes before the prefix check, so an unknown prefix
+        # against an unread root is unreadable rather than a Refused.
+        self.assertIsNone(support.next_id(self.foreign, "MADEUP")["offered"])
+
+    def test_the_cli_exits_the_way_the_contract_declares(self):
+        """The exit is how a log learns which of the two readings came back, so
+        the four verbs are read at the CLI and not only as functions."""
+        for argv in (["entries"], ["check", "--as-of", "2026-09-20"],
+                     ["match", "--message", "budget exceeded"],
+                     ["answer", "--message", "budget exceeded"]):
+            with self.subTest(verb=argv[0]):
+                code = support.main(["--kb-root", str(self.foreign)] + argv)
+                self.assertEqual(code, support.EXIT_COULD_NOT_ANSWER)
+                self.assertEqual(code, support.exit_code_for("KB_UNREADABLE"))
+
+
+# ---------------------------------------------------------------------------
 # next_id: the ID is a commitment, and this only offers one
 # ---------------------------------------------------------------------------
 class NextIdTest(Fixture):
