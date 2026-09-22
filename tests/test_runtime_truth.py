@@ -20,6 +20,7 @@ import subprocess
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest import mock
 
 import yaml
@@ -591,6 +592,41 @@ class RuntimeTruthTests(unittest.TestCase):
         self.codex_config.write_text("[plugins.\"other@x\"]\nenabled = true\n")
         self.assertFalse(truth.read_codex_install(self.codex_config)["enabled"])
 
+    def test_the_codex_reader_answers_about_the_composition_it_was_asked(self):
+        """The defect this node was in on 2026-09-23, as a fixed input.
+
+        The reader took core's plugin name and marketplace as constants, so a
+        node whose Codex activates `hwz-server-os-linux-work` was reported as
+        `enabled: false` — a false absence, read off the right key of the wrong
+        composition. Both directions are asserted, because a reader that
+        answered `true` for everything would pass the first half alone.
+        """
+        self.codex_config.write_text(
+            '[marketplaces.hwz-server-os-linux-work-local]\n'
+            'source = "/somewhere"\n\n'
+            '[plugins."hwz-server-os-linux-work@hwz-server-os-linux-work-local"]\n'
+            'enabled = true\n')
+        core = truth.read_codex_install(self.codex_config, "hwz-server-os")
+        work = truth.read_codex_install(self.codex_config, "hwz-server-os-linux-work")
+        self.assertFalse(core["enabled"])
+        self.assertTrue(work["enabled"])
+        self.assertEqual(work["marketplace"], "hwz-server-os-linux-work-local")
+
+    def test_a_codex_pair_that_is_not_the_rule_is_not_enabled(self):
+        """Half a match is not a match. The pair is the subject.
+
+        `codex_marketplace_name` derives the marketplace from the plugin name,
+        and an enabled line whose marketplace is the OTHER composition's is not
+        this composition's activation — it is a name that no rule produces. A
+        reader that matched on the plugin name alone would call this enabled,
+        which is the same conflation in the other direction.
+        """
+        self.codex_config.write_text(
+            '[plugins."hwz-server-os@hwz-server-os-linux-work-local"]\n'
+            'enabled = true\n')
+        got = truth.read_codex_install(self.codex_config, "hwz-server-os")
+        self.assertFalse(got["enabled"])
+
     # ---- the plugin a session actually loads -----------------------------
 
     def test_a_disabled_plugin_is_named_disabled_rather_than_left_out(self):
@@ -666,6 +702,37 @@ class RuntimeTruthTests(unittest.TestCase):
         label = f"{truth.BUNDLE_NAME}@{truth.CODEX_MARKETPLACE} (Codex plugin, disabled)"
         self.assertIn(label, rows)
         self.assertEqual(rows[label]["verdict"], truth.OK)
+
+    def test_the_codex_summary_is_keyed_by_composition_not_by_runtime(self):
+        """The block used to be one answer about core, under the key `codex`.
+
+        A reader of the JSON could not tell which composition `enabled` was
+        about, and on this node that turned into a false absence. Every
+        declared composition is now asked separately and each entry names its
+        own plugin and marketplace, so "Codex is off" is not something this
+        block can be read as saying.
+        """
+        version = self.build_and_install()
+        self.install_claude(version, self.out)
+        self.install_codex(version, self.out)
+        report = truth.collect(self.args())
+        # Resolved against the FIXTURE's repository, not the one this test file
+        # lives in: `composition_index` takes the repository from the module it
+        # is handed, and the module imported here resolves to the real checkout.
+        # Asked that way the assertion compares the report against a different
+        # repository's compositions and passes or fails for a reason unrelated
+        # to what it claims to test.
+        declared = set(truth.composition_index(
+            SimpleNamespace(repo_root=lambda: self.serveros)))
+        self.assertTrue(declared)
+        self.assertEqual(set(report["codex"]), declared)
+        for composition, entry in report["codex"].items():
+            self.assertEqual(entry["marketplace"],
+                             truth.codex_marketplace_name(entry["plugin"]),
+                             f"{composition} names a marketplace no rule produces")
+        self.assertTrue(report["codex"]["serveros-core"]["enabled"])
+        self.assertFalse(report["codex"][NODE_COMPOSITION]["enabled"],
+                         "the fixture enables core only; the node composition is not on")
 
     def test_the_codex_row_is_recomputed_not_read_from_the_cache_name(self):
         """The version dir's NAME is the payload's own version inside a payload.

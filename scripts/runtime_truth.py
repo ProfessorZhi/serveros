@@ -175,7 +175,6 @@ EXCLUDED_SUFFIXES = {".pyc", ".pyo"}
 
 BUNDLE_NAME = "hwz-server-os"
 CLAUDE_PLUGIN_KEY = "hwz-server-os@hwz-server-os"
-CODEX_MARKETPLACE = "hwz-server-os-local"
 
 # The branch a build pin must be reachable from. Named here rather than
 # inlined so the fixture can point it at its own synthetic repository.
@@ -480,15 +479,30 @@ def composition_index(build) -> dict[str, dict]:
     return out
 
 
-def read_codex_install(config_toml: Path) -> dict:
+def read_codex_install(config_toml: Path, plugin_name: str = BUNDLE_NAME,
+                       marketplace: str | None = None) -> dict:
     """Codex records activation in config.toml and materializes into a cache dir.
 
     Parsed by hand rather than with tomllib/tomli: this must run under the same
     interpreter that runs the rest of these scripts, and the two keys needed are
     unambiguous single-line assignments. A full TOML parser would be a new
     dependency for two string reads.
+
+    The composition, and so the pair of names, is a PARAMETER and no longer a
+    constant. It used to read `BUNDLE_NAME` and `CODEX_MARKETPLACE` — core's
+    plugin name and the marketplace that name derives — which made this reader
+    answer a question about ONE composition while its result was reported under
+    a key called `codex`, as if it were the whole of Codex on this node. On
+    2026-09-23 this node moved its default entry to `hwz-server-os-linux-work`,
+    and the summary then said `enabled: false` about a node whose Codex does
+    have the distribution enabled — a false absence produced by reading the
+    right key of the wrong composition. The caller now asks per composition, and
+    the marketplace name is derived from the plugin name by the builder's own
+    rule rather than restated, so the two cannot part.
     """
-    out = {"enabled": False, "marketplace_source": None}
+    marketplace = marketplace or codex_marketplace_name(plugin_name)
+    out = {"plugin": plugin_name, "marketplace": marketplace,
+           "enabled": False, "marketplace_source": None}
     if not config_toml.is_file():
         return out
     section = None
@@ -497,9 +511,9 @@ def read_codex_install(config_toml: Path) -> dict:
         if line.startswith("[") and line.endswith("]"):
             section = line[1:-1]
             continue
-        if section == f"marketplaces.{CODEX_MARKETPLACE}" and line.startswith("source"):
+        if section == f"marketplaces.{marketplace}" and line.startswith("source"):
             out["marketplace_source"] = line.split("=", 1)[1].strip().strip('"')
-        if section == f'plugins."{BUNDLE_NAME}@{CODEX_MARKETPLACE}"' and line.startswith("enabled"):
+        if section == f'plugins."{plugin_name}@{marketplace}"' and line.startswith("enabled"):
             out["enabled"] = line.split("=", 1)[1].strip() == "true"
     return out
 
@@ -542,6 +556,14 @@ def codex_marketplace_name(plugin_name: str) -> str:
     copy was a literal nobody compared with anything.
     """
     return f"{plugin_name}-local"
+
+
+#: Core's marketplace name, DERIVED. It used to be the literal
+#: `"hwz-server-os-local"` at the top of this file, beside `BUNDLE_NAME`, which
+#: is a second statement of a rule this function already states — and a second
+#: statement is the one that stops being true. Nothing compared the two, so the
+#: only thing keeping them equal was that nobody had changed either yet.
+CODEX_MARKETPLACE = codex_marketplace_name(BUNDLE_NAME)
 
 
 def composition_files(build) -> dict[str, Path]:
@@ -1244,7 +1266,12 @@ def collect(args) -> dict:
 
     # --- 4/5/6. the artifact, at each hop of the chain -------------------
     claude = read_claude_install(args.claude_plugins_json)
-    codex = read_codex_install(args.codex_config)
+    # Per composition, and read before `compositions` exists because the
+    # pin every other read depends on comes out of `claude`. The block below
+    # asks each declared composition for its own answer rather than asking
+    # once for core's names and reporting it under the name `codex`.
+    codex = {composition: read_codex_install(args.codex_config, entry["name"])
+             for composition, entry in composition_index(build).items()}
 
     recorded_pin = claude.get("gitCommitSha") or ""
     declared = declared_pin(args.output)
@@ -1804,8 +1831,7 @@ def collect(args) -> dict:
                                 "since superseded. It is not a disagreement between the "
                                 "artifact and this record — both can be right"}},
             },
-            "codex": {"enabled": codex.get("enabled"),
-                      "marketplace_source": codex.get("marketplace_source")}}
+            "codex": codex}
 
 
 def render(report: dict) -> None:
