@@ -139,6 +139,24 @@ surface measurement and compared by the parity checker.
 `consumable_provider_kinds` used to be a single global list, and it is the one
 that changed shape in W7:
 
+And one thing that is deliberately **not** in that list, because it is not a
+per-runtime map and cannot be made into one:
+
+```text
+session_drivers        which drivers must fire at session start, and where
+```
+
+A driver is declared as a driver — one entry naming the runtime that fires it,
+the event, the surface it must be registered on, the marker that identifies the
+registration, and the program the registration would run. The question it exists
+to answer is "is this driver wired on this node", and the two maps above cannot
+ask it: a hook's file is present on a node where the driver fires nowhere, so a
+presence probe on `~/.claude/settings.json` answers `true` while the collector it
+was meant to fire never runs. Two runtimes do not both have a hook surface and
+must not be forced to declare one, so this is a register of drivers rather than
+a map keyed by runtime. `abilities/runtime_parity.py#check_drivers` reads it;
+`serverosctl device agents` measures it.
+
 ```text
 before   consumable_provider_kinds: [skill, mcp-server, cli, …]   one list
 after    consumable_provider_kinds: {claude-code: [...], codex: [...]}

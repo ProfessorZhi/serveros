@@ -168,6 +168,167 @@ class ContractProbes(unittest.TestCase):
                       codes(parity.report(contract(), broken)))
 
 
+# ---------------------------------------------------------------------------
+# The session-start drivers
+# ---------------------------------------------------------------------------
+
+
+class DriverTests(unittest.TestCase):
+    """A driver is registered inside a file that exists either way.
+
+    That sentence is the whole reason this half is not a third `*_surfaces`
+    entry. A hook surface's file is present on a node where the driver fires
+    nowhere, so a presence probe answers `present: true` and the report goes on
+    saying the node is wired — the shape this repository keeps finding, one
+    level down. These tests are about the reading that cannot be had that way.
+    """
+
+    def _observed(self, state="NOT_REGISTERED", program_present=True):
+        return {"drift_sync": {
+            "state": state, "event": "SessionStart",
+            "surface": "/home/x/.claude/settings.json",
+            "registrations": 1,
+            "program": "/home/x/workspace/records/information/raw/drift_sync.py",
+            "program_present": program_present,
+            "because": "no command names it"}}
+
+    def _without_the_recorded_gap(self):
+        """The contract with the `drift_sync` entry removed.
+
+        The mechanism tests below ask whether a defect produces a finding, and
+        the shipped contract already records this one — so on the shipped file
+        the answer is `acknowledged`, and a test naming `findings` would be
+        asserting the absence of the very acknowledgement that
+        `test_the_live_gap_is_acknowledged_and_still_in_the_record` pins. Both
+        questions are worth asking and they need different inputs.
+        """
+        broken = copy.deepcopy(contract())
+        gaps = broken["capabilities"]["known_gaps"]
+        broken["capabilities"]["known_gaps"] = [g for g in gaps
+                                                if not g.get("driver")]
+        self.assertTrue(len(broken["capabilities"]["known_gaps"]) < len(gaps),
+                        "no recorded driver gap to remove")
+        return broken
+
+    def test_an_unregistered_driver_is_a_finding(self):
+        result = parity.report(self._without_the_recorded_gap(),
+                               observed_drivers=self._observed())
+        self.assertIn("DRIVER_NOT_REGISTERED", codes(result))
+
+    def test_a_driver_nobody_observed_is_unknown_and_not_absent(self):
+        """The distinction the surface half already makes, applied here. A
+        driver nobody looked for must not read as one that is not registered;
+        assuming it fires is how this check would be true by default."""
+        result = parity.report(contract(), observed_drivers={})
+        self.assertIn("DRIVER_NOT_OBSERVED",
+                      {u["code"] for u in result["unknowns"]})
+        self.assertNotIn("DRIVER_NOT_REGISTERED", codes(result))
+        self.assertEqual(result["verdict"], "CONFORMANT",
+                         "an unobserved driver was counted as a defect")
+
+    def test_no_driver_observation_at_all_is_unknown_not_conformant(self):
+        result = parity.report(contract())
+        self.assertIn("DRIVERS_NOT_OBSERVED",
+                      {u["code"] for u in result["unknowns"]})
+
+    def test_an_unreadable_surface_is_unknown_and_not_a_missing_registration(self):
+        """A file that is there and cannot be parsed is a question this node
+        could not answer. Reporting it as NOT_REGISTERED would be inventing a
+        fact about a file nobody could read."""
+        result = parity.report(contract(),
+                               observed_drivers=self._observed(state="UNREADABLE"))
+        self.assertIn("DRIVER_SURFACE_UNREADABLE",
+                      {u["code"] for u in result["unknowns"]})
+        self.assertNotIn("DRIVER_NOT_REGISTERED", codes(result))
+
+    def test_a_registration_pointing_at_nothing_is_a_finding_of_its_own(self):
+        """Opposite failures with one cause between them: a marker with no
+        program behind it, and a program nobody registered. The finding carries
+        `registered` so a reader can tell which one they are looking at
+        without parsing the sentence."""
+        unregistered = parity.report(
+            self._without_the_recorded_gap(),
+            observed_drivers=self._observed(program_present=False))
+        self.assertIn("DRIVER_PROGRAM_ABSENT", codes(unregistered))
+        self.assertFalse([f for f in unregistered["findings"]
+                          if f["code"] == "DRIVER_PROGRAM_ABSENT"][0]["registered"])
+
+        broken_marker = parity.report(
+            self._without_the_recorded_gap(),
+            observed_drivers=self._observed(state="REGISTERED",
+                                            program_present=False))
+        self.assertTrue([f for f in broken_marker["findings"]
+                         if f["code"] == "DRIVER_PROGRAM_ABSENT"][0]["registered"])
+
+    def test_a_gap_records_the_finding_it_covers_and_not_the_driver(self):
+        """A recorded gap is not a silencer for every defect about its subject.
+
+        A driver can fail two ways and the entry records one of them. Without
+        `acknowledges`, `DRIVER_PROGRAM_ABSENT` on the same driver would be
+        acknowledged by an entry about the registration — a defect nobody
+        recorded, reported as one they did.
+        """
+        result = parity.report(contract(),
+                               observed_drivers=self._observed(program_present=False))
+        self.assertIn("DRIVER_PROGRAM_ABSENT", codes(result))
+        self.assertEqual([a["code"] for a in result["acknowledged"]],
+                         ["DRIVER_NOT_REGISTERED"],
+                         "one gap acknowledged two different findings")
+
+    def test_the_live_gap_is_acknowledged_and_still_in_the_record(self):
+        """On this node the driver is installed and unwired, and the contract
+        records that as a gap. A check that is red the day it is written gets
+        turned off, so it is acknowledged instead — and acknowledgement must
+        not become deletion."""
+        result = parity.report(contract(), observed_drivers=self._observed())
+        self.assertEqual(result["findings"], [])
+        self.assertEqual([a["declared_gap"]["driver"] for a in result["acknowledged"]],
+                         ["drift_sync"])
+        self.assertIn("drift_sync", json.dumps(result))
+
+    def test_a_recorded_driver_gap_nobody_observed_is_not_reported_as_closed(self):
+        """The driver half of the staleness trap, and the reason it is in this
+        class rather than the one above: an unobserved driver would otherwise
+        make its own recorded gap read as fixed."""
+        result = parity.report(contract(), observed_drivers={})
+        self.assertEqual(result["unobserved_declared_gaps"], [])
+
+    def test_a_registered_driver_makes_its_recorded_gap_stale(self):
+        """And the direction that matters operationally: the day somebody wires
+        the hook, the record says so rather than going quiet."""
+        result = parity.report(contract(),
+                               observed_drivers=self._observed(state="REGISTERED"))
+        self.assertEqual(result["unobserved_declared_gaps"], ["drift_sync"])
+
+    def test_the_matcher_matches_a_driver_gap_on_the_driver(self):
+        """A path match cannot work here: the driver's surface file exists
+        either way, so the path is never the thing that is missing."""
+        gap = {"driver": "drift_sync", "state": "UNWIRED_ON_THIS_HOST",
+               "acknowledges": ["DRIVER_NOT_REGISTERED"]}
+        finding = {"driver": "drift_sync", "code": "DRIVER_NOT_REGISTERED"}
+        self.assertIsNotNone(parity._matches_a_declared_gap(finding, [gap]))
+        self.assertIsNone(parity._matches_a_declared_gap(
+            {"driver": "other", "code": "DRIVER_NOT_REGISTERED"}, [gap]))
+        # The same driver, a finding the entry does not name.
+        self.assertIsNone(parity._matches_a_declared_gap(
+            {"driver": "drift_sync", "code": "DRIVER_PROGRAM_ABSENT"}, [gap]))
+        # And an entry that names no finding acknowledges none, rather than
+        # everything about its driver.
+        self.assertIsNone(parity._matches_a_declared_gap(
+            finding, [{"driver": "drift_sync", "state": "UNWIRED_ON_THIS_HOST"}]))
+
+    def test_the_driver_rows_are_read_from_what_was_observed(self):
+        rows = parity.observed_driver_rows(self._observed(), contract())
+        self.assertEqual([r["driver"] for r in rows], ["drift_sync"])
+        self.assertEqual(rows[0]["state"], "NOT_REGISTERED")
+        # `registered` and not `present`: a row here answers "is this driver
+        # wired", which is not "is this path there", and the two must not read
+        # as one key.
+        self.assertFalse(rows[0]["registered"])
+        self.assertNotIn("present", rows[0])
+        self.assertEqual(parity.observed_driver_rows({}, contract()), [])
+
+
 class ObservationProbes(unittest.TestCase):
     def _observed(self, claude="present", codex="present"):
         def one(state):
@@ -270,17 +431,52 @@ class DeclaredGapTests(unittest.TestCase):
         other = {"runtime": "codex", "path": "/somewhere/else/AGENTS.md"}
         self.assertIsNone(parity._matches_a_declared_gap(other, [gap]))
 
+    def _all_present(self):
+        """Every declared surface observed and present, at the paths the
+        contract actually declares.
+
+        The paths used to be a placeholder — `{"path": "/x"}` — and that
+        placeholder is why the sibling test below exists. Staleness is now
+        decided by whether the gap's SUBJECT was observed, and a gap whose
+        subject is a path can only be recognised by that path's tail; a
+        fixture of `/x` therefore observes nothing and would have made this
+        test pass by reporting no gap at all rather than by reporting a fixed
+        one. The literal tail is not decoration, it is the input.
+        """
+        return {
+            "codex": {"instruction_surfaces": [
+                {"path": "/x/workspace/AGENTS.md", "present": True},
+                {"path": "/x/AGENTS.md", "present": True}],
+                "mcp_surfaces": [{"path": "/x/.codex/config.toml",
+                                  "present": True}]},
+            "claude-code": {"instruction_surfaces": [
+                {"path": "/x/workspace/CLAUDE.md", "present": True}],
+                "mcp_surfaces": [{"path": "/x/.claude.json",
+                                  "present": True}]},
+        }
+
     def test_a_recorded_gap_that_stops_being_observed_is_reported(self):
         """The other direction, which keeps the list honest: a gap written
         down and never seen again is either fixed or noise, and both want a
         look."""
-        all_present = {
-            runtime: {field: [{"path": "/x", "present": True}]
-                      for field in parity.OBSERVABLE_SURFACES}
-            for runtime in ("claude-code", "codex")}
-        result = parity.report(contract(), observed=all_present)
+        result = parity.report(contract(), observed=self._all_present())
         self.assertEqual(result["unobserved_declared_gaps"],
                          ["codex workspace AGENTS.md"])
+
+    def test_a_gap_nobody_looked_at_is_not_reported_as_fixed(self):
+        """The trap on the other side of the test above, and it was live.
+
+        Staleness means "observed, and the defect is gone" — so a run that read
+        nothing must not produce it. `report(contract, observed={"codex": {}})`
+        used to list the AGENTS.md gap as stale, i.e. it reported "either it was
+        fixed or the record is wrong" about a surface nobody had opened. Same
+        collapse as everywhere else here: an absence of measurement, rendered as
+        a measurement of absence.
+        """
+        result = parity.report(contract(), observed={"codex": {}})
+        self.assertEqual(result["unobserved_declared_gaps"], [])
+        self.assertIn("SURFACE_UNOBSERVED",
+                      {u["code"] for u in result["unknowns"]})
 
 
 # ---------------------------------------------------------------------------
@@ -343,6 +539,72 @@ class CliTests(unittest.TestCase):
         # And the record must carry the field each row belongs to, or a reader
         # cannot tell an instruction surface from an MCP one.
         self.assertTrue(all(row["field"] for row in rows))
+
+    def test_the_driver_row_agrees_with_an_independent_read_of_the_surface(self):
+        """End to end, on this host, and it is the assertion the surface half
+        cannot make for the driver half.
+
+        A driver row that echoed the declaration back would say `REGISTERED`
+        because the contract says the driver must be — and the surface's own
+        rows would look identical, since the settings file is present either
+        way. So this recomputes the answer here, from the file, and requires the
+        command's record to agree with it. A marker search here rather than a
+        call into the module on purpose: a test that reused the code under test
+        to check the code under test would pass with the marker match broken.
+
+        `registrations` is asserted too, and the mutation run is why. Without
+        it this test was **green against a collector that found no commands at
+        all**: `drift_sync` is not registered on this node, so "I read the
+        surface and none of its commands match" and "I read no commands" both
+        produce `NOT_REGISTERED` — the assertion could not tell a measured
+        absence from an empty measurement, which is the one distinction this
+        whole record is built on. Pinning the count pins the collection half
+        independently of the matching half, so breaking either one fails here.
+        """
+        proc = subprocess.run(
+            [sys.executable, str(REPO / "bin" / "serverosctl"),
+             "device", "agents", "--json"],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        record = json.loads(proc.stdout)
+        rows = record["observed_drivers"]
+        self.assertTrue(rows, "no observed driver reached the record")
+        declared = {d["name"]: d for d in parity.declared_drivers(contract())}
+        for row in rows:
+            spec = declared[row["driver"]]
+            self.assertEqual(row["event"], spec["event"])
+            surface = Path(row["surface"])
+            self.assertTrue(surface.is_file(), f"{surface} is not a file")
+            document = json.loads(surface.read_text(encoding="utf-8"))
+            event = document.get("hooks", {}).get(spec["event"])
+
+            def commands(node):
+                # Written out as loops rather than comprehensions: the nested
+                # comprehension over `node.values()` cannot see the first one's
+                # `k`, and a test that reads as a puzzle is a test nobody
+                # re-reads when it goes red.
+                out = []
+                if isinstance(node, dict):
+                    for key, value in node.items():
+                        if key == "command" and isinstance(value, str):
+                            out.append(value)
+                        else:
+                            out.extend(commands(value))
+                elif isinstance(node, list):
+                    for item in node:
+                        out.extend(commands(item))
+                return out
+
+            found = commands(event)
+            self.assertEqual(row["registrations"], len(found),
+                             "the record's command count is not the one on disk")
+            expected = any(spec["marker"] in c for c in found)
+            self.assertEqual(row["state"],
+                             "REGISTERED" if expected else "NOT_REGISTERED",
+                             f"{surface} says {expected} for {spec['marker']} "
+                             f"and the record says {row['state']}")
+            # The program's presence is a second, independent fact.
+            self.assertEqual(row["program_present"],
+                             Path(row["program"]).is_file() if row["program"] else None)
 
 
 class ObservedSurfaceRowsTest(unittest.TestCase):
