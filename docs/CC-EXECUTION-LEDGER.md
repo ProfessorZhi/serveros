@@ -1793,6 +1793,20 @@ summary: {"findings": 7, "blocking_high_open": 1,
 `ops/workspace/environment.yaml`。**这不是本轮代码的问题**，也不是我调用方式的问题——
 `ROOT_SOURCES["ops_repo"]` 的默认值就是 `<workspace_root>/ops`，我用的是产品自己的默认。
 
+**现行（2026-09-22 复测，§9.21）：**「不是本轮代码的问题」这半句**仍然成立**，但同一句后面
+隐含的那个结论——「所以这就是世界的状态，可以接受」——**不成立**。那五个 token 的真因是
+`ops/workspace/environment.yaml` **解析不过去**（`ScannerError`，line 70 column 11，一个以
+反引号开头的 plain scalar），而它同时是 `schema: hwz/environment.v2`、**本来就没有 `roots` 键**。
+检查器此前把「读不了这份文档」压成 `{}`，于是**一个语法错**看起来像**五个没人绑的 token**。
+§9.21 让这个读数分开报：现在多出一条 `ROOTS_SOURCE_UNREAD`（HIGH/OPEN，带类型/行/列/解析器原话），
+`ROOT_TOKEN_UNRESOLVED` 仍在并带上 `source_read`。**上面那个 invocation 逐字复测过**：
+把本单元改的那个文件换回 HEAD 版，判词是 `NONCONFORMANT` / **7 条 / blocking 1**，与本节记的**一字不差**；
+换回本单元版是 `NONCONFORMANT` / **8 条 / blocking 2**——多的那一条就是 `ROOTS_SOURCE_UNREAD`，
+所以「后果」与「原因」现在并列在 blocking 名单上，读的人不必再从五个 token 去猜。
+其余四种调用方式的对照在 §9.18.1 的 `现行`。
+**这一行留下的教训**：一句「这不是本轮代码的问题」是对的，而它离「所以不用管」只有一步——
+这一步正是本单元要走的那一步。
+
 ### 9.18.1 判词随调用方式变，而三种变化里两种是量具的错，不是产品的错
 
 这一节是上一节的方法论，单独写出来是因为**它差点让我把两条不存在的 HIGH 记成真实缺陷**。
@@ -1806,6 +1820,14 @@ ref 的树与工作树的内容不一致时，左右两边说的不是同一件�
 | `--serveros-repo <canonical 检出>` | `INCONCLUSIVE`，8 条，blocking 4 | — |
 | `--serveros-repo .`（`--canonical-ref` 留默认 `main`） | `NONCONFORMANT`，10 条，blocking 3 | **`UNDECLARED_ACTUATOR` ×7 + `STALE_ACTUATOR`** |
 | **`--serveros-repo . --canonical-ref HEAD`** | `NONCONFORMANT`，**7 条**，**blocking 1** | 无 |
+
+**现行（2026-09-22 复测，§9.21）：**四行的判词现在**都是 `INCONCLUSIVE`**，条数分别是
+21 / 9 / 11 / 9，blocking 19 / 5 / 6 / 5。**§9.21 只贡献了 +1 条、+1 blocking**——
+本单元把 HEAD 版换回来逐模式量过，这一步是可归因的；上面那张表与今天之间的其余差额
+是那之后别的改动留下的，不记在本单元账上。第三行那个 `UNDECLARED_ACTUATOR ×7 + STALE_ACTUATOR`
+的成因（local `main` 落后 HEAD）**没有变**，只是它现在与另外几条并存，所以判词从
+`NONCONFORMANT` 变成 `INCONCLUSIVE`：这个量具在 ref ≠ 工作树时报假 HIGH 这件事，本节末尾
+点出而未做的那半，仍然未做。
 
 第三行的两条是**量具的产物**：工作树的本地 `main`（`d0a94d6`）比 HEAD（`2ee6b79`）
 **落后 71 个提交**，所以契约读的是旧版——`git show main:runtime/actuator-contract.yaml:710`
@@ -2184,6 +2206,123 @@ verdict     CONFORMANT
 本轮没有新增文件。这一轮**没有写入点**（观测者只读），所以
 `runtime/actuator-contract.yaml` 不改。
 
+### 9.21 五个未解析的 root token，真因是一处 YAML 语法
+
+**这一节起于 §11.3 第 3 条的账对不上。** 那条写的是：检查器报 5 个 token 未解析，其中
+2 个（`SRC_ROOT`、`KNOWLEDGE_ROOT`）是**本机 Profile 其实绑了、检查器读错了文档**，
+3 个（`OPS_ROOT`、`RECORDS_ROOT`、`TEST_ENVS_ROOT`）是**本机 Profile 真没绑**。去量了活体读数，
+两半都不成立：
+
+```text
+unresolved : [KNOWLEDGE_ROOT, OPS_ROOT, RECORDS_ROOT, SRC_ROOT, TEST_ENVS_ROOT]
+declared   : []
+roots_source: ops/workspace/environment.yaml
+```
+
+`declared` 是**空的**——不是"绑了三个少了两个"，是检查器从那份文档里**一个 root 都没读到**。
+所以「哪几个绑了」这个问题本身问错了对象。
+
+**四种不同的事实，此前是同一个 `{}`。** `_ops_roots` 的返回把下面四件事压成了一个值，
+而调用方只看得到最后那个数字：
+
+| 事实 | 改前的样子 | 改后 |
+| --- | --- | --- |
+| locator 够不到 | `{}` | `found: false` / `roots_key: "unreadable"` |
+| 读到了但解析不了 | `{}` | `roots_key: "unparsed"` + `parse_error`（类型/行/列/解析器原话） |
+| 读到了、没有 `roots` 键 | `{}` | `roots_key: "absent"` + `schema` |
+| 有 `roots`、但不是映射 | `{}` | `roots_key: "not-a-mapping"`，`keys: 0` |
+
+**真因是一处标点。** 本机那份 machine instance 是 `schema: hwz/environment.v2`，
+角色根已改为「由 profile 绑定」（`binding_authority: serveros:fleet/profiles.yaml#linux-shared-multiuser`），
+所以它**本来就没有 `roots` 键**——这是合法的形状变化，不是谁忘了写。而它**连解析都过不去**：
+
+```text
+ScannerError  line 70, column 11
+found character '`' that cannot start any token
+```
+
+YAML 的 plain scalar 不能以反引号开头（它是保留指示符），而那份文档里有一行
+`note: \`.build-*\` / \`.prev-*\` 是发布流程的隐藏前缀桶…`。于是链条是：
+**文档语法错 → `_load` 把异常吞成 `None` → `{}` → 五个 token 未解析 → 一条 HIGH 指名五个 token**。
+读的人会去绑五个 token，而该做的是改一行文档或修 locator。
+
+**`_load` 吞掉原因是这条链的铰链，所以它也得改。** `_load` 对「空文本 / YAML 语法错 / 不是预期的文档」
+一律答 `None`——只要解析值的调用方继续用它就好，但**在报告一份文档的调用方不能用它**：
+「它没解析成功」不可行动。新增 `_load_detailed()` 返回 `(doc, reason)`，reason 里只放解析器
+**自己的 `problem` 与位置**，绝不放 `str(error)`——那串东西是消息**加一段代码框**，而代码框就是文档正文。
+位置是 1-based，因为它是要拿去在编辑器里打开的。这一条与「不打印 hook 命令」是同一条纪律：
+**报告不是转载文档的地方。**
+
+**判定抽成了纯函数。** `roots_source_finding(root_map)` 现在单独存在，因为「读数变成哪条 finding」
+正是要被钉住的那一步。分轴是**字节有没有被读到**，不是消息多坏：读到了却用不了的文档
+（语法错、形状不对）是**有位置的可修缺陷**，locator 一解析出来它就已经 OPEN；够不到的文档
+是对本节点可达性的陈述，记成 OBSERVED/MEDIUM——和「登记表不存在」同一个待遇。
+反过来会让一条关于可达性的注记占住 blocking 名单，而把可修的缺陷放进记录。
+
+**这条路径此前一条测试都没有**，所以合并才没被发现。新增 `tests/test_root_resolution.py`
+（10 条，从 0 条起）：五态各一条、`present` 不产 finding 一条、OPEN/OBSERVED 那对轴一条、
+后果带因一条、以及一条「不许把文档正文抄进报告」。
+
+**增量是准的，而且是逐模式量的。** 把 HEAD 版换回来跑一次再换回本单元版，四种调用方式
+**都是 +1 条 finding、+1 条 blocking**：
+
+| 调用 | 改动前 | 改动后 |
+| --- | --- | --- |
+| 纯默认（零参数） | `INCONCLUSIVE`，20 条，blocking 18 | 21 条，blocking 19 |
+| `--serveros-repo <canonical 检出>` | `INCONCLUSIVE`，8 条，blocking 4 | 9 条，blocking 5 |
+| `--serveros-repo .` | `INCONCLUSIVE`，10 条，blocking 5 | 11 条，blocking 6 |
+| `--serveros-repo . --canonical-ref HEAD` | `INCONCLUSIVE`，8 条，blocking 4 | 9 条，blocking 5 |
+| **§9.18 那条 invocation**（含 `--ability-repo …/fabric-integration-20260922 --ability-ref HEAD`） | `NONCONFORMANT`，**7 条**，blocking **1** | `NONCONFORMANT`，**8 条**，blocking **2** |
+
+所以 §9.18.1 那张表里 `--serveros-repo .` 的 `blocking 3` 与今天的 5 之间那 2 条**不是本单元加的**，
+是那之后别的改动加的；本单元的份额一行一个，没有别的。顺带一提：
+`--serveros-repo <canonical 检出>` 与 `--serveros-repo . --canonical-ref HEAD` 现在**读数完全相同**
+（9 / 5），这正是「工作树在 HEAD 上与 canonical 检出一致」的样子。
+
+**同一片区域里另外两条 HIGH 我查过了，是诚实的。** `DECLARATION_UNREADABLE` 的观测逐字是
+`"object not found"`，`COMPOSITION_EVALUATOR_ABSENT` 点名
+`skills/ability-management/payload/composition.py` 并原样印出它实际解析到的那个重复了一段路径的
+仓库（`/data/home/vince/workspace/src/ability-management/ability-management`，即 §9.18.2 那条）。
+两条都说了自己找不到什么。**所以 laundering 在这片区域只有本单元这一处。**
+
+**第六条变异体漏网了，和 §9.20 的 M7 是同一个形状。** 变异是
+`"problem": problem or "…"` → `"problem": str(error)`（把文档正文抄进报告）。它**第一次是绿的**，
+原因是我那条判据种了一个哨兵字符串、然后断言它不在报告里——而 **PyYAML 会把代码框按固定宽度截断**，
+哨兵在 `str(error)` 里被截掉了（`note: \`SENTINEL_VALUE_THAT_MUST_NOT_AP\ ...`），
+于是判据靠「截断窗口比哨兵短」而绿，不是靠代码拒绝抄正文。**种哨兵本身就是错的方法**：
+它绿不绿取决于 PyYAML 的窗口宽度，而不取决于被测代码。改成对解析器**逐字段相等**：
+
+```python
+with pytest.raises(yaml.YAMLError) as raised:
+    yaml.safe_load(body)
+assert source["parse_error"]["problem"] == raised.value.problem
+assert source["parse_error"]["line"] == raised.value.problem_mark.line + 1
+```
+
+以及键集合恰好是那四个（多一个字段就红）。改完重跑：**六条全被抓，还原后 sha256 逐字节相符**。
+
+```text
+caught  M1 源读数不再产出任何 finding  (2 failing)
+caught  M2 读到的文档也报成「够不到」：OPEN/HIGH 退化成 OBSERVED/MEDIUM  (1 failing)
+caught  M3 解析失败与「没有这个键」重新合并成同一种读数  (1 failing)
+caught  M4 解析失败不再给出位置  (2 failing)
+caught  M5 把解析器的 str() 当原因：文档正文被抄进报告  (1 failing)
+caught  M6 非映射的 roots 也报成键数  (1 failing)
+ALL SIX CAUGHT, tree byte-identical
+```
+
+**量这件事的过程中我自己丢过一次文件。** 为拿「改动前」的读数，我用了
+`git checkout-index -f -- <file>` —— 而那个文件在本轮**还没暂存**，索引里是 HEAD 版，
+于是它把整个改动**静默抹掉**。这和 §9.20 记的 `git checkout --` 是同一个陷阱的第二副面孔
+（一个是按 ref 还原，一个是按索引还原，看起来都像「还原」）。文件从变异测试的备份副本取了回来
+（`mutations/architecture_check.py.orig`，sha 相符）。**两次都不是靠运气**：这个单元从写下第一行起
+就有备份副本，正是因为那一课已经上过。
+
+**本轮不修那份文档。** `ops/workspace/environment.yaml` 在**另一个仓库**，ops 的策略是默认只读；
+改它是一行引号的事，但那是别人的文件、别人的提交。所以它进 §11 的孤立清单，连同精确位置与修法。
+`DECLARATION_UNREADABLE` 那条路径的 `_load` 也是同一个吞异常的写法，但它的观测已经是诚实的，
+**不在本单元里顺手改**——一次只动一处，绿才能归因。
+
 ## 10. 后续每包更新哪几行
 
 - 改完一个包，只更新 §3.1 里对应行的四层状态 + §5 表的增删。
@@ -2217,7 +2356,8 @@ verdict     CONFORMANT
 
 | # | 缺口 | 为什么需要人 |
 | --- | --- | --- |
-| 3 | **本节点的 root 绑定缺口**：检查器报 5 个 token 未解析，其中 2 个（`SRC_ROOT`、`KNOWLEDGE_ROOT`）是本机 Profile 其实绑了、检查器读错了文档；3 个（`OPS_ROOT`、`RECORDS_ROOT`、`TEST_ENVS_ROOT`）是本机 Profile 真没绑，而目录都在 | 修法两半：绑那三条是**事实**（仓内可做）；让 `root_tokens()` 读 Profile 需要把**三个互不同名的词表**对齐（§9.18），其中给 `workspace.ops`/`records`/`test-envs` 取名本身就是那次对齐的一部分。猜一个映射正是这个检查器拒绝做的事（「reported as unresolved, never guessed」），所以不猜 |
+| 3 | **本节点的 root 绑定缺口**：检查器报 5 个 token 未解析，其中 2 个（`SRC_ROOT`、`KNOWLEDGE_ROOT`）是本机 Profile 其实绑了、检查器读错了文档；3 个（`OPS_ROOT`、`RECORDS_ROOT`、`TEST_ENVS_ROOT`）是本机 Profile 真没绑，而目录都在。**现行（2026-09-22 复测，§9.21）：这条账的两半都不成立。** 检查器从那份文档里读到的 `declared` 是**空的**——不是「绑了三个少了两个」，是**一个都没读到**；真因是 `ops/workspace/environment.yaml` **解析不过去**（`ScannerError`，line 70 column 11，一个以反引号开头的 plain scalar），而它同时是 `schema: hwz/environment.v2`、**本来就没有 `roots` 键**。所以「哪几个绑了」这个问题问错了对象 | 修法变成两条，都不在这一侧：**(a) 那份文档的语法**是别人的仓库、别人的提交（一行引号的事，位置见 §9.21），进 §11 孤立清单；**(b) 让 locator 认得 v2 的 `binding_authority`** 需要把三个互不同名的词表对齐（§9.18），猜一个映射正是这个检查器拒绝做的事（「reported as unresolved, never guessed」）。**本单元做掉的是第三件事**：让检查器**说出它读到的到底是什么**，于是这两条以后不必靠推断。§9.21 |
+| 3b | **`ops/workspace/environment.yaml` 有一处 YAML 语法错**：`note:` 的值以反引号开头（YAML 保留指示符），`ScannerError` at line 70 column 11；该文档是 `schema: hwz/environment.v2`（2026-09-18 实测）。它使本节点的 machine instance **完全不可读**，五个 root token 因此报未解析 | 改一行引号即可，但那份文件在**另一个仓库**（hwz-ops），ops 策略默认只读。本轮只报不改；位置与判词已由 `serverosctl architecture check` 的 `ROOTS_SOURCE_UNREAD` 逐字给出 |
 | 4 | **两处量具缺陷**：`architecture_check.py` 从工作树扫代码、从 ref 的 git object 读契约（§9.18.1，ref ≠ 工作树内容时按构造报出假 HIGH）；`SERVEROS_REPO`/`SERVEROS_ABILITY_REPO` 在 `architecture_check.py:1427`、`scripts/runtime_truth.py:1588` 被当作「要再拼一层的那层」，而 `build.py:1037`、`runtime/cli.py:8911`、`abilities/taxonomy.py:1095` 当作检出本身（§9.18.2） | 9.18.2 是机械的、可做的；9.18.1 要先决定「ref 与工作树不一致时该拒绝还是照报」，而产品里已有先例（缺 root 时拒绝）。本轮**同时改代码与改量具会让「绿」无法归因给任何一边**，所以两处都不落 |
 
 ### 11.4 §7.2 的五条 HUMAN_EXECUTED（原文不动，只在此处汇总指向）
