@@ -7,6 +7,12 @@ that pin the properties separating an index from a second database:
   * the file must be reproducible byte-for-byte from the canonical objects;
   * a relation with no producer is absent, not invented.
 
+And, for the one predicate whose producer reads *captures* rather than cards,
+a fourth: an attachment whose other end is not recorded is neither written as a
+plausible row nor dropped silently. `attached_to` is where a wrong locator is
+most believable — "the media belongs to this document" is exactly the shape of
+statement that survives review because it is usually true.
+
 Hermetic: the records root is a synthetic tree in a temp directory. The
 projection is also run once against this repository's real `records/` checkout
 when it is reachable, because a projection that only works on a fixture has not
@@ -33,6 +39,7 @@ _spec.loader.exec_module(project)
 RECORDS_CANDIDATES = (
     Path("/opt/applications/data/home-hwz/workspace/records"),
     Path("/opt/applications/data/home-hwz/workspace/worktrees/records/SRV-0003"),
+    Path("/data/home/vince/workspace/records"),
 )
 
 
@@ -99,10 +106,12 @@ class ProjectionTest(unittest.TestCase):
         self.write_card("LIT-0101", "litellm", refs=["brief.md"])
         rows, _ = project.project(self.records)
         self.assertNotIn("discussed_in", {r["rel"] for r in rows})
+        self.assertNotIn("discussed_in", project.PRODUCED)
         # And the declared set is wider than the produced set: that gap is
-        # recorded, not hidden.
+        # recorded, not hidden. A predicate is produced only where its records
+        # are, so this fixture (cards, no captures) produces a subset.
         self.assertTrue(set(project.PRODUCED) < set(project.PREDICATES))
-        self.assertTrue(set(project.PRODUCED) == {r["rel"] for r in rows})
+        self.assertTrue({r["rel"] for r in rows} <= set(project.PRODUCED))
 
     def test_the_projection_is_deterministic(self):
         self.write_card("LIT-0101", "litellm", refs=["brief.md", "plan.md"])
@@ -238,6 +247,254 @@ class IndexFileTest(unittest.TestCase):
         self.assertTrue(reasons)
 
 
+class AttachedToTest(unittest.TestCase):
+    """The third predicate, where a plausible row and a wrong one look alike.
+
+    Both capture forms are exercised because they are genuinely different: a
+    document's media belong to the document, a chat's attachments belong to the
+    message that carried them. Flattening both to "attached to the capture" would
+    pass a test written against either one alone.
+    """
+
+    LINK = "information/raw/feishu/chats/people/x/oc_x/links/doc"
+    CHAT = "information/raw/feishu/chats/people/x/oc_x"
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+        self.records = self.root / "records"
+        self.link = self.records / self.LINK
+        self.chat = self.records / self.CHAT
+        (self.link / "media").mkdir(parents=True)
+        (self.chat / "files").mkdir(parents=True)
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def write_manifest(self, capture: Path, payload: dict):
+        capture.mkdir(parents=True, exist_ok=True)
+        path = capture / "manifest.json"
+        path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+        return path
+
+    def link_manifest(self, media=("a.png",), materialize=None):
+        """Declare `media`; materialize only the names the test means to have.
+
+        `materialize=None` writes every plain name, which is the ordinary case. A
+        test about a declaration that did not survive to this node names it
+        explicitly instead, so the fixture cannot accidentally create the file
+        its own assertion says is missing.
+        """
+        for name in (media if materialize is None else materialize):
+            if "/" in name:
+                continue
+            (self.link / "media" / name).write_bytes(b"x")
+        (self.link / "content.md").write_text("body", encoding="utf-8")
+        return self.write_manifest(self.link, {"media": list(media), "media_count": len(media)})
+
+    def chat_manifest(self, by_message=None, backfilled=(), image_keys=(), materialize=None,
+                      transcript=True, **extra):
+        if transcript:
+            (self.chat / "messages.jsonl").write_text('{"message_id": "om_1"}\n',
+                                                      encoding="utf-8")
+        paths = [entry.get("path") for entry in (by_message or {}).values()
+                 if isinstance(entry, dict)]
+        for path in (paths if materialize is None else materialize):
+            if isinstance(path, str) and path.startswith("files/"):
+                (self.chat / path).write_bytes(b"x")
+        for name in image_keys:
+            (self.chat / "files" / f"{name}.jpg").write_bytes(b"x")
+        files = {"by_message": by_message or {}, "backfilled": list(backfilled),
+                 "pending": "无附件待展开"}
+        if image_keys:
+            files["image_keys"] = list(image_keys)
+        files.update(extra)
+        return self.write_manifest(self.chat, {"files": files})
+
+    def attached(self):
+        rows, skipped = project.project(self.records)
+        return [r for r in rows if r["rel"] == "attached_to"], skipped
+
+    # -- a document capture ------------------------------------------------
+
+    def test_media_hangs_off_the_document_it_came_from(self):
+        self.link_manifest(media=("a.png", "b.png"))
+        rows, skipped = self.attached()
+        self.assertEqual(skipped, [])
+        self.assertEqual(
+            [(r["from"], r["to"]) for r in rows],
+            [(f"records://{self.LINK}/media/a.png", f"records://{self.LINK}/content.md"),
+             (f"records://{self.LINK}/media/b.png", f"records://{self.LINK}/content.md")],
+        )
+
+    def test_every_attachment_row_is_derived_from_its_manifest(self):
+        self.link_manifest(media=("a.png",))
+        rows, _ = self.attached()
+        self.assertEqual(rows[0]["derived_from"], [f"records://{self.LINK}/manifest.json"])
+
+    def test_a_declared_attachment_that_is_not_on_disk_is_a_gap_not_a_row(self):
+        self.link_manifest(media=("a.png", "missing.png"), materialize=("a.png",))
+        rows, skipped = self.attached()
+        self.assertEqual([r["from"].rsplit("/", 1)[-1] for r in rows], ["a.png"])
+        self.assertEqual(len(skipped), 1, skipped)
+        self.assertIn("missing.png", skipped[0])
+        self.assertIn("not on this node", skipped[0])
+
+    def test_a_media_name_that_leaves_the_capture_is_refused(self):
+        """A manifest could name anything; the locator is still confined to it."""
+        self.link_manifest(media=("a.png", "../../outside.png"))
+        rows, skipped = self.attached()
+        self.assertEqual(len(rows), 1)
+        self.assertTrue(any("outside.png" in gap for gap in skipped), skipped)
+        self.assertFalse(any("outside" in r["from"] for r in rows))
+
+    def test_an_absolute_media_name_is_refused(self):
+        self.link_manifest(media=("a.png", "/etc/passwd"))
+        rows, skipped = self.attached()
+        self.assertEqual(len(rows), 1)
+        self.assertTrue(any("/etc/passwd" in gap for gap in skipped), skipped)
+
+    def test_declared_media_with_no_document_is_reported(self):
+        """The document is one end of the relation; without it there is no row."""
+        (self.link / "media").mkdir(parents=True, exist_ok=True)
+        (self.link / "media" / "a.png").write_bytes(b"x")
+        self.write_manifest(self.link, {"media": ["a.png"], "media_count": 1})
+        rows, skipped = self.attached()
+        self.assertEqual(rows, [])
+        self.assertEqual(len(skipped), 1)
+        self.assertIn("content.md", skipped[0])
+
+    # -- a chat capture ----------------------------------------------------
+
+    def test_an_attachment_hangs_off_the_message_that_carried_it(self):
+        self.chat_manifest(by_message={"om_1": {"path": "files/a.jpg"}})
+        rows, skipped = self.attached()
+        self.assertEqual(skipped, [])
+        self.assertEqual(
+            [(r["from"], r["to"]) for r in rows],
+            [(f"records://{self.CHAT}/files/a.jpg",
+              f"records://{self.CHAT}/messages.jsonl#om_1")],
+        )
+
+    def test_an_attachment_recorded_against_no_message_is_a_gap(self):
+        self.chat_manifest(by_message={"": {"path": "files/a.jpg"}})
+        rows, skipped = self.attached()
+        self.assertEqual(rows, [])
+        self.assertEqual(len(skipped), 1)
+        self.assertIn("no message", skipped[0])
+
+    def test_an_attachment_path_that_leaves_the_capture_is_refused(self):
+        self.chat_manifest(by_message={"om_1": {"path": "../../outside.jpg"}})
+        rows, skipped = self.attached()
+        self.assertEqual(rows, [])
+        self.assertTrue(any("no usable" in gap for gap in skipped), skipped)
+
+    def test_an_attachment_recorded_but_absent_from_disk_is_a_gap(self):
+        self.chat_manifest(by_message={"om_1": {"path": "files/gone.jpg"}},
+                           materialize=())
+        rows, skipped = self.attached()
+        self.assertEqual(rows, [])
+        self.assertEqual(len(skipped), 1, skipped)
+        self.assertIn("not on this node", skipped[0])
+
+    def test_an_attachment_with_no_transcript_is_reported_once(self):
+        self.chat_manifest(by_message={"om_1": {"path": "files/a.jpg"},
+                                       "om_2": {"path": "files/b.jpg"}},
+                           transcript=False)
+        rows, skipped = self.attached()
+        self.assertEqual(rows, [])
+        self.assertEqual(len(skipped), 1, skipped)
+        self.assertIn("2 attachment(s)", skipped[0])
+
+    def test_a_materialized_file_no_message_records_is_reported(self):
+        self.chat_manifest(by_message={"om_1": {"path": "files/a.jpg"}},
+                           backfilled=["a.jpg", "orphan.jpg"])
+        rows, skipped = self.attached()
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(len(skipped), 1, skipped)
+        self.assertIn("orphan.jpg", skipped[0])
+
+    def test_an_attributed_file_is_not_also_reported_as_unattributed(self):
+        """One absence must not be counted twice, by two different routes."""
+        self.chat_manifest(by_message={"om_1": {"path": "files/a.jpg"}},
+                           backfilled=["a.jpg"])
+        rows, skipped = self.attached()
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(skipped, [])
+
+    def test_a_file_lost_after_attribution_is_reported_once(self):
+        """Attribution survives a missing file: the manifest did map that name."""
+        self.chat_manifest(by_message={"om_1": {"path": "files/a.jpg"}},
+                           backfilled=["a.jpg"])
+        (self.chat / "files" / "a.jpg").unlink()
+        rows, skipped = self.attached()
+        self.assertEqual(rows, [])
+        self.assertEqual(len(skipped), 1, skipped)
+        self.assertIn("not on this node", skipped[0])
+
+    def test_an_attachment_key_with_no_message_is_reported(self):
+        """`image_keys` names neither a path nor a message, so it yields no row."""
+        self.chat_manifest(image_keys=["img_1"])
+        rows, skipped = self.attached()
+        self.assertEqual(rows, [])
+        self.assertEqual(len(skipped), 1, skipped)
+        self.assertIn("img_1", skipped[0])
+
+    def test_a_zip_expansion_is_reported_verbatim_and_never_parsed(self):
+        """The field holds a path and a sentence; neither end is reliable."""
+        self.chat_manifest(zip_expanded_into="reference/x (git repo: y)")
+        rows, skipped = self.attached()
+        self.assertEqual(rows, [])
+        self.assertEqual(len(skipped), 1, skipped)
+        self.assertIn("reference/x (git repo: y)", skipped[0])
+
+    # -- the projection's own rules ----------------------------------------
+
+    def test_a_manifest_that_cannot_be_read_is_reported_not_raised(self):
+        (self.chat / "manifest.json").write_text("{not json", encoding="utf-8")
+        rows, skipped = self.attached()
+        self.assertEqual(rows, [])
+        self.assertEqual(len(skipped), 1, skipped)
+        self.assertIn("unreadable", skipped[0])
+
+    def test_an_attachment_row_carries_no_body(self):
+        self.link_manifest(media=("a.png",))
+        rows, _ = self.attached()
+        for entry in rows:
+            for field in ("from", "to"):
+                self.assertLess(len(entry[field]), 400, entry)
+                self.assertNotIn("\n", entry[field])
+
+    def test_the_projection_is_deterministic_with_attachments(self):
+        self.link_manifest(media=("a.png", "missing.png"))
+        self.chat_manifest(by_message={"om_1": {"path": "files/a.jpg"}, "": {}},
+                           backfilled=["orphan.jpg"], image_keys=["img_1"])
+        first, first_skipped = project.project(self.records)
+        second, second_skipped = project.project(self.records)
+        self.assertEqual(project.dumps(first), project.dumps(second))
+        self.assertEqual(first_skipped, second_skipped)
+
+    def test_a_capture_that_is_not_there_is_not_a_finding(self):
+        """A records root with no capture tree projects cards, and says nothing."""
+        (self.records / "projects" / "litellm" / "items" / "LIT-0101").mkdir(parents=True)
+        self.write_card_for_litellm()
+        rows, skipped = project.project(self.records)
+        self.assertEqual(skipped, [])
+        self.assertTrue(rows)
+
+    def write_card_for_litellm(self):
+        (self.records / "projects" / "litellm" / "items" / "LIT-0101" / "card.yaml").write_text(
+            yaml.safe_dump(card("LIT-0101", "litellm"), allow_unicode=True), encoding="utf-8"
+        )
+
+    def test_the_helper_refuses_every_shape_it_cannot_confine(self):
+        base = self.link
+        for refused in ("/etc/passwd", "../../outside.png", "a\\b.png", "", "   ", None, 7):
+            self.assertIsNone(project._inside(base, refused), refused)
+        inside = project._inside(base, "media/a.png")
+        self.assertEqual(inside, (base / "media" / "a.png").resolve())
+
+
 class SchemaAgreementTest(unittest.TestCase):
     def setUp(self):
         self.schema = json.loads(SCHEMA.read_text(encoding="utf-8"))
@@ -283,9 +540,33 @@ class RealRecordsTest(unittest.TestCase):
 
     def test_every_card_projects_without_untyped_references(self):
         rows, skipped = project.project(self.records_root())
-        self.assertEqual(skipped, [], "a card carries a source reference the projection cannot type")
+        # `skipped` carries two kinds of finding and only one of them is a
+        # failure. A card whose source reference cannot be typed is a defect in
+        # the records; an attachment whose other end was never recorded is a
+        # measurement of what the captures do not say, and it is expected to be
+        # non-empty. Entries are prefixed with the records-relative path of the
+        # object they came from, which is what separates them here.
+        card_gaps = [gap for gap in skipped if gap.startswith("projects/")]
+        self.assertEqual(card_gaps, [],
+                         "a card carries a source reference the projection cannot type")
         self.assertTrue(rows)
         self.assertTrue({r["rel"] for r in rows} <= set(project.PREDICATES))
+
+    def test_the_real_captures_produce_attachment_rows(self):
+        """`attached_to` is not fixture-only: the live captures have a producer."""
+        rows, skipped = project.project(self.records_root())
+        attached = [r for r in rows if r["rel"] == "attached_to"]
+        self.assertTrue(attached, "no capture on this node yields an attachment relation")
+        for entry in attached:
+            self.assertTrue(entry["from"].startswith("records://information/raw/"), entry)
+            self.assertIn("/manifest.json", entry["derived_from"][0], entry)
+        # Both capture forms are present in the live tree, and both are reported
+        # rather than silently absorbed: the document form's target is a
+        # `content.md`, the chat form's is a transcript fragment.
+        targets = {r["to"] for r in attached}
+        self.assertTrue(any(t.endswith("/content.md") for t in targets), sorted(targets)[:5])
+        self.assertTrue(any("#om_" in t for t in targets), sorted(targets)[:5])
+        self.assertTrue(skipped)
 
     def test_no_row_carries_a_body(self):
         rows, _ = project.project(self.records_root())

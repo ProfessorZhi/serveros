@@ -618,7 +618,7 @@ manifest 行、packs 闭包、cards。凡是「X 的渲染嵌了 X 的值」，�
 | P3 | people/project/topic 卡 | 手写 markdown：`records/information/understanding/{people,projects,topics}/*.md` | **读的一侧已接线**：`serverosctl work understanding`（`intake/understanding_delta.py`）。**写的一侧仍 not read** | — | **读的一半已补**（§9.7）：14 份卡逐份对账到源，`BEHIND 3 · UNMEASURABLE 7 · UNTRACEABLE 4`。设计要的「最小 incremental writer」**仍然是缺口**——这个模块读、对账、提议区间，不写一个字 |
 | P3 | Minutes / MeetingBundle | 无 Python 类。`space/meeting-policy.schema.yaml:30` 声明结构；内核 `space/meeting_relevance.py:69` | ~~`python3 space/meeting_relevance.py --request`（**未接 serverosctl**）~~ **已接线**：`serverosctl space meeting` | — | 内核 working，**接线已补**（§9.5）；bundle 的生产者仍 not found |
 | P3 | 记忆账本/投影/scope | `memory/{record,projection,scope,handoff}.py` | `serverosctl memory {audit,project,status,subject}` (`cli.py:6479`) | — | working；`docs/memory-fabric.md` 逐条点名这些模块 |
-| P4 | 文档关系边 | `relations/project.py:47`（`serveros/relations.v1`），`relations/schema.yaml:30` | `python3 project.py --records ROOT --write relations/current.jsonl` | — | **partial**：8 个谓词里只有 2 个（`belongs_to`、`derived_from`）有生产者，其余 6 个 `declared_only` |
+| P4 | 文档关系边 | `relations/project.py:61`（`serveros/relations.v1`），`relations/schema.yaml:29` | `python3 project.py --records ROOT --write relations/current.jsonl` | — | **partial**（比上一版进了一步）：8 个谓词里 3 个有生产者（`belongs_to`、`derived_from`、`attached_to`），其余 5 个 `declared_only`。本机实测 239 行 / 19 条报出，见 §9.8；另 5 个谓词逐条查过，**本机没有载体**，不是差功夫 |
 | P4 | Feishu 空间适配 / 共享 publisher | **只有 SKILL.md 文本，没有代码**：`skills/feishu-space-management/`、`skills/document-stewardship/` | — | — | partial（只有契约文字） |
 | P5 | 员工 KB 生产者 | `src/litellm-support/scripts/build_agent_kb.py`，输出 `dist/employee-kb/`（`dist/` 被 gitignore） | `python3 scripts/build_agent_kb.py` | — | working，但**在 ServerOS 之外** |
 | P5 | KB 消费 | `intake/support.py:187,432,534,697,855,977`，契约 `intake/support-contract.yaml` | `serverosctl support {entries,match,answer,check} --kb-root <path>` (`cli.py:7206`) | — | working，但 `--kb-root` 必填且**没有任何东西把它接到 litellm-support 那棵树** |
@@ -925,6 +925,78 @@ pytest 那行照印「52 passed」。一个没应用的变异是一次**假绿**
 **没做完的是写入侧。** P3 设计里的「最小 incremental writer」仍然 `not read`：这个模块读、对账、
 提议区间，**不写一个字**（`ast` 那条判据是它的证据）。所以 B2 的 CODE 仍是 `PARTIAL` ——
 读的一侧 DONE，写的一侧 not read，两者都不许互相代表。
+
+### 9.8 关系边：第三个谓词有了真生产者，另五个各写出「为什么没有」
+
+P4 的上一版判定是「8 个谓词里只有 2 个有生产者，其余 6 个 `declared_only`」。那 6 个里
+**只有一个在本机有真载体**：`attached_to`。其余五个不是「还差功夫」，是**盘上没有任何东西
+声明过那条边**，逐条查过：
+
+| 谓词 | 本机有没有载体 | 结论 |
+| --- | --- | --- |
+| `attached_to` | **有**：15 份链接采集的 `media`（配 `content.md`）、2 份会话采集的 `files.by_message`（配 `messages.jsonl`） | 本轮补上生产者，见下 |
+| `supports` | 无。证据对象没有「我支持什么」这个字段 | 仍是 declared_only |
+| `discussed_in` | 无。meetings 没有生产者（§9 的 P3 行） | 仍是 declared_only |
+| `published_as` / `verified_by` | 无。各需要一个盘上没有的登记册 | 仍是 declared_only |
+| `canonical_for` | 无。要「哪一份是权威」的声明——**这恰是可重建索引最不该自己断言的东西** | 仍是 declared_only |
+
+`relations/project.py:289` `project_attachments()`，`_CAPTURE_MANIFEST_GLOB`（`:255`）；
+`PRODUCED`（`:80`）加上 `attached_to`，`relations/schema.yaml:29` 跟着把它从
+`declared_only` 移到 `implemented` —— 这两处的相等由 `test_the_documented_split_matches_the_code`
+断言，所以不是两处各写一遍。
+
+**两种采集形态没有合并，因为差别是真的**：文档采集的 media 属于那份文档，会话采集的附件
+属于**带它来的那条消息**。都写成 `X attached_to <这片采集>` 会把「读者问的是哪条边」这件事
+抹掉，而且抹掉之后更难看出来了——一个谓词、两种 `to`。
+
+**实测（本机 records，239 行 / 19 条报出）**：
+
+- 链接形态：`records://…/links/<slug>/media/<name>` **attached_to**
+  `records://…/links/<slug>/content.md`。
+- 会话形态：`records://…/files/<name>` **attached_to** `records://…/messages.jsonl#<om_id>`。
+- 每行的 `derived_from` 是那份 `manifest.json`——关系写在哪，出处就是哪。
+
+19 条**没有被写成行**、也没有被丢掉，而是从 `skipped` 报出来，因为 `attached_to` 正是
+「听起来总是对」的那类断言（「这张图属于这份文档」通常确实成立）：
+
+- **声明了但不在本机**（5 条）：`docx-1-fjbigmodel-guide` 的 `.pdf`、
+  `wiki-workbuddy-config` 的 `.dmg`/`.exe`、`codex-config-ccswitch` 的 `.msi`/`.dmg`。
+  **逐个 stat 过，也按前缀找过别的扩展名**——确不在本机。规律是**安装包/大二进制**被声明而
+  没有落地，图片都落地了。这正是「声明 vs 落地」的分裂，采集覆盖（§9.6）问的是另一半。
+- **落地了但没有消息认领**（10 条）：`zhangzhengji` 的 7 条（1 个 `.mp4` + 6 张图）、
+  `zhou-kit` 的 3 条。备份回的附件与 `by_message` 的差额，与上一轮手数的一致。
+- **只有 key、没有路径也没有消息**（3 条）：`bruce-xu` 的 `image_keys`——三张图都在盘上，
+  但没有任何记录说它们是谁带的。
+- **一句散文**（1 条）：`zip_expanded_into` 的值是
+  `"reference/litellm-methodology-v8 (git repo: litellm-log-analysis)"`——**路径与句子在同一个
+  字段里**，而那个目录不存在。原样报出，不解析；`files.pending`（`"3 张图片未下载"`）**读都不读**，
+  它是散文，残缺采集是 `capture_coverage` 的问题。
+
+**「一条缺失不许被两条路各数一次」有专门判据**：`by_message` 认领过的名字进了 `attributed`，
+即使文件不在盘上也算认领过——否则一份丢失的附件会被报成「没有消息带它」，一个缺失变成两个。
+`test_a_file_lost_after_attribution_is_reported_once` 钉住它。
+
+**越界即拒**。manifest 是本进程**没有写过**的文件，所以 `path`/`media` 名一律按 `_inside()`
+限制在原采集目录内：绝对路径、`\\`、`../../` 逃逸都返回 `None` 并报出，不写行。判据直接
+打在 helper 上（`test_the_helper_refuses_every_shape_it_cannot_confine`），不靠某个上层测试
+顺带覆盖。
+
+**测试从 28 条涨到 50 条**（`tests/test_relations.py`，50 passed）。新增 22 条里，
+一条是**这一轮唯一改动的旧断言**：`test_a_relation_with_no_producer_is_absent_not_invented`
+原先断言 `PRODUCED == 观测到的谓词集合`——那是「卡片夹具恰好能产出 PRODUCED 全集」的巧合，
+加了第二个读者就不成立了，改成 `观测 ⊆ PRODUCED < PREDICATES`。
+
+**另一个改动是把 `RealRecordsTest` 从「静默跳过」变成真的在跑。** 它的
+`RECORDS_CANDIDATES` 里只有北京路径，所以在本机一直是 skip —— 一个从没跑过的「实测」测试。
+加上 `/data/home/vince/workspace/records`（第 3 个候选，北京两条仍在前面）之后，4 条实测全跑：
+239 行、两种形态都在、`skipped` 非空。同时那条断言本身也修了：`skipped == []` 混了两种发现——
+卡片的引用类型不出来是**记录的缺陷**（必须为零），附件的另一头没被记录是**采集的测量**
+（本来就不为零）。现在按条目前缀（`projects/` vs `information/raw/`）分开，并在测试里写明
+为什么分开。
+
+**没有动 CLI，也没有新开动词。** `relations/project.py` 仍是脚本，用法就是 P4 行里写的那条；
+`runtime/actuator-contract.yaml` 那两条登记的是 `write()` 的 `os.unlink` / `os.replace`，
+本轮没有新增任何写入点，所以契约不改。
 
 ## 10. 后续每包更新哪几行
 

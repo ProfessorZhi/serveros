@@ -29,12 +29,26 @@ Three properties enforce that, rather than merely recommending it:
      fails and says which row.
 
   3. **Nothing is invented.** A relation this module cannot derive is simply not
-     written. Absent is not the same as guessed: six of the eight predicates
+     written. Absent is not the same as guessed: five of the eight predicates
      have no producer yet, and that is recorded in `relations/schema.yaml`
      rather than filled in with plausible-looking rows.
 
 No database, no network, no clock: the projection is a pure function of the
 records it reads, so two runs over the same inputs produce identical bytes.
+
+What each reader reads
+----------------------
+    `belongs_to`, `derived_from`   Item cards (`projects/*/items/*/card.yaml`)
+    `attached_to`                  capture manifests (`information/raw/**/manifest.json`)
+
+An attachment relation needs both ends to be *records*, not merely names: the
+file that is attached, and the thing it hangs off. The capture manifests are the
+only canonical objects on disk that carry both — a document capture lists its
+`media` beside the `content.md` they came from, and a chat capture maps each
+attachment to the message id it arrived on. A declared attachment whose other
+end is not recorded is not written and not silently dropped either: it is
+returned in `skipped`, because `attached_to` is exactly where a plausible-looking
+row would be most believable and least true.
 """
 from __future__ import annotations
 
@@ -63,7 +77,7 @@ PREDICATES = (
 # Predicates with a real producer today. Anything outside this set is declared
 # but unpopulated — deliberately, and visibly, rather than silently empty.
 # `relations/schema.yaml` records the same split for a human reader.
-PRODUCED = ("belongs_to", "derived_from")
+PRODUCED = ("belongs_to", "derived_from", "attached_to")
 
 
 class InvalidRow(ValueError):
@@ -195,7 +209,7 @@ def project_card(card_path: Path, records_root: Path) -> list[dict]:
 
 
 def project(records_root: Path | str) -> tuple[list[dict], list[str]]:
-    """Project every Item card under a records root.
+    """Project every Item card and capture manifest under a records root.
 
     Returns (rows, skipped). `skipped` is returned rather than logged so that a
     caller can surface it: a silently dropped source reference is the failure
@@ -210,6 +224,10 @@ def project(records_root: Path | str) -> tuple[list[dict], list[str]]:
         rows.extend(project_card(card, root))
         for ref in _unrecognised_refs(card, root):
             skipped.append(f"{card.relative_to(root)}: untyped source reference {ref!r}")
+    for manifest in sorted(root.glob(_CAPTURE_MANIFEST_GLOB)):
+        attached, gaps = project_attachments(manifest, root)
+        rows.extend(attached)
+        skipped.extend(gaps)
     return normalise(rows), skipped
 
 
@@ -227,6 +245,170 @@ def _unrecognised_refs(card: Path, records_root: Path) -> list[str]:
         repr(ref) for ref in (payload.get("source_refs") or [])
         if _source_locator(ref, card.parent, records_root) is None
     ]
+
+
+# Attachments. The two capture forms do not share a shape, and the difference is
+# real rather than cosmetic: a document capture's media belong to the document,
+# a chat capture's attachments belong to the message that carried them. Writing
+# both as `X attached_to <capture>` would erase exactly that distinction, which
+# is the one thing a reader of this predicate is asking about.
+_CAPTURE_MANIFEST_GLOB = "information/raw/**/manifest.json"
+_LINK_DOCUMENT = "content.md"
+_CHAT_TRANSCRIPT = "messages.jsonl"
+
+
+def _relative(path: Path, records_root: Path) -> str:
+    return str(path.relative_to(records_root))
+
+
+def _records_locator(path: Path, records_root: Path) -> str:
+    return f"records://{path.relative_to(records_root)}"
+
+
+def _inside(capture: Path, relative) -> Path | None:
+    """Resolve a manifest-declared relative path against its capture, or refuse.
+
+    A manifest is a file this process did not write, so the confinement is
+    checked rather than assumed: a `path` naming `../../..`, an absolute path, or
+    a symlink out of the capture has no correct locator to emit. A wrong locator
+    is worse than a missing row, so this returns None and the caller reports it.
+    """
+    if not isinstance(relative, str) or not relative.strip():
+        return None
+    if relative.startswith("/") or "\\" in relative:
+        return None
+    base = capture.resolve()
+    candidate = (base / relative).resolve(strict=False)
+    try:
+        candidate.relative_to(base)
+    except ValueError:
+        return None
+    return candidate
+
+
+def project_attachments(manifest_path: Path, records_root: Path) -> tuple[list[dict], list[str]]:
+    """Rows derivable from one capture manifest's own attachment record.
+
+    A row is written only when both ends are records on this node: the file that
+    is attached, and the document or message it hangs off. Anything the manifest
+    declares that does not reach that state is returned as a gap, never guessed
+    at and never dropped.
+
+    Two fields are deliberately not read. `files.pending` is prose ("3 张图片未
+    下载") and parsing prose into a field is what this design forbids; incomplete
+    capture is `capture_coverage`'s question, answered there against the same
+    manifests. `files.zip_expanded_into` mixes a relative path with a sentence
+    about which repository the expansion went into, so it names neither end
+    reliably — it is reported verbatim instead.
+    """
+    capture = manifest_path.parent
+    where = _relative(manifest_path, records_root)
+    manifest_locator = _records_locator(manifest_path, records_root)
+    try:
+        payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        return [], [f"{where}: unreadable ({exc.__class__.__name__}), so its "
+                    f"attachments could not be projected"]
+    if not isinstance(payload, dict):
+        return [], [f"{where}: manifest is not an object, so its attachments could "
+                    f"not be projected"]
+
+    rows: list[dict] = []
+    gaps: list[str] = []
+
+    media = payload.get("media")
+    if isinstance(media, list) and media:
+        document = capture / _LINK_DOCUMENT
+        if not document.is_file():
+            gaps.append(f"{where}: {len(media)} declared attachment(s) and no "
+                        f"{_LINK_DOCUMENT} to attach them to")
+        else:
+            target = _records_locator(document, records_root)
+            for name in media:
+                file = _inside(capture / "media", name)
+                if file is None:
+                    gaps.append(f"{where}: `media` names {name!r}, which is not a "
+                                f"path inside this capture, so no locator is written")
+                elif file.is_file():
+                    rows.append(row(_records_locator(file, records_root), "attached_to",
+                                    target, manifest_locator))
+                else:
+                    gaps.append(f"{where}: `media` declares {name!r} and it is not on "
+                                f"this node")
+
+    files = payload.get("files")
+    if isinstance(files, dict):
+        attached, gaps_from_files = _chat_attachments(files, capture, where,
+                                                      manifest_locator, records_root)
+        rows.extend(attached)
+        gaps.extend(gaps_from_files)
+
+    return rows, sorted(set(gaps))
+
+
+def _chat_attachments(files: dict, capture: Path, where: str, manifest_locator: str,
+                      records_root: Path) -> tuple[list[dict], list[str]]:
+    """Rows and gaps for one chat capture's `files` block."""
+    rows: list[dict] = []
+    gaps: list[str] = []
+    transcript = capture / _CHAT_TRANSCRIPT
+    by_message = files.get("by_message")
+    attributed: set[str] = set()
+
+    if isinstance(by_message, dict) and by_message:
+        if transcript.is_file():
+            target = _records_locator(transcript, records_root)
+            ordered = sorted(by_message.items(), key=lambda pair: str(pair[0]))
+            for message, entry in ordered:
+                path = entry.get("path") if isinstance(entry, dict) else None
+                file = _inside(capture, path)
+                if file is not None:
+                    # Attributed whether or not the file survived to this node:
+                    # the manifest did map this name to a message, and counting it
+                    # as unattributed would report one absence as two.
+                    attributed.add(file.name)
+                if not isinstance(message, str) or not message.strip():
+                    gaps.append(f"{where}: {path!r} is recorded against no message "
+                                f"id, so there is nothing to attach it to")
+                elif file is None:
+                    gaps.append(f"{where}: attachment of {message} has no usable "
+                                f"`path` ({path!r})")
+                elif not file.is_file():
+                    gaps.append(f"{where}: {path!r}, recorded against {message}, is "
+                                f"not on this node")
+                else:
+                    rows.append(row(_records_locator(file, records_root), "attached_to",
+                                    f"{target}#{message}", manifest_locator))
+        else:
+            gaps.append(f"{where}: {len(by_message)} attachment(s) name a message and "
+                        f"{_CHAT_TRANSCRIPT} is not on this node, so none of them has "
+                        f"an object to be attached to")
+
+    backfilled = files.get("backfilled")
+    if isinstance(backfilled, list):
+        for name in sorted({item for item in backfilled
+                            if isinstance(item, str) and item.strip()}):
+            if Path(name).name not in attributed:
+                gaps.append(f"{where}: {name!r} is materialized and no recorded "
+                            f"message carried it, so it has nothing to attach to")
+
+    image_keys = files.get("image_keys")
+    if isinstance(image_keys, list):
+        for key in sorted({item for item in image_keys
+                           if isinstance(item, str) and item.strip()}):
+            materialized = sorted(p.name for p in (capture / "files").glob(f"{key}.*"))
+            gaps.append(f"{where}: attachment key {key!r} is recorded against no "
+                        f"message"
+                        + (f"; {materialized[0]!r} on this node matches it"
+                           if materialized else "; nothing on this node matches it"))
+
+    expanded = files.get("zip_expanded_into")
+    if isinstance(expanded, str) and expanded.strip():
+        # Reported, never parsed: the value is a path and a sentence in one field.
+        gaps.append(f"{where}: an archive was expanded and `zip_expanded_into` says "
+                    f"{expanded!r}, which is not a locator this index can place a row on")
+
+    return rows, gaps
 
 
 # --------------------------------------------------------------------------

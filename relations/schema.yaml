@@ -31,10 +31,18 @@ predicates:
   implemented:
     belongs_to:    "the subject is contained by the object (item → project)"
     derived_from:  "the subject was produced out of the object (item → source)"
+    attached_to:   "the subject is an attachment of the object (media → document,
+                    attachment → the message that carried it)"
   declared_only:
+    # Each of these five has no carrier on disk, and that is the reason it is not
+    # written — not a shortage of effort. `supports` would need the evidence
+    # object to name what it supports; `discussed_in` would need a meeting
+    # producer; `published_as` and `verified_by` would each need a registry the
+    # records do not hold; `canonical_for` would need a statement of which copy
+    # is canonical, which is exactly what a rebuildable index must not assert on
+    # its own authority.
     supports:      "the subject is evidence for the object"
     discussed_in:  "the subject was discussed in the object (item → meeting)"
-    attached_to:   "the subject is an attachment of the object"
     published_as:  "the subject was published as the object"
     verified_by:   "the subject was verified by the object"
     canonical_for: "the subject is the canonical source for the object"
@@ -57,7 +65,7 @@ rules:
      be reviewed; a body cannot."
 
   - "**Absent is not guessed.** A relation with no producer is not written.
-     Six of the eight predicates have no producer yet, which is stated here and
+     Five of the eight predicates have no producer yet, which is stated here and
      in `relations/project.py::PRODUCED` rather than filled in with
      plausible-looking rows. A wrong locator is worse than a missing row: a
      missing row is visible, a wrong locator is not."
