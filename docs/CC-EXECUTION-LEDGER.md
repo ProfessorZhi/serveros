@@ -416,13 +416,16 @@ DESIGN-only 变成了 CODE。`NOT_MEASURED` 与 `FAILED` 是两件事，不能�
 
 | 套件 | 结果 | 命令 |
 | --- | --- | --- |
-| serveros（终态，带 evaluator 覆盖） | **4239 passed, 23 skipped, 3704 subtests passed, 0 failed**（480.07s，`fb97f77`） | `SERVEROS_COMPOSITION_EVALUATOR=<worktree>/…/composition.py SERVEROS_ABILITY_REF=serveros/fabric-integration-20260922 pytest tests/ -q -p no:cacheprovider` |
+| serveros（再终态，带 evaluator 覆盖，含 `space` 接线） | **4260 passed, 23 skipped, 3713 subtests passed, 0 failed**（470.51s） | `SERVEROS_COMPOSITION_EVALUATOR=<worktree>/…/composition.py SERVEROS_ABILITY_REF=serveros/fabric-integration-20260922 pytest tests/ -q -p no:cacheprovider` |
+| serveros（终态，带 evaluator 覆盖） | **4239 passed, 23 skipped, 3704 subtests passed, 0 failed**（480.07s，`fb97f77`） | 同上 |
 | serveros（同树不带覆盖） | **8 failed, 4231 passed, 23 skipped, 3704 subtests passed**（467.10s） | 同上去掉那两个变量 |
 | serveros（`dc23707`，带覆盖） | 4207 passed, 23 skipped, 3703 subtests passed, 0 failed（459.73s） | 同上 |
 | serveros（起点） | 3 failed, 4171 passed | — |
 | ability-management | **105 passed, 2 skipped**（`074a518`）；三个 renderer `--check` 干净 | 加 `SERVEROS_BUNDLE=<serveros worktree>/plugin` |
 
 4239 − 4231 = 8，**正好是那 8 条配对测试**——两个数之间的差就是那一族红的全部，没有第二处。
+4260 − 4239 = **21**，正好是新增的 `tests/test_space_cli.py`（21 tests / 9 subtests），
+subtests 3704 → 3713 = **9**，也对上。加一个动词族没有让任何别的行移动。
 
 serveros 那套的代价要写下来：单次 **7 分 47 秒**，且主机 load 一度到 53 时被拖到
 近乎两倍。所以「跑一套」在这台共享机上不是随手动作，改一个字面量就该只想跑受影响的那两个文件。
@@ -537,7 +540,7 @@ manifest 行、packs 闭包、cards。凡是「X 的渲染嵌了 X 的值」，�
 | 对象 | 在哪 | 谁调它 | 判定 |
 | --- | --- | --- | --- |
 | records 的 66 份 `information/raw/**/manifest.json` | `/data/home/vince/workspace/records/information/raw/…` | **无**。`grep -rn "pagination_complete\|msg_count" --include=*.py` 在 fabric 树里零命中 | 采集写了 manifest，**ServerOS 侧没有读者**。设计要求「capture policy 与 materialized coverage 分开」，coverage 这一半没有被消费 |
-| `space/resolver.py`（402 行，含词汇表） | serveros worktree `space/resolver.py` | **无**。`grep -rn "space\.resolver\|from space\|import space"` 零命中；`runtime/cli.py` 里没有 space 动词 | 只能 `python3 space/resolver.py --request …` 单跑。它的 docstring 自己声明「不认识 lark-cli 且永远不许认识」，所以孤岛是刻意的，缺的是**接线**不是实现 |
+| ~~`space/resolver.py`（402 行，含词汇表）~~ | serveros worktree `space/resolver.py` | **已接线**：`serverosctl space resolve`（`runtime/cli.py`，`_load_module_from(REPO_ROOT / "space" / "resolver.py", …)`） | **本轮已修**，见 §9.5。此前只能 `python3 space/resolver.py --request …` 单跑——模块**在 artifact 里**而没有任何东西加载它，于是装在节点上的动词不是缺失，是**叫不出名字**。它的 docstring 自己声明「不认识 lark-cli 且永远不许认识」，所以缺的从来是**接线**不是实现 |
 
 | 包 | 对象 | source | 入口 | consumer | 判定 |
 | --- | --- | --- | --- | --- | --- |
@@ -550,7 +553,7 @@ manifest 行、packs 闭包、cards。凡是「X 的渲染嵌了 X 的值」，�
 | P2 | 唯一脱敏实现 | `records/information/raw/_redact.py`（327 行，md5 `fa980373…`） | 库：`redact()`、`persist_secrets()` | `sync_feishu_chat.py:29`、`expand_feishu_doc.py:32`、`redact_backfill.py:54` | **盘上有 5 份**，其中 `worktrees/records/reconcile-20260922` 与主份逐字节相同，另外三份（SRV-0003 75 行 / MKT-0001 90 行 / clean-line-20260920 274 行）与已退役归档 `015de972` 不同。设计要「保留唯一 redaction 实现」，盘上现在是多份——**这是待收敛项，不是既成事实** |
 | P2 | 黑名单 | `records/information/raw/DRIFT_WATCHLIST.txt` | — | — | **not read**；注册 `drift_sync` 为 hook 的 `settings*.json` **not found** |
 | P3 | people/project/topic 卡 | 手写 markdown：`records/information/understanding/{people,projects,topics}/*.md` | — | — | **no producer found**：全 workspace 的 `*.py` 里没有生产者。设计要的「最小 incremental writer」就是这一条的缺口 |
-| P3 | Minutes / MeetingBundle | 无 Python 类。`space/meeting-policy.schema.yaml:30` 声明结构；内核 `space/meeting_relevance.py:69` | `python3 space/meeting_relevance.py --request`（**未接 serverosctl**） | — | 内核 working；bundle 的生产者 not found |
+| P3 | Minutes / MeetingBundle | 无 Python 类。`space/meeting-policy.schema.yaml:30` 声明结构；内核 `space/meeting_relevance.py:69` | ~~`python3 space/meeting_relevance.py --request`（**未接 serverosctl**）~~ **已接线**：`serverosctl space meeting` | — | 内核 working，**接线已补**（§9.5）；bundle 的生产者仍 not found |
 | P3 | 记忆账本/投影/scope | `memory/{record,projection,scope,handoff}.py` | `serverosctl memory {audit,project,status,subject}` (`cli.py:6479`) | — | working；`docs/memory-fabric.md` 逐条点名这些模块 |
 | P4 | 文档关系边 | `relations/project.py:47`（`serveros/relations.v1`），`relations/schema.yaml:30` | `python3 project.py --records ROOT --write relations/current.jsonl` | — | **partial**：8 个谓词里只有 2 个（`belongs_to`、`derived_from`）有生产者，其余 6 个 `declared_only` |
 | P4 | Feishu 空间适配 / 共享 publisher | **只有 SKILL.md 文本，没有代码**：`skills/feishu-space-management/`、`skills/document-stewardship/` | — | — | partial（只有契约文字） |
@@ -649,6 +652,84 @@ ability-management 或 serveros 的测试环境**。A7 若要 LIVE 需要先有�
 `materialization.forbidden` 禁绝对路径/`$HOME`/env 名/凭据）、`abilities/resolver.py:636`、
 `abilities/provider_instance.py:297` —— 最后一个的 docstring 自己记着 `instance:`
 记录「自契约写下就声明了，**而没有任何 writer**」。
+
+### 9.5 `space/` 的两个内核已接线（本轮唯一一处从「孤岛」变「可达」）
+
+§9 表里那条孤岛不再成立。两个内核此前**在 artifact 里**而没有任何东西加载它们——
+`grep -rn 'space\.resolver\|from space\|import space' runtime/ mcp/ abilities/` 零命中，
+`runtime/cli.py` 里没有 space 动词。所以装到节点上的不是「动词缺失」，是**动词叫不出
+名字**：唯一跑法是 `python3 space/resolver.py --request …` 从一个源码检出。
+
+修法是一个新动词族，不是新实现：
+
+```text
+serverosctl space resolve --request <json> [--vocabulary <yaml>]
+serverosctl space meeting --request <json> [--kind relevance|cleanup] [--vocabulary <yaml>]
+```
+
+四条判据写在代码里，而不是写在文档里：
+
+1. **退出码是内核的**。两个内核的 docstring 都写着「判定 0，请求malformed/读不到 2」，
+   CLI 不重排：`PROPOSAL_REQUIRED`（没有规则覆盖这一对、或策略拒绝选一个 canon、或模板
+   缺上下文）、`REFUSAL`（清理内核拒绝出计划）、`REVIEW`、`UNKNOWN` **都是判定**，都退
+   0。一个在「最诚实的答案」上退非零的动词，会教它的调用者把诚实读成失败。
+2. **`--json` 就是内核的记录**，不是 CLI 形状的摘要。测试里逐字段比对了
+   `resolve()` / `classify()` / `plan_cleanup()` 的返回值。
+3. **`MOVE` 渲染出 `approval`**。词汇表自己把 `approval.cross_surface` 定成
+   `proposal-only`，理由是飞书上「加进 wiki」没有自动撤销。一条不带 approval 的 MOVE
+   读起来就是一条指令。
+4. **没有 `--as-of`**。会议内核按**显式** `as_of` 判过期、判不了就 fail closed，一个
+   CLI flag 就是 shell 时钟进来的地方。这条以「`--help` 里没有这个词」断言，并以
+   「把 `as_of` 拿掉后 `REBUILDABLE_ARTIFACT_CLEANUP` 仍 REFUSAL」作为它保护的性质。
+
+`REJECTED` 是这轮的第二个判据：两个内核都把 `REJECTED` 写进 `DECISIONS`，而
+`resolve()` / `classify()` / `plan_cleanup()` **没有任何一条路径返回它**——只有那两个模块
+自己的 `main()` 的 except 分支合成它。所以 CLI 不调 `main()`（那条 `return 2 if
+record["decision"] == "REJECTED"` 因此是死代码），而是自己印拒绝理由并退 2。这正是
+`cmd_document_resolve` 的 docstring 拒绝发明的那个东西：一个观测不到被发出的状态比没有
+状态更糟，因为它读起来像一个检查。
+
+**证明跑在 artifact 上，不在检出上。** 这才是这条缺口的意义，所以证据是这一串：
+
+```text
+scripts/build.py --write --bundle plugin/bundle.yaml \
+  --ability-repo <src/ability-management> \
+  --ability-rev 074a51863d92cfbb89608a28f0779668aa448408 \
+  --output <scratch>/artifact
+<scratch>/artifact/bin/serverosctl space resolve --request move.json
+  decision    MOVE -> wiki
+  placement   wiki/report  (project=litellm owner=actor:human_0001)
+  approval    proposal-only  ·  this is a proposal and not a permission: nothing here writes
+  exit=0
+```
+
+`tests/test_space_cli.py`（21 tests / 9 subtests）把它钉住，并且**做过变异测试**：
+把 `PROPOSAL_REQUIRED` 改成退 2、把 proposal 警告去掉、把 `cleanup: null` 印成
+「nothing to clean up」、把 locator 行的解释去掉——四次各自被对应的那一条抓住，
+每次之后按 sha256 逐字节还原（`02e95518…`）。
+
+`tests/test_core_ability_boundary.py` 的 `KNOWN_CLI_CROSSINGS` 加了
+`space/resolver.py` 与 `space/meeting_relevance.py` 两条，各带 `because`。这不是把闸门
+放宽：`space` 本来就在 `FABRIC_DIRS` 里，所以这两条是新跨界，必须逐条论证。论证是
+§24 的那一句——daemon 不可能回答它，因为问题关于**某一个调用者的请求文档**，而 daemon
+没有请求；两个内核都不开 socket、不改任何东西，所以这条跨界不带
+`mcp/human_control.py` 那条的风险。
+
+**顺带纠一条我自己差点写错的。** 第一次构建时我把 `--ability-rev` 填成了
+`e7d20f3b…`（那是 §3.8 记的 **pin**），于是 `build.py` 报 `PIN_MISMATCH` 并拒绝。
+我一度据此判定 §3.8 记错了。实测把结论推翻了：
+
+```text
+ability-packs.yaml 里五包的 authority.revision = e7d20f3b50e1a86c9998b5dff3f519fa52b4aa1d
+能构建的 revision 是 074a51863d92cfbb89608a28f0779668aa448408
+  ← "packs: repin all five to the revision that split the plugin records"
+e7d20f3b..074a518 只有这一个提交
+abilities-manifest.yaml 在两者上同 blob 4afa3a22…
+```
+
+所以 §3.8 是**对的**：pin 是读到的 revision 的祖先，且 manifest 在两者上逐字节相同。
+错的是我拿 pin 当读的 revision 用。记这一笔，是因为「一次看似证据充分的自我纠错」和
+「一次真的纠错」在台账里长得一样，而这次是前者——差一点就把它写成后者。
 
 ## 10. 后续每包更新哪几行
 

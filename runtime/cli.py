@@ -659,6 +659,186 @@ def cmd_document_resolve(args) -> int:
     return EXIT_OK
 
 
+def _space_request(args) -> dict:
+    """Read one request document, or refuse with the reason it could not be read.
+
+    Shared by the two `space` verbs because they answer the same shape of
+    question — a request document in, a decision record out — and because the
+    refusal has to read the same in both: an unreadable request is a gap in the
+    asking, and it must not be told apart from a decision by anything except
+    the words on the line.
+    """
+    try:
+        return json.loads(Path(args.request).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise _SpaceRequestUnreadable(f"cannot read {args.request}: {exc}") from exc
+
+
+class _SpaceRequestUnreadable(Exception):
+    """A request that could not be read. Not a decision about any object."""
+
+
+def cmd_space_resolve(args) -> int:
+    """`space/resolver.py` — where a logical object canonically belongs.
+
+    This is the product entry point for the Space Resolver. Until it existed
+    the kernel had exactly one way to be run, `python3 space/resolver.py
+    --request …` from a source checkout, and the module ships in the artifact
+    with nothing that names it — so on an installed node the verb was not
+    missing, it was unnameable. The same sentence is true of
+    `space/meeting_relevance.py`, and the two are wired together here because
+    they are the two halves of one question: Space answers *where does this
+    belong*, Meeting answers *what does this meeting contribute, and what may be
+    done to it afterwards*.
+
+    Exit codes are the kernel's own, and are not rearranged here:
+
+      0  a decision was reached, whatever it was. `PROPOSAL_REQUIRED` — no rule
+         covers this pair, or the policy declines to choose a canon, or a
+         template needs context the request did not carry — is the most honest
+         answer this kernel gives, and a verb that exits non-zero on it makes
+         honesty look like failure.
+      2  the request itself is unreadable, or the kernel raised `Rejected`
+         because the request is malformed. A caller's typo must not look like
+         an answer.
+
+    `REJECTED` is named in the kernel's `DECISIONS` tuple and no path in
+    `resolve()` can return it — it is emitted only by that module's `main()`
+    except-branch. The value is therefore reported here the way the kernel
+    actually produces it, as a refusal with a reason, rather than as a decision
+    this verb might invent a status for. A status nothing can be observed
+    emitting is worse than no status, because it reads as a check.
+
+    Nothing here writes, moves or authorizes. `MOVE` is a *proposal*: the
+    kernel's own vocabulary sets `approval.cross_surface` to `proposal-only`,
+    on the grounds that on Feishu "add to wiki" has no automatic undo. The
+    `approval` field is printed for every decision for exactly that reason.
+    """
+    mod = _load_module_from(REPO_ROOT / "space" / "resolver.py",
+                            "serveros_space_resolver")
+    try:
+        vocabulary = mod.load_vocabulary(args.vocabulary)
+        record = mod.decide(_space_request(args), vocabulary)
+    except mod.Rejected as exc:
+        sys.stderr.write(f"serverosctl: {exc}\n")
+        return EXIT_COULD_NOT_ANSWER
+    except _SpaceRequestUnreadable as exc:
+        sys.stderr.write(f"serverosctl: {exc}\n")
+        return EXIT_COULD_NOT_ANSWER
+
+    target = record.get("logical_target") or {}
+    where = " ".join(f"{slot}={target[slot]}"
+                     for slot in ("project", "repo", "item", "run", "owner")
+                     if target.get(slot))
+    if target:
+        placement = f"{target['surface']}/{record['canonical_role']}"
+    else:
+        # No rule, or the policy declined to choose, or the role is unclassified:
+        # the kernel has no logical target to report, and saying so is the answer.
+        # Printing a dash where a surface would go would read as a surface called
+        # "—"; the decision line above already carries the surface when there is one.
+        placement = f"(undecided)  ·  role={record['canonical_role']}"
+    lines = [
+        f"decision    {record['decision']}"
+        + (f" -> {record['canonical_surface']}" if record.get("canonical_surface") else ""),
+        f"placement   {placement}" + (f"  ({where})" if where else ""),
+        f"confidence  {record['confidence']}",
+        f"approval    {record['approval']}"
+        + ("  ·  this is a proposal and not a permission: nothing here writes"
+           if record["approval"] != "none-required" else ""),
+    ]
+    if record.get("index"):
+        lines.append(f"index       {record['index']}")
+    # A locator is printed as what it is: logical, and present only when the
+    # caller's own policy carried a template. The kernel refuses to invent one,
+    # so an absent locator here is a property of the policy, not a bug.
+    lines.append(f"locator     {record.get('target_locator') or '(none — no template in the policy)'}")
+    for index, reason in enumerate(record.get("reason") or []):
+        lines.append(f"{'reason' if index == 0 else '':<11} {reason}")
+    emit(record, as_json=args.json, lines=lines)
+    return EXIT_OK
+
+
+def cmd_space_meeting(args) -> int:
+    """`space/meeting_relevance.py` — what a MeetingBundle contributes to work.
+
+    Two questions with two input sets, selected by the request document's
+    `kind`: `relevance` (metadata → policy match → bounded content → RELEVANT /
+    MIXED / IRRELEVANT / UNKNOWN → an action) and `cleanup` (one of section 8's
+    four levels, planned or refused). `--kind` overrides the document, because
+    re-asking the same bundle the other question is a thing a person does and
+    it should not require editing the file.
+
+    Exit codes follow the same rule as `space resolve`, and the kernel states it
+    in its own docstring: 0 for a decision — `REVIEW`, `REFUSAL` and
+    `PROPOSAL_REQUIRED` included, because each is a successful determination —
+    and 2 only for a request that is malformed or unreadable.
+
+    Two properties of the record are load-bearing enough to be printed rather
+    than left in the JSON:
+
+      * a relevance record carries `cleanup: null`, and that None means *this
+        kernel does not produce a cleanup level at all* — section 7 makes
+        deletability an axis of its own, and a cleanup plan is asked for
+        separately. It does not mean "nothing to clean up", and a reader who
+        takes it that way has inverted the one field that keeps relevance from
+        reaching a deletion;
+      * a cleanup `PLAN` is a plan and not an execution. Eligibility is
+        evaluated here; applying it belongs to the surface adapters, and each
+        acting object carries its own intent and its own receipt.
+
+    `--as-of` is deliberately not offered. The kernel evaluates expiry against
+    an explicit `as_of` and fails closed when it cannot, so a flag would invite
+    a value derived from the shell's clock — and a check whose answer depends on
+    when it ran cannot be compared against a recorded one.
+    """
+    mod = _load_module_from(REPO_ROOT / "space" / "meeting_relevance.py",
+                            "serveros_space_meeting_relevance")
+    try:
+        vocabulary = mod.load_vocabulary(args.vocabulary)
+        request = _space_request(args)
+        if args.kind:
+            # Re-asked, not mutated in place: a caller's document is theirs.
+            request = dict(request)
+            request["kind"] = args.kind
+        record = mod.decide(request, vocabulary)
+    except mod.Rejected as exc:
+        sys.stderr.write(f"serverosctl: {exc}\n")
+        return EXIT_COULD_NOT_ANSWER
+    except _SpaceRequestUnreadable as exc:
+        sys.stderr.write(f"serverosctl: {exc}\n")
+        return EXIT_COULD_NOT_ANSWER
+
+    cleanup = record.get("cleanup")
+    lines = []
+    if "level" in record:
+        lines.append(f"level       {record['level']}")
+    lines.append(f"decision    {record['decision']}"
+                 + (f"  relevance={record['relevance']}" if record.get("relevance") else ""))
+    if "level" in record:
+        lines.append(f"deletability {record['axes']['deletability']}"
+                     + ("  ·  a plan is not an execution: each acting object carries"
+                        " its own intent and its own receipt"
+                        if record["decision"] == "PLAN" else ""))
+        lines.append(f"objects     {len(record['objects'])} planned"
+                     + (f"  ({len(record['already_executed'])} already executed)"
+                        if record.get("already_executed") else ""))
+    else:
+        stages = " ".join(f"{entry['stage']}={entry['state']}"
+                          for entry in record.get("stages") or [])
+        lines.append(f"stages      {stages}")
+        axes = record.get("axes") or {}
+        lines.append("axes        " + " ".join(f"{name}={axes[name]}" for name in sorted(axes)))
+        lines.append(
+            "cleanup     null — this kernel produces no cleanup level; deletability "
+            "is its own axis and a plan is asked for separately"
+            if cleanup is None else f"cleanup     {cleanup}")
+    for index, reason in enumerate(record.get("reason") or []):
+        lines.append(f"{'reason' if index == 0 else '':<11} {reason}")
+    emit(record, as_json=args.json, lines=lines)
+    return EXIT_OK
+
+
 def cmd_device_show(args) -> int:
     reg = load_registry(args.registry)
     inv = inventory_mod.Inventory()
@@ -7469,6 +7649,47 @@ def build_parser() -> argparse.ArgumentParser:
              "that ships beside the kernel, so an installed node judges by the "
              "same closed set a source checkout does")
     doc_resolve.set_defaults(func=cmd_document_resolve)
+
+    space = sub.add_parser(
+        "space", help="where a logical object belongs, and what a meeting "
+                      "contributes (§B9)", **_COMMON)
+    space_sub = space.add_subparsers(dest="space_verb", required=True)
+
+    space_resolve = space_sub.add_parser(
+        "resolve",
+        help="placement decision for one logical object: KEEP / MOVE / INDEX / "
+             "PROPOSAL_REQUIRED. Reads a request file and answers; a MOVE is a "
+             "proposal and nothing here writes", **_COMMON)
+    space_resolve.add_argument(
+        "--request", required=True,
+        help="path to a request JSON. Required and undefaulted: there is no "
+             "useful default object, and a defaulted one would answer about "
+             "something nobody asked after")
+    space_resolve.add_argument(
+        "--vocabulary", default=None,
+        help="the placement table to judge against. Default: the one that ships "
+             "beside the kernel, so an installed node decides by the same closed "
+             "set a source checkout does")
+    space_resolve.set_defaults(func=cmd_space_resolve)
+
+    space_meeting = space_sub.add_parser(
+        "meeting",
+        help="a MeetingBundle's relevance, or a cleanup plan for explicit "
+             "objects. Reads a request file and answers; applying a plan "
+             "belongs to the surface adapters", **_COMMON)
+    space_meeting.add_argument(
+        "--request", required=True,
+        help="path to a request JSON. Its `kind` selects the question: "
+             "`relevance` (default) or `cleanup`")
+    space_meeting.add_argument(
+        "--kind", choices=("relevance", "cleanup"), default=None,
+        help="override the request document's kind, for when the same bundle "
+             "has to be asked the other question")
+    space_meeting.add_argument(
+        "--vocabulary", default=None,
+        help="the policy vocabulary to judge against. Default: the one that "
+             "ships beside the kernel")
+    space_meeting.set_defaults(func=cmd_space_meeting)
 
     taxonomy = sub.add_parser(
         "taxonomy",
