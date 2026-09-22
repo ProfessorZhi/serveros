@@ -1,0 +1,515 @@
+"""Capture policy and materialized coverage, read as two answers and not one.
+
+WHY THIS FILE EXISTS
+--------------------
+Neither half of `intake/capture_coverage.py` was previously observable. Read on
+2026-09-22, `grep -rn "pagination_complete\\|msg_count" --include=*.py` over the
+fabric tree returned nothing: the collectors wrote 66 manifests under
+`records/information/raw/` and no ServerOS-side reader had ever opened one. So
+every property below is asserted here for the first time, and the four that are
+individually easy to get wrong are each given their own class:
+
+  * an absence is not a value. `pagination_complete` has three states on this
+    node, not two — `true`, `false`, and *the collector did not record it* — and
+    collapsing the third into either of the others is the failure the module was
+    written for. `sync.mode` is missing from 37 of 47 manifests and must not
+    acquire a default.
+  * a component's shortfall is not the object's verdict. One manifest can be
+    fully paginated and still have attachments the collector declared pending.
+    There is no object-level verdict to assert on, and its absence is asserted.
+  * one unreadable manifest must not shrink the denominator. A reader that
+    returned 65 objects where 66 exist would understate coverage by exactly the
+    amount it failed to look at.
+  * the reader reads no clock. Freshness is a different question with a
+    different threshold, and a module that answered it would be the authority on
+    a fact it does not hold.
+
+THE CAPTURE
+-----------
+`tests/data/capture-coverage-live-2026-09-22.json`
+    `serverosctl information captured --json` over `/data/home/vince/workspace/records`,
+    captured 2026-09-22, sha256 of the FULL output
+    `7434bee1d2640795b874168368d3338549bd1c1136dab8c8ecd41f01a6fdee09`; the file
+    here is trimmed to `path`/`role`/`shape`/`capture`/component `state` and
+    `facts`, dropping the `why` prose and the `unstructured` sentences. The trim
+    is mechanical, so a test that reads it can still be checked against the
+    original by digest. Nothing in it was written by hand.
+
+The live-tree test does not assert the captured numbers against constants alone:
+it re-walks the real records root and asserts the report's denominator equals the
+number of `manifest.json` files that are actually there. A fixture that drifted
+from the tree would then fail as a drift rather than as an edit.
+"""
+from __future__ import annotations
+
+import importlib.util
+import json
+import subprocess
+import sys
+from pathlib import Path
+
+import pytest
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+CLI = REPO_ROOT / "runtime" / "cli.py"
+FIXTURE = Path(__file__).resolve().parent / "data" / "capture-coverage-live-2026-09-22.json"
+LIVE_RECORDS = Path("/data/home/vince/workspace/records")
+
+
+def _load():
+    spec = importlib.util.spec_from_file_location(
+        "serveros_intake_capture_coverage",
+        REPO_ROOT / "intake" / "capture_coverage.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+cc = _load()
+
+
+def cli(*args) -> subprocess.CompletedProcess:
+    return subprocess.run([sys.executable, str(CLI), *args],
+                          capture_output=True, text=True, cwd=str(REPO_ROOT))
+
+
+# --------------------------------------------------------------------------
+# fixtures
+# --------------------------------------------------------------------------
+
+def chat_manifest(**over) -> dict:
+    """A chat capture shaped like the real ones, with only the named fields changed."""
+    document = {
+        "contact": {"name": "X", "open_id": "ou_x"},
+        "chat": {"chat_id": "oc_x", "chat_type": "p2p", "name": "X"},
+        "sync": {
+            "mode": "incremental",
+            "method": "im/chat-messages-list",
+            "msg_count": 43,
+            "remote_unique_message_count": 43,
+            "fetched_page_count": 1,
+            "pagination_complete": True,
+            "earliest_create_time": "2026-09-11 09:45",
+            "latest_create_time": "2026-09-11 10:07",
+            "last_sync_at": "2026-09-14",
+            "last_verified_at": "2026-09-14T15:45:58",
+            "status": "synced",
+            "last_message_id": "om_x",
+        },
+        "note": "a narrative the reader must not project",
+    }
+    document.update(over)
+    return document
+
+
+def document_manifest(**over) -> dict:
+    document = {
+        "source_message_id": "om_x",
+        "url": "https://example.invalid/doc",
+        "type": "docx",
+        "title": "T",
+        "fetched_at": "2026-09-07",
+        "last_verified_at": "2026-09-08T00:00:00",
+        "content_sha256": "a" * 64,
+        "redaction_applied": False,
+    }
+    document.update(over)
+    return document
+
+
+@pytest.fixture
+def tree(tmp_path):
+    """A capture tree a test owns, laid out the way `records/information/raw` is."""
+    root = tmp_path / "records" / "information" / "raw" / "feishu" / "chats"
+    root.mkdir(parents=True)
+    return root
+
+
+def write(root: Path, relative: str, document) -> Path:
+    path = root / relative / "manifest.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if isinstance(document, str):
+        path.write_text(document, encoding="utf-8")
+    else:
+        path.write_text(json.dumps(document, ensure_ascii=False), encoding="utf-8")
+    return path
+
+
+# --------------------------------------------------------------------------
+# an absence is not a value
+# --------------------------------------------------------------------------
+
+class TestAnAbsenceIsNotAValue:
+    def test_a_recorded_mode_is_reported_and_nothing_is_undeclared(self, tree):
+        write(tree, "people/x/oc_x", chat_manifest())
+        record = cc.read_root(tree.parents[3])["objects"][0]
+        assert record["capture"] == {"mode": "incremental",
+                                     "method": "im/chat-messages-list"}
+        assert record["capture_undeclared"] == []
+
+    def test_an_absent_mode_is_absent_and_named_rather_than_defaulted(self, tree):
+        document = chat_manifest()
+        del document["sync"]["mode"]
+        write(tree, "people/x/oc_x", document)
+        record = cc.read_root(tree.parents[3])["objects"][0]
+        assert "mode" not in record["capture"]
+        assert [entry["field"] for entry in record["capture_undeclared"]] == ["mode"]
+        # The reason travels with the absence, and it names the manifest field
+        # rather than this reader's opinion about it.
+        assert record["capture_undeclared"][0]["produced_by"] == "sync.mode"
+        assert "did not record" in record["capture_undeclared"][0]["why"]
+
+    @pytest.mark.parametrize("value,state", [
+        (True, "COMPLETE"),
+        (False, "INCOMPLETE"),
+        (None, "UNDECIDABLE"),
+    ])
+    def test_pagination_complete_has_three_states_not_two(self, tree, value, state):
+        document = chat_manifest()
+        document["sync"]["pagination_complete"] = value
+        if value is None:
+            del document["sync"]["pagination_complete"]
+        write(tree, "people/x/oc_x", document)
+        messages = cc.read_root(tree.parents[3])["objects"][0]["coverage"]["components"]["messages"]
+        assert messages["state"] == state
+        if value is None:
+            assert "pagination_complete" not in messages["facts"]
+
+    @pytest.mark.parametrize("value", ["43", True, 43.0, None])
+    def test_a_count_that_is_not_an_integer_is_absent_not_a_disagreement(self, tree, value):
+        """`"43" != 43` and `True == 1` both turn a readable manifest into a wrong one."""
+        document = chat_manifest()
+        document["sync"]["msg_count"] = value
+        write(tree, "people/x/oc_x", document)
+        messages = cc.read_root(tree.parents[3])["objects"][0]["coverage"]["components"]["messages"]
+        assert "msg_count" not in messages["facts"]
+        assert messages["state"] == "UNDECIDABLE"
+        assert not any("source's own count" in reason for reason in messages["why"])
+        assert any("no readable `msg_count`" in reason for reason in messages["why"])
+
+    def test_a_real_disagreement_is_incomplete_and_names_both_numbers(self, tree):
+        document = chat_manifest()
+        document["sync"]["remote_unique_message_count"] = 51
+        write(tree, "people/x/oc_x", document)
+        messages = cc.read_root(tree.parents[3])["objects"][0]["coverage"]["components"]["messages"]
+        assert messages["state"] == "INCOMPLETE"
+        assert any("43" in reason and "51" in reason for reason in messages["why"])
+
+
+# --------------------------------------------------------------------------
+# a component's shortfall is not the object's verdict
+# --------------------------------------------------------------------------
+
+class TestNoObjectLevelVerdict:
+    def test_the_record_carries_no_single_verdict_key(self, tree):
+        write(tree, "people/x/oc_x", chat_manifest())
+        record = cc.read_root(tree.parents[3])["objects"][0]
+        assert "verdict" not in record
+        assert "status" not in record["coverage"]
+        assert sorted(record["coverage"]["components"]) == ["messages"]
+
+    def test_a_paginated_chat_with_pending_attachments_reports_both(self, tree):
+        document = chat_manifest(
+            files={"backfilled": [], "pending": "3 张图片未下载"})
+        write(tree, "people/x/oc_x", document)
+        coverage = cc.read_root(tree.parents[3])["objects"][0]["coverage"]
+        assert coverage["components"]["messages"]["state"] == "COMPLETE"
+        assert coverage["components"]["attachments"]["state"] == "COMPLETE"
+        # The collector's own words are carried beside the components and are
+        # marked as prose, because no component above reads them.
+        assert coverage["unstructured"]["files_pending"]["text"] == "3 张图片未下载"
+        assert "prose" in coverage["unstructured"]["files_pending"]["note"]
+
+    def test_the_narrative_note_is_not_projected(self, tree):
+        write(tree, "people/x/oc_x", chat_manifest())
+        record = cc.read_root(tree.parents[3])["objects"][0]
+        assert "a narrative the reader must not project" not in json.dumps(
+            record, ensure_ascii=False)
+
+    def test_the_rollup_counts_per_component_and_not_per_object(self, tree):
+        write(tree, "people/x/oc_x", chat_manifest())
+        write(tree, "people/x/oc_y", chat_manifest(
+            files={"backfilled": [], "pending": "无附件"}))
+        summary = cc.read_root(tree.parents[3])["summary"]
+        assert summary["denominator"] == 2
+        assert summary["components"]["messages"] == {"COMPLETE": 2}
+        # Counted over two objects but one component each: an object-level count
+        # would have had to collapse them.
+        assert summary["components"]["attachments"] == {"COMPLETE": 1}
+
+
+# --------------------------------------------------------------------------
+# one unreadable manifest must not shrink the denominator
+# --------------------------------------------------------------------------
+
+class TestTheDenominatorSurvivesABadFile:
+    def test_a_malformed_manifest_is_a_record_and_not_an_abort(self, tree):
+        write(tree, "people/x/oc_x", chat_manifest())
+        write(tree, "people/x/oc_y", "{not json")
+        write(tree, "people/x/oc_z", chat_manifest())
+        report = cc.read_root(tree.parents[3])
+        assert report["summary"]["denominator"] == 3
+        assert report["summary"]["by_shape"]["UNREADABLE"] == 1
+        assert report["summary"]["by_shape"]["chat_capture"] == 2
+        bad = [o for o in report["objects"] if o["shape"] == "UNREADABLE"][0]
+        assert "cannot read" in bad["why"]
+
+    def test_a_json_array_is_unreadable_rather_than_an_empty_manifest(self, tree):
+        write(tree, "people/x/oc_x", "[1, 2, 3]")
+        record = cc.read_root(tree.parents[3])["objects"][0]
+        assert record["shape"] == "UNREADABLE"
+        assert "list, not a manifest object" in record["why"]
+
+    def test_an_absent_root_refuses_instead_of_reporting_zero(self, tmp_path):
+        with pytest.raises(cc.Refused) as caught:
+            cc.read_root(tmp_path / "nothing-here")
+        assert "not a directory" in str(caught.value)
+        assert "not an empty one" in str(caught.value)
+
+
+# --------------------------------------------------------------------------
+# shape from the keys, role from the path, and the disagreement is reported
+# --------------------------------------------------------------------------
+
+class TestShapeAndRoleAreSeparateFacts:
+    def test_a_default_layout_gives_role_and_shape_that_agree(self, tree):
+        write(tree, "people/x/oc_x", chat_manifest())
+        write(tree, "people/x/oc_x/links/slug", document_manifest())
+        by_role = {o["role"]: o for o in cc.read_root(tree.parents[3])["objects"]}
+        assert set(by_role) == {"chat", "link"}
+        assert by_role["chat"]["shape"] == "chat_capture"
+        assert by_role["link"]["shape"] == "document_capture"
+        assert not any("shape_role_disagreement" in o for o in by_role.values())
+
+    def test_a_link_path_holding_a_chat_manifest_keeps_both_facts(self, tree):
+        write(tree, "people/x/oc_x/links/slug", chat_manifest())
+        record = cc.read_root(tree.parents[3])["objects"][0]
+        assert record["role"] == "link"
+        assert record["shape"] == "chat_capture"
+
+    def test_neither_family_is_unknown_rather_than_resolved_by_the_path(self, tree):
+        write(tree, "people/x/oc_x/links/slug", {"something": "else"})
+        record = cc.read_root(tree.parents[3])["objects"][0]
+        assert record["shape"] == "UNKNOWN_SHAPE"
+        assert record["role"] == "link"
+        assert "the path says role `link`" in record["shape_role_disagreement"]
+        assert "no shape this reader knows" in record["shape_role_disagreement"]
+
+    def test_a_chat_key_without_a_sync_block_is_not_a_chat_capture(self, tree):
+        """`chat` alone would be read as a capture whose coverage half vanished.
+
+        The family is `chat`+`sync` together, because everything the declared
+        half can report about a chat — `mode`, `method` — comes from `sync`. A
+        manifest carrying one without the other is a shape this reader does not
+        know, and calling it a chat capture would turn "no coverage record was
+        written" into a page of UNDECIDABLE components.
+        """
+        write(tree, "people/x/oc_x", {"chat": {"chat_id": "oc_x"}, "contact": {}})
+        record = cc.read_root(tree.parents[3])["objects"][0]
+        assert record["shape"] == "UNKNOWN_SHAPE"
+        assert "coverage" not in record
+        assert record["role"] == "chat"
+
+
+# --------------------------------------------------------------------------
+# producers are named, and an unnamable field is a refusal
+# --------------------------------------------------------------------------
+
+class TestEveryFieldHasAProducer:
+    def test_the_two_halves_name_two_disjoint_sets_of_producers(self, tree):
+        write(tree, "people/x/oc_x", chat_manifest())
+        write(tree, "people/x/oc_x/links/slug", document_manifest())
+        for record in cc.read_root(tree.parents[3])["objects"]:
+            assert set(record["capture"]) <= set(cc.CAPTURE_PRODUCED)
+            facts = set()
+            for component in record["coverage"]["components"].values():
+                facts |= set(component["facts"])
+            assert facts <= set(cc.COVERAGE_PRODUCED)
+        # The declaration half and the materialization half must not share a
+        # producer: a field in both tables is a field whose half is undecided.
+        assert not set(cc.CAPTURE_PRODUCED) & set(cc.COVERAGE_PRODUCED)
+
+    def test_a_capture_key_with_no_producer_is_a_refusal_not_a_field(self, tree, monkeypatch):
+        write(tree, "people/x/oc_x", chat_manifest())
+        original = cc._capture_half
+
+        def with_smuggled(shape, document):
+            declared, undeclared = original(shape, document)
+            declared["smuggled"] = 1
+            return declared, undeclared
+
+        monkeypatch.setattr(cc, "_capture_half", with_smuggled)
+        with pytest.raises(cc.Refused) as caught:
+            cc.read_root(tree.parents[3])
+        assert "`capture.smuggled`" in str(caught.value)
+        assert "does not name a source for" in str(caught.value)
+
+    def test_a_reader_defect_is_not_reported_as_an_unreadable_manifest(self, tree, monkeypatch):
+        """A `Refused` about this module must not become a claim about the file.
+
+        `read_root` turns a `Malformed` into an UNREADABLE object, because that
+        is a fact about the manifest. If it caught every `Refused`, a bug here
+        would print as "this file cannot be read" — the misattribution the
+        components exist to prevent, one level up.
+        """
+        write(tree, "people/x/oc_x", chat_manifest())
+        monkeypatch.setattr(cc, "CAPTURE_PRODUCED", {})
+        with pytest.raises(cc.Refused):
+            cc.read_root(tree.parents[3])
+        # And the per-file case still becomes a record rather than an abort.
+        write(tree, "people/x/oc_y", {"chat": "not an object", "sync": {}})
+        monkeypatch.undo()
+        shapes = {o["path"]: o["shape"]
+                  for o in cc.read_root(tree.parents[3])["objects"]}
+        assert shapes["feishu/chats/people/x/oc_y/manifest.json"] == "UNREADABLE"
+
+    def test_a_coverage_key_with_no_producer_is_a_refusal(self):
+        with pytest.raises(cc.Refused) as caught:
+            cc._facts(("invented", 1))
+        assert "`coverage.invented`" in str(caught.value)
+
+    def test_every_component_state_is_in_the_declared_vocabulary(self, tree):
+        write(tree, "people/x/oc_x", chat_manifest())
+        write(tree, "people/x/oc_x/links/slug", document_manifest())
+        for record in cc.read_root(tree.parents[3])["objects"]:
+            for component in record["coverage"]["components"].values():
+                assert component["state"] in cc.COMPONENT_STATES
+
+
+# --------------------------------------------------------------------------
+# the reader reads no clock
+# --------------------------------------------------------------------------
+
+class TestTheReaderHoldsNoClock:
+    def test_no_time_module_is_imported(self):
+        source = (REPO_ROOT / "intake" / "capture_coverage.py").read_text(encoding="utf-8")
+        assert "import time" not in source
+        assert "import datetime" not in source
+        assert "time.time" not in source
+        assert "datetime.now" not in source
+
+    def test_the_verification_stamp_is_printed_as_written_and_not_aged(self, tree):
+        document = chat_manifest()
+        document["sync"]["last_verified_at"] = "2020-01-01T00:00:00"
+        write(tree, "people/x/oc_x", document)
+        verified = cc.read_root(tree.parents[3])["objects"][0]["coverage"]["verified"]
+        assert verified["state"] == "RECORDED"
+        assert verified["at"] == "2020-01-01T00:00:00"
+
+    def test_an_unverified_manifest_says_so_rather_than_going_quiet(self, tree):
+        document = chat_manifest()
+        del document["sync"]["last_verified_at"]
+        write(tree, "people/x/oc_x", document)
+        verified = cc.read_root(tree.parents[3])["objects"][0]["coverage"]["verified"]
+        assert verified["state"] == "NOT_RECORDED"
+        assert verified["at"] is None
+        assert "the collector's own account of its own work" in verified["why"]
+
+
+# --------------------------------------------------------------------------
+# the verb
+# --------------------------------------------------------------------------
+
+class TestTheCli:
+    def test_it_renders_the_live_tree_and_exits_zero(self):
+        done = cli("information", "captured")
+        assert done.returncode == 0, done.stderr
+        assert "按分量计" in done.stdout
+        assert "一份材料失败不伪造整包完成" not in done.stdout  # no such claim is made
+
+    def test_a_relative_records_root_is_refused(self):
+        done = cli("information", "captured", "--records-root", "records")
+        assert done.returncode == 1
+        assert "must be absolute" in done.stderr
+        assert "nobody else can reproduce" in done.stderr
+
+    def test_an_absent_records_root_refuses_with_a_reason(self, tmp_path):
+        done = cli("information", "captured", "--records-root", str(tmp_path))
+        assert done.returncode == 1
+        assert "not a directory" in done.stderr
+        assert "not an empty one" in done.stderr
+
+    def test_json_is_the_same_report_the_renderer_prints(self, tmp_path, tree):
+        write(tree, "people/x/oc_x", chat_manifest())
+        records = tree.parents[3]
+        done = cli("information", "captured", "--records-root", str(records), "--json")
+        assert done.returncode == 0, done.stderr
+        payload = json.loads(done.stdout)
+        assert payload["schema"] == cc.SCHEMA
+        assert payload["summary"]["denominator"] == 1
+        assert payload["summary"] == cc.read_root(records)["summary"]
+
+    def test_it_loads_the_module_rather_than_shelling_out_to_it(self):
+        source = (REPO_ROOT / "runtime" / "cli.py").read_text(encoding="utf-8")
+        body = source.split("def cmd_information_captured(")[1].split("\ndef ")[0]
+        assert "intake" in body and "capture_coverage.py" in body
+        assert "subprocess" not in body
+        # And the module has no `main()` for a verb to reach for instead.
+        assert not hasattr(cc, "main")
+
+
+# --------------------------------------------------------------------------
+# the capture
+# --------------------------------------------------------------------------
+
+@pytest.mark.skipif(not FIXTURE.exists(), reason="no capture recorded")
+class TestAgainstTheRecordedCapture:
+    """The numbers a re-run must still produce, and the two that are findings."""
+
+    def test_the_recorded_totals(self):
+        captured = json.loads(FIXTURE.read_text(encoding="utf-8"))["summary"]
+        assert captured["denominator"] == 66
+        assert captured["by_shape"] == {"chat_capture": 47, "document_capture": 19}
+        assert captured["by_role"] == {"chat": 47, "link": 19}
+        assert captured["components"]["messages"] == {"COMPLETE": 45,
+                                                     "UNDECIDABLE": 2}
+        assert captured["components"]["body"] == {"COMPLETE": 16, "INCOMPLETE": 3}
+        assert captured["components"]["media"] == {"COMPLETE": 14, "UNDECIDABLE": 5}
+        assert captured["capture_undeclared"] == {"mode": 37}
+        assert captured["verified"] == {"RECORDED": 61, "NOT_RECORDED": 5}
+
+    def test_the_live_tree_still_produces_them(self):
+        if not LIVE_RECORDS.is_dir():
+            pytest.skip("this node's records checkout is not here")
+        report = cc.read_root(LIVE_RECORDS)
+        captured = json.loads(FIXTURE.read_text(encoding="utf-8"))["summary"]
+        assert report["summary"] == captured
+
+    def test_the_denominator_equals_the_files_that_are_on_disk(self):
+        if not LIVE_RECORDS.is_dir():
+            pytest.skip("this node's records checkout is not here")
+        root = cc.raw_root(LIVE_RECORDS)
+        on_disk = {str(p.relative_to(root)) for p in cc.walk_manifests(root)}
+        report = cc.read_root(LIVE_RECORDS)
+        assert len(on_disk) == report["summary"]["denominator"]
+        assert {o["path"] for o in report["objects"]} == on_disk
+
+    def test_the_three_truncated_digests_are_the_finding_and_not_a_slip(self):
+        """A 12-character `content_sha256` names a body without addressing one."""
+        if not LIVE_RECORDS.is_dir():
+            pytest.skip("this node's records checkout is not here")
+        report = cc.read_root(LIVE_RECORDS)
+        short = [o for o in report["objects"]
+                 if (o.get("coverage") or {}).get("components", {}).get("body", {})
+                 .get("facts", {}).get("content_sha256_chars", 64) < 64]
+        assert len(short) == 3
+        for record in short:
+            assert record["coverage"]["components"]["body"]["state"] == "INCOMPLETE"
+            assert record["coverage"]["components"]["body"]["facts"][
+                "content_sha256_chars"] == 12
+
+    def test_the_two_unpaginated_chats_carry_no_independent_denominator(self):
+        if not LIVE_RECORDS.is_dir():
+            pytest.skip("this node's records checkout is not here")
+        report = cc.read_root(LIVE_RECORDS)
+        undecided = [o for o in report["objects"]
+                     if (o.get("coverage") or {}).get("components", {})
+                     .get("messages", {}).get("state") == "UNDECIDABLE"]
+        assert sorted(o["path"] for o in undecided) == sorted([
+            "feishu/chats/people/venus-liu/oc_89c0764c0664c7ec492220164e29a328/manifest.json",
+            "feishu/chats/people/yale-huang/oc_f4b9ed4885415a496e8f0b5d24d321c8/manifest.json",
+        ])
+        for record in undecided:
+            facts = record["coverage"]["components"]["messages"]["facts"]
+            assert "pagination_complete" not in facts
+            assert "remote_unique_message_count" not in facts

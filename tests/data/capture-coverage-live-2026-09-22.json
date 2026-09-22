@@ -1,0 +1,1861 @@
+{
+ "objects": [
+  {
+   "capture": {
+    "method": "im/+chat-messages-list --as user --order asc --page-size 50 + page-token loop; desc newest cross-check",
+    "mode": "incremental"
+   },
+   "capture_undeclared": [],
+   "components": {
+    "messages": {
+     "facts": {
+      "earliest_create_time": "2026-09-08 13:41",
+      "fetched_page_count": 1,
+      "last_message_id": "om_x100b66ce5f95dca0c2f1f712874fed4",
+      "latest_create_time": "2026-09-08 13:45",
+      "msg_count": 13,
+      "pagination_complete": true,
+      "remote_unique_message_count": 13
+     },
+     "state": "COMPLETE"
+    }
+   },
+   "path": "feishu/chats/groups/ai-support/oc_5d3001b2e60e6333d85237e36e00e057/manifest.json",
+   "role": "chat",
+   "shape": "chat_capture",
+   "verified": "RECORDED"
+  },
+  {
+   "capture": {
+    "method": "im/+chat-messages-list --as user --order asc --page-size 50 + page-token loop; desc newest cross-check"
+   },
+   "capture_undeclared": [
+    "mode"
+   ],
+   "components": {
+    "messages": {
+     "facts": {
+      "earliest_create_time": "2026-07-08 21:15",
+      "fetched_page_count": 5,
+      "last_message_id": "om_x100b6509f313ac80b30f29042a778b9",
+      "latest_create_time": "2026-09-11 18:45",
+      "msg_count": 206,
+      "pagination_complete": true,
+      "remote_unique_message_count": 206
+     },
+     "state": "COMPLETE"
+    }
+   },
+   "path": "feishu/chats/groups/bruce-sky-maggie/oc_0c4a3d39db26ddae068d19885c2674b7/manifest.json",
+   "role": "chat",
+   "shape": "chat_capture",
+   "verified": "RECORDED"
+  },
+  {
+   "capture": {
+    "method": "im/+chat-messages-list --as user --order asc --page-size 50 + page-token loop; desc newest cross-check"
+   },
+   "capture_undeclared": [
+    "mode"
+   ],
+   "components": {
+    "messages": {
+     "facts": {
+      "earliest_create_time": "2026-08-21 13:51",
+      "fetched_page_count": 1,
+      "last_message_id": "om_x100b6502d7cf58bcc2ef0f59a072938",
+      "latest_create_time": "2026-09-11 10:38",
+      "msg_count": 4,
+      "pagination_complete": true,
+      "remote_unique_message_count": 4
+     },
+     "state": "COMPLETE"
+    }
+   },
+   "path": "feishu/chats/groups/call-anytime/oc_fefbc079537e9074f62da5e0abea0630/manifest.json",
+   "role": "chat",
+   "shape": "chat_capture",
+   "verified": "RECORDED"
+  },
+  {
+   "capture": {
+    "method": "im/+chat-messages-list --as user --order asc --page-size 50 + page-token loop; desc newest cross-check",
+    "mode": "incremental"
+   },
+   "capture_undeclared": [],
+   "components": {
+    "messages": {
+     "facts": {
+      "earliest_create_time": "2026-06-11 11:23",
+      "fetched_page_count": 18,
+      "last_message_id": "om_x100b650291559480b30e38c89542151",
+      "latest_create_time": "2026-09-11 10:56",
+      "msg_count": 858,
+      "pagination_complete": true,
+      "remote_unique_message_count": 858
+     },
+     "state": "COMPLETE"
+    }
+   },
+   "path": "feishu/chats/groups/codex-domestic-model-support/oc_d8037405128a62c8c27520a26518e09a/manifest.json",
+   "role": "chat",
+   "shape": "chat_capture",
+   "verified": "RECORDED"
+  },
+  {
+   "capture": {
+    "method": "im/+chat-messages-list --as user --order asc --page-size 50 + page-token loop; desc newest cross-check",
+    "mode": "incremental"
+   },
+   "capture_undeclared": [],
+   "components": {
+    "messages": {
+     "facts": {
+      "earliest_create_time": "2026-08-17 17:15",
+      "fetched_page_count": 5,
+      "last_message_id": "om_x100b6540af67dca4c312bee13a02c98",
+      "latest_create_time": "2026-09-14 09:30",
+      "msg_count": 204,
+      "pagination_complete": true,
+      "remote_unique_message_count": 204
+     },
+     "state": "COMPLETE"
+    }
+   },
+   "path": "feishu/chats/groups/litellm-alerts/oc_eb2df36956e50e6cc4a388cf3bece196/manifest.json",
+   "role": "chat",
+   "shape": "chat_capture",
+   "verified": "RECORDED"
+  },
+  {
+   "capture": {
+    "method": "im/+chat-messages-list --as user --order asc --page-size 50 + page-token loop; desc newest cross-check",
+    "mode": "incremental"
+   },
+   "capture_undeclared": [],
+   "components": {
+    "messages": {
+     "facts": {
+      "earliest_create_time": "2026-07-03 13:42",
+      "fetched_page_count": 30,
+      "last_message_id": "om_x100b6542e055a0acb3d40229dbaa738",
+      "latest_create_time": "2026-09-14 11:32",
+      "msg_count": 1491,
+      "pagination_complete": true,
+      "remote_unique_message_count": 1491
+     },
+     "state": "COMPLETE"
+    }
+   },
+   "path": "feishu/chats/groups/litellm-thirdparty-api/oc_c881d6e02c098450fba154b029d06895/manifest.json",
+   "role": "chat",
+   "shape": "chat_capture",
+   "verified": "RECORDED"
+  },
+  {
+   "capture": {
+    "method": "im/+chat-messages-list --as user --order asc --page-size 50 + page-token loop; desc newest cross-check"
+   },
+   "capture_undeclared": [
+    "mode"
+   ],
+   "components": {
+    "messages": {
+     "facts": {
+      "earliest_create_time": "2026-09-18 15:13",
+      "fetched_page_count": 1,
+      "last_message_id": "om_x100b65fae1e950acc2450452477bcc6",
+      "latest_create_time": "2026-09-18 15:40",
+      "msg_count": 41,
+      "pagination_complete": true,
+      "remote_unique_message_count": 41
+     },
+     "state": "COMPLETE"
+    }
+   },
+   "path": "feishu/chats/groups/maia-zhengji-kit-vince/oc_3e647419972febd2fcd174fdef5496de/manifest.json",
+   "role": "chat",
+   "shape": "chat_capture",
+   "verified": "RECORDED"
+  },
+  {
+   "capture": {
+    "method": "im/+chat-messages-list --as user --order asc --page-size 50 + page-token loop; desc newest cross-check"
+   },
+   "capture_undeclared": [
+    "mode"
+   ],
+   "components": {
+    "messages": {
+     "facts": {
+      "earliest_create_time": "2022-02-25 22:17",
+      "fetched_page_count": 108,
+      "last_message_id": "om_x100b65415c7c2ca0b27e6356d1816ba",
+      "latest_create_time": "2026-09-14 09:43",
+      "msg_count": 4956,
+      "pagination_complete": true,
+      "remote_unique_message_count": 4956
+     },
+     "state": "COMPLETE"
+    }
+   },
+   "path": "feishu/chats/groups/nanjing-office/oc_bf4e4b395554c066f012288f6ed09fc6/manifest.json",
+   "role": "chat",
+   "shape": "chat_capture",
+   "verified": "RECORDED"
+  },
+  {
+   "capture": {
+    "method": "im/+chat-messages-list --as user --order asc --page-size 50 + page-token loop; desc newest cross-check"
+   },
+   "capture_undeclared": [
+    "mode"
+   ],
+   "components": {
+    "messages": {
+     "facts": {
+      "earliest_create_time": "2026-08-03 10:48",
+      "fetched_page_count": 2,
+      "last_message_id": "om_x100b667a436ddcbcc3e8b7c34cd4509",
+      "latest_create_time": "2026-08-31 10:03",
+      "msg_count": 52,
+      "pagination_complete": true,
+      "remote_unique_message_count": 52
+     },
+     "state": "COMPLETE"
+    }
+   },
+   "path": "feishu/chats/groups/new-hire-2026-08/oc_2ce36d153f16b8221b7840dbc16c1452/manifest.json",
+   "role": "chat",
+   "shape": "chat_capture",
+   "verified": "RECORDED"
+  },
+  {
+   "capture": {
+    "method": "im/+chat-messages-list --as user --order asc --page-size 50 + page-token loop; desc newest cross-check"
+   },
+   "capture_undeclared": [
+    "mode"
+   ],
+   "components": {
+    "messages": {
+     "facts": {
+      "earliest_create_time": "2026-01-12 15:14",
+      "fetched_page_count": 22,
+      "last_message_id": "om_x100b65231782ecb4b1c568b44345e7f",
+      "latest_create_time": "2026-09-09 23:04",
+      "msg_count": 1085,
+      "pagination_complete": true,
+      "remote_unique_message_count": 1085
+     },
+     "state": "COMPLETE"
+    }
+   },
+   "path": "feishu/chats/groups/online-service-ai-infra/oc_388ebd134f6ee7dcc4fbb2a6900b09cc/manifest.json",
+   "role": "chat",
+   "shape": "chat_capture",
+   "verified": "RECORDED"
+  },
+  {
+   "capture": {
+    "method": "im/+chat-messages-list --as user --order asc --page-size 50 + page-token loop; desc newest cross-check"
+   },
+   "capture_undeclared": [
+    "mode"
+   ],
+   "components": {
+    "messages": {
+     "facts": {
+      "earliest_create_time": "2026-07-22 19:04",
+      "fetched_page_count": 5,
+      "last_message_id": "om_x100b65089df784a8c4a0fe0d7a7b0d1",
+      "latest_create_time": "2026-09-11 17:43",
+      "msg_count": 207,
+      "pagination_complete": true,
+      "remote_unique_message_count": 207
+     },
+     "state": "COMPLETE"
+    }
+   },
+   "path": "feishu/chats/groups/quay/oc_b4a1d65148be80c2128296ffb595b116/manifest.json",
+   "role": "chat",
+   "shape": "chat_capture",
+   "verified": "RECORDED"
+  },
+  {
+   "capture": {
+    "method": "im/+chat-messages-list --as user --order asc --page-size 50 + page-token loop; desc newest cross-check"
+   },
+   "capture_undeclared": [
+    "mode"
+   ],
+   "components": {
+    "messages": {
+     "facts": {
+      "earliest_create_time": "2026-09-15 14:50",
+      "fetched_page_count": 1,
+      "last_message_id": "om_x100b643dbef46cb0c39ac73b2d025cc",
+      "latest_create_time": "2026-09-21 11:05",
+      "msg_count": 23,
+      "pagination_complete": true,
+      "remote_unique_message_count": 23
+     },
+     "state": "COMPLETE"
+    }
+   },
+   "path": "feishu/chats/groups/tokyo-server/oc_237ad866d2efee97d985eb39587a0ab2/manifest.json",
+   "role": "chat",
+   "shape": "chat_capture",
+   "verified": "RECORDED"
+  },
+  {
+   "capture": {
+    "method": "im/+chat-messages-list --as user --order asc --page-size 50 + page-token loop; desc newest cross-check"
+   },
+   "capture_undeclared": [
+    "mode"
+   ],
+   "components": {
+    "messages": {
+     "facts": {
+      "earliest_create_time": "2026-09-07 14:58",
+      "fetched_page_count": 3,
+      "last_message_id": "om_x100b66cd3cc5e4a8c10ed690e1e8970",
+      "latest_create_time": "2026-09-08 13:03",
+      "msg_count": 124,
+      "pagination_complete": true,
+      "remote_unique_message_count": 124
+     },
+     "state": "COMPLETE"
+    }
+   },
+   "path": "feishu/chats/groups/vince-monika/oc_4d91d82e6abd8a7d2b2c03ceafcdc0e9/manifest.json",
+   "role": "chat",
+   "shape": "chat_capture",
+   "verified": "RECORDED"
+  },
+  {
+   "capture": {
+    "method": "im/+chat-messages-list --as user --order asc --page-size 50 + page-token loop; desc newest cross-check"
+   },
+   "capture_undeclared": [
+    "mode"
+   ],
+   "components": {
+    "messages": {
+     "facts": {
+      "earliest_create_time": "2026-09-16 18:08",
+      "fetched_page_count": 1,
+      "last_message_id": "om_x100b6593621924b0c3aebc644b3a872",
+      "latest_create_time": "2026-09-16 18:43",
+      "msg_count": 12,
+      "pagination_complete": true,
+      "remote_unique_message_count": 12
+     },
+     "state": "COMPLETE"
+    }
+   },
+   "path": "feishu/chats/groups/vince-zhengji-wendy-monica-marek/oc_35e2af5565082efe40cd6790e379a1cc/manifest.json",
+   "role": "chat",
+   "shape": "chat_capture",
+   "verified": "RECORDED"
+  },
+  {
+   "capture": {
+    "source_message_id": "om_x100b651f73eb5ca4c3e66975eb4a19d",
+    "target_type": "docx",
+    "target_url": "https://fjdynamics.feishu.cn/docx/Y15QdmqCXoPI46xRgvVccpDhnMb"
+   },
+   "capture_undeclared": [],
+   "components": {
+    "body": {
+     "facts": {
+      "content_sha256": "7d9c602c6e8cca0eceaaaac47ac9e41c559e9d007c2cd41b88a5a89bc59628ec",
+      "content_sha256_chars": 64,
+      "fetched_at": "2026-09-15"
+     },
+     "state": "COMPLETE"
+    },
+    "media": {
+     "facts": {
+      "media_count": 0,
+      "media_listed": 0
+     },
+     "state": "COMPLETE"
+    }
+   },
+   "path": "feishu/chats/groups/zhengji-bruce-vince/oc_f0efc4b6b27f7bc444e27a0ce54496a9/links/docx-research-outreach-sop/manifest.json",
+   "role": "link",
+   "shape": "document_capture",
+   "verified": "RECORDED"
+  },
+  {
+   "capture": {
+    "method": "im/+chat-messages-list --as user --order asc --page-size 50 + page-token loop; desc newest cross-check",
+    "mode": "full_backfill"
+   },
+   "capture_undeclared": [],
+   "components": {
+    "attachments": {
+     "facts": {
+      "backfilled": 2
+     },
+     "state": "COMPLETE"
+    },
+    "links": {
+     "facts": {
+      "count": 1,
+      "expanded": 1
+     },
+     "state": "COMPLETE"
+    },
+    "messages": {
+     "facts": {
+      "earliest_create_time": "2026-09-10 14:32",
+      "fetched_page_count": 1,
+      "last_message_id": "om_x100b650d7f7bc8acb4bb6ff4acea0ba",
+      "latest_create_time": "2026-09-11 13:35",
+      "msg_count": 22,
+      "pagination_complete": true,
+      "remote_unique_message_count": 22
+     },
+     "state": "COMPLETE"
+    }
+   },
+   "path": "feishu/chats/groups/zhengji-bruce-vince/oc_f0efc4b6b27f7bc444e27a0ce54496a9/manifest.json",
+   "role": "chat",
+   "shape": "chat_capture",
+   "verified": "RECORDED"
+  },
+  {
+   "capture": {
+    "method": "im/+chat-messages-list --as user --order asc --page-size 50 + page-token loop; desc newest cross-check"
+   },
+   "capture_undeclared": [
+    "mode"
+   ],
+   "components": {
+    "messages": {
+     "facts": {
+      "earliest_create_time": "2026-09-03 13:48",
+      "fetched_page_count": 1,
+      "last_message_id": "om_x100b66d19688d4bcb4aacad42300e2f",
+      "latest_create_time": "2026-09-07 14:45",
+      "msg_count": 23,
+      "pagination_complete": true,
+      "remote_unique_message_count": 23
+     },
+     "state": "COMPLETE"
+    }
+   },
+   "path": "feishu/chats/groups/zhengji-erika-vince/oc_7d32ea6c6a98b741846e77a663820dab/manifest.json",
+   "role": "chat",
+   "shape": "chat_capture",
+   "verified": "RECORDED"
+  },
+  {
+   "capture": {
+    "method": "im/+chat-messages-list --as user --order asc --page-size 50 + page-token loop; desc newest cross-check"
+   },
+   "capture_undeclared": [
+    "mode"
+   ],
+   "components": {
+    "messages": {
+     "facts": {
+      "earliest_create_time": "2026-09-15 18:59",
+      "fetched_page_count": 3,
+      "last_message_id": "om_x100b643a9cfc20bcb1af55f514012d4",
+      "latest_create_time": "2026-09-21 16:38",
+      "msg_count": 149,
+      "pagination_complete": true,
+      "remote_unique_message_count": 149
+     },
+     "state": "COMPLETE"
+    }
+   },
+   "path": "feishu/chats/people/ann-xuan/oc_d1e448893d866dacc3f03d74db89069d/manifest.json",
+   "role": "chat",
+   "shape": "chat_capture",
+   "verified": "RECORDED"
+  },
+  {
+   "capture": {
+    "method": "im/+chat-messages-list --as user --order asc --page-size 50 + page-token loop; desc newest cross-check"
+   },
+   "capture_undeclared": [
+    "mode"
+   ],
+   "components": {
+    "messages": {
+     "facts": {
+      "earliest_create_time": "2026-09-10 21:00",
+      "fetched_page_count": 3,
+      "last_message_id": "om_x100b654d2b9c40b8c079045522d77af",
+      "latest_create_time": "2026-09-14 14:38",
+      "msg_count": 135,
+      "pagination_complete": true,
+      "remote_unique_message_count": 135
+     },
+     "state": "COMPLETE"
+    }
+   },
+   "path": "feishu/chats/people/beata-domaciuk/oc_dc39bf5aded0d478d594cc20062a524e/manifest.json",
+   "role": "chat",
+   "shape": "chat_capture",
+   "verified": "RECORDED"
+  },
+  {
+   "capture": {
+    "method": "im/+chat-messages-list --as user --order asc --page-size 50 + page-token loop; desc newest cross-check",
+    "mode": "full_backfill"
+   },
+   "capture_undeclared": [],
+   "components": {
+    "attachments": {
+     "facts": {
+      "backfilled": 0
+     },
+     "state": "COMPLETE"
+    },
+    "links": {
+     "facts": {
+      "count": 0,
+      "expanded": 0
+     },
+     "state": "COMPLETE"
+    },
+    "messages": {
+     "facts": {
+      "earliest_create_time": "2026-09-10 15:12",
+      "fetched_page_count": 1,
+      "last_message_id": "om_x100b6512e9b214a8b17feb09fd78c4b",
+      "latest_create_time": "2026-09-10 16:29",
+      "msg_count": 20,
+      "pagination_complete": true,
+      "remote_unique_message_count": 20
+     },
+     "state": "COMPLETE"
+    }
+   },
+   "path": "feishu/chats/people/bruce-xu/oc_078314a8279795245c2983883c13dfc1/manifest.json",
+   "role": "chat",
+   "shape": "chat_capture",
+   "verified": "RECORDED"
+  },
+  {
+   "capture": {
+    "method": "im/+chat-messages-list --as user --order asc --page-size 50 + page-token loop; desc newest cross-check"
+   },
+   "capture_undeclared": [
+    "mode"
+   ],
+   "components": {
+    "messages": {
+     "facts": {
+      "earliest_create_time": "2026-08-17 10:56",
+      "fetched_page_count": 1,
+      "last_message_id": "om_x100b6538575eb8a8b2adb9c8ddcd127",
+      "latest_create_time": "2026-09-09 10:16",
+      "msg_count": 6,
+      "pagination_complete": true,
+      "remote_unique_message_count": 6
+     },
+     "state": "COMPLETE"
+    }
+   },
+   "path": "feishu/chats/people/charles-fan/oc_b54b433408d20bdaacab5a36ec9d1c78/manifest.json",
+   "role": "chat",
+   "shape": "chat_capture",
+   "verified": "RECORDED"
+  },
+  {
+   "capture": {
+    "method": "im/+chat-messages-list --as user --order asc --page-size 50 + page-token loop; desc newest cross-check"
+   },
+   "capture_undeclared": [
+    "mode"
+   ],
+   "components": {
+    "messages": {
+     "facts": {
+      "earliest_create_time": "2026-09-10 16:39",
+      "fetched_page_count": 1,
+      "last_message_id": "om_x100b6512945cccb0b2754c796009aaa",
+      "latest_create_time": "2026-09-10 16:43",
+      "msg_count": 7,
+      "pagination_complete": true,
+      "remote_unique_message_count": 7
+     },
+     "state": "COMPLETE"
+    }
+   },
+   "path": "feishu/chats/people/charley-chen/oc_6ca6850053ff4b17eb31fdc242f347dc/manifest.json",
+   "role": "chat",
+   "shape": "chat_capture",
+   "verified": "RECORDED"
+  },
+  {
+   "capture": {
+    "method": "im/+chat-messages-list --as user --order asc --page-size 50 + page-token loop; desc newest cross-check"
+   },
+   "capture_undeclared": [
+    "mode"
+   ],
+   "components": {
+    "messages": {
+     "facts": {
+      "earliest_create_time": "2026-09-20 16:15",
+      "fetched_page_count": 1,
+      "last_message_id": "om_x100b65ce654a68b0b128f013f324454",
+      "latest_create_time": "2026-09-20 17:09",
+      "msg_count": 45,
+      "pagination_complete": true,
+      "remote_unique_message_count": 45
+     },
+     "state": "COMPLETE"
+    }
+   },
+   "path": "feishu/chats/people/chenn-wang/oc_d2ad86220bf499e69f202c2e6f4cd78c/manifest.json",
+   "role": "chat",
+   "shape": "chat_capture",
+   "verified": "RECORDED"
+  },
+  {
+   "capture": {
+    "method": "im/+chat-messages-list --as user --order asc --page-size 50 + page-token loop; desc newest cross-check"
+   },
+   "capture_undeclared": [
+    "mode"
+   ],
+   "components": {
+    "messages": {
+     "facts": {
+      "earliest_create_time": "2026-09-09 10:41",
+      "fetched_page_count": 1,
+      "last_message_id": "om_x100b6538ce05750cb3456de3ea26213",
+      "latest_create_time": "2026-09-09 10:44",
+      "msg_count": 6,
+      "pagination_complete": true,
+      "remote_unique_message_count": 6
+     },
+     "state": "COMPLETE"
+    }
+   },
+   "path": "feishu/chats/people/cherman-wang/oc_dd15c7f231da8013e5e8301137865729/manifest.json",
+   "role": "chat",
+   "shape": "chat_capture",
+   "verified": "RECORDED"
+  },
+  {
+   "capture": {
+    "method": "im/+chat-messages-list --as user --order asc --page-size 50 + page-token loop; desc newest cross-check"
+   },
+   "capture_undeclared": [
+    "mode"
+   ],
+   "components": {
+    "messages": {
+     "facts": {
+      "earliest_create_time": "2026-09-14 16:30",
+      "fetched_page_count": 1,
+      "last_message_id": "om_x100b654fa99ad0b0b48f0cbb4654041",
+      "latest_create_time": "2026-09-14 17:29",
+      "msg_count": 35,
+      "pagination_complete": true,
+      "remote_unique_message_count": 35
+     },
+     "state": "COMPLETE"
+    }
+   },
+   "path": "feishu/chats/people/dany-lan/oc_257b19c1023918a1aafa0e2d74660dac/manifest.json",
+   "role": "chat",
+   "shape": "chat_capture",
+   "verified": "RECORDED"
+  },
+  {
+   "capture": {
+    "method": "im/+chat-messages-list --as user --order asc --page-size 50 + page-token loop; desc newest cross-check"
+   },
+   "capture_undeclared": [
+    "mode"
+   ],
+   "components": {
+    "messages": {
+     "facts": {
+      "earliest_create_time": "2026-09-18 16:23",
+      "fetched_page_count": 1,
+      "last_message_id": "om_x100b65e45d44d8b0b2cab23df46c99e",
+      "latest_create_time": "2026-09-18 17:15",
+      "msg_count": 32,
+      "pagination_complete": true,
+      "remote_unique_message_count": 32
+     },
+     "state": "COMPLETE"
+    }
+   },
+   "path": "feishu/chats/people/gavin-guo/oc_66d5a01353e7d1df792c557e54620423/manifest.json",
+   "role": "chat",
+   "shape": "chat_capture",
+   "verified": "RECORDED"
+  },
+  {
+   "capture": {
+    "method": "im/+chat-messages-list --as user --order asc --page-size 50 + page-token loop; desc newest cross-check"
+   },
+   "capture_undeclared": [
+    "mode"
+   ],
+   "components": {
+    "messages": {
+     "facts": {
+      "earliest_create_time": "2026-09-15 17:02",
+      "fetched_page_count": 2,
+      "last_message_id": "om_x100b65a56fef98bcb48e0222ba45506",
+      "latest_create_time": "2026-09-15 17:38",
+      "msg_count": 59,
+      "pagination_complete": true,
+      "remote_unique_message_count": 59
+     },
+     "state": "COMPLETE"
+    }
+   },
+   "path": "feishu/chats/people/jason-guo/oc_dd7971e688711dfd15e2fdcff546c61c/manifest.json",
+   "role": "chat",
+   "shape": "chat_capture",
+   "verified": "RECORDED"
+  },
+  {
+   "capture": {
+    "method": "im/+chat-messages-list --as user --order asc --page-size 50 + page-token loop; desc newest cross-check"
+   },
+   "capture_undeclared": [
+    "mode"
+   ],
+   "components": {
+    "messages": {
+     "facts": {
+      "earliest_create_time": "2026-09-10 16:15",
+      "fetched_page_count": 3,
+      "last_message_id": "om_x100b6508f6d4fcbcb49f422e25e956d",
+      "latest_create_time": "2026-09-11 17:36",
+      "msg_count": 109,
+      "pagination_complete": true,
+      "remote_unique_message_count": 109
+     },
+     "state": "COMPLETE"
+    }
+   },
+   "path": "feishu/chats/people/jie-xu/oc_772f424ce443dc906855f9ac11b55899/manifest.json",
+   "role": "chat",
+   "shape": "chat_capture",
+   "verified": "RECORDED"
+  },
+  {
+   "capture": {
+    "method": "im/+chat-messages-list --as user --order asc --page-size 50 + page-token loop; desc newest cross-check"
+   },
+   "capture_undeclared": [
+    "mode"
+   ],
+   "components": {
+    "messages": {
+     "facts": {
+      "earliest_create_time": "2026-09-18 11:55",
+      "fetched_page_count": 1,
+      "last_message_id": "om_x100b65ff2d0e40bcb264f5895fd02b2",
+      "latest_create_time": "2026-09-18 11:55",
+      "msg_count": 1,
+      "pagination_complete": true,
+      "remote_unique_message_count": 1
+     },
+     "state": "COMPLETE"
+    }
+   },
+   "path": "feishu/chats/people/kai-dong/oc_df1d3661141a995b33f71bbbac337bfd/manifest.json",
+   "role": "chat",
+   "shape": "chat_capture",
+   "verified": "RECORDED"
+  },
+  {
+   "capture": {
+    "method": "im/+chat-messages-list --as user --order asc --page-size 50 + page-token loop; desc newest cross-check"
+   },
+   "capture_undeclared": [
+    "mode"
+   ],
+   "components": {
+    "messages": {
+     "facts": {
+      "earliest_create_time": "2026-09-16 11:49",
+      "fetched_page_count": 2,
+      "last_message_id": "om_x100b65934b0e38a4b0489bdb5ba8f12",
+      "latest_create_time": "2026-09-16 18:33",
+      "msg_count": 78,
+      "pagination_complete": true,
+      "remote_unique_message_count": 78
+     },
+     "state": "COMPLETE"
+    }
+   },
+   "path": "feishu/chats/people/karl-wu/oc_57d68107884cc9f70c5b07cbb0cadb36/manifest.json",
+   "role": "chat",
+   "shape": "chat_capture",
+   "verified": "RECORDED"
+  },
+  {
+   "capture": {
+    "method": "im/+chat-messages-list --as user --order asc --page-size 50 + page-token loop; desc newest cross-check"
+   },
+   "capture_undeclared": [
+    "mode"
+   ],
+   "components": {
+    "messages": {
+     "facts": {
+      "earliest_create_time": "2026-09-11 09:45",
+      "fetched_page_count": 1,
+      "last_message_id": "om_x100b65026a95dca4b248a70d7e1c899",
+      "latest_create_time": "2026-09-11 10:07",
+      "msg_count": 43,
+      "pagination_complete": true,
+      "remote_unique_message_count": 43
+     },
+     "state": "COMPLETE"
+    }
+   },
+   "path": "feishu/chats/people/kun-wu/oc_dadee0fbe89d0978a25c995d31f03d35/manifest.json",
+   "role": "chat",
+   "shape": "chat_capture",
+   "verified": "RECORDED"
+  },
+  {
+   "capture": {
+    "method": "im/+chat-messages-list --as user --order asc --page-size 50 + page-token loop; desc newest cross-check"
+   },
+   "capture_undeclared": [
+    "mode"
+   ],
+   "components": {
+    "messages": {
+     "facts": {
+      "earliest_create_time": "2026-09-15 18:42",
+      "fetched_page_count": 1,
+      "last_message_id": "om_x100b65a60b128ca4b1f146e96790fae",
+      "latest_create_time": "2026-09-15 18:56",
+      "msg_count": 22,
+      "pagination_complete": true,
+      "remote_unique_message_count": 22
+     },
+     "state": "COMPLETE"
+    }
+   },
+   "path": "feishu/chats/people/lawson-huang/oc_f1d47957b63b6d2be5c1404a94e9f59e/manifest.json",
+   "role": "chat",
+   "shape": "chat_capture",
+   "verified": "RECORDED"
+  },
+  {
+   "capture": {
+    "method": "im/+chat-messages-list --as user --order asc --page-size 50 + page-token loop; desc newest cross-check"
+   },
+   "capture_undeclared": [
+    "mode"
+   ],
+   "components": {
+    "messages": {
+     "facts": {
+      "earliest_create_time": "2026-08-21 14:13",
+      "fetched_page_count": 1,
+      "last_message_id": "om_x100b65086a572cb4c23f06f080a98fe",
+      "latest_create_time": "2026-09-11 16:56",
+      "msg_count": 13,
+      "pagination_complete": true,
+      "remote_unique_message_count": 13
+     },
+     "state": "COMPLETE"
+    }
+   },
+   "path": "feishu/chats/people/lucia-wang/oc_965b63bd0910c5585b2a6ff66c7959f3/manifest.json",
+   "role": "chat",
+   "shape": "chat_capture",
+   "verified": "RECORDED"
+  },
+  {
+   "capture": {
+    "method": "im/+chat-messages-list --as user --order asc --page-size 50 + page-token loop; desc newest cross-check"
+   },
+   "capture_undeclared": [
+    "mode"
+   ],
+   "components": {
+    "messages": {
+     "facts": {
+      "earliest_create_time": "2026-09-08 18:50",
+      "fetched_page_count": 1,
+      "last_message_id": "om_x100b66caac4044b4c3da6678d74d773",
+      "latest_create_time": "2026-09-08 19:14",
+      "msg_count": 6,
+      "pagination_complete": true,
+      "remote_unique_message_count": 6
+     },
+     "state": "COMPLETE"
+    }
+   },
+   "path": "feishu/chats/people/marek-rola/oc_b6a1c4ef403a3f0f17ce860b711f4370/manifest.json",
+   "role": "chat",
+   "shape": "chat_capture",
+   "verified": "RECORDED"
+  },
+  {
+   "capture": {
+    "method": "im/+chat-messages-list --as user --order asc --page-size 50 + page-token loop; desc newest cross-check"
+   },
+   "capture_undeclared": [
+    "mode"
+   ],
+   "components": {
+    "messages": {
+     "facts": {
+      "earliest_create_time": "2026-09-10 15:39",
+      "fetched_page_count": 2,
+      "last_message_id": "om_x100b65036614c8b8b265f7d6a97cba0",
+      "latest_create_time": "2026-09-11 11:16",
+      "msg_count": 63,
+      "pagination_complete": true,
+      "remote_unique_message_count": 63
+     },
+     "state": "COMPLETE"
+    }
+   },
+   "path": "feishu/chats/people/mina-wang/oc_b7c7ee51b26878f59c720c6f69607b02/manifest.json",
+   "role": "chat",
+   "shape": "chat_capture",
+   "verified": "RECORDED"
+  },
+  {
+   "capture": {
+    "method": "im/+chat-messages-list --as user --order asc --page-size 50 + page-token loop; desc newest cross-check"
+   },
+   "capture_undeclared": [
+    "mode"
+   ],
+   "components": {
+    "messages": {
+     "facts": {
+      "earliest_create_time": "2026-08-17 10:00",
+      "fetched_page_count": 1,
+      "last_message_id": "om_x100b6712f81e0468c1fd188e8fc292b",
+      "latest_create_time": "2026-08-17 10:01",
+      "msg_count": 3,
+      "pagination_complete": true,
+      "remote_unique_message_count": 3
+     },
+     "state": "COMPLETE"
+    }
+   },
+   "path": "feishu/chats/people/molly-wang/oc_bea72bda3338857b0d51aa4fdde6bab4/manifest.json",
+   "role": "chat",
+   "shape": "chat_capture",
+   "verified": "RECORDED"
+  },
+  {
+   "capture": {
+    "method": "im/+chat-messages-list --as user --order asc --page-size 50 + page-token loop; desc newest cross-check"
+   },
+   "capture_undeclared": [
+    "mode"
+   ],
+   "components": {
+    "messages": {
+     "facts": {
+      "earliest_create_time": "2026-09-01 16:12",
+      "fetched_page_count": 1,
+      "last_message_id": "om_x100b665cdbf698acb116ddbf5d136eb",
+      "latest_create_time": "2026-09-01 16:14",
+      "msg_count": 6,
+      "pagination_complete": true,
+      "remote_unique_message_count": 6
+     },
+     "state": "COMPLETE"
+    }
+   },
+   "path": "feishu/chats/people/monica-yang/oc_b62ab17f015d5da6d197e8dbb43e41d0/manifest.json",
+   "role": "chat",
+   "shape": "chat_capture",
+   "verified": "RECORDED"
+  },
+  {
+   "capture": {
+    "method": "im/+chat-messages-list --as user --order asc --page-size 50 + page-token loop; desc newest cross-check"
+   },
+   "capture_undeclared": [
+    "mode"
+   ],
+   "components": {
+    "messages": {
+     "facts": {
+      "earliest_create_time": "2026-09-11 17:25",
+      "fetched_page_count": 2,
+      "last_message_id": "om_x100b6575288f0cacc232a8a6638d675",
+      "latest_create_time": "2026-09-11 22:55",
+      "msg_count": 65,
+      "pagination_complete": true,
+      "remote_unique_message_count": 65
+     },
+     "state": "COMPLETE"
+    }
+   },
+   "path": "feishu/chats/people/nancy-zhu/oc_b3e5355702fd02254b4d481ebc31057f/manifest.json",
+   "role": "chat",
+   "shape": "chat_capture",
+   "verified": "RECORDED"
+  },
+  {
+   "capture": {
+    "method": "im/+chat-messages-list --as user --order asc --page-size 50 + page-token loop; desc newest cross-check"
+   },
+   "capture_undeclared": [
+    "mode"
+   ],
+   "components": {
+    "messages": {
+     "facts": {
+      "earliest_create_time": "2026-09-11 14:04",
+      "fetched_page_count": 1,
+      "last_message_id": "om_x100b65c85fd2bca0b2adb2f6ba8ae03",
+      "latest_create_time": "2026-09-20 19:18",
+      "msg_count": 38,
+      "pagination_complete": true,
+      "remote_unique_message_count": 38
+     },
+     "state": "COMPLETE"
+    }
+   },
+   "path": "feishu/chats/people/nature-hu/oc_78148d12799e6f369059dc9f9691ed5d/manifest.json",
+   "role": "chat",
+   "shape": "chat_capture",
+   "verified": "RECORDED"
+  },
+  {
+   "capture": {
+    "source_message_id": "om_x100b67cbd618dcacc4445fc6dd4b6da",
+    "target_type": "repo",
+    "target_url": "https://github.com/VenusFennn/Backend-Solution-Design"
+   },
+   "capture_undeclared": [],
+   "components": {
+    "body": {
+     "facts": {
+      "content_sha256": "4657fe883c6e",
+      "content_sha256_chars": 12,
+      "fetched_at": "2026-09-07"
+     },
+     "state": "INCOMPLETE"
+    },
+    "media": {
+     "facts": {},
+     "state": "UNDECIDABLE"
+    }
+   },
+   "path": "feishu/chats/people/venus-liu/oc_89c0764c0664c7ec492220164e29a328/links/backend-solution-design/manifest.json",
+   "role": "link",
+   "shape": "document_capture",
+   "verified": "NOT_RECORDED"
+  },
+  {
+   "capture": {
+    "source_message_id": "om_x100b67cbd618dcacc4445fc6dd4b6da",
+    "target_type": "repo",
+    "target_url": "https://github.com/VenusFennn/Better-Know"
+   },
+   "capture_undeclared": [],
+   "components": {
+    "body": {
+     "facts": {
+      "content_sha256": "d640b69f3c90",
+      "content_sha256_chars": 12,
+      "fetched_at": "2026-09-07"
+     },
+     "state": "INCOMPLETE"
+    },
+    "media": {
+     "facts": {},
+     "state": "UNDECIDABLE"
+    }
+   },
+   "path": "feishu/chats/people/venus-liu/oc_89c0764c0664c7ec492220164e29a328/links/better-know/manifest.json",
+   "role": "link",
+   "shape": "document_capture",
+   "verified": "NOT_RECORDED"
+  },
+  {
+   "capture": {
+    "source_message_id": "om_x100b67cbd618dcacc4445fc6dd4b6da",
+    "target_type": "repo",
+    "target_url": "https://github.com/VenusFennn/Frontend-Solution-Design"
+   },
+   "capture_undeclared": [],
+   "components": {
+    "body": {
+     "facts": {
+      "content_sha256": "9463b64421a4",
+      "content_sha256_chars": 12,
+      "fetched_at": "2026-09-07"
+     },
+     "state": "INCOMPLETE"
+    },
+    "media": {
+     "facts": {},
+     "state": "UNDECIDABLE"
+    }
+   },
+   "path": "feishu/chats/people/venus-liu/oc_89c0764c0664c7ec492220164e29a328/links/frontend-solution-design/manifest.json",
+   "role": "link",
+   "shape": "document_capture",
+   "verified": "NOT_RECORDED"
+  },
+  {
+   "capture": {
+    "method": "im/chat-messages-list (user identity)",
+    "mode": "full_backfill"
+   },
+   "capture_undeclared": [],
+   "components": {
+    "attachments": {
+     "facts": {
+      "backfilled": 0
+     },
+     "state": "COMPLETE"
+    },
+    "links": {
+     "facts": {
+      "count": 3,
+      "expanded": 3
+     },
+     "state": "COMPLETE"
+    },
+    "messages": {
+     "facts": {
+      "earliest_create_time": "2026-08-27 16:47",
+      "latest_create_time": "2026-08-27 16:47",
+      "msg_count": 5
+     },
+     "state": "UNDECIDABLE"
+    }
+   },
+   "path": "feishu/chats/people/venus-liu/oc_89c0764c0664c7ec492220164e29a328/manifest.json",
+   "role": "chat",
+   "shape": "chat_capture",
+   "verified": "NOT_RECORDED"
+  },
+  {
+   "capture": {
+    "method": "im/+chat-messages-list --as user --order asc --page-size 50 + page-token loop; desc newest cross-check"
+   },
+   "capture_undeclared": [
+    "mode"
+   ],
+   "components": {
+    "messages": {
+     "facts": {
+      "earliest_create_time": "2026-09-15 18:46",
+      "fetched_page_count": 1,
+      "last_message_id": "om_x100b643d7982fcacb4c1faad70b330b",
+      "latest_create_time": "2026-09-21 10:16",
+      "msg_count": 5,
+      "pagination_complete": true,
+      "remote_unique_message_count": 5
+     },
+     "state": "COMPLETE"
+    }
+   },
+   "path": "feishu/chats/people/vince-huang/oc_30cf50026f10afd8b91875f361efbdbd/manifest.json",
+   "role": "chat",
+   "shape": "chat_capture",
+   "verified": "RECORDED"
+  },
+  {
+   "capture": {
+    "method": "im/+chat-messages-list --as user --order asc --page-size 50 + page-token loop; desc newest cross-check"
+   },
+   "capture_undeclared": [
+    "mode"
+   ],
+   "components": {
+    "messages": {
+     "facts": {
+      "earliest_create_time": "2026-09-17 10:34",
+      "fetched_page_count": 1,
+      "last_message_id": "om_x100b65fb83bb68a0b3f0b894df6a289",
+      "latest_create_time": "2026-09-18 16:56",
+      "msg_count": 20,
+      "pagination_complete": true,
+      "remote_unique_message_count": 20
+     },
+     "state": "COMPLETE"
+    }
+   },
+   "path": "feishu/chats/people/wayne-zhao/oc_a027422cc9626fd5dd86aef13080900c/manifest.json",
+   "role": "chat",
+   "shape": "chat_capture",
+   "verified": "RECORDED"
+  },
+  {
+   "capture": {
+    "method": "im/+chat-messages-list --as user --order asc --page-size 50 + page-token loop; desc newest cross-check"
+   },
+   "capture_undeclared": [
+    "mode"
+   ],
+   "components": {
+    "messages": {
+     "facts": {
+      "earliest_create_time": "2026-09-10 14:21",
+      "fetched_page_count": 1,
+      "last_message_id": "om_x100b6510a2c86880b490f1261555e1c",
+      "latest_create_time": "2026-09-10 14:31",
+      "msg_count": 32,
+      "pagination_complete": true,
+      "remote_unique_message_count": 32
+     },
+     "state": "COMPLETE"
+    }
+   },
+   "path": "feishu/chats/people/wendy-du/oc_ae37600aee2f227fd2cc6e6d7639d25a/manifest.json",
+   "role": "chat",
+   "shape": "chat_capture",
+   "verified": "RECORDED"
+  },
+  {
+   "capture": {
+    "method": "im/+chat-messages-list --as user --order asc --page-size 50 + page-token loop; desc newest cross-check"
+   },
+   "capture_undeclared": [
+    "mode"
+   ],
+   "components": {
+    "messages": {
+     "facts": {
+      "earliest_create_time": "2026-09-03 15:38",
+      "fetched_page_count": 1,
+      "last_message_id": "om_x100b66a63ccff4b0c2460390fa78bb8",
+      "latest_create_time": "2026-09-03 15:52",
+      "msg_count": 3,
+      "pagination_complete": true,
+      "remote_unique_message_count": 3
+     },
+     "state": "COMPLETE"
+    }
+   },
+   "path": "feishu/chats/people/wenqiang-zhao/oc_dfdc4df352b80c92eddfc41c272ce0dd/manifest.json",
+   "role": "chat",
+   "shape": "chat_capture",
+   "verified": "RECORDED"
+  },
+  {
+   "capture": {
+    "method": "im/chat-messages-list (user identity)",
+    "mode": "full_backfill"
+   },
+   "capture_undeclared": [],
+   "components": {
+    "attachments": {
+     "facts": {
+      "backfilled": 0
+     },
+     "state": "COMPLETE"
+    },
+    "links": {
+     "facts": {
+      "count": 0,
+      "expanded": 0
+     },
+     "state": "COMPLETE"
+    },
+    "messages": {
+     "facts": {
+      "earliest_create_time": "2026-08-17 11:18",
+      "latest_create_time": "2026-08-17 11:26",
+      "msg_count": 3
+     },
+     "state": "UNDECIDABLE"
+    }
+   },
+   "path": "feishu/chats/people/yale-huang/oc_f4b9ed4885415a496e8f0b5d24d321c8/manifest.json",
+   "role": "chat",
+   "shape": "chat_capture",
+   "verified": "NOT_RECORDED"
+  },
+  {
+   "capture": {
+    "method": "im/+chat-messages-list --as user --order asc --page-size 50 + page-token loop; desc newest cross-check"
+   },
+   "capture_undeclared": [
+    "mode"
+   ],
+   "components": {
+    "messages": {
+     "facts": {
+      "earliest_create_time": "2026-09-10 10:51",
+      "fetched_page_count": 1,
+      "last_message_id": "om_x100b6516dc1d28b0b22e2eaac022d39",
+      "latest_create_time": "2026-09-10 11:51",
+      "msg_count": 17,
+      "pagination_complete": true,
+      "remote_unique_message_count": 17
+     },
+     "state": "COMPLETE"
+    }
+   },
+   "path": "feishu/chats/people/zachariah-zhao/oc_fa2a86c0b67e9e1b29cfd9a1157fb8cf/manifest.json",
+   "role": "chat",
+   "shape": "chat_capture",
+   "verified": "RECORDED"
+  },
+  {
+   "capture": {
+    "source_message_id": "om_x100b66a4203380b8c375bd323bb8941",
+    "target_type": "docx",
+    "target_url": "https://fjdynamics.feishu.cn/docx/BSeZdob58oiwIdxnQf9cKEdDnbd"
+   },
+   "capture_undeclared": [],
+   "components": {
+    "body": {
+     "facts": {
+      "content_sha256": "d7a6fa9b2728fd38e84326264f8706d7a76feb3760359a600ba4523e8e49a4ce",
+      "content_sha256_chars": 64,
+      "fetched_at": "2026-09-07"
+     },
+     "state": "COMPLETE"
+    },
+    "media": {
+     "facts": {
+      "media_count": 6,
+      "media_listed": 6
+     },
+     "state": "COMPLETE"
+    }
+   },
+   "path": "feishu/chats/people/zhangzhengji/oc_ddc206bb6093ec959b51752cc7a59533/links/cite-codex-image-skill/manifest.json",
+   "role": "link",
+   "shape": "document_capture",
+   "verified": "RECORDED"
+  },
+  {
+   "capture": {
+    "source_message_id": "om_x100b66a4957c48a4b29ea168c232259",
+    "target_type": "docx",
+    "target_url": "https://fjdynamics.feishu.cn/docx/PJphdb0YmoCAZYxrUlGcmxOgnnc"
+   },
+   "capture_undeclared": [],
+   "components": {
+    "body": {
+     "facts": {
+      "content_sha256": "8a0d6113285334b0ccfbbcb3cc589f6511b95c55cc64e5dfeec069364539ff2b",
+      "content_sha256_chars": 64,
+      "fetched_at": "2026-09-07"
+     },
+     "state": "COMPLETE"
+    },
+    "media": {
+     "facts": {
+      "media_count": 0,
+      "media_listed": 0
+     },
+     "state": "COMPLETE"
+    }
+   },
+   "path": "feishu/chats/people/zhangzhengji/oc_ddc206bb6093ec959b51752cc7a59533/links/cite-es-daily-report/manifest.json",
+   "role": "link",
+   "shape": "document_capture",
+   "verified": "RECORDED"
+  },
+  {
+   "capture": {
+    "source_message_id": "om_x100b66a4957c48a4b29ea168c232259",
+    "target_type": "wiki",
+    "target_url": "https://fjdynamics.feishu.cn/wiki/Y4ewwMp0vixZulkyKMbcbP7bn3e"
+   },
+   "capture_undeclared": [],
+   "components": {
+    "body": {
+     "facts": {
+      "content_sha256": "201a5235d1c7d03852a54d0e665a35b41e58269d9148e91721186d91bfe57342",
+      "content_sha256_chars": 64,
+      "fetched_at": "2026-09-07"
+     },
+     "state": "COMPLETE"
+    },
+    "media": {
+     "facts": {
+      "media_count": 0,
+      "media_listed": 0
+     },
+     "state": "COMPLETE"
+    }
+   },
+   "path": "feishu/chats/people/zhangzhengji/oc_ddc206bb6093ec959b51752cc7a59533/links/cite-litellm-branch-model/manifest.json",
+   "role": "link",
+   "shape": "document_capture",
+   "verified": "RECORDED"
+  },
+  {
+   "capture": {
+    "source_message_id": "om_x100b66a4957c48a4b29ea168c232259",
+    "target_type": "wiki",
+    "target_url": "https://fjdynamics.feishu.cn/wiki/KOfqwgBZNiti5Dk5qPtchuAwnQY"
+   },
+   "capture_undeclared": [],
+   "components": {
+    "body": {
+     "facts": {
+      "content_sha256": "6ad5c7cc32546929c9f17d3009e648849f3215a9b73a44a5e7df093bb0e7187b",
+      "content_sha256_chars": 64,
+      "fetched_at": "2026-09-07"
+     },
+     "state": "COMPLETE"
+    },
+    "media": {
+     "facts": {
+      "media_count": 3,
+      "media_listed": 3
+     },
+     "state": "COMPLETE"
+    }
+   },
+   "path": "feishu/chats/people/zhangzhengji/oc_ddc206bb6093ec959b51752cc7a59533/links/cite-litellm-optimize-plan/manifest.json",
+   "role": "link",
+   "shape": "document_capture",
+   "verified": "RECORDED"
+  },
+  {
+   "capture": {
+    "source_message_id": "om_x100b66a4957c48a4b29ea168c232259",
+    "target_type": "docx",
+    "target_url": "https://fjdynamics.feishu.cn/docx/KHQTwjpzaiorLakimrecTR7QnIf"
+   },
+   "capture_undeclared": [],
+   "components": {
+    "body": {
+     "facts": {
+      "content_sha256": "faf149681d7a5af189cbf2170ff3ca0ffa62327126f12225dd53a743160ce256",
+      "content_sha256_chars": 64,
+      "fetched_at": "2026-09-07"
+     },
+     "state": "COMPLETE"
+    },
+    "media": {
+     "facts": {
+      "media_count": 0,
+      "media_listed": 0
+     },
+     "state": "COMPLETE"
+    }
+   },
+   "path": "feishu/chats/people/zhangzhengji/oc_ddc206bb6093ec959b51752cc7a59533/links/cite-log-full-analysis/manifest.json",
+   "role": "link",
+   "shape": "document_capture",
+   "verified": "RECORDED"
+  },
+  {
+   "capture": {
+    "source_message_id": "om_x100b6713198a5cb0b16b40a6231a8b1",
+    "target_type": "docx",
+    "target_url": "https://fjdynamics.feishu.cn/docx/Rmh5dvpxMobaO0xrxjacXFmHntd"
+   },
+   "capture_undeclared": [],
+   "components": {
+    "body": {
+     "facts": {
+      "content_sha256": "c570654d46d57929d390c43f3276e25254cf31e6bfda4a9190b3cee3897bd662",
+      "content_sha256_chars": 64,
+      "fetched_at": "2026-09-14"
+     },
+     "state": "COMPLETE"
+    },
+    "media": {
+     "facts": {
+      "media_count": 15,
+      "media_listed": 15
+     },
+     "state": "COMPLETE"
+    }
+   },
+   "path": "feishu/chats/people/zhangzhengji/oc_ddc206bb6093ec959b51752cc7a59533/links/docx-1-fjbigmodel-guide/manifest.json",
+   "role": "link",
+   "shape": "document_capture",
+   "verified": "RECORDED"
+  },
+  {
+   "capture": {
+    "source_message_id": "om_x100b66a422ba30acde738b44672fdab",
+    "target_type": "wiki",
+    "target_url": "https://fjdynamics.feishu.cn/wiki/Lul8wmoCki6NqYkCf9fcsr0gnBh"
+   },
+   "capture_undeclared": [],
+   "components": {
+    "body": {
+     "facts": {
+      "content_sha256": "6b550e365ca553cdb34fc9aca2ce257c8f06d8c0bd94d26bed021dfc32e1bb2d",
+      "content_sha256_chars": 64,
+      "fetched_at": "2026-09-07"
+     },
+     "state": "COMPLETE"
+    },
+    "media": {
+     "facts": {
+      "media_count": 0,
+      "media_listed": 0
+     },
+     "state": "COMPLETE"
+    }
+   },
+   "path": "feishu/chats/people/zhangzhengji/oc_ddc206bb6093ec959b51752cc7a59533/links/wiki-claude-code-config/manifest.json",
+   "role": "link",
+   "shape": "document_capture",
+   "verified": "RECORDED"
+  },
+  {
+   "capture": {
+    "source_message_id": "om_x100b66a4203380b8c375bd323bb8941",
+    "target_type": "wiki",
+    "target_url": "https://fjdynamics.feishu.cn/wiki/AaWawVDUziMxJXkmeh0cA8dYnmx"
+   },
+   "capture_undeclared": [],
+   "components": {
+    "body": {
+     "facts": {
+      "content_sha256": "8848928ad8c72c2280d387386157909488c62f97278be76bb106d6fc30535900",
+      "content_sha256_chars": 64,
+      "fetched_at": "2026-09-07"
+     },
+     "state": "COMPLETE"
+    },
+    "media": {
+     "facts": {
+      "media_count": 21,
+      "media_listed": 21
+     },
+     "state": "COMPLETE"
+    }
+   },
+   "path": "feishu/chats/people/zhangzhengji/oc_ddc206bb6093ec959b51752cc7a59533/links/wiki-codex-config/manifest.json",
+   "role": "link",
+   "shape": "document_capture",
+   "verified": "RECORDED"
+  },
+  {
+   "capture": {
+    "source_message_id": "om_x100b66a4957c48a4b29ea168c232259",
+    "target_type": "wiki",
+    "target_url": "https://fjdynamics.feishu.cn/wiki/XQErwPZLXivD8dkvwR0cZ42VnRd"
+   },
+   "capture_undeclared": [],
+   "components": {
+    "body": {
+     "facts": {
+      "content_sha256": "f4927de5ab12564f27d990827fb0c73b8f0e13c8ffba7bdd82a9c9dc18ebc772",
+      "content_sha256_chars": 64,
+      "fetched_at": "2026-09-15"
+     },
+     "state": "COMPLETE"
+    },
+    "media": {
+     "facts": {
+      "media_count": 6,
+      "media_listed": 6
+     },
+     "state": "COMPLETE"
+    }
+   },
+   "path": "feishu/chats/people/zhangzhengji/oc_ddc206bb6093ec959b51752cc7a59533/links/wiki-litellm-work-doc/manifest.json",
+   "role": "link",
+   "shape": "document_capture",
+   "verified": "RECORDED"
+  },
+  {
+   "capture": {
+    "source_message_id": "om_x100b671316b5cc98b3954677da70a47",
+    "target_type": "wiki",
+    "target_url": "https://fjdynamics.feishu.cn/wiki/Ltyaw1xIPiPa70kGoJGc5baOnGb"
+   },
+   "capture_undeclared": [],
+   "components": {
+    "body": {
+     "facts": {
+      "content_sha256": "9b806854e98bbdfe062a51025dbae50415d00350035a46c08fa4b7a9b21ceea7",
+      "content_sha256_chars": 64,
+      "fetched_at": "2026-09-14"
+     },
+     "state": "COMPLETE"
+    },
+    "media": {
+     "facts": {
+      "media_count": 28,
+      "media_listed": 28
+     },
+     "state": "COMPLETE"
+    }
+   },
+   "path": "feishu/chats/people/zhangzhengji/oc_ddc206bb6093ec959b51752cc7a59533/links/wiki-workbuddy-config/manifest.json",
+   "role": "link",
+   "shape": "document_capture",
+   "verified": "RECORDED"
+  },
+  {
+   "capture": {
+    "method": "im/+chat-messages-list --as user --order asc --page-size 50 + page-token loop; desc newest cross-check",
+    "mode": "incremental"
+   },
+   "capture_undeclared": [],
+   "components": {
+    "attachments": {
+     "facts": {
+      "backfilled": 65
+     },
+     "state": "COMPLETE"
+    },
+    "links": {
+     "facts": {
+      "count": 10,
+      "expanded": 10
+     },
+     "state": "COMPLETE"
+    },
+    "messages": {
+     "facts": {
+      "earliest_create_time": "2026-08-17 10:44",
+      "fetched_page_count": 16,
+      "last_message_id": "om_x100b65cfb86514a4b102ad6b09f5a77",
+      "latest_create_time": "2026-09-20 19:11",
+      "msg_count": 761,
+      "pagination_complete": true,
+      "remote_unique_message_count": 761
+     },
+     "state": "COMPLETE"
+    }
+   },
+   "path": "feishu/chats/people/zhangzhengji/oc_ddc206bb6093ec959b51752cc7a59533/manifest.json",
+   "role": "chat",
+   "shape": "chat_capture",
+   "verified": "RECORDED"
+  },
+  {
+   "capture": {
+    "source_message_id": "om_x100b671c6107cc8cb3293c3f8af3928",
+    "target_type": "wiki",
+    "target_url": "https://fjdynamics.feishu.cn/wiki/CCJYw3t8Ei8Aj0kOaFScvsd7nPf"
+   },
+   "capture_undeclared": [],
+   "components": {
+    "body": {
+     "facts": {
+      "content_sha256": "de564997025eb9dbbf087b8d65f18f12f7253392d8a2412e52e196964a292126",
+      "content_sha256_chars": 64,
+      "fetched_at": "2026-09-07"
+     },
+     "state": "COMPLETE"
+    },
+    "media": {
+     "facts": {},
+     "state": "UNDECIDABLE"
+    }
+   },
+   "path": "feishu/chats/people/zhou-kit/oc_0d1749f1215fabe2957f0d8b71b78bdf/links/2026-08-workline/manifest.json",
+   "role": "link",
+   "shape": "document_capture",
+   "verified": "RECORDED"
+  },
+  {
+   "capture": {
+    "source_message_id": "om_x100b67131dd2b8a4b1402a3bc5656e4",
+    "target_type": "wiki",
+    "target_url": "https://fjdynamics.feishu.cn/wiki/O27rwHvejiNr1ekcJSUcwFOFnzg"
+   },
+   "capture_undeclared": [],
+   "components": {
+    "body": {
+     "facts": {
+      "content_sha256": "9d2242ce3a279c47d607e001771aa265ee78204d6f4622174ac3651f753e9967",
+      "content_sha256_chars": 64,
+      "fetched_at": "2026-09-14"
+     },
+     "state": "COMPLETE"
+    },
+    "media": {
+     "facts": {
+      "media_count": 23,
+      "media_listed": 23
+     },
+     "state": "COMPLETE"
+    }
+   },
+   "path": "feishu/chats/people/zhou-kit/oc_0d1749f1215fabe2957f0d8b71b78bdf/links/codex-config-ccswitch/manifest.json",
+   "role": "link",
+   "shape": "document_capture",
+   "verified": "RECORDED"
+  },
+  {
+   "capture": {
+    "source_message_id": "om_x100b676536408ca4b24c546b12c5f8b",
+    "target_type": "docx",
+    "target_url": "https://fjdynamics.feishu.cn/docx/VbXIdAWqTovL2wxCuOgcNPUmnxb"
+   },
+   "capture_undeclared": [],
+   "components": {
+    "body": {
+     "facts": {
+      "content_sha256": "a86a88acbe2b2055170f3731e640ba70b601e514466450a487f52fb98a416e8e",
+      "content_sha256_chars": 64,
+      "fetched_at": "2026-09-07"
+     },
+     "state": "COMPLETE"
+    },
+    "media": {
+     "facts": {},
+     "state": "UNDECIDABLE"
+    }
+   },
+   "path": "feishu/chats/people/zhou-kit/oc_0d1749f1215fabe2957f0d8b71b78bdf/links/dev-approach-ai/manifest.json",
+   "role": "link",
+   "shape": "document_capture",
+   "verified": "RECORDED"
+  },
+  {
+   "capture": {
+    "source_message_id": "om_x100b67131bed28bcb2a420908e33657",
+    "target_type": "wiki",
+    "target_url": "https://fjdynamics.feishu.cn/wiki/Yx2UwTvITiJTs1kB34TcLzm2nyc"
+   },
+   "capture_undeclared": [],
+   "components": {
+    "body": {
+     "facts": {
+      "content_sha256": "850e9f79d07bd79d4043808629088452dbefd47cc60c025e78a5e7f3b3d42c8c",
+      "content_sha256_chars": 64,
+      "fetched_at": "2026-09-14"
+     },
+     "state": "COMPLETE"
+    },
+    "media": {
+     "facts": {
+      "media_count": 2,
+      "media_listed": 2
+     },
+     "state": "COMPLETE"
+    }
+   },
+   "path": "feishu/chats/people/zhou-kit/oc_0d1749f1215fabe2957f0d8b71b78bdf/links/feishu-cli-install/manifest.json",
+   "role": "link",
+   "shape": "document_capture",
+   "verified": "RECORDED"
+  },
+  {
+   "capture": {
+    "source_message_id": "om_x100b67131bd688b4b36ffa99f0e3c18",
+    "target_type": "wiki",
+    "target_url": "https://fjdynamics.feishu.cn/wiki/ZlglwxCe6irGD5kdlklcE4Mrnwb"
+   },
+   "capture_undeclared": [],
+   "components": {
+    "body": {
+     "facts": {
+      "content_sha256": "b6dafddd75c22dfa9ffd474234090b5561593ff7dfeffb7d996ef27e9abe92af",
+      "content_sha256_chars": 64,
+      "fetched_at": "2026-09-14"
+     },
+     "state": "COMPLETE"
+    },
+    "media": {
+     "facts": {
+      "media_count": 10,
+      "media_listed": 10
+     },
+     "state": "COMPLETE"
+    }
+   },
+   "path": "feishu/chats/people/zhou-kit/oc_0d1749f1215fabe2957f0d8b71b78bdf/links/hosting-platform-guide/manifest.json",
+   "role": "link",
+   "shape": "document_capture",
+   "verified": "RECORDED"
+  },
+  {
+   "capture": {
+    "method": "im/+chat-messages-list --as user --order asc --page-size 50 + page-token loop; desc newest cross-check",
+    "mode": "incremental"
+   },
+   "capture_undeclared": [],
+   "components": {
+    "attachments": {
+     "facts": {
+      "backfilled": 3
+     },
+     "state": "COMPLETE"
+    },
+    "links": {
+     "facts": {
+      "count": 5,
+      "expanded": 5
+     },
+     "state": "COMPLETE"
+    },
+    "messages": {
+     "facts": {
+      "earliest_create_time": "2026-08-17 10:42",
+      "fetched_page_count": 2,
+      "last_message_id": "om_x100b65425cb1aca8b151454703d2d35",
+      "latest_create_time": "2026-09-14 10:51",
+      "msg_count": 76,
+      "pagination_complete": true,
+      "remote_unique_message_count": 76
+     },
+     "state": "COMPLETE"
+    }
+   },
+   "path": "feishu/chats/people/zhou-kit/oc_0d1749f1215fabe2957f0d8b71b78bdf/manifest.json",
+   "role": "chat",
+   "shape": "chat_capture",
+   "verified": "RECORDED"
+  }
+ ],
+ "schema": "serveros/capture-coverage.v1#trimmed",
+ "summary": {
+  "by_role": {
+   "chat": 47,
+   "link": 19
+  },
+  "by_shape": {
+   "chat_capture": 47,
+   "document_capture": 19
+  },
+  "capture_undeclared": {
+   "mode": 37
+  },
+  "components": {
+   "attachments": {
+    "COMPLETE": 6
+   },
+   "body": {
+    "COMPLETE": 16,
+    "INCOMPLETE": 3
+   },
+   "links": {
+    "COMPLETE": 6
+   },
+   "media": {
+    "COMPLETE": 14,
+    "UNDECIDABLE": 5
+   },
+   "messages": {
+    "COMPLETE": 45,
+    "UNDECIDABLE": 2
+   }
+  },
+  "denominator": 66,
+  "verified": {
+   "NOT_RECORDED": 5,
+   "RECORDED": 61
+  }
+ }
+}

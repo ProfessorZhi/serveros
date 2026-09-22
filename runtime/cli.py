@@ -659,6 +659,106 @@ def cmd_document_resolve(args) -> int:
     return EXIT_OK
 
 
+def cmd_information_captured(args) -> int:
+    """§B1/P1 — what the collectors were asked for, and what actually landed.
+
+    The materialized half of P1's "capture policy 与 materialized coverage 分开".
+    `work coverage` already reports the feishu surfaces, but it counts the
+    *authored* `sources.yaml` — what somebody declared they follow. This reads
+    the 66 manifests the collectors wrote under `records/information/raw/`, which
+    until now had no ServerOS-side reader at all.
+
+    What it refuses to hand back as one number:
+
+      * a per-object verdict. One chat manifest can be fully paginated and still
+        have three attachments declared pending. The components are reported
+        separately with the facts each was decided from, and the rollup counts
+        per component.
+      * a default policy. 37 of the 47 chat manifests carry no `sync.mode` — the
+        collector never recorded which mode it ran — and that is printed as
+        undeclared rather than as the mode anybody would assume.
+      * freshness. `last_verified_at` is printed as written. Whether it is old
+        is a staleness question with its own threshold, and answering it here
+        would make this verb the authority on a fact it does not hold.
+    """
+    paths = paths_mod.Paths()
+    records = Path(getattr(args, "records_root", "") or
+                   Path(paths.root("workspace")) / "records")
+    if not records.is_absolute():
+        sys.stderr.write(
+            f"serverosctl: --records-root must be absolute, got {records}. A "
+            f"capture tree read relative to whatever directory the caller stood "
+            f"in is a coverage number nobody else can reproduce.\n")
+        return EXIT_FAULT
+    mod = _load_module_from(REPO_ROOT / "intake" / "capture_coverage.py",
+                            "serveros_intake_capture_coverage")
+    try:
+        report = mod.read_root(records)
+    except mod.Refused as exc:
+        sys.stderr.write(f"serverosctl: {exc}\n")
+        return EXIT_FAULT
+
+    summary = report["summary"]
+    lines = [
+        f"root        {report['root']}",
+        f"manifest    {summary['denominator']} 份"
+        + ("  ·  " + " · ".join(f"{name} {count}"
+                                for name, count in sorted(summary["by_shape"].items()))
+           if summary["by_shape"] else ""),
+        f"role        " + " · ".join(f"{name} {count}"
+                                     for name, count in sorted(summary["by_role"].items())),
+        "",
+        "coverage    按分量计——一个对象的「完整」不是一句话",
+    ]
+    # Component order is the collector's own order of work, not alphabetical:
+    # messages/body are what the capture was for, and a reader comparing two
+    # runs should not have the rows move because a component was added.
+    order = ("messages", "body", "attachments", "links", "media")
+    for name in order:
+        bucket = summary["components"].get(name)
+        if not bucket:
+            continue
+        parts = " · ".join(f"{state} {count}" for state, count in sorted(bucket.items()))
+        lines.append(f"  {name:<12} {parts}")
+    if summary["components"]:
+        missing = [n for n in order if n not in summary["components"]]
+        if missing:
+            lines.append(f"  未出现       {'、'.join(missing)}"
+                         f" —— 本树下没有带这个块的 manifest，不是它们都通过了")
+    verified = summary["verified"]
+    lines += [
+        "",
+        f"复核        RECORDED {verified['RECORDED']} · "
+        f"NOT_RECORDED {verified['NOT_RECORDED']}"
+        + ("   —— NOT_RECORDED 的 manifests 只有采集者对自己工作的自述，"
+           "没有任何独立重核记录" if verified["NOT_RECORDED"] else ""),
+    ]
+    if summary["capture_undeclared"]:
+        lines.append("未声明采集策略  " + " · ".join(
+            f"{field} 缺于 {count} 份" for field, count in
+            sorted(summary["capture_undeclared"].items()))
+            + " —— 采集器没记，不补默认值")
+    rows = [o for o in report["objects"] if o.get("coverage")]
+    flagged = [
+        (o, component) for o in rows
+        for component in o["coverage"]["components"].values()
+        if component["state"] != "COMPLETE"
+    ]
+    lines += ["", f"需要看的     {len(flagged)} 个分量，分布在 "
+                  f"{len({o['path'] for o, _ in flagged})} 个对象上"]
+    for obj, component in flagged:
+        lines.append(f"  {component['state']:<11} {obj['path']}"
+                     + (f"  [{obj['role']}]" if obj["role"] not in ("chat", "link") else ""))
+        for reason in component["why"]:
+            lines.append(f"      {reason}")
+    for obj in report["objects"]:
+        if obj.get("coverage") is None:
+            lines.append(f"  {obj['shape']:<11} {obj.get('path', '?')}")
+            lines.append(f"      {obj.get('why', '')}")
+    emit(report, as_json=args.json, lines=lines)
+    return EXIT_OK
+
+
 def _space_request(args) -> dict:
     """Read one request document, or refuse with the reason it could not be read.
 
@@ -7649,6 +7749,24 @@ def build_parser() -> argparse.ArgumentParser:
              "that ships beside the kernel, so an installed node judges by the "
              "same closed set a source checkout does")
     doc_resolve.set_defaults(func=cmd_document_resolve)
+
+    information = sub.add_parser(
+        "information", help="what was captured from the sources (§B1): the "
+                            "declared policy and the coverage achieved, kept "
+                            "apart", **_COMMON)
+    information_sub = information.add_subparsers(dest="information_verb",
+                                                 required=True)
+
+    info_captured = information_sub.add_parser(
+        "captured",
+        help="the 66 manifests under <records>/information/raw, read as capture "
+             "records. Reports per component and not per object; reads nothing, "
+             "writes nothing", **_COMMON)
+    info_captured.add_argument(
+        "--records-root", default="",
+        help="the records checkout to read. Default: this node's workspace "
+             "root + /records. Must be absolute")
+    info_captured.set_defaults(func=cmd_information_captured)
 
     space = sub.add_parser(
         "space", help="where a logical object belongs, and what a meeting "
