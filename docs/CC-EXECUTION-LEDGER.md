@@ -243,20 +243,35 @@ anomaly(detectors, runtime/anomaly.py)
   -> ops alert_digest_card.py 取面 -> lark-cli 发
 ```
 
-登记表现状：`serverosctl alert list --json` exit 0，**4117 条**（795 OPEN / 3322 RESOLVED），
-其中 701 条带 `last_notified_at`。
+登记表现状（写这一节时的读数）：`serverosctl alert list --json` exit 0，**4117 条**
+（795 OPEN / 3322 RESOLVED），其中 701 条带 `last_notified_at`。
 
-缺口在三处，都实测过：
+缺口在三处，都实测过。**这三条是写下时的读数，不是现状**——第 1、2 条后来已修，
+判词在 §9.2；每条下面带一条 `现行`，因为这一节与 §9.2 曾经给过相反的判词，
+而同一份台账里两笔账正是它自己反复警告的东西：
 
 1. **没有冻结 payload / payload hash。** 设计 `BROADCAST-ALERT-DESIGN.md:80` 要求
    `frozen presentation payload + payload hash + intended rows/versions`；
    `grep -rn 'payload_hash' runtime/*.py` → 0 命中。这是读过的 absent，不是没找到。
+
+   **现行（2026-09-22 复测）：已修。** `runtime/alert_digest.py:693` 起 `sha256(blob)`
+   → `payload_hash`，`version = f"{generation}@{payload_hash[:12]}"`，冻结块带自己的
+   schema `serveros/alert-digest-frozen.v1`；`runtime/card_delivery.py:134` 是同一形状。
+   上面那句「0 命中」属于**当时那个 revision**，留在这里是因为它是 §9.2 那次修复的
+   对照，不是因为今天还成立。
 2. **`alert_digest.record()` 盖的是活登记表，不是发出去的那一版。**
    `alert_digest.py:730 _shown_pairs()` 把冻结文档压成 `(key, kind)`，写回时
    `:790` 取 `alerts.get(key)` 的**当前**值，`:811` 和 `:822` 于是把注册表的现值
    记成「这一版就是这么播的」。compose 与 record 之间若发生 severity 升级，
    记录会把它写成以新 severity 播过。（相邻的 `alert is None` 分支 `:792-800`
    反而正确写了 `None`，说明这个坑是知道的。）
+
+   **现行：已修。** `record()` 现在收 `frozen`（`runtime/alert_digest.py:933-935`），
+   severity / state / **episode** 都取自冻结块，`_frozen_rows()`（`:890`）只认那一版的
+   行，`_refuse_a_different_document()`（`:907`）在冻结块与同来的那批行**互相矛盾时
+   拒绝**而不是就地调停。上面引的 `:730` / `:790` / `:811` / `:822` 是**修复前**的行号：
+   今天 `_shown_pairs()` 在 `:870`，而 `:730` 是 `deltas(store, cursor, at=at, …)`
+   那一行。行号只在指定 revision 时才有意义——这一节自己就是又一处例子。
 3. **ServerOS 原生投递那一跳从没在这台机上跑过。** `~/.config/systemd/user/` 里有
    `serveros-alert-sync.service.d/10-botmux-token.conf`，但**没有**
    `serveros-alert-sync.service`、也没有 `.timer`；`is-enabled` → `not-found`，
@@ -266,11 +281,23 @@ anomaly(detectors, runtime/anomaly.py)
    （`runtime/serveros-alert-sync.service`/`.timer`），安装动词是
    `scripts/release.py:528 cmd_alert_worker`，它在没有 `--conversation` 时拒绝。
 
+   **现行（2026-09-22 复测）：仍然成立，而且这一条是本机今天唯一还开着的那条。**
+   `~/.config/systemd/user/serveros-alert-sync.service.d/10-botmux-token.conf` 在
+   （881 B，9 月 17 日），而 `serveros-alert-sync.service` 与 `.timer` 都不在——
+   **两个** `is-enabled` 都答 `not-found`。登记表也在长：**4364 条**告警、其中
+   **740 条**带 `last_notified_at`（写下这一节时是 4117 / 701），而这 740 条仍然来自
+   `alert_digest.record()`（今日 `alert_digest.py:1119`），**不是**来自
+   `alerting.record_delivery()`（`alerting.py:947`，本机从没跑过）。安装动词今天的
+   行号是 `scripts/release.py:885 cmd_alert_worker`；上面写的 `:528` 是旧行号。
+
 第 3 条同时解释了 §8 里那个「孤立的 drop-in」：它不是残渣，是**一个设计好的跳没装**。
 
 还有一处**已测但没接线**：`monitor_card.py:994-1009`（每小时那张主卡）只调
 `resource summary` / `resource containers` / `runtime list` / `runtime status`，
-从不调 `serverosctl card status`。所以 `presentation.status_model()` 与
+从不调 `serverosctl card status`。这两处 ops 侧的行号是**别仓的**，在 ops 仓
+`9d7a2ff` 上逐条复核过（`alert_digest_card.py:107` 的 `def serveros_card()`、
+主卡那四条命令），所以它们成立的前提是**那个 revision**——ops 仓自己的活动工作树
+正在改 `monitor_card.py`（见下），行号会漂。所以 `presentation.status_model()` 与
 `cards.status_card()` 有实现、有测试、**没接**。主卡也不写 receipt
 （`grep 'record|digest-record|receipt' monitor_card.py` → 0 命中）。
 
