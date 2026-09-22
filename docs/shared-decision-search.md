@@ -30,9 +30,11 @@ ServerOS 原生 Coordinator / Skills       MarketOps 应用 / 单一 MCP
 
 2026-09-22 本轮只读核查：ServerOS main 为 a4758a0，ability-management main 为 a7914d3；MarketOps 当前 GitHub 产品仓为 ProfessorZhi/marketops，main 为 9a4fe4e。旧 src/marketops 仍在早期 research-pipeline 基线，不能从它重新初始化产品。
 
-本机 vault 的 serper.env 存在，含非空 SERPER_API_KEY，文件权限 0600、owner 为当前用户。未输出真值，也未用付费请求验证当前认证/额度，因此只能称 credential-present，不能称 Serper LIVE。MarketOps 已有 SerperSearchProvider 和统一 Settings，可复用。
+本机 vault 的 `serper.env` 存在，含非空 SERPER_API_KEY，文件权限 0600、owner 为当前用户。**2026-09-23 已判定为 Serper LIVE**：走的是 MarketOps 的真实消费路径，不是裸 curl —— `marketops.search.serper.SerperSearchProvider.from_config(RuntimeConfig.from_env())` → `search(SearchRequest(query=…, num_results=1))`，一次请求 HTTP 成功、返回 1 条、2.31s，且 `SerperSearchProvider.__repr__` 实测不泄露 key。密钥未输出、未写盘。仍为 NOT_MEASURED 的是计费额度余量、并发上限与长期可用性 —— 按配额纪律只发一次，不据此声称；NOT_MEASURED 不等于 FAILED。MarketOps 已有 SerperSearchProvider 和统一 Settings，可复用。
 
-前轮 Laya PoC 使用 @receptron/laya 0.1.2 / CPU；本轮再次读取配置为 max_len=512、head_max_len=192，缓存仍以 main 命名。它是实验产物，不是已固定 revision 的发布件。没有在本轮已检查的 user-unit 列表中找到 Laya 服务；未据此声称所有机器都没有服务。
+前轮 Laya PoC 使用 @receptron/laya 0.1.2 / CPU、max_len=512、head_max_len=192，缓存以 main 命名，是实验产物。**该 PoC 已不是本机现状**：Laya 现在是一个受管服务，`laya-shared.service`（user unit）`active (running)` + `enabled` + `Linger=yes`，`ExecStart` 走 `providers.laya.serve --binding ~/.config/serveros/laya-shared-binding.yaml`，socket 为 `state/serveros/laya-shared/laya.sock`（目录 0700 / socket 0600）。规格以 binding 为准，不沿用 PoC 参数：`convaiinnovations/laya-multilingual` @ revision `052592a15d198d9ad47da779604259b10b47b7aa`（weights sha256 前 16 位 `9d628fd971b70038`）、`max_len=1024`、`head_max_len=256`、1 个推理槽 / 4 intra-op 线程、队列 16 全局 / 8 每消费者、`memory_max_bytes=3 GiB`、`languages=[en, zh]`。
+
+**但服务可用不等于答案可用。**同一份 binding 的 `verified_languages` 是**空表**，`language_evidence` 逐字写着：验收只证明服务会答、且会正确地拒，**不证明任何答案是好的**。所以 Laya 的状态是「服务 LIVE、答案未经评估」，不得当作权限、状态或业务正确性的裁决器。
 
 前轮的 4/8 线程延迟与约 1.6 GiB RSS 是小样本证据，不能当新 checkpoint 的容量保证。整机 128 vCPU/大内存也不是当前用户可无限使用的配额。旧实验还有高置信错误，所以不允许直接作为权限、状态或业务正确性的裁决器。
 
@@ -95,10 +97,29 @@ Laya 不是上述四处缺口的解决方案。它可并行部署验证，但不
 
 MarketOps Dockerfile/Compose/镜像内模型、host-network、GPU runtime 都延期。本阶段仅保留 endpoint/凭据/超时配置注入和独立 contract tests，为以后容器化留边界；不得顺手实施未来 Hosting/发送系统。
 
-## 8. 本轮交付与下一轮验收
+## 8. 交付状态与下一轮验收
 
-本轮只提交设计与实施入口；未部署 Laya、未调用 Serper/Jev、未扩大权限、未发布业务报告。
+**2026-09-22 首次成文时的状态**（保留，供对照）：本轮只提交设计与实施入口；未部署 Laya、未调用 Serper/Jev、未扩大权限、未发布业务报告。
 
-下一轮必须实测两个客户端调用同一 Laya 实例；中文/英文/超长/错误类型/队列公平/超时/停服降级；受控 Serper 真查询并保留原文证据链；Jev 有合法绑定时同一 DecisionSpec 对照，无绑定如实 BLOCKED；一个 ServerOS 日循环真实目标与一个 MarketOps research-only 小任务分别完成。合成 gate/模型端口通不代替真实业务链。
+**2026-09-23 复核后的实际状态**：
+
+| 项 | 状态 | 依据 |
+|---|---|---|
+| Laya 服务 | **部署并验收** | `laya-shared.service` active+enabled+Linger；验收跑逐行过契约 §7（PASS/FAIL/NOT_OBSERVED 三值） |
+| Laya 答案质量 | **NOT_MEASURED** | binding `verified_languages` 空表，`language_evidence` 自述未做质量评估 |
+| Serper | **LIVE** | 一次真实付费查询，走 MarketOps provider，见 §2 |
+| Jev | **BLOCKED** | 无合法绑定。按契约「没有 key 不假装调用，也不删掉集成项」，如实记 BLOCKED |
+| MarketOps 侧消费 | **未接线** | `adapters/laya.py` 是进程内的；`LAYA_*` 未设 |
+| ServerOS 侧消费 | **0，且原因已查明** | 见下 |
+
+### ServerOS 侧消费方为 0 —— 这不是「少接一根线」
+
+本轮全仓实测：`ABSTAIN` 在 `.py` 里**零命中**；`laya` 只出现在文档与目录分类表（`runtime/conformance.py`、`runtime/fs_hygiene.py`、`runtime/paths.py`）中，**没有任何读取或调用**；唯一真读「共享网关」的是 `runtime/card_source.load_binding`，而它只渲染一行字、不发请求。
+
+语义上最接近「需要对材料做一次判定」的真实入口是 `work focus`（`runtime/cli.py:6108` → `intake/daily_cycle.py:103 select_focus`）。它**已经**做完全部可计算的部分——排除规则、排序、`limit<=2` 的容量约束都在 `intake/daily_cycle.py:103-198`，返回的 `selection_digest` 是个可复算的哈希而不是判断。它缺的是一个语义输入：`next_action`。而该字段**本机没有生产者**——`intake/focus_source.py:96` 记着缺失时缺省为 `research`；同一文件里 `daily_cycle.py` 又明文裁定「priority 必须来自被接受的板，不能来自 LLM 生成的 popularity」。
+
+所以结论是：**消费方不存在，是因为 ServerOS 里目前没有一个由规则答不了的问题。**契约 §2 要求 DecisionSpec 由消费业务自己声明（`spec.id/version/hash`），因此一个通用 CLI verb 不是合法消费方 —— 它无法提供一份真实的声明。挂点已确定（`work focus` 的 `next_action`），等板拿到该字段的生产者即为接线点；而板 producer 目前是 `PROPOSED_NOT_APPROVED`（见 `intake/workchain-contract.yaml#card_extension`）。**本轮不据此造一个没有调用者的客户端**——那正是契约结尾禁止的「只添加只有文字的 surface」。
+
+下一轮必须实测两个客户端调用同一 Laya 实例；中文/英文/超长/错误类型/队列公平/超时/停服降级；Jev 有合法绑定时同一 DecisionSpec 对照；一个 ServerOS 日循环真实目标与一个 MarketOps research-only 小任务分别完成。合成 gate/模型端口通不代替真实业务链。
 
 参考（上游能力，不是现场保证）：[Laya 模型卡](https://huggingface.co/convaiinnovations/laya)、[Node 适配](https://github.com/receptron/laya)、[Jev API](https://docs.typesafe.ai/api)、[Serper](https://serper.dev/)。
