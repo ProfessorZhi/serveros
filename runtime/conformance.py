@@ -198,11 +198,35 @@ EXCEPTIONS: dict[str, dict[str, dict]] = {
             # one action no declaration supports, so nothing was deleted. The
             # snapshots (before/after git-status, docker-ps, docker-mounts,
             # worktrees, remotes) are not reproducible.
+            #
+            # A FOURTH declaration, later than two of the three above, says why
+            # one of those destinations is missing — and the entry above reads
+            # as if that were still open. Measured 2026-09-23:
+            #   records v2 (`records@6adfd5a`, 2026-09-06, user 定版) — "archive/
+            #     整体退休：migrations/* 与 environment 摘要为历史执行记录（事实
+            #     已入 maps/memory/Git 历史）". So `records/archive/migrations/`
+            #     is absent because the namespace was retired deliberately,
+            #     after EXPIRY.md was written — not because the archive step
+            #     failed. `artifacts/evidence/` does not exist at all.
+            #   the payload is intact: the 12 before/after snapshots and
+            #     EXPIRY.md are at
+            #     `artifacts/ops/beijing-20260918/state-serveros/migrations-20260824-home-finalize/`
+            #     — a fourth path none of the three declarations named.
+            # So the part that is stale is this entry's subject: it describes
+            # `state/serveros/migrations/`, which is not on disk. Nothing was
+            # deleted on an unmet precondition and the not-reproducible
+            # snapshots still exist. Whether the entry should now be retired is
+            # the ruling records v2 would support and this module does not
+            # make — the class and disposition are left exactly as they were.
             "reason": "expired rollback snapshots from the 2026-08-24 home "
                       "finalize; three declarations disagree on delete / move / "
-                      "preserve, and the expiry's precondition is unmet",
+                      "preserve, and the expiry's precondition is unmet — but a "
+                      "later records v2 ruling retired the namespace one of them "
+                      "names, and the payload survives in the Beijing archive",
             "authority": "self-refuting: EXPIRY.md, the 2026-09-06 convergence "
-                         "report, and §0 each claim it",
+                         "report, and §0 each claim it; records@6adfd5a rules the "
+                         "archive namespace retired, which is a fourth claim and "
+                         "the only one later than the first two",
             "disposition": "UNKNOWN_OWNER",
         },
         "document-stewardship": {
