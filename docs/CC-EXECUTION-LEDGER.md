@@ -2599,7 +2599,9 @@ anomaly(detectors) -> alert producer(身份 = code+device+subject)
   功能（采集、个人播报的**安装**）各自标了生命周期与权限。
 - **没有把计数或费用填成估计值**。本报告里出现的数字全部来自上面点名的 log 文件。
 - **没有用 fixture 顶替无权限的 Live 场景**。§12.7 的 Laya 是这一条的例子：判词是
-  「被测对象不存在」，不是「测了没通过」。
+  「被测对象不存在」，不是「测了没通过」。**计划 P11 的十条验收场景逐条落位在 §12.12**——
+  那一节此前不存在，而一张写着「做完了」的终报和一列没被记过的验收项放在一起，
+  读的人会以为那十条已经过了。
 - **代码审阅通过不是上线证明**。本轮 A7 的 fresh-session 验证只证明**加载**，不证明任何一条
   业务需求被自动化测试真的服务过。
 
@@ -2609,3 +2611,34 @@ anomaly(detectors) -> alert producer(身份 = code+device+subject)
 （一格里数了三个列了四个，且没跟着重测）、§3.6 的两笔账（同一份台账给过相反判词）、
 以及 §11.2 2b（**判据 `--branches` 看不见 tag**，而结论句说的是「任何远程 ref」）。
 四处都会让一个读者拿着量具的绿当产品的绿。
+
+### 12.12 P11 的十条验收场景——这一节是它们第一次有落点
+
+计划 §P11 给了一张十行的清单（S1…S10，每行一个「完成标志」）。**在此之前这份台账里没有
+对应的小节**，所以这十条的现状只能靠 §9 各节拼出来。补上是必要的，因为一份写着「做完了」
+的终报和一列**没被记过的**验收项放在一起，读的人会以为那十条已经过了。
+
+先记一句本仓自己的话，它正好是这一节的口径。`tests/test_live_closure.py` 的 docstring：
+
+> The live run is worth doing and it is not a test — it is an acceptance, and it
+> belongs in the report.
+
+所以下表分三列：**实现载体**（代码在哪）、**机制测试**（单测覆盖了什么）、**LIVE 判词与所缺
+的具体字段**。按计划 §P11 的要求，缺权限的场景**列具体未满足的字段**，不用 fixture 顶替。
+
+| 场景 | 实现载体 | 机制测试 | LIVE 判词与所缺字段 |
+| --- | --- | --- | --- |
+| S1 真人 IM 报错 | `records/information/raw/sync_feishu_chat.py`（B1）+ `intake/understanding_delta.py`（B2） | `test_capture_coverage.py`、`test_understanding_delta.py` | **未跑**。缺一条真实用户消息，与一次真实只读调查的产物 |
+| S2 机器人/例外 | 黑名单 `DRIFT_WATCHLIST.txt`（采集侧 `drift_sync.py:71`、ServerOS 侧 `serverosctl information watched`，§9.10）+ 告警事件链（§3.6） | `test_watch_coverage.py`、`test_alerting.py`、`test_capture_coverage.py` | **一半在跑**：告警事件链活着（登记表 4364 条、740 条带 `last_notified_at`）。缺一条机器人消息被记成 `NONE` 的现场记录，及其读者 |
+| S3 会议 | `space/meeting_relevance.py` + `space/meeting_bundle.py`（§9.15） | `test_meeting_bundle.py`、`test_meeting_relevance.py` | **未跑**。缺一份真实会议 manifest——本机四个探针声明全是合成的 |
+| S4 自管指南 | B9 `document-stewardship`（本仓只有文本；实现与 publisher 循环在外仓 `~/.claude/skills/document-stewardship/scripts/maintain.py`） | —（该实现不在本仓，本仓没有它的测试） | **未跑**。缺一次真实 Published Knowledge patch 与它的回读 receipt |
+| S5 协作文档/SOP | `runtime/report-publication-contract.yaml` + `intake/support_handoff.py`（§9.19） | `test_report_publication.py`（31 条）、`test_support_handoff.py` | **未跑**。缺两个锚（收件人与会话）——它们 UNBOUND，所以当前读数是「待投递」而不是「已通知」 |
+| S6 日常工作 | `intake/daily_cycle.py`（`select_focus` / `review_gate` / `invalidate_claims` / `fingerprint` / `instant`）+ `runtime/workbench.py` | `test_daily_cycle.py`、`test_workbench.py` | **腿装了、手跑过一次、没上弦**（§3.9、§12.5）。缺整条链跑通一次——这正是 §12.11 第一句不声称无人值守的理由 |
+| S7 卡片 | `runtime/cards.py` + `runtime/card-definitions.yaml` + `runtime/card_delivery.py` | `test_cards.py`、`test_card_delivery.py`、`test_presentation.py` | **告警那一面在生产链上**，status 那一面 ServerOS 侧齐、ops 侧没接（§3.6、§12.6）。缺 ops 那一跳，且它被两个活动工作树压着 |
+| S8 共享基础设施 | MarketOps 三个 adapter（Laya/Jev/Serper）+ ServerOS `abilities/provider-contract.yaml` | `test_provider_readiness.py`、`test_provider_adapter_surface.py`、`test_memory_provider.py` | **一条都不成立**：没有受管 Laya 进程、没有权重、ServerOS 侧零 consumer（§12.7）。这是「被测对象不存在」，不是「测了没通过」 |
+| S9 重启和权限 | `runtime/coordination.py`、`runtime/agent_control_store.py`、`runtime/daily_report.py`（receipt）、`runtime/alert_digest.py`（冻结块）、`runtime/report_publication.py`、`abilities/provider_instance.py` | `test_coordination.py`、`test_alert_digest.py`、`test_report_publication.py`、`test_provider_readiness.py`、`test_daily_cycle.py` | **机制被单测覆盖**（全套 4723 passed），**但「按不同水位恢复」这条链没在真进程上跑过**。最能说明这件事的现场就在 §12.2：`serverosd.service` 至今跑着 promote 之前那一版，因为重启它是 HUMAN_EXECUTED。缺一次安全窗口内的真重启 |
+| S10 生产边界 | `runtime/managed_mutation.py` + `managed-mutation-contract.yaml`、`runtime/approval.py`、A9/A10 的 `READY ≠ 切流授权` | `test_managed_mutation.py`、`test_approval.py` | **只在「没有访问」的形态下成立**。缺真实生产访问（A9/A10 的 Binding 是 UNBOUND），所以「有真实访问才读观察」这句话本机**没有反例可测** |
+
+**十条里，一条（S2 的告警腿）在生产链上真在跑，一条（S7 的告警卡面）同属那条链，
+其余八条没有一条跑通过。** 这不是「测了没通过」——两张表分开写，是因为把它们并成一列
+`FAILED` 会让「对象不存在」看起来像「产品坏了」，而这两种状态下该做的事完全不同。
