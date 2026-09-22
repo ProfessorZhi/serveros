@@ -142,8 +142,8 @@ scenarios:
     source: constructed — 本节点当前没有 high 档事件；这条用 DISK_CRITICAL 说明
       单个严重档异常在卡上的样子，时间与引用是示例值。
       它渲染成橙色而不是红色，这是刻意的：severity 是 CRITICAL，但没有任何
-      登记表声明 /data 这个文件系统应该处于什么状态，所以注意力是「需要确认」
-      而不是「需要处理」。红色需要一条声明，见 critical_service_failed。
+      登记表声明 /data 这个文件系统应该处于什么状态，所以注意力是「需确认」
+      而不是「需处理」。红色需要一条声明，见 critical_service_failed。
     digest:
       counts: {new: 1, escalated: 0, reopened: 0}
       severity_counts: {high: 1}
@@ -580,8 +580,8 @@ scenarios:
     source: measured — 登记表与主体拼写都取自本节点：serveros-control-plane 确实
       以 criticality critical 注册，而实测的 FUNCTIONAL_PROBE_FAILED 行的
       subject_ref 就是裸资源 id（见下方注释）。severity 与首次观测是示例值。
-      这一张说明注意力升级：同一条 code 在未注册的主体上是「需要确认」（橙），
-      在一个声明为 critical 的登记资源上变成「需要处理」（红）。颜色差来自
+      这一张说明注意力升级：同一条 code 在未注册的主体上是「需确认」（橙），
+      在一个声明为 critical 的登记资源上变成「需处理」（红）。颜色差来自
       登记表里的声明，不来自严重度。
     digest:
       counts: {new: 1, escalated: 0, reopened: 0}
