@@ -1,0 +1,177 @@
+# report-publication-contract — B8 的兼容门面，以及它**不再负责**的四件事。
+#
+# WHY THIS FILE EXISTS WHEN `REPORTING-PUBLICATION-ABILITY.md` ALREADY DOES
+# ------------------------------------------------------------------------
+# 设计 §8 只写了一句：「feishu-report 保留正式中文/用途差异和既有 report-consumer 映射，
+# 移除复制的测试执行、space规则、默认 whole overwrite 和强制 Milestone。先保留兼容入口
+# 再迁 consumer，只有实际需要才独立新 Skill 身份。」
+#
+# 这句话里有三件不同的事，而它们最容易在交付时被压成一件：
+#
+#   1. **保留**兼容入口——`report.publish` 仍然路由到 `feishu-report`，这一轮不动它；
+#   2. **移除**四处职责——但每一处的移除都受一个 consumer 的进度约束；
+#   3. **不新建** `reporting` Skill 身份——设计原话是「只有实际需要才独立」。
+#
+# 把 1 做完却不说 2 还欠着，读者会把「兼容入口还在」读成「迁移已完成」；把 3 反过来做
+# （顺手建一个 `reporting`），则会把一条已决定的设计读成一个遗漏。所以这份文件同时记下
+# 「还路由到谁」「还欠哪四件事、欠给谁」「眼下被谁挡住」，而 `runtime/report_publication.py`
+# 的唯一职责就是拒绝一份说漏了其中任一条的契约。
+#
+# 这份契约是**声明**，不是实现：它不写正文、不发布、不投递。真正的 producer 是
+# `runtime/daily_report.py`（compose → sha256 → 本地发布 → publication receipt），
+# 而它同样不投递。
+schema: serveros/report-publication-contract.v1
+
+# ── 事实组织（这一半已经在跑）───────────────────────────────────────────────
+compose:
+  module: runtime/daily_report.py
+  contract: runtime/periodic-report-contract.yaml
+  # 四个输入类别的白名单住在上面那份契约里，这里只指过去，不复制——两份白名单迟早会
+  # 有一份没人读。
+  cli: "serverosctl report daily"
+  produces: [draft, source-manifest, publication-receipt]
+
+# ── 兼容门面（保留，且这一轮不迁）───────────────────────────────────────────
+#
+# 设计 §8 的「先保留兼容入口再迁 consumer」是一条**顺序**约束：consumer 迁移不能晚于
+# 入口移除，反过来则可以。所以入口这一轮必须还在，而且**必须仍然只有一条**。
+facade:
+  ability: feishu-report
+  origin: ability-management
+  # 这一项不是自由文本：`runtime/report_publication.py` 会把它和下面两处**本地**
+  # 权威比对，不一致就拒绝。路由的第二份定义是本仓最容易长出来的东西。
+  #
+  # 两处权威说的**不是同一句话**，把它们写成同一个形状会逼着其中一处说谎：
+  #
+  #   * `serveros-contract.json` 直接给路由字符串（`routes.report.publish`）；
+  #   * `context/resolver.py` 给的是「哪些 kind 是发布物，因此走这个门面」——它是按
+  #     capability 名单表达的，没有 `report.publish` 这个键。所以这里按各自的形状
+  #     声明，而不是把后者硬塞进前者。
+  route: report.publish
+  route_authorities:
+    - file: skills/serveros/references/serveros-contract.json
+      form: route-string
+    - file: context/resolver.py
+      form: capability-list
+      section: KIND_CAPABILITIES.report
+  # 设计 §8 的第三件事，写成一条可被检查的断言：没有新建 Skill 身份。
+  new_skill_identity: false
+
+# ── 还欠的四件事 ────────────────────────────────────────────────────────────
+#
+# 每一条都写三样东西：**现在还在哪**（可复核的坐标）、**本该归谁**、**为什么还没动**。
+# 坐标带 `at_revision`，因为行号只在指定 revision 时才有意义——本仓已经因为读工作树
+# 行号得到过「引错了」的假结论一次。
+#
+# 四处 `state` 都是 `PENDING_CONSUMER`，这不是偷懒：设计把迁移顺序定为「先迁 consumer
+# 再移除」，而唯一的 consumer 正被一个活动工作树挡着（见 consumers）。把某一处写成
+# `MIGRATING` 会声称一件没有发生的事。
+delegations:
+  - id: copied-test-execution
+    what: 教自己跑 E2E 并自取证据
+    owners: [test-management, automated-testing]
+    state: PENDING_CONSUMER
+    at_revision: 074a51863d92cfbb89608a28f0779668aa448408
+    evidence:
+      - path: skills/feishu-report/payload/SKILL.md
+        line: 191
+        text: 跑 `pytest --junitxml=$REPORT_WORKDIR/e2e.xml` 或导出 playwright trace/HTML 报告
+      - path: skills/feishu-report/payload/SKILL.md
+        line: 206
+        text: "`publish` 会：`upload_images()` 真正 `docs +media-insert` 上传 `artifacts.screenshots`"
+    why: >-
+      证据的取得与判读是 A7 的判断（场景选择、真实/合成之分、verdict、真实 FAIL 后的停止
+      规则），而这份 Skill 的契约恰恰是「只展示、不判」。两处都能取证据，则同一份 e2e 会在
+      两个地方各判一次，且第二次判出来的 verdict 没有停止规则跟着。
+
+  - id: space-rules
+    what: 自己按 space 与父节点建树定位
+    owners: [feishu-space-management]
+    state: PENDING_CONSUMER
+    at_revision: 074a51863d92cfbb89608a28f0779668aa448408
+    evidence:
+      - path: skills/feishu-report/payload/SKILL.md
+        line: 252
+        text: lark-cli wiki +node-list --space-id <space> --parent-node-token <父> --as user
+      - path: skills/feishu-report/payload/SKILL.md
+        line: 246
+        text: lark-cli wiki +node-create --parent-node-token <父> --title ... --obj-type docx
+    why: >-
+      位置、ACL 与冲突归 B9。空间规则写在报告 Skill 里，等于让「写报告的」决定「报告放哪」，
+      而放哪是一个权限问题：它决定谁看得见。
+
+  - id: default-whole-overwrite
+    what: 一律整篇覆写已有文档
+    owners: [document-stewardship]
+    state: PENDING_CONSUMER
+    at_revision: 074a51863d92cfbb89608a28f0779668aa448408
+    evidence:
+      - path: skills/feishu-report/payload/SKILL.md
+        line: 58
+        text: 回写 `docs +update --command overwrite --doc-format markdown --content @./_content.md`
+      - path: skills/feishu-report/payload/SKILL.md
+        line: 181
+        text: lark-cli docs +update --doc <obj_token> --command overwrite --doc-format markdown ...
+      - path: skills/feishu-report/payload/SKILL.md
+        line: 206
+        text: "`docs +update --command overwrite --doc-format markdown` 覆写"
+    why: >-
+      整篇覆写会吃掉人在文档里改过的段落，而报告的价值有一半在于有人愿意在它上面改。
+      正确形状是绑定 base revision 的局部 patch（B9 的 document-stewardship），
+      而它需要 doc 的 base revision——那是 B9 的对象模型，不是这里的。
+
+  - id: compulsory-milestone
+    what: 每个可说明阶段强制新增不可变 Milestone Report
+    owners: []      # 设计说这**不再强制**，所以没有接手方；空名单是答案，不是遗漏
+    state: PENDING_CONSUMER
+    at_revision: 074a51863d92cfbb89608a28f0779668aa448408
+    evidence:
+      - path: skills/feishu-report/payload/SKILL.md
+        line: 41
+        text: 达到一次可说明的阶段时新增不可变 **Milestone Report**
+      - path: skills/feishu-report/payload/SKILL.md
+        line: 10
+        text: 工作记录与不可变 Milestone Report；它们是可并存的报告版本，不存在天然 Final Report
+    why: >-
+      这一条与上面三条不同：它不是把职责挪给别人，而是**取消一条要求**。「每个阶段必须留一个
+      不可变版本」会让一次正常推进变成一次归档义务，而设计改成保留 Milestone 的**能力**而不是
+      义务。所以 `owners` 是空的，而空名单必须被读成「没人接手」而不是「还没想好」——契约
+      允许它为空，但要求 `why` 说清楚为什么。
+    note: 设计同时保留了「不可变性」本身：新版本以 builds_on/supersedes 关联旧版，不覆盖。
+
+# ── 眼下被谁挡住 ────────────────────────────────────────────────────────────
+#
+# 四处移除都受同一条顺序约束，所以只需要一个 consumer。它在一个**活动**工作树里，而那份
+# 工作正在改的恰好是这份契约要动的那三个文件——所以这一轮不碰它，也不等它。
+consumers:
+  - id: srv-0005-e2e-evidence
+    disposition: MIGRATION_WAITING_ON_ACTIVE_CONSUMER
+    repository: ability-management
+    worktree: worktrees/ability-management/SRV-0005
+    branch: serveros/srv-0005-e2e-evidence
+    head: 22cd2a2
+    item: SRV-0005
+    paths:
+      - skills/feishu-report/ABILITY.md
+      - skills/feishu-report/payload/SKILL.md
+      - skills/feishu-report/payload/references/report-handoff.md
+    # 迁移到最后一步才允许做的那部分：这些接口的**新**归属。写在被挡住的一侧，等分支合并后
+    # 按这张表逐条落。
+    pending_interfaces:
+      - from: payload/SKILL.md 的「验收报告最小结构」一节
+        to: automated-testing 的 verdict 与 evidence 契约
+        note: 报告结构由 A7 的 verdict 字段决定，不由报告 Skill 自己规定
+      - from: payload/SKILL.md 的 e2e 证据采集
+        to: automated-testing 的场景与证据（真实 vs 合成）
+        note: 结构化断言优先；视频默认关、trace/HAR 只在失败时留
+      - from: payload/SKILL.md 的 space / parent-node-token 用法
+        to: feishu-space-management
+      - from: payload/SKILL.md 的 docs +update --command overwrite
+        to: document-stewardship 的 base-revision 局部 patch
+      - from: payload/SKILL.md 的强制 Milestone 措辞
+        to: 取消强制，保留 builds_on/supersedes 关联
+    why: >-
+      SRV-0005 的活动工作树正在修改上面三个路径（`git status` 显示为 modified），且尚未提交。
+      在这一轮去改同一批文件，等于覆盖另一个 actor 的 WIP。设计给 B8 定的顺序本来就是
+      「先保留兼容入口再迁 consumer」——于是正确的动作是：把新契约和兼容层做完，把这一条
+      标成等待，然后继续做不被它挡住的一切。
