@@ -1,0 +1,72 @@
+# serveros-testing — the A7 composition.
+#
+# WHY THIS ONE HAS NO `extends:`
+#
+# Every other file in `profiles/` extends `../bundle.yaml`, because a wider
+# product is core plus more. This one deliberately does not, and the reason is
+# not stylistic.
+#
+# `bundle.yaml` carries `runtime` and `bin` — `serverosd`, its MCP adapters and
+# the entry points that reach them. A node that has the ServerOS workbench
+# installed already has those. A node that wants to PROVE something behaves as
+# required is a different node: it may be a build worker, a CI runner, or a
+# machine whose only job is to run a headed browser against a real environment.
+# Making it inherit the daemon would install a second ServerOS on it to answer a
+# question that does not mention one — and would make the testing plugin's
+# footprint a function of the workbench's, which is the coupling this file
+# exists to avoid.
+#
+# So this is a root composition, like `bundle.yaml` itself: schema, identity,
+# skills, and nothing it does not use. It carries no hook, no subagent and no
+# MCP server of its own. A hook that binds "the goal is complete" to a Stop
+# event would turn a reported failure into a rerun loop, and the Playwright
+# surface already exists as the upstream `playwright-mcp` — a copy declared here
+# would be a second identity for one provider (design/AUTOMATED-TESTING-ABILITY.md §8).
+#
+# WHAT IT SHIPS
+#
+#   automated-testing  the judgment: scenario selection, real-vs-synthetic
+#                      evidence, verdict, and the stop rule on a real FAIL.
+#   test-management    the environment: what a reproducible test environment IS
+#                      and how one is smoke-checked before it is reused.
+#
+# Two, because the second is not part of the first: a node can define an
+# environment and never run a requirement E2E against it, and the A7 design
+# moves environment definition OUT of testing rather than into it (§10). They
+# are composed together here because a testing plugin without a way to resolve
+# an environment cannot reach the boundary it is supposed to test.
+schema: serveros/bundle.v1
+
+composition: serveros-testing
+
+name: serveros-testing
+display_name: HWZ ServerOS Testing
+description: ServerOS automated testing and requirement acceptance
+short_description: Prove that a requirement's behaviour is really implemented
+long_description: >-
+  Scenario selection, real-environment execution and evidence for requirement
+  and scope E2E. Reports PASS / FAIL / BLOCKED / PARTIAL / NOT_RUN against a
+  pinned revision, keeps the raw evidence, and stops on a real product failure
+  instead of repairing it into a pass.
+author: ProfessorZhi
+category: Productivity
+license: MIT
+brand_color: "#315C92"
+
+version: "1.0.0"
+
+# Its own payload, so its own cache identity. A cachebuster shared with the
+# workbench would let two different payloads claim one version string.
+cachebuster: srvtest0001.20260922a
+
+skills:
+  - name: automated-testing
+    source: ability-management
+
+  - name: test-management
+    source: ability-management
+
+default_prompt:
+  - Prove this requirement's behaviour in a real environment and show the evidence.
+  - Run the bounded regression scope and report per-scenario verdicts.
+  - A scenario failed — keep the evidence and report it; do not repair the product.
