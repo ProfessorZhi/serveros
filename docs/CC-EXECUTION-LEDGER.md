@@ -112,7 +112,7 @@ source revision 一列给的是**指纹成立的那次 revision**，也就是 pa
 | A9 | 生产观察 | production-observation | `skills/production-observation` | Skill | **ce6e103** | 既有 API/CLI/跳板 | **UNBOUND** | 无 | DONE | NOT_MEASURED | NOT_ENABLED | 未装进任何 composition |
 | A10 | 生产变更 | production-change | `skills/production-change` | Skill | **ce6e103** | 调用 A9 + 真实 Runbook | **UNBOUND** | 无 | DONE | NOT_MEASURED | NOT_ENABLED | 同 A8；且 READY≠切流授权 |
 | B1 | 来源采集 | information-management | `skills/information-management` | Skill | 早于本轮 | `records/information/raw/*` | 原生 | srv0003.20260915a | DONE | DONE | ENABLED | — |
-| B2 | 结构化认识 | information-management（共用 payload） | 无独立 artifact（读者在 `intake/understanding_delta.py`） | — | 早于本轮 | affected people/project/topic | 原生 | 未 promote（本轮新增） | PARTIAL | DONE | NOT_ENABLED | 设计就写「可先共用 payload」。**读的一侧本轮补上**（§9.7）；**写的一侧 not read**，所以 CODE 是 PARTIAL 而不是 DONE——读与写谁也不许代表谁 |
+| B2 | 结构化认识 | information-management（共用 payload） | 无独立 artifact（读者在 `intake/understanding_delta.py`，写者在 `intake/understanding_patch.py`） | — | 早于本轮 | affected people/project/topic | 原生 | 未 promote（本轮新增） | DONE | DONE | NOT_ENABLED | 设计就写「可先共用 payload」。读的一侧本轮补上（§9.7），**写的一侧本轮补上**（§9.9）：`serverosctl work understanding-patch`。CODE 从 PARTIAL 转 DONE 的条件是两侧都在，且**两者互不代表**——写者只消费读者的区间，确认仍是人工输入。LIVE 仍是 NOT_ENABLED：没有消费者读这份 patch |
 | B3 | 需求 | product-requirements-and-design | `skills/product-requirements-and-design` | Skill | 早于本轮 | — | 原生 | srv0003.20260915a | DONE | DONE | ENABLED | — |
 | B4 | 工作管理 | work-management | `skills/work-management` | Skill | 早于本轮 | Work Engine MCP/CLI | 原生 | srv0003.20260915a | DONE | DONE | ENABLED | — |
 | B5 | 调研 | research-evidence | `skills/research-evidence` | Skill | **ce6e103** | Serper / 既有专业知识 | **UNBOUND** | 无 | DONE | NOT_MEASURED | NOT_ENABLED | 未装进任何 composition |
@@ -615,7 +615,7 @@ manifest 行、packs 闭包、cards。凡是「X 的渲染嵌了 X 的值」，�
 | P2 | 五个采集器 | `/data/home/vince/workspace/records/information/raw/{sync_feishu_chat,expand_feishu_doc,expand_feishu_files,drift_sync,_redact}.py` | 各自 `main()`；`drift_sync.py:2` 自称 SessionStart hook driver | lark-cli（`sync_feishu_chat.py:131`、`expand_feishu_doc.py:42`） | working；`information/raw/` 在 records 仓里是 clean |
 | P2 | 唯一脱敏实现 | `records/information/raw/_redact.py`（327 行，md5 `fa980373…`） | 库：`redact()`、`persist_secrets()` | `sync_feishu_chat.py:29`、`expand_feishu_doc.py:32`、`redact_backfill.py:54` | **盘上有 5 份**，其中 `worktrees/records/reconcile-20260922` 与主份逐字节相同，另外三份（SRV-0003 75 行 / MKT-0001 90 行 / clean-line-20260920 274 行）与已退役归档 `015de972` 不同。设计要「保留唯一 redaction 实现」，盘上现在是多份——**这是待收敛项，不是既成事实** |
 | P2 | 黑名单 | `records/information/raw/DRIFT_WATCHLIST.txt` | — | — | **not read**；注册 `drift_sync` 为 hook 的 `settings*.json` **not found** |
-| P3 | people/project/topic 卡 | 手写 markdown：`records/information/understanding/{people,projects,topics}/*.md` | **读的一侧已接线**：`serverosctl work understanding`（`intake/understanding_delta.py`）。**写的一侧仍 not read** | — | **读的一半已补**（§9.7）：14 份卡逐份对账到源，`BEHIND 3 · UNMEASURABLE 7 · UNTRACEABLE 4`。设计要的「最小 incremental writer」**仍然是缺口**——这个模块读、对账、提议区间，不写一个字 |
+| P3 | people/project/topic 卡 | 手写 markdown：`records/information/understanding/{people,projects,topics}/*.md` | **两侧都已接线**：读 `serverosctl work understanding`（`intake/understanding_delta.py`）、写 `serverosctl work understanding-patch`（`intake/understanding_patch.py`） | — | **两半都补上了**：读的一侧见 §9.7（14 份卡逐份对账到源，`BEHIND 3 · UNMEASURABLE 7 · UNTRACEABLE 4`）；写的一侧见 §9.9（15 条提议全 `AWAITING`，`--write`+`--verify` ok）。设计要的「最小 incremental writer」不再缺口。**仍未 LIVE**：没有任何消费者读这份 patch |
 | P3 | Minutes / MeetingBundle | 无 Python 类。`space/meeting-policy.schema.yaml:30` 声明结构；内核 `space/meeting_relevance.py:69` | ~~`python3 space/meeting_relevance.py --request`（**未接 serverosctl**）~~ **已接线**：`serverosctl space meeting` | — | 内核 working，**接线已补**（§9.5）；bundle 的生产者仍 not found |
 | P3 | 记忆账本/投影/scope | `memory/{record,projection,scope,handoff}.py` | `serverosctl memory {audit,project,status,subject}` (`cli.py:6479`) | — | working；`docs/memory-fabric.md` 逐条点名这些模块 |
 | P4 | 文档关系边 | `relations/project.py:61`（`serveros/relations.v1`），`relations/schema.yaml:29` | `python3 project.py --records ROOT --write relations/current.jsonl` | — | **partial**（比上一版进了一步）：8 个谓词里 3 个有生产者（`belongs_to`、`derived_from`、`attached_to`），其余 5 个 `declared_only`。本机实测 239 行 / 19 条报出，见 §9.8；另 5 个谓词逐条查过，**本机没有载体**，不是差功夫 |
@@ -925,6 +925,101 @@ pytest 那行照印「52 passed」。一个没应用的变异是一次**假绿**
 **没做完的是写入侧。** P3 设计里的「最小 incremental writer」仍然 `not read`：这个模块读、对账、
 提议区间，**不写一个字**（`ast` 那条判据是它的证据）。所以 B2 的 CODE 仍是 `PARTIAL` ——
 读的一侧 DONE，写的一侧 not read，两者都不许互相代表。
+
+**这一节之后补上的两处，与本节同源**，记在这里以免被读成新事件：
+
+- 读的一侧少了一个区间。一份**整份换版**的文档（卡上引的摘要与 manifest 记的都不符）原先
+  只贡献 `STALE_IN_PLACE` 这个状态、**一个区间都不提**——一张被判定为陈的卡，没有可读的东西。
+  现在补第三类区间 `WHOLE_DOCUMENT`：文档没有位置，所以区间带的是**做出这次比较的那两个摘要**，
+  而不是编一个位置出来。`test_a_replaced_document_proposes_a_range_with_no_positions` 钉住它。
+  实测渲染：`→ litellm.md  文档已换版  摘要 b9fe2535 → f4927de5ab12…`。
+- **一条判据被自己的假绿救回。** 那次改动里我把一行 `for row in stale` 留在了第三条
+  推导式末尾，于是它变成 `for row in digest_differs for row in stale`——一个笛卡尔积，
+  `digest_differs` 为空时产出**零行**。而 `test_being_behind_beats_being_stale_in_place`
+  **在这个坏状态下仍然是绿的**，因为这个 bug 只把同一个表达式里的摘要那一支清零。
+  是新加的那条测试发现的。记下来是因为形状与 §9.7 的 M4 一样：绿不是因为对。
+
+### 9.9 认识层的写入侧：一个只会提议、结构上无法自我确认的 patch
+
+§9.7 关掉的是读的一侧。这一节是写的一侧：**`intake/understanding_patch.py` +
+`serverosctl work understanding-patch`**。它把读者的区间变成人能据以行动的那份东西，而边界
+就是整个文件的意义：
+
+> **patch 是提议。它不是确认，这个模块也没有任何一条路能自己产生一个确认。**
+
+三条规则是**结构性**的，不是推荐性的：
+
+1. **确认是人工输入。** 确认状态从一份**只读**的 decisions 文件里读，这个模块没有它的写口
+   （`ast` 那条判据逐函数扫写入调用，把写点集合钉成恰好 `{"write"}`）。没有 decisions 文件时
+   每一项都是 `AWAITING`。判据两半：一半查「没有 decisions 时全是 AWAITING」，一半查
+   「模块里不存在第二个写口」。
+2. **确认只覆盖它当时被做出的那个区间。** 项的身份是
+   `(卡片, 采集对象, 区间种类, from, to)`。源再动一次就产生一个**不同的**区间，旧决定不会
+   跟着卡片走：项回到 `AWAITING`，旧决定进 `stale_decisions` 并写明「它不再是关于现在所提议
+   的那件事的决定」。**报出来而不是丢掉**——一个安静地停止生效的确认，比一个从没做过的更糟。
+3. **每一项都带着它据以计算的版本对。** 卡读到哪、源现在到哪：会话是位置，文档是两个摘要。
+   没有这一对的提议，是读者无法核对的提议，而「这张卡落后 644 位」正是那种会被相信、
+   不会被核对的句子。
+
+设计文档管这个叫 **Claim patch**，这里实现成**带版本锚的 items**，并且**刻意不叫 `claim`**：
+claim 读起来是对内容的断言，而这个模块——和它所组合的读者一样——**不打开任何内容**。
+新写下的判据 `test_nothing_anywhere_in_the_patch_is_called_a_claim` 递归扫键，
+`claim`/`user_confirmed`/`asserted` 一个都不许出现（`confirmation` 这个**状态**和
+`confirmed` 这个**计数**不在禁止之列，理由写在测试里：前者是提议的状态，后者是人数出来的决定，
+都不声称这个模块懂了什么）。**说新内容是什么意思的是语义层**（P7），它继承同一条规则：
+它提议，人确认。
+
+**实测（本机 records）**：14 份卡 → **15 条提议，全部 `AWAITING`**；
+`BEHIND 3 · UNMEASURABLE 7 · UNTRACEABLE 4`；没有提议的 11 份卡**逐类计数并写明原因**
+（`no_item`）——列出三条提议的 patch 不能被读成「这一层只有三张卡」。
+`--write` 后 `--verify` → `ok`；重跑写 → 逐字节相同
+（`92cad4b0c368553a6bcc5c6b67221fa53a9af5709638c4bd7be890c6211fba4a`）。
+
+**它不写记录、不改卡片。** 唯一写的是调用者点名的那一份 patch，绝对路径否则拒（与
+`global_board.py#render` 同一条约束），临时文件 + `os.replace` 原子落盘。两个写点登记进
+`runtime/actuator-contract.yaml`（`os.unlink` 清理那一节 + `os.replace` 提交那一节），
+`mutation_guard` 从 `FAILED` 回到 `CHECKED`。模块**没有 `main`**——`intake/` 下经 CLI 加载的
+模块不留第二个入口，`test_capture_coverage.py` 里那条规则的原话是「no `main()` for a verb to
+reach for instead」。
+
+**变异测试：五条承重判据各切断一次，都被对应测试抓住，五次之后文件逐字节还原**
+（`3a2e5ec4c6188bf6ed73e41d9cd7da19d3f9542d2bdddfae276dbe94bf21a4fa`）：
+
+| # | 变异 | 抓住它的测试 |
+| --- | --- | --- |
+| M1 | 项默认 `CONFIRMED` | 8 条（含 live 那条） |
+| M2 | 身份丢掉采集对象 | `test_the_identity_is_...`、`..._in_another_capture_is_not_it` |
+| M3 | 失效决定被丢掉而不是报出 | 4 条（含 `..._becomes_current_supersedes_...`） |
+| M4 | 无出处的键照样发出 | 两条 producer 判据 |
+| M5 | 绝对路径闸门消失 | 两条相对路径判据 |
+
+**M2 第一次是假绿，改的是测试不是实现。** 那条测试原先只断言「决定指向另一份采集时项仍是
+`AWAITING`」。身份丢掉 manifest 之后，那份决定的键与**任何东西**都对不上，项当然还是
+`AWAITING`，测试照绿——它分不清「正确地拒绝了」和「根本没能对上」。现在它断言**一对**：
+两条只差采集对象的决定，一条被采用、一条被拒。M2 会让「被采用」那一半转红。
+与 §9.7 的 M4 同一个形状，记下来。
+
+**M5 在工作树里留下了一个文件，而那正是测试自己的问题。** M5 拆掉的是绝对路径闸门，而抓住
+它的两条测试**都从仓库根跑**——于是「按吩咐去写」的变异体**把 `patch.json` 写进了检出**。
+提交前 `git status` 发现的（`?? patch.json`，16:43，一条项，卡片 `people/x.md`：本轮夹具），
+已删。两条测试改成在自己拥有的目录里跑（直接调用那条用 `monkeypatch.chdir(tmp_path)`，
+CLI 那条给 `cli()` 加 `cwd=`），**坏状态下也只写进 pytest 会删掉的目录**。
+一条「一旦失效就往检出里拉屎」的测试，恰在它测的性质坏掉时留下证据——下一个读者会看到
+一个文件而找不到解释它的那次运行。改后重跑：同样五个变异、同样五处被抓、逐字节还原，
+`git status` 无新增。
+
+**一条实测下界被这一轮自己的改动踩过去了，改的是数字不是性质。**
+`tests/test_verification_tool.py` 那条量的是「静态输入集只有测试文件自己」的测试文件数，
+断言 `> len(suite) // 2`，并在失败信息里写明「52 of 96 …… 这条断言需要**重新测量**而不是放宽」。
+新加的写入侧测试文件用的是本树 55 个盲文件同款的 `_load(name, relative)` 习惯，
+于是 54/109 → 55/110，**恰好等于一半**，严格大于不再成立。处置：把断言改成下界
+（`>=`）+ 把实测数字写进失败信息（55 of 110，2026-09-22），`scripts/verify.py` 里那两处
+同样的陈旧数字（「52 of the 96」「91 of the 96」）一并重量为 55 of 110 / 85 of 110。
+**没有动那条性质本身**（扫描器看不见 `_load` 这个习惯），也**没有**为了保住一个不等号，
+把这个文件改成全树唯一一个不用本树习惯的测试文件。
+
+**接线同上，是自动被门覆盖的**：经 `_load_module_from` 加载，`loader_graph` 推出它，
+`test_build.py` 的产物闭包判据自动覆盖（`tests/test_build.py` 43 passed）。
 
 ### 9.8 关系边：第三个谓词有了真生产者，另五个各写出「为什么没有」
 

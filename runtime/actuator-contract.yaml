@@ -390,6 +390,12 @@ actuators:
       first that included it: the site existed for a round before the
       declaration did, which is a fact worth leaving in the file rather than
       tidying away.
+
+      `intake/understanding_patch.py#write` is the one site here whose
+      temporary is named by `tempfile.mkstemp` rather than by the function: the
+      name is handed back by the library and is this process's own, so the
+      "cannot reach a file it did not write" argument holds by construction
+      rather than by a naming rule.
     sites:
       - {file: relations/project.py, symbols: [write]}
       - {file: runtime/ability_projection.py, symbols: [write_atomic]}
@@ -399,6 +405,7 @@ actuators:
       # daily_report 的文本那一半：与 agent_control_store 的写法同一决定，
       # 但 `_atomic_write` 只处理 JSON，日报写的是文本，所以是另一个符号。
       - {file: runtime/daily_report.py, symbols: [_atomic_write_text]}
+      - {file: intake/understanding_patch.py, symbols: [write]}
 
   - id: atomic-write-commit
     kind: fs_mutation
@@ -421,6 +428,14 @@ actuators:
       the only file ever replaced is the one being written — which is also why
       the two are in the same directory rather than in `tmp/`, and why this is
       one entry and not a rename across filesystems.
+
+      `intake/understanding_patch.py#write` is the fourth spelling, and it is
+      bounded the way `global_board.py` is: the destination is a path the
+      CALLER names, and it is refused unless it is absolute, so it cannot come
+      from the cwd or from a relative argument. It writes exactly one file —
+      the patch a person is meant to read — and it is atomic for the reason
+      the module is written at all: a reader must never see half a patch and
+      decide on it.
     sites:
       - {file: relations/project.py, symbols: [write]}
       - {file: runtime/ability_projection.py, symbols: [write_atomic]}
@@ -431,6 +446,7 @@ actuators:
       - {file: scripts/release.py, symbols: [_symlink_swap]}
       - {file: scripts/verify.py, symbols: [write_record]}
       - {file: intake/global_board.py, symbols: [render], verb: ".replace()"}
+      - {file: intake/understanding_patch.py, symbols: [write]}
 
   - id: daemon-owns-its-socket
     kind: fs_mutation
