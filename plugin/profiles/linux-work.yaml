@@ -68,14 +68,22 @@ skills:
 # today. The build checks the claim against the pinned revision in both
 # directions, so a stale `missing` is as much an error as a broken `available`.
 #
-# This list is deliberately "the registry, minus what this composition ships".
-# The registry is the catalogue of abilities a node MAY resolve; a profile
-# declares which of them this node's product actually offers and why the rest
-# are not carried. Leaving a registry ability unnamed here would mean the
-# registry describes a product that is not this one, which is the drift A1
-# exists to catch — and it is caught as a HIGH finding rather than tolerated, so
-# a newly registered ability forces a decision (ship it, recommend it, or fix
-# the registry) instead of silently widening the gap.
+# This list is a SUBSET of the registry, not "the registry, minus what this
+# composition ships". The registry is the catalogue of everything any product on
+# any node may resolve — 41 `skill` names at the pinned revision — and most of
+# them belong to other products' compositions and to toolchains this node does
+# not carry. This list is the part of that catalogue whose resolution THIS node
+# promises, and it is short on purpose.
+#
+# What forces the decision is not registration, it is PLACEMENT. A name added to
+# a plugin record's `provides` makes this profile either ship it or recommend it
+# here, or else A1 reports `COMPOSITION_MEMBER_UNREACHABLE` at HIGH — because
+# A1's rules pair each composition with ITS OWN artifact's record and judge that
+# record's members. A bare `skill` entry that no record provides enters no
+# comparison at all; measured 2026-09-22, 29 of the registry's 41 `skill` names
+# appear in no composition here and A1 says nothing about them. So an ability
+# that is registered and never placed widens this node's gap silently, and the
+# gate that closes it is the record's `provides`, not this file's silence.
 recommended:
   - name: information-management
     source: ability-management
