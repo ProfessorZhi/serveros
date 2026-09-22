@@ -4033,12 +4033,30 @@ def _card_modules():
                               "serveros_runtime_cards"))
 
 
+def _card_clock() -> str:
+    """The instant a card is rendered at, in the form the MODEL expects: ISO.
+
+    Named and separated from `_now_text()` so a test can hold it, because the
+    two are not interchangeable and nothing said so. `_now_text()` produces
+    `"%Y-%m-%d %H:%M:%S %Z"` for the prose lines, and `_card_common` used it for
+    this too — but `presentation.open_duration` ends an open row AT THIS VALUE,
+    and `datetime.fromisoformat` cannot read `2026-09-22 10:52:12 CST`. So every
+    duration on every live alert card rendered 「持续 未知」 while the ledger held
+    the measurement, and the collection time could not be shortened either
+    (`cards._local` returns nothing for an instant it cannot parse).
+
+    Measured on the production `card alert --json`, 2026-09-22. The card formats
+    this for a person; the model is handed the value. Same rule as
+    `cmd_registration_resolve`'s: formatting is for the line, the computation
+    gets the instant.
+    """
+    return datetime.datetime.now(datetime.timezone.utc).astimezone().isoformat()
+
+
 def _card_common(args) -> tuple[dict, str]:
     """The model and its caption, gathered the one way the card knows how."""
     source, presentation, _cards = _card_modules()
-    at = (getattr(args, "at", "") or
-          datetime.datetime.now(datetime.timezone.utc).astimezone().strftime(
-              "%Y-%m-%d %H:%M:%S %Z"))
+    at = getattr(args, "at", "") or _card_clock()
     kind = args._card_kind
     if kind == "status":
         binding = source.load_binding(getattr(args, "gateway_binding", "") or None,
