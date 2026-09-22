@@ -204,34 +204,72 @@ class KernelPurityTest(unittest.TestCase):
 
 class PlacementDecisionTest(unittest.TestCase):
 
-    def test_personal_report_moves_to_the_curated_wiki(self):
-        """The My Docs case: a formal report is canonical in Wiki, not personal."""
+    def test_workbench_material_is_canonical_where_it_was_authored(self):
+        """My Document Library is the workbench: a report does not move out of it.
+
+        The rule is not "anything authored in My Docs is misplaced". It is "the
+        part of it that outlives the work is knowledge" — see the test below.
+        """
         record = resolve(surface="mydocs", object_type="document",
                          semantic_role="report", context={"project": "litellm"})
+        self.assertEqual(record["decision"], "KEEP")
+        self.assertEqual(record["canonical_surface"], "mydocs")
+        self.assertEqual(record["approval"], "none-required")
+        self.assertEqual(record["index"], "deliverable-index")
+
+    def test_an_item_closure_artifact_is_also_workbench_material(self):
+        """`final-report` is the narrow sibling of `report`, and lands the same way.
+
+        It exists so a closure artifact can be named without being mistaken for a
+        second copy of the process report. It carries no rule `report` did not
+        already carry: nothing transitions, and no state machine reads this value.
+        """
+        record = resolve(surface="mydocs", object_type="document",
+                         semantic_role="final-report", context={"project": "litellm"})
+        self.assertEqual(record["decision"], "KEEP")
+        self.assertEqual(record["canonical_surface"], "mydocs")
+        self.assertEqual(record["approval"], "none-required")
+        self.assertEqual(record["index"], "deliverable-index")
+
+    def test_knowledge_promotes_off_the_workbench(self):
+        """The half that does move: durable knowledge is not workbench material."""
+        record = resolve(surface="mydocs", object_type="document",
+                         semantic_role="knowledge", context={"project": "litellm"})
         self.assertEqual(record["decision"], "MOVE")
         self.assertEqual(record["canonical_surface"], "wiki")
         self.assertEqual(record["approval"], "proposal-only")
-        self.assertEqual(record["index"], "deliverable-index")
+
+    def test_a_meeting_on_the_workbench_is_a_question_not_a_move(self):
+        """No curated meeting index exists on a Wiki surface, so there is no rule.
+
+        A Minute is the canon for a meeting and its sidecars are Drive files; a
+        workbench note that merely concerns a meeting is none of those things.
+        The absence is deliberate, and a rule set is allowed to have one.
+        """
+        record = resolve(surface="mydocs", object_type="document",
+                         semantic_role="meeting", context={"project": "litellm"})
+        self.assertEqual(record["decision"], "PROPOSAL_REQUIRED")
+        self.assertIsNone(record["canonical_surface"])
 
     def test_a_move_never_invents_a_locator(self):
         """No policy template means no concrete target — the adapter decides where."""
         record = resolve(surface="mydocs", object_type="document",
-                         semantic_role="deliverable", context={"project": "litellm"})
+                         semantic_role="knowledge", context={"project": "litellm"})
         self.assertEqual(record["decision"], "MOVE")
         self.assertIsNone(record["target_locator"])
         self.assertEqual(record["logical_target"],
-                         {"surface": "wiki", "semantic_role": "deliverable",
+                         {"surface": "wiki", "semantic_role": "knowledge",
                           "project": "litellm"})
 
     def test_a_caller_template_is_rendered_when_complete(self):
         record = resolve(surface="mydocs", object_type="document",
-                         semantic_role="deliverable", context={"project": "litellm"},
+                         semantic_role="knowledge", context={"project": "litellm"},
                          policy={"target_template": "wiki://{project}/{semantic_role}"})
-        self.assertEqual(record["target_locator"], "wiki://litellm/deliverable")
+        self.assertEqual(record["target_locator"], "wiki://litellm/knowledge")
 
     def test_an_incomplete_template_yields_a_proposal_not_a_broken_path(self):
         record = resolve(surface="mydocs", object_type="document",
-                         semantic_role="deliverable",
+                         semantic_role="knowledge",
                          policy={"target_template": "wiki://{project}/{item}/{semantic_role}"})
         self.assertEqual(record["decision"], "PROPOSAL_REQUIRED")
         self.assertIsNone(record["target_locator"])
@@ -363,7 +401,7 @@ class CliTest(unittest.TestCase):
 
     def test_a_decision_exits_zero_and_prints_json(self):
         proc = run_cli("--surface", "mydocs", "--object-type", "document",
-                       "--semantic-role", "report", "--project", "litellm")
+                       "--semantic-role", "knowledge", "--project", "litellm")
         self.assertEqual(proc.returncode, 0, proc.stderr.decode())
         record = json.loads(proc.stdout.decode())
         self.assertEqual(record["decision"], "MOVE")
@@ -408,7 +446,7 @@ class CliTest(unittest.TestCase):
         import tempfile
         request = {
             "object": {"surface": "mydocs", "object_type": "document",
-                       "semantic_role": "deliverable"},
+                       "semantic_role": "knowledge"},
             "context": {"project": "litellm"},
         }
         with tempfile.TemporaryDirectory() as tmp:

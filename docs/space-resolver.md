@@ -73,7 +73,7 @@ anything wrong" is not the same as "this is right".
 
 ```bash
 python3 space/resolver.py --surface mydocs --object-type document \
-    --semantic-role deliverable --project litellm
+    --semantic-role knowledge --project litellm
 
 python3 space/resolver.py --request request.json
 ```
@@ -83,15 +83,66 @@ python3 space/resolver.py --request request.json
   "schema": "serveros/space-decision.v1",
   "decision": "MOVE",
   "canonical_surface": "wiki",
-  "canonical_role": "deliverable",
+  "canonical_role": "knowledge",
   "target_locator": null,
-  "logical_target": {"surface": "wiki", "semantic_role": "deliverable", "project": "litellm"},
-  "index": "deliverable-index",
-  "reason": ["semantic_role=deliverable is canonical on wiki, not on mydocs"],
+  "logical_target": {"surface": "wiki", "semantic_role": "knowledge", "project": "litellm"},
+  "index": null,
+  "reason": [
+    "semantic_role=knowledge is canonical on wiki, not on mydocs",
+    "Durable knowledge outlives the work that produced it and is canonical on a knowledge surface."
+  ],
   "confidence": "high",
   "approval": "proposal-only"
 }
 ```
+
+## What `mydocs` is, and which half of it moves
+
+`mydocs` is the Feishu **My Document Library** — a Wiki-provider space
+(`space_type=my_library`) with node/subpage hierarchy, not a Drive-style folder
+tree. That matters to the rules below only because it means the surface holds
+authored documents rather than files.
+
+It is a **workbench**, and that is a full-time job. Workbench, project, work-item,
+report and deliverable material is canonical *there* and does not move: a report
+does not become more canonical by being carried somewhere else. Only `knowledge`
+and `method` promote, because those outlive the work that produced them.
+
+So the rule is not "anything authored in My Document Library is misplaced". It is
+"the part of it that outlives the work is knowledge". An earlier version of the
+table promoted all seven, which was correct only while a single curated tree held
+both jobs; once curation was split by purpose, the two halves had to be said
+separately.
+
+`mydocs`/`meeting` has **no rule on purpose**, and the resulting
+`PROPOSAL_REQUIRED` is the table working rather than a hole in it. A meeting's
+canon is its Minute, and a minute's sidecars are Drive files; no curated meeting
+index exists on a Wiki surface. A workbench note that merely concerns a meeting
+is none of those, so it is a question for a human — which is exactly what a
+missing rule is for.
+
+## The product form of each surface
+
+The vocabulary names dimensions; it does not describe a product. These four
+sentences are the product reading, and they are what the roles above are for:
+
+| Surface | Product form |
+|---|---|
+| `mydocs` | **private active human work surface** — what is being worked on now, plus the durable *reporting* subtree (daily / weekly / special reports) that people keep reading after the week ends. A report is not demoted by having happened. |
+| `wiki` (a curated space, e.g. personal notes) | **curated long-term private knowledge** — the part of the work that outlives the work. Method and knowledge promote here; workflow material does not. |
+| `drive` | **file / evidence asset surface** — screenshots, E2E evidence, traces, meeting sidecars, attachments, delivered files. Not a place for authored prose. |
+| `minutes` | **meeting source object** — the canon of one meeting, with its sidecars elsewhere. |
+
+`final-report` is the one role addition worth pointing at: **one durable
+human-facing closure artifact per durable Item**, sized to the work it describes
+rather than to a template. It resolves exactly as `report` does — same canonical
+surface, same index — and the reason to name it separately is legibility, not
+policy: an Item node holding both a process report and a closure artifact should
+say which is which. An Item that is still open, is protected, or whose own
+evidence contradicts itself **has no closure artifact**; that absence is recorded
+as a question for a human, not filled in with a plausible-sounding document.
+Nothing here transitions, dispatches, or advances — there is no report state
+machine and no workflow engine behind this value.
 
 The vocabulary and the request/response schema are documented in
 [`space/schema.yaml`](../space/schema.yaml); the vocabulary itself is data in
