@@ -342,6 +342,43 @@ class DeclaredServiceDownTests(unittest.TestCase):
             "DESIRED_ACTUAL_MISMATCH")["what"])
 
 
+class TheEventLineWearsTheCataloguesLabelTests(unittest.TestCase):
+    """`Claude 会话 15413 · 遗留进程组` — the line that says what the subject IS.
+
+    The header carries the attention word ("⚠️ 需确认 · 1 项"), so the event line
+    owes the reader the catalogue's noun for the code rather than the word they
+    read six lines ago. Both spellings were on the live card once: the noun only
+    appeared when `presentation._event_of` copied it into the event's `what`
+    block, and that block is built field by field — `label` was returned by
+    `definition_for` and then dropped on the floor. Nothing failed, because
+    `_event_title` falls back to the subject alone by design and a missing label
+    is therefore indistinguishable from a code that has none.
+
+    That is what this test is for: the fallback is correct, so the only way to
+    tell "no label declared" from "label not threaded" is to read the catalogue
+    and check it reached the face.
+    """
+
+    def test_every_alert_scenario_carries_the_declared_label_onto_the_face(self):
+        checked = 0
+        for scenario in scenarios.scenarios():
+            if scenario.get("card") != "alert":
+                continue
+            model = scenarios.model_for(scenario, sample=False)
+            face = "\n".join(_markdown(cards.card_for(model)))
+            for event in model["events"]:
+                declared = presentation.definition_for(event["code"]).get("label")
+                if not declared:
+                    continue
+                checked += 1
+                with self.subTest(scenario=scenario["name"], code=event["code"]):
+                    self.assertEqual(event["what"]["label"], declared)
+                    self.assertIn(f"{event['subject']['text']} · {declared}", face)
+        self.assertGreater(checked, 0,
+                           "no alert scenario exercises the label, so this test "
+                           "would pass on a model that dropped it")
+
+
 #: A caveat of the shape `desired.py` writes. Written out rather than imported
 #: because the producer's own sentence names a file and a node, and a test that
 #: asserted on it would be asserting that the sentence was unchanged.
