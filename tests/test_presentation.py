@@ -15,7 +15,6 @@ from __future__ import annotations
 
 import ast
 import importlib.util
-import re
 import sys
 import unittest
 from pathlib import Path
@@ -69,15 +68,10 @@ MACHINE_OPS = ("重启", "重新启动", "删除", "清理", "回收", "杀掉",
                "重建", "卸载", "kill", "restart", "delete", "remove",
                "prune", "terminate")
 
-#: A clause may mention an operation only to refuse it. The markers are the
-#: forms the catalogue actually uses, and the test below requires that at least
-#: one such refusal exists — otherwise the rule is never exercised and passes
-#: for the wrong reason.
-NEGATIONS = ("不", "无需", "非", "别")
-
-
-def _clauses(text: str) -> list[str]:
-    return [c for c in re.split(r"[；;。，,、\n]", str(text)) if c.strip()]
+#: The forms a refusal takes in this codebase. The card's one refusal line has
+#: to contain one of them, which is what stops the ban on the line above from
+#: being satisfied by a catalogue that simply stopped refusing anything.
+NEGATIONS = ("不", "未", "无需", "非", "别")
 
 
 class DefinitionCatalogueTests(unittest.TestCase):
@@ -138,30 +132,49 @@ class DefinitionCatalogueTests(unittest.TestCase):
                     with self.subTest(code=code, field=field, op=op):
                         self.assertNotIn(op, text)
 
-    def test_an_action_may_name_an_operation_only_to_refuse_it(self):
+    def test_no_action_names_an_operation_even_to_refuse_one(self):
         """§15's `alert != authorization`, in the one place words could break it.
 
         The catalogue is display text and no word in it reaches a machine — but
         a line reading "重启该服务" on a card is read by a person as an
         instruction, and this node's alerts go to somebody who could carry it
-        out. So an operation word is allowed only inside a clausethat refuses
-        it ("本卡不会重建它").
+        out.
+
+        This rule used to have an exception: an operation was allowed inside a
+        clause that refused it ("本卡不会重建它"). The refusal is now made once
+        for the whole card, in `cards.FOOTNOTE_READ_ONLY`, so a catalogue line
+        has no business naming an operation at all — and a ban with no
+        exceptions is one a reviewer can check by eye, which the per-clause
+        version was not. The card's own line is asserted below, because a ban
+        with nothing on the other side of it would pass on a card that had
+        stopped refusing anything.
         """
-        refusals = 0
         for code, text in (_catalogue().get("actions") or {}).items():
-            for clause in _clauses(text):
-                if not any(op in clause for op in MACHINE_OPS):
-                    continue
-                refusals += 1
-                with self.subTest(code=code, clause=clause):
-                    self.assertTrue(
-                        any(n in clause for n in NEGATIONS),
-                        f"{code}: {clause!r} names an operation without "
-                        "refusing it")
-        self.assertGreater(refusals, 0,
-                           "no action clause exercises the refusal rule, so "
-                           "this test would pass on a catalogue that had "
-                           "stopped refusing anything")
+            for op in MACHINE_OPS:
+                with self.subTest(code=code, op=op):
+                    self.assertNotIn(op, str(text))
+
+    def test_the_card_states_the_refusal_once_and_in_the_refusing_form(self):
+        """The positive control for the ban above.
+
+        With every operation word out of the catalogue, one line on the card is
+        the only place §15 is stated. If that line stopped naming an operation —
+        or named one without refusing it — every test above would still pass
+        and the card would have quietly stopped saying that a suggestion is not
+        an authorization.
+
+        The check is on the whole line and not clause by clause. The footnote is
+        one sentence whose 「未执行」 governs a list, and splitting it on 、 cuts
+        「重启」 away from the word that refuses it — a per-clause reading would
+        fail a line that is correct.
+        """
+        cards = _load("serveros_runtime_cards", "cards.py")
+        line = cards.FOOTNOTE_READ_ONLY
+        self.assertTrue(any(op in line for op in MACHINE_OPS),
+                        f"{line!r} names no operation, so the catalogue's ban "
+                        "is no longer paired with a refusal anywhere")
+        self.assertTrue(any(n in line for n in NEGATIONS),
+                        f"{line!r} names an operation without refusing it")
 
     def test_a_code_with_no_definition_is_reported_as_a_hole(self):
         """ABSENT is a first-class answer, not a fallback to something else."""
@@ -391,12 +404,24 @@ class SubjectDisplayTests(unittest.TestCase):
     rule — say what the producer said, in the order it said it — and these are
     the shapes the live register actually carries."""
 
-    def test_a_session_process_tree_names_the_session_and_the_pid(self):
+    def test_a_session_process_tree_names_the_session_and_puts_the_pid_below(self):
+        """AC3: the face carries a name, the pid rides in the detail.
+
+        `session-11127:pid1533977` is the ref, and it was on the card's first
+        line — a raw identifier where a person reads. The face now says which
+        conversation the finding is about; `precise` keeps the pid, because it
+        is the only handle somebody has when they go to look, and a handle
+        removed is a finding nobody can act on. Both halves are asserted here:
+        a version that dropped the pid and a version that put it back on the
+        face would each fail one of them.
+        """
         answer = presentation.subject_display(
             "runtime-group:process-tree:session-11127:pid1533977")
         self.assertIn("会话 11127", answer["text"])
-        self.assertIn("1533977", answer["text"])
+        self.assertNotIn("1533977", answer["text"])
         self.assertNotIn("session-11127:pid", answer["text"])
+        self.assertIn("1533977", answer["precise"])
+        self.assertIn("会话 11127", answer["precise"])
         self.assertEqual(answer["rule"], "runtime-group:process-tree:session-")
 
     def test_a_docker_process_tree_is_not_read_as_a_session(self):
@@ -426,8 +451,9 @@ class SubjectDisplayTests(unittest.TestCase):
         A card whose subject came out as the raw ref has to be distinguish-
         able from one that was understood, and the rule name is what makes
         that checkable without diffing strings. Guessing at an unrecognised
-        shape is how `...:session-150:pid28541` becomes "会话 150" and stops
-        naming the process the alert is about.
+        shape is how `...:session-150:pid28541` becomes "会话 150" with nothing
+        holding the pid that the alert is actually about — a declared rule may
+        shorten a face, but only one that also hands over the precise form.
         """
         answer = presentation.subject_display("some-new-kind:abc123")
         self.assertEqual(answer["rule"], "verbatim")
@@ -492,7 +518,7 @@ class EnvHealthTests(unittest.TestCase):
             self._sections(host="CRITICAL", gateway=presentation.UNKNOWN),
             at="now")
         self.assertEqual(health["verdict"], "UNCONFIRMED")
-        self.assertIn("需要处理", health["verdict_text"])
+        self.assertIn("需处理", health["verdict_text"])
         self.assertIn("未读到", health["verdict_text"])
 
 

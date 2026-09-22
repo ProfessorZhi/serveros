@@ -100,17 +100,36 @@ ABSENT = "ABSENT"
 #: §4: "没有影响证据时明确影响尚未确认". One sentence, so that an impact the
 #: catalogue does not state and an impact nobody measured cannot be confused
 #: with an impact that was measured and found slight.
-IMPACT_UNCONFIRMED = "影响尚未确认"
+#:
+#: The wording is the console's, not an explainer's. The sentence that stood
+#: here first was the label read back to the reader ("影响尚未确认"), which
+#: rendered as `**影响** 影响尚未确认` — the same word twice — and the repair
+#: for that put a paragraph of self-description on the first screen. This says
+#: the same thing in the words a NOC would use and stops there. See
+#: CARDS-STYLE.md R2 and R7.
+IMPACT_UNCONFIRMED = "暂未发现明确影响"
 
 #: What a reader may do, when the catalogue names nothing for a code. It names
 #: no operation, and it is the default on purpose: the catalogue is allowed to
 #: be silent about a code, and silence must not read as "nothing to do".
-DEFAULT_ACTION = "在 ServerOS 登记表里查看该条目；本卡不会停止、重启或清理任何东西"
+#:
+#: It names a thing to look AT ("查看该条目的证据与归属") rather than a place to
+#: go ("在 ServerOS 登记表里查看该条目"). The second form is what the first
+#: version of this card said on every code the catalogue was silent about, and
+#: it is not an action: it sends a person to a surface without saying what they
+#: are looking for. CARDS-STYLE.md R5.
+DEFAULT_ACTION = "查看该条目的证据与归属"
 
 #: §15, restated on every action because a card is the surface where it is
 #: most easily lost. `recommendation()` already returns a suggestion; the word
 #: travelling alone is what gets read as an instruction.
-ACTION_AUTHORITY = "建议，不是授权；没有任何动作会因此发生"
+#:
+#: The refusal half of §15 is NOT repeated here. "没有任何动作会因此发生" used
+#: to ride along with this line on every event, and the card states the same
+#: thing once at the foot (`cards.FOOTNOTE_READ_ONLY`), where a reader who has
+#: decided to act will look for it. Two statements of one refusal is how the
+#: third event's version stops being read. CARDS-STYLE.md R2.
+ACTION_AUTHORITY = "建议，不是授权"
 
 UNKNOWN = "UNKNOWN"
 
@@ -164,11 +183,16 @@ def definition_for(code: str | None) -> dict:
     codes = _catalogue().get("codes") or {}
     entry = codes.get(str(code or ""))
     if not isinstance(entry, dict) or not str(entry.get("what") or "").strip():
-        return {"state": ABSENT, "code": code, "what": None, "why": (
+        return {"state": ABSENT, "code": code, "what": None, "label": None, "why": (
             f"card-definitions.yaml 没有为 {code!r} 声明含义；本卡照原名列出"
             f"该 code，不对它作任何断言")}
     return {"state": DECLARED, "code": code,
             "what": str(entry["what"]).strip(),
+            # The short noun the event line wears after the subject. Optional:
+            # a code with no `label` keeps the subject alone on its line rather
+            # than having one invented for it, because an invented label is a
+            # second definition of a code that already has one.
+            "label": (str(entry["label"]).strip() if entry.get("label") else None),
             "impact": (str(entry["impact"]).strip() if entry.get("impact") else None)}
 
 
@@ -444,7 +468,8 @@ def integrity_finding(held_rows: list[dict]) -> dict | None:
 #: and `process-tree:` both match a session tree, and the more specific one has
 #: to win or every session tree renders as an opaque pid blob.
 _SUBJECT_RULES = (
-    ("runtime-group:process-tree:session-", lambda rest: _tree(rest, "会话")),
+    ("runtime-group:process-tree:session-",
+     lambda rest: _session_tree(rest, "会话")),
     # A container's process tree, which is the shape most of this node's
     # findings take. Named as a container rather than left as `system.slice:
     # docker:<id>`: the slice, the runtime and the id are three layers of where
@@ -452,7 +477,11 @@ _SUBJECT_RULES = (
     ("runtime-group:process-tree:system.slice:docker:",
      lambda rest: f"Docker 容器 {rest}"),
     ("runtime-group:process-tree:", lambda rest: f"进程组 {rest}"),
-    ("runtime-group:claude-session:", lambda rest: f"Claude 会话 {rest}"),
+    # The shape `RUNTIME_OUTLIVED_OWNER` carries on this node, and the one the
+    # first NOC-style card was written against. Same split as the session tree
+    # above: the face is `Claude 会话 15413`, the pid is in the detail.
+    ("runtime-group:claude-session:",
+     lambda rest: _session_tree(rest, "Claude 会话")),
     ("runtime-group:", lambda rest: f"运行时组 {rest}"),
     # `filesystem:mount:/data` → `文件系统 /data`. The `mount:` in the middle
     # is the producer's own word for how it found the filesystem and it is not
@@ -474,15 +503,26 @@ _SUBJECT_RULES = (
 )
 
 
-def _tree(rest: str, what: str) -> str:
-    """`<session>:pid<pid>` — the one shape a process tree ref has.
+def _session_tree(rest: str, what: str) -> tuple[str, str]:
+    """`<session>:pid<pid>` — the one shape a session tree ref has.
 
-    The pid is kept in brackets rather than dropped. "会话 150 的进程组" names
-    a session that may hold several trees, and the alert is about one of them.
+    Two forms, and the split between them is §5's: **the face names the thing a
+    person acts on, the detail keeps the identifier that says which one.**
+
+    The pid is not dropped — it is what distinguishes one of a session's trees
+    from another, and it is the only handle a person has when they go to look.
+    It is not on the face either. `Claude 会话 15413 的进程组（pid 1315723）` is
+    46 characters of which the readable part is eight, and on a 390px screen it
+    pushes the state line off the first screen. So the face carries
+    `Claude 会话 15413` and the detail carries this same sentence with the pid
+    in it. CARDS-STYLE.md R3.
     """
     session, _, pid = rest.partition(":pid")
-    return (f"{what} {session} 的进程组（pid {pid}）" if pid
-            else f"{what} {session} 的进程组")
+    session = session.removeprefix("session-")
+    face = f"{what} {session}"
+    precise = (f"{what} {session} 的进程组（pid {pid}）" if pid
+               else f"{what} {session} 的进程组")
+    return face, precise
 
 
 #: How much of an opaque id a card shows before eliding it. A docker container
@@ -539,21 +579,30 @@ def subject_display(subject_ref: str | None, *, owner: dict | None = None,
     named = _lookup_name(ref, names)
     if named is not None:
         return {"ref": ref or None, "text": _abbreviate_ids(named["text"]),
+                "precise": None,
                 "rule": named["rule"], "owner": dict(owner) if owner else None,
                 "because": named.get("because"),
                 "criticality": named.get("criticality")}
     text = None
+    precise = None
     rule = None
     for prefix, expand in _SUBJECT_RULES:
         if ref.startswith(prefix):
-            text, rule = expand(ref[len(prefix):]), prefix
+            expanded = expand(ref[len(prefix):])
+            # A rule may return the more precise form alongside the face one
+            # (`_session_tree` does; see the pid rule there). Everything else
+            # returns a single string and has no second form.
+            text, precise = expanded if isinstance(expanded, tuple) else (expanded, None)
+            rule = prefix
             break
     if text is None:
         # An unrecognised subject is printed whole. Guessing at its shape is
         # how `runtime-group:process-tree:session-150:pid28541` becomes
         # "会话 150" and stops naming the process the alert is actually about.
         text, rule = (ref or "（未记录对象）"), "verbatim"
-    return {"ref": ref or None, "text": _abbreviate_ids(text), "rule": rule,
+    return {"ref": ref or None, "text": _abbreviate_ids(text),
+            "precise": _abbreviate_ids(precise) if precise else None,
+            "rule": rule,
             "owner": dict(owner) if owner else None, "because": None,
             "criticality": None}
 
@@ -1230,9 +1279,9 @@ def env_health(sections: dict, *, at: str, gaps: list | None = None) -> dict:
                               "ATTENTION", GATEWAY_UNBOUND))
 
     if faulted and unread:
-        verdict, word = UNCONFIRMED, "有项目需要处理，且有项目未读到"
+        verdict, word = UNCONFIRMED, "有项目需处理，且有项目未读到"
     elif faulted:
-        verdict, word = ATTENTION, "有项目需要处理"
+        verdict, word = ATTENTION, "有项目需处理"
     elif unread:
         # Named rather than counted, because "一项未读到" sends the reader
         # hunting through three blocks for which one, and the card already

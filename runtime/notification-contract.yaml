@@ -502,9 +502,16 @@ alerts:
     # copy is how ACTION_REQUIRED comes to read as "warning" on one surface and
     # "critical" on another. A level with no word here renders as itself rather
     # than being given a friendlier one.
+    #
+    # The two 需 words dropped the 要 they used to carry (需要处理 / 需要确认).
+    # They sit in a card header on a 390px screen beside a count, and 要 buys
+    # nothing a NOC header reader needs; the risk of shortening a declared word
+    # is real, which is why it is done HERE, once, for every surface that reads
+    # this table, and not by a renderer trimming it at display time. The other
+    # three are left alone: 值得留意 / 供参考 / 无事 are already the terse form.
     words:
-      ACTION_REQUIRED: 需要处理
-      REVIEW: 需要确认
+      ACTION_REQUIRED: 需处理
+      REVIEW: 需确认
       WATCH: 值得留意
       INFORMATIONAL: 供参考
       NONE: 无事

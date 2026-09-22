@@ -144,9 +144,23 @@ def _sample_line(model: dict) -> list[dict]:
     return [md(f"🧪 **{presentation.SAMPLE_MARK}** —— 以下内容为布局示例，不是本次采集")]
 
 
+#: §15's `alert != authorization`, said once for the whole card.
+#
+# WHY ONE LINE AND NOT ONE PER ACTION
+#
+# Every action line and every action in the catalogue used to carry its own
+# refusal ("本卡不会重建它", "本卡不会停止、重启或清理任何东西"). Repeating it
+# beside every suggestion is what made a card of three events read as a
+# disclaimer: by the third repetition a reader stops reading it, which is the
+# opposite of what a refusal is for. It is stated once, at the foot, where a
+# reader who has decided to act will look for it, and it is now the ONLY line on
+# the face that names an operation at all — so it is also the only one that has
+# to be reviewed for naming one.
+FOOTNOTE_READ_ONLY = "只读告警 · 未执行终止、重启或清理操作"
+
+
 def _footnote(model: dict) -> list[dict]:
-    return [md("本卡只报告 ServerOS 已经记录的事实。没有终止、没有重启、没有清理 —— "
-               "需要动作的条目在 ServerOS 里带建议，不在这里。")]
+    return [md(FOOTNOTE_READ_ONLY)]
 
 
 # ---------------------------------------------------------------------------
@@ -174,7 +188,6 @@ def alert_card(model: dict) -> dict:
     watch = model.get("watch") or {}
     undecided = model.get("undecided") or {}
     recovery = model.get("recovery") or {}
-    omitted = model.get("omitted") or {}
 
     # Colour follows ATTENTION, not severity. A card whose colour came from
     # severity would paint a node red for a WARNING nobody may act on, which is
@@ -187,12 +200,14 @@ def alert_card(model: dict) -> dict:
     # draft printed it twice — once in the coloured bar and once as the first
     # body line — which on a 390px screen spends the most valuable line of the
     # card saying what the line above it just said.
-    if not events and not integrity:
-        # An empty alert card is a real answer and it is only honest with the
-        # counts beside it. "没有新变化" over a register with 113 backlogged
-        # entries and 1112 never-announced resolutions is true and misleading.
-        els.append(md(_quiet_line(omitted, watch)))
-
+    #
+    # AN EMPTY CARD IS A REAL ANSWER AND THE COUNTS ARE WHAT KEEP IT HONEST.
+    # "没有新变化" over a register with 113 backlogged entries and 1112
+    # never-announced resolutions is true and misleading, which is why a quiet
+    # card still prints `_summary_line` below. It carries the qualification as
+    # counts, so a quiet card needs no sentence of its own: "安静不等于没事"
+    # once stood here, and a card that has to tell a reader how to read it is
+    # a card that has not said the thing. CARDS-STYLE.md R2 / R8.
     for event in events:
         # THE FACE IS NOT THE PANEL HEADER. The first version of this put the
         # four face lines INSIDE the collapsible panel, which on a 390px screen
@@ -202,8 +217,8 @@ def alert_card(model: dict) -> dict:
         # tidier font. The face is markdown, always visible; the §4 detail is
         # the panel, and it is collapsed.
         els.append(md(_event_face(event)))
-        els.append(panel(_detail_title(event), _event_detail(event),
-                         expanded=False))
+        els.append(panel(_detail_title(event, multi=len(events) > 1),
+                         _event_detail(event), expanded=False))
 
     if integrity:
         # Same split as an event, and for the same reason: the finding is one
@@ -212,7 +227,9 @@ def alert_card(model: dict) -> dict:
         els.append(panel("技术详情 · 监控完整性", _integrity_detail(integrity),
                          expanded=False))
 
-    els.append(md(_summary_line(model, watch, recovery)))
+    other = _summary_line(model, watch, recovery)
+    if other:
+        els.append(md(other))
     if undecided.get("count"):
         els.append(md(_undecided_line(undecided)))
     els.append(md(f"采集 {_stamp(model)} · 设备 {model.get('device_ref') or '未知'}"))
@@ -255,14 +272,19 @@ def _face_verdict(events: list[dict], integrity: dict | None) -> str:
 def _face_title(events: list[dict], integrity: dict | None) -> str:
     """One sentence, carrying the WORST level's own word.
 
-    Not a count with a fixed word beside it: "1 件需要确认" over a row the
+    Not a count with a fixed word beside it: "1 项需确认" over a row the
     contract levelled ACTION_REQUIRED would be the renderer softening the axis,
     and the word is the contract's precisely so that cannot happen here.
+
+    The quantifier is 项 for findings and 个 for subjects, and the split is
+    worth stating because the alternative is drift: 件 reads as a parcel of
+    work rather than a count of findings, and a card that says 件 here and 条 in
+    the summary line is counting the same rows in two units.
     """
     levels = _face_levels(events, integrity)
     parts = []
     if events:
-        parts.append(f"{len(events)} 件")
+        parts.append(f"{len(events)} 项")
     if integrity:
         parts.append(f"{integrity['count']} 个主体失去观测")
     if not parts:
@@ -272,30 +294,44 @@ def _face_title(events: list[dict], integrity: dict | None) -> str:
 
 
 def _event_title(event: dict) -> str:
-    """`<attention word> · <subject>` — the subject named, not its ref.
+    """`<subject> · <what the catalogue calls this>` — the console's first line.
 
-    The subject is the whole point of the line: "内存占用持续偏高" over
-    `491d41804a0e` tells a person nothing they can act on, and the same
-    sentence over `litellm-shared-postgres` tells them which service to look
-    at. `presentation.name_index` is what makes the second one possible, and
-    when it has no answer this stays an id rather than becoming a guess.
+    The attention word is NOT here. The header carries it already ("⚠️ 需确认 ·
+    1 项"), and repeating it on every event spends the widest line of a 390px
+    card on a word the reader read six lines ago. What the line owes the reader
+    instead is what the subject IS to this finding, and that is the catalogue's
+    `label`: `Claude 会话 15413 · 遗留进程组` scans; `WARNING · Claude 会话
+    15413 的进程组（pid 1315723）` is an identifier with a severity glued on.
+
+    A code with no declared `label` keeps the subject alone on its line. A noun
+    invented here would be a second definition of a code that already has one,
+    written by the renderer rather than reviewed with the catalogue.
     """
-    return (f"{presentation.attention_word(event['attention']['level'])}"
-            f" · {event['subject']['text']}")
+    subject = event["subject"]["text"]
+    label = event["what"].get("label")
+    return f"{subject} · {label}" if label else subject
 
 
-def _detail_title(event: dict) -> str:
-    """What the fold is called. Not the event's own title, which is above it.
+def _detail_title(event: dict, *, multi: bool) -> str:
+    """What the fold is called.
 
-    A panel headed with the event's title would put the same line on the card
-    twice — once visible and once as the thing you tap — and a reader who taps
-    it would find the sentence they had already read.
+    Not the event's own title: a panel headed with the line directly above it
+    puts the same sentence on the card twice, once visible and once as the
+    thing you tap, and the reader who taps it finds what they already read.
+
+    `multi` is the one case that forces the subject back in. With three events
+    the card carries three collapsed panels, and three headers reading 技术详情
+    are three folds a person cannot tell apart without opening them. With one
+    event the position is the whole answer and the header stays bare — which is
+    the common shape, decided at the call site where the count is known.
     """
-    return f"技术详情 · {event['subject']['text']}"
+    if multi:
+        return f"技术详情 · {event['subject']['text']}"
+    return "技术详情"
 
 
 def _event_face(event: dict) -> str:
-    """The first screen: what happened, what it means, what to do. Four lines.
+    """The first screen: what is wrong, what it costs, what to look at. Four lines.
 
     Four and not ten, and VISIBLE rather than folded. The field set §4 lists
     has ten members and a person on a phone reads four of them before the taxi
@@ -306,20 +342,30 @@ def _event_face(event: dict) -> str:
     three actionable. On a container finding it is the name the registration
     gave the service, and the twelve hex characters a person cannot use are in
     the detail with the ref.
+
+    The label on line two is 状态 and not 发生了什么. 发生了什么 asks a question
+    and invites a sentence in reply; 状态 is a field, and a console's field
+    holds a state ("会话已结束，关联进程仍在运行") rather than a narrative. The
+    two said the same thing and only one of them read as a console.
+    CARDS-STYLE.md R1.
+
+    The duration rides on the 首次观测 line instead of taking one of its own.
+    It is the same fact — how long this has been true — and a fifth labelled
+    line on a 390px screen costs more than it carries.
     """
     what = event["what"]
     times = event["times"]
     impact = event["impact"]
+    # The local time, because a person reading this is in a place. The ISO
+    # instant is in the detail for anything that has to be matched against a log.
+    first = _local(times["first_seen"])
     lines = [
         f"**{_event_title(event)}**",
-        f"**发生了什么** {what['text'] or what['code']}",
+        f"**状态** {what['text'] or what['code']}",
         f"**影响** {_impact_text(impact['text'])}",
         f"**建议** {event['action']['text']}",
-        # The local time, because a person reading this is in a place. The ISO
-        # instant is in the detail for anything that has to be matched against
-        # a log.
-        f"**持续** {times['duration_text'] or '时长未知'}"
-        + (f" · 自 {_local(times['first_seen'])}" if _local(times['first_seen']) else ""),
+        f"**首次观测** {first or '未知'}"
+        + (f" · 持续 {times['duration_text']}" if times["duration_text"] else ""),
     ]
     named = _owner_line(event["subject"].get("owner"))
     if named:
@@ -328,18 +374,18 @@ def _event_face(event: dict) -> str:
 
 
 def _impact_text(text: str) -> str:
-    """The impact, without the placeholder reading as a stutter.
+    """The impact, said once, in the console's words.
 
-    `presentation.IMPACT_UNCONFIRMED` is "影响尚未确认", and a card that prints
-    it after the label renders `**影响** 影响尚未确认` — four characters of the
-    same word twice, which is what the first render of this card did on both of
-    its face events. The placeholder is kept verbatim in the model, the JSON
-    payload and the CLI, because that is the value §4 names; only the human
-    line drops the repeated word, and it adds what "unconfirmed" is claiming,
-    which the bare phrase did not.
+    The sentence that stood here was a paragraph: "尚未确认 —— 本卡没有这条代码的
+    影响证据，也不从代码本身推后果". It was written to repair a stutter (`**影响**
+    影响尚未确认` printed the same word twice) and it repaired it by explaining
+    the card to the reader instead of telling them the impact. The placeholder
+    itself now reads `暂未发现明确影响`, so the line needs no repair and the
+    second sentence has nothing left to say. CARDS-STYLE.md R2 / R7.
+
+    The placeholder is still carried verbatim in the model, the JSON payload
+    and the CLI, because that is the value §4 names.
     """
-    if text == presentation.IMPACT_UNCONFIRMED:
-        return "尚未确认 —— 本卡没有这条代码的影响证据，也不从代码本身推后果"
     return text
 
 
@@ -370,7 +416,14 @@ def _event_detail(event: dict) -> list[str]:
     what = event["what"]
     certainty = event["certainty"]
     times = event["times"]
-    lines = [
+    lines = []
+    # The subject's precise form, when the face had to shorten it. On a session
+    # finding the face says `Claude 会话 15413` and this says which of that
+    # session's trees the alert is about; the pid is the only handle a person
+    # has when they go to look, so it is never dropped, only moved.
+    if event["subject"].get("precise"):
+        lines.append(f"**对象** {event['subject']['precise']}")
+    lines += [
         f"**异常代码** {what['code']}",
         f"**事件类型** {event['event']} · **机器严重度** {event['severity']['word']}"
         f"（{event['severity']['level']}）",
@@ -414,7 +467,7 @@ INTEGRITY_CODES_SHOWN = 3
 def _integrity_heading(finding: dict) -> str:
     """Which declarations lost observation — the one thing the header cannot say.
 
-    The header already carries both the level and the count ("⚠️ 需要确认 · 3 个
+    The header already carries both the level and the count ("⚠️ 需确认 · 3 个
     主体失去观测"), so a first body line repeating either spends the most
     valuable line of a 390px card on what the line above it just said. The
     first draft of this face did exactly that — a bold count — and the render
@@ -449,7 +502,7 @@ def _integrity_face(finding: dict) -> str:
     """
     return "\n".join([
         _integrity_heading(finding),
-        f"**发生了什么** {finding['text']}",
+        f"**状态** {finding['text']}",
         f"**影响** {finding['impact']}",
         f"**建议** {finding['action']}",
     ])
@@ -471,7 +524,7 @@ def _integrity_detail(finding: dict) -> list[str]:
         "**这意味着** 本卡无法判断这些主体的当前状态。观测恢复前，"
         "「未再观测到」不等于「已恢复正常」。",
         f"**不作为故障计数** {finding['not_a_finding']['note']}"
-        f"（{finding['not_a_finding']['count']} 条）",
+        f"（{finding['not_a_finding']['count']} 项）",
         f"**注意力** {(finding.get('attention') or {}).get('because') or ''}"
         .rstrip(),
     ]
@@ -480,37 +533,66 @@ def _integrity_detail(finding: dict) -> list[str]:
 def _summary_line(model: dict, watch: dict, recovery: dict) -> str:
     """The line that keeps a short card honest.
 
-    Every count here is a thing the card did NOT print. "静默不等于没事" is
-    the misreading a short card invites, and a count is the cheapest thing that
+    Every count here is a thing the card did NOT print. "静默不等于没事" is the
+    misreading a short card invites, and a count is the cheapest thing that
     stops it without turning the card back into a register dump.
+
+    THREE NUMBERS, NOT SIX, AND ONE NOUN EACH. The line that stood here read:
+
+        另有 487 条低于打断级别（值得留意，未占卡面） · 4 条此前报告过的问题已恢复
+        · 2807 条在更早的批次里已被计数 · 110 条在投递基线之前就已存在（积压，不重复
+        播报） · 21 条从未告知过，不计入恢复
+
+    Every clause was true and the whole thing was unreadable, because it is the
+    alert ledger's own bookkeeping: `beyond_card_cap` versus `rows` is a
+    distinction between two of this card's internal caps, and no reader outside
+    this repository has any use for it. What a person needs off the first
+    screen is "how much did you leave out", which is one number.
+
+    THREE COUNTS, AND EACH ONE ANSWERS "how much did you leave out". The face
+    keeps exactly three — how many were below the interruption level, how many
+    were reported and have recovered, how many predate the delivery baseline.
+    Everything else the ledger counts is arithmetic *about* those numbers and
+    it belongs where the rest of the arithmetic already lives:
+
+      * `beyond_card_cap` versus `rows` is a distinction between two of this
+        card's own internal caps, and no reader outside this repository has any
+        use for it.
+      * `silent_resolutions` is the recovery ledger's own footnote (a resolution
+        of a row nobody was told about). It has a line of its own on the recovery
+        card, which is the card that is about recoveries; here it was a fourth
+        clause on a line whose subject is "what did not fit".
+
+    None of them is dropped from the payload or from `serverosctl alert digest`,
+    which is where a reader who wants the arithmetic gets it. CARDS-STYLE.md R8.
+
+    Empty when it has nothing to count, and the caller prints nothing rather
+    than a sentence about the absence: "没有未进卡面的条目" is a line on a card
+    whose whole purpose is to carry numbers, and a fallback that says "no
+    numbers" costs a line to say nothing.
     """
     omitted = model.get("omitted") or {}
     parts = []
     if watch.get("count"):
-        parts.append(f"另有 {watch['count']} 条低于打断级别（值得留意，未占卡面）")
+        parts.append(f"{watch['count']} 项低优先级")
     if recovery.get("announced"):
-        parts.append(f"{recovery['announced']} 条此前报告过的问题已恢复")
-    if omitted.get("beyond_card_cap"):
-        parts.append(f"{omitted['beyond_card_cap']} 条在更早的批次里已被计数")
+        parts.append(f"{recovery['announced']} 项已恢复")
     if omitted.get("backlog"):
-        parts.append(f"{omitted['backlog']} 条在投递基线之前就已存在（积压，不重复播报）")
-    if omitted.get("silent_resolutions"):
-        parts.append(f"{omitted['silent_resolutions']} 条从未告知过，不计入恢复")
-    if omitted.get("rows"):
-        parts.append(f"另有 {omitted['rows']} 条同类事件未进卡面")
-    return " · ".join(parts) if parts else "没有未进卡面的条目"
+        parts.append(f"{omitted['backlog']} 项历史积压")
+    return "**其他** " + " · ".join(parts) if parts else ""
 
 
 def _undecided_line(undecided: dict) -> str:
-    return (f"⚠️ {undecided['count']} 条事件的 code 没有在注意力表里被决定过"
-            f"（{'、'.join(undecided.get('codes') or [])}）。"
-            f"未决定不等于不重要——这是声明里的一个洞。")
+    """A hole in the attention table, stated as a hole.
 
-
-def _quiet_line(omitted: dict, watch: dict | None = None) -> str:
-    extra = f"另有 {watch['count']} 条低于打断级别。" if (watch or {}).get("count") else ""
-    return (f"本批没有需要确认的变化。{extra}登记表中仍有 "
-            f"{omitted.get('backlog') or 0} 条积压未播报 —— 安静不等于没事。")
+    The sentence that stood here ended "未决定不等于不重要——这是声明里的一个
+    洞". The first half is the judgement the ⚠️ is for and it stays; the second
+    half explains the card's own vocabulary back to a reader who is looking at
+    a code list they cannot act on. What they need is the fact that these codes
+    have no declared level, which is what the line now says.
+    """
+    return (f"⚠️ {undecided['count']} 项事件的 code 未在注意力表中定级"
+            f"（{'、'.join(undecided.get('codes') or [])}）· 未定级不等于不重要")
 
 
 def _stamp(model: dict) -> str:
@@ -559,7 +641,7 @@ def recovery_card(model: dict) -> dict:
     items = model.get("items") or []
     counts = model.get("counts") or {}
     template, icon = _template("OK" if items else "UNCONFIRMED")
-    title = _titled(f"{icon} 已恢复 · {counts.get('announced') or 0} 件"
+    title = _titled(f"{icon} 已恢复 · {counts.get('announced') or 0} 项"
                     if items else f"{icon} 本批没有已告知且已恢复的问题", model)
 
     els: list[dict] = _sample_line(model)
@@ -567,19 +649,23 @@ def recovery_card(model: dict) -> dict:
         what = item["what"]
         els.append(md(
             f"✅ **{what['what'] or what['code']}**\n"
-            f"对象：{item['subject']['text']}\n"
-            f"恢复依据：{item['basis']['note']}（state {item['basis']['state']}）\n"
-            f"出现于 {item['times']['first_seen'] or '未记录'} · "
-            f"恢复于 {item['times']['resolved_at'] or '未记录'} · "
-            f"持续 {item['times']['open_for_text']}"))
+            f"**对象** {item['subject']['text']}\n"
+            f"**恢复依据** {item['basis']['note']}（state {item['basis']['state']}）\n"
+            f"**出现于** {item['times']['first_seen'] or '未记录'} · "
+            f"**恢复于** {item['times']['resolved_at'] or '未记录'} · "
+            f"**持续** {item['times']['open_for_text']}"))
 
     omitted = model.get("omitted") or {}
     tail = []
     if omitted.get("announced_beyond_limit"):
-        tail.append(f"另有 {omitted['announced_beyond_limit']} 件已告知的恢复未进卡面")
+        tail.append(f"另有 {omitted['announced_beyond_limit']} 项已告知的恢复未进卡面")
+    # `never_announced` is a resolution of an alert the register never delivered,
+    # so nobody experienced it going wrong and "recovered" would be a word this
+    # card put in their mouth. The count says which rows those are; the sentence
+    # that once explained that here ("人不能被通知一个他从来没收到过的坏消息")
+    # was the card arguing its own case to the reader, and the count carries it.
     if omitted.get("never_announced"):
-        tail.append(f"{omitted['never_announced']} 件从未告知过，不计入恢复"
-                    "（人不能被通知一个他从来没收到过的坏消息）")
+        tail.append(f"{omitted['never_announced']} 项从未告知，不计入恢复")
     if tail:
         els.append(md(" · ".join(tail)))
     els.append(md(f"本批恢复总数 {counts.get('recovered') or 0} · "
@@ -729,7 +815,12 @@ def _html_body(els: list[dict]) -> str:
         tag = el.get("tag")
         if tag == "markdown":
             content = el.get("content") or ""
-            css = "foot" if content.startswith("本卡只报告") else ""
+            # The footnote is the card's chrome, not its content, so it is grey
+            # in the preview. Compared against the constant rather than matched
+            # by prefix: the prefix this used to test ("本卡只报告") was the
+            # OLD footnote's opening, and a sentinel that stops matching fails
+            # silently — the line simply stops being grey, which no test sees.
+            css = "foot" if content == FOOTNOTE_READ_ONLY else ""
             out.append(f'<p class="{css}">{_esc(content)}</p>')
         elif tag == "hr":
             out.append("<hr>")
