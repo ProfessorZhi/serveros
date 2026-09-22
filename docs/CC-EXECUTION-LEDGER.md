@@ -274,6 +274,32 @@ anomaly(detectors, runtime/anomaly.py)
 `cards.status_card()` 有实现、有测试、**没接**。主卡也不写 receipt
 （`grep 'record|digest-record|receipt' monitor_card.py` → 0 命中）。
 
+**ServerOS 这一侧已经是齐的**，缺的只在 ops 那一跳：链条是
+collectors → 结构化事实模型 → `status_model`/`status_card` → 冻结的 presentation payload
+→ delivery intent → transport → receipt，而 CLI 上对应的三个动词都在
+（`cmd_card_status` `cli.py:4269`、`cmd_card_record_delivery:4201`、`cmd_card_deliveries:4242`）。
+实测 `serverosctl card status --with-frozen --json` 在**新进程**里 exit 0，给出冻结块
+`{"version": "status@9820fa98d597", "payload_hash": "9820fa98d597…", …}`，2967 字节。
+
+顺带一提：同一条命令在 promote 之前给的是 `status@cfc8bc7165ab`、3185 字节。**版本号是内容
+的函数，不是时钟的函数**——shim 指到新 revision 之后卡面内容确实变了，于是版本也变了。
+这正是 §3/§4 要的语义；如果它两次一样，那份冻结就没有冻住任何东西。
+
+**这一跳本轮做不了，不是因为难，是因为有两个活动工作树压着同一个文件**：
+
+```text
+worktrees/hwz-ops/SRV-0011        M scripts/tokyo-monitor/monitor_card.py     （未提交）
+                                  ?? gateway-binding.yaml / gateway_binding.py / test_gateway_binding.py
+worktrees/hwz-ops/alert-card-v2   ?? ALERT-CARD-V2.md / alert_card_v2.py / alert_semantics.py
+                                     alert_subjects.py / health_face.py / validate_card_v2.py / fixtures/
+```
+
+`monitor_card.py` 正被别人改，而 `alert-card-v2` 是一整条独立的飞书 UX 工作流。去改同一
+个文件等于覆盖另一个 actor 的 WIP——所以这一条记成**等待**，不记成没做：状态广播
+（定时状态摘要）与告警摘要（NEW/ESCALATED/REOPENED/RECOVERED）是两种节奏，共享事实与
+呈现规则但**不共享发送触发语义**，而两种节奏的卡面现在都已经由 ServerOS 出（告警那份
+已经在链上，见上）。
+
 ### 3.7 G1 的注册表：一个 artifact 一条 plugin 记录，成员按 composition 精确取
 
 先前 `manifest_members()` 会把**全部** plugin 记录的成员并起来，于是「composition 声明
@@ -336,21 +362,48 @@ DESIGN-only 变成了 CODE。`NOT_MEASURED` 与 `FAILED` 是两件事，不能�
 
 计划 P0：「测试现有受影响基线并记录，不能把旧问题带来的失败静默删掉。」
 
-### 5.0 本轮实测基线
+### 5.0 本轮实测基线（含一条被修正的过度声明）
+
+**先纠一条本轮自己写错过的**：早先记成「`4207 passed, 0 failed`」的那次绿灯，实际命令里带着
+`SERVEROS_COMPOSITION_EVALUATOR=<…>/fabric-v1/skills/ability-management/payload/composition.py`。
+也就是说那 8 条 composition/registry 配对测试**是在把规则钉到含 pairing 的那个 revision 上
+之后**才绿的。不带这个变量跑，同样这棵树会红 8 条。一条省略了环境变量的绿灯，读起来和
+一条无条件的绿灯一模一样——所以这一格现在把变量写出来。
 
 | 套件 | 结果 | 命令 |
 | --- | --- | --- |
-| serveros（最新） | **4207 passed, 23 skipped, 3703 subtests passed, 0 failed**（459.73s，tree `dc23707`） | `serveros-test/bin/python -m pytest tests/ -q -p no:cacheprovider` |
-| serveros（起点） | 3 failed, 4171 passed | 同上 |
-| ability-management | **105 passed, 2 skipped**（`074a518`）；三个 renderer `--check` 干净 | 同上，加 `SERVEROS_BUNDLE=<serveros worktree>/plugin` |
+| serveros（终态，带 evaluator 覆盖） | **4239 passed, 23 skipped, 3704 subtests passed, 0 failed**（480.07s，`fb97f77`） | `SERVEROS_COMPOSITION_EVALUATOR=<worktree>/…/composition.py SERVEROS_ABILITY_REF=serveros/fabric-integration-20260922 pytest tests/ -q -p no:cacheprovider` |
+| serveros（同树不带覆盖） | **8 failed, 4231 passed, 23 skipped, 3704 subtests passed**（467.10s） | 同上去掉那两个变量 |
+| serveros（`dc23707`，带覆盖） | 4207 passed, 23 skipped, 3703 subtests passed, 0 failed（459.73s） | 同上 |
+| serveros（起点） | 3 failed, 4171 passed | — |
+| ability-management | **105 passed, 2 skipped**（`074a518`）；三个 renderer `--check` 干净 | 加 `SERVEROS_BUNDLE=<serveros worktree>/plugin` |
 
-serveros 那套的代价要写下来：单次 **7 分 44 秒**，且主机 load 一度到 53 时被拖到
+4239 − 4231 = 8，**正好是那 8 条配对测试**——两个数之间的差就是那一族红的全部，没有第二处。
+
+serveros 那套的代价要写下来：单次 **7 分 47 秒**，且主机 load 一度到 53 时被拖到
 近乎两倍。所以「跑一套」在这台共享机上不是随手动作，改一个字面量就该只想跑受影响的那两个文件。
 
 起点那 3 failed 是本轮改掉的第一件事（§3/§4 的 send-time race 与 freeze），不是外部红。
 
+那 8 条红的身份要说清楚，因为它们的形状**看似**是本轮代码的问题：全部在
+`tests/test_architecture_check.py`，且都是「本应报出了 drift，却一条都没报」。
+实测三条判据定案：
+
+1. 单独跑这个文件也红 8 条 → 不是全量跑的顺序污染。
+2. `git diff dc23707 fb97f77` 对这个文件与 `skills/serveros/scripts/architecture_check.py`
+   **无改动** → 不是本轮改坏的。
+3. 把 `SERVEROS_COMPOSITION_EVALUATOR` 指向 `worktrees/ability-management/…` 的
+   `composition.py` → **24 passed** → 是这个输入决定的。
+
+原因是 fixture 的搜索顺序（它自己的 docstring 就写着）：**canonical checkout 优先**，
+于是它读 `src/ability-management/skills/ability-management/payload/composition.py`——
+那一份是 9-18 的，**不含 §8 的配对规则**（`grep -c pairing` → 0，worktree 那份 → 1）。
+规则读不到，检查就报 `COMPOSITION_PAIRING_UNAVAILABLE`，而「报出了不可用」在断言里
+与「没报出 drift」长得一样。
+
 | 红 | 位置 | 性质 | 处置 |
 | --- | --- | --- | --- |
+| **8 条 pairing 断言** | serveros `tests/test_architecture_check.py` | **跨仓库、同一族的反向**：它读 `src/ability-management` 的 `composition.py`（9-18），那份不含 §8 的配对规则；带 `SERVEROS_COMPOSITION_EVALUATOR` 指向 worktree 那份就 24 passed | **未修，已定案**。解除条件是让 `src/ability-management` 前进到含 `e7d20f3`（配对规则进 evaluator 的那次）的 revision——**不是**改测试，也**不是**把 fixture 的搜索顺序倒过来（那会让 canonical checkout 永远不再被读）。它是 §5.0 里那条跨仓库红的同一族 |
 | `test_real_registry_matches_real_bundle` | ability-management `tests/test_materialization_contract.py` | **跨仓库**：它读 `src/serveros`，而 `plugin/profiles/testing.yaml` 只在 worktree 里，于是注册表「多」了 `automated-testing` | 已确诊：`SERVEROS_BUNDLE=<worktree>/plugin` 下全套通过。修法是让 `src/serveros` 前进到含该 profile 的 revision，**不是**改测试 |
 | `test_the_committed_view_is_up_to_date` | ability-management `tests/test_capability_families.py` | repin 的派生后果：视图里嵌 `authority_revision` | 已修，并入 repin commit `c993c82`（只动 pin 不动 pin 的渲染，那一格 bisect 出来就是红的） |
 | 9 个 profile 构建失败 | serveros `tests/test_build.py`、`tests/test_plugin_composition.py` | **本轮自己引入又修掉的**：`ABILITY_SKILLS` 是 fixture 里手维护的「注册表替身」，它含全部 `available` 名字却独缺 `document-stewardship` | 已修，commit `6986b6f`。它当时**正确地**发火了——fixture 一直默默模拟旧事实而从不声明，所以 profile 一改就炸在这里而不是炸在别处 |
