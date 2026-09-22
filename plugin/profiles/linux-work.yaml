@@ -33,7 +33,17 @@ short_description: Agent Engineering Workbench for a Linux work node
 # A profile's payload differs from its parent's, so it declares its own cache
 # identity. The builder refuses a profile that inherits this one — a shared
 # cachebuster would let two different payloads claim one version string.
-cachebuster: srv0003.20260915b
+#
+# Bumped here because that is exactly what had just happened. `15b` is the
+# cachebuster of the revision promoted at 11:00, whose README says
+# `document-stewardship (missing)`; re-building the same profile after the
+# Skill landed produces a DIFFERENT payload (the recommended line now says
+# `available`) under the SAME version string. Nothing in the builder can see
+# that — it compares a profile against its parent, not against what has already
+# been released — so the bump is the author's to make, and skipping it would
+# leave an installed plugin cache serving the old payload for a version that no
+# longer describes it.
+cachebuster: srv0003.20260922a
 
 skills:
   - name: runtime-management
