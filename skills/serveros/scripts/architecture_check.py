@@ -257,36 +257,73 @@ def skill_names(root: Path) -> list[str]:
                   if p.is_dir() and (p / "SKILL.md").exists())
 
 
-def manifest_members(manifest: dict, plugin_id: str = "ProfessorZhi/hwz-server-os") -> dict:
-    """Resolve ``provides`` to skill *names*.
+def manifest_provides(manifest: dict) -> dict:
+    """The registry's plugin records, indexed by the ARTIFACT each one is about.
 
-    ``provides`` carries stable identities (``ProfessorZhi/workspace-maintainer``),
-    while ``bundle.yaml`` carries skill names (``workspace-management``). They are
-    not the same namespace and a naive set comparison between them produces a
-    fake drift -- the rename is recorded in ``repository_aliases`` and the
-    ``name``/``aliases`` fields. Resolution goes identity -> ability -> name.
+    Three namespaces meet here and none of them is another's. ``provides``
+    carries stable identities (``ProfessorZhi/workspace-maintainer``), a
+    composition's ``name`` carries an ARTIFACT name (``hwz-server-os-linux-work``),
+    and ``bundle.yaml`` carries skill names (``workspace-management``). A set
+    comparison across them without resolution is a fake drift -- the rename is
+    recorded in ``repository_aliases`` and the ``name``/``aliases`` fields. Each
+    member resolves identity -> ability -> name.
+
+    Returns::
+
+        {"records": {artifact_name: [{"id": ..., "members": [...]}, ...]},
+         "identities": [...], "names": [...], "unresolved": [...]}
+
+    ``records`` maps a name to a LIST. Two records claiming one artifact
+    identity is a fact the report has to be able to state; collapsing it here
+    would decide that question by dict insertion order, in the one place a
+    reader cannot see the decision being made.
+
+    WHY THE RECORDS ARE INDEXED BY ARTIFACT. They used to be read through one
+    hardcoded plugin id, and the union of every composition was compared against
+    that one record. While the record happened to BE the union, "everything
+    shipped is explainable by the registry" was true by construction -- so the
+    comparison could not see either error it existed for: a record listing a
+    member of a different artifact (explained away by that artifact) and a record
+    omitting one of its own (covered by a sibling record). One union record
+    describes three artifacts and is therefore false for each of them.
+
+    The product-level ``identities``/``names`` are still returned, and they are
+    still the right answer to "what can this node resolve". They are no longer
+    the answer to "is this record true": that is a question about one artifact,
+    and the evaluator's ``judge_records()`` decides it.
     """
     abilities = {a.get("id"): a for a in (manifest.get("abilities") or [])}
-    plugin = abilities.get(plugin_id) or {}
-    names, unresolved, identities = [], [], []
-    for entry in plugin.get("provides") or []:
-        ident = entry.get("id")
-        identities.append(ident)
-        ability = abilities.get(ident)
-        if ability is None:
-            unresolved.append(ident)
-        else:
-            names.append(ability.get("name") or str(ident).split("/")[-1])
+    records: dict[str, list[dict]] = {}
+    identities, names, unresolved = [], [], []
+    for entry in (manifest.get("abilities") or []):
+        if (entry.get("type") or "") != "plugin":
+            continue
+        members = []
+        for provided in entry.get("provides") or []:
+            ident = provided.get("id")
+            identities.append(ident)
+            ability = abilities.get(ident)
+            if ability is None:
+                unresolved.append(ident)
+            else:
+                name = ability.get("name") or str(ident).split("/")[-1]
+                members.append(name)
+                names.append(name)
+        artifact = (entry.get("name") or "").strip()
+        if not artifact:
+            # A record with no name has no artifact to pair with. It is not
+            # silently skipped into the product union either: its members are
+            # in `names`, and the pairing layer reports the compositions it
+            # cannot be matched to. Falling back to the registry id would look
+            # up one identity's record and report another identity's errors.
+            continue
+        records.setdefault(artifact, []).append(
+            {"id": entry.get("id"), "members": sorted(members)})
     return {
-        "plugin_entry_found": bool(plugin),
-        # The plugin's OWN name. Passed to the evaluator so it can exclude a
-        # plugin that provides itself: that is a statement about the plugin,
-        # not about an ability it composes, and counting it would force every
-        # composition to list itself as a member.
-        "plugin_name": plugin.get("name") or str(plugin_id).split("/")[-1],
+        "records": records,
         "identities": identities,
-        "names": sorted(names),
-        "unresolved_identities": unresolved,
+        "names": sorted(set(names)),
+        "unresolved": sorted(set(unresolved)),
     }
 
 
@@ -793,38 +830,64 @@ def collect(args) -> dict:
     # resolvability directions; restating them would be the second
     # implementation this section exists to delete.
 
-    provides = manifest_members(manifest)
+    provides = manifest_provides(manifest)
 
-    if provides["unresolved_identities"]:
+    if provides["unresolved"]:
         findings.append(finding(
             "PROVIDES_IDENTITY_UNRESOLVED", "registry",
             "every provides[].id resolves to an ability entry",
-            provides["unresolved_identities"],
+            provides["unresolved"],
             "ability-management/abilities-manifest.yaml", "MEDIUM"))
 
     # The verdict itself, from the one implementation. Each finding the
     # evaluator returns is rendered with the identifier this report has always
-    # used, so a reader (and the tests) keep the same handle on it.
+    # used, so a reader (and the tests) keep the same handle on it. The
+    # evaluator's OWN id stays in `desired`, so a reader can still tell which
+    # rule fired without a second id being invented for it here.
+    #
+    # The three pairing ids share the drift id deliberately: "this artifact's
+    # record and this composition disagree" is one thing to act on, and which of
+    # the three it is decides the repair, not the alarm. `composition` and
+    # `observed` name the artifact, so the repair is still reachable from the row.
     _JUDGMENT_IDS = {
         "COMPOSITION_MEMBER_UNREGISTERED": ("BUNDLE_MANIFEST_DRIFT", "HIGH"),
         "COMPOSITION_MEMBER_UNREACHABLE": ("BUNDLE_MANIFEST_DRIFT", "HIGH"),
         "COMPOSITION_EXACT_MEMBER_MISMATCH": ("BUNDLE_MANIFEST_DRIFT", "HIGH"),
         "RECOMMENDATION_UNRESOLVABLE": ("RECOMMENDATION_UNRESOLVABLE", "MEDIUM"),
+        "COMPOSITION_ARTIFACT_UNNAMED": ("BUNDLE_MANIFEST_DRIFT", "HIGH"),
+        "ARTIFACT_RECORD_MISSING": ("BUNDLE_MANIFEST_DRIFT", "HIGH"),
+        "ARTIFACT_RECORD_DUPLICATE": ("BUNDLE_MANIFEST_DRIFT", "HIGH"),
     }
     if evaluator is not None and resolved_compositions:
-        for judged in evaluator.judge(
-                resolved_compositions,
-                registry_members=provides["names"],
-                plugin_members=[provides["plugin_name"]]):
-            fid, severity = _JUDGMENT_IDS.get(
-                judged["id"], (judged["id"], judged["severity"]))
+        if not hasattr(evaluator, "judge_records"):
+            # A pin older than the pairing rule. Reported rather than skipped:
+            # a checker that cannot reach its rule has not thereby found the
+            # system correct, and falling back to the union comparison would
+            # restore exactly the judgment this round removed -- silently, and
+            # under the evaluator's authority, which is worse than not asking.
             findings.append(finding(
-                fid, "composition-vs-registry", judged["rule"],
-                f"{judged['id']}={judged['observed']}",
-                judged["owner"], severity,
-                observation_provenance={"bundle": _prov(bundle_obs),
-                                        "manifest": _prov(manifest_obs),
-                                        "evaluator": _prov(evaluator_obs)}))
+                "COMPOSITION_PAIRING_UNAVAILABLE", "composition",
+                "the pinned ability revision's evaluator pairs each composition "
+                "with its own artifact's registry record (`judge_records`)",
+                f"{evaluator.__file__} exposes "
+                f"{'judge' if hasattr(evaluator, 'judge') else 'neither judge nor judge_records'}"
+                f"{', but not judge_records' if hasattr(evaluator, 'judge') else ''}",
+                "the composition rule is implemented once, in ability-management; "
+                "serveros reads it from the pin and never vendors a copy",
+                "HIGH",
+                observation_provenance=_prov(evaluator_obs)))
+        else:
+            for judged in evaluator.judge_records(
+                    resolved_compositions, records_by_name=provides["records"]):
+                fid, severity = _JUDGMENT_IDS.get(
+                    judged["id"], (judged["id"], judged["severity"]))
+                findings.append(finding(
+                    fid, "composition-vs-registry", judged["rule"],
+                    f"{judged['id']}={judged['observed']}",
+                    judged["owner"], severity,
+                    observation_provenance={"bundle": _prov(bundle_obs),
+                                            "manifest": _prov(manifest_obs),
+                                            "evaluator": _prov(evaluator_obs)}))
 
     # A member the bundle sources locally that the registry also lists in
     # `provides`.

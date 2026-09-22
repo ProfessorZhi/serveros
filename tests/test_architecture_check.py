@@ -74,9 +74,43 @@ SHIPPED = ("ability-management", "runtime-management", "test-management",
 RECOMMENDED = ("information-management", "work-management",
                "feishu-space-management", "feishu-report")
 
-# Everything the registry lists in `provides` for the plugin.
-DISTRIBUTED = SHIPPED + RECOMMENDED
-PLUGIN_ID = "ProfessorZhi/hwz-server-os"
+# PER ARTIFACT, because that is the question one plugin record answers: a record
+# says what is in ONE artifact. These are the three real member sets, read from
+# `plugin/bundle.yaml` and `plugin/profiles/*.yaml` and held as literals so that
+# a change to either side shows up here as a decision rather than silently
+# redefining what these tests assert.
+#
+# A union record used to stand here, and the checker compared it against the
+# union of every composition. That comparison could not fail while the record
+# WAS the union, so it saw neither error it existed for. Splitting the literal
+# is what makes the fixture able to express "this artifact's record is wrong" --
+# with one record there is no such state to write down.
+CORE_SHIPPED = ("ability-management", "runtime-management")
+LINUX_WORK_SHIPPED = ("ability-management", "runtime-management",
+                      "test-management", "workspace-management")
+TESTING_SHIPPED = ("automated-testing", "test-management")
+LINUX_WORK_RECOMMENDED = ("document-stewardship", "feishu-report",
+                          "feishu-space-management", "information-management",
+                          "inventory-publishing", "work-management")
+# Each record carries its artifact's members: what it ships, plus what it
+# recommends, because a recommendation is a promise the registry has to be able
+# to keep and a record that omits one leaves the promise with nothing behind it.
+CORE_PROVIDES = CORE_SHIPPED
+LINUX_WORK_PROVIDES = LINUX_WORK_SHIPPED + LINUX_WORK_RECOMMENDED
+TESTING_PROVIDES = TESTING_SHIPPED
+
+# The product's member set: the union across the three records. This is still
+# the right answer to "what can a node resolve from this registry" -- it is no
+# longer the answer to "is this record true", which is per artifact.
+DISTRIBUTED = tuple(dict.fromkeys(CORE_PROVIDES + LINUX_WORK_PROVIDES + TESTING_PROVIDES))
+
+# The three artifacts, by the name each composition declares. A composition pairs
+# with a record by THIS name, not by the registry id: `composition` carries the
+# distribution's identity and `name` carries the artifact's, and only the second
+# one is what the registry is keyed by.
+ARTIFACTS = (("hwz-server-os", CORE_PROVIDES),
+             ("hwz-server-os-linux-work", LINUX_WORK_PROVIDES),
+             ("serveros-testing", TESTING_PROVIDES))
 
 
 def _load(name: str, filename: str):
@@ -159,21 +193,42 @@ def _init(path: Path) -> Path:
     return path
 
 
-def _registry(provides, *, extra=()):
-    """A manifest whose plugin entry provides exactly `provides`.
+def _registry(*, core=CORE_PROVIDES, linux_work=LINUX_WORK_PROVIDES,
+              testing=TESTING_PROVIDES, extra=(), extra_records=()):
+    """A manifest with one plugin record per artifact, each providing its own set.
 
-    Each provided identity needs an ability entry to resolve to a NAME, because
+    Every provided identity needs an ability entry to resolve to a NAME, because
     `provides` carries identities and `bundle.yaml` carries names — an
     unresolvable identity is reported separately as a registry problem, and
     letting it stand in here would make every other assertion ambiguous.
+
+    The records say `type: plugin`, as the real registry does. They used to say
+    `type: skill`, which the old reader could not notice: it looked the entry up
+    by id and never asked what it was. A fixture that describes the registry in a
+    shape the registry does not use is a fixture that tests a stand-in.
+
+    `None` for one of the three means NO RECORD for that artifact — the old
+    union shape, which a fixture that always wrote three records could not
+    express. `extra_records` adds further `(artifact, members)` pairs, which is
+    how a duplicated identity is written down.
     """
-    abilities = [{"type": "skill", "id": PLUGIN_ID, "name": "hwz-server-os",
-                  "path": "plugins/hwz-server-os",
-                  "provides": [{"type": "skill", "id": f"ProfessorZhi/{n}"} for n in provides]}]
+    sets = dict(ARTIFACTS)
+    sets["hwz-server-os"] = core
+    sets["hwz-server-os-linux-work"] = linux_work
+    sets["serveros-testing"] = testing
+    abilities = []
+    for artifact, members in list(sets.items()) + list(extra_records):
+        if members is None:
+            continue
+        abilities.append({
+            "type": "plugin", "id": f"ProfessorZhi/{artifact}", "name": artifact,
+            "path": f"plugins/{artifact}",
+            "provides": [{"type": "skill", "id": f"ProfessorZhi/{n}"} for n in members]})
+    provided = sorted({n for members in sets.values() for n in (members or ())}
+                      | {n for _a, ms in extra_records for n in ms}
+                      | set(extra))
     abilities += [{"type": "skill", "id": f"ProfessorZhi/{n}", "name": n,
-                   "path": f"skills/{n}"} for n in provides]
-    abilities += [{"type": "skill", "id": f"ProfessorZhi/{n}", "name": n,
-                   "path": f"skills/{n}"} for n in extra]
+                   "path": f"skills/{n}"} for n in provided]
     return {"schema_version": 3, "abilities": abilities}
 
 
@@ -181,7 +236,9 @@ def _registry(provides, *, extra=()):
 def world(tmp_path):
     """Three hermetic repositories, and a way to re-run the checker against them."""
 
-    def build(*, provides=DISTRIBUTED, extra=()):
+    def build(*, core=CORE_PROVIDES, linux_work=LINUX_WORK_PROVIDES,
+              testing=TESTING_PROVIDES, extra=(), extra_records=(),
+              evaluator_text=None):
         root = tmp_path / "world"
         serveros = _init(root / "serveros")
         # `plugin/profiles/` is copied too: the checker compares the registry
@@ -204,14 +261,25 @@ def world(tmp_path):
 
         ability = _init(root / "ability-management")
         (ability / "abilities-manifest.yaml").write_text(
-            yaml.safe_dump(_registry(provides, extra=extra), sort_keys=False))
+            yaml.safe_dump(_registry(core=core, linux_work=linux_work,
+                                     testing=testing, extra=extra,
+                                     extra_records=extra_records),
+                           sort_keys=False))
         # The composition rule itself, at the path the pin names. The checker
         # executes it out of the ability revision rather than importing a local
         # copy, so a fixture that omitted it would exercise only the
         # COMPOSITION_EVALUATOR_ABSENT branch and never the comparison.
+        #
+        # `evaluator_text` overrides the copy, which is how "a pin older than
+        # the rule" is written down: not a mock, but the real file with the
+        # function this round added removed from it.
         payload = ability / "skills/ability-management/payload"
         payload.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(PAYLOAD / "composition.py", payload / "composition.py")
+        if evaluator_text is None:
+            shutil.copy2(PAYLOAD / "composition.py", payload / "composition.py")
+        else:
+            (payload / "composition.py").write_text(evaluator_text,
+                                                    encoding="utf-8")
         _commit(ability)
 
         ops = _init(root / "ops")
@@ -258,7 +326,8 @@ def test_a_distributed_ability_missing_from_the_registry_is_high_drift(world):
     expands a plugin install into its `provides` members, so a member it cannot
     see is a member silently left out of its own accounting — the failure is
     in the registry, and it must be reported loudly."""
-    report = world(provides=[n for n in DISTRIBUTED if n != "workspace-management"])
+    report = world(linux_work=[n for n in LINUX_WORK_PROVIDES
+                               if n != "workspace-management"])
     found = drifts(report)
     assert len(found) == 1, [f["observed"] for f in found]
     assert found[0]["severity"] == "HIGH"
@@ -271,7 +340,7 @@ def test_a_provided_ability_that_no_composition_ships_is_high_drift(world):
     """The other direction: the registry claims an ability that the bundle does
     not compose, so the registry describes a distribution that does not exist.
     A repair that only ever subtracts from one side would let this through."""
-    report = world(provides=list(DISTRIBUTED) + ["ghost-ability"])
+    report = world(linux_work=list(LINUX_WORK_PROVIDES) + ["ghost-ability"])
     found = drifts(report)
     assert len(found) == 1, [f["observed"] for f in found]
     assert found[0]["severity"] == "HIGH"
@@ -279,6 +348,95 @@ def test_a_provided_ability_that_no_composition_ships_is_high_drift(world):
 
 def test_a_registry_that_agrees_with_the_bundle_reports_no_drift(world):
     assert drifts(world()) == []
+
+
+# ---------------------------------------------------------------------------
+# §8 · a record answers for ONE artifact
+# ---------------------------------------------------------------------------
+#
+# The three below are the errors the union comparison could not see. It compared
+# ONE record against the union of every composition, which holds exactly while
+# that record IS the union — so "everything shipped is explainable by the
+# registry" was true by construction and neither direction could fail. Pairing
+# is composition -> the artifact it declares -> that artifact's record -> that
+# record's own member set, and the rule lives in the evaluator so this side
+# never grows a second copy of it (§8).
+
+
+def test_a_composition_whose_artifact_has_no_record_is_high_drift(world):
+    """The old registry shape. One union record for the whole product reaches
+    here, and the finding is the truthful statement of it: an install expanded
+    from this registry cannot produce `serveros-testing` at all."""
+    report = world(testing=None)
+    found = drifts(report)
+    assert len(found) == 1, [f["observed"] for f in found]
+    assert found[0]["severity"] == "HIGH"
+    assert "ARTIFACT_RECORD_MISSING" in str(found[0]["observed"])
+    assert "serveros-testing" in str(found[0]["observed"])
+
+
+def test_two_records_claiming_one_artifact_are_high_drift(world):
+    """`serveros-testing` is a second plugin identity, not a longer `provides`
+    on the first. Two records claiming one name means "the record" is not well
+    defined, and first-wins would decide it in the one place nobody can see."""
+    report = world(extra_records=(("serveros-testing", TESTING_SHIPPED),))
+    found = drifts(report)
+    assert len(found) == 1, [f["observed"] for f in found]
+    assert found[0]["severity"] == "HIGH"
+    assert "ARTIFACT_RECORD_DUPLICATE" in str(found[0]["observed"])
+
+
+def test_a_record_over_listing_another_artifacts_member_is_high_drift(world):
+    """The error the union record made unfalsifiable.
+
+    `hwz-server-os` builds core, which ships neither `workspace-management` nor
+    `test-management`. A record listing them describes a different artifact —
+    and it used to be undetectable by construction, because the record was the
+    union of every composition and so was the comparison."""
+    report = world(core=list(CORE_PROVIDES) + ["workspace-management",
+                                               "test-management"])
+    found = drifts(report)
+    assert len(found) == 1, [f["observed"] for f in found]
+    assert found[0]["severity"] == "HIGH"
+    assert "COMPOSITION_MEMBER_UNREACHABLE" in str(found[0]["observed"])
+    assert "workspace-management" in str(found[0]["observed"])
+    assert "test-management" in str(found[0]["observed"])
+
+
+def test_a_record_omitting_its_own_member_is_high_drift(world):
+    """The other half of the same blind spot, and the one with the worse
+    consequence: ability-management expands a plugin install into its `provides`
+    members, so a record that omits one silently leaves it out of its own
+    accounting — while a sibling record listing it made the union comparison
+    look satisfied."""
+    report = world(core=["ability-management"])
+    found = drifts(report)
+    assert len(found) == 1, [f["observed"] for f in found]
+    assert found[0]["severity"] == "HIGH"
+    assert "COMPOSITION_MEMBER_UNREGISTERED" in str(found[0]["observed"])
+    assert "runtime-management" in str(found[0]["observed"])
+
+
+def test_a_pin_older_than_the_pairing_rule_is_reported_not_skipped(world):
+    """A checker that cannot reach its rule has not thereby found the system
+    correct.
+
+    An evaluator without `judge_records` is a perfectly valid evaluator — it
+    resolves compositions and it judges them — so `load_evaluator` accepts it
+    and nothing else in this file notices. Falling back to its `judge()` would
+    restore the union comparison silently and under the evaluator's authority,
+    which reads exactly like a verdict. The missing function is the only thing
+    that can report the pin is behind, so it has to."""
+    source = (PAYLOAD / "composition.py").read_text(encoding="utf-8")
+    head, sep, _tail = source.partition("def judge_records(")
+    assert sep, ("the fixture strips `judge_records` from the real evaluator; it is "
+                 "no longer there, so this test would assert nothing")
+    report = world(evaluator_text=head)
+    found = [f for f in report["findings"]
+             if f.get("id") == "COMPOSITION_PAIRING_UNAVAILABLE"]
+    assert len(found) == 1, [f["id"] for f in report["findings"]]
+    assert found[0]["severity"] == "HIGH"
+    assert "judge_records" in str(found[0]["observed"])
 
 
 # ---------------------------------------------------------------------------
@@ -301,10 +459,10 @@ def test_a_locally_sourced_member_is_not_drift_whether_registered_or_not(world):
     for local members, and the registered case is what proves the two findings
     can coexist.
     """
-    unregistered = world(provides=DISTRIBUTED)
+    unregistered = world()
     assert drifts(unregistered) == [], "a locally-sourced member with no registry record"
 
-    registered = world(provides=list(DISTRIBUTED) + ["serveros"])
+    registered = world(linux_work=list(LINUX_WORK_PROVIDES) + ["serveros"])
     assert drifts(registered) == [], "a locally-sourced member with a registry record"
 
 
@@ -314,7 +472,7 @@ def test_the_registry_scope_question_is_still_reported_at_observed(world):
     `serveros` being both local-sourced and registered is a real open question
     for the registry's owner — whether the bootstrap skill is a *reusable*
     ability at all. It is reported at OBSERVED, and it must stay reported."""
-    report = world(provides=list(DISTRIBUTED) + ["serveros"])
+    report = world(linux_work=list(LINUX_WORK_PROVIDES) + ["serveros"])
     observed = [f for f in report["findings"]
                 if f.get("id") == "BOOTSTRAP_ABILITY_REGISTERED"]
     assert len(observed) == 1
@@ -347,7 +505,8 @@ def test_a_recommended_ability_the_registry_does_not_provide_is_medium(world):
     and the registry is what it resolves against. Dropping the registry entry
     leaves the promise with nothing behind it, so it is reported — at MEDIUM,
     because the product is still coherent, one door is just missing."""
-    report = world(provides=[n for n in DISTRIBUTED if n != "information-management"])
+    report = world(linux_work=[n for n in LINUX_WORK_PROVIDES
+                               if n != "information-management"])
     found = [f for f in report["findings"] if f.get("id") == "RECOMMENDATION_UNRESOLVABLE"]
     assert len(found) == 1, [f["id"] for f in report["findings"]]
     assert found[0]["severity"] == "MEDIUM"
