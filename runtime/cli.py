@@ -759,6 +759,117 @@ def cmd_information_captured(args) -> int:
     return EXIT_OK
 
 
+def cmd_information_watched(args) -> int:
+    """§P2 — the follow list against the capture tree: the join neither side had.
+
+    `information captured` reads the 66 manifests the collectors wrote. This
+    reads the list that says which documents are *supposed* to be re-checked —
+    `records/information/raw/DRIFT_WATCHLIST.txt` — and asks of each entry
+    whether the capture tree is actually keeping up. On 2026-09-22
+    `grep -rn "DRIFT_WATCHLIST\\|drift-sync-state"` over the fabric tree
+    returned nothing: `drift_sync.py:71 load_watchlist()` reads its own list and
+    no ServerOS-side reader had ever opened it.
+
+    What it refuses to hand back as one number:
+
+      * a freshness verdict. "Overdue" is a threshold, and a threshold is a
+        policy somebody authors. `--before YYYY-MM-DD` is that input; without it
+        the report says the question was not asked. This verb reads no clock.
+      * the debounce state as a verification record. `.drift-sync-state.json` is
+        the collector's commit debounce — `drift_sync.py:246` resets it
+        "无论 commit 是否成功" — so it says when this link last tried to commit.
+        The live tree holds both: the state says `2026-09-15T00:05:53` and the
+        manifest says `last_verified_at: 2026-09-16`. Two facts about two
+        things, and subtracting them would invent a contradiction.
+      * the collector's builtin fallback as an authored list. When the file is
+        missing, `load_watchlist()` returns `["wiki-litellm-work-doc"]`; that is
+        reported as the collector's default, because "one document is followed"
+        and "the follow list is gone" are different facts.
+      * a resolution of a conflict. Two captures under one link_id make
+        `drift_sync.locate()` return None, and it logs and skips — the watch is
+        silently dead. That is the class this verb exists to surface.
+    """
+    paths = paths_mod.Paths()
+    records = Path(getattr(args, "records_root", "") or
+                   Path(paths.root("workspace")) / "records")
+    if not records.is_absolute():
+        sys.stderr.write(
+            f"serverosctl: --records-root must be absolute, got {records}. A "
+            f"follow list read relative to whatever directory the caller stood "
+            f"in is a coverage number nobody else can reproduce.\n")
+        return EXIT_FAULT
+    mod = _load_module_from(REPO_ROOT / "intake" / "watch_coverage.py",
+                            "serveros_intake_watch_coverage")
+    try:
+        report = mod.read_root(records, watchlist=args.watchlist or "",
+                               before=args.before or "")
+    except (mod.Refused, mod.Malformed) as exc:
+        sys.stderr.write(f"serverosctl: {exc}\n")
+        return EXIT_FAULT
+
+    listing = report["watchlist"]
+    summary = report["summary"]
+    lines = [
+        f"root        {report['root']}",
+        f"watchlist   {listing['path']}",
+        f"来源        {listing['listed']}  ·  {summary['denominator']} 条"
+        + ("  ·  malformed " + str(summary["malformed"]) + " 条（没有丢弃，见下）"
+           if summary["malformed"] else ""),
+    ]
+    if listing["why"]:
+        lines.append(f"      {listing['why']}")
+    lines += [
+        "",
+        "解析        一个 link_id 一条——«盯住了» 不是一句话",
+    ]
+    for name in mod.WATCH_STATES:
+        if summary["by_state"].get(name):
+            lines.append(f"  {name:<12} {summary['by_state'][name]}")
+    lines.append(f"  {'复核记录':<12} " + " · ".join(
+        f"{k} {v}" for k, v in sorted(summary["by_verified"].items())))
+    lines.append(f"  {'内容漂移':<12} " + " · ".join(
+        f"{k} {v}" for k, v in sorted(summary["by_drift"].items())))
+    lines.append(f"  {'提交去抖':<12} " + " · ".join(
+        f"{k} {v}" for k, v in sorted(summary["by_debounce"].items())))
+    if summary["overdue_asked"]:
+        lines.append(f"  {'逾期':<12} " + " · ".join(
+            f"{k} {v}" for k, v in sorted(summary["by_overdue"].items()))
+            + f"   —— 对 {report['cutoff']} 而言")
+    else:
+        lines.append(f"  {'逾期':<12} 未问——没有给 --before，这个 verb 不读时钟")
+    lines += ["", f"逐条        {summary['denominator']} 条"]
+    for watch in report["watches"]:
+        lines.append(f"  {watch['state']:<11} {watch['link_id']}"
+                     + (f"  [{watch['listed']}]" if watch["listed"] != "AUTHORED" else ""))
+        if watch["state"] == "RESOLVED":
+            lines.append(f"      {watch['title'] or '(无标题)'}"
+                         f"  {watch['type']}  {watch['url']}")
+            lines.append(f"      复核 {watch['verified']['state']}"
+                         f" {watch['verified']['at'] or ''}"
+                         f"  ·  漂移 {watch['drift']['state']}"
+                         f"  ·  去抖 {watch['debounce']['state']}"
+                         f" {watch['debounce']['at'] or ''}")
+            if watch["overdue"]["asked"]:
+                lines.append(f"      逾期 {watch['overdue']['state']}"
+                             f"  —— {watch['overdue']['why']}")
+        else:
+            lines.append(f"      {watch['why']}")
+        for path in watch["captures"]:
+            lines.append(f"      → {path}")
+    if report["state_without_watch"]:
+        lines += ["", f"去抖表里没有被盯的     {len(report['state_without_watch'])} 条"
+                      "——以前盯过、现在不在表里，条目是残留"]
+        for link_id in report["state_without_watch"]:
+            lines.append(f"  {link_id}")
+    if listing["malformed"]:
+        lines += ["", f"不是 link_id 的行   {len(listing['malformed'])} 条"
+                      "——采集器跳过空行与 # 注释、其余照收，所以这些它也会拿去查"]
+        for line in listing["malformed"]:
+            lines.append(f"  {line}")
+    emit(report, as_json=args.json, lines=lines)
+    return EXIT_OK
+
+
 def _space_request(args) -> dict:
     """Read one request document, or refuse with the reason it could not be read.
 
@@ -8001,6 +8112,30 @@ def build_parser() -> argparse.ArgumentParser:
         help="the records checkout to read. Default: this node's workspace "
              "root + /records. Must be absolute")
     info_captured.set_defaults(func=cmd_information_captured)
+
+    info_watched = information_sub.add_parser(
+        "watched",
+        help="the follow list (DRIFT_WATCHLIST.txt) against the capture tree: "
+             "which demanded links resolve to one capture, which are silently "
+             "dead, and when each was last re-checked. Reads no clock — "
+             "overdue needs a --before cutoff. Reads nothing, writes nothing",
+        **_COMMON)
+    info_watched.add_argument(
+        "--records-root", default="",
+        help="the records checkout to read. Default: this node's workspace "
+             "root + /records. Must be absolute")
+    info_watched.add_argument(
+        "--watchlist", default="",
+        help="the watchlist file the collector would read, overriding "
+             "<records>/information/raw/DRIFT_WATCHLIST.txt. Honoured for the "
+             "same reason the default is: this verb reports what the collector "
+             "was actually pointed at")
+    info_watched.add_argument(
+        "--before", default="",
+        help="YYYY-MM-DD. Reports which watched captures had no re-check before "
+             "this day. Omit it and the overdue question is reported as not "
+             "asked — this verb does not read a clock")
+    info_watched.set_defaults(func=cmd_information_watched)
 
     space = sub.add_parser(
         "space", help="where a logical object belongs, and what a meeting "

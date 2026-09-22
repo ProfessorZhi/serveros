@@ -459,6 +459,7 @@ tests/test_declared_commands.py::DeclaredCommandsExist::test_every_declared_comm
 | serveros（`1c36789`，上一份记成「0 failed」的那棵） | **1 failed**, 4298 passed, 23 skipped, 3714 subtests passed（469.78s） | 同上。修文档后同树变 12 passed（`tests/test_declared_commands.py`） |
 | serveros（终态，带 evaluator 覆盖） | **4239 passed, 23 skipped, 3704 subtests passed, 0 failed**（480.07s，`fb97f77`） | 同上 |
 | serveros（同树不带覆盖） | **8 failed, 4231 passed, 23 skipped, 3704 subtests passed**（467.10s） | 同上去掉那两个变量 |
+| serveros（本轮末，不带覆盖，含 §9.10 的 `information watched`） | **8 failed, 4480 passed, 20 skipped, 3717 subtests passed**（492.73s） | `pytest tests/ -q -p no:cacheprovider`。**8 条全部是 `tests/test_architecture_check.py` 的配对断言**（本节 §5.0 那条已定案的跨仓红），无新增失败；pass 数从 4231 涨到 4480 是本节 §9.6/§9.7/§9.9/§9.10 四轮新增的测试 |
 | serveros（`dc23707`，带覆盖） | 4207 passed, 23 skipped, 3703 subtests passed, 0 failed（459.73s） | 同上 |
 | serveros（起点） | 3 failed, 4171 passed | — |
 | ability-management | **105 passed, 2 skipped**（`074a518`）；三个 renderer `--check` 干净 | 加 `SERVEROS_BUNDLE=<serveros worktree>/plugin` |
@@ -597,13 +598,14 @@ manifest 行、packs 闭包、cards。凡是「X 的渲染嵌了 X 的值」，�
 计划 P0 要的第三样东西：「盘点每个详细设计对应的 source、实际入口、consumer、现有字段与
 真实 producer」。下面每条都是读过盘之后写的；grep 没命中的写 `not found`，没读的写 `not read`。
 
-三处**在 fabric 树里没有消费者**的孤岛，是本轮最实的接线缺口（第三处见 §9.7）：
+四处**在 fabric 树里没有消费者**的孤岛，是本轮最实的接线缺口（第三处见 §9.7，第四处见 §9.10）：
 
 | 对象 | 在哪 | 谁调它 | 判定 |
 | --- | --- | --- | --- |
 | ~~records 的 66 份 `information/raw/**/manifest.json`~~ | `/data/home/vince/workspace/records/information/raw/…` | **已接线**：`serverosctl information captured`（`intake/capture_coverage.py`）。此前 `grep -rn "pagination_complete\|msg_count" --include=*.py` 在 fabric 树里零命中 | **本轮已修**，见 §9.6。设计要求「capture policy 与 materialized coverage 分开」，此前 coverage 这一半没有被消费 |
 | ~~`space/resolver.py`（402 行，含词汇表）~~ | serveros worktree `space/resolver.py` | **已接线**：`serverosctl space resolve`（`runtime/cli.py`，`_load_module_from(REPO_ROOT / "space" / "resolver.py", …)`） | **本轮已修**，见 §9.5。此前只能 `python3 space/resolver.py --request …` 单跑——模块**在 artifact 里**而没有任何东西加载它，于是装在节点上的动词不是缺失，是**叫不出名字**。它的 docstring 自己声明「不认识 lark-cli 且永远不许认识」，所以缺的从来是**接线**不是实现 |
 | ~~`records/information/understanding/**/*.md` 的出处~~ | `/data/home/vince/workspace/records/information/understanding/…`（14 份卡） | **已接线**：`serverosctl work understanding`（`intake/understanding_delta.py`）。此前 `grep -rn "message_position" --include=*.py` 在 fabric 树里零命中，`workchain.py` 只数写了 `## Sources` 标题的卡 | **本轮已修**，见 §9.7。这一层的 `README.md` 要求卡可追溯，而没有东西核对过任何一条引用 |
+| ~~`records/information/raw/DRIFT_WATCHLIST.txt` + `.drift-sync-state.json`~~ | `/data/home/vince/workspace/records/information/raw/` | **已接线**：`serverosctl information watched`（`intake/watch_coverage.py`）。此前只有采集器自己读（`drift_sync.py:71`），`grep -rn "DRIFT_WATCHLIST\|drift-sync-state"` 在 fabric 树里零命中 | **本轮已修**，见 §9.10。缺的是 **watchlist 与 manifest 的 join**：一份采集都没有、有两份、或者 manifest 解析不了，三种在 manifest 遍历里全都不可见——**因为缺的正是 manifest 本身** |
 
 | 包 | 对象 | source | 入口 | consumer | 判定 |
 | --- | --- | --- | --- | --- | --- |
@@ -613,8 +615,8 @@ manifest 行、packs 闭包、cards。凡是「X 的渲染嵌了 X 的值」，�
 | P1 | `Source` 类型 | — | — | — | **not found**：没有该类型。最近的字段是 `document_governance.py:252` 的 `source_ref`、`memory/record.py:83` 的 `source`（REQUIRED）、Item 卡的 `source_refs` |
 | P1 | 编写的 follow 源清单 | `intake/workchain.py:723` `load_sources()` 读 `<records_root>/<project>/context/sources.yaml` | `serverosctl work coverage --project` (`cli.py:5592`) | — | 有读者，**但盘上没有 `sources.yaml`**（`find` 空） |
 | P2 | 五个采集器 | `/data/home/vince/workspace/records/information/raw/{sync_feishu_chat,expand_feishu_doc,expand_feishu_files,drift_sync,_redact}.py` | 各自 `main()`；`drift_sync.py:2` 自称 SessionStart hook driver | lark-cli（`sync_feishu_chat.py:131`、`expand_feishu_doc.py:42`） | working；`information/raw/` 在 records 仓里是 clean |
-| P2 | 唯一脱敏实现 | `records/information/raw/_redact.py`（327 行，md5 `fa980373…`） | 库：`redact()`、`persist_secrets()` | `sync_feishu_chat.py:29`、`expand_feishu_doc.py:32`、`redact_backfill.py:54` | **盘上有 5 份**，其中 `worktrees/records/reconcile-20260922` 与主份逐字节相同，另外三份（SRV-0003 75 行 / MKT-0001 90 行 / clean-line-20260920 274 行）与已退役归档 `015de972` 不同。设计要「保留唯一 redaction 实现」，盘上现在是多份——**这是待收敛项，不是既成事实** |
-| P2 | 黑名单 | `records/information/raw/DRIFT_WATCHLIST.txt` | — | — | **not read**；注册 `drift_sync` 为 hook 的 `settings*.json` **not found** |
+| P2 | 唯一脱敏实现 | `records/information/raw/_redact.py`（327 行，`a1c1a4d00fd798eb…`） | 库：`redact()`、`persist_secrets()` | `sync_feishu_chat.py:29`、`expand_feishu_doc.py:32`、`redact_backfill.py:54` | **盘上现在是 3 份，3 个不同哈希**（2026-09-22 重量，上一版记的是 5 份 / 2 份逐字节相同——那时还在的 `reconcile-20260922` 与 `clean-line-20260920` 两个工作树已退役）。另两份是**别的 workstream 工作树里的陈旧快照，不是竞争实现**：`worktrees/records/SRV-0003/…`（75 行，2026-09-16）、`worktrees/records/MKT-0001/…`（90 行，2026-09-20），两者都早于 `ec500a4`（12 条脱敏规则落进 records，含**口令**四种形态）。**风险是真的**：那两个工作树里的采集脚本 import 的是本地那份，跑起来用的是没有口令规则的版本。**不动它们**——不属于本轮授权范围，且它们是别人工作树里的在制品 |
+| P2 | 黑名单 | `records/information/raw/DRIFT_WATCHLIST.txt`（5 行，1 条 `wiki-litellm-work-doc`） | **两侧都有读者了**：采集器侧 `drift_sync.py:71` `load_watchlist()`（`DRIFT_WATCHLIST` 可覆写，缺失时回退内置默认，支持行内 `#` 注释）+ `locate()` 按 `link_id` 反查；ServerOS 侧**本轮补上** `serverosctl information watched`（`intake/watch_coverage.py`，§9.10） | `drift_sync.py`（自称 SessionStart hook driver） | **上一版这一格写的「not read」是错的**（采集器侧读得好好的），2026-09-22 改。**现在只剩一件真的缺**：注册 `drift_sync` 为 SessionStart hook 的 `settings*.json` 在本机 **not found**，所以它是「装好了、手动能跑、没有上弦」，与 §3.9 的日报渲染腿同一形状。上一版说「ServerOS 这一侧没有读者」时**把 `last_verified_at` 也连写了进去，那一项是错的**（`intake/capture_coverage.py:436` 一直在读，§9.6 就是为它写的）；真正零命中只有 `DRIFT_WATCHLIST` 与 `drift-sync-state` 两个串，缺的是 **watchlist 与 manifest 的 join**——本轮已补，见 §9.10 |
 | P3 | people/project/topic 卡 | 手写 markdown：`records/information/understanding/{people,projects,topics}/*.md` | **两侧都已接线**：读 `serverosctl work understanding`（`intake/understanding_delta.py`）、写 `serverosctl work understanding-patch`（`intake/understanding_patch.py`） | — | **两半都补上了**：读的一侧见 §9.7（14 份卡逐份对账到源，`BEHIND 3 · UNMEASURABLE 7 · UNTRACEABLE 4`）；写的一侧见 §9.9（15 条提议全 `AWAITING`，`--write`+`--verify` ok）。设计要的「最小 incremental writer」不再缺口。**仍未 LIVE**：没有任何消费者读这份 patch |
 | P3 | Minutes / MeetingBundle | 无 Python 类。`space/meeting-policy.schema.yaml:30` 声明结构；内核 `space/meeting_relevance.py:69` | ~~`python3 space/meeting_relevance.py --request`（**未接 serverosctl**）~~ **已接线**：`serverosctl space meeting` | — | 内核 working，**接线已补**（§9.5）；bundle 的生产者仍 not found |
 | P3 | 记忆账本/投影/scope | `memory/{record,projection,scope,handoff}.py` | `serverosctl memory {audit,project,status,subject}` (`cli.py:6479`) | — | working；`docs/memory-fabric.md` 逐条点名这些模块 |
@@ -1092,6 +1094,79 @@ P4 的上一版判定是「8 个谓词里只有 2 个有生产者，其余 6 个
 **没有动 CLI，也没有新开动词。** `relations/project.py` 仍是脚本，用法就是 P4 行里写的那条；
 `runtime/actuator-contract.yaml` 那两条登记的是 `write()` 的 `os.unlink` / `os.replace`，
 本轮没有新增任何写入点，所以契约不改。
+
+### 9.10 follow 清单有了面：第四处孤岛关闭，且它揭穿了两个「两笔账」的陷阱
+
+**缺口是上一版自己在 §9 的 P2 表里写下的。** 本轮改那一行时，我在格子里写「watchlist、
+`.drift-sync-state.json` 与各 link manifest 的 `last_verified_at` 在 fabric 树里零命中」——
+提交前重量，**那句话有三处错**，三处都是「把一个还不存在的东西说成不存在」的反面：
+听起来更安全的那个方向，但一样是假的。改法与重量如下。
+
+**(a) `last_verified_at` 有读者，而且还不少。** `intake/capture_coverage.py:436` 逐 manifest 读它，
+报 `RECORDED`/`NOT_RECORDED` + 时间；§9.6 那一轮就是为它写的。零命中的只有
+`DRIFT_WATCHLIST` 与 `drift-sync-state` 两个串。**缺的不是时间戳的读者，是 watchlist 与 manifest
+的 join**——一个文档可以一份采集都没有、有两份、或者 manifest 根本解析不了，而这三种在
+manifest 的遍历里**全都不可见，因为缺的正是 manifest 本身**。
+
+**(b) `drift_sync.py:68` 是 `needs_fetch`，`load_watchlist` 在 `:71`。** 行号只在指定 revision 时
+才有意义，所以两个数字都得按当前工作树重量，改的是 `:71`。
+
+**(c) 那两份脱敏副本是「陈旧快照」而不是「竞争实现」，而且风险要写出来。** 盘上现在
+**3 份、3 个不同哈希**（上一版记的 5 份里，`reconcile-20260922` 与 `clean-line-20260920`
+两个工作树已退役）：canonical 327 行 `a1c1a4d00fd798eb`（含 `ec500a4` 的 12 条规则，**含口令**）、
+`worktrees/records/SRV-0003/…` 75 行（2026-09-16）、`worktrees/records/MKT-0001/…` 90 行（2026-09-20）。
+两个工作树里的采集脚本 import 的是**本地那份**，跑起来用的是没有口令规则的版本。
+**不动它们**——不属于本轮授权范围，且是别人工作树里的在制品。这一条从「记着」升级成
+「有风险且有位置」。
+
+**新增 `intake/watch_coverage.py` + `serverosctl information watched`。** 读
+`DRIFT_WATCHLIST.txt`（`DRIFT_WATCHLIST` 环境变量可覆写，与采集器同一条契约），按
+`drift_sync.locate()` **自己的规则**（`<chats>/*/*/*/links/<link_id>/manifest.json`，
+按父目录名匹配）反查，逐条给状态：`RESOLVED` / `NO_CAPTURE` / `AMBIGUOUS` / `UNREADABLE`。
+
+**这个面存在的理由，是 `AMBIGUOUS` 那一类。** `locate()` 零命中返回 None，**两命中同样返回
+None**，调用方打日志然后 `continue`——于是「一个 link_id 有两份采集」和「一条都没采到」
+在采集器里是同一个副作用：**盯着的东西静默地死了**。读者在这里把它拆开，并且**拒绝**从
+两个命中里挑一个——挑一个就把「这个 watch 死了」这份发现藏起来，而那正是这个模块存在的理由。
+
+**三处「看起来是同一个数、其实是两笔账」的拒绝，每一处都在 live 树上取到了证据：**
+
+- **去抖不是复核。** `.drift-sync-state.json` 是采集器的 **commit 去抖**：`drift_sync.py:246`
+  写的是「无论 commit 是否成功都重置计时」。live 树上两个值**同时存在且不同**——
+  state `2026-09-15T00:05:53`，manifest `last_verified_at 2026-09-16`。这是两笔账，
+  相减就会**凭空造出一个矛盾**。报告里两者分别命名、各自成块，**永不互推**。
+- **缺失的 watchlist 不是别人写好的清单。** `load_watchlist()` 在文件缺失时回退到内置的
+  `["wiki-litellm-work-doc"]`。原样打印等于在「清单没了」的那一刻说「跟了一篇」——
+  所以缺文件报 `COLLECTOR_FALLBACK`，把那份内置默认**指明是采集器的默认**。
+- **读不到的行不能丢。** 采集器跳过空行与 `#` 注释、**其余照收**；一行不可能是 link_id 的
+  东西它也会拿去查。读者把它计数并列出：丢掉会让 follow 清单**读起来比实际短**。
+
+**逾期要人给阈值。** `--before YYYY-MM-DD` 是作者的输入，不给就报「未问」。
+这个 verb **不读时钟**，且这一条有 AST 判据（不许 `datetime`/`time`/`calendar` 导入、
+不许 `now`/`today`/`utcnow` 调用），因为时钟读取只有一行、而且**加进去看起来像功能**。
+比较按 **ISO 前缀的那一天**（`2026-09-16T15:45:58` 与 `2026-09-16` 在「哪一天复核的」
+这个问题上是同一天）。
+
+**live 层第一次跑出来的东西。** 一条 watch（`wiki-litellm-work-doc`，`AUTHORED`），`RESOLVED`，
+复核 `RECORDED 2026-09-16`，**漂移 `DRIFTED`**（`content_sha256 f4927de5…` ≠
+`prev_content_sha256 672cd067…`），去抖 `RECORDED 2026-09-15T00:05:53`。那个 `f4927de5…`
+正是 §9.7 里 `litellm.md` 那张卡引用的摘要——**这份被盯着反复更新的文档确实换过版，
+而在此之前没有任何面把「盯着的东西已经变了」说出来**。
+
+**五处变异…六处，每处都被抓到，文件逐字节还原**
+（`sha256 6c95c4c20f6466166873967b0e8b05cd2a8f56593878131c3f10c9d6493fe93a`）：
+M1 冲突解成命中、M2 回退标成 `AUTHORED`、M3 逾期判反、M4 读不到的行丢掉、M5
+解析不了的 manifest 当 `RESOLVED`、M6 去抖表整个不读。脚本在
+`artifacts/skills/serveros/RUN-20260922-raw-coverage/watch-coverage/run.sh`，
+每条**写前**断言锚点存在且唯一、**写后**清 `__pycache__`、还原后校验 sha256。
+
+**`no_unsourced` 当场抓到了我自己。** 第一次跑 live：`the row for 'wiki-litellm-work-doc'
+carries keys this module has no producer for: ['why']`——`why` 忘了进 `WATCH_PRODUCED` 表。
+这就是那个闸门该有的样子：**加一个字段却被生产者表忘掉，是拒绝，不是多出一列**。
+
+**接线同上，是自动被门覆盖的**：经 `_load_module_from` 加载，`loader_graph` 推出它，
+`test_build.py` 的产物闭包判据自动覆盖。这一轮**没有任何写入点**（读者只读），
+所以 `runtime/actuator-contract.yaml` 不改，`mutation_guard.py` `findings: []`。
 
 ## 10. 后续每包更新哪几行
 
