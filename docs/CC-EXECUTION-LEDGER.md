@@ -655,7 +655,7 @@ MarketOps、没有两处 LiteLLM、没有 `records/` 脏资产。它正是内存
 | P4 | 文档关系边 | `relations/project.py:61`（`serveros/relations.v1`），`relations/schema.yaml:29` | `python3 project.py --records ROOT --write relations/current.jsonl` | — | **partial**（比上一版进了一步）：8 个谓词里 3 个有生产者（`belongs_to`、`derived_from`、`attached_to`），其余 5 个 `declared_only`。本机实测 239 行 / 19 条报出，见 §9.8；另 5 个谓词逐条查过，**本机没有载体**，不是差功夫 |
 | P4 | Feishu 空间适配 / 共享 publisher | `skills/feishu-space-management/`：**只有 SKILL.md 文本，本仓没有代码**。`skills/document-stewardship/`：本仓同样只有文本，但**外仓有代码**——`~/.claude/skills/document-stewardship/scripts/maintain.py`（publisher 循环：取 revision N → 定位 → 校验 → 候选 patch → 重取仍为 N? → apply/STOP → 重取 → 校验），且 `plugin/profiles/linux-work.yaml:119-123` 声明它 `available` | — | — | partial。**上一版这一格把两者合成了一句「只有 SKILL.md 文本，没有代码」，那是错的**：`document-stewardship` 在外仓有实现，且 ability-management 注册表（HEAD `8d98aff`）**不持有**它——与那 8 条跨仓红同族 |
 | P5 | 员工 KB 生产者 | `src/litellm-support/scripts/build_agent_kb.py`，输出 `dist/employee-kb/`（`dist/` 被 gitignore） | `python3 scripts/build_agent_kb.py` | — | working，但**在 ServerOS 之外** |
-| P5 | KB 消费 | `intake/support.py:187,432,534,697,855,977`（另 `read_entries` 的第三个字段 `unrecognised`，见 §9.14），契约 `intake/support-contract.yaml` | `serverosctl support {entries,match,answer,check} --kb-root <path>` (`cli.py:7206`) | — | working，但 `--kb-root` 必填且**没有任何东西把它接到 litellm-support 那棵树**。**§9.14 修掉了一个把「没读到」印成「干净」的洞**：契约写就的那棵树读数不变（`21 entries` / `21 index rows` / exit 0），员工树现在 `entries`/`check` 都是 exit 2 并点名读过哪些文件、哪个 pattern 没匹配上 |
+| P5 | KB 消费 | `intake/support.py:187,432,534,697,855,977`（另 `read_entries` 的第三个字段 `unrecognised`，见 §9.14），契约 `intake/support-contract.yaml`；**本轮新增 `intake/support_handoff.py` + `intake/support-handoff-contract.yaml`（见 §9.19）** | `serverosctl support {entries,match,answer,check,handoff} --kb-root <path>`（support 组：`cli.py:8719` @ `4fa1748`，`:8784` @ 本工作树；旧记账写 `cli.py:7206`，实测那里是 taxonomy 转发，已纠正） | — | working，但 `--kb-root` 必填且**没有任何东西把它接到 litellm-support 那棵树**。**§9.14 修掉了一个把「没读到」印成「干净」的洞**：契约写就的那棵树读数不变（`21 entries` / `21 index rows` / exit 0），员工树现在 `entries`/`check` 都是 exit 2 并点名读过哪些文件、哪个 pattern 没匹配上。**§9.19 补上无答案转人工的状态/投递路径**：`support.answer` 那个此前无消费者的改进候选现在有消费者，两个锚未绑定时输出 `PENDING_DELIVERY`、`notified` 只在 `DELIVERED` 为真——但**两个锚在本机仍然 UNBOUND**，所以生产读数是待投递 |
 | P5 | 公开指南生产者 | — | — | — | **not found as code** |
 | P6 | 线程准入 / 控制存储 | `runtime/coordination.py:89,116,228`，`runtime/agent_control_store.py:86,97,103,149` | `serverosctl coordination {resolve,bind,close,list}` (`cli.py:6632`) | — | working |
 | P6 | provider 侧准入 | `mcp/agent_session_service.py:58,115,159,251` | `mcp/bin/serveros-agent-mcp` | — | working（support→readiness→admission 顺序在 `:229`） |
@@ -1905,6 +1905,132 @@ Profile 真的没绑（而目录和机器政策都写着它们在）。
 具体业务语义**（不是架构选择，也不是「请人拍板」：映射该由谁署名的答案在契约自己那句
 `note` 里——`owner: hwz-ops` 的实例文档已经退役，而接手的 Profile 属于 serveros，
 所以这个映射的归属本身要重新署一次名）。
+
+### 9.19 P5：一条打印后就被丢弃的候选，和一个「不能告诉求助者已通知」的读数
+
+**这一节补的是 P5。** 判据是 `docs/CC-EXECUTION-PLAN.md:128`——「员工知识消费与一条
+**无答案转人工的状态/投递路径**分别**可核对**」；规则原句在 `docs/daily-work-cycle.md:118`
+（已逐字核过）：「先入已有工作/通知队列并得到回执，再按许可给 owner 提醒；外发收件人/
+机器人未绑定时显示待投递，**不能告诉求助者“已通知”**」。
+
+**先记下缺口的形状。** P5 之前，每一味配料都在，唯独**没有那次 join**：
+
+| 配料 | 状态（P5 之前实测） |
+| --- | --- |
+| `intake/support.py` 的 `NO_ENTRY_MATCHES` 改进候选 | 从写下那天起**没有任何消费者**；唯一读者是它自己的 `render()`（`support.py:1351`），**打印后丢弃** |
+| `runtime/notifications.py` 的投递能力三值 | 除 `alerting.py#notify_for` 外**无调用者** |
+| `memory/handoff.py` | 全仓唯一持久 inbox，但那是 §59 的**设备**交接（`device_ref`/`OPEN`/`ANSWERED`），**不是给人的队列** |
+| `PENDING_DELIVERY` | 全仓零命中；`待投递` 只出现在文档里 |
+| `escalate`/`handoff`/`transfer`/`inbox`/`queue` 动词 | 一个都没有 |
+
+**本轮落了什么，四个文件（另有一处装运闸门，见下）：**
+
+| 文件 | 是什么 |
+| --- | --- |
+| `intake/support-handoff-contract.yaml` | 五个触发、五个部分、两个锚、四种投递词、`exit_codes`；并写明**两个锚是本机今天没有的东西** |
+| `intake/support_handoff.py` | 那次 join：读 `support.answer` 的读数 → 组装小决策包 → 记录两个锚各自回答了什么 |
+| `tests/test_support_handoff.py` | 35 条 + 27 subtests（`35 passed, 27 subtests passed`） |
+| `runtime/cli.py` | `serverosctl support handoff`（`cli.py:8838`，本工作树上） |
+| `tests/test_build.py` | 同一处 `test_intake_ships_inside_the_artifact` 里按名字补上新模块与新契约的装运断言（见下文「顺手补的一处装运闸门」） |
+
+**判词，连同它的确切调用方式**（照 §9.18 立下的规矩：换一个调用方式判词就变）。三条命令
+逐字在 `support-handoff/cli-readings.log`：
+
+```text
+$ serverosctl support handoff --kb-root <KB> --status-code 599 --message '…user=ou_…'
+outcome     NOT_NOTIFIED
+queue UNBOUND   owner UNBOUND   delivery PENDING_DELIVERY   notified False
+question    status=599 message='UpstreamWidgetGasketFailure user=<已脱敏>'      exit 2
+
+$ … --status-code 402 --message 'SomethingElseEntirely' \
+    --queue-receipt 'work-queue:ITEM-4242' --owner 'person:oncall' \
+    --delivery-state DELIVERED --delivery-at '2026-09-22T20:10:00+09:00'
+outcome     NOTIFIED      offered PLAT-006 under PLAT (03_平台代理层/)  NOT assigned
+queue ACCEPTED as work-queue:ITEM-4242   owner BOUND   delivery DELIVERED       exit 0
+
+$ … --delivery-state DELIVERED --delivery-at T          # no queue supplied
+serverosctl: a delivery was reported for a packet the queue did not accept …
+                                                                               exit 1
+```
+
+**第一条命令里的 `<已脱敏>` 就是这次 join 的证据，也是这个模块最可能出的那个错。**
+support 的读数**把问题带了两次**：`reading["question"]["message"]` 是原文，
+`reading["improvement"]["question_shape"]["message"]` 是脱敏后的。包是一份**可能被人归档**
+的记录，选错那个字段是**一个词的距离**，另一侧是活标识符。所以 fixture 里放真标识符，
+**两半都断言**（`test_the_packet_reads_the_redacted_field_and_not_the_raw_one`）：
+既断言原文里**确实有**那个标识符（否则下面两句在同义反复），也断言包里**没有**。
+
+**第二条命令里 `PLAT-006` 是那个候选第一次被消费，而不是被打印。** 同一行的 `NOT assigned`
+是 §J 的规矩（「分配后不再变更」是**人**做的承诺），它在这个模块里是一个**字段**
+（`recommendation.assigned = False`）而不是注释里的善意。
+
+**四条不能声称的，每条都有对应的结构或测试：**
+
+1. **本机今天发不出去，而这不是本模块的缺陷。** 两个锚都 UNBOUND：`serveros-work-mcp`
+   在本机任何 `.mcp.json` / `settings*.json` / 插件清单里都注册不到，`workengine` 不在 PATH 上，
+   `fleet/mcp-contract.yaml:362-366` 自己写着实现**不在这个仓**。所以**生产的诚实读数是
+   `PENDING_DELIVERY` / exit 2**——§10 要的「显示待投递」就是这个读数，不是 READY。
+2. **五个触发只有一个有生产者。** 只有 `NO_MATCH` 能从读数推出；证据冲突、权限不够、
+   用户要求转人工、预算耗尽这四个**要调用方自己命名**。契约把这件事写在 `values` 的明面上，
+   而不是等人来发现——并且**没有**把 `AMBIGUOUS_MATCH` 冒充成「证据冲突」：前者是两条**条目**
+   都匹配（关于知识库的事实），后者是两个**事实**互相矛盾，不是一件事。
+3. **`--queue-receipt` 不是队列。** CLI 没有队列客户端，它只能让**已经拿到回执的操作者**
+   把引用交出来，并把这件事记进 `routing.queue.provenance`——原文「asserted on the command
+   line by the caller; this tool has no queue client and called no queue」。一条命令行上来的
+   引用**不能冒充**一次真的调用。
+4. **`notifications.deliver()` 没有被使用，11 个事件名的闭集没有被扩。** 那 11 个名字里
+   **没有**「向人升级」这个词（`handoff.completed` 是 §59 的**设备**交接，借用它等于让一份
+   文档有两个意思），而扩别人的闭集是本模块不该做的事。所以投递是**被报告进来的**，
+   本模块只记录、不发送。
+
+**数字与证据。** 证据目录 `artifacts/skills/serveros/RUN-20260922-raw-coverage/support-handoff/`
+（README 逐条记了每个文件属于哪个 revision 与产生它的确切命令）：
+
+| 读数 | 数字 |
+| --- | --- |
+| 全套（本 revision，`pytest tests/ -q -rf -rs`） | `8 failed, 4700 passed, 20 skipped, 3795 subtests passed in 518.37s` |
+| 那 8 条是哪 8 条（`pytest tests/test_architecture_check.py -q -rf`） | 全在 `test_architecture_check.py`，`8 failed, 16 passed`，名字逐条在 `arch-check-eight-reds.log`；与 §5.0.1 / §11.1 那组**跨仓红**同名同源 |
+| 本模块（单独） | `35 passed, 27 subtests passed` |
+| `test_build.py` + 本模块 | `78 passed, 29 subtests passed` |
+| 突变守卫（`mutation_guard.py --root . --json`） | `status CHECKED`、`findings 0`、`undeclared 0 / stale 0 / tests_breach 0`、扫 231 个文件、生产者 `declared 25 / unresolved 0` |
+
+**与基线的差额必须逐项说清，不然「绿」是个没人能核的词。** 基线是同一棵树上
+HEAD `4fa1748`、**尚无这五个文件**时的全套读数 `8 failed, 4665 passed, 20 skipped,
+3767 subtests passed`。差额：`passed` **+35**——正好是新增的 35 条；`skipped` 不变；
+`subtests` **+28**，其中 27 条是本模块的。**剩下那 1 条没有归因**：我按「按目录发现模块
+的 subTest 循环」去找过（`intake/` 下没有任何测试用 `glob`/`iterdir`/`rglob` 枚举），
+没有找到判据，所以**不写成已知**。
+
+**中途有一轮读数与基线不同，记在这里而不是抹掉。** 第一次全套给出 `21 skipped`（比基线
+多 1），我按 §9.18 的规矩换 `-rs` 重跑取证：20 条 skip 的判据**全部是环境**（`no live
+registry on this host`、`the ability-management checkout is not beside this repo`、
+`no ledger at …/records/projects/serveros/memory`、`the governance document is not on this
+machine` 等），没有一条与本改动有关。所以那次多出来的 1 条是**环境抖动**，可复现的读数是
+20——这一点必须写下来，因为「多一条 skip」和「少一条测试」在计数上长得一样。
+
+**顺手补的一处装运闸门（真缺口，不是顺手改字）。** `tests/test_build.py#test_intake_ships_inside_the_artifact`
+本来只断言 `intake/support.py` 与 `intake/support-contract.yaml` 进了制品。本模块和
+`support.py` 一样**在身旁读两个 `.yaml`**（脱敏规则读 support 契约、触发器与两个锚读自己
+那份），而构建器只排除字节码——所以「模块进了、契约没进」这个失败模式对新契约**同样成立、
+且同样无声**：它读起来会像「兜底从不触发」，而不是「兜底没带契约」。已在同一个测试里按名字
+补上两条断言（`intake/support_handoff.py`、`intake/support-handoff-contract.yaml`）。
+
+**一个只有真跑过才知道的量具事实。** `pytest -q -rf -rs` 只列出了 SKIPPED、**一条 FAILED
+名都没列**：两个 `-r` 是**覆盖**而不是合并，最终生效的是最后一个。这个仓已经记过同一家族
+的错三次（§5.0：子串搜索会命中「承诺该性质的那句话」）；这次是它的镜像——**用两个 `-r`
+取证，等于把失败的名字丢掉，而计数还是对的**。所以本节的 8 条名字取自单独跑该文件的那一轮。
+
+**没有改变的那条缺口（不得与上面混为一谈）。** `docs/daily-work-cycle.md:116` 与
+`docs/integration-readiness-20260922.md:105` 说的 Bot 侧三件事——**Bot 消息入口、旧 matcher
+到新知识格式的消费适配、owner 投递/回调闭环**——**一条都没有现场通过**，本轮**没有**碰它们，
+也**没有**把「知识包已生成」写成「Bot 已上线」。这一节落的只是那条**状态/投递路径本身**
+可核对：两条回执按 §10 的顺序分开、`notified` 只在 `DELIVERED` 上为真、锚未绑定时输出
+`待投递`。它的上游（员工快照的真实消费）仍然是 `NOT_MEASURED`。
+
+**顺手改掉的一条旧定位符。** §9 的 P5 行原本把消费动词定位在 `cli.py:7206`。实测：
+那一行在 `4fa1748` 上是 `cmd_abilities_taxonomy` 的转发代码；**support 组在 `4fa1748` 上
+是 `cli.py:8719`**，本工作树上是 `:8784`。旧定位符差了约 500 行，已改并标上 revision——
+这正是「行号引用只在指定 revision 时才有意义」那条的又一例。
 
 ## 10. 后续每包更新哪几行
 

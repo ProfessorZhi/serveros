@@ -1,0 +1,276 @@
+# The fallback: a support question that reached no entry, and the two receipts
+# it needs before anybody may say a person was told.
+#
+# WHY THIS FILE EXISTS
+# --------------------
+# `docs/daily-work-cycle.md` §10 states the whole path in one sentence, and it
+# is quoted here rather than paraphrased because every clause in it is load
+# bearing:
+#
+#     兜底默认交绑定的个人工作 owner，而非擅自指定同事或 SLA：无匹配、证据冲突、
+#     权限不够、用户要求转人工或预算耗尽时形成小决策包（原消息引用、已查事实、
+#     尝试、疑问、建议）。先入已有工作/通知队列并得到回执，再按许可给 owner 提醒；
+#     外发收件人/机器人未绑定时显示待投递，不能告诉求助者“已通知”。
+#
+# `docs/integration-readiness-20260922.md:105` says the same thing as a status:
+#
+#     无结论时交已绑定个人 owner 的现有队列，得到实际回执才声称已转人工。
+#
+# And `docs/CC-EXECUTION-PLAN.md:128` names the deliverable: 「一条无答案转人工的
+# 状态/投递路径…可核对」 — a status and delivery path that can be CHECKED.
+#
+# WHAT EXISTS, AND WHAT IS NOT JOINED (measured 2026-09-22)
+# --------------------------------------------------------
+# Every ingredient is present in this tree in isolation. The survey that
+# established this is worth stating here, because the failure this file exists
+# to prevent is a reader believing the path is already wired:
+#
+#   * `intake/support.py` produces a `NO_ENTRY_MATCHES` improvement candidate
+#     that carries exactly the material a packet needs — the question's shape,
+#     the facts read (`entry_count`, the miss reason) and the recommendation
+#     (`id_prefix`, `offered_id`, `kb_file`). **Nothing consumes it.** Its only
+#     reader is its own renderer at `support.py:1351`; it is printed and
+#     dropped. That is the join this file is about.
+#   * `runtime/notifications.py` can deliver to a person and its capability
+#     probe answers SUPPORTED / UNSUPPORTED / UNKNOWN. **Nothing calls it** but
+#     `runtime/alerting.py#notify_for`.
+#   * `NEEDS_HUMAN` exists as a verdict on a subject and never as a message to
+#     an owner.
+#   * `memory/handoff.py` is the only durable inbox in the tree and it is a
+#     §59 DEVICE handoff (`device_ref`, `handoff_id`, `OPEN`/`ANSWERED`) with no
+#     producer. It is not a queue for people, and using it as one would give
+#     one document two meanings.
+#   * There is no owner queue, no `PENDING_DELIVERY` symbol, and no verb named
+#     escalate / handoff / transfer / inbox / queue.
+#
+# So the two anchors below are DECLARED as things this path needs and does not
+# have. Declaring them is not the same as binding them.
+schema: serveros/support-handoff-contract.v1
+
+# ---------------------------------------------------------------------------
+# WHEN the fallback fires. Five, quoted from the sentence above.
+# ---------------------------------------------------------------------------
+trigger:
+  _comment: >
+    「无匹配、证据冲突、权限不够、用户要求转人工或预算耗尽」. These are the
+    design's five words and they are kept as five: 「no entry matched」 and
+    「the person asked for a human」 produce the same routing and are NOT the
+    same event — the first is a finding about the knowledge base, the second is
+    a request, and collapsing them would lose which one happened. The caller
+    supplies the trigger because the caller is who observed it.
+  values:
+    NO_MATCH: >
+      无匹配. The only one `intake/support.py` can produce today: its
+      `NO_ENTRY_MATCHES` reading. The other four are declared and have no
+      producer in the support chain, which is recorded here rather than
+      discovered later.
+    EVIDENCE_CONFLICT: >
+      证据冲突. Two sources the chain read disagree. No producer in the
+      support chain today; `support.py`'s `AMBIGUOUS_MATCH` is a different
+      thing — two ENTRIES matched, which is a finding about the knowledge
+      base and not a conflict between two facts about the world.
+    INSUFFICIENT_PERMISSION: >
+      权限不够. The chain may not read what answering would need.
+    USER_ASKED_FOR_A_HUMAN: >
+      用户要求转人工. A request, not a failure.
+    BUDGET_EXHAUSTED: >
+      预算耗尽. The chain ran out of its allowance before concluding.
+
+# ---------------------------------------------------------------------------
+# WHAT is handed over. The small decision packet, and its five parts.
+# ---------------------------------------------------------------------------
+package:
+  _comment: >
+    「小决策包（原消息引用、已查事实、尝试、疑问、建议）」. Five named parts,
+    kept as five fields rather than folded into a prose blob, because the
+    reader of a packet is a person deciding whether to spend their time, and
+    「what was already tried」 is the field that decides it. A packet that
+    carried only the question would make the owner repeat the work that
+    produced it.
+  carries:
+    original_message: >
+      「原消息引用」. A REFERENCE to the asking message, never its body. §J's
+      boundary is the reason: the packet is a record somebody may file, and a
+      record carrying what the answer path carefully redacted is the same leak
+      in a file that outlives the chat. `intake/support.py` already redacts the
+      question's own text on the way IN for exactly this reason, and this
+      module reuses that decision instead of restating it.
+    facts_checked: >
+      「已查事实」. What the chain actually read, as counts and names: how many
+      entries the glob read, which rules were reached. Not a summary of the
+      knowledge base — a description of the search that was performed.
+    attempts: >
+      「尝试」. Which of the knowledge base's own rules were evaluated and with
+      what verdict, so that the owner does not retry the same match.
+    question: >
+      「疑问」. What is still open, in the caller's words, redacted. It also
+      carries a `source`, naming WHICH of three places it was taken from — the
+      improvement candidate's own redacted `question_shape`, the reading's raw
+      question scrubbed here because the trigger came from outside the chain,
+      or the caller's own argument. Three places is two more than a reader
+      would guess, and a packet whose question came from a different place than
+      the reader assumed is a packet about the wrong question.
+    recommendation: >
+      「建议」. What the chain proposes — for `NO_MATCH`, the improvement
+      candidate's own `id_prefix`, `offered_id` and `kb_file`. The ID is
+      OFFERED and not assigned: 「分配后不再变更」 is a commitment a person
+      makes, which is `support-contract.yaml`'s rule and not this file's to
+      relax.
+
+  ref: >
+    The packet's own identity: `sha256` over its five parts, canonicalised. It
+    is what makes two handoffs of the same question recognisable as one packet
+    instead of two, and it is computed rather than assigned because nothing in
+    this path is entitled to name a packet — the queue names what it accepts,
+    and that is the receipt.
+  never_carries:
+    _comment: >
+      A packet leaves this machine. Anything listed here would be a credential
+      or a raw payload on the far side of the evidence boundary.
+    values:
+      - "the asking message's body, or any credential, token or key it contains"
+      - "a raw provider payload or stack trace"
+      - "an entry's full text; a packet names the gap, it does not move the KB"
+
+# ---------------------------------------------------------------------------
+# HOW it is routed. Two anchors, and neither is chosen here.
+# ---------------------------------------------------------------------------
+anchors:
+  _comment: >
+    §10 orders the two steps: 「先入已有工作/通知队列并得到回执，再按许可给 owner
+    提醒」 — INTO a queue and a receipt FIRST, the owner's reminder SECOND. The
+    order is the rule, not a performance choice: a reminder that arrives before
+    anything is durable is a message nobody can act on, and `notified` before a
+    receipt is the lie the same sentence forbids.
+
+    Both anchors are PARAMETERS and never defaults, by the rule
+    `runtime/cli.py` states for `--kb-root`: 「a path baked into a module
+    answers for the machine it was written on」. A module that shipped a
+    default owner would be 擅自指定同事 — choosing a colleague on somebody
+    else's behalf — which §10 names as the thing not to do.
+  queue:
+    _comment: >
+      「已有工作/通知队列」 — an EXISTING queue, named by the caller. This
+      module does not create one, and must not: `runtime/notification-contract.yaml`
+      states 「No queue, no retry and no scheduler」 as a decision of that module,
+      so minting a queue here would be a second delivery path with its own
+      opinion about how often a person is told the same thing. The work-engine's
+      intake is the queue the design means (`intake/workchain-contract.yaml:67`
+      reads `work-engine item_candidates, through serveros-work-mcp`), and
+      `fleet/mcp-contract.yaml:362-366` records that its implementation is NOT
+      in this tree and points at `work-engine:workengine/mcp.py`.
+    owner:
+      _comment: >
+        「已绑定的个人工作 owner」 — a person, bound. Not a team, not a
+        rotation, not an SLA. Resolved by the caller from whatever binding
+        holds it; this module neither reads nor writes one.
+    bound_where_today: >
+      NOWHERE, on this node, measured 2026-09-22: `serveros-work-mcp` is
+      registered in no `.mcp.json`, no `settings*.json` and no plugin manifest,
+      `workengine` is not on PATH, and no owner binding exists in
+      `fleet/profiles.yaml` or any contract. So the honest reading of the
+      routing today is PENDING_DELIVERY, and that is what the verb prints.
+
+# ---------------------------------------------------------------------------
+# WHAT the queue answered. Four states, because 「no queue」 and 「a queue that
+# said no」 and 「a queue that broke」 are three different repairs.
+# ---------------------------------------------------------------------------
+queue_states:
+  _comment: >
+    The queue is an injected adapter with one method — `accept(packet)` returning
+    the reference it will hold the packet under, or a falsey value if it will not
+    take it. It is injected for the reason `runtime/notifications.py#deliver` takes
+    a provider rather than importing one: the module is then testable against a
+    transport that cannot lie, and a missing transport is a named state instead of
+    an ImportError.
+  values:
+    UNBOUND: no queue was supplied. Nothing was attempted and nothing is held.
+    ACCEPTED: >
+      the queue took the packet and named it. The NAME is what makes this a
+      receipt: 「先入已有工作/通知队列并得到回执」 — a queue that cannot say what it
+      accepted has not been shown to have accepted anything.
+    REFUSED: the queue answered and declined. It was asked, and said no.
+    FAILED: >
+      the queue raised. Distinct from REFUSED on purpose — one is a queue with
+      an opinion, the other is a queue that is broken, and a caller repairs the
+      two differently.
+
+# ---------------------------------------------------------------------------
+# WHAT MAY BE SAID afterwards. The four words, and the one that is a lie.
+# ---------------------------------------------------------------------------
+delivery:
+  _comment: >
+    Reused from `runtime/notification-contract.yaml#alerts.delivery` rather than
+    defined again. There is one delivery vocabulary in this product and a
+    second copy of it would be a second opinion about what 「delivered」 means.
+  values:
+    DELIVERED: the transport accepted the call. Not that a person read it.
+    FAILED: it was tried and did not arrive.
+    UNSUPPORTED: the transport asked and was told no.
+    UNKNOWN: nobody established whether it can.
+    PENDING_DELIVERY: >
+      待投递. Named here and nowhere else, and it is NOT a fifth transport
+      answer: it means NOTHING WAS ATTEMPTED. The transport was never asked,
+      which is why collapsing it into UNKNOWN would report 「we did not ask」 as
+      「we asked and nobody knows」, and why it cannot be reported BY a
+      transport — the three reasons it can arise are all this module's own: no
+      queue was supplied, the queue did not accept the packet, or no owner was
+      bound to remind. Each one is recorded with its reason rather than folded
+      into a single 「pending」.
+  notified_only_on: DELIVERED
+  notified_rule: >
+    The rule is `runtime/alerting.py#record_delivery`'s, quoted because this
+    module obeys it rather than reimplementing it: 「`last_notified_at` is set
+    ONLY for DELIVERED. A message that did not arrive was not a notification,
+    and recording one would make 「this was announced」 and 「this was supposed
+    to be announced and was not」 the same field.」 `runtime/daily_report.py`
+    states the same rule for a publication receipt: 「一份没有收件人的回执不允许
+    声称 DELIVERED」, and 「THE RECEIPT DOES NOT LIE ABOUT DELIVERY」.
+
+  the_two_receipts:
+    _comment: >
+      §10 asks for two, in order, and they are different objects. The QUEUE
+      receipt says a durable thing now holds the packet. The DELIVERY receipt
+      says a person's transport accepted a message. Only the second licenses
+      「已通知」, and a path that had the first and reported the second would be
+      the exact confusion the sentence 「未收到投递回执不能说已转人工」 forbids.
+    queue_receipt: "the queue's own reference for what it accepted. A queue that cannot name what it accepted has not been shown to have accepted anything, so a receipt without a reference is refused rather than recorded as one."
+    delivery_receipt: "the transport's answer, one of the four words above, plus the moment it was recorded."
+
+# ---------------------------------------------------------------------------
+# HOW the shell reads it. Two outcomes and a fault, and the split is the point:
+# `NOT_NOTIFIED` is a real reading of a real path, not a malfunction, and an
+# operator scripting against this needs 「nobody was told」 to be separable from
+# 「the tool broke」.
+#
+# The outcome is named after what MAY BE SAID and not after the transport,
+# because every way of not arriving is one sentence to the person who asked —
+# 「nobody has been told yet」 — while the ways of not arriving are five, and
+# they live in `delivery.state` where a reader who needs to repair one can find
+# it. `NOT_NOTIFIED` covers a queue that was never bound, a queue that refused,
+# no owner, no reported delivery, and a delivery that failed: one outcome, five
+# causes, none of them collapsed into each other.
+# ---------------------------------------------------------------------------
+exit_codes:
+  NOTIFIED: 0
+  NOT_NOTIFIED: 2
+
+# ---------------------------------------------------------------------------
+not_claimed:
+  - >
+    This module does not create a queue and does not choose an owner. Both are
+    parameters. It is therefore not a routing policy, and a caller that passed
+    a default would be inventing one outside this file.
+  - >
+    It does not send anything itself. The delivery is `runtime/notifications.py`
+    — the one delivery path in this product — and this module records what that
+    path answered. A second sender here would be the second delivery path
+    `notification-contract.yaml` refuses by name.
+  - >
+    Its decision packet is not a decision. §10 asks for 「建议」, and a
+    recommendation is not a resolution: the packet is what a person reads
+    before deciding, and nothing in this file resolves anything.
+  - >
+    Being handed over is not being known about. A packet with a queue receipt
+    and no delivery receipt is PENDING_DELIVERY, and the caller must not tell
+    the person who asked that anybody has been told.

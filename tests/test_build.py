@@ -345,6 +345,14 @@ class BuildTests(unittest.TestCase):
         self.assertEqual(run_build(self.args("--write")).returncode, 0)
         self.assertTrue((self.out / "intake/support.py").is_file())
         self.assertTrue((self.out / "intake/support-contract.yaml").is_file())
+        # The fallback's own paths, asserted by name for the same reason: the
+        # module reads TWO files beside it -- the support contract for the
+        # redaction patterns, and its own for the triggers and the two anchors.
+        # Naming only one would let the other stop shipping silently, and the
+        # failure would read as 「no fallback fires」 rather than 「the fallback
+        # came without its contract」.
+        self.assertTrue((self.out / "intake/support_handoff.py").is_file())
+        self.assertTrue((self.out / "intake/support-handoff-contract.yaml").is_file())
 
     def test_relations_ships_inside_the_artifact(self):
         self.assertEqual(run_build(self.args("--write")).returncode, 0)
