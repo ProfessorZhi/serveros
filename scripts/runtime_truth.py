@@ -738,6 +738,46 @@ def pin_superseded(ability_repo: Path, pin: str, canonical_head: str,
     return None
 
 
+def canonical_record(ability_repo: Path, requested: str) -> tuple[str, str]:
+    """(the ref to judge against, why not the requested one).
+
+    A branch name names a branch, and a repository holds more than one record of
+    it. `refs/heads/<branch>` is what THIS clone has; `refs/remotes/origin/…`
+    is what was published as of the last fetch. They are not interchangeable
+    here and the difference is not academic: on 2026-09-23 this node's canonical
+    ability checkout had `refs/heads/main` forty-three commits behind the
+    published one, and the pin was the published head EXACTLY. Resolving the
+    local name reported `PIN_NOT_CANONICAL` — "the artifact was built from a
+    revision canonical does not contain" — about a release that was reproducible
+    byte for byte, and the remedy it implies is to pull the one checkout the
+    workspace policy says not to disturb.
+
+    So the published record is preferred when the repository has one, and the
+    requested ref is the fallback rather than the rule. That ordering is not a
+    loosening: a revision on the local branch and on no published record is a
+    revision that exists on this machine and nowhere that will survive, so it
+    still fails (`test_a_commit_only_this_clone_has_is_not_canonical`). What it
+    stops is the opposite error — a stale local record convicting a correct
+    release — and a repository with no remote at all (every fixture, and a
+    checkout of a local-only branch) keeps answering with the ref it was asked
+    for, because there it is the only record there is.
+
+    The empty second value means "the requested ref is what answered". When it
+    is not, the caller reports both, so a reader can see that the two records
+    disagree rather than being told a single ref answered.
+    """
+    if not requested.startswith("refs/heads/"):
+        # Already a remote-tracking ref, a tag, or a SHA. Only a local branch
+        # has a published counterpart to prefer, and guessing one for anything
+        # else would be inventing a subject.
+        return requested, ""
+    branch = requested[len("refs/heads/"):]
+    published = f"refs/remotes/origin/{branch}"
+    if _git(ability_repo, "rev-parse", "--verify", "--quiet", published):
+        return published, f"{requested} was not consulted; {published} is the record of it"
+    return requested, ""
+
+
 def canonical_provenance(ability_repo: Path, pin: str, canonical_ref: str) -> dict:
     """Is the pinned build revision contained in the canonical branch?
 
@@ -763,9 +803,11 @@ def canonical_provenance(ability_repo: Path, pin: str, canonical_ref: str) -> di
     if not (ability_repo / ".git").exists():
         out["detail"] = f"not a git checkout: {ability_repo}"
         return out
-    head = _git(ability_repo, "rev-parse", canonical_ref)
+    ref, note = canonical_record(ability_repo, canonical_ref)
+    out["ref_used"], out["ref_note"] = ref, note
+    head = _git(ability_repo, "rev-parse", ref)
     if head is None:
-        out["detail"] = f"no such ref in {ability_repo}: {canonical_ref}"
+        out["detail"] = f"no such ref in {ability_repo}: {ref}"
         return out
     out["canonical_head"] = head
     if _git(ability_repo, "cat-file", "-t", pin) is None:
@@ -776,7 +818,7 @@ def canonical_provenance(ability_repo: Path, pin: str, canonical_ref: str) -> di
         return out
     try:
         proc = subprocess.run(
-            ["git", "-C", str(ability_repo), "merge-base", "--is-ancestor", pin, canonical_ref],
+            ["git", "-C", str(ability_repo), "merge-base", "--is-ancestor", pin, ref],
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     except OSError:
         out["detail"] = "git merge-base could not be run"
@@ -785,28 +827,28 @@ def canonical_provenance(ability_repo: Path, pin: str, canonical_ref: str) -> di
         out["reachable"] = True
         if head == pin:
             out["state"] = PIN_STATE_CURRENT
-            out["detail"] = f"pin is exactly {canonical_ref}"
+            out["detail"] = f"pin is exactly {ref}"
             return out
-        behind = _git(ability_repo, "rev-list", "--count", f"{pin}..{canonical_ref}") or "?"
+        behind = _git(ability_repo, "rev-list", "--count", f"{pin}..{ref}") or "?"
         # pin 比 head 老不是缺陷 —— 但那不等于"这个发布就是当前发布"。两个问题分开问:
         # 老提交 + 同样的 payload = 一次合法的、内容仍然当前的发布;
         # 老提交 + 变了的 payload = canonical 已经发布过更新的 revision。
         moved = pin_superseded(ability_repo, pin, head)
         if moved is None:
             out["state"] = PIN_STATE_HISTORICAL
-            out["detail"] = (f"pin is on {canonical_ref}, {behind} commit(s) behind its head; "
+            out["detail"] = (f"pin is on {ref}, {behind} commit(s) behind its head; "
                              "the ability's payload could not be compared against head, so "
                              "whether it is still current was NOT established")
         elif moved:
             out["state"] = PIN_STATE_SUPERSEDED
             out["drift"] = PIN_SUPERSEDED
-            out["detail"] = (f"pin is on {canonical_ref}, {behind} commit(s) behind its head, "
+            out["detail"] = (f"pin is on {ref}, {behind} commit(s) behind its head, "
                              "and the ability's payload has changed since — canonical has "
                              "published a newer revision. The pinned bytes are real and "
                              "reproducible; they are just not the ones to ship")
         else:
             out["state"] = PIN_STATE_HISTORICAL
-            out["detail"] = (f"pin is on {canonical_ref}, {behind} commit(s) behind its head, "
+            out["detail"] = (f"pin is on {ref}, {behind} commit(s) behind its head, "
                              "but the ability's payload is unchanged since the pin — an older "
                              "commit carrying the current content; not a defect")
         return out
@@ -814,8 +856,8 @@ def canonical_provenance(ability_repo: Path, pin: str, canonical_ref: str) -> di
         out["reachable"] = False
         out["state"] = PIN_STATE_INVALID
         out["drift"] = PIN_NOT_CANONICAL
-        ahead = _git(ability_repo, "rev-list", "--count", f"{canonical_ref}..{pin}") or "?"
-        out["detail"] = (f"pinned revision {pin[:12]} is NOT reachable from {canonical_ref} "
+        ahead = _git(ability_repo, "rev-list", "--count", f"{ref}..{pin}") or "?"
+        out["detail"] = (f"pinned revision {pin[:12]} is NOT reachable from {ref} "
                          f"({ahead} commit(s) outside canonical) — the artifact was built "
                          "from a revision canonical does not contain")
         return out
@@ -1697,6 +1739,13 @@ def collect(args) -> dict:
             "state": provenance.get("state", PIN_STATE_MISSING),
             "detail": provenance["detail"] or "pin reachability undetermined",
             "drift": provenance["drift"],
+            # Which record of the branch answered, and — when it was not the ref
+            # that was asked for — that the two disagree. A reader who sees a
+            # PASS should still be able to see that this clone's own branch is
+            # behind, because that is a fact about the machine worth acting on
+            # and it is not the same fact as "the release is reproducible".
+            "ref_used": provenance.get("ref_used"),
+            "ref_note": provenance.get("ref_note") or None,
         },
         AXIS_MATERIALIZATION: {
             "verdict": materialization["verdict"],
