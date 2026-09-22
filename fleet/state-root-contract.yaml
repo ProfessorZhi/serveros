@@ -173,8 +173,9 @@ namespaces:
       agent-control:
         class: authority
         holds: >-
-          trusted actor contexts and human approvals — who a request came from,
-          what a person approved, and until when
+          trusted actor contexts, human approvals and standing delegations —
+          who a request came from, what a person approved, until when, and the
+          scope a cycle may carry without asking again
         # One producer, and it is the store. `runtime/daemon.py` mints the
         # identifiers and writes through the same module — that is a caller,
         # not a second producer, and §18's whole rule is that the two are not

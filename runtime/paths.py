@@ -135,8 +135,9 @@ STATE_SERVEROS_RUNTIME = (
     # fire). Declared here so `resolve` can name them before a producer
     # exists — the namespace is the contract, the directory is the state.
     "attribution", "graph", "anomalies",
-    # §5/§6 adds one: the trusted actor contexts and human approvals this node
-    # minted and decided. Declared before the directory exists, because the
+    # §5/§6 adds one: the trusted actor contexts, human approvals and standing
+    # delegations this node minted and decided. Declared before the directory
+    # exists, because the
     # namespace is the contract and the directory is the state — and declared as
     # a CHILD of runtime rather than a top-level sibling because the daemon is
     # its only producer and `state_dir` is the one root every daemon write is

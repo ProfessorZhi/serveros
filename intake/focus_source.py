@@ -80,19 +80,34 @@ NOT_PRODUCED = {
     "focus_disposition": "the field that would mark an Item PARKED is part of the "
                          "same proposed card extension as the priorities",
     "parking_acknowledged": "same",
-    "scope_digest": "a grant-scoped digest; the grant itself has no producer either",
-    "grant_ref": "no grant store exists on this node; see `NOT_PRODUCED_ELSEWHERE`",
+    "scope_digest": "a grant-scoped digest, and no card carries one. It stopped "
+                    "being unproducible when the grant store landed "
+                    "(`runtime/agent_control_store.py#put_grant` takes "
+                    "`scope_digests`), so what is missing is the CARD field: a "
+                    "row that named a grant and no scope digest would be "
+                    "admitted under a grant whose scope was never checked, so "
+                    "`grant_reason` refuses it as SCOPE_CHANGED",
+    "grant_ref": "the card carries no such field. The other end of this join "
+                 "exists now — a grant can be recorded and the envelope is "
+                 "derived from it (`context/delegation.py`) — but until a card "
+                 "names a grant, `select_focus` reads `grants.get(None)` and "
+                 "reports every candidate MISSING_OR_REVOKED_GRANT. The gap is "
+                 "the board's producer, not the store's",
     "next_action": "`select_focus` defaults to `research` when the row is silent",
     "blocked_by": "the board carries no dependency edge",
 }
 
 # Facts the policy needs that are absent for a reason outside this adapter.
 NOT_PRODUCED_ELSEWHERE = {
-    "grants": "`select_focus(grants=...)` takes grants minted by an authority. "
-              "Nothing on this node mints one — there is no grant store under "
-              "`state/serveros/` — so every candidate is reported "
-              "MISSING_OR_REVOKED_GRANT. That is the true answer: no objective "
-              "has been authorized, so none may be admitted.",
+    "grants": "`select_focus(grants=...)` takes the envelope "
+              "`context/delegation.py` derives from the delegations recorded in "
+              "`state/serveros/runtime/agent-control/store.json`. This node has "
+              "recorded none, and — separately — a board row cannot name one, so "
+              "every candidate is reported MISSING_OR_REVOKED_GRANT. That is the "
+              "true answer: no objective has been authorized, so none may be "
+              "admitted. The two gaps are named apart on purpose: an empty store "
+              "is a delegation nobody made, and a row without a `grant_ref` is a "
+              "card field nobody built.",
     "current_priority": "`intake/workchain-contract.yaml#card_extension` proposes "
                         "`source_priority`/`personal_priority` and is "
                         "PROPOSED_NOT_APPROVED; no card carries either, so every "
