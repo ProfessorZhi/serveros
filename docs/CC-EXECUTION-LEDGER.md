@@ -2513,7 +2513,21 @@ LIVE 不是——两侧都接线了，而**没有任何消费者读那份 patch*
 装上（可手工验证、不自动运行）与上弦（每天 08:17 自动产出）是两个动作；本轮只做前者，
 后者是 §7.2 第 3 条。
 
-### 12.6 Cards：告警那一面在链上，status 那一面在 ServerOS 侧已齐、在 ops 侧没接
+**但"上弦"不是这一条唯一的缺口，而且不是最硬的那个**（2026-09-23 实测）。信息半环当天
+真跑通并留下产物（`information captured` 98,685 B、`information watched` 1,944 B、
+`work understanding` 44,067 B、`report daily` 写出 `daily-report.md` 3,891 B ＋
+`publication-receipt.json` 1,209 B，其中 `blocking` / `claimed_done_without_a_pass` /
+`fallbacks` 三项全空）；**工作半环跑不完**：`work focus` 判 `BLOCKED`、理由 `STALE_BOARD`、
+`selected` 空，`work grants` 0 条委派，`work admissions` 0 条在办。根不在定时器，在
+**板投影没有 producer** —— `focus.not_produced` 逐项列出板还没有生产的字段
+（`priorities_unproduced: 34`、无 dependency edge），`grant_ref` 那一句是 ServerOS 自己写的：
+「The gap is the board's producer, not the store's」。
+
+所以在这里打开定时器会产出一份**看起来像工作循环的日产物，而 `select_focus` 每次都返回
+BLOCKED** —— 那正是这一轮反复遇到的那种绿：动作执行了、退出了 0、结论却不是使用者要的。
+上弦要等板有 producer 之后再做，那才是它有意义的时候。
+
+### 12.6 Cards：alert 与 status 两面都在生产链上
 
 链条（§3.6 逐段核过）：
 
@@ -2527,31 +2541,58 @@ anomaly(detectors) -> alert producer(身份 = code+device+subject)
 - **告警卡面已经是 ServerOS 出的**：`ops/…/alert_digest_card.py:107 serveros_card()` 调
   `serverosctl card alert --json` 并把返回的 `body` 当卡面；只有取不到才回落旧渲染器，且回落
   会往 stderr 写一行。所以 `card` 这个面**在生产链上**。
-- **status 卡面（每小时那张主卡）没接**：`monitor_card.py` 只调 `resource summary` /
-  `resource containers` / `runtime list` / `runtime status`，从不调 `serverosctl card status`，
-  也不写 receipt。ServerOS 这一侧是齐的（`serverosctl card status --with-frozen --json` 在
-  新进程里 exit 0，给出冻结块 `status@9820fa98d597`、2967 B）；缺的只在 ops 那一跳。
-- **这一跳本轮做不了，不是因为难**：`monitor_card.py` 正被两个活动工作树压着
-  （`worktrees/hwz-ops/SRV-0011` 未提交地改它；`worktrees/hwz-ops/alert-card-v2` 是一整条独立
-  的飞书 UX 工作流）。去改同一个文件等于覆盖另一个 actor 的 WIP，所以记成**等待**。
+- **status 卡面（每小时那张主卡）2026-09-23 接上了**（`hwz-ops@a8272d4`）：`monitor_card.py`
+  改成调 `serverosctl card status --with-frozen --json --gateway-binding <path>`，把返回的
+  `body` 当卡面、把 `frozen` 当回执信封写 `card record-delivery`；取不到就回落本脚本原来的
+  渲染器并往 stderr 写一行（计时器的安全属性）。分工是 **ops 量网关、措辞归 ServerOS**：
+  测量值只能经 `binding["gateway"]` 进卡（`card_source.py:395`），而"一个数该怎么说"只在
+  `card-definitions.yaml` 一处声明。
+- **冻结块是逐次渲染的，不是一个固定值。** 这里原来引 `status@9820fa98d597`、2967 B，读起来
+  像一个版本号；今天两次渲染分别得到 `status@b3bd796bad44` / `status@b7071444bc98`，因为
+  `version = "status@" + payload_hash[:12]`。要引就引某一次：2026-09-23 02:50 那次
+  `payload_bytes = 3657`、`version = status@b7071444bc98`。
+- **更正一处失实**：这里原来写「这一跳本轮做不了，不是因为难……`monitor_card.py` 正被两个
+  活动工作树压着」。`alert-card-v2` 一行没改 `monitor_card.py`；只有 `SRV-0011` 改了它，且改
+  的是**共享网关端口声明化**那一段，与本跳无关。而 `SRV-0011` 那份未提交的
+  `gateway-binding.yaml` 与本跳落地的同名文件 schema/role **逐字相同** —— 同一个设计的两次
+  独立实现 —— 已按 §2「重叠文件准备兼容补丁」取并集收敛（`hwz-ops@0958ca9`）：身份字段
+  （`service_ref`/`source`/`maintainer`）喂 ServerOS，`endpoint`/`evidence`/`window_minutes`/
+  `watched_families` 喂 ops 自己的 `gateway_binding.py#cross_check()`，两类不重叠。缺
+  `endpoint` 时 SRV-0011 的 `gateway_port()` 会把「端口退回常量」报上卡 —— 并集不是折衷，
+  是两边各缺的那一半。
 
-### 12.7 Laya：adapter 在、权重不在、进程不在 —— 三条都是实测
+### 12.7 Laya：provider 已部署并验收，缺的是消费 —— 三条订正、一条仍真
 
 | 问 | 答 |
 | --- | --- |
-| 有受管进程吗 | **没有**（`pgrep` 无命中；全机 `*laya*` 命中的只有 uv 缓存里一个同名的 PyPI 包，与本能力无关） |
-| 有 adapter 吗 | 有，在 **MarketOps 仓**：`worktrees/marketops/mvp/marketops/adapters/laya.py`，`LayaDecisionProvider:128` |
-| 有权重吗 | **没有**。`find *laya*` 无模型目录；`LAYA_CHECKPOINT_DIR` 只在 `mvp/.env.example:42` 出现且为空 |
-| ServerOS 侧有 consumers 吗 | **read-and-absent**：`grep -rl 'DecisionProvider\|SearchProvider' runtime/ mcp/ abilities/` → 0 文件 |
+| 有受管进程吗 | **有**（2026-09-23 订正）。`laya-shared.service`：`active (running)`、`enabled`、`Linger=yes`，主 PID 206372，`Tasks 21`，1.3 G RSS（`MemoryMax=3G`），启动 02:24:03 |
+| 有 adapter 吗 | 有，在 **MarketOps 仓**：`worktrees/marketops/mvp/marketops/adapters/laya.py`，`LayaDecisionProvider:128`。但它是**进程内模型**，没接到共享 endpoint |
+| 有权重吗 | **有**（2026-09-23 订正）。`caches/models/laya-multilingual/052592a1…/model.safetensors`，643,835,514 B，`sha256:9d628fd9…`（本轮复算，与部署回执一致） |
+| ServerOS 侧有 consumers 吗 | **仍为 0**。`grep -ril laya runtime/ mcp/ abilities/` 零命中；12 个 serveros 工作树里也全是 0 |
 
-`providers/` 这个目录**不存在**——四种独立查法确认，不是没找到。全机只有一个 provider 记录
-（`provider:openviking`，属记忆域），而它被复制进全部 10 个 serveros worktree/revision，所以它
-在每个 worktree 里都「存在」，这本身不是 10 个 provider。ServerOS 实际有的是契约与解析器
-（`abilities/provider-contract.yaml`、`abilities/resolver.py:636`、`abilities/provider_instance.py:297`），
-其中最后一个的 docstring 自己记着 `instance:` 记录「自契约写下就声明了，**而没有任何 writer**」。
+**订正的原因**：这里原来写「没有受管进程、没有权重」——那是在 2026-09-23 01:54 下载权重
+**之前**量的。部署与验收由它自己的 Item 完成并留下回执：`ops@ed3166d`
+`reports/2026-09-23-laya-shared-provider-deployment.md` —— 契约 §7 八行里 6 行观测通过、
+2 行如实记 `NOT_OBSERVED`，并诚实记着 `verified_for_this_request` **恒为 false**（这台机器上
+没跑过任何质量评估）。
 
-**P10 的完成判据（「ServerOS 和 MarketOps 同时访问同一个 Laya」）因此一条都不成立**：
-没有受管进程，没有权重，ServerOS 侧没有消费者。这不是「测了没通过」，是**被测对象不存在**。
+那条回执自己点名了剩下的缺口，与本轮实测一致：**「没有第二个 consumer 业务接入……真正的
+业务 consumer（MarketOps、ServerOS）尚未接」**。而 ServerOS 侧连 provider 消费者都不存在。
+
+`providers/` 这个目录在 ServerOS 里**不存在**——四种独立查法确认，不是没找到。（顺带一条：
+全机只有一个 provider 记录 `provider:openviking`，属记忆域，而它被复制进全部 10 个
+serveros worktree/revision，所以在每个 worktree 里都「存在」——那本身不是 10 个 provider。）
+ServerOS 实际有的是契约与解析器（`abilities/provider-contract.yaml`、`abilities/resolver.py`、
+`abilities/provider_instance.py`），其中最后一个自己的 docstring 记着 `instance:` 记录「自契约
+写下就声明了，**而没有任何 writer**」。契约写 `is_the_field: instance.status`，问的是
+「would calling this provider right now work」，两个轴是控制面可达与执行就绪。
+
+**所以 P10 的判据（「ServerOS 和 MarketOps 同时访问同一个 Laya」）不是"被测对象不存在"** ——
+provider 侧的对象在、还在跑；**被测的消费不在**：两个轴各有观测者才有意义，而现在
+ServerOS 侧一个观测者都没有。这不是「测了没通过」，是「没有人在问这个问题」。
+
+（一条诊断，不是故障，免得下次被当故障读：journal 里的 `BrokenPipeError` 是无凭据客户端
+被正确拒 `UNAUTHORIZED` 后在拒绝写出前断开 —— 它证明拒绝路径是活的。）
 
 ### 12.8 MarketOps：代码在，业务 MCP 没注册，SOP 只读
 
@@ -2633,12 +2674,13 @@ anomaly(detectors) -> alert producer(身份 = code+device+subject)
 | S3 会议 | `space/meeting_relevance.py` + `space/meeting_bundle.py`（§9.15） | `test_meeting_bundle.py`、`test_meeting_relevance.py` | **未跑**。缺一份真实会议 manifest——本机四个探针声明全是合成的 |
 | S4 自管指南 | B9 `document-stewardship`（本仓只有文本；实现与 publisher 循环在外仓 `~/.claude/skills/document-stewardship/scripts/maintain.py`） | —（该实现不在本仓，本仓没有它的测试） | **未跑**。缺一次真实 Published Knowledge patch 与它的回读 receipt |
 | S5 协作文档/SOP | `runtime/report-publication-contract.yaml` + `intake/support_handoff.py`（§9.19） | `test_report_publication.py`（31 条）、`test_support_handoff.py` | **未跑**。缺两个锚（收件人与会话）——它们 UNBOUND，所以当前读数是「待投递」而不是「已通知」 |
-| S6 日常工作 | `intake/daily_cycle.py`（`select_focus` / `review_gate` / `invalidate_claims` / `fingerprint` / `instant`）+ `runtime/workbench.py` | `test_daily_cycle.py`、`test_workbench.py` | **腿装了、手跑过一次、没上弦**（§3.9、§12.5）。缺整条链跑通一次——这正是 §12.11 第一句不声称无人值守的理由 |
-| S7 卡片 | `runtime/cards.py` + `runtime/card-definitions.yaml` + `runtime/card_delivery.py` | `test_cards.py`、`test_card_delivery.py`、`test_presentation.py` | **告警那一面在生产链上**，status 那一面 ServerOS 侧齐、ops 侧没接（§3.6、§12.6）。缺 ops 那一跳，且它被两个活动工作树压着 |
-| S8 共享基础设施 | MarketOps 三个 adapter（Laya/Jev/Serper）+ ServerOS `abilities/provider-contract.yaml` | `test_provider_readiness.py`、`test_provider_adapter_surface.py`、`test_memory_provider.py` | **一条都不成立**：没有受管 Laya 进程、没有权重、ServerOS 侧零 consumer（§12.7）。这是「被测对象不存在」，不是「测了没通过」 |
+| S6 日常工作 | `intake/daily_cycle.py`（`select_focus` / `review_gate` / `invalidate_claims` / `fingerprint` / `instant`）+ `runtime/workbench.py` | `test_daily_cycle.py`、`test_workbench.py` | **信息半环 2026-09-23 真的跑通了；工作半环卡在板投影的 producer 上**（§3.9、§12.5）。四条实测全 EXIT 0 且留下真实文件：`information captured`（98,685 B）、`information watched`（1,944 B）、`work understanding`（44,067 B）、`report daily`（写出 `daily-report.md` 3,891 B ＋ `publication-receipt.json` 1,209 B，其 JSON 里 `blocking` / `claimed_done_without_a_pass` / `fallbacks` 三项全空）。工作半环的读数：`work focus` 判 `BLOCKED`、理由是 `STALE_BOARD`、`selected` 空；`work grants` 0 条委派、`work admissions` 0 条在办。所以缺的不是"上弦"——是 ServerOS 自己点名的那个 producer：`focus.not_produced` 逐项列出板**还没有生产**的字段（`priorities_unproduced: 34`、无 dependency edge、`grant_ref` 一句写着 "The gap is the board's producer, not the store's"）|
+| S7 卡片 | `runtime/cards.py` + `runtime/card-definitions.yaml` + `runtime/card_delivery.py` | `test_cards.py`、`test_card_delivery.py`、`test_presentation.py` | **两面都在生产链上了。** 告警面 2026-09-22 起取 `serverosctl card alert`；status 面（每小时那张主卡）2026-09-23 起取 `serverosctl card status --with-frozen` 并写 `card record-delivery` 回执（`hwz-ops@a8272d4`），分工是 ops 量网关、措辞归 ServerOS。**原判词的两处失实已更正**：这一跳没有被"两个活动工作树"压着——`alert-card-v2` 一行没改 `monitor_card.py`，只有 `SRV-0011` 改了它，且改的是共享网关端口声明化那一段，与这一跳无关 |
+| S8 共享基础设施 | MarketOps 三个 adapter（Laya/Jev/Serper）+ ServerOS `abilities/provider-contract.yaml` | `test_provider_readiness.py`、`test_provider_adapter_surface.py`、`test_memory_provider.py` | **前两句已不成立、第三句仍成立**：受管 Laya 服务在跑（单元 `active` ＋ `enabled`，恰好 1 个进程，权重 `sha256:9d628fd9…` 在位，`/instance` 与记录一致），**缺的只是消费**——ServerOS 侧仍零 consumer（§12.7 已订正）。所以这不是"被测对象不存在"，而是"provider 侧的对象在、被测的消费不在" |
 | S9 重启和权限 | `runtime/coordination.py`、`runtime/agent_control_store.py`、`runtime/daily_report.py`（receipt）、`runtime/alert_digest.py`（冻结块）、`runtime/report_publication.py`、`abilities/provider_instance.py` | `test_coordination.py`、`test_alert_digest.py`、`test_report_publication.py`、`test_provider_readiness.py`、`test_daily_cycle.py` | **机制被单测覆盖**（全套 4723 passed），**但「按不同水位恢复」这条链没在真进程上跑过**。最能说明这件事的现场就在 §12.2：`serverosd.service` 至今跑着 promote 之前那一版，因为重启它是 HUMAN_EXECUTED。缺一次安全窗口内的真重启 |
 | S10 生产边界 | `runtime/managed_mutation.py` + `managed-mutation-contract.yaml`、`runtime/approval.py`、A9/A10 的 `READY ≠ 切流授权` | `test_managed_mutation.py`、`test_approval.py` | **只在「没有访问」的形态下成立**。缺真实生产访问（A9/A10 的 Binding 是 UNBOUND），所以「有真实访问才读观察」这句话本机**没有反例可测** |
 
-**十条里，一条（S2 的告警腿）在生产链上真在跑，一条（S7 的告警卡面）同属那条链，
-其余八条没有一条跑通过。** 这不是「测了没通过」——两张表分开写，是因为把它们并成一列
+**十条里，S7 的两面与 S2 的告警腿都在生产链上真在跑；S6 的信息半环 2026-09-23 第一次
+跑通并留下产物，工作半环仍卡在板投影的 producer 上。** 其余各条没有一条跑通过。
+这不是「测了没通过」——两张表分开写，是因为把它们并成一列
 `FAILED` 会让「对象不存在」看起来像「产品坏了」，而这两种状态下该做的事完全不同。
