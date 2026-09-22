@@ -1815,15 +1815,26 @@ def host_profile_roots() -> dict:
 
 
 def default_root(argument: str):
-    """The environment's answer, else this host's, else None. Never a guess."""
+    """The environment's answer, else this host's, else None. Never a guess.
+
+    The two sources are not interchangeable, and the difference is the suffix.
+    An environment variable names the thing itself: `SERVEROS_REPO` and
+    `SERVEROS_ABILITY_REPO` are declared in `ops/workspace/environment.yaml` as
+    the checkouts, and `build.py`, `taxonomy.py` and `runtime/cli.py` all read
+    them that way. The profile names the ROOT a thing hangs under — `workspace_src`
+    is `<WORKSPACE_ROOT>/src` — so the product layout is appended to it.
+
+    Appending on both branches resolved `…/src/ability-management` to
+    `…/src/ability-management/ability-management`, and the consumer reported
+    `not a git checkout`: a wrong path wearing a broken repository's message.
+    """
     env_name, profile_keys, suffix = ROOT_SOURCES[argument]
     raw = os.environ.get(env_name)
     if raw:
-        base = Path(raw)
-    else:
-        roots = host_profile_roots()
-        base = next((Path(roots[key]) for key in profile_keys
-                     if isinstance(roots.get(key), str) and roots[key]), None)
+        return Path(raw)
+    roots = host_profile_roots()
+    base = next((Path(roots[key]) for key in profile_keys
+                 if isinstance(roots.get(key), str) and roots[key]), None)
     if base is None:
         return None
     return base.joinpath(*suffix) if suffix else base
