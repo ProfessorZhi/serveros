@@ -525,6 +525,36 @@ serveros 那套的代价要写下来：单次 **7 分 47 秒**，且主机 load 
 第二条值得单独记一笔：它是**同一个族的第四次**——源动了，派生物没跟着动。前三次是
 manifest 行、packs 闭包、cards。凡是「X 的渲染嵌了 X 的值」，都必须和 X 同一次改。
 
+### 5.0.1 那 8 条红的解除条件收窄到一次 fast-forward，而它不在本轮授权内（2026-09-22 量）
+
+台账上面那句「让 `src/ability-management` 前进到含 `e7d20f3` 的 revision」是对的，但当时
+**没有量到它到底要求哪一步**。这一节把两个看起来显然的修法排除掉，剩下的那一个是一条
+外部权限项。
+
+**它不是 fixture 独有的一条红，产品检查本身也是红的。** `architecture_check.py:1479` 的
+`--ability-ref` 默认是 `main`（`SERVEROS_ABILITY_REF` 未设时），而 `:750` 的
+`observe_object(ability_repo, args.ability_ref, …)` 读的是**这个 ref 的 git object**。
+所以生产的 `architecture_check` 读的正是 ability-management 的 `main`，今天会报
+`COMPOSITION_PAIRING_UNAVAILABLE`（HIGH）。fixture 的「canonical checkout 优先」不是它
+自己的怪癖，是在复现产品的读法——**两者要一起绿，只有一条路**：
+
+| 看起来能修的 | 实测 | 结论 |
+| --- | --- | --- |
+| 把 `src/ability-management` 快进到 `origin/main` | `origin/main` = `7ea44af`；`git -C src/ability-management branch -r --contains e7d20f3` → **只有** `origin/serveros/fabric-v1-20260922` | **不够**。`e7d20f3` 根本不在 `origin/main` 上，快进 33 个提交也读不到配对规则 |
+| 在 canonical 检出里切到带规则的分支 | 工作树会带上规则（fixture 变绿），但 `--ability-ref=main` 读的是 **ref**，不是工作树 | **更坏**：只有量具绿、产品照红。这正是本仓记过五次的那一族 |
+| 把 `074a518` 落到 ability-management `main` | `git merge-base --is-ancestor origin/main HEAD` → **YES**，`0 10` | **唯一的路**，且是 fast-forward：无 merge commit、不改写任何历史 |
+
+那 10 个提交的内容也审过了，因为 §12 点名不许夹带：`git diff --name-only origin/main..HEAD`
+的 35 个路径**全部**落在 ability-management 自己的 `skills/`、`plugins/`、`abilities-manifest.yaml`、
+`ability-packs.yaml`、capability-families 派生视图与 `tests/` 里——没有 Feishu UX、没有
+MarketOps、没有两处 LiteLLM、没有 `records/` 脏资产。它正是内存里那句
+「其余剩的都是有独有内容的 blocker」里的一条。
+
+**而这一步本轮不做**：§1 明写「不覆盖 main」，`ops/CLAUDE.md` 是「未明确授权时只检查、
+不移动/删除/修改/commit/push」，所以对**另一个仓的 main** 做远端写是一条外部权限项，
+不是本轮的授权动作。它的形态很轻（一条 fast-forward，`git push origin 074a518:main`），
+但轻不是自己批的理由。§16 的最终报告把它列进「孤立的外部权限操作」那一栏。
+
 ## 6. 外部 WIP 隔离
 
 以下对象**本轮不碰**，理由不是它们不重要，是它们在别人的活动引用里：
@@ -572,7 +602,7 @@ manifest 行、packs 闭包、cards。凡是「X 的渲染嵌了 X 的值」，�
 结论写成一句：**三个都不删，理由是任何一个都存在不确定性；不确定就不动，继续做别的事。**
 这是 §5 的规则要求的结果，不是拖延。
 
-### 7.2 只剩要人做的两件（其余都已做完）
+### 7.2 只剩要人做的四件（其余都已做完）
 
 | # | 动作 | 为什么不是本轮能做的 |
 | --- | --- | --- |
@@ -1612,6 +1642,101 @@ release 的符号链接，所以 `--sidecars` 在已安装路径上还不可用�
 **declared 37 / undeclared 0 / stale 0 / tests_breach 0**，扫 229 文件（§9.14 是 227，
 多出的两个正是本轮新增的文件，而 declared 一个没动——本轮没加任何 `os.unlink`/
 `os.replace` 位点，**没动就是证据**）。
+
+### 9.16 ability 侧终态：绿，但「绿」这个词在这里有两次不同的意思（2026-09-22 量）
+
+§14 的链条里有一格是「ability 测试绿色」。它此前**没被量过**，而台账 §5.0 的表格里
+还留着一条关于它的红（`test_materialization_contract.py::test_real_registry_matches_real_bundle`），
+所以这一节先纠一条记录，再报两个数。
+
+**那条红已经不存在了，不是因为它被修好，是因为那个测试名不存在了。**
+`tests/test_materialization_contract.py` 本轮被改过，那个函数名已经不在文件里；
+`pytest tests/test_materialization_contract.py::test_real_registry_matches_real_bundle` 报
+`not found: … (no match in any of [<Module test_materialization_contract.py>])`。
+按名字引用一条判据的台账会这样过期——**名字在动的时候，行号与函数名都只是指针**，
+这一点本仓先前已记过一次（「行号引用只在指定 revision 时才有意义」），这里是同一族的第二次。
+
+**它现在也从另一条路自己绿了**：该文件解析 serveros bundle 的顺序是
+`SERVEROS_BUNDLE` → … → `worktrees/<repo>/*/plugin`（`test_materialization_contract.py:391-415`），
+所以它读得到 §9.15 那棵工作树的 `plugin/profiles/testing.yaml`。
+注意这与 serveros 那边 fixture 的「canonical 优先」是**相反**的顺序，而两边都写下了理由：
+serveros 问的是「规则在哪」，ability 问的是「这个组合长什么样」。
+
+| 跑法 | 结果 |
+| --- | --- |
+| `pytest tests/`（工作树，无环境变量） | **105 passed, 2 skipped** |
+| 同上，`SERVEROS_BUNDLE=<serveros 工作树>/plugin` | **107 passed, 3 subtests passed**（0 skipped） |
+
+那 2 条是 `tests/test_registry_records.py:345,351`，跳过理由是它自己印出来的：
+`SERVEROS_BUNDLE 未设置: 本条需要 composition canonical, 跳过而不是静默通过`。
+**这是本仓要的那种跳过**——它明说自己没跑，所以「跳过」不会被读成「通过」；
+补上环境变量后它确实跑，并且确实过。
+
+顺带量到、留给 §14 与 §16 的两件事：`src/serveros` 的 `plugin/profiles/` 里**只有
+`linux-work.yaml`**（没有 `testing.yaml`），且相对自己的 `origin/main` 是 **2 ahead /
+40 behind**（`HEAD=d0a94d6`，`origin/main=4d090d6`）。
+
+那 2 个本地提交（`d0a94d6`、`e925fbf`，2026-09-21，都是 `space:` 开头的）**只在
+`refs/heads/main` 上**。这一句是 fetch 之后才成立的：`git branch -r --contains` 只认得
+本地的远端跟踪引用，所以先 `fetch origin --prune` 再读——刷新后两条仍是 `[]`，
+`git for-each-ref --contains d0a94d6` 也只列出本地的 `refs/heads/main`，
+且都不在已推送的 serveros 工作树 HEAD 里。**这是本机唯一的、未被任何远端持有的用户提交**，
+别人对该检出做一次快进就会丢；本轮不碰它，但它属于 §16 要单列的那类外部权限项。
+
+### 9.17 一句散文许下了一个不存在的闸门，而它许诺的方向正是操作者会信的方向
+
+`plugin/profiles/linux-work.yaml` 的 `recommended:` 上方原写着：这份清单「deliberately
+the registry, minus what this composition ships」，并且「Leaving a registry ability
+unnamed here … 是被 A1 抓成 HIGH finding 的，所以新注册一个 ability 会逼出一个决定
+（ship / recommend / 修 registry），而不是悄悄把缺口撑大」。
+
+**两句话都是假的，而第二句假在要紧的那个方向**：它告诉操作者「注册就够了」。
+
+**量。** 注册表在 `074a518` 上是 64 条，其中 41 个是 `type: skill` 的名字、15 条是
+`type: plugin` 记录；每条 `provides[].id` 都能解析成一条 ability 条目（0 unresolved，
+这正是检查器自己那条 `PROVIDES_UNRESOLVED` 为 0 的读数）。
+
+**A1 实际比的是什么。** `judge_records()` 把每条 composition 配到**它自己那个 artifact
+的记录**上，再 `judge([comp], registry_members=record["members"])`——所以被比的集合是
+**那一条记录自己的 `provides` 成员**。在工作树上实测：
+
+| | 数 |
+| --- | --- |
+| 被某条 plugin 记录的 `provides` 触达的名字 | 12 |
+| 被某条 composition 声明的名字 | 12 |
+| **差**（会变成 `COMPOSITION_MEMBER_UNREACHABLE` 的） | **没有** |
+| 注册表里 `type: skill`、却没有任何 composition 声明的名字 | **29** |
+
+12 与 12 相等，正是那次运行一条 drift 都不报的原因——**这个模型复现出了检查器自己的
+输出**，所以那个 29 才可信。29 个里就有本轮那三个：`production-observation`、
+`production-change`、`research-evidence`。
+
+**闸门是真的，只是主语收窄了。** 什么都没被删：一条 plugin 记录 `provides` 了、而没有任何
+composition ship 或 recommend 的 ability，仍然报 `COMPOSITION_MEMBER_UNREACHABLE`（HIGH），
+且 fixture 就钉着它——`test_a_provided_ability_that_no_composition_ships_is_high_drift`
+往**记录**的成员表里加 `ghost-ability`，不是往注册表这个目录里加。
+所以那条散文把主语说成了「注册表」，实际是「某条 plugin 记录的 `provides`」；
+一条没有记录认领的 `skill` 条目**根本不进入任何比较**。
+
+**处置：改散文，不改代码。** 照那句话去实现会与 §28 的 containment 规则相抵触
+（`test_a_recommended_ability_the_registry_provides_is_not_drift` 钉着它，且注册表答的是
+「这个节点能解析什么」、composition 答的是「这个 artifact 携带什么」两个不同的问题），
+并且会对一个行为正确的产品报出 29 条 HIGH。文件现在写它真正把守的东西，并写明那 29 与那 12。
+
+**同一小时内两个量具读错了东西**，两次都是靠与检查器自己的输出对照才抓到的，都没进文件：
+先是把 composition 的键猜成 `abilities`/`carries`（真名是 `skills`/`recommended`），
+报出 53；后是把 `provides[].id` 的最后一段当成员名，报出 `workspace-maintainer` 是个
+「无 composition 可达的成员」——那是检查器的一个假洞。它不是：
+`ProfessorZhi/workspace-maintainer` 是名字为 `workspace-management` 那条 ability 的 **id**，
+而 `linux-work.yaml` 声明的正是那个名字。**`provides` 装身份，composition 装名字**；
+检查器是对的，解析器是错的。
+
+**顺带闭合的两件：** ① 这处只改注释，故 cachebuster 按 `scripts/build.py:789-790`
+的规则（「byte-identical rebuild 保持不动；只有当新的生成产物必须让已装 plugin 缓存失效时
+才 bump 一次」）不动——而且是量过才不动：`tests/test_build.py` + `tests/test_plugin_composition.py`
++ `tests/test_architecture_check.py` 合跑是 **8 failed, 74 passed, 2 subtests**，
+8 条仍是那 8 条跨仓红，无新增，说明没有东西对该文件的字节做哈希。② §5.0.1 那条外部权限项
+的严重性被这一节独立确认：**产品检查本身也在读 `main`**，不只是 fixture 在红。
 
 ## 10. 后续每包更新哪几行
 
