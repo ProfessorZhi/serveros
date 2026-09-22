@@ -3937,10 +3937,14 @@ def cmd_alert_digest(args) -> int:
     counts = payload.get("counts") or {}
     severity = payload.get("severity_counts") or {}
     verdict = payload.get("decision") or {}
+    frozen = payload.get("frozen") or {}
     lines = [
         f"as of       {payload.get('at')}",
         f"baseline    {payload.get('baseline_at')}",
         f"generation  {payload.get('generation')}",
+        f"版本        {frozen.get('version') or '—'} "
+        f"({frozen.get('row_count', 0)} 行 · "
+        f"{frozen.get('payload_bytes', 0)} 字节)",
         "",
         f"变化        NEW {counts.get('NEW', 0)} · ESCALATED {counts.get('ESCALATED', 0)}"
         f" · RECOVERED {counts.get('RECOVERED', 0)} · REOPENED {counts.get('REOPENED', 0)}",
@@ -3973,6 +3977,7 @@ def cmd_alert_digest_record(args) -> int:
     somebody else's limit without anybody noticing.
     """
     shown = None
+    frozen = None
     if args.shown_file:
         try:
             document = json.loads(Path(args.shown_file).read_text(encoding="utf-8"))
@@ -3981,6 +3986,15 @@ def cmd_alert_digest_record(args) -> int:
                              f"({type(exc).__name__}: {exc})\n")
             return EXIT_FAULT
         shown = document.get("shown") if isinstance(document, dict) else document
+        # The document's own frozen version travels WITH the rows. The receipt
+        # has to name the version that was carried, and the severity/state a
+        # row was told at are facts about the composing instant — reading them
+        # back off the register after the send is how a card that said MEDIUM
+        # gets recorded as having said the HIGH somebody escalated to while
+        # the transport was thinking. A document without the block is an older
+        # daemon and is recorded without it.
+        if isinstance(document, dict):
+            frozen = document.get("frozen")
         if not isinstance(shown, list):
             sys.stderr.write(
                 "serverosctl: --shown-file is neither a digest document nor a "
@@ -3989,7 +4003,7 @@ def cmd_alert_digest_record(args) -> int:
                 "told.\n")
             return EXIT_FAULT
     params = {"generation": args.generation, "state": args.state,
-              "shown": shown or [], "reason": args.reason}
+              "shown": shown or [], "reason": args.reason, "frozen": frozen}
     payload, code = _digest_answer("alert.digest-record", params)
     if code != EXIT_OK:
         return code
@@ -3998,6 +4012,8 @@ def cmd_alert_digest_record(args) -> int:
     if payload.get("delivered"):
         lines.append(f"已标记告知  {payload.get('announced_keys')} 条")
         lines.append(f"登记表落章  {payload.get('rows_stamped')} 行")
+        lines.append(f"所记版本    {payload.get('payload_version') or '—'}"
+                     + ("" if payload.get("payload_hash") else "（文档未带冻结版本）"))
     else:
         lines.append(f"未送达      {args.reason or '未给出原因'}")
         lines.append("            generation 不前进，delta 窗口保持打开 —— "
@@ -4005,6 +4021,16 @@ def cmd_alert_digest_record(args) -> int:
     gone = payload.get("gone_from_register") or []
     if gone:
         lines.append(f"已不在册    {len(gone)} 条（卡面显示过，游标仍记账）")
+    superseded = payload.get("superseded") or []
+    if superseded:
+        lines.append(f"已被更新    {len(superseded)} 条（更晚的一批已经记过账，"
+                     f"这份回执不覆盖它）")
+    for label, field in (("未冻结行", "unnamed_rows"), ("与冻结不符", "disagreed_rows")):
+        rows = payload.get(field) or []
+        if rows:
+            lines.append(f"{label}    {len(rows)} 条 —— 这份"
+                         f"交付的行与它自带的冻结版本对不上，"
+                         f"已按冻结版本记账并在此报出")
     emit(payload, as_json=args.json, lines=lines)
     return EXIT_OK
 
@@ -4053,8 +4079,14 @@ def _card_clock() -> str:
     return datetime.datetime.now(datetime.timezone.utc).astimezone().isoformat()
 
 
-def _card_common(args) -> tuple[dict, str]:
-    """The model and its caption, gathered the one way the card knows how."""
+def _card_common(args) -> tuple[dict, str, str]:
+    """The model, its caption and the instant, gathered the one way cards know.
+
+    The instant is returned rather than recomputed by the caller because the
+    frozen version §3 requires carries it: a card hashed at one clock reading
+    and stamped with another would be a receipt whose two halves came from
+    two different sends.
+    """
     source, presentation, _cards = _card_modules()
     at = getattr(args, "at", "") or _card_clock()
     kind = args._card_kind
@@ -4081,7 +4113,7 @@ def _card_common(args) -> tuple[dict, str]:
                                                 sample=bool(args.sample))
             caption = ("recovery card — only what was announced, and only what "
                        "has since recovered")
-    return model, caption
+    return model, caption, at
 
 
 def _read_card_document(args):
@@ -4119,7 +4151,7 @@ def _card_error(code: str, detail: str) -> dict:
 
 
 def _emit_card(args) -> int:
-    model, caption = _card_common(args)
+    model, caption, at = _card_common(args)
     if isinstance(model, dict) and model.get("schema") == "serveros/card-error.v1":
         emit(model, as_json=True)
         return EXIT_FAULT
@@ -4127,13 +4159,101 @@ def _emit_card(args) -> int:
     rendered = cards.preview(model, caption=caption)
     if getattr(args, "html_out", ""):
         Path(args.html_out).write_text(rendered["html"], encoding="utf-8")
-    emit(rendered["card"], as_json=True,
-         lines=[f"card      {rendered['card']['header']['title']['content']}",
-                f"template  {rendered['card']['header']['template']}",
-                f"html      {args.html_out or '（未写出；用 --html-out 落盘）'}",
-                "",
-                "本命令不发送任何东西。预览证明 renderer 产出什么，不证明飞书"
-                "怎么显示；发送由已经持有 transport 的命令负责。"])
+    card = rendered["card"]
+    lines = [f"card      {card['header']['title']['content']}",
+             f"template  {card['header']['template']}",
+             f"html      {args.html_out or '（未写出；用 --html-out 落盘）'}"]
+    payload = card
+    # §3. The version of the card that a sender is about to send. Absent by
+    # default so that the JSON a renderer already consumes stays the payload
+    # itself: wrapping it unconditionally would change `card alert --json` from
+    # the飞书 card into an envelope around one, and every consumer would have to
+    # learn the envelope before it could send anything.
+    if getattr(args, "with_frozen", False):
+        frozen = _card_delivery().freeze_card(
+            args._card_kind, card, at=at,
+            idempotency_key=getattr(args, "idempotency_key", "") or None)
+        payload = {"card": card, "frozen": frozen}
+        lines.append(f"version   {frozen['version']} "
+                     f"({frozen['payload_bytes']} 字节)")
+    lines.append("")
+    lines.append("本命令不发送任何东西。预览证明 renderer 产出什么，不证明飞书"
+                 "怎么显示；发送由已经持有 transport 的命令负责。")
+    emit(payload, as_json=True, lines=lines)
+    return EXIT_OK
+
+
+def _card_delivery():
+    return _load_module_from(REPO_ROOT / "runtime" / "card_delivery.py",
+                             "serveros_runtime_card_delivery")
+
+
+def _card_answer(method: str, params: dict) -> tuple[dict, int]:
+    """One daemon call for the card receipt hop. Same reading as `_alert_answer`.
+
+    The receipt goes through the daemon for the same reason the digest's does:
+    the ledger lives beside the register, the daemon owns the state directory,
+    and a local file write would be a second writer for one durable document.
+    """
+    return _alert_answer(method, params)
+
+
+def cmd_card_record_delivery(args) -> int:
+    """§3. What the transport did with the card version it was handed.
+
+    `--card-file` is a `card <kind> --with-frozen --json` envelope: the payload
+    that was sent AND the version it was sent as. Both halves are needed
+    because the receipt's whole value is that its version and the payload that
+    went out are the same thing, and a file that carried only one of them would
+    leave that unverifiable.
+    """
+    module = _card_delivery()
+    try:
+        document = json.loads(Path(args.card_file).read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        sys.stderr.write(f"serverosctl: --card-file could not be read "
+                         f"({type(exc).__name__}: {exc})\n")
+        return EXIT_FAULT
+    if not isinstance(document, dict) or not isinstance(document.get("card"), dict):
+        sys.stderr.write(
+            "serverosctl: --card-file is not a card envelope. Produce one with "
+            "`serverosctl card <kind> --with-frozen --json`. Nothing was "
+            "recorded — a receipt for a payload nobody can produce is a receipt "
+            "for nothing.\n")
+        return EXIT_FAULT
+    params = {"kind": args.kind, "state": args.state,
+              "card": document["card"], "frozen": document.get("frozen"),
+              "reason": args.reason, "idempotency_key": args.idempotency_key}
+    payload, code = _card_answer("card.record-delivery", params)
+    if code != EXIT_OK:
+        return code
+    entry = payload.get("entry") or {}
+    lines = [f"kind        {entry.get('kind')}",
+             f"结果        {entry.get('state')}",
+             f"所记版本    {entry.get('version')}",
+             f"载荷        {entry.get('payload_bytes')} 字节 · "
+             f"{str(entry.get('payload_hash') or '')[:12]}"]
+    if not entry.get("delivered"):
+        lines.append(f"未送达      {entry.get('reason')}")
+    emit(payload, as_json=args.json, lines=lines)
+    return EXIT_OK
+
+
+def cmd_card_deliveries(args) -> int:
+    """§3. What has been sent, by version. A read of the receipt ledger."""
+    payload, code = _card_answer(
+        "card.deliveries", {"kind": args.kind or None, "limit": args.limit})
+    if code != EXIT_OK:
+        return code
+    lines = [f"kind        {payload.get('kind') or '（全部）'}",
+             f"条目        {payload.get('entries')}"]
+    rows = payload.get("recent") or []
+    for row in rows:
+        lines.append(f"  {row.get('at')}  {row.get('state'):<11} "
+                     f"{row.get('version')}")
+    if not rows:
+        lines.append("  （没有记录：这个节点还没有投递过这种卡）")
+    emit(payload, as_json=args.json, lines=lines)
     return EXIT_OK
 
 
@@ -6734,6 +6854,24 @@ def build_parser() -> argparse.ArgumentParser:
             "--sample", action="store_true",
             help="mark the card 示例 / 尚未发送. Every layout fixture uses it")
         parser_.add_argument("--at", default="", help="override the timestamp")
+        # §3. Off by default, and the default is the payload itself. A renderer
+        # reads this JSON to send a card; wrapping it unconditionally would
+        # make every existing consumer learn an envelope before it could send
+        # anything, and the version would arrive as a change they did not ask
+        # for rather than as a thing they opted into.
+        parser_.add_argument(
+            "--with-frozen", action="store_true",
+            help="emit {card, frozen} instead of the card alone, where `frozen` "
+                 "names the version of this payload. Pair it with --card-file "
+                 "on `card record-delivery`")
+        parser_.add_argument(
+            "--idempotency-key", default="", metavar="KEY",
+            help="the window this send dedupes within, if the sender has one. "
+                 "The default names the instant the card was rendered at, so a "
+                 "re-render is a new key: ServerOS does not know the cadence — "
+                 "an hourly timer's window is a property of the timer — and "
+                 "inventing one here would be a second clock beside the one "
+                 "that actually drives the send")
         parser_.set_defaults(func=func)
 
     _add_card("status", cmd_card_status,
@@ -6755,6 +6893,43 @@ def build_parser() -> argparse.ArgumentParser:
               "only what was announced and has since recovered — never a "
               "resolution nobody was told about",
               from_digest=True)
+
+    # §3. The receipt, and the ONE surface that writes it. `card record-delivery`
+    # is the second half of the same split `alert record-delivery` states: this
+    # side decides what a card IS and records what happened to it, and the
+    # transport stays with whoever holds one.
+    card_rec = card_sub.add_parser(
+        "record-delivery",
+        help="§3 · say what the transport did with the card version it was "
+             "handed. The record names the version, so a re-send of one card "
+             "and a send of the next one cannot read the same",
+        **_COMMON)
+    card_rec.add_argument("--kind", required=True, choices=list(_card_delivery().KINDS),
+                          help="which card kind this delivery is")
+    card_rec.add_argument("--card-file", required=True, metavar="PATH",
+                          help="a `card <kind> --with-frozen --json` envelope: "
+                               "the payload AND the version it was sent as")
+    card_rec.add_argument("--state", required=True,
+                          choices=list(_card_delivery().OUTCOMES),
+                          help="DELIVERED, FAILED, UNSUPPORTED or UNKNOWN")
+    card_rec.add_argument("--reason", default="",
+                          help="why, when the outcome was not DELIVERED")
+    card_rec.add_argument("--idempotency-key", default="",
+                          help="override the key the frozen block carries. The "
+                               "default comes from the rendering: it names the "
+                               "instant, so a re-render is a new key and the "
+                               "cadence-window rule stays with whoever runs "
+                               "the clock")
+    card_rec.set_defaults(func=cmd_card_record_delivery)
+
+    card_del = card_sub.add_parser(
+        "deliveries", help="§3 · what has been sent, by version",
+        **_COMMON)
+    card_del.add_argument("--kind", default="", choices=[""] + list(_card_delivery().KINDS),
+                          help="one card kind; omitted means all of them")
+    card_del.add_argument("--limit", type=int, default=10,
+                          help="how many recent entries to print")
+    card_del.set_defaults(func=cmd_card_deliveries)
 
     registration = sub.add_parser(
         "registration", help="the loop from 'something is running' to a "

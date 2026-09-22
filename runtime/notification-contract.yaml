@@ -458,6 +458,54 @@ alerts:
     # on every evaluation pass, while the cursor is what has been SAID to a
     # person. One file would mean an evaluation pass rewrote the ledger.
     cursor_file: delivery.json
+    # WHAT A DELIVERY IS RECORDED AGAINST, and the reason it is not the clock.
+    #
+    # Composing and recording are two moments with a transport between them,
+    # and the register is free to move in the gap. `severity`, `state` and
+    # which APPEARANCE of an identity a row was about are exactly the fields it
+    # is free to change — so reading them at record time makes the ledger say
+    # whatever the world did next rather than what the card said.
+    #
+    # The version a send carries is therefore frozen at COMPOSE time: a hash
+    # over the document as composed, the generation, and a per-row record of
+    # the severity, state and EPISODE each shown row asserted. An EPISODE is
+    # `alert_ref` + `first_seen` + `resolved_at` — the identity's stable name is
+    # deliberately reused across a close-and-reopen, so a token built from it
+    # alone would call a reopen and the alert it reopened one thing.
+    #
+    # Two rules follow, and both are stated as policy because both are the kind
+    # of thing that gets reintroduced as a convenience:
+    #
+    #   * the RECEIPT records the frozen version. `last_payload` in the cursor
+    #     names the version string, the payload hash, the generation and how
+    #     many rows travelled, so a re-delivery of one card is distinguishable
+    #     from a delivery of the next one.
+    #   * whatever the register does after the send stays a PENDING DELTA. An
+    #     escalation the card did not mention is compared against the severity
+    #     the card DID mention, so it is still announced; a resolution the card
+    #     did not mention becomes RECOVERED; a reopen becomes REOPENED.
+    #
+    # And an older receipt never overwrites a newer one. A slow send can answer
+    # after the next digest has already been delivered and recorded, and writing
+    # that answer would move severity and state BACKWARDS — un-recording a
+    # RECOVERED that had already been announced, so the next digest announces
+    # the recovery a second time.
+    frozen_version:
+      hash: sha256 over the canonical (sorted-key, no-whitespace) document
+      episode: "alert_ref + first_seen + resolved_at"
+      receipt_field: last_payload
+      stale_receipt_rule: >-
+        a delivery for a key the cursor holds at a HIGHER generation is recorded
+        as SUPERSEDED rather than applied, whatever episode it names. The
+        cursor's generation is the order the versions were composed in, not the
+        order the transports answered in, so a late answer describes a past the
+        newer entry has already replaced. An answer at the same generation still
+        applies, which is what makes a duplicate retry idempotent
+      legacy: >-
+        a document with no frozen block is an older `alert digest`. Its rows are
+        recorded from the register, as before, and the cursor entry says so
+        (`frozen: false`). Absent is not the same as contradictory: a document
+        that HAS a frozen block and contradicts its own rows is refused.
     # §Q2. What must NOT become the normal path. Stated as policy rather than
     # as a comment in one module, because the shape it forbids is the one
     # somebody would reintroduce as a feature.

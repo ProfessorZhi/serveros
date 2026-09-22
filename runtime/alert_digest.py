@@ -67,9 +67,33 @@ kind, up to the declared top-N, with the remainder reported as a count rather
 than dropped. LOW-severity rows are in the document and are NOT eligible for
 an out-of-band send — the declared `immediate_severities` decides that, so
 "this is urgent" is policy and not a judgement made here.
+
+THE FROZEN VERSION
+------------------
+Composing and recording are two moments, and a transport sits between them.
+The register can move in that gap, and the fields this module needs in order to
+record a delivery correctly — severity, state, and which APPEARANCE of an
+identity a row was about — are exactly the fields the register is free to
+change. Reading them at record time is a race with a silent symptom: the card
+said MEDIUM, the detector escalated to HIGH while the send was in flight, the
+receipt wrote HIGH, and the escalation was never announced to anybody because
+the comparison that would have found it had already been satisfied.
+
+So `compose` freezes the version it produced — the payload hash over the
+document as composed, the generation, and a per-row record of the severity,
+state and EPISODE each shown row asserted — and `record` writes THOSE. The
+world is then free to move on: a severity change is an escalation pending
+against what the person was told, a close is a RECOVERED, a reopen is a
+REOPENED, and none of them was consumed by the receipt of a card that did not
+mention it.
+
+Recording the payload is also what makes the receipt checkable. A delivery is
+recorded against a version, not against a clock, and a caller that hands over
+a frozen block and rows that disagree is refused rather than reconciled.
 """
 from __future__ import annotations
 
+import hashlib
 import importlib.util
 import json
 import sys
@@ -80,6 +104,24 @@ _HERE = Path(__file__).resolve().parent
 CONTRACT = _HERE / "notification-contract.yaml"
 SCHEMA = "serveros/alert-digest.v1"
 CURSOR_SCHEMA = "serveros/alert-delivery.v1"
+
+#: The document's own statement about the version of itself that a send would
+#: carry. It sits ON the document rather than beside it so that the thing
+#: `alert digest --json` prints and the thing a renderer hands back to
+#: `alert digest-record` are ONE artifact: a hash kept next to the payload is a
+#: hash that can be separated from it, and the separation is the whole failure
+#: this field exists to close.
+FROZEN_FIELD = "frozen"
+FROZEN_SCHEMA = "serveros/alert-digest-frozen.v1"
+
+#: What makes two sightings of one identity the SAME appearance. The key alone
+#: is not enough — `alert_ref` is reused by design, which is the point of the
+#: dedupe key and also what lets a resolved-then-reopened alert occupy the same
+#: row as the alert it replaced. `first_seen` and `resolved_at` are the two
+#: fields the register stamps when an appearance begins and ends, so a tuple of
+#: them names an EPISODE: two digests of one continuous OPEN period share it,
+#: and a close-and-reopen does not.
+EPISODE_FIELDS = ("first_seen", "resolved_at")
 
 #: The four delta kinds, in the order a card reads them. Named here so the
 #: contract's `alerts.digest.kinds` has a literal to check against and so the
@@ -270,6 +312,7 @@ class DeliveryCursor:
             "last_attempt_at": self._data.get("last_attempt_at"),
             "last_delivery": self._data.get("last_delivery"),
             "delivery_failure": self._data.get("delivery_failure"),
+            "last_payload": self._data.get("last_payload"),
             "known_keys": len(keys),
             "announced_keys": sum(1 for row in keys.values()
                                   if isinstance(row, dict) and row.get("announced")),
@@ -279,7 +322,7 @@ class DeliveryCursor:
 
     def commit(self, *, baseline_at=None, generation=None, last_digest_at=None,
                last_attempt_at=None, last_delivery=None, delivery_failure=None,
-               keys=None) -> dict:
+               keys=None, last_payload=None) -> dict:
         """The whole document, in one atomic write.
 
         Whole-document rather than per-record for the same reason the alert
@@ -287,6 +330,14 @@ class DeliveryCursor:
         every announced key in the same instant, and a row-by-row write would
         have a window in which a key is marked announced in a generation that
         was never sent.
+
+        `last_payload` is the receipt for the version that was announced: the
+        generation, the payload hash, the version string and how many rows
+        travelled. It is a separate field from `last_delivery` because the two
+        answer different questions — `last_delivery` says what the transport
+        did, and this says WHICH document it did it to. A cursor that recorded
+        only the outcome would be unable to tell a re-delivery of one card from
+        a delivery of the next one.
         """
         if baseline_at is not None:
             self._data["baseline_at"] = baseline_at
@@ -299,6 +350,8 @@ class DeliveryCursor:
         if last_delivery is not None:
             self._data["last_delivery"] = last_delivery
         self._data["delivery_failure"] = delivery_failure
+        if last_payload is not None:
+            self._data["last_payload"] = last_payload
         if keys is not None:
             self._data["keys"] = dict(keys)
         _store_io()._atomic_write(self.path, self._data)
@@ -574,6 +627,86 @@ def deltas(store, cursor: DeliveryCursor, *, at: str,
     }
 
 
+def _canonical(blob) -> bytes:
+    """One document, one byte string, whatever the serialiser felt like.
+
+    Sorted keys and no incidental whitespace, because the hash is taken over
+    this and a reader who reformats the document must not thereby produce a
+    different version number for the same payload.
+    """
+    return json.dumps(blob, sort_keys=True, ensure_ascii=False,
+                      separators=(",", ":")).encode("utf-8")
+
+
+def episode_of(row: dict) -> str:
+    """The token that names ONE appearance of an identity.
+
+    Not the alert_ref: that is the identity's stable name and is deliberately
+    reused, so a token built from it alone would call a reopen and the alert it
+    reopened one thing. Not the severity either — a severity change is a delta
+    WITHIN an episode, and the record of what a person was told has to survive
+    it rather than be replaced by it.
+    """
+    blob = "|".join([str(row.get("key") or "")]
+                    + [str(row.get(field)) for field in EPISODE_FIELDS])
+    return hashlib.sha256(blob.encode("utf-8")).hexdigest()[:16]
+
+
+def row_version(row: dict) -> dict:
+    """What one shown row asserted at the instant it was composed.
+
+    Frozen at COMPOSE time and never re-read from the register. That is the
+    whole point: `record` runs after the transport answered, which can be
+    seconds or minutes after the card was built, and the register is free to
+    move in between. Re-reading it there is how a ledger comes to say a person
+    was told about a severity that did not exist yet when they were told.
+    """
+    rank = row.get("severity_rank")
+    return {
+        "key": str(row.get("key") or ""),
+        "kind": row.get("kind"),
+        "severity": row.get("severity"),
+        "severity_rank": int(rank) if isinstance(rank, int) else -1,
+        "state": row.get("state"),
+        "first_seen": row.get("first_seen"),
+        "resolved_at": row.get("resolved_at"),
+        "episode": episode_of(row),
+    }
+
+
+def freeze(digest: dict, *, idempotency_key: str | None = None) -> dict:
+    """The version of this document that a send would carry, and its hash.
+
+    Returns the frozen block, and does NOT put it anywhere: `compose` embeds it
+    and `record` reads it back. The payload is the document as composed and
+    nothing is copied out of it, so the hash is over exactly the bytes a
+    renderer was handed — a second copy of the rows kept here would be one more
+    thing that can disagree with the card.
+
+    `version` rather than the bare hash because a person reading a receipt
+    wants to know WHICH digest, and the generation answers that question for
+    the register's own history while the hash answers it for the payload.
+    """
+    payload = {key: value for key, value in digest.items()
+               if key != FROZEN_FIELD}
+    blob = _canonical(payload)
+    payload_hash = hashlib.sha256(blob).hexdigest()
+    generation = int(digest.get("generation") or 0)
+    device = str(digest.get("device_ref") or DEVICE_FALLBACK)
+    rows = [row_version(row) for row in digest.get("shown") or ()]
+    return {
+        "schema": FROZEN_SCHEMA,
+        "generation": generation,
+        "payload_hash": payload_hash,
+        "payload_bytes": len(blob),
+        "version": f"{generation}@{payload_hash[:12]}",
+        "idempotency_key": (idempotency_key
+                            or f"alert-digest-{device}-{generation}"),
+        "rows": rows,
+        "row_count": len(rows),
+    }
+
+
 def compose(store, cursor: DeliveryCursor, *, at: str, device_ref: str,
             policy_block: dict | None = None) -> dict:
     """The document a renderer turns into one card. No transport, no send.
@@ -582,6 +715,11 @@ def compose(store, cursor: DeliveryCursor, *, at: str, device_ref: str,
     being short. A composer that returned only the top N would make the number
     of things wrong a function of how many fit — and the reader would have no
     way to tell "three" from "three hundred".
+
+    The returned document carries its own FROZEN version: the payload hash, the
+    generation, and the severity/state/episode each shown row asserted here.
+    Composing is the only instant at which those are known to be what the card
+    says, so it is the instant that has to write them down.
     """
     block = policy_block or policy()
     top_n = int(block.get("top_n") or 0)
@@ -591,7 +729,7 @@ def compose(store, cursor: DeliveryCursor, *, at: str, device_ref: str,
             f"nothing is not a digest")
     found = deltas(store, cursor, at=at, policy_block=block)
     shown = found["rows"][:top_n]
-    return {
+    document = {
         "schema": SCHEMA,
         "device_ref": device_ref,
         "at": at,
@@ -620,6 +758,8 @@ def compose(store, cursor: DeliveryCursor, *, at: str, device_ref: str,
                  "they are visible in the register and in `standing`, and they "
                  "are never announced as new."),
     }
+    document[FROZEN_FIELD] = freeze(document)
+    return document
 
 
 # ---------------------------------------------------------------------------
@@ -747,8 +887,52 @@ def _shown_pairs(shown) -> list[tuple[str, str | None]]:
     return out
 
 
+def _frozen_rows(frozen) -> dict[str, dict]:
+    """key -> the version of that row the payload was frozen with.
+
+    An empty mapping when there is no frozen block, which is the one case the
+    caller has to be able to tell from "the block is there and lists nothing":
+    the first is an older document and is recorded honestly as such, and the
+    second is a payload whose hash covers no rows at all.
+    """
+    if not isinstance(frozen, dict):
+        return {}
+    rows = frozen.get("rows")
+    if not isinstance(rows, list):
+        return {}
+    return {str(row["key"]): row for row in rows
+            if isinstance(row, dict) and row.get("key")}
+
+
+def _refuse_a_different_document(frozen: dict, generation: int) -> None:
+    """The version being recorded against must be the version that was frozen.
+
+    The one disagreement here that is REFUSED rather than reported. The others
+    — a row whose severity differs from the frozen table, a row the payload
+    does not name, a named row the delivery did not carry — are disagreements
+    about CONTENT, and the frozen table settles them: it is what the composing
+    instant wrote down, so it wins and the disagreement is reported. Refusing
+    those would leave a message that really was sent unrecorded, which is the
+    worse of the two failures.
+
+    A generation mismatch is not a disagreement about content. It means the
+    caller is recording the delivery of one document against another, and
+    accepting it would advance this cursor to a generation whose rows nobody
+    composed — marking announced a set of rows that was never shown, and
+    silently consuming the deltas of the generation that actually went out.
+    """
+    declared = frozen.get("generation")
+    if declared is not None and int(declared) != int(generation):
+        raise DigestError(
+            f"the frozen payload is generation {declared} and the delivery is "
+            f"being recorded against generation {generation}. They are two "
+            f"different documents, and a receipt naming the wrong one would "
+            f"advance this cursor past a version nobody was shown.")
+
+
 def record(cursor: DeliveryCursor, store, *, at: str, generation: int,
-           state: str, shown, reason: str | None = None) -> dict:
+           state: str, shown, reason: str | None = None,
+           frozen: dict | None = None) -> dict:
     """What we know after trying. The same vocabulary as `alerting`.
 
     DELIVERED means the transport accepted the call — not that a person read
@@ -761,6 +945,35 @@ def record(cursor: DeliveryCursor, store, *, at: str, generation: int,
     open, so the next digest re-composes the same findings. That is not a retry
     loop: it is the same rule `alerting.record_delivery` states, and `decision`
     is what stops two attempts inside one cooldown.
+
+    THE VALUES RECORDED ARE THE FROZEN ONES
+    ---------------------------------------
+    This runs AFTER the transport answered, which may be minutes after the card
+    was composed, and the register is free to move in between. Reading
+    `severity` off the register here was a race with a specific symptom: the
+    card said MEDIUM, the detector escalated to HIGH before the receipt was
+    written, and the cursor recorded that HIGH had been announced. The person
+    was told MEDIUM and never told about HIGH — the escalation is compared
+    against the recorded severity, so it had already been swallowed — and the
+    ledger asserted the opposite in the one place nobody re-reads.
+
+    So the severity, the state and the EPISODE are taken from the frozen
+    payload the card carried, and the register's `last_notified_severity` is
+    set to what the person was actually shown. Whatever the register does next
+    becomes a delta like any other: an escalation stays pending, a resolution
+    becomes RECOVERED, a reopen becomes REOPENED. §4's requirement stated as
+    one line — the receipt names the version, and the world is free to move on
+    from it.
+
+    A frozen block that contradicts the rows it arrived with does not win the
+    argument and does not become an exception either: the frozen half is what
+    the composing instant wrote down, so it is what gets recorded, and the keys
+    that disagreed are named in the receipt (`disagreed`, `unnamed`). A
+    document with no frozen block at all is recorded the old way, with the
+    cursor saying so — an older document is not a lying one. The one thing
+    refused is a frozen block naming a generation other than the one being
+    recorded, because that is not a disagreement about content but a delivery
+    being attached to a document nobody composed.
     """
     if state not in ("DELIVERED", "FAILED", "UNSUPPORTED", "UNKNOWN"):
         raise DigestError(
@@ -778,16 +991,89 @@ def record(cursor: DeliveryCursor, store, *, at: str, generation: int,
         # somebody is trying to find out whether anybody was told.
         return {"delivered": False, "generation": cursor.generation(),
                 "announced_keys": 0, "rows_stamped": 0,
-                "gone_from_register": [], "cursor": summary,
+                "gone_from_register": [], "superseded": [], "cursor": summary,
+                "payload_version": None, "payload_hash": None,
                 "failure": summary.get("delivery_failure")}
 
     pairs = _shown_pairs(shown)
+    versions = _frozen_rows(frozen)
+    payload_version = None
+    payload_hash = None
+    if versions:
+        _refuse_a_different_document(frozen, generation)
+        payload_version = frozen.get("version")
+        payload_hash = frozen.get("payload_hash")
+
+    # The rows as the caller handed them over, for the one comparison the
+    # frozen table cannot make on its own: does the row it was handed agree
+    # with the row it froze? It cannot happen on the real path — the frozen
+    # block and the shown rows are two readings of one document — so a
+    # disagreement means a caller edited or rebuilt one of the halves, and the
+    # frozen half wins while the key is named in the receipt.
+    handed = {str(row["key"]): row for row in (shown or ())
+              if isinstance(row, dict) and row.get("key")}
+    contradicted = []
+
     keys = cursor.keys()
     alerts = store.alerts()
     stamped = 0
     missing = []
+    superseded = []
+    unnamed = []
     for key, kind in pairs:
+        version = versions.get(key)
+        if versions and version is None:
+            # A row the frozen payload does not name. It was handed over as
+            # shown, and the payload — which is the authority on what was
+            # frozen — has nothing to say about its severity. Recorded with
+            # nulls, exactly as a document with no frozen block at all is, and
+            # named in the receipt so that "the card carried a row nobody
+            # composed" is visible rather than assumed away.
+            unnamed.append(key)
+        episode = version.get("episode") if version else None
+        told_severity = version.get("severity") if version else None
+        told_state = version.get("state") if version else None
+        if version is not None and version.get("kind"):
+            kind = version["kind"]
+        if version is not None:
+            row = handed.get(key) or {}
+            if any(row.get(field) != version.get(field)
+                   for field in ("severity", "state")):
+                contradicted.append(key)
+
+        # AN OLDER RECEIPT DOES NOT OVERWRITE A NEWER ONE. Two deliveries can
+        # be in flight at once — a slow send that finally answered after the
+        # next digest had already been composed, delivered and recorded, or an
+        # attempt that timed out while the provider had in fact accepted it.
+        # The late answer is true about the version it names and false about
+        # the cursor's PRESENT: applying it would move `severity` and `state`
+        # backwards, un-recording an escalation or a recovery that had already
+        # been announced. The delta that separated the two versions would then
+        # be announced a second time, because the comparison it is found by
+        # reads the cursor.
+        #
+        # The cursor's generation is the ORDER the versions were composed in,
+        # not the order the transports happened to answer in. An ACK below it
+        # is therefore superseded, whatever episode it names and whatever it
+        # says — the newer entry already describes what the person last heard.
+        # An ACK at the SAME generation still applies, which is what makes a
+        # duplicate retry of one document idempotent rather than a conflict.
+        held = keys.get(key)
+        if (isinstance(held, dict)
+                and int(held.get("generation") or 0) > int(generation)):
+            superseded.append(key)
+            continue
+
         alert = alerts.get(key)
+        if not versions and alert is not None:
+            # No frozen block at all: the register is read here, after the
+            # fact, and the cursor entry records that this is where the value
+            # came from. Note that this is the ONLY path on which that happens
+            # — a key the frozen payload did not name is not read from the
+            # register either, because reading it would put a post-send value
+            # on a row that was composed with something else.
+            told_severity = alert.get("severity")
+            told_state = alert.get("state")
         if alert is None:
             # The register no longer holds it: the detector resolved it in the
             # seconds between composing and delivering. Recorded rather than
@@ -798,18 +1084,25 @@ def record(cursor: DeliveryCursor, store, *, at: str, generation: int,
             # It was doing exactly that: the caller was handed `missing` and the
             # ledger still had no memory of the key. The fields that cannot be
             # known here are null, which is true, rather than copied from
-            # whatever the register holds now, which would not be.
+            # whatever the register holds now, which would not be — and when
+            # the payload was frozen they are known, so they are carried.
             missing.append(key)
             keys[key] = {"announced": True, "at": at, "kind": kind,
-                         "severity": None, "state": None,
+                         "severity": told_severity, "state": told_state,
+                         "episode": episode,
+                         "frozen": version is not None,
+                         "payload_version": payload_version,
                          "generation": int(generation)}
             continue
         keys[key] = {
             "announced": True,
             "at": at,
             "kind": kind,
-            "severity": alert.get("severity"),
-            "state": alert.get("state"),
+            "severity": told_severity,
+            "state": told_state,
+            "episode": episode,
+            "frozen": version is not None,
+            "payload_version": payload_version,
             "generation": int(generation),
         }
         # The register's OWN fields, set to what they have always meant: "this
@@ -818,19 +1111,36 @@ def record(cursor: DeliveryCursor, store, *, at: str, generation: int,
         # `last_notified_at: null` on it. `pending` is deliberately NOT touched:
         # that intent belongs to the engine's own delivery hop, and a second
         # surface clearing it would be one surface editing another's ledger.
+        #
+        # `last_notified_severity` is the FROZEN one. It is read by a person
+        # asking "what was I told about this", so it has to be the severity
+        # that was on the card and not the severity the register happens to
+        # hold by the time the transport answered.
         alert["last_notified_at"] = at
-        alert["last_notified_severity"] = alert.get("severity")
+        alert["last_notified_severity"] = told_severity
         alert["last_delivery"] = "DELIVERED"
         alert["delivery_failure"] = None
         alert["last_digest_generation"] = int(generation)
         stamped += 1
     store.commit(alerts)
+    receipt = None
+    if payload_version is not None:
+        receipt = {"version": payload_version, "payload_hash": payload_hash,
+                   "generation": int(generation), "at": at,
+                   "rows": len(pairs), "superseded": sorted(superseded),
+                   "unnamed": sorted(unnamed),
+                   "disagreed": sorted(contradicted)}
     summary = cursor.commit(generation=int(generation), last_digest_at=at,
                             last_attempt_at=at, last_delivery="DELIVERED",
-                            delivery_failure=None, keys=keys)
+                            delivery_failure=None, keys=keys,
+                            last_payload=receipt)
     return {"delivered": True, "generation": int(generation),
-            "announced_keys": len(pairs) - len(missing), "rows_stamped": stamped,
-            "gone_from_register": missing, "cursor": summary}
+            "announced_keys": len(pairs) - len(missing),
+            "rows_stamped": stamped,
+            "gone_from_register": missing, "superseded": sorted(superseded),
+            "unnamed_rows": sorted(unnamed), "disagreed_rows": sorted(contradicted),
+            "payload_version": payload_version, "payload_hash": payload_hash,
+            "cursor": summary}
 
 
 def main(argv: list[str] | None = None) -> int:
