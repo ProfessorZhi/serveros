@@ -876,7 +876,7 @@ def cmd_information_watched(args) -> int:
     return EXIT_OK
 
 
-def _space_request(args) -> dict:
+def _space_request(args, *, attribute: str = "request") -> dict:
     """Read one request document, or refuse with the reason it could not be read.
 
     Shared by the two `space` verbs because they answer the same shape of
@@ -884,11 +884,16 @@ def _space_request(args) -> dict:
     refusal has to read the same in both: an unreadable request is a gap in the
     asking, and it must not be told apart from a decision by anything except
     the words on the line.
+
+    `attribute` names which of the caller's paths is being read. Both are JSON
+    documents and both are read the same way, so the message names the file that
+    was actually opened rather than the one this function was first written for.
     """
+    path = getattr(args, attribute)
     try:
-        return json.loads(Path(args.request).read_text(encoding="utf-8"))
+        return json.loads(Path(path).read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
-        raise _SpaceRequestUnreadable(f"cannot read {args.request}: {exc}") from exc
+        raise _SpaceRequestUnreadable(f"cannot read {path}: {exc}") from exc
 
 
 class _SpaceRequestUnreadable(Exception):
@@ -986,6 +991,24 @@ def cmd_space_meeting(args) -> int:
     re-asking the same bundle the other question is a thing a person does and
     it should not require editing the file.
 
+    Two ways to say what the bundle IS, and they are different kinds of input:
+
+      * `--request` — somebody already knows how to put the question and hands
+        over the `bundle` object directly. Unchanged, and still the only way to
+        ask a cleanup question.
+      * `--sidecars` — the meeting's own material, declared as what it has.
+        `space/meeting_bundle.py` assembles the bundle from it and the kernel is
+        asked about THAT. A declaration that is not one unit — missing a member
+        the machine policy requires, or naming two meetings — puts no question
+        to the kernel at all, and the reading says which member and what state it
+        was in. The alternative is what P3 was before this: a kernel that can
+        only be asked about bundles somebody hand-wrote.
+
+    `--observed-at` is required with `--sidecars` and absent from the `--request`
+    path, which carries its own `as_of`. Neither falls back to the clock: a
+    reading whose answer depends on when it ran cannot be compared against a
+    recorded one.
+
     Exit codes follow the same rule as `space resolve`, and the kernel states it
     in its own docstring: 0 for a decision — `REVIEW`, `REFUSAL` and
     `PROPOSAL_REQUIRED` included, because each is a successful determination —
@@ -1011,9 +1034,42 @@ def cmd_space_meeting(args) -> int:
     """
     mod = _load_module_from(REPO_ROOT / "space" / "meeting_relevance.py",
                             "serveros_space_meeting_relevance")
+    if args.sidecars and not args.observed_at:
+        sys.stderr.write(
+            "serverosctl: --sidecars needs --observed-at. The reading is a "
+            "statement about a meeting at an instant, and one taken from the "
+            "clock cannot be compared against a recorded one\n")
+        return EXIT_COULD_NOT_ANSWER
+    # Loaded up front when the sidecars path is taken, so the `except` below can
+    # name that module's own refusal class. Loaded from the `#47`-style cache, so
+    # this is the same module object the rest of this process sees.
+    bundle_mod = (_load_module_from(REPO_ROOT / "space" / "meeting_bundle.py",
+                                    "serveros_space_meeting_bundle")
+                  if args.sidecars else None)
+    reading = None
     try:
         vocabulary = mod.load_vocabulary(args.vocabulary)
-        request = _space_request(args)
+        if args.sidecars:
+            # The producer half: a meeting's declared sidecars assembled into the
+            # bundle this kernel takes. `bundle` is None for every reading that is
+            # not COMPLETE, and a question is not put in that case -- handing over
+            # a bundle missing its audio would produce a decision record about
+            # material that is not there.
+            declaration = _space_request(args, attribute="sidecars")
+            assembled = bundle_mod.assemble(declaration, observed_at=args.observed_at,
+                                            vocabulary=vocabulary)
+            reading = assembled["reading"]
+            if assembled["bundle"] is None:
+                emit({"reading": reading, "bundle": None},
+                     as_json=args.json,
+                     lines=bundle_mod.render(assembled).splitlines())
+                return EXIT_COULD_NOT_ANSWER
+            request = {"kind": args.kind or "relevance", "bundle": assembled["bundle"],
+                       "policies": declaration.get("policies") or []}
+            if declaration.get("as_of") is not None:
+                request["as_of"] = declaration["as_of"]
+        else:
+            request = _space_request(args)
         if args.kind:
             # Re-asked, not mutated in place: a caller's document is theirs.
             request = dict(request)
@@ -1023,11 +1079,22 @@ def cmd_space_meeting(args) -> int:
         sys.stderr.write(f"serverosctl: {exc}\n")
         return EXIT_COULD_NOT_ANSWER
     except _SpaceRequestUnreadable as exc:
+        sys.stderr.write(f"{exc}\n")
+        return EXIT_COULD_NOT_ANSWER
+    except (bundle_mod.Refused if bundle_mod else ()) as exc:
         sys.stderr.write(f"serverosctl: {exc}\n")
         return EXIT_COULD_NOT_ANSWER
 
     cleanup = record.get("cleanup")
     lines = []
+    if reading is not None:
+        # The reading first, because it is what the rest of the answer is about:
+        # a decision made about a bundle assembled from the wrong members is a
+        # decision about another meeting, and a reader who sees only the decision
+        # has no way to notice.
+        bundle_mod = sys.modules["serveros_space_meeting_bundle"]
+        lines.extend(bundle_mod.render({"reading": reading, "bundle": {}}).splitlines())
+        lines.append("")
     if "level" in record:
         lines.append(f"level       {record['level']}")
     lines.append(f"decision    {record['decision']}"
@@ -1052,7 +1119,9 @@ def cmd_space_meeting(args) -> int:
             if cleanup is None else f"cleanup     {cleanup}")
     for index, reason in enumerate(record.get("reason") or []):
         lines.append(f"{'reason' if index == 0 else '':<11} {reason}")
-    emit(record, as_json=args.json, lines=lines)
+    payload = record if reading is None else {"reading": reading, "bundle": request["bundle"],
+                                              "decision": record}
+    emit(payload, as_json=args.json, lines=lines)
     return EXIT_OK
 
 
@@ -8790,10 +8859,25 @@ def build_parser() -> argparse.ArgumentParser:
         help="a MeetingBundle's relevance, or a cleanup plan for explicit "
              "objects. Reads a request file and answers; applying a plan "
              "belongs to the surface adapters", **_COMMON)
-    space_meeting.add_argument(
-        "--request", required=True,
+    # Exactly one input, and the two are different kinds of thing: `--request` is
+    # a question somebody already knew how to put, `--sidecars` is the meeting's
+    # own material and the question is assembled from it. Defaulting either would
+    # make "nobody said which" and "this file was meant" the same command line.
+    space_input = space_meeting.add_mutually_exclusive_group(required=True)
+    space_input.add_argument(
+        "--request",
         help="path to a request JSON. Its `kind` selects the question: "
              "`relevance` (default) or `cleanup`")
+    space_input.add_argument(
+        "--sidecars",
+        help="path to a declaration of what this meeting actually has. The "
+             "bundle is assembled from it and the kernel is asked about THAT, "
+             "so the question cannot be put about members that are not there")
+    space_meeting.add_argument(
+        "--observed-at", default=None,
+        help="ISO-8601 UTC instant to read `--sidecars` as of. Required with "
+             "`--sidecars` and never read from the clock: a reading whose answer "
+             "depends on when it ran cannot be compared against a recorded one")
     space_meeting.add_argument(
         "--kind", choices=("relevance", "cleanup"), default=None,
         help="override the request document's kind, for when the same bundle "
