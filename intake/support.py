@@ -430,11 +430,23 @@ def _read_one_file(path: Path, root: Path) -> tuple[list[dict], str | None]:
 
 
 def read_entries(kb_root: str | Path) -> dict:
-    """Every formal entry, and everything the glob read and did not read."""
+    """Every formal entry, and everything the glob read and did not read.
+
+    Three facts, and the third one was missing for a while:
+
+      * `entries` — what was recognised.
+      * `unreadable` — nothing under the glob. A fact about the GLOB, and the
+        glob may be aimed at the wrong root.
+      * `unrecognised` — files were read and not one of them yielded an entry.
+        A fact about the READING. Without this, a knowledge base in another
+        format is indistinguishable from a knowledge base with no entries,
+        which is the same silent lower bound `sample_section_prefix` in the
+        contract was written about -- one directory up.
+    """
     root = Path(kb_root).expanduser()
     kb = contract()["kb"]
     result = {"kb_root": str(root), "entries": [], "files": [], "excluded": [],
-              "entry_count": 0, "unreadable": None}
+              "entry_count": 0, "unreadable": None, "unrecognised": None}
     if not root.exists():
         result["unreadable"] = f"{root} does not exist"
         return result
@@ -464,6 +476,30 @@ def read_entries(kb_root: str | Path) -> dict:
         result["unreadable"] = (
             f"no entry file matched {kb['entry_glob']!r} under {root}; "
             f"excluded: {result['excluded']}")
+    elif not result["entries"]:
+        # Every file that matched was opened and none of them carried an entry.
+        # Measured on this node against the real employee knowledge base,
+        # `src/litellm-support/dist/employee-kb` (25 files, 23 entries, built
+        # 2026-09-20): the glob MATCHES there -- `platform/` and
+        # `compatibility/` are one level deep -- so `unreadable` stayed unset,
+        # `entry_count` was 0, and `check` reported `findings: []` on a
+        # knowledge base it had not read a single entry from. That tree keys
+        # its entries on YAML front-matter and English `##` headings, and this
+        # contract declares `## [ID] name`; nothing here decides which of the
+        # two is the authority, so the sentence names both and stops.
+        named = ", ".join(f["path"] for f in result["files"][:5])
+        extra = len(result["files"]) - 5
+        result["unrecognised"] = (
+            f"{len(result['files'])} file(s) matched {kb['entry_glob']!r} under "
+            f"{root} and no entry was recognised in any of them ({named}"
+            f"{f', and {extra} more' if extra > 0 else ''}). No heading matched "
+            # Quoted, not `!r`: this is a regex, and the repr of one doubles
+            # every backslash -- `'^##\\s*\\[…'` -- which a person reading the
+            # sentence would take for the pattern itself.
+            f"'{kb['entry']['heading_pattern']}', so these files either carry "
+            f"entries in another format or spell the heading differently. The "
+            f"reading is empty either way, and an empty reading is not a "
+            f"knowledge base with no entries")
     return result
 
 
@@ -556,9 +592,9 @@ def match(kb_root: str | Path, *, status_code=None, message=None,
         return result
 
     reading = read_entries(kb_root)
-    if reading["unreadable"]:
+    if reading["unreadable"] or reading["unrecognised"]:
         result["outcome"] = "KB_UNREADABLE"
-        result["unreadable"] = reading["unreadable"]
+        result["unreadable"] = reading["unreadable"] or reading["unrecognised"]
         return result
 
     question = _question(status_code, message)
@@ -834,8 +870,13 @@ def next_id(kb_root: str | Path, prefix: str) -> dict:
     burning the number if the answer turned out to be wrong.
     """
     reading = read_entries(kb_root)
-    if reading["unreadable"]:
-        return {"prefix": prefix, "offered": None, "unreadable": reading["unreadable"]}
+    if reading["unreadable"] or reading["unrecognised"]:
+        # An offer is an ID and IDs are never reused, so offering `PREFIX-001`
+        # against a reading that recognised nothing would burn a number on the
+        # strength of "I looked and found none" -- which is exactly what this
+        # reading does NOT say. Unreadable is unreadable here too.
+        return {"prefix": prefix, "offered": None,
+                "unreadable": reading["unreadable"] or reading["unrecognised"]}
     known = contract()["kb"]["id_prefixes"]
     if prefix not in known:
         raise Refused(f"prefix {prefix!r} is not one of {sorted(known)}; "
@@ -983,6 +1024,12 @@ def check(kb_root: str | Path, *, as_of: str | None = None,
     unreadable knowledge base produces NO findings -- it produces
     `KB_UNREADABLE`, because `findings: []` is what "checked and clean" and
     "never checked" both render as.
+
+    "Unreadable" is not only "there was nothing there". A reading that opened
+    files and recognised no entry in any of them is unreadable in the sense
+    this outcome is for, and the guard below reads BOTH facts for that reason:
+    a comparison between two empty sets is not a clean check, it is a check
+    that had nothing to compare.
     """
     from datetime import date, timedelta  # local: the only clock use in this module
 
@@ -999,8 +1046,18 @@ def check(kb_root: str | Path, *, as_of: str | None = None,
     reading = read_entries(kb_root)
     index = read_index(kb_root)
     result["excluded"] = reading["excluded"]
-    if reading["unreadable"] and index["unreadable"]:
-        result["unreadable"] = f"{reading['unreadable']}; and {index['unreadable']}"
+    # The reading is the thing being compared, so it is the thing whose absence
+    # stops the comparison -- and "there was nothing under the glob" and "there
+    # were files and no entry came out of any of them" are the same absence
+    # here. The index's own unreadability is reported alongside when both hold;
+    # on its own it does not stop the check, because a missing index against
+    # entries that DID read is the `INDEX_ORPHAN` finding below and not a
+    # refusal to look.
+    if reading["unreadable"] or reading["unrecognised"]:
+        why = reading["unreadable"] or reading["unrecognised"]
+        if index["unreadable"]:
+            why = f"{why}; and {index['unreadable']}"
+        result["unreadable"] = why
         result["outcome"] = "KB_UNREADABLE"
         return result
 
@@ -1142,7 +1199,8 @@ def listing(kb_root: str | Path) -> dict:
                          "primary_rules": [r["text"] for r in e["rules"]
                                            if r["kind"] == "primary"],
                          "related_ids": e["related_ids"]} for e in reading["entries"]],
-            "unreadable": reading["unreadable"]}
+            "unreadable": reading["unreadable"],
+            "unrecognised": reading["unrecognised"]}
 
 
 # ---------------------------------------------------------------------------
@@ -1187,7 +1245,8 @@ def main(argv: list[str] | None = None) -> int:
     try:
         if args.verb == "entries":
             payload = listing(args.kb_root)
-            outcome = "KB_UNREADABLE" if payload["unreadable"] else "ANSWERED"
+            outcome = ("KB_UNREADABLE" if payload["unreadable"] or payload["unrecognised"]
+                       else "ANSWERED")
         elif args.verb == "match":
             payload = match(args.kb_root, status_code=args.status_code,
                             message=args.message, code_root=args.code_root)
@@ -1228,13 +1287,18 @@ def render(verb: str, payload: dict) -> str:
                 lines.append(f"      主匹配: {rule}")
         if payload["unreadable"]:
             lines.append(f"  UNREADABLE: {payload['unreadable']}")
+        if payload["unrecognised"]:
+            lines.append(f"  NO ENTRY RECOGNISED: {payload['unrecognised']}")
         return "\n".join(lines)
 
     if verb == "check":
+        if payload["unreadable"]:
+            # The two counts are `None` here, and "check None entries against
+            # None index rows" is a number where there is no number. A check
+            # that could not run says that and says nothing else.
+            return f"COULD NOT CHECK: {payload['unreadable']}"
         lines = [f"check {payload['entry_count']} entries against "
                  f"{payload['index_row_count']} index rows, as of {payload['as_of']}"]
-        if payload["unreadable"]:
-            return lines[0] + f"\n  COULD NOT CHECK: {payload['unreadable']}"
         if not payload["findings"]:
             lines.append("  no findings")
         for code, n in sorted(payload["counts"].items()):

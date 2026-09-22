@@ -613,7 +613,7 @@ manifest 行、packs 闭包、cards。凡是「X 的渲染嵌了 X 的值」，�
 | --- | --- | --- | --- | --- | --- |
 | P1 | 文档身份与权威链 | `documents/document_governance.py:79`（`serveros/document-identity.v1` 等四个 schema），`document-vocabulary.json` | `serverosctl document resolve --request` (`runtime/cli.py:7260`) | — | working，纯内核无 I/O |
 | P1 | Context Capsule | `context/resolver.py:37` | `serverosctl context startup` (`cli.py:1736`) | — | working |
-| P1 | Publication receipt | `runtime/daily_report.py:77` `RECEIPT_SCHEMA`，`receipt():924`，`publish():993` | `serverosctl report daily` (`cli.py:7057`) | — | working，**树里唯一实现** |
+| P1 | Publication receipt | `runtime/daily_report.py:77` `RECEIPT_SCHEMA`，`receipt():924`，`publish():1016` | `serverosctl report daily` (`cli.py:225`) | — | working，**树里唯一实现**。**两处行号本轮核定更正**：上一版写 `publish():993` 与 `cli.py:7057`，实测分别是 `:1016` 与 `:225`（`runtime/cli.py:7057` 现在落在别的代码里）。行号只在指定 revision 时才有意义，这两处是拿当前工作树量的 |
 | P1 | `Source` 类型 | — | — | — | **not found**：没有该类型。最近的字段是 `document_governance.py:252` 的 `source_ref`、`memory/record.py:83` 的 `source`（REQUIRED）、Item 卡的 `source_refs` |
 | P1 | 编写的 follow 源清单 | `intake/workchain.py:723` `load_sources()` 读 `<records_root>/<project>/context/sources.yaml` | `serverosctl work coverage --project` (`cli.py:5592`) | — | 有读者，**但盘上没有 `sources.yaml`**（`find` 空） |
 | P2 | 五个采集器 | `/data/home/vince/workspace/records/information/raw/{sync_feishu_chat,expand_feishu_doc,expand_feishu_files,drift_sync,_redact}.py` | 各自 `main()`；`drift_sync.py:2` 自称 SessionStart hook driver | lark-cli（`sync_feishu_chat.py:131`、`expand_feishu_doc.py:42`） | working；`information/raw/` 在 records 仓里是 clean |
@@ -623,9 +623,9 @@ manifest 行、packs 闭包、cards。凡是「X 的渲染嵌了 X 的值」，�
 | P3 | Minutes / MeetingBundle | 无 Python 类。`space/meeting-policy.schema.yaml:30` 声明结构；内核 `space/meeting_relevance.py:69` | ~~`python3 space/meeting_relevance.py --request`（**未接 serverosctl**）~~ **已接线**：`serverosctl space meeting` | — | 内核 working，**接线已补**（§9.5）；bundle 的生产者仍 not found |
 | P3 | 记忆账本/投影/scope | `memory/{record,projection,scope,handoff}.py` | `serverosctl memory {audit,project,status,subject}` (`cli.py:6479`) | — | working；`docs/memory-fabric.md` 逐条点名这些模块 |
 | P4 | 文档关系边 | `relations/project.py:61`（`serveros/relations.v1`），`relations/schema.yaml:29` | `python3 project.py --records ROOT --write relations/current.jsonl` | — | **partial**（比上一版进了一步）：8 个谓词里 3 个有生产者（`belongs_to`、`derived_from`、`attached_to`），其余 5 个 `declared_only`。本机实测 239 行 / 19 条报出，见 §9.8；另 5 个谓词逐条查过，**本机没有载体**，不是差功夫 |
-| P4 | Feishu 空间适配 / 共享 publisher | **只有 SKILL.md 文本，没有代码**：`skills/feishu-space-management/`、`skills/document-stewardship/` | — | — | partial（只有契约文字） |
+| P4 | Feishu 空间适配 / 共享 publisher | `skills/feishu-space-management/`：**只有 SKILL.md 文本，本仓没有代码**。`skills/document-stewardship/`：本仓同样只有文本，但**外仓有代码**——`~/.claude/skills/document-stewardship/scripts/maintain.py`（publisher 循环：取 revision N → 定位 → 校验 → 候选 patch → 重取仍为 N? → apply/STOP → 重取 → 校验），且 `plugin/profiles/linux-work.yaml:119-123` 声明它 `available` | — | — | partial。**上一版这一格把两者合成了一句「只有 SKILL.md 文本，没有代码」，那是错的**：`document-stewardship` 在外仓有实现，且 ability-management 注册表（HEAD `8d98aff`）**不持有**它——与那 8 条跨仓红同族 |
 | P5 | 员工 KB 生产者 | `src/litellm-support/scripts/build_agent_kb.py`，输出 `dist/employee-kb/`（`dist/` 被 gitignore） | `python3 scripts/build_agent_kb.py` | — | working，但**在 ServerOS 之外** |
-| P5 | KB 消费 | `intake/support.py:187,432,534,697,855,977`，契约 `intake/support-contract.yaml` | `serverosctl support {entries,match,answer,check} --kb-root <path>` (`cli.py:7206`) | — | working，但 `--kb-root` 必填且**没有任何东西把它接到 litellm-support 那棵树** |
+| P5 | KB 消费 | `intake/support.py:187,432,534,697,855,977`（另 `read_entries` 的第三个字段 `unrecognised`，见 §9.14），契约 `intake/support-contract.yaml` | `serverosctl support {entries,match,answer,check} --kb-root <path>` (`cli.py:7206`) | — | working，但 `--kb-root` 必填且**没有任何东西把它接到 litellm-support 那棵树**。**§9.14 修掉了一个把「没读到」印成「干净」的洞**：契约写就的那棵树读数不变（`21 entries` / `21 index rows` / exit 0），员工树现在 `entries`/`check` 都是 exit 2 并点名读过哪些文件、哪个 pattern 没匹配上 |
 | P5 | 公开指南生产者 | — | — | — | **not found as code** |
 | P6 | 线程准入 / 控制存储 | `runtime/coordination.py:89,116,228`，`runtime/agent_control_store.py:86,97,103,149` | `serverosctl coordination {resolve,bind,close,list}` (`cli.py:6632`) | — | working |
 | P6 | provider 侧准入 | `mcp/agent_session_service.py:58,115,159,251` | `mcp/bin/serveros-agent-mcp` | — | working（support→readiness→admission 顺序在 `:229`） |
@@ -1444,6 +1444,86 @@ grep 的 harness 会报「0 处匹配，继续」，变异体从未写入而日�
 8 条全部是 `tests/test_architecture_check.py` 里那 8 条已定案的跨仓红，无新增。**
 与 §9.12 的 `8 failed, 4521 passed` 相比是 **+84 passed、+0 failed**，而 84 正好是本轮新增
 测试文件的大小——**这一轮加了测试，别的一个数都没动。**
+
+### 9.14 第三种读取形状：文件读到了，一条条目也没认出来
+
+**这一节不是从计划来的，是从一次与本台账绿色格子相矛盾的实测来的。** 把
+`serverosctl support` 指向本机**第二个知识库**——`src/litellm-support/dist/employee-kb`，
+25 文件、两级目录、2026-09-20 构建——三个动词逐条读作：
+
+```text
+$ serverosctl support entries --kb-root …/dist/employee-kb      → exit 0，列出零条目
+$ serverosctl support check   --kb-root …/dist/employee-kb
+  check 0 entries against 0 index rows, as of None
+    no findings                                                  → exit 0
+$ serverosctl support match   --kb-root …/dist/employee-kb --status-code 402 \
+                              --message "budget exceeded"
+  outcome: NO_ENTRY_MATCHES                                      → exit 2
+```
+
+**每个动词什么都没读到，并且报告成功。** 第三条最坏：它把锅算在问题上。`answer`
+更进一步，对一个**它一条条目都没读过**的知识库提出了改进候选——一条可能被人归档的
+候选条目。
+
+**根因两句话。** `read_entries` 只在 **glob 一个文件都没匹配到**时才设
+`unreadable`——所以 `unreadable` 是**关于 glob 的事实，不是关于读取的事实**；员工树
+的 `*/*.md` 匹配到了一堆。然后 `check()` 的守卫要求
+`reading["unreadable"] and index["unreadable"]`——**两侧都**不可读——于是一侧「可读但为
+空」、另一侧缺失时守卫不触发，循环比较了两个空集合，`findings: []` 被渲染成 `CHECKED`。
+
+**修法是第三个字段，不是把那个词放宽。** 两个事实分开报，一起消费：
+
+```python
+  * `unreadable` — glob 下面什么都没有。关于 GLOB 的事实，而 glob 可能瞄错了根。
+  * `unrecognised` — 文件读了，没有一条产出条目。关于读取本身的事实。
+```
+
+读者需要区分「你指错了地方」和「我读了你的文件，这份契约描述不了它们」；守卫只需要知道
+两者都不是一次读取。合成一个字段会丢掉前一种区分，而只读其中一个**就是**被修的那个缺陷。
+`match`/`check`/`next_id`/`listing` 的守卫现在读 `unreadable or unrecognised`，**CLI 也
+读两个**，`render` 说出是哪一种。
+
+**为什么这一条自行实施而不上报。** 模块自己的 docstring 已经裁定过：「an unreadable
+knowledge base produces NO findings — it produces `KB_UNREADABLE`, because
+`findings: []` is what "checked and clean" and "never checked" both render as.」
+并且已有两条测试为到达同一处的另外两个根断言了同一意图
+（`test_an_unreadable_knowledge_base_reports_a_reading_and_not_clean`、
+`test_a_root_with_no_entry_files_is_unreadable_not_empty`）。这是**同一个已被陈述过的
+意图的第三例未覆盖情形**，所以是缺陷，不是产品语义变更。
+
+**哪一个 KB 格式权威、契约要不要为员工树那种 YAML front-matter + 英文 `##` 标题再声明
+一个 `heading_pattern`，这一条没做，也不自行决定。** 契约的注释记下实测并停在那里；工具
+现在打印的那句话同时点名两种读法，并说明这个选择不归它。**上报，不落代码。**
+
+**变异证据 10/10 被拒，零存活**（`support-kb/run.sh`、`mutation-run.log`、
+`mutant-M*.log`；逐条见该目录 `RESULTS.md`）。三件事值得留在这里：
+
+- **M1/M2 与 M9/M10 是同一个锚点向两个方向变异。** 守卫是一条边界，只从一侧测过的边界
+  没有被测：M2 与 M10 正是分别能通过 M1、M9 那条测试的变异体。
+- **M8 是本轮新代码被自己的测试抓住的**——那句话把正则按 `!r` 打印，每个反斜杠都被加倍，
+  断言拿契约里的值一比就拒了它。
+- **第一遍在 M2 处 abort，并把 M1 留在了 `support.py` 里。** 同一个锚点的两个变异体不可能
+  都找到它：M1 改写的正是 M2 要写的那段文字，于是 M2 报 `0 occurrence(s)`——**而基于
+  `grep` 的量具会记一句「继续」，把 M2 报成「没被抓住」**，那是对 M2 那条测试的错误结论。
+  `mutate()` 现在先 `restore()`，每个变异体都从实测 revision 出发；陈旧文件在 `diff` 确认
+  只剩 M1 那一行之后从 `support.pristine.py` 还原，第二遍才是整轮干净的一遍。
+
+**`runtime/actuator-contract.yaml` 本轮不改。** 本轮没有新增 `os.unlink`/`os.replace`
+位置：`read_entries` 只读，新字段是字典里的一个字符串，CLI 那处是一个分支。guard 仍是
+declared **37** / undeclared 0 / stale 0 / tests_breach 0，227 文件——**和上两轮同数**，
+而「新增一个已声明位置会挪走这个数字」正是这个数字算证据的原因。
+
+**明确没做的事：** 「哪种 KB 格式权威」没有决定（见上）；`support-contract.yaml` 没有
+声明第二种格式；本机的 `serverosctl` 是指向已安装 release revision 的符号链接，所以
+**这个修复在已安装路径上还没生效**——它随 §14 的晋升一起到达，而晋升是推迟的。
+
+**终态重量：8 failed, 4618 passed, 20 skipped, 3722 subtests passed（497.20s）。
+8 条全是 `tests/test_architecture_check.py` 那 8 条已定案的跨仓红，无新增。**
+与 §9.13 的 `8 failed, 4605 passed, 3718 subtests` 相比是 **+13 passed、+4 subtests、
++0 failed**，而 13 正好是本轮新增的测试数（`test_support.py` 9 条、
+`test_serverosctl.py` 4 条）。活节点两个知识库的对照读数：员工树 `entries`/`check`
+都是 **exit 2 并点名八个文件与没匹配上的 pattern**；契约写就的那棵树
+**`21 entries` / `21 index rows` / exit 0，一个数字都没动。**
 
 ## 10. 后续每包更新哪几行
 

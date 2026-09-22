@@ -334,6 +334,84 @@ def test_path_conformance_is_a_read_only_verb():
 
 
 # ---------------------------------------------------------------------------
+# §J · the four support verbs, read at the CLI
+# ---------------------------------------------------------------------------
+#: The reading shape the module reports as `unrecognised`: the glob MATCHES
+#: (the entries sit one level down, as they do in both knowledge bases on this
+#: host) and no recognisable heading comes out of any file. The exit code is
+#: what a log sees, and it must not be the one that means "here is the count".
+def _unrecognised_kb(tmp_path):
+    kb = tmp_path / "employee-kb"
+    for rel in ("compatibility/COMPAT-001.md", "troubleshooting/NET-001.md"):
+        path = kb / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("# 标题\n\n## Symptoms\n\n- nothing\n", encoding="utf-8")
+    return kb
+
+
+def _glob_matched_nothing(tmp_path):
+    kb = tmp_path / "empty-kb"
+    (kb / "knowledge").mkdir(parents=True)
+    return kb / "knowledge"
+
+
+def test_every_support_verb_exits_could_not_answer_on_an_unrecognised_reading(
+        tmp_path, capsys):
+    """Measured on this node: all four verbs read ZERO entries against the real
+    employee knowledge base and reported success -- `entries` exiting 0 with an
+    empty list, `check` printing `0 entries against 0 index rows` / `no
+    findings` / exit 0, `match` blaming the question."""
+    kb = _unrecognised_kb(tmp_path)
+    for argv in (["entries"], ["check", "--as-of", "2026-09-22"],
+                 ["match", "--status-code", "402", "--message", "budget exceeded"],
+                 ["answer", "--status-code", "402", "--message", "budget exceeded"]):
+        code = cli_mod.main(["support"] + argv + ["--kb-root", str(kb)])
+        assert code == cli_mod.EXIT_COULD_NOT_ANSWER, (argv, code)
+        out = capsys.readouterr().out
+        assert "NO ENTRY RECOGNISED" in out or "COULD NOT CHECK" in out or \
+               "KB_UNREADABLE" in out, (argv, out)
+
+
+def test_a_support_root_that_matched_nothing_is_the_same_exit_and_a_different_fact(
+        tmp_path, capsys):
+    """Two facts, one exit. A caller reading only the exit learns "no answer
+    came back"; a caller reading the output learns which of the two happened."""
+    code = cli_mod.main(["support", "entries",
+                         "--kb-root", str(_glob_matched_nothing(tmp_path))])
+    assert code == cli_mod.EXIT_COULD_NOT_ANSWER
+    out = capsys.readouterr().out
+    assert "UNREADABLE" in out
+    assert "NO ENTRY RECOGNISED" not in out
+
+
+def test_a_support_root_that_did_read_entries_exits_ok(tmp_path, capsys):
+    """The other direction, so the guard is pinned at both ends: a root whose
+    files are written the way this contract declares must not be reported as
+    unreadable, and a guard that always answers KB_UNREADABLE passes the test
+    above and fails this one."""
+    kb = tmp_path / "contract-kb"
+    path = kb / "03_平台" / "预算.md"
+    path.parent.mkdir(parents=True)
+    path.write_text("# 索引\n\n## [PLAT-001] 平台预算超限 ExceededBudget 402\n\n"
+                    "### 元数据\n- 置信度：已确认\n", encoding="utf-8")
+    code = cli_mod.main(["support", "entries", "--kb-root", str(kb)])
+    assert code == cli_mod.EXIT_OK
+    out = capsys.readouterr().out
+    assert "1 entries under" in out
+    assert "NO ENTRY RECOGNISED" not in out
+
+
+def test_the_support_verbs_name_a_handler_and_write_nothing(tmp_path):
+    """The knowledge base is in a PROTECTED repository and this verb reads it.
+    Nothing under the root may be touched, including by a `__pycache__`."""
+    kb = _unrecognised_kb(tmp_path)
+    before = sorted(p.relative_to(kb) for p in kb.rglob("*"))
+    cli_mod.main(["support", "entries", "--kb-root", str(kb)])
+    after = sorted(p.relative_to(kb) for p in kb.rglob("*"))
+    assert before == after
+
+
+# ---------------------------------------------------------------------------
 # §47 · the probe verb, rendered end to end
 # ---------------------------------------------------------------------------
 

@@ -86,6 +86,20 @@ kb:
   entry:
     # `## [PLAT-002] 平台预算超限 ExceededBudget 402`
     heading_pattern: "^##\\s*\\[(?P<id>[A-Z]+-\\d+)\\]\\s*(?P<name>.+?)\\s*$"
+    #
+    # TWO FACTS, AND A THIRD READING SHAPE. `entry_glob` matching nothing and
+    # `entry_glob` matching files that carry no recognisable heading are
+    # different facts about the root, and they are the same fact about the
+    # READING: nothing came out of it. Measured on 2026-09-22 against a second
+    # knowledge base on this host -- 25 files under a two-level tree, glob
+    # match 8, entries recognised 0 -- where the first reading rendered as
+    # `check 0 entries against 0 index rows` / `no findings` / exit 0, which is
+    # the exact rendering this contract's `findings` note above forbids. Both
+    # now report `KB_UNREADABLE`. Which AUTHORED format that second knowledge
+    # base uses, and whether this contract should declare a second
+    # `heading_pattern` for it, is not decided here: this contract declares the
+    # format the KB it was measured against is written in, and a reading that
+    # does not recognise it says so rather than reading zero.
     required_sections:
       - 元数据
       - 字段匹配规则

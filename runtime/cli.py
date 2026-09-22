@@ -355,7 +355,13 @@ def cmd_support_entries(args) -> int:
     """
     def build(mod):
         payload = mod.listing(args.kb_root)
-        return payload, ("KB_UNREADABLE" if payload["unreadable"] else "ANSWERED")
+        # Two facts, one outcome. `unreadable` is "the glob matched nothing",
+        # `unrecognised` is "files were read and no entry came out of any of
+        # them"; both mean the listing above is not a count of entries, so
+        # neither may be served with the exit code that says it is.
+        outcome = ("KB_UNREADABLE" if payload["unreadable"] or payload["unrecognised"]
+                   else "ANSWERED")
+        return payload, outcome
     return _support_call(args, build)
 
 
