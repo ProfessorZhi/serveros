@@ -457,17 +457,26 @@ def plugin_key(composition_name: str) -> str:
     return f"{composition_name}@{composition_name}"
 
 
-def composition_names(build) -> dict[str, Path]:
-    """Each declared composition's plugin NAME -> the file that declares it."""
-    out: dict[str, Path] = {}
-    for path in composition_files(build).values():
+def composition_index(build) -> dict[str, dict]:
+    """Each declared composition: composition name -> its plugin name and file.
+
+    Keyed by the COMPOSITION, and carrying the plugin name beside it, because
+    the two are different strings that coincide only for core. A composition is
+    what the artifact's README declares and what `declared_composition()`
+    returns; the plugin name is what Claude and Codex key their records on. They
+    were conflated here for exactly one commit — the map was keyed by plugin
+    name, the materialization audit looked it up by composition name, and the
+    lookup silently missed for every composition except core.
+    """
+    out: dict[str, dict] = {}
+    for composition, path in composition_files(build).items():
         try:
             document = yaml.safe_load(path.read_text(encoding="utf-8"))
         except (OSError, yaml.YAMLError):
             continue
         name = document.get("name") if isinstance(document, dict) else None
         if isinstance(name, str) and name:
-            out[name] = path
+            out[composition] = {"name": name, "path": path}
     return out
 
 
@@ -493,6 +502,46 @@ def read_codex_install(config_toml: Path) -> dict:
         if section == f'plugins."{BUNDLE_NAME}@{CODEX_MARKETPLACE}"' and line.startswith("enabled"):
             out["enabled"] = line.split("=", 1)[1].strip() == "true"
     return out
+
+
+def read_codex_plugins(config_toml: Path) -> dict[str, bool]:
+    """Every plugin Codex records as enabled, by `name@marketplace`.
+
+    The counterpart of `read_enabled_plugins` for the other runtime, and it is
+    read from the same kind of place: Codex keeps the switch in its config, not
+    in the cache directory it materializes into. Both are needed to say whether
+    a plugin is present AND loaded.
+    """
+    out: dict[str, bool] = {}
+    if not config_toml.is_file():
+        return out
+    section = None
+    for raw in config_toml.read_text().splitlines():
+        line = raw.strip()
+        if line.startswith("[") and line.endswith("]"):
+            section = line[1:-1]
+            continue
+        if section is None or not section.startswith('plugins."'):
+            continue
+        if line.startswith("enabled"):
+            out[section[len("plugins."):].strip('"')] = (
+                line.split("=", 1)[1].strip() == "true")
+    return out
+
+
+def codex_marketplace_name(plugin_name: str) -> str:
+    """Codex's marketplace name for a PLUGIN: `<name>-local`.
+
+    The builder renders `f"{bundle['name']}-local"`, and `name` in a bundle is
+    the plugin name — `hwz-server-os`, not `serveros-core`. Calling this with a
+    composition name would produce `serveros-core-local`, which is a marketplace
+    nothing has ever created. Mirrored rather than imported for the same reason
+    `default_root` is: the two files ship from different roots. A test pins this
+    against the builder's own output, so the mirror cannot drift without
+    failing — which is what happened to the Claude plugin key, where the second
+    copy was a literal nobody compared with anything.
+    """
+    return f"{plugin_name}-local"
 
 
 def composition_files(build) -> dict[str, Path]:
@@ -1238,23 +1287,9 @@ def collect(args) -> dict:
     # <cache>/<marketplace>/<plugin>/<version>/. Both levels were gotten wrong
     # once here — first a false MISSING, then a false drift — which is the
     # argument for resolving the Codex leaf by listing rather than by pattern.
-    codex_leaf, codex_note = None, ""
-    codex_plugin_dir = args.codex_cache / CODEX_MARKETPLACE / BUNDLE_NAME
-    if codex_plugin_dir.is_dir():
-        versions = sorted(p for p in codex_plugin_dir.iterdir() if p.is_dir())
-        if len(versions) == 1:
-            codex_leaf = versions[0]
-        elif versions:
-            # Codex is documented as single-slot: an old generation sitting
-            # beside a new one is a fact worth naming, not silently taking the
-            # newest of.
-            codex_leaf = versions[-1]
-            codex_note = (f"{len(versions)} version dirs present "
-                          f"({', '.join(p.name for p in versions)}); Codex is single-slot")
-
     targets = [("runtime-assets (built)", args.output),
-               ("Claude plugin cache", Path(claude.get("installPath", "")) if claude.get("installPath") else None),
-               ("Codex plugin cache", codex_leaf)]
+               ("Claude plugin cache",
+                Path(claude.get("installPath", "")) if claude.get("installPath") else None)]
     for label, root in targets:
         if root is None or not Path(root).is_dir():
             row(f"{BUNDLE_NAME} @ {label}", "", "", MISSING, MISSING, f"not present: {root}")
@@ -1272,8 +1307,6 @@ def collect(args) -> dict:
         # as a failure on the first run of this file.
         absent = [m for m in build.CORE_MODULES if not (root / m).is_dir()]
         note = f"core module(s) absent: {', '.join(absent)}" if absent else ""
-        if codex_note and label.startswith("Codex"):
-            note = f"{note}; {codex_note}" if note else codex_note
         verdict = OK if not drift else SOURCE_RUNTIME_DRIFT
         detail = f"{len(drift)} drifted path(s); e.g. {', '.join(drift[:3])}" if drift else ""
         row(f"{BUNDLE_NAME} @ {label}", "", "", f"sha256={tree_hash(root) or 'NONE'}",
@@ -1300,9 +1333,33 @@ def collect(args) -> dict:
     # a hardcoded ignore list.
     enabled = read_enabled_plugins(args.claude_settings_json)
     installed = read_claude_plugins(args.claude_plugins_json)
-    declared_names = composition_names(build)
+    codex_enabled = read_codex_plugins(args.codex_config)
+    compositions = composition_index(build)
+    plugin_names = {entry["name"] for entry in compositions.values()}
+    by_plugin = {entry["name"]: composition for composition, entry in compositions.items()}
+
+    # Where each runtime put each composition, resolved once and then used by
+    # both the rows below and the materialization audit further down. It used to
+    # be resolved separately at each site against `BUNDLE_NAME`, which meant the
+    # audit paired the NODE revision with CORE's installed plugin — two
+    # compositions, compared as though they were one. Nothing said so, because
+    # with a single installed plugin every pairing happens to be self-consistent.
+    plugin_roots: dict[str, dict] = {}
+    for composition, info in compositions.items():
+        name = info["name"]
+        record = installed.get(plugin_key(name)) or {}
+        install_path = record.get("installPath")
+        codex_dir = args.codex_cache / codex_marketplace_name(name) / name
+        versions = sorted(p for p in codex_dir.iterdir() if p.is_dir()) \
+            if codex_dir.is_dir() else []
+        plugin_roots[composition] = {
+            "claude": Path(install_path) if install_path else None,
+            "codex_versions": versions,
+            "codex": versions[-1] if versions else None,
+        }
+
     for key in sorted(enabled):
-        if key.split("@")[0] not in declared_names:
+        if key.split("@")[0] not in plugin_names:
             continue
         state = "enabled" if enabled[key] else "disabled"
         entry = installed.get(key)
@@ -1347,6 +1404,59 @@ def collect(args) -> dict:
             "" if not drift else
             f"canonical source builds {plugin_built}, and the installed plugin "
             f"differs in {len(drift)} path(s); e.g. {', '.join(drift[:3])}")
+
+    # Codex, read the same way and for the same reason. It keeps its switch in
+    # config.toml and materializes into <cache>/<marketplace>/<plugin>/<version>/,
+    # so the leaf is resolved by LISTING the version directory rather than by
+    # asking the config which version is installed — the config does not record
+    # one. A second version dir beside the first is named, not silently resolved
+    # to the newest: Codex is single-slot, so a generation sitting beside another
+    # is a fact about this machine.
+    for key in sorted(codex_enabled):
+        name, _, marketplace = key.partition("@")
+        # The record is keyed by PLUGIN name; `plugin_roots` is keyed by
+        # COMPOSITION. Translating rather than conflating, because the two are
+        # the same string for exactly one of this product's compositions and a
+        # lookup that is right by coincidence is a lookup that stops being right
+        # when a profile is added. The marketplace name, by contrast, is built
+        # from the plugin name — `codex_marketplace()` in the builder derives it
+        # from `bundle['name']` — so that argument stays as it is.
+        composition = by_plugin.get(name)
+        if composition is None or marketplace != codex_marketplace_name(name):
+            continue
+        state = "enabled" if codex_enabled[key] else "disabled"
+        label = f"{key} (Codex plugin, {state})"
+        versions = plugin_roots[composition]["codex_versions"]
+        if not versions:
+            row(label, "", "", MISSING, MISSING,
+                f"not present: {args.codex_cache / marketplace / name}")
+            continue
+        note = "" if len(versions) == 1 else (
+            f"{len(versions)} version dirs present ({', '.join(p.name for p in versions)}); "
+            "Codex is single-slot")
+        leaf = versions[-1]
+        installed_version = leaf.name
+        if not pinned or not args.ability_repo.is_dir():
+            row(label, "", "", f"version={installed_version}  sha256="
+                f"{tree_hash(leaf) or 'NONE'}", UNKNOWN,
+                "cannot verify: " + recompute_blocker(build, leaf), note=note)
+            continue
+        got = expected_artifact(build, args.ability_repo, pinned, leaf,
+                                args.marketplace_path, layout_at=args.output)
+        if got is None:
+            row(label, "", "", f"version={installed_version}  sha256="
+                f"{tree_hash(leaf) or 'NONE'}", UNKNOWN,
+                "cannot verify: " + recompute_blocker(build, leaf), note=note)
+            continue
+        expected_codex, codex_built = got
+        drift = tree_drift(expected_codex, leaf, ignore=(Path(TREE_MANIFEST),))
+        row(label, "", codex_built, f"version={installed_version}  sha256="
+            f"{tree_hash(leaf) or 'NONE'}",
+            OK if not drift else SOURCE_RUNTIME_DRIFT,
+            ("" if not drift else
+             f"canonical source builds {codex_built}, and the installed plugin "
+             f"differs in {len(drift)} path(s); e.g. {', '.join(drift[:3])}"),
+            note=note)
 
     # --- 8. the node: revision, unit, process ----------------------------
     #
@@ -1536,9 +1646,17 @@ def collect(args) -> dict:
     for artifact, label in audit_targets:
         if artifact is None:
             continue
+        # The installed roots for the composition THIS artifact declares, not
+        # for whatever distribution happens to be named by a constant. The two
+        # audit targets are two different compositions, so one pair of roots
+        # cannot serve both — and pairing the node revision with core's plugin
+        # made the audit ask whether core's members reach the node, which is a
+        # question about the wrong artifact that answers itself when the
+        # compositions overlap.
+        roots = plugin_roots.get(declared_composition(artifact) or "", {})
         found = materialization_audit(artifact, [
-            ("Claude", claude.get("installPath") or None, claude_skills),
-            ("Codex", codex_leaf, codex_skills),
+            ("Claude", roots.get("claude"), claude_skills),
+            ("Codex", roots.get("codex"), codex_skills),
         ])
         materialization["compositions"][label] = {
             "artifact": str(artifact),
