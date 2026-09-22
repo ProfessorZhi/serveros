@@ -345,6 +345,50 @@ packs 的 `authority.revision` 现在是
 **祖先**，且 `abilities-manifest.yaml` 在两者上逐字节相同——正是 pack pin 的祖先规则
 要求的两条。
 
+### 3.9 日循环的渲染腿：装了、手跑过一次、**没有上弦**
+
+`runtime/serveros-daily.service` / `.timer` 这对模板一直在树里，而
+`~/.config/systemd/user/` 里**从来没有它们**——所以「日循环」此前是一个有实现没安装的
+routine。这一轮把它装上了，并且**按设计的极性保持未启用**：
+
+```text
+scripts/release.py daily-task --runtime-root <dist> --composition serveros-linux-work \
+                              --out /data/home/vince/artifacts/serveros/workbench
+  installed      ~/.config/systemd/user/serveros-daily.service
+  installed      ~/.config/systemd/user/serveros-daily.timer
+  revision       cards-and-release-20260922@2f77b02
+  destination    /data/home/vince/artifacts/serveros/workbench
+  installed and NOT enabled
+```
+
+`--out` 是必填且没有缺省值，这条不是形式：缺省会落在 revision 自己的 `workbench/`，
+而那是下一次更新会整份替换的目录，渲染器从安装态往那里写是**按名字被拒**的。
+目的地先用 `path_admit` 过了一遍（`ADMITTED_NON_CANONICAL`，属 artifacts 根）。
+
+然后**手工跑了一次**，这正是模板设计的验证路径（不需要 timer）：
+
+```text
+systemctl --user start serveros-daily.service
+  Result=success   ExecMainStatus=0   消耗 2min 6s CPU
+  wrote 15 份文档到 /data/home/vince/artifacts/serveros/workbench
+```
+
+输出是一份真实的 START-HERE 集合：`START-HERE.md` 的头部记着渲染者
+（`runtime/workbench.py`，来自新 revision）、三组输入、以及**23 条命令逐条的退出码**，
+其中 `ability resolve` 两条是 2——那不是失败，是「没给 ability catalogue，所以答案是
+UNKNOWN，且 `inputs_missing` 逐条点名缺哪八个输入」。**把「问不出来」记成 2 而不是记成
+0**，正是这条链要的诚实性。
+
+未启用的那一行留给要人做的那一步：
+
+```text
+systemctl --user enable --now serveros-daily.timer
+```
+
+**为什么不由本轮上弦**：单元自己的头部写着「enabling is the act §8 puts on the approved
+list」。装上（可手工验证、不自动运行）与上弦（每天 08:17 自动产出）是两个动作，这一轮
+只做前者。
+
 ## 4. 四层状态的定义
 
 | 层 | 判据 | 不算这一层的 |
@@ -466,8 +510,10 @@ manifest 行、packs 闭包、cards。凡是「X 的渲染嵌了 X 的值」，�
 | --- | --- | --- |
 | 1 | **重启 `serverosd.service`**（PID 2615936，起于 11:00:26） | `current` 已是新 revision，shim 也已指向它，所以**新开的进程拿到的是新代码**；但长驻进程仍在跑 promote 之前那一版。重启会打断这台共享机上别人正在跑的东西。等一个安全窗口，`HUMAN_EXECUTED` |
 | 2 | **把 CC marketplace `hwz-server-os` 指到新 release，并 `claude plugin update` 工作台** | 遗留目录 `hwz-server-os/current` 声明的 plugin 名是 `hwz-server-os`（3 skills），新 release 声明的名字是 `hwz-server-os-linux-work`（5 skills）。指过去等于**给已装 plugin 改名**——用户可见的身份变更，不是基础设施细节。已装那一份仍是 `3.1.0+srv0003.20260915a` |
+| 3 | **给日渲染上弦**：`systemctl --user enable --now serveros-daily.timer` | 单元已装、已手工跑通一次（§3.9），但没有启用。单元头部写明「enabling is the act §8 puts on the approved list」——自动产出与手工验证是两个动作 |
+| 4 | **装原生告警投递那一跳**：`scripts/release.py alert-worker --conversation <id>` | 它与它的 timer **从没装过**（§3.6 第 3 条），所以 701 条 `last_notified_at` 来自 `alert_digest.record()` 而不是原生投递。这个动词在没有 `--conversation` 时拒绝——而「往哪个会话发」是一次外联决定 |
 
-两条都是**外部/共享面动作**，不是内部架构选择——所以它们出现在这里，而不是被包装成
+四条都是**外部/共享面动作**，不是内部架构选择——所以它们出现在这里，而不是被包装成
 「请用户决定」。其余七条已按设计落地。
 
 ## 8. 卫生发现（只给位置，不给值）
