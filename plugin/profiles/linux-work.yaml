@@ -92,7 +92,21 @@ recommended:
       and §18's rule is that the catalogue is not eagerly bundled.
   - name: document-stewardship
     source: ability-management
-    status: missing
-    reason: §26 baseline member with no implementation yet. Recorded here with
-      its status rather than omitted, because a profile that silently drops it
-      reads as a complete recommendation set.
+    status: available
+    # Folded, because the reason contains colons and a plain multi-line scalar
+    # would read one of them as a mapping — which is how this line was caught:
+    # `yaml.safe_load` refused the file and `composition.py::_parse` fell
+    # through to `json.loads`, so the failure surfaced as a JSONDecodeError on a
+    # YAML document rather than as "this profile does not parse".
+    reason: >-
+      §26 baseline member, and now implemented — the canonical
+      `document-stewardship` Skill landed the 正文 side: local diff, versioned
+      verification, readback and receipt, and the rule that an unreliably
+      protected conflict range produces a candidate rather than an unattended
+      whole-body overwrite. It stays recommended rather than bundled because
+      the node that maintains a document is the node that has been given one to
+      maintain, and the Skill is explicit that the position/ACL side remains
+      with `feishu-space-management`, so a node without that grant would carry
+      a member it cannot exercise. The status moves because it is now true that
+      the registry can resolve it; a status is a claim about the registry, and
+      `build.py` checks it in both directions against the payload.

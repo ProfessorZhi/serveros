@@ -55,6 +55,18 @@ ABILITY_SKILLS = (
     "feishu-space-management",
     "feishu-report",
     "inventory-publishing",
+    # The profile marks this one `available`, and this tuple is the registry
+    # that claim is checked against — the fixture is passed as `--ability-repo`
+    # and IS the pinned revision from the build's point of view. So a name the
+    # profile can resolve has to be resolvable here too, or the both-directions
+    # check fires on the fixture rather than on the world.
+    #
+    # It was absent while the profile said `missing`, and that was the accident
+    # worth naming: the fixture was modelling the old truth without ever
+    # asserting it, so the day the canonical `document-stewardship` Skill
+    # landed and the profile moved to `available`, the check fired here first.
+    # The fixture was right to fire — it just had to be told the news.
+    "document-stewardship",
 )
 
 # What `serveros-core` itself composes from ability-management. A subset of the
@@ -234,7 +246,9 @@ class BuildTests(unittest.TestCase):
     def test_a_recommended_ability_never_reaches_the_payload(self):
         """§5: `recommended` is a claim about the node, not a member of the artifact.
 
-        The profile names four abilities it does not ship. Each of them resolves
+        The profile names several abilities it does not ship, and no count is
+        written down here because the last one to be written down ("four") went
+        stale the moment a sixth arrived. Each of them resolves
         at the pinned revision, so a builder that merged `skills` and
         `recommended` — or that copied everything the registry can resolve —
         would put them in the payload and nothing would look wrong: the artifact
@@ -267,12 +281,20 @@ class BuildTests(unittest.TestCase):
         calls it. Both matter, and only this one can catch the call site going
         away — which is how the rule survived unimplemented for as long as it
         did.
+
+        The name is `no-such-ability` rather than a real one that happens to be
+        missing. `document-stewardship` was the example here until the profile
+        above started claiming it resolves — and then one name was doing two
+        jobs, "an ability the catalogue has" in one test and "an ability it
+        does not" in this one. Which of the two a name is should not depend on
+        what the rest of the suite has not got round to needing yet; a sentinel
+        that cannot ever be registered says it by construction.
         """
         repo, rev = make_ability_repo(self.base / "absent",
-                                      packs=("document-stewardship",))
+                                      packs=("no-such-ability",))
         result = run_build(self.args_for(repo, rev, "--write"))
         self.assertEqual(result.returncode, 2)
-        self.assertIn("document-stewardship", result.stderr)
+        self.assertIn("no-such-ability", result.stderr)
         self.assertIn("does not exist", result.stderr)
 
     def test_a_pack_pinned_to_another_revision_fails_the_build(self):
