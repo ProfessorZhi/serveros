@@ -66,7 +66,15 @@ version: "1.0.0"
 
 # Its own payload, so its own cache identity. A cachebuster shared with the
 # workbench would let two different payloads claim one version string.
-cachebuster: srvtest0001.20260922a
+#
+# Moved to `b` on 2026-09-22, and the move is the point of the field: the
+# payload changed after `a` was named — `artifacts: [plugin]` was added so that
+# `release.py` could reach the plugin verifier without being told the answer —
+# and an installed cache keyed on `…20260922a` would then have been served a
+# different payload than the one it was named for. `a` was only ever loaded
+# with `--plugin-dir`, which caches nothing, so no cache is stale; the label
+# moved because the content did, and not because a target was chosen first.
+cachebuster: srvtest0001.20260922b
 
 skills:
   - name: automated-testing
