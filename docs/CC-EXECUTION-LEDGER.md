@@ -1738,6 +1738,76 @@ composition ship 或 recommend 的 ability，仍然报 `COMPOSITION_MEMBER_UNREA
 8 条仍是那 8 条跨仓红，无新增，说明没有东西对该文件的字节做哈希。② §5.0.1 那条外部权限项
 的严重性被这一节独立确认：**产品检查本身也在读 `main`**，不只是 fixture 在红。
 
+### 9.18 架构检查的判词从来没被记录过，而它是 `NONCONFORMANT`——根因是同一个产品里有两套 root 解析
+
+§14 的链条里有「架构/突变守卫绿色」这一格。**台账此前从未记过架构检查的判词**，这一节补上，并且写下它的根因——它不在 serveros 的代码里，也不在 ops 的实例里，而在两者之间。
+
+**判词。** 用工作树跑 `skills/serveros/scripts/architecture_check.py`（`--canonical-ref HEAD`，
+`--ability-repo` 指向 fiber 工作树的 `HEAD`，`--ops-repo` 用产品自己的默认值
+`<WORKSPACE_ROOT>/ops`）：
+
+```
+architecture_status: NONCONFORMANT
+findings: 6   blocking_high_open: 1
+  HIGH    ROOT_TOKEN_UNRESOLVED  {unresolved: [KNOWLEDGE_ROOT, OPS_ROOT, RECORDS_ROOT, SRC_ROOT, TEST_ENVS_ROOT],
+                                  declared: [], roots_source: ops/workspace/environment.yaml}
+```
+
+`blocking_high_open: 1` 就是它。**这不是本轮代码的问题，也不是我调用方式的问题**——
+`ROOT_SOURCES["ops_repo"]` 的默认值就是 `<workspace_root>/ops`，我用的是产品自己的默认。
+
+**根因：`root_tokens()` 读的是东京已经退役的那份文档。** 契约的
+`roots_source.locator` 是 `ops/workspace/environment.yaml`、`key` 是 `roots`。实测：
+
+| 事实 | 量 |
+| --- | --- |
+| 活的 `ops/workspace/environment.yaml`（`main`，8643 B）里 `roots` 这个词 | **一次都不出现**；顶层键是 `schema: hwz/environment.v2` |
+| 它能不能被 YAML 解析 | **不能**：`ScannerError … line 70, column 11`（`note:` 的值以反引号开头） |
+| 带 `roots:` 的那一份在哪 | 只在 `ops/archive/beijing-20260918/workspace/environment.yaml:7` |
+| 东京 v2 把绑定交给了谁 | 文件自己写着 `binding_authority: serveros:fleet/profiles.yaml#linux-shared-multiuser` |
+
+而产品里**已经有一个能正确回答的解析器**：`runtime/paths.py`（Profile 绑定），实测
+`python -m runtime.cli path contract` 在这台机器上零环境变量给出 **12 个根，全在
+`/data/home/vince` 下**。`architecture_check.py` 里 `root_tokens()` 对
+`PERSISTENT_ROOT` / `profiles.yaml` / `paths.py` **零引用**——它自己又算了一遍。
+
+**这正是检查器自己的文件在第 736-744 行禁止的形状**（那里说的是 composition 规则：
+「一条规则被写了两遍，就迟早会被写成两个样子」）。同一份文件里的 root 解析没有遵守它。
+
+**那 5 个 token 的真实身份，逐条量过了，不是同一件事：**
+
+| token | 本机 Profile（`linux-shared-multiuser.paths`） | 磁盘 |
+| --- | --- | --- |
+| `SRC_ROOT` | **绑了**，叫 `workspace.src` → `/data/home/vince/workspace/src` | 存在 |
+| `KNOWLEDGE_ROOT` | **路径绑了**，叫 `knowledge.corporate` → `/data/home/vince/workspace/knowledge` | 存在 |
+| `OPS_ROOT` | **没有这个条目** | `workspace/ops` 存在 |
+| `RECORDS_ROOT` | **没有这个条目** | `workspace/records` 存在 |
+| `TEST_ENVS_ROOT` | **没有这个条目** | `workspace/test-envs` 存在 |
+
+也就是说检查器报了 5 条，其中 **2 条是本机其实绑了、只是它读错了文档**，3 条是本机
+Profile 真的没绑（而目录和机器政策都写着它们在）。
+
+**所以修法有两半，而两半的性质不同，不能混着做：**
+
+1. **事实那一半（serveros 仓内，可做）**：`linux-shared-multiuser.paths` 按既有命名约定
+   （`workspace.src` / `workspace.worktrees`）补上 `workspace.ops`、`workspace.records`、
+   `workspace.test-envs`。provenance 与其余十二条相同（`server_local_agent`），事实为真。
+2. **词汇表那一半（需要作者，本轮不做）**：`root_tokens()` 要能读 Profile，就得有一份
+   「契约 token → Profile 路径键」的映射：`SRC_ROOT→workspace.src`、
+   `OPS_ROOT→workspace.ops`、`RECORDS_ROOT→workspace.records`、
+   `TEST_ENVS_ROOT→workspace.test-envs`，这四条是机械的；**`KNOWLEDGE_ROOT→knowledge.corporate`
+   是唯一一处语义判断**（Profile 那个名字说的是「corporate」，契约的 token 说的是根目录，
+   同一个路径，但两个词不是同一个主张）。把两个词汇表对上是一次**著作行为**，
+   而按约定它只能写在 `roots_source` 里（那里现在只有 `owner/locator/key/required_keys/derivations`）。
+   **猜一个映射正是这个检查器拒绝做的事**（「reported as unresolved, never guessed」），
+   所以本轮不替它猜。
+
+**因此：只做了一半就不做另一半，等于宣布一个没人读的修复——本轮两半都没落**，
+它作为 §16 那条外部权限项的一部分列出，并且是本轮**唯一一处「由现有事实决定不了」的
+具体业务语义**（不是架构选择，也不是「请人拍板」：映射该由谁署名的答案在契约自己那句
+`note` 里——`owner: hwz-ops` 的实例文档已经退役，而接手的 Profile 属于 serveros，
+所以这个映射的归属本身要重新署一次名）。
+
 ## 10. 后续每包更新哪几行
 
 - 改完一个包，只更新 §3.1 里对应行的四层状态 + §5 表的增删。
