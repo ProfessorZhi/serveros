@@ -579,6 +579,30 @@ class BuildTests(unittest.TestCase):
         self.assertEqual(market["name"], "hwz-server-os-local")
         self.assertEqual(market["plugins"][0]["source"]["path"], "./current")
 
+    def test_codex_marketplace_does_not_name_a_staging_directory(self):
+        """A build into a scratch directory is fine; recording it is not.
+
+        `release.py` promotes a composition into `<runtime-root>/<composition>/
+        current`, so that is what the descriptor has to name — the build's own
+        output directory survives only until the release moves it. On this node
+        the file named `./.staging-c233946`, which is the directory `current`
+        was built from and which a staging cleanup is entitled to consider.
+        """
+        staging = self.base / "dist/.staging-deadbeef"
+        args = [
+            "--ability-repo", str(self.repo), "--ability-rev", str(self.rev),
+            "--output", str(staging), "--marketplace-path", str(self.marketplace),
+            "--pack-contract", str(self.contract), "--write",
+        ]
+        self.assertEqual(run_build(args).returncode, 0)
+        market = json.loads(self.marketplace.read_text())
+        composition = yaml.safe_load((ROOT / "plugin/bundle.yaml").read_text())["composition"]
+        self.assertEqual(market["plugins"][0]["source"]["path"],
+                         f"./{composition}/current")
+        self.assertNotIn(".staging", market["plugins"][0]["source"]["path"],
+                         "a descriptor that names a disposable directory is one "
+                         "cleanup away from naming nothing")
+
     def test_short_revision_is_rejected(self):
         result = run_build([
             "--check",

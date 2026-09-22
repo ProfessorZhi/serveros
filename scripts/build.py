@@ -628,19 +628,44 @@ def claude_marketplace_manifest(bundle: dict, version: str) -> dict:
     }
 
 
+def _is_transient(rel: Path) -> bool:
+    """Whether a path names a directory nobody promised to keep.
+
+    A component beginning with a dot is one of those. `.staging-<revision>` is
+    where a build is written before a release moves it into `revisions/`, and
+    the name says as much. The descriptor below outlives it: measured on this
+    node, `runtime-assets/hwz-server-os/.agents/plugins/marketplace.json` named
+    `./.staging-c233946` while `current` resolved to the revision built out of
+    that very directory. Nothing broke — nothing here reads that file — but a
+    descriptor that names a disposable directory is one cleanup away from
+    naming nothing, and the cleanup is exactly what §5's staging rule asks an
+    operator to consider.
+    """
+    return any(part.startswith(".") for part in rel.parts)
+
+
 def codex_marketplace(bundle: dict, output: Path, marketplace_path: Path) -> dict:
     """Render the local Codex marketplace that points at the generated payload."""
     marketplace_root = marketplace_path.resolve().parent.parent.parent
     relative_payload = Path(os.path.relpath(output.resolve(), marketplace_root))
     if relative_payload.parts[:1] == ("..",):
         raise ValueError("plugin output must be inside the Codex marketplace root")
+    # Where the payload WILL live, which is not always where it was built. A
+    # build to a scratch directory is a normal thing to do; recording the
+    # scratch directory in a descriptor is not, because the descriptor is read
+    # long after the build. `release.py` promotes a composition into
+    # `<runtime-root>/<composition>/current`, so that is the stable name, and
+    # it is derived from the bundle rather than from this invocation.
+    source_path = relative_payload
+    if _is_transient(relative_payload):
+        source_path = Path(bundle["composition"]) / "current"
     return {
         "name": f"{bundle['name']}-local",
         "interface": {"displayName": f"{bundle['display_name']} Local"},
         "plugins": [
             {
                 "name": bundle["name"],
-                "source": {"source": "local", "path": "./" + relative_payload.as_posix()},
+                "source": {"source": "local", "path": "./" + source_path.as_posix()},
                 "policy": {"installation": "AVAILABLE", "authentication": "ON_INSTALL"},
                 "category": bundle["category"],
             }
