@@ -27,36 +27,63 @@ implementation ledger（现有 Item/execution 记录），后续每包只更新�
 
 四层状态的定义见 §4。「代码在盘上」永远不算 LIVE。
 
-## 2. 本轮 live 状态（2026-09-22 实测）
+## 2. 本轮 live 状态（2026-09-22 实测，promote 后重测）
 
 ```text
 checkout    /data/home/vince/workspace/src/serveros                     d0a94d6 [main]
-worktree    /data/home/vince/workspace/worktrees/serveros/fabric-v1     5deec94 [serveros/fabric-v1-20260922]
-canonical   /data/home/vince/workspace/worktrees/ability-management/fabric-v1
-                                                                        c993c82 [serveros/fabric-v1-20260922]
-packs pin   authority.revision = ce6e1032aae6b2f098fc9f522d72da433b67fdff（五包同一值）
+worktree    /data/home/vince/workspace/worktrees/serveros/fabric-integration-20260922
+                                                                       fb97f77 [serveros/fabric-integration-20260922]
+canonical   /data/home/vince/workspace/worktrees/ability-management/fabric-integration-20260922
+                                                                       074a518 [integration/fabric-20260922]
+packs pin   authority.revision = e7d20f3b50e1a86c9998b5dff3f519fa52b4aa1d
 ```
 
-**安装面与发布面不是同一棵树**，这是本轮最具体的一个活缺陷：
+`fabric-integration-20260922` 是 `origin/main` + 10 个线性 commit（`b007c8c` …
+`074a518`）上的集成分支，本轮三个 commit 落在它上面（`aef122d`、`dc23707`、
+`2f77b02`、`fb97f77`），已 non-force 推到同名远端分支。
+
+**安装面与发布面原本不是同一棵树**，现在**发布面已经收敛，安装面还差一次 update**：
 
 | 面 | 指向 | 版本 | 时间 |
 | --- | --- | --- | --- |
-| 已安装 plugin | `~/.claude/plugins/cache/hwz-server-os/hwz-server-os/3.1.0-srv0003.20260915a` | `3.1.0+srv0003.20260915a` | installedAt 2026-09-17 |
-| marketplace `hwz-server-os` 的 source | `runtime-assets/hwz-server-os/current`（directory） | `srv0003.20260915a` | lastUpdated 2026-09-16 |
-| release 管理的 composition | `runtime-assets/hwz-server-os/serveros-linux-work/current` → `revisions/noc-copy-20260922@c233946` | `3.1.0+srv0003.20260915b` | promote 于 2026-09-22 11:00 |
+| 已安装 plugin（工作台） | `~/.claude/plugins/cache/hwz-server-os/hwz-server-os/3.1.0-srv0003.20260915a` | `3.1.0+srv0003.20260915a` | installedAt 2026-09-17 |
+| CC marketplace `hwz-server-os` 的 source | `runtime-assets/hwz-server-os/current`（**真实目录**，不指向 `revisions/`） | `3.1.0+srv0003.20260915a`，3 skills | lastUpdated 2026-09-16 |
+| release 管理的 composition | `runtime-assets/hwz-server-os/serveros-linux-work/current` → `revisions/cards-and-release-20260922@2f77b02` | `3.1.0+srv0003.20260922a`，5 skills | promote 于 2026-09-22 14:55 |
+| 它的 `previous` | `revisions/noc-copy-20260922@c233946` | `3.1.0+srv0003.20260915b` | 回滚是一条命令 |
+| Codex 描述符 | `runtime-assets/hwz-server-os/.agents/plugins/marketplace.json` → `./serveros-linux-work/current` | — | 已由构建产出 |
 
-marketplace 指的是 `hwz-server-os/current`，而 release 把新版本 promote 到了
-**另一个目录** `serveros-linux-work/`。两者相差 6 天，且没有任何东西会自己
-收敛。装到 CC 里的工作台因此比 release 落后一个版本——这不是推测，是上面三
-行读出来的。
+三件事必须分开读，因为它们过去被读成了一件：
+
+1. **release 面已经对齐。** `serveros-linux-work/current` 现在指 `@2f77b02` 那次
+   promote，`RELEASE.json` 记 `kind: node-runtime`、`kind_basis: chosen`、
+   `tree_hash 5e8694ce…`、`previous noc-copy-20260922@c233946`。`previous` 在，
+   回滚有对象。
+2. **Codex 描述符的那个缺陷已修。** 它曾经写 `./.staging-c233946`——一个可被清理
+   的目录名。修法是构建期判据（`build.py::_is_transient`），不是改那一个字符串：
+   任何以 `.` 开头的路径分量都算「没人承诺保留」，于是描述符改写
+   `./<composition>/current`。见 §5。
+3. **CC 那侧的安装面还没动，而且不该由本轮动。** CC 的 marketplace
+   `hwz-server-os` 指的是**遗留目录** `hwz-server-os/current`（不是 symlink 进
+   `revisions/`），它的 `.claude-plugin/marketplace.json` 声明的 plugin 名是
+   `hwz-server-os`；而新 release 里 `.claude-plugin/plugin.json` 声明的名字是
+   `hwz-server-os-linux-work`。**把 marketplace 指过去等于给已装 plugin 改名**——
+   那是一次用户可见的身份变更，不在本轮授权里。所以：报告，不改。已装那一份仍然
+   是 `srv0003.20260915a`（3 skills），差一次 `claude plugin update`。
 
 已跑的服务：
 
 ```text
-serverosd.service           active running   ServerOS node runtime
+serverosd.service           active running   MainPID 2615936，起于 2026-09-22 11:00:26
 tokyo-status-card.timer     active waiting   每小时 :00（北京整点）
 tokyo-alert-digest.timer    active waiting   每 5 分钟
 ```
+
+**daemon 没有被重启**：`current` 已经是新 revision，但 PID 2615936 仍在执行 promote
+之前那一版。重启它会打断这台共享机上别人正在跑的东西，所以留作
+`HUMAN_EXECUTED`，等一个安全窗口。`~/.local/bin/serverosctl` 这个 shim 已经指到
+`revisions/cards-and-release-20260922@2f77b02/bin/serverosctl`（shim 是路径跳转，
+不随进程走），所以**新开进程拿到的是新代码，长驻进程还是旧的**——这个区别正是
+「代码在盘上不等于 LIVE」在同一个节点上的实例。
 
 ## 3. 21 个语义职责
 
@@ -80,8 +107,8 @@ source revision 一列给的是**指纹成立的那次 revision**，也就是 pa
 | A4 | 运行环境/Fleet | runtime-management、test-management | `skills/runtime-management`、`skills/test-management` | Skill ×2 | 早于本轮 | `serverosd`、`serveros-node` MCP | 原生 | srv0003.20260915a | DONE | DONE | ENABLED | — |
 | A5 | Fleet 交接 | fleet-coordination | `skills/fleet-coordination` | Skill | 早于本轮 | 已授权 transport | **UNBOUND** | srv0003.20260915a | DONE | DONE | PARTIAL | 单设备路径，跨设备动词 absent |
 | A6 | 委派 | cc-quay-delegation | `skills/cc-quay-delegation` | Skill | 早于本轮 | 原生 Quay 0.11.0 | 原生（quay@quay 已装） | srv0003.20260915a | DONE | DONE | ENABLED | — |
-| A7 | 自动化测试 | automated-testing | `skills/automated-testing` + `plugin/profiles/testing.yaml` | Skill + Plugin composition `serveros-testing` | ce6e103（Skill）/ f5e563b（profile） | 目标 CC 以 `--plugin-dir` 加载 | 原生 | **无** | DONE | DONE | **NOT_ENABLED** | 见 §3.3 |
-| A8 | 构建发布 | build-release | `skills/build-release` | Skill | **ce6e103** | 项目 builder/CI | 原生 | 无 | DONE | NOT_MEASURED | NOT_ENABLED | 未装进任何 composition |
+| A7 | 自动化测试 | automated-testing | `skills/automated-testing` + `plugin/profiles/testing.yaml` | Skill + Plugin composition `serveros-testing` | ce6e103（Skill）/ f5e563b（profile） | 目标 CC 以正规 install 加载 | 原生 | `1.0.0+srvtest0001.20260922b` | DONE | DONE | **ENABLED** | 见 §3.3 |
+| A8 | 构建发布 | build-release | `skills/build-release` | Skill | **ce6e103** | 项目 builder/CI | 原生 | 随 `srv0003.20260922a` | DONE | DONE | ENABLED | 已加进 `pack:litellm-development`（§7 第 5 条） |
 | A9 | 生产观察 | production-observation | `skills/production-observation` | Skill | **ce6e103** | 既有 API/CLI/跳板 | **UNBOUND** | 无 | DONE | NOT_MEASURED | NOT_ENABLED | 未装进任何 composition |
 | A10 | 生产变更 | production-change | `skills/production-change` | Skill | **ce6e103** | 调用 A9 + 真实 Runbook | **UNBOUND** | 无 | DONE | NOT_MEASURED | NOT_ENABLED | 同 A8；且 READY≠切流授权 |
 | B1 | 来源采集 | information-management | `skills/information-management` | Skill | 早于本轮 | `records/information/raw/*` | 原生 | srv0003.20260915a | DONE | DONE | ENABLED | — |
@@ -91,7 +118,7 @@ source revision 一列给的是**指纹成立的那次 revision**，也就是 pa
 | B5 | 调研 | research-evidence | `skills/research-evidence` | Skill | **ce6e103** | Serper / 既有专业知识 | **UNBOUND** | 无 | DONE | NOT_MEASURED | NOT_ENABLED | 未装进任何 composition |
 | B6 | 方案 | design-and-contract + 专业 Skill | `skills/design-and-contract`、`VenusFennn/Backend-Solution-Design`、`VenusFennn/Frontend-Solution-Design` | Skill ×3 | 早于本轮 | — | 原生 | srv0003.20260915a | DONE | DONE | ENABLED | 旧入口分步迁移未做 |
 | B7 | 实现 | implementation-delivery | `skills/implementation-delivery` | Skill | 早于本轮 | — | 原生 | srv0003.20260915a | DONE | DONE | ENABLED | 重叠旧入口未迁移 |
-| B8 | 报告发布 | feishu-report | `skills/feishu-report` | Skill | 早于本轮 | `serverosctl report` | 原生 | srv0003.20260915a | PARTIAL | PARTIAL | PARTIAL | 见 §3.5：**没有独立 artifact 是设计选定的落法**，缺的是四处移除没做 |
+| B8 | 报告发布 | feishu-report | `skills/feishu-report` + `runtime/report-publication-contract.yaml` | Skill + 契约 | 早于本轮 | `serverosctl report`、那四个移除的接手方 | 原生 | srv0003.20260915a | DONE | PARTIAL | PARTIAL | 见 §3.5：**没有独立 artifact 是设计选定的落法**。契约与检查器已落地（31 测试），四处移除仍 `PENDING_CONSUMER`，被 `srv-0005-e2e-evidence` 的活动工作树挡着 |
 | B9 | 文档维护 | document-stewardship | `skills/document-stewardship` | Skill | **ce6e103** | feishu-space-management + publisher | 原生（仅正文侧） | 无 | DONE | NOT_MEASURED | NOT_ENABLED | 位置/ACL 侧留在 B-空间 |
 | B10 | 人机控制 | human-control | `skills/human-control` | Skill | 早于本轮 | `serverosctl card`/presentation | 原生 | srv0003.20260915a | DONE | DONE | ENABLED | 告警卡面已在生产链上；status 卡面仍未接，见 §3.6 |
 
@@ -106,32 +133,46 @@ source revision 一列给的是**指纹成立的那次 revision**，也就是 pa
 - B1 与 B2 是**一个 artifact 担两个职责**：B2 没有独立 payload，设计原话是「可先共用 payload」。
 - A7 是唯一一个职责落成 **Plugin composition**（不是因为职责需要插件，而是因为它要装到一个**别的** CC 上——见设计 §10「部署时必须证明 Plugin 从目标 CC 实际加载」）。
 
-### 3.3 A7 的真实 blocker（修正一条先前记错的理由）
+### 3.3 A7 已经装好（这一节从「blocker」改写为「怎么装的」）
 
 先前记录的理由是「`release.py` 没有承载非 node composition 的动词」。**这条是错的**，
-本轮实测推翻：
+已被两件事同时推翻：
 
-- `runtime-assets/hwz-server-os/serveros-linux-work/` 是完整的 release 布局
-  （`revisions/noc-copy-20260922@c233946` + `current` + `previous` + `RELEASE.json`），
-  而 `serveros-linux-work` **本身就是** `plugin/profiles/linux-work.yaml` 那个 profile
-  composition。所以 `release.py promote` 完全能承载 composition，它天天在这么做。
+- `runtime-assets/hwz-server-os/serveros-linux-work/` 是完整的 release 布局，而
+  `serveros-linux-work` **本身就是** `plugin/profiles/linux-work.yaml` 那个 composition。
+  所以 `release.py promote` 完全能承载 composition，它天天在这么做。
+- 真正的问题比那条窄：`stage()` 里有一条**硬要求 `bin/serverosd`** 的判据。那不是
+  「composition 不能 release」，而是**一个 node runtime 的 verifier 在替所有 release
+  类型做决定**。它现在按 `ARTIFACT.json` 的 `kinds` 分派：`node-runtime` 走原来的清单，
+  `plugin` 走 plugin verifier（`plugin/dist` 在、plugin manifest 在、声明的 name/version/
+  cache 身份一致、skills 真的materialize了、MCP/hook/agent 声明与 composition 逐条相符、
+  没有未声明文件、加载 smoke）。**没有第二个 `testing-release.py`。**
 
-真正的理由是两条，都比原来那条窄：
+于是 A7 走的就是那条共用的生命周期：build → 不可变 candidate → verify →
+`revisions/<revision>` → `current`/`previous` → RELEASE receipt → rollback。
 
-1. **两个面本来就是两条路。** `release.py promote` 装的是 **node runtime**——它要求
-   artifact 里有 `bin/serverosd`、`bin/serverosctl`、`runtime/daemon.py`、`runtime/cli.py`、
-   `runtime/<unit>.name`，还要渲染 systemd unit 并装 CLI shim（实测拒绝时打印的正是这张
-   清单，exit 1）。A7 的 artifact 是 `build.py` 产的 **plugin/dist**（`skills/` +
-   `.claude-plugin/plugin.json` + `.codex-plugin/plugin.json` + `README.md`），**没有 node runtime**，
-   这是设计使然：Testing Plugin 出的是 Skill，不是一个守护进程。所以它走的不是 promote 这条路。
-2. **plugin 分发这条路是一次共享面变更。** 持久安装要写
-   `~/.claude/plugins/installed_plugins.json` 与 `known_marketplaces.json`，而这台机器
-   有并发 agent 在跑，注册 marketplace 不是本轮能替人做的决定。
+实测（`kind: plugin`，`kind_basis: chosen`）：
 
-INTEGRATION 一侧是真测过的，且零共享面变更：`claude --plugin-dir <dir> plugin details serveros-testing`
-返回 `serveros-testing 1.0.0+srvtest0001.20260922a`，`Skills (2) automated-testing, test-management`，
-`Agents (0) Hooks (0) MCP servers (0) LSP servers (0)`，always-on token 约 218。这满足设计 §10
-「从目标 CC 实际加载」。缺的只是持久化那一步。
+```text
+build      3.1.0+srvtest0001.20260922b   （cachebuster 从 a 移到 b）
+release    revisions/fabric-integration-20260922@2f77b02
+current    runtime-assets/hwz-server-os/serveros-testing/current -> 上面那一版
+validate   claude plugin validate                      → 通过
+marketplace claude plugin marketplace add .../serveros-testing/current
+install    claude plugin install serveros-testing@serveros-testing
+details    serveros-testing  Skills (2)  automated-testing, test-management  ~218 tok
+```
+
+**fresh session 验证**：另起两个 headless 会话，一个列出 `serveros-testing:automated-testing`，
+第三个真的调用了 `serveros-testing:test-management` 并返回了它的真实内容。全程
+**没有用 `--plugin-dir`**（那只是集成证据，不是安装证据），也**没有手改
+`installed_plugins.json`**。已装路径
+`~/.claude/plugins/cache/serveros-testing/serveros-testing/1.0.0-srvtest0001.20260922b`，
+`installedAt 2026-09-22T06:53:45Z`。
+
+§7 里那两条旧决策（「要不要给 `serveros-testing` 注册第二条 plugin 记录」「要不要在这台
+共享机上装它」）因此都已关闭：注册表里它是**独立的第二条 plugin 记录**（§3.7），安装走的
+是正规 plugin 安装路径。
 
 ### 3.5 B8 为什么没有独立 artifact（这不是缺口）
 
@@ -150,6 +191,36 @@ INTEGRATION 一侧是真测过的，且零共享面变更：`claude --plugin-dir
 
 设计同时定了顺序：「**先保留兼容入口再迁 consumer**」——移除不能先于 consumer 迁移做。
 这一条决定了 B8 是一个按顺序走的包，不是一次顺手改文件。
+
+**这一轮做完的是「可被复核」那一半**，因为「保留入口」和「迁移完成」在交付里读起来是
+一样的：
+
+| 物件 | 是什么 |
+| --- | --- |
+| `runtime/report-publication-contract.yaml` | 说出还路由到谁、还欠哪四件事、欠给谁、被谁挡住 |
+| `runtime/report_publication.py` | 只做一件事：**拒绝**一份说漏了其中任一条的契约 |
+| `tests/test_report_publication.py` | 31 条，绝大多数是「这几种写法必须被拒」 |
+
+几处刻意的判断，都不是格式偏好：
+
+- **`owners: []` 与缺字段是两个答案。** `compulsory-milestone` 是**取消**这条要求，
+  不是把它挪给别人，所以它的接手方是空的——但空名单必须带 `why`，否则它和「忘了填」
+  长得完全一样。
+- **`state` 只有 `PENDING_CONSUMER` 一个值。** 已迁完的职责应当从 `delegations` 里
+  消失，而不是换个词留在原地，所以 `MIGRATED` 不是一个可写状态。
+- **证据带 `at_revision`。** 行号只在指定 revision 时才有意义——本仓已经因为读工作树
+  行号得到过「引错了」的假结论一次。
+- **`facade.route` 与两处本地权威逐字比对，而两处说的不是同一句话**：
+  `serveros-contract.json` 给路由字符串，`context/resolver.py` 给的是「哪些 kind 是发布
+  物」的 capability 名单（没有 `report.publish` 这个键）。第一次运行时这条检查就拒绝了
+  我自己的契约——我把后者也写成了 `route-string`，于是它读到 `None`。按各自的形状声明
+  才是诚实的写法，而拒绝本身是这条检查在工作的证据。
+
+唯一被挡住的 consumer 是 `srv-0005-e2e-evidence`，处置写作
+**`MIGRATION_WAITING_ON_ACTIVE_CONSUMER`**：它的活动工作树
+（`worktrees/ability-management/SRV-0005`，branch `serveros/srv-0005-e2e-evidence@22cd2a2`）
+正在改这份契约要动的那三个路径，且尚未提交。契约里记下了那三个路径与五个待落接口，
+等它合并后按表逐条落。
 
 ### 3.6 B10 的 LIVE 到哪一步
 
@@ -203,6 +274,51 @@ anomaly(detectors, runtime/anomaly.py)
 `cards.status_card()` 有实现、有测试、**没接**。主卡也不写 receipt
 （`grep 'record|digest-record|receipt' monitor_card.py` → 0 命中）。
 
+### 3.7 G1 的注册表：一个 artifact 一条 plugin 记录，成员按 composition 精确取
+
+先前 `manifest_members()` 会把**全部** plugin 记录的成员并起来，于是「composition 声明
+了什么」与「注册表里这条 plugin 有哪些成员」是两件事，读的人无法从后者检查前者。现在
+是一对一的：
+
+```text
+plugin: hwz-server-os              provides  3  serveros, ability-management, runtime-management
+plugin: hwz-server-os-linux-work   provides 10  ability-management, runtime-management, test-management,
+                                                workspace-maintainer, feishu-space-management,
+                                                information-management, work-management, feishu-report,
+                                                inventory-publishing, document-stewardship
+plugin: serveros-testing           provides  2  automated-testing, test-management
+```
+
+`serveros-testing` 因此是一条**独立的 registry 记录**，不是从别的记录里并出来的。检查的
+路径也随之变成一条链：**composition → 声明的 plugin 身份 → 那条 plugin 记录 → 该
+artifact 的精确成员集合**。旧 consumer 的兼容迁移保留着。
+
+### 3.8 五个 pack 与它们的成员（§7 的落点，实测）
+
+| pack | 成员数 | 这一轮动了什么 |
+| --- | --- | --- |
+| `pack:quality-delivery` | 4 | `automated-testing` 加为 `required` |
+| `pack:autonomous-quality-loop` | 6 | 同上 |
+| `pack:litellm-development` | 7 | 同上，且 `build-release` 加为 `required` |
+| `pack:cross-device-collaboration` | 4 | — |
+| `pack:agent-orchestration` | 6 | — |
+
+`test-management` 与 `automated-testing` 在三个包里都是 `required`，这个分工是有意的：
+前者是**环境**（一个可复现的测试环境是什么、复用前怎么 smoke），后者是**判断**（场景
+选择、真实/合成证据、verdict、真 FAIL 后的停止规则）。设计 §10 把环境定义**移出**测试
+而不是移进它，所以一个节点可以定义环境而从不跑需求 E2E——两者都在的话，测试插件才有
+边界可测。
+
+**A9/A10/B5 不进任何 pack**，这是决定不是遗漏：`production-observation`、
+`production-change`、`research-evidence` 三条都**没有**为了「每个职责都有包」而造一个空
+composition。没有 pack 意味着没有产品承诺面在替它们说话，而造一个空包会把「还没接线」
+读成「已经承诺」。
+
+packs 的 `authority.revision` 现在是
+`e7d20f3b50e1a86c9998b5dff3f519fa52b4aa1d`（五包同一值），它是读到的 revision 的
+**祖先**，且 `abilities-manifest.yaml` 在两者上逐字节相同——正是 pack pin 的祖先规则
+要求的两条。
+
 ## 4. 四层状态的定义
 
 | 层 | 判据 | 不算这一层的 |
@@ -224,18 +340,22 @@ DESIGN-only 变成了 CODE。`NOT_MEASURED` 与 `FAILED` 是两件事，不能�
 
 | 套件 | 结果 | 命令 |
 | --- | --- | --- |
-| serveros | **4144 passed, 23 skipped, 0 failed**（3202 subtests，464s） | `serveros-test/bin/python -m pytest tests/ -q -p no:cacheprovider` |
-| ability-management | **91 passed** | 同上，加 `SERVEROS_BUNDLE=<serveros worktree>/plugin` |
+| serveros（最新） | **4207 passed, 23 skipped, 3703 subtests passed, 0 failed**（459.73s，tree `dc23707`） | `serveros-test/bin/python -m pytest tests/ -q -p no:cacheprovider` |
+| serveros（起点） | 3 failed, 4171 passed | 同上 |
+| ability-management | **105 passed, 2 skipped**（`074a518`）；三个 renderer `--check` 干净 | 同上，加 `SERVEROS_BUNDLE=<serveros worktree>/plugin` |
 
 serveros 那套的代价要写下来：单次 **7 分 44 秒**，且主机 load 一度到 53 时被拖到
 近乎两倍。所以「跑一套」在这台共享机上不是随手动作，改一个字面量就该只想跑受影响的那两个文件。
 
+起点那 3 failed 是本轮改掉的第一件事（§3/§4 的 send-time race 与 freeze），不是外部红。
+
 | 红 | 位置 | 性质 | 处置 |
 | --- | --- | --- | --- |
-| `test_real_registry_matches_real_bundle` | ability-management `tests/test_materialization_contract.py` | **跨仓库**：它读 `src/serveros`，而 `plugin/profiles/testing.yaml` 只在 worktree 里，于是注册表「多」了 `automated-testing` | 已确诊：`SERVEROS_BUNDLE=<worktree>/plugin` 下全套 91 passed。修法是让 `src/serveros` 前进到含该 profile 的 revision，**不是**改测试 |
+| `test_real_registry_matches_real_bundle` | ability-management `tests/test_materialization_contract.py` | **跨仓库**：它读 `src/serveros`，而 `plugin/profiles/testing.yaml` 只在 worktree 里，于是注册表「多」了 `automated-testing` | 已确诊：`SERVEROS_BUNDLE=<worktree>/plugin` 下全套通过。修法是让 `src/serveros` 前进到含该 profile 的 revision，**不是**改测试 |
 | `test_the_committed_view_is_up_to_date` | ability-management `tests/test_capability_families.py` | repin 的派生后果：视图里嵌 `authority_revision` | 已修，并入 repin commit `c993c82`（只动 pin 不动 pin 的渲染，那一格 bisect 出来就是红的） |
 | 9 个 profile 构建失败 | serveros `tests/test_build.py`、`tests/test_plugin_composition.py` | **本轮自己引入又修掉的**：`ABILITY_SKILLS` 是 fixture 里手维护的「注册表替身」，它含全部 `available` 名字却独缺 `document-stewardship` | 已修，commit `6986b6f`。它当时**正确地**发火了——fixture 一直默默模拟旧事实而从不声明，所以 profile 一改就炸在这里而不是炸在别处 |
 | 同一个名字当了两种样例 | 同上 | `document-stewardship` 同时是「catalogue 有的」断言对象与「catalogue 没有的」样例；前者一改，后者就假 | 已修：后者改用哨兵 `no-such-ability`（`test_plugin_composition.py` 里早就用的同一个哨兵） |
+| **构建产出会写一个可被清理的目录名** | `scripts/build.py::codex_marketplace()` | 实测：`runtime-assets/hwz-server-os/.agents/plugins/marketplace.json` 写的是 `./.staging-c233946`，而 `current` 正是从那个目录构建出来的。当时没有东西坏（没有读者读那个文件），但**一个指着一次性目录的描述符离「什么都没有」只差一次清理**，而清理正是 §5 的 staging 规则要求操作者考虑的事 | 已修，commit `2f77b02`：判据落在**构建期**（任何以 `.` 开头的路径分量都算「没人承诺保留」），于是描述符改写 `./<composition>/current`。修一个字符串治不了第二次 |
 
 第二条值得单独记一笔：它是**同一个族的第四次**——源动了，派生物没跟着动。前三次是
 manifest 行、packs 闭包、cards。凡是「X 的渲染嵌了 X 的值」，都必须和 X 同一次改。
@@ -253,39 +373,49 @@ manifest 行、packs 闭包、cards。凡是「X 的渲染嵌了 X 的值」，�
   只存在于磁盘，禁止 clean/reset/checkout。
 - `~/.codex/`、`skills/*/SKILL.md-windows`：Windows onboard，不动。
 
-## 7. 待决决策包
+## 7. 上一版列在这里的九条问题——都已关闭
 
-聚合成一包，不逐条问。每条都写「不定会怎样」：
+这一节原本是「待决决策包」。九条不是九个需要人重新决定的产品问题，所以它们全部按已定的
+设计实施了。逐条记下落点，因为「问了但没答」和「决定过并落地」在交付里长得一样：
 
-1. **`noc-copy-20260922@c233946` 要不要落到 `main`。** 这是本包里最重的一条，理由比「版本新鲜度」
-   硬得多：**P8 的实现已经在那个分支上做完了**（`CARDS-STYLE.md` + 6 个 runtime 文件，
-   见 §9.1），而且**那个分支就是活的节点正在跑的东西**。不定的后果不是「落后一点」，
-   是两头同时错：从 main 做 P8 会重写一遍已有实现（第二来源，正是 §2 禁止的形态），
-   而在 main 上改 `runtime/cli.py` 会和那个分支撞车。
-2. **东京卡要不要搬到 `serverosctl card`。** 不定的后果：卡面两套渲染长期并存，Card 模型
-   在生产链上永远不被行使。
-3. **`.staging-*` 目录怎么处置。** `hwz-server-os/` 下有 `.staging-978a0f9`、`.staging-a4758a0`、
-   `.staging-c233946`。不定的后果：占空间，且 `release.py` 下次遇到同名 staging 会
-   `shutil.rmtree` 它——**这是 release.py 的行为，不是建议**，所以它们要么是残渣要么是
-   正在用的，需要人判。
-4. **`automated-testing` 属于哪个 pack。** 候选：`pack:quality-delivery`（「一个节点要测试、
-   反馈、报告所需的能力」）或 `pack:autonomous-quality-loop`（「一个工作项自己开发、自测、
-   反应」）。两个 purpose 都点名测试，区别在主语——一个是**节点的能力集**，一个是**工作项
-   跑的循环**。不定的后果：两个 pack 都对测试的实际承诺含糊。
-5. **A8/A9/A10/B5 要不要有 pack。** 同 4 的形状，本轮新增四条。不定的后果：这五个职责
-   没有任何 pack 描述它们，而 pack 是「产品承诺了什么」的声明面。
-6. **要不要给 `serveros-testing` 注册第二条 plugin 记录。** 需要改 `manifest_members()`
-   让它在 plugin 记录上取并集。不定的后果：A7 的 plugin 在注册表里只以 Skill 身份出现，
-   composition 本身不被登记。
-7. **要不要在这台共享机上一装 `serveros-testing`。** 见 §3.3 第 2 条。
-8. **要不要教 `release.py` 一个非 node composition 的形状。** 见 §3.3：现在它只装 node runtime，
-   而 plugin/dist 走的是另一条路。不定的后果：plugin/dist 的分发没有 release 级的版本
-   与回滚（`revisions/` + `previous` + `RELEASE.json` 那三样它现在享受不到）。
-9. **要不要重建并 promote `serveros-linux-work`（`15b` → `20260922a`）。** 这是**动活节点**，
-   所以不由本轮做。事实：已发布那棵树的 README 写 `document-stewardship (missing)`，
-   而这句话现在对注册表是**假的**（B9 的 Skill 已落地）。不定的后果：release 面继续
-   宣称一个已经不成立的 gap，而 §5 那条测试守的正是「`missing` 不能比 gap 活得久」——
-   它在构建期守住了，在已发布产物上没人守。`previous` 会保留，回滚是一条命令。
+| 旧的问法 | 落点 | 证据 |
+| --- | --- | --- |
+| 1. `noc-copy-20260922@c233946` 要不要落到 `main` | 按设计**整合而不是重写**：从最新 `origin/main` 起集成分支，reconcile 那个分支的提交 | `aef122d`、`dc23707`、`2f77b02`（`runtime/cards.py`、`presentation.py`、`cli.py`、`card-definitions.yaml`、`card-scenarios.yaml`、`notification-contract.yaml`）；`CARDS-STYLE.md` 随之落地 |
+| 2. 东京卡要不要搬到 `serverosctl card` | 是。`serverosctl card status` 是**唯一**人读的主资源卡面 | §3.6：`monitor_card.py` 仍在自渲染，属**待迁**（见下） |
+| 3. `.staging-*` 怎么处置 | 先**只读分类**，不删 | §7.1 |
+| 4. `automated-testing` 属于哪个 pack | 三个包都加，且都是 `required` | §3.8；commit `0980a57` |
+| 5. A8/A9/A10/B5 要不要有 pack | 只给 A8 `build-release` 加进 `pack:litellm-development`；A9/A10/B5 **保持 standalone** | §3.8；同 commit |
+| 6. 要不要给 `serveros-testing` 注册第二条 plugin 记录 | 是，一条**独立**记录 | §3.7；commit `e7d20f3` |
+| 7. 要不要在这台机上装它 | 是，走正规 plugin 安装路径并做 fresh-session 验证 | §3.3 |
+| 8. 要不要教 `release.py` 非 node composition 的形状 | 要，按**显式 artifact kind** 分派，不按名字特判 | §3.3；`tests/test_release.py::ArtifactKinds`、`StagingIsNotADeletionOpportunity` |
+| 9. 要不要重建并 promote `serveros-linux-work` | 已在授权内执行，**且目标版本是推出来的不是写死的** | §2、§7.2 |
+
+### 7.1 `.staging-*` 的三个目录：分类结果与处置
+
+`release.py` 的规则是**基于身份的拒绝**，不是无条件的 `rmtree`：staging 不存在就建；已存在
+且 release 身份相同、明确陈旧或有主，才允许安全清理或按协议续做；**身份/意图未知就拒绝**。
+这条规则已在代码里并被测到（`StagingIsNotADeletionOpportunity`）。
+
+三个目录的只读分类：
+
+| 目录 | 有 `ARTIFACT.json` | 被谁引用 | 处置 |
+| --- | --- | --- | --- |
+| `.staging-c233946` | 无 | **Codex 描述符曾指着它**（`./.staging-c233946`） | **留在原地**。它的名字被一个描述符用过，而那份引用已由 §5 的构建期修法改成 `./serveros-linux-work/current`；即便如此也不删——它的来源是一个已 promote 的 revision，删它换不来什么，误删却要重新构建 |
+| `.staging-a4758a0` | 无 | 无 | **留在原地**，记 `STAGING_OWNER_UNKNOWN`：对应已 promote 的 `main@a4758a0`，但**owner 与意图无法从盘上证明** |
+| `.staging-978a0f9` | 无 | 无，且无对应 revision | **留在原地**，同上；它是三者中最接近残渣的一个，但「接近」不是判据 |
+
+结论写成一句：**三个都不删，理由是任何一个都存在不确定性；不确定就不动，继续做别的事。**
+这是 §5 的规则要求的结果，不是拖延。
+
+### 7.2 只剩要人做的两件（其余都已做完）
+
+| # | 动作 | 为什么不是本轮能做的 |
+| --- | --- | --- |
+| 1 | **重启 `serverosd.service`**（PID 2615936，起于 11:00:26） | `current` 已是新 revision，shim 也已指向它，所以**新开的进程拿到的是新代码**；但长驻进程仍在跑 promote 之前那一版。重启会打断这台共享机上别人正在跑的东西。等一个安全窗口，`HUMAN_EXECUTED` |
+| 2 | **把 CC marketplace `hwz-server-os` 指到新 release，并 `claude plugin update` 工作台** | 遗留目录 `hwz-server-os/current` 声明的 plugin 名是 `hwz-server-os`（3 skills），新 release 声明的名字是 `hwz-server-os-linux-work`（5 skills）。指过去等于**给已装 plugin 改名**——用户可见的身份变更，不是基础设施细节。已装那一份仍是 `3.1.0+srv0003.20260915a` |
+
+两条都是**外部/共享面动作**，不是内部架构选择——所以它们出现在这里，而不是被包装成
+「请用户决定」。其余七条已按设计落地。
 
 ## 8. 卫生发现（只给位置，不给值）
 
@@ -337,9 +467,9 @@ manifest 行、packs 闭包、cards。凡是「X 的渲染嵌了 X 的值」，�
 | P7 | 已安装 Quay | `~/.claude/plugins/cache/quay/quay/0.11.0/`，`bin/quay --version` → `0.11.0-dev` | MCP：`…/0.11.0/.mcp.json` → `vendor/quay/dist/quay.js mcp` | — | working（`0.4.0` 没有 `goal`，`0.11.0` 又有了——本机至少三代并存） |
 | P7 | codex provider | `mcp/codex_app_server_provider.py:88,89,95,564,1181` | `--live` 才启动，默认只读 | `codex-cli 0.153.4`（`~/.local/bin/codex`，与 `MEASURED_AGAINST` 一致） | working |
 
-### 9.1 两个必须记下的现场事实
+### 9.1 两个必须记下的现场事实（已收敛，保留原始观测）
 
-**（一）活的节点跑的不是这个 worktree。** 实测 md5 对比：
+**（一）当初活的节点跑的不是这个 worktree。** 实测 md5 对比：
 
 ```text
 DIFF  runtime/cards.py              DIFF  runtime/card-definitions.yaml
@@ -348,28 +478,34 @@ DIFF  runtime/cli.py                DIFF  runtime/notification-contract.yaml
 SAME  runtime/coordination.py       SAME  documents/document_governance.py
 ```
 
-安装面是 `noc-copy-20260922@c233946`（分支 `serveros/noc-copy-20260922`），与 fabric-v1
-各 3 个提交分叉。**`runtime/cli.py` 在被别人改**——所以本轮任何 `cli.py` 改动都会撞车，
-不做。
+当时安装面是 `noc-copy-20260922@c233946`（分支 `serveros/noc-copy-20260922`）。
+**`runtime/cli.py` 在被别人改**——所以本轮任何 `cli.py` 改动都要**先整合再改**，不复用
+那棵分叉的树。
 
-**（二）`CARDS-STYLE.md` 只存在于 noc-copy。** 9310 字节，mtime 2026-09-22 11:02，
-和 promote 时间（11:00）同一刻；被 `presentation.py` / `cards.py` / `card-definitions.yaml`
-引用。fabric-v1 里 `ls CARDS-STYLE.md` → 不存在。
+**（二）`CARDS-STYLE.md` 当时只存在于 noc-copy。** 9310 字节，mtime 2026-09-22 11:02，
+和那次 promote 同一刻；被 `presentation.py` / `cards.py` / `card-definitions.yaml` 引用。
 
 （一）与（二）合起来给出一条硬结论：**P8（广播/告警 producer/presentation/receipt）
-的实现已经在未合并的 noc-copy 分支上做完了。** 所以决策包第 1 条卡住的不是版本新鲜度，
-是整条 P8——不落 noc-copy，P8 在 main 上无从做起，重做一遍就是第二来源。
+的实现已经在未合并的 noc-copy 分支上做完了。** 所以那一条卡住的不是版本新鲜度，是整条
+P8——不整合那个分支，P8 在 main 上无从做起，重做一遍就是第二来源。
 
-### 9.2 P8 的四条断点（见 §3.6 详述）
+**现在的状态**：那条结论已被执行。集成分支从最新 `origin/main` 起，
+reconcile 了 noc-copy 的六个 runtime 文件与 `CARDS-STYLE.md`，`aef122d`/`dc23707`/`2f77b02`
+落在 `fb97f77` 上，并已 promote 成 `serveros-linux-work/current`（§2）。
+所以 §9.1 记的是**当时的观测**，不是现在的状态；它值得留着，因为「安装面与工作树分叉」
+这件事在同一台机器上会再次发生。
 
-链条活着，但设计要求的四样里缺四样的一半：
+### 9.2 P8 的四条断点（前两条已修，后两条见 §3.6）
 
-| 设计要点 | 实测 | 判定 |
+| 设计要点 | 当时的实测 | 现在的判定 |
 | --- | --- | --- |
-| frozen payload + payload hash | `grep -rn 'payload_hash' runtime/*.py` → 0 | read-and-absent |
-| 播报记录绑定发出那一版 | `alert_digest.py:790,811,822` 取活登记表现值 | present-but-partial（§8 风险已确认） |
-| ServerOS 原生投递 | unit/timer 都不存在，从没跑过 | 未安装 |
+| frozen payload + payload hash | `grep -rn 'payload_hash' runtime/*.py` → 0 | **已修**：`alert_digest.py:693` 起 `sha256(blob)` → `payload_hash`，`version = f"{generation}@{payload_hash[:12]}"`，冻结块 schema `serveros/alert-digest-frozen.v1` |
+| 播报记录绑定发出那一版 | `alert_digest.py:790,811,822` 取活登记表现值，于是 compose 与 record 之间若发生升级，记录会把它写成「以新 severity 播过」 | **已修**：`record()` 收 `frozen`，severity/state/**episode 都取自冻结块**（`:960`）；`_refuse_a_different_document()` 在冻结块与它一起来的那批行**互相矛盾时拒绝**而不是就地调停（`:907`）；`_frozen_rows()` 只认那一版的行。旧投递的 ACK 不会覆盖新 episode/severity/state，B 留在 pending delta |
+| ServerOS 原生投递 | unit/timer 都不存在，从没跑过；701 条 `last_notified_at` 来自 `alert_digest.record()`，**不是** `alerting.record_delivery()` | **仍未安装**。`cmd_alert_worker` 在没有 `--conversation` 时拒绝。这是要人做的一件（§7.2 之外，因为它需要一个获准的接收端） |
 | 六个通知生产者 | `runtime/notification-contract.yaml` `producers:` `:130` 起：`alert.opened`/`alert.resolved` → IMPLEMENTED；`session.created`/`session.waiting_input`/`turn.completed`/`approval.required`/`handoff.completed`/`run.terminated` → 各自带 `because`/`disposition` 的 DECLARED_ABSENT | 声明诚实；该文件 `:127-128` 自己记着「这六条曾零调用者而声明对声明的闸照样过」 |
+
+反例是跟着修复一起来的，不是事后补的：发信时升级、发信时 resolve、发信时 reopen、
+超时但 provider 已接受、重复重试、cursor 崩溃——六条都在 `tests/` 里各自有名字。
 
 `alerting.py` / `alert_digest.py` / `anomaly.py` / `bin/serverosctl` 在 worktree 与
 安装面**逐字节相同**；不同的那 6 个文件见 §9.1。所以 P8 的断点不是版本差，
