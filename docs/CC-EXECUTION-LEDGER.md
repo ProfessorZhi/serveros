@@ -620,7 +620,7 @@ manifest 行、packs 闭包、cards。凡是「X 的渲染嵌了 X 的值」，�
 | P2 | 唯一脱敏实现 | `records/information/raw/_redact.py`（327 行，`a1c1a4d00fd798eb…`） | 库：`redact()`、`persist_secrets()` | `sync_feishu_chat.py:29`、`expand_feishu_doc.py:32`、`redact_backfill.py:54` | **盘上现在是 3 份，3 个不同哈希**（2026-09-22 重量，上一版记的是 5 份 / 2 份逐字节相同——那时还在的 `reconcile-20260922` 与 `clean-line-20260920` 两个工作树已退役）。另两份是**别的 workstream 工作树里的陈旧快照，不是竞争实现**：`worktrees/records/SRV-0003/…`（75 行，2026-09-16）、`worktrees/records/MKT-0001/…`（90 行，2026-09-20），两者都早于 `ec500a4`（12 条脱敏规则落进 records，含**口令**四种形态）。**风险是真的**：那两个工作树里的采集脚本 import 的是本地那份，跑起来用的是没有口令规则的版本。**不动它们**——不属于本轮授权范围，且它们是别人工作树里的在制品 |
 | P2 | 黑名单 | `records/information/raw/DRIFT_WATCHLIST.txt`（5 行，1 条 `wiki-litellm-work-doc`） | **两侧都有读者了**：采集器侧 `drift_sync.py:71` `load_watchlist()`（`DRIFT_WATCHLIST` 可覆写，缺失时回退内置默认，支持行内 `#` 注释）+ `locate()` 按 `link_id` 反查；ServerOS 侧**本轮补上** `serverosctl information watched`（`intake/watch_coverage.py`，§9.10） | `drift_sync.py`（自称 SessionStart hook driver） | **上一版这一格写的「not read」是错的**（采集器侧读得好好的），2026-09-22 改。**现在只剩一件真的缺**：注册 `drift_sync` 为 SessionStart hook 的 `settings*.json` 在本机 **not found**，所以它是「装好了、手动能跑、没有上弦」，与 §3.9 的日报渲染腿同一形状。上一版说「ServerOS 这一侧没有读者」时**把 `last_verified_at` 也连写了进去，那一项是错的**（`intake/capture_coverage.py:436` 一直在读，§9.6 就是为它写的）；真正零命中只有 `DRIFT_WATCHLIST` 与 `drift-sync-state` 两个串，缺的是 **watchlist 与 manifest 的 join**——本轮已补，见 §9.10 |
 | P3 | people/project/topic 卡 | 手写 markdown：`records/information/understanding/{people,projects,topics}/*.md` | **两侧都已接线**：读 `serverosctl work understanding`（`intake/understanding_delta.py`）、写 `serverosctl work understanding-patch`（`intake/understanding_patch.py`） | — | **两半都补上了**：读的一侧见 §9.7（14 份卡逐份对账到源，`BEHIND 3 · UNMEASURABLE 7 · UNTRACEABLE 4`）；写的一侧见 §9.9（15 条提议全 `AWAITING`，`--write`+`--verify` ok）。设计要的「最小 incremental writer」不再缺口。**仍未 LIVE**：没有任何消费者读这份 patch |
-| P3 | Minutes / MeetingBundle | 无 Python 类。`space/meeting-policy.schema.yaml:30` 声明结构；内核 `space/meeting_relevance.py:69` | ~~`python3 space/meeting_relevance.py --request`（**未接 serverosctl**）~~ **已接线**：`serverosctl space meeting` | — | 内核 working，**接线已补**（§9.5）；bundle 的生产者仍 not found |
+| P3 | Minutes / MeetingBundle | 无 Python 类。`space/meeting-policy.schema.yaml:30` 声明结构；内核 `space/meeting_relevance.py:69`；**生产者 `space/meeting_bundle.py`（§9.15）** + 契约 `space/meeting-bundle-contract.yaml` | ~~`python3 space/meeting_relevance.py --request`（**未接 serverosctl**）~~ **已接线**：`serverosctl space meeting`（`--request` 与 `--sidecars` 两条入口） | — | 内核 working，**接线已补**（§9.5）；**生产者也补上了**（§9.15）：会议自己声明的 sidecar 现在能组装成内核收得下的 bundle，`COMPLETE` 才把问题递给内核，`INCOMPLETE`/`MIXED_SCOPE` 只给读数不给问题。**仍未 LIVE**：本机没有任何真实会议 manifest 可测，四个探针声明是合成的（`RUN-20260922-raw-coverage/meeting-bundle/*.json`） |
 | P3 | 记忆账本/投影/scope | `memory/{record,projection,scope,handoff}.py` | `serverosctl memory {audit,project,status,subject}` (`cli.py:6479`) | — | working；`docs/memory-fabric.md` 逐条点名这些模块 |
 | P4 | 文档关系边 | `relations/project.py:61`（`serveros/relations.v1`），`relations/schema.yaml:29` | `python3 project.py --records ROOT --write relations/current.jsonl` | — | **partial**（比上一版进了一步）：8 个谓词里 3 个有生产者（`belongs_to`、`derived_from`、`attached_to`），其余 5 个 `declared_only`。本机实测 239 行 / 19 条报出，见 §9.8；另 5 个谓词逐条查过，**本机没有载体**，不是差功夫 |
 | P4 | Feishu 空间适配 / 共享 publisher | `skills/feishu-space-management/`：**只有 SKILL.md 文本，本仓没有代码**。`skills/document-stewardship/`：本仓同样只有文本，但**外仓有代码**——`~/.claude/skills/document-stewardship/scripts/maintain.py`（publisher 循环：取 revision N → 定位 → 校验 → 候选 patch → 重取仍为 N? → apply/STOP → 重取 → 校验），且 `plugin/profiles/linux-work.yaml:119-123` 声明它 `available` | — | — | partial。**上一版这一格把两者合成了一句「只有 SKILL.md 文本，没有代码」，那是错的**：`document-stewardship` 在外仓有实现，且 ability-management 注册表（HEAD `8d98aff`）**不持有**它——与那 8 条跨仓红同族 |
@@ -1524,6 +1524,94 @@ declared **37** / undeclared 0 / stale 0 / tests_breach 0，227 文件——**�
 `test_serverosctl.py` 4 条）。活节点两个知识库的对照读数：员工树 `entries`/`check`
 都是 **exit 2 并点名八个文件与没匹配上的 pattern**；契约写就的那棵树
 **`21 entries` / `21 index rows` / exit 0，一个数字都没动。**
+
+### 9.15 MeetingBundle 的生产者：内核可达而无人到达
+
+**这一节补的是 §9.5 留下的那半句。** §9.5 把 `space/meeting_relevance.py` 接进了
+`serverosctl space meeting`，那之后内核可达了——但只对**已经知道怎么写 bundle 的人**
+可达：`--request` 要求有人手写 `bundle` 对象。仓库里**零个 bundle 生产者**，所以 P3 的
+完成句「会议复用既有 Minutes/Bundle」在物理上没有路径。这和 §9.13 之前的 `work admit`
+是同一个形状。
+
+新增两个文件：`space/meeting-bundle-contract.yaml`（哪个集合是一个 unit、每个 sidecar
+是什么、读数的封闭集）与 `space/meeting_bundle.py`（生产者），外加 `runtime/cli.py` 的
+第二条入口 `--sidecars`。
+
+**四项设计判据，逐条都有测试钉住：**
+
+1. **四个成员是一个 unit，不是一张清单。** 机器策略的原话（`ability-management/
+   instructions/machine-policy-invariant.md:32`，2026-09-22 实测）是「require minute,
+   audio, transcript, and summary **as one unit**」，所以读数只有 `COMPLETE` 与
+   `INCOMPLETE` 两种，**没有完成度百分比**——数字会招来「90% 也行」，而要求没有这个意思。
+   契约把这句话连同出处引进来，不复制。
+2. **五种 presence 状态是五个不同的事实。** `PROCESSING` 是等下去的理由，`ABSENT` 不是，
+   `FAILED` 是别再等的理由，`UNREADABLE` 可能说明材料存在只是读不到。折成
+   `missing` 会让「等转录」与「这场会议没有转录」读成同一句话，而计划自己的测试清单
+   （缺音频 / processing）点名要这个区分。
+3. **两个轴由内核声明，生产者只读不写。** `ownership`/`hold` 属于
+   `meeting-vocabulary.json` 的 `dimensions`；契约的 `axes` 块只声明**读哪两个维度**，
+   值在组装时从 vocabulary 取。声明里没说的那一个：**读数写 `UNDECLARED`，bundle 里
+   直接省略该键**——内核自己对「没人说」的词是 `UNKNOWN`，由它从 `None` 补，生产者
+   没有第二个词。
+4. **`COMPLETE` 以外的读数不向内核提任何问题**（`bundle: None`）。递给内核一个缺音频的
+   bundle 会产出一条关于不存在材料的 decision record，而 decision record 是别人拿去做
+   事的凭据。
+
+**这一轮找到的缺陷是自己跑出来的，不是看出来的。** 端到端第一次跑通时，四成员齐全、
+`state: COMPLETE`，然后
+
+```text
+serverosctl: unknown ownership: 'UNDECLARED'; declared values are
+             ['OTHER_OWNER', 'OWNED', 'SHARED', 'UNKNOWN']
+exit 2
+```
+
+根因是 `assemble()` 里两行 `declaration.get(name) or "UNDECLARED"`——**生产者自己造了一个
+词，塞进一个内核按封闭集校验的字段**。这与契约自己在 `member_kind` 注释里警告的形状
+逐字相同：「this producer would then build bundles the kernel rejects for a reason it
+could have caught」。修法不是把 `UNDECLARED` 加进 vocabulary，而是让省略成为答案。
+`AxesTest` 把这条钉成测试，`TheBundleReachesTheKernelTest` 是它对应的集成判据：**别
+的测试全绿而 bundle 内核不收，正是这一轮发生的事。**
+
+**其余结构性判据：** `MIXED_SCOPE` 优先于 `INCOMPLETE`（两场会议不是一场缺件会议的
+bundle，哪一场被意指不是读者的选择）；成员之间的 `meeting_ref` 不一致即拒；通配符规则
+`_stable_id` 直接读 `kernel.WILDCARDS` 而不是抄一份（源码断言 `assertNotIn('WILDCARDS = ('）;
+`bundle_ref` 从 `scope.meeting_ref` 派生，没有就拒——生成的 id 每次跑都变，内核的记录
+两次读数就没法比。
+
+**新出现的 CLI 交叉点被架构守卫拦下，这是它该做的。** `space/meeting_bundle.py`
+进了 `KNOWN_CLI_CROSSINGS`（`test_core_ability_boundary.py`），因为 CLI 多了一条通往
+fabric 的路就必须说清为什么在 CLI 而不是 daemon：daemon 没有 declaration，而
+`--observed-at` 是必填参数，就是为了任何进程的时钟都不能代答。
+
+**没做的事（明确）：** 本机**没有任何真实会议 manifest**，四个探针声明
+（`complete` / `processing` / `mixed-scope` / `declared-axes`）全部是合成的；真实会议
+材料的接入点、以及它从哪来，这一轮没有决定也没有接。`serverosctl` 仍是指向已安装
+release 的符号链接，所以 `--sidecars` 在已安装路径上还不可用（`serverosctl space` 报
+`invalid choice: 'space'`，实测），它随 §14 的晋升一起到达。
+
+**变异证据：10 个变异体，10 个被拒，零存活。** `RUN-20260922-raw-coverage/meeting-bundle/`
+（`run.sh`、`mutation-run.log`、`mutant-M*.log`）。两个文件的起止哈希逐字节相同
+（`95ff536b…` / `304ac98a…`）。两点值得留：
+
+- **量具自己抓住了作者（第五次）。** `verdict()` 第一版只数 `^FAILED`，而 M4 是被一个
+  **subtest** 抓住的，于是记成「refused by 0 test(s)」——非零退出配零计数，正是
+  RESULTS.md 里记的那一族。改成数 `SUBFAILED` 并把 pytest 的汇总行原样打出来。
+- **M5 第一次真的存活了，而它暴露的是测试的洞，不是代码的洞。** 原来的
+  `test_mixed_scope_is_read_before_completeness` 用四个成员全 PRESENT，两个分支交换
+  顺序都会得到 `MIXED_SCOPE`，所以换序的变异体活得下去。补了
+  `test_two_meetings_outranks_a_missing_member`（两场会议 **且** 缺 minute）之后 M5 被拒。
+  同时把原测试里那句「a producer that checked completeness first would call this
+  COMPLETE」的**错误论断改掉了**——换序的变异体测出来它不会。
+
+**终态重量：8 failed, 4665 passed, 20 skipped, 3767 subtests passed（500.25s）。
+8 条全部是 `tests/test_architecture_check.py` 里那 8 条已定案的跨仓红，无新增**
+（单独跑该文件确认是同样 8 条）。与 §9.14 的 `8 failed, 4618 passed, 20 skipped,
+3722 subtests` 相比是 **+47 passed、+45 subtests、+0 failed**，而 47 正好是
+`tests/test_meeting_bundle.py` 的大小。`mutation_guard.py`：`CHECKED`、`findings: []`、
+**declared 37 / undeclared 0 / stale 0 / tests_breach 0**，扫 229 文件（§9.14 是 227，
+多出的两个正是本轮新增的文件，而 declared 一个没动——本轮没加任何 `os.unlink`/
+`os.replace` 位点，**没动就是证据**）。
 
 ## 10. 后续每包更新哪几行
 

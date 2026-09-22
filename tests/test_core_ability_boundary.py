@@ -255,6 +255,20 @@ KNOWN_CLI_CROSSINGS = {
                    "own, so there is no clock for a default to come from.",
         "disposition": "REDECLARED",
     },
+    "space/meeting_bundle.py": {
+        "because": "`serverosctl space meeting --sidecars` is the producer half "
+                   "of the line above, and it is a crossing for the same "
+                   "reason: the kernel could only be asked about a bundle "
+                   "somebody hand-wrote, and a meeting's own material had no "
+                   "path into it. The producer builds the bundle and puts NO "
+                   "question of its own — the decision, the axes and the record "
+                   "are `meeting_relevance.py`'s — and the reading it does "
+                   "produce is a reading of the CALLER's declaration, which is "
+                   "why it belongs on this side and not in the daemon: a daemon "
+                   "has no declaration, and `--observed-at` is required "
+                   "precisely so no clock in any process can supply one.",
+        "disposition": "REDECLARED",
+    },
 }
 
 # `runtime/daemon.py` is the core process, and this is the only place its name

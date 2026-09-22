@@ -1,0 +1,118 @@
+# The unit a MeetingBundle is, and what one declared sidecar turned out to be.
+#
+# WHY THIS FILE EXISTS
+# --------------------
+# `space/meeting_relevance.py` classifies a MeetingBundle and has no producer:
+# `serverosctl space meeting --request …` requires somebody to hand-author the
+# `bundle` object, and the plan's P3 completion line — 会议复用既有 Minutes/Bundle
+# — is about a meeting's own material reaching that kernel. So the kernel is
+# reachable and unreached, the same shape as `work admit` before §9.13.
+#
+# This contract declares the two things a producer needs to state rather than
+# decide: WHICH members make one unit, and WHAT each declared sidecar is.
+#
+# The four are not chosen here.
+schema: serveros/meeting-bundle-contract.v1
+
+required_members:
+  _comment: >
+    「MeetingBundles require minute, audio, transcript, and summary as one unit.」
+    Quoted verbatim from the machine policy, which is the authority for this
+    sentence. The four are ONE UNIT and not a checklist: a bundle missing a
+    member is not a partial bundle of this kind, it is not this thing. That is
+    why the reading below is a refusal and not a completeness percentage — a
+    number invites "90% is fine", and the requirement does not.
+  values:
+    - audio
+    - transcript
+    - summary
+    - minute
+
+member_kind:
+  _comment: >
+    The machine policy says `audio`. `space/meeting-vocabulary.json` declares
+    `object_type` values for what one bundle member physically IS, and the one
+    that is the audio is `recording`. The two words are joined here rather than
+    reconciled in either document: the vocabulary belongs to the kernel (a
+    second copy of a closed set drifts from it), and the policy's sentence
+    belongs to the policy (an edit there is an edit to the requirement, and a
+    copy here would keep answering after it changed). Each mapping is checked
+    against the vocabulary's own `object_type` list at read time, so a
+    vocabulary that drops one of these four is a refusal and not a silent miss.
+  values:
+    audio: recording
+    transcript: transcript
+    summary: summary
+    minute: minute
+
+presence:
+  _comment: >
+    What ONE declared sidecar is. Four of the five are not PRESENT, and they are
+    four different facts. Collapsing them into one `missing` would make "wait
+    for the transcript" read identically to "this meeting has no transcript",
+    and the plan's own test list asks for that distinction by name (缺音频 /
+    processing).
+  values:
+    PRESENT: >
+      declared, readable, and carrying a revision. Only this counts.
+    PROCESSING: >
+      the provider is still generating it. Not present NOW, and the reason to
+      wait rather than to report the bundle as permanently short.
+    FAILED: >
+      generation was attempted and failed. Not present, and waiting will not
+      change that.
+    ABSENT: >
+      never declared by the source. Not present, and nothing is pending.
+    UNREADABLE: >
+      declared, and could not be read. Not present, and a different fact from
+      ABSENT: the material may exist and be unreadable, which is a permission
+      or transport problem and not a property of the meeting.
+
+readings:
+  _comment: >
+    What the declaration as a whole is. COMPLETE and INCOMPLETE are the two
+    answers to "is this one unit"; MIXED_SCOPE is a refusal to read the
+    declaration at all, because members belonging to two different meetings are
+    not a bundle with something wrong with it — they are two meetings, and
+    which one was meant is not the reader's to pick.
+  values:
+    COMPLETE: every required member is PRESENT
+    INCOMPLETE: at least one required member is not PRESENT; `not_present` says which, and what each is
+    MIXED_SCOPE: the declaration carries members with more than one meeting_ref; refused, with both named
+
+axes:
+  _comment: >
+    The two axes `meeting_relevance` reads off a bundle and never consults for
+    relevance — declared here only so the producer knows WHICH dimensions to
+    read, never what is in them: the values are read from
+    `space/meeting-vocabulary.json` at assembly time and no second copy of a
+    closed set is kept. A vocabulary that dropped one of these dimensions is a
+    refusal, because the kernel validates every value it is handed against it
+    and would otherwise reject each bundle for a reason the producer could have
+    named. An axis the declaration did not carry is reported as UNDECLARED in
+    the reading and OMITTED from the bundle, so the kernel applies its own word
+    for "nobody said" — `UNKNOWN`, from `None`. The producer has no second word
+    for it: a producer-side literal here builds a bundle the kernel refuses,
+    which is exactly the failure shape the `member_kind` comment above warns
+    about. UNDECLARED belongs to this contract and never reaches the kernel.
+  values:
+    - ownership
+    - hold
+
+project_reading:
+  _comment: >
+    An axis and never a decision. A meeting that touched three projects is
+    ordinary, and this producer will not choose one: the plan's 多项目 case is
+    answered by reporting the set. UNDECLARED is reported as itself and never
+    defaulted to an empty list, because "nobody said" and "the source said none"
+    are different facts about a bundle somebody may later act on.
+  values:
+    SINGLE: every member that names a project names the same one
+    MULTIPLE: the members name more than one; `projects` carries them all
+    UNDECLARED: no member declared a project. Not an empty project list.
+
+# The stable-id spelling the kernel refuses, repeated here so a producer cannot
+# build a bundle the kernel will reject for a reason the producer could have
+# caught. Kept as a pointer and not as a copy: the kernel's own `WILDCARDS` is
+# the authority, and `assemble()` reads it from there.
+wildcards_refused_by: space/meeting_relevance.py#WILDCARDS
