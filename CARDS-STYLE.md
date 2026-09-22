@@ -56,7 +56,11 @@ spends its first three characters establishing what the card just established.
 - ✓ 归属对象已结束，该进程组仍在运行
 
 The catalogue is per-code and subject-independent, so the entry cannot name its
-subject. It names the state.
+subject. It names the state. That is why the card reads 「归属对象已结束，该进程组仍在
+运行」 where a hand-written line would read 「会话已结束，关联进程仍在运行」: 会话 is the
+subject, and this catalogue entry is shared by every subject the code can fire on,
+so the entry says 归属对象 and the subject is named once, on the line above, by a
+rule that does know which subject it is (R9).
 
 **R2 · 卡面不自述。** Nothing on the face describes the card, the renderer, the
 ledger or the reader's situation. A refusal, a caveat or a definition of terms is
@@ -119,6 +123,20 @@ An empty alert card still prints this line. "没有新变化" over a register wi
 backlogged rows is true and misleading, and the counts are what stop it — not a
 sentence telling the reader how to read a card.
 
+**R9 · 事件行写「主体 · 这条 code 的名字」。** The header carries one attention word
+for the whole card, so the event line owes the reader what this particular finding
+*is*: `Claude 会话 15413 · 遗留进程组`. The noun is the catalogue's `label` for the
+code, and it reaches the line through the event's `what` block — a field the
+renderer reads and does not look up, because the renderer may not read the
+catalogue.
+
+A card that prints the bare subject is not wrong: a code the catalogue does not
+define has no noun, and the fallback to the subject alone is correct. That is
+exactly why the label was missing from the face for as long as it was without
+anything failing — a dropped label and an undeclared one look the same on a card.
+The rule is therefore held by a test that reads the catalogue, not by the
+renderer's own docstring.
+
 ## Words that come from a contract
 
 The attention words on a card header — `需处理` / `需确认` / `值得留意` / `供参考` /
@@ -139,7 +157,14 @@ the file next, which is what this section is for.
 | R3 | `test_presentation.py::SubjectDisplayTests::test_a_session_process_tree_names_the_session_and_puts_the_pid_below` |
 | R6 | `test_presentation.py::…::test_a_says_word_is_held_to_the_same_bans_as_a_what_line` |
 | R7 | `presentation.IMPACT_UNCONFIRMED`; the value §4 names |
+| R9 | `test_cards.py::TheEventLineWearsTheCataloguesLabelTests::test_every_alert_scenario_carries_the_declared_label_onto_the_face` |
 | R1, R2, R4, R5, R8 | this file, and review |
+
+One rule here is not a copy rule and is on the table because a card broke it: **the
+instant a card is rendered at is an ISO instant and not a display string.** The two
+look interchangeable and are not — a duration is computed from that value, and a
+display form is unreadable to the parser that computes it. Held by
+`test_serverosctl.py::test_the_card_clock_is_an_instant_and_not_a_display_string`.
 
 A rule added here without a test is still a rule; it is just a rule that lives on
 review alone, and this table says so rather than implying otherwise.
