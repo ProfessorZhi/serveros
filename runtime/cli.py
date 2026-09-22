@@ -6209,16 +6209,96 @@ def _measurement_line(row: dict) -> str:
 
 def _review_line(row: dict) -> str:
     """One range to look at. A range, never a claim."""
-    what = ("需要往下读" if row["kind"] == "BEYOND_APPLIED"
-            else "已读区间被改动过")
-    span = (f"位置 {row['to_position']}"
-            if row["kind"] == "BEYOND_APPLIED" else
-            f"位置 {row['from_position']}–{row['to_position']}")
+    what = {"BEYOND_APPLIED": "需要往下读",
+            "REVISITED_IN_PLACE": "已读区间被改动过",
+            "WHOLE_DOCUMENT": "文档已换版"}[row["kind"]]
+    if row["kind"] == "BEYOND_APPLIED":
+        span = f"位置 {row['to_position']}"
+    elif row["kind"] == "REVISITED_IN_PLACE":
+        span = f"位置 {row['from_position']}–{row['to_position']}"
+    else:
+        # No positions to print: a document has none, and printing one would be
+        # the reader naming a span it never measured.
+        span = (f"摘要 {row['cited_digest']} → {row['content_sha256']}"
+                if row.get("content_sha256") else "整份重读")
     detail = (f"  改 {row['revisions']['edited']} 删 {row['revisions']['deleted']}"
               if row.get("revisions") else
               f"  最新 {row['latest_create_time']}" if row.get("latest_create_time")
               else "")
     return f"{row['card'].split('/', 3)[-1]}  {what}  {span}{detail}"
+
+
+def cmd_work_understanding_patch(args) -> int:
+    """§B2/P3 — the write half: a proposal a person confirms, never a card rewritten.
+
+    `work understanding` answers which cards a source delta touches. This turns
+    that answer into the patch an operator acts on, and it is deliberately the
+    half that cannot decide anything:
+
+      * confirmation is authored input. `--decisions` is read and never written,
+        so with no decisions file every item is AWAITING — there is no path from
+        a derived record to a confirmation on this tool's own authority.
+      * an item is identified by the exact range it proposes. A source that
+        moves again makes a different item, so a superseded confirmation does
+        not follow the card; it is reported in `stale_decisions` instead.
+      * no card is edited. The patch is one new file, written atomically to an
+        absolute path the caller names.
+
+    `--verify` recomputes the patch from the records and compares it field by
+    field: a proposal added by hand, one that should have expired and did not,
+    or one whose version pair drifted all come back by name.
+    """
+    paths = paths_mod.Paths()
+    records = Path(getattr(args, "records_root", "") or
+                   Path(paths.root("workspace")) / "records")
+    if not records.is_absolute():
+        sys.stderr.write(
+            f"serverosctl: --records-root must be absolute, got {records}. A "
+            f"patch computed against a card tree read relative to whatever "
+            f"directory the caller stood in is a proposal nobody else can "
+            f"reproduce.\n")
+        return EXIT_FAULT
+    capture = _load_module_from(REPO_ROOT / "intake" / "capture_coverage.py",
+                                "serveros_intake_capture_coverage")
+    delta = _load_module_from(REPO_ROOT / "intake" / "understanding_delta.py",
+                              "serveros_intake_understanding_delta")
+    patch_mod = _load_module_from(REPO_ROOT / "intake" / "understanding_patch.py",
+                                  "serveros_intake_understanding_patch")
+    try:
+        # Read here and passed in, for the same reason `work understanding` does
+        # it: two readers of one tree drift, and the writer must never acquire
+        # its own opinion about what the cards say.
+        objects = capture.read_root(records)["objects"]
+        report = delta.read_and_reconcile(records, objects)
+        decisions = patch_mod.read_decisions(args.decisions) if args.decisions else {}
+    except (capture.Refused, delta.Refused, patch_mod.Refused) as exc:
+        sys.stderr.write(f"serverosctl: {exc}\n")
+        return EXIT_FAULT
+
+    decisions_path = str(args.decisions) if args.decisions else None
+    if args.verify:
+        reasons = patch_mod.verify(report, decisions, decisions_path, args.verify)
+        payload = {"schema": patch_mod.SCHEMA, "ok": not reasons,
+                   "verified": str(args.verify), "reasons": reasons}
+        emit(payload, as_json=args.json, lines=([f"verify      {args.verify}  ok"]
+               if not reasons else
+               [f"verify      {args.verify}  {len(reasons)} 处不一致"] +
+               [f"  ! {reason}" for reason in reasons]))
+        return EXIT_OK if not reasons else EXIT_FAULT
+
+    patch = patch_mod.build(report, decisions, decisions_path)
+    if args.write:
+        # Absolute, and refused rather than guessed: see the module's `write`.
+        try:
+            patch_mod.write(patch, args.write)
+        except patch_mod.Refused as exc:
+            sys.stderr.write(f"serverosctl: {exc}\n")
+            return EXIT_FAULT
+    lines = patch_mod.render(patch)
+    if args.write:
+        lines.append(f"    written     {args.write}")
+    emit(patch, as_json=args.json, lines=lines)
+    return EXIT_OK
 
 
 # ---------------------------------------------------------------------------
@@ -7597,6 +7677,25 @@ def build_parser() -> argparse.ArgumentParser:
                         help="the records checkout to read. Default: this node's "
                              "workspace root + /records. Must be absolute")
     wk_und.set_defaults(func=cmd_work_understanding)
+
+    wk_upatch = work_sub.add_parser(
+        "understanding-patch", help="§B2 — the write half: the patch a person "
+                                    "acts on, built from the reader's ranges. "
+                                    "Confirmation is authored input; with no "
+                                    "--decisions every item is AWAITING and no "
+                                    "card is edited", **_COMMON)
+    wk_upatch.add_argument("--records-root", default="",
+                           help="the records checkout to read. Default: this "
+                                "node's workspace root + /records. Must be absolute")
+    wk_upatch.add_argument("--decisions", type=Path, default=None,
+                           help="an authored decisions file (JSONL). Read only: "
+                                "this verb has no way to write one")
+    wk_upatch.add_argument("--write", type=Path, default=None,
+                           help="write the patch here. Must be absolute")
+    wk_upatch.add_argument("--verify", type=Path, default=None,
+                           help="recompute from the records and compare against "
+                                "this patch instead of building a new one")
+    wk_upatch.set_defaults(func=cmd_work_understanding_patch)
 
     workbench = sub.add_parser(
         "workbench",

@@ -37,10 +37,11 @@ was measured before this file was written:
 One module. The test loads `runtime/coordination.py` through this tree's
 standard test helper — `_load(name, filename)`, which joins the filename with a
 module-level directory constant — and the scanner resolves a bare filename only
-beside the calling module and at the repository root. 91 of the 96 files named
-`test_*.py` in `tests/` define that helper, and for 52 of the 96 the static
+beside the calling module and at the repository root. 85 of the 110 files named
+`test_*.py` in `tests/` define that helper, and for 55 of the 110 the static
 closure is the test file alone: the input set a plan would have been built on is
-empty, and nothing in its output would have said so. That is the failure
+empty, and nothing in its output would have said so. Both numbers re-measured
+2026-09-22; they were 91 of the 96 and 52 of the 96. That is the failure
 `tests/loader_graph.py`'s own docstring records three times over on the
 shipped-surface side, found a fourth time on this side by measuring it before
 building on it.
@@ -376,9 +377,10 @@ def static_inputs(test: str) -> set[str] | None:
 
     `None` and an empty set are different answers: "nobody looked" and "this
     test loads nothing" must not render the same. The set being the test file
-    alone is the common real answer here — 52 of the 96 — and it is exactly why
-    this is a fallback and never the record: a static answer of "this test
-    depends on itself" is not a small answer, it is a blind one.
+    alone is the common real answer here — 55 of the 110, re-measured
+    2026-09-22, up from 52 of the 96 — and it is exactly why this is a fallback
+    and never the record: a static answer of "this test depends on itself" is
+    not a small answer, it is a blind one.
     """
     try:
         loader_graph = _load("loader_graph", REPO / "tests" / "loader_graph.py")

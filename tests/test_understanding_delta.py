@@ -316,6 +316,24 @@ class TestAStaleCardIsNotACurrentOne:
         assert row["lag"] == 1
         assert card["judged"]["state"] == "STALE_IN_PLACE"
 
+    def test_a_replaced_document_proposes_a_range_with_no_positions(self, tree):
+        """A state that implies work must propose something to look at.
+
+        It used to contribute the state and no range, so the verdict read
+        STALE_IN_PLACE beside an empty list — a card told it is stale with
+        nothing to re-read. A document has no positions, so the range carries
+        the two digests that made the comparison instead of inventing a span.
+        """
+        write_capture(tree, "people/x/oc_x/links/d",
+                      document_manifest(content_sha256="b" * 64))
+        write_card(tree, "people", "x.md", heading_card(f"- `{DOC}`（sha `beef1234`）\n"))
+        ranges = only_card(tree)["judged"]["review_ranges"]
+        assert [row["kind"] for row in ranges] == ["WHOLE_DOCUMENT"]
+        assert ranges[0]["from_position"] is None
+        assert ranges[0]["to_position"] is None
+        assert ranges[0]["cited_digest"] == "beef1234"
+        assert ranges[0]["content_sha256"] == "b" * 64
+
     def test_a_matching_digest_prefix_is_current(self, tree):
         write_capture(tree, "people/x/oc_x/links/d",
                       document_manifest(content_sha256="beef1234" + "0" * 56))

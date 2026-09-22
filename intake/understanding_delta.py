@@ -136,12 +136,31 @@ MEASUREMENT_PRODUCED = {
 REVIEW_PRODUCED = {
     "card": "the understanding card, relative to the records root",
     "source": "the cited source path",
-    "kind": "why there is a range: BEYOND_APPLIED or REVISITED_IN_PLACE",
-    "from_position": "the first position to re-read",
-    "to_position": "the last position to re-read",
+    "kind": "why there is a range: BEYOND_APPLIED, REVISITED_IN_PLACE, or "
+            "WHOLE_DOCUMENT",
+    "from_position": "the first position to re-read, or null for a range that "
+                     "is not positional",
+    "to_position": "the last position to re-read, or null for a range that is "
+                   "not positional",
     "latest_create_time": "`sync.latest_create_time`, from the manifest",
     "last_message_id": "`sync.last_message_id`, from the manifest",
     "revisions": "edited/deleted counts inside the range, for REVISITED_IN_PLACE",
+    "cited_digest": "the digest prefix the card quoted, for WHOLE_DOCUMENT",
+    "content_sha256": "the digest the manifest now records, for WHOLE_DOCUMENT",
+    # The version pair, copied from the measurement this range came out of.
+    # Copied rather than recomputed: a range that said only "positions 761-1491"
+    # would be a range a reader cannot check, because the other half of the
+    # comparison — where the card had got to, and where the source got to — is
+    # what the proposal rests on. `manifest` is here for the glob case: one
+    # cited path can match several capture objects, and a range that does not
+    # say which one is not actionable.
+    "manifest": "the capture object this range was measured against, from the "
+                "capture index",
+    "applied": "the newest position the card cites in that source",
+    "applied_low": "the oldest position the card cites in that source",
+    "source_max": "the newest position that source now holds, from its own "
+                  "messages file",
+    "source_count": "`sync.msg_count` — the collector's count, from the manifest",
 }
 
 #: Emitted under `judged` — the card's state and why, plus how much of the card
@@ -716,9 +735,22 @@ def _review_range(card: dict, row: dict, kind: str, low, high) -> dict:
         "from_position": low, "to_position": high,
         "latest_create_time": row.get("latest_create_time"),
         "last_message_id": row.get("last_message_id"),
+        "manifest": row.get("manifest"),
+        "applied": row.get("applied"),
+        "applied_low": row.get("applied_low"),
+        "source_max": (row.get("source_positions") or {}).get("max"),
+        "source_count": row.get("source_count"),
     }, REVIEW_PRODUCED, "review_range")
     if kind == "REVISITED_IN_PLACE":
         record["revisions"] = dict(row["revisions_in_range"])
+    if kind == "WHOLE_DOCUMENT":
+        # A document has no positions, so this range carries the two digests
+        # instead of a span. Without them the reader would be saying "re-read
+        # this" while the only evidence it has for saying so is the pair of
+        # hashes it just compared — which is exactly what a reader of the
+        # proposal needs in order to agree or disagree with it.
+        record["cited_digest"] = row.get("cited_digest")
+        record["content_sha256"] = row.get("content_sha256")
     return record
 
 
@@ -759,6 +791,15 @@ def judge_card(card: dict, measurements: list[dict]) -> dict:
         _review_range(card, row, "REVISITED_IN_PLACE", row["applied_low"],
                       row["applied"])
         for row in stale
+    ] + [
+        # A cited digest that no longer matches the manifest is a state that
+        # implies work and carries no position: the document was re-published,
+        # and which part of it changed is not recorded anywhere this reader can
+        # see. It used to contribute the state and no range at all, so the
+        # verdict said STALE_IN_PLACE and proposed nothing to look at. A range
+        # with no positions says "the whole document" without inventing a span.
+        _review_range(card, row, "WHOLE_DOCUMENT", None, None)
+        for row in digest_differs
     ]
 
     if behind:
