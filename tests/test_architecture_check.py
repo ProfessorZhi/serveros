@@ -50,8 +50,17 @@ OPS_SOURCE = Path("/opt/applications/data/home-hwz/workspace/ops")
 # the fixtures below still exercise that shape deliberately — they pass
 # `local=(...)` explicitly — so this literal tracks the real compositions
 # without removing the case that made the A1 contradiction visible.
+#
+# `automated-testing` joined with A7's `plugin/profiles/testing.yaml`. It is the
+# first member here that arrives from a composition a node installs INSTEAD of
+# the workbench rather than alongside it, which is why the registry had to be
+# told about it: `provides` is a union over the composition set, and the checker
+# compares the registry against that whole set. The `world` fixture copies every
+# profile for the same reason, so a fixture left behind here does not fail
+# silently — it fails as COMPOSITION_MEMBER_UNREGISTERED, which is what
+# happened, and this line is the decision that came out of it.
 SHIPPED = ("ability-management", "runtime-management", "test-management",
-           "workspace-management")
+           "workspace-management", "automated-testing")
 
 # Recommended on demand by `serveros-linux-work`, and deliberately NOT shipped
 # by any composition. The registry provides these too, and that asymmetry is the
