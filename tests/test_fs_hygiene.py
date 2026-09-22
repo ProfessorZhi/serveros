@@ -48,6 +48,7 @@ def _load(name: str, filename: str):
 
 fh = _load("serveros_runtime_fs_hygiene", "fs_hygiene.py")
 paths = _load("serveros_runtime_paths", "paths.py")
+conformance = _load("serveros_runtime_conformance", "conformance.py")
 
 # This node's roots, RESOLVED FROM THE CONTRACT rather than written down.
 #
@@ -216,6 +217,37 @@ def test_a_name_the_contract_has_not_ruled_on_is_unknown_not_misplaced(name):
     row = classify(name, root_name="state", vocabulary=("runtime", "boards"))
     assert row["class"] == fh.UNKNOWN
     assert "paths.py" in row["why"]
+
+
+def test_every_name_awaiting_a_ruling_is_one_conformance_already_covers():
+    """The third copy of one list, and the direction the copies may differ in.
+
+    Three tables name the `state/serveros` entries that are absent from the
+    vocabulary on purpose: `paths.py`'s comment, `conformance.EXCEPTIONS["state"]`,
+    and this module's `AWAITING_A_RULING`. Two of them are pinned to each other
+    (`test_state_root.py`); this one was not, and this is the list the report
+    actually reads.
+
+    A subset, not an equality, and the difference is the point. `conformance`
+    also carries entries that are exceptions because they PREDATE the rule:
+    `README.md` and the three `serveros.db` files were already there, and no
+    ruling about them is pending. Listing them here would claim one is; dropping
+    them from there would turn a preexisting file into a contract gap. What must
+    hold is the one direction — a name this module refuses to call misplaced is
+    a name the conformance table already covers — so the two cannot disagree
+    about a single entry.
+
+    What this does NOT catch is stated rather than implied: the list that
+    drifted and let `archive` and a running service's socket root go unreported
+    is prose in `paths.py`, and no test reads a comment. This catches the
+    repair being made in one table instead of both.
+    """
+    awaiting = set(fh.AWAITING_A_RULING)
+    covered = set(conformance.EXCEPTIONS["state"])
+    assert awaiting <= covered, (
+        "ruled on here but not covered by conformance: "
+        f"{sorted(awaiting - covered)}"
+    )
 
 
 # ---------------------------------------------------------------------------
