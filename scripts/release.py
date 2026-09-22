@@ -89,6 +89,43 @@ DAILY_SERVICE_NAME = "serveros-daily.service"
 DAILY_TIMER_NAME = "serveros-daily.timer"
 TREE_MANIFEST = "RELEASE.json"
 
+# The build's own statement about what it built, written by `build.py --write`
+# beside the artifact's files. `release.py` reads it and never guesses: the two
+# facts this path needs before it can verify anything are WHAT KIND of thing is
+# being released and WHICH composition it came from, and neither is recoverable
+# from a directory listing without resorting to a name.
+#
+# It carries the file list the build produced as well, which is what lets a
+# release say "no undeclared files" as a comparison against a record rather than
+# as a rule about which filenames look suspicious.
+ARTIFACT_MANIFEST = "ARTIFACT.json"
+ARTIFACT_MANIFEST_SCHEMA = "serveros/artifact.v1"
+
+# Artifact kinds. A kind is a VERIFIER, and the verifier is the whole difference
+# between the two faces of this product: a node runtime is a daemon with a unit
+# and a CLI shim, a plugin is a payload a different Claude Code loads. They share
+# the lifecycle — candidate, verify, `revisions/<revision>`, `current`,
+# `previous`, receipt, rollback — and they differ in what "verified" means and in
+# whether there is anything outside the revision directory to install.
+#
+# The set is closed and named, so a kind that is not one of these is refused by
+# name rather than falling through to whichever branch happens to be last.
+NODE_RUNTIME = "node-runtime"
+PLUGIN = "plugin"
+ARTIFACT_KINDS = (NODE_RUNTIME, PLUGIN)
+
+# What each kind requires of a revision, as data rather than as an if-chain, so
+# that `status` can answer "which of these is missing" for a kind it is only
+# reading about. The node list is the one `verify_revision` has always checked;
+# the plugin list is §9's, expressed in the layout `build.py` actually produces
+# (the artifact root IS the plugin payload — there is no nested `dist/`, and
+# inventing one here would put a path in the release tool that no build writes).
+REQUIRED_MEMBERS = {
+    NODE_RUNTIME: ("bin/serverosd", "bin/serverosctl", "runtime/daemon.py",
+                   "runtime/cli.py", f"runtime/{UNIT_NAME}"),
+    PLUGIN: (".claude-plugin/plugin.json", ".codex-plugin/plugin.json"),
+}
+
 
 def default_state_dir() -> Path:
     """The node's state root, read from the project's own path contract.
@@ -253,37 +290,307 @@ def render_unit(template: str, runtime_dir: Path, state_dir: Path, *,
     return rendered
 
 
-def stage(artifact: Path, revisions_root: Path, revision: str,
-          state_dir: Path, replace: bool) -> Path:
-    """Copy a built artifact into an immutable revision directory."""
+def read_artifact_manifest(artifact: Path) -> dict | None:
+    """The build's statement about this artifact, or None if it carries none."""
+    path = artifact / ARTIFACT_MANIFEST
+    if not path.is_file():
+        return None
+    try:
+        value = json.loads(path.read_text())
+    except json.JSONDecodeError as exc:
+        raise SystemExit(
+            f"{path} is not valid JSON: {exc}\n"
+            f"The artifact manifest is what says which kind of thing this is and "
+            f"which composition built it. A manifest that cannot be read is not a "
+            f"weaker statement — it is no statement, and the release path has "
+            f"nothing to verify against."
+        )
+    if value.get("schema") != ARTIFACT_MANIFEST_SCHEMA:
+        raise SystemExit(
+            f"{path} declares schema {value.get('schema')!r}, expected "
+            f"{ARTIFACT_MANIFEST_SCHEMA!r}. This release path reads one schema; a "
+            f"differently-shaped manifest would be parsed as if the fields meant "
+            f"the same thing."
+        )
+    kinds = value.get("kinds")
+    if not isinstance(kinds, list) or not kinds:
+        raise SystemExit(
+            f"{path} declares no artifact kinds. A build that cannot say what it "
+            f"produced cannot be released: the verifier is chosen by the kind, so "
+            f"an empty list would have to be guessed at."
+        )
+    unknown = sorted(set(kinds) - set(ARTIFACT_KINDS))
+    if unknown:
+        raise SystemExit(
+            f"{path} declares unknown artifact kind(s): {unknown}. This release "
+            f"path implements {list(ARTIFACT_KINDS)}; a kind it does not implement "
+            f"has no verifier, and releasing it unverified is what the verifier "
+            f"exists to prevent."
+        )
+    return value
+
+
+def resolve_kind(target: Path, *, declared: str | None = None) -> tuple[str, str]:
+    """Which verifier applies, and on what basis. Never inferred from a name.
+
+    The order is: an explicit choice the caller made, then the build's own
+    declaration (in the artifact manifest for an artifact, in `RELEASE.json` for
+    an already-staged revision), then — only for a revision staged before kinds
+    were recorded — the structure of the thing itself.
+
+    That last fallback is not a name special-case and it is not silent: it asks
+    which verifier's structural requirements the directory actually satisfies,
+    and it needs exactly one answer. A revision where both or neither applies is
+    refused, because choosing then would be choosing on the reader's behalf. The
+    basis is returned so every caller can print it: a reader is entitled to know
+    whether the tool was told or worked it out.
+    """
+    if declared is not None:
+        if declared not in ARTIFACT_KINDS:
+            raise SystemExit(
+                f"--kind {declared!r} is not a known artifact kind "
+                f"({list(ARTIFACT_KINDS)})"
+            )
+        return declared, "chosen"
+
+    manifest = read_artifact_manifest(target)
+    if manifest is not None:
+        kinds = list(manifest["kinds"])
+        if len(kinds) == 1:
+            return kinds[0], "declared"
+        # The composition says this payload is released as more than one kind
+        # (core and linux-work are both a node runtime AND a plugin). The
+        # declaration cannot narrow itself, so the choice has to be made
+        # explicitly — and it is refused rather than defaulted to the first,
+        # because "which of these two things are you installing" is the caller's
+        # question and a default would answer it in a log line nobody reads.
+        raise SystemExit(
+            f"artifact declares more than one kind: {kinds}\n"
+            f"Pass --kind to say which one this release is."
+        )
+
+    receipt = target / TREE_MANIFEST
+    if receipt.is_file():
+        recorded = json.loads(receipt.read_text()).get("kind")
+        if recorded in ARTIFACT_KINDS:
+            return recorded, "recorded"
+        if recorded:
+            raise SystemExit(
+                f"{receipt} records kind {recorded!r}, which this release path "
+                f"does not implement ({list(ARTIFACT_KINDS)})"
+            )
+
+    # No declaration anywhere. Ask the structure, and require a single answer.
+    fits = [k for k in ARTIFACT_KINDS
+            if all((target / rel).is_file() for rel in REQUIRED_MEMBERS[k])]
+    if len(fits) == 1:
+        return fits[0], "structural"
+    raise SystemExit(
+        f"cannot tell what kind of artifact this is: {target}\n"
+        f"  no {ARTIFACT_MANIFEST} and no kind in {TREE_MANIFEST}\n"
+        f"  structural requirements satisfied by: {fits or 'neither kind'}\n"
+        f"A revision staged before artifact kinds were recorded can still be "
+        f"verified, but only when exactly one verifier's requirements fit. Pass "
+        f"--kind if you know which one this is."
+    )
+
+
+def stage(artifact: Path, revisions_root: Path, revision: str) -> Path:
+    """Copy a built artifact into an immutable revision directory.
+
+    What may be done to a leftover `.staging-<revision>` is decided by what the
+    leftover IS, not by the fact that it exists:
+
+      * absent                       -> create it
+      * present, and it is a partial copy of THIS artifact (the same identity,
+        written by an interrupted run of this same command) -> resume, which in
+        practice means remove and recopy, and say so
+      * present and something else   -> REFUSE
+
+    The rule this replaces was `if staging.exists(): shutil.rmtree(staging)`, and
+    it was wrong for the reason the rest of this file exists: a `.staging-*`
+    directory is not evidence of a failed run of the command that is running now.
+    It can be a finished release's payload that something still points at, or
+    another actor's half-written copy, and the old line deleted either of those
+    without looking. `rmtree` was the default action on an object whose owner and
+    intent the command had not established, which is the one classification this
+    project does not let a tool make on its own.
+    """
     dest = revisions_root / revision
     if dest.exists():
-        if not replace:
-            raise SystemExit(
-                f"revision already staged: {dest}\n"
-                f"Releasing the same revision twice is not a no-op — it is either a "
-                f"rebuild that produced different bytes, or the same bytes and a "
-                f"wasted copy. Pass --replace only if you have checked which."
-            )
-        shutil.rmtree(dest)
-
-    if not (artifact / "bin" / "serverosd").is_file():
         raise SystemExit(
-            f"artifact has no bin/serverosd: {artifact}\n"
-            f"The node's entry point is the one file this whole path exists to place. "
-            f"An artifact without it was built before `runtime` and `bin` were members "
-            f"of the composition, and promoting it would install a node that cannot start."
+            f"revision already staged: {dest}\n"
+            f"Releasing the same revision twice is not a no-op — it is either a "
+            f"rebuild that produced different bytes, or the same bytes and a "
+            f"wasted copy. Inspect it, remove it deliberately if that is right, "
+            f"and stage again."
         )
 
     staging = revisions_root / f".staging-{revision}"
     if staging.exists():
+        same_identity = (staging / ARTIFACT_MANIFEST).is_file() and (
+            (artifact / ARTIFACT_MANIFEST).is_file()) and (
+            (staging / ARTIFACT_MANIFEST).read_bytes()
+            == (artifact / ARTIFACT_MANIFEST).read_bytes())
+        if not same_identity:
+            raise SystemExit(
+                f"refusing to reuse {staging}\n"
+                f"There is already a staging directory for this revision and it is "
+                f"not a partial copy of the artifact being staged now. It may belong "
+                f"to a finished release that something still points at, or to "
+                f"another actor's run. Nothing here removes a directory whose owner "
+                f"and intent have not been established. Inspect it, and if it is "
+                f"stale remove it deliberately — then stage again."
+            )
+        # Same identity and left behind by an interrupted run of this same
+        # command: the only case where removing it is this tool's own business.
         shutil.rmtree(staging)
+
     shutil.copytree(artifact, staging, symlinks=False)
     staging.rename(dest)
     return dest
 
 
-def verify_revision(rev_dir: Path, state_dir: Path) -> dict:
+def verify_revision(rev_dir: Path, state_dir: Path, *,
+                    kind: str = NODE_RUNTIME) -> dict:
+    """Check a staged revision before anything points at it.
+
+    The verifier is selected by KIND, which is why this is a dispatcher rather
+    than a longer list of requirements. `stage()` used to require
+    `bin/serverosd` for every artifact, and that check made a node's entry point
+    decide whether a plugin could be released — a fact about one kind standing in
+    for a fact about all of them. It lives in the node verifier now, where it is
+    a statement about a node rather than a toll on the path.
+    """
+    if kind not in ARTIFACT_KINDS:
+        raise SystemExit(f"no verifier for artifact kind {kind!r}")
+    for rel in REQUIRED_MEMBERS[kind]:
+        if not (rev_dir / rel).is_file():
+            problems = [f"missing {rel}"]
+            return {"ok": False, "problems": problems, "tree_hash": None}
+    if kind == PLUGIN:
+        return verify_plugin(rev_dir)
+    return verify_node_runtime(rev_dir, state_dir)
+
+
+def verify_plugin(rev_dir: Path) -> dict:
+    """Check a built plugin payload before a Claude Code is told to load it.
+
+    A plugin has no daemon and no unit, so none of the node verifier applies. What
+    it does have is a set of DECLARATIONS — the two plugin manifests, the MCP
+    manifests, the composition's member list, the build's file list — and every
+    check below compares one declaration against another or against the files
+    actually present. That is the whole content of "verified" here: not that it
+    loads (this tool cannot load it and does not pretend to), but that the
+    statements it makes about itself are true.
+    """
+    problems: list[str] = []
+    try:
+        manifest = read_artifact_manifest(rev_dir)
+    except SystemExit as exc:
+        # A refusal about the manifest is a finding about this revision, so it is
+        # reported the way every other finding is. Letting it escape as an
+        # exception would make the same fact print as a traceback in one caller
+        # and as "REFUSED ..." in another, which is the difference between a
+        # verifier's verdict and a crash.
+        return {"ok": False, "tree_hash": None, "problems": [str(exc)]}
+    if manifest is None:
+        # The shared required-member check already covers the two plugin
+        # manifests, so this cannot happen via `verify_revision`. It is kept
+        # because `verify_plugin` is also reachable directly, and a verifier that
+        # silently checks less when its input is missing is the failure mode this
+        # whole function is about.
+        return {"ok": False, "tree_hash": None,
+                "problems": [f"no {ARTIFACT_MANIFEST}; nothing declares what this is"]}
+
+    # 1. The plugin manifest, and the identity it claims. `build.py` renders this
+    #    from the composition, so a mismatch means the release is being handed a
+    #    payload from a different composition than the one it was told about —
+    #    which is the one confusion the revision name cannot detect, because the
+    #    caller chooses that name.
+    declared_name = manifest.get("name")
+    declared_version = manifest.get("version")
+    for rel in (".claude-plugin/plugin.json", ".codex-plugin/plugin.json"):
+        try:
+            plugin = json.loads((rev_dir / rel).read_text())
+        except json.JSONDecodeError as exc:
+            problems.append(f"{rel} is not valid JSON: {exc}")
+            continue
+        if plugin.get("name") != declared_name:
+            problems.append(
+                f"{rel} names {plugin.get('name')!r} but the build manifest "
+                f"names {declared_name!r}"
+            )
+        if plugin.get("version") != declared_version:
+            problems.append(
+                f"{rel} is version {plugin.get('version')!r} but the build "
+                f"manifest says {declared_version!r}"
+            )
+
+    # 2. Cache identity. The version string is `<version>+<cachebuster>`, and the
+    #    cachebuster is the part an installed cache keys on, so a version that
+    #    does not carry the declared cachebuster is a payload that will be served
+    #    from a cache belonging to a different payload.
+    cachebuster = manifest.get("cachebuster")
+    if not cachebuster:
+        problems.append("build manifest declares no cachebuster; the installed "
+                        "cache identity would be unstated")
+    elif declared_version and not str(declared_version).endswith(f"+{cachebuster}"):
+        problems.append(
+            f"version {declared_version!r} does not end with the declared "
+            f"cachebuster {cachebuster!r}"
+        )
+
+    # 3. Skills actually materialized. The composition's member list is what the
+    #    build recorded; a name on it with no `SKILL.md` on disk is a plugin that
+    #    lists a capability it cannot answer, and it would load cleanly.
+    for name in manifest.get("skills") or []:
+        skill = rev_dir / "skills" / name / "SKILL.md"
+        if not skill.is_file():
+            problems.append(f"composed skill {name!r} has no skills/{name}/SKILL.md")
+
+    # 4. MCP server declarations exactly match the composition. The server name
+    #    appears in an agent's tool namespace, so a manifest that declares a
+    #    different set than the composition is an adapter reachable under a name
+    #    nobody composed, or a composed name with nothing behind it.
+    composed_servers = sorted(manifest.get("mcp_servers") or [])
+    mcp_files = [rel for rel in (".mcp.json", ".codex-mcp.json")
+                 if (rev_dir / rel).is_file()]
+    if composed_servers and not mcp_files:
+        problems.append(
+            f"composition declares MCP servers {composed_servers} and the payload "
+            f"carries no MCP manifest"
+        )
+    for rel in mcp_files:
+        mcp = json.loads((rev_dir / rel).read_text())
+        declared = sorted(mcp.get("mcpServers") or {})
+        if declared != composed_servers:
+            problems.append(
+                f"{rel} declares MCP servers {declared}, composition declares "
+                f"{composed_servers}"
+            )
+
+    # 5. No undeclared files. The build records what it produced; this is the
+    #    difference between a payload whose contents were decided at build time
+    #    and one that picked up something afterwards. `RELEASE.json` is written
+    #    by the release path itself, so it is the one file legitimately present
+    #    that the build did not put there — and it is named here rather than
+    #    excluded by a wildcard, so the exemption cannot grow by accident.
+    recorded = manifest.get("members")
+    if not isinstance(recorded, list):
+        problems.append("build manifest records no member list; undeclared files "
+                        "in this payload cannot be distinguished from declared ones")
+    else:
+        expected = set(recorded) | {TREE_MANIFEST}
+        actual = {str(p.relative_to(rev_dir)) for p in rev_dir.rglob("*") if p.is_file()}
+        for rel in sorted(actual - expected):
+            problems.append(f"file present that the build did not produce: {rel}")
+
+    return {"ok": not problems, "problems": problems,
+            "tree_hash": fingerprint(rev_dir) if not problems else None}
+
+
+def verify_node_runtime(rev_dir: Path, state_dir: Path) -> dict:
     """Check a staged revision is runnable before anything points at it."""
     problems: list[str] = []
 
@@ -300,11 +607,6 @@ def verify_revision(rev_dir: Path, state_dir: Path) -> dict:
             f"daemon refuses to start without a registry under it. Seed the state "
             f"root before promoting, or pass --state-dir with this node's real root."
         )
-
-    for rel in ("bin/serverosd", "bin/serverosctl", "runtime/daemon.py",
-                "runtime/cli.py", f"runtime/{UNIT_NAME}"):
-        if not (rev_dir / rel).is_file():
-            problems.append(f"missing {rel}")
 
     template = rev_dir / "runtime" / UNIT_NAME
     if template.is_file():
@@ -395,9 +697,39 @@ def cmd_status(args) -> int:
     unit = args.unit_dir / UNIT_NAME
     shim = args.bin_dir / "serverosctl"
 
+    # The kind is read from the receipt the promotion wrote, so `status` reports
+
+    # what was actually released rather than what the reader assumes. A
+    # composition can be released as either face, and the two have different
+    # meanings for everything below: a plugin has no unit and no shim, and
+    # calling that DIVERGENT would report a correct installation as a fault.
+    kind, basis = None, "unknown"
+    if cur is not None:
+        receipt = root / "revisions" / cur / TREE_MANIFEST
+        if receipt.is_file():
+            recorded = json.loads(receipt.read_text()).get("kind")
+            if recorded in ARTIFACT_KINDS:
+                kind, basis = recorded, "recorded"
+
     print(f"runtime root      {root}")
     print(f"current           {cur or '(none)'}")
     print(f"previous          {prev or '(none)'}")
+    print(f"kind              {kind or '(unrecorded)'} ({basis})")
+
+    if kind == PLUGIN:
+        # The plugin face has nothing installed outside the revision directory:
+        # the installed Claude Code points at `current` through its own plugin
+        # registry, and that registry is not this tool's to write. So the
+        # question "do the entry points agree" has one entry point here, and the
+        # answer is whether `current` resolves at all.
+        print("unit installed    n/a (plugin face)")
+        print("cli shim          n/a (plugin face)")
+        ok = cur is not None and (root / "current").is_dir()
+        print(f"agreement         {'AGREE' if ok else 'DIVERGENT'}")
+        return 0 if ok else 1
+
+    unit = args.unit_dir / UNIT_NAME
+    shim = args.bin_dir / "serverosctl"
     print(f"unit installed    {unit.is_file()}")
     if unit.is_file():
         first = next((l for l in unit.read_text().splitlines()
@@ -422,6 +754,12 @@ def cmd_promote(args) -> int:
     root = args.runtime_root / args.composition
     revisions = root / "revisions"
 
+    # Which verifier applies is settled BEFORE anything is copied. `--kind` is a
+    # narrowing, not an override: when the artifact declares one kind, that is
+    # what runs, and when it declares two the caller has to say which release
+    # this is. Nothing here reads the artifact's NAME to decide.
+    kind, basis = resolve_kind(args.artifact, declared=args.kind)
+
     # A dry run verifies the artifact where it was built and stops. It must not
     # stage first and check afterwards: staging writes a revision directory, so
     # a dry run that staged would be a real run with the last step removed —
@@ -429,21 +767,18 @@ def cmd_promote(args) -> int:
     # staged", which is how this was found. Nothing below `--dry-run` is
     # reached, so `revisions/` is not even created.
     if args.dry_run:
-        report = verify_revision(args.artifact, args.state_dir)
+        report = verify_revision(args.artifact, args.state_dir, kind=kind)
         if not report["ok"]:
             for problem in report["problems"]:
                 print(f"REFUSED {problem}", file=sys.stderr)
             return 1
-        if not (args.artifact / "runtime" / UNIT_NAME).is_file():
-            print(f"REFUSED no runtime/{UNIT_NAME}", file=sys.stderr)
-            return 1
-        print(f"would promote  {args.revision}  tree={report['tree_hash']}")
+        print(f"would promote  {args.revision}  kind={kind} ({basis})  "
+              f"tree={report['tree_hash']}")
         return 0
 
     revisions.mkdir(parents=True, exist_ok=True)
-    rev_dir = stage(args.artifact, revisions, args.revision,
-                    args.state_dir, replace=args.replace)
-    report = verify_revision(rev_dir, args.state_dir)
+    rev_dir = stage(args.artifact, revisions, args.revision)
+    report = verify_revision(rev_dir, args.state_dir, kind=kind)
     if not report["ok"]:
         for problem in report["problems"]:
             print(f"REFUSED {problem}", file=sys.stderr)
@@ -451,34 +786,45 @@ def cmd_promote(args) -> int:
         return 1
 
     # Render before the swap, so that everything which can fail has failed
-    # while `current` still points at the revision that is running.
-    unit_text = render_unit((rev_dir / "runtime" / UNIT_NAME).read_text(),
-                            root / "current", args.state_dir)
+    # while `current` still points at the revision that is running. Only the
+    # node face has a unit to render: skipping this for a plugin is not an
+    # omission to be restored later, it is the difference between the kinds.
+    unit_text = None
+    if kind == NODE_RUNTIME:
+        unit_text = render_unit((rev_dir / "runtime" / UNIT_NAME).read_text(),
+                                root / "current", args.state_dir)
 
     previous = current_revision(root)
     if previous and previous != args.revision:
         _symlink_swap(root / "previous", revisions / previous)
     _symlink_swap(root / "current", rev_dir)
 
-    args.unit_dir.mkdir(parents=True, exist_ok=True)
-    (args.unit_dir / UNIT_NAME).write_text(unit_text)
+    if unit_text is not None:
+        args.unit_dir.mkdir(parents=True, exist_ok=True)
+        (args.unit_dir / UNIT_NAME).write_text(unit_text)
 
-    args.bin_dir.mkdir(parents=True, exist_ok=True)
-    _symlink_swap(args.bin_dir / "serverosctl", root / "current" / "bin" / "serverosctl")
+        args.bin_dir.mkdir(parents=True, exist_ok=True)
+        _symlink_swap(args.bin_dir / "serverosctl",
+                      root / "current" / "bin" / "serverosctl")
 
     (rev_dir / TREE_MANIFEST).write_text(json.dumps({
         "composition": args.composition,
         "revision": args.revision,
+        "kind": kind,
+        "kind_basis": basis,
         "tree_hash": report["tree_hash"],
         "runtime_root": str(root / "current"),
         "previous": previous,
     }, indent=2) + "\n")
 
-    print(f"promoted       {args.revision}  tree={report['tree_hash']}")
+    print(f"promoted       {args.revision}  kind={kind} ({basis})  "
+          f"tree={report['tree_hash']}")
     print(f"  previous     {previous or '(none)'}")
-    print(f"  unit         {args.unit_dir / UNIT_NAME}")
-    print(f"  cli shim     {args.bin_dir / 'serverosctl'}")
-    if not args.no_reload:
+    print(f"  current      {root / 'current'}")
+    if unit_text is not None:
+        print(f"  unit         {args.unit_dir / UNIT_NAME}")
+        print(f"  cli shim     {args.bin_dir / 'serverosctl'}")
+    if not args.no_reload and unit_text is not None:
         subprocess.run(["systemctl", "--user", "daemon-reload"], check=False)
         print("  daemon-reload  done")
     return 0
@@ -500,27 +846,38 @@ def cmd_rollback(args) -> int:
             f"leave `current` pointing wherever the failure landed."
         )
 
-    report = verify_revision(rev, args.state_dir)
+    # A rollback has to run the same verifier the promotion did, and it can only
+    # learn which one from the receipt that promotion wrote. That is the whole
+    # reason `kind` is recorded there: without it a rollback would have to guess,
+    # and the guarantee "the previous revision is still promotable" would depend
+    # on the guess being right.
+    kind, basis = resolve_kind(rev, declared=args.kind)
+    report = verify_revision(rev, args.state_dir, kind=kind)
     if not report["ok"]:
         for problem in report["problems"]:
             print(f"REFUSED {problem}", file=sys.stderr)
         return 1
 
-    unit_text = render_unit((rev / "runtime" / UNIT_NAME).read_text(),
-                            root / "current", args.state_dir)
+    unit_text = None
+    if kind == NODE_RUNTIME:
+        unit_text = render_unit((rev / "runtime" / UNIT_NAME).read_text(),
+                                root / "current", args.state_dir)
     current = current_revision(root)
     if args.dry_run:
-        print(f"would roll back to {rev.name} (from {current or '(none)'})")
+        print(f"would roll back to {rev.name} (from {current or '(none)'})  "
+              f"kind={kind} ({basis})")
         return 0
 
     _symlink_swap(root / "current", rev)
     if current:
         _symlink_swap(prev_link, revisions / current)
-    (args.unit_dir / UNIT_NAME).write_text(unit_text)
-    _symlink_swap(args.bin_dir / "serverosctl", root / "current" / "bin" / "serverosctl")
+    if unit_text is not None:
+        (args.unit_dir / UNIT_NAME).write_text(unit_text)
+        _symlink_swap(args.bin_dir / "serverosctl",
+                      root / "current" / "bin" / "serverosctl")
 
-    print(f"rolled back    {current or '(none)'} -> {rev.name}")
-    if not args.no_reload:
+    print(f"rolled back    {current or '(none)'} -> {rev.name}  kind={kind}")
+    if not args.no_reload and unit_text is not None:
         subprocess.run(["systemctl", "--user", "daemon-reload"], check=False)
     return 0
 
@@ -739,6 +1096,15 @@ def main() -> int:
                        help="distribution root, e.g. $DATA_ROOT/runtime-assets/hwz-server-os")
         p.add_argument("--composition", required=True,
                        help="composition name, e.g. serveros-linux-work")
+        # Which verifier applies, when the artifact cannot say on its own. A
+        # composition may be released as either face (core and linux-work are
+        # both a node runtime and a plugin), and the artifact declares the SET
+        # it supports rather than the one this release is — so for those, this
+        # is required rather than defaulted. It is checked against the declared
+        # set and never against the artifact's name.
+        p.add_argument("--kind", choices=list(ARTIFACT_KINDS), default=None,
+                       help="which face this release is; must be one the artifact "
+                            "declares. Required when it declares more than one.")
         # No environment lookup here, deliberately. The previous default read
         # `SERVEROS_STATE_DIR` then `DATA_ROOT` then `$HOME`, so the value an
         # install produced depended on which of those happened to be exported —
@@ -754,13 +1120,14 @@ def main() -> int:
                        help="skip systemctl --user daemon-reload")
         p.add_argument("--dry-run", action="store_true")
 
-    p = sub.add_parser("promote", help="stage a built artifact and point the node at it")
+    p = sub.add_parser(
+        "promote",
+        help="stage a built artifact (node runtime or plugin) and point the "
+             "composition at it")
     common(p)
     p.add_argument("--artifact", type=Path, required=True)
     p.add_argument("--revision", required=True,
                    help="serveros revision or release label this artifact was built from")
-    p.add_argument("--replace", action="store_true",
-                   help="restage over an existing revision of the same name")
     p.set_defaults(func=cmd_promote)
 
     p = sub.add_parser("rollback", help="point the node back at the previous revision")

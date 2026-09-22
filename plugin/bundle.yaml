@@ -16,6 +16,24 @@
 # checkout on this machine cannot silently downgrade the distribution.
 schema: serveros/bundle.v1
 
+# Which artifact kinds this composition is released as. Read by
+# `scripts/build.py`, recorded into the artifact's own `ARTIFACT.json`, and used
+# by `scripts/release.py` to choose a verifier.
+#
+# Two entries, because the same bytes are released twice and the two releases do
+# different things: as `node-runtime` a revision is pointed at by a systemd unit
+# and a CLI shim, as `plugin` it is a payload a Claude Code loads from a
+# marketplace. Neither is a mode of the other and neither is inferred — the
+# release path that installs the node and the release path that installs the
+# plugin both read this list, and a caller who does not say which one they mean
+# when both are possible is asked rather than guessed at.
+#
+# The closed set of kinds lives in `release.py`, not here. This file says what
+# the composition IS; the release path says what it knows how to verify.
+artifacts:
+  - node-runtime
+  - plugin
+
 # §27: this file is the `serveros-core` composition — the bootstrap Skill, the
 # node surface, the Core modules, and the ability dependencies the bootstrap
 # itself calls. It is deliberately NOT the whole product.

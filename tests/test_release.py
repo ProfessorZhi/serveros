@@ -61,12 +61,20 @@ def main():
 """
 
 
-def make_artifact(base: Path, marker: str, *, with_daemon: bool = True) -> Path:
+def make_artifact(base: Path, marker: str, *, with_daemon: bool = True,
+                  kinds: tuple = ("node-runtime",), manifest: bool = True) -> Path:
     """A minimal but structurally real artifact.
 
     The shim is the real three-line shim and the module it imports is real, so
     `bin/serverosctl --help` exercises the actual `bin/` <-> `runtime/`
     relationship that a revision can get wrong while both paths still exist.
+
+    `ARTIFACT.json` is written by default because a real artifact has one: the
+    build writes it, and it is what tells the release path which verifier to
+    run. `manifest=False` produces the artifact of a build that predates the
+    manifest, which is a state the release path still has to handle — a node
+    already promoted from one can be rolled back to — so it is reachable here
+    rather than only in a comment.
     """
     art = base / f"artifact-{marker}"
     (art / "bin").mkdir(parents=True)
@@ -78,6 +86,76 @@ def make_artifact(base: Path, marker: str, *, with_daemon: bool = True) -> Path:
     (art / "bin" / "serverosctl").write_text(CLI_SHIM)
     if with_daemon:
         (art / "bin" / "serverosd").write_text("# entry point\n")
+    if manifest:
+        (art / release.ARTIFACT_MANIFEST).write_text(json.dumps({
+            "schema": release.ARTIFACT_MANIFEST_SCHEMA,
+            "composition": "serveros-linux-work",
+            "name": "hwz-server-os-linux-work",
+            "version": "3.1.0+fixture0001",
+            "cachebuster": "fixture0001",
+            "kinds": list(kinds),
+            "skills": [],
+            "mcp_servers": [],
+            "members": sorted(str(p.relative_to(art))
+                              for p in art.rglob("*") if p.is_file())
+                       + [release.ARTIFACT_MANIFEST],
+        }, indent=2) + "\n")
+    return art
+
+
+def make_plugin_artifact(base: Path, marker: str, *,
+                         skills: tuple = ("automated-testing", "test-management"),
+                         servers: tuple = (), extra_files: tuple = (),
+                         name: str = "serveros-testing",
+                         cachebuster: str = "srvtest0001.fixture",
+                         members: list | None = None) -> Path:
+    """A minimal but structurally real PLUGIN artifact.
+
+    Structurally real in the sense the verifier cares about: the two plugin
+    manifests, the composed skills on disk, the MCP manifests when the
+    composition declares servers, and a build manifest whose member list is the
+    one the payload actually has.
+    """
+    art = base / f"plugin-{marker}"
+    version = f"1.0.0+{cachebuster}"
+    (art / ".claude-plugin").mkdir(parents=True)
+    (art / ".codex-plugin").mkdir(parents=True)
+    for rel in (".claude-plugin/plugin.json", ".codex-plugin/plugin.json"):
+        (art / rel).write_text(json.dumps({
+            "name": name, "version": version, "description": "fixture",
+            "author": {"name": "test"}, "skills": "./skills/", "license": "MIT",
+        }, indent=2) + "\n")
+    for skill in skills:
+        (art / "skills" / skill).mkdir(parents=True)
+        (art / "skills" / skill / "SKILL.md").write_text(f"# {skill}\n")
+    if servers:
+        for rel in (".mcp.json", ".codex-mcp.json"):
+            (art / rel).write_text(json.dumps(
+                {"mcpServers": {s: {"command": "python3", "args": [f"bin/{s}"]}
+                                for s in servers}}, indent=2) + "\n")
+    (art / "README.md").write_text(f"marker {marker}\n")
+    # The member list is taken BEFORE `extra_files` is written, which is the
+    # only order that makes the field mean anything: a list computed afterwards
+    # would declare whatever happened to be there, and the check it feeds would
+    # be a tautology.
+    if members is None:
+        members = sorted(str(p.relative_to(art))
+                         for p in art.rglob("*") if p.is_file())
+        members.append(release.ARTIFACT_MANIFEST)
+    for rel in extra_files:
+        (art / rel).parent.mkdir(parents=True, exist_ok=True)
+        (art / rel).write_text("undeclared\n")
+    (art / release.ARTIFACT_MANIFEST).write_text(json.dumps({
+        "schema": release.ARTIFACT_MANIFEST_SCHEMA,
+        "composition": name,
+        "name": name,
+        "version": version,
+        "cachebuster": cachebuster,
+        "kinds": ["plugin"],
+        "skills": sorted(skills),
+        "mcp_servers": sorted(servers),
+        "members": sorted(members),
+    }, indent=2) + "\n")
     return art
 
 
@@ -611,6 +689,352 @@ class TheDeliveryWorkerIsInstalledByASeparateAct(unittest.TestCase):
             self.assertTrue((ROOT / "runtime" / name).is_file(),
                             f"runtime/{name} is gone, and `verify_revision` "
                             f"would not have noticed")
+
+
+
+
+class ArtifactKinds(unittest.TestCase):
+    """§9: one lifecycle, two faces, and the kind chosen from a declaration.
+
+    The defect these tests exist for: `promote` required `bin/serverosd` of
+    every artifact, so the node's entry point decided whether ANYTHING could be
+    released. That is a fact about one kind standing in for a fact about all of
+    them, and it is why a plugin — which has no daemon and never will — could
+    not be released through the path that already implements candidate,
+    verify, `revisions/<revision>`, `current`, `previous`, receipt, rollback.
+    """
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.base = Path(self._tmp.name)
+        self.runtime_root = self.base / "runtime-assets"
+        self.unit_dir = self.base / "systemd-user"
+        self.bin_dir = self.base / "bin"
+        self.state_dir = self.base / "state/serveros"
+        self.state_dir.mkdir(parents=True)
+        self.composition = "serveros-testing"
+        self.comp_root = self.runtime_root / self.composition
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def args(self, *extra: str) -> list[str]:
+        return [
+            "--runtime-root", str(self.runtime_root),
+            "--composition", self.composition,
+            "--state-dir", str(self.state_dir),
+            "--unit-dir", str(self.unit_dir),
+            "--bin-dir", str(self.bin_dir),
+            "--no-reload",
+            *extra,
+        ]
+
+    def promote(self, artifact: Path, revision: str, *extra: str):
+        return run_release(["promote", "--artifact", str(artifact),
+                            "--revision", revision, *self.args(*extra)])
+
+    def status(self, *extra: str):
+        return run_release(["status", *self.args(*extra)])
+
+    # -- the kind is declared, and both faces share the lifecycle ------------
+
+    def test_a_plugin_releases_through_the_same_lifecycle(self):
+        """The whole point: candidate, verify, revision, current, receipt."""
+        art = make_plugin_artifact(self.base, "t")
+        result = self.promote(art, "srvtest-a")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("kind=plugin (declared)", result.stdout)
+
+        rev = self.comp_root / "revisions" / "srvtest-a"
+        self.assertTrue(rev.is_dir())
+        self.assertTrue((self.comp_root / "current").is_symlink())
+        receipt = json.loads((rev / release.TREE_MANIFEST).read_text())
+        self.assertEqual(receipt["kind"], "plugin")
+        self.assertEqual(receipt["kind_basis"], "declared")
+        self.assertIsNotNone(receipt["tree_hash"])
+
+    def test_a_plugin_installs_nothing_outside_the_revision_directory(self):
+        """No unit and no shim, because a plugin is not a daemon.
+
+        Asserted as absence in the two real destinations rather than as a
+        missing string in the output: a promotion that printed "plugin" and
+        still wrote a unit would pass the weaker check.
+        """
+        art = make_plugin_artifact(self.base, "t")
+        self.assertEqual(self.promote(art, "srvtest-a").returncode, 0)
+        self.assertFalse((self.unit_dir / release.UNIT_NAME).exists())
+        self.assertFalse((self.bin_dir / "serverosctl").exists())
+
+    def test_the_shim_is_still_written_for_the_node_face(self):
+        """The other half, so the test above cannot pass by writing nothing."""
+        art = make_artifact(self.base, "n")
+        self.assertEqual(self.promote(art, "rev-n").returncode, 0)
+        self.assertTrue((self.unit_dir / release.UNIT_NAME).is_file())
+        self.assertTrue((self.bin_dir / "serverosctl").is_symlink())
+
+    def test_a_payload_that_is_both_faces_is_asked_which_one(self):
+        """Core and linux-work are a node runtime AND a plugin. One payload,
+        two releases, and a default would answer the caller's question."""
+        art = make_plugin_artifact(self.base, "both")
+        manifest = json.loads((art / release.ARTIFACT_MANIFEST).read_text())
+        manifest["kinds"] = ["node-runtime", "plugin"]
+        (art / release.ARTIFACT_MANIFEST).write_text(json.dumps(manifest, indent=2) + "\n")
+
+        result = self.promote(art, "both-a")
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("more than one kind", result.stderr)
+        self.assertFalse((self.comp_root / "current").exists())
+
+    def test_kind_narrows_and_does_not_override(self):
+        """`--kind node-runtime` on a plugin-only payload must refuse.
+
+        The flag says which release this is, not which rules to apply: letting
+        it name a kind the composition does not claim would be a name
+        special-case entered from the command line instead of from the payload.
+        """
+        art = make_plugin_artifact(self.base, "t")
+        result = self.promote(art, "srvtest-a", "--kind", "node-runtime")
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("missing bin/serverosd", result.stderr)
+        self.assertFalse((self.comp_root / "current").exists())
+
+    def test_status_reports_the_kind_and_agrees_for_a_plugin(self):
+        """A correct plugin install has no unit. Calling that DIVERGENT would
+        report a healthy installation as a fault."""
+        self.assertEqual(
+            self.promote(make_plugin_artifact(self.base, "t"), "srvtest-a").returncode, 0)
+        result = self.status()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("kind              plugin (recorded)", result.stdout)
+        self.assertIn("agreement         AGREE", result.stdout)
+        self.assertIn("n/a (plugin face)", result.stdout)
+
+    def test_the_kind_recorded_at_promotion_is_the_one_rollback_uses(self):
+        """Rollback cannot ask the artifact it is returning to — it has to read
+        the receipt, which is why the receipt records the kind at all."""
+        self.assertEqual(self.promote(make_artifact(self.base, "n"), "rev-n").returncode, 0)
+        self.assertEqual(
+            self.promote(make_plugin_artifact(self.base, "t"), "srvtest-b").returncode, 0)
+
+        result = run_release(["rollback", *self.args()])
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("kind=node-runtime", result.stdout)
+        self.assertEqual(release.current_revision(self.comp_root), "rev-n")
+        self.assertTrue((self.unit_dir / release.UNIT_NAME).is_file())
+
+    # -- a revision that predates the manifest -------------------------------
+
+    def test_a_revision_staged_before_the_manifest_resolves_structurally(self):
+        """A node already promoted from a manifest-less artifact is one a
+        rollback can still reach. It is resolved by STRUCTURE and says so —
+        never by the revision's name."""
+        art = make_artifact(self.base, "legacy", manifest=False)
+        self.assertFalse((art / release.ARTIFACT_MANIFEST).exists())
+        result = self.promote(art, "legacy-a", "--kind", "node-runtime")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("kind=node-runtime (chosen)", result.stdout)
+
+        # And with no --kind at all, the structure alone settles it.
+        self.assertEqual(
+            self.promote(make_artifact(self.base, "legacy2", manifest=False),
+                         "legacy-b").returncode, 0)
+
+    def test_an_artifact_that_fits_neither_verifier_is_refused_by_name(self):
+        art = make_plugin_artifact(self.base, "broken")
+        (art / ".claude-plugin" / "plugin.json").unlink()
+        (art / release.ARTIFACT_MANIFEST).unlink()
+        result = self.promote(art, "broken-a")
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("cannot tell what kind", result.stderr)
+        self.assertFalse((self.comp_root / "current").exists())
+
+    # -- the plugin verifier's findings -------------------------------------
+
+    def _refuses(self, art: Path, revision: str, needle: str):
+        result = self.promote(art, revision)
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn(needle, result.stderr)
+        self.assertFalse((self.comp_root / "current").exists(),
+                         "a refused artifact left the composition pointed at something")
+        return result
+
+    def test_a_manifest_naming_another_artifact_is_refused(self):
+        art = make_plugin_artifact(self.base, "wrongname")
+        plugin = json.loads((art / ".claude-plugin/plugin.json").read_text())
+        plugin["name"] = "something-else"
+        (art / ".claude-plugin/plugin.json").write_text(json.dumps(plugin, indent=2) + "\n")
+        self._refuses(art, "wrong-a", "names 'something-else'")
+
+    def test_a_version_without_the_declared_cachebuster_is_refused(self):
+        art = make_plugin_artifact(self.base, "nocache")
+        for rel in (".claude-plugin/plugin.json", ".codex-plugin/plugin.json"):
+            plugin = json.loads((art / rel).read_text())
+            plugin["version"] = "1.0.0+someone-elses-cache"
+            (art / rel).write_text(json.dumps(plugin, indent=2) + "\n")
+        manifest = json.loads((art / release.ARTIFACT_MANIFEST).read_text())
+        manifest["version"] = "1.0.0+someone-elses-cache"
+        (art / release.ARTIFACT_MANIFEST).write_text(json.dumps(manifest, indent=2) + "\n")
+        self._refuses(art, "nocache-a", "does not end with the declared cachebuster")
+
+    def test_a_composed_skill_with_no_payload_is_refused(self):
+        art = make_plugin_artifact(self.base, "noskill")
+        (art / "skills" / "test-management" / "SKILL.md").unlink()
+        self._refuses(art, "noskill-a", "has no skills/test-management/SKILL.md")
+
+    def test_mcp_declarations_that_do_not_match_the_composition_are_refused(self):
+        art = make_plugin_artifact(self.base, "mcp", servers=("serveros-node",))
+        mcp = json.loads((art / ".mcp.json").read_text())
+        mcp["mcpServers"]["serveros-extra"] = {"command": "python3", "args": ["bin/x"]}
+        (art / ".mcp.json").write_text(json.dumps(mcp, indent=2) + "\n")
+        self._refuses(art, "mcp-a", "declares MCP servers")
+
+    def test_a_file_the_build_did_not_produce_is_refused(self):
+        art = make_plugin_artifact(self.base, "extra",
+                                   extra_files=("skills/leftover/NOTES.md",))
+        self._refuses(art, "extra-a", "the build did not produce")
+
+    def test_a_payload_with_no_member_list_is_refused(self):
+        """Not "written before the manifest existed": a manifest that omits the
+        list cannot say what its own payload is, and the file check would have
+        nothing to compare against."""
+        art = make_plugin_artifact(self.base, "nolist")
+        manifest = json.loads((art / release.ARTIFACT_MANIFEST).read_text())
+        del manifest["members"]
+        (art / release.ARTIFACT_MANIFEST).write_text(json.dumps(manifest, indent=2) + "\n")
+        self._refuses(art, "nolist-a", "records no member list")
+
+    def test_an_unknown_kind_is_refused_rather_than_released_unverified(self):
+        art = make_plugin_artifact(self.base, "unknown")
+        manifest = json.loads((art / release.ARTIFACT_MANIFEST).read_text())
+        manifest["kinds"] = ["service"]
+        (art / release.ARTIFACT_MANIFEST).write_text(json.dumps(manifest, indent=2) + "\n")
+        result = self.promote(art, "unknown-a")
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("unknown artifact kind", result.stderr)
+
+
+class StagingIsNotADeletionOpportunity(unittest.TestCase):
+    """§5: what may be done to a leftover `.staging-<revision>` is decided by
+    what the leftover IS.
+
+    The rule this replaces was `if staging.exists(): shutil.rmtree(staging)`.
+    It was wrong for the reason the rest of this file exists: a `.staging-*`
+    directory is not evidence of a failed run of the command that is running
+    now. Measured on this machine, all three real ones were still referenced —
+    one named by a live marketplace descriptor, one matching the revision the
+    `previous` symlink points at — and the old line would have deleted any of
+    them without looking.
+    """
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.base = Path(self._tmp.name)
+        self.runtime_root = self.base / "runtime-assets"
+        self.unit_dir = self.base / "systemd-user"
+        self.bin_dir = self.base / "bin"
+        self.state_dir = self.base / "state/serveros"
+        self.state_dir.mkdir(parents=True)
+        self.composition = "serveros-linux-work"
+        self.comp_root = self.runtime_root / self.composition
+        self.revisions = self.comp_root / "revisions"
+        self.revisions.mkdir(parents=True)
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def promote(self, artifact: Path, revision: str):
+        return run_release([
+            "promote", "--artifact", str(artifact), "--revision", revision,
+            "--runtime-root", str(self.runtime_root),
+            "--composition", self.composition,
+            "--state-dir", str(self.state_dir),
+            "--unit-dir", str(self.unit_dir),
+            "--bin-dir", str(self.bin_dir),
+            "--no-reload",
+        ])
+
+    def test_a_partial_copy_of_this_artifact_is_resumed(self):
+        """The one case where removing it is this tool's own business: the same
+        identity, left behind by an interrupted run of this same command."""
+        art = make_artifact(self.base, "a")
+        leftover = self.revisions / ".staging-rev-a"
+        leftover.mkdir(parents=True)
+        (leftover / release.ARTIFACT_MANIFEST).write_text(
+            (art / release.ARTIFACT_MANIFEST).read_text())
+        (leftover / "half-written").write_text("interrupted\n")
+
+        result = self.promote(art, "rev-a")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        rev = self.revisions / "rev-a"
+        self.assertTrue((rev / "bin" / "serverosd").is_file())
+        self.assertFalse((rev / "half-written").exists(),
+                         "the interrupted copy's residue was kept")
+        self.assertFalse(leftover.exists(), "the staging directory was left behind")
+
+    def test_a_staging_directory_of_unknown_intent_is_refused_untouched(self):
+        """The case the old rule destroyed. A different payload, or another
+        actor's: either way not this command's to remove."""
+        art = make_artifact(self.base, "a")
+        leftover = self.revisions / ".staging-rev-a"
+        leftover.mkdir(parents=True)
+        (leftover / "SOMETHING-ELSE").write_text("a finished release's payload\n")
+
+        result = self.promote(art, "rev-a")
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("refusing to reuse", result.stderr)
+        self.assertIn("not a partial copy", result.stderr)
+        self.assertTrue(leftover.exists(), "the refusal still deleted it")
+        self.assertEqual((leftover / "SOMETHING-ELSE").read_text(),
+                         "a finished release's payload\n")
+        self.assertFalse((self.revisions / "rev-a").exists())
+
+    def test_an_already_staged_revision_is_refused_without_a_delete_flag(self):
+        """`--replace` is gone. Restaging over a revision deletes a directory
+        whose intent has not been established — the same act as the staging
+        rule above, on an object that is by definition already a release."""
+        art = make_artifact(self.base, "a")
+        self.assertEqual(self.promote(art, "rev-a").returncode, 0)
+        artifact_id = release.fingerprint(self.revisions / "rev-a")
+
+        result = self.promote(make_artifact(self.base, "b"), "rev-a")
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("already staged", result.stderr)
+        self.assertEqual(release.fingerprint(self.revisions / "rev-a"), artifact_id)
+
+    def test_the_delete_flag_no_longer_exists(self):
+        result = run_release(["promote", "--artifact", str(self.base), "--revision",
+                              "x", "--replace", "--runtime-root", str(self.runtime_root),
+                              "--composition", self.composition])
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("unrecognized arguments", result.stderr)
+
+
+class TheTwoScriptsNameOneManifest(unittest.TestCase):
+    """The build writes it and the release reads it. Two files, one key, and
+    nothing but a test holding them together — a manifest written under one
+    name and looked for under another refuses every artifact for a reason
+    nobody can see."""
+
+    def test_the_build_and_the_release_agree_on_the_manifest_name(self):
+        spec = importlib.util.spec_from_file_location("serveros_build", ROOT / "scripts/build.py")
+        build = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(build)
+        self.assertEqual(build.ARTIFACT_MANIFEST_NAME, release.ARTIFACT_MANIFEST)
+
+    def test_the_release_reads_the_kind_vocabulary_the_compositions_declare(self):
+        """Every composition in this repository declares kinds `release.py`
+        implements. The vocabulary is owned by the release path and the
+        declarations are the composition's, so the join is checked here."""
+        import yaml
+        for path in sorted((ROOT / "plugin").rglob("*.yaml")):
+            bundle = yaml.safe_load(path.read_text())
+            if not isinstance(bundle, dict) or "composition" not in bundle:
+                continue
+            with self.subTest(composition=path.name):
+                kinds = bundle.get("artifacts")
+                self.assertTrue(kinds, f"{path} declares no artifacts:")
+                for kind in kinds:
+                    self.assertIn(kind, release.ARTIFACT_KINDS)
 
 
 if __name__ == "__main__":
