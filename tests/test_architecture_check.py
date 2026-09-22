@@ -40,7 +40,6 @@ import yaml
 
 REPO = Path(__file__).resolve().parent.parent
 SCRIPTS = REPO / "skills/serveros/scripts"
-OPS_SOURCE = Path("/opt/applications/data/home-hwz/workspace/ops")
 
 # What the real compositions ship from ability-management, held as a literal so
 # that a change to `plugin/bundle.yaml` or `plugin/profiles/` shows up here as a
@@ -133,6 +132,20 @@ check = _load("serveros_architecture_check", "architecture_check.py")
 # The path the pin names, relative to the ability-management repository root.
 EVALUATOR_REL = "skills/ability-management/payload/composition.py"
 
+#: The ref the rule is read from. The canonical branch, because the rule is the
+#: registry owner's and what the fixture has to exercise is the rule the
+#: product's pin resolves against.
+#:
+#: A WORKING TREE must not stand here, and this is the second half of the same
+#: defect the ops literal was. `src/ability-management` is a shared canonical
+#: checkout that can be — and was, on 2026-09-23 — forty-odd commits behind
+#: `origin/main`, and the evaluator it carried predated `judge_records`. The
+#: fixture read it anyway, the checker took the "this pin is older than the
+#: pairing rule" branch, and the composition comparison these tests exist to
+#: pin never ran. Reading a revision makes the fixture's subject a fixed input
+#: instead of whatever the machine happens to have checked out.
+EVALUATOR_REF = os.environ.get("SERVEROS_COMPOSITION_EVALUATOR_REF", "origin/main")
+
 
 def _workspace_roots(start: Path) -> list[Path]:
     """Ancestors that look like a workspace: they hold both `src/` and `worktrees/`."""
@@ -144,8 +157,17 @@ def _workspace_roots(start: Path) -> list[Path]:
     return found
 
 
-def evaluator_source() -> Path:
-    """The real `composition.py`, read from the ability-management side.
+def _git_show(repo: Path, ref: str, rel: str) -> str | None:
+    """The file's text at `ref`, or None if this repo cannot supply it."""
+    if not (repo / ".git").exists():
+        return None
+    done = subprocess.run(["git", "-C", str(repo), "show", f"{ref}:{rel}"],
+                          capture_output=True, text=True)
+    return done.stdout if done.returncode == 0 and done.stdout else None
+
+
+def evaluator_rule() -> tuple[str, str]:
+    """(the real `composition.py`'s text, where it was read from).
 
     NOT hand-written into this fixture. The rule is implemented once, in
     ability-management, and serveros executes it out of the pinned ability
@@ -153,29 +175,81 @@ def evaluator_source() -> Path:
     agrees with the real rule only until the first edit of either one, which is
     exactly the divergence this design exists to make impossible.
 
-    The search order is explicit and the absence of a hit is a failure rather
-    than a skip: a test that quietly stops comparing is indistinguishable from
-    one that found nothing to compare.
+    Read out of a REVISION rather than off the working tree, and the second
+    half of the answer is kept because "which clone" is not a detail: the search
+    order below is a fallback chain, so a failure should be able to say which
+    repository and which ref it settled on instead of leaving a reader to infer
+    it from an empty result.
+
+    The absence of a hit is a failure rather than a skip: a test that quietly
+    stops comparing is indistinguishable from one that found nothing to compare.
     """
     explicit = os.environ.get("SERVEROS_COMPOSITION_EVALUATOR")
-    candidates: list[Path] = [Path(explicit)] if explicit else []
+    if explicit:
+        path = Path(explicit)
+        if not path.is_file():
+            raise AssertionError(
+                f"SERVEROS_COMPOSITION_EVALUATOR names {path}, which is not a file")
+        return path.read_text(encoding="utf-8"), str(path)
+    looked: list[str] = []
     for ws in _workspace_roots(REPO):
-        # The canonical checkout first: once the rule is merged there, the
-        # fixture stops depending on which worktree happens to exist.
-        candidates.append(ws / "src" / "ability-management" / EVALUATOR_REL)
-        candidates.extend(sorted(
-            (ws / "worktrees" / "ability-management").glob(f"*/{EVALUATOR_REL}")))
-    for candidate in candidates:
-        if candidate.is_file():
-            return candidate
+        # The canonical checkout first: once the rule is merged there — it is,
+        # and `EVALUATOR_REF` is the branch it was merged to — the fixture stops
+        # depending on which worktree happens to exist.
+        repos = [ws / "src" / "ability-management"]
+        repos += sorted(p for p in (ws / "worktrees" / "ability-management").glob("*")
+                        if p.is_dir())
+        for repo in repos:
+            looked.append(str(repo))
+            text = _git_show(repo, EVALUATOR_REF, EVALUATOR_REL)
+            if text is not None:
+                return text, f"{repo}:{EVALUATOR_REF}:{EVALUATOR_REL}"
     raise AssertionError(
         "the composition evaluator was not found; this suite cannot exercise "
-        "the composition rule without it. Set SERVEROS_COMPOSITION_EVALUATOR "
-        f"to a `composition.py`. Looked in:\n  "
+        "the composition rule without it. Set SERVEROS_COMPOSITION_EVALUATOR to "
+        f"a `composition.py`, or SERVEROS_COMPOSITION_EVALUATOR_REF to a ref of "
+        f"an ability-management clone that carries {EVALUATOR_REL}. Repositories "
+        "looked in:\n  " + "\n  ".join(looked))
+
+
+EVALUATOR_TEXT, EVALUATOR_ORIGIN = evaluator_rule()
+
+
+def ops_source() -> Path:
+    """This node's `hwz-ops` checkout, resolved rather than retyped.
+
+    This was a literal — `/opt/applications/data/home-hwz/workspace/ops` — and
+    that is a Beijing-node path. Here it does not exist, so the fixture's
+    `if source.is_file()` guard copied NEITHER `workspace/environment.yaml` nor
+    `workspace/serveros/policies/authority.md`, the checker reported
+    `DECLARATION_UNREADABLE` and `ROOTS_SOURCE_UNREAD`, and the composition
+    gate these tests exist to pin never ran. Eight tests asserting that gate
+    fires were green-by-absence: the same failure `evaluator_source` above was
+    written to prevent, one path over, where a silent skip did exactly what a
+    silent skip does.
+
+    Resolved by the product's own rule, which `architecture_check.ROOT_SOURCES`
+    states and this fixture imports no second copy of: the environment's
+    answer first (`SERVEROS_OPS_REPO`), else the workspace root the ancestry
+    walk finds, with the layout appended. Absence is a failure, not a skip —
+    see `evaluator_source` for why.
+    """
+    explicit = os.environ.get("SERVEROS_OPS_REPO")
+    candidates: list[Path] = [Path(explicit)] if explicit else []
+    for ws in _workspace_roots(REPO):
+        candidates.append(ws / "ops")
+        candidates.extend(sorted((ws / "worktrees" / "ops").glob("*")))
+    for candidate in candidates:
+        if (candidate / "workspace/environment.yaml").is_file():
+            return candidate
+    raise AssertionError(
+        "this node's ops checkout was not found; the composition fixture "
+        "cannot declare its roots without it. Set SERVEROS_OPS_REPO to an "
+        "`hwz-ops` checkout. Looked in:\n  "
         + "\n  ".join(str(c) for c in candidates))
 
 
-PAYLOAD = evaluator_source().parent
+OPS_SOURCE = ops_source()
 
 
 def _commit(repo: Path) -> None:
@@ -247,6 +321,17 @@ def world(tmp_path):
         rels = ["plugin/bundle.yaml", "integration/components.yaml"]
         rels += [str(p.relative_to(REPO))
                  for p in sorted((REPO / "plugin" / "profiles").glob("*.yaml"))]
+        # The DEVICE BINDING. `hwz/environment.v2` carries no `roots` map by
+        # design: it names `binding_authority: serveros:fleet/profiles.yaml#…`
+        # and the concrete paths are that profile's, read from this repository
+        # at the canonical ref. A fixture without the delegate therefore hands
+        # the checker a v2 instance whose roots cannot be resolved, and the
+        # topology section says ROOTS_SOURCE_UNREAD instead of answering — the
+        # composition gate below never runs. Copied from the real file rather
+        # than written down here, because the profile names this node's actual
+        # role paths and a hand-written stand-in would be a second source of
+        # truth for them.
+        rels.append("fleet/profiles.yaml")
         for rel in rels:
             dst = serveros / rel
             dst.parent.mkdir(parents=True, exist_ok=True)
@@ -276,7 +361,7 @@ def world(tmp_path):
         payload = ability / "skills/ability-management/payload"
         payload.mkdir(parents=True, exist_ok=True)
         if evaluator_text is None:
-            shutil.copy2(PAYLOAD / "composition.py", payload / "composition.py")
+            (payload / "composition.py").write_text(EVALUATOR_TEXT, encoding="utf-8")
         else:
             (payload / "composition.py").write_text(evaluator_text,
                                                     encoding="utf-8")
@@ -285,10 +370,18 @@ def world(tmp_path):
         ops = _init(root / "ops")
         for rel in ("workspace/serveros/policies/authority.md", "workspace/environment.yaml"):
             source = OPS_SOURCE / rel
-            if source.is_file():
-                dst = ops / rel
-                dst.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copy2(source, dst)
+            # Loud, not skipped. The `if source.is_file()` that used to stand
+            # here is how eight tests came to assert a gate that was not
+            # running: the declaration went missing, the checker said
+            # DECLARATION_UNREADABLE, and the fixture's silence made that look
+            # like the fixture's business rather than the test's.
+            assert source.is_file(), (
+                f"{rel} is missing from the ops checkout at {OPS_SOURCE}; the "
+                "fixture would otherwise build a world with no roots declared "
+                "and the composition gate below would never run")
+            dst = ops / rel
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(source, dst)
         _commit(ops)
 
         # Everything a default run would scan is pointed at empty directories.
@@ -427,7 +520,7 @@ def test_a_pin_older_than_the_pairing_rule_is_reported_not_skipped(world):
     restore the union comparison silently and under the evaluator's authority,
     which reads exactly like a verdict. The missing function is the only thing
     that can report the pin is behind, so it has to."""
-    source = (PAYLOAD / "composition.py").read_text(encoding="utf-8")
+    source = EVALUATOR_TEXT
     head, sep, _tail = source.partition("def judge_records(")
     assert sep, ("the fixture strips `judge_records` from the real evaluator; it is "
                  "no longer there, so this test would assert nothing")
