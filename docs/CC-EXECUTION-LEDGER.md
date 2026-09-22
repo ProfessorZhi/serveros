@@ -93,7 +93,7 @@ source revision 一列给的是**指纹成立的那次 revision**，也就是 pa
 | B7 | 实现 | implementation-delivery | `skills/implementation-delivery` | Skill | 早于本轮 | — | 原生 | srv0003.20260915a | DONE | DONE | ENABLED | 重叠旧入口未迁移 |
 | B8 | 报告发布 | feishu-report | `skills/feishu-report` | Skill | 早于本轮 | `serverosctl report` | 原生 | srv0003.20260915a | PARTIAL | PARTIAL | PARTIAL | 见 §3.5：**没有独立 artifact 是设计选定的落法**，缺的是四处移除没做 |
 | B9 | 文档维护 | document-stewardship | `skills/document-stewardship` | Skill | **ce6e103** | feishu-space-management + publisher | 原生（仅正文侧） | 无 | DONE | NOT_MEASURED | NOT_ENABLED | 位置/ACL 侧留在 B-空间 |
-| B10 | 人机控制 | human-control | `skills/human-control` | Skill | 早于本轮 | `serverosctl card`/presentation | 原生 | srv0003.20260915a | DONE | DONE | PARTIAL | 见 §3.4 |
+| B10 | 人机控制 | human-control | `skills/human-control` | Skill | 早于本轮 | `serverosctl card`/presentation | 原生 | srv0003.20260915a | DONE | DONE | ENABLED | 告警卡面已在生产链上；status 卡面仍未接，见 §3.6 |
 
 图例：`DONE` 已落地并测过；`PARTIAL` 只落了一部分；`NOT_MEASURED` 没测，**不是**失败也不是通过；
 `NOT_ENABLED` 已明确没启用；`ENABLED` 在生产/日常链路上真在跑。
@@ -151,12 +151,57 @@ INTEGRATION 一侧是真测过的，且零共享面变更：`claude --plugin-dir
 设计同时定了顺序：「**先保留兼容入口再迁 consumer**」——移除不能先于 consumer 迁移做。
 这一条决定了 B8 是一个按顺序走的包，不是一次顺手改文件。
 
-### 3.6 B10 的 PARTIAL 在哪
+### 3.6 B10 的 LIVE 到哪一步
 
-`serverosctl card` 这个面存在且是「one model, a Feishu payload and a preview, and
-NOTHING is sent」——**不发**是它的性质，不是缺口。缺口在**生产链上跑的那张卡不是它渲染的**：
-东京主卡与告警摘要由 ops 侧渲染，所以 promote ServerOS 的卡面一个字都不会变。
-B10 的 CODE 与 INTEGRATION 成立，LIVE 停在「两套渲染并存」。
+先纠一条曾被读反的：**告警摘要卡的卡面已经是 ServerOS 出的**。
+`ops/scripts/tokyo-monitor/alert_digest_card.py:107 serveros_card()` 调
+`serverosctl card alert --json` 并把返回的 `body` 当卡面用（注释写着「2026-09-22 起，
+人类语义只有一个 authority」）；只有在取不到时才回落旧渲染器，且回落会往 stderr
+写一行。实测 `serverosctl card alert --json` exit 0，给出的是真实的飞书
+`body.elements`，点名一条活着的 finding（`RUNTIME_OUTLIVED_OWNER`，Claude 会话 15413）。
+所以 `card` 这个面**在生产链上**，B10 的 LIVE 成立。
+
+链条本身是活的，读出来的形状是：
+
+```text
+anomaly(detectors, runtime/anomaly.py) 
+  -> alert producer (runtime/alerting.py:461 evaluate(), 身份 = code+device+subject)
+     唯一生产调用者 = daemon tick (runtime/daemon.py:569)
+  -> card model (runtime/cards.py:156 alert_card(); catalogue runtime/card-definitions.yaml)
+     -> serverosctl card {status,alert,recovery}  (cli.py:6721/6732/6736, 恰好三个)
+  -> ops alert_digest_card.py 取面 -> lark-cli 发
+```
+
+登记表现状：`serverosctl alert list --json` exit 0，**4117 条**（795 OPEN / 3322 RESOLVED），
+其中 701 条带 `last_notified_at`。
+
+缺口在三处，都实测过：
+
+1. **没有冻结 payload / payload hash。** 设计 `BROADCAST-ALERT-DESIGN.md:80` 要求
+   `frozen presentation payload + payload hash + intended rows/versions`；
+   `grep -rn 'payload_hash' runtime/*.py` → 0 命中。这是读过的 absent，不是没找到。
+2. **`alert_digest.record()` 盖的是活登记表，不是发出去的那一版。**
+   `alert_digest.py:730 _shown_pairs()` 把冻结文档压成 `(key, kind)`，写回时
+   `:790` 取 `alerts.get(key)` 的**当前**值，`:811` 和 `:822` 于是把注册表的现值
+   记成「这一版就是这么播的」。compose 与 record 之间若发生 severity 升级，
+   记录会把它写成以新 severity 播过。（相邻的 `alert is None` 分支 `:792-800`
+   反而正确写了 `None`，说明这个坑是知道的。）
+3. **ServerOS 原生投递那一跳从没在这台机上跑过。** `~/.config/systemd/user/` 里有
+   `serveros-alert-sync.service.d/10-botmux-token.conf`，但**没有**
+   `serveros-alert-sync.service`、也没有 `.timer`；`is-enabled` → `not-found`，
+   `journalctl -u` → 无条目。所以那 701 条 `last_notified_at` 来自
+   `alert_digest.record()`（`alert_digest.py:821`），**不是**来自
+   `alerting.record_delivery()`（`alerting.py:947`）。unit 模板在树里
+   （`runtime/serveros-alert-sync.service`/`.timer`），安装动词是
+   `scripts/release.py:528 cmd_alert_worker`，它在没有 `--conversation` 时拒绝。
+
+第 3 条同时解释了 §8 里那个「孤立的 drop-in」：它不是残渣，是**一个设计好的跳没装**。
+
+还有一处**已测但没接线**：`monitor_card.py:994-1009`（每小时那张主卡）只调
+`resource summary` / `resource containers` / `runtime list` / `runtime status`，
+从不调 `serverosctl card status`。所以 `presentation.status_model()` 与
+`cards.status_card()` 有实现、有测试、**没接**。主卡也不写 receipt
+（`grep 'record|digest-record|receipt' monitor_card.py` → 0 命中）。
 
 ## 4. 四层状态的定义
 
@@ -179,6 +224,8 @@ DESIGN-only 变成了 CODE。`NOT_MEASURED` 与 `FAILED` 是两件事，不能�
 | --- | --- | --- | --- |
 | `test_real_registry_matches_real_bundle` | ability-management `tests/test_materialization_contract.py` | **跨仓库**：它读 `src/serveros`，而 `plugin/profiles/testing.yaml` 只在 worktree 里，于是注册表「多」了 `automated-testing` | 已确诊：`SERVEROS_BUNDLE=<worktree>/plugin` 下全套 91 passed。修法是让 `src/serveros` 前进到含该 profile 的 revision，**不是**改测试 |
 | `test_the_committed_view_is_up_to_date` | ability-management `tests/test_capability_families.py` | repin 的派生后果：视图里嵌 `authority_revision` | 已修，并入 repin commit `c993c82`（只动 pin 不动 pin 的渲染，那一格 bisect 出来就是红的） |
+| 9 个 profile 构建失败 | serveros `tests/test_build.py`、`tests/test_plugin_composition.py` | **本轮自己引入又修掉的**：`ABILITY_SKILLS` 是 fixture 里手维护的「注册表替身」，它含全部 `available` 名字却独缺 `document-stewardship` | 已修，commit `6986b6f`。它当时**正确地**发火了——fixture 一直默默模拟旧事实而从不声明，所以 profile 一改就炸在这里而不是炸在别处 |
+| 同一个名字当了两种样例 | 同上 | `document-stewardship` 同时是「catalogue 有的」断言对象与「catalogue 没有的」样例；前者一改，后者就假 | 已修：后者改用哨兵 `no-such-ability`（`test_plugin_composition.py` 里早就用的同一个哨兵） |
 
 第二条值得单独记一笔：它是**同一个族的第四次**——源动了，派生物没跟着动。前三次是
 manifest 行、packs 闭包、cards。凡是「X 的渲染嵌了 X 的值」，都必须和 X 同一次改。
@@ -224,12 +271,17 @@ manifest 行、packs 闭包、cards。凡是「X 的渲染嵌了 X 的值」，�
 8. **要不要教 `release.py` 一个非 node composition 的形状。** 见 §3.3：现在它只装 node runtime，
    而 plugin/dist 走的是另一条路。不定的后果：plugin/dist 的分发没有 release 级的版本
    与回滚（`revisions/` + `previous` + `RELEASE.json` 那三样它现在享受不到）。
+9. **要不要重建并 promote `serveros-linux-work`（`15b` → `20260922a`）。** 这是**动活节点**，
+   所以不由本轮做。事实：已发布那棵树的 README 写 `document-stewardship (missing)`，
+   而这句话现在对注册表是**假的**（B9 的 Skill 已落地）。不定的后果：release 面继续
+   宣称一个已经不成立的 gap，而 §5 那条测试守的正是「`missing` 不能比 gap 活得久」——
+   它在构建期守住了，在已发布产物上没人守。`previous` 会保留，回滚是一条命令。
 
 ## 8. 卫生发现（只给位置，不给值）
 
 | 位置 | 现象 | 为什么值得看 |
 | --- | --- | --- |
-| `~/.config/systemd/user/serveros-alert-sync.service.d/10-botmux-token.conf` | drop-in 孤立 | 引用它的 unit 已不在；drop-in 里的东西是否还有效没人知道 |
+| `~/.config/systemd/user/serveros-alert-sync.service.d/10-botmux-token.conf` | drop-in 存在，但它属于的 `serveros-alert-sync.service` 与 `.timer` **都不存在** | 不是残渣：**一个设计好的投递跳从没装过**，见 §3.6 第 3 条。装它是 `release.py cmd_alert_worker` 的活，且需要 `--conversation` |
 | `hwz-monitor.service` | dead | 死服务 |
 | `~/.claude/settings.json` | `ANTHROPIC_AUTH_TOKEN` 内联，且 `ANTHROPIC_BASE_URL=http://127.0.0.1:26500`，`permissions.defaultMode: bypassPermissions` | 明文凭据落在 HOME 下，而策略说凭据只住 vault |
 | `sanitize.default_files()` | fail-open | 脱敏失败时放行，方向反了 |
@@ -297,6 +349,61 @@ SAME  runtime/coordination.py       SAME  documents/document_governance.py
 （一）与（二）合起来给出一条硬结论：**P8（广播/告警 producer/presentation/receipt）
 的实现已经在未合并的 noc-copy 分支上做完了。** 所以决策包第 1 条卡住的不是版本新鲜度，
 是整条 P8——不落 noc-copy，P8 在 main 上无从做起，重做一遍就是第二来源。
+
+### 9.2 P8 的四条断点（见 §3.6 详述）
+
+链条活着，但设计要求的四样里缺四样的一半：
+
+| 设计要点 | 实测 | 判定 |
+| --- | --- | --- |
+| frozen payload + payload hash | `grep -rn 'payload_hash' runtime/*.py` → 0 | read-and-absent |
+| 播报记录绑定发出那一版 | `alert_digest.py:790,811,822` 取活登记表现值 | present-but-partial（§8 风险已确认） |
+| ServerOS 原生投递 | unit/timer 都不存在，从没跑过 | 未安装 |
+| 六个通知生产者 | `runtime/notification-contract.yaml` `producers:` `:130` 起：`alert.opened`/`alert.resolved` → IMPLEMENTED；`session.created`/`session.waiting_input`/`turn.completed`/`approval.required`/`handoff.completed`/`run.terminated` → 各自带 `because`/`disposition` 的 DECLARED_ABSENT | 声明诚实；该文件 `:127-128` 自己记着「这六条曾零调用者而声明对声明的闸照样过」 |
+
+`alerting.py` / `alert_digest.py` / `anomaly.py` / `bin/serverosctl` 在 worktree 与
+安装面**逐字节相同**；不同的那 6 个文件见 §9.1。所以 P8 的断点不是版本差，
+是真的没做。
+
+### 9.3 P9 的安装覆盖
+
+62 个 ability（skill 41 / plugin 13 / mcp 6 / instruction 1 / hook 1）。
+按「composition 成员 + pack 成员」两种口径：
+
+| 口径 | 数 |
+| --- | --- |
+| 有 composition 或 pack 成员身份 | **20 / 62** |
+| 无任何成员身份 | **42 / 62**（其中 plugin 型 13 个**全部**无身份；`hwz-server-os` 是 composition 本身，属类别假象不是缺口） |
+| 最新 revision 带 installation 行 | **25 / 62** |
+| 任一 revision 带 installation 行 | **35 / 62** |
+| 任何 revision 都没有 installation 行 | **27 / 62** |
+
+最后一行的读法要小心：`session-manager` 最新版 `4.0.0` 没有 installation 行，早先的
+有 —— 所以诚实的说法是「最新 revision 不带 installation 行」，**不是**「没装」。
+
+`test-envs/` 下只有 `litellm-bridge` 和 `muc-bridge`：**本机不存在
+ability-management 或 serveros 的测试环境**。A7 若要 LIVE 需要先有这个，现在没有。
+
+### 9.4 P10：代码在 MarketOps，不在 ServerOS
+
+| 对象 | 在哪 | 实测 |
+| --- | --- | --- |
+| Laya adapter | `worktrees/marketops/mvp/marketops/adapters/laya.py`，`LayaDecisionProvider:128` | **partial**：盘上**没有权重**（`find *laya*` 无模型目录），`LAYA_CHECKPOINT_DIR` 只在 `mvp/.env.example:42` 出现且为空 |
+| Jev adapter | `…/adapters/jev.py`，形状镜像 `laya.py` | **UNBOUND**：无 key，`MARKETOPS_DECISION_PROVIDER` 未设 |
+| Serper adapter | `src/marketops/marketops/search/serper.py`，`SerperSearchProvider:24` | working（adapter+port+tests）；凭据在 `~/.secrets/vault/serper.env`（0600，152 B）。**没有跑过真实查询**，所以 LIVE 不可声称 |
+| MarketOps 业务 MCP | `…/interfaces/mcp/__main__.py` + `adapters/mcp_server/*` | **没在任何地方注册**——唯一相邻的 `.mcp.json`（`worktrees/quay/marketops-goalwrite/.mcp.json`）是空表 |
+| ServerOS 侧的 decision/search 消费者 | — | **read-and-absent**：`grep -rl 'DecisionProvider\|SearchProvider' runtime/ mcp/ abilities/` → 0 文件 |
+
+**`providers/` 目录不存在——四种独立查法确认，不是没找到。** 全机只有一个 provider
+记录：`provider:openviking`，在 `memory/provider-contract.yaml:83`，属记忆域，
+且被复制进全部 10 个 serveros worktree/revision（所以它在每个 worktree 里都"存在"，
+这本身不是 10 个 provider）。设计只在
+`design/SHARED-PROVIDER-CONTRACT.md:7` 提过一次 `providers/laya/`，措辞是「或真实已
+存在的等价位置」。ServerOS 实际有的是契约与解析器：
+`abilities/provider-contract.yaml`（`objects.Provider`、`provider_kinds`、
+`materialization.forbidden` 禁绝对路径/`$HOME`/env 名/凭据）、`abilities/resolver.py:636`、
+`abilities/provider_instance.py:297` —— 最后一个的 docstring 自己记着 `instance:`
+记录「自契约写下就声明了，**而没有任何 writer**」。
 
 ## 10. 后续每包更新哪几行
 
