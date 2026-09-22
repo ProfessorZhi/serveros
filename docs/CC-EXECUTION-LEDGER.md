@@ -1742,19 +1742,99 @@ composition ship 或 recommend 的 ability，仍然报 `COMPOSITION_MEMBER_UNREA
 
 §14 的链条里有「架构/突变守卫绿色」这一格。**台账此前从未记过架构检查的判词**，这一节补上，并且写下它的根因——它不在 serveros 的代码里，也不在 ops 的实例里，而在两者之间。
 
-**判词。** 用工作树跑 `skills/serveros/scripts/architecture_check.py`（`--canonical-ref HEAD`，
-`--ability-repo` 指向 fiber 工作树的 `HEAD`，`--ops-repo` 用产品自己的默认值
-`<WORKSPACE_ROOT>/ops`）：
+**判词，连同它的确切调用方式。** 这一节的每个数字都绑定在下面这一行上；换一个调用方式
+判词就变，所以调用方式本身是结果的一部分：
 
 ```
-architecture_status: NONCONFORMANT
-findings: 6   blocking_high_open: 1
-  HIGH    ROOT_TOKEN_UNRESOLVED  {unresolved: [KNOWLEDGE_ROOT, OPS_ROOT, RECORDS_ROOT, SRC_ROOT, TEST_ENVS_ROOT],
-                                  declared: [], roots_source: ops/workspace/environment.yaml}
+$ python skills/serveros/scripts/architecture_check.py --json \
+    --serveros-repo . --canonical-ref HEAD \
+    --ability-repo ../ability-management/fabric-integration-20260922 --ability-ref HEAD
+architecture_status: NONCONFORMANT        runtime_status: RELEASE_INCOMPLETE
+summary: {"findings": 7, "blocking_high_open": 1,
+          "by_status": {"LEGACY_COMPAT": 1, "OBSERVED": 5, "OPEN": 1},
+          "by_class": {"authority": 1, "map-projection": 3, "registry-scope": 1, "topology": 2}}
+  HIGH   OPEN          ROOT_TOKEN_UNRESOLVED
+  LOW    OBSERVED      BOOTSTRAP_ABILITY_REGISTERED
+  MEDIUM OBSERVED      MAP_VIEW_UNBOUND  ×3
+  MEDIUM OBSERVED      TRANSITIONAL_GENERATED_SURFACE
+  MEDIUM LEGACY_COMPAT UNREGISTERED_DATA_ROOT
 ```
 
-`blocking_high_open: 1` 就是它。**这不是本轮代码的问题，也不是我调用方式的问题**——
+`blocking_high_open: 1` 就是 `ROOT_TOKEN_UNRESOLVED` 那一条，`observed` 的五个 token 是
+`[KNOWLEDGE_ROOT, OPS_ROOT, RECORDS_ROOT, SRC_ROOT, TEST_ENVS_ROOT]`，`roots_source` 写的是
+`ops/workspace/environment.yaml`。**这不是本轮代码的问题**，也不是我调用方式的问题——
 `ROOT_SOURCES["ops_repo"]` 的默认值就是 `<workspace_root>/ops`，我用的是产品自己的默认。
+
+### 9.18.1 判词随调用方式变，而三种变化里两种是量具的错，不是产品的错
+
+这一节是上一节的方法论，单独写出来是因为**它差点让我把两条不存在的 HIGH 记成真实缺陷**。
+检查器把**代码从工作树扫、把契约从 ref 的 git object 读**（`:617-618` 读
+`runtime/actuator-contract.yaml`，`:639-640` 用 `root=serveros_repo` 扫盘）。两者一致时没问题；
+ref 的树与工作树的内容不一致时，左右两边说的不是同一件事，于是按构造产生两条 HIGH：
+
+| 调用 | 判词 | 多出来的是什么 |
+| --- | --- | --- |
+| 纯默认（零参数） | `INCONCLUSIVE`，20 条，`blocking_high_open: 18` | 见下方 9.18.2 |
+| `--serveros-repo <canonical 检出>` | `INCONCLUSIVE`，8 条，blocking 4 | — |
+| `--serveros-repo .`（`--canonical-ref` 留默认 `main`） | `NONCONFORMANT`，10 条，blocking 3 | **`UNDECLARED_ACTUATOR` ×7 + `STALE_ACTUATOR`** |
+| **`--serveros-repo . --canonical-ref HEAD`** | `NONCONFORMANT`，**7 条**，**blocking 1** | 无 |
+
+第三行的两条是**量具的产物**：工作树的本地 `main`（`d0a94d6`）比 HEAD（`2ee6b79`）
+**落后 71 个提交**，所以契约读的是旧版——`git show main:runtime/actuator-contract.yaml:710`
+正是 `symbols: [verify_revision]`，而工作树里 `release.py` 的那个函数已经叫
+`verify_node_runtime`（工作树的契约 `:735` 也这么写）。于是：
+
+- `UNDECLARED_ACTUATOR` 的 7 个调用点里 6 个在 `intake/understanding_patch.py` 与
+  `runtime/bounded_invocation.py`——**这两个文件在 local `main` 上整个不存在**，是新代码对旧契约；
+- `STALE_ACTUATOR` 是旧契约对上新代码，`expected: [scripts/release.py, verify_revision, …]`。
+
+**两条都不是真的**，工作树干净（`git status --porcelain` 空）、ref 改用 HEAD 后两条同时消失。
+留在这里的价值是：**这个量具会在 ref ≠ 工作树内容时报出「本轮改坏了安全声明」的假 HIGH**，
+而它报的正是会挡住 §14 晋升的那一格。要不要让检查器在 ref 的树与工作树不同时拒绝
+（而不是照报），是一个我没做的改动——写在这里，不假装它已经解决。
+
+### 9.18.2 零参数调用量的是一个不存在的目录，而它没有拒绝
+
+同一个「量具读错东西」家族，但这一条的后果更宽：**产品默认值本身在这台机器上是坏的。**
+`default_root()` 对 `SERVEROS_REPO` / `SERVEROS_ABILITY_REPO` 的处理与对 host profile 的
+键**完全一样**——把变量值当作「装着检出的那一层」，再拼上后缀：
+
+```
+serveros_repo    -> /data/home/vince/workspace/src/serveros/serveros            NOT THERE
+ability_repo     -> /data/home/vince/workspace/src/ability-management/ability-management  NOT THERE
+ops_repo         -> /data/home/vince/workspace/ops                              exists
+```
+
+因为本会话环境里这两个变量已被设成**检出本身**（`SERVEROS_REPO=/data/home/vince/workspace/src/serveros`，
+`SERVEROS_ABILITY_REPO=…/src/ability-management`），而不是 `…/workspace/src`。
+host profile 是对的（`workspace_src = /data/home/vince/workspace/src`）——错的只有变量这一路。
+
+**这不是孤例，是产品内部对同一个变量名有两种读法：**
+
+| 读法 | 谁 |
+| --- | --- |
+| 是**检出本身** | `scripts/build.py:1037`、`runtime/cli.py:8911`（「default: SERVEROS_ABILITY_REPO, else the sibling checkout」）、`abilities/taxonomy.py:1095` |
+| 是**要再拼一层的那层** | `skills/serveros/scripts/architecture_check.py:1427`、`scripts/runtime_truth.py:1588` |
+
+按票数与环境实际值，前一种是对的，后两处是错的。而后两处**恰好是量具**。
+
+后果：零参数运行的判词是 `INCONCLUSIVE`、20 条 finding、`blocking_high_open: 18`——
+其中 5 条 `DECLARATION_UNREADABLE`、3 条 `MAP_VIEW_SOURCE_UNAVAILABLE`、4 条 `OWNERSHIP_DRIFT`
+都是**关于一个不存在的目录**的。检查器自己在 `:1487-1495` 那段拒绝语里写的就是这件事：
+
+> a wrong root produces findings about a directory nobody asked about — which reads
+> exactly like a finding about this one.
+
+它对**五个 root 都缺失**的情况返回 2 并拒绝，但对「路径拼错了、目录不存在」不拒绝——
+而是照扫、照报，报出 18 条 blocking。**同一个产品里同一类错误，一种被拒绝、一种被当成结论。**
+
+这两处（9.18.1 的 ref/工作树不一致、9.18.2 的两个变量读法）与本轮的 root 解析是**同一类**
+的：一份规则写了两遍或两个地方，迟早被写成两个样子。它们都不在 §15 的升级清单里——
+9.18.2 是机械的（把 `architecture_check.py:1427` 与 `runtime_truth.py:1588` 改成与多数一致，
+或在拼之前先判目录是否存在并拒绝）；9.18.1 需要先决定「ref 与工作树不一致时该拒绝还是该照报」，
+而**产品里已经有一个先例**：它拒绝缺失的 root 而不是猜。**本轮不改这两处**，原因是它们改的是
+量具本身，而 §14 要求「架构守卫绿色」——在晋升链上同时改代码和改量具，就无法把「绿」归因给
+任何一边。列入 §16。
 
 **根因：`root_tokens()` 读的是东京已经退役的那份文档。** 契约的
 `roots_source.locator` 是 `ops/workspace/environment.yaml`、`key` 是 `roots`。实测：
@@ -1766,10 +1846,26 @@ findings: 6   blocking_high_open: 1
 | 带 `roots:` 的那一份在哪 | 只在 `ops/archive/beijing-20260918/workspace/environment.yaml:7` |
 | 东京 v2 把绑定交给了谁 | 文件自己写着 `binding_authority: serveros:fleet/profiles.yaml#linux-shared-multiuser` |
 
-而产品里**已经有一个能正确回答的解析器**：`runtime/paths.py`（Profile 绑定），实测
+而产品里**已经有一个能把路径解析对的解析器**：`runtime/paths.py`（Profile 绑定），实测
 `python -m runtime.cli path contract` 在这台机器上零环境变量给出 **12 个根，全在
 `/data/home/vince` 下**。`architecture_check.py` 里 `root_tokens()` 对
 `PERSISTENT_ROOT` / `profiles.yaml` / `paths.py` **零引用**——它自己又算了一遍。
+
+**但这里不是两个词表，是三个，而且它们互不同名。** 这一点决定了下一节那半件事的份量，
+所以先量清楚：
+
+| 词表 | 它给出什么名字 | 举例 |
+| --- | --- | --- |
+| topology contract 的机器实例键 | 9 个大写 token | `SRC_ROOT`、`OPS_ROOT`、`KNOWLEDGE_ROOT`、`DATA_ROOT`、`WORKSPACE_ROOT` |
+| Profile（`fleet/profiles.yaml`）的路径键 | 12 个点分小写角色 | `workspace.src`、`knowledge.corporate`、`runtime-assets`、`state` |
+| v1.1 路径契约（`runtime/paths.py` 的输出） | 12 个**又一组**短名 | `workspace`、`data`、`state`、`artifacts`、`toolchains`、`runtime.serveros-distribution` |
+
+三组名字里，`workspace`/`data` 与 `WORKSPACE_ROOT`/`DATA_ROOT` 是**疑似**同一件事（同样的路径、
+不同的主张），而 `SRC_ROOT`、`OPS_ROOT`、`KNOWLEDGE_ROOT`、`RECORDS_ROOT`、`TEST_ENVS_ROOT`
+这五个**在第三组里根本没有对应项**——v1.1 契约的 12 个角色里没有任何一个叫 src / ops /
+knowledge / records / test-envs。所以「让 `root_tokens()` 读 Profile」不是把五行对上，
+而是**让三个各自有道理的文档就「一个根有哪些名字」达成一次一致**。这不是架构选择，
+也不是「请人拍板」——它是三个现存词表之间一次没人做过的对齐。
 
 **这正是检查器自己的文件在第 736-744 行禁止的形状**（那里说的是 composition 规则：
 「一条规则被写了两遍，就迟早会被写成两个样子」）。同一份文件里的 root 解析没有遵守它。
@@ -1795,9 +1891,11 @@ Profile 真的没绑（而目录和机器政策都写着它们在）。
 2. **词汇表那一半（需要作者，本轮不做）**：`root_tokens()` 要能读 Profile，就得有一份
    「契约 token → Profile 路径键」的映射：`SRC_ROOT→workspace.src`、
    `OPS_ROOT→workspace.ops`、`RECORDS_ROOT→workspace.records`、
-   `TEST_ENVS_ROOT→workspace.test-envs`，这四条是机械的；**`KNOWLEDGE_ROOT→knowledge.corporate`
-   是唯一一处语义判断**（Profile 那个名字说的是「corporate」，契约的 token 说的是根目录，
-   同一个路径，但两个词不是同一个主张）。把两个词汇表对上是一次**著作行为**，
+   `TEST_ENVS_ROOT→workspace.test-envs`，这四条**看起来**机械；**`KNOWLEDGE_ROOT→knowledge.corporate`
+   是语义判断**（Profile 那个名字说的是「corporate」，契约的 token 说的是根目录，
+   同一个路径，但两个词不是同一个主张）。而上面那张三方词表说明**「看起来机械」正是陷阱**：
+   上半张表里那三条 `workspace.*` 现在**只存在于 serveros 的 Profile 里**，第三组名字里没有对应项，
+   所以给它们取名本身就是这次对齐的一部分，不是抄写。把三个词表对上是一次**著作行为**，
    而按约定它只能写在 `roots_source` 里（那里现在只有 `owner/locator/key/required_keys/derivations`）。
    **猜一个映射正是这个检查器拒绝做的事**（「reported as unresolved, never guessed」），
    所以本轮不替它猜。
@@ -1814,3 +1912,39 @@ Profile 真的没绑（而目录和机器政策都写着它们在）。
 - **不新开文件、不新开平台。** 计划原话：「后续每包只更新此处结果/证据，不另建平台。」
 - 状态从 `NOT_MEASURED` 变 `DONE` 必须有具体证据（测试名 + 结果，或实测命令 + 输出），
   不能因为「代码在盘上」就改。
+
+## 11. 孤立的外部权限 / HUMAN_EXECUTED 操作（终报 §16 的输入）
+
+这一节存在的唯一目的是**不让东西丢掉**。§16 要的终报里，这些必须是**单独列出**的一类，
+不与「本轮做完了什么」混在一起。凡是台账正文里写了「列入 §16」的，条目都落在这里；
+台账到 §10 就结束了，所以在此之前「§16」只是一个承诺——这一节就是那个承诺的落点。
+
+### 11.1 需要人（或一次授权）动**另一个仓库**的远端
+
+| # | 动作 | 实测事实 | 为什么不是本轮 |
+| --- | --- | --- | --- |
+| 1 | **把 `074a518` fast-forward 到 ability-management 的 `main`** | `git merge-base --is-ancestor origin/main HEAD` → 是；`0 10`，10 个提交、35 个路径，全在 ability-management 自己的 `skills/`、`plugins/`、`abilities-manifest.yaml`、`ability-packs.yaml`、capability-family 视图与 `tests/` 里 | 这是对**另一个仓库的 main 的远端写**。§1 用「不覆盖 main」把它括起来，`ops/CLAUDE.md` 默认只读。它是 §5.0.1 那 8 条跨仓红的**唯一**解除条件（另两条路测过，都不够：快进到 `origin/main` 不行——`e7d20f3` 不在其上；在 canonical 检出切分支更差——只把量具弄绿、产品照红） |
+
+### 11.2 会**丢失别人未推送工作**的东西——不碰，但要记
+
+| # | 事实 | 实测 |
+| --- | --- | --- |
+| 2 | **`src/serveros` 的本地 `main` 上有 2 个提交不在任何远端分支上** | fetch --prune 之后：本地 `main` = `d0a94d6`，`origin/main` = `4d090d6`，`40 2`。那两个是 `e925fbf space: My Document Library is a workbench, not a staging area for the wiki` 与 `d0a94d6 space: name the Item closure artifact, and say what each surface is for`；`git for-each-ref --contains` 只列出 `refs/heads/main`（本机） |
+
+**这一条不是「待办」，是「待保管」**：谁来一次 `git -C src/serveros pull` 或快进，这两个提交就
+没了（本地 `main` 会被覆盖或产生分叉）。本轮**不推它们**——它们不是本轮的工作，推等于替别人
+决定；也**不 stash、不 reset**。处置只能由那两个提交的作者做，所以它进终报的孤立清单。
+
+### 11.3 本节点特有的两个缺口
+
+| # | 缺口 | 为什么需要人 |
+| --- | --- | --- |
+| 3 | **本节点的 root 绑定缺口**：检查器报 5 个 token 未解析，其中 2 个（`SRC_ROOT`、`KNOWLEDGE_ROOT`）是本机 Profile 其实绑了、检查器读错了文档；3 个（`OPS_ROOT`、`RECORDS_ROOT`、`TEST_ENVS_ROOT`）是本机 Profile 真没绑，而目录都在 | 修法两半：绑那三条是**事实**（仓内可做）；让 `root_tokens()` 读 Profile 需要把**三个互不同名的词表**对齐（§9.18），其中给 `workspace.ops`/`records`/`test-envs` 取名本身就是那次对齐的一部分。猜一个映射正是这个检查器拒绝做的事（「reported as unresolved, never guessed」），所以不猜 |
+| 4 | **两处量具缺陷**：`architecture_check.py` 从工作树扫代码、从 ref 的 git object 读契约（§9.18.1，ref ≠ 工作树内容时按构造报出假 HIGH）；`SERVEROS_REPO`/`SERVEROS_ABILITY_REPO` 在 `architecture_check.py:1427`、`scripts/runtime_truth.py:1588` 被当作「要再拼一层的那层」，而 `build.py:1037`、`runtime/cli.py:8911`、`abilities/taxonomy.py:1095` 当作检出本身（§9.18.2） | 9.18.2 是机械的、可做的；9.18.1 要先决定「ref 与工作树不一致时该拒绝还是照报」，而产品里已有先例（缺 root 时拒绝）。本轮**同时改代码与改量具会让「绿」无法归因给任何一边**，所以两处都不落 |
+
+### 11.4 §7.2 的四条 HUMAN_EXECUTED（原文不动，只在此处汇总指向）
+
+重启 `serverosd.service`（PID 2615936）；把 CC marketplace `hwz-server-os` 指到新 release 并
+`claude plugin update` 工作台；`systemctl --user enable --now serveros-daily.timer`；
+装原生告警投递 `scripts/release.py alert-worker --conversation <id>`。**四条都是外部/共享面动作**，
+理由逐条写在 §7.2，不在这里重复——重复会漂移。
