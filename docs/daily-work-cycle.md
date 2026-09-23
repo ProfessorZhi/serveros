@@ -1,138 +1,97 @@
-# Daily Work Cycle · 每日低干预工作闭环
+# Daily Work Cycle · 有真实接收者的每日工作
 
-Status: product profile and implementation contract, 2026-09-22. 产品架构仍以 ARCHITECTURE.md 为准。不是新的 workflowd、任务数据库，也不把该顺序强加给所有临时工作。
+状态：2026-09-23 协作修订，产品规范仍为ARCHITECTURE.md。此Profile组合现有能力，不新增workflowd、第二任务数据库或固定业务阶段机。通用交接/预算/恢复依 [COLLABORATION-CONTRACT](COLLABORATION-CONTRACT.md)，每职责详见ability-management/design/ABILITY-SCENARIO-CONTRACTS.md。
 
-## 1. 用户目标与本轮取舍
+## 1. 已接受的目标
 
-每天自动更新结构化认识与工作对账；晚间从现有需求看板选择两项值得推进的目标，GPT 深度参与调研设计、独立审阅实施计划，次日由原生 Agent / Quay 执行、验收与汇报。正常情况不等人逐步点确认；权限、重大业务取舍、生产变更和实质失败才升级。
+每天增量接收真实工作信息、修正结构化认识并对账；晚间形成最多两个合格工作焦点，GPT深度参与研究设计、独立Session审实施计划；原生CC/Codex/Quay实际推进；用真实验收、报告、获准维护与通知交付。正常授权范围内少找人，重大目标/权限/生产效果与真实非预期产品失败才升级。
 
-“两项”是本 profile 的并行焦点上限与期望，不是每天必须新造两项：未完成/委派/等待/取消未确认/效果未知的已有焦点仍占位。不足两项符合准入时少做，并解释缺口。已结束或被取消的旧需求不自动复活。
+这不是每天必新开两项，也不要求所有任务写代码、使用每种Provider或经历每个阶段。研究、验证已有能力、报告、指导配置可以单独完成。Quay要有可验证的贡献，不为进程忙碌造任务。
 
-“每天 Quay 在跑”意味着优先给 Quay 有价值、可验证的切片，不是保持进程忙碌或造任务凑日报。Quay 的任务数、进程数与父需求完成情况分开。
+## 2. 一轮的输入与结果
 
-## 2. 每日动作与责任
+一轮读取固定cutoff内的来源变化、当前理解版本、Work Engine真实控制状态、接受目标/AC、已有委托、资源/环境和运行证据。cutoff是本轮一致性边界，不是忽略紧急变化的理由。
 
-| 时机 | 动作 | 所有者与输出 |
-|---|---|---|
-| 当日工作后 / 晚间 | 获取已登记来源增量 | Information Intake；source revision、分页覆盖、游标和必要原文 locator |
-| 同轮 | 更新认识并对账 | 理解事实/推论/冲突、需求处置、Git/PR/Run/实际环境，不复制全量数据库 |
-| 同轮 | 选取最多两项次日焦点 | 原生 Coordinator 根据已授权排序策略提案；Work Engine 原子准入、记录选择来源 |
-| 晚间 | GPT 参与研究与设计 | 原生 GPT reasoning Provider；独立 source/design 版本与证据 |
-| 设计足够明确后 | 形成实施计划并由独立 GPT Session 审阅 | 审阅绑定 scope、source、design、plan、代码 baseline；拒绝/未完成不能放行 |
-| 次日 / 条件满足时 | 原生 Agent 或 Quay 执行有界工作 | 已存在执行器和 Work Engine Run/lease；不把一个状态字当执行许可 |
-| 有意义的验收边界 | 测试并给出证据 | Testing；需求 E2E / 范围 E2E、后端断言、多张必要截图 |
-| 结束或受阻 | 报告、发布及反馈回流 | Reporting / Document / Human Control 各自回执；结果回到看板与认识 |
+本轮结果至少说明：采集/理解哪些范围完成；关键认识变化/冲突；实际选中和继续的焦点；做了哪些有意义工作；验证/发布/投递分别到了哪；哪些待续、谁接收、什么条件唤醒。report写出来不等于这些步骤都运行过。
 
-晚间/次日是用户产品节奏，不是不可变时钟。具体时间、时区 Asia/Singapore、资源和费用预算是实例配置；代码不写死业务时刻。本轮没有启用全业务每日执行定时器。
+例行状态、人类日对账与正式日报不同用途，共用事实但不复制正文权威。当前没有任务/没有新信息可合法空结果，不制造日报成果或无意义告警。
 
-研究/实验可往返，研究型或 no-code 目标不强制写代码；代码计划改变必须重新审阅受影响部分。分阶段回执是证据与准入条件，不增加另一套业务 Item 状态机。
+## 3. 一次配置与授权
 
-## 3. 一次配置，日常少确认
+通过已有Agent Control的可信actor/委托记录，明确可读来源/项目/cutoff、可写树/文档章节、允许effect、模型/搜索/Quay费用与资源、review策略、receiver、时区/触发、有效期和撤销。文档本身和模型正文不能签发grant。
 
-授权分两层：
+模型API、公共搜索、私人材料外发、客户联系、开发服务安装、生产变更、云删除/ACL分别判断。允许本地研究不自动允许Jev外发，也不能用禁止客户邮件推导所有已授权模型API都必须停。当前生产cutover/rollback/高风险配置依旧人执行。
 
-1. 站立委托规定可参与项目、来源、可自动选择的候选范围、允许读写/网络/发布目标、风险上限、运行预算、有效期和撤销途径。
-2. 每日选择通过真实控制面将它落实成具体 Item/动作/scope digest 的有界授权，并占用现有工作租约；模型不能自己填写一个 allow 字段就完成授权。
+首次真正缺字段就一次列出精确配置和影响；可从现有record/Binding解析的不反复问。用户没出席不把agent_reconciled写成user_confirmed，也不冻结其他已合法授权的工作。
 
-用户本轮表达的是自动选择/研究/审阅/实施的产品方向，不隐式授权未知生产操作、管理员知识外发、所有共享仓库 push 或无限模型费用。已确认的项目边界继续有效。首次配置后正常日子不再反复问“要不要研究、要不要写计划”。
+## 4. 采集与理解两条水位
 
-Coordinator 可自动记录可核对事实与已授权范围内的判断。`agent_reconciled` 不等于 `user_confirmed`；用户未到场时对账机会照常产生，重大争议保留，其他已授权工作继续。不能用每日人类签到作为全部工作的启动条件。
+**纠正前版“理解提交后才推进采集游标”的耦合。**
 
-## 4. 认识不是每日重写一遍长摘要
+B1对原始事件/manifest安全持久的精确范围推进capture watermark；B2对完成语义patch/相关视图提交的范围推进understanding watermark。模型失败可以留下understanding lag，不重抓已存raw；任何中间gap都不能被最大位置掩盖。
 
-按来源 stable ID / revision 处理增量、更正、撤回和失效；提交理解变更后才推进相应采集游标。只更新被新证据影响的 people/project/topic/responsibility/decision 记录。
+默认SHALLOW、明确bot/app/测试来源NONE、指定必要材料DEEP。NONE不为计数先拉正文；Follow按对象/版本和受控子树；所有private文件/截图均有物化与外发权限边界。
 
-每条重要结论能回到来源、时间、适用版本与证据强度；missing 与 zero、推断与观察、团队基线与生产事实保持分开。冲突不会靠最后写入者获胜，也不为自动化而吞掉原失败。
+B2读取actual source内容，产生有出处的观察/推论/决定候选和冲突，写入合法authoring对象。现有understanding_delta/understanding_patch的重读提案是前置，不代替语义writer。来源正文变而range没变时旧确认仍失效，patch接受须绑定source digest与当前理解baseline。
 
-每次执行前使用同一已核对的 knowledge/source digest 加该任务最小 Context Capsule。当前上下文与实际可写 checkout 对齐；新的关键来源变化撤销受影响计划的准入，不撤销全世界所有计划。
+只更新受影响people/project/topic/Claim；自己的发布revision通过receipt去重，后续人改不能被吞。撤回/失效先在本地召回过滤生效，远端Memory更新晚到不复活旧结论。
 
-原生 Memory、records/checkpoint 与 MetaCC 可先满足连续性；OpenViking 是可选检索 Provider，不是每天工作的启动依赖。失效来源在调用方 recall/filter 层即排除，不能等远端索引恢复才阻止旧结论召回。
+## 5. 对账与最多两项焦点
 
-## 共享决策与真实对账入口
+Card拥有语义，Work Engine拥有状态/Run/lease，Board派生。current store、cards、旧projection按身份/来源对账，历史ACTIVE不当今日worker；取消/被替代不自动重开。没有某项目projection与项目确有0项分开。
 
-Laya 的本地共享服务和 Serper/Jev 接入见 [共享基础设施](shared-decision-search.md)。它们辅助 relevance/证据研究，不负责签发授权、决定当前状态或测试是否成功。Laya 不可用时关闭 shadow 或沿原生路径继续；不得自动把内部上下文发往 Jev。
+对本profile已经选中的root先继续/结束/合法停放，再填空位。运行/委派/等待/取消未确认/unknown effect占位；历史record-only不自动占位。明确停放需checkpoint与旧writer/资源确认，不新建Item enum。
 
-进入本 profile 前先核对 cards、当前 control store 和历史投影；旧视图零重叠不是再次选择 authority 的理由。只重新纳入当前证据支持的控制对象；历史待对账项可见但不能假装已被选择或仍有 worker。下面的“两项”指本 profile 真正选中的工作焦点，不把全部项目的每条记录都当 carryover。
+准入从Work Engine、Agent Control、实际executor、Registry/Binding和接受需求组装；grant/scope/worker事实不塞Card当独立权威。新候选从没开始过时检查无冲突lease/intent，不要求虚构停止回执。
 
-## 5. 自动选两项，不把规划变成无限积压
+选择按已有业务价值/优先级、deadline、依赖、可验收和环境就绪，有来源解释；没有priority字段不默认P0，也不永久拒绝所有候选。若授权允许Coordinator排序，记录其建议与接受范围。实际effects前再次原子核scope/revocation/基线/资源/预算。
 
-先处理本 profile 已选焦点的继续/结束/明确停放，再填空位。等待、delegated、cancelling、效果未知不能被当成“已经空闲”。明确停放是焦点选择的 disposition，不凭空增加 Work Engine 的 Item enum；必须已确认执行者停止、资源释放并留下恢复点。
+## 6. GPT设计、独立审阅和研究往返
 
-按用户/授权来源既有优先级、真实依赖、可验收范围与环境准备度排序。重要业务优先级不存在时先说明，不用模型热度猜 P0。全局 Work Engine 仍检查与其他工作流的冲突，不接管别人的 Quay 队列。
+采用已有CodexAppServerProvider或已验证exec适配；明确模型/推理配置、允许工具、预算/deadline。设计与plan review不同真实Session，提供问题、原始依据、候选方案/反例与具体当前代码，不只给作者摘要。
 
-选择是可撤销的计划，不是两项已经开始执行；执行仍要在权威准入锁内检查最新授权、撤销、源/计划基线、环境和资源。过期看板不能产生新的可信选择。
+review receipt绑定Item/scope/source/design/plan/baseline、实际Session、requested model/config和时间；完整turn与有效final对应才算完成。模型APPROVE不授权；field缺失、旧final、同作者、自述adapter_verified不能放行。
 
-## 6. GPT 高强度参与的两条真实路径
+CHANGES_REQUIRED在原设计预算内有界修订。相同输入/相同finding且无新证据不重复review刷结论；评审可能错，主侧核对可定位证据，不为了迎合它删正确行为。实质输入变更仅重审受影响组合，不把所有业务变成永远审计划。
 
-### 原生自动路径
+人工ChatGPT仍可经GitHub参与深度讨论，但不要求用户每天手动搬材料，也不冒充无人值守操控ChatGPT界面。
 
-使用已授权的 Codex 非交互接口作为 GPT reasoning Provider。为设计与计划审阅明确指定已验证可用模型与 high/xhigh 推理配置，不继承当前用户可能为低延迟编码设置的 low 配置。
+## 7. 实际执行、验收与父继续责任
 
-设计轮与独立计划审阅使用不同 Session，提供问题、来源、候选方案与验收，后者检查遗漏、因果证据、迁移、权限、资源、测试和恢复。独立 Session 是隔离条件，不自动证明审阅质量，关键结果仍需证据核查。
+Parent将接受的子任务交真实native/Quay执行端，记身份/输入/allowed effects/资源/预算/验收receiver。接收者确认可执行才accepted，Task创建不等于worker已研究。Quay保持原生driver/队列/工作树生命周期，不重建其调度。
 
-可信调用适配器记录：真实进程状态、完整 completion 事件、最终结构化正文、requested model/effort、Session、输入 digest、来源/计划 baseline、时间与未决意见。模型返回的“APPROVE”本身不具备身份、授权或签名效力。
+浏览器按当前worker实际工具限制，必要时独立Testing Provider执行；不解除全部worker黑名单。真实登录/headed、多图/断言按AC，mock/synthetic只用于明确的机制验证。
 
-本轮实测出现过 exit 0 但没有 turn.completed/最终正文，所以必须判为 INCOMPLETE。原生 CLI 成功、模型审阅通过和工作执行准入是三个不同判断。代码与测试已加入该反例。
+验证目的先声明：复现一个缺陷、确认已有修复、证明新实现不是同一oracle。未复现只限已测路径，产品非预期FAIL按既定粗粒度收证据停自动修；预期拒绝/预期缺陷复现可完成相应诊断任务，但不能报产品已好。
 
-### 人类参与 ChatGPT 路径
+Parent验收结果并决定下一步，不让child自己关闭父Item。parent压缩/退出前有真实checkpoint与接收/唤醒机制才称会自动继续；无scheduler只是待续状态。一个child受阻不取消其他scope正确的工作。
 
-你在 ChatGPT 对话中的深度讨论仍可通过 GitHub work packet 回写。这是可选的更强参与路径，不冒充已自动控制网页/桌面 ChatGPT。原生自动路径不依赖你每晚把一份设计粘贴回来。
+## 8. 文档、报告、通知与反馈
 
-## 7. 设计审阅与实施准入
+B8组织已验证事实；B9在正确对象/受众/授权章节做局部维护与回读；B10按receiver/静默/幂等发送。三个效果分别记录，失败恢复只补未完成部分。用户要求发出时只有draft不能完工；没有发送目标的研究任务也不强制飞书发送。
 
-审阅接受的对象是一个固定组合：Item、scope、source、design、plan、代码/config baseline 与所需执行 Binding。审阅结束到实际实施前任何重要部分变化，重新审受影响版本。
+自管公开指南保持指定知识库入口；LiteLLM共享doc可Follow+局部patch；Bruce SOP默认只读+规则差异建议。不能保护人改冲突时交候选，不自动whole-body覆盖。原Minutes/文件按用途保留，不在每处复制正文。
 
-CHANGES_REQUIRED 可以在既有授权/预算内回到设计修订再审；保留原意见和修改依据。模型/认证/输出不完整、费用或次数预算耗尽时停止该分支。不得降成未经批准的低推理模型，也不得将空答复当默认批准。
+静默窗口内完成准备与合法待发intent，actual sender在允许时间消费并回执；没有真实consumer不得声称已排队。知识/工作结果回B2更新，自己报告不反向证明自己的原结论。
 
-原生执行在 Work Engine Run/lease 与真实 OS/Provider 权限边界下进行。新 pure policy helper 的 ELIGIBLE_FOR_ADMISSION 不等于执行权限；可信授权/receipt 由调用者注入，不能接受网页或模型自行声明的 allow。
+## 9. 故障、预算和可选依赖
 
-## 8. Quay 与测试的实际接法
+worker cancel、process exit、business effect、resource released分别有证据；unknown effect先查同attempt，不重放child。父级预算包括子任务/重试/shadow/浏览器subrequest，计费未知先保留尝试再核对。
 
-复用当前安装的 Quay 插件 CLI/原生 Task/acceptance/gate-events。源码目录、插件版本、CLI 版本、当前运行者分别记录。对一个有界任务，创建任务、配置真实验收命令、执行 gate/complete、回读证据，不能只创建 Task 然后报“Quay 已参与”。
+OpenViking可选、Laya shadow、某远端UI/Windows路径只影响依赖它的步骤；缺生产Runbook只阻断生产变更。Jev未绑定可完成adapter/本地部分，但MarketOps full-MVP要求的实际对照不能被静默删掉。
 
-当前默认 Quay worker 屏蔽 Playwright MCP，保留这一隔离，不偷偷开放全部 worker。非浏览器实现/验证可交 Quay；浏览器测试由具备授权环境的独立 Tokyo Testing Provider 执行，Quay/父目标引用其结果。需要独立 browser worker 时专门验证身份、profile、权限、并发与清理。
+source取得失败/权限撤销只冻结可能受影响的后续效果，精确scope无法证明时保守暂停该scope；无关项目不被一个旧Board/历史文档全局卡住。基础监控与业务无进展分开：serverosd健康不证明循环做了工作。
 
-本轮已证明 Quay 能调用原生验收命令运行单元测试，也能调用独立真实浏览器 context 的验证任务并保留截图。该 smoke 不证明用户登录态/可见窗口 E2E；不能将它替代已约定的真实用户验收。
+## 10. 调度与运行资格
 
-测试失败在已选的安全粗粒度边界保存证据并呈现，停止自动产品修改；不能为了低人工介入而隐藏失败、改 acceptance 或无限重试。设计审阅修订和产品测试失败的停点不同。
+复用OS/已有授权scheduler启动有限worker；一个logical routine唯一trigger owner，checkpoint/intent/receipt进既有control体系。错过周期按语义合并，不能机器恢复后重复开多批。
 
-## 9. 六处接缝的默认处理
+时区、晚间/次日时刻、预算和告警策略是实例配置。本轮未启用任何timer。现有unit只跑workbench render就只能叫资料刷新，不能写完整日循环LIVE。
 
-| 接缝 | 采用选择 | 不能冒充的完成 |
-|---|---|---|
-| Quay / 浏览器 | 现有插件 + 明确任务 + 独立 Testing Provider | MCP 进程存在不等于真实任务；synthetic browser smoke 不等于带用户登录态 E2E |
-| Windows handoff | 已授权远端 Provider + checkpoint/hash + 目标根解析 + 真实写入权交接 | 传文件或远程命令通过不等于已移交业务租约；SSH 不可用不绕企业控制 |
-| OpenViking | 采用官方独立 SDK/HTTP 服务，配置 endpoint 与限定身份；当前先用 records/checkpoint | fixture/SDK 可导入不等于真实检索服务在线 |
-| 云文档并发 | 写前 fetch 当前 revision/内容；精确局部写、回读；共享正文需已验证条件写 | 存在 revision 参数不等于 CAS；无保护时不能自动覆盖他人正文 |
-| 生产切流 | 真实 Runbook/traffic authority 与目标 Binding，人工执行 | 通用蓝绿设计不等于已知道当前线上 nginx/脚本/命令 |
-| Support Bot | support 受审知识 → 员工快照 → bot 只读消费；无解交 owner 队列 | 生成员工包不等于 Bot 已接消息；未收到投递回执不能说已转人工 |
+完整LIVE前至少跑通SCENARIO-ACCEPTANCE的J06：真实源变化→理解提交→current board与有效委托→设计/独立review→实际执行→验收→必需交付/回流，并完成duplicate、source漂移、权限撤销、cancel未知和partial发布恢复反例。其他独立功能可分别启用，但不能汇总成全链已完成。
 
-六者不是所有工作共同的启用门：无 Windows/生产依赖的 Tokyo 工作继续；OpenViking 不可用仍可对账；共享文档条件写未验证时生成可审核版本/新报告，不自动覆盖旧正文。缺口必须明确影响哪些具体动作，不能以一个总 READY 掩盖差异。
+## 11. 历史实测和当前缺口的位置
 
-## 10. Support Bot 的知识入口与兜底选择
+2026-09-22原生GPT、Quay gate、合成browser、Windows checkpoint等历史实测在integration-readiness-20260922.md；它们不是当前LIVE/业务完整证明。此次源码反查与风险见WORK-SCENARIO-REVIEW-20260923.md。
 
-知识维护归 litellm-support，而不是 Bot 代码仓或 ServerOS。消费的具体快照必须带 source revision、entry hashes、audience 与经过实质审核的适用状态。现有导出器可复用，但标签 verified 与正文警告冲突的条目要先核对；不得仅凭目录白名单/字符扫描宣称完全安全。
-
-Bot 默认只消费员工可用的快照，不挂 raw、operator、candidate 或来源全文作为可穿透链接。ServerOS 旧 support matcher 与该快照格式不是同一接口，需真实消费测试，不能换路径就宣称适配完成。
-
-兜底默认交绑定的个人工作 owner，而非擅自指定同事或 SLA：无匹配、证据冲突、权限不够、用户要求转人工或预算耗尽时形成小决策包（原消息引用、已查事实、尝试、疑问、建议）。先入已有工作/通知队列并得到回执，再按许可给 owner 提醒；外发收件人/机器人未绑定时显示待投递，不能告诉求助者“已通知”。
-
-回包后按原 case/thread 回写事实与结果，同一问题幂等归并；Bot 的答复不能自动变成 verified 知识。服务接入、实际接收/回调和 owner 收件仍需端到端验证。
-
-## 11. 可靠性与通知
-
-只保留一个该 profile 的触发所有者，沿用 OS 定时器或已授权 Scheduler 启动有限 worker。日循环不在 serverosd tick 里调用模型，不建立第二套 Quay/work 状态库。
-
-同一轮/阶段动作的 idempotency key 绑定输入版本；STARTED 后崩溃/超时先查实际效果，不能盲目再发。共享动作回执写入既有 namespace；本轮 bounded invocation 只提供进程证据，不证明业务结果，也不证明所有子进程已经消失。
-
-日志大小/等待时间有明确边界，不对整个 native 进程施加可能破坏其缓存写入的全局文件大小限制。真实 worker 的进程树/cgroup、安全沙箱和累计预算由受管执行端承担；helper 不夸称具备这些能力。
-
-通知默认一份日对账/成果摘要，加实质异常；一项等待不阻塞其他已授权焦点。报告列选了什么、做了什么、哪些证据支持、Quay 的真实贡献、未完成/未投递/待你决定什么，不用工具调用数充当进展。
-
-## 12. 当前实现与启用条件
-
-已有本轮代码：intake/daily_cycle.py（选择/当前授权与审阅绑定/来源失效），runtime/review_receipt.py（完整原生审阅证据），runtime/bounded_invocation.py（有限调用与幂等证据）。这些都是现有系统的库函数，不是已接完的无人值守总执行器。
-
-在任何“每日自动实现已启用”声明前，必须验证完整一路：真实增量 → 认识提交/游标 → 真实 board/current grants → 原子选择/资源准入 → 设计/计划审阅 → 自有工作树实施 → 真实验收 → 对账和发布回执。失效/重启/双触发与取消反例也要覆盖。
-
-本轮运行范围与未覆盖项见 [现场接缝验证](integration-readiness-20260922.md)。该报告不替代未来某次 Run 的准入。不得仅安装本 profile 或测试 helper 就声称无人值守业务闭环已经运行。
+执行仍用CC-EXECUTION-PLAN.md的P0–P12；COLLABORATION-IMPLEMENTATION只给本轮接口/失败定位和依赖细化，不另开一套完成度表或工作平台。
