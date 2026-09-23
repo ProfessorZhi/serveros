@@ -731,6 +731,88 @@ def test_a_pending_sentence_that_names_a_token_is_reconcilable(tmp_path):
     assert claim["names_materials"] == [IMG2]
 
 
+def test_a_sentence_declaring_nothing_pending_agrees_with_the_material_half(
+        tmp_path):
+    """The fourth case, and the reason the first three were not enough.
+
+    Measured on the live tree 2026-09-23: six of the seven pending sentences
+    there read `无附件待展开`. Reading all six as claims about missing material
+    reported six reconciled captures as broken, which is the same failure as
+    reading a broken one as fine — a reader who cannot tell them apart has to
+    go and look at every one.
+    """
+    records = tmp_path / "records"
+    chat_capture(records, messages=[a_message("om_1", 1, "image", IMG)],
+                 files={f"{IMG}.jpg": b"x" * 4},
+                 files_block={"pending": "无附件待展开",
+                              "backfilled": [f"{IMG}.jpg"],
+                              "by_message": {"om_1": {"file_key": IMG}}})
+    row = objects_by_name(read(records))["feishu:chat:oc_fixture_chat"]
+    claim = row["pending_claims"][0]
+    assert claim["state"] == "DECLARES_NONE"
+    assert claim["names_materials"] == []
+    assert "the material half agrees" in claim["why"]
+    facts = row["coverage"]["material"]["facts"]
+    assert facts["registered_not_landed"] == 0
+    assert facts["referenced_not_landed"] == 0
+    assert facts["unindexed"] == 0
+
+
+def test_a_declaration_the_bytes_contradict_is_a_false_all_clear(tmp_path):
+    """§4: 只有登记hash、实际字节丢失也不能称归档完整.
+
+    `无附件待展开` over a manifest whose `backfilled` list names an attachment
+    the disk does not hold. This is NOT `NAMES_NO_MATERIAL`: that state sends a
+    person to find out what is missing, this one sends them to find out whether
+    anything is, and the two are different errands because only one of them may
+    start by re-downloading what is already there.
+
+    Live case, 2026-09-23: `people/nature-hu`'s manifest says exactly this and
+    its `registered_not_landed` is 1.
+    """
+    records = tmp_path / "records"
+    chat_capture(records, messages=[a_message("om_1", 1, "image", IMG)],
+                 files={f"{IMG}.jpg": b"x" * 4},
+                 files_block={"pending": "无附件待展开",
+                              "backfilled": [f"{IMG}.jpg", f"{IMG2}.jpg"],
+                              "by_message": {"om_1": {"file_key": IMG}}})
+    row = objects_by_name(read(records))["feishu:chat:oc_fixture_chat"]
+    facts = row["coverage"]["material"]["facts"]
+    assert facts["registered_not_landed"] == 1
+    assert facts["unindexed"] == 0
+    claim = row["pending_claims"][0]
+    assert claim["state"] == "FALSE_ALL_CLEAR"
+    assert "1 registered material(s) have no bytes" in claim["why"]
+    assert claim["state"] != "NAMES_NO_MATERIAL"
+
+
+def test_a_quantity_turns_a_negation_into_a_claim(tmp_path):
+    """The precedence, because 无附件待展开 is only an all-clear when it is one.
+
+    A sentence that opens with a negation and still counts something is a
+    claim; a keyword rule over 待/未 would read both it and `无附件待展开` as
+    claims, and a rule over 无 alone would read both as all-clears.
+    """
+    records = tmp_path / "records"
+    chat_capture(records, messages=[a_message("om_1", 1, "image", IMG)],
+                 files={f"{IMG}.jpg": b"x" * 4},
+                 files_block={"pending": "无附件待下载，另有 2 个文件未展开",
+                              "backfilled": [f"{IMG}.jpg"],
+                              "by_message": {"om_1": {"file_key": IMG}}})
+    row = objects_by_name(read(records))["feishu:chat:oc_fixture_chat"]
+    claim = row["pending_claims"][0]
+    assert claim["state"] == "NAMES_NO_MATERIAL"
+
+
+def test_the_pending_claim_states_are_the_vocabulary_the_module_emits():
+    """A state the module can return and does not declare is a state a reader
+    cannot look up; one it declares and cannot return is a promise."""
+    assert material.PENDING_CLAIM_STATES == (
+        "NAMES_A_MATERIAL", "NAMES_NO_MATERIAL", "FALSE_ALL_CLEAR",
+        "DECLARES_NONE")
+    assert len(set(material.PENDING_CLAIM_STATES)) == 4
+
+
 def test_a_permission_refusal_is_not_recorded_as_a_success(tmp_path):
     """§5: 权限拒绝结束 attempt 而不是 content 成功."""
     records = tmp_path / "records"

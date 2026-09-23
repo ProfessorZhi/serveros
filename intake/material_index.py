@@ -188,6 +188,27 @@ REGISTRY_STATES = ("DECLARED_BACKFILLED", "DECLARED_PENDING",
 MATERIAL_STATES = ("UNMEASURABLE", "PARTIAL", "COMPLETE",
                    "NONE_REQUIRED_BY_POLICY")
 
+#: What a `files.pending` sentence amounts to. Two of these owe work and two owe
+#: agreement, and the distinction decides who acts: a sentence that CARRIES a
+#: claim has to be reconciled against bytes, while a sentence that DECLARES
+#: there is nothing to fetch is only as good as the manifest behind it. A false
+#: all-clear is the worse failure of the two — a reader who trusts it stops
+#: looking — which is why it is not folded into `NAMES_NO_MATERIAL`: that state
+#: says somebody must go and find out WHAT is missing, this one says somebody
+#: must go and find out WHETHER anything is.
+PENDING_CLAIM_STATES = ("NAMES_A_MATERIAL", "NAMES_NO_MATERIAL",
+                        "FALSE_ALL_CLEAR", "DECLARES_NONE")
+
+#: Whether a sentence declares that nothing is left to fetch, rather than
+#: claiming something is. Measured against the live tree before it was written:
+#: six of the seven pending sentences there read `无附件待展开`, and a search for
+#: 待/未 — which is what a keyword rule would do — reads every one of them as a
+#: claim. So the negation is tested at the START and a quantity anywhere
+#: overrides it: `无附件待下载，另有 2 个文件未展开` claims two attachments and is
+#: not an all-clear.
+_EMPTY_SENTENCE = re.compile(r"^\s*(?:无|沒|没|空)")
+_QUANTITY = re.compile(r"[0-9０-９一二两三四五六七八九十百]")
+
 #: The understanding half is measured elsewhere or not at all. This module
 #: reads materials; it does not read cards, and a second reader of the cards
 #: would be a second answer to a question that already has one.
@@ -1635,7 +1656,8 @@ def build_object(record: dict, document: dict, directory: Path, *,
         "materials_this_scope": sorted(m["material_id"] for m in own),
         "legacy": _legacy_summary(messages, evidence, edges, own),
         "stale_markers": _stale_markers(own),
-        "pending_claims": _pending_claims(evidence, disk),
+        "pending_claims": _pending_claims(evidence, disk,
+                                          material_half["facts"]),
         "unindexed": _unindexed(own),
         "why": _object_why(discovery, material_half, understanding_half),
     }
@@ -2005,8 +2027,10 @@ SUMMARY_PRODUCED = {
     "policy": "the policy join's state, so `UNMEASURABLE` everywhere is never "
               "read as a measurement",
     "policy_joined": "policy rows that name a source this reading also reached",
-    "pending_claims": "the collector's pending sentences, counted by whether "
-                      "anything on the manifest lets them be reconciled",
+    "pending_claims": "the collector's pending sentences, counted by what each "
+                      "one claims — a claim nothing identifies, a declaration "
+                      "that nothing is pending, and a declaration the material "
+                      "half contradicts are three rows and not one",
 }
 
 PENDING_CLAIM_PRODUCED = {
@@ -2019,8 +2043,12 @@ PENDING_CLAIM_PRODUCED = {
                              "`.gitkeep` is not material, and counting it "
                              "silently would inflate the claim",
     "state": "NAMES_A_MATERIAL when the sentence can be reconciled against "
-             "bytes, NAMES_NO_MATERIAL when nothing identifies what is missing",
-    "why": "one sentence, and the one that decides who has to act",
+             "bytes; NAMES_NO_MATERIAL when it claims something is missing and "
+             "nothing identifies what; FALSE_ALL_CLEAR when it declares nothing "
+             "is left to fetch and the material half contradicts it; "
+             "DECLARES_NONE when it declares that and the material half agrees",
+    "why": "one sentence, and the one that decides who has to act — what to go "
+           "and fetch, or whether there is anything to fetch at all",
 }
 
 LEGACY_PRODUCED = {
@@ -2116,17 +2144,28 @@ def _stale_markers(materials: list[dict]) -> list[dict]:
             and "DECLARED_PENDING" in material["registry"]["states"]]
 
 
-def _pending_claims(evidence: dict, disk: dict) -> list[dict]:
+def _pending_claims(evidence: dict, disk: dict, facts: dict) -> list[dict]:
     """The collector's `files.pending` sentence, and what it does not say.
 
-    On this tree the sentence is prose — `3 张图片未下载` — and it names no
-    token, so it cannot be attached to a material and cannot be reconciled by
-    recomputing a set difference. §10's row `现存文件pending旧 → 核字节/关联后
-    修索引，不重复下` is answered where the sentence does name something; where
-    it names nothing the finding is that a claim about three files exists and
-    nothing identifies which three, which is the thing a reader must fix by
-    hand. The tokens the sentence does carry are reported so the two cases are
-    told apart instead of merged into one.
+    Three cases, and reading them as one would hide the worst of them:
+
+    - the sentence names a token (`3 张图片未下载` naming one): reconcilable, and
+      §10's row `现存文件pending旧 → 核字节/关联后修索引，不重复下` is answered by
+      recomputing the set difference against the bytes;
+    - the sentence claims something is missing and names nothing: somebody must
+      go and find out WHAT. This is the case the module originally reported for
+      every non-empty sentence, and on this tree it is also the honest reading
+      of the one sentence that admits incompleteness.
+    - the sentence DECLARES there is nothing left to fetch (`无附件待展开`): it
+      owes no work, it owes agreement — and the material half is what it has to
+      agree with. Declared on the live tree, 2026-09-23: one capture's manifest
+      says `无附件待展开` while a material it registers has no bytes on disk.
+      That is the failure mode §4 names (`只有登记hash、实际字节丢失也不能称归档
+      完整`) and it is reported as `FALSE_ALL_CLEAR` rather than as a vague
+      claim, because the two send a reader to different places.
+
+    The `why` is the sentence that decides who acts, so each state writes its
+    own and none of them is a rewording of another.
     """
     text = evidence.get("pending_text")
     if not text:
@@ -2137,22 +2176,45 @@ def _pending_claims(evidence: dict, disk: dict) -> list[dict]:
                      form["pattern"].finditer(str(text)))
     landed = sorted(disk)
     unnamed = [name for name in landed if not _is_token(_token_of(name))]
+    declares_none = (bool(_EMPTY_SENTENCE.match(str(text)))
+                     and not _QUANTITY.search(str(text)))
+    debt = (facts["registered_not_landed"] + facts["referenced_not_landed"]
+            + facts["unindexed"])
+    if named:
+        state = "NAMES_A_MATERIAL"
+        why = ("the sentence names a token, so what it claims can be checked "
+               "against the bytes")
+    elif declares_none and not debt:
+        state = "DECLARES_NONE"
+        why = ("the sentence declares nothing left to fetch and the material "
+               "half agrees: no registered material is unlanded, no message "
+               "names one nothing landed, and no file sits on disk unindexed. "
+               "That is agreement about this manifest, not a measurement that "
+               "the capture is complete — the message half answers that")
+    elif declares_none:
+        state = "FALSE_ALL_CLEAR"
+        why = (f"the sentence declares nothing left to fetch while "
+               f"{facts['registered_not_landed']} registered material(s) have "
+               f"no bytes, {facts['referenced_not_landed']} material(s) are "
+               f"named by a message nothing landed, and {facts['unindexed']} "
+               f"file(s) sit on disk unindexed: a reader who trusts the "
+               f"sentence stops looking, and the bytes are the half to trust")
+    else:
+        state = "NAMES_NO_MATERIAL"
+        why = (f"the sentence names no token and {len(landed)} file(s) are on "
+               f"disk under this capture"
+               + (f", {len(unnamed)} of which carry no token at all"
+                  if unnamed else "")
+               + ": nobody can tell from this manifest which materials are "
+                 "still missing, and no download should be started until a "
+                 "person reconciles it")
     return [no_unsourced({
         "text": str(text),
         "names_materials": sorted(set(named)),
         "files_on_disk": len(landed),
         "files_without_a_token": unnamed,
-        "state": ("NAMES_A_MATERIAL" if named else "NAMES_NO_MATERIAL"),
-        "why": ("the sentence names a token, so what it claims can be checked "
-                "against the bytes"
-                if named else
-                f"the sentence names no token and {len(landed)} file(s) are on "
-                f"disk under this capture"
-                + (f", {len(unnamed)} of which carry no token at all"
-                   if unnamed else "")
-                + ": nobody can tell from this manifest which materials are "
-                  "still missing, and no download should be started until a "
-                  "person reconciles it"),
+        "state": state,
+        "why": why,
     }, PENDING_CLAIM_PRODUCED, "pending_claim")]
 
 
