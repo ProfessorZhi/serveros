@@ -1,64 +1,48 @@
-# ServerOS documentation map
+# ServerOS 当前文档入口
 
-Start with [the product entry](../README.zh.md) and [ARCHITECTURE.md](../ARCHITECTURE.md). ARCHITECTURE remains the single normative product boundary; focused contracts specify existing responsibilities without adding another authority, resident Core or compulsory workflow.
+2026-09-23整合。产品总边界仍为[ARCHITECTURE.md](../ARCHITECTURE.md)：原生Agent主脑、薄Plugin、唯一Core、Work Engine/Agent Control各自权威。本轮补外部参考、重点深归档与Git/飞书方向，并把最新并行实现纳入**一个**实施计划。
 
-## Real-work collaboration and execution
+## 先看三份
 
-| Document | Purpose |
+1. [CC-EXECUTION-PLAN](CC-EXECUTION-PLAN.md)：唯一P0–P12，当前源码/历史回执分开。提交前已读新增semantic writer、水位、Nature资料与发布排除；不重造已实现机制。
+2. [INFORMATION-DOCUMENT-LIFECYCLE](INFORMATION-DOCUMENT-LIFECYCLE.md)：Source/材料/Reference/理解/工作/交付的统一对象与权威图。
+3. [Ability Blueprint](https://github.com/ProfessorZhi/ability-management/blob/main/design/ABILITY-CANONICAL-BLUEPRINT.md)与[21项实现矩阵](https://github.com/ProfessorZhi/ability-management/blob/main/design/ABILITY-REALIZATION-PLAN.md)：最小形态、真实消费者和退出门，不是21行LIVE勾。
+
+仅按当前任务加载下面相应合同，不每次读全库。
+
+## 信息、参考和知识
+
+| 文档 | 范围 |
 |---|---|
-| [Collaboration contract](COLLABORATION-CONTRACT.md) | native Parent continuation, accepted user deliverables, minimal producer/receiver handoffs, multi-authority admission, budgets and recovery; details architecture §1/3/4/8/10/11/27 |
-| [Work scenario review](WORK-SCENARIO-REVIEW-20260923.md) | actual pinned records, archived Feishu messages, SOP, code and primary research; separates static risks, historical evidence and unverified runtime |
-| [Daily Work Cycle](daily-work-cycle.md) | corrected capture/understanding watermarks, bounded daily focus, real GPT/Quay work, parent acceptance and delivery continuation |
-| [Scenario acceptance](SCENARIO-ACCEPTANCE.md) | J01–J10 real user journeys, expected outcomes, negative and recovery checks; not proof the tests were executed |
-| [CC final execution plan](CC-EXECUTION-PLAN.md) | existing P0–P12 implementation order and safety/activation boundaries |
-| [Collaboration implementation detail](COLLABORATION-IMPLEMENTATION.md) | current producer/consumer gaps mapped onto P0–P12; no second task plan or completion database |
-| [Ability canonical blueprint](https://github.com/ProfessorZhi/ability-management/blob/main/design/ABILITY-CANONICAL-BLUEPRINT.md) | fixed 21 semantic responsibilities, smallest useful artifacts and exact scenario links |
-| [Per-ability scenario contracts](https://github.com/ProfessorZhi/ability-management/blob/main/design/ABILITY-SCENARIO-CONTRACTS.md) | all 21 responsibilities reverse-checked against actual work: inputs, decisions, receiver, scope, recovery and acceptance |
-| [Product coverage versus sufficiency](https://github.com/ProfessorZhi/ability-management/blob/main/design/ABILITY-PRODUCT-COMPLETENESS-20260923.md) | corrects the prior all-checkmarks interpretation; topic coverage is not proof that collaboration or LIVE behavior works |
+| [外部参考资料库](EXTERNAL-REFERENCE-LIBRARY.md) | 原网页/论文/他人文档→个人Reference、可选本地保存、Follow、人批注、采用；REF01–REF12 |
+| [重点深归档](DEEP-ARCHIVE-POLICY.md) | confirmed source、历史范围、转发包内部有界遍历、多材料与discovery分母 |
+| [Source/Document合同](https://github.com/ProfessorZhi/ability-management/blob/main/design/SOURCE-DOCUMENT-CONTRACT.md) | desired/observed、身份、版本、权限、正文authority、单向投影 |
+| [B1输入](https://github.com/ProfessorZhi/ability-management/blob/main/design/INFORMATION-INTAKE-ABILITY.md) | native/现有采集、Web质量、限定doc/Wiki与部分范围 |
+| [B2理解](https://github.com/ProfessorZhi/ability-management/blob/main/design/STRUCTURED-UNDERSTANDING-ABILITY.md) | 原生reading、现有writer、真实委托与接受、view/记忆传播 |
+| [B9维护](https://github.com/ProfessorZhi/ability-management/blob/main/design/DOCUMENT-STEWARDSHIP-ABILITY.md) | Reference/自管指南/共同章节/SOP，正文与批注分责 |
+| [飞书空间](https://github.com/ProfessorZhi/ability-management/blob/main/design/FEISHU-SPACE-MANAGEMENT-ABILITY.md) | 复用MyDocs/独立个人笔记/Published Knowledge/Drive/Minutes，只增必要参考节点 |
 
-A child task finishing, a report being generated, a JSON schema passing or an installed Skill loading does not by itself complete the user's accepted goal. The current native Parent must check its required outcomes and hand unfinished work to an actual receiver/continuation path. These obligations use existing Work Engine/Agent Control/provider receipts, not another orchestration platform.
+## 协作与运行
 
-## Product surfaces and source lifecycle
-
-| Document | Purpose |
+| 文档 | 范围 |
 |---|---|
-| [Node observability and serverosd health](NODE-OBSERVABILITY.md) | resource semantics, dynamic necessary services, Tailscale/tunnel reachability, independent Core checks and realistic fault domains |
-| [Readable broadcast and alert cards](BROADCAST-ALERT-DESIGN.md) | screenshot-driven visible resource metrics and service health, truthful coverage, actionable low-noise alerts |
-| [Card copy rules](../CARDS-STYLE.md) | actual summaries rather than UID/model lines, precise uncertainty and normal-versus-alert presentation |
-| [Monitoring acceptance](MONITORING-ACCEPTANCE.md) | M1–M6/V01–V18 for P8/P9/P11, producer/model/native visual tests and isolated failure recovery; reused by J08 |
-| [Priority-contact deep archive](DEEP-ARCHIVE-POLICY.md) | project counterpart p2p/project-group DEEP_REQUIRED policy, forwarded-file material closure, completeness and migration |\n| [Information and document lifecycle](INFORMATION-DOCUMENT-LIFECYCLE.md) | default shallow IM, selected materialization, meetings, documents that are both followed and maintained, placement and feedback |
-| [Source/Document contract](https://github.com/ProfessorZhi/ability-management/blob/main/design/SOURCE-DOCUMENT-CONTRACT.md) | stable identities, roles, authority, versions, material coverage and two watermarks |
-| [Ability product experience](https://github.com/ProfessorZhi/ability-management/blob/main/design/PRODUCT-EXPERIENCE-CONTRACT.md) | user-visible outcomes, empty/unknown/partial/failure/waiting behavior and acceptance for every responsibility |
+| [Collaboration](COLLABORATION-CONTRACT.md) | Parent继续责任、receiver接受、授权/预算/恢复 |
+| [Daily Work Cycle](daily-work-cycle.md) | 两水位、最多两root焦点、GPT/Quay与必需交付 |
+| [Scenario Acceptance](SCENARIO-ACCEPTANCE.md) | J01–J10；本轮REF/DEEP追加到对应用户场景 |
+| [协作实现索引](COLLABORATION-IMPLEMENTATION.md) | 合同到主计划映射，明确新writer/水位已存在而业务消费还须验证 |
+| [21项场景](https://github.com/ProfessorZhi/ability-management/blob/main/design/ABILITY-SCENARIO-CONTRACTS.md) | 专属工作/交接；旧源码观察要按当前revision复核 |
+| [产品体验](https://github.com/ProfessorZhi/ability-management/blob/main/design/PRODUCT-EXPERIENCE-CONTRACT.md) | 首层结果、空/未知/partial/等待与真实验收 |
 
-Do not treat every state label in product examples as a new runtime enum or compulsory sequence. Availability, health, authorization, execution, business outcome and delivery are different dimensions. Keep existing supported schemas until deliberately migrated with real producers and consumers.
+## 监控与共享Provider
 
-## Existing focused contracts
+[Node Observability](NODE-OBSERVABILITY.md)定义CPU/RAM/盘/必要服务、Tailscale/隧道与Core独立健康；[卡片产品](BROADCAST-ALERT-DESIGN.md)、[表达规范](../CARDS-STYLE.md)、[Monitoring Acceptance](MONITORING-ACCEPTANCE.md)给可读默认面、冻结receipt、原生360/390px与隔离故障测试。
 
-| Document | Purpose |
-|---|---|
-| [Shared decision/search](shared-decision-search.md) | one Laya host service for ServerOS/MarketOps development, direct Serper/Jev adapters and resource/data boundaries |
-| [Historical integration readiness](integration-readiness-20260922.md) | dated component measurements, not current end-to-end readiness |
-| [Context Capsule](context-capsule.md) | sparse intent-first context, provenance and recovery |
-| [Capability Discovery](capability-discovery.md) | native-first discovery, identity, scoped loading and adoption |
-| [Claude/Codex Parity](claude-codex-parity.md) | shared contracts without invented runtime equivalence |
-| [Safety and Concurrency](safety-and-concurrency.md) | ownership, actual effect boundaries and concurrent writers |
-| [Earlier consolidation review](architecture/CONSOLIDATION-REVIEW-20260921.md) | prior evidence, contradictions and implementation gaps |
+[Shared decision/search](shared-decision-search.md)及[Provider合同](https://github.com/ProfessorZhi/ability-management/blob/main/design/SHARED-PROVIDER-CONTRACT.md)定义单Laya及Jev/Serper边界。服务部署、两个真实consumer、答案质量不是同一证明。当前MarketOps保留业务MCP/独立ledger，Docker和客户外联不因本轮集成启动。
 
-## Technical specifications and owners
+## 原技术合同与历史
 
-- [Ability Fabric](ability-fabric.md)
-- [Agent Runtime Model](agent-runtime-model.md)
-- [Memory Fabric](memory-fabric.md)
-- [Human Control](human-control.md)
-- [Runtime Resources](runtime-resources.md)
-- [Fleet Controller Adapter](fleet-controller-adapter.md)
-- [Space Resolver](space-resolver.md)
-- [Repository Roles](repository-roles.md)
+[Context](context-capsule.md)、[Discovery](capability-discovery.md)、[Parity](claude-codex-parity.md)、[Safety](safety-and-concurrency.md)、[Ability Fabric](ability-fabric.md)、[Agent Runtime](agent-runtime-model.md)、[Memory](memory-fabric.md)、[Human Control](human-control.md)、[Runtime Resources](runtime-resources.md)、[Fleet](fleet-controller-adapter.md)、[Space Resolver](space-resolver.md)、[Repository Roles](repository-roles.md)保持各自责任。
 
-ServerOS owns product composition, Core and human presentation semantics. ability-management owns reusable source/distribution. Work Engine owns current work/control state; Agent Control owns trusted grants. hwz-ops binds concrete targets, limits, recipients and schedules. records and native documents keep their authoring authority. A readable Card is not a second grant/worker database, and an independent observer cannot seize a failed daemon's store.
+[此前反查](WORK-SCENARIO-REVIEW-20260923.md)、[旧实测](integration-readiness-20260922.md)、[历史收敛](architecture/CONSOLIDATION-REVIEW-20260921.md)和ledger保留日期/范围，不倒改成新实现的证明。新版源码推翻旧缺失判断时以主计划当前基线与实际测试为准，不把历史风险无限当待办。
 
-## History and scope of this design update
-
-[Discovery decisions](architecture/PRODUCT-DISCOVERY-DECISIONS-20260921.md), [earlier roadmap](fabric-v1-roadmap.md) and [prior Ability evidence review](https://github.com/ProfessorZhi/ability-management/blob/main/design/ABILITY-DESIGN-EVIDENCE-20260922.md) remain historical evidence. New source/versions must be inspected rather than backfilled as if older runs had observed them.
-
-The collaboration review changes documentation only. It does not alter ARCHITECTURE's frozen resident surface, runtime code, permissions, enum definitions, credential bindings, installations, actual source cursors, Feishu documents, cards or active services. CODE/INTEGRATION/LIVE require their own evidence. Read only the sections relevant to the current native Agent task; do not load the full design corpus into every Session.
+本次只改设计/计划/records说明，基于最新main保留并行代码/数据/测试。无payload、runtime、manifest、source文件、凭据、飞书对象、部署和授权的本轮修改；后续实现必须把新规则落实到真正入口和消费者，不靠文档改LIVE。

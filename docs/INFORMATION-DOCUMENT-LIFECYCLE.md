@@ -1,108 +1,100 @@
-# 工作信息、会议、文档维护与云空间生命周期
+# ServerOS 信息、知识与工作协作生命周期
 
-状态：2026-09-22 用户场景的详细架构合同。解释 ARCHITECTURE.md §4/5/13/20/24；不新增事实、工作或权限权威。本轮只读调查并在GitHub改文档，实际抓取/写入/安装由后续实施按[执行计划](CC-EXECUTION-PLAN.md)完成。
+状态：2026-09-23整合后的设计。解释ARCHITECTURE.md §4/5/13/20/24，保留原Core/控制/正文权威，不增加新业务族。整合外部收藏、优先联系人深归档、限定Follow、协作维护、Git/飞书方向与现有日循环；本次无业务抓取/写入/部署。
 
-## 1. 产品图
+## 1. 统一体系，但不是强制流程
 
 ```text
-已授权IM/文档/Wiki/Minutes/Git工作事实
-     |
-     +-- capture policy（NONE / SHALLOW默认 / 选中范围DEEP）
-     |       -> raw/event manifest + 版本/coverage + 必要材料locator
-     |       -> 按需要取得原文/文件，不自动上传云盘
-     |
-     +-- Follow（指定对象/有界子树）
-             -> 新增/编辑/撤回/权限变化
-                     |
-           Structured Understanding
-            事实/推论/决定/冲突/更正 + 来源关系
-                     |
-          当前工作对账 / 候选 / 已接受需求
-                     |
-        原生Agent与GPT设计/实施/Quay/测试
-                     |
-          报告 / 指南patch / 会议纪要 / 证据
-                     |
-       Stewardship（正文、读者、维护范围）
-                     |
-       Space Management（对象类型、位置、ACL）
-                     |
-       Publisher（精确写入、回读、receipt）
-                     |
-       Human Control（按授权提醒、告警、决策）
-                     |
-       新的源revision回流，但不产生自我重复循环
+IM / 转发材料 / 飞书doc与Wiki / Minutes / Web / Git / 论文
+                 ↓ B1：发现、范围与捕获
+  source声明 ── snapshot/material/coverage ── Follow变化
+       │                     │
+       │                     ├─ B9：我的参考笔记（可收藏后即结束）
+       │                     └─ B2：有来源的认识/变化/冲突
+       │                                    ↓
+       └──────── B3需求 / B5研究 / B6设计 ─ B4当前工作与授权
+                                            ↓
+                          native CC/Codex / GPT review / Quay
+                                            ↓
+                             A7验证 / A8制品（需要时）
+                                            ↓
+                           B8报告 / B9知识与空间 / B10投递
+                                            ↓
+                             实际回执与结果回到当前认识
 ```
 
-这是职责图，不是所有任务都要跑完的阶段机。读一个报错可直接调查；维护一段指南可直接使用已有证据；研究可以no-code交付。
+Source、Snapshot、Reference、Understanding、Owned Knowledge是对象关系，不是每件资料必须晋升五次。只读查询、收藏链接、验证已有能力可直接交付。Parent由原生Agent承担，负责所有已接受的必需交付；child done不自动结束原目标。
 
-## 2. 本轮定下的默认
+## 2. 各仓与物理载体
 
-IM在已授权工作来源范围内默认浅归档。明确机器人/应用DM、指定测试会话黑名单不归档正文；人类群不能因为名字像机器、含bot或者bot占比高就被整组排除。保留已有自聊与东京人类群KEEP例外。
+serveros负责产品/Core/Context/组合/人面，薄Plugin仅入口和必要接入；ability-management拥有可复用Skill/Provider源码与分发；Work Engine拥有当前工作状态/Run，Agent Control拥有真实委托/准入；records/information拥有来源声明/获准观测与当前认识；ops绑定实际路径、身份、环境、受众和触发。
 
-浅档只保存合规消息内容、时间/发送者/编辑撤回/thread、链接/附件引用和manifest；不默认取得全部图片、ZIP或链接文档。深档按消息/线程/材料的工作需要或明确策略展开。policy与实际已取覆盖分开，不能一个deep标志掩盖files.pending。
+大raw/受限文件/媒体、可再生索引、活动游标/锁/outbox按既有受管存储分别落位，不因information是总入口就全部进入Git。原始对象通过稳定身份连接，不靠绝对路径或名称推导authority。
 
-黑名单先依据平台对端类型/稳定ID，不为凑sender计数读取被排除正文。未知身份先metadata评估；计数未知不是无法登记排除的理由。默认浅档不授权无限历史backfill，也不把所有可读个人领域资料自动纳入工作范围。
+全21职责与其正常入口/消费者/验收见ability-management/design/ABILITY-REALIZATION-PLAN.md；不是21个插件或21条固定工作流。
 
-## 3. 一份文档同时读和维护
+## 3. 归档政策与四种独立完成度
 
-DocumentRef关联原正文身份，独立设置：authoring authority、owner、follow范围、stewardship范围、audience/data class、placement、current/accepted revision。一个文件夹“输入/输出”无法表达这些不同事实，不要求重复存两份。
+普通已授权真人来源默认SHALLOW；明确bot/app/测试黑名单NONE；用户确认的重点对接人私聊及指定项目小群DEEP_REQUIRED；普通来源的某份必要材料可按任务做DEEP，不永久升级整群。
 
-实际案例：
+优先联系人当前种子是Bruce.Xu、Nature.Hu、Zhengji.Zhang，绑定稳定chat/identity，不按名字猜或自动纳入其所有群。采集目标历史范围和预算要声明；FULL BACKFILL只是有界历史回填任务，不是全账号数据授权。
 
-| 文档 | 输入作用 | 维护作用 | 权威与限制 |
-|---|---|---|---|
-| 自己的配置/故障指南 | 被Agent/Bot引用、跟进人改 | 在指定Published Knowledge知识库按授权更新正文/截图 | 原指南是正文权威，邻居文档不自动可写 |
-| LiteLLM工作文档 | 需求、决定、协作变化 | 获准章节回填真实进度/结果 | 保持别人的原对象、位置与读者，不接管owner |
-| Bruce MarketOps SOP | 需求/Scene规则与长期目标 | 默认只提修改建议或本项目映射 | 原SOP不改；新版本不自动解禁外发 |
-| 别人维护的公开教程 | 按需参考/Follow | 默认无写；有授权才局部协作 | “公开”不是复刻/搬家/分享许可 |
+必须分开：消息捕获覆盖、材料发现覆盖、材料落地覆盖、语义理解覆盖。capture原始事件提交即可前进；未读材料造成相关语义PARTIAL；附件失败不能拖住所有消息，也不能把只读文本称整包理解完成。
 
-归档消息中已有AI平台知识库作为自有最新版指南落点的线索。与旧地图“共享空间全只读”冲突，应以默认只读+具体已授权文档/子树例外迁移；当前ACL和目标节点执行时再验，不去占用空“配置文档”空间或创建新知识库。
+深归档包括实际转发包里的消息/文件/图片/可解析子转发，遍历上限和权限覆盖明确；只跟踪已转发进来的内容，不查原群所有历史。网页/文档链接默认第一层，不能借转发深归档爬完整网站。细节见[DEEP-ARCHIVE-POLICY](DEEP-ARCHIVE-POLICY.md)。
 
-## 4. 附件与会议需要保留什么
+## 4. 文档角色按对象分开
 
-IM文件默认只保留出处、类型/大小（若提供）、权限、fetch状态和locator。报错截图、需求/SOP、会议关键转录、必要交付文件在改变工作判断或复用时展开；其余不为“完整”批量下载。
+| 对象 | 默认行为 | 正文权威 |
+|---|---|---|
+| 别人文档/指定知识库子树 | Follow、按范围快照、必要参考笔记 | 原文 |
+| 别人的文档但由我们协作维护 | Follow+授权章节patch，原入口/owner不动 | 原共享doc |
+| 自己公开指南 | 适用版本核实、局部维护/截图/回读 | 指定飞书doc或Git对象 |
+| 外部网页/论文/Git资料 | 读取/收藏/按许可离线，采用另判 | 原Source |
+| 自己的参考笔记 | 读者摘要、用途、批注、原文入口 | 我们的参考doc，非原文章 |
 
-读取、持久保留、上传、公开和分享是不同效果。原source合法可访问时优先原链接；需要复用且被允许的副本才交空间管理。图片可能含密钥/个人数据，文本脱敏或文件0600不能证明可Git提交/公开上传。
+follow范围、所有者、stewardship、受众、保存权限、正文权威、placement分别记录。一个doc可以既输入又维护；“共享库”既不表示全只读，也不表示全部可写。具体对象、范围和当前权限共同决定允许动作。
 
-MeetingBundle关联原Minutes、recording、transcript、AI summary和附件。转录/明确人确认支持决定，summary是派生；不将无关背景讲话、推测负责人/期限直接变需求。先metadata/摘要/相关片段，有真实理由再处理音频；缺成员准确PARTIAL。
+Bruce SOP新版本先作差异/候选规则，不自动改其原文、不解除MarketOps research_only/send限制。LiteLLM工作文档回填真实进度只在获准章节，历史备份不升为权威。
 
-## 5. 落位模型
+## 5. 本人空间的最小变化
 
-MyDocs是当前工作的人读界面：工作台、每日对齐、项目工作区、汇报和真正历史归档。个人笔记放经过整理的私人长期知识。Published Knowledge放面向既定企业读者的维护型指南，不等于互联网公开。
+沿用现有MyDocs工作台、每日对齐、项目/需求/报告、汇报、Inbox/归档；个人笔记和Published Knowledge保持各自既有独立空间。新增/复用的仅是MyDocs“参考资料”逻辑节点，不重编号整套目录，不建立每项目/月的空桶。
 
-Drive负责获准的输入/会议sidecars/截图trace/交付文件，沿已有收件箱、工作资料、临时、归档；项目和年月桶只在有内容时建。Minutes原对象不是Drive目录。原外部文档保留原位，备份不能升格正文权威。
+外部文章进入个人参考资料，默认原链接+我们的摘要/批注；不是全文自动转载，不进入团队正式指南。真正采用后由B5/B6/B9在原规则/指南上更新受影响部分。私人资料分享到更广读者需独立授权，不能用摘要名义绕源受众。
 
-产物来源不决定位置：来自会议的代码测试图仍可归测试证据，来自IM的SOP仍是源文档。逻辑用途→真实对象/父节点/ACL由空间能力resolve，不让每个Skill硬编码token/path。
+Drive用于必要附件/输入/会议sidecar/测试/交付。原Minutes保留，会议纪要按用途进入工作区/报告，不自动Wiki化。复制、移动、分享、删除与正文维护是不同效果。
 
-## 6. 两条水位与回流
+## 6. 源目录、快照和Git的方向
 
-capture水位在原始事件/manifest安全持久后前进；understanding水位在有效Claim patch/依赖处理后前进。模型失败可重试理解，不重新抓整库；显示理解滞后，不把capture成功说成认知已对齐。
+records/information/sources/是目标desired声明位置：谁/什么范围被关注、为何、body authority/受众/捕获与Follow策略。现有DRIFT_WATCHLIST和not-archived登记经adapter迁移，raw manifest仍只拥有observed覆盖；不让两份可编辑列表同时生效。catalog是派生检索面，不新建source数据库。
 
-来源变化找到依赖Claim、指南段落、任务/计划和记忆；只失效受影响部分。自己的publication receipt去重自身版本，不能无声跳过后来人改，也不能自发重写成无限循环。原始来源与派生报告形成有向来源关系，不靠自我引用证明事实。
+默认本地snapshot是证据或备份，不是另一份authoritative正文。不同用途的方向：外部source→本地；飞书原生参考/指南→只读本地snapshot；Git工程正文→飞书发布视图；人对视图的修改→回源patch提案。没有通用mtime双向覆盖。
 
-## 7. 写保护与资料寿命
+Git只同步适合该repo实际受众的声明、关系、去敏感manifest/原创认识/获准文本。大媒体、完整受限正文、cookie/签名URL和高敏感资料默认非Git。引用可用原stable locator+所见版本+获准snapshot，取消“为了引用必须全量先归档”的旧限制。
 
-更新原文要有对象级维护授权、最新baseline和内容证据。真正条件写只有实际Provider证实才声明；本地writer锁/写前读取不能隔离远端人类同时编辑。不能保护冲突范围就产候选/patch proposal，不自动whole overwrite。
+## 7. 稳定身份与失效
 
-超时先查实际效果，partial只补未完成步骤。journal/receipt保留先intent后观测，重启不空表覆盖。清理必须查正文、children、引用、owner/ACL和唯一副本，MeetingBundle多对象操作不假称原子事务。
+对象身份不随标题/路径改名；source revision、captured_at、last_checked、last_changed、实际内容hash与解析器版本分开。正文hash不等于资料真实性证明，ETag或revision字段也不自动提供并发CAS。
 
-源撤回/权限收回使当前召回受限；历史审计按合法retention保存，append-only不意味着敏感内容永远不能清除。大raw与原始媒体不自动进Git或公开库，本轮不会为迁移政策删除已有资料。
+来源更正/撤回/权限变化定位受影响Claim、Reference摘要、计划/review和知识snapshot，精确标stale/conflict/不可召回。局部已提交的变化先保留receipt再恢复依赖传播，不能全库重写来“同步”。自己的publication去重自身版本，后续人工编辑仍正常进入Follow。
 
-## 8. 代码分工与实施入口
+## 8. 发布、备份与副作用恢复
 
-现有 records/information/raw/{sync_feishu_chat,expand_feishu_doc,expand_feishu_files,drift_sync,_redact}.py 是采集基础；通用代码经兼容迁移进入能力包，原来源/manifest继续归records，不能维护两份redaction。
+阅读、下载、长期保留、提交Git、飞书创建/更新、移动/分享、发送是独立effects。目标要求到哪一层预先确定：收藏进飞书需要实际doc回读；只保存链接不要求下载所有附件；发给同事需要sender receipt。
 
-ability-management的B1/B2/B8/B9详细设计定义判断/共享数据合同；ServerOS负责跨簇Context/工作/效果衔接；Work Engine仍是控制状态；hwz-ops维护实例Binding和带时间的maps。任何新schema字段都要真producer/consumer。
+每个有副作用的步骤有intent、输入版本与真实receipt。超时先查目标效果；无法查询就保持UNKNOWN并限制重试，不创建重复对象。多系统之间不假称ACID；原文/媒体/索引/Git/outbox可以PARTIAL，重启只补未完成边。
 
-具体操作、依赖顺序、验收与回退见CC-EXECUTION-PLAN.md。此文不生成新的常驻服务、全库采集授权、云写入或日循环启用声明。
+自动管理分区与人批注分开，current/base/desired冲突不可安全保护时交候选，不whole overwrite。索引失效可重建；来源删改与保留/真正删除政策分别处理，不自动删除唯一历史字节。
 
-## 9. Priority-contact 深归档
+## 9. 与整个Ability体系的接口
 
-一般真人工作IM仍默认 SHALLOW；用户明确指定的项目对接人和明确项目小群可以进入 **DEEP_REQUIRED**。当前确认的例子包括 Bruce.Xu、Nature.Hu、Zhengji.Zhang 等，实际执行按稳定 identity / project relationship 解析，不把显示名硬编码进采集器。
+B1产source/material delta；B2产已追溯认识变化；A2过滤撤回/过期；B3提出/接受目标；B4从各权威组装准入；B5/B6评估外部建议，不能收藏即采用；B7/A6实际执行；A7按用户AC证明；A8按需生成制品；B8/B9/B10分别内容、正文/位置、接收效果。
 
-DEEP_REQUIRED 不只下载直接 image/file：它覆盖消息里的 post 媒体、文件/视频/音频、第一层 doc/wiki/link，以及 merge_forward / forwarded bundle 中实际转发进当前会话且 API 可解析的第一层材料。转发内容保留原作者/时间/forward provenance；不因此递归抓原始会话全部历史。
+A3保护并行WIP/路径迁移，A4/B10监测Core/必要服务和可读资源，A5保实际跨端lease与证据，G1管已安装能力，不重复各族框架。source/资料工作不强制先有虚假业务Item；需要后台治理证据时用合法Run或既有operation父类型，不造假Run点绿。
 
-完整度不能靠 `files/` 目录存在或自由文本 `pending`；按每个 material 的 discovered→materialized/failed/unresolved 与 source revision 计算。capture、material coverage、understanding 分开推进，缺一个附件不会丢消息，但含未读材料的语义范围不能冒充 COMPLETE。
+## 10. 当前差距与一次实施入口
 
-详细身份、转发附件、多附件索引、当前 Bruce/Nature/Zhengji 差距、迁移和验收见 [Priority-contact Deep Archive](DEEP-ARCHIVE-POLICY.md)。
+本轮读到B2的content_identity/card_digest绑定已写入当前源码；不能再按早期文档宣布它缺失。该模块仍是重读提案，语义writer正向消费者仍需核验。focus_source当前仍列多项NOT_PRODUCED，grant/worker事实要从真正owner join而非塞Card。
+
+外部参考的整个产品合同见[EXTERNAL-REFERENCE-LIBRARY](EXTERNAL-REFERENCE-LIBRARY.md)，归档合同见[DEEP-ARCHIVE-POLICY](DEEP-ARCHIVE-POLICY.md)。执行只用更新的[CC-EXECUTION-PLAN](CC-EXECUTION-PLAN.md) P0–P12，21项门见能力实现矩阵；旧观察保留为历史，不复制一套新的最终台账。
