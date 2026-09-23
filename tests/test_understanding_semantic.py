@@ -1092,8 +1092,17 @@ class TestALineAPersonWroteInsideTheFence:
         assert card.startswith(ALICE_PROSE)
 
     @pytest.mark.parametrize("where", ["after", "before"])
-    def test_the_modules_own_lines_are_replaced_and_not_duplicated(
+    def test_a_second_commit_adds_a_line_and_does_not_duplicate_the_block(
             self, tmp_path, where):
+        # This test used to assert `"pos 12" not in card` — the first claim's
+        # line GONE after the second commit. That was stronger than the stated
+        # intent ("the module's own lines are replaced and not duplicated"), and
+        # it is what let the line-loss defect pass the suite: a card is a
+        # person's view of everything understood about a subject, so a commit
+        # about one span must not delete what an earlier commit about another
+        # span put there, while its receipt went on naming it. Both claims are
+        # asserted present, each exactly once, which is what "not duplicated"
+        # has to mean once the block accumulates.
         root = records_tree(tmp_path)
         commit_and_write(tmp_path, root, delegation=GRANT)
         corrected(root, where=where)
@@ -1102,8 +1111,9 @@ class TestALineAPersonWroteInsideTheFence:
         commit_and_write(tmp_path, root, delegation=GRANT, document=document,
                          to_position=60)
         card = (root / CARD).read_text(encoding="utf-8")
-        assert "pos 12" not in card
+        assert card.count("pos 12") == 1
         assert card.count("pos 28") == 1
+        assert card.count(CORRECTION) == 1
         assert card.count(us.FENCE_BEGIN) == 1
         assert card.count(us.CLAIMS_BEGIN) == 1
         assert card.count(us.CLAIMS_END) == 1
@@ -1123,19 +1133,21 @@ class TestALineAPersonWroteInsideTheFence:
         card = (root / CARD).read_text(encoding="utf-8")
         assert card.count(lookalike) == 1
 
-    def test_the_same_lines_written_twice_do_not_grow_the_card(self, tmp_path):
+    def test_the_same_claim_written_twice_does_not_grow_the_card(self, tmp_path):
         # Asked of the splice rather than through a second commit: a second
         # reading over one span is refused for an unrelated reason (two readings
         # of one span cannot both be the committed one), so it cannot answer
-        # this. What is being pinned here is that the splice is idempotent — a
-        # `\n` added on each write would pass every assertion above.
+        # this. What is being pinned here is that the merge is idempotent — a
+        # `\n` added on each write would pass every assertion above, and so would
+        # a merge that matched on the line's text instead of its id.
         root = records_tree(tmp_path)
         commit_and_write(tmp_path, root, delegation=GRANT)
         text = (root / CARD).read_text(encoding="utf-8")
-        lines = [f"- **[{us.OBSERVED_FACT}]** alice：她说下周一交付"]
-        once = us._replace_fence(text, lines)
+        claimed = [("c9", "- `c9` **[OBSERVED_FACT]** alice：她说下周一交付")]
+        once = us._replace_fence(text, claimed)
         assert once != text and "她说下周一交付" in once
-        assert us._replace_fence(once, lines) == once
+        assert once.count("她说下周一交付") == 1
+        assert us._replace_fence(once, claimed) == once
 
     def test_a_correction_written_above_the_block_survives_too(self, tmp_path):
         # The other slot. A person who writes the correction first and the claim
@@ -1172,25 +1184,50 @@ class TestALineAPersonWroteInsideTheFence:
 
 class TestAFenceThisModuleCannotReadIsRefused:
 
-    def test_a_fence_written_before_the_region_existed_migrates_cleanly(
+    def test_lines_written_before_the_ids_existed_are_refused_not_replaced(
             self, tmp_path):
-        # Cards written by the earlier version hold the module's lines with no
-        # region marker around them. Replacing that whole body is right, and it
-        # is exact rather than a guess: back then the writer replaced the whole
-        # body on every commit, so every line in it is one the module put there.
+        # This test used to pin the opposite: a fence with no claims region was
+        # migrated by replacing its whole body, and the old line was asserted
+        # GONE. That judgement was about OWNERSHIP — back then the writer
+        # replaced the whole body on every commit, so every line in such a body
+        # is one the module put there and none of it is a person's — and
+        # ownership was sufficient while replacing was what the writer did.
+        # It stopped being sufficient when the body became a merge: the lines in
+        # an old body carry no id, so the merge can neither match them nor say
+        # which claim each one is, and both available answers lose something —
+        # dropping them takes claims out of a card, keeping them leaves lines
+        # nothing can match on again. So the commit is refused and a person
+        # looks at the card.
         root = records_tree(tmp_path)
         card = root / CARD
-        card.write_text(ALICE_PROSE + "\n" + us.FENCE_BEGIN + "\n- 老的自动摘要行\n"
-                        + us.FENCE_END, encoding="utf-8")
+        old = (ALICE_PROSE + "\n" + us.FENCE_BEGIN + "\n- 老的自动摘要行\n"
+               + us.FENCE_END)
+        card.write_text(old, encoding="utf-8")
+        document = reading(root, [claim("c2", now="她说周三交付", positions=(28,),
+                                        excerpt="周三给你")], to_position=60)
+        with pytest.raises(us.Refused) as caught:
+            commit_and_write(tmp_path, root, delegation=GRANT, document=document,
+                             to_position=60)
+        assert "carries no claim id this module can read" in str(caught.value)
+        assert str(card) in str(caught.value)
+        assert card.read_text(encoding="utf-8") == old
+
+    def test_an_empty_fence_body_takes_the_commit_without_a_refusal(
+            self, tmp_path):
+        # The boundary of the judgement above, pinned so that it is the
+        # unreadable LINES that are refused and not the absence of a region: a
+        # fence with nothing in it has nothing to merge and nothing to lose.
+        root = records_tree(tmp_path)
+        card = root / CARD
+        card.write_text(ALICE_PROSE + "\n" + us.FENCE_BEGIN + us.FENCE_END,
+                        encoding="utf-8")
         document = reading(root, [claim("c2", now="她说周三交付", positions=(28,),
                                         excerpt="周三给你")], to_position=60)
         commit_and_write(tmp_path, root, delegation=GRANT, document=document,
                          to_position=60)
-        migrated = card.read_text(encoding="utf-8")
-        line = ("- **[OBSERVED_FACT]** alice：她说周三交付"
+        line = ("- `c2` **[OBSERVED_FACT]** alice：她说周三交付"
                 "（agent_reconciled；来源 pos 28；excerpt: 周三给你）")
-        assert migrated == ALICE_PROSE + "\n" + fenced(line)
-        assert "老的自动摘要行" not in migrated
+        assert card.read_text(encoding="utf-8") == ALICE_PROSE + "\n" + fenced(line)
 
     @pytest.mark.parametrize("half,diagnosis", [
         pytest.param(ALICE_PROSE + "\n" + us.FENCE_BEGIN + "\n- 半截的\n",
@@ -1213,8 +1250,10 @@ class TestAFenceThisModuleCannotReadIsRefused:
         # Four shapes, two consequences, one answer. A half FENCE puts a second
         # copy of the lines in the card and puts them outside any guard
         # (`fence_parts` calls such a card all head). A half CLAIMS region reads
-        # as no region, and the migration that follows replaces the whole body
-        # — taking a person's lines with it. Neither half is a shape this module
+        # as no region, so the body it is half-marking goes into the merge as
+        # though the module owned all of it — which is what the whole-body
+        # migration used to do on purpose, and what the merge now refuses to do
+        # at all when the lines carry no id. Neither half is a shape this module
         # ever wrote, so it cannot say which lines are its own.
         #
         # A CLAIMS marker in the prose OUTSIDE any fence is not one of these
@@ -1344,19 +1383,31 @@ class TestTheReceiptNamesItsClaims:
         entries = {entry["card"]: entry for entry in receipt["written"]}
         assert entries[CARD]["claims"] == ["a1", "z9"]
 
-    def test_an_id_that_appears_nowhere_in_the_line_is_still_recorded(
+    def test_the_line_carries_its_id_because_the_next_commit_merges_on_it(
             self, tmp_path):
-        # The mutation this keeps: recovering the ids by parsing the rendered
-        # line. The line carries the kind, the subject, the excerpt and the
-        # confirmation and NOT the id, so a parser finds nothing — and an id
-        # that happens to appear as prose would be found and be wrong.
+        # This test used to assert the opposite — `"zz-9" not in body` — because
+        # the ids were deliberately kept off the line and copied from the
+        # commit's keys. That was right while the writer replaced its whole
+        # block on every commit: a card held only the last commit's lines, so
+        # the commit knew what was in it. A card accumulates now, so the file is
+        # the only record of what it holds and the id has to be in the file.
+        #
+        # The identity of the claim still does not come from the rendering: the
+        # id comes from the reading and is validated there, the merge refuses a
+        # line whose first token is not a claim id, and the receipt's ids are the
+        # merge's key set — read back out of the file that was written.
         root = records_tree(tmp_path)
         document = reading(root, [claim("zz-9", now="她说周五交付")])
         receipt = applied(tmp_path, root, document, delegation=GRANT)
-        body = (root / CARD).read_text(encoding="utf-8")
-        assert "zz-9" not in body
         entries = {entry["card"]: entry for entry in receipt["written"]}
         assert entries[CARD]["claims"] == ["zz-9"]
+        assert us._line_id("- `zz-9` **x**") == "zz-9"
+        for card in (CARD, VIEW):
+            body = (root / card).read_text(encoding="utf-8")
+            assert "`zz-9`" in body
+            lines = [line for line in us.claims_region(
+                us.fence_parts(body)[1])[1].splitlines() if line.strip()]
+            assert [us._line_id(line) for line in lines] == ["zz-9"]
 
     def test_a_resume_names_the_claims_it_was_owed(self, tmp_path):
         # ONE reading, applied twice. Calling `reading()` again after the first
@@ -1420,6 +1471,294 @@ class TestTheReceiptNamesItsClaims:
                                     "key": [], "written": []}), encoding="utf-8")
         with pytest.raises(us.Refused):
             us.receipt_for(at(tmp_path, document), root)
+
+
+# --------------------------------------------------------------------------
+# a card accumulates what is committed into it
+# --------------------------------------------------------------------------
+
+def region_edited(root: Path, *lines: str, card: str = CARD) -> None:
+    """This module's own block rewritten by hand, as a merge would leave it.
+
+    Only the bytes between the claims markers are replaced, and the bytes around
+    them are read off the card rather than spelled out here: the failure this
+    helper exists to set up is a line inside the region, so the region's shape
+    must be whatever the writer actually produced.
+    """
+    target = root / card
+    head, body, tail = us.fence_parts(target.read_text(encoding="utf-8"))
+    before, _, after = us.claims_region(body)
+    target.write_text(head + us.FENCE_BEGIN + before + us._claims_marked(list(lines))
+                      + after + us.FENCE_END + tail, encoding="utf-8")
+
+
+class TestACardAccumulatesWhatIsCommittedIntoIt:
+    """One card holds every commit that has landed in it, and can still be merged.
+
+    The defect this class exists for: the writer replaced its whole block on
+    every commit, so a second commit into one card deleted the first commit's
+    line — in the card AND in the view's reference to it — while the receipt of
+    the first commit went on naming a claim that was no longer anywhere a person
+    could read. That is the worst shape a defect can take here: the record says
+    the understanding changed and every surface a person reads says it did not.
+
+    The fix is not "append". A block that only ever grew would hold the replaced
+    claim beside the claim replacing it, both reading as current, and a claim
+    committed twice — after a resume, or after a refusal and a retry — would be
+    two lines for one id with no way to order them. So a card's block is a map
+    from claim id to line: this commit's ids replace, the ids a committed claim
+    supersedes are removed, and every other line is kept.
+    """
+
+    def two_commits(self, tmp_path, root, *, claim_id="c2", now="她说周一交付",
+                    position=32, low=30, high=40, supersedes=()):
+        """Two proposals about different spans of one source, both committed.
+
+        Two spans rather than one, because two readings of one span are refused
+        for an unrelated reason and could not reach the merge at all.
+        """
+        first = commit_and_write(tmp_path, root, delegation=GRANT)
+        document = reading(root, [claim(claim_id, now=now, positions=(position,),
+                                        excerpt="第二次",
+                                        supersedes=supersedes)],
+                           from_position=low, to_position=high)
+        second = commit_and_write(tmp_path, root, delegation=GRANT,
+                                  document=document, from_position=low,
+                                  to_position=high)
+        return first, second, document
+
+    def test_a_second_commit_keeps_the_first_claims_line(self, tmp_path):
+        root = records_tree(tmp_path)
+        first, second, _ = self.two_commits(tmp_path, root)
+        assert first["written"][0]["claims"] == ["c1"]
+        card = (root / CARD).read_text(encoding="utf-8")
+        assert "她说周五交付" in card
+        assert "她说周一交付" in card
+        # In id order, so that the block is a function of the claims in it and
+        # not of the order the commits arrived in.
+        assert card.index("`c1`") < card.index("`c2`")
+        assert card.count(us.FENCE_BEGIN) == 1
+        assert card.count(us.CLAIMS_BEGIN) == 1
+        assert card.startswith(ALICE_PROSE)
+
+    def test_the_view_keeps_its_reference_to_the_first_claim(self, tmp_path):
+        root = records_tree(tmp_path)
+        self.two_commits(tmp_path, root)
+        view = (root / VIEW).read_text(encoding="utf-8")
+        assert f"- `c1` → `{CARD}`" in view
+        assert f"- `c2` → `{CARD}`" in view
+        assert view.startswith(VIEW_PROSE)
+
+    def test_a_later_claim_that_sorts_earlier_goes_above_the_first(self, tmp_path):
+        # The order of a block is a function of the claims in it, and this is
+        # the case that tells that apart from "the order they arrived in": the
+        # second commit's id sorts before the first's, so a merge that kept the
+        # arrival order would put it below. Ids come from readings and are
+        # arbitrary strings, so this is the ordinary case rather than a corner.
+        root = records_tree(tmp_path)
+        commit_and_write(tmp_path, root, delegation=GRANT,
+                         document=reading(root, [claim("z9")]))
+        document = reading(root, [claim("a1", now="她说周一交付", positions=(32,),
+                                        excerpt="第二次")],
+                           from_position=30, to_position=40)
+        second = commit_and_write(tmp_path, root, delegation=GRANT,
+                                  document=document, from_position=30,
+                                  to_position=40)
+        card = (root / CARD).read_text(encoding="utf-8")
+        assert card.index("`a1`") < card.index("`z9`")
+        view = (root / VIEW).read_text(encoding="utf-8")
+        assert view.index("`a1`") < view.index("`z9`")
+        entries = {entry["card"]: entry for entry in second["written"]}
+        assert entries[CARD]["claims"] == ["a1", "z9"]
+        assert entries[VIEW]["claims"] == ["a1", "z9"]
+
+    def test_the_receipt_says_what_the_card_carries_and_not_only_this_runs_lines(
+            self, tmp_path):
+        # The reason the receipt's schema had to move again. `written[i].claims`
+        # read as "what this run wrote" is a different field from "what the file
+        # holds", and a reader that took the second for the first would report a
+        # claim that IS in the card as absent from it.
+        root = records_tree(tmp_path)
+        _, second, _ = self.two_commits(tmp_path, root)
+        entries = {entry["card"]: entry for entry in second["written"]}
+        assert entries[CARD]["claims"] == ["c1", "c2"]
+        assert entries[VIEW]["claims"] == ["c1", "c2"]
+        assert entries[CARD]["removed"] == []
+
+    def test_a_replaced_claim_is_taken_out_of_the_card_and_the_view(self, tmp_path):
+        root = records_tree(tmp_path)
+        _, second, _ = self.two_commits(tmp_path, root, supersedes=("c1",))
+        card = (root / CARD).read_text(encoding="utf-8")
+        assert "她说周五交付" not in card
+        assert "她说周一交付" in card
+        view = (root / VIEW).read_text(encoding="utf-8")
+        assert "`c1`" not in view and "`c2`" in view
+        entries = {entry["card"]: entry for entry in second["written"]}
+        assert entries[CARD]["removed"] == ["c1"]
+        assert second["superseded"] == ["c1"]
+        assert second["superseded_unmet"] == []
+
+    def test_a_supersede_that_found_no_line_says_so_instead_of_looking_done(
+            self, tmp_path):
+        # The one outcome of a supersede that reads as success and is not: the
+        # claim it names is in a card this write never opened, so nothing was
+        # taken out and the replaced claim still reads as current. Which card a
+        # claim is in is not recorded here — that is what the receipts are read
+        # for — so the honest report is "no line this write carried it".
+        root = records_tree(tmp_path)
+        _, second, _ = self.two_commits(tmp_path, root, supersedes=("c9",))
+        assert second["superseded"] == ["c9"]
+        assert second["superseded_unmet"] == ["c9"]
+        assert "她说周五交付" in (root / CARD).read_text(encoding="utf-8")
+        rendered = "\n".join(us.render_receipt(second))
+        assert "c9" in rendered and "没有对应行" in rendered
+
+    def test_a_claim_that_supersedes_its_own_commit_is_refused(self, tmp_path):
+        # Refused rather than resolved: "this claim replaces that one" and "that
+        # one is being committed here" cannot both be meant, and choosing which
+        # is not a decision this module can make on the author's behalf.
+        root = records_tree(tmp_path)
+        before = (root / CARD).read_bytes()
+        document = reading(root, [claim("c2", supersedes=("c2",))])
+        with pytest.raises(us.Refused) as caught:
+            commit_and_write(tmp_path, root, delegation=GRANT, document=document)
+        assert "both committed here and named as replaced" in str(caught.value)
+        assert (root / CARD).read_bytes() == before
+
+    def test_a_supersede_that_is_not_a_claim_id_is_refused_where_it_is_read(
+            self, tmp_path):
+        # At the read, not at the write, and the difference is visible: left to
+        # the write this would remove nothing and read — from the receipt alone
+        # — exactly like a supersede whose target was never committed.
+        root = records_tree(tmp_path)
+        document = reading(root, [claim("c2", supersedes=("not an id",))])
+        with pytest.raises(us.Malformed) as caught:
+            at(tmp_path, document)
+        assert "not a claim id" in str(caught.value)
+        assert "remove nothing" in str(caught.value)
+
+    @pytest.mark.parametrize("line", [
+        # Two shapes of unreadable, and the second is the one that matters:
+        # backticked, but not a claim id. `_line_id` asks for the shape as well
+        # as the position, because "whatever sits in backticks first" is a
+        # reading that finds an id in a line somebody wrote by hand.
+        pytest.param("- 一句没有 id 的行", id="no-backticks"),
+        pytest.param("- `_c1` **x**", id="backticked-but-not-a-claim-id"),
+    ])
+    def test_a_region_line_the_module_cannot_read_blocks_the_write(
+            self, tmp_path, line):
+        # A line inside the module's own block whose id cannot be read: written
+        # by no version of this module, so somebody merged or edited a card by
+        # hand. Both available answers lose something — keeping it leaves a line
+        # nothing can match on again, dropping it takes a claim out of the card
+        # — so the write does not happen and the refusal names the card to open.
+        root = records_tree(tmp_path)
+        commit_and_write(tmp_path, root, delegation=GRANT)
+        region_edited(root, line)
+        before = (root / CARD).read_bytes()
+        document = reading(root, [claim("c2", now="她说周一交付", positions=(32,),
+                                        excerpt="第二次")],
+                           from_position=30, to_position=40)
+        with pytest.raises(us.Refused) as caught:
+            commit_and_write(tmp_path, root, delegation=GRANT, document=document,
+                             from_position=30, to_position=40)
+        assert "carries no claim id this module can read" in str(caught.value)
+        assert str(root / CARD) in str(caught.value)
+        assert (root / CARD).read_bytes() == before
+
+    def test_two_lines_for_one_id_in_the_block_are_refused(self, tmp_path):
+        # The same judgement from the other side, and the reason the merge keys
+        # on the id rather than on the line: two lines for one claim leave a
+        # reader no way to say which of them is the claim.
+        root = records_tree(tmp_path)
+        commit_and_write(tmp_path, root, delegation=GRANT)
+        line = "- `c1` **[OBSERVED_FACT]** alice：她说周五交付（旧的；来源 pos 12）"
+        region_edited(root, line, "- `c1` **[OBSERVED_FACT]** alice：她说周六交付"
+                                "（新的；来源 pos 12）")
+        before = (root / CARD).read_bytes()
+        document = reading(root, [claim("c2", now="她说周一交付", positions=(32,),
+                                        excerpt="第二次")],
+                           from_position=30, to_position=40)
+        with pytest.raises(us.Refused) as caught:
+            commit_and_write(tmp_path, root, delegation=GRANT, document=document,
+                             from_position=30, to_position=40)
+        assert "two lines for claim c1" in str(caught.value)
+        assert (root / CARD).read_bytes() == before
+
+    def test_a_resume_removes_what_the_first_write_could_not_reach(self, tmp_path):
+        # A supersede is the commit's INTENT and is copied into the receipt
+        # rather than recomputed, and this is the case that tells the two apart:
+        # the view was missing when the commit ran and came back afterwards
+        # already routing to the replaced claim. A resume that recomputed its
+        # removals would have nothing to recompute them FROM — it cannot re-run
+        # the reading, because the first write moved the card the reading was
+        # reasoned against — and would leave the view routing to a claim the
+        # same commit took out of the card.
+        root = records_tree(tmp_path)
+        commit_and_write(tmp_path, root, delegation=GRANT)
+        (root / VIEW).unlink()
+        document = reading(root, [claim("c2", now="她说周一交付", positions=(32,),
+                                        supersedes=("c1",), excerpt="第二次")],
+                           from_position=30, to_position=40)
+        first = applied(tmp_path, root, document, delegation=GRANT,
+                        from_position=30, to_position=40)
+        assert first["state"] == "PARTIAL"
+        # The card took the removal; the view was never opened, so whether the
+        # id is in it cannot be said in either direction — which is why the
+        # stale reference is not reported as `superseded_unmet` (that field
+        # answers "did a file this write touched carry the id", and the answer
+        # is yes) but as a pending view, named with the reason.
+        assert first["superseded"] == ["c1"]
+        assert first["superseded_unmet"] == []
+        assert [entry["view"] for entry in first["pending_views"]] == [VIEW]
+        (root / VIEW).write_text(
+            VIEW_PROSE + "\n" + fenced(f"- `c1` → `{CARD}`（alice）"),
+            encoding="utf-8")
+        second = applied(tmp_path, root, document, delegation=GRANT,
+                         from_position=30, to_position=40)
+        assert second["state"] == "COMPLETE"
+        assert second["superseded_unmet"] == []
+        view = (root / VIEW).read_text(encoding="utf-8")
+        assert "`c1`" not in view and "`c2`" in view
+        assert view.startswith(VIEW_PROSE)
+
+    def test_the_resolution_says_a_line_will_be_taken_out(self, tmp_path):
+        # A person shown only "a new claim is being written" would find a line
+        # gone from a card later and have nothing to connect it to.
+        root = records_tree(tmp_path)
+        document = reading(root, [claim("c2", supersedes=("c1",))])
+        rendered = "\n".join(us.render_resolution(
+            resolved(tmp_path, root, document, delegation=GRANT)))
+        assert "取代 c1" in rendered
+        assert "会从它所在的卡片移出" in rendered
+
+    def test_the_rendered_receipt_says_what_left_the_card(self, tmp_path):
+        root = records_tree(tmp_path)
+        _, second, _ = self.two_commits(tmp_path, root, supersedes=("c1",))
+        rendered = "\n".join(us.render_receipt(second))
+        # Both cards end up routing only to the claim that replaced c1: the
+        # replaced claim's line leaves its owning card, and the reference to it
+        # leaves the view. A receipt that showed a count without the removal
+        # would leave a reader unable to say whether the claim was ever taken
+        # out or had simply not been written yet.
+        assert rendered.count("1 条：c2  移出 c1") == 2
+
+    def test_a_v2_receipt_is_refused_by_name(self, tmp_path):
+        # v2 named the ids a commit WROTE; this version names what the file
+        # CARRIES. A card with two commits is where the two answers differ, so a
+        # v2 receipt read as a v3 one would report a claim that is in the card
+        # as absent from it.
+        path = tmp_path / "receipt-v2.json"
+        path.write_text(json.dumps({
+            "schema": "serveros/understanding-receipt.v2",
+            "key": [CARD, MANIFEST, 10, 20, "a" * 64],
+            "written": [{"card": CARD, "before": "b" * 64, "after": "c" * 64,
+                         "claims": ["c1"]}],
+        }), encoding="utf-8")
+        with pytest.raises(us.Refused) as caught:
+            us._read_receipt(path)
+        assert "serveros/understanding-receipt.v2" in str(caught.value)
+        assert "duplicate" in str(caught.value)
 
 
 # --------------------------------------------------------------------------
@@ -1809,31 +2148,61 @@ class TestTheVerbEndToEnd:
 class TestTheGuardOnTheSpliceIsASecondOpinion:
 
     @pytest.mark.parametrize("broken", ["drops-everything-inside-the-fence",
-                                        "writes-nothing-at-all"],
-                             ids=["drops-everything-inside-the-fence",
-                                  "writes-nothing-at-all"])
+                                        "drops-the-prose-before-the-fence",
+                                        "normalises-the-bytes-around-the-block",
+                                        "writes-nothing-at-all"])
     def test_a_splice_that_loses_a_persons_text_is_refused(
             self, tmp_path, monkeypatch, broken):
         # `_write_fence` checks its own splice before writing, and that check
         # never fires while the splice is correct — so nothing in the suite
         # exercises it, and a check nothing exercises is a comment. This test
-        # supplies the splice it exists to catch: one that replaces the whole
-        # fence body, which is the defect this slice was opened for, and one
-        # that writes nothing, which leaves the card with no region at all.
+        # supplies the splices it exists to catch, one per clause: one that
+        # replaces the whole fence body (the defect this slice was opened for),
+        # one that gets the fence exactly right and rebuilds the card without
+        # the prose that was before it (a writer that assembles a file out of
+        # its own parts drops what it does not know it has), one that reflows
+        # the space inside the fence around the block (which is where a person
+        # disputing a claim writes), and one that writes nothing at all.
+        #
+        # Each splice is written so that the clauses OTHER than the one it is
+        # about would let it through. A splice that loses the head and also
+        # writes a wrong region is refused by the region clause instead, and
+        # would never tell the head clause apart from absent — and it is the
+        # clause whose whole subject is somebody else's prose.
         root = records_tree(tmp_path)
         commit_and_write(tmp_path, root, delegation=GRANT)
         card = root / CARD
         corrected(root)
         before = card.read_text(encoding="utf-8")
+        correct_splice = us._replace_fence
 
-        def drops(text: str, lines: list[str]) -> str:
+        def drops_inside(text: str, claimed, *, superseded=()) -> str:
             head, _, tail = us.fence_parts(text)
-            return head + us.FENCE_BEGIN + us._fence_body(lines) + us.FENCE_END + tail
+            return (head + us.FENCE_BEGIN
+                    + us._fence_body([line for _, line in claimed])
+                    + us.FENCE_END + tail)
 
-        monkeypatch.setattr(us, "_replace_fence",
-                            drops if broken.startswith("drops") else lambda t, l: t)
+        def drops_head(text: str, claimed, *, superseded=()) -> str:
+            fixed = correct_splice(text, claimed, superseded=superseded)
+            _, rest = fixed.split(us.FENCE_BEGIN, 1)
+            return us.FENCE_BEGIN + rest
+
+        def normalises_around(text: str, claimed, *, superseded=()) -> str:
+            fixed = correct_splice(text, claimed, superseded=superseded)
+            head, body, tail = us.fence_parts(fixed)
+            _, claims, _ = us.claims_region(body)
+            return (head + us.FENCE_BEGIN + "\n" + us.CLAIMS_BEGIN + claims
+                    + us.CLAIMS_END + "\n" + us.FENCE_END + tail)
+
+        splices = {
+            "drops-everything-inside-the-fence": drops_inside,
+            "drops-the-prose-before-the-fence": drops_head,
+            "normalises-the-bytes-around-the-block": normalises_around,
+            "writes-nothing-at-all": lambda t, c, *, superseded=(): t,
+        }
+        monkeypatch.setattr(us, "_replace_fence", splices[broken])
         with pytest.raises(us.Refused) as caught:
             us._write_fence(root, us._understanding_root(root), CARD,
-                            ["- **[OBSERVED_FACT]** alice：她说周四交付"])
+                            [("c9", "- `c9` **[OBSERVED_FACT]** alice：她说周四交付")])
         assert "does not own" in str(caught.value)
         assert card.read_text(encoding="utf-8") == before

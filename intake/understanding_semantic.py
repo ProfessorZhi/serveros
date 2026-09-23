@@ -71,12 +71,20 @@ from pathlib import Path
 
 SCHEMA = "serveros/understanding-semantic.v1"
 READING_SCHEMA = "serveros/understanding-reading.v1"
-#: Bumped when the receipt's SHAPE changed, and bumped for that reason alone:
-#: `written[i].claims` used to hold a count and now holds the claim ids. The
-#: schema string is what makes a receipt written before that change refusable
-#: by name instead of readable in the wrong sense — a v1 receipt handed to a
-#: reader that expects ids would report a count as if it were a list.
-RECEIPT_SCHEMA = "serveros/understanding-receipt.v2"
+#: Bumped when the receipt's SHAPE changed, and bumped for that reason alone.
+#: Twice, so far, and the second bump is the interesting one:
+#:
+#:   * v1 → v2: `written[i].claims` used to hold a count and now holds the ids.
+#:     A v1 receipt handed to a reader that expects ids would report a count as
+#:     if it were a list.
+#:   * v2 → v3: `written[i].claims` used to hold THE IDS THIS COMMIT WROTE and
+#:     now holds THE IDS THE FILE CARRIES, and each entry gained `removed`. The
+#:     change is not cosmetic: a card accumulates the claims committed into it,
+#:     so a v2 entry for a card with two commits names one of them, and a reader
+#:     that trusts it would report a claim that is in the card as absent from it.
+#:     A fact about a file that has to be read as "everything the file holds" is
+#:     a different field from one read as "everything this run put there".
+RECEIPT_SCHEMA = "serveros/understanding-receipt.v3"
 
 #: Where the understanding layer sits under the records root. The same two
 #: segments `understanding_delta` walks, and repeated here rather than imported
@@ -147,6 +155,22 @@ CLAIMS_END = "<!-- serveros:semantic:claims:end -->"
 #: a conflict and a retraction all name, and two shapes of id would make those
 #: references unjoinable.
 CLAIM_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
+
+#: A line this module wrote, read back: the claim id it carries comes first,
+#: alone, in backticks. ONE pattern for both lines the module writes — the claim
+#: line in an owning card and the reference line in a view — because the id is
+#: what the next commit merges on, and two spellings of "here is the id" would
+#: let a card hold a line the merge cannot see.
+#:
+#: Read back from the LINE and from nowhere else, which is a real change of
+#: position from the earlier version of this file. While the writer replaced its
+#: whole block on every commit, a card held only the lines of the last commit and
+#: the ids could be carried on the side; now a card accumulates, so the file is
+#: the only record of what is in it, and the id has to be in the file. The
+#: identity of the claim is still not a rendering: the id comes from the reading,
+#: is validated there, and a line whose first token is not a claim id is refused
+#: rather than guessed at.
+WRITTEN_LINE = re.compile(r"^-\s+`([^`\s]+)`\s")
 
 
 class Refused(RuntimeError):
@@ -362,6 +386,18 @@ def _validate_claim(claim, target: Path, number: int) -> None:
     for field in ("supersedes", "conflicts", "views"):
         if not isinstance(claim[field], list):
             raise Malformed(f"{target}: claim {number}: `{field}` is a list")
+    # Checked here rather than where the ids are used, for the reason this
+    # function exists: a supersede names a line that is already in a card, and an
+    # id that could not be a claim id names a line no card can hold. Left to the
+    # write it would remove nothing and read, from the receipt alone, exactly
+    # like a supersede whose target was never committed.
+    for superseded in claim["supersedes"]:
+        if not isinstance(superseded, str) or not CLAIM_ID.match(superseded):
+            raise Malformed(
+                f"{target}: claim {number}: `supersedes` names {superseded!r}, "
+                f"which is not a claim id. An id is what a line in a card "
+                f"carries, so this names nothing a card could hold and would "
+                f"remove nothing")
     for field in ("subject", "card"):
         _require(claim[field], f"{target}: claim {number}: {field}")
 
@@ -979,6 +1015,15 @@ COMMIT_PRODUCED = {
              "to be able to say WHICH claims that card is now a route to. A "
              "count of lines records that a card was touched and not whose fact "
              "can be reached through it",
+    "superseded": "the claim ids the COMMITTED claims of this reading replace, "
+                  "from each committed claim's own `supersedes` — the claim ids "
+                  "of earlier readings that were written into cards before this "
+                  "one. Carried in the commit rather than derived at the write, "
+                  "because taking a line out of a card is part of what a person "
+                  "is shown before anything happens, and `render_resolution` "
+                  "reads it from here. Ids named by a RETRACTION are not in it: "
+                  "a retraction is a local withdrawal that is not committed "
+                  "anywhere",
 }
 
 RECEIPT_PRODUCED = {
@@ -994,14 +1039,17 @@ RECEIPT_PRODUCED = {
                 "rather than matched",
     "written": "the files this write actually changed, with the digest each one "
                "had before and after and the CLAIM IDS that file now carries "
-               "(`{card, before, after, claims}`). Facts about the disk, read "
-               "back after the write and not computed before it. The ids are "
-               "copied from the commit's own keys and are never parsed back out "
-               "of the rendered lines: a claim parsed out of a line would make a "
-               "claim's identity depend on how it was rendered, and rendering "
-               "changes. This field used to hold the NUMBER of lines, which "
-               "named no claim at all — so no later reader could ask whether a "
-               "particular claim was still there to be recalled",
+               "(`{card, before, after, claims, removed}`). Facts about the disk, "
+               "read back after the write and not computed before it. `claims` is "
+               "what the file CARRIES when the write returns — this commit's "
+               "claims plus every earlier commit's that are still there — and "
+               "`removed` is what this write took out. Both are read back out of "
+               "the file that was just written rather than taken from the "
+               "commit's keys: a card accumulates, so the ids a commit put in it "
+               "stopped being the ids the file holds. Deliberately not the NUMBER "
+               "of lines, which named no claim at all and left no later reader "
+               "able to ask whether a particular claim was still there to be "
+               "recalled",
     "pending_views": "the views whose update did not complete, each with the "
                      "error and the references it was to receive, "
                      "`{claim id: reference line}`. Present means the commit is "
@@ -1024,6 +1072,19 @@ RECEIPT_PRODUCED = {
     "committed_at": "the time the caller supplied. Never this process's clock: a "
                     "receipt whose time came from the machine that wrote it "
                     "cannot be compared with one from another machine",
+    "superseded": "the ids this commit set out to take out of the cards, copied "
+                  "from the commit. Copied rather than recomputed so that a "
+                  "resumed PARTIAL write removes the same lines it would have "
+                  "removed the first time — the intent of a commit is not "
+                  "reconstructed from whichever of its files happened to be "
+                  "writable",
+    "superseded_unmet": "the ids from `superseded` that no line in any file this "
+                        "commit wrote carried, so nothing was taken out for "
+                        "them. Reported rather than dropped because the claim "
+                        "they name is still in a card somewhere — a supersede "
+                        "removes where this commit writes, and finding a claim "
+                        "across cards is what the receipts are read for. An "
+                        "empty list is the ordinary case and says so",
 }
 
 
@@ -1064,11 +1125,21 @@ def card_digest(text: str) -> str:
 
 
 def commit(resolution: dict, reading: dict) -> dict:
-    """The write this resolution implies, before anything is written."""
+    """The write this resolution implies, before anything is written.
+
+    The supersede set is collected from the COMMITTED claims only, and that is
+    not an omission: a retraction's `supersedes` is a withdrawal that `resolve`
+    applies locally and does not commit anywhere, while a committed claim's
+    `supersedes` means "this claim replaces that one" — which until now had no
+    effect on any file, so a card could hold the replaced claim's line forever
+    beside the line that replaced it, both reading as current.
+    """
     lines = {claim["id"]: {"card": claim["card"], "text": _claim_line(claim)}
              for claim in resolution["committed"]}
     views: dict[str, dict[str, str]] = {}
+    superseded: set[str] = set()
     for claim in resolution["committed"]:
+        superseded.update(claim["supersedes"])
         for view in claim["views"]:
             views.setdefault(view, {})[claim["id"]] = _view_reference(claim)
     return no_unsourced({
@@ -1080,6 +1151,7 @@ def commit(resolution: dict, reading: dict) -> dict:
                      "card_digest": reading["read"].get("card_digest")},
         "lines": lines,
         "views": views,
+        "superseded": sorted(superseded),
     }, COMMIT_PRODUCED, "commit")
 
 
@@ -1099,20 +1171,45 @@ def _claim_line(claim: dict) -> str:
     person edits, and the receipt — which is written once and not edited by hand
     into a claim — is where the acceptance is recorded as written. A card line
     naming a person is a claim about that person authored by the tool.
+
+    The id IS on the line, first, and it is not decoration: a card holds the
+    claims of every commit that has landed in it, and the id is the only thing
+    that lets the next commit find this line again — replace it rather than add a
+    second line to it, and take it out when a later claim says it replaces it.
     """
     was = claim["assertion"]["was"]
     change = (f"{was} → {claim['assertion']['now']}" if was
               else claim["assertion"]["now"])
     where = ", ".join(str(position)
                       for position in claim["support"]["positions"]) or "无位置"
-    return (f"- **[{claim['kind']}]** {claim['subject']}：{change}"
+    return (f"- `{claim['id']}` **[{claim['kind']}]** {claim['subject']}：{change}"
             f"（{claim['confirmation']}；来源 pos {where}；"
             f"excerpt: {claim['support']['excerpt']}）")
 
 
 def _view_reference(claim: dict) -> str:
+    """One committed claim as the line a view card routes to it with.
+
+    Same shape as the claim line at the front — `- \\`id\\` ` — because the
+    merge reads both kinds of line with one pattern, and a view is a card that
+    accumulates routes the same way an owning card accumulates claims.
+    """
     owner = claim["card"]
-    return f"- {claim['id']} → `{owner}`（{claim['subject']}）"
+    return f"- `{claim['id']}` → `{owner}`（{claim['subject']}）"
+
+
+def _line_id(line: str) -> str | None:
+    """The claim id a line this module wrote carries, or None when it carries none.
+
+    None is not "no claim" and is never read as one. The callers are all in the
+    merge, where a line with no readable id is the difference between a claim a
+    person can still read in the card and a claim nothing can name — so it is
+    refused there rather than skipped.
+    """
+    match = WRITTEN_LINE.match(line)
+    if match is None or not CLAIM_ID.match(match.group(1)):
+        return None
+    return match.group(1)
 
 
 def write(commit_document: dict, records_root: Path | str, *,
@@ -1170,12 +1267,13 @@ def write(commit_document: dict, records_root: Path | str, *,
         }, RECEIPT_PRODUCED, "receipt")
 
     baseline = commit_document["baseline"]
+    superseded = list(commit_document.get("superseded") or [])
     written = []
     # Group the lines by the card that owns them, carrying each claim's id
-    # alongside its text. The id is not decoration: it is what the receipt
-    # records so that a later reader can ask about ONE claim rather than about a
-    # card. Sorted, so that two runs over one commit produce the same file and
-    # the same receipt.
+    # alongside its text. The id is not decoration: it is the key the merge
+    # matches on, so that a card carrying an earlier commit's claims gets the
+    # line of this one replaced and not a second line beside it. Sorted, so that
+    # two runs over one commit produce the same file and the same receipt.
     by_card: dict[str, list[tuple[str, str]]] = {}
     for claim_id, entry in sorted(commit_document["lines"].items()):
         by_card.setdefault(entry["card"], []).append((claim_id, entry["text"]))
@@ -1189,17 +1287,15 @@ def write(commit_document: dict, records_root: Path | str, *,
     # from, so a view edited since the read is a view whose text this write still
     # does not touch.
     for card, claimed in sorted(by_card.items()):
-        written.append(_write_fence(records_root, base, card,
-                                    [text for _, text in claimed], baseline,
-                                    claims=[claim_id for claim_id, _ in claimed]))
+        written.append(_write_fence(records_root, base, card, claimed, baseline,
+                                    superseded=superseded))
 
     pending = []
     for view, references in sorted(commit_document["views"].items()):
         ordered = sorted(references.items())
         try:
-            written.append(_write_fence(records_root, base, view,
-                                        [line for _, line in ordered],
-                                        claims=[claim_id for claim_id, _ in ordered]))
+            written.append(_write_fence(records_root, base, view, ordered,
+                                        superseded=superseded))
         except Refused as exc:
             pending.append({"view": view, "why": str(exc),
                             "references": dict(ordered)})
@@ -1214,9 +1310,32 @@ def write(commit_document: dict, records_root: Path | str, *,
         "state": "PARTIAL" if pending else "COMPLETE",
         "reused": False,
         "committed_at": committed_at,
+        "superseded": superseded,
+        "superseded_unmet": _superseded_unmet(superseded, written),
     }, RECEIPT_PRODUCED, "receipt")
     _write_receipt(receipt_path, receipt)
     return receipt
+
+
+def _superseded_unmet(superseded: list[str], written: list[dict]) -> list[str]:
+    """The ids a commit set out to remove and found no line for.
+
+    Which file a claim is in is not recorded by this module: a claim has one
+    owning card, and an id arriving from an earlier reading names a claim whose
+    card this commit may not be writing at all. So the honest answer is not "it
+    is gone" but "no line this write carried it" — and it is reported, because a
+    supersede that quietly removed nothing leaves the replaced claim in a card,
+    reading as current.
+
+    A view whose write is pending is not written yet, so an id that lives only
+    there is unmet at this instant and stops being unmet when the resume writes
+    it. Recomputed on every receipt rather than carried forward, which is what
+    makes that sentence true rather than intended.
+    """
+    found = {claim_id
+             for entry in written
+             for claim_id in entry.get("removed") or []}
+    return sorted(set(superseded) - found)
 
 
 def _resume(prior: dict, records_root: Path | str, receipt_path: Path) -> dict:
@@ -1227,14 +1346,17 @@ def _resume(prior: dict, records_root: Path | str, receipt_path: Path) -> dict:
     module does not get a second opinion about text it has already committed.
     """
     base = _understanding_root(records_root)
+    # The supersede set is the commit's INTENT and is copied rather than
+    # recomputed: a resume cannot re-derive it, because the first write moved
+    # the card the reading was reasoned against.
+    superseded = list(prior.get("superseded") or [])
     written = list(prior.get("written") or [])
     pending = []
     for entry in prior.get("pending_views") or []:
         ordered = sorted((entry.get("references") or {}).items())
         try:
             written.append(_write_fence(records_root, base, entry["view"],
-                                        [line for _, line in ordered],
-                                        claims=[claim_id for claim_id, _ in ordered]))
+                                        ordered, superseded=superseded))
         except Refused as exc:
             pending.append({**entry, "why": str(exc)})
     receipt = no_unsourced({
@@ -1244,6 +1366,8 @@ def _resume(prior: dict, records_root: Path | str, receipt_path: Path) -> dict:
         "pending_views": pending,
         "state": "PARTIAL" if pending else "COMPLETE",
         "reused": True,
+        "superseded": superseded,
+        "superseded_unmet": _superseded_unmet(superseded, written),
     }, RECEIPT_PRODUCED, "receipt")
     _write_receipt(receipt_path, receipt)
     return receipt
@@ -1321,9 +1445,13 @@ def _replay(prior: dict, reading: dict, records_root: Path | str, *,
 
 
 def _write_fence(records_root: Path | str, base: Path, card: str,
-                 lines: list[str], baseline: dict | None = None, *,
-                 claims: list[str] | None = None) -> dict:
-    """Replace this module's fence in one card, and nothing else in it."""
+                 claimed: list[tuple[str, str]], baseline: dict | None = None,
+                 *, superseded: list[str] | None = None) -> dict:
+    """Merge this commit's claims into one card's fence, and touch nothing else.
+
+    `claimed` is `(claim id, line)` pairs and not two parallel lists: the id is
+    the key the merge matches on, and a pair cannot be half-supplied.
+    """
     target = Path(records_root) / card
     # `card` is records-root-relative, the coordinate system the reader and the
     # patch use, so joining it onto the records root is the only join that does
@@ -1352,7 +1480,22 @@ def _write_fence(records_root: Path | str, base: Path, card: str,
             f"again — the difference between the two versions is the only "
             f"evidence that anything happened to it")
     head_before, body_before, tail_before = fence_parts(before)
-    body = _replace_fence(before, lines)
+    superseded = list(superseded or [])
+    # The merge is computed twice, and that is the design rather than waste. The
+    # FIRST computation is the write. The SECOND, below, is from the file on
+    # disk, and it is what the splice is checked against — so a `_replace_fence`
+    # that returned something else, however plausible, is caught here rather
+    # than written. `test_the_guard_on_the_splice_is_a_second_opinion` reaches
+    # past the first computation to make sure this one is doing the work.
+    try:
+        body = _replace_fence(before, claimed, superseded=superseded)
+    except Refused as exc:
+        # Every refusal about one card names that card. The merge's own
+        # refusals are about a line inside a file and cannot name it; a person
+        # reading one has to know which card to open.
+        raise Refused(f"{target}: {exc}") from None
+    merged, lines, removed = _merge_claims(_existing(body_before), claimed,
+                                           superseded)
     # Checked BEFORE the write, so that a refusal is a refusal and the file is
     # still the one a person left. The check is on the splice this module is
     # about to perform: the head bytes survive, the tail bytes survive, the
@@ -1381,12 +1524,13 @@ def _write_fence(records_root: Path | str, base: Path, card: str,
         raise Refused(
             f"{target}: the card on disk is not what this module wrote, so this "
             f"write is not reported as having happened")
-    # The ids are the caller's and are carried through unexamined: which claims
-    # a card now holds is a fact about the commit, and this function is the one
-    # place that knows the write happened. They are NOT recovered from `lines`,
-    # which are rendered text.
+    # `claims` is every id the file now carries and `removed` is what this write
+    # took out — both read back from the file, not taken from the caller. The
+    # caller's list is what this COMMIT wanted in the card; a card holds the
+    # claims of every commit that landed in it, and a receipt that reported the
+    # caller's list would say a claim this file still carries is not in it.
     return {"card": card, "before": card_digest(before), "after": card_digest(after),
-            "claims": list(claims or [])}
+            "claims": merged, "removed": removed}
 
 
 def fence_parts(text: str) -> tuple[str, str, str]:
@@ -1454,20 +1598,109 @@ def _fence_layout(body: str) -> tuple[str, str]:
     return before, after
 
 
-def _replace_fence(text: str, lines: list[str]) -> str:
-    """The card with this module's own lines replaced, and everything else kept.
+def _existing(body: str) -> str:
+    """The lines in a fence body that the merge has to read back.
+
+    The module's own region when the body carries one, and otherwise the whole
+    body — because with no region the only writer of that body was this module.
+    An empty body and no fence at all both come out empty here, which is the
+    same answer: nothing to merge with.
+
+    Called from the write AND from the check of the write, so that the two
+    cannot disagree about which bytes are being merged over. A second reading of
+    the same body written out twice is how the check would come to bless a
+    splice the write did not perform.
+    """
+    region = claims_region(body)
+    return region[1] if region is not None else body
+
+
+def _merge_claims(region: str, claimed: list[tuple[str, str]],
+                  superseded: list[str]) -> tuple[list[str], list[str], list[str]]:
+    """The lines a card's block holds after this commit, as `(ids, lines, removed)`.
+
+    Three effects, and a card needs all three to stay readable:
+
+      * this commit's claims REPLACE the lines of the same id. A claim read
+        again over a new revision is a new proposal, but a claim re-committed
+        into a card — after a resume, or from a commit that was refused and
+        retried — must not appear twice, because two lines for one id are two
+        statements a reader has no way to order;
+      * the ids a committed claim supersedes are REMOVED. Without this, adding
+        accumulation to the writer would turn a lost-line bug into a
+        contradictory-card bug: the replaced claim and the claim replacing it
+        would both sit there reading as current;
+      * every other readable line is KEPT. This is the whole point of the
+        merge: a card is a person's view of everything understood about a
+        subject, so a commit about one span must not delete what an earlier
+        commit about another span put there.
+
+    A line with no readable id is REFUSED, not skipped and not kept. Skipping it
+    drops a claim out of the card; keeping it leaves a line nothing can ever
+    match on again, so the next commit adds a second line beside it and the card
+    holds the same fact twice. Neither is a shape this module ever wrote — it
+    writes every line with its id — so the module cannot say which claim such a
+    line is, and the one thing it must not do is decide. Two lines carrying one
+    id are refused for the same reason: which of them is the claim is not
+    answerable from the file.
+
+    Canonical id order, so that a card's block is a function of the claims in it
+    rather than of the order they arrived in, and two runs over one commit
+    produce the same bytes.
+    """
+    both = sorted(set(superseded) & {claim_id for claim_id, _ in claimed})
+    if both:
+        raise Refused(
+            f"claim {', '.join(both)} is both committed here and named as "
+            f"replaced by this same reading. A claim cannot take its own line "
+            f"out of a card, and which of the two the reading meant is not "
+            f"something this module can choose")
+    kept: dict[str, str] = {}
+    for line in region.splitlines():
+        if not line.strip():
+            continue
+        claim_id = _line_id(line)
+        if claim_id is None:
+            raise Refused(
+                f"a line inside this module's own block carries no claim id "
+                f"this module can read, so a commit here cannot tell which "
+                f"claim it is ({line!r}). Keeping it and writing another line "
+                f"beside it would show one claim twice; dropping it would take "
+                f"a claim out of this card. A person has to look at this card")
+        if claim_id in kept:
+            raise Refused(
+                f"this module's block holds two lines for claim {claim_id}, so "
+                f"which of them is the claim cannot be read off the card. This "
+                f"is not a shape this module writes — every line it writes "
+                f"carries its id once — so somebody has edited or merged this "
+                f"card by hand")
+        kept[claim_id] = line
+    removed = sorted(claim_id for claim_id in superseded if claim_id in kept)
+    for claim_id in removed:
+        del kept[claim_id]
+    for claim_id, line in claimed:
+        kept[claim_id] = line
+    merged = sorted(kept)
+    return merged, [kept[claim_id] for claim_id in merged], removed
+
+
+def _replace_fence(text: str, claimed: list[tuple[str, str]], *,
+                   superseded: list[str] | None = None) -> str:
+    """The card with this commit's claims merged in, and everything else kept.
 
     Three cases, and the difference between them is the point:
 
       * no fence — appended. A card nobody has written to has no fence, and
         there the module's lines go after the prose rather than in place of it,
         because the prose is a person's;
-      * a fence with no claims region — a card written before the region
-        existed. Its body had been replaced wholesale on every commit, so all
-        of it is the module's and replacing all of it again keeps faith with
-        what was there;
-      * a fence with the region — only the region is replaced. Every other byte
-        inside the fence, and everything outside it, is what it was before.
+      * a fence whose body carries no claims region — the merge runs over the
+        whole body. That body is the module's and not a person's, so ownership
+        is not in question; identity is. Lines written before the module marked
+        its own claims carry no id, and a line with no id cannot be merged, so
+        such a body is refused unless it is empty;
+      * a fence with the region — the merge runs over the region alone. Every
+        other byte inside the fence, and everything outside it, is what it was
+        before.
 
     A card holding one marker of a pair and not its counterpart is REFUSED, not
     repaired — both pairs, for the same reason and with different consequences.
@@ -1475,11 +1708,9 @@ def _replace_fence(text: str, lines: list[str]) -> str:
     lines beside it, and `fence_parts` calls such a card all head: the markers
     are the guard that says a person's prose is not this module's, so a card
     with one of them has no guard at all. A half CLAIMS region is read as no
-    region, which is the migration case — and that migration replaces the whole
-    body, because the writer that produced an unmarked body owned all of it.
-    Neither half is a shape this module ever wrote, so in either the module
-    cannot say which lines are its own, and the second would take a person's
-    lines with them.
+    region, which puts a person's lines into the merge and takes the refusal
+    above. Neither half is a shape this module ever wrote, so in either the
+    module cannot say which lines are its own.
     """
     has_begin, has_end = FENCE_BEGIN in text, FENCE_END in text
     if has_begin != has_end:
@@ -1493,6 +1724,11 @@ def _replace_fence(text: str, lines: list[str]) -> str:
     if not has_begin:
         separator = ("" if text.endswith("\n\n")
                      else ("\n" if text.endswith("\n") else "\n\n"))
+        # Merged against nothing, rather than written in the caller's order: the
+        # check below re-runs this same merge, and a card whose block came out
+        # in a different order here would be refused by a splice that had in
+        # fact done what it was asked.
+        _, lines, _ = _merge_claims("", claimed, list(superseded or []))
         return text + separator + FENCE_BEGIN + _fence_body(lines) + FENCE_END
     head, body, tail = fence_parts(text)
     if claims_region(body) is None and (CLAIMS_BEGIN in body
@@ -1501,10 +1737,11 @@ def _replace_fence(text: str, lines: list[str]) -> str:
         raise Refused(
             f"this card holds the claims region's {which} marker and not its "
             f"counterpart, so the lines this module wrote cannot be told from "
-            f"the ones a person added next to them. An unmarked fence is "
-            f"migrated by replacing its whole body, which is right only because "
-            f"nothing else could have written there — and this card says "
-            f"somebody did. A person has to look at this card")
+            f"the ones a person added next to them. An unmarked fence is merged "
+            f"wholesale only because nothing else could have written in it — "
+            f"and this card says somebody did. A person has to look at this "
+            f"card")
+    _, lines, _ = _merge_claims(_existing(body), claimed, list(superseded or []))
     before, after = _fence_layout(body)
     return (head + FENCE_BEGIN + before + _claims_marked(lines) + after
             + FENCE_END + tail)
@@ -1577,6 +1814,13 @@ def render_resolution(resolution: dict) -> list[str]:
         lines.append(f"  + [{claim['kind']}] {claim['subject']}："
                      f"{claim['assertion']['now']}")
         lines.append(f"    {claim['confirmation_why']}")
+        if claim["supersedes"]:
+            # On the screen because it is a change to a card a person may be
+            # looking at: this commit takes those lines out. A person told only
+            # that a new claim is being written would find a line gone later and
+            # have nothing to connect it to.
+            lines.append(f"    取代 {', '.join(str(i) for i in claim['supersedes'])}"
+                         f"（这些行会从它所在的卡片移出）")
     lines.append(f"awaiting    {len(resolution['awaiting'])} 条")
     for claim in resolution["awaiting"]:
         lines.append(f"  ? [{claim['kind']}] {claim['subject']}："
@@ -1647,7 +1891,16 @@ def render_receipt(receipt: dict) -> list[str]:
                      f"{_short(receipt['accepted']['digest'])}")
     for entry in receipt["written"]:
         lines.append(f"  · {entry['card']}  {_short(entry['before'])} → "
-                     f"{_short(entry['after'])}  {_claim_ids_text(entry['claims'])}")
+                     f"{_short(entry['after'])}  {_claim_ids_text(entry['claims'])}"
+                     + (f"  移出 {', '.join(entry['removed'])}"
+                        if entry.get("removed") else ""))
+    if receipt.get("superseded_unmet"):
+        # Reported because it is the one outcome of a supersede that looks like
+        # success and is not: nothing was taken out, and the claim the commit
+        # meant to replace is still in a card this write did not open.
+        lines.append(f"  ! 取代的目标在本次写入的卡片里没有对应行："
+                     f"{', '.join(receipt['superseded_unmet'])}"
+                     f"（该主张仍在它自己的卡片里）")
     for entry in receipt["pending_views"]:
         lines.append(f"  ! {entry['view']}  {entry['why']}"
                      + (f"  {_claim_ids_text(sorted(entry.get('references') or {}))}"
