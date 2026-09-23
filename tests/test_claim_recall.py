@@ -111,7 +111,8 @@ class Tree:
                 "claims": claims}
 
     def claim(self, claim_id: str, now: str, positions, **over) -> dict:
-        return {"id": claim_id, "kind": us.OBSERVED_FACT, "subject": "alice",
+        return {"id": claim_id, "kind": over.pop("kind", us.OBSERVED_FACT),
+                "subject": "alice",
                 "assertion": {"was": None, "now": now},
                 "support": {"positions": list(positions), "excerpt": "摘录"},
                 "applies_to": None, "touches": [],
@@ -409,6 +410,188 @@ class TestAClaimALaterReadingReplaced:
 
 
 # --------------------------------------------------------------------------
+# a reading withdrew a claim
+# --------------------------------------------------------------------------
+
+def retracted(tree: Tree, name: str = "two", *, ids=("c1",), low: int = 30,
+              high: int = 40, at: str = SECOND) -> dict:
+    """One withdrawal, through the real writer. The shape every case here uses."""
+    return tree.commit(name, tree.reading(
+        [tree.claim("r1", "撤回", [low + 5], kind=us.RETRACTION, supersedes=list(ids))],
+        low=low, high=high), committed_at=at)
+
+
+class TestAClaimAReadingWithdrew:
+    """The producer A2 used to say it did not have.
+
+    `understanding_semantic.eligible` has stated since it was written that a
+    withdrawal takes effect locally and at once, and this filter named the
+    missing half — no durable producer — in `unobserved` rather than answering
+    `CURRENT`. These are the cases that close it, and every one of them goes
+    through `apply`, so the receipt under test is one the writer really wrote.
+    """
+
+    def test_a_withdrawal_leaves_a_receipt_with_nothing_written_into_it(self, tree):
+        tree.commit("one", tree.reading([tree.claim("c1", "她说周五交付", [11])]))
+        receipt = retracted(tree)
+        assert receipt["state"] == "RETRACTION_ONLY"
+        assert receipt["written"] == []
+        assert receipt["retracted"] == ["c1"]
+        # The receipt is on disk. A withdrawal whose only record is the return
+        # value of the run that computed it is a fact that lives as long as the
+        # process.
+        assert len(tree.receipts()) == 2
+
+    def test_the_claim_is_not_recallable_and_the_provider_is_not_in_the_path(
+            self, tree):
+        # The contract's §6: the remote can be down and the withdrawn fact still
+        # must not come back. Nothing here asks anything anywhere.
+        tree.commit("one", tree.reading([tree.claim("c1", "她说周五交付", [11])]))
+        retracted(tree)
+        row = tree.one("c1")
+        assert row["verdict"] == cr.RETRACTED
+        assert row["mark"] == "不可召回"
+        assert row["recallable"] is False
+        assert row["retraction"][0]["committed_at"] == SECOND
+        assert tree.recall()["provider"]["in_the_path"] is False
+
+    def test_the_line_stays_in_the_card_because_that_is_the_audit(self, tree):
+        # `RETRACTED` is not `SUPERSEDED`: nothing took the line out, and a
+        # filter that enforced the withdrawal by hiding it would be destroying
+        # the record that the claim was ever believed. The contract's §9 wants
+        # "this was believed then" and "this may not be used now" as two facts.
+        tree.commit("one", tree.reading([tree.claim("c1", "她说周五交付", [11])]))
+        retracted(tree)
+        row = tree.one("c1")
+        assert row["still_in_card"] is True
+        assert "c1" in (tree.root / CARD).read_text(encoding="utf-8")
+        assert "audit history" in row["why"] or "believed" in row["why"]
+
+    def test_the_same_withdrawal_read_twice_is_one_receipt_and_one_entry(self, tree):
+        tree.commit("one", tree.reading([tree.claim("c1", "她说周五交付", [11])]))
+        first = retracted(tree)
+        again = retracted(tree, at=THIRD)
+        assert again["reused"] is True
+        assert len(tree.receipts()) == 2
+        assert len(tree.one("c1")["retraction"]) == 1
+
+    def test_a_later_reading_that_does_not_mention_it_cannot_clear_it(self, tree):
+        # The source reappearing, or being read again, is a new claim with its
+        # own revision — never an un-withdrawal. A withdrawal that a later
+        # reading of the same source could quietly erase would be one that a
+        # late remote update could erase too.
+        tree.commit("one", tree.reading([tree.claim("c1", "她说周五交付", [11])]))
+        retracted(tree)
+        tree.commit("three", tree.reading(
+            [tree.claim("c2", "另一段里她说周一", [45])], low=40, high=50),
+            committed_at=THIRD)
+        assert tree.one("c1")["verdict"] == cr.RETRACTED
+        assert tree.one("c1")["recallable"] is False
+        assert tree.one("c2")["verdict"] == cr.CURRENT
+
+    def test_the_withdrawal_holds_when_the_text_under_it_moved_too(self, tree):
+        # Two facts about one claim and neither cancels the other. The source
+        # moved — so the claim is stale about text that is no longer there — and
+        # it is withdrawn, which is the more decisive of the two: re-reading
+        # cannot make it usable.
+        tree.commit("one", tree.reading([tree.claim("c1", "她说周五交付", [11])]))
+        retracted(tree)
+        tree.write_messages(range(1, 61), edit={11: "她后来说改期了"})
+        row = tree.one("c1")
+        assert row["verdict"] == cr.RETRACTED
+        assert row["source_revision"]["recorded"] != row["source_revision"]["current"]
+        assert row["recallable"] is False
+
+    def test_a_withdrawal_and_a_replacement_are_both_reported(self, tree):
+        # The contract requires both to be able to hold of one claim without
+        # either overriding the other, so they are two fields and not one. The
+        # card is where the difference shows: the supersede took the line out,
+        # the withdrawal did not need to.
+        tree.commit("one", tree.reading([tree.claim("c1", "她说周五交付", [11])]))
+        tree.commit("two", tree.reading(
+            [tree.claim("c2", "她改成了周一", [35], supersedes=["c1"])],
+            low=30, high=40), committed_at=SECOND)
+        retracted(tree, name="three", at=THIRD, low=50, high=60)
+        row = tree.one("c1")
+        assert len(row["withdrawal"]) == 1
+        assert len(row["retraction"]) == 1
+        assert row["verdict"] == cr.RETRACTED
+        assert row["recallable"] is False
+
+    def test_a_withdrawal_and_a_conflict_on_one_claim_are_both_reported(
+            self, tree):
+        # The same requirement on the axis that is NOT a replacement. The id
+        # names more than one claim, so the label has to be the one that sends a
+        # person to look — and the withdrawal still happened, so a reader that
+        # dropped it because the label is about something else would let an id
+        # the record explicitly took out of use read as merely disputed.
+        tree.commit("one", tree.reading([tree.claim("c1", "她说周五交付", [11])]))
+        tree.commit("two", tree.reading(
+            [tree.claim("c1", "另一段里也用了这个 id", [35], card=OTHER_CARD,
+                        views=[])], low=30, high=40), committed_at=SECOND)
+        retracted(tree, name="three", at=THIRD, low=50, high=60)
+        row = tree.one("c1")
+        assert row["verdict"] == cr.CONFLICT
+        assert row["recallable"] is False
+        assert len(row["retraction"]) == 1
+        assert "more than one span" in row["why"]
+
+    def test_a_withdrawal_naming_an_id_nothing_wrote_is_reported_not_dropped(
+            self, tree):
+        # A retraction of a claim no receipt ever wrote. Dropping it would make
+        # an id the record explicitly took out of use indistinguishable from one
+        # nobody ever mentioned — and the withdrawal is what a consumer acts on,
+        # so it holds whether or not the write is still here.
+        retracted(tree, ids=("c9",))
+        row = tree.one("c9")
+        assert row["verdict"] == cr.RETRACTED
+        assert row["recallable"] is False
+        assert row["card"] is None
+        assert row["retraction"][0]["committed_at"] == SECOND
+
+    def test_the_receipt_binds_the_reading_the_source_and_the_baseline(self, tree):
+        # What a person needs to re-examine the withdrawal later, all of it in
+        # the one durable record: which place, which revision of the source,
+        # which reading, which text the reader was looking at, which authority
+        # was in play, and which ids came out of use. Nothing here is derivable
+        # after the fact — the commit's own file does not survive the run.
+        tree.commit("one", tree.reading([tree.claim("c1", "她说周五交付", [11])]))
+        card_digest = us.card_digest((tree.root / CARD).read_text(encoding="utf-8"))
+        retracted(tree)
+        # Found by what it says and not by position: `receipts()` is sorted by
+        # FILE NAME, which is a hash of each receipt's own key and orders them
+        # by nothing a reader can see.
+        document = next(json.loads(path.read_text(encoding="utf-8"))
+                        for path in tree.receipts()
+                        if json.loads(path.read_text(encoding="utf-8"))["state"]
+                        == "RETRACTION_ONLY")
+        assert len(document["key"]) == 5
+        assert document["key"][0] == CARD and document["key"][4] == tree.identity(30, 40)
+        assert document["reading_digest"]
+        assert document["baseline"] == {"card": CARD, "card_digest": card_digest}
+        assert document["accepted"] is None
+        assert document["retracted"] == ["c1"]
+
+    def test_the_rule_was_given_the_withdrawal_and_not_a_constant(self, tree):
+        # `invalidate_claims` has two inputs and one of them used to be a
+        # constant: every row that set `withdrawn` also cleared `verification`,
+        # so the rule's `withdrawn` branch could not be reached and a reader was
+        # told the rule decided when one of its inputs never varied. The first
+        # half is the rule on its own; the second is the row this module hands
+        # it for a retracted claim.
+        revisions = {"span": "digest"}
+        live = {"source_revisions": {"span": "digest"}, "verification": cr.EVIDENCED,
+                "withdrawn": False}
+        gone = {**live, "withdrawn": True}
+        assert cr._cycle.invalidate_claims([live], revisions)[0]["recallable"] is True
+        assert cr._cycle.invalidate_claims([gone], revisions)[0]["recallable"] is False
+        tree.commit("one", tree.reading([tree.claim("c1", "她说周五交付", [11])]))
+        retracted(tree)
+        assert tree.one("c1")["recallable"] is False
+        assert tree.one("c1")["verdict"] not in cr.RECALLABLE_VERDICTS
+
+
+# --------------------------------------------------------------------------
 # the card and the record disagree
 # --------------------------------------------------------------------------
 
@@ -633,21 +816,31 @@ class TestTheProviderIsNeverInThePath:
         assert tree.one("c1")["withdrawal"]
 
     def test_the_axes_this_filter_cannot_see_are_named(self, tree):
+        # `retraction` used to be the fourth name here, saying that the rule for
+        # a withdrawal was tested while nothing durable carried a withdrawal
+        # into this filter. It is not in the table any more because it is not
+        # unobserved any more: a retraction is written into the receipt of the
+        # reading that performed it and is read back on every run. A table of
+        # what is NOT checked that kept naming a checked axis would be the same
+        # error the other way round.
         tree.commit("one", tree.reading([tree.claim("c1", "她说周五交付", [11])]))
         assert set(tree.recall()["unobserved"]) == {"permission", "provider",
-                                                    "line_text", "retraction"}
+                                                    "line_text"}
 
-    def test_a_retraction_is_named_as_a_gap_rather_than_silently_passed(self, tree):
-        # The one axis here that has a RULE and no producer: `eligible` states
-        # that a withdrawal takes effect locally and at once, and a retraction
-        # commits nowhere and writes no receipt, so nothing durable carries it
-        # into this filter. A completed claim reads as CURRENT, and the answer
-        # says so rather than letting CURRENT mean "no withdrawal applies".
+    def test_an_axis_that_left_the_table_is_not_read_as_still_unchecked(self, tree):
+        # Two halves, and the second is the one that matters: the name is gone
+        # from `unobserved`, AND a withdrawal actually decides the verdict. A
+        # table edit alone would have removed the warning without supplying the
+        # answer.
         tree.commit("one", tree.reading([tree.claim("c1", "她说周五交付", [11])]))
+        tree.commit("two", tree.reading(
+            [tree.claim("r1", "撤回 c1", [35], kind=us.RETRACTION,
+                        supersedes=["c1"])], low=30, high=40),
+            committed_at=SECOND)
         document = tree.recall()
-        assert "eligible" in document["unobserved"]["retraction"]
-        assert "gap in this answer" in document["unobserved"]["retraction"]
-        assert document["claims"][0]["verdict"] == cr.CURRENT
+        assert "retraction" not in document["unobserved"]
+        assert document["claims"][0]["verdict"] == cr.RETRACTED
+        assert document["claims"][0]["recallable"] is False
 
     def test_a_revoked_permission_is_reported_as_unobserved_not_as_a_verdict(
             self, tree):

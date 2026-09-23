@@ -398,6 +398,24 @@ class TestARetractionActsLocally:
         assert "takes effect locally at once" in \
             result["awaiting"][0]["confirmation_why"]
 
+    def test_a_withdrawal_needs_no_grant_and_that_is_the_safe_direction(
+            self, tmp_path):
+        # The contract's §6 read from the other side: a withdrawal is the act
+        # that makes a fact UNUSABLE, and a grant is what an act that puts a
+        # fact into a card needs. Gating this on a grant would leave the claim
+        # recallable whenever no grant happened to be in play — which is the
+        # state the retraction gap exists to remove. It is not free: the
+        # withdrawal takes effect, so the receipt has to be re-examinable, and
+        # the field that would name an authority says there was none.
+        root = records_tree(tmp_path)
+        document = reading(root, [claim("r1", kind=us.RETRACTION,
+                                        supersedes=("c1",))])
+        receipt = applied(tmp_path, root, document, delegation=None)
+        assert receipt["state"] == "RETRACTION_ONLY"
+        assert receipt["retracted"] == ["c1"]
+        assert receipt["accepted"] is None
+        assert receipt["written"] == []
+
 
 # --------------------------------------------------------------------------
 # the write happens once, and only inside the fence
@@ -432,6 +450,237 @@ def applied(tmp_path: Path, root: Path, document: dict, *, delegation=None,
     return us.apply(path, root, measure=lambda: current(root, **overrides),
                     delegation=delegation, accepted=accepted,
                     committed_at=committed_at)
+
+
+class TestAWithdrawalLeavesARecordThoughItWritesNoFile:
+    """A retraction commits nowhere, so the receipt is the only record of it.
+
+    The local effect the contract gives a withdrawal — that it takes hold at
+    once, with the provider down — is worth exactly as much as its durable
+    record: an effect that exists only in the process that computed it is gone
+    with that process, and A2's recall filter reads receipts and reads nothing
+    else. These tests are the producer side of that; `test_claim_recall` is the
+    consumer side.
+    """
+
+    def _withdrawn(self, tmp_path: Path, root: Path):
+        """c1 committed at one span, then withdrawn from a later one.
+
+        Returns the withdrawing reading, the receipt the run left, and the
+        card's bytes from just before that run. The third is what "this run
+        wrote no file" can be measured against at all.
+        """
+        commit_and_write(tmp_path, root, document=reading(root, [claim("c1")]),
+                         delegation=GRANT)
+        frozen = (root / CARD).read_bytes()
+        document = reading(root, [claim("r1", kind=us.RETRACTION,
+                                        supersedes=("c1",), positions=(35,))],
+                           from_position=30, to_position=40)
+        receipt = applied(tmp_path, root, document, delegation=GRANT,
+                          from_position=30, to_position=40)
+        return document, receipt, frozen
+
+    def test_a_run_whose_only_effect_is_a_withdrawal_leaves_a_receipt(
+            self, tmp_path):
+        root = records_tree(tmp_path)
+        document, receipt, frozen = self._withdrawn(tmp_path, root)
+        assert receipt["state"] == "RETRACTION_ONLY"
+        assert receipt["written"] == []
+        assert receipt["pending_views"] == []
+        assert receipt["retracted"] == ["c1"]
+        assert receipt["reused"] is False
+        path = us._receipt_path(us._understanding_root(root), at(tmp_path, document))
+        assert path.is_file()
+        assert us._read_receipt(path) == receipt
+        # And it is the record of a withdrawal and not of a write, which is the
+        # difference the card's own bytes can be asked about.
+        assert (root / CARD).read_bytes() == frozen
+
+    def test_the_receipt_binds_the_withdrawal_to_its_source_and_its_reading(
+            self, tmp_path):
+        # The withdrawal names a claim; the receipt has to say which source
+        # revision, which range of it, and which reading of it that claim was
+        # taken out of — otherwise the evidence cannot be re-examined, which is
+        # the only thing durable evidence is for.
+        root = records_tree(tmp_path)
+        document, receipt, _ = self._withdrawn(tmp_path, root)
+        read = at(tmp_path, document)
+        assert receipt["schema"] == us.RECEIPT_SCHEMA
+        assert receipt["key"] == list(us.commit_key(read))
+        assert receipt["reading_digest"] == us.reading_digest(read)
+        assert receipt["baseline"] == {"card": CARD,
+                                       "card_digest": digest_of(root, CARD)}
+        assert receipt["retracted"] == ["c1"]
+
+    def test_the_same_withdrawal_run_twice_is_one_receipt_on_disk(self, tmp_path):
+        root = records_tree(tmp_path)
+        document, first, _ = self._withdrawn(tmp_path, root)
+        path = us._receipt_path(us._understanding_root(root), at(tmp_path, document))
+        before = path.read_bytes()
+        again = applied(tmp_path, root, document, delegation=GRANT,
+                        from_position=30, to_position=40,
+                        committed_at="2026-09-23T23:00:00+08:00")
+        assert again["reused"] is True
+        assert again["state"] == "RETRACTION_ONLY"
+        assert again["retracted"] == ["c1"]
+        # Not rewritten means not restamped either: a receipt's `committed_at`
+        # is when the withdrawal happened, and the second run did not make one.
+        assert path.read_bytes() == before
+        assert again["committed_at"] == first["committed_at"]
+
+    def test_the_persons_answer_arriving_later_commits_and_keeps_the_withdrawal(
+            self, tmp_path):
+        # The ordinary order of events, with a withdrawal in the same run: the
+        # card is waiting for a person AND a claim is withdrawn, the person
+        # answers later. The yes must not be refused by the receipt the
+        # withdrawal left, and the withdrawal must not be dropped by the write
+        # that follows — the two are separate fields of one receipt.
+        root = records_tree(tmp_path)
+        commit_and_write(tmp_path, root, document=reading(root, [claim("c1")]),
+                         delegation=GRANT)
+        document = reading(root, [claim("c2", touches=DEADLINE, positions=(35,)),
+                                  claim("r1", kind=us.RETRACTION,
+                                        supersedes=("c1",), positions=(36,))],
+                           from_position=30, to_position=40)
+        span = {"from_position": 30, "to_position": 40}
+        waiting = applied(tmp_path, root, document, delegation=GRANT, **span)
+        assert waiting["state"] == "RETRACTION_ONLY"
+        assert waiting["retracted"] == ["c1"]
+        assert "她说周五交付" in (root / CARD).read_text(encoding="utf-8")
+
+        proposal = resolved(tmp_path, root, document, delegation=GRANT, **span)
+        row = acceptance(proposal, claims=["c2"])
+        receipt = applied(tmp_path, root, document, delegation=GRANT,
+                          accepted=accepted_document(tmp_path, row), **span)
+        assert receipt["state"] == "COMPLETE"
+        assert receipt["reused"] is False
+        assert receipt["retracted"] == ["c1"]
+        assert receipt["superseded"] == []
+        # `written[i].claims` is the ids the FILE carries, so the card that took
+        # c2 carries the withdrawn c1's line as well — the withdrawal takes the
+        # claim out of what may be recalled and leaves it where it is.
+        assert [claim_id for entry in receipt["written"]
+                if entry["card"] == CARD for claim_id in entry["claims"]] == \
+            ["c1", "c2"]
+
+    def test_a_withdrawal_with_nothing_waiting_is_still_not_a_write(self, tmp_path):
+        # The `RETRACTION_ONLY` receipt is written where `NOTHING_TO_WRITE` is
+        # not, and the two states differ by exactly one thing: whether anything
+        # was withdrawn. This is the same run as the case above with the waiting
+        # claim taken out, so that nothing but the withdrawal is left in it.
+        root = records_tree(tmp_path)
+        commit_and_write(tmp_path, root, document=reading(root, [claim("c1")]),
+                         delegation=GRANT)
+        document = reading(root, [claim("r1", kind=us.RETRACTION,
+                                        supersedes=("c1",), positions=(35,))],
+                           from_position=30, to_position=40)
+        nothing = applied(tmp_path, root, document, delegation=GRANT,
+                          from_position=30, to_position=40)
+        assert nothing["state"] == "RETRACTION_ONLY"
+        # And with nothing withdrawn the state is the other one, on the same
+        # span and the same card, so that the assertion above is about the
+        # withdrawal and not about the span.
+        plain = reading(root, [claim("c9", touches=DEADLINE, positions=(55,))],
+                        from_position=50, to_position=60)
+        empty = applied(tmp_path, root, plain, delegation=GRANT,
+                        from_position=50, to_position=60)
+        assert empty["state"] == "NOTHING_TO_WRITE"
+        assert empty["retracted"] == []
+        assert not us._receipt_path(
+            us._understanding_root(root), at(tmp_path, plain)).exists()
+
+    def test_a_resumed_write_does_not_drop_the_withdrawal_it_started_with(
+            self, tmp_path):
+        # A run that both writes and withdraws, with a view it could not reach:
+        # the receipt is PARTIAL and holds the withdrawal, and the run that
+        # finishes it owes the view and nothing else. A resume that re-derived
+        # the withdrawal, or dropped it because this run did not make one, would
+        # leave the claim recallable again while the receipt on disk said it was
+        # not — the one direction a withdrawal must never move.
+        root = records_tree(tmp_path)
+        commit_and_write(tmp_path, root, document=reading(root, [claim("c1")]),
+                         delegation=GRANT)
+        (root / VIEW).unlink()
+        (root / VIEW).mkdir()
+        document = reading(root, [claim("c2", positions=(35,)),
+                                  claim("r1", kind=us.RETRACTION,
+                                        supersedes=("c1",), positions=(36,))],
+                           from_position=30, to_position=40)
+        span = {"from_position": 30, "to_position": 40}
+        first = applied(tmp_path, root, document, delegation=GRANT, **span)
+        assert first["state"] == "PARTIAL"
+        assert first["retracted"] == ["c1"]
+        (root / VIEW).rmdir()
+        (root / VIEW).write_text(VIEW_PROSE, encoding="utf-8")
+        second = applied(tmp_path, root, document, delegation=GRANT, **span)
+        assert second["state"] == "COMPLETE"
+        assert second["reused"] is True
+        assert second["retracted"] == ["c1"]
+        assert list(second["pending_views"]) == []
+
+    def test_a_v4_receipt_is_read_as_what_it_is_and_not_migrated(self, tmp_path):
+        # v5 ADDED two fields and changed none, so a v4 receipt is read directly:
+        # its absent `retracted` is not a guess about what it meant, it is what a
+        # v4 receipt says — v4 had no way to record a withdrawal that wrote no
+        # file, so it recorded none. Nothing here rewrites the file on disk.
+        root = records_tree(tmp_path)
+        document = reading(root)
+        receipt = commit_and_write(tmp_path, root, document=document,
+                                   delegation=GRANT)
+        path = us._receipt_path(us._understanding_root(root), at(tmp_path, document))
+        older = {name: value for name, value in receipt.items()
+                 if name not in ("retracted", "baseline")}
+        older["schema"] = "serveros/understanding-receipt.v4"
+        path.write_text(json.dumps(older, ensure_ascii=False), encoding="utf-8")
+
+        assert us._read_receipt(path) == older
+        again = applied(tmp_path, root, document, delegation=GRANT)
+        assert again["reused"] is True
+        assert "retracted" not in again
+        assert json.loads(path.read_text(encoding="utf-8")) == older
+
+    def test_a_v4_receipt_that_was_partial_can_still_be_finished(self, tmp_path):
+        # The other half of reading an older receipt as what it is: a v4 receipt
+        # can be PARTIAL — a view it could not write — and finishing it must not
+        # be a `KeyError` over the field v5 added. What such a receipt says about
+        # the card it was reasoned against is that it does not record one, which
+        # is what a null baseline on the finished receipt means.
+        root = records_tree(tmp_path)
+        (root / VIEW).unlink()
+        (root / VIEW).mkdir()
+        document = reading(root)
+        first = applied(tmp_path, root, document, delegation=GRANT)
+        assert first["state"] == "PARTIAL"
+        path = us._receipt_path(us._understanding_root(root), at(tmp_path, document))
+        older = {name: value for name, value in first.items()
+                 if name not in ("retracted", "baseline")}
+        older["schema"] = "serveros/understanding-receipt.v4"
+        path.write_text(json.dumps(older, ensure_ascii=False), encoding="utf-8")
+        (root / VIEW).rmdir()
+        (root / VIEW).write_text(VIEW_PROSE, encoding="utf-8")
+
+        second = applied(tmp_path, root, document, delegation=GRANT)
+        assert second["state"] == "COMPLETE"
+        assert second["reused"] is True
+        assert second["retracted"] == []
+        assert second["baseline"] is None
+        assert [entry["card"] for entry in second["written"]] == [CARD, VIEW]
+
+    def test_a_v3_receipt_is_refused_by_name(self, tmp_path):
+        # A v3 receipt's `written[i]` has no `role`, so a reader that knows which
+        # field says whether a card OWNS a claim or only references it cannot
+        # read that entry without inventing one.
+        path = tmp_path / "receipt-v3.json"
+        path.write_text(json.dumps({
+            "schema": "serveros/understanding-receipt.v3",
+            "key": [CARD, MANIFEST, 10, 20, "a" * 64],
+            "written": [{"card": CARD, "before": "b" * 64, "after": "c" * 64,
+                         "claims": ["c1"]}],
+        }), encoding="utf-8")
+        with pytest.raises(us.Refused) as caught:
+            us._read_receipt(path)
+        assert "serveros/understanding-receipt.v3" in str(caught.value)
+        assert "serveros/understanding-receipt.v5" in str(caught.value)
 
 
 class TestTheWriteHappensOnce:
