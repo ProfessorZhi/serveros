@@ -534,29 +534,28 @@ def messages_file(key: str, records_root: Path) -> Path:
         *[part for part in directory.split("/") if part]) / "messages.jsonl"
 
 
-def read_positions(source_file: Path) -> dict:
-    """`{state, count, min, max, edited, deleted, without_position}` for one jsonl.
+def _scan_positions(source_file: Path) -> dict:
+    """One messages file, parsed once. Both views below are projections of this.
 
-    Only `message_position` and the revision flags are read. No `content` is
-    loaded into any returned value, so nothing this function returns can carry a
-    message body into a report.
+    One parse and two projections rather than two readers of one file: two
+    readers drift, and the one that drifts is the one that decides whether a
+    position was there.
 
-    A record with no readable `message_position` makes `max` **not decidable**
-    rather than smaller: `max` over the records that happen to have one is a
-    number about the reader's luck, and returning it would understate how far
-    the source reaches by exactly the amount this reader failed to look at.
+    Only `message_position` and the revision flags are read into any returned
+    value. No `content` is loaded, so nothing here can carry a message body into
+    a report.
     """
     if not source_file.is_file():
-        return {"state": "NO_MESSAGES_FILE", "count": 0, "min": None, "max": None,
-                "edited": 0, "deleted": 0, "without_position": 0,
+        return {"state": "NO_MESSAGES_FILE", "count": 0, "positions": [],
+                "duplicates": [], "edited": 0, "deleted": 0, "without_position": 0,
                 "why": f"{source_file} does not exist"}
     count = edited = deleted = without = 0
     positions: list[int] = []
     try:
         handle = source_file.open(encoding="utf-8")
     except OSError as exc:
-        return {"state": "UNREADABLE", "count": 0, "min": None, "max": None,
-                "edited": 0, "deleted": 0, "without_position": 0,
+        return {"state": "UNREADABLE", "count": 0, "positions": [],
+                "duplicates": [], "edited": 0, "deleted": 0, "without_position": 0,
                 "why": str(exc)}
     with handle:
         for number, line in enumerate(handle, start=1):
@@ -565,13 +564,13 @@ def read_positions(source_file: Path) -> dict:
             try:
                 record = json.loads(line)
             except ValueError as exc:
-                return {"state": "MALFORMED", "count": count, "min": None,
-                        "max": None, "edited": edited, "deleted": deleted,
+                return {"state": "MALFORMED", "count": count, "positions": [],
+                        "duplicates": [], "edited": edited, "deleted": deleted,
                         "without_position": without,
                         "why": f"line {number}: {exc}"}
             if not isinstance(record, dict):
-                return {"state": "MALFORMED", "count": count, "min": None,
-                        "max": None, "edited": edited, "deleted": deleted,
+                return {"state": "MALFORMED", "count": count, "positions": [],
+                        "duplicates": [], "edited": edited, "deleted": deleted,
                         "without_position": without,
                         "why": f"line {number} is not an object"}
             count += 1
@@ -583,16 +582,72 @@ def read_positions(source_file: Path) -> dict:
                 positions.append(int(str(record.get("message_position")).strip()))
             except (TypeError, ValueError):
                 without += 1
+    ordered = sorted(positions)
+    duplicates = sorted({position for position in ordered
+                         if ordered.count(position) > 1})
     return {
         "state": "DECIDABLE" if not without else "POSITIONS_INCOMPLETE",
         "count": count,
-        "min": min(positions) if positions else None,
-        "max": max(positions) if positions else None,
+        "positions": ordered,
+        "duplicates": duplicates,
         "edited": edited, "deleted": deleted, "without_position": without,
         "why": "" if not without else
                f"{without} of {count} records carry no integer "
                f"`message_position`, so the newest position this source reaches "
                f"cannot be stated",
+    }
+
+
+def read_positions(source_file: Path) -> dict:
+    """`{state, count, min, max, edited, deleted, without_position}` for one jsonl.
+
+    A record with no readable `message_position` makes `max` **not decidable**
+    rather than smaller: `max` over the records that happen to have one is a
+    number about the reader's luck, and returning it would understate how far
+    the source reaches by exactly the amount this reader failed to look at.
+    """
+    scan = _scan_positions(source_file)
+    positions = scan["positions"]
+    return {"state": scan["state"], "count": scan["count"],
+            "min": min(positions) if positions else None,
+            "max": max(positions) if positions else None,
+            "edited": scan["edited"], "deleted": scan["deleted"],
+            "without_position": scan["without_position"], "why": scan["why"]}
+
+
+def read_position_runs(source_file: Path) -> dict:
+    """The positions one file holds, as runs AND the gaps between them.
+
+    `read_positions` answers "how far does this source reach" with a maximum, and
+    it is right about that question. It is the wrong answer to "what has been
+    captured": a file holding 0–4 and 9–13 reaches 13 and is missing four
+    positions in the middle, and a reader given only the maximum reports the
+    capture as complete up to 13. No scalar contains that gap, so this returns
+    the runs and names the gaps — 任何中间 gap 都不能被最大位置掩盖.
+
+    Interior gaps only. A run that starts above zero is where the captured
+    conversation begins and not a hole, and the same at the end; only a position
+    missing BETWEEN two captured ones is a fact about the capture.
+    """
+    scan = _scan_positions(source_file)
+    positions = scan["positions"]
+    runs: list[list[int]] = []
+    for position in positions:
+        if runs and position == runs[-1][1] + 1:
+            runs[-1][1] = position
+        elif runs and position <= runs[-1][1]:
+            continue                      # a duplicate, reported separately
+        else:
+            runs.append([position, position])
+    gaps = [[runs[index][1] + 1, runs[index + 1][0] - 1]
+            for index in range(len(runs) - 1)
+            if runs[index + 1][0] > runs[index][1] + 1]
+    return {
+        "state": scan["state"], "runs": runs, "gaps": gaps,
+        "duplicates": scan["duplicates"], "count": scan["count"],
+        "low": positions[0] if positions else None,
+        "high": positions[-1] if positions else None,
+        "why": scan["why"],
     }
 
 

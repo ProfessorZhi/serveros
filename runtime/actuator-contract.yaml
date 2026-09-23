@@ -396,6 +396,10 @@ actuators:
       name is handed back by the library and is this process's own, so the
       "cannot reach a file it did not write" argument holds by construction
       rather than by a naming rule.
+
+      `intake/understanding_semantic.py#_atomic_write` is the second `mkstemp`
+      site and the same argument: the temporary is one this process just made,
+      and the unlink runs only on the path where the replace did not happen.
     sites:
       - {file: relations/project.py, symbols: [write]}
       - {file: runtime/ability_projection.py, symbols: [write_atomic]}
@@ -406,6 +410,7 @@ actuators:
       # 但 `_atomic_write` 只处理 JSON，日报写的是文本，所以是另一个符号。
       - {file: runtime/daily_report.py, symbols: [_atomic_write_text]}
       - {file: intake/understanding_patch.py, symbols: [write]}
+      - {file: intake/understanding_semantic.py, symbols: [_atomic_write]}
 
   - id: atomic-write-commit
     kind: fs_mutation
@@ -436,6 +441,16 @@ actuators:
       the patch a person is meant to read — and it is atomic for the reason
       the module is written at all: a reader must never see half a patch and
       decide on it.
+
+      `intake/understanding_semantic.py#_atomic_write` is the fifth, and it is
+      the patch writer's twin: `mkstemp` in the destination's own directory,
+      the same two reasons. Its destinations are a card and the receipt beside
+      it, both under the understanding root, which `_understanding_root`
+      refuses unless it is absolute — so, like the two above, the path cannot
+      arrive from the cwd. The card write is atomic for a sharper reason than
+      the patch write's: the module's whole subject is a card whose fenced
+      reading was replaced by a person's correction, and a reader who catches
+      half of that splice cannot tell a correction from a lost paragraph.
     sites:
       - {file: relations/project.py, symbols: [write]}
       - {file: runtime/ability_projection.py, symbols: [write_atomic]}
@@ -447,6 +462,7 @@ actuators:
       - {file: scripts/verify.py, symbols: [write_record]}
       - {file: intake/global_board.py, symbols: [render], verb: ".replace()"}
       - {file: intake/understanding_patch.py, symbols: [write]}
+      - {file: intake/understanding_semantic.py, symbols: [_atomic_write]}
 
   - id: daemon-owns-its-socket
     kind: fs_mutation
