@@ -24,20 +24,28 @@ Three rules enforce that rather than recommend it.
      record to `CONFIRMED`. The `ast` property test is the evidence: no writer
      for the decisions path exists in this module, only a reader.
 
-  2. **A confirmation covers the range it was made about, and nothing else.**
-     An item is identified by (card, capture object, kind, from, to). A source
-     that moves again produces a different range, and the decision made about
-     the old one does not come along: the item returns to `AWAITING` and the
-     decision is reported in `stale_decisions` rather than dropped. A
-     confirmation that followed a card automatically is not a confirmation of
-     anything a person read.
+  2. **A confirmation covers the revision it was made about, and nothing else.**
+     An item is identified by (card, capture object, kind, from, to) TOGETHER
+     WITH two digests — the card's own text, and the content the span names. A
+     source that moves again produces a different range, a message rewritten
+     under an unchanged span produces a different CONTENT, and a card rewritten
+     under its own path produces a different baseline. Each of the three makes a
+     new item, and the decision about the old one does not come along: the item
+     returns to `AWAITING` and the decision is reported in `stale_decisions`
+     with the part that moved named. A confirmation that followed a card
+     automatically is not a confirmation of anything a person read — and neither
+     is one that outlives the text it was about. A decisions file that names no
+     content is refused rather than accepted as a decision about a place.
 
   3. **Every item carries the version pair it was computed from.** Where the
      card had got to, and where the source had got to, at the moment of
      comparison: positions for a chat, content digests for a document. A
      proposal without them is a proposal a reader cannot check, and "the card
      is behind its source by 644" is exactly the sentence that gets believed
-     without being checked.
+     without being checked. The identity digests of rule 2 are one-way and
+     carry no text; they answer "is this the same" and never "what does it say",
+     which is the only reason this module can hold them without breaking the
+     rule below.
 
 What the design calls a *Claim* patch is realised here as version-anchored
 *items*, and deliberately not as anything named `claim`. A claim reads as a
@@ -86,6 +94,11 @@ NO_ITEM_BECAUSE = {
 ITEM_PRODUCED = {
     "card": "the understanding card, relative to the records root, echoed from "
             "the range",
+    # The understanding baseline. A card rewritten in place keeps its path and
+    # can keep every span it cites, so the path alone does not name the text a
+    # proposal was computed against.
+    "card_digest": "the card's own text as a digest, from the reader's "
+                   "`read_card` — the baseline this proposal is about",
     "state": "the card's verdict from the reader, copied",
     "state_why": "the verdict's own reason, copied verbatim",
     "source": "the source path as the CARD wrote it, echoed from the range",
@@ -106,6 +119,20 @@ ITEM_PRODUCED = {
     "source_count": "`sync.msg_count`, the collector's count, from the range",
     "cited_digest": "the digest prefix the card quoted, for a document range",
     "content_sha256": "the digest the manifest records now, for a document range",
+    # The version half, copied from the range. `content_sha256` is what the
+    # DOCUMENT now holds and `content_identity` is what the RANGE is about;
+    # they are the same value for a document and only the second exists for a
+    # chat span. A decision that did not carry this would be a decision about a
+    # place, and the content at that place can be rewritten under it.
+    "content_identity": "a digest of the records this range names, from the "
+                        "reader — the version this proposal is about",
+    "content_identity_why": "why `content_identity` is null, from the reader; "
+                            "null when the digest is present, because then the "
+                            "question does not arise. Every key this writer "
+                            "emits is present on every item — a key that "
+                            "appeared only for the items it applies to would "
+                            "make a consumer's field access a question about "
+                            "which item it is holding",
     "revisions": "edited/deleted counts inside the range, when the range is one "
                  "the card already read",
     "latest_create_time": "`sync.latest_create_time`, from the range",
@@ -132,9 +159,12 @@ PATCH_PRODUCED = {
     "rejected": "items an authored decision marked REJECTED",
     "decisions_path": "the decisions file this patch was built against, or null",
     "stale_decisions": "decisions whose exact proposal is no longer in this "
-                       "patch, each with why — reported rather than dropped, "
-                       "because a confirmation that silently stops applying is "
-                       "worse than one that was never made",
+                       "patch, each with the identity it was made against and "
+                       "why it no longer applies. The reason names which part "
+                       "moved — the range, the content under it, or the card — "
+                       "because those call for different next actions. Reported "
+                       "rather than dropped: a confirmation that silently stops "
+                       "applying is worse than one that was never made",
     "skipped": "what this module declined to emit or folded into another item, "
                "each with why — so the item count never differs from the ranges "
                "the reader printed without a line here saying so",
@@ -143,10 +173,21 @@ PATCH_PRODUCED = {
 
 DECISION_PRODUCED = {
     "card": "the card the decision was made about",
+    "card_digest": "the card's text the decision was made against. Required, "
+                   "and required to be present rather than merely non-null: a "
+                   "decision that does not say which revision of the card it "
+                   "was about is a decision about a path",
     "manifest": "the capture object the decision was made about",
     "review": "the range kind the decision was made about",
     "from_position": "the first position the decision was made about",
     "to_position": "the last position the decision was made about",
+    "content_identity": "the content the decision was made about, as the "
+                        "reader measured it. Required and required present, for "
+                        "the same reason as `card_digest`; null is a legitimate "
+                        "value only when the proposal itself carried null and "
+                        "said why, which is a decision about a span whose "
+                        "content could not be identified — not a decision about "
+                        "whatever is there now",
     "decision": "CONFIRMED or REJECTED — never AWAITING, which is the absence "
                 "of a decision rather than one",
     "by": "who decided. Required: a confirmation nobody is named for is an "
@@ -192,15 +233,54 @@ def no_unsourced(mapping: dict, table: dict, where: str) -> dict:
     return mapping
 
 
+#: The fields a proposal's identity is made of, in order. One list, and both
+#: halves read it: a reader building this tuple and a writer building it
+#: separately would agree until the first time either changed, and the symptom
+#: would be a confirmation that no longer matches the proposal it was made for.
+#: That failure is silent, which is why the list is here rather than twice.
+#:
+#: Every index into the identity tuple below is taken through `place_of` and
+#: `version_of` rather than written as `key[5]`. The two halves mean different
+#: things — one is what a person read, the other is which revision of it — and
+#: `key[5]` reads the second only until somebody inserts a field.
+IDENTITY_FIELDS = ("card", "manifest", "review", "from_position",
+                   "to_position", "card_digest", "content_identity")
+
+#: The half a person can read aloud and repeat in a message.
+PLACE_FIELDS = IDENTITY_FIELDS[:5]
+
+#: The half nobody can read aloud and every decision depends on.
+VERSION_FIELDS = IDENTITY_FIELDS[5:]
+
+
+def place_of(record: dict) -> tuple:
+    """Where a proposal is: the card, the capture object, the kind, the span."""
+    return tuple(record.get(field) for field in PLACE_FIELDS)
+
+
+def version_of(record: dict) -> tuple:
+    """Which revision of that place: the card's own text, the content's."""
+    return tuple(record.get(field) for field in VERSION_FIELDS)
+
+
+def identity_of(record: dict) -> tuple:
+    """The identity fields of an item or of a decision, in one order."""
+    return place_of(record) + version_of(record)
+
+
 def item_key(item: dict) -> tuple:
     """What a decision is about: the exact proposal, not the card.
 
     The capture object is in the key and not just the cited path, because one
     cited path can match several captures; the positions are in it because a
-    range is what a person read.
+    range is what a person read; and the two digests are in it because a range
+    is not a revision. `content_identity` covers the content the range names and
+    `card_digest` covers the understanding baseline it was judged against — so a
+    message rewritten under an unchanged span, or a card rewritten under an
+    unchanged path, makes a DIFFERENT proposal, and a decision about the older
+    one stops applying rather than being inherited by text nobody confirmed.
     """
-    return (item["card"], item["manifest"], item["review"],
-            item["from_position"], item["to_position"])
+    return identity_of(item)
 
 
 def read_decisions(path: Path | str) -> dict[tuple, dict]:
@@ -234,18 +314,34 @@ def read_decisions(path: Path | str) -> dict[tuple, dict]:
                 f"CONFIRMED or REJECTED. AWAITING is the absence of a decision, "
                 f"so writing it down would be recording that somebody decided "
                 f"nothing")
+        # PRESENT, not merely non-null. `entry.get` returns `None` for a field
+        # that is absent and for one written as null, and the difference is the
+        # whole rule: null is the honest value for a proposal whose content the
+        # reader could not identify, while an absent field is a decision that
+        # did not say what it was about. Only the first may inherit.
+        for field in ("card_digest", "content_identity"):
+            if field not in entry:
+                raise Malformed(
+                    f"{path}:{number}: `{field}` is absent, so this decision "
+                    f"names a place and not a revision. A message rewritten "
+                    f"under an unchanged path and span, or a card rewritten "
+                    f"under its own path, would inherit the decision and record "
+                    f"somebody as having confirmed text they never read. Copy "
+                    f"the field from the item in the patch; null is accepted "
+                    f"only when the item itself carries null and says why")
         record = no_unsourced({
             "card": _require(entry.get("card"), f"{path}:{number}: card"),
+            "card_digest": entry.get("card_digest"),
             "manifest": entry.get("manifest"),
             "review": _require(entry.get("review"), f"{path}:{number}: review"),
             "from_position": entry.get("from_position"),
             "to_position": entry.get("to_position"),
+            "content_identity": entry.get("content_identity"),
             "decision": state,
             "by": _require(entry.get("by"), f"{path}:{number}: by"),
             "at": entry.get("at"),
         }, DECISION_PRODUCED, "decision")
-        key = (record["card"], record["manifest"], record["review"],
-               record["from_position"], record["to_position"])
+        key = identity_of(record)
         if key in decisions:
             raise Malformed(
                 f"{path}:{number}: two decisions about one proposal "
@@ -260,7 +356,12 @@ def _locator(relative: str) -> str:
 
 
 def item_for(card: dict, range_: dict, state: str, state_why: str) -> dict:
-    """One actionable range as a proposal, with the version pair it rests on."""
+    """One actionable range as a proposal, with the versions it rests on.
+
+    Three of them, not one: where the card had got to, where the source has got
+    to, and WHICH content the range is about. The first two are a lag; the third
+    is what makes a confirmation mean a revision rather than a place.
+    """
     manifest = range_.get("manifest")
     derived = [_locator(card["card"])]
     if manifest:
@@ -269,6 +370,7 @@ def item_for(card: dict, range_: dict, state: str, state_why: str) -> dict:
         derived.append(_locator(f"information/raw/{manifest}"))
     item = {
         "card": card["card"],
+        "card_digest": card.get("card_digest"),
         "state": state,
         "state_why": state_why,
         "source": range_["source"],
@@ -282,6 +384,8 @@ def item_for(card: dict, range_: dict, state: str, state_why: str) -> dict:
         "source_count": range_.get("source_count"),
         "cited_digest": range_.get("cited_digest"),
         "content_sha256": range_.get("content_sha256"),
+        "content_identity": range_.get("content_identity"),
+        "content_identity_why": range_.get("content_identity_why"),
         "revisions": range_.get("revisions"),
         "latest_create_time": range_.get("latest_create_time"),
         "last_message_id": range_.get("last_message_id"),
@@ -291,6 +395,36 @@ def item_for(card: dict, range_: dict, state: str, state_why: str) -> dict:
         "decided_at": None,
     }
     return no_unsourced(item, ITEM_PRODUCED, "item")
+
+
+def _stale_why(decision: dict, current: dict | None) -> str:
+    """Why a decision no longer applies, named by which part of it moved.
+
+    "The proposal changed" is true of every case here and useful for none of
+    them. A person whose confirmation lapsed needs to know whether the source
+    moved past the range, whether the content UNDER the same range was
+    rewritten, or whether the card they were reading was rewritten — those are
+    three different next actions, and a single sentence covering all three
+    would be the kind of broad statement this module refuses elsewhere.
+    """
+    if current is None:
+        return ("the card no longer proposes this exact range at all — the "
+                "source moved past it, or the card stopped citing it — so a "
+                "decision about it is not a decision about what is proposed now")
+    moved = []
+    if current.get("card_digest") != decision.get("card_digest"):
+        moved.append("the card's own text changed")
+    if current.get("content_identity") != decision.get("content_identity"):
+        moved.append("the content this range names changed")
+    if not moved:
+        # Unreachable while the identity is a function of the range, and left
+        # as a sentence rather than an assertion: a stale decision that cannot
+        # explain itself must still be reported, not dropped.
+        return ("this proposal was replaced by one carrying the same identity "
+                "fields, which this module cannot account for")
+    return ("the same card, capture and span are now proposed as a different "
+            "revision: " + " and ".join(moved) + " — the decision was about a "
+            "revision that is no longer the one on disk")
 
 
 def items_for(report: dict, decisions: dict[tuple, dict]) -> tuple[list, list, dict]:
@@ -305,6 +439,11 @@ def items_for(report: dict, decisions: dict[tuple, dict]) -> tuple[list, list, d
     no_item: dict[str, int] = {}
     skipped: list[str] = []
     seen: dict[tuple, dict] = {}
+    # The same proposals keyed by the legible half of their identity, so a
+    # superseded decision can say WHICH of its two version halves moved. A
+    # decision reported as stale without that is a decision a person has to
+    # re-derive by hand.
+    by_place: dict[tuple, dict] = {}
     for card in report["cards"]:
         verdict = card["judged"]
         state = verdict["state"]
@@ -341,21 +480,24 @@ def items_for(report: dict, decisions: dict[tuple, dict]) -> tuple[list, list, d
                     f"for it")
                 continue
             seen[key] = item
+            by_place[place_of(item)] = item
             decision = decisions.get(key)
             if decision:
                 item["confirmation"] = decision["decision"]
                 item["decided_by"] = decision["by"]
                 item["decided_at"] = decision["at"]
             items.append(item)
+    # Built from the decision RECORD rather than from its key: the key is a
+    # tuple whose positions mean nothing on their own, and a stale record that
+    # said `key[5]` would be the one place a reader could not check the two
+    # digests against the decision they came from.
     stale = [
-        {"card": key[0], "manifest": key[1], "review": key[2],
-         "from_position": key[3], "to_position": key[4],
+        {**{field: record.get(field) for field in IDENTITY_FIELDS},
          "decision": record["decision"], "by": record["by"],
-         "why": ("the card no longer proposes this exact range — the source "
-                 "moved, or the card was rewritten, so a decision about it is "
-                 "not a decision about what is proposed now")}
-        for key, record in sorted(decisions.items(), key=lambda pair: repr(pair[0]))
-        if key not in seen
+         "why": _stale_why(record, by_place.get(place_of(record)))}
+        for record in sorted(decisions.values(),
+                             key=lambda r: repr(identity_of(r)))
+        if identity_of(record) not in seen
     ]
     items.sort(key=item_key)
     return items, stale, dict(sorted(no_item.items())), sorted(set(skipped))

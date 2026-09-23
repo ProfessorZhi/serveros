@@ -343,6 +343,199 @@ class TestAStaleCardIsNotACurrentOne:
         assert card["judged"]["state"] == "CURRENT"
 
 
+class TestAPositionIsNotAVersion:
+    """The range says WHERE, and the digest says WHICH REVISION of it.
+
+    Everything else in this module measures a place: a position, a span, a
+    count. A place can be rewritten underneath a decision that was taken about
+    it — a message edited with no flag set, a card rewritten at its own path —
+    and a reader that reported only the place would hand the writer an identity
+    that survives the rewrite. So the digest is computed here, over the records
+    the span names, and the properties below are the ones the writer's whole
+    "a confirmation covers a revision" rule rests on.
+    """
+
+    def test_the_digest_moves_when_the_content_does_and_the_place_does_not(
+            self, tree):
+        """The load-bearing pair: same span, same flags, different text.
+
+        The `updated` flag is not set and no position changes, so every other
+        number in this report is identical across the two reads. If the digest
+        did not move here it would be a digest over the projection the flags
+        already carry, and `STALE_IN_PLACE` would be the only thing standing
+        between a rewrite and a decision taken before it.
+        """
+        write_capture(tree, "people/x/oc_x", chat_manifest())
+        write_messages(tree, "people/x/oc_x", messages(10))
+        write_card(tree, "people", "x.md",
+                   heading_card(f"- `{CHAT}` message_position 0-4\n"))
+        before = only_card(tree)["judged"]["review_ranges"][0]
+        source_before = only_card(tree)["measurements"][0]
+
+        rows = messages(10)
+        rows[7]["content"] = "改过的一句话"
+        write_messages(tree, "people/x/oc_x", rows)
+        after = only_card(tree)["judged"]["review_ranges"][0]
+        source_after = only_card(tree)["measurements"][0]
+
+        assert before["content_identity"] != after["content_identity"]
+        # The place is untouched, and the test says so: an assertion that only
+        # saw the digest move would also pass if the span had moved with it.
+        assert (before["from_position"], before["to_position"]) == \
+            (after["from_position"], after["to_position"]) == (5, 9)
+        assert source_before["source_positions"] == source_after["source_positions"]
+        assert before["kind"] == after["kind"] == "BEYOND_APPLIED"
+
+    def test_a_record_outside_the_span_moving_leaves_the_digest_alone(self, tree):
+        """The negative half, so the test above is about the span.
+
+        Without this, a digest over the whole file would pass the test above.
+        That would be a different claim — "this capture changed" rather than
+        "the text this range is about changed" — and it would send a person
+        back to re-read a span whose content never moved.
+        """
+        write_capture(tree, "people/x/oc_x", chat_manifest())
+        write_messages(tree, "people/x/oc_x", messages(10))
+        write_card(tree, "people", "x.md",
+                   heading_card(f"- `{CHAT}` message_position 0-4\n"))
+        before = only_card(tree)["judged"]["review_ranges"][0]["content_identity"]
+
+        rows = messages(10)
+        rows[1]["content"] = "卡已经读过的那一段里的一句话"
+        write_messages(tree, "people/x/oc_x", rows)
+        after = only_card(tree)["judged"]["review_ranges"][0]["content_identity"]
+        assert before == after
+
+    def test_a_reserialisation_is_the_same_records_and_the_same_digest(
+            self, tmp_path):
+        """Canonical, so the collector's key order is not a version.
+
+        A collector that rewrites `messages.jsonl` with the same records and
+        the keys in a different order has not changed the source. A digest taken
+        over the raw line would say it had, and every confirmation taken before
+        that rewrite would go back to a person for no reason.
+        """
+        one = tmp_path / "one.jsonl"
+        two = tmp_path / "two.jsonl"
+        record = {"message_position": "7", "message_id": "om_7",
+                  "content": "x", "deleted": False, "updated": False}
+        one.write_text(json.dumps(record) + "\n", encoding="utf-8")
+        two.write_text(json.dumps({key: record[key] for key in
+                                   ("updated", "content", "deleted",
+                                    "message_id", "message_position")}) + "\n",
+                       encoding="utf-8")
+        assert ud.range_content_digest(one, 5, 9) == \
+            ud.range_content_digest(two, 5, 9)
+        assert ud.range_content_digest(one, 5, 9)[0] is not None
+
+    def test_a_field_added_to_a_record_is_a_different_revision(self, tmp_path):
+        """And the other half: a record is not the same record with a new key.
+
+        The digest is not "the text of the message"; it is "this record". A
+        collector that starts recording an extra field has produced a different
+        record, and a confirmation taken over the older shape should come back
+        to a person rather than be carried forward on a comparison nobody made.
+        """
+        one = tmp_path / "one.jsonl"
+        two = tmp_path / "two.jsonl"
+        record = {"message_position": "7", "message_id": "om_7", "content": "x"}
+        one.write_text(json.dumps(record) + "\n", encoding="utf-8")
+        two.write_text(json.dumps({**record, "reactions": []}) + "\n",
+                       encoding="utf-8")
+        assert ud.range_content_digest(one, 5, 9)[0] != \
+            ud.range_content_digest(two, 5, 9)[0]
+
+    def test_a_span_holding_no_record_is_unidentifiable_and_says_so(self, tmp_path):
+        """Null with a reason, never a digest of nothing.
+
+        Reachable through this function and not through `judge_card`: a
+        `BEYOND_APPLIED` span starts one past the card's reach and runs to the
+        source's maximum, and that maximum came out of the same file, so it
+        always names at least one record. The branch is kept because the
+        function is the contract — a caller holding a span from somewhere else
+        must get "I cannot identify this" and not the digest of the empty
+        string, which would compare equal to every other empty span.
+        """
+        path = tmp_path / "messages.jsonl"
+        path.write_text(json.dumps(messages(3)[0]) + "\n", encoding="utf-8")
+        digest, why = ud.range_content_digest(path, 5, 9)
+        assert digest is None
+        assert "no record in the messages file carries a position in 5–9" in why
+        # And the same file over a span it does hold is identified, so the
+        # assertion above is about the span and not about the file.
+        assert ud.range_content_digest(path, 0, 0)[0] is not None
+
+    def test_an_unreadable_span_is_null_with_its_own_reason(self, tmp_path):
+        """Three ways to have no digest, and none of them is an empty digest."""
+        missing = tmp_path / "absent.jsonl"
+        digest, why = ud.range_content_digest(missing, 5, 9)
+        assert digest is None and "is not a file" in why
+
+        broken = tmp_path / "broken.jsonl"
+        broken.write_text("{not json}\n", encoding="utf-8")
+        digest, why = ud.range_content_digest(broken, 5, 9)
+        assert digest is None and "not JSON" in why
+
+        positional = tmp_path / "no_span.jsonl"
+        digest, why = ud.range_content_digest(positional, None, None)
+        assert digest is None and "names no positions" in why
+
+    def test_a_document_range_takes_the_digest_the_manifest_recorded(self):
+        """A document has no records here, so its revision is the manifest's.
+
+        `content_sha256` is measured by the collector that wrote the file, and
+        it is the only digest this module has for a document. Copying it is not
+        this reader claiming to have read the document; it is the same value the
+        range comparison above already used.
+        """
+        row = {"content_sha256": "b" * 64}
+        assert ud._content_identity(row, "WHOLE_DOCUMENT", None, None,
+                                    Path("/nonexistent")) == ("b" * 64, "")
+
+        digest, why = ud._content_identity({}, "WHOLE_DOCUMENT", None, None,
+                                           Path("/nonexistent"))
+        assert digest is None
+        assert "records no digest for this document" in why
+
+    def test_a_chat_range_always_carries_an_identity(self, tree):
+        """The end-to-end half, and the one the writer consumes.
+
+        `content_identity_why` is absent rather than null here, following `lag`
+        and `unresolved_why` above: an explanation that does not apply is not
+        emitted. What the writer needs is that the key it copies is a real
+        digest for every range this module actually produces, so that is what
+        is asserted.
+        """
+        write_capture(tree, "people/x/oc_x", chat_manifest())
+        write_messages(tree, "people/x/oc_x", messages(10))
+        write_card(tree, "people", "x.md",
+                   heading_card(f"- `{CHAT}` message_position 0-4\n"))
+        range_ = only_card(tree)["judged"]["review_ranges"][0]
+        assert len(range_["content_identity"]) == 64
+        assert set(range_["content_identity"]) <= set("0123456789abcdef")
+        assert "content_identity_why" not in range_
+
+    def test_the_card_digest_is_the_cards_own_text(self, tree):
+        """The other version half: the understanding baseline, not the source.
+
+        A card rewritten in place keeps its path and can keep every span it
+        cites, so the path does not name the text a proposal was computed
+        against — and a person who read the older text would be recorded as
+        having confirmed a proposal about the newer one.
+        """
+        write_capture(tree, "people/x/oc_x", chat_manifest())
+        write_messages(tree, "people/x/oc_x", messages(10))
+        body = heading_card(f"- `{CHAT}` message_position 0-4\n")
+        write_card(tree, "people", "x.md", body)
+        first = only_card(tree)["card_digest"]
+
+        write_card(tree, "people", "x.md", body)
+        assert only_card(tree)["card_digest"] == first
+
+        write_card(tree, "people", "x.md", body + "\n补了一句话。\n")
+        assert only_card(tree)["card_digest"] != first
+
+
 class TestNoClaimIsEmitted:
     def _keys(self, node) -> set[str]:
         found: set[str] = set()
