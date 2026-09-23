@@ -141,6 +141,7 @@ import os
 import re
 import tempfile
 from contextlib import contextmanager
+from datetime import datetime
 from pathlib import Path
 
 SCHEMA = "serveros/agent-control-store.v1"
@@ -275,6 +276,125 @@ def _intent_digest(record: dict, *, selection_digest: str, grant_ref: str,
                         "action_key": str(action_key)})
 
 
+def _instant(value) -> datetime | None:
+    """A timestamp with a timezone, or None.
+
+    Parsed here rather than imported from `intake/daily_cycle.instant`, which
+    states the same rule: this module is the durable half of Agent Control and
+    is loaded by path by callers that have no `intake` on their path, and the
+    dozen other instant comparisons in this tree each parse their own for that
+    reason. A stamp with no timezone yields None rather than being assumed into
+    one: the window it would be compared against is a real interval, and the
+    guess that made it fit would leave no trace of having been made.
+    """
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return None
+    return parsed if parsed.tzinfo is not None else None
+
+
+def _authorizing_grant(grants: dict, *, cycle: str, grant_ref: str,
+                       admitted_at: str, reservation: dict, selection: dict) -> None:
+    """Refuse an admission this store's own record of authority does not cover.
+
+    Called from inside `admit`'s single mutation, with the `grants` mapping that
+    is on disk under the lock. That placement is the whole point: every layer
+    above reads the envelope OUTSIDE the lock. `work admit` reads
+    `control.grants()`, composes a plan from it, and then writes — and a
+    `work revoke` in another process lands in exactly that gap. A cycle admitted
+    under a delegation that ended a moment ago is the state this closes, and no
+    reader above could close it, because none of them is holding the lock.
+
+    Five answers to one question: are the facts this record asserts still this
+    store's own at the instant it is written? The grant exists HERE, it is not
+    revoked, the instant is inside its window, the selection is inside the items
+    it names, and the reservation is the bounds it declares.
+
+    The first of those deliberately shares a word with
+    `intake/daily_cycle.admission_plan`, which also refuses a missing grant, and
+    the sentence says which operand each is about: the plan checks the envelope
+    the CALLER handed it, this checks the store's record. Two refusals about
+    different operands that read the same would send a reader to the wrong one.
+
+    What it does NOT check, and why. The grant's `projects` and `scope_digests`
+    are checked by `intake/daily_cycle.grant_reason` against the board's rows
+    and this record carries neither; checking them here would mean persisting a
+    board snapshot as authority, which is the second copy an admission exists to
+    avoid. The `action_key` is not one of the grant's `actions` either — it is
+    the receipt and lease key, and its vocabulary belongs to
+    `runtime/bounded_invocation`.
+
+    And this is not a second authorization decision:
+    `context/delegation.derivation` says whether the delegation authorizes and
+    `grant_reason` says whether the row is in scope. This says only that what
+    the record names is what the store holds.
+    """
+    grant = grants.get(grant_ref)
+    if not isinstance(grant, dict):
+        raise StoreError(
+            f"{cycle} is admitted under {grant_ref!r} and no grant by that name "
+            f"has been recorded in this store. `intake/daily_cycle.admission_plan` "
+            f"checks the envelope it is HANDED; this is the store's own record of "
+            f"what was delegated, and an admission naming authority this store has "
+            f"never held is one nobody granted")
+    if grant.get("revoked") is not False:
+        # `is not False`, the same reading `intake/daily_cycle.grant_reason`
+        # takes: a grant whose revocation field is missing is not a grant known
+        # to be live, and the permissive reading of an absent field is how a
+        # revocation becomes invisible.
+        raise StoreError(
+            f"{grant_ref} was revoked at "
+            f"{grant.get('revoked_at') or 'an unrecorded instant'} and {cycle} is "
+            f"admitted after that. The revocation is this store's own record; a "
+            f"cycle admitted under a delegation that has ended would be work "
+            f"running on authority the store says is gone")
+    admitted = _instant(admitted_at)
+    if admitted is None:
+        raise StoreError(
+            f"{cycle} does not say when it was admitted, so the window it is "
+            f"admitted under cannot be read against it. {grant_ref}'s window is "
+            f"what makes 'was this authorized when it ran' answerable afterwards, "
+            f"and an admission with no instant is one no window can be checked "
+            f"for")
+    valid_from, expires_at = _instant(grant.get("valid_from")), _instant(grant.get("expires_at"))
+    if valid_from is None or expires_at is None:
+        raise StoreError(
+            f"{grant_ref} carries no readable window ({grant.get('valid_from')!r} "
+            f"to {grant.get('expires_at')!r}), so there is nothing for {cycle} to "
+            f"be inside. `intake/daily_cycle.grant_reason` answers the same grant "
+            f"INVALID_GRANT_TIME for the same reason: a delegation with no interval "
+            f"authorizes at every instant or at none, and neither is what was "
+            f"delegated")
+    if not valid_from <= admitted < expires_at:
+        raise StoreError(
+            f"{cycle} is admitted at {admitted_at}, which is outside {grant_ref}'s "
+            f"window ({grant['valid_from']} to {grant['expires_at']}). A cycle "
+            f"admitted before its delegation began or after it expired runs on "
+            f"authority that was not current when it started")
+    authorized = grant.get("items")
+    outside = [str(item_id) for item_id in (selection.get("selected") or [])
+               if not isinstance(authorized, list) or item_id not in authorized]
+    if outside:
+        raise StoreError(
+            f"{cycle} selects {', '.join(outside)}, which {grant_ref} does not name "
+            f"among its items. `intake/daily_cycle.grant_reason` refuses the same "
+            f"row as ITEM_NOT_AUTHORIZED; a selection outside the delegation would "
+            f"record a reservation for work the delegation does not cover")
+    declared = grant.get("budget")
+    declared = ({key: declared.get(key) for key in BUDGET_KEYS}
+                if isinstance(declared, dict) else {})
+    reserved = {key: reservation.get(key) for key in BUDGET_KEYS}
+    if declared != reserved:
+        raise StoreError(
+            f"{cycle} reserves {json.dumps(reserved, sort_keys=True)} and "
+            f"{grant_ref} declares {json.dumps(declared, sort_keys=True)}. The "
+            f"reservation is the bounds this cycle runs under, COPIED from its "
+            f"grant, and this is the line that keeps the copy from being a second "
+            f"bound nobody declared: it is checked against its source at the "
+            f"moment it is taken")
+
+
 def fingerprint(value) -> str:
     """A stable digest of a JSON value, with no clock and no path in it.
 
@@ -368,9 +488,9 @@ class AgentControlStore:
     written in the same transaction — an approval consumed and the context it
     was decided from, a binding and the selection that pointed at it — and two
     files that are written together are two files that can disagree after a
-    crash. The five collections are `contexts`, `approvals`, `bindings`,
-    `selections` and `grants`; each says in its own section above why it is
-    here rather than in a store of its own.
+    crash. The six collections are `contexts`, `approvals`, `bindings`,
+    `selections`, `grants` and `admissions`; each says in its own section above
+    why it is here rather than in a store of its own.
     """
 
     def __init__(self, path: Path | str, *, now=None) -> None:
@@ -950,6 +1070,18 @@ class AgentControlStore:
                     f"discard the only record of what was admitted and of the "
                     f"reservation it holds. Retire it first, or admit the new "
                     f"intent under its own cycle_ref")
+
+            # AFTER the replay branch, and BEFORE the action key. The order is
+            # the message's. A replay returns the record of what was admitted at
+            # the time, so re-judging it against a grant revoked since would
+            # answer "this is not authorized" to a caller who asked whether it
+            # had already been admitted — a different question with a different
+            # answer. And authority comes before the key because a caller told
+            # its key was taken would go and change the key, then come back with
+            # authority that is still gone.
+            _authorizing_grant(self._data["grants"], cycle=cycle, grant_ref=grant_ref,
+                               admitted_at=str(record.get("admitted_at") or ""),
+                               reservation=reservation, selection=selection)
 
             holder = next((ref for ref, other in self._data["admissions"].items()
                            if other.get("action_key") == action_key
