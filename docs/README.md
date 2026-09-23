@@ -1,38 +1,50 @@
 # ServerOS documentation map
 
-Start with [the product entry](../README.zh.md) and [ARCHITECTURE.md](../ARCHITECTURE.md). ARCHITECTURE remains the single normative product boundary; focused contracts specify named responsibilities without creating another state authority or mandatory workflow.
+Start with [the product entry](../README.zh.md) and [ARCHITECTURE.md](../ARCHITECTURE.md). ARCHITECTURE remains the single normative product boundary; focused contracts specify existing responsibilities without adding another authority, resident Core or compulsory workflow.
 
-## Current product design and implementation entry
+## Real-work collaboration and execution
 
 | Document | Purpose |
 |---|---|
-| [Node observability and serverosd health](NODE-OBSERVABILITY.md) | hardware/resource semantics, dynamic essential services, Tailscale/tunnel reachability, independent Core monitoring, daemon-failure delivery and fault-domain limits; expands architecture §17/20/21/26 |
-| [Readable broadcast and alert cards](BROADCAST-ALERT-DESIGN.md) | 2026-09-23 screenshot-driven default-visible metrics, essential-service strip, accurate health/coverage, readable actionable alerts |
-| [Card copy rules](../CARDS-STYLE.md) | concise human presentation, meaningful summaries rather than lines[0], impact uncertainty, no status-card alert disclaimer |
-| [Monitoring implementation and acceptance](MONITORING-ACCEPTANCE.md) | targeted M1–M6 detail for existing P8/P9/P11; actual source/model/render/consumer and isolated failure/visual acceptance |
-| [Information and document lifecycle](INFORMATION-DOCUMENT-LIFECYCLE.md) | shallow IM default, exclusion/deep materialization, meeting notes, dual-role maintained inputs, cloud placement and feedback |
-| [CC final execution plan](CC-EXECUTION-PLAN.md) | P0–P12 cross-repository work packages, migration, real acceptance, rollback and activation; read the focused monitoring acceptance with P8/P9/P11 |
-| [Ability canonical blueprint](https://github.com/ProfessorZhi/ability-management/blob/main/design/ABILITY-CANONICAL-BLUEPRINT.md) | 21 semantic responsibilities and chosen artifact shapes, not 21 plugins |
-| [Ability product-experience contract](https://github.com/ProfessorZhi/ability-management/blob/main/design/PRODUCT-EXPERIENCE-CONTRACT.md) | each responsibility's user-visible outcome, normal/empty/error/partial/deferred behavior and concrete acceptance |
-| [Source/Document contract](https://github.com/ProfessorZhi/ability-management/blob/main/design/SOURCE-DOCUMENT-CONTRACT.md) | shared roles, authority, versions, archive depth and actual material coverage |
-| [Earlier read-only evidence review](https://github.com/ProfessorZhi/ability-management/blob/main/design/ABILITY-DESIGN-EVIDENCE-20260922.md) | historical code/records/chat inspection and unverified live permissions |
+| [Collaboration contract](COLLABORATION-CONTRACT.md) | native Parent continuation, accepted user deliverables, minimal producer/receiver handoffs, multi-authority admission, budgets and recovery; details architecture §1/3/4/8/10/11/27 |
+| [Work scenario review](WORK-SCENARIO-REVIEW-20260923.md) | actual pinned records, archived Feishu messages, SOP, code and primary research; separates static risks, historical evidence and unverified runtime |
+| [Daily Work Cycle](daily-work-cycle.md) | corrected capture/understanding watermarks, bounded daily focus, real GPT/Quay work, parent acceptance and delivery continuation |
+| [Scenario acceptance](SCENARIO-ACCEPTANCE.md) | J01–J10 real user journeys, expected outcomes, negative and recovery checks; not proof the tests were executed |
+| [CC final execution plan](CC-EXECUTION-PLAN.md) | existing P0–P12 implementation order and safety/activation boundaries |
+| [Collaboration implementation detail](COLLABORATION-IMPLEMENTATION.md) | current producer/consumer gaps mapped onto P0–P12; no second task plan or completion database |
+| [Ability canonical blueprint](https://github.com/ProfessorZhi/ability-management/blob/main/design/ABILITY-CANONICAL-BLUEPRINT.md) | fixed 21 semantic responsibilities, smallest useful artifacts and exact scenario links |
+| [Per-ability scenario contracts](https://github.com/ProfessorZhi/ability-management/blob/main/design/ABILITY-SCENARIO-CONTRACTS.md) | all 21 responsibilities reverse-checked against actual work: inputs, decisions, receiver, scope, recovery and acceptance |
+| [Product coverage versus sufficiency](https://github.com/ProfessorZhi/ability-management/blob/main/design/ABILITY-PRODUCT-COMPLETENESS-20260923.md) | corrects the prior all-checkmarks interpretation; topic coverage is not proof that collaboration or LIVE behavior works |
 
-The latest monitoring feedback changes the product expectation, not the running system automatically. Do not keep UID/CPU model as the only visible resource summary to satisfy an older test. Likewise do not convert optional/stopped services or all stale historical records into critical alarms. Correct code, readable UI, actual delivery and live failure detection are separate proofs.
+A child task finishing, a report being generated, a JSON schema passing or an installed Skill loading does not by itself complete the user's accepted goal. The current native Parent must check its required outcomes and hand unfinished work to an actual receiver/continuation path. These obligations use existing Work Engine/Agent Control/provider receipts, not another orchestration platform.
+
+## Product surfaces and source lifecycle
+
+| Document | Purpose |
+|---|---|
+| [Node observability and serverosd health](NODE-OBSERVABILITY.md) | resource semantics, dynamic necessary services, Tailscale/tunnel reachability, independent Core checks and realistic fault domains |
+| [Readable broadcast and alert cards](BROADCAST-ALERT-DESIGN.md) | screenshot-driven visible resource metrics and service health, truthful coverage, actionable low-noise alerts |
+| [Card copy rules](../CARDS-STYLE.md) | actual summaries rather than UID/model lines, precise uncertainty and normal-versus-alert presentation |
+| [Monitoring acceptance](MONITORING-ACCEPTANCE.md) | M1–M6/V01–V18 for P8/P9/P11, producer/model/native visual tests and isolated failure recovery; reused by J08 |
+| [Information and document lifecycle](INFORMATION-DOCUMENT-LIFECYCLE.md) | default shallow IM, selected materialization, meetings, documents that are both followed and maintained, placement and feedback |
+| [Source/Document contract](https://github.com/ProfessorZhi/ability-management/blob/main/design/SOURCE-DOCUMENT-CONTRACT.md) | stable identities, roles, authority, versions, material coverage and two watermarks |
+| [Ability product experience](https://github.com/ProfessorZhi/ability-management/blob/main/design/PRODUCT-EXPERIENCE-CONTRACT.md) | user-visible outcomes, empty/unknown/partial/failure/waiting behavior and acceptance for every responsibility |
+
+Do not treat every state label in product examples as a new runtime enum or compulsory sequence. Availability, health, authorization, execution, business outcome and delivery are different dimensions. Keep existing supported schemas until deliberately migrated with real producers and consumers.
 
 ## Existing focused contracts
 
 | Document | Purpose |
 |---|---|
-| [Shared decision/search](shared-decision-search.md) | one CPU Laya service for ServerOS/MarketOps development, Serper/Jev reuse, resource/data boundaries |
-| [Daily Work Cycle](daily-work-cycle.md) | low-intervention daily understanding, two-objective focus, native GPT review and bounded execution |
-| [Integration readiness](integration-readiness-20260922.md) | dated measured GPT/Quay/browser/Windows/cloud/knowledge results, not current health |
-| [Context Capsule](context-capsule.md) | intent-first sparse context, provenance, budget and recovery |
-| [Capability Discovery](capability-discovery.md) | native-first discovery, typed identity, scoped loading and acquisition |
-| [Claude/Codex Parity](claude-codex-parity.md) | shared semantics without invented feature parity |
-| [Safety and Concurrency](safety-and-concurrency.md) | ownership, actual effects, concurrent writers and destructive safety |
-| [Consolidation review](architecture/CONSOLIDATION-REVIEW-20260921.md) | earlier inspected evidence, contradictions and implementation limits |
+| [Shared decision/search](shared-decision-search.md) | one Laya host service for ServerOS/MarketOps development, direct Serper/Jev adapters and resource/data boundaries |
+| [Historical integration readiness](integration-readiness-20260922.md) | dated component measurements, not current end-to-end readiness |
+| [Context Capsule](context-capsule.md) | sparse intent-first context, provenance and recovery |
+| [Capability Discovery](capability-discovery.md) | native-first discovery, identity, scoped loading and adoption |
+| [Claude/Codex Parity](claude-codex-parity.md) | shared contracts without invented runtime equivalence |
+| [Safety and Concurrency](safety-and-concurrency.md) | ownership, actual effect boundaries and concurrent writers |
+| [Earlier consolidation review](architecture/CONSOLIDATION-REVIEW-20260921.md) | prior evidence, contradictions and implementation gaps |
 
-## Technical specifications
+## Technical specifications and owners
 
 - [Ability Fabric](ability-fabric.md)
 - [Agent Runtime Model](agent-runtime-model.md)
@@ -43,12 +55,10 @@ The latest monitoring feedback changes the product expectation, not the running 
 - [Space Resolver](space-resolver.md)
 - [Repository Roles](repository-roles.md)
 
-Concrete implementation claims apply to the revision/time they describe. Read the actual installed CLI/MCP and provider schema. A new design field or named operation needs a real producer and consumer; no documentation edit turns it into a working interface. Historical freeze/load boundaries still apply: Core monitoring does not add another resident Core process or model/network work to serverosd startup.
+ServerOS owns product composition, Core and human presentation semantics. ability-management owns reusable source/distribution. Work Engine owns current work/control state; Agent Control owns trusted grants. hwz-ops binds concrete targets, limits, recipients and schedules. records and native documents keep their authoring authority. A readable Card is not a second grant/worker database, and an independent observer cannot seize a failed daemon's store.
 
-## Ownership and history
+## History and scope of this design update
 
-[Product discovery decisions](architecture/PRODUCT-DISCOVERY-DECISIONS-20260921.md) and [the earlier roadmap](fabric-v1-roadmap.md) remain historical inputs. Do not rewrite their observations into current successful deployment.
+[Discovery decisions](architecture/PRODUCT-DISCOVERY-DECISIONS-20260921.md), [earlier roadmap](fabric-v1-roadmap.md) and [prior Ability evidence review](https://github.com/ProfessorZhi/ability-management/blob/main/design/ABILITY-DESIGN-EVIDENCE-20260922.md) remain historical evidence. New source/versions must be inspected rather than backfilled as if older runs had observed them.
 
-serveros owns product composition, Core and human presentation semantics. ability-management owns reusable source/distribution. work-engine owns work/control state. hwz-ops binds concrete devices/targets/limits/recipients/schedules and timed maps. Native providers own their actual states; records/cloud documents retain their declared authoring authority. Independent health checks may observe a failed Core but do not seize its store or imply production control permission.
-
-The 2026-09-23 monitoring revision changes documentation only: no runtime code, policy threshold, registry, installation, cloud card, Tailscale/network or service state is changed. CODE/INTEGRATION/LIVE each require evidence. Implementation follows the existing execution plan plus focused acceptance, not another round of product taxonomy debate.
+The collaboration review changes documentation only. It does not alter ARCHITECTURE's frozen resident surface, runtime code, permissions, enum definitions, credential bindings, installations, actual source cursors, Feishu documents, cards or active services. CODE/INTEGRATION/LIVE require their own evidence. Read only the sections relevant to the current native Agent task; do not load the full design corpus into every Session.
