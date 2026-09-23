@@ -1,170 +1,71 @@
-# CARDS-STYLE · the copy rules for a ServerOS card
+# CARDS-STYLE · ServerOS 的可读产品表面
 
-`runtime/cards.py`, `runtime/presentation.py` and `runtime/card-definitions.yaml`
-cite this file by rule number. It exists because those three files are where a
-card's sentences live, and a sentence written without a rule beside it is a
-sentence the next edit rewrites in the opposite direction.
+2026-09-23 根据用户实际飞书截图修订。R1–R9编号保留方便旧引用迁移，但本版纠正“首行可辨就算摘要”“所有卡统一免责声明”“不许出现任何因果词就等于准确”等过窄判据。现有代码/测试不会因文档更新自动符合；实现按docs/MONITORING-ACCEPTANCE.md逐项迁移。
 
-## The register
+本文件只定义表达与层级。阈值/注意力/状态语义仍由ServerOS拥有的contract/model产生，renderer不重新判断，ops sender不另造中文事实。
 
-**不要"机器语言"，也不要"聊天语言"；用专业、简洁的 SRE/NOC 运维语言。**
+## 默认语气
 
-Both failures have already happened on this node, in that order, and this file is
-the correction for both.
+专业、简洁、可操作，不是原始台账，也不是解释自己如何工作的聊天。正常卡让人看到资源和服务；告警让人知道症状、影响、何时开始与下一步。未知如实，但不把免责声明占满页面。
 
-The first version of the alert card printed the register: `session-15413:pid1315723`,
-`HIGH_MEMORY_SUSTAINED`, `WARNING`. Everything on it was true and a person could
-not read it. The correction overshot into the other failure — a card that
-explained itself to the reader ("本卡不会停止、重启或清理任何东西", "影响尚未确认 ——
-本卡没有这条代码的影响证据"). That is a chatbot's register: it narrates its own
-state instead of the machine's.
+## 规则
 
-A NOC console line is neither. It is short, it is about the machine, and it
-assumes a competent reader:
+**R1 · 先说当前结果/症状，不以对象存在充数。**
 
-```text
-⚠️ 需确认 · 1 项
-Claude 会话 15413 · 遗留进程组
-状态  会话已结束，关联进程仍在运行
-影响  暂未发现明确影响
-建议  核对进程归属，确认是否仍需保留
-首次观测  09-21 16:36
-▸ 技术详情
-只读告警 · 未执行终止、重启或清理操作
-```
+“内存6.8GiB”“数据盘剩余32GiB”“Tailscale入口未连通”有判断价值；“账户uid1002”“CPU型号…”只标识对象。后者放详情，不再作为唯一可见摘要。
 
-## The face
+**R2 · 不重复标题、不让卡片自述占首屏。**
 
-Every event face is exactly these five labelled lines, in this order, then the
-optional owner line. The labels are fixed: `状态` / `影响` / `建议` / `首次观测`,
-and the fold is `技术详情`.
+状态卡不出现“只读告警”；alert如确需说明动作状态只写一处“未自动操作”。删除“三项均已读到”与重复“观测三项已读到”，保留具体缺口而不是两次描述renderer。声明与个人container0分开只需在对象名称/详情能正确消歧，不每次三处解释。
 
-| field | what belongs there | what does not |
-|---|---|---|
-| `状态` | the measured state, as a state | the subject's existence, a cause, an operation |
-| `影响` | the impact, or `暂未发现明确影响` | an explanation of why the card cannot say |
-| `建议` | a thing to look at, with its object named | a place to go, an operation to carry out |
-| `首次观测` | local time, with `持续` riding the same line | an ISO instant |
+**R3 · 名称服务于人，精确身份保留在详情。**
 
-## The rules
+人面优先“监控核心(serverosd)”“Tailscale”“CloudCLI内网入口”“MarketOps研究隧道”；同名按项目/用途消歧。PID/UID/code/token/原始ref不是标题。名称不能替代鉴权、归属或精确target。
 
-**R1 · 说状态，不说存在。** `what` states a state, not a discovery. The subject is
-already on the line above; a sentence that opens with 「有一个」/「有一组」/「有一条」
-spends its first three characters establishing what the card just established.
+**R4 · 数值有单位、窗口和分母。**
 
-- ✗ 有一个受管运行时比它的归属对象活得更久
-- ✓ 归属对象已结束，该进程组仍在运行
+本人CPU用核数与真实配额/整机口径，内存用GiB，磁盘同时给比例与余量。失败数/请求数同窗口，不以成功日志计算全量错误率；未知不0。finding计“项”、subject计“个”，但不把时间/请求/文件都机械改同一量词。
 
-The catalogue is per-code and subject-independent, so the entry cannot name its
-subject. It names the state. That is why the card reads 「归属对象已结束，该进程组仍在
-运行」 where a hand-written line would read 「会话已结束，关联进程仍在运行」: 会话 is the
-subject, and this catalogue entry is shared by every subject the code can fire on,
-so the entry says 归属对象 and the subject is named once, on the line above, by a
-rule that does know which subject it is (R9).
+**R5 · 建议指向下一件可做的事，不等于执行许可。**
 
-**R2 · 卡面不自述。** Nothing on the face describes the card, the renderer, the
-ledger or the reader's situation. A refusal, a caveat or a definition of terms is
-said **once**, where it belongs — the §15 refusal at the foot, the ledger
-arithmetic in the detail — and not beside every line it applies to.
+“检查Tailscale登录状态与入口映射”优于“查看登记表”。需要有风险动作时呈现可审核指引/人执行边界，不能因文案提及重启就执行，也不因一律禁操作词而使建议永远含糊。只读卡不提供暗含mutation的按钮。
 
-- ✗ 本卡不会停止、重启或清理任何东西 （said on every event; by the third, unread）
-- ✓ 只读告警 · 未执行终止、重启或清理操作 （said once, at the foot）
-- ✗ 未决定不等于不重要——这是声明里的一个洞
-- ✓ 未定级不等于不重要
+**R6 · 不能发明原因，但允许有证据的解释。**
 
-**R3 · 卡面写名字，标识下沉技术详情。** A name a person recognises on the face; an
-identifier they do not in the fold. `Claude 会话 15413` on the face, its pid in
-`技术详情 · **对象**`. The identifier is never dropped — it is the only handle
-somebody has when they go to look — only moved.
+进程failed不能写成网络故障；不同现象同时出现不自动连因果。已有诊断/依赖证据时可以写“已确认的原因/相关依赖”，附evidence_ref；待核对解释明确标假设。词表禁“因为/导致”不能替代证据审查，也不能阻止正确因果解释。
 
-A `subject_display` rule may shorten a face only if it also returns the precise
-form. A rule that shortens and keeps nothing is how `session-150:pid28541`
-becomes a sentence nobody can act on.
+**R7 · “没查”与“查过未发现影响”不同。**
 
-**R4 · 量词用「项」，主体用「个」。** Findings are counted in 项; subjects are
-counted in 个 (`1 项`, `3 个主体失去观测`). 件 and 条 are not used on a card: 件
-reads as a parcel of work rather than a count of findings, and a card that counts
-the same rows in two units is a card whose numbers cannot be added up by a reader.
+默认缺影响证据可简写“影响待确认”或具体“尚未验证远端访问”。只有相应检查支持才写“暂未发现明确影响”。“本地任务仍在运行”也需要独立证据，不能从监控器自身出错推断业务一切正常或全部失败。
 
-**R5 · 建议写真实动作。** An action names a thing to look at, and the object is in
-the same breath. 「在 ServerOS 登记表里查看该条目」 is not an action — it sends a
-person to a surface without saying what for, which is the shape that made the
-first version of this card read as an explanation.
+**R8 · 当前重要信息默认可见，历史账本只在详情。**
 
-- ✗ 在 ServerOS 登记表里查看该条目
-- ✓ 核对进程归属，确认是否仍需保留
-- ✓ 无需动作；未归属本身不构成危险
+正常资源卡不出现数百项历史积压/恢复清单。告警有超过cap的当前问题时可一行“另有N项当前问题”并下钻；不能用历史数量代替紧急程度。无需要通知的新变化不额外发空告警。主动诊断视图可显示完整审计计数，和自动推送分开。
 
-No action line names an operation. That ban has no exceptions: the one refusal is
-made once for the whole card, in `cards.FOOTNOTE_READ_ONLY`.
+**R9 · 告警对象/症状/影响/建议有明确层级，不强制五行模板。**
 
-**R6 · 定义不连接两个事实。** No cause word in `what` or `impact`. §4 names the
-failure by hand — reading `restart failed` as `network fault` — and a definition
-that connects two facts has authored a root cause nobody reviewed.
-Enforced by `tests/test_presentation.py`.
+例如“监控核心采样停更3分钟”作标题，正文交代OS进程仍在、哪些状态不能确认、建议检查何处。没有额外信息的重复状态/首次观测行可合并；关键证据和首次/最近观察在详情完整保留。
 
-**R7 · 影响未确认时写「暂未发现明确影响」。** §4: 「没有影响证据时明确影响尚未
-确认」. The phrase is the declared value, carried verbatim in the model, the JSON
-payload and the CLI. A plausible impact written for a code is how a card starts
-asserting harm nobody measured; a sentence explaining the absence is how it
-starts explaining itself.
+**R10 · 状态卡不再用lines[0]决定摘要。**
 
-**R8 · 次要信息最多一行，账本算术进技术详情。** Counts of what the card did *not*
-print go on at most one secondary line under `**其他**`, in 项, and the ledger's
-own bookkeeping (`beyond_card_cap` versus `rows`, the interval state, the
-per-code breakdown) goes in the fold. The first screen does not explain the
-ledger's internal arithmetic.
+模型显式提供summary_metrics、service summary、当前issues和details或等价结构；renderer不能把身份第一行当资源结论。三个资源区CPU/RAM/存储与关键服务在默认折叠态可判断；正常明细折叠，异常自动上提。
 
-```text
-**其他** 487 项低优先级 · 4 项已恢复 · 110 项历史积压
-```
+**R11 · 可见性必须在真实客户端验证。**
 
-An empty alert card still prints this line. "没有新变化" over a register with 113
-backlogged rows is true and misleading, and the counts are what stop it — not a
-sentence telling the reader how to read a card.
+390px目标、360px回归、大屏、长名称、空值/大值/多异常、折叠初态均测；HTML预览不是Feishu native渲染证明。不能靠缩字号、空格对齐、HTML专属CSS或删重要信息让卡面“更短”。图标/色彩伴文字，不只有红绿。
 
-**R9 · 事件行写「主体 · 这条 code 的名字」。** The header carries one attention word
-for the whole card, so the event line owes the reader what this particular finding
-*is*: `Claude 会话 15413 · 遗留进程组`. The noun is the catalogue's `label` for the
-code, and it reaches the line through the event's `what` block — a field the
-renderer reads and does not look up, because the renderer may not read the
-catalogue.
+**R12 · 链接与时间不得制造错觉。**
 
-A card that prints the bare subject is not wrong: a code the catalogue does not
-define has no noun, and the fallback to the subject alone is correct. That is
-exactly why the label was missing from the face for as long as it was without
-anything failing — a dropped label and an undeclared one look the same on a card.
-The rule is therefore held by a test that reads the catalogue, not by the
-renderer's own docstring.
+127.0.0.1不是手机服务入口；declared/probed/reachable_from分开。主时间显示观测窗口/年龄，render或send时间不能刷新旧事实；时钟异常不改成“刚刚”。失效历史CLOSURE不作为当前完整状态入口。
 
-## Words that come from a contract
+**R13 · 样例与真实结果严格区分。**
 
-The attention words on a card header — `需处理` / `需确认` / `值得留意` / `供参考` /
-`无事` — are declared in `runtime/notification-contract.yaml`, not here and not in
-the renderer. This file describes the register they are written in; it does not
-own them. A renderer holding its own copy is how `ACTION_REQUIRED` comes to read
-as "warning" on one surface and "critical" on another.
+合成样例标题和正文保留“示例/非当前采集”，截图裁剪也不冒充现场。截图去敏感信息；部署改变用实际revision/consumer验收，不以文档写成新样式证明已上线。
 
-## Where each rule is kept true
+## 验收不再只检查漂亮的字符串
 
-Rules that a test can hold are held by a test; the rest are held by whoever edits
-the file next, which is what this section is for.
+需要四层：具有真实口径的source fixture；producer→model字段与证据；默认折叠的JSON/HTML可读性；授权测试接收端的native截图/回读。同一输入版本贯穿，任何一层失败不能由另一层PASS顶替。
 
-| rule | enforced by |
-|---|---|
-| R1, R2 (no cause word) | `test_presentation.py::DefinitionCatalogueTests::test_no_definition_connects_two_facts` |
-| R2, R5 (§15, one refusal) | `test_presentation.py::…::test_no_action_names_an_operation_even_to_refuse_one` + `…::test_the_card_states_the_refusal_once_and_in_the_refusing_form` |
-| R3 | `test_presentation.py::SubjectDisplayTests::test_a_session_process_tree_names_the_session_and_puts_the_pid_below` |
-| R6 | `test_presentation.py::…::test_a_says_word_is_held_to_the_same_bans_as_a_what_line` |
-| R7 | `presentation.IMPACT_UNCONFIRMED`; the value §4 names |
-| R9 | `test_cards.py::TheEventLineWearsTheCataloguesLabelTests::test_every_alert_scenario_carries_the_declared_label_onto_the_face` |
-| R1, R2, R4, R5, R8 | this file, and review |
+旧test中要求所有卡出现同一个FOOTNOTE_READ_ONLY、首行恰为UID/型号、总禁因果词、历史计数必露出的规则若存在，必须据本次用户反馈明确迁移并保留安全反例，不为让旧测试绿继续保留错误体验。
 
-One rule here is not a copy rule and is on the table because a card broke it: **the
-instant a card is rendered at is an ISO instant and not a display string.** The two
-look interchangeable and are not — a duration is computed from that value, and a
-display form is unreadable to the parser that computes it. Held by
-`test_serverosctl.py::test_the_card_clock_is_an_instant_and_not_a_display_string`.
-
-A rule added here without a test is still a rule; it is just a rule that lives on
-review alone, and this table says so rather than implying otherwise.
+详细页面与语义：[BROADCAST-ALERT-DESIGN](docs/BROADCAST-ALERT-DESIGN.md)。运行/自身监测：[NODE-OBSERVABILITY](docs/NODE-OBSERVABILITY.md)。具体迁移/验收：[MONITORING-ACCEPTANCE](docs/MONITORING-ACCEPTANCE.md)。本轮只有设计修订，没有执行截图/服务故障测试或修改运行卡片。
