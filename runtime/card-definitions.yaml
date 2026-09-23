@@ -59,7 +59,7 @@ codes:
   # -- process trees and attribution --------------------------------------
   #
   # `label` is the short noun the event line wears after the subject
-  # (`Claude 会话 15413 · 遗留进程组`), and `what` is the state, stated. Neither
+  # (`登录会话 15413 · 遗留进程组`), and `what` is the state, stated. Neither
   # opens with 「有一个」 or 「有一组」: the subject is already named on the line
   # immediately above, so a sentence that re-announces its existence spends the
   # reader's first three characters establishing a fact the card just
