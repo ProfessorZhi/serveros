@@ -1613,3 +1613,16 @@ Drive is the Asset Plane. Large/binary MP3, image, PDF, PPTX/XLSX, ZIP, installe
 Meeting recording, Miaoji/transcript, auto-minutes and attachments are a MeetingBundle over Drive/source objects. Raw/automatic meeting materials do not automatically enter MyDocs; only a useful curated human note may be created there. Remote-control support sessions treat unattributed/background audio as untrusted for business semantics.
 
 Detailed directory, style-profile, Records layout and B1/B8/B9 ownership are canonicalized in ability-management [Feishu Information Surfaces & Three-Surface Sync Architecture](https://github.com/ProfessorZhi/ability-management/blob/main/design/FEISHU-INFORMATION-SYNC-ARCHITECTURE.md).
+
+
+## Monitoring product model · 2026-09-24 addendum
+
+Monitoring has three human surfaces only: **Current Status Card**, **Incident Card**, and on-demand **Diagnostic View**. The status card shows the user's own CPU/RAM/quota, host CPU/RAM, root and data filesystem capacity, and a small set of real infrastructure dependencies. Incident cards represent real failure episodes; process hygiene and historical alert ledgers do not page the user.
+
+The default Tokyo infrastructure set is resolved from actual bindings/dependencies rather than container names. Current important examples include ServerOS Core, Tailscale, Shared Laya, Shared LiteLLM Gateway and any currently required remote/browser/project runtime. ServerOS Core is critical; Tailscale peers are checked only when a specific peer/endpoint is expected; Laya availability is operational health while answer/language quality belongs to evaluation; the shared gateway is monitored as one logical service across app/readiness/database/dependencies.
+
+Resource display and resource alerts are separate. CPU/RAM are always visible, but high single samples or per-process usage do not become incidents without sustained pressure/impact. Disk/quota use role-specific percentage plus absolute remaining capacity. Root /, data /data, and the user's data quota are separate first-class numbers. Same-filesystem roles are deduplicated.
+
+Notifications are episode/transition driven: NEW, ESCALATED, REOPENED or materially changed impact/action may notify; STILL_OPEN with only age increasing does not. One episode maps to one Feishu card and is updated in place. The rolling status card is also patched in place rather than adding an hourly history message; observation history remains in durable records.
+
+Canonical details and current live gaps are in [Monitoring Product Architecture](docs/MONITORING-PRODUCT-ARCHITECTURE.md).
