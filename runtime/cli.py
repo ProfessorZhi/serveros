@@ -941,6 +941,59 @@ def cmd_information_watched(args) -> int:
     return EXIT_OK
 
 
+def cmd_information_reference(args) -> int:
+    """§4/§5/§6/§11 — 一个外部参考对象：抓到了什么，能证明什么。
+
+    `information captured` 读的是**形状**：一个 web capture 有三个分量，各自
+    判定。这个动词读的是**合同**：`docs/EXTERNAL-REFERENCE-LIBRARY.md` 里五条
+    写着「读者不能自己补」的规则，今天在三棵树里没有别的读者。
+
+    What it refuses to hand back as one number:
+
+      * 采集器自己的 `page_kind.state`。§4 说 HTTP 200 但拿到登录页、验证码、
+        脚本壳、截断正文不能算捕获成功，而这个动词把 §4 那四条问题逐条对着采集器
+        自己写的标记清单查：**查过且没命中**与**根本没查**是不同的取值，所以一条
+        没人问过的问题足以让整体不是 `CAPTURED` —— 无论标签写了什么。标签旁置，
+        分歧被点出来。
+      * 四个效果的一个「完成度」。§11 说阶段各自可部分完成、没有哪个蕴含另一个，
+        所以每个 DONE 旁边带着它不蕴含的那句话，而一个连状态都没有的阶段是
+        `UNDECLARED` 加一句「不存在的下一consumer不叫排队」。
+      * 一个「允许」。`--note` 校验的是**我们自己**写的那份笔记：首层九项齐不齐、
+        机器细节有没有摊在首屏、要点有没有出处、以及一条 `ADOPTED` 有没有人的确认。
+        §5 与 §3 的表里「收藏行为本身不批准代码/安全规则变更」。
+
+    它不下载、不复制正文、不建飞书对象、不推进任何状态。
+    """
+    paths = paths_mod.Paths()
+    records = Path(getattr(args, "records_root", "") or
+                   Path(paths.root("workspace")) / "records")
+    if not records.is_absolute():
+        sys.stderr.write(
+            f"serverosctl: --records-root must be absolute, got {records}. A "
+            f"reference library read relative to whatever directory the caller "
+            f"stood in is a reading nobody else can reproduce.\n")
+        return EXIT_FAULT
+    policy = _load_module_from(REPO_ROOT / "intake" / "source_policy.py",
+                               "serveros_intake_source_policy")
+    mod = _load_module_from(REPO_ROOT / "intake" / "external_reference.py",
+                            "serveros_intake_external_reference")
+    try:
+        report = mod.read_root(mod.raw_root(records), policy.key_of)
+        note = mod.read_note(Path(args.note)) if args.note else None
+    except (mod.Refused, mod.Malformed, policy.Refused, policy.Malformed) as exc:
+        sys.stderr.write(f"serverosctl: {exc}\n")
+        return EXIT_FAULT
+
+    lines = mod.render(report)
+    if note is not None:
+        lines += ["", f"§5 笔记草稿  {note['path']}",
+                  "  首层九项齐、机器细节在折叠层、要点各带出处 —— 通过",
+                  f"  状态       {note['check']['proposal'] or '无拟采用'}"]
+    emit(report if note is None else {**report, "note": note},
+         as_json=args.json, lines=lines)
+    return EXIT_OK
+
+
 def _space_request(args, *, attribute: str = "request") -> dict:
     """Read one request document, or refuse with the reason it could not be read.
 
@@ -9832,6 +9885,24 @@ def build_parser() -> argparse.ArgumentParser:
              "this day. Omit it and the overdue question is reported as not "
              "asked — this verb does not read a clock")
     info_watched.set_defaults(func=cmd_information_watched)
+
+    info_reference = information_sub.add_parser(
+        "reference",
+        help="§4/§5/§6/§11 of EXTERNAL-REFERENCE-LIBRARY — 每个外部参考对象抓到"
+             "什么、能证明什么：§4 的四条捕获质量问题逐条对着采集器自己写的标记"
+             "清单判定（查过没命中 ≠ 没人查过），§11 的四个阶段分层（没有哪个蕴含"
+             "另一个），发现出处按 provider+稳定标识分组而不按标题。`--note` 另校验"
+             "一份我们自己写的笔记草稿的首层。读，不写", **_COMMON)
+    info_reference.add_argument(
+        "--records-root", default="",
+        help="the records checkout to read. Default: this node's workspace "
+             "root + /records. Must be absolute")
+    info_reference.add_argument(
+        "--note", default="",
+        help="path to a candidate reference-note draft to check against §5/§6. "
+             "Omit it and no note is checked — this verb does not go looking for "
+             "one to approve")
+    info_reference.set_defaults(func=cmd_information_reference)
 
     space = sub.add_parser(
         "space", help="where a logical object belongs, and what a meeting "
