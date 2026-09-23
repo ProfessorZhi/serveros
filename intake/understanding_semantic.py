@@ -72,7 +72,7 @@ from pathlib import Path
 SCHEMA = "serveros/understanding-semantic.v1"
 READING_SCHEMA = "serveros/understanding-reading.v1"
 #: Bumped when the receipt's SHAPE changed, and bumped for that reason alone.
-#: Twice, so far, and the second bump is the interesting one:
+#: Three times, so far, and the second bump is the interesting one:
 #:
 #:   * v1 → v2: `written[i].claims` used to hold a count and now holds the ids.
 #:     A v1 receipt handed to a reader that expects ids would report a count as
@@ -92,7 +92,36 @@ READING_SCHEMA = "serveros/understanding-reading.v1"
 #:     living in a person's card and in every project view at once. This was not
 #:     a reading error anybody had to make: an A2 recall filter, reading v3 as
 #:     written, reported exactly that.
-RECEIPT_SCHEMA = "serveros/understanding-receipt.v4"
+#:   * v4 → v5: the receipt gained `baseline` and `retracted`, and a withdrawal
+#:     became a thing a receipt can BE (state `RETRACTION_ONLY`). v4 could not
+#:     record one: a retraction commits nowhere, so a reading that was only a
+#:     retraction produced an empty commit, `write` left no receipt for it, and
+#:     the local effect the contract gives a withdrawal — that it takes hold at
+#:     once — had nothing durable to be read back from. A2's recall filter said
+#:     so in its `unobserved` table rather than answering `CURRENT`, which was
+#:     honest and was not a product. `baseline` came with it because on a
+#:     `RETRACTION_ONLY` receipt it is the only record of the card the reader
+#:     was looking at, and a withdrawal whose durable evidence names a claim and
+#:     a source revision but not the text it was reasoned against is evidence
+#:     nobody can re-examine.
+RECEIPT_SCHEMA = "serveros/understanding-receipt.v5"
+
+#: The receipt schemas this version can READ, newest first. v4 is on the list
+#: and v1–v3 are not, and the difference is what each bump changed:
+#:
+#:   * `written[i].claims` gained its meaning in v2 and changed it in v3 (a
+#:     count became the ids, then the ids this commit wrote became the ids the
+#:     file carries). A reader that has only ever known v4's reading of that
+#:     field cannot read a v1–v3 receipt without inventing one, so it refuses
+#:     them by name — see `_read_receipt`.
+#:   * v5 ADDED a field and changed none. Every field v4 has, v5 has with the
+#:     same meaning, so a v4 receipt is read directly and its absent `retracted`
+#:     reads as the empty list — which is not a guess about what it meant, it is
+#:     what a v4 receipt says: v4 had no way to record a withdrawal that wrote
+#:     no file, so it recorded none. An old receipt is read as what it is and is
+#:     never rewritten into the newer shape; nothing here migrates a file on
+#:     disk.
+READABLE_RECEIPT_SCHEMAS = (RECEIPT_SCHEMA, "serveros/understanding-receipt.v4")
 
 #: Where the understanding layer sits under the records root. The same two
 #: segments `understanding_delta` walks, and repeated here rather than imported
@@ -1038,7 +1067,17 @@ COMMIT_PRODUCED = {
                   "is shown before anything happens, and `render_resolution` "
                   "reads it from here. Ids named by a RETRACTION are not in it: "
                   "a retraction is a local withdrawal that is not committed "
-                  "anywhere",
+                  "anywhere, and it is carried in `retracted` instead",
+    "retracted": "the claim ids this reading's RETRACTIONs withdraw, from the "
+                 "resolution's own `retracted`. A separate field from "
+                 "`superseded` because the two are different acts: a supersede "
+                 "takes a line out of a card this commit writes, a retraction "
+                 "takes a claim out of what may be recalled and leaves every "
+                 "line where it is. This is what makes a withdrawal DURABLE — "
+                 "the contract's §6 says it takes hold locally and at once, and "
+                 "until this field existed there was nothing to hold it: the "
+                 "receipt is the durable record, and a retraction that wrote no "
+                 "file left no receipt",
 }
 
 RECEIPT_PRODUCED = {
@@ -1052,6 +1091,14 @@ RECEIPT_PRODUCED = {
                 "yes that is not in the write, and the comparison is done by "
                 "value so that an acceptance edited after the fact is caught "
                 "rather than matched",
+    "baseline": "the card the reading was made against and the digest it had "
+                "then, copied from the commit's own `baseline`. The commit "
+                "checks it again at the moment of writing, and the receipt "
+                "keeps it because the commit's file does not survive the run: "
+                "on a `RETRACTION_ONLY` receipt this is the ONLY record of which "
+                "text the withdrawal was reasoned against, and without it the "
+                "durable evidence would name a claim and a source revision and "
+                "say nothing about the card the reader was looking at",
     "written": "the files this write actually changed, with the digest each one "
                "had before and after, whether it OWNS the claims or only "
                "REFERENCES them, and the CLAIM IDS that file now carries "
@@ -1081,11 +1128,18 @@ RECEIPT_PRODUCED = {
                      "write has moved the card the reading was reasoned against, "
                      "and re-running the reading against the new baseline is a "
                      "different reading",
-    "state": "COMPLETE, PARTIAL, or NOTHING_TO_WRITE. The first two are decided "
-             "by `pending_views` and nothing else. The third is a receipt that is "
-             "RETURNED AND NOT WRITTEN — a commit whose every claim awaits a "
-             "person changed no file, so there is nothing to record, and the "
-             "proposal stays open for the acceptance that can commit it",
+    "state": "COMPLETE, PARTIAL, RETRACTION_ONLY, or NOTHING_TO_WRITE. The "
+             "first two are decided by `pending_views` and nothing else. The "
+             "last two are both receipts with no `written` entry, and they are "
+             "NOT the same thing: `NOTHING_TO_WRITE` is RETURNED AND NOT "
+             "WRITTEN — a commit whose every claim awaits a person changed no "
+             "file, so there is nothing to record, and the proposal stays open "
+             "for the acceptance that can commit it — while `RETRACTION_ONLY` IS "
+             "written, because a withdrawal has already taken effect locally and "
+             "this receipt is the only durable record of it. A later run holding "
+             "the acceptance is what tells the two apart, and `write` reads it "
+             "for what it is rather than refusing the acceptance on the strength "
+             "of a receipt with no write in it",
     "reused": "true when this receipt is an earlier write returned again. A "
               "replay that wrote a second time would be a duplicate commitment "
               "that no reader could tell from a second real change",
@@ -1105,6 +1159,25 @@ RECEIPT_PRODUCED = {
                         "removes where this commit writes, and finding a claim "
                         "across cards is what the receipts are read for. An "
                         "empty list is the ordinary case and says so",
+    "retracted": "the claim ids this write's reading WITHDREW, copied from the "
+                 "commit's own `retracted`. This is the durable half of a "
+                 "retraction: the contract gives a withdrawal effect locally and "
+                 "at once, and `resolve`'s `retracted` is a decision inside one "
+                 "run that nothing outside that run could read. Recorded "
+                 "whether or not this write also committed claims, so that a "
+                 "reading that both asserts and withdraws keeps both facts — "
+                 "and recorded on a receipt whose `state` is `RETRACTION_ONLY`, "
+                 "which is a receipt with no `written` entry at all. Read by "
+                 "`intake/claim_recall`, which reads ALL receipts and not just "
+                 "the latest, so a withdrawal cannot be undone by a later "
+                 "reading that does not mention it. Named limitation: nothing "
+                 "UN-retracts a claim. A source that comes back does not revive "
+                 "the withdrawn conclusion — it supports a new claim, with its "
+                 "own id, its own revision and its own receipt, and this id "
+                 "stays withdrawn. That is the contract's §9 (the audit keeps "
+                 "'this was believed then' and 'this may not be used now' as two "
+                 "facts) and it also means there is no way to say the withdrawal "
+                 "itself was a mistake",
 }
 
 
@@ -1153,6 +1226,16 @@ def commit(resolution: dict, reading: dict) -> dict:
     `supersedes` means "this claim replaces that one" — which until now had no
     effect on any file, so a card could hold the replaced claim's line forever
     beside the line that replaced it, both reading as current.
+
+    A retraction's ids go into `retracted`, which is a DIFFERENT field from
+    `superseded` and is not merged into it. The two are different acts on a
+    claim and a record that collapsed them could not say which happened: a
+    supersede takes a line out of the cards this commit writes, and a
+    retraction takes a claim out of what may be RECALLED while leaving every
+    line where it is. Merging them would also lose the case the contract
+    requires to be possible — one claim withdrawn and disputed at the same time
+    — because `superseded` is built from committed claims and `retracted` from
+    claims that commit nowhere.
     """
     lines = {claim["id"]: {"card": claim["card"], "text": _claim_line(claim)}
              for claim in resolution["committed"]}
@@ -1172,6 +1255,7 @@ def commit(resolution: dict, reading: dict) -> dict:
         "lines": lines,
         "views": views,
         "superseded": sorted(superseded),
+        "retracted": list(resolution["retracted"]),
     }, COMMIT_PRODUCED, "commit")
 
 
@@ -1245,14 +1329,25 @@ def write(commit_document: dict, records_root: Path | str, *,
     prose a person just changed is how an agent's sentence ends up attributed to
     a human.
 
-    A commit with nothing in it writes NOTHING and leaves NO receipt, and that is
-    load-bearing rather than tidy. A receipt is the record that a write happened;
+    A commit with nothing in it writes NOTHING and leaves NO receipt — with one
+    exception, and the exception is a withdrawal. The rule for the first case is
+    load-bearing rather than tidy: a receipt is the record that a write happened,
     one written for a run that changed no file would answer a later run with
     "already written" and refuse the very acceptance that could commit the claims
     — and the order of events would be the ordinary one, a proposal prepared
     before anybody was asked. The proposal stays open until something is
     committed, and an acceptance arriving afterwards is then exactly what commits
     it.
+
+    A WITHDRAWAL is the exception because it is not nothing. A retraction commits
+    nowhere and takes a claim out of what may be recalled at once, and a local
+    effect with no durable record of it is a fact that exists only as long as the
+    process that computed it. So a run whose only effect is a withdrawal writes a
+    receipt with state `RETRACTION_ONLY` — and the receipt it writes is exactly
+    what would have locked out the acceptance, which is why the lookup above
+    reads a `RETRACTION_ONLY` receipt for what it is: a record of a withdrawal
+    with no write in it, so a later run holding the person's answer continues
+    instead of being refused.
     """
     if not committed_at or not isinstance(committed_at, str):
         raise Refused(
@@ -1261,30 +1356,53 @@ def write(commit_document: dict, records_root: Path | str, *,
             "machine, and the comparison is what makes a replay detectable")
     base = _understanding_root(records_root)
     receipt_path = base / ".serveros" / f"receipt-{_key_slug(commit_document['key'])}.json"
+    retracted = list(commit_document.get("retracted") or [])
     prior = _read_receipt(receipt_path)
     if prior is not None:
         if prior.get("reading_digest") != commit_document["reading_digest"]:
             raise Refused(_reading_mismatch(receipt_path))
+        # A receipt whose only content is a withdrawal is not the record of a
+        # write, and the acceptance comparison is carved out for it. That
+        # comparison exists so a receipt is never handed back reporting a
+        # person's yes that is not in the write; this receipt holds no write, so
+        # there is nothing in it for the comparison to protect — and everything
+        # for it to block, because the run that took the withdrawal could not
+        # commit what was waiting for a person and that person's answer arrives
+        # as a later run of the SAME proposal. The withdrawal is not lost by
+        # continuing: this run's own `retracted` is written into the receipt it
+        # replaces it with.
+        withdrawal_only = prior.get("state") == "RETRACTION_ONLY"
         mismatch = _acceptance_mismatch(prior, commit_document.get("accepted"),
                                         receipt_path)
         if mismatch is not None:
-            raise Refused(mismatch)
-        if prior.get("state") == "COMPLETE":
+            if not withdrawal_only or prior.get("accepted") is not None:
+                raise Refused(mismatch)
+        elif withdrawal_only or prior.get("state") == "COMPLETE":
             return {**prior, "reused": True}
-        return _resume(prior, base, receipt_path)
+        elif not withdrawal_only:
+            return _resume(prior, base, receipt_path)
 
     if not commit_document["lines"]:
-        return no_unsourced({
+        receipt = no_unsourced({
             "schema": RECEIPT_SCHEMA,
             "key": commit_document["key"],
             "reading_digest": commit_document["reading_digest"],
             "accepted": commit_document.get("accepted"),
+            "baseline": commit_document.get("baseline"),
             "written": [],
             "pending_views": [],
-            "state": "NOTHING_TO_WRITE",
+            "state": "RETRACTION_ONLY" if retracted else "NOTHING_TO_WRITE",
             "reused": False,
             "committed_at": committed_at,
+            "superseded": [],
+            "superseded_unmet": [],
+            "retracted": retracted,
         }, RECEIPT_PRODUCED, "receipt")
+        # `NOTHING_TO_WRITE` is RETURNED and not written; `RETRACTION_ONLY` is
+        # written, and the difference is the whole of the paragraph above.
+        if retracted:
+            _write_receipt(receipt_path, receipt)
+        return receipt
 
     baseline = commit_document["baseline"]
     superseded = list(commit_document.get("superseded") or [])
@@ -1325,6 +1443,7 @@ def write(commit_document: dict, records_root: Path | str, *,
         "key": commit_document["key"],
         "reading_digest": commit_document["reading_digest"],
         "accepted": commit_document.get("accepted"),
+        "baseline": baseline,
         "written": written,
         "pending_views": pending,
         "state": "PARTIAL" if pending else "COMPLETE",
@@ -1332,6 +1451,7 @@ def write(commit_document: dict, records_root: Path | str, *,
         "committed_at": committed_at,
         "superseded": superseded,
         "superseded_unmet": _superseded_unmet(superseded, written),
+        "retracted": retracted,
     }, RECEIPT_PRODUCED, "receipt")
     _write_receipt(receipt_path, receipt)
     return receipt
@@ -1384,14 +1504,26 @@ def _resume(prior: dict, records_root: Path | str, receipt_path: Path) -> dict:
         except Refused as exc:
             pending.append({**entry, "why": str(exc)})
     receipt = no_unsourced({
-        **{key: prior[key] for key in ("schema", "key", "reading_digest",
-                                       "accepted", "committed_at")},
+        # Copied by name and read with `.get`, not `[]`: a v4 receipt is
+        # readable by this version and has no `baseline`, and a resume of one
+        # would be a `KeyError` where it should be a finished write. What such a
+        # receipt says about the card it was reasoned against is that it does
+        # not record one, which is what `None` here means.
+        **{key: prior.get(key) for key in ("schema", "key", "reading_digest",
+                                           "accepted", "baseline",
+                                           "committed_at")},
         "written": written,
         "pending_views": pending,
         "state": "PARTIAL" if pending else "COMPLETE",
         "reused": True,
         "superseded": superseded,
         "superseded_unmet": _superseded_unmet(superseded, written),
+        # Carried forward and never recomputed, for the reason `superseded` is:
+        # a resume has no reading to re-derive a withdrawal from, and a resume
+        # that dropped it would take a claim that has been withdrawn and put it
+        # back into what may be recalled — the one thing the contract says a
+        # withdrawal must survive.
+        "retracted": list(prior.get("retracted") or []),
     }, RECEIPT_PRODUCED, "receipt")
     _write_receipt(receipt_path, receipt)
     return receipt
@@ -1445,21 +1577,39 @@ def apply(reading_path: Path | str, records_root: Path | str, *, measure,
     document = read_reading(reading_path)
     prior = _read_receipt(_receipt_path(base, document))
     if prior is not None:
-        return _replay(prior, document, records_root, accepted=accepted)
+        resumed = _replay(prior, document, records_root, accepted=accepted)
+        if resumed is not None:
+            return resumed
     result = resolve(document, measure(), delegation, accepted)
     plan = commit(result, document)
     return write(plan, records_root, committed_at=committed_at)
 
 
 def _replay(prior: dict, reading: dict, records_root: Path | str, *,
-            accepted: dict[tuple, dict] | None = None) -> dict:
-    """An earlier write for this proposal, returned or finished — never redone."""
+            accepted: dict[tuple, dict] | None = None) -> dict | None:
+    """An earlier write for this proposal, returned or finished — never redone.
+
+    `None` means there is something for this run to do after all, and there is
+    exactly one way that happens: the receipt found records a WITHDRAWAL and no
+    write, and this run holds an acceptance the earlier one did not. A withdrawal
+    takes effect at once and is not committed anywhere, so the run that performed
+    one had nothing to write for the claims that were waiting for a person —
+    and that person's answer arrives as a later run of the SAME proposal, which
+    the receipt would refuse if it were read as a write. `write` replaces it with
+    a receipt carrying the same withdrawal.
+    """
     if prior.get("reading_digest") != reading_digest(reading):
         raise Refused(_reading_mismatch(
             _receipt_path(_understanding_root(records_root), reading)))
     mismatch = _acceptance_mismatch(
         prior, _accepted_as_written(acceptance_for(reading, accepted)),
         _receipt_path(_understanding_root(records_root), reading))
+    if prior.get("state") == "RETRACTION_ONLY":
+        if mismatch is None:
+            return {**prior, "reused": True}
+        if prior.get("accepted") is None:
+            return None
+        raise Refused(mismatch)
     if mismatch is not None:
         raise Refused(mismatch)
     if prior.get("state") == "COMPLETE":
@@ -1807,14 +1957,20 @@ def _read_receipt(path: Path) -> dict | None:
     # reading that cannot be wrong: the alternative is a v1 receipt, whose
     # `written[i].claims` was a COUNT, being read by something that expects the
     # claim ids and reporting a number as a list.
-    if document.get("schema") != RECEIPT_SCHEMA:
+    #
+    # The list of shapes it DOES recognise is `READABLE_RECEIPT_SCHEMAS`, and a
+    # schema on it is read directly rather than migrated: a receipt is the
+    # record of a write that happened, and rewriting one into a newer shape
+    # would make a file that says it was written a way it was not.
+    if document.get("schema") not in READABLE_RECEIPT_SCHEMAS:
         raise Refused(
             f"{path} is a receipt this module does not recognise: its schema is "
-            f"{document.get('schema')!r}, not {RECEIPT_SCHEMA!r}. It may be the "
-            f"record of a commit of this proposal made by a different version, "
-            f"and this module cannot tell which claims it wrote or under which "
-            f"acceptance. Writing again on top of it would duplicate whatever it "
-            f"holds; inspect the file before retrying")
+            f"{document.get('schema')!r}, and this version reads "
+            f"{' and '.join(READABLE_RECEIPT_SCHEMAS)}. It may be the record of "
+            f"a commit of this proposal made by a version whose `written[i]` "
+            f"means something else, and this module cannot tell which claims it "
+            f"wrote or under which acceptance. Writing again on top of it would "
+            f"duplicate whatever it holds; inspect the file before retrying")
     return document
 
 
@@ -1937,6 +2093,13 @@ def render_receipt(receipt: dict) -> list[str]:
                      f"{_short(entry['after'])}  {_claim_ids_text(entry['claims'])}"
                      + (f"  移出 {', '.join(entry['removed'])}"
                         if entry.get("removed") else ""))
+    if receipt.get("retracted"):
+        # Printed for the same reason `superseded_unmet` is, and more so: this
+        # list is the whole of what a withdrawal leaves behind. A receipt read
+        # without it says a run changed nothing, when what it did was take
+        # claims out of use.
+        lines.append(f"  撤回 {', '.join(receipt['retracted'])}"
+                     f"（这些主张不得再作为当前事实召回；卡片里的行仍在）")
     if receipt.get("superseded_unmet"):
         # Reported because it is the one outcome of a supersede that looks like
         # success and is not: nothing was taken out, and the claim the commit
@@ -1971,11 +2134,18 @@ def _state_line(receipt: dict) -> str:
     NOTHING_TO_WRITE reads like a failure and is not one: nothing was committed
     because nothing could be, no file was touched, and no receipt was left, which
     is what keeps the proposal open for the acceptance that can commit it.
+
+    RETRACTION_ONLY reads like NOTHING_TO_WRITE — no file, nothing written — and
+    is not the same thing at all: a withdrawal has already taken hold, and this
+    receipt is the only durable record of it. The gloss says so, because the two
+    states differ in the one way a person is looking at this list to find out.
     """
     gloss = {
         "PARTIAL": "  —— 主张已在归属卡片，引用未补齐",
         "NOTHING_TO_WRITE": "  —— 本轮无可提交的条目，未写任何文件、也未留收据；"
                             "提案仍然开着，等确认到达",
+        "RETRACTION_ONLY": "  —— 本轮只有撤回，没有写入任何文件；撤回已在本轮即时"
+                           "生效，本收据是它唯一的持久记录",
     }
     return f"state       {receipt['state']}{gloss.get(receipt['state'], '')}"
 

@@ -77,6 +77,21 @@ rather than being allowed to change an answer. The same discipline covers the
 axes this module cannot observe at all: they are named in `unobserved`, because
 a filter that silently checks nothing is indistinguishable from one that
 checked and found nothing.
+
+Where a withdrawal comes from, and why it is read as a SET
+----------------------------------------------------------
+From the receipt's own `retracted`, which is the producer this filter used not
+to have: a retraction commits nowhere, so it used to leave no receipt and this
+module named the missing producer in `unobserved` instead of answering. It now
+leaves one, and the shape of the read is what makes the answer the contract
+asks for. Every receipt under the understanding layer is read and the
+withdrawals are a UNION over all of them, not the latest receipt's value —
+because "the remote can be down and the withdrawn fact still must not come
+back" and "a source that reappears does not revive it" are the same
+requirement seen twice. A withdrawal is undone by nothing short of a reading
+that says so, and there is no verb for that; a later reading of the same span
+that happens not to be a retraction cannot clear one, because it is a different
+receipt and the old one is still here.
 """
 from __future__ import annotations
 
@@ -104,6 +119,14 @@ STALE = "STALE"
 #: card reading as current, and that is the state
 #: `understanding_semantic._superseded_unmet` exists to report rather than hide.
 SUPERSEDED = "SUPERSEDED"
+#: A reading WITHDREW this claim. Distinct from `SUPERSEDED` because the two are
+#: different acts with different evidence: a supersede is a later claim taking
+#: this one's place and its line leaves the cards that write touched, while a
+#: retraction takes the claim out of use and leaves every line exactly where it
+#: is. A card that still carries a retracted claim is not a defect — it is the
+#: audit history, and the contract's §9 keeps "this was believed then" and "this
+#: may not be used now" as two facts rather than one.
+RETRACTED = "RETRACTED"
 #: The card the receipt says carries this claim's line does not carry it, and
 #: nothing in the record accounts for the removal. A hand edit, a write whose
 #: receipt was lost, or a card that was replaced wholesale.
@@ -120,27 +143,34 @@ UNRESOLVED = "UNRESOLVED"
 #: that — a person has to look at the record.
 CONFLICT = "CONFLICT"
 
-VERDICTS = (CURRENT, STALE, SUPERSEDED, MISSING, UNRESOLVED, CONFLICT)
+VERDICTS = (CURRENT, STALE, SUPERSEDED, RETRACTED, MISSING, UNRESOLVED, CONFLICT)
 
 #: The precedence, stated rather than emergent. `CONFLICT` comes first because it
 #: is a statement about the record itself: nothing read out of a record that
-#: disagrees with itself should be trusted before somebody has looked.
+#: disagrees with itself should be trusted before somebody has looked — not even
+#: a withdrawal, because a withdrawal naming an id that is two claims names
+#: neither. `RETRACTED` next, before `SUPERSEDED` and before the source states:
+#: a withdrawal is an act a person already performed rather than a question to
+#: be settled by reading the source, and "the text under it changed" would send
+#: somebody to re-read a claim that may not be used whatever the text says.
 #: `SUPERSEDED` before `MISSING` because a recorded replacement EXPLAINS an
 #: absence — without that order every successfully superseded claim would come
 #: back `MISSING`. Then the two source states, `STALE` before `UNRESOLVED`
 #: because a comparison that happened outranks one that could not. `CURRENT` is
-#: the absence of all five and is last.
-PRECEDENCE = (CONFLICT, SUPERSEDED, MISSING, STALE, UNRESOLVED, CURRENT)
+#: the absence of all six and is last.
+PRECEDENCE = (CONFLICT, RETRACTED, SUPERSEDED, MISSING, STALE, UNRESOLVED,
+              CURRENT)
 
 #: The doc's own three labels, per verdict. Present so that a reader comparing
 #: this output with `docs/INFORMATION-DOCUMENT-LIFECYCLE.md` §7 can see that
-#: `SUPERSEDED`, `MISSING` and `UNRESOLVED` are all 不可召回, split because the
-#: repairs differ — the same reason `memory/layering.py` names its two drop
-#: reasons instead of counting them.
+#: `SUPERSEDED`, `RETRACTED`, `MISSING` and `UNRESOLVED` are all 不可召回, split
+#: because the repairs differ — the same reason `memory/layering.py` names its
+#: two drop reasons instead of counting them.
 MARK = {
     CURRENT: "可召回",
     STALE: "stale",
     SUPERSEDED: "不可召回",
+    RETRACTED: "不可召回",
     MISSING: "不可召回",
     UNRESOLVED: "不可召回",
     CONFLICT: "conflict",
@@ -159,6 +189,15 @@ NOT_EVIDENCED = "NOT_EVIDENCED"
 
 #: The axes this filter cannot see, said out loud. Each is a real question a
 #: caller may believe was answered by a verdict about recallability.
+#:
+#: There was a fourth entry here — `retraction` — saying that the rule for a
+#: withdrawal existed and was tested while nothing durable carried a withdrawal
+#: into this filter, so a retracted claim read as `CURRENT`. That is closed: a
+#: retraction is written into the receipt of the reading that performed it
+#: (`understanding_semantic`, `retracted` / `RETRACTION_ONLY`) and is read back
+#: below. It left this table because the table is a list of what is NOT checked,
+#: and leaving it in would now be the same class of error in the other
+#: direction — a claim that this filter cannot see something it does see.
 UNOBSERVED = {
     "permission": (
         "there is no source-permission store in this fabric — `docs/memory-"
@@ -176,17 +215,6 @@ UNOBSERVED = {
         "was edited in place from one that was not. `card_changed_since` says "
         "whether something in the card changed; it does not say that this claim "
         "is what changed"),
-    "retraction": (
-        "a RETRACTION is not visible to this filter, and unlike the other axes "
-        "here the RULE for it exists and is tested — "
-        "`understanding_semantic.eligible(claimed, retractions)` states that a "
-        "withdrawal takes effect locally and at once. What is missing is a "
-        "durable producer: a retraction commits nowhere and, when it is the only "
-        "thing in a reading, writes no receipt either, so the local effect it "
-        "was supposed to have has nothing to be read back from here. Until the "
-        "daily cycle — which holds the retraction itself — supplies it, a claim "
-        "withdrawn by a retraction and by no later reading reads as `CURRENT`, "
-        "and that is a gap in this answer rather than a fact about the claim"),
 }
 
 
@@ -228,7 +256,17 @@ RECALL_PRODUCED_CLAIM = {
                        "the source holds now, and why the second is absent when "
                        "it is",
     "withdrawal": "the receipts that named this claim as replaced, and whether "
-                  "the line actually left its card",
+                  "the line actually left its card. NOT the same list as "
+                  "`retraction`: a supersede is a later claim taking this one's "
+                  "place, a withdrawal is somebody taking it out of use, and a "
+                  "claim can have both",
+    "retraction": "the receipts that WITHDREW this claim, each with the reading "
+                  "digest that performed it. Read from the receipt's own "
+                  "`retracted`, unioned over every receipt in the tree rather "
+                  "than taken from the latest — a withdrawal is not undone by a "
+                  "later reading that does not mention it, so it is a fact that "
+                  "accumulates. `null` when no reading withdrew the claim, which "
+                  "is the ordinary case",
     "still_in_card": "whether the card the receipt names carries the line now",
     "card_changed_since": "whether the card's digest differs from what the last "
                           "write of it recorded. A fact about the CARD, not "
@@ -441,6 +479,20 @@ def build_index(records_root: Path | str) -> dict:
                 "committed_at": written_at,
                 "removal_landed": claim_id not in unmet,
             })
+        # The withdrawals this receipt records, into the SAME row as the
+        # replacements — one claim id, one row, both facts. The `reading_digest`
+        # is carried because it is the one field that says WHICH reading
+        # withdrew the claim: a receipt's name is a hash of the proposal key, so
+        # two withdrawals of one claim made from two readings are two files a
+        # person cannot tell apart from the names, and the two can differ in
+        # everything that matters — a different reading, a different content
+        # identity, a different baseline.
+        for claim_id in receipt.get("retracted") or []:
+            _row(claims, claim_id)["retracted_by"].append({
+                "receipt": str(entry["path"].name),
+                "committed_at": written_at,
+                "reading_digest": receipt.get("reading_digest"),
+            })
 
     for row in claims.values():
         # By time, not by receipt name: a receipt's name is a hash of its key,
@@ -451,6 +503,8 @@ def build_index(records_root: Path | str) -> dict:
                                               e["receipt"]))
         row["replaced_by"].sort(key=lambda e: (str(e.get("committed_at") or ""),
                                                e["receipt"]))
+        row["retracted_by"].sort(key=lambda e: (str(e.get("committed_at") or ""),
+                                                e["receipt"]))
 
     cards: dict[str, dict] = {}
     for row in claims.values():
@@ -483,7 +537,8 @@ def _row(claims: dict, claim_id: str) -> dict:
     """One claim's accumulating row. Every field is filled by the caller."""
     return claims.setdefault(claim_id, {
         "id": claim_id, "owners": {}, "referenced_by": {}, "spans": {},
-        "written_by": [], "replaced_by": [], "removal_landed": False,
+        "written_by": [], "replaced_by": [], "retracted_by": [],
+        "removal_landed": False,
     })
 
 
@@ -495,70 +550,112 @@ def _verdict(row: dict, cards: dict, recorded, digest_now,
              digest_why) -> tuple[str, str]:
     """One claim's verdict and the sentence a person reads, by PRECEDENCE.
 
-    The facts are gathered by the caller and the ORDER is here, in one place,
-    because a precedence split across the branches that produce each fact is a
-    precedence nobody can read.
+    Every fact that holds is collected below with the sentence that explains it,
+    and the ORDER is applied once, at the end, from `PRECEDENCE`. The branches
+    used to return directly, which put the precedence in their sequence and left
+    `PRECEDENCE` a table nothing consulted — and a module that states a
+    precedence and applies a different one has two answers to the same question,
+    of which a reader can only see the table. `setdefault` keeps the FIRST
+    sentence found for a verdict, which is what the order between the two
+    `CONFLICT` branches already was.
+
+    Each branch is guarded by its own fact and none of them assumes the others
+    did not fire, which is what makes gathering them all safe. The one guard
+    that had to be made explicit is `STALE`'s: it is a statement about a
+    comparison that HAPPENED, so it now requires both sides of it to exist —
+    without that, collecting every fact would let a claim with no recorded
+    revision be reported as "the text no longer digests to what it was read
+    from", which is a sentence about a comparison nobody made.
     """
     owners = sorted(row["owners"])
+    found: dict[str, str] = {}
     if len(row["spans"]) > 1:
         where = ", ".join(
             f"`{manifest}` 位置 {low}–{high}" for _, manifest, low, high
             in sorted(row["spans"], key=repr))
-        return CONFLICT, (
+        found.setdefault(CONFLICT, (
             f"the record writes this id from more than one span ({where}), so "
             f"one id names two claims. A supersede, a conflict and a retraction "
-            f"all name an id, and none of them can be resolved through this one")
+            f"all name an id, and none of them can be resolved through this one"))
     if len(owners) > 1:
         # Reachable from a record the writer cannot make but a damaged one can
         # hold — two entries claiming ownership of one line. This is not the
         # same as "two spans": here both entries name one reading, so nothing in
         # the record says which card is the one the claim lives in.
-        return CONFLICT, (
+        found.setdefault(CONFLICT, (
             f"the record puts this id in {' and '.join(f'`{o}`' for o in owners)}, "
             f"so one id names two claims in two cards. There is no rule that "
-            f"decides which card a reader should be sent to")
+            f"decides which card a reader should be sent to"))
+    if row["retracted_by"]:
+        # Said before the supersede and before the source comparison, and the
+        # sentence says why: the withdrawal is done, and it is not a question
+        # the source can answer. Whether the line is still in the card is
+        # reported rather than assumed, and it is not a defect either way — the
+        # contract's §9 keeps "this was believed then" and "this may not be used
+        # now" as two facts, and a filter that enforced the second by hiding the
+        # line would be destroying the first.
+        was = cards.get(owners[0], {}).get("carried")
+        if was is None:
+            where = (f"Card `{owners[0]}` cannot be read, so whether the line is "
+                     f"still in it is not known here")
+        elif row["id"] in was:
+            where = (f"Card `{owners[0]}` still carries the line: that is the "
+                     f"audit history, not a defect — the claim was believed, and "
+                     f"it may not be used")
+        else:
+            where = (f"Card `{owners[0]}` no longer carries the line either, so "
+                     f"the claim is both withdrawn and gone from where it was put")
+        found.setdefault(RETRACTED, (
+            f"a reading withdrew this claim ({_by_text(row['retracted_by'])}). "
+            f"The withdrawal takes effect here and now and does not wait for any "
+            f"remote store: the contract's §6 is that the remote can be down and "
+            f"the withdrawn fact still must not come back. {where}"))
     if row["replaced_by"]:
         if row["removal_landed"]:
-            return SUPERSEDED, (
+            found.setdefault(SUPERSEDED, (
                 "a later reading named this claim as replaced and its line left "
-                "the card. Recalling it would put a replaced fact back into use")
-        return SUPERSEDED, (
-            f"a later reading named this claim as replaced and its line is STILL "
-            f"in `{owners[0]}`, reading as current — no write that commit "
-            f"carried found it. Nothing may recall it, and the card wants "
-            f"looking at")
+                "the card. Recalling it would put a replaced fact back into use"))
+        else:
+            found.setdefault(SUPERSEDED, (
+                f"a later reading named this claim as replaced and its line is "
+                f"STILL in `{owners[0]}`, reading as current — no write that "
+                f"commit carried found it. Nothing may recall it, and the card "
+                f"wants looking at"))
     carried = cards.get(owners[0], {}).get("carried")
     if carried is not None and row["id"] not in carried:
-        return MISSING, (
+        found.setdefault(MISSING, (
             f"`{owners[0]}` carries no line for this id and nothing in the "
             f"record accounts for its absence. The claim is not where it was "
-            f"put: a line removed by hand, or a write that did not happen")
+            f"put: a line removed by hand, or a write that did not happen"))
     if not recorded:
         # A reading whose `content_identity` is null is a reading that never
         # identified the text it read — the reader emits exactly that when a
         # capture has no messages file to digest. The line is where the writer
         # left it, and there is no revision to compare the source against, so
         # `STALE` would be a claim about a comparison that never happened.
-        return UNRESOLVED, (
+        found.setdefault(UNRESOLVED, (
             "the reading this claim was written from never identified the "
             "content it read — its `content_identity` is absent — so there is "
             "no recorded revision to compare this source against. Nothing was "
-            "compared, and nothing here says the text changed")
+            "compared, and nothing here says the text changed"))
     if digest_now is None:
-        return UNRESOLVED, (
+        found.setdefault(UNRESOLVED, (
             f"the span this claim was read from cannot be identified now: "
             f"{digest_why}. Nothing was compared, so this is not a statement "
-            f"that the text changed — it is the absence of one")
-    if digest_now != recorded:
-        return STALE, (
+            f"that the text changed — it is the absence of one"))
+    if recorded and digest_now is not None and digest_now != recorded:
+        found.setdefault(STALE, (
             f"the text at `{owners[0]}`'s source, positions "
             f"{sorted(row['spans'])[0][2]}–{sorted(row['spans'])[0][3]}, no longer "
             f"digests to what this claim was read from. The claim is about a "
             f"text that is not there any more; it has to be read again before "
-            f"anybody acts on it")
-    return CURRENT, (
-        "the span still digests to what it digested to, the card carries the "
-        "line, and no reading has replaced it")
+            f"anybody acts on it"))
+    if not found:
+        return CURRENT, (
+            "the span still digests to what it digested to, the card carries the "
+            "line, and no reading has replaced it")
+    verdict = min(found, key=PRECEDENCE.index)
+    return verdict, found[verdict]
 
 
 # --------------------------------------------------------------------------
@@ -642,16 +739,41 @@ def recall(records_root: Path | str, *, only: list[str] | None = None) -> dict:
                 "why": digest_why,
             },
             "withdrawal": row["replaced_by"] or None,
+            "retraction": row["retracted_by"] or None,
             "still_in_card": (None if carried is None else claim_id in carried),
             "card_changed_since": _card_changed_since(built, sorted(row["owners"])[0],
                                                       row),
         }
         rows.append({
             "source_revisions": {key: recorded} if key else {},
-            "verification": (EVIDENCED if verdict in (CURRENT, STALE, UNRESOLVED)
+            # RETRACTED is EVIDENCED and that is not a slip. `verification` is a
+            # statement about the claim's SUPPORT — whether the span it cites is
+            # one that still digests to what it digested to, and whether its line
+            # is where it was put. A withdrawal is a separate fact and the rule
+            # takes it as a separate input, which is what
+            # `daily_cycle.invalidate_claims`'s two branches say: an EVIDENCED
+            # claim that is `withdrawn` is not recallable, and a retracted claim
+            # whose source ALSO moved is not recallable for the source's reason
+            # and says so. Passing NOT_EVIDENCED here instead would make the
+            # rule's `withdrawn` branch unreachable — which is what it was
+            # before this change, for `SUPERSEDED` as well: every row that set
+            # `withdrawn` also cleared `verification`, so that input decided
+            # nothing and a reader was told the rule had been consulted when one
+            # of its two inputs was a constant.
+            "verification": (EVIDENCED
+                             if verdict in (CURRENT, STALE, UNRESOLVED, RETRACTED)
                              and per_claim[claim_id]["still_in_card"]
                              else NOT_EVIDENCED),
-            "withdrawn": verdict == SUPERSEDED,
+            # Read off the claim's own two facts and not off the label, for the
+            # reason the comment above gives: a verdict is what a reader is
+            # shown and `withdrawn` is what happened to the claim. They coincide
+            # for `SUPERSEDED` and `RETRACTED`, and they must not be made to
+            # coincide by construction — an id that is BOTH withdrawn and
+            # disputed is labelled `CONFLICT`, because that is the only label
+            # that sends a person to look, and the withdrawal still happened.
+            # Deriving this from the label would report that it did not.
+            "withdrawn": bool(per_claim[claim_id]["withdrawal"]
+                              or per_claim[claim_id]["retraction"]),
         })
 
     judged = _cycle.invalidate_claims(rows, current)
@@ -691,8 +813,14 @@ def recall(records_root: Path | str, *, only: list[str] | None = None) -> dict:
             "given": {
                 "revisions_compared": len(current),
                 "vocabulary": {"verification": [EVIDENCED, NOT_EVIDENCED],
-                               "withdrawn": "true only for a claim a later "
-                                            "reading named as replaced"},
+                               "withdrawn": "true for a claim a later reading "
+                                            "named as replaced and for a claim a "
+                                            "reading withdrew — the rule has one "
+                                            "input for both because both are "
+                                            "somebody having taken the claim out "
+                                            "of use, and the two are kept apart "
+                                            "in `withdrawal` and `retraction` on "
+                                            "each row"},
             },
         },
     }, RECALL_PRODUCED, "recall")
@@ -701,13 +829,30 @@ def recall(records_root: Path | str, *, only: list[str] | None = None) -> dict:
 def _orphan(claim_id: str, row: dict) -> dict:
     """A claim the record names in some way and no card owns."""
     views = sorted(row["referenced_by"])
-    if views:
+    if row["retracted_by"]:
+        # A withdrawal naming an id nothing ever wrote. It is reported as
+        # RETRACTED rather than MISSING and it is not an error: a reading may
+        # withdraw an id whose write this tree does not hold — an earlier
+        # receipt removed deliberately, or a claim never made — and the
+        # withdrawal holds either way. Nothing here may be recalled FROM, so
+        # the id must not be dropped from the answer for want of a card to hang
+        # it on.
+        verdict = RETRACTED
+        why = (f"{_by_text(row['retracted_by'])} withdrew this id and no receipt "
+               f"in this tree ever wrote it. Either the write that made the claim "
+               f"is missing from this tree or the withdrawal names an id that was "
+               f"never claimed, and the two look the same from here — but the "
+               f"withdrawal does not depend on which it is, so the id is "
+               f"withdrawn either way")
+    elif views:
+        verdict = MISSING
         why = (f"`{'`, `'.join(views)}` reference{'s' if len(views) == 1 else ''} "
                f"this id and no card owns it. A reference to a claim nothing "
                f"holds is a dangling reference: either the owning card's write "
                f"is missing from this tree or the reference was written by "
                f"mistake, and from here the two look the same")
     else:
+        verdict = MISSING
         why = (f"{len(row['replaced_by'])} reading(s) name this id as replaced "
                f"and no receipt in this tree ever wrote it. Either an earlier "
                f"commit's receipt is missing or the id was never claimed; the "
@@ -716,8 +861,8 @@ def _orphan(claim_id: str, row: dict) -> dict:
         "id": claim_id,
         "card": None,
         "span": {"manifest": None, "from_position": None, "to_position": None},
-        "verdict": MISSING,
-        "mark": MARK[MISSING],
+        "verdict": verdict,
+        "mark": MARK[verdict],
         "why": why,
         "source_revision": {
             "recorded": None,
@@ -726,9 +871,24 @@ def _orphan(claim_id: str, row: dict) -> dict:
                     "compare against"),
         },
         "withdrawal": row["replaced_by"] or None,
+        "retraction": row["retracted_by"] or None,
         "still_in_card": None,
         "card_changed_since": None,
     }
+
+
+def _by_text(entries: list[dict]) -> str:
+    """The readings that acted on one claim, as the sentence reads them.
+
+    A receipt's NAME is a hash of the proposal key and says nothing a person can
+    read, so the reading digest is printed beside it: two withdrawals of one
+    claim made from two readings are two files whose names differ and whose
+    contents can differ in everything that matters.
+    """
+    return "；".join(
+        f"`{entry['receipt']}`（{entry.get('committed_at') or '无时间'}，"
+        f"阅读 {_semantic._short(entry.get('reading_digest'))}）"
+        for entry in entries)
 
 
 def _card_changed_since(built: dict, card: str, row: dict) -> bool | None:
