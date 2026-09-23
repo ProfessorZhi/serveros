@@ -320,12 +320,13 @@ confirmed meeting note into Wiki.** Original Minutes remains the source.
 
 | Surface | Normal role | Not its responsibility |
 |---|---|---|
-| My Document Library | private working documents, understanding views, requirements, reports | raw execution archive or compulsory draft-to-Wiki staging |
-| Personal Knowledge, currently 个人笔记 | curated private methods and reusable knowledge | daily task ledger or migration scratch |
-| Published Knowledge, currently 公开文档 | reader-facing maintained guides for a broader audience | automatic Internet-public access |
-| External/shared documents | followed source or authorized maintenance target | content to take over or move for tidiness |
-| Drive | files, attachments, selected screenshots/traces and deliverables | authoritative personal Board |
-| IM / Minutes | original work information | approved business conclusions merely because it exists |
+| My Document Library | dynamic work surface: workbench, daily alignment, project docs, formal reports | raw source archive or long-term external mirror library |
+| 个人笔记 | curated long-term private knowledge | daily task ledger, reports, migration scratch |
+| 公开文档 | owned formal guides we maintain for broader readers | unrelated external source mirrors or automatic Internet-public access |
+| 外部文档 | stable FOLLOW_MIRROR / Source Library for external read-only sources | taking over source authority or storing externally-maintained canonical docs |
+| External/shared canonical documents | source or scoped maintenance target kept in original location | duplicated editable body in our own space |
+| Drive | Asset Plane: recordings, files, screenshots, PDFs/PPTX/XLSX/ZIP, E2E evidence and meeting sidecars | authoritative Board or mandatory Git-blob mirror |
+| IM / Minutes | original work information / source events | approved business conclusions merely because it exists |
 
 My Document Library uses the Wiki provider's my_library space and supports
 node/subpage organization; Drive uses file/folder organization. Product roles stay
@@ -1309,10 +1310,11 @@ My Document Library
   Inbox
   归档  (useful historical snapshots only)
 
-Personal Knowledge: curated topics; no operational scratch archive
-Published Knowledge: reader-oriented guides; no empty taxonomy scaffolding
+个人笔记: curated private long-term topics; no operational scratch archive
+公开文档: owned reader-facing formal guides; preserve per-document style profiles
+外部文档: read-only FOLLOW_MIRROR / Source Library grouped by Feishu source-space/person and network publisher
 Drive: 收件箱 / 工作资料 / 临时 / 归档
-  工作资料 / <Project> / 输入、会议、测试与 E2E、交付 as needed
+  工作资料 / <Project or 通用工作> / 输入、会议、测试与 E2E、交付 as needed
 ```
 
 An existing Item report bundle may contain its final report and supporting reports.
@@ -1571,3 +1573,43 @@ Revision Content Digest remains required for exact artifact/materialization matc
 Author/provenance and Device/runtime identity are separate authority domains. Device/principal/runtime observations belong to A4/A5 Runtime/Fleet and are joined into Card runtime projections; authors do not own devices merely because a historical registry schema nested them.
 
 Detailed semantics and compatibility migration are owned by ability-management [Ability Card & Registry Contract](https://github.com/ProfessorZhi/ability-management/blob/main/design/ABILITY-CARD-REGISTRY-CONTRACT.md). `serverosd` consumes only the small current registry/profile/runtime projection needed for low-latency resolution; it does not crawl GitHub/marketplaces, review licenses, clone candidates, run external evaluations, build packages or self-upgrade inside its resident tick.
+
+
+## Feishu information surfaces and three-surface continuity · 2026-09-24 addendum
+
+A live read-only Feishu CLI inventory on 2026-09-24 confirmed the current human surfaces:
+
+- My Document Library already contains workbench/alignment/project/report trees;
+- `个人笔记` is the curated private knowledge space;
+- the former `配置文档` stable space is now live as `公开文档` and contains the Chinese/English Codex guides;
+- `外部文档` already exists as private team space `7688789520019360968`; it currently has only a revision-1 default-template `首页`, so the space exists but the Source Library/FOLLOW_MIRROR integration is **not yet live**;
+- Drive already has `收件箱 / 工作资料 / 临时 / 归档` and real meeting/source assets.
+
+The final document relationships are:
+
+```text
+FOLLOW_MIRROR
+  external read-only source
+  -> original source stays authoritative
+  -> stable mirror in 外部文档
+  -> records/Git preserve source+mirror revisions
+
+EXTERNAL_MAINTAINED
+  shared/external canonical document that we help maintain
+  -> update original document in authorized scope
+  -> records/Git preserve revision/history
+  -> no second editable body in our own cloud
+
+OWNED
+  -> private knowledge: 个人笔记
+  -> formal broad-reader guides: 公开文档
+  -> formal work reports: My Document Library/汇报
+```
+
+Textual managed documents use **Feishu ↔ local hwz-records ↔ private GitHub** continuity. Local checkout and GitHub are two materializations of the same Records authority, not competing writers. Each logical body declares its actual body authority and sync/write policy; no general mtime-based three-master sync is allowed.
+
+Drive is the Asset Plane. Large/binary MP3, image, PDF, PPTX/XLSX, ZIP, installer, trace and similar bytes normally remain in Drive or controlled local archive; Records/Git preserve identity, relation, MIME/size, content hash, locator and retention. IM is already a three-surface capture path through Feishu IM → records → private GitHub and is not copied into 外部文档.
+
+Meeting recording, Miaoji/transcript, auto-minutes and attachments are a MeetingBundle over Drive/source objects. Raw/automatic meeting materials do not automatically enter MyDocs; only a useful curated human note may be created there. Remote-control support sessions treat unattributed/background audio as untrusted for business semantics.
+
+Detailed directory, style-profile, Records layout and B1/B8/B9 ownership are canonicalized in ability-management [Feishu Information Surfaces & Three-Surface Sync Architecture](https://github.com/ProfessorZhi/ability-management/blob/main/design/FEISHU-INFORMATION-SYNC-ARCHITECTURE.md).
