@@ -7220,6 +7220,190 @@ def cmd_work_understanding_patch(args) -> int:
     return EXIT_OK
 
 
+def _reading_current(semantic, report: dict, reading: dict) -> dict:
+    """What the span a reading is about measures at, now — from the reader's report.
+
+    Not recomputed here. The reader already decided which ranges each card is
+    behind on, and taking a second opinion about that would be a second reader of
+    one tree. A reading whose span the reader no longer proposes is refused by
+    name rather than measured against something else: the range is gone because
+    the card moved past it, and interpreting a span that is no longer the reason
+    to read anything is how a stale reading gets committed.
+    """
+    source = reading["source"]
+    card_row = next((card for card in report["cards"]
+                     if card.get("card") == source.get("card")), None)
+    if card_row is None:
+        raise semantic.Refused(
+            f"the reader reports no card at {source.get('card')!r}: the reading "
+            f"is about a card that is not in the understanding layer")
+    if "card_digest" not in card_row:
+        raise semantic.Refused(
+            f"{source.get('card')!r} carries no card digest, so the reading "
+            f"cannot be bound to the revision it read")
+    matching = [row for row in (card_row.get("judged") or {}).get("review_ranges", [])
+                if row.get("manifest") == source.get("manifest")
+                and row.get("from_position") == source.get("from_position")
+                and row.get("to_position") == source.get("to_position")]
+    if not matching:
+        proposed = ", ".join(
+            f"{row.get('manifest')} {row.get('from_position')}–"
+            f"{row.get('to_position')}"
+            for row in (card_row.get("judged") or {}).get("review_ranges", []))
+        raise semantic.Refused(
+            f"the reader no longer proposes {source.get('manifest')} "
+            f"{source.get('from_position')}–{source.get('to_position')} for "
+            f"{source.get('card')!r}"
+            + (f"; it now proposes {proposed}" if proposed else
+               "; it proposes no range for this card at all")
+            + ". Read the current proposal rather than applying an "
+              "interpretation of a span nothing is asking about")
+    row = matching[0]
+    return {"card_digest": card_row["card_digest"],
+            "content_identity": row.get("content_identity"),
+            "from_position": row.get("from_position"),
+            "to_position": row.get("to_position")}
+
+
+def cmd_work_understanding_semantic(args) -> int:
+    """§B2 — the semantic step: a native Agent's reading becomes understanding.
+
+    The three verbs are three different things and this is the third:
+
+      * `work understanding` reads no message body and says which cards a source
+        delta touches;
+      * `work understanding-patch` turns those ranges into a proposal a person
+        confirms, and edits nothing;
+      * this one takes a READING — what an authorised native Agent found when it
+        read the fixed-version material — and commits the part of it that may be
+        committed without a person, leaving the rest as candidates.
+
+    It cannot read a body itself, and that is deliberate rather than unfinished:
+    `--reading` is authored input in the same sense `--decisions` is, and the
+    absence of a model client here is what keeps the two from being the same
+    author. Three things gate the commit and none of them is a field the reading
+    writes: the source revision and understanding baseline it was made against,
+    the standing delegation `--delegation` supplies, and what each claim touches.
+
+    Without `--commit` nothing is written and you get the resolution. With it,
+    the write goes into each owning card's own fence — the prose around it is
+    preserved byte for byte — and a claim whose view could not be updated comes
+    back as PARTIAL rather than as a commit that finished.
+    """
+    paths = paths_mod.Paths()
+    records = Path(getattr(args, "records_root", "") or
+                   Path(paths.root("workspace")) / "records")
+    if not records.is_absolute():
+        sys.stderr.write(
+            f"serverosctl: --records-root must be absolute, got {records}. A "
+            f"reading validated against a card tree read relative to whatever "
+            f"directory the caller stood in is a commit nobody else can "
+            f"reproduce.\n")
+        return EXIT_FAULT
+    capture = _load_module_from(REPO_ROOT / "intake" / "capture_coverage.py",
+                               "serveros_intake_capture_coverage")
+    delta = _load_module_from(REPO_ROOT / "intake" / "understanding_delta.py",
+                              "serveros_intake_understanding_delta")
+    semantic = _load_module_from(
+        REPO_ROOT / "intake" / "understanding_semantic.py",
+        "serveros_intake_understanding_semantic")
+
+    delegation = None
+    if args.delegation:
+        try:
+            delegation = json.loads(Path(args.delegation).read_text(encoding="utf-8"))
+        except (OSError, ValueError) as exc:
+            sys.stderr.write(
+                f"serverosctl: cannot read --delegation {args.delegation}: {exc}. "
+                f"A grant that could not be read is not an absent one, and "
+                f"treating it as absent would silently turn every claim into a "
+                f"candidate.\n")
+            return EXIT_FAULT
+    if args.commit and not args.committed_at:
+        sys.stderr.write(
+            "serverosctl: --commit needs --committed-at. A receipt stamped from "
+            "this process's clock cannot be compared with one from another "
+            "machine, and the comparison is what makes a replay detectable.\n")
+        return EXIT_FAULT
+
+    try:
+        objects = capture.read_root(records)["objects"]
+        report = delta.read_and_reconcile(records, objects)
+        document = semantic.read_reading(args.reading)
+
+        def measure():
+            return _reading_current(semantic, report, document)
+    except (capture.Refused, delta.Refused, semantic.Refused) as exc:
+        sys.stderr.write(f"serverosctl: {exc}\n")
+        return EXIT_FAULT
+
+    if not args.commit:
+        try:
+            resolution = semantic.resolve(document, measure(), delegation)
+        except semantic.Refused as exc:
+            sys.stderr.write(f"serverosctl: {exc}\n")
+            return EXIT_FAULT
+        emit(resolution, as_json=args.json,
+             lines=semantic.render_resolution(resolution))
+        return EXIT_OK
+
+    try:
+        receipt = semantic.apply(args.reading, records, measure=measure,
+                                 delegation=delegation,
+                                 committed_at=args.committed_at)
+    except semantic.Refused as exc:
+        sys.stderr.write(f"serverosctl: {exc}\n")
+        return EXIT_FAULT
+    emit(receipt, as_json=args.json, lines=semantic.render_receipt(receipt))
+    return EXIT_OK
+
+
+def cmd_work_waterline(args) -> int:
+    """§B2/§6 — the two waterlines per source, with the gaps named.
+
+    `work understanding` answers, per CARD, which sources a card is behind on.
+    This answers, per SOURCE, how far the capture got and how far understanding
+    got, and it reports the two facts a per-card lag cannot carry: a hole in the
+    capture's own positions, and an extent that is where the collector stopped
+    rather than where the source ended.
+
+    任何中间 gap 都不能被最大位置掩盖 — so nothing here is a maximum. Both
+    waterlines are runs, `lag` is the set difference between them, and a source
+    whose every captured position is understood but which is missing positions
+    in the middle comes back GAPPED with an empty lag rather than UP_TO_DATE.
+    That is the answer a scalar implementation cannot produce, and it is the
+    reason this verb exists rather than a `lag` integer beside the card's.
+
+    It writes nothing. The raw half is already committed by the collectors and
+    the understanding half is what the cards say; a verb that wrote here would
+    be a second author for both.
+    """
+    paths = paths_mod.Paths()
+    records = Path(getattr(args, "records_root", "") or
+                   Path(paths.root("workspace")) / "records")
+    if not records.is_absolute():
+        sys.stderr.write(
+            f"serverosctl: --records-root must be absolute, got {records}. "
+            f"Positions measured against a tree read relative to whatever "
+            f"directory the caller stood in are positions nobody else can "
+            f"reproduce.\n")
+        return EXIT_FAULT
+    capture = _load_module_from(REPO_ROOT / "intake" / "capture_coverage.py",
+                               "serveros_intake_capture_coverage")
+    delta = _load_module_from(REPO_ROOT / "intake" / "understanding_delta.py",
+                              "serveros_intake_understanding_delta")
+    waterline = _load_module_from(REPO_ROOT / "intake" / "source_waterline.py",
+                                  "serveros_intake_source_waterline")
+    try:
+        objects = capture.read_root(records)["objects"]
+        document = waterline.waterlines(records, delta, objects)
+    except (capture.Refused, delta.Refused, waterline.Refused) as exc:
+        sys.stderr.write(f"serverosctl: {exc}\n")
+        return EXIT_FAULT
+    emit(document, as_json=args.json, lines=waterline.render(document))
+    return EXIT_OK
+
+
 # ---------------------------------------------------------------------------
 # network
 # ---------------------------------------------------------------------------
@@ -8683,6 +8867,44 @@ def build_parser() -> argparse.ArgumentParser:
                            help="recompute from the records and compare against "
                                 "this patch instead of building a new one")
     wk_upatch.set_defaults(func=cmd_work_understanding_patch)
+
+    wk_usem = work_sub.add_parser(
+        "understanding-semantic", help="§B2 — the semantic step: what an "
+                                       "authorised native Agent read becomes "
+                                       "committed understanding, or a question. "
+                                       "The reading is authored input; without "
+                                       "--commit nothing is written",
+        **_COMMON)
+    wk_usem.add_argument("--reading", type=Path, required=True,
+                         help="the reading an authorised native Agent produced "
+                              "(JSON). Read only: this verb cannot write one")
+    wk_usem.add_argument("--records-root", default="",
+                         help="the records checkout to read and, with --commit, "
+                              "to write into. Default: this node's workspace "
+                              "root + /records. Must be absolute")
+    wk_usem.add_argument("--delegation", type=Path, default=None,
+                         help="the standing grant that lets machine facts "
+                              "commit without a person (JSON: covers/until/"
+                              "granted_by/source). Read only, and absent means "
+                              "every claim is a candidate")
+    wk_usem.add_argument("--commit", action="store_true",
+                         help="write the claims that may be committed into "
+                              "their owning cards' own fence. Without this, "
+                              "nothing is written and the resolution is printed")
+    wk_usem.add_argument("--committed-at", default="",
+                         help="the time to stamp the receipt with, supplied by "
+                              "the caller. Required with --commit")
+    wk_usem.set_defaults(func=cmd_work_understanding_semantic)
+
+    wk_wl = work_sub.add_parser(
+        "waterline", help="§B2/§6 — the two waterlines per source: how far the "
+                          "capture got, how far understanding got, and the gaps "
+                          "between them. Reads only; writes nothing",
+        **_COMMON)
+    wk_wl.add_argument("--records-root", default="",
+                       help="the records checkout to read. Default: this node's "
+                            "workspace root + /records. Must be absolute")
+    wk_wl.set_defaults(func=cmd_work_waterline)
 
     workbench = sub.add_parser(
         "workbench",
