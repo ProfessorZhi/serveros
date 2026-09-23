@@ -35,6 +35,18 @@ THE CAPTURE
     is mechanical, so a test that reads it can still be checked against the
     original by digest. Nothing in it was written by hand.
 
+The capture is dated and the records root is alive. On 2026-09-23 the collector
+rewrote one manifest the capture had already read and added one the capture could
+not have — a document link under `feishu/chats/people/nature-hu/<chat>/links/`.
+The 65 manifests that were neither still read exactly as they did, which is the
+measurement that separates the two ways a re-run can differ. So the live-tree
+test compares per manifest and directionally rather than by summary total: a
+capture landing, or a manifest the collector re-verified, is the TREE advancing;
+a captured manifest reading differently without that is the READER moving. Only
+the second is a failure. Comparing totals makes the first look like the second,
+which is this module's neighbour's whole subject — a total standing in for the
+positions underneath it.
+
 The live-tree test does not assert the captured numbers against constants alone:
 it re-walks the real records root and asserts the report's denominator equals the
 number of `manifest.json` files that are actually there. A fixture that drifted
@@ -54,6 +66,10 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 CLI = REPO_ROOT / "runtime" / "cli.py"
 FIXTURE = Path(__file__).resolve().parent / "data" / "capture-coverage-live-2026-09-22.json"
 LIVE_RECORDS = Path("/data/home/vince/workspace/records")
+# The day the capture above was taken, from its own name. A manifest the
+# collector re-verified after this day is the tree advancing; one that reads
+# differently without that is the reader moving.
+CAPTURED_ON = "2026-09-22"
 
 
 def _load():
@@ -452,11 +468,182 @@ class TestTheCli:
 # the capture
 # --------------------------------------------------------------------------
 
+def _verified_on(entry: dict) -> str:
+    """The day the collector says it verified this manifest, or `""`.
+
+    `capture_coverage` copies the collector's own `verified.at` rather than
+    reading a clock, so this is the tree's date and not this run's. Both
+    spellings are in the tree — a bare day and a full timestamp — and only the
+    day is compared, which is the resolution the capture's own name has.
+    """
+    verified = (entry.get("coverage") or {}).get("verified") or {}
+    return str(verified.get("at") or "")[:10]
+
+
+def _trimmed(entry: dict) -> dict:
+    """One live object reduced the way the capture file was reduced.
+
+    The trim the capture documents, recovered by measurement rather than read
+    off a script: `coverage.components` flattened to `components` with the
+    `why` sentences dropped, `coverage.verified.state` to `verified`, and each
+    `capture_undeclared` entry to the field name it names. Applied to the live
+    tree it reproduces 65 of the 66 captured objects exactly; the 66th is one
+    the collector rewrote after the capture, and the test below separates that
+    from a reader that moved rather than counting it as either.
+    """
+    coverage = entry.get("coverage") or {}
+    components = {name: {"state": c.get("state"), "facts": c.get("facts")}
+                  for name, c in (coverage.get("components") or {}).items()}
+    return {
+        "path": entry["path"],
+        "role": entry["role"],
+        "shape": entry["shape"],
+        "capture": entry["capture"],
+        "capture_undeclared": [u["field"] for u in entry["capture_undeclared"]],
+        "components": components,
+        "verified": (coverage.get("verified") or {}).get("state"),
+    }
+
+
+CAPTURED_PATH = "feishu/chats/people/x/oc_x/manifest.json"
+
+
+def _captured_entry(msg_count: int) -> dict:
+    """One object as the capture file holds it — trimmed, `why` dropped."""
+    return {
+        "path": CAPTURED_PATH,
+        "role": "chat",
+        "shape": "chat_capture",
+        "capture": {"mode": "incremental"},
+        "capture_undeclared": ["mode"],
+        "components": {"messages": {"state": "COMPLETE",
+                                    "facts": {"msg_count": msg_count}}},
+        "verified": "RECORDED",
+    }
+
+
+def _live_entry(msg_count: int, verified_at: str) -> dict:
+    """The same object as the reader returns it — nested, with prose."""
+    return {
+        "path": CAPTURED_PATH,
+        "role": "chat",
+        "shape": "chat_capture",
+        "capture": {"mode": "incremental"},
+        "capture_undeclared": [{"field": "mode", "produced_by": "sync.mode",
+                                "why": "the collector did not record this"}],
+        "coverage": {
+            "components": {"messages": {"state": "COMPLETE",
+                                        "facts": {"msg_count": msg_count},
+                                        "why": []}},
+            "verified": {"state": "RECORDED", "at": verified_at, "why": ""},
+            "unstructured": {},
+        },
+        "identity": {"chat_id": "oc_x", "name": "X"},
+        "prev_content_sha256": None,
+    }
+
+
+def _disagreements(recorded: dict, live: dict) -> tuple[list, list, list]:
+    """Sort the ways a re-run can differ into the three that are not the same.
+
+    `gone` is material the capture read and this run does not. `moved` is a
+    reading that changed while the manifest's own record does NOT say the
+    collector re-wrote it after the capture — that is the reader having moved,
+    and it is the failure. `arrived` is material the capture could not have
+    seen. A reading that changed AND was re-verified is in none of the three:
+    it is the tree advancing, which is not a finding about this module.
+
+    Separated from the live-tree test below because the live tree can only show
+    whichever case it happens to be in, and today it shows only an advance. The
+    made-up manifests in `TestWhatCountsAsATreeThatMoved` are where the
+    discriminator is actually asked.
+    """
+    gone = sorted(set(recorded) - set(live))
+    # Only the paths BOTH sides hold can be compared: a path the capture read
+    # and this run does not is `gone`, and asking it for a reading is asking a
+    # dictionary for a key nobody put there.
+    both = sorted(set(recorded) & set(live))
+    changed = [p for p in both if _trimmed(live[p]) != recorded[p]]
+    moved = [p for p in changed if _verified_on(live[p]) <= CAPTURED_ON]
+    arrived = sorted(set(live) - set(recorded))
+    return gone, moved, arrived
+
+
+class TestWhatCountsAsATreeThatMoved:
+    """The three ways a re-run can differ, asked of manifests a test makes up.
+
+    The live tree is one sample and today it is an advancing one, so a
+    discriminator tested only against it would be a discriminator that has
+    never been asked a hard question. These are the hard ones.
+    """
+
+    def test_the_trim_pairs_the_captures_shape_with_the_readers(self):
+        """The comparison is only a comparison if both sides are the same object.
+
+        The capture file is the reader's output with the prose dropped and the
+        coverage nested one level shallower. If the trim did not invert exactly
+        that, every object would differ and the live-tree test would pass by
+        asserting `moved` over a set of 66 — that is, it would be red for a
+        reason that is not a finding.
+        """
+        assert _trimmed(_live_entry(38, "2026-09-20T10:00:00")) == \
+            _captured_entry(38)
+
+    def test_an_unchanged_manifest_is_in_no_category(self):
+        recorded = {CAPTURED_PATH: _captured_entry(38)}
+        live = {CAPTURED_PATH: _live_entry(38, "2026-09-14T09:00:00")}
+        assert _disagreements(recorded, live) == ([], [], [])
+
+    def test_a_manifest_the_collector_rewrote_is_neither_the_reader_nor_a_finding(self):
+        """The reader said 38 and now says 92 — because the TREE says it changed."""
+        recorded = {CAPTURED_PATH: _captured_entry(38)}
+        live = {CAPTURED_PATH: _live_entry(92, "2026-09-23T12:47:12")}
+        gone, moved, arrived = _disagreements(recorded, live)
+        assert (gone, moved, arrived) == ([], [], [])
+        # Not vacuous: the reading really did differ, and the trim shows it.
+        assert _trimmed(live[CAPTURED_PATH]) != recorded[CAPTURED_PATH]
+
+    def test_a_reading_that_changed_without_a_reverification_is_the_reader_moving(self):
+        recorded = {CAPTURED_PATH: _captured_entry(38)}
+        live = {CAPTURED_PATH: _live_entry(92, "2026-09-14T09:00:00")}
+        assert _disagreements(recorded, live) == ([], [CAPTURED_PATH], [])
+
+    def test_the_day_of_the_capture_does_not_count_as_after_it(self):
+        """`<=` and not `<`: a manifest verified ON the capture day is not evidence
+        of anything the capture could not have seen, so it stays a finding."""
+        recorded = {CAPTURED_PATH: _captured_entry(38)}
+        live = {CAPTURED_PATH: _live_entry(92, CAPTURED_ON + "T23:59:59")}
+        assert _disagreements(recorded, live) == ([], [CAPTURED_PATH], [])
+
+    def test_a_missing_verified_date_is_a_finding_and_not_a_pass(self):
+        """A manifest whose own record cannot say when it was verified is exactly
+        the case where this module must not assume the tree moved."""
+        recorded = {CAPTURED_PATH: _captured_entry(38)}
+        live = {CAPTURED_PATH: _live_entry(92, "")}
+        assert _disagreements(recorded, live) == ([], [CAPTURED_PATH], [])
+
+    def test_a_manifest_the_capture_read_and_this_run_does_not_is_gone(self):
+        recorded = {CAPTURED_PATH: _captured_entry(38)}
+        assert _disagreements(recorded, {}) == ([CAPTURED_PATH], [], [])
+
+    def test_a_manifest_the_capture_could_not_have_seen_has_arrived(self):
+        live = {CAPTURED_PATH: _live_entry(38, "2026-09-23T12:47:12")}
+        assert _disagreements({}, live) == ([], [], [CAPTURED_PATH])
+
+
 @pytest.mark.skipif(not FIXTURE.exists(), reason="no capture recorded")
 class TestAgainstTheRecordedCapture:
-    """The numbers a re-run must still produce, and the two that are findings."""
+    """What the 2026-09-22 capture reads, and what a re-run must still say."""
 
     def test_the_recorded_totals(self):
+        """The captured numbers, as the shipped file's own record.
+
+        These pin the FILE, not the reader's current output: the capture is
+        what was read on 2026-09-22, and a total here changing means the
+        shipped artifact was edited rather than that the reader moved. Whether
+        the reader still produces these numbers of the manifests is a different
+        question and is asked per manifest, below.
+        """
         captured = json.loads(FIXTURE.read_text(encoding="utf-8"))["summary"]
         assert captured["denominator"] == 66
         assert captured["by_shape"] == {"chat_capture": 47, "document_capture": 19}
@@ -468,12 +655,44 @@ class TestAgainstTheRecordedCapture:
         assert captured["capture_undeclared"] == {"mode": 37}
         assert captured["verified"] == {"RECORDED": 61, "NOT_RECORDED": 5}
 
-    def test_the_live_tree_still_produces_them(self):
+    def test_the_live_tree_still_produces_what_the_capture_recorded(self):
+        """Each captured manifest reads the same, unless the tree says it changed.
+
+        Per manifest rather than by total, because the tree is alive: since
+        2026-09-22 it gained one capture and the collector rewrote one manifest
+        it had already written. A total comparison makes both of those look
+        like the reader having moved, which is the scalar mistake this module's
+        neighbour exists to stop — a total standing in for the positions under
+        it. Three things are asked separately instead:
+
+          * nothing the capture read has gone;
+          * nothing reads differently WITHOUT the manifest's own record saying
+            it was re-verified after the capture — `coverage.verified.at` is
+            the collector's date, so a changed reading whose manifest was not
+            re-verified is the READER moving, and that is the failure;
+          * the denominator grew by exactly the manifests that are new, so a
+            shrink cannot hide behind an arrival.
+        """
         if not LIVE_RECORDS.is_dir():
             pytest.skip("this node's records checkout is not here")
         report = cc.read_root(LIVE_RECORDS)
-        captured = json.loads(FIXTURE.read_text(encoding="utf-8"))["summary"]
-        assert report["summary"] == captured
+        captured = json.loads(FIXTURE.read_text(encoding="utf-8"))
+        recorded = {o["path"]: o for o in captured["objects"]}
+        live = {o["path"]: o for o in report["objects"]}
+
+        gone, moved, arrived = _disagreements(recorded, live)
+        assert gone == [], (
+            f"the capture read these and this run does not: {gone}. A manifest "
+            f"that disappeared is a finding about the tree, not a re-reading")
+        assert moved == [], (
+            f"these read differently and their own record does not say the "
+            f"collector rewrote them after the capture ({CAPTURED_ON}), so what "
+            f"moved is the reader, not the tree: {moved}")
+
+        assert report["summary"]["denominator"] == len(recorded) + len(arrived)
+        assert (report["summary"]["denominator"]
+                >= captured["summary"]["denominator"]), (
+            "the tree cannot hold fewer manifests than the capture read from it")
 
     def test_the_denominator_equals_the_files_that_are_on_disk(self):
         if not LIVE_RECORDS.is_dir():
