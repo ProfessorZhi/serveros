@@ -7381,6 +7381,44 @@ def cmd_work_understanding_semantic(args) -> int:
     return EXIT_OK
 
 
+def cmd_work_claim_recall(args) -> int:
+    """A2 — what may still be recalled, and for the rest, why not.
+
+    The verb answers one question about the understanding layer: given what the
+    durable record says was written and what the sources say now, may this claim
+    still be used as current? It writes nothing — `intake/claim_recall.py` has no
+    write path at all — and it consults no provider, which the output states
+    rather than implies.
+
+    It exits 0 on any answer it could produce, including an answer that a person
+    has work to do. An exit code that conflated "I answered" with "the answer was
+    unpleasant" would make `CURRENT` and `STALE` indistinguishable to a shell,
+    and `STALE` is the ordinary consequence of somebody editing a source. The
+    answer is in `counts` and in each claim's `recallable`; a caller that wants a
+    gate reads `--json`.
+    """
+    paths = paths_mod.Paths()
+    records = Path(getattr(args, "records_root", "") or
+                   Path(paths.root("workspace")) / "records")
+    if not records.is_absolute():
+        sys.stderr.write(
+            f"serverosctl: --records-root must be absolute, got {records}. An "
+            f"index built from a tree read relative to whatever directory the "
+            f"caller stood in is one nobody else can rebuild, and the receipts "
+            f"it finds would be whichever ones happened to be under that "
+            f"directory.\n")
+        return EXIT_FAULT
+    recall_mod = _load_module_from(REPO_ROOT / "intake" / "claim_recall.py",
+                                   "serveros_intake_claim_recall")
+    try:
+        document = recall_mod.recall(records, only=list(args.claim or []))
+    except recall_mod.Refused as exc:
+        sys.stderr.write(f"serverosctl: {exc}\n")
+        return EXIT_FAULT
+    emit(document, as_json=args.json, lines=recall_mod.render_recall(document))
+    return EXIT_OK
+
+
 def cmd_work_waterline(args) -> int:
     """§B2/§6 — the two waterlines per source, with the gaps named.
 
@@ -8925,6 +8963,25 @@ def build_parser() -> argparse.ArgumentParser:
                          help="the time to stamp the receipt with, supplied by "
                               "the caller. Required with --commit")
     wk_usem.set_defaults(func=cmd_work_understanding_semantic)
+
+    wk_recall = work_sub.add_parser(
+        "claim-recall", help="§A2 — whether a committed claim may still be "
+                             "recalled as current: the source revision it was "
+                             "read from, the durable record of what replaced "
+                             "it, and the card the line is in. Reads only, "
+                             "consults no provider, writes nothing",
+        **_COMMON)
+    wk_recall.add_argument("--records-root", default="",
+                           help="the records checkout to read. Default: this "
+                                "node's workspace root + /records. Must be "
+                                "absolute")
+    wk_recall.add_argument("--claim", action="append", default=[],
+                           help="restrict the report to this claim id. Repeatable. "
+                                "The index is NOT restricted: an id no receipt "
+                                "names is refused rather than reported, because "
+                                "a claim the record never held is not a claim "
+                                "that was withdrawn")
+    wk_recall.set_defaults(func=cmd_work_claim_recall)
 
     wk_wl = work_sub.add_parser(
         "waterline", help="§B2/§6 — the two waterlines per source: how far the "
