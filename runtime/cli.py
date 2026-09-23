@@ -7285,10 +7285,21 @@ def cmd_work_understanding_semantic(args) -> int:
     writes: the source revision and understanding baseline it was made against,
     the standing delegation `--delegation` supplies, and what each claim touches.
 
+    `--accepted` is the fourth thing and the only one a PERSON writes: what a
+    human said yes to, identified down to both digests and the reading's own
+    digest. It is what makes `user_confirmed` reachable at all — without it a
+    claim touching a major change is prepared and never committed — and it is
+    also why a confirmation cannot be inherited: an acceptance made about this
+    span at the text that was there before somebody edited the card matches
+    nothing, and the resolution says so instead of quietly doing nothing.
+
     Without `--commit` nothing is written and you get the resolution. With it,
     the write goes into each owning card's own fence — the prose around it is
     preserved byte for byte — and a claim whose view could not be updated comes
-    back as PARTIAL rather than as a commit that finished.
+    back as PARTIAL rather than as a commit that finished. A commit whose every
+    claim still awaits a person writes nothing and leaves no receipt: the
+    proposal stays open, which is what lets the acceptance arriving afterwards be
+    the thing that commits it.
     """
     paths = paths_mod.Paths()
     records = Path(getattr(args, "records_root", "") or
@@ -7319,6 +7330,17 @@ def cmd_work_understanding_semantic(args) -> int:
                 f"treating it as absent would silently turn every claim into a "
                 f"candidate.\n")
             return EXIT_FAULT
+    accepted = None
+    if args.accepted:
+        try:
+            accepted = semantic.read_acceptances(args.accepted)
+        except (OSError, semantic.Refused) as exc:
+            sys.stderr.write(
+                f"serverosctl: cannot read --accepted {args.accepted}: {exc}. A "
+                f"confirmation that could not be read is not an absent one, and "
+                f"treating it as absent would either drop a person's decision "
+                f"silently or commit the claims it names as the machine's own.\n")
+            return EXIT_FAULT
     if args.commit and not args.committed_at:
         sys.stderr.write(
             "serverosctl: --commit needs --committed-at. A receipt stamped from "
@@ -7339,7 +7361,8 @@ def cmd_work_understanding_semantic(args) -> int:
 
     if not args.commit:
         try:
-            resolution = semantic.resolve(document, measure(), delegation)
+            resolution = semantic.resolve(document, measure(), delegation,
+                                          accepted)
         except semantic.Refused as exc:
             sys.stderr.write(f"serverosctl: {exc}\n")
             return EXIT_FAULT
@@ -7349,7 +7372,7 @@ def cmd_work_understanding_semantic(args) -> int:
 
     try:
         receipt = semantic.apply(args.reading, records, measure=measure,
-                                 delegation=delegation,
+                                 delegation=delegation, accepted=accepted,
                                  committed_at=args.committed_at)
     except semantic.Refused as exc:
         sys.stderr.write(f"serverosctl: {exc}\n")
@@ -8887,6 +8910,13 @@ def build_parser() -> argparse.ArgumentParser:
                               "commit without a person (JSON: covers/until/"
                               "granted_by/source). Read only, and absent means "
                               "every claim is a candidate")
+    wk_usem.add_argument("--accepted", type=Path, default=None,
+                         help="what a person accepted about this proposal "
+                              "(JSONL: card/manifest/from_position/to_position/"
+                              "card_digest/content_identity/reading_digest/"
+                              "claims/by/at). Read only: this verb has no way to "
+                              "write one. An acceptance made about this span at "
+                              "another revision matches nothing and is reported")
     wk_usem.add_argument("--commit", action="store_true",
                          help="write the claims that may be committed into "
                               "their owning cards' own fence. Without this, "
