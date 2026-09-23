@@ -1,185 +1,101 @@
-# Priority-contact Deep Archive · 项目对接人的完整工作资料闭包
+# 重点联系人深归档：声明范围、转发闭包与可证明覆盖
 
-状态：2026-09-23 用户确认的产品策略；本文件定义 ServerOS/B1 如何解释“项目对接人深归档”。它不会自动执行历史回填，也不会把所有群聊/附件都扩大为可读、可外发或公开资料。当前实现与数据差距来自只读 GitHub 检查，真正 materialization 仍需后续 B1 实施与授权运行。
+状态：2026-09-23整合修订。对应B1和SOURCE-DOCUMENT-CONTRACT，不执行回填、不改变任何原始消息/权限/配置。一般工作来源仍SHALLOW；用户确认的关键对接来源长期DEEP_REQUIRED，包含实际转发进来的材料。执行见CC-EXECUTION-PLAN P1/P2/P3/P11。
 
-## 1. 为什么需要一层明确的 DEEP_REQUIRED
+## 1. 已接受的范围
 
-默认 SHALLOW 对一般工作沟通合理：保存消息、版本、线程和附件/链接 locator，按任务需要取具体材料。但项目对接人的聊天往往本身就是需求、验收、截图、SOP、转发上下文和决策的长期来源。
+当前用户明确的种子联系人为Bruce.Xu、Nature.Hu、Zhengji.Zhang；名字仅作导航，resolver从已有可信人员/会话记录关联稳定identity/chat_id。不能把Zhengji与Zhang误拆为两个联系人，不能把一个显示名下所有同名人自动纳入。
 
-用户明确要求 Bruce.Xu、Nature.Hu、Zhengji.Zhang 等项目对接人的聊天记录深归档，并包含他们**转发消息里的文件/图片等材料**。这不是“每次碰到附件再判断”的临时取证，而是这些来源的长期捕获策略。
+明确对应的p2p会话为DEEP_REQUIRED；指定项目小群可同样登记。大型部门群仍默认SHALLOW，不能因其中含priority联系人而整群深抓。新增对接人/项目群由用户或已有明确委托接受，模型推测的关系只产生候选。
 
-因此 B1 需要三种稳定 capture policy：
+策略顺序：检查真实授权/deny边界→明确source规则→已确认对接关系/指定channel→普通来源默认。更具体规则不能绕过上级deny；机器人要转成可捕获source需真实重新分类，不用“priority=true”忽略黑名单。现有自聊和真人Tokyo群KEEP例外保留。
 
-- **NONE**：明确 bot/app/test 黑名单；只登记身份/理由，不读正文。
-- **SHALLOW**：一般真人工作来源默认；消息正文+版本/thread+材料 locator。
-- **DEEP_REQUIRED**：用户指定或项目关系确认的关键对接来源；消息和规定的第一层材料闭包必须持续物化。
+## 2. 捕获深度与历史范围独立
 
-DEEP_REQUIRED 是采集政策，不是工作授权、发布授权或“所有内容都送入模型”的许可。
+NONE：只保存必要排除身份/类型/理由，不取正文凑计数。
+SHALLOW：消息合规文本、版本、thread、材料locator和manifest。
+DEEP_REQUIRED：在已声明时间/对象范围内，把消息材料闭包作为必须完成的采集义务。
 
-## 2. 谁进入优先联系人策略
+旧任务级DEEP保持“为此次任务选择材料”的含义，不自动变长期策略。持久policy与实际物化coverage分开；新schema不能只加字段无人消费。
 
-策略以稳定 source identity/关系为准，显示名只用于人读。当前用户确认的种子例子包括 Bruce.Xu、Nature.Hu、Zhengji.Zhang；实现时从现有 Feishu manifest/people/project 关系解析实际 open_id/chat_id，不把名字硬编码进同步逻辑。
+历史范围以start/end或已有可访问起点、回填cursor、增量cutoff和预算说明。用户希望关键聊天完整，意味着未完成的历史应被显示并逐批续填，不是无界扫描所有账号/群。实时增量先安全保存，后台历史回填不能饿死新消息。结果必须写“在范围X、所见版本Y、截至T的覆盖”，禁止没有分母的“所有历史完整”。
 
-优先级来源：
+## 3. 转发内容与文件究竟如何闭合
 
-1. 用户明确指定“这个人/这个会话必须完整留存”；
-2. 某项目的主要需求/验收/运营对接人被正式记录为 priority counterpart；
-3. 明确的项目小群被登记为 authoritative working channel。
+目标集合：消息事件/编辑/撤回/thread、直接image/file/audio/video、post内嵌媒体、被消息直接引用的第一层doc/wiki/web，以及转发bundle可见内容与其中实际材料。
 
-默认作用域：
+**转发的内部结构与外部链接是两种扩展。** 同一已获准转发包里的可解析子消息、子转发/附件属于被转发内容，在depth/node/byte/time上限内遍历并去环；不能借“只取第一层”漏掉包内文件。第一层限制用于跳出消息访问的网页/文档引用，不授权递归抓其全部出链。
 
-- **与 priority counterpart 的 p2p 私聊：DEEP_REQUIRED**。
-- **明确登记的项目小群：DEEP_REQUIRED**，例如已知项目对接小组。
-- **大型通用群/部门群：仍 SHALLOW**；某关键联系人在群里不自动触发整群 deep。
-- **bot/app/test：继续 NONE**，除非用户明确将该具体会话重新分类为 source。
+只获取被转发进当前会话的内容，绝不因此查询原群全历史或切换更高权限身份。Provider仅暴露扁平文本、子消息不可访问、token缺失、结构不支持或遍历达到上限时记录discovery gap与原因；不能把“没解析出材料”当“没有材料”。原API的真实可用行为需版本/样本验证，本设计不发明合并转发读取命令。
 
-关系变化不会自动删除历史。某人不再是项目对接人时，新消息可降为 SHALLOW，但已有深归档按合法 retention 保留。
+保留转发者、parent_forward、可见原作者/原时间/顺序与位置路径。拿不到原ID就弱关联，不猜造；转发中某人说的话不能记成当前对接人直接声明。相同嵌套消息被两次转发时内容可复用，但两条发现/转发关系分别保留。
 
-## 3. “深归档”不是 files/ 目录存在，而是消息材料闭包
+## 4. Material N:M身份
 
-一个 DEEP_REQUIRED chat 的目标闭包：
+消息可以N个材料，一个文件可以被多个消息引用。不能以message_id→one file作为完整索引。material identity按tenant/provider object/实际版本构造，token不是跨租户普遍唯一或永不过期的保证。
 
-```text
-消息事件 / 编辑 / 撤回 / thread
-  + 直接附件
-      image / file / media / audio / video
-      post 内嵌图片
-  + 消息引用的第一层 doc/wiki/link snapshot
-  + merge_forward / forwarded bundle
-      原转发边界
-      可见的原发送者/时间/文本
-      转发项里可解析的第一层附件/图片/文件
-      转发项里可解析的第一层文档链接
-```
+材料记录关联source_message/revision、part/位置路径、parent_forward、原locator、kind/name/size（可空）、发现方法/coverage、fetch状态、protected locator、实际字节hash、时间、权限与retention。声明size与实际bytes区分；文件扩展名不证明媒体类型。
 
-**转发只扩展用户实际转发进当前会话的内容和材料，不递归抓取原始会话的全部历史。** 若转发消息中只给扁平文本、API没有暴露嵌套 file token，就保留已看见的 forward 内容和 provenance，并把材料标为 unresolved；不能声称完整，也不能为补齐而扫描另一个未授权聊天。
+同域合法去重复用下载字节，不抹来源；跨ACL不借hash命中透露或给出别人文件。已有files.by_message为legacy导航，migration必须保留messages、backfilled列表和所有已落地材料，旧键冲突不丢“败者”。旧consumer只能处理单项时准确标不完整，不静默选最后一个文件。
 
-文档链接默认展开其被引用的当前正文/必要媒体一层；文档内部继续链接到更多页面不递归全站抓取，除非该链接本身被 Follow/任务明确选中。
+## 5. 四个覆盖面，不以文件数自证
 
-## 4. 材料身份必须按 material，不按 message 单键
+1. message coverage：哪些页/时间/版本已取得，中间有哪些gap。
+2. discovery coverage：这些消息/转发/post/链接结构是否都被支持的解析器检查；unknown是缺口。
+3. material coverage：已发现的required材料哪些取得、哪些失败/未取/无权限/已失效。
+4. understanding coverage：哪些文字/图片/文件真的被语义消费，哪些Claim仍依赖未读材料。
 
-当前历史 manifest 的 `files.by_message` 以 message_id 为键，一条消息多个附件会撞键。深归档不能继续把它当完整索引。
+只有声明范围内消息覆盖和发现都完整、required材料全部当前版本落地，才能表示该范围内容COMPLETE。发现0材料且解析失败不能0/0=100%；实际目录有65文件也不能证明required集合被穷尽。权限拒绝可以结束一次尝试，但保存覆盖仍PARTIAL。
 
-逻辑材料记录至少需要：
+允许单独表达TRANSFER_VERIFIED/SHALLOW_ONLY/PARTIAL/STALE等人读含义，代码沿现有正交状态扩展，不给业务Item加归档pipeline枚举。当前内容变化后旧完整度属于旧版本，不能继续显示fresh COMPLETE。
 
-- material identity：provider token 或稳定派生 ID；
-- source_message_id；
-- source_part：direct / post-embedded / forwarded；
-- parent_forward_id（如适用）；
-- kind / media type / display name；
-- discovered_at / source revision；
-- fetch status；
-- local/protected locator；
-- bytes/hash（实际取得后）；
-- error/permission state；
-- retention/data class；
-- derived consumers。
+## 6. 消息先存、材料续取、理解差量重试
 
-同一 message 可以有 N 个 material。兼容期可保留旧 `by_message`，但它只能是派生导航，不再作为 completeness authority。
+B1消息/manifest原子或可恢复提交后推进capture；材料discovery与下载按有界队列继续，分别留intent/receipt。B2可先读文字，但有关未取得截图/SOP/forward文件的结论要partial/待核。材料到达只唤醒受影响Claim，不全库重算。
 
-## 5. 深归档完成度必须可计算
+一份大文件/权限失败不阻止其他聊天；retry按错误类别、deadline/总预算，未知下载效果先核已存hash，不无限重新下载。下载文件先临时写/校验/原子落位，失败不留下0字节成功文件。URL过期在同scope合法重新解析，不能扩大原会话范围。
 
-不要用自由文本 `files.pending: "无附件待展开"` 单独宣称 complete。完整度来自发现集和物化集：
+已发生源编辑/撤回保留原事件关系；当前可读/可传播按最新权限与retention控制。普通业务修改不可改历史事实，合法泄密清理/删除需求也不能被“append-only永远不删”阻止；须走原始资料owner的可审计流程。
 
-```text
-message coverage
-+ links discovered / materialized
-+ direct materials discovered / materialized
-+ forwarded materials discovered / materialized
-+ unresolved / inaccessible / source-gone
-```
+## 7. 当前迁移依据的正确口径
 
-人读可显示：
+此前在hwz-records@2e61200的只读检查记下：Zhengji有大量已落地图片/链接并含forward；Bruce有3张图在目录中而manifest仍说待下载；Nature消息含forward/post媒体但无相应coverage。
 
-- COMPLETE：政策要求的材料都已物化、版本和来源关系完整；
-- PARTIAL：正文已捕获，但仍有 required material 未取得/权限不足/无法解析；
-- SHALLOW_ONLY：只有消息与 locator；
-- STALE_COVERAGE：后续新消息/编辑产生新的材料，旧 deep snapshot 不再覆盖当前 source revision。
+它们是**历史候选测试素材**，不是本轮新测量：
 
-“扫描完成但权限拒绝”是 attempt 完成，不是 content COMPLETE。
+- Bruce先验证真实消息关联、文件可读与hash，若一致只修stale索引，不重下载。
+- Nature先发现可解析/不可解析范围，再按权限补真正缺失材料；不能先承诺Provider一定能拿nested token。
+- Zhengji是丰富已有样本，不自动冠以COMPLETE。新discovery若发现unsupported或隐藏缺口，准确降为partial并补证据；不为维持旧表绿色忽略缺口。
 
-## 6. Capture、materialization、understanding 三件事分开
+本轮未回填、未下载、未检查二进制；不回写manifest成功字段。
 
-B1 原始消息/manifest 安全提交后可以推进 capture watermark；DEEP_REQUIRED 的文件下载/链接展开可以随后继续，并在 material coverage 上显示 partial。B2可以先理解纯文本，但涉及未取得的截图/SOP/转发文件时，对应 Claim/范围保持 PARTIAL，材料落地后再补理解。
+## 8. 本地、Git和飞书边界
 
-因此不允许两种错误：
+记录总入口为information/raw/feishu现有布局；新desired source policy走information/sources目标声明/旧watchlist适配。大媒体/敏感字节放已有受保护非Gitarchive root，通过manifest locator关联；不能为设计整齐立即移动有消费者的旧资料。
 
-- 等全部附件下载完才保存新消息，导致原始事件也丢；
-- 文本先处理就把含未读附件的消息标成“完整理解”。
+已有private-repo归档许可保留在原scope，但新增材料仍核实际受众、敏感性与保存/传播许可。文本redaction不证明图片没秘密；credential不得进raw/Git/Prompt/公开卡。metadata有敏感身份时也应最小化/受保护。
 
-Daily Work Cycle 应优先处理 priority contacts 的新材料闭包，但一个大文件/权限失败不会冻结无关消息和项目。
+深归档不是上传云盘/公共知识库、模型全量外发或生成项目代码的许可。文件被后续真正用于需求/参考/指南时，由相应B1/B5/B9/Space按用途复用安全对象，不在每个项目重复复制相同原文。
 
-## 7. 当前数据反查：为什么这不是理论需求
+## 9. 与Follow及外部参考的关系
 
-2026-09-23 对 hwz-records@2e61200 只读检查：
+聊天引用同一doc与用户单独Follow该doc时保留一份source身份/版本快照及多个discovery来源。该doc持续Follow是独立已接受策略，不因曾深归档一次就无限轮询整个库。外部网页默认第一层抓取，自己的飞书参考卡为独立衍生对象。
 
-- **Zhengji.Zhang p2p** 已成为参考样板：消息、10个展开链接、65个附件落地，manifest 的 required pending 为无；其中有 `merge_forward` 形态的图片，证明转发材料确实会成为工作证据。
-- **Bruce.Xu p2p** 有20条消息和3张图片，实际 `files/` 已存在3张图片，但 manifest 仍写“3张图片未下载”。这说明“文件存在”和“manifest completeness”已经漂移，必须由可计算 material inventory 解决。
-- **Nature.Hu p2p** 有38条消息，包含至少1条 `merge_forward` 和1条带图片的 post；当前目录只有 `messages.jsonl + manifest.json`，manifest 没有 files/links coverage。这是 priority DEEP policy 尚未落实的直接例子。
-- **Zhengji/Bruce/Vince 项目小群** 已有历史深归档（链接与图片都落地），说明项目小群可以按显式关系而非“所有群”升级 deep。
+材料landing、source edit、permission/retraction分别产生精确delta；B2语义writer、A2失效、B9Reference刷新各自消费。仅写一份pending JSON但没真实worker/consumer，只能标待实施，不说后台已排队。
 
-这些是历史 Git revision 的观察，不代表本轮已经补齐 Bruce/Nature，也不授权现在去下载新附件。
+## 10. 必须验证
 
-## 8. 转发消息的 provenance 和安全
-
-merge_forward/forwarded bundle 要保留“这是某人转发来的”，不能把嵌套发言错归为当前直接联系人。能取得的原作者、原时间、顺序和嵌套层级保留；拿不到稳定原 message ID 时明确弱 provenance。
-
-转发中的 secret、账号、截图等继续按 raw 私有政策处理：
-
-- 消息正文按既有 redaction；
-- 原始二进制只放获准的 private raw/evidence 范围；
-- 不把敏感截图自动发给 Jev/Serper/外部模型；
-- 不因归档完整就自动上传到 Published Knowledge 或 Drive；
-- 参考/报告只引用安全 locator/摘要，不重抄凭据。
-
-深归档扩大的是**保存完整性**，不是数据外发范围。
-
-## 9. 自动执行与预算
-
-Priority DEEP 不应每小时全量重扫历史。推荐：
-
-1. 增量拉新/编辑消息；
-2. 从新/变更消息生成 material discovery；
-3. 有界 worker 物化 direct/forwarded/link material；
-4. 对失败材料按 provider/error 分类有限重试；
-5. 大文件、费用、权限或安全边界超出当前 policy 时保持 PARTIAL 并等待相应授权；
-6. material landing 触发受影响 B2 understanding retry，而不是全库重算。
-
-下载预算按 bytes/files/request/time 计入 B1 子预算。相同 provider token/hash 在同一授权范围可复用字节，但每个 source-message 关系都要保留。
-
-## 10. 迁移现有资料
-
-不能因为新政策是 DEEP_REQUIRED 就重新下载全部已落地资料。实施先做 inventory/reconcile：
-
-- 从 messages 发现期望 direct/post/forward material；
-- 从 links/files 实际目录和 manifest 找已落地 material；
-- 对照 provider token/hash；
-- 修 stale manifest/索引；
-- 只下载真正缺失且当前仍允许获取的材料；
-- 不覆盖已验证原字节，不删除历史唯一副本。
-
-Bruce 的 3 张图片属于“字节已在、manifest待纠正”的例子；Nature 属于“需要 discovery + materialization”的例子；Zhengji 用来做回归基线，不能重抓一遍来证明新代码。
-
-## 11. 与 records、飞书文档和 GitHub 的边界
-
-项目对接人聊天归 `hwz-records/information/raw/feishu/chats/**`；其产生的结构化认识归 `information/understanding/**`。这不等于把聊天附件变成项目代码或我们自己的知识正文。
-
-- 外部/他人飞书文档：原对象是 authority，本地保存获准 snapshot/关系；
-- 聊天转发来的文件：先作为 raw material 归档，后续是否进入项目输入/Drive由用途和授权决定；
-- 我们自己的指南：仍由 B9 在正确飞书/Git authority维护；
-- GitHub 只保存符合 private-repo/raw policy 的内容和 metadata；大媒体/高敏感材料按既有 externalization/retention 规则，不用 Git 作为唯一大文件仓。
-
-## 12. 验收矩阵
-
-| 场景 | 必须满足 |
+| 场景 | 断言 |
 |---|---|
-| priority p2p 新图片 | 消息先落盘；图片随后落地；最终 COMPLETE，B2可补理解 |
-| priority p2p merge_forward 带文件 | forward边界/原作者时间保留，嵌套file material可单独追踪/落地 |
-| forward API不暴露附件token | 保存可见forward内容并标PARTIAL/unresolved，不扫未授权原群 |
-| 一条消息多个附件 | N个material全保留，不被message_id单键覆盖 |
-| Bruce现存3图 | reconcile后不重复下载，stale pending被修正 |
-| Nature现存post图/forward | policy发现缺口并只补缺失材料 |
-| Zhengji现有complete样板 | 新实现读取为complete，不重新下载/破坏已有字节 |
-| 大通用群含priority person | 仍SHALLOW，除非该群本身被显式升级 |
-| secret screenshot | 可在批准private raw留存，但不会自动进入外部模型/公开文档 |
-| attachment permission denied | capture继续，material PARTIAL；不把失败改成空文件或complete |
+| 重点p2p直接文件 | raw先存，文件后落地，按同一范围/版本给覆盖 |
+| 一消息多材料、重复token | 全部材料和每条来源关系保留，不message单键覆盖 |
+| 同转发包内子转发 | 有界遍历已转发内容；循环/上限/不支持均可见 |
+| 原群或原消息不可访问 | 不扩大抓取范围、不换身份、不标完整 |
+| 第2页失败/回填中断 | 已存页不丢、不跳gap，增量继续 |
+| 0材料但parser不支持 | discovery PARTIAL，不0/0成功 |
+| 文件已在而pending陈旧 | reconcile验证后修索引，不重复下载 |
+| 重要图像有私密内容 | 私有capture/传播政策分别执行，不自动发布 |
+| 旧deep样本新增编辑 | 旧COMPLETE只属于旧版本，准确续取/失效 |
+| 转发内第三方发言 | provenance不错误归当前联系人 |
+
+实施作为P2的正向与恢复门，再让P3验证材料真正被理解；文件名/目录数量/自由文本pending都不能单独替代内容覆盖证明。
