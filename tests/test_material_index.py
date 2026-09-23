@@ -85,6 +85,7 @@ IMG = "img_v3_0215a_11111111-2222-3333-4444-555555555555g"
 IMG2 = "img_v3_0215a_66666666-7777-8888-9999-aaaaaaaaaaaag"
 FILE = "file_v3_0215a_bbbbbbbb-cccc-dddd-eeee-ffffffffffffg"
 DOC_URL = "https://fjdynamics.feishu.cn/wiki/MaterialIndexFixture"
+WEB_URL = "https://developers.openai.com/blog/rethinking-skills-and-prompts"
 
 CHAT_SYNC = {
     "msg_count": 1,
@@ -157,6 +158,25 @@ def document_capture(records, *, slug="a-doc", url=DOC_URL, media=None,
     if media is not None:
         document["media"] = list(media)
     document.update(extra or {})
+    _write_manifest(directory, document)
+    return directory
+
+
+def a_web_page(records, *, slug="openai-developers/sample-article",
+               url=WEB_URL, final_url=None, redirected=False,
+               title="A Page", inventoried=False, count=0,
+               drop_address=False) -> Path:
+    """One page capture: `information/raw/web/<publisher>/<slug>/manifest.json`."""
+    directory = records / RAW / "web" / slug
+    document = {
+        "schema": "serveros/web-capture.v1",
+        "source": {"provider": "web", "requested_url": None if drop_address else url,
+                   "final_url": final_url or url, "redirected": redirected},
+        "identity_observed": {"title": title},
+        "fetch": {"at": "2026-09-23T18:31+08:00", "http_status": 200,
+                  "bytes": 317035, "sha256": "b" * 64, "captured_by": "curl"},
+        "materials": {"inventoried": inventoried, "count": count},
+    }
     _write_manifest(directory, document)
     return directory
 
@@ -377,6 +397,34 @@ def test_a_document_capture_has_no_message_stream_and_says_so():
     assert "not a pass" in state["why"][0]
 
 
+def test_a_web_capture_has_no_message_stream_and_says_so():
+    """The same non-answer for the shape added 2026-09-23, and by the same rule.
+
+    Read as `UNREADABLE` it would say this module failed at a page — it failed
+    at nothing; the file the message rows would be in was never supposed to
+    exist. Which shapes those are is a set (`NO_MESSAGE_SHAPES`) because the
+    failure this guards is a shape nobody added.
+    """
+    state = material.discovery_coverage(
+        {"state": "NO_MESSAGES_FILE", "rows": [], "why": "absent"},
+        shape="web_capture")
+    assert state["state"] == "NOT_APPLICABLE"
+    assert "page captured from the web" in state["why"][0]
+    assert "materials" in state["why"][0]
+
+
+def test_the_no_message_shapes_are_the_readable_shapes_and_no_more():
+    """A shape that cannot hold a message stream is a fact about the shape.
+
+    Asserted against `capture_coverage`'s own list rather than against a second
+    copy of it: a shape added there and not here would read as `UNREADABLE`,
+    which blames this module for a file the capture never wrote.
+    """
+    readable = {shape for shape in capture.SHAPES
+                if shape not in ("UNREADABLE", "UNKNOWN_SHAPE")}
+    assert readable - {"chat_capture"} == set(material.NO_MESSAGE_SHAPES)
+
+
 def test_all_rows_examined_is_complete(tmp_path):
     chats = tmp_path / "chat"
     chats.mkdir()
@@ -456,11 +504,44 @@ def test_the_source_key_has_the_policy_module_shape(tmp_path):
     records = tmp_path / "records"
     chat_capture(records, slug="a-chat", chat_id="oc_x")
     document_capture(records, slug="a-doc", url=DOC_URL)
+    a_web_page(records)
     for row in capture.read_root(records)["objects"]:
         directory = material.raw_root(records) / row["path"]
         document = material.read_manifest(directory)
         key = material.source_key(row, document)
         assert KEY_SHAPE.match(key), key
+
+
+def test_a_web_captures_key_is_the_one_source_policy_composes(tmp_path):
+    """Two modules, one key space, for the shape added on 2026-09-23.
+
+    Composed here and not imported there, so the assertion is the thing that
+    keeps them equal: a page keyed `web:chat:<slug>` by one reader and
+    `web:doc:<url>` by the other is a source that joins to nothing, silently.
+    """
+    records = tmp_path / "records"
+    a_web_page(records)
+    objects = capture.read_root(records)["objects"]
+    row = material.read_root(records, objects)["objects"][0]
+    assert row["key"] == f"web:doc:{WEB_URL}"
+    document = material.read_manifest(
+        material.raw_root(records) / str(row["path"]))
+    observed = policy.identity_of(document, "web_capture", str(row["path"]))
+    assert material.source_key({"path": row["path"]}, document) == \
+        policy.key_of(observed)
+
+
+def test_a_web_capture_with_no_address_is_keyed_by_nothing(tmp_path):
+    """A page with no address has no identity, and the fallback — the directory
+    name — would key it as a chat that it is not. `source_policy` composes no
+    key at all here; this composes none either."""
+    records = tmp_path / "records"
+    a_web_page(records, drop_address=True)
+    objects = capture.read_root(records)["objects"]
+    document = material.read_manifest(material.raw_root(records) / objects[0]["path"])
+    assert material.source_key(objects[0], document) == ""
+    assert policy.key_of(policy.identity_of(document, "web_capture",
+                                            objects[0]["path"])) is None
 
 
 def test_a_display_name_never_becomes_a_key(tmp_path):

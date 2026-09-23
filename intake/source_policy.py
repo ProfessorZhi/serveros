@@ -115,6 +115,16 @@ LEVEL_OF = {
 #: report reads as a source with nothing wrong.
 ROW_STATES = ("IN_FORCE", "CONFLICT", "UNDECLARED", "UNRESOLVED", "UNREADABLE")
 
+#: The capture shapes this module opens a manifest for to read an identity.
+#: One constant because "which shapes do I parse" is asked twice — once when the
+#: manifests are walked and once when a row is decided — and two hand-written
+#: lists of one set drift on the day a shape is added. Adding a shape to
+#: `capture_coverage` and not to this one made a parsed object report as
+#: `UNREADABLE` while its own identity sat correctly in the row beside it
+#: (measured 2026-09-23, on the first web capture). `PARSED_SHAPES` is a subset
+#: of `capture_coverage.SHAPES` and the suite asserts that containment.
+PARSED_SHAPES = ("chat_capture", "document_capture", "web_capture")
+
 #: A `FOLLOW` label with no follow block. Key → what the key has to say, in the
 #: words of §6 of the work instruction: root object, depth, include/exclude, the
 #: new-descendant policy, the history start point, the check policy, the budget
@@ -224,7 +234,8 @@ RULE_PRODUCED = {
 ROW_PRODUCED = {
     "object": "object — the capture object's own path under information/raw, "
               "which is how a reader looks the file up and is not a policy input",
-    "role": "role — capture_coverage's role_of: chat or link, from the layout",
+    "role": "role — capture_coverage's role_of: chat, link or web, from the "
+            "layout",
     "shape": "shape — capture_coverage's shape_of: from the manifest's keys",
     "identity": "identity — the stable identity, or null when the manifest "
                 "carries none",
@@ -347,9 +358,10 @@ def identity_of(document: dict, shape: str, record_path: str) -> dict:
     """The stable identity of one capture object, or a stated absence.
 
     Read from the manifest and never from the path. A chat capture's key is its
-    `chat_id`; a document capture's is its `url`. Both are what the providers
-    treat as identity and what the legacy lists do not carry, which is the whole
-    reason this module reads the manifests rather than the directory names.
+    `chat_id`; a document capture's is its `url`; a web capture's is the address
+    it was pointed at. All three are what the providers treat as identity and
+    what the legacy lists do not carry, which is the whole reason this module
+    reads the manifests rather than the directory names.
     """
     slug = _slug_of(record_path)
     if shape == "chat_capture":
@@ -370,6 +382,38 @@ def identity_of(document: dict, shape: str, record_path: str) -> dict:
                    "the manifest carries no `chat.chat_id`: this capture object "
                    "has no stable identity, so no declaration can be matched to "
                    "it and none was",
+        }
+        return identity
+    if shape == "web_capture":
+        web_source = (document.get("source")
+                      if isinstance(document.get("source"), dict) else {})
+        observed = (document.get("identity_observed")
+                    if isinstance(document.get("identity_observed"), dict) else {})
+        # The REQUESTED address, not the final one: a declaration names what it
+        # wants read, and a redirect is a fact about the answer that the
+        # coverage record reports. Matching a declaration against wherever the
+        # server happened to send it would silently accept a declaration for an
+        # address this capture does not name.
+        url = web_source.get("requested_url")
+        provider = web_source.get("provider") or "web"
+        identity = {
+            "kind": "page",
+            "provider": provider,
+            "key": key_of({"provider": provider, "url": url}),
+            "url": url,
+            "url_final": web_source.get("final_url"),
+            "type": document.get("type"),
+            "chat_id": None,
+            "chat_type": None,
+            "tenant_key": None,
+            "open_id": None,
+            "label": observed.get("title"),
+            "observed_as": slug,
+            "why": "" if url else
+                   "the manifest carries no `source.requested_url`: a web "
+                   "capture with no address has no identity beyond the "
+                   "directory it was written to, and a directory name is not "
+                   "one",
         }
         return identity
     url = document.get("url")
@@ -661,7 +705,7 @@ def observed(records_root: Path | str, objects: list[dict]) -> list[dict]:
                     "open_id": None, "chat_id": None, "url": None,
                     "chat_type": None, "why": "this record carries no `path`, so "
                     "there is no manifest to read an identity from"}
-        if shape in ("chat_capture", "document_capture"):
+        if shape in PARSED_SHAPES:
             try:
                 document = json.loads((root / record_path).read_text(encoding="utf-8"))
             except (OSError, ValueError) as exc:
@@ -794,12 +838,18 @@ def _identity_match(rule_identity: dict, observed_identity: dict) -> tuple[bool,
     observed manifest that carries a different one are two different answers
     about one key, and matching them anyway is how a policy written for one
     tenant's chat lands on another's.
+
+    A near miss is a declaration that matched on the KEY and was refused on a
+    second fact — that is the definition `SUMMARY_PRODUCED` publishes, and this
+    reader has to hold to it. A cross-provider pair whose keys do not match as
+    well is not a near miss: a declaration for a web page is not nearly the
+    policy for a chat, and reporting one per chat would make the list long
+    enough that nobody reads the entry that matters. The provider is still
+    compared FIRST and still refuses; only the reporting is narrowed.
     """
     provider = rule_identity.get("provider")
-    if provider and observed_identity.get("provider") and \
-            provider != observed_identity["provider"]:
-        return False, (f"declared provider `{provider}` and the manifest's is "
-                       f"`{observed_identity['provider']}`")
+    provider_differs = bool(provider and observed_identity.get("provider")
+                            and provider != observed_identity["provider"])
     if rule_identity.get("chat_id"):
         if rule_identity["chat_id"] != observed_identity.get("chat_id"):
             return False, ""
@@ -811,6 +861,9 @@ def _identity_match(rule_identity: dict, observed_identity: dict) -> tuple[bool,
             return False, ""
     else:
         return False, ""
+    if provider_differs:
+        return False, (f"declared provider `{provider}` and the manifest's is "
+                       f"`{observed_identity['provider']}`, on the same key")
     declared_tenant = rule_identity.get("tenant_key")
     seen_tenant = observed_identity.get("tenant_key")
     if declared_tenant and seen_tenant and declared_tenant != seen_tenant:
@@ -1205,19 +1258,32 @@ def _row(object_row: dict, rules: list[dict], decl: dict,
     if reached is None:
         if identity.get("kind") != "chat" or identity.get("key") is None:
             state = "UNDECLARED"
-            if identity.get("kind") == "chat":
+            kind = identity.get("kind")
+            if kind == "chat":
                 why.append(
                     "no rule reaches this object and it has no stable identity "
                     "for one to be written against: a manifest with no "
                     "`chat.chat_id` cannot be named by a declaration, so it "
                     "takes no default")
-            else:
+            elif kind == "page":
+                why.append(
+                    "no rule reaches this object. It is a page captured from "
+                    "outside this workspace: nothing but a declaration asks for "
+                    "one, so with no declaration in force nothing here says "
+                    "what may be kept of it — and the general default for chats "
+                    "is not a default for pages")
+            elif kind == "document":
                 why.append(
                     "no rule reaches this object. It is a document captured "
                     "from a chat, which makes it material OF that chat; whether "
                     "it is also a followed source is a decision nobody has "
                     "made, and the general default for chats is not a default "
                     "for documents")
+            else:
+                why.append(
+                    "no rule reaches this object and this reader read no "
+                    "identity for it: no declaration can name it and no default "
+                    "can be given to a name it does not have")
         else:
             policies = ["SHALLOW"]
             policy, axis = "SHALLOW", POLICY_AXES["SHALLOW"]
@@ -1281,7 +1347,7 @@ def _row(object_row: dict, rules: list[dict], decl: dict,
         reference = _block_of(decl, identity, "reference", REFERENCE_PRODUCED,
                               "REFERENCE", level_rules)
 
-    if object_row["shape"] not in ("chat_capture", "document_capture"):
+    if object_row["shape"] not in PARSED_SHAPES:
         state = "UNREADABLE"
         why.append(f"this object's shape is `{object_row['shape']}`, so no "
                    f"manifest was parsed and no identity could be matched "
@@ -1358,6 +1424,7 @@ def _coverage_owner(shape) -> str:
     return {
         "chat_capture": "intake/capture_coverage.py — messages, attachments, links",
         "document_capture": "intake/capture_coverage.py — body, media",
+        "web_capture": "intake/capture_coverage.py — body, response, materials",
     }.get(shape, "none: no capture reader parsed this object")
 
 
