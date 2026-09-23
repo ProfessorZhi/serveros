@@ -300,7 +300,7 @@ def _event_title(event: dict) -> str:
     1 项"), and repeating it on every event spends the widest line of a 390px
     card on a word the reader read six lines ago. What the line owes the reader
     instead is what the subject IS to this finding, and that is the catalogue's
-    `label`: `Claude 会话 15413 · 遗留进程组` scans; `WARNING · Claude 会话
+    `label`: `登录会话 15413 · 遗留进程组` scans; `WARNING · 登录会话
     15413 的进程组（pid 1315723）` is an identifier with a severity glued on.
 
     A code with no declared `label` keeps the subject alone on its line. A noun
@@ -418,7 +418,7 @@ def _event_detail(event: dict) -> list[str]:
     times = event["times"]
     lines = []
     # The subject's precise form, when the face had to shorten it. On a session
-    # finding the face says `Claude 会话 15413` and this says which of that
+    # finding the face says `登录会话 15413` and this says which of that
     # session's trees the alert is about; the pid is the only handle a person
     # has when they go to look, so it is never dropped, only moved.
     if event["subject"].get("precise"):

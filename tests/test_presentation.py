@@ -445,6 +445,38 @@ class SubjectDisplayTests(unittest.TestCase):
         self.assertIn("…", hashed["text"])
         self.assertLess(len(hashed["text"]), 30)
 
+    def test_no_display_name_is_derived_from_an_agent(self):
+        """CARDS-STYLE R16, asserted against the table that decides it.
+
+        The kind in a session-tree ref is `f"{agent}-session"` and `agent` comes
+        from `graph.identify_agent` — a REGEX OVER PROCESS NAMES carrying
+        `status: INFERRED`. R16: a cgroup's `session-15413.scope` may only be
+        called an OS login session, and only an `AgentSessionProvider`-proven
+        identity may be displayed as 「Claude 会话」/「Codex 会话」.
+
+        This is not hypothetical on this node. The live `session-15413` group
+        renders as `claude-session` because one process of its 45 matched
+        `/claude(-code)?$/`, and the tree is a VS Code Server — the face said
+        "Claude 会话 15413" about a thing that is not one, and the operator
+        reading the card asked which Claude session it meant.
+
+        The enumeration is the load-bearing half: a third agent added to
+        `graph.AGENT_RULES` gets a `…-session` kind the moment it is added, and
+        without this loop it would silently fall through to the opaque
+        `runtime-group:` rule while the two rules above kept working.
+        """
+        graph = _load("serveros_runtime_graph", "graph.py")
+        self.assertTrue(graph.AGENT_RULES, "no agent rules; this would be vacuous")
+        for agent, _pattern in graph.AGENT_RULES:
+            with self.subTest(agent=agent):
+                answer = presentation.subject_display(
+                    f"runtime-group:{agent}-session:session-15413:pid1315723")
+                self.assertEqual(answer["rule"], f"runtime-group:{agent}-session:")
+                self.assertIn("登录会话", answer["text"])
+                self.assertNotIn(agent, answer["text"])
+                self.assertNotIn(agent, answer["precise"])
+                self.assertIn("登录会话", answer["precise"])
+
     def test_an_unknown_prefix_is_printed_whole_and_named_as_unexpanded(self):
         """`verbatim` is a rule and not the absence of one.
 

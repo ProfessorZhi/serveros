@@ -477,11 +477,39 @@ _SUBJECT_RULES = (
     ("runtime-group:process-tree:system.slice:docker:",
      lambda rest: f"Docker 容器 {rest}"),
     ("runtime-group:process-tree:", lambda rest: f"进程组 {rest}"),
-    # The shape `RUNTIME_OUTLIVED_OWNER` carries on this node, and the one the
-    # first NOC-style card was written against. Same split as the session tree
-    # above: the face is `Claude 会话 15413`, the pid is in the detail.
+    # The one the first NOC-style card was written against, and still the
+    # shape most of this node's findings about a working session take. Same
+    # split as the session tree above: the face is the session, the pid is in
+    # the detail.
+    #
+    # THE WORD IS `登录会话` AND IT USED TO BE `Claude 会话` UNTIL 2026-09-24.
+    # The kind in the ref is `f"{agent}-session"` where `agent` comes from
+    # `graph.identify_agent`, which is a REGEX OVER PROCESS NAMES
+    # (`graph.AGENT_RULES`) carrying `status: INFERRED`. CARDS-STYLE R16: a
+    # `session-15413.scope` out of loginctl or a cgroup may only be called an
+    # OS login session, and only an `AgentSessionProvider`-proven provider or
+    # native identity may be displayed as 「Claude 会话」/「Codex 会话」 —
+    # deciding an agent type from a ref prefix or a process name is forbidden
+    # outright.
+    #
+    # That is not a technicality, and this node has the measurement. The live
+    # `session-15413` group renders as `claude-session` because one process in
+    # its 45 matched `/claude(-code)?$/`, and the tree it names is a VS Code
+    # Server — so the old face printed a specific false statement about what
+    # the subject was, and the operator reading the card asked which Claude
+    # session it meant. What the rule says now is the half the kernel wrote
+    # into the cgroup path: a login session, identified by its number.
+    #
+    # Both agent kinds get the same word on purpose. Naming Claude's sessions
+    # wrongly and Codex's not at all would be one rule applied to two refs and
+    # disagreeing with itself; `test_no_display_name_is_derived_from_an_agent`
+    # enumerates `graph.AGENT_RULES` so a third agent added there fails that
+    # test rather than silently falling through to the opaque `runtime-group:`
+    # rule below.
     ("runtime-group:claude-session:",
-     lambda rest: _session_tree(rest, "Claude 会话")),
+     lambda rest: _session_tree(rest, "登录会话")),
+    ("runtime-group:codex-session:",
+     lambda rest: _session_tree(rest, "登录会话")),
     ("runtime-group:", lambda rest: f"运行时组 {rest}"),
     # `filesystem:mount:/data` → `文件系统 /data`. The `mount:` in the middle
     # is the producer's own word for how it found the filesystem and it is not
@@ -511,11 +539,16 @@ def _session_tree(rest: str, what: str) -> tuple[str, str]:
 
     The pid is not dropped — it is what distinguishes one of a session's trees
     from another, and it is the only handle a person has when they go to look.
-    It is not on the face either. `Claude 会话 15413 的进程组（pid 1315723）` is
-    46 characters of which the readable part is eight, and on a 390px screen it
-    pushes the state line off the first screen. So the face carries
-    `Claude 会话 15413` and the detail carries this same sentence with the pid
-    in it. CARDS-STYLE.md R3.
+    It is not on the face either. `登录会话 15413 的进程组（pid 1315723）` is 28
+    characters of which the readable part is 10, and on a 390px screen it pushes
+    the state line off the first screen. So the face carries `登录会话 15413`
+    and the detail carries this same sentence with the pid in it. CARDS-STYLE.md
+    R3. (Both forms shortened on 2026-09-24 when the agent word became
+    `登录会话`; the old pair measured 15 and 33.)
+
+    `what` is the caller's word for the kind of session, and the callers pass
+    one word for every agent kind — see the R16 note at the rules above for why
+    it may not be an agent's name.
     """
     session, _, pid = rest.partition(":pid")
     session = session.removeprefix("session-")
@@ -1027,7 +1060,7 @@ def _event_of(row: dict, *, at: str, names: dict | None = None,
             "text": what_text,
             "definition": definition["state"],
             # The short noun the event line wears after its subject
-            # (`Claude 会话 15413 · 遗留进程组`). Carried here and not looked up
+            # (`登录会话 15413 · 遗留进程组`). Carried here and not looked up
             # again in the renderer: the renderer may not read the catalogue
             # (that is `presentation`'s job), and a second reader of one file is
             # a second place its contents can be interpreted. Null on a code the
