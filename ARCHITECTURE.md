@@ -1641,3 +1641,12 @@ Ordinary observed facts/supported inferences may be agent-reconciled inside stan
 Memory remains federated retrieval, not authority: current records/source first, applicable history second, MetaCC/native session history after that, optional vector retrieval last. Provider lag cannot revive stale claims.
 
 Detailed composition and current implementation gaps are in [Understanding, Memory & Daily Reconciliation](docs/UNDERSTANDING-MEMORY-RECONCILIATION.md) and the ability-management canonical contract.
+
+
+### Session hygiene and workflow incidents
+
+Monitoring must not confuse OS login sessions with A1 Agent Sessions. cgroup/loginctl session identity is transport/login provenance, not proof of a Claude/Codex session. Long-lived/background/resumable Agent sessions and IDE/tmux helpers are normal unless they violate an explicit lifecycle, hold conflicting resources, create unknown effects, or cause real capacity/Work Item impact.
+
+Process/session hygiene is diagnostic by default. User-facing workflow incidents are restricted to current Active Focus delivery integrity: lost Parent continuation without checkpoint/receiver, conflicting writer/lease, commit-unknown effects, required child output that cannot be accepted and blocks the critical path, unexpected A7 acceptance failure requiring a stop, invalidated accepted plan still about to execute, or required publication/delivery repeatedly failing.
+
+Current Status uses one rolling Feishu card per local day; incident episodes use one card for their entire lifecycle. Details are canonicalized in Monitoring Product Architecture.
