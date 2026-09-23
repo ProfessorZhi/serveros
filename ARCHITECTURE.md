@@ -1545,3 +1545,29 @@ Scheduled daily work is a **Profile that composes Abilities**, not a new workflo
 `serverosd` stays the single resident Node Core: runtime/resource facts, IPC, Agent Control durable mechanical state, leases/effects, bounded reconciliation and its own observable health. It does **not** become a Feishu crawler, semantic reader, business scheduler, Session archive, Workspace manager or self-improvement daemon.
 
 Ability self-improvement is **G1.5 Ability Evaluation & Evolution**, a sub-ability of governance rather than a 22nd top-level Ability. It compares stable Responsibility Contracts with real outcomes/evals, uses MetaCC/A7/human feedback as evidence, proposes the smallest realization change and promotes only after isolated and fresh-consumer verification. It cannot rewrite its own responsibility, authorization or safety boundary to make a failing eval pass.
+
+
+## G1 Core Governance and Ability Card semantics · 2026-09-24 addendum
+
+G1 is the **Core Governance / Capability Supply Chain** for ServerOS. It is not A0 and not part of A1; A1 remains Session Continuity. G1 owns product-capability modelling, external/internal sourcing, artifact identity/provenance, adoption, distribution, installation/runtime resolution, evaluation/evolution and retirement.
+
+The product vocabulary is fixed as:
+
+```text
+Product Ability / Sub-Ability
+→ Capability Operation
+→ Ability Artifact
+→ Distribution
+→ Materialization
+→ Binding
+```
+
+A Skill/MCP/Plugin/Provider is an Ability Artifact realization, not a peer to A1/B1 product responsibilities.
+
+Every managed Artifact has a generated Ability Card. Card shows product-role mapping, what/when/not-for, applicability gates/signals, provenance/author/maintainer/publisher, license, adoption reason/status, current Revision/Content Digest, known limits/evaluation and current runtime projection. Card is not a second machine authority.
+
+Revision Content Digest remains required for exact artifact/materialization matching, package locks, drift and rollback, but digest does not establish identity, authorship, trust, authorization or business correctness. A reference-only Card digest must never be presented as the upstream source artifact digest.
+
+Author/provenance and Device/runtime identity are separate authority domains. Device/principal/runtime observations belong to A4/A5 Runtime/Fleet and are joined into Card runtime projections; authors do not own devices merely because a historical registry schema nested them.
+
+Detailed semantics and compatibility migration are owned by ability-management [Ability Card & Registry Contract](https://github.com/ProfessorZhi/ability-management/blob/main/design/ABILITY-CARD-REGISTRY-CONTRACT.md). `serverosd` consumes only the small current registry/profile/runtime projection needed for low-latency resolution; it does not crawl GitHub/marketplaces, review licenses, clone candidates, run external evaluations, build packages or self-upgrade inside its resident tick.
