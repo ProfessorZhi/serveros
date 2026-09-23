@@ -362,16 +362,355 @@ def _validate_claim(claim, target: Path, number: int) -> None:
 
 
 # --------------------------------------------------------------------------
+# the acceptance: what a person said yes to, and to which revision of it
+# --------------------------------------------------------------------------
+
+#: The fields that say WHERE an acceptance is about, in order.
+ACCEPTANCE_PLACES = ("card", "manifest", "from_position", "to_position")
+
+#: The fields that say WHICH REVISION of that place, and what a person is told
+#: when each of them moved. The sentence lives beside the field rather than in a
+#: table keyed by name, so that a field cannot be added to the identity without
+#: somebody having to decide what to say when it moves — the alternative is a
+#: version field whose movement is reported as nothing, which reads exactly like
+#: an acceptance that was never supplied.
+ACCEPTANCE_VERSIONS = (
+    ("card_digest",
+     "the understanding card has been rewritten since it was accepted"),
+    ("content_identity",
+     "the content this reading is about has changed since it was accepted"),
+    ("reading_digest",
+     "the claims this reading produced are not the ones that were accepted"),
+)
+
+#: The fields an acceptance's identity is made of, in order. One list read by
+#: both halves — the key a person copies off a resolution and the key built from
+#: a reading — because two lists would agree until the first time either changed,
+#: and the symptom is silent: the acceptance simply stops applying and nothing
+#: says why.
+#:
+#: The places come first and the versions after, and the versions are the reason
+#: this list is longer than a path and a span. `card_digest` is the understanding
+#: baseline the person read, `content_identity` is the source revision the Agent
+#: read, and `reading_digest` is the accepted patch itself — the claims somebody
+#: said yes to rather than the span they came from. Any of the three moving makes
+#: a different acceptance subject: a message rewritten under an unchanged path
+#: and span, or a card rewritten under its own path, must not inherit a person's
+#: yes.
+ACCEPTANCE_IDENTITY = ACCEPTANCE_PLACES + tuple(
+    field for field, _ in ACCEPTANCE_VERSIONS)
+
+ACCEPTANCE_SCHEMA = "serveros/understanding-acceptance.v1"
+
+ACCEPTANCE_PRODUCED = {
+    "card": "the card the accepted proposal was about, copied from the "
+            "resolution",
+    "manifest": "the capture object it was about, copied from the resolution",
+    "from_position": "the first position it was about, copied from the resolution",
+    "to_position": "the last position it was about, copied from the resolution",
+    "card_digest": "the card's text the person read, copied from the reading. "
+                   "Required, and required to be present rather than merely "
+                   "non-null: an acceptance that does not say which revision of "
+                   "the card it was about is a yes to a path, and the card "
+                   "somebody edits next week would inherit it",
+    "content_identity": "the content the Agent read, copied from the reading. "
+                        "Required and required present, for the same reason: it "
+                        "is what makes a message rewritten inside an unchanged "
+                        "span a different subject rather than the same one",
+    "reading_digest": "the reading whose claims these are, copied from the "
+                      "resolution. Required: a person accepts the claims a "
+                      "particular reading produced, and a second reading of the "
+                      "same span that says something else must not inherit the "
+                      "acceptance",
+    "claims": "the claim ids the person accepted, non-empty. An acceptance that "
+              "names no claim accepted nothing, and a record of it would read as "
+              "a signature on whatever the reading happened to contain",
+    "by": "who accepted, as they wrote it. Required: a confirmation nobody is "
+          "named for is an assertion by the tool. This module does not "
+          "AUTHENTICATE it — a name in a file is not a verified identity, and "
+          "reading one as the other is how a tool's own text acquires a person's "
+          "authority. It is carried into the receipt as written, so that the "
+          "question 'who said this was fine' is answerable by looking rather "
+          "than by trusting this run",
+    "at": "when they accepted, as they wrote it",
+}
+
+
+def acceptance_key(record: dict) -> tuple:
+    """An acceptance's identity, read off the acceptance in one place only."""
+    return tuple(record.get(field) for field in ACCEPTANCE_IDENTITY)
+
+
+def reading_acceptance_key(reading: dict, *, digest: str) -> tuple:
+    """The identity an acceptance must carry to be about THIS reading.
+
+    Built from the reading rather than from the resolution, so that the two
+    halves of the identity are read from the same material the commit will use.
+    """
+    source = reading.get("source") or {}
+    read = reading.get("read") or {}
+    return (source.get("card"), source.get("manifest"),
+            source.get("from_position"), source.get("to_position"),
+            read.get("card_digest"), read.get("content_identity"), digest)
+
+
+def read_acceptances(path: Path | str) -> dict[tuple, dict]:
+    """Every authored acceptance, keyed by the proposal it was made about.
+
+    Read-only, deliberately: this module has no writer for this file. A record
+    here says a PERSON accepted something, and a tool that could write it would
+    be signing its own resolution — the same reason `understanding_patch` has no
+    writer for its decisions file.
+    """
+    acceptances: dict[tuple, dict] = {}
+    text = Path(path).read_text(encoding="utf-8")
+    for number, line in enumerate(text.splitlines(), 1):
+        if not line.strip():
+            continue
+        try:
+            entry = json.loads(line)
+        except json.JSONDecodeError as exc:
+            raise Malformed(f"{path}:{number}: invalid JSON") from exc
+        if not isinstance(entry, dict):
+            raise Malformed(f"{path}:{number}: an acceptance must be an object")
+        unexpected = sorted(set(entry) - set(ACCEPTANCE_PRODUCED))
+        if unexpected:
+            raise Malformed(
+                f"{path}:{number}: unexpected field(s) "
+                f"{', '.join(f'`{key}`' for key in unexpected)}; an acceptance "
+                f"records what was accepted about which proposal, by whom, and "
+                f"nothing else")
+        # PRESENT, not merely non-null. `entry.get` returns `None` for a field
+        # that is absent and for one written as null, and null is a legitimate
+        # value for a proposal whose content the reader could not identify.
+        # An absent field is an acceptance that did not say what it was about.
+        for field in ("card_digest", "content_identity"):
+            if field not in entry:
+                raise Malformed(
+                    f"{path}:{number}: `{field}` is absent, so this acceptance "
+                    f"names a place and not a revision. A message rewritten "
+                    f"under an unchanged path and span, or a card rewritten "
+                    f"under its own path, would inherit it and record somebody "
+                    f"as having accepted text they never read. Copy the field "
+                    f"from the resolution; null is accepted only when the "
+                    f"reading itself carries null")
+        claims = entry.get("claims")
+        if not isinstance(claims, list) or not claims:
+            raise Malformed(
+                f"{path}:{number}: `claims` is {claims!r}; an acceptance names "
+                f"the claim ids it accepts, and one that names none accepted "
+                f"nothing")
+        for claim_id in claims:
+            if not isinstance(claim_id, str) or not CLAIM_ID.match(claim_id):
+                raise Malformed(
+                    f"{path}:{number}: {claim_id!r} is not a claim id. An id is "
+                    f"what a retraction and a supersede cite, so an acceptance "
+                    f"that mangles one accepts nothing and says so nowhere")
+        record = no_unsourced({
+            "card": _require(entry.get("card"), f"{path}:{number}: card"),
+            "manifest": entry.get("manifest"),
+            "from_position": entry.get("from_position"),
+            "to_position": entry.get("to_position"),
+            "card_digest": entry.get("card_digest"),
+            "content_identity": entry.get("content_identity"),
+            "reading_digest": _require(entry.get("reading_digest"),
+                                       f"{path}:{number}: reading_digest"),
+            "claims": list(claims),
+            "by": _require(entry.get("by"), f"{path}:{number}: by"),
+            "at": entry.get("at"),
+        }, ACCEPTANCE_PRODUCED, "acceptance")
+        key = acceptance_key(record)
+        if key in acceptances:
+            raise Malformed(
+                f"{path}:{number}: two acceptances about one proposal "
+                f"({key[0]} {key[1]} {key[2]}–{key[3]}); which claims a person "
+                f"accepted is not something this module can choose between")
+        acceptances[key] = record
+    return acceptances
+
+
+def acceptance_digest(entry: dict | None) -> str | None:
+    """One acceptance's own bytes, canonically. None for "no acceptance"."""
+    if entry is None:
+        return None
+    canonical = json.dumps(entry, ensure_ascii=False, sort_keys=True,
+                           separators=(",", ":"))
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def acceptance_for(reading: dict, accepted: dict[tuple, dict] | None) -> dict | None:
+    """The acceptance about this reading, or None. A lookup, never a fallback.
+
+    There is no "closest" acceptance. One made about the same place at another
+    revision is reported by `_acceptance_report` rather than applied, because a
+    yes to text that has since changed is a yes to text that is not there.
+    """
+    if not accepted:
+        return None
+    key = reading_acceptance_key(reading, digest=reading_digest(reading))
+    return accepted.get(key)
+
+
+def _accepted_as_written(entry: dict | None) -> dict | None:
+    """The acceptance in the form the commit and the receipt carry it.
+
+    Copied and not summarised, for the same reason the delegation is: an
+    acceptance restated in this module's words would be an acceptance this
+    module invented, and the digest is what lets a later run say the acceptance
+    it holds is not the one the write recorded.
+    """
+    if entry is None:
+        return None
+    return {"digest": acceptance_digest(entry),
+            "by": entry["by"],
+            "at": entry.get("at"),
+            "claims": list(entry["claims"]),
+            "identity": list(acceptance_key(entry))}
+
+
+def _reading_mismatch(where) -> str:
+    """Why one span cannot have two committed readings, and what actually replaces one.
+
+    The remedy is not "supersede the first one", because nothing in this module
+    supersedes anything: there is no verb, and a phrase naming a verb that does
+    not exist sends a person looking for it. What does work is said instead.
+    """
+    return (f"this proposal already has a receipt for a different reading "
+            f"({where}). Two readings of one span cannot both be the committed "
+            f"one, and choosing between them is not this module's decision to "
+            f"make. A source read again under a new revision is a new proposal; "
+            f"to replace this one, a person removes this receipt deliberately — "
+            f"this module has no verb for it, because choosing which of two "
+            f"readings of one span is the true one is not its decision either")
+
+
+def _acceptance_mismatch(prior: dict, accepted: dict | None, where) -> str | None:
+    """Why the acceptance this run holds is not the one the receipt recorded.
+
+    The remedy named is deliberately NOT "read the source again". Re-reading does
+    not help here: a proposal's identity is its place and its source revision, so
+    an unchanged source read again produces the same identity, finds this same
+    receipt, and is refused again. The span is written a second time only if a
+    person removes the receipt on purpose — and that is a deliberate act this
+    module has no verb for, because "write the same span twice" is not a decision
+    it makes. Naming a procedure that fails would be worse than naming none.
+
+    One sentence for both call sites. Two sentences about one question drift, and
+    the second one to be written is the one nobody re-reads.
+    """
+    if prior.get("accepted") == accepted:
+        return None
+    held = ("no acceptance" if not prior.get("accepted")
+            else f"an acceptance ({_who(prior['accepted'])}, "
+                 f"{_short(prior['accepted'].get('digest'))})")
+    now = "an acceptance" if accepted else "no acceptance"
+    return (f"this proposal already has a receipt ({where}) and it was written "
+            f"for {held}, while this run holds {now}. Returning the receipt "
+            f"would report a person's yes that is not in it, and writing again "
+            f"would make a second commitment of one span. Reading the source "
+            f"again does not help: the proposal is the place and the source "
+            f"revision, so an unchanged source re-read is the same proposal and "
+            f"finds this receipt. The span is written again only if a person "
+            f"removes this receipt deliberately")
+
+
+def _version_difference(mine: tuple, other: tuple) -> list[str]:
+    """Which of the three revisions differ, in words a person can act on."""
+    offset = len(ACCEPTANCE_PLACES)
+    return [sentence for index, (_, sentence) in enumerate(ACCEPTANCE_VERSIONS)
+            if mine[offset + index] != other[offset + index]]
+
+
+def _who(entry: dict | None) -> str:
+    """An acceptance named by its writer, for a message. Never for a decision.
+
+    A string out of a file is fine in a sentence and is not an identity; nothing
+    is branched on this, and `by`'s own table entry says why.
+    """
+    if not entry:
+        return "nobody"
+    claims = entry.get("claims") or []
+    return (f"{entry.get('by')!r} over {len(claims)} "
+            f"claim{'s' if len(claims) != 1 else ''}")
+
+
+def _stale_acceptances(accepted: dict[tuple, dict] | None,
+                       key: tuple) -> list[dict]:
+    """Acceptances about this place at another revision, each with what moved.
+
+    Reported rather than silently ignored, and the reason is the whole point of
+    binding a confirmation to a revision: a person who accepted this span, edited
+    the card afterwards, and then watched a run commit nothing has no way to tell
+    "your acceptance was not needed" from "your acceptance was for the text that
+    was there before you edited the card". The second is the one they must be
+    told, and it is only visible if the acceptance is still on the table to be
+    compared with the revision this run has.
+    """
+    if not accepted:
+        return []
+    stale = []
+    place = len(ACCEPTANCE_PLACES)
+    for other, entry in accepted.items():
+        if other == key or other[:place] != key[:place]:
+            continue
+        stale.append({"identity": list(other), "by": entry["by"],
+                      "at": entry.get("at"),
+                      "differs": _version_difference(key, other)})
+    return sorted(stale, key=lambda row: [str(part) for part in row["identity"]])
+
+
+def _acceptance_report(accepted: dict[tuple, dict] | None, key: tuple,
+                       mine: dict | None, *, applied: list[str],
+                       covered: list[str], not_committable: list[dict],
+                       reading_ids: set[str], digest: str) -> dict:
+    """What happened to every acceptance supplied, including the ones that did not apply.
+
+    Written as a report of FAILURES as much as successes, because an acceptance
+    file is authored by hand and the ways it can miss are all silent: an id that
+    is not in this reading, a claim the delegation had already committed, a
+    retraction that cannot be committed anywhere, and — the one this exists for —
+    an acceptance made about the same span at an earlier revision. A run that
+    reported only `applied` would leave a person to conclude the tool ignored
+    them.
+    """
+    named = list(mine["claims"]) if mine else []
+    return {
+        "supplied": len(accepted) if accepted is not None else None,
+        "identity": list(key),
+        "reading_digest": digest,
+        "as_written": _accepted_as_written(mine),
+        "applied": list(applied),
+        "covered_by_the_delegation_already": list(covered),
+        "not_in_this_reading": sorted(set(named) - reading_ids),
+        "not_committable": not_committable,
+        "for_other_revisions": _stale_acceptances(accepted, key),
+    }
+
+
+# --------------------------------------------------------------------------
 # the delegation: what a machine may commit without asking
 # --------------------------------------------------------------------------
 
-def resolve(reading: dict, current: dict, delegation: dict | None) -> dict:
+def resolve(reading: dict, current: dict, delegation: dict | None,
+            accepted: dict[tuple, dict] | None = None) -> dict:
     """Decide, per claim, whether it commits now or waits for a person.
 
     `current` is the truth about the material right now — `{card_digest,
     content_identity, from_position, to_position}` — measured by the caller from
     the same tree the reading names. `delegation` is the standing grant, if the
     caller has one: `{covers: [subject prefixes], until: <as written>}`.
+    `accepted` is `read_acceptances`'s output, or None when no acceptance file
+    was supplied; an acceptance is matched by the FULL identity, digests
+    included, so one written for this span under an earlier revision matches
+    nothing and is reported as such rather than quietly applied.
+
+    An acceptance is a person's ANSWER to a proposal, not an authority this
+    module grants: it can turn a claim the machine could not commit into a
+    committed one, and it cannot make a retraction commit anywhere or make the
+    delegation cover a subject it does not name. The reason both directions
+    matter is the same: `user_confirmed` in a card must mean a person was
+    required and said yes. Recording it wherever a person happened to agree would
+    make the marker say nothing.
 
     The order of the checks is the order of the consequences. A reading bound to
     a revision that has moved is refused before any claim is looked at, because
@@ -391,10 +730,15 @@ def resolve(reading: dict, current: dict, delegation: dict | None) -> dict:
             f"citation can be checked, and an unchecked citation is a claim "
             f"nobody can refuse")
     delegable = _delegation_covers(delegation)
+    mine = acceptance_for(reading, accepted)
+    accepting = set(mine["claims"]) if mine else set()
 
     committed: list[dict] = []
     awaiting: list[dict] = []
     retracted: list[str] = []
+    applied: list[str] = []
+    covered: list[str] = []
+    not_committable: list[dict] = []
     for claim in reading["claims"]:
         outside = [position for position in claim["support"]["positions"]
                    if not low <= position <= high]
@@ -411,6 +755,16 @@ def resolve(reading: dict, current: dict, delegation: dict | None) -> dict:
             # so the eligibility filter below can act on it before any remote
             # store is told anything.
             retracted.extend(claim["supersedes"])
+            if claim["id"] in accepting:
+                # Accepting a retraction is not a way to commit it, and saying so
+                # is not pedantry: whoever wrote this id into the file expected
+                # something to change in a card, and nothing will.
+                not_committable.append({
+                    "id": claim["id"], "by": mine["by"],
+                    "why": "a retraction takes effect locally at once and is not "
+                           "committed into a card; accepting it changes nothing "
+                           "in this run. If the withdrawal is to be visible in "
+                           "the card, the card is edited"})
             awaiting.append({**claim, "confirmation": AWAITING_DECISION,
                              "confirmation_why":
                                  "a retraction takes effect locally at once; "
@@ -418,21 +772,54 @@ def resolve(reading: dict, current: dict, delegation: dict | None) -> dict:
                                  "visible act a person performs"})
             continue
         confirmation, why = _confirmation_for(claim, delegation, delegable)
+        if claim["id"] in accepting:
+            if confirmation == AGENT_RECONCILED:
+                # The delegation had already committed this one on its own
+                # authority. Reported as not needed rather than upgraded to
+                # `user_confirmed`: a marker that appears wherever a person
+                # agreed with the machine stops meaning "this needed a person",
+                # which is the one thing it is there to say.
+                covered.append(claim["id"])
+            else:
+                applied.append(claim["id"])
+                confirmation = USER_CONFIRMED
+                why = (f"accepted by {mine['by']}"
+                       + (f" at {mine['at']}" if mine.get("at") else "")
+                       + f", for this revision of the source and of the card. It "
+                         f"was not the delegation's to commit: {why}")
         record = {**claim, "confirmation": confirmation,
                   "confirmation_why": why}
-        if confirmation == AGENT_RECONCILED:
-            committed.append(record)
-        else:
+        # Asked as "is this one decided" rather than "is this one the machine's".
+        # The two read the same while `agent_reconciled` was the only way a claim
+        # could commit, and they stopped reading the same the moment a person
+        # could confirm one: the question the lists answer is which claims are
+        # still waiting, and every named confirmation that is not
+        # `awaiting_decision` is one that is not.
+        if confirmation == AWAITING_DECISION:
             awaiting.append(record)
+        else:
+            committed.append(record)
 
+    key = reading_acceptance_key(reading, digest=reading_digest(reading))
     return no_unsourced({
         "schema": SCHEMA,
         "reading": reading["source"],
         "read": read,
+        # On the resolution and not only on the commit, because an acceptance is
+        # authored by copying this value off a resolution — and a proposal whose
+        # every claim awaits is exactly the one a person is being asked about, so
+        # a digest that appeared only once something committed would be missing
+        # every time it was needed.
+        "reading_digest": key[-1],
         "committed": committed,
         "awaiting": awaiting,
         "retracted": sorted(set(retracted)),
         "delegation": _delegation_as_written(delegation),
+        "acceptance": _acceptance_report(
+            accepted, key, mine, applied=applied, covered=covered,
+            not_committable=not_committable,
+            reading_ids={claim["id"] for claim in reading["claims"]},
+            digest=key[-1]),
     }, RESOLUTION_PRODUCED, "resolution")
 
 
@@ -506,6 +893,9 @@ RESOLUTION_PRODUCED = {
     "schema": "this module's own schema string",
     "reading": "the material the reading was about, copied from the reading",
     "read": "the two digests the reading was bound to, copied from it",
+    "reading_digest": "this reading's own bytes as a digest — the third half of "
+                      "an acceptance's identity, and the value a person copies "
+                      "onto the resolution they are answering",
     "committed": "the claims that commit now, each with the confirmation and why",
     "awaiting": "the claims a person decides, each with the confirmation and why",
     "retracted": "the claim ids a RETRACTION in this reading names. Local "
@@ -515,6 +905,14 @@ RESOLUTION_PRODUCED = {
     "delegation": "the standing grant as it was written, or null when there is "
                   "none. Copied and never paraphrased: a grant restated in this "
                   "module's words would be a grant this module invented",
+    "acceptance": "what became of every acceptance supplied, including the ones "
+                  "that did not apply and why — an id not in this reading, a "
+                  "claim the delegation had already committed, a retraction that "
+                  "cannot be committed anywhere, and an acceptance made about "
+                  "this span at an earlier revision. That last one is the reason "
+                  "the section exists: a person's yes is bound to the text they "
+                  "read, and a run that reported only what applied would leave "
+                  "them to guess why nothing changed",
 }
 
 
@@ -556,6 +954,11 @@ COMMIT_PRODUCED = {
     "reading_digest": "the reading's own bytes as a digest. Recorded in the "
                       "receipt so that the same proposal arriving with a "
                       "DIFFERENT reading is refused rather than applied twice",
+    "accepted": "the acceptance this commit applied, as written, or null when "
+                "there was none — copied from the resolution's "
+                "`acceptance.as_written`. Carried into the receipt so that a "
+                "later run holding a different acceptance is refused by name "
+                "instead of being handed a receipt that does not mention it",
     "baseline": "the card the reading was made against and the digest it had "
                 "then, copied from `reading.read`. Checked again at the moment "
                 "of writing: the check in `resolve` and the check in `write` are "
@@ -573,6 +976,13 @@ RECEIPT_PRODUCED = {
     "schema": "this module's own schema string",
     "key": "the proposal identity the receipt is for, copied from the commit",
     "reading_digest": "the reading that produced it, copied from the commit",
+    "accepted": "the acceptance the write was made under, as written, or null "
+                "when there was none — copied from the commit. It is compared "
+                "on every later run of this proposal: a receipt returned to a "
+                "caller holding a different acceptance would report a person's "
+                "yes that is not in the write, and the comparison is done by "
+                "value so that an acceptance edited after the fact is caught "
+                "rather than matched",
     "written": "the files this write actually changed, with the digest each one "
                "had before and after. Facts about the disk, read back after the "
                "write and not computed before it",
@@ -586,7 +996,11 @@ RECEIPT_PRODUCED = {
                      "retried, the first write has moved the card the reading "
                      "was reasoned against, and re-running the reading against "
                      "the new baseline is a different reading",
-    "state": "COMPLETE or PARTIAL, decided by `pending_views` and nothing else",
+    "state": "COMPLETE, PARTIAL, or NOTHING_TO_WRITE. The first two are decided "
+             "by `pending_views` and nothing else. The third is a receipt that is "
+             "RETURNED AND NOT WRITTEN — a commit whose every claim awaits a "
+             "person changed no file, so there is nothing to record, and the "
+             "proposal stays open for the acceptance that can commit it",
     "reused": "true when this receipt is an earlier write returned again. A "
               "replay that wrote a second time would be a duplicate commitment "
               "that no reader could tell from a second real change",
@@ -647,6 +1061,7 @@ def commit(resolution: dict, reading: dict) -> dict:
         "schema": SCHEMA,
         "key": list(commit_key(reading)),
         "reading_digest": reading_digest(reading),
+        "accepted": resolution["acceptance"]["as_written"],
         "baseline": {"card": reading["source"].get("card"),
                      "card_digest": reading["read"].get("card_digest")},
         "lines": lines,
@@ -660,6 +1075,16 @@ def _claim_line(claim: dict) -> str:
     The kind, the assertion and the support are all on the line because a reader
     who has to open the source to find out what a sentence is based on will not
     open it. The excerpt is the Agent's quotation and is carried as a quotation.
+
+    The confirmation is the claim's own and not a constant. It used to be
+    hardcoded to `agent_reconciled`, which was invisible while nothing else could
+    commit and would have gone on saying a machine reconciled a claim that a
+    person had signed.
+
+    WHO accepted is deliberately not on the line. The line lives in a card a
+    person edits, and the receipt — which is written once and not edited by hand
+    into a claim — is where the acceptance is recorded as written. A card line
+    naming a person is a claim about that person authored by the tool.
     """
     was = claim["assertion"]["was"]
     change = (f"{was} → {claim['assertion']['now']}" if was
@@ -667,7 +1092,7 @@ def _claim_line(claim: dict) -> str:
     where = ", ".join(str(position)
                       for position in claim["support"]["positions"]) or "无位置"
     return (f"- **[{claim['kind']}]** {claim['subject']}：{change}"
-            f"（{AGENT_RECONCILED}；来源 pos {where}；"
+            f"（{claim['confirmation']}；来源 pos {where}；"
             f"excerpt: {claim['support']['excerpt']}）")
 
 
@@ -688,6 +1113,15 @@ def write(commit_document: dict, records_root: Path | str, *,
     a card whose new text the Agent never saw, and merging an interpretation into
     prose a person just changed is how an agent's sentence ends up attributed to
     a human.
+
+    A commit with nothing in it writes NOTHING and leaves NO receipt, and that is
+    load-bearing rather than tidy. A receipt is the record that a write happened;
+    one written for a run that changed no file would answer a later run with
+    "already written" and refuse the very acceptance that could commit the claims
+    — and the order of events would be the ordinary one, a proposal prepared
+    before anybody was asked. The proposal stays open until something is
+    committed, and an acceptance arriving afterwards is then exactly what commits
+    it.
     """
     if not committed_at or not isinstance(committed_at, str):
         raise Refused(
@@ -699,15 +1133,27 @@ def write(commit_document: dict, records_root: Path | str, *,
     prior = _read_receipt(receipt_path)
     if prior is not None:
         if prior.get("reading_digest") != commit_document["reading_digest"]:
-            raise Refused(
-                f"this proposal already has a receipt for a different reading "
-                f"({receipt_path}). Two readings of one span cannot both be the "
-                f"committed one, and choosing between them is not this module's "
-                f"decision to make: supersede the first one explicitly, or read "
-                f"the source again under a new revision")
+            raise Refused(_reading_mismatch(receipt_path))
+        mismatch = _acceptance_mismatch(prior, commit_document.get("accepted"),
+                                        receipt_path)
+        if mismatch is not None:
+            raise Refused(mismatch)
         if prior.get("state") == "COMPLETE":
             return {**prior, "reused": True}
         return _resume(prior, base, receipt_path)
+
+    if not commit_document["lines"]:
+        return no_unsourced({
+            "schema": RECEIPT_SCHEMA,
+            "key": commit_document["key"],
+            "reading_digest": commit_document["reading_digest"],
+            "accepted": commit_document.get("accepted"),
+            "written": [],
+            "pending_views": [],
+            "state": "NOTHING_TO_WRITE",
+            "reused": False,
+            "committed_at": committed_at,
+        }, RECEIPT_PRODUCED, "receipt")
 
     baseline = commit_document["baseline"]
     written = []
@@ -741,6 +1187,7 @@ def write(commit_document: dict, records_root: Path | str, *,
         "schema": RECEIPT_SCHEMA,
         "key": commit_document["key"],
         "reading_digest": commit_document["reading_digest"],
+        "accepted": commit_document.get("accepted"),
         "written": written,
         "pending_views": pending,
         "state": "PARTIAL" if pending else "COMPLETE",
@@ -769,7 +1216,7 @@ def _resume(prior: dict, records_root: Path | str, receipt_path: Path) -> dict:
             pending.append({**entry, "why": str(exc)})
     receipt = no_unsourced({
         **{key: prior[key] for key in ("schema", "key", "reading_digest",
-                                       "committed_at")},
+                                       "accepted", "committed_at")},
         "written": written,
         "pending_views": pending,
         "state": "PARTIAL" if pending else "COMPLETE",
@@ -799,7 +1246,8 @@ def _understanding_root(records_root: Path | str) -> Path:
 
 
 def apply(reading_path: Path | str, records_root: Path | str, *, measure,
-          delegation: dict | None = None, committed_at: str) -> dict:
+          delegation: dict | None = None,
+          accepted: dict[tuple, dict] | None = None, committed_at: str) -> dict:
     """Read, resolve, commit and write — in the one order that is correct.
 
     The order is the whole reason this function exists rather than the caller
@@ -816,26 +1264,33 @@ def apply(reading_path: Path | str, records_root: Path | str, *, measure,
     would make the replay DEPEND on that measurement still being possible. A
     range the reader no longer proposes must not stop a write that already
     happened from being reported.
+
+    `accepted` is read before any of this and used twice: `_replay` compares it
+    against what the receipt recorded, and `resolve` matches it against the
+    reading. Passing it only to `resolve` would make a replay of an accepted
+    write return the receipt as though the acceptance were still in play.
     """
     base = _understanding_root(records_root)
     document = read_reading(reading_path)
     prior = _read_receipt(_receipt_path(base, document))
     if prior is not None:
-        return _replay(prior, document, records_root)
-    result = resolve(document, measure(), delegation)
+        return _replay(prior, document, records_root, accepted=accepted)
+    result = resolve(document, measure(), delegation, accepted)
     plan = commit(result, document)
     return write(plan, records_root, committed_at=committed_at)
 
 
-def _replay(prior: dict, reading: dict, records_root: Path | str) -> dict:
+def _replay(prior: dict, reading: dict, records_root: Path | str, *,
+            accepted: dict[tuple, dict] | None = None) -> dict:
     """An earlier write for this proposal, returned or finished — never redone."""
     if prior.get("reading_digest") != reading_digest(reading):
-        raise Refused(
-            f"this proposal already has a receipt for a different reading. Two "
-            f"readings of one span cannot both be the committed one, and "
-            f"choosing between them is not this module's decision to make: "
-            f"supersede the first one explicitly, or read the source again under "
-            f"a new revision")
+        raise Refused(_reading_mismatch(
+            _receipt_path(_understanding_root(records_root), reading)))
+    mismatch = _acceptance_mismatch(
+        prior, _accepted_as_written(acceptance_for(reading, accepted)),
+        _receipt_path(_understanding_root(records_root), reading))
+    if mismatch is not None:
+        raise Refused(mismatch)
     if prior.get("state") == "COMPLETE":
         return {**prior, "reused": True}
     base = _understanding_root(records_root)
@@ -1087,20 +1542,64 @@ def render_resolution(resolution: dict) -> list[str]:
                      f"本地即刻不再可召回，远端失效另行确认")
         for claim_id in resolution["retracted"]:
             lines.append(f"  - {claim_id}")
+    lines.extend(_acceptance_lines(resolution["acceptance"]))
+    return lines
+
+
+def _acceptance_lines(report: dict) -> list[str]:
+    """The acceptance section of a resolution, the failures at the same weight.
+
+    A person who supplied a file and watches a run commit nothing has to be able
+    to read why off the screen, and every way an acceptance can miss is
+    invisible in a report that lists only what applied: an id that is not in the
+    reading, a claim the delegation had already committed, a retraction that
+    cannot be committed anywhere, and an acceptance made about this span at the
+    text that was there before somebody edited the card. The last one is the
+    reason this section exists at all.
+    """
+    supplied = report["supplied"]
+    if supplied is None:
+        return []
+    who = report["as_written"]
+    lines = [f"acceptance  收到 {supplied} 条；"
+             + (f"1 条匹配本次读数（{who['by']}，{len(who['claims'])} 条主张）"
+                if who else "没有一条匹配本次读数")]
+    if not who:
+        lines.append(f"            本次读数的身份  card "
+                     f"{_short(report['identity'][len(ACCEPTANCE_PLACES)])} · "
+                     f"content {_short(report['identity'][len(ACCEPTANCE_PLACES) + 1])} · "
+                     f"reading {_short(report['reading_digest'])}")
+    if report["applied"]:
+        lines.append(f"  + 采纳 {len(report['applied'])} 条："
+                     + ", ".join(report["applied"]))
+    for claim_id in report["covered_by_the_delegation_already"]:
+        lines.append(f"  · {claim_id} 常设委托已自行提交，无需确认"
+                     f"（记录为机器自洽，而不是人工确认）")
+    for claim_id in report["not_in_this_reading"]:
+        lines.append(f"  ! {claim_id} 不在本次读数里")
+    for entry in report["not_committable"]:
+        lines.append(f"  ! {entry['id']} 无法被接受：{entry['why']}")
+    for entry in report["for_other_revisions"]:
+        lines.append(f"  ! 另一版本上的确认（{entry['by']}"
+                     + (f"，{entry['at']}" if entry.get("at") else "")
+                     + "）：" + "；".join(entry["differs"])
+                     + "。确认是对文本的，而文本已经不是这份文本")
     return lines
 
 
 def render_receipt(receipt: dict) -> list[str]:
     """A receipt as lines. PARTIAL is the line that matters, so it carries why."""
     lines = [
-        f"state       {receipt['state']}"
-        + ("  —— 主张已在归属卡片，引用未补齐" if receipt["state"] == "PARTIAL" else ""),
+        _state_line(receipt),
         f"proposal    {_short(receipt['key'][0])}  "
         f"pos {receipt['key'][2]}–{receipt['key'][3]}  "
         f"content {_short(receipt['key'][4])}",
         f"reading     {_short(receipt['reading_digest'])}",
         f"written     {len(receipt['written'])} 个文件",
     ]
+    if receipt.get("accepted"):
+        lines.append(f"accepted    {_who(receipt['accepted'])}  "
+                     f"{_short(receipt['accepted']['digest'])}")
     for entry in receipt["written"]:
         lines.append(f"  · {entry['card']}  {_short(entry['before'])} → "
                      f"{_short(entry['after'])}  {entry['claims']} 条")
@@ -1109,6 +1608,21 @@ def render_receipt(receipt: dict) -> list[str]:
     lines.append(f"committed   {receipt['committed_at']}"
                  + ("  （重放：未再次写入）" if receipt["reused"] else ""))
     return lines
+
+
+def _state_line(receipt: dict) -> str:
+    """The state, and what it means for a person — one gloss per state.
+
+    NOTHING_TO_WRITE reads like a failure and is not one: nothing was committed
+    because nothing could be, no file was touched, and no receipt was left, which
+    is what keeps the proposal open for the acceptance that can commit it.
+    """
+    gloss = {
+        "PARTIAL": "  —— 主张已在归属卡片，引用未补齐",
+        "NOTHING_TO_WRITE": "  —— 本轮无可提交的条目，未写任何文件、也未留收据；"
+                            "提案仍然开着，等确认到达",
+    }
+    return f"state       {receipt['state']}{gloss.get(receipt['state'], '')}"
 
 
 def _delegation_line(delegation: dict | None) -> str:

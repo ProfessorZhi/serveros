@@ -74,8 +74,15 @@ def claim(claim_id: str = "c1", *, kind: str = us.OBSERVED_FACT,
     }
 
 
+#: Distinct from None on purpose. The reader does not always identify the
+#: content, and a reading that says so carries a null; a test helper that turned
+#: "not given" and "given as null" into the same value could not build the second
+#: and would quietly test the first.
+_UNSET = object()
+
+
 def reading(root: Path, claims=None, *, card: str = CARD,
-            content_identity: str | None = None,
+            content_identity=_UNSET,
             card_digest: str | None = None,
             from_position: int = 10, to_position: int = 20) -> dict:
     """A reading whose two digests match the tree on disk, unless told otherwise."""
@@ -85,7 +92,8 @@ def reading(root: Path, claims=None, *, card: str = CARD,
                    "from_position": from_position, "to_position": to_position},
         "read": {
             "card": card,
-            "content_identity": content_identity or "a" * 64,
+            "content_identity": ("a" * 64 if content_identity is _UNSET
+                                 else content_identity),
             "card_digest": card_digest or digest_of(root, card),
         },
         "claims": [claim()] if claims is None else list(claims),
@@ -108,9 +116,22 @@ def at(tmp_path: Path, document: dict) -> dict:
 
 
 def resolved(tmp_path: Path, root: Path, document: dict, *,
-             delegation=None, card: str = CARD, **overrides) -> dict:
+             delegation=None, accepted=None, card: str = CARD,
+             **overrides) -> dict:
     return us.resolve(at(tmp_path, document),
-                      current(root, card, **overrides), delegation)
+                      current(root, card, **overrides), delegation, accepted)
+
+
+def accepted_document(tmp_path: Path, *rows: dict, name: str = "accepted.jsonl") -> dict:
+    """An authored acceptance file, read back through the reader — never hand-made."""
+    return us.read_acceptances(accepted_file(tmp_path, *rows, name=name))
+
+
+def accepted_file(tmp_path: Path, *rows: dict, name: str = "accepted.jsonl") -> Path:
+    path = tmp_path / name
+    path.write_text("".join(json.dumps(row, ensure_ascii=False) + "\n"
+                            for row in rows), encoding="utf-8")
+    return path
 
 
 # --------------------------------------------------------------------------
@@ -398,7 +419,7 @@ STAMP = "2026-09-23T10:00:00+08:00"
 
 
 def applied(tmp_path: Path, root: Path, document: dict, *, delegation=None,
-            committed_at: str = STAMP, **overrides) -> dict:
+            accepted=None, committed_at: str = STAMP, **overrides) -> dict:
     """The whole path, through the one entry point that orders it correctly.
 
     A replay has to be looked up before the reading is re-validated against the
@@ -409,7 +430,8 @@ def applied(tmp_path: Path, root: Path, document: dict, *, delegation=None,
     path = tmp_path / "reading.json"
     path.write_text(json.dumps(document, ensure_ascii=False), encoding="utf-8")
     return us.apply(path, root, measure=lambda: current(root, **overrides),
-                    delegation=delegation, committed_at=committed_at)
+                    delegation=delegation, accepted=accepted,
+                    committed_at=committed_at)
 
 
 class TestTheWriteHappensOnce:
@@ -582,6 +604,427 @@ class TestTheWriteHappensOnce:
         assert entries[CARD]["before"] == us.card_digest(ALICE_PROSE)
         assert entries[CARD]["after"] == digest_of(root, CARD)
         assert entries[CARD]["claims"] == 1
+
+
+# --------------------------------------------------------------------------
+# a person's yes: what it reaches, and what it is bound to
+# --------------------------------------------------------------------------
+
+def acceptance(resolution: dict, *, claims, by: str = "alice", at: str = STAMP,
+               **overrides) -> dict:
+    """An acceptance as a person writes one: copied off the resolution.
+
+    Every identity field is copied from the RESOLUTION rather than rebuilt from
+    the reading, because copying is what a person does — and it is why
+    `reading_digest` is on the resolution at all. A helper that constructed the
+    key itself would keep agreeing with the module after the module changed what
+    the key is, which is the one thing this helper must not do.
+    """
+    source = resolution["reading"]
+    read = resolution["read"]
+    row = {"card": source["card"], "manifest": source["manifest"],
+           "from_position": source["from_position"],
+           "to_position": source["to_position"],
+           "card_digest": read["card_digest"],
+           "content_identity": read["content_identity"],
+           "reading_digest": resolution["reading_digest"],
+           "claims": list(claims), "by": by, "at": at}
+    row.update(overrides)
+    return row
+
+
+#: A proposal the machine will not commit on its own, however certain it is.
+DEADLINE = ("deadline",)
+
+
+class TestAPersonsYesIsWhatMakesAMajorChangeCommittable:
+
+    def test_without_a_person_a_major_change_is_prepared_and_never_written(
+            self, tmp_path):
+        # The gap this slice was opened for. `user_confirmed` was a constant
+        # nothing ever produced, so a claim about a deadline could be prepared
+        # and never written — the far end of the chain ("必需结果真正交到用户/文档/
+        # 下游") was simply missing.
+        root = records_tree(tmp_path)
+        document = reading(root, [claim(touches=DEADLINE)])
+        result = resolved(tmp_path, root, document, delegation=GRANT)
+        assert result["committed"] == []
+        assert result["awaiting"][0]["confirmation"] == us.AWAITING_DECISION
+        assert "deadline" in result["awaiting"][0]["confirmation_why"]
+        assert us.USER_CONFIRMED in us.CONFIRMATIONS
+
+    def test_a_person_accepting_it_is_the_thing_that_commits_it(self, tmp_path):
+        root = records_tree(tmp_path)
+        document = reading(root, [claim(touches=DEADLINE)])
+        proposal = resolved(tmp_path, root, document, delegation=GRANT)
+        result = resolved(tmp_path, root, document, delegation=GRANT,
+                          accepted=accepted_document(
+                              tmp_path, acceptance(proposal, claims=["c1"])))
+        assert [entry["id"] for entry in result["committed"]] == ["c1"]
+        assert result["committed"][0]["confirmation"] == us.USER_CONFIRMED
+        assert result["acceptance"]["applied"] == ["c1"]
+        # The reason the machine could not commit it is not lost when a person
+        # does: a reader has to be able to see why this one was asked about.
+        assert "deadline" in result["committed"][0]["confirmation_why"]
+        assert "accepted by alice" in result["committed"][0]["confirmation_why"]
+
+    def test_the_card_says_a_person_confirmed_it_rather_than_the_machine(
+            self, tmp_path):
+        # The line used to be rendered with `agent_reconciled` hardcoded, which
+        # was invisible while nothing else could commit and would have gone on
+        # asserting that a machine reconciled a claim somebody had signed.
+        root = records_tree(tmp_path)
+        document = reading(root, [claim(touches=DEADLINE)])
+        proposal = resolved(tmp_path, root, document, delegation=GRANT)
+        plan = us.commit(resolved(tmp_path, root, document, delegation=GRANT,
+                                  accepted=accepted_document(
+                                      tmp_path, acceptance(proposal, claims=["c1"]))),
+                         at(tmp_path, document))
+        us.write(plan, root, committed_at=STAMP)
+        body = (root / CARD).read_text(encoding="utf-8")
+        assert us.USER_CONFIRMED in body
+        assert us.AGENT_RECONCILED not in body
+
+    def test_a_delegated_claim_still_reads_as_the_machines_own(self, tmp_path):
+        root = records_tree(tmp_path)
+        commit_and_write(tmp_path, root, delegation=GRANT)
+        body = (root / CARD).read_text(encoding="utf-8")
+        assert us.AGENT_RECONCILED in body
+        assert us.USER_CONFIRMED not in body
+
+    def test_a_claim_the_delegation_already_committed_is_not_needing_the_person(
+            self, tmp_path):
+        # The other direction of the same rule. A marker that appeared wherever
+        # somebody happened to agree with the machine would stop meaning "this
+        # one needed a person", which is the only thing it is there to say.
+        root = records_tree(tmp_path)
+        document = reading(root)
+        proposal = resolved(tmp_path, root, document, delegation=GRANT)
+        result = resolved(tmp_path, root, document, delegation=GRANT,
+                          accepted=accepted_document(
+                              tmp_path, acceptance(proposal, claims=["c1"])))
+        assert [entry["id"] for entry in result["committed"]] == ["c1"]
+        assert result["committed"][0]["confirmation"] == us.AGENT_RECONCILED
+        assert result["acceptance"]["applied"] == []
+        assert result["acceptance"]["covered_by_the_delegation_already"] == ["c1"]
+
+    def test_an_id_that_is_not_in_this_reading_is_reported_and_the_rest_applies(
+            self, tmp_path):
+        root = records_tree(tmp_path)
+        document = reading(root, [claim(touches=DEADLINE)])
+        proposal = resolved(tmp_path, root, document, delegation=GRANT)
+        result = resolved(tmp_path, root, document, delegation=GRANT,
+                          accepted=accepted_document(
+                              tmp_path,
+                              acceptance(proposal, claims=["c9", "c1"])))
+        assert result["acceptance"]["applied"] == ["c1"]
+        assert result["acceptance"]["not_in_this_reading"] == ["c9"]
+
+    def test_accepting_a_retraction_is_not_a_way_to_commit_one(self, tmp_path):
+        root = records_tree(tmp_path)
+        document = reading(root, [claim("r1", kind=us.RETRACTION,
+                                        supersedes=("c9",))])
+        proposal = resolved(tmp_path, root, document)
+        result = resolved(tmp_path, root, document,
+                          accepted=accepted_document(
+                              tmp_path, acceptance(proposal, claims=["r1"])))
+        assert result["committed"] == []
+        assert result["retracted"] == ["c9"]
+        assert [entry["id"] for entry in result["acceptance"]["not_committable"]] \
+            == ["r1"]
+        assert "takes effect locally at once" in \
+            result["acceptance"]["not_committable"][0]["why"]
+
+    def test_a_resolution_with_no_acceptance_supplied_says_so(self, tmp_path):
+        root = records_tree(tmp_path)
+        report = resolved(tmp_path, root, reading(root))["acceptance"]
+        assert report["supplied"] is None
+        assert report["as_written"] is None
+        assert report["applied"] == []
+
+    def test_the_identity_the_report_shows_is_the_one_the_resolution_carries(
+            self, tmp_path):
+        # What a person copies is what the run will match on, so the report's
+        # identity is checked against the resolution's own fields rather than
+        # against the function that built it: an extra normalisation inside the
+        # key would make every acceptance a person writes from this screen fail
+        # to match, and it would fail silently — as an acceptance about nothing.
+        root = records_tree(tmp_path)
+        result = resolved(tmp_path, root, reading(root))
+        source, read = result["reading"], result["read"]
+        assert result["acceptance"]["identity"] == [
+            source["card"], source["manifest"], source["from_position"],
+            source["to_position"], read["card_digest"],
+            read["content_identity"], result["reading_digest"]]
+
+
+class TestAConfirmationBelongsToTheTextItWasMadeAbout:
+
+    def test_an_acceptance_for_the_old_card_is_reported_and_commits_nothing(
+            self, tmp_path):
+        # §2's own requirement, from the person's side: the path and the range
+        # are unchanged, and the card they read is not the card there is now.
+        # The old confirmation must not carry over — and the run has to SAY so,
+        # because a person who supplied a file and watched nothing happen would
+        # otherwise conclude the tool ignored them.
+        root = records_tree(tmp_path)
+        document = reading(root, [claim(touches=DEADLINE)])
+        row = acceptance(resolved(tmp_path, root, document, delegation=GRANT),
+                         claims=["c1"])
+        (root / CARD).write_text(ALICE_PROSE + "\n她后来改了主意。\n",
+                                 encoding="utf-8")
+        again = reading(root, [claim(touches=DEADLINE)])
+        result = resolved(tmp_path, root, again, delegation=GRANT,
+                          accepted=accepted_document(tmp_path, row))
+        assert result["committed"] == []
+        assert result["acceptance"]["applied"] == []
+        stale = result["acceptance"]["for_other_revisions"]
+        assert len(stale) == 1
+        assert stale[0]["by"] == "alice"
+        assert "the understanding card has been rewritten since it was accepted" \
+            in stale[0]["differs"]
+        assert "the claims this reading produced are not the ones that were " \
+               "accepted" in stale[0]["differs"]
+
+    def test_an_acceptance_for_the_old_content_is_reported(self, tmp_path):
+        # The message was rewritten inside the same span. Nothing about the
+        # PLACE looks different, which is exactly why the version has to be part
+        # of the identity.
+        root = records_tree(tmp_path)
+        document = reading(root, [claim(touches=DEADLINE)])
+        row = acceptance(resolved(tmp_path, root, document, delegation=GRANT),
+                         claims=["c1"])
+        again = reading(root, [claim(touches=DEADLINE)], content_identity="b" * 64)
+        result = resolved(tmp_path, root, again, delegation=GRANT,
+                          accepted=accepted_document(tmp_path, row),
+                          content_identity="b" * 64)
+        assert result["committed"] == []
+        differs = result["acceptance"]["for_other_revisions"][0]["differs"]
+        assert "the content this reading is about has changed since it was " \
+               "accepted" in differs
+        assert "the understanding card has been rewritten since it was accepted" \
+            not in differs
+
+    def test_an_acceptance_naming_another_reading_is_reported(self, tmp_path):
+        # Same place, same source revision, same card: only the reading differs,
+        # which is the case a place-and-range identity cannot see at all.
+        root = records_tree(tmp_path)
+        document = reading(root, [claim(touches=DEADLINE)])
+        row = acceptance(resolved(tmp_path, root, document, delegation=GRANT),
+                         claims=["c1"], reading_digest="b" * 64)
+        result = resolved(tmp_path, root, document, delegation=GRANT,
+                          accepted=accepted_document(tmp_path, row))
+        assert result["committed"] == []
+        assert result["acceptance"]["for_other_revisions"][0]["differs"] == [
+            "the claims this reading produced are not the ones that were accepted"]
+
+    def test_an_acceptance_about_another_span_altogether_is_not_reported_here(
+            self, tmp_path):
+        # The other side of the judgement: a file holding several acceptances
+        # must not have the ones about somebody else's span listed as failures.
+        root = records_tree(tmp_path)
+        document = reading(root, [claim(touches=DEADLINE)])
+        row = acceptance(resolved(tmp_path, root, document, delegation=GRANT),
+                         claims=["c1"], to_position=30)
+        result = resolved(tmp_path, root, document, delegation=GRANT,
+                          accepted=accepted_document(tmp_path, row))
+        assert result["acceptance"]["for_other_revisions"] == []
+
+
+class TestTheAcceptanceFileIsAuthoredInputAndIsChecked:
+
+    def test_an_unknown_field_is_refused(self, tmp_path):
+        with pytest.raises(us.Refused) as caught:
+            accepted_document(tmp_path, {"card": CARD, "mood": "confident"})
+        assert "unexpected field(s)" in str(caught.value)
+        assert "mood" in str(caught.value)
+
+    def test_an_acceptance_that_names_no_claim_is_refused(self, tmp_path):
+        # An acceptance that names nothing would read as a signature on whatever
+        # the reading happened to contain.
+        with pytest.raises(us.Refused) as caught:
+            accepted_document(tmp_path, acceptance_probe(claims=[]))
+        assert "accepted nothing" in str(caught.value)
+
+    def test_an_acceptance_with_no_author_is_refused(self, tmp_path):
+        with pytest.raises(us.Refused) as caught:
+            accepted_document(tmp_path, acceptance_probe(by=""))
+        assert "by" in str(caught.value)
+
+    def test_a_claims_field_that_is_not_a_list_of_ids_is_refused(self, tmp_path):
+        with pytest.raises(us.Refused) as caught:
+            accepted_document(tmp_path, acceptance_probe(claims=["c 1"]))
+        assert "is not a claim id" in str(caught.value)
+
+    def test_an_acceptance_that_omits_the_revision_is_refused(self, tmp_path):
+        # Absent and null are different answers, and the reader has to tell them
+        # apart: `get` returns None for both, and one of them is a person's yes
+        # to a path that a later edit would inherit. Both spellings are checked
+        # here, because a test that only asserted the refusal would pass just as
+        # well against a reader that refused the null one too — and would then be
+        # asserting the opposite of what it says.
+        row = acceptance_probe(claims=["c1"])
+        row.pop("card_digest")
+        with pytest.raises(us.Refused) as caught:
+            accepted_document(tmp_path, row)
+        assert "names a place and not a revision" in str(caught.value)
+        assert "null is accepted only when the reading itself carries null" \
+            in str(caught.value)
+        spelled = acceptance_probe(claims=["c1"], card_digest=None)
+        assert len(us.read_acceptances(
+            accepted_file(tmp_path, spelled, name="null.jsonl"))) == 1
+
+    def test_a_revision_the_reading_could_not_identify_may_be_written_as_null(
+            self, tmp_path):
+        # The reader does not always identify content, and the field is `None`
+        # then. An acceptance for such a reading must be writable, and it is
+        # still bound to the card's baseline, so it is not unbound either.
+        root = records_tree(tmp_path)
+        document = reading(root, [claim(touches=DEADLINE)], content_identity=None)
+        proposal = resolved(tmp_path, root, document, delegation=GRANT,
+                            content_identity=None)
+        row = acceptance(proposal, claims=["c1"], content_identity=None)
+        result = resolved(tmp_path, root, document, delegation=GRANT,
+                          accepted=accepted_document(tmp_path, row),
+                          content_identity=None)
+        assert result["acceptance"]["applied"] == ["c1"]
+        assert result["acceptance"]["for_other_revisions"] == []
+
+    def test_two_acceptances_about_one_proposal_are_refused(self, tmp_path):
+        with pytest.raises(us.Refused) as caught:
+            accepted_document(tmp_path, acceptance_probe(claims=["c1"]),
+                              acceptance_probe(claims=["c1"], by="bruce"))
+        assert "two acceptances about one proposal" in str(caught.value)
+
+    def test_blank_lines_are_not_acceptances(self, tmp_path):
+        path = accepted_file(tmp_path, acceptance_probe(claims=["c1"]))
+        path.write_text("\n" + path.read_text(encoding="utf-8") + "\n\n",
+                        encoding="utf-8")
+        assert len(us.read_acceptances(path)) == 1
+
+
+def acceptance_probe(*, claims=None, by: str = "alice", at: str = STAMP,
+                     **overrides) -> dict:
+    """A well-formed acceptance for a run that has not happened yet.
+
+    For the tests about READING the file, where there is no resolution to copy
+    from and the identity only has to be shaped correctly.
+    """
+    row = {"card": CARD, "manifest": MANIFEST, "from_position": 10,
+           "to_position": 20, "card_digest": "a" * 64,
+           "content_identity": "a" * 64, "reading_digest": "c" * 64,
+           "claims": ["c1"] if claims is None else list(claims),
+           "by": by, "at": at}
+    row.update(overrides)
+    return row
+
+
+class TestTheWriteRecordsWhichAcceptanceItWasMadeUnder:
+
+    def test_the_receipt_names_the_person_and_the_acceptance_by_digest(
+            self, tmp_path):
+        root = records_tree(tmp_path)
+        document = reading(root, [claim(touches=DEADLINE)])
+        proposal = resolved(tmp_path, root, document, delegation=GRANT)
+        rows = accepted_document(tmp_path, acceptance(proposal, claims=["c1"]))
+        receipt = commit_and_write(tmp_path, root, document=document,
+                                   accepted=rows)
+        assert receipt["accepted"]["by"] == "alice"
+        assert receipt["accepted"]["claims"] == ["c1"]
+        assert receipt["accepted"]["digest"] == \
+            us.acceptance_digest(next(iter(rows.values())))
+        assert us.USER_CONFIRMED in (root / CARD).read_text(encoding="utf-8")
+
+    def test_a_replay_under_the_same_acceptance_writes_once(self, tmp_path):
+        root = records_tree(tmp_path)
+        document = reading(root, [claim(touches=DEADLINE)])
+        proposal = resolved(tmp_path, root, document, delegation=GRANT)
+        rows = accepted_document(tmp_path, acceptance(proposal, claims=["c1"]))
+        first = applied(tmp_path, root, document, delegation=GRANT, accepted=rows)
+        after = (root / CARD).read_bytes()
+        second = applied(tmp_path, root, document, delegation=GRANT, accepted=rows)
+        assert first["state"] == "COMPLETE"
+        assert second["reused"] is True
+        assert (root / CARD).read_bytes() == after
+
+    def test_a_replay_holding_a_different_acceptance_is_refused_by_name(
+            self, tmp_path):
+        root = records_tree(tmp_path)
+        document = reading(root, [claim(touches=DEADLINE)])
+        proposal = resolved(tmp_path, root, document, delegation=GRANT)
+        first = accepted_document(tmp_path, acceptance(proposal, claims=["c1"]),
+                                  name="one.jsonl")
+        applied(tmp_path, root, document, delegation=GRANT, accepted=first)
+        other = accepted_document(
+            tmp_path, acceptance(proposal, claims=["c1"], by="bruce"),
+            name="two.jsonl")
+        with pytest.raises(us.Refused) as caught:
+            applied(tmp_path, root, document, delegation=GRANT, accepted=other)
+        assert "while this run holds an acceptance" in str(caught.value)
+        # The remedy has to be one that WORKS. Reading the source again does not
+        # reach this: the proposal is the place and the source revision, so an
+        # unchanged source re-read is the same proposal and finds this receipt.
+        assert "Reading the source again does not help" in str(caught.value)
+        assert "removes this receipt" in str(caught.value)
+
+    def test_a_receipt_written_without_an_acceptance_refuses_one_arriving_after(
+            self, tmp_path):
+        root = records_tree(tmp_path)
+        document = reading(root)
+        # The acceptance is authored from the proposal as it stood BEFORE the
+        # write, because that is when a person would have been asked.
+        row = acceptance(resolved(tmp_path, root, document, delegation=GRANT),
+                         claims=["c1"])
+        applied(tmp_path, root, document, delegation=GRANT)
+        with pytest.raises(us.Refused) as caught:
+            applied(tmp_path, root, document, delegation=GRANT,
+                    accepted=accepted_document(tmp_path, row))
+        assert "it was written for no acceptance" in str(caught.value)
+
+    def test_a_first_run_that_commits_nothing_leaves_no_receipt_to_hide_behind(
+            self, tmp_path):
+        # The ordinary order of events: the Agent prepares, the person is asked,
+        # the person answers. If a run that committed nothing left a receipt,
+        # the acceptance arriving afterwards would find it and be refused — the
+        # proposal would be closed by a write that changed no file.
+        root = records_tree(tmp_path)
+        document = reading(root, [claim(touches=DEADLINE)])
+        before = (root / CARD).read_bytes()
+        nothing = applied(tmp_path, root, document, delegation=GRANT)
+        assert nothing["state"] == "NOTHING_TO_WRITE"
+        assert nothing["written"] == []
+        assert (root / CARD).read_bytes() == before
+        assert not (root / "information" / "understanding" / ".serveros").exists()
+
+        proposal = resolved(tmp_path, root, document, delegation=GRANT)
+        row = acceptance(proposal, claims=["c1"])
+        after = applied(tmp_path, root, document, delegation=GRANT,
+                        accepted=accepted_document(tmp_path, row))
+        assert after["state"] == "COMPLETE"
+        assert us.USER_CONFIRMED in (root / CARD).read_text(encoding="utf-8")
+
+    def test_the_write_is_a_second_opinion_on_the_acceptance(self, tmp_path):
+        # `apply` finds the receipt before it measures the source, so its check
+        # is the one every ordinary run takes; this one is reached only by a
+        # caller that goes to `write` directly, which is why it has to be
+        # exercised that way. A check nothing exercises is a comment, and this is
+        # the instant of writing — the instant the earlier question cannot speak
+        # for, because between the two a person can edit a card.
+        root = records_tree(tmp_path)
+        document = reading(root)
+        parsed = at(tmp_path, document)
+        measured = current(root)
+        proposal = us.resolve(parsed, measured, GRANT)
+        first = us.write(us.commit(proposal, parsed), root, committed_at=STAMP)
+        assert first["accepted"] is None
+        rows = accepted_document(tmp_path, acceptance(proposal, claims=["c1"]))
+        second = us.commit(us.resolve(parsed, measured, GRANT, rows), parsed)
+        with pytest.raises(us.Refused) as caught:
+            us.write(second, root, committed_at=STAMP)
+        assert "it was written for no acceptance" in str(caught.value)
+        body = (root / CARD).read_text(encoding="utf-8")
+        assert body.count(us.FENCE_BEGIN) == 1
+        assert body.count("她说周五交付") == 1
 
 
 # --------------------------------------------------------------------------
@@ -1163,6 +1606,75 @@ class TestTheVerbEndToEnd:
         assert "the content this reading is about changed" in result.stderr
         assert "the understanding card was rewritten" not in result.stderr
         assert us.FENCE_BEGIN not in (records / CHAIN_CARD).read_text(encoding="utf-8")
+
+    def test_the_verb_takes_a_persons_acceptance_and_commits_what_it_names(
+            self, chain_tree, tmp_path):
+        records, reading_path, _ = chain_tree
+        # The proposal first and with no write: this is the run a person is
+        # shown, and its `reading_digest` is the value they copy onto their
+        # answer. No delegation, so every claim is one a person decides.
+        proposal = json.loads(run(
+            "work", "understanding-semantic", "--records-root", records,
+            "--reading", reading_path, "--json").stdout)
+        assert [entry["id"] for entry in proposal["committed"]] == []
+        accepted = accepted_file(tmp_path, acceptance(proposal, claims=["c1"]))
+        result = run("work", "understanding-semantic", "--records-root", records,
+                     "--reading", reading_path, "--accepted", accepted,
+                     "--commit", "--committed-at", STAMP, "--json")
+        assert result.returncode == 0, result.stderr
+        receipt = json.loads(result.stdout)
+        assert receipt["state"] == "COMPLETE"
+        assert receipt["accepted"]["by"] == "alice"
+        card = (records / CHAIN_CARD).read_text(encoding="utf-8")
+        assert us.USER_CONFIRMED in card
+        assert us.AGENT_RECONCILED not in card
+
+    def test_the_verb_says_when_the_acceptance_is_for_text_that_has_moved(
+            self, chain_tree, tmp_path):
+        # §2's 必须修 seen from the outside: the path, the range and the content
+        # are the same, the card is not, and the run has to SAY that the person's
+        # yes was for the text that was there before — not commit it, and not
+        # fail silently either.
+        records, reading_path, _ = chain_tree
+        proposal = json.loads(run(
+            "work", "understanding-semantic", "--records-root", records,
+            "--reading", reading_path, "--json").stdout)
+        accepted = accepted_file(tmp_path, acceptance(proposal, claims=["c1"]))
+        (records / CHAIN_CARD).write_text(
+            CHAIN_CARD_PROSE + "\n她后来改了主意。\n", encoding="utf-8")
+        again = tmp_path / "reading2.json"
+        again.write_text(json.dumps(chain_reading(records), ensure_ascii=False),
+                         encoding="utf-8")
+        result = run("work", "understanding-semantic", "--records-root", records,
+                     "--reading", again, "--accepted", accepted)
+        assert result.returncode == 0, result.stderr
+        assert "没有一条匹配本次读数" in result.stdout
+        assert "the understanding card has been rewritten since it was accepted" \
+            in result.stdout
+        assert us.FENCE_BEGIN not in (records / CHAIN_CARD).read_text(encoding="utf-8")
+
+    def test_with_commit_and_no_acceptance_nothing_is_written_and_no_receipt_left(
+            self, chain_tree):
+        records, reading_path, _ = chain_tree
+        result = run("work", "understanding-semantic", "--records-root", records,
+                     "--reading", reading_path, "--commit", "--committed-at", STAMP,
+                     "--json")
+        assert result.returncode == 0, result.stderr
+        receipt = json.loads(result.stdout)
+        assert receipt["state"] == "NOTHING_TO_WRITE"
+        assert receipt["written"] == []
+        assert not (records / "information" / "understanding" / ".serveros").exists()
+        assert us.FENCE_BEGIN not in (records / CHAIN_CARD).read_text(encoding="utf-8")
+
+    def test_an_accepted_file_that_cannot_be_read_is_not_an_absent_one(
+            self, chain_tree, tmp_path):
+        records, reading_path, _ = chain_tree
+        broken = tmp_path / "broken-accepted.jsonl"
+        broken.write_text("{ not json", encoding="utf-8")
+        result = run("work", "understanding-semantic", "--records-root", records,
+                     "--reading", reading_path, "--accepted", broken)
+        assert result.returncode != 0
+        assert "could not be read is not an absent one" in result.stderr
 
     def test_a_delegation_file_that_cannot_be_read_is_not_an_absent_one(
             self, chain_tree, tmp_path):
