@@ -95,7 +95,19 @@ CloudCLI 内网入口通过 · 研究隧道待命
 
 ## 7. 低噪声与聚合
 
+**范围先于噪声：逐条告警的主语必须是我们自己这一侧的对象** —— 本账户（uid）的进程、本机的受管 runtime、我们声明过的服务和资源。同一台机器上其他账户的会话与进程即使看起来像遗留也不逐条报：那不是我们的工作，也不是我们有权处置的东西，报出来只会把“需确认”变成别人工作清单的镜像，还把真正属于我们的项稀释掉。收窄的是**按进程组/会话逐条报警这一层**；**“整机资源”那一层保持设备范围** —— CPU/内存/盘被别人占满时，别人的消耗就是有效信息，但它的出口是整机资源块和“资源吃紧”，不是一条条点名别人的进程。
+
 只对当前期望运行/被工作需要的对象报警。CPU忙不必然异常；DERP中继可用不是故障；手机休眠、按需浏览器没启动是正常状态。性能阈值用持续窗口/hysteresis和实际影响，配置来自政策不由renderer推导。
+
+**长期开着的 Claude Code 会话是常态，不是缺陷。** 一个 CC 会话开几天、常驻内存、一直挂着，是正常工作方式，不构成告警对象；“开了多久”不是判据。
+
+这条需求落在哪一层，2026-09-24 有实测可判。飞书应用1 最近 50 条里 35 条同题「⚠️ 需确认 · 3 项」，全部是同一个 code：`RUNTIME_OUTLIVED_OWNER`。它一周内 323 条告警，306 条主语是 `process-tree`、17 条是 `claude-session`，而**始终不收敛的只有 3 条** —— 会话卡在 `closing` 是它不会离开的状态，所以条件永远成立（自家 1 条、另两位账户各 1 条，就是那张卡的全部内容）。
+
+可以走的路有两条：**改探测器**让它对某些组不发，或**改 attention 层级**让它不再打断人。选后者，因为这条 finding 的处置本来就写错了位置：`notification-contract.yaml#attention` 的 `declared` 桶，入桶条件是“比对式另一边有一份声明”（`desired.state`、任务的占用声明、隧道声明、保护标签），而**没有任何东西声明过“进程组不得比它的登录会话活得更久”** —— 本码报的是它自己量到的生命周期错配。移出该桶也因此**收走了它唯一的升级路径**（`escalation` 要求 `expectation is declared`），这是移动的正确后果而非回归：升级问的是“被违反的那份声明有多重要”，没有声明就没有可称重的东西。§18 余下的那步 —— 先把 finding 接到真实 Work Item 或资源影响上、再接上升级 —— 是本契约目前**没有**的机制，本节不发明它。这与 §14 把该码归入 Hygiene/Diagnostic 是同一判断，§14 定级、本节记执行与代价。
+
+探测器一侧刻意不动，因为两处“让卡安静下来”的改动都已被量到站不住。**按 ownership class 给 `AGE_WITHOUT_ACTIVITY` 加闸**：该码在 09-24 的 OPEN 积压 113 条里 95 条是本机自己的基础设施（`init`、`pid2`、`getty@tty1.service`、`containerd.service`、`cron.service`、`user@1002..1008.service`，其中 `containerd.service` 一家 15 条）—— 这是真实的 premise 缺陷，已按证据记在 `runtime/anomaly.py` 的注释里，但它在 attention 表里本来就是 INFORMATIONAL，收窄它的 premise 换不到任何安静。**按 `agent.value` 给本码加闸**：CARDS-STYLE R16 禁止从进程名判定身份，而 `agent.value` 就是 `graph.AGENT_RULES` 对进程名的正则；更糟的是实测里那条 `session-15413` 挂着 `claude-session` 的名字而实际是 VS Code Server 树，这样的闸会靠一个本身错误的名称把 finding 压掉。
+
+主语仍然只能是**进程组/稳定对象**，不能是一串标识符 —— 但这一条的依据是“主语要指向人能处置的东西”，**不是 R3**。R3 禁的是把 **PID/UID/code/token/原始 ref 当标题**，会话编号不在其列；`runtime/presentation.py::_session_tree` 正是照 R3 把 pid 留在详情、把会话编号留在卡面，且该规则是刻意写下的。本节先前那句“拿会话编号当标题违反 §3 与 CARDS-STYLE R3”是错的，与代码里的决定相反，在此撤回。会话**叫**什么由 §14 定（只写“登录会话/用户会话/进程组”），§15 定它作为 subject 的地位（OS login session 只是 provenance）。
 
 同一故障域/可信依赖引发多个缺口时合并为一个事件，附受影响路径。例如serverosd停采可导致多块状态陈旧，不能为每个过期metric发一张卡；没有依赖证据不擅自认定共同根因，原独立故障仍保留。
 
@@ -126,6 +138,12 @@ Observation→当前condition/episode→确定性PresentationModel→frozen payl
 ## 11. 可测的完成条件
 
 JSON合法只是格式；HTML preview只是设计预览。必须检查默认折叠态、390/360px、长中文名称、大值/0/unknown、正常/资源吃紧/关键服务失败/监控失明、native Feishu真实渲染以及相同fixture正文一致性。
+
+§7 的范围规则要有对应的正反例，且必须是同一份 fixture 的对照：**别的账户**的遗留进程组 → 不报；**我们自己**已开数日的 CC 会话仍被报（本码不再按身份收窄）但**不进 ⚠️需确认 面**；**我们自己**父进程已不存在、仍在消耗的进程组 → 报；整机资源被别的账户吃紧 → 只在整机资源块与“资源吃紧”出现，不出现在逐条告警里。另需一组**同量级只差 uid** 的对照（40 GiB / 10 天 / cpu 150，别家 → 空，自家 → 报），否则“收窄了归属”与“抬高了阈值”两种改动在测试上无法区分。只测“报了没有”、不测“谁被报进来”，会让这条规则悄悄退回设备范围。`tests/test_alert_ownership.py` 末尾的 §7 范围规则一节即这四组。
+
+卡面这一层另有三个可测的钉：本码的层级由 `tests/test_attention.py::TheTableHasNoHoleTests::test_a_lifecycle_mismatch_is_not_a_violated_declaration` 与 `…::test_moving_it_out_of_the_declaration_bucket_removed_its_escalation` 钉住（后者同时证明 escalation 机制本身没被关掉）；会话命名由 `tests/test_presentation.py::SubjectDisplayTests::test_no_display_name_is_derived_from_an_agent` 钉住，它按 `graph.AGENT_RULES` 枚举，将来加第三种 agent 会失败而不是静默退回不透明 ref。
+
+§7 的验收在 2026-09-24 落到了一次**同一 digest 的 SOURCE/INSTALLED 对照**（§15 的层次划分）：同一份 `alert digest`、同一个 `at`，只有解释它的模块不同。INSTALLED 出 `⚠️ 需确认 · 3 项`/orange 加三条「Claude 会话 … · 遗留进程组」；SOURCE 出 `✅ 没有需要处理的变化`/green、卡面 0 条、该码 4 条全部落进「其他 … 项低优先级」的计数（632 → 636，差集恰好是这 4 行）。读数与两层说明在 `artifacts/tmp-alert-card-scope/ACCEPTANCE.md`。这只证明 **SOURCE 层**：未安装、未重启，操作者下一张卡仍是旧样。
 
 5–10秒阅读验收：查看者不展开能指出最重要的问题或资源余量，知道影响/建议；不得用文件存在、测试数量或“首行可辨”替代。异常磁盘/关键服务不能折叠隐藏；保留source/revision与样例水印。
 
