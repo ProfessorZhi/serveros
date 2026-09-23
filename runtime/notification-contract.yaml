@@ -608,7 +608,6 @@ alerts:
         MCP_PROCESS_ALIVE_BUT_UNAVAILABLE: REVIEW
         TASK_CLOSED_RESOURCE_RUNNING: REVIEW
         TASK_IDLE_PROCESS_ACTIVE: REVIEW
-        RUNTIME_OUTLIVED_OWNER: REVIEW
         SESSION_OWNED_DURABLE_RESOURCE: REVIEW
         UNDECLARED_DURABLE_RESOURCE: REVIEW
         PERSISTENT_RUNTIME_FLOATING_DEPENDENCY: REVIEW
@@ -656,6 +655,34 @@ alerts:
       # same sentence as "this is wrong now".
       history:
         AGE_WITHOUT_ACTIVITY: INFORMATIONAL
+        # MOVED HERE FROM `declared` ON 2026-09-24, and the move is a
+        # correction rather than a quieting. Read the definition above: a
+        # `declared` code needs something on this node saying what the
+        # subject's state should be — a `desired.state`, a task's claim, a
+        # tunnel's declaration, a protection label. Nothing declares that a
+        # process group must not outlive its login session. What this code
+        # reports is a lifecycle mismatch it measured itself, so it never
+        # belonged in the bucket whose membership test is "there is a
+        # declaration on the other side of the comparison".
+        #
+        # It was also, until today, the only hygiene code in `declared` and
+        # therefore the only one that could reach the ⚠️需确认 face. Measured
+        # on this host: 323 alerts on this code in one week, and the only three
+        # that never closed were a session held in `closing` — a state it never
+        # leaves, so the finding was reported forever, in two other people's
+        # names and in this operator's own. A row nobody can clear and nobody
+        # can action is not a request for confirmation.
+        #
+        # WHAT THIS GIVES UP, stated rather than discovered later: `escalation`
+        # below requires `expectation is declared`, so this code can no longer
+        # be escalated to ACTION_REQUIRED by `criticality: critical`. That is
+        # the correct consequence of the move — escalation asks "how important
+        # is the declaration that is being violated", and there is no
+        # declaration to weigh. The design's remaining step, joining a finding
+        # to a real Work Item or to resource impact before it may interrupt,
+        # is a mechanism this contract does not have yet and is not invented
+        # here.
+        RUNTIME_OUTLIVED_OWNER: INFORMATIONAL
         STALE_CONTAINER: INFORMATIONAL
         STOPPED_REVIEW_CANDIDATE: INFORMATIONAL
         EXTERNAL_SYSTEM_PROCESS_TREE: INFORMATIONAL

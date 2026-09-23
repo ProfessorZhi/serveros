@@ -132,6 +132,55 @@ class OnlyExpectationsInterruptTests(unittest.TestCase):
                                  "INFORMATIONAL")
                 self.assertFalse(presentation.on_the_face("INFORMATIONAL"))
 
+    def test_a_lifecycle_mismatch_is_not_a_violated_declaration(self):
+        """`RUNTIME_OUTLIVED_OWNER` sat in `declared` until 2026-09-24, and it
+        was the only hygiene code there — which is why it was the only one of
+        them on the ⚠️需确认 face, and why the face on this host was made of it.
+
+        The bucket's membership test is stated in the contract and this code
+        fails it: a `declared` code needs something on this node saying what
+        the subject's state SHOULD be, and nothing declares that a process
+        group must not outlive its login session. What the code reports is a
+        lifecycle mismatch it measured itself.
+
+        The live evidence, because a code moved off a face for looking untidy
+        and a code moved off a face for being misfiled look identical in the
+        diff: 323 alerts in one week, 306 `process-tree` and 17
+        `claude-session`, and the only three that never closed were sessions
+        held in `closing` — a state they never leave, so the finding was
+        reported forever, in two other accounts' names and in this operator's
+        own. Nothing about that row was a question a person could answer, and
+        the level it carried was the only thing that made it a question.
+        """
+        self.assertEqual(presentation.expectation_of("RUNTIME_OUTLIVED_OWNER")["kind"],
+                         "history")
+        level = presentation.attention_of("RUNTIME_OUTLIVED_OWNER")["level"]
+        self.assertEqual(level, "INFORMATIONAL")
+        self.assertFalse(presentation.on_the_face(level))
+        # Still alert truth: off the face is not out of the register.
+        self.assertIn("RUNTIME_OUTLIVED_OWNER", anomaly.SEVERITY)
+
+    def test_moving_it_out_of_the_declaration_bucket_removed_its_escalation(self):
+        """The consequence, asserted rather than left to be discovered.
+
+        `escalation` is `declared` PLUS a critical registration. A code with no
+        declaration has nothing for a criticality to weigh, so this one can no
+        longer reach ACTION_REQUIRED however critical the registered resource
+        is. That is the move working, not a regression: the escalation question
+        is "how important is the declaration being violated", and the honest
+        answer here is that there is no declaration.
+        """
+        self.assertEqual(presentation.attention_of("RUNTIME_OUTLIVED_OWNER",
+                                                   criticality="critical")["level"],
+                         "INFORMATIONAL")
+        # And the mechanism is still there for the codes that do declare one,
+        # so the assertion above is about this code and not about escalation
+        # having been switched off.
+        self.assertEqual(
+            presentation.attention_of("DESIRED_ACTUAL_MISMATCH",
+                                      criticality="critical")["level"],
+            "ACTION_REQUIRED")
+
 
 class TheBoundaryBucketAgreesWithTheThresholdsTests(unittest.TestCase):
     """`boundary` is the bucket fed by declared thresholds, so it has to be the
