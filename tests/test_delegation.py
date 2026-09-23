@@ -110,6 +110,14 @@ def a_grant(**over) -> dict:
         "items": ["LIT-0103"],
         "actions": ["research"],
         "scope_digests": {"LIT-0103": "sha256:" + "b" * 64},
+        # The subject half of the scope, alongside the work half: a grant is
+        # what `understanding_semantic` reads to decide whether a machine may
+        # reconcile a claim about a subject, and
+        # `test_every_declared_producer_is_actually_emitted` is the assertion
+        # that keeps `covers` in ROW_PRODUCED from being a producer with no
+        # field. A grant that delegates work and no subject is a real record and
+        # a different one; the fixture is the ordinary case.
+        "covers": ["litellm"],
         "budget": {"wall_seconds": 600, "max_attempts": 2,
                    "max_output_bytes": 65536, "exhausted": False},
     }

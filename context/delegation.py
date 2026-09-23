@@ -95,6 +95,12 @@ ROW_PRODUCED = {
     "projects": "the stored grant's `projects`",
     "items": "the stored grant's `items`",
     "actions": "the stored grant's `actions`",
+    # Copied because a second reader now decides authority by it:
+    # `understanding_semantic` lets a machine reconcile a claim about a subject
+    # only where a delegation covers that subject, and a grant whose `covers`
+    # cannot be seen in this report is one whose refusals a person would have to
+    # guess at.
+    "covers": "the stored grant's `covers` — the subject prefixes it delegates",
     "scope_digests": "the stored grant's `scope_digests`",
     "budget": "the stored grant's `budget`",
     "in_envelope": "whether this module put the grant in the map",
@@ -249,7 +255,7 @@ def envelopes(grants: dict, contexts: dict, *, now: str, named_by=()) -> dict:
             for field in ("delegated_by", "revoked", "revoked_at",
                           "revoked_reason", "valid_from", "expires_at",
                           "projects", "items", "actions", "scope_digests",
-                          "budget"):
+                          "budget", "covers"):
                 if field in grant:
                     row[field] = grant[field]
         if "delegation" in verdict:

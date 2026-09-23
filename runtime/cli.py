@@ -5876,6 +5876,134 @@ def _control_store():
     return mod, mod.AgentControlStore(_agent_control_store_path())
 
 
+def _reading_clock(raw: str) -> tuple[str | None, str]:
+    """The instant a delegation is judged at, from a caller-supplied timestamp.
+
+    `(now, why)` with exactly one of them filled. Factored out of `work grants`
+    when a second verb needed the same clock, because the reader's clock IS part
+    of the answer — a grant that authorizes at one instant and not the next is
+    the whole point of re-checking the delegation on every read — and two
+    compositions of that would be two instants for one question.
+
+    Both refusals are about the same thing: a timestamp this process cannot read
+    is not a timestamp it may fall back from, and one with no timezone names a
+    different instant depending on where the reader is standing.
+    """
+    try:
+        stamp = datetime.datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
+    except ValueError as exc:
+        return None, (f"--now {raw!r} is not a timestamp ({exc}). This verb "
+                      f"judges delegations against a clock; one it cannot read "
+                      f"is not a clock it may fall back from")
+    if stamp.tzinfo is None:
+        return None, (f"--now {raw!r} carries no timezone, so the instant it "
+                      f"names depends on where the reader is standing")
+    return stamp.astimezone(datetime.timezone.utc).isoformat(), ""
+
+
+def _delegation_from_grant(ref: str, now_raw: str) -> tuple[dict | None, str]:
+    """The delegation a RECORDED grant supplies, or the sentence saying why none.
+
+    §P3's first half: a reading commits under authority that is resolved from
+    Agent Control, not asserted by whoever submits the reading. `--delegation` is
+    `understanding_semantic`'s own contract — a file the caller hands in — and a
+    file is a shape no store checked: its `granted_by` is a string nothing
+    verified and its `covers` is a scope nobody recorded. This is the join, and
+    it keeps the two vocabularies apart rather than merging them:
+
+      * the grant's ROOT is `context/delegation.py`'s question (`delegated_by`
+        must resolve to a context that authorizes now), and its answer is copied,
+        never re-worded;
+      * the SCOPE is the record's own `covers`, copied as written. A grant that
+        records no `covers` covers nothing — which is the safe direction, and
+        reported rather than silently widened: every claim then lands as a
+        candidate awaiting a person.
+
+    What this does NOT do is invent a mapping. The store's other scope fields
+    (`projects`, `items`, `actions`) are a work scope, judged by
+    `intake/daily_cycle.grant_reason`; deriving subject prefixes from them would
+    be this function deciding what a delegation meant.
+
+    `(None, why)` with `why` non-empty for every refusal, and each refusal is a
+    different fact: "nothing was ever recorded", "the root is gone", "it does not
+    authorize now", "the scope is not a scope". Collapsed into one sentence a
+    person would be sent to the wrong producer.
+
+    The two checks that need no Item — is there a live grant, and is it in force
+    at this instant — are `intake/daily_cycle.standing_reason`'s, called rather
+    than re-implemented, because a second comparison of `valid_from`/`expires_at`
+    would be a second answer to whether a grant is current. `context/delegation
+    .derivation` deliberately does not make them: its docstring assigns the
+    grant's own window and scope to `grant_reason`, and on this path there is no
+    Item to pass that function, so a reviewer reading only the derivation would
+    find a revoked grant reported as AUTHORIZED.
+    """
+    delegation_mod = _load_module_from(REPO_ROOT / "context" / "delegation.py",
+                                       "serveros_context_delegation")
+    cycle = _load_module_from(REPO_ROOT / "intake" / "daily_cycle.py",
+                              "serveros_intake_daily_cycle")
+    store_mod, control = _control_store()
+    raw = now_raw or datetime.datetime.now(datetime.timezone.utc).isoformat()
+    now, why = _reading_clock(raw)
+    if now is None:
+        return None, why
+    try:
+        recorded = control.grants()
+        contexts = control.contexts()
+    except store_mod.StoreError as exc:
+        return None, str(exc)
+    grant = recorded.get(str(ref))
+    if grant is None:
+        return None, (
+            f"{ref!r} is not a grant this node recorded, so it delegates nothing. "
+            f"`serverosctl work grants` lists what has been recorded; a name that "
+            f"appears nowhere there is a submission the store never authorized")
+    # Guarded, because `standing_reason` is `grant_reason`'s reader and a store
+    # a person hand-edited can hold a non-mapping under a grant key. That value
+    # is `derivation`'s GRANT_MALFORMED to report, with its own sentence — not a
+    # traceback from `grant.get`.
+    #
+    # The ENVELOPE is what is judged, not the raw record. A stored grant carries
+    # its ref under `grant_ref` (the store's key) and `standing_reason` reads
+    # `grant["ref"]` (the name a cycle's envelope has), so handing it the record
+    # would report every grant as MISSING_OR_REVOKED_GRANT — a refusal caused by
+    # the caller's shape rather than by the record. `envelope_of` is the one
+    # place in this tree that unifies the two names, and a second unification
+    # here would be a second answer to what a grant's ref is.
+    envelope = (delegation_mod.envelope_of(grant, str(ref))
+                if isinstance(grant, dict) else None)
+    if envelope is not None:
+        standing = cycle.standing_reason(
+            envelope, now=datetime.datetime.fromisoformat(now))
+        if standing is not None:
+            return None, (
+                f"{ref!r} is recorded and {standing}, so it delegates nothing now. "
+                f"`serverosctl work grants` reports the record this was read from; "
+                f"the reading is refused rather than admitted under a grant that is "
+                f"not in force, and nothing here re-mints one")
+    delegated_by = grant.get("delegated_by") if isinstance(grant, dict) else None
+    verdict = delegation_mod.derivation(
+        grant, str(ref), contexts.get(str(delegated_by) or ""), now=now)
+    if verdict["state"] != "AUTHORIZED":
+        return None, (f"{verdict['state']}: {verdict['because']}")
+    # Non-null: `derivation` cannot reach AUTHORIZED for anything but a mapping.
+    covers = envelope.get("covers")
+    if covers is None:
+        covers = []
+    if not isinstance(covers, list) or not all(
+            isinstance(prefix, str) and prefix.strip() for prefix in covers):
+        return None, (
+            f"{ref!r} records `covers` as {covers!r}, which is not a list of "
+            f"subject prefixes. The module that decides what this scope covers "
+            f"reads it as one, and a scope it cannot read is not a broad one")
+    return {"covers": list(covers),
+            "until": envelope.get("expires_at"),
+            "granted_by": envelope.get("delegated_by"),
+            # The locator, not a paraphrase: a receipt carrying this can be
+            # traced back to the record it was authorized by.
+            "source": f"{control.path}#{ref}"}, ""
+
+
 def _work_board_document(args):
     """The composed personal board, shared by every verb that reads it.
 
@@ -6228,20 +6356,10 @@ def cmd_work_grants(args) -> int:
     # of re-checking the delegation on every read.
     raw = getattr(args, "now", "") or datetime.datetime.now(
         datetime.timezone.utc).isoformat()
-    try:
-        stamp = datetime.datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
-    except ValueError as exc:
-        sys.stderr.write(
-            f"serverosctl: --now {raw!r} is not a timestamp ({exc}). This verb "
-            f"judges delegations against a clock; one it cannot read is not a "
-            f"clock it may fall back from.\n")
+    now, why = _reading_clock(raw)
+    if now is None:
+        sys.stderr.write(f"serverosctl: {why}.\n")
         return EXIT_FAULT
-    if stamp.tzinfo is None:
-        sys.stderr.write(
-            f"serverosctl: --now {raw!r} carries no timezone, so the instant it "
-            f"names depends on where the reader is standing.\n")
-        return EXIT_FAULT
-    now = stamp.astimezone(datetime.timezone.utc).isoformat()
 
     try:
         recorded, contexts = control.grants(), control.contexts()
@@ -7269,6 +7387,119 @@ def _reading_current(semantic, report: dict, reading: dict) -> dict:
             "to_position": row.get("to_position")}
 
 
+def cmd_work_understanding_brief(args) -> int:
+    """§B2/P3 — the material a native Agent reads, at the version it must hand back.
+
+    The range verbs are four different things and this is the one that carries
+    text out:
+
+      * `work understanding` says which cards a source delta touches;
+      * `work understanding-patch` turns a range into a proposal a person
+        confirms;
+      * this one produces the INPUT to the semantic step: one range, the records
+        it names as the collector wrote them, the card those records are a change
+        to, and the two blocks — `source` and `read` — copied exactly as the
+        validator will compare them;
+      * `work understanding-semantic` takes the reading an authorised Agent wrote
+        against that packet and commits the part of it that may be committed
+        without a person.
+
+    It reads no model and writes no reading, and that line holds in both
+    directions: the Agent is a session somebody else runs, and a verb that could
+    author a reading would be a verb whose "native Agent" was itself. What
+    `--write` writes is the PACKET, which is an input a person can read before a
+    session is handed it.
+
+    It is also the only verb under `work` that puts message text on stdout, and
+    that is what it is for: "what is the model about to be given" has no other
+    answer on this node. A brief is a projection — four fields per record, the
+    text and the two revision flags — while the digest the reading must hand back
+    is taken over the whole record, so the packet is readable without being the
+    thing the identity is over.
+
+    A range the reader proposes and this packet cannot pin is PRINTED with the
+    reason, beside the ranges that were handed over and not instead of them: a
+    document range is a real piece of work on a real layer (the project cards on
+    this node cite documents as well as chats), and a listing that showed only
+    what it could carry would present a partial view of the layer as the whole
+    of it.
+    """
+    paths = paths_mod.Paths()
+    records = Path(getattr(args, "records_root", "") or
+                   Path(paths.root("workspace")) / "records")
+    if not records.is_absolute():
+        sys.stderr.write(
+            f"serverosctl: --records-root must be absolute, got {records}. The "
+            f"material a session reads is pinned to a source revision, and one "
+            f"read relative to whatever directory the caller stood in is a packet "
+            f"nobody else can reproduce.\n")
+        return EXIT_FAULT
+    capture = _load_module_from(REPO_ROOT / "intake" / "capture_coverage.py",
+                                "serveros_intake_capture_coverage")
+    delta = _load_module_from(REPO_ROOT / "intake" / "understanding_delta.py",
+                              "serveros_intake_understanding_delta")
+    brief_mod = _load_module_from(REPO_ROOT / "intake" / "understanding_brief.py",
+                                  "serveros_intake_understanding_brief")
+    try:
+        # Read here and passed in, for the same reason the other range verbs do
+        # it: two readers of one tree drift, and the packet must be pinned to
+        # what the reader proposes rather than to a second opinion about it.
+        objects = capture.read_root(records)["objects"]
+        report = delta.read_and_reconcile(records, objects)
+        pinned, unpinnable = brief_mod.briefs(report, records)
+        chosen = brief_mod.select(
+            pinned, refused=unpinnable,
+            card=getattr(args, "card", "") or None,
+            manifest=getattr(args, "manifest", "") or None,
+            position=getattr(args, "position", None))
+    except (capture.Refused, delta.Refused, brief_mod.Refused) as exc:
+        sys.stderr.write(f"serverosctl: {exc}\n")
+        return EXIT_FAULT
+
+    if args.write:
+        if len(chosen) != 1:
+            sys.stderr.write(
+                f"serverosctl: --write takes one brief and this selection is "
+                f"{len(chosen)}. A packet file that held several ranges would be "
+                f"handed to a session that cannot tell which one it read; narrow "
+                f"with --card/--manifest/--position.\n")
+            return EXIT_FAULT
+        try:
+            brief_mod.write(chosen[0], args.write)
+        except brief_mod.Refused as exc:
+            sys.stderr.write(f"serverosctl: {exc}\n")
+            return EXIT_FAULT
+
+    if len(chosen) == 1:
+        lines = brief_mod.render(chosen[0])
+    else:
+        lines = [f"{len(chosen)} range(s) the reader proposes:",
+                 ""]
+        for brief in chosen:
+            source = brief["source"]
+            lines.append(f"  {source['card']}  {source['manifest']} "
+                         f"{source['from_position']}–{source['to_position']}"
+                         f"  ({brief['range']['kind']})")
+        lines += ["", "hand one range to --write: a session reads one packet."]
+    if unpinnable:
+        # Printed even when other ranges were handed over: a range the reader
+        # proposes and this packet cannot carry is work somebody has to do, and
+        # a listing that showed only the pinnable ones would present a partial
+        # view of the layer as the whole of it.
+        lines += ["", f"{len(unpinnable)} range(s) this packet cannot pin:"]
+        for row in unpinnable:
+            lines.append(f"  {row['card']}  {row['kind']}  "
+                         f"{row['manifest']} {row['from_position']}–"
+                         f"{row['to_position']}")
+            lines.append(f"      {row['why']}")
+    if args.write:
+        lines.append(f"    written     {args.write}")
+    emit({"schema": brief_mod.SCHEMA, "count": len(chosen), "briefs": chosen,
+          "unpinnable": unpinnable},
+         as_json=args.json, lines=lines)
+    return EXIT_OK
+
+
 def cmd_work_understanding_semantic(args) -> int:
     """§B2 — the semantic step: a native Agent's reading becomes understanding.
 
@@ -7297,6 +7528,24 @@ def cmd_work_understanding_semantic(args) -> int:
     span at the text that was there before somebody edited the card matches
     nothing, and the resolution says so instead of quietly doing nothing.
 
+    THE AUTHORITY HAS TWO FORMS AND ONE OF THEM IS RESOLVED
+
+    `--grant` names a grant this node RECORDED, and the scope, the window and
+    the root come out of the record: the scope is the grant's own `covers`, the
+    root is its `delegated_by`, and `context/delegation.py` decides whether that
+    root authorizes at `--now` — with its sentence copied rather than re-worded.
+    A grant the store has never heard of, a root that has gone, a delegation
+    that no longer authorizes and a record whose scope cannot be read are four
+    refusals with four different next actions, and none of them is "commit
+    anyway".
+
+    `--delegation` hands in a file and asserts the same four fields. It is kept
+    because it is `understanding_semantic`'s own contract and the module's tests
+    are written against it — but a file is a shape no store checked, and
+    `granted_by` in it is a string nothing verified. `--grant` is the product
+    path; the two are mutually exclusive so that no commit can be authorized by
+    one while reporting the other.
+
     Without `--commit` nothing is written and you get the resolution. With it,
     the write goes into each owning card's own fence — the prose around it is
     preserved byte for byte — and a claim whose view could not be updated comes
@@ -7324,7 +7573,23 @@ def cmd_work_understanding_semantic(args) -> int:
         "serveros_intake_understanding_semantic")
 
     delegation = None
-    if args.delegation:
+    if args.grant:
+        # §P3: the authority is RESOLVED from Agent Control. `--delegation` is
+        # the module's contract and this is the product path to it; the two are
+        # mutually exclusive so that a commit never has two answers to "under
+        # what authority" and no way to tell which one it used.
+        delegation, why = _delegation_from_grant(args.grant, args.now)
+        if delegation is None:
+            sys.stderr.write(f"serverosctl: {why}\n")
+            return EXIT_FAULT
+        if not delegation["covers"]:
+            sys.stderr.write(
+                f"serverosctl: grant {args.grant!r} is recorded and authorizes, "
+                f"and it names no `covers` — so it delegates no subject and every "
+                f"claim will land as a candidate awaiting a person. That is the "
+                f"safe direction and it is worth saying out loud before a reading "
+                f"is committed under it.\n")
+    elif args.delegation:
         try:
             delegation = json.loads(Path(args.delegation).read_text(encoding="utf-8"))
         except (OSError, ValueError) as exc:
@@ -8933,6 +9198,29 @@ def build_parser() -> argparse.ArgumentParser:
                                 "this patch instead of building a new one")
     wk_upatch.set_defaults(func=cmd_work_understanding_patch)
 
+    wk_ubrief = work_sub.add_parser(
+        "understanding-brief", help="§B2/P3 — the fixed-version material a "
+                                    "native Agent reads: one range's records, "
+                                    "the card they are a change to, and the two "
+                                    "blocks the reading must hand back. Reads "
+                                    "only; --write writes the packet a session "
+                                    "is handed, never a reading", **_COMMON)
+    wk_ubrief.add_argument("--records-root", default="",
+                           help="the records checkout to read. Default: this "
+                                "node's workspace root + /records. Must be absolute")
+    wk_ubrief.add_argument("--card", default="",
+                           help="only ranges for this card, named as the reader "
+                                "names it (records-root relative)")
+    wk_ubrief.add_argument("--manifest", default="",
+                           help="only ranges citing this capture object, by its "
+                                "manifest key")
+    wk_ubrief.add_argument("--position", type=int, default=None,
+                           help="only the range whose span contains this position")
+    wk_ubrief.add_argument("--write", type=Path, default=None,
+                           help="write ONE selected brief here as the packet a "
+                                "session is handed. Must be absolute")
+    wk_ubrief.set_defaults(func=cmd_work_understanding_brief)
+
     wk_usem = work_sub.add_parser(
         "understanding-semantic", help="§B2 — the semantic step: what an "
                                        "authorised native Agent read becomes "
@@ -8947,11 +9235,25 @@ def build_parser() -> argparse.ArgumentParser:
                          help="the records checkout to read and, with --commit, "
                               "to write into. Default: this node's workspace "
                               "root + /records. Must be absolute")
-    wk_usem.add_argument("--delegation", type=Path, default=None,
-                         help="the standing grant that lets machine facts "
-                              "commit without a person (JSON: covers/until/"
-                              "granted_by/source). Read only, and absent means "
-                              "every claim is a candidate")
+    wk_usem_authority = wk_usem.add_mutually_exclusive_group()
+    wk_usem_authority.add_argument("--delegation", type=Path, default=None,
+                                   help="the standing grant that lets machine "
+                                        "facts commit without a person (JSON: "
+                                        "covers/until/granted_by/source), "
+                                        "asserted by the caller. Read only, and "
+                                        "absent means every claim is a candidate")
+    wk_usem_authority.add_argument("--grant", default="",
+                                   help="a grant REF this node recorded, resolved "
+                                        "through Agent Control (scope, window and "
+                                        "root from the record, not from the "
+                                        "caller). Mutually exclusive with "
+                                        "--delegation: one commit has one answer "
+                                        "to 'under what authority'")
+    wk_usem.add_argument("--now", default="",
+                         help="the instant to judge the grant's root at, with "
+                              "the --grant path. Default: this process's clock. "
+                              "It is a flag because the reader's clock is part "
+                              "of the answer")
     wk_usem.add_argument("--accepted", type=Path, default=None,
                          help="what a person accepted about this proposal "
                               "(JSONL: card/manifest/from_position/to_position/"

@@ -47,8 +47,18 @@ def fresh(observed_at: str, now: datetime, ttl_seconds: int) -> bool:
     return 0 <= age <= ttl_seconds
 
 
-def grant_reason(grant: dict, *, item: dict, action: str, now: datetime) -> str | None:
-    """Validate scope/time/budget, not the authenticity of the supplied grant."""
+def standing_reason(grant: dict, *, now: datetime) -> str | None:
+    """The two judgements about a grant that need no Item and no action.
+
+    Is there a live grant here at all, and is it in force now. Factored out
+    verbatim when a second reader needed them: `runtime/cli.py`'s `--grant`
+    authority path commits a READING, which has no Item to hand `grant_reason`,
+    and a second copy of these comparisons would be a second answer to "is this
+    grant live" — the failure this tree keeps naming. `revoked is not False`
+    rather than `not revoked` is deliberate and is the same test the original
+    written here used: a record that never says whether it was revoked has not
+    said it is live.
+    """
     if not grant.get("ref") or grant.get("revoked") is not False:
         return "MISSING_OR_REVOKED_GRANT"
     try:
@@ -56,6 +66,14 @@ def grant_reason(grant: dict, *, item: dict, action: str, now: datetime) -> str 
             return "GRANT_NOT_CURRENT"
     except (KeyError, ValueError, TypeError):
         return "INVALID_GRANT_TIME"
+    return None
+
+
+def grant_reason(grant: dict, *, item: dict, action: str, now: datetime) -> str | None:
+    """Validate scope/time/budget, not the authenticity of the supplied grant."""
+    standing = standing_reason(grant, now=now)
+    if standing is not None:
+        return standing
     if item.get("project") not in grant.get("projects", []):
         return "PROJECT_OUT_OF_SCOPE"
     if item.get("id") not in grant.get("items", []):

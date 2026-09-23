@@ -400,6 +400,11 @@ actuators:
       `intake/understanding_semantic.py#_atomic_write` is the second `mkstemp`
       site and the same argument: the temporary is one this process just made,
       and the unlink runs only on the path where the replace did not happen.
+
+      `intake/understanding_brief.py#write` is the third `mkstemp` site and the
+      same argument again: `tempfile.mkstemp` names the temporary, the unlink
+      runs only in the `except` arm, and it therefore removes a file this
+      process created one statement earlier and nothing else.
     sites:
       - {file: relations/project.py, symbols: [write]}
       - {file: runtime/ability_projection.py, symbols: [write_atomic]}
@@ -411,6 +416,7 @@ actuators:
       - {file: runtime/daily_report.py, symbols: [_atomic_write_text]}
       - {file: intake/understanding_patch.py, symbols: [write]}
       - {file: intake/understanding_semantic.py, symbols: [_atomic_write]}
+      - {file: intake/understanding_brief.py, symbols: [write]}
 
   - id: atomic-write-commit
     kind: fs_mutation
@@ -451,6 +457,17 @@ actuators:
       the patch write's: the module's whole subject is a card whose fenced
       reading was replaced by a person's correction, and a reader who catches
       half of that splice cannot tell a correction from a lost paragraph.
+
+      `intake/understanding_brief.py#write` is the sixth and the newest, and it
+      is the patch writer's shape with the opposite reader: the file it writes
+      is the PACKET — the fixed-version material a native Agent session is
+      handed before it writes a reading — so the reader who must never see half
+      of it is a model, and half a packet is a reading authored against text
+      that was never all there. The path is again the caller's and refused
+      unless absolute, which is the module's own reason for the rule: a packet
+      written relative to whatever directory a CLI happened to stand in is one
+      the session cannot find. It was written in the round that added the verb
+      and declared in this one, because the guard's run is what says so.
     sites:
       - {file: relations/project.py, symbols: [write]}
       - {file: runtime/ability_projection.py, symbols: [write_atomic]}
@@ -463,6 +480,7 @@ actuators:
       - {file: intake/global_board.py, symbols: [render], verb: ".replace()"}
       - {file: intake/understanding_patch.py, symbols: [write]}
       - {file: intake/understanding_semantic.py, symbols: [_atomic_write]}
+      - {file: intake/understanding_brief.py, symbols: [write]}
 
   - id: daemon-owns-its-socket
     kind: fs_mutation
