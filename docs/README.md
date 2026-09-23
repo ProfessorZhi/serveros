@@ -27,7 +27,7 @@
 | 文档 | 范围 |
 |---|---|
 | [Collaboration](COLLABORATION-CONTRACT.md) | Parent继续责任、receiver接受、授权/预算/恢复 |
-| [Daily Work Cycle](daily-work-cycle.md) | 两水位、最多两root焦点、GPT/Quay与必需交付 |
+| [Daily Work Cycle](daily-work-cycle.md) | 两水位、最多两root焦点、GPT/Quay与必需交付 |\n| [Ability Operating Model](ABILITY-OPERATING-MODEL.md) | 21稳定职责→子Ability/实现层；定时节点owner、Session/Workspace显式位置、serverosd与scheduler边界、自迭代入口 |
 | [Scenario Acceptance](SCENARIO-ACCEPTANCE.md) | J01–J10；本轮REF/DEEP追加到对应用户场景 |
 | [协作实现索引](COLLABORATION-IMPLEMENTATION.md) | 合同到主计划映射，明确新writer/水位已存在而业务消费还须验证 |
 | [21项场景](https://github.com/ProfessorZhi/ability-management/blob/main/design/ABILITY-SCENARIO-CONTRACTS.md) | 专属工作/交接；旧源码观察要按当前revision复核 |

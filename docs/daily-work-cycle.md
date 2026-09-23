@@ -95,3 +95,37 @@ source取得失败/权限撤销只冻结可能受影响的后续效果，精确s
 2026-09-22原生GPT、Quay gate、合成browser、Windows checkpoint等历史实测在integration-readiness-20260922.md；它们不是当前LIVE/业务完整证明。此次源码反查与风险见WORK-SCENARIO-REVIEW-20260923.md。
 
 执行仍用CC-EXECUTION-PLAN.md的P0–P12；COLLABORATION-IMPLEMENTATION只给本轮接口/失败定位和依赖细化，不另开一套完成度表或工作平台。
+
+
+## 12. 显式定时节点与Ability owner
+
+Daily Cycle不是单一Ability，也不是serverosd内部循环。时间只唤醒有限routine，前置receipt/state决定能否继续。推荐当前个人实例候选：
+
+| 节点 | 推荐触发 | owner |
+|---|---|---|
+| 日间轻量增量 | 每30–60分钟 | A4 scheduler → B1 |
+| Evening cutoff | 20:00 local候选 | A4 |
+| Archive catch-up | cutoff后 | B1 |
+| Structured Understanding | B1 receipt后 | B2 + A2 |
+| Daily Reconciliation | B2 receipt后 | B10 |
+| Requirement/Board reconcile | 人回复或standing policy允许 | B3 + B4 |
+| Next-day Focus <=2 | reconcile后/约21:00候选 | B4 |
+| Session Prep | Focus成立后 | A1 |
+| Workspace Prep | Focus成立后 | A3 |
+| Runtime Prep | Session/Workspace后 | A4 |
+| Morning Resume | 08:30 local候选 | A1 + A3 + A4 + B4 |
+| Session/Workspace maintenance | 低频夜间 | A1.3 / A3 |
+
+具体时间/时区/预算是instance policy；用户只说“8点”时要结合“归档今天/选明天”语境解析早晚，必要时只问这一处配置。
+
+A1 Session Prep必须显式包含：Context Resolver、agent-session-management实时控制、session-manager历史archive/restore。A3 Workspace Prep必须显式确认repo/base/worktree/dirty owner/remote freshness/write scope。完整职责见 [Ability Operating Model](ABILITY-OPERATING-MODEL.md)。
+
+## 13. serverosd与scheduler的边界
+
+`serverosd`提供长期Node Core事实/控制面：runtime registry、IPC、Agent Control持久机械状态、lease/effect协调、低成本readiness、有限reconcile和自身健康。它不主动抓飞书、做B2语义推理、选业务Focus、管理Session archive、创建worktree或运行长驻workflow。
+
+OS/授权scheduler负责wake finite routine；routine调用对应Ability实现，完成/partial/wait后写receipt并退出。一个logical routine只有一个trigger owner，错过周期按cycle_ref幂等恢复，不重复开批。
+
+## 14. Ability自迭代进入治理而非业务流水线
+
+G1.5 Ability Evaluation & Evolution消费Journey/A7、用户纠正、运行receipt和MetaCC session evidence，比较“Ability理想职责”与“真实完成效果”。只有具体gap才产生候选优化，并在隔离eval/held-out/fresh consumer后走G1正常升级。它不每天盲改Skill，也不自改权限/安全/业务职责。

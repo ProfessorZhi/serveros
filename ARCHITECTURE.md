@@ -1525,3 +1525,14 @@ old tests, silently weakening a check, or claiming a doc edit deployed functiona
 A separate review record identifies inspected sources, concrete corrected defects and
 remaining implementation verification. Future changes refine this baseline from real
 work evidence, with one authority and a proportionate change surface.
+
+
+## Product Ability Ownership & Operating Model · 2026-09-23 addendum
+
+The 21 G/A/B entries are stable **semantic product responsibilities**, not a requirement for 21 physical Skills. Their realizations may be Core code, Skills, specialist Skills, MCPs, Providers, Plugins or native tools, selected per terminal/runtime. The complete five-layer product tree is owned by ability-management [PRODUCT-ABILITY-TREE](https://github.com/ProfessorZhi/ability-management/blob/main/design/PRODUCT-ABILITY-TREE.md); artifact discovery remains a separate generated view.
+
+Scheduled daily work is a **Profile that composes Abilities**, not a new workflow Ability or daemon. OS/authorized scheduler wakes finite routines; B1 owns source capture, B2 semantic understanding, A2 invalidation/recall, B10 daily human reconciliation, B3/B4 requirement/board/focus, A1 session preparation, A3 workspace preparation and A4 runtime readiness. Details and the recommended instance cadence are in [Ability Operating Model](docs/ABILITY-OPERATING-MODEL.md).
+
+`serverosd` stays the single resident Node Core: runtime/resource facts, IPC, Agent Control durable mechanical state, leases/effects, bounded reconciliation and its own observable health. It does **not** become a Feishu crawler, semantic reader, business scheduler, Session archive, Workspace manager or self-improvement daemon.
+
+Ability self-improvement is **G1.5 Ability Evaluation & Evolution**, a sub-ability of governance rather than a 22nd top-level Ability. It compares stable Responsibility Contracts with real outcomes/evals, uses MetaCC/A7/human feedback as evidence, proposes the smallest realization change and promotes only after isolated and fresh-consumer verification. It cannot rewrite its own responsibility, authorization or safety boundary to make a failing eval pass.
