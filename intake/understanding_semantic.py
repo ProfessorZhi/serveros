@@ -71,7 +71,12 @@ from pathlib import Path
 
 SCHEMA = "serveros/understanding-semantic.v1"
 READING_SCHEMA = "serveros/understanding-reading.v1"
-RECEIPT_SCHEMA = "serveros/understanding-receipt.v1"
+#: Bumped when the receipt's SHAPE changed, and bumped for that reason alone:
+#: `written[i].claims` used to hold a count and now holds the claim ids. The
+#: schema string is what makes a receipt written before that change refusable
+#: by name instead of readable in the wrong sense — a v1 receipt handed to a
+#: reader that expects ids would report a count as if it were a list.
+RECEIPT_SCHEMA = "serveros/understanding-receipt.v2"
 
 #: Where the understanding layer sits under the records root. The same two
 #: segments `understanding_delta` walks, and repeated here rather than imported
@@ -968,8 +973,12 @@ COMMIT_PRODUCED = {
              "claim. The card is a FIELD and not something read back out of the "
              "text: a line parsed for its owner would make the ownership of a "
              "claim depend on how it was rendered, and rendering changes",
-    "views": "the view cards the committed claims are references from, with the "
-             "reference line for each",
+    "views": "the view cards the committed claims are references from, "
+             "`{view: {claim id: reference line}}`. Keyed by claim id rather than "
+             "held as a list of lines, because the receipt of a view update has "
+             "to be able to say WHICH claims that card is now a route to. A "
+             "count of lines records that a card was touched and not whose fact "
+             "can be reached through it",
 }
 
 RECEIPT_PRODUCED = {
@@ -984,18 +993,26 @@ RECEIPT_PRODUCED = {
                 "value so that an acceptance edited after the fact is caught "
                 "rather than matched",
     "written": "the files this write actually changed, with the digest each one "
-               "had before and after. Facts about the disk, read back after the "
-               "write and not computed before it",
+               "had before and after and the CLAIM IDS that file now carries "
+               "(`{card, before, after, claims}`). Facts about the disk, read "
+               "back after the write and not computed before it. The ids are "
+               "copied from the commit's own keys and are never parsed back out "
+               "of the rendered lines: a claim parsed out of a line would make a "
+               "claim's identity depend on how it was rendered, and rendering "
+               "changes. This field used to hold the NUMBER of lines, which "
+               "named no claim at all — so no later reader could ask whether a "
+               "particular claim was still there to be recalled",
     "pending_views": "the views whose update did not complete, each with the "
-                     "error and the reference lines it was to receive. Present "
-                     "means the commit is PARTIAL: the claim is in its owning "
-                     "card and some reference to it is missing. The contract's "
-                     "§5 is explicit that this must not be reported as all "
-                     "consumers aligned. The LINES are carried here because a "
-                     "resume cannot re-derive them: by the time a view is "
-                     "retried, the first write has moved the card the reading "
-                     "was reasoned against, and re-running the reading against "
-                     "the new baseline is a different reading",
+                     "error and the references it was to receive, "
+                     "`{claim id: reference line}`. Present means the commit is "
+                     "PARTIAL: the claim is in its owning card and some "
+                     "reference to it is missing. The contract's §5 is explicit "
+                     "that this must not be reported as all consumers aligned. "
+                     "The REFERENCES are carried here because a resume cannot "
+                     "re-derive them: by the time a view is retried, the first "
+                     "write has moved the card the reading was reasoned against, "
+                     "and re-running the reading against the new baseline is a "
+                     "different reading",
     "state": "COMPLETE, PARTIAL, or NOTHING_TO_WRITE. The first two are decided "
              "by `pending_views` and nothing else. The third is a receipt that is "
              "RETURNED AND NOT WRITTEN — a commit whose every claim awaits a "
@@ -1050,13 +1067,10 @@ def commit(resolution: dict, reading: dict) -> dict:
     """The write this resolution implies, before anything is written."""
     lines = {claim["id"]: {"card": claim["card"], "text": _claim_line(claim)}
              for claim in resolution["committed"]}
-    views: dict[str, list[str]] = {}
+    views: dict[str, dict[str, str]] = {}
     for claim in resolution["committed"]:
-        reference = _view_reference(claim)
         for view in claim["views"]:
-            views.setdefault(view, [])
-            if reference not in views[view]:
-                views[view].append(reference)
+            views.setdefault(view, {})[claim["id"]] = _view_reference(claim)
     return no_unsourced({
         "schema": SCHEMA,
         "key": list(commit_key(reading)),
@@ -1157,11 +1171,14 @@ def write(commit_document: dict, records_root: Path | str, *,
 
     baseline = commit_document["baseline"]
     written = []
-    # Group the lines by the card that owns them, in id order, so that two runs
-    # over one commit produce the same file and the same receipt.
-    by_card: dict[str, list[str]] = {}
-    for _, entry in sorted(commit_document["lines"].items()):
-        by_card.setdefault(entry["card"], []).append(entry["text"])
+    # Group the lines by the card that owns them, carrying each claim's id
+    # alongside its text. The id is not decoration: it is what the receipt
+    # records so that a later reader can ask about ONE claim rather than about a
+    # card. Sorted, so that two runs over one commit produce the same file and
+    # the same receipt.
+    by_card: dict[str, list[tuple[str, str]]] = {}
+    for claim_id, entry in sorted(commit_document["lines"].items()):
+        by_card.setdefault(entry["card"], []).append((claim_id, entry["text"]))
     # An owning card that cannot be written is NOT a partial commit: a claim
     # whose owner did not take it was never committed, and reporting it as a
     # missing reference would say the claim is in a card it is not in.
@@ -1171,17 +1188,21 @@ def write(commit_document: dict, records_root: Path | str, *,
     # the card the reading was ABOUT. A view is not interpreted, only referenced
     # from, so a view edited since the read is a view whose text this write still
     # does not touch.
-    for card, texts in sorted(by_card.items()):
-        written.append(_write_fence(records_root, base, card, texts, baseline))
+    for card, claimed in sorted(by_card.items()):
+        written.append(_write_fence(records_root, base, card,
+                                    [text for _, text in claimed], baseline,
+                                    claims=[claim_id for claim_id, _ in claimed]))
 
     pending = []
     for view, references in sorted(commit_document["views"].items()):
+        ordered = sorted(references.items())
         try:
             written.append(_write_fence(records_root, base, view,
-                                        list(references)))
+                                        [line for _, line in ordered],
+                                        claims=[claim_id for claim_id, _ in ordered]))
         except Refused as exc:
             pending.append({"view": view, "why": str(exc),
-                            "lines": list(references)})
+                            "references": dict(ordered)})
 
     receipt = no_unsourced({
         "schema": RECEIPT_SCHEMA,
@@ -1209,9 +1230,11 @@ def _resume(prior: dict, records_root: Path | str, receipt_path: Path) -> dict:
     written = list(prior.get("written") or [])
     pending = []
     for entry in prior.get("pending_views") or []:
+        ordered = sorted((entry.get("references") or {}).items())
         try:
             written.append(_write_fence(records_root, base, entry["view"],
-                                        list(entry["lines"])))
+                                        [line for _, line in ordered],
+                                        claims=[claim_id for claim_id, _ in ordered]))
         except Refused as exc:
             pending.append({**entry, "why": str(exc)})
     receipt = no_unsourced({
@@ -1298,7 +1321,8 @@ def _replay(prior: dict, reading: dict, records_root: Path | str, *,
 
 
 def _write_fence(records_root: Path | str, base: Path, card: str,
-                 lines: list[str], baseline: dict | None = None) -> dict:
+                 lines: list[str], baseline: dict | None = None, *,
+                 claims: list[str] | None = None) -> dict:
     """Replace this module's fence in one card, and nothing else in it."""
     target = Path(records_root) / card
     # `card` is records-root-relative, the coordinate system the reader and the
@@ -1357,8 +1381,12 @@ def _write_fence(records_root: Path | str, base: Path, card: str,
         raise Refused(
             f"{target}: the card on disk is not what this module wrote, so this "
             f"write is not reported as having happened")
+    # The ids are the caller's and are carried through unexamined: which claims
+    # a card now holds is a fact about the commit, and this function is the one
+    # place that knows the write happened. They are NOT recovered from `lines`,
+    # which are rendered text.
     return {"card": card, "before": card_digest(before), "after": card_digest(after),
-            "claims": len(lines)}
+            "claims": list(claims or [])}
 
 
 def fence_parts(text: str) -> tuple[str, str, str]:
@@ -1495,7 +1523,24 @@ def _read_receipt(path: Path) -> dict | None:
             f"{path} exists and is not readable JSON. This proposal may already "
             f"have been committed and its record damaged; writing again would "
             f"duplicate it. Inspect the file before retrying") from None
-    return document if isinstance(document, dict) else None
+    if not isinstance(document, dict):
+        return None
+    # A receipt this module does not recognise is not an absent one. Every
+    # question a caller asks of a receipt — was this proposal already written,
+    # which claims went into which card, under which acceptance — is answered
+    # from its shape, and one shape is not another. Refusing by name is the only
+    # reading that cannot be wrong: the alternative is a v1 receipt, whose
+    # `written[i].claims` was a COUNT, being read by something that expects the
+    # claim ids and reporting a number as a list.
+    if document.get("schema") != RECEIPT_SCHEMA:
+        raise Refused(
+            f"{path} is a receipt this module does not recognise: its schema is "
+            f"{document.get('schema')!r}, not {RECEIPT_SCHEMA!r}. It may be the "
+            f"record of a commit of this proposal made by a different version, "
+            f"and this module cannot tell which claims it wrote or under which "
+            f"acceptance. Writing again on top of it would duplicate whatever it "
+            f"holds; inspect the file before retrying")
+    return document
 
 
 def _write_receipt(path: Path, receipt: dict) -> None:
@@ -1602,12 +1647,26 @@ def render_receipt(receipt: dict) -> list[str]:
                      f"{_short(receipt['accepted']['digest'])}")
     for entry in receipt["written"]:
         lines.append(f"  · {entry['card']}  {_short(entry['before'])} → "
-                     f"{_short(entry['after'])}  {entry['claims']} 条")
+                     f"{_short(entry['after'])}  {_claim_ids_text(entry['claims'])}")
     for entry in receipt["pending_views"]:
-        lines.append(f"  ! {entry['view']}  {entry['why']}")
+        lines.append(f"  ! {entry['view']}  {entry['why']}"
+                     + (f"  {_claim_ids_text(sorted(entry.get('references') or {}))}"
+                        if entry.get("references") else ""))
     lines.append(f"committed   {receipt['committed_at']}"
                  + ("  （重放：未再次写入）" if receipt["reused"] else ""))
     return lines
+
+
+def _claim_ids_text(claim_ids) -> str:
+    """Which claims one written card now carries, in a person's words.
+
+    The ids are listed and not only counted. "2 条" tells a reader that
+    something was written; it does not tell them whether the fact they were
+    looking for is in there, and it is the second question a receipt is read to
+    answer — the first being whether anything was written at all.
+    """
+    ids = list(claim_ids or [])
+    return f"{len(ids)} 条" + (f"：{', '.join(str(i) for i in ids)}" if ids else "")
 
 
 def _state_line(receipt: dict) -> str:

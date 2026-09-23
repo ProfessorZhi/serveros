@@ -603,7 +603,7 @@ class TestTheWriteHappensOnce:
         entries = {entry["card"]: entry for entry in receipt["written"]}
         assert entries[CARD]["before"] == us.card_digest(ALICE_PROSE)
         assert entries[CARD]["after"] == digest_of(root, CARD)
-        assert entries[CARD]["claims"] == 1
+        assert entries[CARD]["claims"] == ["c1"]
 
 
 # --------------------------------------------------------------------------
@@ -1272,8 +1272,10 @@ class TestAViewThatFailsIsPartial:
         receipt = applied(tmp_path, root, document, delegation=GRANT)
         assert receipt["state"] == "PARTIAL"
         assert [entry["view"] for entry in receipt["pending_views"]] == [VIEW]
-        assert receipt["pending_views"][0]["lines"], \
-            "a resume must not have to re-derive the lines it still owes"
+        owed = receipt["pending_views"][0]["references"]
+        assert list(owed) == ["c1"], \
+            "a resume must not have to re-derive the references it still owes"
+        assert f"`{CARD}`" in owed["c1"] and "c1" in owed["c1"]
         # The claim IS in its owning card. Reporting COMPLETE would say the
         # consumers agree; reporting nothing would lose the claim.
         assert "她说周五交付" in (root / CARD).read_text(encoding="utf-8")
@@ -1307,6 +1309,117 @@ class TestAViewThatFailsIsPartial:
         second = applied(tmp_path, root, document, delegation=GRANT)
         assert second["state"] == "PARTIAL"
         assert [entry["view"] for entry in second["pending_views"]] == [VIEW]
+
+
+# --------------------------------------------------------------------------
+# the receipt names its claims
+# --------------------------------------------------------------------------
+
+class TestTheReceiptNamesItsClaims:
+    """A receipt that named no claim could not answer the second question.
+
+    The first question a receipt answers is whether anything was written. The
+    second is whether the fact a reader is looking for is in what was written —
+    and a count of lines cannot answer it. Everything A2 does with a committed
+    claim starts here: without the ids, "is this claim still recallable" has no
+    subject.
+    """
+
+    def test_the_owning_card_records_the_claim_id_and_not_a_count(self, tmp_path):
+        root = records_tree(tmp_path)
+        receipt = commit_and_write(tmp_path, root, delegation=GRANT)
+        entries = {entry["card"]: entry for entry in receipt["written"]}
+        assert entries[CARD]["claims"] == ["c1"]
+
+    def test_the_view_records_the_claims_it_is_now_a_route_to(self, tmp_path):
+        root = records_tree(tmp_path)
+        receipt = commit_and_write(tmp_path, root, delegation=GRANT)
+        entries = {entry["card"]: entry for entry in receipt["written"]}
+        assert entries[VIEW]["claims"] == ["c1"]
+
+    def test_two_claims_in_one_card_are_both_named_in_id_order(self, tmp_path):
+        root = records_tree(tmp_path)
+        document = reading(root, [claim("z9"), claim("a1", now="她说周一交付")])
+        receipt = applied(tmp_path, root, document, delegation=GRANT)
+        entries = {entry["card"]: entry for entry in receipt["written"]}
+        assert entries[CARD]["claims"] == ["a1", "z9"]
+
+    def test_an_id_that_appears_nowhere_in_the_line_is_still_recorded(
+            self, tmp_path):
+        # The mutation this keeps: recovering the ids by parsing the rendered
+        # line. The line carries the kind, the subject, the excerpt and the
+        # confirmation and NOT the id, so a parser finds nothing — and an id
+        # that happens to appear as prose would be found and be wrong.
+        root = records_tree(tmp_path)
+        document = reading(root, [claim("zz-9", now="她说周五交付")])
+        receipt = applied(tmp_path, root, document, delegation=GRANT)
+        body = (root / CARD).read_text(encoding="utf-8")
+        assert "zz-9" not in body
+        entries = {entry["card"]: entry for entry in receipt["written"]}
+        assert entries[CARD]["claims"] == ["zz-9"]
+
+    def test_a_resume_names_the_claims_it_was_owed(self, tmp_path):
+        # ONE reading, applied twice. Calling `reading()` again after the first
+        # write would compute a fresh `card_digest` off a card that has since
+        # gained a fence, and the second application would be a different
+        # reading of the same span — which is refused, and not the case here.
+        root = records_tree(tmp_path)
+        document = reading(root)
+        (root / VIEW).unlink()
+        (root / VIEW).mkdir()
+        first = applied(tmp_path, root, document, delegation=GRANT)
+        assert first["state"] == "PARTIAL"
+        (root / VIEW).rmdir()
+        (root / VIEW).write_text(VIEW_PROSE, encoding="utf-8")
+        second = applied(tmp_path, root, document, delegation=GRANT)
+        entries = {entry["card"]: entry for entry in second["written"]}
+        assert entries[VIEW]["claims"] == ["c1"]
+        assert "c1" in (root / VIEW).read_text(encoding="utf-8")
+
+    def test_the_rendered_receipt_lists_the_ids_and_not_only_a_count(self, tmp_path):
+        root = records_tree(tmp_path)
+        receipt = commit_and_write(tmp_path, root, delegation=GRANT)
+        rendered = "\n".join(us.render_receipt(receipt))
+        assert "1 条：c1" in rendered
+        assert "1 条\n" not in rendered and not rendered.endswith("1 条")
+
+    def test_a_receipt_from_before_the_shape_changed_is_refused_by_name(
+            self, tmp_path):
+        # A v1 receipt is not an absent receipt and not a readable one. Its
+        # `written[i].claims` was a COUNT, so a reader expecting ids would
+        # report a number where the claims should be — and the write that
+        # followed would duplicate a commit this module cannot read.
+        path = tmp_path / "receipt-v1.json"
+        path.write_text(json.dumps({
+            "schema": "serveros/understanding-receipt.v1",
+            "key": [CARD, MANIFEST, 10, 20, "a" * 64],
+            "written": [{"card": CARD, "before": "b" * 64, "after": "c" * 64,
+                         "claims": 1}],
+        }), encoding="utf-8")
+        with pytest.raises(us.Refused) as caught:
+            us._read_receipt(path)
+        assert "serveros/understanding-receipt.v1" in str(caught.value)
+        assert "duplicate" in str(caught.value)
+
+    def test_a_receipt_the_module_writes_is_one_it_can_read_back(self, tmp_path):
+        root = records_tree(tmp_path)
+        document = reading(root)
+        receipt = commit_and_write(tmp_path, root, document=document, delegation=GRANT)
+        path = us._receipt_path(us._understanding_root(root), at(tmp_path, document))
+        assert us._read_receipt(path) == receipt
+
+    def test_receipt_for_refuses_a_receipt_it_cannot_read(self, tmp_path):
+        # The read-only accessor is a reader too, and the one most likely to be
+        # pointed at a file somebody copied in.
+        root = records_tree(tmp_path)
+        document = reading(root)
+        base = us._understanding_root(root)
+        path = us._receipt_path(base, at(tmp_path, document))
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps({"schema": "something-else/1",
+                                    "key": [], "written": []}), encoding="utf-8")
+        with pytest.raises(us.Refused):
+            us.receipt_for(at(tmp_path, document), root)
 
 
 # --------------------------------------------------------------------------
