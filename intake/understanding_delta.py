@@ -55,9 +55,37 @@ position and still be wrong, because a message it already read was **edited or
 deleted in place** — same position, different content. That is `STALE_IN_PLACE`,
 and it is a separate state because the fix is different: not "read further" but
 "re-read what you already read".
+
+A POSITION IS NOT A VERSION
+---------------------------
+`STALE_IN_PLACE` names the fact that a position can hold a different text than
+the one a card read there. Detecting it once is not the same as being able to
+say WHICH text a proposal is about, and a proposal that cannot say that cannot
+carry a confirmation: a person who approved "re-read 700–720" would still be
+recorded as having approved it after those messages were rewritten, which is an
+approval of a revision nobody read.
+
+So every range this module proposes carries `content_identity` — a digest over
+the records the range names, or the digest the manifest recorded for a document.
+Two proposals naming the same card, capture and span are the same proposal only
+when this agrees as well. When it does not, the range is the same PLACE holding
+different CONTENT, and an older decision about it is about something that is no
+longer there. The write half keys its decisions on this, which is why a
+confirmation can stop applying without anybody editing the card.
+
+THE DIGEST IS ONE-WAY, AND THE NO-CLAIM RULE STANDS
+---------------------------------------------------
+Hashing a record means reading it, and this module states above that it does not
+read message content. What it holds is a rule about what it REPORTS: no body, no
+excerpt and no paraphrase leaves this module, and a sha256 cannot carry one. A
+digest answers "is this the same text" and never "what does it say". The
+producer guard is what keeps that honest — no field named `content` can be
+emitted here without an entry in the table saying where its value came from, and
+there is no such entry.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -161,6 +189,16 @@ REVIEW_PRODUCED = {
     "source_max": "the newest position that source now holds, from its own "
                   "messages file",
     "source_count": "`sync.msg_count` — the collector's count, from the manifest",
+    # The version half. A range says WHERE to read; this says WHAT was there
+    # when the proposal was computed, which is the other half of a thing a
+    # person can be asked to confirm. See the module docstring.
+    "content_identity": "a digest of the records this range names, computed from "
+                        "the source's own messages file; for a WHOLE_DOCUMENT "
+                        "range, the digest the manifest recorded. Null only when "
+                        "the records could not be read at the moment the range "
+                        "was computed, which `content_identity_why` then names",
+    "content_identity_why": "why `content_identity` is null, present only when "
+                            "it is",
 }
 
 #: Emitted under `judged` — the card's state and why, plus how much of the card
@@ -370,6 +408,12 @@ def read_card(path: Path, records_root: Path) -> dict:
         state, why = None, ""
     return {
         "card": str(path.relative_to(records_root)),
+        # The understanding baseline, as an identity rather than a path: a card
+        # rewritten in place keeps its path and its citations can keep their
+        # spans, and a proposal computed against the newer text is not the
+        # proposal a person read. Nothing here interprets the card — this is a
+        # digest of the text this reader already had to load.
+        "card_digest": hashlib.sha256(text.encode("utf-8")).hexdigest(),
         "scope": parts[0] if len(parts) > 1 else None,
         "title": title,
         "sources_marker": form,
@@ -479,6 +523,17 @@ def expand(citation: dict, index: dict) -> list[str]:
     return sorted(candidate for candidate in index if matcher.match(candidate))
 
 
+def messages_file(key: str, records_root: Path) -> Path:
+    """The messages file beside a capture object named by its manifest key.
+
+    One derivation, in one place, because two of them drift and the one that
+    drifts is the one that decides which file a digest was taken over.
+    """
+    directory = key.rsplit("/", 1)[0] if "/" in key else ""
+    return raw_root(records_root).joinpath(
+        *[part for part in directory.split("/") if part]) / "messages.jsonl"
+
+
 def read_positions(source_file: Path) -> dict:
     """`{state, count, min, max, edited, deleted, without_position}` for one jsonl.
 
@@ -576,6 +631,72 @@ def revisions_in_range(source_file: Path, low: int, high: int) -> dict:
     return {"edited": edited, "deleted": deleted, "readable": True}
 
 
+def range_content_digest(messages: Path, low: int | None,
+                         high: int | None) -> tuple[str | None, str]:
+    """`(digest, why)` for the records a span names — the version half of a range.
+
+    WHY THIS DOES NOT READ LIKE THE REST OF THE MODULE
+    --------------------------------------------------
+    Everything above reads `message_position` and the two revision flags and
+    nothing else, so that no code path can carry a message body into a report.
+    This function reads whole records, because a digest over a projection is a
+    claim about the projection and not about the content: hashing only the
+    fields the flags already record would produce a `content_identity` that is
+    blind to exactly the edits `STALE_IN_PLACE` exists to catch. What leaves is
+    a sha256, which answers "is this the same text" and cannot answer "what does
+    it say" — and `no_unsourced` keeps a `content` field from being emitted.
+
+    The record is hashed in a canonical serialisation, so a collector that
+    re-serialises the same records with the keys in another order has not
+    changed anything. A collector that ADDS a field has: the record is not the
+    same record, and every confirmation taken over it goes back to the person
+    rather than being silently carried forward.
+
+    `(None, why)` is the answer when the span cannot be identified — an
+    unreadable file, a malformed line, a span holding no record. It is not an
+    exception: a source that went missing between two reads is a fact about the
+    source, and the range is emitted saying it could not be identified rather
+    than being dropped or being given a digest of nothing.
+    """
+    if low is None or high is None:
+        return None, ("this range names no positions, so there is no span to "
+                      "take a digest over")
+    if not messages.is_file():
+        return None, "the messages file for this capture is not a file"
+    digest = hashlib.sha256()
+    identified = False
+    try:
+        handle = messages.open(encoding="utf-8")
+    except OSError as exc:
+        return None, f"the messages file could not be read: {exc}"
+    with handle:
+        for line in handle:
+            if not line.strip():
+                continue
+            try:
+                record = json.loads(line)
+            except ValueError:
+                return None, "a line of the messages file is not JSON"
+            if not isinstance(record, dict):
+                return None, "a line of the messages file is not an object"
+            try:
+                position = int(str(record.get("message_position")).strip())
+            except (TypeError, ValueError):
+                # A record with no position is outside every span, exactly as it
+                # is outside every position comparison above.
+                continue
+            if not low <= position <= high:
+                continue
+            identified = True
+            digest.update(json.dumps(record, ensure_ascii=False, sort_keys=True,
+                                     separators=(",", ":")).encode("utf-8"))
+            digest.update(b"\n")
+    if not identified:
+        return None, (f"no record in the messages file carries a position in "
+                      f"{low}–{high}, so the span names nothing to identify")
+    return digest.hexdigest(), ""
+
+
 def _components(obj: dict) -> dict:
     """The source's component states that are not COMPLETE, as copied facts."""
     out = {}
@@ -661,9 +782,7 @@ def _measure_one(citation: dict, key: str, obj: dict, records_root: Path,
 
     # A chat capture. Positions come from the messages file, which sits beside
     # the manifest under the same capture-relative directory.
-    directory = key.rsplit("/", 1)[0] if "/" in key else ""
-    messages = raw_root(records_root).joinpath(
-        *[part for part in directory.split("/") if part]) / "messages.jsonl"
+    messages = messages_file(key, records_root)
     positions = read_positions(messages)
     row["source_positions"] = {
         "state": positions["state"], "count": positions["count"],
@@ -729,7 +848,9 @@ def measure_citation(citation: dict, index: dict, records_root: Path) -> list[di
             for key in keys]
 
 
-def _review_range(card: dict, row: dict, kind: str, low, high) -> dict:
+def _review_range(card: dict, row: dict, kind: str, low, high,
+                  records_root: Path) -> dict:
+    identity, identity_why = _content_identity(row, kind, low, high, records_root)
     record = no_unsourced({
         "card": card["card"], "source": row["source"], "kind": kind,
         "from_position": low, "to_position": high,
@@ -740,7 +861,10 @@ def _review_range(card: dict, row: dict, kind: str, low, high) -> dict:
         "applied_low": row.get("applied_low"),
         "source_max": (row.get("source_positions") or {}).get("max"),
         "source_count": row.get("source_count"),
+        "content_identity": identity,
     }, REVIEW_PRODUCED, "review_range")
+    if identity_why:
+        record["content_identity_why"] = identity_why
     if kind == "REVISITED_IN_PLACE":
         record["revisions"] = dict(row["revisions_in_range"])
     if kind == "WHOLE_DOCUMENT":
@@ -754,7 +878,28 @@ def _review_range(card: dict, row: dict, kind: str, low, high) -> dict:
     return record
 
 
-def judge_card(card: dict, measurements: list[dict]) -> dict:
+def _content_identity(row: dict, kind: str, low, high,
+                      records_root: Path) -> tuple[str | None, str]:
+    """The digest for one range, and why there is none when there is none.
+
+    One function rather than a branch at each range: the identity is a property
+    of the RANGE, and a reader that computed it in three places would be three
+    readers of one rule, two of which are wrong.
+    """
+    if kind == "WHOLE_DOCUMENT":
+        recorded = row.get("content_sha256")
+        if recorded:
+            return recorded, ""
+        return None, ("the manifest records no digest for this document, so the "
+                      "revision this range is about cannot be named")
+    manifest = row.get("manifest")
+    if not manifest:
+        return None, ("the range names no capture object, so there is no "
+                      "messages file to identify its content from")
+    return range_content_digest(messages_file(manifest, records_root), low, high)
+
+
+def judge_card(card: dict, measurements: list[dict], records_root: Path) -> dict:
     """The card's state, the ranges to look at, and the reason for both.
 
     PRECEDENCE, stated rather than emergent: `BEHIND` beats `STALE_IN_PLACE`
@@ -763,6 +908,12 @@ def judge_card(card: dict, measurements: list[dict]) -> dict:
     the newest position whose already-read messages changed is `STALE_IN_PLACE`.
     A card whose every citation names a source without naming a reach is
     `UNMEASURABLE`, not `CURRENT` — nothing was compared.
+
+    `records_root` is here because a range now carries the identity of the
+    content it names, and that identity is read from the source tree. Deciding
+    which ranges a card implies and saying what those ranges are ABOUT are the
+    same act; splitting them would let a caller emit a range whose version half
+    nobody computed.
     """
     if card.get("state"):
         return no_unsourced(
@@ -785,11 +936,11 @@ def judge_card(card: dict, measurements: list[dict]) -> dict:
 
     ranges = [
         _review_range(card, row, "BEYOND_APPLIED", row["applied"] + 1,
-                      row["source_positions"]["max"])
+                      row["source_positions"]["max"], records_root)
         for row in behind
     ] + [
         _review_range(card, row, "REVISITED_IN_PLACE", row["applied_low"],
-                      row["applied"])
+                      row["applied"], records_root)
         for row in stale
     ] + [
         # A cited digest that no longer matches the manifest is a state that
@@ -798,7 +949,7 @@ def judge_card(card: dict, measurements: list[dict]) -> dict:
         # see. It used to contribute the state and no range at all, so the
         # verdict said STALE_IN_PLACE and proposed nothing to look at. A range
         # with no positions says "the whole document" without inventing a span.
-        _review_range(card, row, "WHOLE_DOCUMENT", None, None)
+        _review_range(card, row, "WHOLE_DOCUMENT", None, None, records_root)
         for row in digest_differs
     ]
 
@@ -888,7 +1039,7 @@ def reconcile(cards: list[dict], index: dict, records_root: Path) -> dict:
         for citation in card.get("citations", []):
             measurements.extend(measure_citation(citation, index, records_root))
         judged.append({**card, "measurements": measurements,
-                       "judged": judge_card(card, measurements)})
+                       "judged": judge_card(card, measurements, records_root)})
     return {"schema": SCHEMA, "records_root": str(records_root),
             "root": str(understanding_root(records_root)),
             "cards": judged, "summary": summarize(judged)}

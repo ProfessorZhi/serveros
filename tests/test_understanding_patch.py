@@ -125,6 +125,24 @@ def messages(count: int, *, edited: tuple = (), deleted: tuple = ()) -> list[dic
             for position in range(count)]
 
 
+def recontent(records: Path, relative: str, position: int, text: str) -> Path:
+    """Rewrite one message's body, leaving its position and its flags alone.
+
+    The collector's `updated` flag is not the only way a span's content
+    changes: a capture re-read from the source can carry different text at the
+    same position with the same flags. That is exactly the case a decision
+    keyed on position alone would inherit — the range did not move, so nothing
+    about the proposal's PLACE looks different.
+    """
+    path = records / RAW / relative / "messages.jsonl"
+    rows = [json.loads(line) for line
+            in path.read_text(encoding="utf-8").splitlines() if line]
+    for row in rows:
+        if row["message_position"] == str(position):
+            row["content"] = text
+    return write_messages(records, relative, rows)
+
+
 def write_card(records: Path, scope: str, name: str, body: str) -> Path:
     path = records / "information" / "understanding" / scope / name
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -173,10 +191,15 @@ def decisions_file(tmp_path: Path, *entries: dict) -> Path:
 
 
 def decision_for(item: dict, state: str = up.CONFIRMED, **over) -> dict:
-    entry = {"card": item["card"], "manifest": item["manifest"],
-             "review": item["review"], "from_position": item["from_position"],
-             "to_position": item["to_position"], "decision": state,
-             "by": "张正己", "at": "2026-09-22 11:00"}
+    """A decision copied off an item, the way a person would write one.
+
+    Every identity field the item carries is copied, not retyped: the two
+    digests are what say WHICH revision was read, and a test that invented
+    them would be testing a decision nobody could have authored.
+    """
+    entry = {field: item.get(field) for field in up.IDENTITY_FIELDS}
+    entry.update({"decision": state, "by": "张正己",
+                  "at": "2026-09-22 11:00"})
     entry.update(over)
     return entry
 
@@ -349,6 +372,121 @@ class TestADecisionDoesNotFollowTheCard:
         assert "not a decision about what is proposed now" in \
             patch["stale_decisions"][0]["why"]
 
+    def test_the_same_span_holding_different_content_supersedes_its_decision(
+            self, behind, tmp_path):
+        """The counterexample the position-only identity could not survive.
+
+        The card is confirmed about `5–9`. Then one message inside that span is
+        rewritten — same path, same span, same number of messages, and the
+        collector's `updated` flag never set. The proposal's PLACE is
+        identical; only its content is not. A decision keyed on the place would
+        still be counted as satisfied, recording 张正己 as having confirmed
+        text they never read, which is the whole defect.
+        """
+        item = item_of(behind)
+        decisions = up.read_decisions(decisions_file(tmp_path, decision_for(item)))
+        before = patch_of(behind, decisions)
+        assert before["confirmed"] == 1
+
+        recontent(behind, "people/x/oc_x", 7, "改过的一句话")
+        after = patch_of(behind, decisions)
+
+        assert after["items"][0]["confirmation"] == up.AWAITING
+        assert after["confirmed"] == 0
+        assert after["stale_decisions"][0]["decision"] == up.CONFIRMED
+        assert after["stale_decisions"][0]["by"] == "张正己"
+        assert "the content this range names changed" in \
+            after["stale_decisions"][0]["why"]
+        # The place is unchanged, and the test says so: an assertion that only
+        # saw the refusal would also pass if the writer had keyed on something
+        # that merely happened to move at the same time.
+        assert after["items"][0]["card_digest"] == before["items"][0]["card_digest"]
+        assert after["items"][0]["from_position"] == item["from_position"]
+        assert after["items"][0]["to_position"] == item["to_position"]
+        assert after["items"][0]["content_identity"] != item["content_identity"]
+
+    def test_a_card_rewritten_under_its_own_path_supersedes_its_decision(
+            self, behind, tmp_path):
+        """The other version half: the understanding baseline, not the source.
+
+        Same path, same cited span, same source content — only the card's own
+        words changed. A decision keyed on the path would follow the card
+        through the rewrite; the digest is what makes the rewritten card a
+        different proposal.
+        """
+        item = item_of(behind)
+        decisions = up.read_decisions(decisions_file(tmp_path, decision_for(item)))
+        write_card(behind, "people", "x.md",
+                   heading_card(f"- `{CHAT}` message_position 0-4\n\n补了一句话。\n"))
+        patch = up.build(read(behind), decisions, None)
+        assert patch["items"][0]["from_position"] == item["from_position"]
+        assert patch["items"][0]["confirmation"] == up.AWAITING
+        assert "the card's own text changed" in patch["stale_decisions"][0]["why"]
+        assert "the content this range names changed" not in \
+            patch["stale_decisions"][0]["why"]
+
+    def test_a_rewrite_of_both_is_reported_as_both(self, behind, tmp_path):
+        """Two reasons, two next actions, and neither is allowed to hide one.
+
+        The reasons are joined rather than chosen between, because a person
+        whose confirmation lapsed for two separate reasons would otherwise be
+        told about one of them.
+        """
+        item = item_of(behind)
+        decisions = up.read_decisions(decisions_file(tmp_path, decision_for(item)))
+        write_card(behind, "people", "x.md",
+                   heading_card(f"- `{CHAT}` message_position 0-4\n\n补了一句话。\n"))
+        recontent(behind, "people/x/oc_x", 7, "改过的一句话")
+        patch = up.build(read(behind), decisions, None)
+        why = patch["stale_decisions"][0]["why"]
+        assert "the card's own text changed" in why
+        assert "the content this range names changed" in why
+
+    def test_a_decision_that_names_a_place_and_not_a_revision_is_malformed(
+            self, behind, tmp_path):
+        """Absent is not null.
+
+        A decision with no `content_identity` key at all is a decision about a
+        path, and the writer will not silently treat it as one. `null` is a
+        different answer: it is a decision about a span whose content the
+        reader could not identify, and it is accepted — with a reason — because
+        the proposal itself carried null. The two cases are told apart by
+        presence, and this test holds both halves so that widening one does not
+        quietly widen the other.
+        """
+        for field in ("card_digest", "content_identity"):
+            entry = decision_for(item_of(behind))
+            del entry[field]
+            with pytest.raises(up.Malformed) as caught:
+                up.read_decisions(decisions_file(tmp_path, entry))
+            assert f"`{field}` is absent" in str(caught.value)
+            assert "names a place and not a revision" in str(caught.value)
+
+        item = item_of(behind)
+        entry = decision_for(item, content_identity=None)
+        # `null` reads, because at the moment the file is read there is no
+        # proposal to compare it against — the writer cannot see one, and a
+        # writer that refused here would be refusing an input it has not
+        # looked at. What it does instead is decline to APPLY it.
+        decisions = up.read_decisions(decisions_file(tmp_path, entry))
+        patch = up.build(read(behind), decisions, None)
+        assert patch["items"][0]["confirmation"] == up.AWAITING
+        assert patch["stale_decisions"][0]["decision"] == up.CONFIRMED
+
+    def test_a_decision_is_keyed_on_the_versions_even_when_nothing_moves(
+            self, behind, tmp_path):
+        """The negative half: an unchanged tree still satisfies its decision.
+
+        Without this, both counterexamples above would pass for a writer that
+        had simply stopped applying decisions at all.
+        """
+        item = item_of(behind)
+        decisions = up.read_decisions(decisions_file(tmp_path, decision_for(item)))
+        first = up.build(read(behind), decisions, None)
+        second = up.build(read(behind), decisions, None)
+        assert first["confirmed"] == second["confirmed"] == 1
+        assert first["stale_decisions"] == second["stale_decisions"] == []
+
     def test_a_card_rewritten_to_a_new_reach_does_not_inherit_a_confirmation(
             self, behind, tmp_path):
         item = item_of(behind)
@@ -393,11 +531,21 @@ class TestADecisionDoesNotFollowTheCard:
         assert patch["items"][0]["confirmation"] == up.CONFIRMED
         assert patch["stale_decisions"] == []
 
-    def test_the_identity_is_the_card_the_capture_and_the_range(self, behind):
+    def test_the_identity_is_the_card_the_capture_the_range_and_its_versions(
+            self, behind):
+        """Seven fields, and the last two are the point of the other five.
+
+        A place and a revision are not the same thing, and the digests are
+        what tell them apart. Asserting the field list rather than a literal
+        tuple keeps this test from passing while `IDENTITY_FIELDS` and the
+        reader's own key drift apart, which is the failure it exists to catch.
+        """
         item = item_of(behind)
-        assert up.item_key(item) == (item["card"], item["manifest"],
-                                     item["review"], item["from_position"],
-                                     item["to_position"])
+        assert up.item_key(item) == tuple(item[field]
+                                          for field in up.IDENTITY_FIELDS)
+        assert up.IDENTITY_FIELDS == ("card", "manifest", "review",
+                                      "from_position", "to_position",
+                                      "card_digest", "content_identity")
 
 
 # --------------------------------------------------------------------------
