@@ -145,3 +145,12 @@ CC按MONITORING-ACCEPTANCE.md实现相关P8/P9/P11，不修改并行MarketOps/Li
 - 自身监控不触发模型推理、目录全扫描、原始日志外发、生产修改或双重restart。
 
 参考：Tailscale官方CLI与Serve说明（https://tailscale.com/docs/reference/tailscale-cli ，https://tailscale.com/docs/reference/tailscale-cli/serve），systemd官方man/systemd.service.xml中WatchdogSec和Restart段（https://github.com/systemd/systemd/blob/main/man/systemd.service.xml），Google SRE Monitoring（https://sre.google/sre-book/monitoring-distributed-systems/）。上述上游行为不代表本机当前版本全部支持，adapter须核验安装版本。
+
+
+## 12. 2026-09-24 监控域与alert分层
+
+Node观测正式分为：①本人资源；②整机资源；③关键基础设施；④治理诊断。前3类形成Current Status；只有满足持续/影响条件的1–3类condition可以形成用户Incident。治理诊断默认不push。
+
+当前Tokyo实际监控对象应通过Binding/registry/current dependency join包括ServerOS Core、Tailscale userspace transport、Shared Laya、Shared LiteLLM Gateway，以及真正当前需要的remote/browser/project runtime。Laya答案质量、offline sleeping peer、无流量provider、orphan/age/unknown-owner不属于运行事故。
+
+资源告警不再按per-process finding数量直接投影：CPU看持续饱和/队列与影响，内存看MemAvailable/PSI/OOM，磁盘/quota按role-specific percent+absolute-free，swap要结合活动pressure。详细产品合同见 [MONITORING-PRODUCT-ARCHITECTURE](MONITORING-PRODUCT-ARCHITECTURE.md)。

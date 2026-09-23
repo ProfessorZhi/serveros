@@ -15,7 +15,7 @@
 | runtime/daemon.py | daemon拥有关键回执writer；聚合视图不少通过daemon IPC | 自身检查/告警不能依赖故障daemon写回，设计独立receipt边界 |
 | CARDS-STYLE旧R5/R6/R7/R8 | 建议禁操作词、因果词禁令、统一未发现影响、历史计数露面 | 改为权限/证据/用户判断测试；保留必要安全保证而非词表模板 |
 
-这些不是对当前安装/发送进程状态的新测量。此设计轮没有调用远端脚本、改变服务、发送卡片、停止Tailscale或运行native视觉测试。
+2026-09-24 又补做了只读live测量：飞书应用1最近50条中35条为同题告警；alert registry 1065条OPEN，其中HIGH_MEMORY_SUSTAINED 727；Tailscale userspace BackendState=Running/Health=[]；Laya binding check和readiness通过；共享LiteLLM liveliness/readiness均HTTP 200且DB connected。没有改变服务、timer、容器或发送测试卡。
 
 ## 2. 先确认实际consumer与写入范围
 
@@ -92,7 +92,7 @@ SRV-0011/SRV-0005/MarketOps/LiteLLM并行任务仍受保护。真正同文件冲
 | V15 | 原生Feishu渲染 | 同一payload真实可见，HTML不是替身 |
 | V16 | 计划停机/退役临时环境 | 不发假故障，历史证据保留，当前视图不充数 |
 | V17 | 新配置未reload旧process | 显示实际running版本；待激活不是已升级 |
-| V18 | 未授权动作/错误actor | 没有实际mutation；“已知晓”不是批准重启 |
+| V18 | 未授权动作/错误actor | 没有实际mutation；“已知晓”不是批准重启 |\n| V19 | rolling status card | 每小时采样只patch当前卡，不新增一条聊天历史 |\n| V20 | incident still-open | 只有age增加不新发；同episode更新原卡 |\n| V21 | process-hygiene flood | 数百个high-memory/orphan/age finding不会变成数百通知 |\n| V22 | root/data/quota | 系统盘、数据盘、本人quota分别可读且阈值按role/remaining判断 |\n| V23 | Laya/Tailscale/Gateway | availability/quality/peer-idle/no-traffic语义不混淆 |
 
 ## 5. 判据与计划关系
 

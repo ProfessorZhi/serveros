@@ -69,3 +69,12 @@
 旧test中要求所有卡出现同一个FOOTNOTE_READ_ONLY、首行恰为UID/型号、总禁因果词、历史计数必露出的规则若存在，必须据本次用户反馈明确迁移并保留安全反例，不为让旧测试绿继续保留错误体验。
 
 详细页面与语义：[BROADCAST-ALERT-DESIGN](docs/BROADCAST-ALERT-DESIGN.md)。运行/自身监测：[NODE-OBSERVABILITY](docs/NODE-OBSERVABILITY.md)。具体迁移/验收：[MONITORING-ACCEPTANCE](docs/MONITORING-ACCEPTANCE.md)。本轮只有设计修订，没有执行截图/服务故障测试或修改运行卡片。
+
+
+**R14 · Current Card 与 Incident Card 都是稳定对象，不靠刷屏表达时间。**
+
+当前状态用一张rolling interactive card原位更新；可按日轮换，但每小时采样不生成24条聊天历史。一个incident episode对应一张card，持续时间/证据/恢复通过patch更新。只有NEW、ESCALATED、REOPENED或实质影响变化才重新打断用户。完整历史属于records/diagnostic，不属于聊天消息数量。
+
+**R15 · 资源首屏固定回答“我 / 设备 / 基础设施 / 当前问题”。**
+
+本人CPU/RAM/quota、整机CPU/RAM、系统盘、数据盘与少量关键基础设施默认直接可见。UID、型号、loopback、PID、container list、probe URL和采集口径进入详情。采集成功不能改写成环境健康。

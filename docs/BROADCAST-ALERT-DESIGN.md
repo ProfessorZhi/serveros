@@ -136,3 +136,17 @@ JSON合法只是格式；HTML preview只是设计预览。必须检查默认折�
 本轮输入为用户截图和serveros@89887a4的实际status renderer/source；此前卡片已接线和历史修复不等于本次UI已经改善。CARDS-STYLE.md同步修订摘要/影响/免责声明/历史统计规则；旧词语禁令或固定五行测试应迁移为语义和视觉验收，不为旧测试绿保留难读卡。
 
 实现复用runtime/card_source.py、presentation.py、cards.py、alerting/alert_digest/card_delivery与hwz-ops现有sender，不新建notifications-v2。外部卡片2.0组件必须按安装SDK/官方schema及实际客户端验证，不能把自制HTML自动换列当飞书保证。
+
+
+## 13. 2026-09-24 live反馈后的产品收敛
+
+当日飞书应用1实测确认：最近50条中35条为同题“⚠️ 需确认 · 3 项”，资源卡仍把UID/型号/loopback放首屏，并将“三块采集成功”错误表达成“环境可用”。因此本文件的低噪声/默认可见原则升级为硬产品合同：
+
+- Current Status Card = 一张rolling card，按采样patch，不每小时新发；
+- Incident = 一个episode一张card，NEW/ESCALATED/REOPENED才打断，STILL_OPEN不重复通知；
+- 首屏区块固定为：我的资源、整机、关键基础设施、当前问题；
+- 本人CPU/RAM/quota；整机CPU/RAM；系统盘/和数据盘/data必须直接可见；
+- ServerOS/Tailscale/Laya/Shared Gateway等按逻辑服务显示，container/PID只在详情；
+- process hygiene（age/orphan/external/unowned、无影响的单process高CPU/RAM）默认进入Diagnostic/Review，不自动push。
+
+详细分类、基础设施探针与alert taxonomy见 [MONITORING-PRODUCT-ARCHITECTURE](MONITORING-PRODUCT-ARCHITECTURE.md)。
