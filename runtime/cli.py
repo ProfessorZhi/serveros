@@ -7734,6 +7734,134 @@ def cmd_work_waterline(args) -> int:
     return EXIT_OK
 
 
+def cmd_work_source_policy(args) -> int:
+    """§B1/P1 — which sources are in force, by what policy, decided by which rule.
+
+    The four things this verb refuses to do are the four ways a policy report
+    goes wrong. It does not pick between two lists that disagree: every row
+    names the ONE rule that decided it (`decided_by`), and a label met under a
+    deny is reported in `bypassed` rather than dropped — that is 「具体标签不能
+    绕上级deny」 as a field instead of a sentence. It does not key anything by a
+    display name: rows are keyed by the provider's own id and the collector's
+    directory name is reported beside it, because `docx-research-outreach-sop`
+    is the name of two objects in this very tree. It does not decide
+    completeness: `coverage_owner` names whose answer an object's completeness
+    is, and the four coverages stay four. And it does not merge the two
+    publish-plane registries that live beside the exclusions — their existence
+    is reported with why they are not inputs.
+
+    With `--coverage` it also hands the resolved rows to the consumer that
+    already exists for a followed-source list, `workchain.source_coverage`,
+    whose fields come from that consumer's own contract entry. That consumer
+    reads `records/projects/<project>/context/sources.yaml`, a file nobody has
+    written, which is why every project reports UNPRODUCED there today; this is
+    the adapter that lets the resolved policy answer it instead.
+    """
+    paths = paths_mod.Paths()
+    records = Path(getattr(args, "records_root", "") or
+                   Path(paths.root("workspace")) / "records")
+    if not records.is_absolute():
+        sys.stderr.write(
+            f"serverosctl: --records-root must be absolute, got {records}. "
+            f"Declarations matched against a tree read relative to whatever "
+            f"directory the caller stood in are declarations nobody else can "
+            f"reproduce.\n")
+        return EXIT_FAULT
+    capture = _load_module_from(REPO_ROOT / "intake" / "capture_coverage.py",
+                                "serveros_intake_capture_coverage")
+    policy = _load_module_from(REPO_ROOT / "intake" / "source_policy.py",
+                               "serveros_intake_source_policy")
+    try:
+        objects = capture.read_root(records)["objects"]
+        document = policy.resolve(records, objects)
+    except (capture.Refused, policy.Refused) as exc:
+        sys.stderr.write(f"serverosctl: {exc}\n")
+        return EXIT_FAULT
+
+    lines = policy.render(document)
+    if getattr(args, "coverage", False):
+        chain = _workchain_module()
+        contract = chain.load_contract(
+            REPO_ROOT / "intake" / "workchain-contract.yaml")
+        entry = next((c for c in contract.get("coverage") or []
+                      if c.get("id") == "followed-sources"), None)
+        if entry is None:
+            sys.stderr.write(
+                "serverosctl: the contract names no `followed-sources` entry, so "
+                "there is no consumer here to hand a list to and reporting an "
+                "empty one would look like a project that follows nothing.\n")
+            return EXIT_FAULT
+        projected = policy.project_rows(document, list(entry.get("fields") or []))
+        document = {**document, "followed_sources": chain.source_coverage(
+            contract=contract, sources=projected["rows"])}
+        lines.append("")
+        lines.append("下游消费者 workchain.source_coverage（字段取自它自己的合同条目）")
+        for row in document["followed_sources"]["rows"]:
+            lines.append(f"  {row['state']:<8} {row['identity'] or '—'}"
+                         + (f"  缺 {', '.join(row['missing_fields'])}"
+                            if row["missing_fields"] else ""))
+    emit(document, as_json=args.json, lines=lines)
+    return EXIT_OK
+
+
+def cmd_work_material_index(args) -> int:
+    """§B1/P2 — the materials a capture refers to, and the four coverages.
+
+    The verb exists because `files.by_message` is one entry per message and the
+    capture tree holds messages naming two attachments: read as the material
+    denominator the map understates this tree by 44% and reports a complete
+    archive over the other half. So the four questions are asked separately —
+    messages, discovery, materials, understanding — and the map is reported as
+    navigation beside them. Nothing here downloads, unpacks, renames or
+    re-records anything: a material registered as pending whose bytes are on
+    disk is a STALE MARKER to reconcile (§10: 现存文件pending旧 → 核字节/关联后
+    修索引，不重复下), and a material that is registered and absent is a gap
+    under any policy depth, not a reason to fetch.
+
+    `--coverage` is what the understanding half costs: it reads the cards
+    through `understanding_delta`/`source_waterline` and copies their comparison
+    for each object rather than forming a second opinion about what was read.
+    Without it that half is `NOT_MEASURED` and says so, because a material on
+    disk is not the same finding as its content having been understood.
+    """
+    paths = paths_mod.Paths()
+    records = Path(getattr(args, "records_root", "") or
+                   Path(paths.root("workspace")) / "records")
+    if not records.is_absolute():
+        sys.stderr.write(
+            f"serverosctl: --records-root must be absolute, got {records}. A "
+            f"material index read relative to whatever directory the caller "
+            f"stood in is a denominator nobody else can reproduce.\n")
+        return EXIT_FAULT
+    capture = _load_module_from(REPO_ROOT / "intake" / "capture_coverage.py",
+                                "serveros_intake_capture_coverage")
+    policy = _load_module_from(REPO_ROOT / "intake" / "source_policy.py",
+                               "serveros_intake_source_policy")
+    index = _load_module_from(REPO_ROOT / "intake" / "material_index.py",
+                              "serveros_intake_material_index")
+    try:
+        objects = capture.read_root(records)["objects"]
+        resolved = policy.resolve(records, objects)
+        understanding = None
+        if getattr(args, "coverage", False):
+            delta = _load_module_from(
+                REPO_ROOT / "intake" / "understanding_delta.py",
+                "serveros_intake_understanding_delta")
+            waterline = _load_module_from(
+                REPO_ROOT / "intake" / "source_waterline.py",
+                "serveros_intake_source_waterline")
+            rows = waterline.waterlines(records, delta, objects)["sources"]
+            understanding = {row["source"]: row for row in rows}
+        document = index.read_root(records, objects, policy=resolved,
+                                   understanding=understanding,
+                                   digest=getattr(args, "digest", False))
+    except (capture.Refused, policy.Refused, index.Refused) as exc:
+        sys.stderr.write(f"serverosctl: {exc}\n")
+        return EXIT_FAULT
+    emit(document, as_json=args.json, lines=index.render(document))
+    return EXIT_OK
+
+
 # ---------------------------------------------------------------------------
 # network
 # ---------------------------------------------------------------------------
@@ -9298,6 +9426,44 @@ def build_parser() -> argparse.ArgumentParser:
                        help="the records checkout to read. Default: this node's "
                             "workspace root + /records. Must be absolute")
     wk_wl.set_defaults(func=cmd_work_waterline)
+
+    wk_sp = work_sub.add_parser(
+        "source-policy", help="§B1/P1 — which sources are in force, by what "
+                              "policy, and which rule decided each one: the "
+                              "desired declarations, the two lists being "
+                              "migrated, and the exclusions. Reads only; "
+                              "--coverage also hands the rows to the existing "
+                              "followed-source consumer", **_COMMON)
+    wk_sp.add_argument("--records-root", default="",
+                       help="the records checkout to read. Default: this node's "
+                            "workspace root + /records. Must be absolute")
+    wk_sp.add_argument("--coverage", action="store_true",
+                       help="also project the resolved rows into the shape "
+                            "`workchain.source_coverage` reads and report what "
+                            "that consumer makes of them")
+    wk_sp.set_defaults(func=cmd_work_source_policy)
+
+    wk_mi = work_sub.add_parser(
+        "material-index", help="§B1/P2 — the materials a source refers to: "
+                               "one message may name several, one material may "
+                               "have several sources, and the four coverages "
+                               "(message/discovery/material/understanding) are "
+                               "answered separately. Reads only; --coverage "
+                               "also joins the card comparison for the "
+                               "understanding half", **_COMMON)
+    wk_mi.add_argument("--records-root", default="",
+                       help="the records checkout to read. Default: this node's "
+                            "workspace root + /records. Must be absolute")
+    wk_mi.add_argument("--coverage", action="store_true",
+                       help="also read the cards through understanding_delta / "
+                            "source_waterline and copy their comparison onto "
+                            "each object instead of reporting NOT_MEASURED")
+    wk_mi.add_argument("--digest", action="store_true",
+                       help="also hash the landed bytes. Off by default: it "
+                            "reads every image, and a caller who wants the "
+                            "landing state should not pay for a hash it will "
+                            "not compare")
+    wk_mi.set_defaults(func=cmd_work_material_index)
 
     workbench = sub.add_parser(
         "workbench",
