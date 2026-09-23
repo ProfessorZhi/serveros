@@ -1626,3 +1626,18 @@ Resource display and resource alerts are separate. CPU/RAM are always visible, b
 Notifications are episode/transition driven: NEW, ESCALATED, REOPENED or materially changed impact/action may notify; STILL_OPEN with only age increasing does not. One episode maps to one Feishu card and is updated in place. The rolling status card is also patched in place rather than adding an hourly history message; observation history remains in durable records.
 
 Canonical details and current live gaps are in [Monitoring Product Architecture](docs/MONITORING-PRODUCT-ARCHITECTURE.md).
+
+
+## Understanding, Memory and Daily Reconciliation · 2026-09-24 addendum
+
+Structured Understanding uses **Atomic Claims + Current Views**. Claims carry source/revision/support/confirmation/correction semantics; `people/projects/topics/responsibilities` are concise current human views, not history archives. Decisions, meetings, requirements and work states do not become extra understanding directories.
+
+The reader side expands across IM spans, exact Doc/Wiki revisions, qualified Meeting/Miaoji material and Web snapshots; the existing semantic writer/receipt/claim-recall path remains the single semantic commit mechanism.
+
+Daily Reconciliation is a B10 human surface with four first-level buckets: **automatic updates, decisions needed, conflicts, understanding gaps**. It is not a raw-message review and not the daily report. MyDocs `每日对齐` is a projection of this semantic reconciliation, not a second authority.
+
+Ordinary observed facts/supported inferences may be agent-reconciled inside standing delegation. Goal, responsible party, deadline, external commitment and permission changes require real human acceptance. Source invalidation may immediately make a claim ineligible for current recall; it does not by itself cancel a business decision.
+
+Memory remains federated retrieval, not authority: current records/source first, applicable history second, MetaCC/native session history after that, optional vector retrieval last. Provider lag cannot revive stale claims.
+
+Detailed composition and current implementation gaps are in [Understanding, Memory & Daily Reconciliation](docs/UNDERSTANDING-MEMORY-RECONCILIATION.md) and the ability-management canonical contract.

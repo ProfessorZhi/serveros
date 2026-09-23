@@ -539,3 +539,14 @@ were expensive to obtain.
 - [`runtime-resources.md`](runtime-resources.md) — the daemon's closed loop
 - [`fabric-v1-roadmap.md`](fabric-v1-roadmap.md) — the firewall, the pipeline,
   the `claim` kind, and what has to be true first
+
+
+## 2026-09-24 current-first clarification
+
+Memory Fabric is a retrieval fabric, not the authority for current business meaning. Current B2 Claims/Views and current source objects are consulted before historical Session/MetaCC/OpenViking results. Similarity/relevance scores never become truth scores.
+
+B2 correction/retraction first changes local recall eligibility; provider invalidate/reindex is asynchronous. A provider outage therefore cannot make an older corrected claim current again.
+
+The current structured-understanding view families are `people/projects/topics/responsibilities`. Their prose is a current projection, while full source history lives in raw/source snapshots and semantic receipts. Existing long cards migrate on touch rather than through a one-shot LLM rewrite.
+
+See [UNDERSTANDING-MEMORY-RECONCILIATION](UNDERSTANDING-MEMORY-RECONCILIATION.md) for the system integration and ability-management for the canonical semantic contract.
