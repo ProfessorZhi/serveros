@@ -118,6 +118,15 @@ does not automatically create an Item. Candidates stay cheap until selected.
 A useful default may be overridden inside the approved boundary. Safety cannot.
 No new service, schema, report, review pass or Skill exists merely to fill a box.
 
+These four are the product-level statement. Their elaboration and rationale live in
+ability-management [Design Philosophy](https://github.com/ProfessorZhi/ability-management/blob/main/design/DESIGN-PHILOSOPHY.md):
+one main principle — do not preload the world — producing the right environment, the
+right context and the right capabilities, together with the mapping between the **L0–L3**
+levels above (the product-level ladder, authoritative here) and the Ability-layer
+**PD0–PD5** expansion in the [Progressive Disclosure Contract](https://github.com/ProfessorZhi/ability-management/blob/main/design/PROGRESSIVE-DISCLOSURE-CONTRACT.md).
+§1.2–§1.4 are not consequences of disclosure: they bound what may be made mandatory, how
+much budget the fast path gets, and what may be invented at all.
+
 ## 2. Layer 0 — Compliance and non-interference
 
 ### 2.1 Authority and enforcement
