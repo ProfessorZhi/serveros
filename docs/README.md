@@ -33,7 +33,7 @@
 | [协作实现索引](COLLABORATION-IMPLEMENTATION.md) | 合同到主计划映射，明确新writer/水位已存在而业务消费还须验证 |
 | [21项场景](https://github.com/ProfessorZhi/ability-management/blob/main/design/ABILITY-SCENARIO-CONTRACTS.md) | 专属工作/交接；旧源码观察要按当前revision复核 |
 | [产品体验](https://github.com/ProfessorZhi/ability-management/blob/main/design/PRODUCT-EXPERIENCE-CONTRACT.md) | 首层结果、空/未知/partial/等待与真实验收 |
-| [Progressive Disclosure](https://github.com/ProfessorZhi/ability-management/blob/main/design/PROGRESSIVE-DISCLOSURE-CONTRACT.md) | 完整Ability树不整棵入prompt；description短而准、Skill根做router、references/scripts/MCP按需展开 |
+| [Progressive Disclosure](https://github.com/ProfessorZhi/ability-management/blob/main/design/PROGRESSIVE-DISCLOSURE-CONTRACT.md) | 完整Ability树不整棵入prompt；description短而准、Skill根做router、references/scripts/MCP按需展开 |\n| [Ability Card & Registry](https://github.com/ProfessorZhi/ability-management/blob/main/design/ABILITY-CARD-REGISTRY-CONTRACT.md) | Product Ability/Artifact术语、Card、适用范围、来源/license、Content Digest、Author/Device分离、runtime projection |
 
 ## 监控与共享Provider
 
