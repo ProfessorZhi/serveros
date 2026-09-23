@@ -129,3 +129,21 @@ OS/授权scheduler负责wake finite routine；routine调用对应Ability实现�
 ## 14. Ability自迭代进入治理而非业务流水线
 
 G1.5 Ability Evaluation & Evolution消费Journey/A7、用户纠正、运行receipt和MetaCC session evidence，比较“Ability理想职责”与“真实完成效果”。只有具体gap才产生候选优化，并在隔离eval/held-out/fresh consumer后走G1正常升级。它不每天盲改Skill，也不自改权限/安全/业务职责。
+
+
+## 15. Daily Reconciliation 的产品结果
+
+Structured Understanding完成后，B10只把真正需要人的语义变化呈现为：
+
+~~~text
+自动更新
+需要你决定
+冲突
+理解缺口
+~~~
+
+普通agent_reconciled事实只给摘要，不要求逐条点确认。goal/responsible/deadline/external commitment/permission和关键语义冲突进入decision surface。人的选择通过真实acceptance/correction/defer receipt回B2；没有回复不是默认接受。
+
+`My Document Library/每日对齐`保存该轮的人读projection和真实决定记录，不承担Claim authority，也不替代B8日报。没有重要变化时允许极短或空对账，不为了每天有文档制造语义。
+
+B2 reader应逐步从IM span扩展到Doc/Wiki、Meeting/Miaoji和Web fixed revisions；仍复用单一semantic writer。详见 [UNDERSTANDING-MEMORY-RECONCILIATION](UNDERSTANDING-MEMORY-RECONCILIATION.md)。

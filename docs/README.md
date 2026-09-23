@@ -18,7 +18,7 @@
 | [重点深归档](DEEP-ARCHIVE-POLICY.md) | confirmed source、历史范围、转发包内部有界遍历、多材料与discovery分母 |
 | [Source/Document合同](https://github.com/ProfessorZhi/ability-management/blob/main/design/SOURCE-DOCUMENT-CONTRACT.md) | desired/observed、身份、版本、权限、正文authority、单向投影 |
 | [B1输入](https://github.com/ProfessorZhi/ability-management/blob/main/design/INFORMATION-INTAKE-ABILITY.md) | native/现有采集、Web质量、限定doc/Wiki与部分范围 |
-| [B2理解](https://github.com/ProfessorZhi/ability-management/blob/main/design/STRUCTURED-UNDERSTANDING-ABILITY.md) | 原生reading、现有writer、真实委托与接受、view/记忆传播 |
+| [B2理解](https://github.com/ProfessorZhi/ability-management/blob/main/design/STRUCTURED-UNDERSTANDING-ABILITY.md) | 原生reading、现有writer、真实委托与接受、view/记忆传播 |\n| [理解、Memory与每日对账](UNDERSTANDING-MEMORY-RECONCILIATION.md) | Atomic Claim + Current View、多源Reading Packet、current-first Memory、MyDocs每日对齐与人类决策面 |
 | [B9维护](https://github.com/ProfessorZhi/ability-management/blob/main/design/DOCUMENT-STEWARDSHIP-ABILITY.md) | Reference/自管指南/共同章节/SOP，正文与批注分责 |
 | [飞书三端与最终目录](https://github.com/ProfessorZhi/ability-management/blob/main/design/FEISHU-INFORMATION-SYNC-ARCHITECTURE.md) | 当前live MyDocs/个人笔记/公开文档/外部文档/Drive；三类文档关系、MeetingBundle、Records目录与Feishu-local-GitHub连续性 |\n| [飞书空间](https://github.com/ProfessorZhi/ability-management/blob/main/design/FEISHU-SPACE-MANAGEMENT-ABILITY.md) | 位置/对象/ACL；外部文档已存在但Source Library尚未初始化，不再默认MyDocs参考资料 |
 
