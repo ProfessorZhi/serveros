@@ -46,6 +46,7 @@ prevented is a reader treating "could not read it" as "nothing to see".
 from __future__ import annotations
 
 import importlib.util
+import os
 import sys
 from pathlib import Path
 
@@ -329,6 +330,77 @@ def signal(code: str, subject: str, measured: dict, *, window: str,
 # ---------------------------------------------------------------------------
 
 
+def our_uid() -> int | None:
+    """The uid this deployment runs as — the line between our side and not.
+
+    WHY THIS IS A QUESTION AT ALL
+
+    `attribution` answers "who owns this cgroup" with the owner's ROLE, and on
+    this host that answer is already good: `EXTERNAL_USER_SESSION`,
+    `EXTERNAL_SYSTEM`, `MANAGED_UNIT`. What it does not answer — and was never
+    meant to — is which of those owners is US. `EXTERNAL` in that module means
+    "outside this deployment's own declared units", so the operator's OWN login
+    session is `EXTERNAL_USER_SESSION` exactly as a stranger's is. Reading
+    `is_external` as "somebody else's account" is therefore a mistake that
+    looks right, and it is the mistake that would silence the operator's own
+    leftovers along with everyone else's.
+
+    So the axis is added here, separately, and it is a FACT rather than a
+    declaration: the uid the process is running as is what `getuid()` returns,
+    measured, not a list of uids somebody typed into a contract and that goes
+    stale when the operator changes.
+
+    WHAT A `None` MEANS
+
+    `getuid()` cannot fail. The `None` branch exists for the case where it
+    returns 0: a deployment running as root is not thereby the owner of every
+    account on the host, and the honest reading of "uid 0" is that this
+    question has no answer here rather than that the answer is "everyone".
+    A caller that gets `None` must fall back to the unscoped behaviour, which
+    is what `_owned_by_another_account` does — a failed scope test reports
+    MORE, never less.
+    """
+    uid = os.getuid()
+    return None if uid == 0 else uid
+
+
+def _owned_by_another_account(group: dict, our: int | None) -> bool:
+    """True when the kernel named an owner on this group and it is not us.
+
+    This is the §7 scope rule, and it is deliberately narrow in three ways.
+
+    It reads `ownership.uid`, which only ever holds what a cgroup path spelled
+    out (`user-1042.slice`, a `session-<N>.scope` under a named uid). A group
+    whose owner the kernel did not name carries `uid: None` and is NOT
+    excluded: "nobody can say whose this is" is `UNKNOWN`, and `UNKNOWN` is
+    `DEFER` — it is the answer this product exists to report, not a licence to
+    drop the subject. The same direction the rest of this module takes: an
+    unreadable registry makes the classifier claim LESS, never more.
+
+    It is tested before any code is emitted, so it covers every per-group code
+    at once — and the machine-level resource codes are NOT touched by it,
+    because they are built from `host_facts` and never from a group. That
+    split is the requirement and not an accident of placement: when another
+    account fills the disk or the memory, their consumption is real information
+    and it still arrives, through the machine's resource block and the
+    "resource tightness" codes that name no process. What stops is naming their
+    process groups one by one.
+
+    And a group it excludes is not erased. `graph.py` built it and the group
+    inventory still carries it, so `serverosctl runtime groups` and the
+    process view answer about it exactly as before. What changes is that this
+    deployment stops opening a finding whose subject is somebody else's work:
+    not our work, not ours to act on, and — measured on this host — the single
+    largest source of alerts that no reader could action.
+    """
+    if our is None:
+        return False
+    owner = (group.get("ownership") or {}).get("uid")
+    if owner is None:
+        return False
+    return str(owner) != str(our)
+
+
 def detect(*, groups=None, containers=None, task_states=None, host_facts=None,
            probe_results=None, error_windows=None, resources=None,
            coverage_update=None, thresholds=None, criticality=None,
@@ -351,7 +423,23 @@ def detect(*, groups=None, containers=None, task_states=None, host_facts=None,
     signals: list[dict] = []
 
     # -- runtime groups ------------------------------------------------------
+    #
+    # §7 scope, decided once for the whole loop: a group the kernel attributed
+    # to another account is not a subject for ANY per-group code. The reason is
+    # written at `_owned_by_another_account`, and the counterweight is next to
+    # it — the machine-level resource codes come from `host_facts` below and
+    # are untouched, so another account eating the disk or the memory still
+    # arrives, as a fact about the machine rather than as a roll-call of their
+    # processes.
+    #
+    # Read BEFORE the loop so the decision cannot drift between the codes: a
+    # second `if` further down would be a second place the same rule is
+    # applied, and the two would part company the first time one was edited.
+    our = our_uid()
+
     for group in groups or []:
+        if _owned_by_another_account(group, our):
+            continue
         ref = group["ref"]
         agg = group.get("aggregate") or {}
         cpu = agg.get("cpu_percent") or 0.0
@@ -384,6 +472,27 @@ def detect(*, groups=None, containers=None, task_states=None, host_facts=None,
                 why="resident memory exceeds the declared threshold",
             ))
 
+        # A KNOWN PREMISE DEFECT, LEFT IN PLACE ON PURPOSE (2026-09-24).
+        #
+        # The code is named `AGE_WITHOUT_ACTIVITY` and its `what` line reads
+        # "该对象存在已久，期间没有活动迹象", but the condition is age and
+        # nothing else. Read off the live host, its OPEN alerts had `init`,
+        # `pid2`, `getty@tty1.service`, `ssh.service`, `rsyslog.service`,
+        # `containerd.service`, `cron.service` and `user@1002..1008.service` as
+        # subjects; fifteen of them were `containerd.service` alone. "PID1 has
+        # been running a long time without activity" is not a finding, it is
+        # what the machine is — and a group with a named owner is not inactive,
+        # because its owner IS its activity.
+        #
+        # A gate on the ownership class — the same one `UNKNOWN_OWNER_LONG_
+        # RUNNING` uses below — was written and measured, and then removed
+        # without being committed, because it fixes the wrong layer.
+        # MONITORING-PRODUCT-ARCHITECTURE §18 puts this code's disposition in
+        # the attention table: it is already INFORMATIONAL there, off the face,
+        # costing nobody an interruption. Narrowing a detector to make the
+        # register look tidier would leave the tier wrong and hide the reason.
+        # Changing what a detector means is a separate decision with its own
+        # evidence, and this comment is that evidence rather than the change.
         if (age or 0) >= thresholds["age_long_seconds"]:
             signals.append(signal(
                 "AGE_WITHOUT_ACTIVITY", ref,
@@ -551,6 +660,25 @@ def detect(*, groups=None, containers=None, task_states=None, host_facts=None,
         # its way out while what it started keeps running for any runtime, and
         # a code named after the process where it was first noticed would be a
         # Codex-specific detector wearing a general name.
+        #
+        # IT STOPS AT NAMING AND DOES NOT STOP AT REPORTING. This code reads
+        # `agent.value` nowhere, and that is deliberate rather than an omission:
+        # `agent.value` is a regex over process names (`graph.AGENT_RULES`), and
+        # CARDS-STYLE R16 forbids deciding identity from a process name. A gate
+        # here would have been the §8 pathology one layer up — an exemption
+        # granted on a string match — and it was written, measured and removed
+        # on 2026-09-24 for exactly that reason: the live `session-15413` group
+        # labelled `claude-session` is a VS Code Server tree, so the gate would
+        # have suppressed a finding on the strength of a name that is itself
+        # wrong.
+        #
+        # What this code's subject LOOKS like is a separate question from
+        # whether it fires, and it is answered in `presentation` (the login
+        # session is provenance, the process group is the subject) and in
+        # `notification-contract.yaml#attention` (the finding is REVIEW-only
+        # evidence about a lifecycle, so it is INFORMATIONAL and off the face).
+        # Suppressing it here would have made the register quieter while leaving
+        # both of those wrong.
         session = (session_states or {}).get(group.get("session_ref") or "")
         state = (session or {}).get("state")
         if state in TERMINATING_SESSION_STATES and (

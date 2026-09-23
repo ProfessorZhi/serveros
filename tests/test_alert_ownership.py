@@ -53,6 +53,52 @@ own manager. `test_a_users_systemd_manager_is_not_a_system_service` is the
 regression test for exactly that, and it is why the class is now derived from
 the same segment `slice_of_cgroup` reports.
 
+WHY THE SCOPE CHANGED ON 2026-09-24. Attribution answers "whose is this" and
+was never asked "is this ours to report". `EXTERNAL` means *outside this
+deployment's declared units*, so the operator's own login is
+EXTERNAL_USER_SESSION exactly as a stranger's is — and every per-group code
+downstream was therefore opening findings about other accounts' work. The live
+alert store had 1,055 OPEN alerts and the card face was a ⚠️需确认 list whose
+items were two other people's sessions.
+
+The answer is one rule, in one place: a group the kernel attributed to another
+uid is not a per-group alert subject. It stays in the group inventory, where
+`serverosctl runtime groups` answers about it exactly as before, and it stays
+in the machine-level resource codes because those never read a group at all.
+That last part is what keeps the requirement's exception ("除非是资源紧张")
+true rather than aspirational, and it is asserted against the module's own
+signature rather than trusted — see
+`test_ownership_does_not_silence_the_observations_about_resources`.
+
+TWO CHANGES WERE WRITTEN HERE THAT DAY AND THEN REMOVED. Both were detectors
+narrowed to make a card go quiet, and the design that landed on `main` the same
+day says the card is not the detector's business. They are recorded because the
+measurements that killed them are worth more than the edits were:
+
+    AGE_WITHOUT_ACTIVITY  was gated on the ownership class, because the code's
+                        OPEN backlog on this host was 113 rows and 95 of them
+                        were the host's own infrastructure — `init`, `pid2`,
+                        `getty@tty1.service`, `containerd.service` and the
+                        rest. The measurement is a real premise defect and it
+                        is recorded in `anomaly.py`. The gate was the wrong
+                        layer: this code is already INFORMATIONAL in the
+                        attention table, so it costs nobody an interruption and
+                        narrowing its premise to buy that would be paying for
+                        nothing.
+    an agent-identity   was gated on `agent.value`, so a group carrying an agent
+    gate                name would never be called a leftover however long it
+                        stayed open. CARDS-STYLE R16 now forbids deciding
+                        identity from a process name, and `agent.value` is a
+                        regex over process names (`graph.AGENT_RULES`). Worse
+                        for this particular gate: the live `session-15413`
+                        group is labelled `claude-session` and is a VS Code
+                        Server tree, so the gate would have quieted a finding on
+                        the strength of a name that is itself wrong.
+
+Both questions are answered in `presentation` (naming) and
+`notification-contract.yaml#attention` (what reaches the face), and neither is
+answered by making `detect` report less.
+
 Every host read here is synthetic. Nothing in this file touches `/proc`.
 """
 from __future__ import annotations
@@ -99,6 +145,26 @@ OTHER_USER_SESSION = "/user.slice/user-1042.slice/session-91.scope"
 USER_RUNTIME_SCOPE = ("/user.slice/user-1042.slice/user@1042.service/"
                       "tmux-spawn-abc.scope")
 
+# The SAME two shapes for THIS account, added 2026-09-24 with the §7 scope
+# rule, and the reason there are now two pairs rather than one.
+#
+# The lineage tests below ask "did this group lose its owner?" — a question
+# about `/proc/<pid>/stat` and the cgroup path, answered the same way whoever
+# owns the group. The scope rule asks a different question, "is this ours to
+# report at all?", and before it existed one pair of fixtures was doing both
+# jobs: every session fixture was `user-1042`, so a test that re-pointed one of
+# them at this account to prove the lineage rule would have silently stopped
+# proving the other.
+#
+# Two pairs keep the two questions separable, and the foreign pair is NOT
+# retired by the scope rule — it is what the rule is tested against. The
+# classifier must still read a stranger's cgroup correctly (asserted all over
+# this file, `OTHER_USER_SESSION` included); what changed is only that the
+# answer no longer opens an alert on this deployment's behalf.
+THIS_USER_SESSION = "/user.slice/user-1002.slice/session-91.scope"
+THIS_USER_RUNTIME_SCOPE = ("/user.slice/user-1002.slice/user@1002.service/"
+                           "tmux-spawn-abc.scope")
+
 # A slice this file has no evidence about. Not present on the live host — every
 # cgroup there is under `system.slice`, `user.slice`, `/init.scope`, `/`, or no
 # slice at all — which is the point: the UNKNOWN answer has to be reachable
@@ -142,7 +208,7 @@ def by_code(signals, code):
 
 def group(scope, *, ref="runtime-group:process-tree:900", age=3600, cpu=0.0,
           memory=0, reparented=True, agent=None, owns_its_session=None,
-          instance_live=None):
+          instance_live=None, session_ref=None):
     """One group record shaped as `graph._describe` builds it.
 
     `ownership` is computed by the classifier rather than written by hand, so
@@ -154,6 +220,12 @@ def group(scope, *, ref="runtime-group:process-tree:900", age=3600, cpu=0.0,
     by an older collector has, and the shape most of this file wants, since
     most of these tests are about the cgroup half. Say True or False
     explicitly when the test is about the process half.
+
+    `session_ref` defaults to None and is what `RUNTIME_OUTLIVED_OWNER` reads.
+    A group with no session ref matches no row in `session_states`, so that
+    code cannot fire from a fixture that does not ask for it — which is why
+    the tests for it below pass `session_states` and a ref together, and why
+    the rest of this file is unaffected by it.
     """
     tree = {"reparented_to_init": reparented, "root_ppid": 1,
             "chain_complete": True}
@@ -165,6 +237,7 @@ def group(scope, *, ref="runtime-group:process-tree:900", age=3600, cpu=0.0,
     return {
         "ref": ref,
         "scope": scope,
+        "session_ref": session_ref,
         "ownership": att.ownership_of_scope(scope),
         "aggregate": {"cpu_percent": cpu, "age_seconds": age,
                       "memory_rss_bytes": memory, "process_count": 1},
@@ -462,9 +535,19 @@ def test_the_unknown_owner_code_clears_for_an_attributed_group():
     session the owner IS identified — it is a person's — and no agent rule
     should match it, so the code's premise is false and it is not emitted.
     This is the code that was mislabelling host systemd services as UNKNOWN,
-    so each role that answers it is checked rather than assumed."""
-    for scope in (THIS_USER_MANAGER, OTHER_USER_SESSION, ROOT_CGROUP):
+    so each role that answers it is checked rather than assumed.
+
+    The middle fixture used to be `OTHER_USER_SESSION` and is now
+    `THIS_USER_SESSION`, and that swap is load-bearing rather than cosmetic:
+    since 2026-09-24 the §7 scope rule drops a foreign account's groups before
+    any per-group code is emitted, so the old fixture answered this test with
+    an empty list. "The code did not fire" and "nothing ran" are the same
+    assertion over an empty set, which is how a test passes while testing
+    nothing — so the non-vacuity of every element is asserted here too.
+    """
+    for scope in (THIS_USER_MANAGER, THIS_USER_SESSION, ROOT_CGROUP):
         signals = detect(group(scope, agent=None, age=10_000))
+        assert signals, f"the fixture for {scope} produced nothing to assert on"
         assert "UNKNOWN_OWNER_LONG_RUNNING" not in codes(signals), scope
 
 
@@ -479,10 +562,35 @@ def test_a_group_still_parented_is_not_a_process_tree_signal():
 def test_ownership_does_not_silence_the_observations_about_resources():
     """AGE_WITHOUT_ACTIVITY and HIGH_MEMORY_SUSTAINED say nothing about an
     owner, so ownership must not touch them. Gating them would be widening the
-    rule past the evidence."""
+    rule past the evidence.
+
+    The same holds one layer out for the §7 scope rule, which is why this test
+    earns its place twice over now: HOW MUCH is not WHO. A resource measurement
+    says a quantity crossed a threshold and says nothing about an owner, so
+    excluding a group from per-group alerts has no business reaching it — and
+    it does not, twice: once because both codes are emitted before any
+    ownership question is asked, and once structurally, which is the assertion
+    at the bottom.
+    """
     signals = detect(group(SYSTEM_UNIT, age=10_000, memory=10 ** 12))
     assert "AGE_WITHOUT_ACTIVITY" in codes(signals)
     assert "HIGH_MEMORY_SUSTAINED" in codes(signals)
+    high = by_code(signals, "HIGH_MEMORY_SUSTAINED")[0]
+    assert high["severity"] == an.SEVERITY["HIGH_MEMORY_SUSTAINED"]
+    # The claim is a quantity and an owner is not part of it. If a future
+    # revision adds one, this is where it gets caught.
+    assert high["measured"]["threshold_bytes"] == 1073741824
+    assert high["measured"]["memory_rss_bytes"] == 10 ** 12
+
+    # And the separation the requirement rests on, asserted against the module
+    # rather than against a fixture: the machine-level resource detector takes
+    # no group inventory at all, so no per-group scope rule can reach it. This
+    # is why another account's consumption still arrives — it arrives through
+    # the machine's resource block and the codes that name no process, which is
+    # exactly where the requirement says it should.
+    import inspect
+    ra = _load("serveros_runtime_resource_anomaly", "resource_anomaly.py")
+    assert "groups" not in inspect.signature(ra.detect).parameters
 
 
 def test_a_group_with_no_ownership_record_is_not_treated_as_external():
@@ -567,14 +675,19 @@ def test_a_session_leftover_keeps_the_high_severity_signal():
     # that session is gone. Asserted explicitly rather than left out of the
     # fixture, so this test proves the discriminator answers "leftover"
     # instead of proving that a missing field fails closed.
-    signals = detect(group(OTHER_USER_SESSION, owns_its_session=False))
+    #
+    # The scope is this account's since 2026-09-24: the §7 scope rule drops
+    # another account's groups before this code is reached, so a foreign
+    # fixture would prove nothing here. The classifier answer is the same
+    # either way and is what the assertions below read; only the uid differs.
+    signals = detect(group(THIS_USER_SESSION, owns_its_session=False))
     assert "ORPHAN_PROCESS_TREE" in codes(signals)
     assert "EXTERNAL_PROCESS_TREE" not in codes(signals)
     orphan = by_code(signals, "ORPHAN_PROCESS_TREE")[0]
     assert orphan["severity"] == "high"
     assert orphan["measured"]["ownership"]["role"] == \
         att.ROLE_EXTERNAL_USER_SESSION
-    assert orphan["measured"]["ownership"]["uid"] == "1042"
+    assert orphan["measured"]["ownership"]["uid"] == "1002"
     assert orphan["measured"]["detached_by_design"] is False
     assert orphan["measured"]["root_session"] == 999999
 
@@ -593,7 +706,7 @@ def test_a_login_session_that_detached_on_purpose_is_not_an_orphan():
     328129, `botmux` 1444974 and two VS Code server processes each with
     sid == pid; three `sh` with a sid whose pid was gone.
     """
-    signals = detect(group(OTHER_USER_SESSION, owns_its_session=True))
+    signals = detect(group(THIS_USER_SESSION, owns_its_session=True))
     assert "ORPHAN_PROCESS_TREE" not in codes(signals)
     assert "EXTERNAL_PROCESS_TREE" in codes(signals)
     external = by_code(signals, "EXTERNAL_PROCESS_TREE")[0]
@@ -617,7 +730,7 @@ def test_a_group_with_no_session_evidence_keeps_the_orphan_alert():
     test wearing a cgroup's clothes: every leftover on the host is in a
     session scope too.
     """
-    signals = detect(group(OTHER_USER_SESSION))
+    signals = detect(group(THIS_USER_SESSION))
     assert "ORPHAN_PROCESS_TREE" in codes(signals)
     assert by_code(signals, "ORPHAN_PROCESS_TREE")[0]["severity"] == "high"
     assert "EXTERNAL_PROCESS_TREE" not in codes(signals)
@@ -628,12 +741,20 @@ def test_detached_by_design_reads_the_tree_and_nothing_else():
 
     No name is consulted anywhere in it, so no amount of process naming can
     widen the exemption.
+
+    This one keeps the FOREIGN scope, deliberately: it calls the predicate
+    directly rather than going through `detect`, so the §7 scope rule is not
+    in the path and the fixture's uid is irrelevant. The predicate has to
+    answer the same way about a stranger's cgroup as about this account's —
+    which is the reason both pairs of fixtures exist.
     """
     assert att.detached_by_design(group(OTHER_USER_SESSION,
                                         owns_its_session=True)) is True
     assert att.detached_by_design(group(OTHER_USER_SESSION,
                                         owns_its_session=False)) is False
     assert att.detached_by_design(group(OTHER_USER_SESSION)) is False
+    assert att.detached_by_design(group(THIS_USER_SESSION,
+                                        owns_its_session=True)) is True
     assert att.detached_by_design({"scope": OTHER_USER_SESSION}) is False
     assert att.detached_by_design({}) is False
 
@@ -662,14 +783,17 @@ def test_a_runtime_scope_under_a_live_instance_is_not_an_orphan():
 
     Measured on `device:tokyo-shared-dev-01`, 2026-09-18: `tmux-spawn-*.scope`
     under a live `user@1004.service`, carrying yale's live `claude.exe`
-    sessions, with both cgroup directories present.
+    sessions, with both cgroup directories present. The fixture is this
+    account's since 2026-09-24, for the same reason as the session tests
+    above; the shape the measurement describes is unchanged by whose uid it
+    sits under.
 
     Note what is NOT required here: the root need not have called `setsid`.
     The scope's payload reparents to PID1 because its creator exited, not
     because it made itself a session leader, so asking that question would
     reject groups for a reason that is not the reason.
     """
-    signals = detect(group(USER_RUNTIME_SCOPE, owns_its_session=False,
+    signals = detect(group(THIS_USER_RUNTIME_SCOPE, owns_its_session=False,
                            instance_live=True))
     assert "ORPHAN_PROCESS_TREE" not in codes(signals)
     assert "EXTERNAL_PROCESS_TREE" in codes(signals)
@@ -684,14 +808,14 @@ def test_a_runtime_scope_whose_instance_is_gone_is_still_an_orphan():
     """The half that keeps this honest. A scope whose `init.scope` is not in
     the table is a scope whose instance is not running, and the alert stands
     at `high` — which is also where a short table lands."""
-    signals = detect(group(USER_RUNTIME_SCOPE, instance_live=False))
+    signals = detect(group(THIS_USER_RUNTIME_SCOPE, instance_live=False))
     assert "ORPHAN_PROCESS_TREE" in codes(signals)
     assert by_code(signals, "ORPHAN_PROCESS_TREE")[0]["severity"] == "high"
     assert "EXTERNAL_PROCESS_TREE" not in codes(signals)
 
     # And with no evidence at all in the tree, which is the older-collector
     # shape. Fail closed.
-    signals = detect(group(USER_RUNTIME_SCOPE))
+    signals = detect(group(THIS_USER_RUNTIME_SCOPE))
     assert "ORPHAN_PROCESS_TREE" in codes(signals)
     assert by_code(signals, "ORPHAN_PROCESS_TREE")[0]["severity"] == "high"
 
@@ -705,7 +829,7 @@ def test_a_login_session_under_a_live_instance_keeps_its_own_rule():
     A login ends. A scope someone made does not. Those are different facts
     and the cgroup path is where the kernel records the difference.
     """
-    signals = detect(group(OTHER_USER_SESSION, owns_its_session=False,
+    signals = detect(group(THIS_USER_SESSION, owns_its_session=False,
                            instance_live=True))
     assert "ORPHAN_PROCESS_TREE" in codes(signals)
     assert by_code(signals, "ORPHAN_PROCESS_TREE")[0]["severity"] == "high"
@@ -914,3 +1038,161 @@ def test_the_classifier_is_not_an_allowlist():
                      and n.value.endswith(".service") and n.value != ".service"
                      and id(n) not in prose]
     assert used_as_value == [], f"unit names are used as values: {used_as_value}"
+
+
+# ---------------------------------------------------------------------------
+# §7 THE SCOPE RULE — whose work is this file's business (2026-09-24)
+#
+# The rule: an anomaly whose subject is a process GROUP must concern this
+# deployment's own side. `EXTERNAL` in attribution.py means "outside this
+# deployment's declared units", which is not the same question — it makes the
+# operator's own login EXTERNAL_USER_SESSION exactly as a stranger's is. So the
+# axis is added as a measurement (the uid this process runs as), not as a list
+# of uids in a contract that goes stale when the operator changes.
+#
+# What is NOT in scope, and the reason it is asserted here rather than assumed:
+# the machine-level resource codes. `resource_anomaly.detect` takes no group
+# inventory at all, so another account filling the disk or the memory still
+# arrives — through the machine's resource block and the codes that name no
+# process. That is the requirement and it is structural, not a promise.
+# ---------------------------------------------------------------------------
+
+
+def test_our_uid_is_measured_and_root_is_answered_none(monkeypatch):
+    """The line between our side and not, and why it can say "no answer".
+
+    A deployment running as root is not thereby the owner of every account on
+    the host, so uid 0 returns None and the caller falls back to the unscoped
+    behaviour — a failed scope test must report MORE than it otherwise would,
+    never less. Asserted by patching the only thing it reads.
+    """
+    monkeypatch.setattr(an.os, "getuid", lambda: 1002)
+    assert an.our_uid() == 1002
+    monkeypatch.setattr(an.os, "getuid", lambda: 0)
+    assert an.our_uid() is None
+
+    monkeypatch.undo()
+    assert isinstance(an.our_uid(), int)
+
+
+def test_the_scope_test_excludes_a_named_foreign_owner_and_nobody_else():
+    """The gate on its own, over every shape the fixtures describe.
+
+    The load-bearing half is the middle of this table. A group whose owner the
+    kernel did NOT name carries `uid: None`, and "nobody can say whose this is"
+    is UNKNOWN, which is DEFER — it is the answer this product exists to
+    report, not a licence to drop the subject. Excluding it would have silenced
+    `test_an_unattributable_group_is_still_an_orphan` and the §8 guards with
+    it, which is the near-miss this test exists to keep closed.
+    """
+    our = 1002
+    assert an._owned_by_another_account(group(OTHER_USER_SESSION), our) is True
+    assert an._owned_by_another_account(group(USER_RUNTIME_SCOPE), our) is True
+    assert an._owned_by_another_account(group(THIS_USER_SESSION), our) is False
+    assert an._owned_by_another_account(
+        group(THIS_USER_RUNTIME_SCOPE), our) is False
+    # Unattributable, or no ownership record at all: not excluded.
+    assert an._owned_by_another_account(group(OTHER_SLICE), our) is False
+    assert an._owned_by_another_account({}, our) is False
+    assert an._owned_by_another_account(
+        {"ownership": {"class": att.UNKNOWN}}, our) is False
+    # Our own daemon's unit sits at the same uid as the foreign unit below it
+    # and neither is excluded; being MANAGED is a separate axis that the
+    # orphan gate already handles, and this gate must not become a second,
+    # disagreeing copy of it.
+    assert an._owned_by_another_account(group(THIS_DEPLOYMENT_UNIT), our) is False
+    assert an._owned_by_another_account(
+        group(FOREIGN_UNIT_SAME_PLACE), our) is False
+    # And with no answer for "us", nothing is excluded.
+    assert an._owned_by_another_account(group(OTHER_USER_SESSION), None) is False
+
+
+def test_another_accounts_leftover_is_not_a_finding_while_ours_is():
+    """§11's paired case, and the whole rule in two lines of contrast.
+
+    Same shape, same lineage evidence, same cgroup mechanism — one fixture has
+    a stranger's uid in the path and the other has ours. Before 2026-09-24 both
+    produced ORPHAN_PROCESS_TREE at `high`. The first does not any more, and
+    the second still does, and it is the second that keeps the rule from being
+    a way to silence leftover alerts in general.
+    """
+    theirs = detect(group(OTHER_USER_SESSION, owns_its_session=False))
+    assert theirs == [], [s["code"] for s in theirs]
+
+    ours = detect(group(THIS_USER_SESSION, owns_its_session=False))
+    assert "ORPHAN_PROCESS_TREE" in codes(ours)
+    assert by_code(ours, "ORPHAN_PROCESS_TREE")[0]["severity"] == "high"
+
+
+def test_another_accounts_consumption_does_not_become_a_per_item_alert():
+    """The same pair with the magnitudes turned up, so the contrast cannot be
+    explained by a threshold. Identical numbers, different uid:
+
+        theirs -> nothing at all, no per-group signal of any code
+        ours   -> HIGH_MEMORY_SUSTAINED and ORPHAN_PROCESS_TREE
+
+    What this does NOT claim is that their consumption is unobserved. Forty
+    gigabytes is a machine fact and it leaves through the machine's resource
+    block; the assertion for that is the `resource_anomaly.detect` signature in
+    `test_ownership_does_not_silence_the_observations_about_resources`, which
+    has no `groups` parameter for a per-group rule to gate.
+    """
+    heavy = {"memory": 40 * 10 ** 9, "age": 864_000, "cpu": 150.0}
+    assert detect(group(OTHER_USER_SESSION, **heavy)) == []
+
+    ours = detect(group(THIS_USER_SESSION, **heavy))
+    assert "HIGH_MEMORY_SUSTAINED" in codes(ours)
+    assert "ORPHAN_PROCESS_TREE" in codes(ours)
+
+
+def test_the_leftover_code_reports_our_own_open_session_and_that_is_the_point():
+    """The live case, kept, because what it proves is now the opposite.
+
+    The fixture is `session-15413` as measured on this host on 2026-09-24:
+    4.44 days, 45 processes, 177.5% of one core summed across them, 5.1 GiB.
+    Over that week this code carried 323 alerts, 306 `process-tree` and 17
+    `claude-session`, and the only three that never closed were in the 17 — a
+    session held in `closing` is reported forever because `closing` is a state
+    it never leaves.
+
+    ON 2026-09-24 THIS TEST ASSERTED THE CODE DID NOT FIRE when the group
+    carried an agent name. That assertion was a detector gate and it was
+    removed, for two reasons that are one reason:
+
+      * CARDS-STYLE R16 forbids deciding identity from a process name, and
+        `agent.value` is a regex over process names (`graph.AGENT_RULES`); and
+      * the live `session-15413` group is labelled `claude-session` while being
+        a VS Code Server tree — so the gate would have quieted a finding on the
+        strength of a name that is itself wrong.
+
+    So what is asserted instead is the disposition the design chose: the code
+    still reports, and it is off the attention face. The name a reader sees is
+    fixed in `presentation`, where a ref is not allowed to spell an agent type;
+    whether the finding interrupts anyone is fixed in
+    `notification-contract.yaml#attention`. Neither is fixed by making `detect`
+    report less, which is exactly what the removed gate did.
+    """
+    closing = {"session:15413": {"state": "closing"}}
+    live = {"session_ref": "session:15413", "age": 383_970, "cpu": 177.5,
+            "memory": 5_112_500_224}
+
+    named = detect(group(THIS_USER_SESSION, agent="claude", **live),
+                   session_states=closing)
+    plain = detect(group(THIS_USER_SESSION, **live), session_states=closing)
+
+    # The measurement does not read the name. This is the assertion that would
+    # have caught the removed gate, and it is stronger than the pair it used to
+    # be: not "the named one is quiet" but "the two are the same finding".
+    assert codes(named) == codes(plain)
+    assert "RUNTIME_OUTLIVED_OWNER" in codes(named)
+    assert by_code(named, "RUNTIME_OUTLIVED_OWNER")[0]["measured"][
+        "origin_session_state"] == "closing"
+    # And the spending is named too, by the codes that measure spending rather
+    # than ownership — a busy session is not quiet just because it is ours.
+    assert "HIGH_CPU_SUSTAINED" in codes(named)
+    assert "HIGH_MEMORY_SUSTAINED" in codes(named)
+
+    # With no session evidence the code cannot fire either way, so the above is
+    # proving the condition and not a fixture that fires unconditionally.
+    assert "RUNTIME_OUTLIVED_OWNER" not in codes(
+        detect(group(THIS_USER_SESSION, **live)))
