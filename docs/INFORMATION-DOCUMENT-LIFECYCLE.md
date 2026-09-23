@@ -98,3 +98,16 @@ A3保护并行WIP/路径迁移，A4/B10监测Core/必要服务和可读资源，
 本轮读到B2的content_identity/card_digest绑定已写入当前源码；不能再按早期文档宣布它缺失。该模块仍是重读提案，语义writer正向消费者仍需核验。focus_source当前仍列多项NOT_PRODUCED，grant/worker事实要从真正owner join而非塞Card。
 
 外部参考的整个产品合同见[EXTERNAL-REFERENCE-LIBRARY](EXTERNAL-REFERENCE-LIBRARY.md)，归档合同见[DEEP-ARCHIVE-POLICY](DEEP-ARCHIVE-POLICY.md)。执行只用更新的[CC-EXECUTION-PLAN](CC-EXECUTION-PLAN.md) P0–P12，21项门见能力实现矩阵；旧观察保留为历史，不复制一套新的最终台账。
+
+
+## 11. 2026-09-24 飞书信息面与三类文档关系
+
+当前live空间已复核为 My Document Library、`个人笔记`、`公开文档`、`外部文档` 与 Drive。早期“外部参考默认放MyDocs参考资料 / Published Knowledge”的位置描述由新合同取代。
+
+- `FOLLOW_MIRROR`：只读长期关注的外部doc/wiki/web等，原Source仍authority；在 `外部文档` 建稳定只读镜像，records/Git保存source+mirror版本。
+- `EXTERNAL_MAINTAINED`：别人/共享位置但由我们参与维护，原位维护，不在自己云空间复制第二正文。
+- `OWNED`：长期私人知识→`个人笔记`；正式多人指南→`公开文档`；正式日报/周报/专项→MyDocs `汇报`。
+
+MyDocs其余部分继续承担动态工作、每日对齐、项目工作台/认识/报告；Drive承担原始文件和MeetingBundle资产。飞书文字文档可与local `hwz-records`和private GitHub形成版本化三端连续性；Drive大二进制默认只把metadata/hash/locator关系进Git。
+
+详细合同见 ability-management [FEISHU-INFORMATION-SYNC-ARCHITECTURE](https://github.com/ProfessorZhi/ability-management/blob/main/design/FEISHU-INFORMATION-SYNC-ARCHITECTURE.md)。
