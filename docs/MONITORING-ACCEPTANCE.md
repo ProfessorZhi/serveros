@@ -92,7 +92,7 @@ SRV-0011/SRV-0005/MarketOps/LiteLLM并行任务仍受保护。真正同文件冲
 | V15 | 原生Feishu渲染 | 同一payload真实可见，HTML不是替身 |
 | V16 | 计划停机/退役临时环境 | 不发假故障，历史证据保留，当前视图不充数 |
 | V17 | 新配置未reload旧process | 显示实际running版本；待激活不是已升级 |
-| V18 | 未授权动作/错误actor | 没有实际mutation；“已知晓”不是批准重启 |\n| V19 | rolling status card | 每小时采样只patch当前卡，不新增一条聊天历史 |\n| V20 | incident still-open | 只有age增加不新发；同episode更新原卡 |\n| V21 | process-hygiene flood | 数百个high-memory/orphan/age finding不会变成数百通知 |\n| V22 | root/data/quota | 系统盘、数据盘、本人quota分别可读且阈值按role/remaining判断 |\n| V23 | Laya/Tailscale/Gateway | availability/quality/peer-idle/no-traffic语义不混淆 |
+| V18 | 未授权动作/错误actor | 没有实际mutation；“已知晓”不是批准重启 |\n| V19 | rolling status card | 每小时采样只patch当前卡，不新增一条聊天历史 |\n| V20 | incident still-open | 只有age增加不新发；同episode更新原卡 |\n| V21 | process-hygiene flood | 数百个high-memory/orphan/age finding不会变成数百通知 |\n| V22 | root/data/quota | 系统盘、数据盘、本人quota分别可读且阈值按role/remaining判断 |\n| V23 | Laya/Tailscale/Gateway | availability/quality/peer-idle/no-traffic语义不混淆 |\n| V24 | login session identity | cgroup/loginctl session不得渲染为Claude/Codex session，除非A1 provider有真实绑定证据 |\n| V25 | many idle agent sessions | 多个后台/可resume CC session不产生Incident |\n| V26 | outlived-login hygiene | VS Code/tmux/daemon跨login存活只进Diagnostic，除非join真实pressure/lease/work impact |\n| V27 | workflow integrity | Active Focus Parent lost、lease conflict、effect unknown、unexpected A7 FAIL可形成workflow incident |\n| V28 | daily status lifecycle | 同一天hourly采样只patch一张Status Card，第二天才新建 |\n| V29 | incident lifecycle | 同episode跨小时/跨天只patch一张Incident Card，不重复NEW |
 
 ## 5. 判据与计划关系
 

@@ -328,3 +328,159 @@ AI 网关 Ready
 - status card一小时更新只patch当前卡；
 - escalation/recovery不会被旧delivery receipt吞掉；
 - native Feishu真实截图通过，而不仅是HTML/JSON测试。
+
+
+## 13. Session Hygiene 与 Agent Session 不是一回事
+
+2026-09-24 03:48 live 告警再次暴露一个明确语义缺陷：三条 `RUNTIME_OUTLIVED_OWNER` 卡片标题显示为“Claude 会话 15413/19825/150”，但对应 PID 实际分别是 Vince/Kai/Zhengji 的 **VS Code Server** 进程组。源码反查确认：
+
+- runtime attribution 的 `session_ref` 来自 cgroup/loginctl 的 **OS login session**（例如 `session-15413.scope`）；
+- `graph.session_states()` 调的是 `loginctl` session facts；
+- presentation 却把 `runtime-group:claude-session:*` 硬编码渲染为“Claude 会话”。
+
+因此这是 attribution/presentation identity mismatch，不能让用户据此判断 Claude native session 是否泄漏。
+
+硬规则：
+
+~~~text
+OS login session
+≠ Claude/Codex Agent Session
+≠ tmux session
+≠ BotMux session
+≠ Work Item Parent Session
+~~~
+
+只有 AgentSessionProvider / A1 的真实 native session identity 能让卡片使用“Claude 会话 / Codex 会话”等名称。只有 loginctl/cgroup 证据时必须写“登录会话 / 用户会话 / 进程组”，不得猜 Agent 类型。
+
+`RUNTIME_OUTLIVED_OWNER` 本质是 lifecycle hygiene observation：login session 正在结束而进程组仍在运行并达到通用资源阈值。它不证明：
+- 进程不该存在；
+- 进程属于 Claude；
+- Work Item owner 已结束；
+- 资源泄漏；
+- 应该清理。
+
+VS Code Server、tmux、daemonized helper、remote IDE 等均可能合法跨越原 login session。
+
+因此该 code 默认属于 **P3 Review/Diagnostic**，不进入用户 interrupting/attention face。只有 join 到额外高质量证据时才升级，例如：
+
+- 当前 Active Focus/Work Item 明确声明该runtime应随session结束而停止；
+- runtime持有冲突lease/write lock，阻断新的合法工作；
+- 聚合资源导致本人quota/host memory/CPU/disk pressure；
+- 受保护服务或当前执行路径受影响；
+- 真实cleanup policy明确要求停止且当前状态违约。
+
+即使升级，Incident按逻辑故障域聚合，不逐session/pid推送。
+
+## 14. CC / Agent Session 的默认健康语义
+
+“Session很多、长期打开、后台待命、未归档”**默认都不是故障**。Session管理与运行监控区分：
+
+~~~text
+active/busy        正常
+idle/background    正常
+dormant/resumable  正常
+archived           正常
+closed             正常
+unknown            需要观测，但不是自动故障
+~~~
+
+只有以下情况可能成为 workflow/session incident：
+
+- Active Focus Parent 应继续但真实 Agent Session 意外消失，且无可恢复checkpoint/receiver；
+- 同一 Work Item/scope 出现两个并发writer/冲突lease；
+- Session/worker停止但外部effect状态 unknown，存在重复执行风险；
+- Parent退出时仍持有独占资源/lease且没有handoff；
+- 当前工作要求的session/provider连续不可用并实际阻塞 Work Item；
+- session/process资源聚合造成真实资源pressure。
+
+“24小时没动”“进程还在”“有很多 /resume 条目”只进入 maintenance/diagnostic。
+
+## 15. Workflow Quality Alerts
+
+ServerOS 还需要一类不同于机器资源的 **workflow integrity incident**。只针对当前 Active Focus / 真实交付义务，而不是 backlog 全库。
+
+### 应通知
+
+- Active Focus Parent 丢失继续责任：无活session、无合法checkpoint、无receiver；
+- Work Item 存在未决 external effect/commit-unknown，重试可能重复产生副作用；
+- 同一 write scope 出现冲突 writer / lease violation；
+- required child Run/Quay Run 结束但结果无法被 Parent 接收，且阻断当前关键路径超过策略窗口；
+- A7 对 implementation acceptance 出现**非预期产品 FAIL**，按政策要求停自动修改并需要人决定；
+- 需求/AC/source revision 发生实质漂移，使当前 accepted design/plan 失效，而执行仍准备继续；
+- 用户明确要求的发布/发送到期但 publisher/sender 连续失败，且没有安全fallback；
+- 20:00 对账所需 B1/B2 pipeline 在 expected cutoff 后仍无法形成可用 reconciliation packet，且这会阻断当晚对账。
+
+### 默认不通知
+
+- GPT review 给出 CHANGES_REQUIRED，但 Parent 可在预算内自动修订；
+- Quay 一个 child 失败，但 Parent 有合法重试/替代且 Work Item 未阻塞；
+- research 暂无结论但预算/时间仍充足；
+- Work Item 正常等待已知依赖；
+- background Session 多；
+- Activity 改计划；
+- Work Item overnight 完成；
+- backlog 有很多未选 Requirement；
+- Daily Reconciliation 没有变化。
+
+这些进入 Workbench/Current Focus/Daily Reconciliation，而不是 Incident。
+
+## 16. 一天一张 Status Card
+
+Current Status Card 的最终发送模型：
+
+~~~text
+local calendar day
+→ create one Daily Status Card on first scheduled sample
+→ every later sample PATCH the same card
+→ midnight/next day's first sample freezes yesterday and creates today's card
+~~~
+
+默认一台设备/一个监控profile每天一张。卡面显示“最后采样时间”和必要趋势；完整小时历史留 records/observations，不靠聊天消息保存。
+
+如果当天发生真实 Incident：
+- Status Card 的“当前问题”区域只放摘要和链接/引用；
+- Incident 本身拥有独立 episode card；
+- Status Card 不复制完整 incident详情。
+
+Feishu interactive card 可 patch 14 天，因此 daily status 远在可更新窗口内。
+
+## 17. 一个 Incident 一张 Card，不按小时/天重复
+
+Incident episode 跨小时、跨天都继续 patch 同一张卡，直到恢复/关闭；不因为跨零点重开 incident。若 episode 超过传输平台可 patch 窗口，才创建 successor card，并显式链接/标注同一 episode continuity。
+
+一个 episode 的 face 只显示：
+- 真实subject；
+- 当前状态；
+- impact；
+- age/trend；
+- 已验证事实；
+- next action / whether automation acted。
+
+不显示：
+- seen 3518 times；
+- alert_ref；
+- raw producer code；
+- freshness内部枚举；
+- “机器严重度 WARNING (medium)”；
+- “建议的效力 建议，不是授权”重复声明；
+- 667项低优先级/108项历史积压。
+
+这些全部进入 Diagnostic View。
+
+## 18. 当前 RUNTIME_OUTLIVED_OWNER 三条 live 结论
+
+本轮只读核验：
+
+| live card | 实际 root PID | 实际对象 | 当前聚合资源 |
+|---|---:|---|---:|
+| “Claude会话15413” | 1315723 | Vince VS Code Server | 约1.22 GiB RSS，约26.5%单核等效CPU |
+| “Claude会话19825” | 2021489 | Kai VS Code Server | 约1.73 GiB RSS，约0.6%CPU |
+| “Claude会话150” | 28541 | Zhengji VS Code Server | 约0.96 GiB RSS，约0.3%CPU |
+
+这些资源读数说明它们可以参与容量诊断，但**不能仅凭该读数和login session closing就形成“Claude遗留进程”告警**。本轮没有执行停止/清理，也不判断这些VS Code Server是否应该退出。
+
+实现时应同时修：
+1. producer/reference naming，避免把login session伪装成Agent Session；
+2. attention policy，把 `RUNTIME_OUTLIVED_OWNER` 默认移出alert face；
+3. aggregation，把session/process hygiene放到Diagnostic/Hygiene；
+4. 只有join真实Work Item/resource impact后再升级为Incident。

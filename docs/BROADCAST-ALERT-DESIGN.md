@@ -150,3 +150,18 @@ JSON合法只是格式；HTML preview只是设计预览。必须检查默认折�
 - process hygiene（age/orphan/external/unowned、无影响的单process高CPU/RAM）默认进入Diagnostic/Review，不自动push。
 
 详细分类、基础设施探针与alert taxonomy见 [MONITORING-PRODUCT-ARCHITECTURE](MONITORING-PRODUCT-ARCHITECTURE.md)。
+
+
+## 14. 2026-09-24 Session误归属与卡片生命周期
+
+03:48 live卡把三组VS Code Server进程写成“Claude会话遗留进程组”。底层session来自loginctl/cgroup，不是A1 Agent Session；presentation不得从ref字符串猜Agent类型。没有AgentSessionProvider证据时只写“登录会话/用户会话/进程组”。
+
+`RUNTIME_OUTLIVED_OWNER`、session age、orphan/unknown owner 等默认属于Hygiene/Diagnostic。CC/Claude Session多、后台待命、长期开着本身不构成用户告警。只有当前Work Item的继续责任、lease/effect或真实资源pressure被证明受影响，才聚合升级。
+
+Feishu surface固定：
+
+- **Daily Status Card**：每设备/每profile每天一张；首次sample创建，后续hourly sample原位patch，次日新建。
+- **Incident Card**：一个episode一张；持续/证据/恢复原位patch，跨天不重复新发。
+- **Diagnostic/Hygiene**：session/process历史、PID、code、seen count、积压数等主动查看。
+
+告警卡首层禁止再显示 `seen N times`、alert ref、机器code/freshness枚举、历史积压总量。完整workflow-quality报警范围见 MONITORING-PRODUCT-ARCHITECTURE。

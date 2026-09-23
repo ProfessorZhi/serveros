@@ -78,3 +78,12 @@
 **R15 · 资源首屏固定回答“我 / 设备 / 基础设施 / 当前问题”。**
 
 本人CPU/RAM/quota、整机CPU/RAM、系统盘、数据盘与少量关键基础设施默认直接可见。UID、型号、loopback、PID、container list、probe URL和采集口径进入详情。采集成功不能改写成环境健康。
+
+
+**R16 · Session 名称必须来自正确身份层。**
+
+loginctl/cgroup 的 `session-15413.scope` 只能称OS登录会话/用户会话；tmux session只能称tmux；BotMux session只能称BotMux；只有A1 AgentSessionProvider证明的provider/native identity才能显示“Claude会话”“Codex会话”。禁止从ref prefix或进程名猜Agent类型。
+
+**R17 · Daily Status 一天一张；Incident 一个episode一张。**
+
+状态采样更新同一张当日卡，不以聊天条数保存小时历史。Incident跨小时/跨天patch同一episode card；平台patch窗口到期才创建successor。页面默认不显示seen count、internal code、raw refs和历史积压。

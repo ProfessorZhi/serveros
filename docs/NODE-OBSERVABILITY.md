@@ -154,3 +154,12 @@ Node观测正式分为：①本人资源；②整机资源；③关键基础设�
 当前Tokyo实际监控对象应通过Binding/registry/current dependency join包括ServerOS Core、Tailscale userspace transport、Shared Laya、Shared LiteLLM Gateway，以及真正当前需要的remote/browser/project runtime。Laya答案质量、offline sleeping peer、无流量provider、orphan/age/unknown-owner不属于运行事故。
 
 资源告警不再按per-process finding数量直接投影：CPU看持续饱和/队列与影响，内存看MemAvailable/PSI/OOM，磁盘/quota按role-specific percent+absolute-free，swap要结合活动pressure。详细产品合同见 [MONITORING-PRODUCT-ARCHITECTURE](MONITORING-PRODUCT-ARCHITECTURE.md)。
+
+
+## 13. Session / Workflow 信号不直接等于告警
+
+OS login session、Agent Session、tmux、Work Item Parent是不同身份域。runtime attribution从cgroup/loginctl得到的session不得被renderer命名为Claude/Codex session。
+
+进程/Session卫生信号默认只进Diagnostic：age、orphan、unknown owner、outlived login、background session、long-lived IDE server。它们只有与当前Active Focus的expected lifecycle、exclusive lease、unknown effect或真实资源pressure join后，才升级为workflow/resource incident。
+
+Workflow integrity的监控对象是当前0–2 Active Focus及其required delivery chain，不是所有历史Work Item/Requirement。重点观察Parent continuation、lease冲突、effect unknown、required Run receiver、A7 unexpected FAIL、accepted source/design drift和必需publisher/sender failure。
