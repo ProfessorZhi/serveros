@@ -163,3 +163,16 @@ OS login session、Agent Session、tmux、Work Item Parent是不同身份域。r
 进程/Session卫生信号默认只进Diagnostic：age、orphan、unknown owner、outlived login、background session、long-lived IDE server。它们只有与当前Active Focus的expected lifecycle、exclusive lease、unknown effect或真实资源pressure join后，才升级为workflow/resource incident。
 
 Workflow integrity的监控对象是当前0–2 Active Focus及其required delivery chain，不是所有历史Work Item/Requirement。重点观察Parent continuation、lease冲突、effect unknown、required Run receiver、A7 unexpected FAIL、accepted source/design drift和必需publisher/sender failure。
+
+
+## 14. 共享节点 principal 隔离与 known-owner drift
+
+Node 采集可以看见共享机多用户事实，但 Human surface 必须按 principal 授权/责任过滤：
+
+- PERSONAL：当前 principal owned；
+- SHARED：共同基础设施；
+- OTHER_PRINCIPAL：只保留设备级聚合影响，默认不进入当前用户可操作清单。
+
+OS login session 只做 provenance。若能 join 到 Work Engine/Run/Binding，应把 runtime 归到真实业务 owner，而不是继续用 session id 作为用户 subject。
+
+owner 明确且 owner lifecycle 已结束、runtime 仍活着，建模为 known-owner lifecycle drift；它与 unknown/orphan 分开。升级前必须核 fresh owner state、lease、consumer、writer/socket scope、resource impact。无 fresh lease 判断不能自动 cleanup。

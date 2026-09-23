@@ -1650,3 +1650,14 @@ Monitoring must not confuse OS login sessions with A1 Agent Sessions. cgroup/log
 Process/session hygiene is diagnostic by default. User-facing workflow incidents are restricted to current Active Focus delivery integrity: lost Parent continuation without checkpoint/receiver, conflicting writer/lease, commit-unknown effects, required child output that cannot be accepted and blocks the critical path, unexpected A7 acceptance failure requiring a stop, invalidated accepted plan still about to execute, or required publication/delivery repeatedly failing.
 
 Current Status uses one rolling Feishu card per local day; incident episodes use one card for their entire lifecycle. Details are canonicalized in Monitoring Product Architecture.
+
+
+### Shared-node alert ownership
+
+Tokyo is shared. Monitoring may observe cross-user process facts, but personal Human Control surfaces are scoped to the current principal. They show the principal's own actionable objects, shared infrastructure and device-wide pressure; another user's WIP is not turned into the current user's cleanup/confirmation task.
+
+OS login sessions are provenance containers, not Agent Sessions or Work Item owners. Incident subjects resolve to the smallest actionable object: logical service, filesystem/quota, Work Item/Run, runtime instance or verified Agent Session.
+
+A runtime that outlives a known terminal Work Item/Run is a known-owner lifecycle drift, not an orphan. Before any attention escalation or cleanup, ServerOS revalidates owner state, active lease, remaining consumer, write/socket scope, resource impact and effect safety. A historical PID or alert is never sufficient authorization to stop it.
+
+Daily status is one rolling Feishu card per local day; each incident is one card per episode. Sampling updates cards and durable observations rather than generating chat history.

@@ -48,3 +48,8 @@
 [此前反查](WORK-SCENARIO-REVIEW-20260923.md)、[旧实测](integration-readiness-20260922.md)、[历史收敛](architecture/CONSOLIDATION-REVIEW-20260921.md)和ledger保留日期/范围，不倒改成新实现的证明。新版源码推翻旧缺失判断时以主计划当前基线与实际测试为准，不把历史风险无限当待办。
 
 本次只改设计/计划/records说明，基于最新main保留并行代码/数据/测试。无payload、runtime、manifest、source文件、凭据、飞书对象、部署和授权的本轮修改；后续实现必须把新规则落实到真正入口和消费者，不靠文档改LIVE。
+
+
+### Shared-node alert scoping
+
+Monitoring contracts explicitly separate current-principal objects, shared infrastructure and other users' WIP. Other-principal runtimes do not become the current user's cleanup alerts; known-owner lifecycle drift, Agent-session identity and one-card-per-day/episode rules are in [Monitoring Product Architecture](MONITORING-PRODUCT-ARCHITECTURE.md).

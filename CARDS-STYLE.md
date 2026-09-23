@@ -87,3 +87,16 @@ loginctl/cgroup 的 `session-15413.scope` 只能称OS登录会话/用户会话�
 **R17 · Daily Status 一天一张；Incident 一个episode一张。**
 
 状态采样更新同一张当日卡，不以聊天条数保存小时历史。Incident跨小时/跨天patch同一episode card；平台patch窗口到期才创建successor。页面默认不显示seen count、internal code、raw refs和历史积压。
+
+
+**R18 · 共享机个人卡不得把别人WIP变成我的动作。**
+
+面向某 principal 的卡片只把本人 owned 对象写成可处理对象。其它用户对象只有形成 device/shared-service 影响时才以聚合事实出现；默认不点名 PID/Session/Work Item，更不写“请确认是否清理”。
+
+**R19 · Subject 粒度必须对应 action boundary。**
+
+login session、Agent Session、Work Item、Run、runtime instance 不能混用。若真正异常是某个已结束 Run 遗留的测试 daemon，标题写该 Run/runtime；不能把父 login scope 整体命名为“Claude 会话遗留”。
+
+**R20 · 卡片生命周期固定。**
+
+Daily Status 每个本地日一张并持续 patch；Incident 每个 episode 一张并持续 patch。采样次数、seen count、小时历史不作为新消息理由。
