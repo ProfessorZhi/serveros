@@ -1,101 +1,91 @@
-# 重点联系人深归档：声明范围、转发闭包与可证明覆盖
+# 重点联系人深归档：范围、转发材料与归档/发布分离
 
-状态：2026-09-23整合修订。对应B1和SOURCE-DOCUMENT-CONTRACT，不执行回填、不改变任何原始消息/权限/配置。一般工作来源仍SHALLOW；用户确认的关键对接来源长期DEEP_REQUIRED，包含实际转发进来的材料。执行见CC-EXECUTION-PLAN P1/P2/P3/P11。
+2026-09-23整合版。B1按SOURCE-DOCUMENT-CONTRACT实现，本文件不执行回填或改变资料/权限。普通来源SHALLOW，明确bot/app/test为NONE，已确认对接source为DEEP_REQUIRED。归档完整性、Git发布许可、实际语义理解分别判断；执行只用CC-EXECUTION-PLAN P1/P2/P3/P11。
 
-## 1. 已接受的范围
+## 1. 已接受的source范围
 
-当前用户明确的种子联系人为Bruce.Xu、Nature.Hu、Zhengji.Zhang；名字仅作导航，resolver从已有可信人员/会话记录关联稳定identity/chat_id。不能把Zhengji与Zhang误拆为两个联系人，不能把一个显示名下所有同名人自动纳入。
+Bruce.Xu、Nature.Hu、Zhengji.Zhang是用户明确种子，执行用已有可信记录解析稳定identity/chat_id，不以显示名硬编码、不把Zhengji与Zhang误拆成两人。其对应p2p为DEEP_REQUIRED，指定项目小群可同样登记；大通用群不因包含这些联系人全部deep。
 
-明确对应的p2p会话为DEEP_REQUIRED；指定项目小群可同样登记。大型部门群仍默认SHALLOW，不能因其中含priority联系人而整群深抓。新增对接人/项目群由用户或已有明确委托接受，模型推测的关系只产生候选。
+规则按真实授权/deny、明确source政策、已接受对接关系、一般默认解析。具体标签不能绕上级deny，bot改为信息源需实际重新分类。自聊与真人Tokyo群KEEP例外保留。模型推测新对接人只能成为候选，不自动增抓取范围。
 
-策略顺序：检查真实授权/deny边界→明确source规则→已确认对接关系/指定channel→普通来源默认。更具体规则不能绕过上级deny；机器人要转成可捕获source需真实重新分类，不用“priority=true”忽略黑名单。现有自聊和真人Tokyo群KEEP例外保留。
+## 2. 深度与历史范围独立
 
-## 2. 捕获深度与历史范围独立
+NONE只登记必要排除身份/理由，不抓正文凑计数；SHALLOW保存合规消息/版本/thread/材料locator；DEEP_REQUIRED在已声明范围内把材料闭包作为必须完成义务。普通source某次task-scoped DEEP不永久改会话政策。
 
-NONE：只保存必要排除身份/类型/理由，不取正文凑计数。
-SHALLOW：消息合规文本、版本、thread、材料locator和manifest。
-DEEP_REQUIRED：在已声明时间/对象范围内，把消息材料闭包作为必须完成的采集义务。
+回填说明历史起点/终点或可获取边界、增量cutoff、页/字节/时间预算。关键聊天需要完整意味着保留未完成范围并有界续填，不是无限抓全账号/原群。新消息先保存，历史工作不能饿死增量。COMPLETE必须注明范围/所见版本/截止时间，不能无分母称所有历史齐全。
 
-旧任务级DEEP保持“为此次任务选择材料”的含义，不自动变长期策略。持久policy与实际物化coverage分开；新schema不能只加字段无人消费。
+## 3. 转发内部结构与外部链接不同
 
-历史范围以start/end或已有可访问起点、回填cursor、增量cutoff和预算说明。用户希望关键聊天完整，意味着未完成的历史应被显示并逐批续填，不是无界扫描所有账号/群。实时增量先安全保存，后台历史回填不能饿死新消息。结果必须写“在范围X、所见版本Y、截至T的覆盖”，禁止没有分母的“所有历史完整”。
+目标材料包括直接image/file/audio/video、post媒体、直接引用的第一层doc/wiki/web，以及实际转发进当前会话的可见消息/原作者时间/附件。
 
-## 3. 转发内容与文件究竟如何闭合
+同一个已授权转发包中的子消息/子转发可按depth/node/bytes/time预算有界遍历并去环。不能借“第一层”默默漏掉包内文件；第一层限制用于跳出消息的外部文档/网页引用，不授权递归其所有出链。
 
-目标集合：消息事件/编辑/撤回/thread、直接image/file/audio/video、post内嵌媒体、被消息直接引用的第一层doc/wiki/web，以及转发bundle可见内容与其中实际材料。
+不查询原始群全部历史、不换更高权限身份。只返回扁平文本、nested token不可用、子消息没权限、解析器不支持或达到上限时标discovery gap/PARTIAL；“没有解析到”不能等于“没有材料”。真实API/CLI支持需核版本/样本，本设计不发明forward读取命令。
 
-**转发的内部结构与外部链接是两种扩展。** 同一已获准转发包里的可解析子消息、子转发/附件属于被转发内容，在depth/node/byte/time上限内遍历并去环；不能借“只取第一层”漏掉包内文件。第一层限制用于跳出消息访问的网页/文档引用，不授权递归抓其全部出链。
+保留转发者、parent_forward、可见原作者/时间/顺序/位置路径；缺原ID时弱关联而不猜造。别人嵌套发言不归当前对接人。同内容被转发两次可复用合法字节，但两条发现/转发边都留。
 
-只获取被转发进当前会话的内容，绝不因此查询原群全历史或切换更高权限身份。Provider仅暴露扁平文本、子消息不可访问、token缺失、结构不支持或遍历达到上限时记录discovery gap与原因；不能把“没解析出材料”当“没有材料”。原API的真实可用行为需版本/样本验证，本设计不发明合并转发读取命令。
+## 4. Material的N:M关系
 
-保留转发者、parent_forward、可见原作者/原时间/顺序与位置路径。拿不到原ID就弱关联，不猜造；转发中某人说的话不能记成当前对接人直接声明。相同嵌套消息被两次转发时内容可复用，但两条发现/转发关系分别保留。
+一条消息N个材料，同一材料可有多消息来源。provider/tenant/object+实际版本/part定义身份，token不是全球唯一且永不变保证。记录source_message/revision、part path、parent forward、原locator、kind/name/声明size、发现方法/状态、实际bytes/hash、protected locator、时间/权限/retention。
 
-## 4. Material N:M身份
+同域合法去重复用字节不丢来源；跨ACL不能靠hash缓存泄露文件存在。legacy by_message单键只作导航；migration需读messages/backfilled/实际文件/manifest，旧碰撞记录不丢，不静默挑最后一个附件给consumer。
 
-消息可以N个材料，一个文件可以被多个消息引用。不能以message_id→one file作为完整索引。material identity按tenant/provider object/实际版本构造，token不是跨租户普遍唯一或永不过期的保证。
+## 5. 四个覆盖面
 
-材料记录关联source_message/revision、part/位置路径、parent_forward、原locator、kind/name/size（可空）、发现方法/coverage、fetch状态、protected locator、实际字节hash、时间、权限与retention。声明size与实际bytes区分；文件扩展名不证明媒体类型。
+message coverage说明哪些页/时间/版本取得及gap；discovery coverage说明这些消息/forward/post是否都被支持的解析器检查；material coverage说明required字节哪些落地；understanding coverage说明实际读了哪些内容及未读依赖。
 
-同域合法去重复用下载字节，不抹来源；跨ACL不借hash命中透露或给出别人文件。已有files.by_message为legacy导航，migration必须保留messages、backfilled列表和所有已落地材料，旧键冲突不丢“败者”。旧consumer只能处理单项时准确标不完整，不静默选最后一个文件。
+范围内消息/发现都完整、required材料全部匹配该source版本落地，才可称内容COMPLETE。0材料且parser未知不得0/0=100%；目录有65文件或pending写无待办也不是完整分母。权限拒绝结束attempt而不是content成功。
 
-## 5. 四个覆盖面，不以文件数自证
+归档物化、Git发布面和语义理解可不同状态：内容在合法受控存储且hash可核，未进入Git不必是归档缺失；但只有登记hash、实际字节丢失也不能称归档完整。新编辑产生新材料时旧COMPLETE仍只属于旧版。
 
-1. message coverage：哪些页/时间/版本已取得，中间有哪些gap。
-2. discovery coverage：这些消息/转发/post/链接结构是否都被支持的解析器检查；unknown是缺口。
-3. material coverage：已发现的required材料哪些取得、哪些失败/未取/无权限/已失效。
-4. understanding coverage：哪些文字/图片/文件真的被语义消费，哪些Claim仍依赖未读材料。
+## 6. 消息先存、材料续取、理解补读
 
-只有声明范围内消息覆盖和发现都完整、required材料全部当前版本落地，才能表示该范围内容COMPLETE。发现0材料且解析失败不能0/0=100%；实际目录有65文件也不能证明required集合被穷尽。权限拒绝可以结束一次尝试，但保存覆盖仍PARTIAL。
+raw事件/manifest安全持久先推进capture；材料发现/下载按预算继续，各自intent/receipt。B2可先理解独立文本结论，依赖未读图/SOP的范围保持partial；landing仅重核受影响Claim，不全库重算。
 
-允许单独表达TRANSFER_VERIFIED/SHALLOW_ONLY/PARTIAL/STALE等人读含义，代码沿现有正交状态扩展，不给业务Item加归档pipeline枚举。当前内容变化后旧完整度属于旧版本，不能继续显示fresh COMPLETE。
+大文件/权限错误不挡无关source。下载用临时文件、真实大小/类型/hash验证后落位，不留0字节假成功；超时先查已存内容/目标效果，过期URL只在原scope合法重解析。源改/撤回保留关系，当前访问/传播按新权限控制。
 
-## 6. 消息先存、材料续取、理解差量重试
+## 7. 历史样本与当前进展
 
-B1消息/manifest原子或可恢复提交后推进capture；材料discovery与下载按有界队列继续，分别留intent/receipt。B2可先读文字，但有关未取得截图/SOP/forward文件的结论要partial/待核。材料到达只唤醒受影响Claim，不全库重算。
+旧hwz-records@2e61200的Bruce三图与pending不一致、Nature仅消息而未有材料、Zhengji有丰富deep资料，是当时的迁移依据，不是恒定现状。
 
-一份大文件/权限失败不阻止其他聊天；retry按错误类别、deadline/总预算，未知下载效果先核已存hash，不无限重新下载。下载文件先临时写/校验/原子落位，失败不留下0字节成功文件。URL过期在同scope合法重新解析，不能扩大原会话范围。
+本轮后续读取81673ebb已包含Nature新增消息、docx/图片、SOP、相关认识和publish-excluded机制。应保留这些新成果、核当前关联与coverage，不重复“Nature只有38条无文件”或重新全量下载。
 
-已发生源编辑/撤回保留原事件关系；当前可读/可传播按最新权限与retention控制。普通业务修改不可改历史事实，合法泄密清理/删除需求也不能被“append-only永远不删”阻止；须走原始资料owner的可审计流程。
+Bruce先检查已有字节/关联/hash再reconcile。Zhengji的丰富目录只能作回归候选，不自称完整：发现unsupported或遗漏时准确partial并补证据。主计划当前源码表同时记录semantic writer/水位已落地，后续聚焦真实reading与consumer。
 
-## 7. 当前迁移依据的正确口径
+本轮没有下载、回填、打开原始图片或修改manifest成功标记。
 
-此前在hwz-records@2e61200的只读检查记下：Zhengji有大量已落地图片/链接并含forward；Bruce有3张图在目录中而manifest仍说待下载；Nature消息含forward/post媒体但无相应coverage。
+## 8. 归档面与发布面的明确边界
 
-它们是**历史候选测试素材**，不是本轮新测量：
+记录总入口沿information/raw/feishu，实际字节可以在原获准位置或受保护非Gitarchive，由安全locator关联。不能为了目录设计立即移动活跃/唯一资料。
 
-- Bruce先验证真实消息关联、文件可读与hash，若一致只修stale索引，不重下载。
-- Nature先发现可解析/不可解析范围，再按权限补真正缺失材料；不能先承诺Provider一定能拿nested token。
-- Zhengji是丰富已有样本，不自动冠以COMPLETE。新discovery若发现unsupported或隐藏缺口，准确降为partial并补证据；不为维持旧表绿色忽略缺口。
+**已批准保存的原始敏感二进制证据可以在受控归档面保持原样，但不得因此进入Git、普通提示词、日志、外部模型或公开资料。** 不把“禁止传播凭据”误实现成销毁唯一合法原证据，也不为追求deep完整复制凭据到新的文本/索引。正文按既有单一redaction去敏感；private metadata同样可能需限制。
 
-本轮未回填、未下载、未检查二进制；不回写manifest成功字段。
+复用records已落地的`information/publish-excluded.json`及manifest的publish_exclusions：它按内容不适合Git发布登记hash/受控locator/provenance。`heavy-media-externalized.yaml`按体积/存储政策，两本判据不合并、不另建重复登记册。原reason-code与结构身份/工作邮箱的明确分类保留，不能一条泛化规则扩成全库文本重脱敏。
 
-## 8. 本地、Git和飞书边界
+历史远端已经传播的凭据截图，不因从HEAD排除或ignore就消失。最新records说明报告这一风险，实际有效性/轮换状态本轮未核；由合法owner核验/轮换/撤销与必要历史处置，不读出/复制值，不未经授权生产变更或force历史重写。发布排除一致性测试不证明所有既有blob安全。
 
-记录总入口为information/raw/feishu现有布局；新desired source policy走information/sources目标声明/旧watchlist适配。大媒体/敏感字节放已有受保护非Gitarchive root，通过manifest locator关联；不能为设计整齐立即移动有消费者的旧资料。
+深归档也不自动上传Drive/Published Knowledge、不变成项目代码或业务授权。后续参考/指南所用材料由B5/B9/Space按目的、许可和受众选择安全版本。
 
-已有private-repo归档许可保留在原scope，但新增材料仍核实际受众、敏感性与保存/传播许可。文本redaction不证明图片没秘密；credential不得进raw/Git/Prompt/公开卡。metadata有敏感身份时也应最小化/受保护。
+## 9. Follow与外部参考衔接
 
-深归档不是上传云盘/公共知识库、模型全量外发或生成项目代码的许可。文件被后续真正用于需求/参考/指南时，由相应B1/B5/B9/Space按用途复用安全对象，不在每个项目重复复制相同原文。
+同doc被聊天引用又被单独Follow，原source身份/版本快照可复用，多个发现边保留。深归档一次不自动注册永远轮询；Follow是明确对象/子树/新子节点/预算政策。
 
-## 9. 与Follow及外部参考的关系
+外部网页默认第一层取得。自己的飞书Reference是独立摘要/批注文档，不是原文章权威；用户收藏不自动采用其规则。材料landing、source改动/撤权分别触发B2/A2/B9准确delta；只有待续文件而没真实consumer不得说后台已排队。
 
-聊天引用同一doc与用户单独Follow该doc时保留一份source身份/版本快照及多个discovery来源。该doc持续Follow是独立已接受策略，不因曾深归档一次就无限轮询整个库。外部网页默认第一层抓取，自己的飞书参考卡为独立衍生对象。
-
-材料landing、source edit、permission/retraction分别产生精确delta；B2语义writer、A2失效、B9Reference刷新各自消费。仅写一份pending JSON但没真实worker/consumer，只能标待实施，不说后台已排队。
-
-## 10. 必须验证
+## 10. 必须验证的边界
 
 | 场景 | 断言 |
 |---|---|
-| 重点p2p直接文件 | raw先存，文件后落地，按同一范围/版本给覆盖 |
-| 一消息多材料、重复token | 全部材料和每条来源关系保留，不message单键覆盖 |
-| 同转发包内子转发 | 有界遍历已转发内容；循环/上限/不支持均可见 |
-| 原群或原消息不可访问 | 不扩大抓取范围、不换身份、不标完整 |
-| 第2页失败/回填中断 | 已存页不丢、不跳gap，增量继续 |
-| 0材料但parser不支持 | discovery PARTIAL，不0/0成功 |
-| 文件已在而pending陈旧 | reconcile验证后修索引，不重复下载 |
-| 重要图像有私密内容 | 私有capture/传播政策分别执行，不自动发布 |
-| 旧deep样本新增编辑 | 旧COMPLETE只属于旧版本，准确续取/失效 |
-| 转发内第三方发言 | provenance不错误归当前联系人 |
+| priority直接文件 | raw先存、字节后落地，范围/版本/receipt一致 |
+| 一消息多材料、重复token | N条与各来源边保留，不单message覆盖 |
+| 转发包内子转发 | 有界遍历，循环/上限/unsupported可见 |
+| 原群不可访问 | 不扩scope/换身份，不假完整 |
+| 分页/回填中断 | 已存不丢、不跳gap，增量继续 |
+| 0材料但parser未知 | discovery PARTIAL，不0/0成功 |
+| 现存文件pending旧 | 核字节/关联后修索引，不重复下 |
+| 凭据类原始图片 | 合法受控原证据保留、发布排除可追，不外发真值 |
+| 已发布历史凭据 | 不以HEAD排除关闭风险，owner处置独立跟踪 |
+| source编辑/撤回 | 旧COMPLETE仅旧版，下游失效可核 |
+| 转发第三方发言 | 原说话人/provenance不错误归属 |
 
-实施作为P2的正向与恢复门，再让P3验证材料真正被理解；文件名/目录数量/自由文本pending都不能单独替代内容覆盖证明。
+P2验证真实捕获/材料，P3复用semantic writer验证实际阅读/正式理解，P5处理合规Reference/发布。三者不能用文件数、free-text pending、Plugin加载或空JSON相互代替。
