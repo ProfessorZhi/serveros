@@ -151,6 +151,53 @@ def write(root: Path, relative: str, document) -> Path:
     return path
 
 
+#: Where a page captured from outside this workspace lands:
+#: `information/raw/web/<publisher>/<slug>/manifest.json`. The plane is the
+#: first segment, which is also what `material_index.provider_of` reads.
+WEB_SLUG = "web/openai-developers/sample-article"
+
+
+def web_manifest(**over) -> dict:
+    """A page capture shaped like the real one, only the named fields changed."""
+    document = {
+        "schema": "serveros/web-capture.v1",
+        "source": {
+            "provider": "web",
+            "requested_url": "https://example.invalid/article",
+            "final_url": "https://example.invalid/article",
+            "redirected": False,
+        },
+        "identity_observed": {"title": "An Article", "author": "A"},
+        "fetch": {"at": "2026-09-23T18:31+08:00", "http_status": 200,
+                  "bytes": 317035, "sha256": "b" * 64, "captured_by": "curl"},
+        "materials": {"inventoried": False, "count": 0},
+    }
+    document.update(over)
+    return document
+
+
+def write_web(records: Path, relative: str, document) -> Path:
+    """The same `write`, rooted at the plane's own root instead of a chat's."""
+    return write(records / "information" / "raw", relative, document)
+
+
+@pytest.fixture
+def page(tmp_path):
+    """A records root holding one web capture, and nothing of any other shape."""
+    tree = tmp_path / "records" / "information" / "raw" / "feishu" / "chats"
+    tree.mkdir(parents=True)
+    records = tmp_path / "records"
+    write_web(records, WEB_SLUG, web_manifest())
+    return records
+
+
+def the_page(records: Path) -> dict:
+    records_ = [o for o in cc.read_root(records)["objects"]
+                if o["shape"] == "web_capture"]
+    assert len(records_) == 1, f"expected one page capture, read {len(records_)}"
+    return records_[0]
+
+
 # --------------------------------------------------------------------------
 # an absence is not a value
 # --------------------------------------------------------------------------
@@ -325,6 +372,161 @@ class TestShapeAndRoleAreSeparateFacts:
         assert record["shape"] == "UNKNOWN_SHAPE"
         assert "coverage" not in record
         assert record["role"] == "chat"
+
+
+# --------------------------------------------------------------------------
+# a page captured from outside this workspace
+# --------------------------------------------------------------------------
+
+class TestAWebPageIsItsOwnShapeAndItsOwnQuestions:
+    """`docs/EXTERNAL-REFERENCE-LIBRARY.md` adds a shape, and a shape is not a
+    label: the questions its completeness is asked over are not a chat's and not
+    a document's, so it gets its own components and its own denials.
+    """
+
+    def test_the_plane_says_the_role_and_the_keys_say_the_shape(self, page):
+        """Read from the path and from the keys, and the two agree here."""
+        record = the_page(page)
+        assert record["shape"] == "web_capture"
+        assert record["role"] == "web"
+        assert "shape_role_disagreement" not in record
+
+    def test_a_shape_this_reader_already_knew_is_not_reclassified(self, tmp_path):
+        """The page keys are asked LAST, so adding the branch moved no reading.
+
+        A manifest that already read as a document capture reads as one still,
+        even when it also carries `source` and `fetch`. A classification changed
+        by an edit is the reader moving, whichever direction it moved in.
+        """
+        tree = tmp_path / "records" / "information" / "raw" / "feishu" / "chats"
+        tree.mkdir(parents=True)
+        records = tmp_path / "records"
+        write_web(records, WEB_SLUG,
+                  {**web_manifest(), "url": "https://example.invalid/doc",
+                   "content_sha256": "a" * 64})
+        assert cc.read_root(records)["objects"][0]["shape"] == "document_capture"
+
+    def test_the_capture_half_is_what_was_asked_for(self, page):
+        """`requested_url` is the request. Where it ENDED UP is the response's
+        fact, kept apart because a declaration names an address to read and not
+        wherever a server chose to send the reader."""
+        record = the_page(page)
+        assert record["capture"]["requested_url"] == \
+            "https://example.invalid/article"
+        assert record["capture"]["method"] == "curl"
+        assert record["capture_undeclared"] == []
+
+    def test_a_capture_that_recorded_no_method_says_so_rather_than_guessing(
+            self, tmp_path):
+        tree = tmp_path / "records" / "information" / "raw" / "feishu" / "chats"
+        tree.mkdir(parents=True)
+        records = tmp_path / "records"
+        write_web(records, WEB_SLUG, web_manifest(
+            fetch={"http_status": 200, "bytes": 10, "sha256": "b" * 64}))
+        record = the_page(records)
+        assert "method" not in record["capture"]
+        assert [u["field"] for u in record["capture_undeclared"]] == ["method"]
+
+    def test_a_body_with_a_short_digest_is_incomplete(self, tmp_path):
+        """A 12-character digest names a body; it does not address one."""
+        tree = tmp_path / "records" / "information" / "raw" / "feishu" / "chats"
+        tree.mkdir(parents=True)
+        records = tmp_path / "records"
+        write_web(records, WEB_SLUG, web_manifest(
+            fetch={"at": "2026-09-23T18:31+08:00", "http_status": 200,
+                   "bytes": 317035, "sha256": "b" * 12, "captured_by": "curl"}))
+        body = the_page(records)["coverage"]["components"]["body"]
+        assert body["state"] == "INCOMPLETE"
+        assert body["facts"]["content_sha256_chars"] == 12
+
+    def test_a_page_that_was_never_inventoried_is_undecidable_and_not_empty(self):
+        """§5's `0 材料且 parser 未知不得 0/0 = 100%`, at the page's own level.
+
+        `materials.inventoried: false` with `count: 0` is one reading — nobody
+        looked — and reading the zero as "this page holds nothing" would report
+        a pass nobody measured. The count stays in `facts` so the number a
+        person needs is not hidden; only its MEANING is refused.
+        """
+        components = cc._web_components(web_manifest())
+        materials = components["materials"]
+        assert materials["state"] == "UNDECIDABLE"
+        assert materials["facts"]["materials_count"] == 0
+        assert materials["facts"]["materials_inventoried"] is False
+        assert "0/0" in " ".join(materials["why"])
+
+    def test_a_page_whose_materials_were_inventoried_reports_a_measured_zero(self):
+        """The other side of the same rule: a zero over a real look is a zero."""
+        components = cc._web_components(
+            web_manifest(materials={"inventoried": True, "count": 0}))
+        materials = components["materials"]
+        assert materials["state"] == "COMPLETE"
+        assert materials["facts"]["materials_count"] == 0
+
+    def test_a_missing_inventory_state_is_undecidable_and_not_a_pass(self):
+        components = cc._web_components(web_manifest(materials={"count": 0}))
+        assert components["materials"]["state"] == "UNDECIDABLE"
+
+    def test_a_200_is_a_response_and_a_refusal_is_not(self):
+        """A 403 often comes with a body — a page, sometimes a nice one. The
+        bytes can be kept and still not be the page, so the two questions are
+        two states."""
+        ok = cc._web_components(web_manifest())["response"]
+        assert ok["state"] == "COMPLETE"
+        assert ok["facts"]["http_status"] == 200
+        refused = cc._web_components(web_manifest(fetch={
+            "at": "x", "http_status": 403, "bytes": 900, "sha256": "b" * 64,
+            "captured_by": "curl"}))["response"]
+        assert refused["state"] == "INCOMPLETE"
+        assert "403" in " ".join(refused["why"])
+
+    def test_a_missing_status_is_undecidable_and_not_a_pass(self):
+        components = cc._web_components(web_manifest(
+            fetch={"at": "x", "bytes": 10, "sha256": "b" * 64}))
+        assert components["response"]["state"] == "UNDECIDABLE"
+        assert "fetch.http_status" in " ".join(components["response"]["why"])
+
+    def test_a_redirect_is_reported_without_calling_the_capture_failed(self):
+        """The bytes are real and the address is not the one that was asked for.
+        Both are true, so neither is rounded into the other: the component stays
+        COMPLETE and the sentence names both addresses."""
+        components = cc._web_components(web_manifest(source={
+            "provider": "web", "requested_url": "https://example.invalid/a",
+            "final_url": "https://example.invalid/b", "redirected": True}))
+        response = components["response"]
+        assert response["state"] == "COMPLETE"
+        assert response["facts"]["redirected"] is True
+        assert response["facts"]["final_url"] == "https://example.invalid/b"
+        assert "example.invalid/b" in " ".join(response["why"])
+
+    def test_the_identity_block_keeps_the_address_out_of_the_chat_id(self, page):
+        record = the_page(page)
+        assert record["identity"]["chat_id"] is None
+        assert record["identity"]["name"] == "An Article"
+        assert record["identity"]["url"] == "https://example.invalid/article"
+
+    def test_a_fetch_that_never_re_checked_anything_says_not_recorded(self, page):
+        """A one-shot fetch has no re-check to record, and inventing one would
+        put this reader's assumption where the collector's evidence goes."""
+        verified = the_page(page)["coverage"]["verified"]
+        assert verified["state"] == "NOT_RECORDED"
+        assert verified["at"] is None
+
+    def test_every_web_fact_is_named_by_the_producer_table(self, page):
+        """The table is load-bearing: a fact with no named producer refuses."""
+        record = the_page(page)
+        assert set(record["capture"]) <= set(cc.CAPTURE_PRODUCED)
+        facts = set()
+        for name, component in record["coverage"]["components"].items():
+            assert component["facts"], f"`{name}` claims a state with no facts"
+            facts |= set(component["facts"])
+        assert facts <= set(cc.COVERAGE_PRODUCED)
+        assert {"materials_inventoried", "materials_count", "http_status",
+                "final_url", "redirected"} <= facts
+
+    def test_an_unknown_shape_names_all_three_key_pairs(self, tree):
+        write(tree, "people/x/oc_x/links/slug", {"something": "else"})
+        record = cc.read_root(tree.parents[3])["objects"][0]
+        assert "`source`+`fetch`" in record["why"]
 
 
 # --------------------------------------------------------------------------

@@ -848,8 +848,24 @@ def source_key(record: dict, document: dict) -> str:
     if isinstance(chat_id, str) and chat_id:
         return f"{provider}:chat:{chat_id}"
     url = document.get("url")
+    if not (isinstance(url, str) and url):
+        # A web capture's address sits in its own `source` block and not at the
+        # top level: the same key, read from where that capture writes it. The
+        # requested address and not the final one, because that is the field
+        # `source_policy.identity_of` keys — and a key space two modules share
+        # is only shared while both read the same field.
+        web_source = (document.get("source")
+                      if isinstance(document.get("source"), dict) else {})
+        url = web_source.get("requested_url")
     if isinstance(url, str) and url:
         return f"{provider}:doc:{url}"
+    if document.get("source") is not None:
+        # No address on a web capture: the fallback below would key a page as a
+        # chat named after its directory, which is a stable key for an object
+        # this module did not identify. `source_policy.key_of` composes no key
+        # at all here, and an empty string composes none either — the two agree
+        # on the only thing that matters, which is that this object has no key.
+        return ""
     return f"{provider}:chat:{Path(str(record.get('path', ''))).parent.name}"
 
 
@@ -951,6 +967,15 @@ def _half(state: str, measured_by: str, facts=None, gaps=None, refusal=None,
     return no_unsourced(out, table, "coverage")
 
 
+# A capture shape that CANNOT have a message stream, as a set rather than as a
+# comparison against one shape: the failure this guards is a shape somebody
+# added to `capture_coverage` and did not add here, which reads as `UNREADABLE`
+# and blames this module for a file that was never supposed to exist. The names
+# are `capture_coverage.SHAPES`' own, and the suite asserts that containment
+# rather than trusting this comment.
+NO_MESSAGE_SHAPES = ("document_capture", "web_capture")
+
+
 # ------------------------------------------------------------------ discovery --
 def discovery_coverage(messages: dict, *, shape: str | None = None,
                        limit: int | None = None) -> dict:
@@ -962,22 +987,32 @@ def discovery_coverage(messages: dict, *, shape: str | None = None,
     `PLACEHOLDER`, `EMPTY_IN_A_MATERIAL_TYPE` or `UNSUPPORTED_TYPE` keeps this
     at `PARTIAL`; no combination of zeroes makes it `COMPLETE`.
 
-    A document capture has no message stream by construction, so the missing
-    file is `NOT_APPLICABLE` and not `UNREADABLE`: reporting 20 document
-    captures as unread would say this module failed at 20 objects when it
-    failed at none. `NOT_APPLICABLE` is its own state and is not read as a
-    pass — coverage for a document lives in its own `body` component, which is
-    `capture_coverage`'s to report.
+    A document captured from a chat and a page captured from the web have no
+    message stream by construction, so a missing file beside them is
+    `NOT_APPLICABLE` and not `UNREADABLE`: reporting 20 document captures as
+    unread would say this module failed at 20 objects when it failed at none.
+    `NOT_APPLICABLE` is its own state and is not read as a pass — coverage for
+    a document lives in its own components, which are `capture_coverage`'s to
+    report. Which shapes those are is a set and not an `if`, because the
+    failure mode this guards against is a shape nobody remembered to add.
     """
-    if messages["state"] == "NO_MESSAGES_FILE" and shape == "document_capture":
+    if messages["state"] == "NO_MESSAGES_FILE" and shape in NO_MESSAGE_SHAPES:
+        if shape == "web_capture":
+            what = ("this object is a page captured from the web: it has no "
+                    "message stream, so the message-discovery question has no "
+                    "denominator here and this is not a pass. What this page "
+                    "holds is its own `body`, `response` and `materials` "
+                    "components, in `capture_coverage`")
+        else:
+            what = ("this object is a document captured from a chat: it has no "
+                    "message stream, so the message-discovery question has no "
+                    "denominator here and this is not a pass. What this "
+                    "document holds is its own `body` component, in "
+                    "`capture_coverage`")
         return _half("NOT_APPLICABLE", "intake/material_index.py",
                      facts={"rows": 0, "by_state": {}, "by_type": {},
                             "with_references": 0, "gap_rows": 0},
-                     why=["this object is a document captured from a chat: it "
-                          "has no message stream, so the message-discovery "
-                          "question has no denominator here and this is not a "
-                          "pass. What this document holds is its own `body` "
-                          "component, in `capture_coverage`"])
+                     why=[what])
     if messages["state"] != "READ":
         return _half("UNREADABLE", "intake/material_index.py",
                      refusal={"half": "discovery",
@@ -1678,10 +1713,15 @@ def _is_token(value) -> bool:
 def _identity_of(record: dict, document: dict) -> dict:
     """The object's own name, as the manifest wrote it."""
     chat = document.get("chat") if isinstance(document.get("chat"), dict) else {}
-    return {"name": chat.get("name") or document.get("title"),
+    web_source = (document.get("source")
+                  if isinstance(document.get("source"), dict) else {})
+    web_seen = (document.get("identity_observed")
+                if isinstance(document.get("identity_observed"), dict) else {})
+    return {"name": chat.get("name") or document.get("title")
+            or web_seen.get("title"),
             "chat_type": chat.get("chat_type"),
             "external": chat.get("external"),
-            "url": document.get("url"),
+            "url": document.get("url") or web_source.get("requested_url"),
             "type": document.get("type")}
 
 

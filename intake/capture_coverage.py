@@ -59,8 +59,15 @@ CAPTURE_SEGMENTS = ("feishu", "chats")
 # The shape of a manifest, decided by the keys it carries and never by where it
 # sits. `role` comes from the path and is reported beside it, so the two can be
 # seen to disagree rather than one silently standing in for the other.
-SHAPES = ("chat_capture", "document_capture", "UNREADABLE", "UNKNOWN_SHAPE")
-ROLES = ("chat", "link", "UNKNOWN_ROLE")
+#
+# `web_capture` is a page fetched from outside this workspace by
+# `docs/EXTERNAL-REFERENCE-LIBRARY.md`. It is a shape and not a role because the
+# question it answers is different: a chat capture's completeness is about a
+# message stream and a document capture's about a body, while a web capture has
+# neither of those denominators and its own (`response`, `materials`).
+SHAPES = ("chat_capture", "document_capture", "web_capture", "UNREADABLE",
+          "UNKNOWN_SHAPE")
+ROLES = ("chat", "link", "web", "UNKNOWN_ROLE")
 
 COMPONENT_STATES = ("COMPLETE", "INCOMPLETE", "UNDECIDABLE")
 
@@ -69,10 +76,13 @@ COMPONENT_STATES = ("COMPLETE", "INCOMPLETE", "UNDECIDABLE")
 # is no such entry: `_capture_half` raises on a key that is not here.
 CAPTURE_PRODUCED = {
     "mode": "sync.mode — the mode the collector recorded it ran",
-    "method": "sync.method — the verbatim command or API call",
+    "method": "sync.method — the verbatim command or API call, on a chat "
+              "capture; fetch.captured_by on a web capture, where the same "
+              "question is asked of a request instead of a run",
     "target_type": "type — a document capture's own kind (wiki/docx/repo)",
     "target_url": "url — what a document capture was pointed at",
     "source_message_id": "source_message_id — the message the link came from",
+    "requested_url": "source.requested_url — what a web capture was pointed at",
 }
 
 # Every key this module may put in `coverage.components[*].facts`.
@@ -86,10 +96,19 @@ COVERAGE_PRODUCED = {
     "earliest_create_time": "sync.earliest_create_time",
     "latest_create_time": "sync.latest_create_time",
     "last_message_id": "sync.last_message_id",
-    "content_sha256": "content_sha256 — the body's digest as written",
+    "content_sha256": "content_sha256 — the body's digest as written, on a "
+                      "document capture; fetch.sha256 on a web capture",
     "content_sha256_chars": "len(content_sha256) — a digest shorter than 64 hex "
                             "characters is a label and not a content address",
-    "fetched_at": "fetched_at",
+    "fetched_at": "fetched_at, on a document capture; fetch.at on a web capture",
+    "http_status": "fetch.http_status — what the server answered",
+    "final_url": "source.final_url — where the request ended up",
+    "redirected": "source.redirected — whether it ended up somewhere else",
+    "materials_inventoried": "materials.inventoried — whether the collector "
+                             "looked for the page's own materials at all",
+    "materials_count": "materials.count — the materials it recorded, which is "
+                       "only a count when `materials_inventoried` says it "
+                       "looked",
     "media_count": "media_count — the count the collector declared",
     "media_listed": "len(media) — the entries it actually wrote",
     "backfilled": "files.backfilled — attachments materialized",
@@ -139,25 +158,38 @@ def walk_manifests(root: Path) -> list[Path]:
 
 
 def role_of(path: Path, root: Path) -> str:
-    """Whether this manifest is a chat's own or one link expanded from a chat.
+    """Whether this manifest is a chat's own, a link expanded from a chat, or a
+    page fetched from outside this workspace.
 
     Read from the path, and reported beside the shape rather than used to pick
     it: `links/<slug>/manifest.json` sits two levels below a chat, which is the
-    capture layout's own structure and not an inference about the content.
+    capture layout's own structure and not an inference about the content. `web`
+    is the same kind of statement one level up — the first segment says which
+    plane the capture belongs to, which is all a path can say.
     """
     try:
         parts = path.relative_to(root).parts
     except ValueError:
         return "UNKNOWN_ROLE"
+    if parts and parts[0] == "web":
+        return "web"
     return "link" if "links" in parts else "chat"
 
 
 def shape_of(document: dict) -> str:
-    """The family a manifest belongs to, from its keys alone."""
+    """The family a manifest belongs to, from its keys alone.
+
+    The web branch is last on purpose: it is the newest shape, and asking it
+    last means no manifest that already read as a chat or a document capture
+    reads as anything else today. A classification changed by adding a case is
+    a reading moved by an edit.
+    """
     if "chat" in document and "sync" in document:
         return "chat_capture"
     if "url" in document and "content_sha256" in document:
         return "document_capture"
+    if "source" in document and "fetch" in document:
+        return "web_capture"
     return "UNKNOWN_SHAPE"
 
 
@@ -184,6 +216,14 @@ def _capture_half(shape: str, document: dict) -> tuple[dict, list[dict]]:
     if shape == "chat_capture":
         sync = _require_mapping(document.get("sync"), "`sync`")
         source = {"mode": sync.get("mode"), "method": sync.get("method")}
+    elif shape == "web_capture":
+        # A web capture has no run to record a mode for: it was pointed at one
+        # address, once. What it was asked is the request; where that request
+        # ended up is a fact about the answer and is reported by `response`.
+        web_source = _require_mapping(document.get("source"), "`source`")
+        fetch = _require_mapping(document.get("fetch"), "`fetch`")
+        source = {"requested_url": web_source.get("requested_url"),
+                  "method": fetch.get("captured_by")}
     else:
         source = {
             "target_type": document.get("type"),
@@ -386,6 +426,110 @@ def _document_components(document: dict) -> dict:
     return components
 
 
+def _web_components(document: dict) -> dict:
+    """`body`, `response` and `materials`, each decided from its own facts.
+
+    Three questions a page capture has and a chat's does not, kept apart
+    because they fail apart: the bytes may be kept and the address wrong, the
+    address right and the server unhelpful, the page fine and nobody having
+    looked at what is on it.
+
+    `materials` is the one whose ABSENCE is the finding. A capture that never
+    looked for the page's own materials records `inventoried: false`, and
+    reading the `0` beside it as "this page has none" is exactly the
+    `0 材料且 parser 未知不得 0/0 = 100%` of `DEEP-ARCHIVE-POLICY.md` §5, one
+    level down. `UNDECIDABLE` states that in a value no caller can mistake for
+    a pass, and does so without claiming the page is empty.
+
+    What is NOT decided here is whether a `200` is really the article: that is
+    `docs/EXTERNAL-REFERENCE-LIBRARY.md` §4's login-shell question, and it is
+    answered by a module that reads the manifest's shell markers, not by this
+    reader endorsing the collector's own `page_kind` label. A label read as a
+    state is the misattribution these components exist to prevent.
+    """
+    source = _require_mapping(document.get("source"), "`source`")
+    fetch = _require_mapping(document.get("fetch"), "`fetch`")
+    components: dict = {}
+
+    digest = fetch.get("sha256")
+    digest = digest if isinstance(digest, str) and digest else None
+    why: list[str] = []
+    if digest is None:
+        why.append("no `fetch.sha256`: what body came back was not recorded")
+        state = "UNDECIDABLE"
+    elif len(digest) < FULL_DIGEST_CHARS:
+        why.append(f"`fetch.sha256` is {len(digest)} characters, short of the "
+                   f"{FULL_DIGEST_CHARS} a full digest has: this names a body, "
+                   f"it does not let anyone re-check one")
+        state = "INCOMPLETE"
+    else:
+        state = "COMPLETE"
+    components["body"] = {
+        "state": state,
+        "facts": _facts(("content_sha256", digest),
+                        ("content_sha256_chars", None if digest is None
+                         else len(digest)),
+                        ("fetched_at", fetch.get("at"))),
+        "why": why,
+    }
+
+    status = fetch.get("http_status")
+    status = _number(status)
+    redirected = source.get("redirected")
+    redirected = redirected if isinstance(redirected, bool) else None
+    final_url = source.get("final_url")
+    final_url = final_url if isinstance(final_url, str) and final_url else None
+    why = []
+    if status is None:
+        why.append("no `fetch.http_status`: whether the server answered is not "
+                   "recorded, and a body with no status beside it cannot be "
+                   "told from one saved by the author")
+        state = "UNDECIDABLE"
+    elif status != 200:
+        why.append(f"the server answered {status}: whatever came back at this "
+                   f"address is not the page, and a capture that records the "
+                   f"status is not one that got the page")
+        state = "INCOMPLETE"
+    else:
+        state = "COMPLETE"
+    if redirected:
+        why.append(f"the request for `{source.get('requested_url')}` ended at "
+                   f"`{final_url}`: the bytes here are the ones served there, "
+                   f"and a declaration naming the first address is naming an "
+                   f"address this capture did not read from")
+    components["response"] = {
+        "state": state,
+        "facts": _facts(("http_status", status), ("final_url", final_url),
+                        ("redirected", redirected)),
+        "why": why,
+    }
+
+    materials = _require_mapping(document.get("materials"), "`materials`")
+    inventoried = materials.get("inventoried")
+    inventoried = inventoried if isinstance(inventoried, bool) else None
+    count = _number(materials.get("count"))
+    why = []
+    if inventoried is None:
+        why.append("the manifest does not record whether the page's own "
+                   "materials were looked for, so neither of its two answers "
+                   "is on file")
+        state = "UNDECIDABLE"
+    elif inventoried:
+        state = "COMPLETE"
+    else:
+        why.append(f"`materials.inventoried` is false: the {count} beside it is "
+                   f"a count of what was NOT DONE, and reading it as 'this page "
+                   f"holds nothing' is the 0/0 the policy forbids")
+        state = "UNDECIDABLE"
+    components["materials"] = {
+        "state": state,
+        "facts": _facts(("materials_inventoried", inventoried),
+                        ("materials_count", count)),
+        "why": why,
+    }
+    return components
+
+
 # The prose fields that do assert coverage, reported verbatim. `note` is not
 # here on purpose: it is the collector's narrative, and a narrative projected
 # into a field reads as a state.
@@ -426,25 +570,43 @@ def read_manifest(path: Path) -> dict:
     shape = shape_of(document)
     if shape == "UNKNOWN_SHAPE":
         return {"shape": "UNKNOWN_SHAPE",
-                "why": f"the manifest carries neither `chat`+`sync` nor "
-                       f"`url`+`content_sha256`: {sorted(document)[:8]}…"}
+                "why": f"the manifest carries neither `chat`+`sync`, nor "
+                       f"`url`+`content_sha256`, nor `source`+`fetch`: "
+                       f"{sorted(document)[:8]}…"}
     chat = _require_mapping(document.get("chat"), "`chat`")
     declared, undeclared = _capture_half(shape, document)
     # `last_verified_at` sits at the manifest's top level on a document capture
     # and inside `sync` on a chat capture. Both are read; neither is inferred
-    # from the other.
+    # from the other. A web capture carries neither, and is reported as
+    # `NOT_RECORDED` rather than given one: a fetch that never re-checked
+    # anything has nothing to record here.
     verified_at = document.get("last_verified_at")
     if shape == "chat_capture":
         verified_at = verified_at or \
             _require_mapping(document.get("sync"), "`sync`").get("last_verified_at")
-    components = (_chat_components(document) if shape == "chat_capture"
-                  else _document_components(document))
+    if shape == "chat_capture":
+        components = _chat_components(document)
+    elif shape == "web_capture":
+        components = _web_components(document)
+    else:
+        components = _document_components(document)
+    identity = {
+        "chat_id": chat.get("chat_id"),
+        "name": chat.get("name") or document.get("title"),
+    }
+    if shape == "web_capture":
+        # A page has no chat to be identified by. Its own address is added
+        # under its own key rather than smuggled into `chat_id`, so a reader
+        # asking one question never gets the other's answer, and the `name` a
+        # renderer prints is the page's title as the page declared it.
+        web_source = _require_mapping(document.get("source"), "`source`")
+        observed = _require_mapping(document.get("identity_observed"),
+                                   "`identity_observed`")
+        identity["url"] = web_source.get("requested_url")
+        identity["name"] = observed.get("title")
     return {
         "shape": shape,
-        "identity": {
-            "chat_id": chat.get("chat_id"),
-            "name": chat.get("name") or document.get("title"),
-        },
+        "identity": identity,
         "capture": no_unsourced(declared, CAPTURE_PRODUCED, "capture"),
         "capture_undeclared": undeclared,
         "coverage": {

@@ -1009,6 +1009,170 @@ class TestTheVerb:
 
 
 # ---------------------------------------------------------------------------
+# 5b. A page captured from outside this workspace
+# ---------------------------------------------------------------------------
+
+
+#: Where a page capture lands, in the layout the real tree uses.
+WEB_SLUG = "web/openai-developers/rethinking-skills-and-prompts"
+
+WEB_URL = "https://developers.openai.com/blog/rethinking-skills-and-prompts"
+
+
+def a_web_page(records: Path, *, slug: str = WEB_SLUG, url: str = WEB_URL,
+               final_url: str | None = None, redirected: bool = False,
+               title: str = "A Page",
+               provider: str = "web") -> Path:
+    """One page capture object, under `information/raw/web/<publisher>/<slug>/`."""
+    directory = records / RAW / slug
+    directory.mkdir(parents=True, exist_ok=True)
+    (directory / "manifest.json").write_text(json.dumps({
+        "schema": "serveros/web-capture.v1",
+        "source": {"provider": provider, "requested_url": url,
+                   "final_url": final_url or url, "redirected": redirected},
+        "identity_observed": {"title": title},
+        "fetch": {"at": "2026-09-23T18:31+08:00", "http_status": 200,
+                  "bytes": 317035, "sha256": "b" * 64, "captured_by": "curl"},
+        "materials": {"inventoried": False, "count": 0},
+    }, ensure_ascii=False), encoding="utf-8")
+    return directory
+
+
+def a_reference(**over) -> dict:
+    """A REFERENCE declaration entry: the policy a page is captured under."""
+    entry = {
+        "id": over.pop("id", "ref1"),
+        "identity": over.pop("identity", {"provider": "web", "url": WEB_URL}),
+        "policy": over.pop("policy", "REFERENCE"),
+        "body_authority": over.pop("body_authority", WEB_URL),
+        "audience": over.pop("audience", "本人"),
+        "why": over.pop("why", "外部参考：与现有 Skill 指引比较"),
+        "decided_by_user": over.pop("decided_by_user", "2026-09-23"),
+        "publishable": over.pop("publishable", False),
+        "reference": over.pop("reference", {
+            "canonical_url": WEB_URL, "permitted_scope": "身份字段 + 自撰摘要",
+            "save": "SNAPSHOT"}),
+    }
+    entry.update(over)
+    return entry
+
+
+class TestAPageCapturedFromOutsideThisWorkspace:
+    """§5's web source, end to end through this module: a declaration written in
+    `information/sources/` is consumed by the capture object it names.
+
+    This is the half `information/README.md` §8 makes the test of a valid
+    registration — 来源声明未消费不能算登记有效 — so what is asserted is that
+    the join HAPPENS and that it happens on the address, not on the title.
+    """
+
+    def test_a_declaration_about_a_page_is_consumed(self, tmp_path):
+        records = tree(tmp_path)
+        a_web_page(records)
+        declared(records, {"entries": [a_reference()]})
+        row = row_for(resolved(records), f"web:doc:{WEB_URL}")
+        assert row["state"] == "IN_FORCE"
+        assert row["decided_by"] == "DECLARATION"
+        assert row["policies"] == ["REFERENCE"]
+        assert row["shape"] == "web_capture"
+        assert row["role"] == "web"
+        assert row["coverage_owner"] == (
+            "intake/capture_coverage.py — body, response, materials")
+        assert "外部参考" in row["rules"][0]["why"]
+
+    def test_the_key_is_the_address_and_never_the_title(self, tmp_path):
+        """Same title, another address: two objects. Same address, another
+        title: one object. A title is a label that is unique until it is not."""
+        records = tree(tmp_path)
+        a_web_page(records, title="Rethinking skills and prompts")
+        declared(records, {"entries": [a_reference(
+            identity={"provider": "web", "url": "https://example.invalid/other"},
+            recorded_as=["Rethinking skills and prompts"])]})
+        document = resolved(records)
+        row = row_for(document, f"web:doc:{WEB_URL}")
+        assert row["state"] == "UNDECLARED", (
+            "a declaration naming another address, and carrying this object's "
+            "title as `recorded_as`, must not reach it")
+        assert "not a default for pages" in " ".join(row["why"])
+        unresolved = [r for r in document["rows"] if r["state"] == "UNRESOLVED"]
+        assert [r["object"] for r in unresolved] == [
+            "web:doc:https://example.invalid/other"]
+
+    def test_a_capture_that_was_redirected_is_keyed_by_the_address_asked_for(
+            self, tmp_path):
+        """A declaration names what to read. Matching it against wherever the
+        server sent the reader would accept a declaration for an address this
+        capture does not name."""
+        records = tree(tmp_path)
+        a_web_page(records, url="https://example.invalid/a",
+                   final_url="https://example.invalid/b", redirected=True)
+        declared(records, {"entries": [a_reference(
+            identity={"provider": "web", "url": "https://example.invalid/b"},
+            reference={"canonical_url": "https://example.invalid/b",
+                       "permitted_scope": "身份字段", "save": "SNAPSHOT"})]})
+        document = resolved(records)
+        row = row_for(document, "web:doc:https://example.invalid/a")
+        assert row["identity"]["url_final"] == "https://example.invalid/b"
+        assert row["state"] == "UNDECLARED"
+
+    def test_a_declaration_for_another_provider_is_not_every_chats_near_miss(
+            self, tmp_path):
+        """A near miss is a declaration that matched on the KEY.
+
+        Read the other way, one web declaration reports 66 feishu objects as
+        near misses, and a list that long is one nobody reads the real entry
+        in. `SUMMARY_PRODUCED` publishes the narrower definition; this asserts
+        the reader holds to it.
+        """
+        records = tree(tmp_path)
+        a_chat(records, slug="a", chat_id="oc_a")
+        a_chat(records, slug="b", chat_id="oc_b")
+        a_web_page(records)
+        declared(records, {"entries": [a_reference()]})
+        assert resolved(records)["summary"]["near_misses"] == []
+
+    def test_the_same_key_under_another_provider_is_still_a_near_miss(
+            self, tmp_path):
+        """The narrow rule must not become no rule: one URL declared under two
+        providers is a declaration a person has to see refused."""
+        records = tree(tmp_path)
+        a_document(records, url="https://example.invalid/shared")
+        declared(records, {"entries": [a_reference(
+            identity={"provider": "web", "url": "https://example.invalid/shared"},
+            reference={"canonical_url": "https://example.invalid/shared",
+                       "permitted_scope": "身份字段", "save": "LINK_ONLY"})]})
+        near = resolved(records)["summary"]["near_misses"]
+        assert [n["why"] for n in near] == [
+            "declared provider `web` and the manifest's is `feishu`, on the "
+            "same key"]
+
+    def test_a_page_with_no_address_has_no_key_and_is_told_apart(self, tmp_path):
+        """It is reported, not keyed: a directory name is not an identity."""
+        records = tree(tmp_path)
+        a_web_page(records, url=None)
+        row = next(r for r in resolved(records)["rows"]
+                   if r["shape"] == "web_capture")
+        assert row["identity"]["key"] is None
+        assert row["state"] == "UNDECLARED"
+        assert "source.requested_url" in " ".join(row["why"])
+
+    def test_the_shapes_this_module_parses_are_the_readable_shapes(self):
+        """One set, asked in two places. Measured 2026-09-23: adding a shape to
+        `capture_coverage` and not here reported a fully parsed object as
+        `UNREADABLE` while its own identity sat in the row beside it.
+
+        Asserted as an equality and not a containment, because the failure it
+        catches is a shape nobody added — a new readable shape has to be added
+        here, and the error message says so.
+        """
+        readable = {shape for shape in capture.SHAPES
+                    if shape not in ("UNREADABLE", "UNKNOWN_SHAPE")}
+        assert readable == set(policy.PARSED_SHAPES), (
+            "every shape `capture_coverage` can read a manifest for is a shape "
+            "this module has to parse; the two lists move together")
+
+
+# ---------------------------------------------------------------------------
 # 6. The live tree
 # ---------------------------------------------------------------------------
 
