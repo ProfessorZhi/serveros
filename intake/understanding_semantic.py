@@ -84,7 +84,15 @@ READING_SCHEMA = "serveros/understanding-reading.v1"
 #:     that trusts it would report a claim that is in the card as absent from it.
 #:     A fact about a file that has to be read as "everything the file holds" is
 #:     a different field from one read as "everything this run put there".
-RECEIPT_SCHEMA = "serveros/understanding-receipt.v3"
+#:   * v3 → v4: each `written` entry gained `role`, which says whether that card
+#:     OWNS the claims or merely REFERENCES them. A claim is committed into one
+#:     owning card and referenced from every view that mentions it, and both
+#:     writes produce an entry of the same shape with the same `claims` list —
+#:     so a v3 receipt read as "the cards holding this claim" reports one claim
+#:     living in a person's card and in every project view at once. This was not
+#:     a reading error anybody had to make: an A2 recall filter, reading v3 as
+#:     written, reported exactly that.
+RECEIPT_SCHEMA = "serveros/understanding-receipt.v4"
 
 #: Where the understanding layer sits under the records root. The same two
 #: segments `understanding_delta` walks, and repeated here rather than imported
@@ -155,6 +163,13 @@ CLAIMS_END = "<!-- serveros:semantic:claims:end -->"
 #: a conflict and a retraction all name, and two shapes of id would make those
 #: references unjoinable.
 CLAIM_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
+
+#: The two roles a card can have in a claim's life, recorded per write because
+#: the write itself cannot tell them apart. A claim has exactly one OWNER — the
+#: card it is committed into — and any number of VIEWS, which are derived and
+#: carry a reference to it rather than the claim.
+OWNER = "OWNER"
+VIEW = "VIEW"
 
 #: A line this module wrote, read back: the claim id it carries comes first,
 #: alone, in backticks. ONE pattern for both lines the module writes — the claim
@@ -1038,8 +1053,13 @@ RECEIPT_PRODUCED = {
                 "value so that an acceptance edited after the fact is caught "
                 "rather than matched",
     "written": "the files this write actually changed, with the digest each one "
-               "had before and after and the CLAIM IDS that file now carries "
-               "(`{card, before, after, claims, removed}`). Facts about the disk, "
+               "had before and after, whether it OWNS the claims or only "
+               "REFERENCES them, and the CLAIM IDS that file now carries "
+               "(`{card, role, before, after, claims, removed}`). `role` is not "
+               "derivable from the other fields — an owning card and a view "
+               "produce entries of the same shape, and a reader that took every "
+               "entry for an owner would have one claim living in every card "
+               "that mentions it. Facts about the disk, "
                "read back after the write and not computed before it. `claims` is "
                "what the file CARRIES when the write returns — this commit's "
                "claims plus every earlier commit's that are still there — and "
@@ -1288,14 +1308,14 @@ def write(commit_document: dict, records_root: Path | str, *,
     # does not touch.
     for card, claimed in sorted(by_card.items()):
         written.append(_write_fence(records_root, base, card, claimed, baseline,
-                                    superseded=superseded))
+                                    superseded=superseded, role=OWNER))
 
     pending = []
     for view, references in sorted(commit_document["views"].items()):
         ordered = sorted(references.items())
         try:
             written.append(_write_fence(records_root, base, view, ordered,
-                                        superseded=superseded))
+                                        superseded=superseded, role=VIEW))
         except Refused as exc:
             pending.append({"view": view, "why": str(exc),
                             "references": dict(ordered)})
@@ -1355,8 +1375,12 @@ def _resume(prior: dict, records_root: Path | str, receipt_path: Path) -> dict:
     for entry in prior.get("pending_views") or []:
         ordered = sorted((entry.get("references") or {}).items())
         try:
+            # A pending view is a view by construction — the owning cards are
+            # written first and a failure there is not a partial commit — so the
+            # role is known here and is not re-derived from the entry.
             written.append(_write_fence(records_root, base, entry["view"],
-                                        ordered, superseded=superseded))
+                                        ordered, superseded=superseded,
+                                        role=VIEW))
         except Refused as exc:
             pending.append({**entry, "why": str(exc)})
     receipt = no_unsourced({
@@ -1446,12 +1470,26 @@ def _replay(prior: dict, reading: dict, records_root: Path | str, *,
 
 def _write_fence(records_root: Path | str, base: Path, card: str,
                  claimed: list[tuple[str, str]], baseline: dict | None = None,
-                 *, superseded: list[str] | None = None) -> dict:
+                 *, superseded: list[str] | None = None, role: str) -> dict:
     """Merge this commit's claims into one card's fence, and touch nothing else.
 
     `claimed` is `(claim id, line)` pairs and not two parallel lists: the id is
     the key the merge matches on, and a pair cannot be half-supplied.
+
+    `role` is `OWNER` or `VIEW`, and it is recorded in the receipt rather than
+    inferred from the shape of the write. Both a claim's owning card and a view
+    it is referenced from get an entry in `written`, carrying the same `claims`
+    list, and there is nothing about the two writes a later reader could tell
+    apart: a claim has ONE owner and N views, so a record that does not say which
+    is which makes a claim read as living in every card that mentions it. That is
+    not a hypothetical — it is what an A2 recall filter reported before this
+    field existed, with the whole of the durable record to read.
     """
+    if role not in (OWNER, VIEW):
+        raise Refused(
+            f"{card}: a write is either a claim's owning card or a view it is "
+            f"referenced from; {role!r} is neither, and a receipt entry whose "
+            f"role nobody can name is one a later reader has to guess at")
     target = Path(records_root) / card
     # `card` is records-root-relative, the coordinate system the reader and the
     # patch use, so joining it onto the records root is the only join that does
@@ -1529,8 +1567,8 @@ def _write_fence(records_root: Path | str, base: Path, card: str,
     # caller's list is what this COMMIT wanted in the card; a card holds the
     # claims of every commit that landed in it, and a receipt that reported the
     # caller's list would say a claim this file still carries is not in it.
-    return {"card": card, "before": card_digest(before), "after": card_digest(after),
-            "claims": merged, "removed": removed}
+    return {"card": card, "role": role, "before": card_digest(before),
+            "after": card_digest(after), "claims": merged, "removed": removed}
 
 
 def fence_parts(text: str) -> tuple[str, str, str]:
@@ -1890,7 +1928,12 @@ def render_receipt(receipt: dict) -> list[str]:
         lines.append(f"accepted    {_who(receipt['accepted'])}  "
                      f"{_short(receipt['accepted']['digest'])}")
     for entry in receipt["written"]:
-        lines.append(f"  · {entry['card']}  {_short(entry['before'])} → "
+        # The role is printed because it changes what the line MEANS. An owning
+        # card holds the claim; a view holds a reference to it, and a reader who
+        # took the second for the first would go looking for a claim in a card
+        # that never had it.
+        described = "持有" if entry.get("role") == OWNER else "引用"
+        lines.append(f"  · [{described}] {entry['card']}  {_short(entry['before'])} → "
                      f"{_short(entry['after'])}  {_claim_ids_text(entry['claims'])}"
                      + (f"  移出 {', '.join(entry['removed'])}"
                         if entry.get("removed") else ""))

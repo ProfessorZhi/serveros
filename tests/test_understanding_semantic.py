@@ -1376,6 +1376,40 @@ class TestTheReceiptNamesItsClaims:
         entries = {entry["card"]: entry for entry in receipt["written"]}
         assert entries[VIEW]["claims"] == ["c1"]
 
+    def test_the_record_says_which_card_owns_the_claim_and_which_only_points_at_it(
+            self, tmp_path):
+        # The two writes above are the same shape and carry the same `claims`
+        # list, so a reader with only those two fields has to guess which card
+        # HOLDS the claim. An A2 recall filter, reading a v3 receipt as written,
+        # reported one claim as living in the person's card and in the project
+        # view at once, and `CONFLICT` for it — with the whole of the durable
+        # record in front of it. A claim has one owner and N views; the record
+        # has to say which is which.
+        root = records_tree(tmp_path)
+        receipt = commit_and_write(tmp_path, root, delegation=GRANT)
+        roles = {entry["card"]: entry["role"] for entry in receipt["written"]}
+        assert roles == {CARD: us.OWNER, VIEW: us.VIEW}
+        owners = [entry["card"] for entry in receipt["written"]
+                  if entry["role"] == us.OWNER]
+        assert owners == [CARD]
+
+    def test_a_write_whose_role_is_neither_is_refused(self, tmp_path):
+        root = records_tree(tmp_path)
+        with pytest.raises(us.Refused) as caught:
+            us._write_fence(root, us._understanding_root(root), CARD,
+                            [("c1", "- `c1` **[OBSERVED_FACT]** alice：她说周五交付")],
+                            role="MENTIONED")
+        assert "neither" in str(caught.value)
+
+    def test_the_rendered_receipt_tells_the_two_apart(self, tmp_path):
+        # The rendering is what a person reads, and the distinction is what
+        # stops them going to look for a claim in a card that only points at it.
+        root = records_tree(tmp_path)
+        receipt = commit_and_write(tmp_path, root, delegation=GRANT)
+        rendered = "\n".join(us.render_receipt(receipt))
+        assert f"  · [持有] {CARD}  " in rendered
+        assert f"  · [引用] {VIEW}  " in rendered
+
     def test_two_claims_in_one_card_are_both_named_in_id_order(self, tmp_path):
         root = records_tree(tmp_path)
         document = reading(root, [claim("z9"), claim("a1", now="她说周一交付")])
@@ -2203,6 +2237,7 @@ class TestTheGuardOnTheSpliceIsASecondOpinion:
         monkeypatch.setattr(us, "_replace_fence", splices[broken])
         with pytest.raises(us.Refused) as caught:
             us._write_fence(root, us._understanding_root(root), CARD,
-                            [("c9", "- `c9` **[OBSERVED_FACT]** alice：她说周四交付")])
+                            [("c9", "- `c9` **[OBSERVED_FACT]** alice：她说周四交付")],
+                            role=us.OWNER)
         assert "does not own" in str(caught.value)
         assert card.read_text(encoding="utf-8") == before
