@@ -623,3 +623,9 @@ CLOSED     → final patch
 Incident 不按整点、天或 timer 轮次重复发送。只有平台 patch 窗口到期且 episode 仍持续时，才创建 successor card，并保持同一个 episode continuity。
 
 因此同一 condition 即使被采样数千次，也不允许数千次 NEW，也不允许每小时/每5分钟重发。
+
+## 26. Monitored set / recovery / work calendar specialization
+
+The canonical specialization for what ServerOS monitors, shared-node principal scoping, native-supervisor vs bounded functional recovery, the CN-Mainland work calendar, the 08:00–20:00 routine broadcast window, and the final latest+collapsible-history Daily Status Card is MONITORING-SCOPE-RECOVERY-CARDS.md.
+
+Where earlier examples imply all-visible-resource monitoring, hourly new status messages, weekend-only inference, or routine broadcasting outside the work window, the specialized contract supersedes them.

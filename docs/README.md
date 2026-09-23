@@ -37,7 +37,7 @@
 
 ## 监控与共享Provider
 
-[Monitoring Product Architecture](MONITORING-PRODUCT-ARCHITECTURE.md)定义我的资源/整机/系统盘/数据盘/quota、ServerOS/Tailscale/Laya/共享网关等基础设施、rolling status card、incident episode和哪些信号禁止push；[Node Observability](NODE-OBSERVABILITY.md)定义采集与Core独立健康；[卡片产品](BROADCAST-ALERT-DESIGN.md)、[表达规范](../CARDS-STYLE.md)、[Monitoring Acceptance](MONITORING-ACCEPTANCE.md)负责具体人面与验收。
+[Monitoring Product Architecture](MONITORING-PRODUCT-ARCHITECTURE.md)定义监控产品总模型；[Monitoring Scope / Recovery / Calendar / Cards](MONITORING-SCOPE-RECOVERY-CARDS.md)固定monitored set、共享机principal边界、分层自愈、中国工作日/调休日历、08:00–20:00播报窗口、latest+折叠历史和独立Incident卡；[Node Observability](NODE-OBSERVABILITY.md)定义采集与Core独立健康；[卡片产品](BROADCAST-ALERT-DESIGN.md)、[表达规范](../CARDS-STYLE.md)、[Monitoring Acceptance](MONITORING-ACCEPTANCE.md)负责具体人面与验收。
 
 [Shared decision/search](shared-decision-search.md)及[Provider合同](https://github.com/ProfessorZhi/ability-management/blob/main/design/SHARED-PROVIDER-CONTRACT.md)定义单Laya及Jev/Serper边界。服务部署、两个真实consumer、答案质量不是同一证明。当前MarketOps保留业务MCP/独立ledger，Docker和客户外联不因本轮集成启动。
 

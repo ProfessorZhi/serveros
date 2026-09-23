@@ -1661,3 +1661,15 @@ OS login sessions are provenance containers, not Agent Sessions or Work Item own
 A runtime that outlives a known terminal Work Item/Run is a known-owner lifecycle drift, not an orphan. Before any attention escalation or cleanup, ServerOS revalidates owner state, active lease, remaining consumer, write/socket scope, resource impact and effect safety. A historical PID or alert is never sufficient authorization to stop it.
 
 Daily status is one rolling Feishu card per local day; each incident is one card per episode. Sampling updates cards and durable observations rather than generating chat history.
+
+### Monitoring scope, recovery, work calendar and card lifecycle
+
+The personal monitored set is dynamically resolved from the current principal's resource/quota and managed runtimes, Active Focus dependencies, standing/shared infrastructure and host-level aggregate pressure. It is not every process/container visible on the shared node.
+
+Recovery is layered: native systemd/Docker supervision first, optional bounded functional recovery only for explicitly registered/authorized resources, and human action for auth/config/data/effect ambiguity or exhausted recovery. Resident serverosd observes and coordinates facts; it is not an unbounded second supervisor.
+
+Routine Broadcast uses the CN-Mainland business calendar in Asia/Shanghai: official workdays, including makeup Saturdays/Sundays, update from 08:00 through 20:00; statutory/non-working days have no routine status broadcast. P1 incidents may bypass quiet hours; ordinary P2 attention waits for the next work window.
+
+Daily status uses one Feishu card per workday. The latest snapshot stays fully visible; earlier same-day broadcasts are compacted into a collapsible history within the same card. Incidents remain separate, one card per episode. Full observations live in records.
+
+Detailed contract: docs/MONITORING-SCOPE-RECOVERY-CARDS.md.
