@@ -6322,6 +6322,11 @@ def cmd_work_admit(args) -> int:
     plan = cycle.admission_plan(
         decision, composed["rows"], delegations["envelopes"],
         cycle_ref=args.cycle, observed_at=composed["observed_at"] or "",
+        # The same instant the board was read at, and the only clock read in
+        # this command. `admit` checks it against the grant's window inside its
+        # own transaction, so a delegation that expired between that read and
+        # this write is refused rather than recorded.
+        admitted_at=now.isoformat(),
         action_key=args.action_key,
         # (scope, holder) is what `runtime/lease_store.declare` is idempotent
         # on, so the holder names the cycle: a resume under the same cycle
@@ -6343,10 +6348,9 @@ def cmd_work_admit(args) -> int:
              lines=lines)
         return EXIT_OK
 
-    record = {**plan, "admitted_at": now.isoformat()}
     store_mod, control = _control_store()
     try:
-        stored = control.admit(record)
+        stored = control.admit(plan)
     except store_mod.StoreError as exc:
         sys.stderr.write(f"serverosctl: {exc}\n")
         return EXIT_FAULT

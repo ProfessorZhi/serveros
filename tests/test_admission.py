@@ -10,23 +10,31 @@ rather than a pretended cross-store commit. `runtime/agent_control_store.admit`
 is that transaction and `intake/daily_cycle.admission_plan` is the policy that
 decides what goes in it. Neither had a test before this file.
 
-Four properties, in the order a reader needs them:
+Five properties, in the order a reader needs them:
 
-  1. THE INTENT IS WHAT IS IDEMPOTENT, NOT THE INSTANT. A retried admission is
+  1. THE AUTHORITY THE RECORD NAMES IS RESOLVED HERE, not taken on the caller's
+     word. `admit` reads the grant off its own `grants` collection inside the
+     same transaction and refuses when it is not recorded, is revoked, is not
+     current at the admission instant, does not name the selected items, or
+     does not declare the reserved bounds. Every one of those is a fact the
+     layers above check against THEIR OWN input: `work admit` composes a plan
+     from an envelope it read outside the lock, so a revocation in another
+     process lands in the gap and only the holder of the lock can see it.
+  2. THE INTENT IS WHAT IS IDEMPOTENT, NOT THE INSTANT. A retried admission is
      the same admission and returns the stored record; a retried admission
      whose objective, bounds or key changed is a DIFFERENT admission and is
      refused, with both digests printed. That refusal is also what makes two
      concurrent schedulers safe — the loser is told it lost.
-  2. THE ACTION KEY IS EXCLUSIVE AMONG OPEN ADMISSIONS. The reason comes from
+  3. THE ACTION KEY IS EXCLUSIVE AMONG OPEN ADMISSIONS. The reason comes from
      `runtime/bounded_invocation` and not from taste: that helper keys one
      receipt per action key and REPLAYS it for equal input, so a second open
      admission under the same key would receive the first cycle's result and
      the receipt would say `replayed: True` about work it never did.
-  3. THE PHASES ADVANCE ONE AT A TIME, PER STORE. Each of the two is another
+  4. THE PHASES ADVANCE ONE AT A TIME, PER STORE. Each of the two is another
      store's answer, recorded as that store gave it. Skipping, reversing,
      re-reporting a phase with different evidence, and reporting another
      resource's lease or another key's receipt are each refused by name.
-  4. RETIREMENT RELEASES AND KEEPS THE FIRST. It is not a deletion: the record
+  5. RETIREMENT RELEASES AND KEEPS THE FIRST. It is not a deletion: the record
      stays, saying what the cycle was admitted for, because the after-the-fact
      question is computed from exactly that.
 
@@ -79,6 +87,26 @@ T1 = "2026-01-01T00:05:00+00:00"
 T2 = "2026-01-01T00:10:00+00:00"
 DIGEST = "a" * 64
 BUDGET = {"wall_seconds": 900, "max_attempts": 2, "max_output_bytes": 200000}
+GRANT = "grant-1"
+CONTEXT = "ctx-delegated-1"
+# A window with T0, T1 and T2 inside it, so the three instants this file uses
+# are all instants a grant covered.
+WINDOW = {"valid_from": "2025-12-31T00:00:00+00:00",
+          "expires_at": "2026-01-02T00:00:00+00:00"}
+
+
+def a_grant(**over) -> dict:
+    """The delegation `a_record()` is admitted under, as the store records it.
+
+    Its items and its budget are the record's own and its window contains the
+    record's instant. All three matter: `admit` resolves the record against
+    this grant, so a fixture whose grant merely EXISTED would pass the check
+    without being the delegation the record claims to run under.
+    """
+    grant = {"grant_ref": GRANT, "delegated_by": CONTEXT, "items": ["SRV-1"],
+             "budget": dict(BUDGET), **WINDOW}
+    grant.update(over)
+    return grant
 
 
 def a_selection(selected=None, digest=DIGEST, observed_at=T0, **over) -> dict:
@@ -94,7 +122,7 @@ def a_selection(selected=None, digest=DIGEST, observed_at=T0, **over) -> dict:
 
 
 def a_record(**over) -> dict:
-    record = {"cycle_ref": "cyc-1", "grant_ref": "grant-1",
+    record = {"cycle_ref": "cyc-1", "grant_ref": GRANT,
               "selection": a_selection(), "reservation": dict(BUDGET),
               "lease": {"resource": "browser:chromium", "scope": "session",
                         "holder": "cyc-1"},
@@ -104,7 +132,20 @@ def a_record(**over) -> dict:
 
 
 def a_store(tmp_path: Path) -> AgentControlStore:
-    return AgentControlStore(tmp_path / "store.json")
+    """A store holding the one delegation `a_record()` names, and nothing else.
+
+    Seeded, because `admit` resolves the grant it is handed against this
+    store's own `grants` collection rather than taking the caller's word for
+    it. Every record in this file was admitted under `grant-1` and the store
+    used to hold no grant at all: the whole file passed anyway, which is the
+    measurement behind `TestAnAdmissionResolvesTheAuthorityItNames`. Seeding
+    here is what makes the rest of the file a test of the transaction rather
+    than of a lucky coincidence.
+    """
+    store = AgentControlStore(tmp_path / "store.json")
+    store.put_context({"context_ref": CONTEXT})
+    store.put_grant(a_grant())
+    return store
 
 
 def a_decision(**over) -> dict:
@@ -166,8 +207,13 @@ def seeded(env: dict) -> dict:
     this file's board fixture is empty on purpose — the CLI class is about the
     two verbs AFTER the admission, and the plan's own refusals are covered
     directly above.
+
+    The delegation is seeded the same way `a_store` seeds it, so the two
+    fixtures admit the same record under the same authority.
     """
     store = AgentControlStore(store_path(env))
+    store.put_context({"context_ref": CONTEXT})
+    store.put_grant(a_grant())
     store.admit(a_record(lease={"resource": "browser:chromium", "scope": "session",
                                 "holder": "cyc-1"}))
     return store.summary()
@@ -585,7 +631,8 @@ class TestWhatAdmitRefuses:
 
 class TestThePlanDecidesAndRefuses:
     def plan(self, **over):
-        kwargs = {"cycle_ref": "cyc-1", "observed_at": T0, "action_key": "act-1",
+        kwargs = {"cycle_ref": "cyc-1", "observed_at": T0, "admitted_at": T0,
+                  "action_key": "act-1",
                   "lease": {"resource": "browser:chromium", "scope": "session",
                             "holder": "cyc-1"}}
         kwargs.update(over)
@@ -598,13 +645,16 @@ class TestThePlanDecidesAndRefuses:
         plan = self.plan()
 
         assert "refused" not in plan
-        assert plan["grant_ref"] == "grant-1"
+        assert plan["grant_ref"] == GRANT
         assert plan["reservation"] == BUDGET
         assert plan["selection"]["selected"] == ["SRV-1"]
         # The plan's output is exactly what `admit` takes: this test would fail
-        # on a key the store requires and the plan forgot.
+        # on a key the store requires and the plan forgot. `admitted_at` is in
+        # the set for that reason and not for symmetry — the store checks it
+        # against the grant's window, so a plan that omitted it would return a
+        # record the store refuses.
         assert set(plan) == {"cycle_ref", "grant_ref", "reservation", "lease",
-                             "action_key", "selection"}
+                             "action_key", "admitted_at", "selection"}
 
     def test_nothing_selected_is_refused_with_the_decisions_own_reason(self):
         plan = self.plan(decision={"status": "BLOCKED", "reason": "STALE_BOARD",
@@ -670,14 +720,258 @@ class TestThePlanDecidesAndRefuses:
 
         assert plan["refused"] == "NO_CYCLE_REF"
 
+    def test_no_admission_instant_is_refused(self):
+        """The instant is in the record because the window is read against it.
+
+        Refused here as well as in the store, for `NO_CYCLE_REF`'s reason: the
+        record this function returns is the one `admit` takes, and a record
+        with no instant is not one it takes.
+        """
+        plan = self.plan(admitted_at="   ")
+
+        assert plan["refused"] == "NO_ADMISSION_INSTANT"
+        assert "window" in plan["because"]
+
+    def test_the_instant_is_in_the_record_and_not_in_its_identity(self, tmp_path):
+        """Present in the record, absent from the identity, and both on purpose.
+
+        Present: `admit` reads it against the grant's window. Absent from the
+        identity: a retried admission happens at a later instant and is still
+        the same admission.
+        """
+        store = a_store(tmp_path)
+        first = store.admit(a_record(admitted_at=T0))
+        again = store.admit(a_record(admitted_at=T1))
+
+        assert first["admitted_at"] == T0
+        assert again["replayed"] is True
+        assert again["admitted_at"] == T0
+
     def test_the_plan_writes_exactly_what_the_store_wants(self, tmp_path):
-        """The seam that matters: the plan's record goes in unchanged."""
+        """The seam that matters: the plan's record goes in unchanged.
+
+        Unchanged INCLUDING the instant, which is why the plan carries one —
+        `admit` checks it against the grant's window, so a plan that left it to
+        the caller would be returning a record the store refuses.
+        """
         store = a_store(tmp_path)
         stored = store.admit(self.plan())
 
         assert stored["cycle_ref"] == "cyc-1"
         assert stored["phase"] == store_mod.ADMISSION_PHASES[0]
         assert stored["reservation"] == BUDGET
+        assert stored["admitted_at"] == T0
+
+
+# ---------------------------------------------------------------------------
+# The authority the record names is resolved here, not taken on the caller's
+# word. This file admitted 44 records under a grant its store never held, and
+# every one of them passed — which is the measurement, not the argument.
+# ---------------------------------------------------------------------------
+
+
+class TestAnAdmissionResolvesTheAuthorityItNames:
+    def test_the_recorded_grant_that_covers_the_record_is_admitted(self, tmp_path):
+        """The positive control: without it the refusals below prove nothing."""
+        store = a_store(tmp_path)
+        stored = store.admit(a_record())
+
+        assert stored["phase"] == store_mod.ADMISSION_PHASES[0]
+        assert stored["grant_ref"] == GRANT
+
+    def test_a_grant_this_store_never_recorded_is_refused(self, tmp_path):
+        """The word is the plan's and the OPERAND is not, so the sentence says which.
+
+        `admission_plan` refuses a missing grant too: it checks the envelope the
+        caller handed it, which is the caller's own map. This is the store's
+        record, and a refusal that read the same would send a reader to the
+        wrong one.
+        """
+        store = a_store(tmp_path)
+        with pytest.raises(StoreError) as refusal:
+            store.admit(a_record(grant_ref="grant-never-recorded"))
+
+        message = str(refusal.value)
+        assert "no grant by that name has been recorded in this store" in message
+        assert "checks the envelope it is HANDED" in message
+
+    def test_a_grant_revoked_before_the_admission_is_refused(self, tmp_path):
+        store = a_store(tmp_path)
+        store.revoke_grant(GRANT, at=T0, reason="the delegation ended")
+        with pytest.raises(StoreError) as refusal:
+            store.admit(a_record(admitted_at=T1))
+
+        message = str(refusal.value)
+        assert "was revoked at" in message and T0 in message
+        assert "the store says is gone" in message
+
+    def test_a_grant_whose_revocation_field_is_absent_is_refused(self, tmp_path):
+        """`is not False` rather than `is not True`, and the two differ HERE.
+
+        A record this store wrote always carries `revoked`, so this case comes
+        from a store written by something else. It is refused because the
+        permissive reading of a missing field is how a revocation becomes
+        invisible — and the reason this test writes the file instead of
+        recording the grant through `put_grant` is that `put_grant` cannot
+        produce the input the two readings disagree on.
+        """
+        path = tmp_path / "no-revocation-field.json"
+        path.write_text(json.dumps({
+            "schema": store_mod.SCHEMA,
+            "contexts": {CONTEXT: {"context_ref": CONTEXT}},
+            "approvals": {}, "bindings": {}, "selections": {}, "admissions": {},
+            "grants": {GRANT: {k: v for k, v in a_grant().items()
+                               if k != "revoked"}}}), encoding="utf-8")
+        store = AgentControlStore(path)
+
+        with pytest.raises(StoreError) as refusal:
+            store.admit(a_record())
+
+        assert "was revoked at an unrecorded instant" in str(refusal.value)
+
+    def test_a_revocation_landing_after_the_plan_is_refused(self, tmp_path):
+        """The race this check exists for, and the reason it is in the store.
+
+        `work admit` reads the envelope, composes a plan and writes; the read
+        is outside the lock. A revocation in another process lands in that gap.
+        The plan here was composed from a grant that WAS live, and the write is
+        refused because the store is the only party holding the lock.
+        """
+        store = a_store(tmp_path)
+        plan = self.a_plan_from_a_live_grant(store)
+        store.revoke_grant(GRANT, at=T1, reason="withdrawn mid-cycle")
+
+        with pytest.raises(StoreError) as refusal:
+            store.admit(plan)
+
+        assert "was revoked at" in str(refusal.value)
+
+    def test_an_instant_outside_the_window_is_refused(self, tmp_path):
+        store = a_store(tmp_path)
+        with pytest.raises(StoreError) as refusal:
+            store.admit(a_record(admitted_at="2026-03-01T00:00:00+00:00"))
+
+        message = str(refusal.value)
+        assert "is outside" in message
+        assert WINDOW["expires_at"] in message
+
+    def test_a_grant_with_no_readable_window_is_refused(self, tmp_path):
+        """Absent and naive both, because neither leaves anything to be inside.
+
+        Written through `put_grant` rather than by editing the store, so the
+        case is one the store really ACCEPTS recording — which is the point:
+        the window is not required at record time, so this boundary is where it
+        has to be required.
+        """
+        for index, window in enumerate((
+                {"valid_from": None, "expires_at": None},
+                {"valid_from": "2025-12-31T00:00:00", "expires_at": T2})):
+            case = tmp_path / f"window-{index}"
+            case.mkdir()
+            store = AgentControlStore(case / "store.json")
+            store.put_context({"context_ref": CONTEXT})
+            store.put_grant(a_grant(**window))
+            with pytest.raises(StoreError) as refusal:
+                store.admit(a_record())
+
+            assert "no readable window" in str(refusal.value)
+            assert "INVALID_GRANT_TIME" in str(refusal.value)
+
+    def test_an_admission_with_no_instant_is_refused(self, tmp_path):
+        store = a_store(tmp_path)
+        with pytest.raises(StoreError) as refusal:
+            store.admit(a_record(admitted_at=""))
+
+        message = str(refusal.value)
+        assert "does not say when it was admitted" in message
+        assert "no window can be checked" in message
+
+    def test_a_selection_outside_the_grants_items_is_refused(self, tmp_path):
+        store = a_store(tmp_path)
+        with pytest.raises(StoreError) as refusal:
+            store.admit(a_record(selection=a_selection(selected=["SRV-2"])))
+
+        message = str(refusal.value)
+        assert "SRV-2" in message and "does not name" in message
+        assert "ITEM_NOT_AUTHORIZED" in message
+
+    def test_a_reservation_that_is_not_the_grants_budget_is_refused(self, tmp_path):
+        """The check that keeps the reservation a copy rather than a second bound.
+
+        `intake/daily_cycle.admission_plan` reads the three bounds off the grant;
+        this is the line that says so at the moment they are written. Without it
+        a caller could record a cycle under bounds its delegation never declared.
+        """
+        store = a_store(tmp_path)
+        with pytest.raises(StoreError) as refusal:
+            store.admit(a_record(reservation={**BUDGET, "max_attempts": 9}))
+
+        message = str(refusal.value)
+        assert '"max_attempts": 9' in message and '"max_attempts": 2' in message
+        assert "checked against its source" in message
+
+    def test_a_grant_with_no_budget_cannot_cover_a_reservation(self, tmp_path):
+        """`put_grant` records it and this refuses it, which is the split.
+
+        The store that records delegations is not the store that decides what a
+        bound is; a recorded grant with no budget is a grant no cycle can be
+        admitted under, and the sentence prints the two sides rather than the
+        word "mismatch".
+        """
+        store = AgentControlStore(tmp_path / "unbudgeted.json")
+        store.put_context({"context_ref": CONTEXT})
+        store.put_grant(a_grant(budget=None))
+        with pytest.raises(StoreError) as refusal:
+            store.admit(a_record())
+
+        message = str(refusal.value)
+        assert '"wall_seconds": 900' in message and "declares {}" in message
+
+    def test_a_replay_is_not_re_judged_after_a_revocation(self, tmp_path):
+        """Order is the message's: a replay answers a different question.
+
+        "Has this already been admitted" is not "is this authorized now", and
+        the retry comes from a resume, not from a new cycle. Answering the
+        second question would refuse a resume that has nothing to change.
+        """
+        store = a_store(tmp_path)
+        first = store.admit(a_record())
+        store.revoke_grant(GRANT, at=T1, reason="the delegation ended")
+        again = store.admit(a_record())
+
+        assert first["replayed"] is False
+        assert again["replayed"] is True
+        assert again["grant_ref"] == GRANT
+
+    def test_the_repair_that_works_is_a_new_grant(self, tmp_path):
+        """A refusal a caller cannot act on is not a refusal, it is a wall.
+
+        The store's own rule is that a grant is write-once and ends by
+        revocation, so the repair is the one the model already declares: admit
+        under the cycle's own new delegation.
+        """
+        store = a_store(tmp_path)
+        store.revoke_grant(GRANT, at=T1, reason="the delegation ended")
+        store.put_context({"context_ref": CONTEXT})
+        store.put_grant(a_grant(grant_ref="grant-2"))
+        stored = store.admit(a_record(cycle_ref="cyc-2", grant_ref="grant-2",
+                                      action_key="act-2"))
+
+        assert stored["grant_ref"] == "grant-2"
+        assert set(store.admissions()) == {"cyc-2"}
+
+    @staticmethod
+    def a_plan_from_a_live_grant(store) -> dict:
+        """The plan a caller composes from an envelope it read OUTSIDE the lock.
+
+        Built through the real plan rather than hand-written, so the record
+        under test is one `work admit` would really have produced.
+        """
+        return cycle.admission_plan(
+            a_decision(), [a_row()], an_envelope(),
+            cycle_ref="cyc-1", observed_at=T0, admitted_at=T0, action_key="act-1",
+            lease={"resource": "browser:chromium", "scope": "session",
+                   "holder": "cyc-1"})
 
 
 # ---------------------------------------------------------------------------

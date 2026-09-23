@@ -199,8 +199,8 @@ def select_focus(rows: list[dict], grants: dict[str, dict], *, now: datetime,
 
 
 def admission_plan(decision: dict, rows: list[dict], grants: dict[str, dict], *,
-                   cycle_ref: str, observed_at: str, action_key: str,
-                   lease: dict) -> dict:
+                   cycle_ref: str, observed_at: str, admitted_at: str,
+                   action_key: str, lease: dict) -> dict:
     """The one record an admission is made of, or the reason there is none.
 
     P6 asks for the selection, the budget reservation and the lease/dispatch
@@ -227,6 +227,16 @@ def admission_plan(decision: dict, rows: list[dict], grants: dict[str, dict], *,
     sentence>}`. A refusal is RETURNED rather than raised because the caller
     is expected to have one — most days this node has no grant at all, and that
     is an answer, not an error.
+
+    `admitted_at` is the instant the admission is made, and it is the caller's
+    clock rather than this function's (there is none here) — the same
+    arrangement `observed_at` already has. It is IN the record because the
+    store checks it against the grant's window: a delegation that expired
+    between the board read and the write is one the cycle must not be admitted
+    under, and that comparison needs the instant the admission is made at. It
+    is not part of the admission's IDENTITY — `runtime/agent_control_store`'s
+    `_intent_digest` leaves it out, so a retried admission is still the same
+    admission.
     """
     selected = decision.get("selected") or []
     if not selected:
@@ -299,11 +309,23 @@ def admission_plan(decision: dict, rows: list[dict], grants: dict[str, dict], *,
                 "because": ("an admission is stored under the cycle it is for, and "
                             "this call names none. The ref is what a resume names: "
                             "without it the reservation can never be released")}
+    if not str(admitted_at or "").strip():
+        # Refused here as well as in the store, and for `NO_CYCLE_REF`'s reason:
+        # the record this function returns is the one `admit` takes, and a
+        # record with no instant is not one it takes. The store's refusal is
+        # for the callers that do not come through here, and its sentence says
+        # which operand it checked.
+        return {"refused": "NO_ADMISSION_INSTANT",
+                "because": ("nothing says when this admission is made, and the "
+                            "grant's window is read against that instant: a "
+                            "delegation that had already expired would admit the "
+                            "cycle and no later reader could tell")}
     return {"cycle_ref": str(cycle_ref),
             "grant_ref": grant_ref,
             "reservation": reservation,
             "lease": dict(lease),
             "action_key": str(action_key),
+            "admitted_at": str(admitted_at),
             "selection": {"selection_digest": decision["selection_digest"],
                           "observed_at": observed_at,
                           "selected": list(selected),
