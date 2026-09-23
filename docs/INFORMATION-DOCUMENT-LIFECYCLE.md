@@ -96,3 +96,13 @@ capture水位在原始事件/manifest安全持久后前进；understanding水位
 ability-management的B1/B2/B8/B9详细设计定义判断/共享数据合同；ServerOS负责跨簇Context/工作/效果衔接；Work Engine仍是控制状态；hwz-ops维护实例Binding和带时间的maps。任何新schema字段都要真producer/consumer。
 
 具体操作、依赖顺序、验收与回退见CC-EXECUTION-PLAN.md。此文不生成新的常驻服务、全库采集授权、云写入或日循环启用声明。
+
+## 9. Priority-contact 深归档
+
+一般真人工作IM仍默认 SHALLOW；用户明确指定的项目对接人和明确项目小群可以进入 **DEEP_REQUIRED**。当前确认的例子包括 Bruce.Xu、Nature.Hu、Zhengji.Zhang 等，实际执行按稳定 identity / project relationship 解析，不把显示名硬编码进采集器。
+
+DEEP_REQUIRED 不只下载直接 image/file：它覆盖消息里的 post 媒体、文件/视频/音频、第一层 doc/wiki/link，以及 merge_forward / forwarded bundle 中实际转发进当前会话且 API 可解析的第一层材料。转发内容保留原作者/时间/forward provenance；不因此递归抓原始会话全部历史。
+
+完整度不能靠 `files/` 目录存在或自由文本 `pending`；按每个 material 的 discovered→materialized/failed/unresolved 与 source revision 计算。capture、material coverage、understanding 分开推进，缺一个附件不会丢消息，但含未读材料的语义范围不能冒充 COMPLETE。
+
+详细身份、转发附件、多附件索引、当前 Bruce/Nature/Zhengji 差距、迁移和验收见 [Priority-contact Deep Archive](DEEP-ARCHIVE-POLICY.md)。

@@ -26,7 +26,7 @@ A child task finishing, a report being generated, a JSON schema passing or an in
 | [Readable broadcast and alert cards](BROADCAST-ALERT-DESIGN.md) | screenshot-driven visible resource metrics and service health, truthful coverage, actionable low-noise alerts |
 | [Card copy rules](../CARDS-STYLE.md) | actual summaries rather than UID/model lines, precise uncertainty and normal-versus-alert presentation |
 | [Monitoring acceptance](MONITORING-ACCEPTANCE.md) | M1–M6/V01–V18 for P8/P9/P11, producer/model/native visual tests and isolated failure recovery; reused by J08 |
-| [Information and document lifecycle](INFORMATION-DOCUMENT-LIFECYCLE.md) | default shallow IM, selected materialization, meetings, documents that are both followed and maintained, placement and feedback |
+| [Priority-contact deep archive](DEEP-ARCHIVE-POLICY.md) | project counterpart p2p/project-group DEEP_REQUIRED policy, forwarded-file material closure, completeness and migration |\n| [Information and document lifecycle](INFORMATION-DOCUMENT-LIFECYCLE.md) | default shallow IM, selected materialization, meetings, documents that are both followed and maintained, placement and feedback |
 | [Source/Document contract](https://github.com/ProfessorZhi/ability-management/blob/main/design/SOURCE-DOCUMENT-CONTRACT.md) | stable identities, roles, authority, versions, material coverage and two watermarks |
 | [Ability product experience](https://github.com/ProfessorZhi/ability-management/blob/main/design/PRODUCT-EXPERIENCE-CONTRACT.md) | user-visible outcomes, empty/unknown/partial/failure/waiting behavior and acceptance for every responsibility |
 
