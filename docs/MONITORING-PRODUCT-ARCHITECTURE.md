@@ -484,3 +484,142 @@ Incident episode 跨小时、跨天都继续 patch 同一张卡，直到恢复/�
 2. attention policy，把 `RUNTIME_OUTLIVED_OWNER` 默认移出alert face；
 3. aggregation，把session/process hygiene放到Diagnostic/Hygiene；
 4. 只有join真实Work Item/resource impact后再升级为Incident。
+
+
+## 19. Shared-node principal scoping
+
+Tokyo 是共享开发节点。监控必须区分三种 owner/scope：
+
+~~~text
+PERSONAL
+  当前 principal 自己的进程、quota、Work Item、Session、runtime
+
+SHARED
+  多人共同依赖的基础设施
+  ServerOS Core / shared gateway / Laya / Tailscale transport 等
+
+OTHER_PRINCIPAL
+  同机其他人的 WIP / runtime / session
+~~~
+
+面向当前用户的 Status/Incident 默认只展示 PERSONAL、SHARED 和 DEVICE 级影响。其它 principal 的具体 PID、Session、Work Item、建议清理动作不得混入当前用户的“需确认/需处理”列表。
+
+如果其它用户的负载已经造成整机 pressure，可以展示“整机资源压力，其中一部分来自其它用户工作负载”之类的聚合事实；跨 principal 具体明细只进入 node-admin / authorized diagnostic surface。
+
+## 20. Actionable subject：最小可处理对象，而不是 login session
+
+Incident subject 必须是实际可采取下一步的最小对象：
+
+~~~text
+runtime instance / process group
+Work Item / Run
+logical shared service
+filesystem / quota
+transport endpoint
+verified Agent Session
+~~~
+
+OS login session 只是一条 provenance/containment 边，不能默认成为 Incident subject。
+
+真实 15413 案例说明：同一个 OS login scope 内可同时存在仍正常活着的 Claude/native sessions、VS Code/remote IDE helper，以及某个已经结束 Work Item/Run 留下的测试 runtime。因此不能把整段 login session 命名成“遗留 Claude 会话”。
+
+有足够 owner 证据时，应写成类似：
+
+~~~text
+SRV-0011 / RUN-0001 · 测试 serverosd 实例仍在运行
+~~~
+
+并分别列真正的 runtime/socket/resource evidence。
+
+## 21. Known-owner lifecycle drift
+
+“owner 已知、Run/Work Item 已结束、runtime 仍活着”与 unknown/orphan 不同。
+
+目标语义：
+
+~~~text
+KNOWN_OWNER_LIFECYCLE_DRIFT
+owner: Work Item / Run / test scope
+actual: runtime still running
+expected: derived from accepted lifecycle contract
+~~~
+
+它默认是 Review/Diagnostic，不是自动 cleanup 许可。升级前必须核：
+1. owner identity 与 Work Item/Run revision；
+2. owner lifecycle 是否 terminal/parked；
+3. active lease / writer / lock；
+4. 是否仍有合法 consumer；
+5. 当前资源影响；
+6. socket/path/write-scope 是否冲突；
+7. stop/fence/cleanup 是否在授权范围。
+
+可能升级为 workflow incident 的情况：已结束 Run 的 runtime 持续制造资源压力、竞争同一 socket/write scope、阻塞新 Run、仍持独占 lease，或会造成重复 effect。IDE/tmux/helper 合法跨 login、其它 principal 正常 WIP、没有资源/写域/lease/effect 影响时不升级。
+
+## 22. SRV-0011 / RUN-0001 作为真实架构样本
+
+后续更深的只读现场核验表明，15413 不能整体解释成“遗留 Claude 会话”。当前 principal 范围内可识别到已结束的 SRV-0011 / RUN-0001 测试 runtime：多个测试 serverosd 实例仍存活，使用 Run 自己的测试 registry/state，不是 live production state；存在实例共享同一测试 socket 路径的迹象；每个实例持续占用约半 GiB 级内存。同时 15413 login scope 内仍有正常活着的 Claude 会话。
+
+这类对象是 known-owner lifecycle drift 的代表：归属不未知，login session 本身也没有整体结束；真正要判断的是那个已结束 Run 的测试 runtime 是否仍应存在。
+
+本合同不批准停止这些实例。任何后续处置必须重新获取 fresh snapshot，并检查 Work Item/Run current state、active lease、writer/socket scope 和授权。stale PID、PID file 或历史 card 均不足以 kill。
+
+## 23. 高质量工作流什么时候报警
+
+工作流告警只针对“当前承诺无法安全继续或无法正确完成”，不是“后台东西很多”。
+
+### P1 / 立即打断
+- Active Focus 出现并发 writer / lease violation，继续有数据破坏风险；
+- external effect commit-unknown，自动重试可能重复真实副作用；
+- 当前必需生产/交付路径明确高影响失败且需要人决定；
+- Work Item Parent 与 continuation 同时丢失，且无 checkpoint/receiver 可恢复。
+
+### P2 / 需要关注
+- A7 unexpected product FAIL，策略要求停止自动修改；
+- accepted Requirement/source/design/plan 实质漂移，当前 Run 不能安全继续；
+- required child/Quay Run 长期无法被 Parent 接收并阻断关键路径；
+- required publisher/sender 持续失败，影响承诺交付；
+- 20:00 前 B1/B2 无法形成可用 reconciliation packet，阻断当晚对齐；
+- known-owner lifecycle drift 经核验确实造成资源、lease、socket/write-scope 或当前 Work Item 影响。
+
+### 不报警
+- 正常 Research 暂无结论；
+- GPT review 要求改计划且可自动修；
+- 一个可替代 child Run 失败；
+- Work Item 正常等待已知依赖；
+- Activity 调整；
+- Quay 暂时没用；
+- 多个 Claude session 后台待命；
+- session 很多但资源/写域无问题；
+- backlog 很大；
+- 当晚 Work Item 提前完成。
+
+## 24. Daily Status Card：一天一张，增量更新
+
+~~~text
+每日第一轮状态采样
+→ send Daily Status Card
+
+同一天后续采样
+→ PATCH 同一张卡
+
+下一本地日第一轮
+→ 冻结昨日卡
+→ send 新 Daily Status Card
+~~~
+
+默认一台 device/profile 每天一张。每次 patch 更新最后采样时间、我的资源、整机资源、shared infrastructure、0–2 个重要问题摘要，以及 Active Focus 的 workflow health 摘要。小时级 observation 留在 records，不用聊天消息保存。
+
+## 25. Incident Card：一个 episode 一张
+
+~~~text
+NEW        → send once
+UPDATED    → patch
+ESCALATED  → patch + optional interrupt
+ACK/SNOOZE → patch
+RECOVERED  → patch
+CLOSED     → final patch
+~~~
+
+Incident 不按整点、天或 timer 轮次重复发送。只有平台 patch 窗口到期且 episode 仍持续时，才创建 successor card，并保持同一个 episode continuity。
+
+因此同一 condition 即使被采样数千次，也不允许数千次 NEW，也不允许每小时/每5分钟重发。

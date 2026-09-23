@@ -165,3 +165,14 @@ Feishu surface固定：
 - **Diagnostic/Hygiene**：session/process历史、PID、code、seen count、积压数等主动查看。
 
 告警卡首层禁止再显示 `seen N times`、alert ref、机器code/freshness枚举、历史积压总量。完整workflow-quality报警范围见 MONITORING-PRODUCT-ARCHITECTURE。
+
+
+## 15. 共享节点与真正可操作 subject
+
+飞书应用1面向当前 principal 时，默认只列“我的对象 + shared infrastructure + device级影响”。别人的 WIP/session/process 不能混入“需确认”清单，更不能给当前用户“确认是否清理”的建议。其它 principal 负载只有形成整机 pressure 时，以聚合设备影响出现。
+
+Incident 标题必须指向真正 actionable subject。OS login session 只是 provenance；一个 login scope 里可同时有正常 Claude sessions、VS Code helper 和已结束 Run 遗留 runtime。没有 A1 AgentSessionProvider 证据不得写“Claude 会话”。
+
+已知 Work Item/Run → runtime 关系时，标题优先写业务 owner，例如“SRV-0011 / RUN-0001 · 测试 serverosd 仍在运行”。此类 known-owner lifecycle drift 先核 active lease、consumer、socket/write-scope 和资源影响；卡片本身不授权 kill。
+
+状态卡固定“一天一张、小时 patch”；incident 固定“一 episode 一张、状态 patch”。其它采样历史进 records。
