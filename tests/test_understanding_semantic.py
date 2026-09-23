@@ -585,6 +585,233 @@ class TestTheWriteHappensOnce:
 
 
 # --------------------------------------------------------------------------
+# a line a person wrote inside the fence is not this module's to remove
+# --------------------------------------------------------------------------
+
+CORRECTION = "- 我核对过：这条不是他说的，是转述。"
+
+
+def fenced(*lines: str) -> str:
+    """What this module's own block looks like and nothing else in it.
+
+    Spelled out here rather than read off the module, so that a card's shape is
+    pinned by the test instead of by the writer agreeing with itself. The
+    newlines are part of it: a block whose markers sit flush against the lines
+    is a different card, and one that grows a `\n` per commit is a different
+    bug — both pass every "the text is in there" assertion.
+    """
+    return (us.FENCE_BEGIN + "\n" + us.CLAIMS_BEGIN + "\n" + "\n".join(lines)
+            + "\n" + us.CLAIMS_END + "\n" + us.FENCE_END)
+
+
+def corrected(root: Path, *, line: str = CORRECTION, where: str = "after") -> None:
+    """A person's line added INSIDE the fence, above or below the module's block.
+
+    Inside the fence on purpose: that is where the claim is, so that is where
+    somebody disputing it writes. The two placements are asked separately
+    because the bytes above the module's block and the bytes below it are
+    different slots in the splice, and one surviving says nothing about the
+    other.
+    """
+    card = root / CARD
+    head, body, tail = us.fence_parts(card.read_text(encoding="utf-8"))
+    before, claims, after = us.claims_region(body)
+    if where == "after":
+        body = before + us.CLAIMS_BEGIN + claims + us.CLAIMS_END + line + after
+    else:
+        body = before + line + us.CLAIMS_BEGIN + claims + us.CLAIMS_END + after
+    card.write_text(head + us.FENCE_BEGIN + body + us.FENCE_END + tail,
+                    encoding="utf-8")
+
+
+class TestALineAPersonWroteInsideTheFence:
+
+    def test_a_correction_inside_the_fence_survives_the_next_commit(
+            self, tmp_path):
+        # The reproduction this class exists for. The module used to replace
+        # everything between the fence markers as one unit, so a correction
+        # written next to a claim — inside the fence, because that is where the
+        # claim is — was destroyed by the next commit, and the receipt reported
+        # success. §2: 下一轮旧的自动摘要不能覆盖用户的更正.
+        root = records_tree(tmp_path)
+        commit_and_write(tmp_path, root, delegation=GRANT)
+        corrected(root)
+        # The reading is made AFTER the card was edited: its digest binds it to
+        # the text it was reasoned against, so a reading made before the edit
+        # would be refused instead of written over the correction. That refusal
+        # is the last test in this class.
+        document = reading(root, [claim("c2", now="她说下周一交付", positions=(28,),
+                                        excerpt="下周一给你")], to_position=60)
+        commit_and_write(tmp_path, root, delegation=GRANT, document=document,
+                         to_position=60)
+        card = (root / CARD).read_text(encoding="utf-8")
+        assert card.count(CORRECTION) == 1
+        assert card.startswith(ALICE_PROSE)
+
+    @pytest.mark.parametrize("where", ["after", "before"])
+    def test_the_modules_own_lines_are_replaced_and_not_duplicated(
+            self, tmp_path, where):
+        root = records_tree(tmp_path)
+        commit_and_write(tmp_path, root, delegation=GRANT)
+        corrected(root, where=where)
+        document = reading(root, [claim("c2", now="她说下周一交付", positions=(28,),
+                                        excerpt="下周一给你")], to_position=60)
+        commit_and_write(tmp_path, root, delegation=GRANT, document=document,
+                         to_position=60)
+        card = (root / CARD).read_text(encoding="utf-8")
+        assert "pos 12" not in card
+        assert card.count("pos 28") == 1
+        assert card.count(us.FENCE_BEGIN) == 1
+        assert card.count(us.CLAIMS_BEGIN) == 1
+        assert card.count(us.CLAIMS_END) == 1
+
+    def test_a_persons_line_that_looks_like_one_of_ours_is_still_theirs(
+            self, tmp_path):
+        # The tempting implementation is "remove every line shaped like one of
+        # ours", and it would pass every test above while eating this one.
+        lookalike = f"- **[{us.OBSERVED_FACT}]** alice：这句是人写的"
+        root = records_tree(tmp_path)
+        commit_and_write(tmp_path, root, delegation=GRANT)
+        corrected(root, line=lookalike)
+        document = reading(root, [claim("c2", now="她说下周一交付", positions=(28,),
+                                        excerpt="下周一给你")], to_position=60)
+        commit_and_write(tmp_path, root, delegation=GRANT, document=document,
+                         to_position=60)
+        card = (root / CARD).read_text(encoding="utf-8")
+        assert card.count(lookalike) == 1
+
+    def test_the_same_lines_written_twice_do_not_grow_the_card(self, tmp_path):
+        # Asked of the splice rather than through a second commit: a second
+        # reading over one span is refused for an unrelated reason (two readings
+        # of one span cannot both be the committed one), so it cannot answer
+        # this. What is being pinned here is that the splice is idempotent — a
+        # `\n` added on each write would pass every assertion above.
+        root = records_tree(tmp_path)
+        commit_and_write(tmp_path, root, delegation=GRANT)
+        text = (root / CARD).read_text(encoding="utf-8")
+        lines = [f"- **[{us.OBSERVED_FACT}]** alice：她说下周一交付"]
+        once = us._replace_fence(text, lines)
+        assert once != text and "她说下周一交付" in once
+        assert us._replace_fence(once, lines) == once
+
+    def test_a_correction_written_above_the_block_survives_too(self, tmp_path):
+        # The other slot. A person who writes the correction first and the claim
+        # under it is placing it in `before`, which is a different slice.
+        root = records_tree(tmp_path)
+        commit_and_write(tmp_path, root, delegation=GRANT)
+        corrected(root, where="before")
+        document = reading(root, [claim("c2", now="她说下周一交付", positions=(28,),
+                                        excerpt="下周一给你")], to_position=60)
+        commit_and_write(tmp_path, root, delegation=GRANT, document=document,
+                         to_position=60)
+        card = (root / CARD).read_text(encoding="utf-8")
+        assert card.count(CORRECTION) == 1
+        assert card.index(CORRECTION) < card.index("pos 28")
+
+    def test_a_correction_makes_a_reading_made_before_it_stale(self, tmp_path):
+        # The other half of the same promise, and the reason the two belong in
+        # one class: keeping the correction is no use if a reading reasoned
+        # against the older text still commits. Editing the card moves its
+        # digest, so that reading is refused rather than written over what a
+        # person said.
+        root = records_tree(tmp_path)
+        commit_and_write(tmp_path, root, delegation=GRANT)
+        document = reading(root, [claim("c2", now="她说下周一交付", positions=(28,),
+                                        excerpt="下周一给你")], to_position=60)
+        corrected(root)
+        with pytest.raises(us.Refused) as caught:
+            commit_and_write(tmp_path, root, delegation=GRANT, document=document,
+                             to_position=60)
+        assert "the understanding card was rewritten" in str(caught.value)
+        assert (root / CARD).read_text(encoding="utf-8").count(CORRECTION) == 1
+
+
+
+class TestAFenceThisModuleCannotReadIsRefused:
+
+    def test_a_fence_written_before_the_region_existed_migrates_cleanly(
+            self, tmp_path):
+        # Cards written by the earlier version hold the module's lines with no
+        # region marker around them. Replacing that whole body is right, and it
+        # is exact rather than a guess: back then the writer replaced the whole
+        # body on every commit, so every line in it is one the module put there.
+        root = records_tree(tmp_path)
+        card = root / CARD
+        card.write_text(ALICE_PROSE + "\n" + us.FENCE_BEGIN + "\n- 老的自动摘要行\n"
+                        + us.FENCE_END, encoding="utf-8")
+        document = reading(root, [claim("c2", now="她说周三交付", positions=(28,),
+                                        excerpt="周三给你")], to_position=60)
+        commit_and_write(tmp_path, root, delegation=GRANT, document=document,
+                         to_position=60)
+        migrated = card.read_text(encoding="utf-8")
+        line = ("- **[OBSERVED_FACT]** alice：她说周三交付"
+                "（agent_reconciled；来源 pos 28；excerpt: 周三给你）")
+        assert migrated == ALICE_PROSE + "\n" + fenced(line)
+        assert "老的自动摘要行" not in migrated
+
+    @pytest.mark.parametrize("half,diagnosis", [
+        pytest.param(ALICE_PROSE + "\n" + us.FENCE_BEGIN + "\n- 半截的\n",
+                     "the fence's begin marker and not its counterpart",
+                     id="fence-begin-alone"),
+        pytest.param(ALICE_PROSE + "\n" + us.FENCE_END + "\n- 半截的\n",
+                     "the fence's end marker and not its counterpart",
+                     id="fence-end-alone"),
+        pytest.param(ALICE_PROSE + "\n" + us.FENCE_BEGIN + "\n"
+                     + us.CLAIMS_BEGIN + "\n- 半截的\n" + us.FENCE_END,
+                     "the claims region's begin marker and not its counterpart",
+                     id="claims-begin-alone-in-a-fence"),
+        pytest.param(ALICE_PROSE + "\n" + us.FENCE_BEGIN + "\n- 半截的\n"
+                     + us.CLAIMS_END + "\n" + us.FENCE_END,
+                     "the claims region's end marker and not its counterpart",
+                     id="claims-end-alone-in-a-fence"),
+    ])
+    def test_one_marker_without_its_counterpart_is_refused_and_changes_nothing(
+            self, tmp_path, half, diagnosis):
+        # Four shapes, two consequences, one answer. A half FENCE puts a second
+        # copy of the lines in the card and puts them outside any guard
+        # (`fence_parts` calls such a card all head). A half CLAIMS region reads
+        # as no region, and the migration that follows replaces the whole body
+        # — taking a person's lines with it. Neither half is a shape this module
+        # ever wrote, so it cannot say which lines are its own.
+        #
+        # A CLAIMS marker in the prose OUTSIDE any fence is not one of these
+        # shapes and is not refused: `claims_region` only ever looks inside a
+        # fence, so out there the marker is somebody's text and gets appended
+        # after, not read.
+        root = records_tree(tmp_path)
+        card = root / CARD
+        card.write_text(half, encoding="utf-8")
+        document = reading(root, [claim("c2", now="她说周四交付", positions=(28,),
+                                        excerpt="周四给你")], to_position=60)
+        with pytest.raises(us.Refused) as caught:
+            commit_and_write(tmp_path, root, delegation=GRANT, document=document,
+                             to_position=60)
+        assert diagnosis in str(caught.value)
+        assert card.read_text(encoding="utf-8") == half
+
+    def test_a_claims_marker_in_the_prose_is_a_persons_text_and_not_a_region(
+            self, tmp_path):
+        # The other side of the same judgement, pinned rather than asserted in
+        # prose: `claims_region` only ever looks inside a fence, so a marker out
+        # in the prose is somebody's text. Refusing it would mean a person
+        # cannot write this string in their own card, and there is nothing to
+        # refuse — the module appends its own fence after it and reads only
+        # what is in there.
+        root = records_tree(tmp_path)
+        card = root / CARD
+        prose = ALICE_PROSE + "\n" + us.CLAIMS_BEGIN + "\n"
+        card.write_text(prose, encoding="utf-8")
+        document = reading(root, [claim("c2", now="她说周五交付", positions=(12,))],
+                           to_position=60)
+        commit_and_write(tmp_path, root, delegation=GRANT, document=document,
+                         to_position=60)
+        body = card.read_text(encoding="utf-8")
+        assert body.startswith(prose)
+        assert body.count(us.CLAIMS_BEGIN) == 2
+        assert body.count(us.CLAIMS_END) == 1
+
+
+# --------------------------------------------------------------------------
 # a commit that fails in a view is PARTIAL, and resumable
 # --------------------------------------------------------------------------
 
@@ -953,3 +1180,35 @@ class TestTheVerbEndToEnd:
                      "--reading", reading_path, "--delegation", grant, "--commit")
         assert result.returncode != 0
         assert "--committed-at" in result.stderr
+
+class TestTheGuardOnTheSpliceIsASecondOpinion:
+
+    @pytest.mark.parametrize("broken", ["drops-everything-inside-the-fence",
+                                        "writes-nothing-at-all"],
+                             ids=["drops-everything-inside-the-fence",
+                                  "writes-nothing-at-all"])
+    def test_a_splice_that_loses_a_persons_text_is_refused(
+            self, tmp_path, monkeypatch, broken):
+        # `_write_fence` checks its own splice before writing, and that check
+        # never fires while the splice is correct — so nothing in the suite
+        # exercises it, and a check nothing exercises is a comment. This test
+        # supplies the splice it exists to catch: one that replaces the whole
+        # fence body, which is the defect this slice was opened for, and one
+        # that writes nothing, which leaves the card with no region at all.
+        root = records_tree(tmp_path)
+        commit_and_write(tmp_path, root, delegation=GRANT)
+        card = root / CARD
+        corrected(root)
+        before = card.read_text(encoding="utf-8")
+
+        def drops(text: str, lines: list[str]) -> str:
+            head, _, tail = us.fence_parts(text)
+            return head + us.FENCE_BEGIN + us._fence_body(lines) + us.FENCE_END + tail
+
+        monkeypatch.setattr(us, "_replace_fence",
+                            drops if broken.startswith("drops") else lambda t, l: t)
+        with pytest.raises(us.Refused) as caught:
+            us._write_fence(root, us._understanding_root(root), CARD,
+                            ["- **[OBSERVED_FACT]** alice：她说周四交付"])
+        assert "does not own" in str(caught.value)
+        assert card.read_text(encoding="utf-8") == before

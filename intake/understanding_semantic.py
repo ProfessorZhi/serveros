@@ -123,9 +123,19 @@ MAJOR_CHANGES = ("goal", "responsible", "deadline", "external_commitment",
 
 #: The fence this module owns inside a card. Everything outside it is somebody
 #: else's prose and is preserved byte for byte — the writer checks that, and a
-#: write that would change a byte outside the fence is refused.
+#: write that would change a byte it does not own, inside the fence or outside
+#: it, is refused.
 FENCE_BEGIN = "<!-- serveros:semantic:begin -->"
 FENCE_END = "<!-- serveros:semantic:end -->"
+#: The region INSIDE the fence that holds this module's own lines. The fence
+#: says "the module owns this area"; this pair says "these bytes are the
+#: module's". They are not the same statement, and what separates them is a
+#: person's correction: somebody who disputes a claim writes next to it, inside
+#: the fence, because that is where the claim is. Without the inner markers the
+#: only way to replace the module's lines is to replace everything between
+#: `FENCE_BEGIN` and `FENCE_END`, and that is how a correction was destroyed.
+CLAIMS_BEGIN = "<!-- serveros:semantic:claims -->"
+CLAIMS_END = "<!-- serveros:semantic:claims:end -->"
 
 #: A claim's id, as a reading writes it: short, stable, and safe to cite in a
 #: later retraction. The pattern is enforced because an id is what a supersede,
@@ -862,21 +872,30 @@ def _write_fence(records_root: Path | str, base: Path, card: str,
             f"reading is about text that is no longer there. Read the card "
             f"again — the difference between the two versions is the only "
             f"evidence that anything happened to it")
-    head_before, _, tail_before = fence_parts(before)
+    head_before, body_before, tail_before = fence_parts(before)
     body = _replace_fence(before, lines)
     # Checked BEFORE the write, so that a refusal is a refusal and the file is
     # still the one a person left. The check is on the splice this module is
-    # about to perform: the head bytes survive, the tail bytes survive, and the
-    # only thing added to the head is blank lines before the fence.
+    # about to perform: the head bytes survive, the tail bytes survive, the
+    # only thing added to the head is blank lines before the fence, the bytes
+    # inside the fence that are NOT this module's lines are unchanged, and the
+    # lines this module does own are the ones it just decided on. The two are
+    # asked separately because they are two different promises — the second is
+    # what keeps a person's correction, and a single comparison against the
+    # whole body would satisfy the second while silently breaking the first.
     head_after, body_after, tail_after = fence_parts(body)
+    region_after = claims_region(body_after)
     if (not head_after.startswith(head_before)
             or head_after[len(head_before):].strip("\n")
             or tail_after != tail_before
-            or body_after != _fence_body(lines)):
+            or region_after is None
+            or _fence_layout(body_after) != _fence_layout(body_before)
+            or region_after[1] != _claims_lines(lines)):
         raise Refused(
-            f"{target}: this write would change text outside this module's "
-            f"fence, so it did not happen and the file is as it was. Somebody's "
-            f"prose is not this module's to rewrite")
+            f"{target}: this write would change text this module does not own "
+            f"— inside its fence or outside it — so it did not happen and the "
+            f"file is as it was. Somebody's prose is not this module's to "
+            f"rewrite")
     _atomic_write(target, body)
     after = target.read_text(encoding="utf-8")
     if after != body:
@@ -902,19 +921,110 @@ def fence_parts(text: str) -> tuple[str, str, str]:
     return head, body, tail
 
 
-def _fence_body(lines: list[str]) -> str:
+def claims_region(body: str) -> tuple[str, str, str] | None:
+    """A fence body as `(before, claims, after)`, or None when it carries none.
+
+    None is not "empty". It says this body was written before the module marked
+    its own lines — and back then the writer replaced the whole body, so every
+    line in it is one the module put there and none of it is a person's. That is
+    what makes the migration below exact instead of a guess about which lines
+    were somebody else's. The sentinel is the whole tuple rather than a `None`
+    inside it, because a region whose `before` is empty is a region, and a
+    caller that tested the wrong slot would read "unmarked" where the answer was
+    "marked, with nothing before it".
+    """
+    if CLAIMS_BEGIN not in body or CLAIMS_END not in body:
+        return None
+    before, rest = body.split(CLAIMS_BEGIN, 1)
+    claims, after = rest.split(CLAIMS_END, 1)
+    return before, claims, after
+
+
+def _claims_lines(lines: list[str]) -> str:
+    """The bytes between the claims markers: this module's lines, newly lined."""
     return "\n" + "\n".join(lines) + "\n"
 
 
+def _claims_marked(lines: list[str]) -> str:
+    """This module's own lines, between the markers that say they are its own."""
+    return CLAIMS_BEGIN + _claims_lines(lines) + CLAIMS_END
+
+
+def _fence_body(lines: list[str]) -> str:
+    """The fence body when this module is the only writer of the card."""
+    return "\n" + _claims_marked(lines) + "\n"
+
+
+def _fence_layout(body: str) -> tuple[str, str]:
+    """What a fence body holds AROUND this module's lines.
+
+    An unmarked body is reported as the canonical layout rather than as itself:
+    every line in it is the module's, so there is nothing in it that is
+    somebody else's to keep, and what the next write lays down around its own
+    lines is the canonical shape. Reporting the body itself would make the
+    migration off an unmarked fence read as a change outside the fence.
+    """
+    region = claims_region(body)
+    if region is None:
+        return "\n", "\n"
+    before, _, after = region
+    return before, after
+
+
 def _replace_fence(text: str, lines: list[str]) -> str:
-    """The card with the fence's contents replaced, or the fence appended."""
-    block = FENCE_BEGIN + _fence_body(lines) + FENCE_END
-    if FENCE_BEGIN in text and FENCE_END in text:
-        head, _, tail = fence_parts(text)
-        return head + block + tail
-    separator = ("" if text.endswith("\n\n")
-                 else ("\n" if text.endswith("\n") else "\n\n"))
-    return text + separator + block
+    """The card with this module's own lines replaced, and everything else kept.
+
+    Three cases, and the difference between them is the point:
+
+      * no fence — appended. A card nobody has written to has no fence, and
+        there the module's lines go after the prose rather than in place of it,
+        because the prose is a person's;
+      * a fence with no claims region — a card written before the region
+        existed. Its body had been replaced wholesale on every commit, so all
+        of it is the module's and replacing all of it again keeps faith with
+        what was there;
+      * a fence with the region — only the region is replaced. Every other byte
+        inside the fence, and everything outside it, is what it was before.
+
+    A card holding one marker of a pair and not its counterpart is REFUSED, not
+    repaired — both pairs, for the same reason and with different consequences.
+    A half FENCE leaves the stale half in the card and puts a second copy of the
+    lines beside it, and `fence_parts` calls such a card all head: the markers
+    are the guard that says a person's prose is not this module's, so a card
+    with one of them has no guard at all. A half CLAIMS region is read as no
+    region, which is the migration case — and that migration replaces the whole
+    body, because the writer that produced an unmarked body owned all of it.
+    Neither half is a shape this module ever wrote, so in either the module
+    cannot say which lines are its own, and the second would take a person's
+    lines with them.
+    """
+    has_begin, has_end = FENCE_BEGIN in text, FENCE_END in text
+    if has_begin != has_end:
+        which = "begin" if has_begin else "end"
+        raise Refused(
+            f"this card holds the fence's {which} marker and not its "
+            f"counterpart, so this module cannot tell its own region from the "
+            f"prose around it. Writing would leave the old lines in the card "
+            f"beside the new ones and put them outside any guard. A person has "
+            f"to look at this card")
+    if not has_begin:
+        separator = ("" if text.endswith("\n\n")
+                     else ("\n" if text.endswith("\n") else "\n\n"))
+        return text + separator + FENCE_BEGIN + _fence_body(lines) + FENCE_END
+    head, body, tail = fence_parts(text)
+    if claims_region(body) is None and (CLAIMS_BEGIN in body
+                                        or CLAIMS_END in body):
+        which = "begin" if CLAIMS_BEGIN in body else "end"
+        raise Refused(
+            f"this card holds the claims region's {which} marker and not its "
+            f"counterpart, so the lines this module wrote cannot be told from "
+            f"the ones a person added next to them. An unmarked fence is "
+            f"migrated by replacing its whole body, which is right only because "
+            f"nothing else could have written there — and this card says "
+            f"somebody did. A person has to look at this card")
+    before, after = _fence_layout(body)
+    return (head + FENCE_BEGIN + before + _claims_marked(lines) + after
+            + FENCE_END + tail)
 
 
 def _read_receipt(path: Path) -> dict | None:
