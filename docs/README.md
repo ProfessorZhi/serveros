@@ -10,6 +10,12 @@
 
 仅按当前任务加载下面相应合同，不每次读全库。
 
+## 五条自动循环与共享记忆
+
+根README的五条循环是当前产品入口：信息、工作、能力、知识、运行。它们共享Memory、权限和证据，但不是一个固定DAG。OpenViking的目标形态是一份Tokyo共享长期记忆Provider：Claude Code/Codex优先复用官方Memory Plugin的hooks+MCP；Windows等设备通过受认证私网访问同一服务。GitHub/private records保存当前可审计语义与跨系统互操作，不同步OpenViking内部索引；ChatGPT当前从GitHub/项目资料读取。详见 [Memory Fabric](memory-fabric.md) 与能力仓 [A2 Memory](https://github.com/ProfessorZhi/ability-management/blob/main/design/MEMORY-RETRIEVAL-ABILITY.md)。
+
+OpenViking目前仍未绑定，设计不等于LIVE；现有 `memory/provider-contract.yaml` 仍带早期candidate/defer规则，实际采用时要与adapter/Binding/认证/数据策略一起迁移并验fresh-agent recall/capture。
+
 ## 信息、参考和知识
 
 | 文档 | 范围 |

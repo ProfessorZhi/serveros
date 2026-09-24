@@ -164,6 +164,8 @@ OS/有限独立check核serverosd进程、IPC、cycle、持久化；Core坏时合
 
 G1/A1/A2做相关依赖与薄上下文/更正；A3/A4/A5保护worktree/网络/profile/跨端lease；A6/A7/A8复用真实Quay、Testing Plugin和native发布；A9/A10保持两个Skill与真实API/jump/Runbook，人执行边界不变；B1–B10接输入/认识/需求/工作/研究/设计/实施/写作/正文/投递。
 
+A2/OpenViking采用一份Tokyo共享Provider：复用官方Claude Code/Codex Memory Plugin与MCP，Windows等走认证私网Binding；关闭OpenViking Skill catalog，能力目录仍归G1。迁现有pre-deployment memory provider contract并接真实adapter/health/capture/recall；OpenViking内部数据库/向量索引不进Git，ChatGPT当前通过private GitHub/records协作。Provider未绑定不能阻断records/checkpoint/source/native-history路径。
+
 优先迁已核入口债务：work-management的INBOX/每动作Run、information-management的旧reader假设、vision的无条件text-only、session-manager发布越界、report的旧Final/重跑取图、dev-doctor标准YAML错误及MUC完整.env输出示例。元数据长度/关键词只是信号；结构通过之后仍需目标runtime选择/加载/正常任务验证。realization说明留原design，不新增注册/验收数据库。
 
 **退出门**：每职责从目标普通runtime可发现/调用并有真实receiver。缺现场身份、生产许可等精确标该层，不将只会安全拒绝当正向完成。真实headed登录E2E按AC，mock/synthetic不替原路径。
