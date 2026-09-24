@@ -1,6 +1,6 @@
 # 协作场景验收：从真实目标反推证据
 
-2026-09-23设计，不是已经执行的测试报告。P11原十类场景仍保留；此矩阵增加验证目的、跨能力接力、完成判据与恢复，使“每个工具成功”不能替代“用户目标完成”。现有测试runner/Run evidence即可，不需要新验收平台。
+2026-09-24产品/自动化收敛设计，不是已经执行的测试报告。P11原十类场景仍保留；此矩阵增加验证目的、跨能力接力、完成判据与恢复，使“每个工具成功”不能替代“用户目标完成”。现有测试runner/Run evidence即可，不需要新验收平台。
 
 ## 1. 验收基本方法
 
@@ -54,7 +54,7 @@ R3限定原知识库/指南关系，R4是外部原SOP。B9 resolve owner/maintai
 
 ### J06 完整日循环（S6）
 
-选择低风险真实目标，事先明确必需交付。完整链：登记源变化→语义认识receipt→当前board/委托→最多两root焦点→GPT研究设计与独立review→真实executor→AC验证→要求的报告/维护/投递→B2/B4回流。
+选择低风险真实目标，事先明确必需交付。J06验证的是**可连续自动推进**而不是固定阶段：登记源变化→语义认识receipt→当前board/委托→0–2 root焦点→真实Parent/executor→required AC→required报告/维护/投递→B2/B4回流。若所选case复杂度/风险确实需要GPT研究设计、独立review或Quay，则在对应位置展开并验证交接；简单case不得为了Journey完整而制造这些步骤。
 
 成功：每次交接有真实receiver和接受证据，Parent在最后必要结果满足后结束；不用人每步搬文件。可以0代码/少于2目标，但不能只render START-HERE或写proposal。
 
@@ -124,3 +124,30 @@ B8生成准确范围内容，B9做必要发布，B10按receiver/窗口发送；S
 | 监控→用户 | 空Incident、active异常无人工、仅历史finding | 无空新事故通知；状态不假绿也不机械黄；V35–V44分别验purpose与送达 |
 
 真实产品验收unexpected FAIL继续遵从现有停点；合成/负面测试的预期拒绝不算产品失败。本次文档修改只做结构与一致性检查，不称上述真实链已跑通。
+
+## 2026-09-24 自动化停点回归
+
+这组case专门防止“模型更强了但旧Skill/AGENTS把它卡住”。沿用现有Journey/receipt，记录人工停点原因即可，不新增approval/workflow数据库。
+
+| 场景 | 预期自动行为 | 失败判据 |
+|---|---|---|
+| 小型只读repo问题 | 直接读相关文件/历史并回答 | 为查询创建Requirement/Run；无条件读architecture/deployment/testing全套；要求用户先确认repo内可自行resolve的信息 |
+| 已接受本地代码修复 | 自动开/复用自己的安全worktree，改代码，修本次局部失败并跑受影响测试 | 第一版实现就返回等用户继续；每个文件/测试都重新申请同一授权 |
+| 复杂Skill只走一个workflow | root router只展开该route需要的reference/script/tool | 选中Skill后完整读取所有reference；相邻workflow规则污染当前任务 |
+| 可选Provider断线 | 标精确降级并继续无关步骤 | OpenViking/Laya/Jev/Windows任一UNBOUND把整个Work Item判NOT_READY |
+| Quay无合适切片 | Native Parent直接完成 | 为满足“每天用Quay”制造Task或把Task创建算进展 |
+| child在Parent退出后完成 | 新Parent查原Task/receipt并接受一次 | 新建第二Task；要求用户复制结果；旧结果晚到覆盖新epoch |
+| 实施阶段局部test失败 | 在当前scope内修正并重跑受影响测试 | 因普通编译/单测失败升级人；反过来把独立真实产品unexpected FAIL自动修掉 |
+| 文档明确要求更新 | 定位原OWNED/获准对象，局部patch+readback | 再问“要不要写文档”；新建第二正文；为报告重跑E2E |
+| quiet window发送 | 正文/发布可完成，保真实待发intent；窗口到来只补send | 无sender却写“已排队”；timeout直接重复新消息 |
+| Focus完成 | 写Outcome并释放，允许0 | 自动从backlog补第二项/下一项；用空槽当异常 |
+| 新Session恢复 | 最小checkpoint+当前source/records+相关Ability，验证actual worker/effect | 全量回放旧聊天/所有Skills；把旧grant文字当当前授权 |
+| 当前异常无需人工 | Status显示异常和责任，但不制造不必要打断 | 因no-human-action变绿；或把全部diagnostic finding提升事故 |
+
+### 人工打断验收
+
+一个低风险、已接受、可在Tokyo本地完成的Journey，理想情况下从开始到Outcome不需要用户再次搬资料、选择工具或说“继续”。若有人工停点，报告必须把它归入：目标/AC歧义、effect/数据/费用边界、共享writer冲突、不可替代身份输入、semantic conflict或当前真实产品FAIL政策之一。无法归类即视为自动化设计缺口。
+
+### 上下文压力验收
+
+同一用户请求分别在精简后/旧入口运行时，检查Skill选择正确性、实际结果、无关文件/工具加载、提前停工、重复测试和token/compaction压力。静态字符数只用于定位，不可用“更短”单独宣告新版本更好。

@@ -10,7 +10,7 @@
 
 1. 获准信息按政策捕获，转发材料覆盖真实，语义变化进入正式认识并能被下一消费者使用。
 2. 外部文章能进入正确个人飞书参考区；原文/摘要/批注/认识/规范分责，必要本地保存与Git范围明确。
-3. 当前工作从可信来源/委托/焦点到GPT设计和独立审阅、实际执行、验收及要求的文档/通知闭合。
+3. 当前工作从可信来源/委托/焦点到实际执行、验收及要求的文档/通知闭合；复杂度/风险需要时再展开GPT设计、独立review、Quay或真实E2E，简单任务不为覆盖Ability而强走这些分支。
 4. 正常安装入口、资源/关键服务/Core自身监控、共享Laya业务消费与失败恢复有证据。
 
 一次委托可包含多个小commit、正规worktree和独立worker，不要求一个大补丁、21个Agent或全部能力每次都加载。Parent负责原目标的必需结果；缺真实consumer是未完成义务，不是“不需要做”。
@@ -138,9 +138,9 @@ Work Engine取生命周期/依赖/focus/lease，Card取目标/AC，Agent Control
 
 **退出门**：真低风险目标得到一次合法准入/dispatch；重复竞争、撤销、过期review/source/plan、旧Run结束但进程活、park/resume/partial effects正确。没有grant可给建议，不能执行。
 
-## P7 GPT、Quay与实际继续责任
+## P7 按需GPT/Quay与实际继续责任
 
-复用CodexAppServerProvider/exec、review_receipt、bounded_invocation及当前Quay。真实设计/独立review Session、输入和model/effort配置、turn完成与final归属明确；APPROVE/exit0不发授权，review finding须核证据，预算有界不无限审。
+本阶段把GPT设计/review、Quay和真实continuation接通为**可按需组合的能力**，不是要求每个Work Item都调用。复用CodexAppServerProvider/exec、review_receipt、bounded_invocation及当前Quay；当任务确实需要设计/独立review时，真实Session、输入和model/effort配置、turn完成与final归属明确。APPROVE/exit0不发授权，review finding须核证据，预算有界不无限审。
 
 Parent在既有Run/Task/checkpoint保存asked-for/inputs/authority/resources/receiver/accepted结果/continuation。child创建≠执行≠验收≠父目标结束；退出前有真实接续consumer才说会后台继续。
 
@@ -184,7 +184,7 @@ Serper复用真实SearchProvider及不可变响应，原文才支持邮箱归属
 
 复用SCENARIO-ACCEPTANCE J01–J10、监控V系列、本轮REF01–REF12与DEEP §10。变化面相同且有效的旧结果可复用；完整套件在适当集成/发布边界运行，不每个小改重复全世界。
 
-必须正向证明：①真实消息/转发材料→正确coverage→原生reading/semantic commit→下游；②网页→本人Reference→获准本地/安全Git关系→人改/源更新；③J06当前工作/可信委托→GPT设计review→实际worker→AC→要求的报告/维护/通知→回流；④普通安装、两业务shared Laya、资源卡/Core隔离故障。
+必须正向证明：①真实消息/转发材料→正确coverage→原生reading/semantic commit→下游；②网页→本人Reference→获准本地/安全Git关系→人改/源更新；③J06当前工作/可信委托→实际Parent/worker→required AC→required文档/维护/通知→回流，并用至少一个**确实需要**复杂设计/review或Quay的case证明这些可选分支可接入；④普通安装、两业务shared Laya、资源卡/Core隔离故障。
 
 事前定oracle与scope：缺陷复现成功可完成诊断，NOT_REPRODUCED不是全局修复；预期安全拒绝是测试成功；真正非预期产品AC FAIL按既定规则收证据并停该产品自动修改，不删断言/降真实度。其他独立工作继续。
 

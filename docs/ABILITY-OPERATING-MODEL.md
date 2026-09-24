@@ -52,17 +52,18 @@ Profile/Recipe可以改变时间和组合，但不拥有上述职责的事实。
 
 | 节点 | 推荐触发 | Ability owner | 用户结果 |
 |---|---:|---|---|
-| Incremental Intake | 每30–60分钟 | A4触发 + B1 | 新消息/编辑/材料locator增量安全落地，不每次跑LLM |
+| Incremental Intake | provider event优先；否则实例配置的有界poll | A4触发 + B1 | 新消息/编辑/材料locator增量安全落地；无变化不跑LLM |
 | Evening Cutoff | 19:xx Asia/Shanghai实例时点 | A4 | 固定本轮cutoff/cycle_ref，不代表采集已完成 |
 | Archive Catch-up | cutoff后 | B1 | SHALLOW/DEEP/FOLLOW/REFERENCE追到cutoff；partial精确可见 |
 | Structured Understanding | B1 receipt后 | B2 + A2 | 新事实/冲突/撤回更新；旧Claim即时失效 |
 | Daily Reconciliation | 20:00提醒；资料不完整明示 | B10 | 差量对话，没有待决定项可短/空，不伪造已读完 |
+| Standing Daily Report（启用时） | report cutoff后 | B8 + B9 + B10 | 从accepted Outcome/evidence生成一份稳定日报；不阻断夜间Focus |
 | Requirement/Board Reconcile | 人回复或策略允许继续后 | B3 + B4 | 去重需求、现有工作/候选/等待状态对齐 |
 | Active Focus | 对齐/接受后 | B4 | 0–2个root focus，可当晚执行，完成后不自动补位 |
 | Session Prep | Focus成立后 | A1 | resume/create Parent Session、checkpoint与当前目标 |
 | Workspace Prep | Focus成立后 | A3 | repo/base/worktree/dirty-owner/写入范围安全就绪 |
 | Runtime Prep | Session/Workspace后 | A4 | 环境、资源、必要service、Binding ready |
-| Night Research/Execution | standing delegation允许时 | B5/B6/B7/A6/A7 | 安全研究/设计/review/实现/测试，可部分完成 |
+| Focus Execution / Continuation | standing delegation允许时 | Parent + 按需B5/B6/B7/A6/A7 | Native直达简单任务；复杂/高风险时才展开研究、review、委派或E2E |
 | Optional Morning Catch-up | 实例需要时 | A1+A3+A4+B4 | 核已选Focus与source/base/runtime变化；不是次日才允许开始 |
 | Session Maintenance | 低频/夜间 | A1.3 | 只archive明确非活动且有checkpoint的Session |
 | Workspace Maintenance | 低频/夜间 | A3 | 只标RETIRE_CANDIDATE或清明确可再生物，不大扫除 |
@@ -232,3 +233,33 @@ real source delta
 原生Parent选择方法并验证必需交付；`serverosd`只维护被真正consumer使用的机械事实，不解释所有飞书消息或替用户选新目标。一个resident Node Core不禁止既有Provider、CloudCLI、Tailscale和实际Agent进程存在。
 
 采集/对齐/接续/状态卡各有不同节奏，不用统一“一天一次”的时钟；routine错过时点有界补缺，状态不补发每个漏小时、工作不重复创建收费Task。源/权限/目标变更只围住相关效果，其他已授权工作继续。
+
+## 12. 自动交接与唤醒：消除“人肉连接器”
+
+自动化承诺必须落到一个真实receiver/trigger；不是看到上一步DONE就假设下一步会发生。这里定义产品接缝，不新增workflow engine或事件总线。receiver可以是同一个Parent同步继续、已有finite routine、provider callback/receipt consumer或OS scheduler。
+
+| Producer事实 | 需要时的Receiver | 默认触发 | Receiver不可用时 |
+|---|---|---|---|
+| B1 capture/source revision receipt | B2 reader/semantic routine | 当前batch/cutoff或已登记重要source事件 | raw保留，understanding lag明确；不重抓source |
+| B2 Claim/View commit / correction | A2 eligibility + B3/B4相关projection | commit后本地失效即时；需求/Board按当前对账节奏刷新 | current recall先正确；远端Memory/Board可滞后但不复活旧事实 |
+| B3 Formal Requirement accepted/revised | B4 canonical Work Item reconcile | acceptance receipt | Requirement保留，Work Item接缝标未闭合；不让用户手建第二任务 |
+| B4 Focus accepted / resumed | A1 logical Parent；按需A3/A4 | focus/continuation intent | 明确待续；不启动重复Parent，不声称后台运行 |
+| A6 child result / Quay Task terminal | 当前Work Item Parent | provider result/receipt或有界poll | 结果durable保存为待接收；新Parent可接原结果，不重派 |
+| A7 acceptance verdict | Parent / B4 completion evaluation；B8按需消费证据 | verdict receipt | 保留已验证范围，Completion不前移；不丢已成功测试 |
+| A8 install/running observation | Parent / G1 runtime projection | install/readback receipt | source/build结果保留，准确停在未安装/未运行 |
+| B9 publish/readback receipt | B10 sender（仅当Requirement要求送达） | 受众/窗口/receiver已解析 | 文档保持已发布，delivery单独待续；不重建正文 |
+| B9/B8自己产生的新revision | B1/B2 source loop | 自发revision去重后只处理后续人改/外部改 | 不形成自循环理解/报告 |
+| A4 health/impact change | B10 Daily Status / Incident | 状态/episode transition | observation仍durable；sender故障不改健康真相 |
+| OpenViking/MetaCC indexing result | A2 future retrieval | 异步ack，无需唤醒普通Work Item | records/source路径继续；只有当前required retrieval受影响才提示 |
+
+### 接续去重
+
+每条异步边至少能够回答原producer identity/revision、当前receiver、是否已被接受、是否仍适用于当前Work Item/epoch。timeout/断线先查同一attempt/result，再决定是否补派；不能因为Parent换Session或scheduler重启就复制child、消息、文档或外部effect。
+
+### 不把接缝变成固定流水线
+
+表中某一边只有在当前用户目标需要它时才存在。一个小型代码修复可以在同一Parent内从A3直接B7→局部验证→Outcome，不需要先跑B1/B2/B3；一个会议理解更新可以B1→B2结束，不创建Work Item。自动交接解决的是**已有责任如何继续**，不是规定所有任务必须经过哪些框。
+
+### 实施验收
+
+每个被宣传为“自动”的异步接缝都要跑一次 producer完成后用户不发第二条消息的测试：receiver应自己收到/轮询到结果并继续，或者准确落为待续。如果测试只能靠操作者复制ID、打开另一个Session说“继续”、手工贴child结果，架构覆盖仍是PARTIAL。

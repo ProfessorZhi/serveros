@@ -7,20 +7,29 @@
 ## 你每天实际得到什么
 
 ```text
-昨天的飞书信息与真实工作
-  → ServerOS 整理认识变化
-  → 在 CloudCLI 和 Coordinator 对账、纠正
-  → 个人看板：处理站 / 未完成 / 已完成
-  → 你选今天值得推进的需求
-  → CC 挖掘意图、整理原始材料
-  → GPT 与你参与调研、方案和设计
-  → CC / 原生子代理 / Quay 实施、实验、验证
-  → 每项工作的结果与有力 E2E 证据
-  → 正式的日报、周报、专项汇报
+白天
+├─ 飞书 IM / Doc / Wiki / 妙记 / 文件 / Follow 增量自动进入
+├─ routine facts 自动更新 Understanding / Memory
+├─ 已选 Focus 由原 Parent 持续推进
+├─ 需要时自动准备 worktree / runtime / research / Quay / tests
+└─ OWNED / FOLLOW_MIRROR / 获准共享章节按变化维护，不重复造正文
+
+19:xx
+└─ source catch-up + understanding reconciliation，缺材料只标 gap
+
+20:00
+└─ CloudCLI 只给真正值得你看的：
+   自动更新 / 需要你决定 / 冲突 / 理解缺口
+
+你接受或调整 0–2 个 Focus 后
+└─ 已授权工作可当晚继续，不等第二天、不要求你逐步说“继续”
+
+第二天或新 Session
+└─ 从当前 Requirement / checkpoint / worker / effect 状态继续，
+   不重讲历史、不重复派 child、不重放未知外部效果
 ```
 
-这不是固定流水线。调研可以先实验，测试可以推翻设计，交付物也可以只有报告。
-你随时新开 Session，提起某个项目或需求，Agent 就应找回相关上下文，而不是要求你重新解释全部历史。
+这不是固定流水线。一天可以没有新 Requirement、没有 Quay、没有报告，Focus 也可以为 0；调研可以先实验，测试可以推翻设计，交付物也可以只有验证或报告。系统应自动完成 HOW，只有目标、重要取舍、真正受保护的效果或不可替代的人类输入才打断你。你随时新开 Session，提起某个项目或需求，Agent 应恢复最小有效上下文，而不是要求你重新解释全部历史。
 
 ## 核心理念
 
@@ -114,6 +123,21 @@ ServerOS 的日常自动化不是一条固定流水线，而是五条相互连�
 ```
 
 Memory、权限和证据横穿五条循环。某一条 Provider 暂时不可用只让依赖它的部分降级，不把整个 ServerOS 变成全局 `NOT_READY`。
+
+## 日常会自动整理什么
+
+| 对象 | 默认自动行为 | 不会静默做的事 |
+|---|---|---|
+| Workspace / 目录 | 新产物在Project/Work Item/canonical parent明确时自动落到正确worktree/artifact/test根；低频检查结构漂移 | 不因“目录看着乱”移动历史repo、别人worktree、唯一证据或未知目录；root级move/delete先走对应effect边界 |
+| 飞书 IM / 文件 | 增量捕获新消息、编辑、转发和需要的附件；partial保gap，后续自动补 | 不把每条消息变Requirement，不为计数下载全部媒体，不把私密材料自动外发 |
+| 关注 Doc / Wiki / Web | 保存稳定source identity/revision；有变化只重读受影响范围并更新理解/mirror | 不因Follow一页扩成全库，不把收藏自动变永久订阅/全文转载 |
+| 会议 / 妙记 / 录音 | MeetingBundle关联Minutes、转录、录音、附件；转录/材料晚到后自动补读并触发受影响理解 | 不要求每场会都有MP3+妙记+纪要；背景/远控音频不自动形成业务承诺；无长期阅读价值不强建MyDocs |
+| OWNED指南 / FOLLOW_MIRROR | standing stewardship按source revision更新允许区块，保护人改，publish后readback | 不whole overwrite，不因source变化自动扩大受众/ACL/业务政策 |
+| 共享维护文档 | 在获准原对象/章节原位维护，变化跟进并三方比较 | 不复制第二份可编辑正文，不接管owner/priority |
+| 日报 / 周报 | 启用standing routine后从accepted Outcome/evidence生成同一logical report，发布/送达分开恢复 | 不为日报重跑E2E、不拼Task数量、不让“日报已发”停止夜间Focus |
+| 运行状态 | 工作日更新同一Daily Status Card；真实Incident按episode跟踪 | 不因为无需人工就假绿，也不把历史/diagnostic finding全升成事故 |
+
+自动整理遵循同一个原则：**明确的新增/维护路径自动做，历史结构性破坏动作谨慎做。** 系统应该替你完成定位、diff、局部patch、readback、索引和接续，而不是让你每天当文件管理员。
 
 ## 一个小核，两大能力家族
 

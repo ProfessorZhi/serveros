@@ -1,10 +1,10 @@
 # Daily Work Cycle · 有真实接收者的每日工作
 
-状态：2026-09-23 协作修订，产品规范仍为ARCHITECTURE.md。此Profile组合现有能力，不新增workflowd、第二任务数据库或固定业务阶段机。通用交接/预算/恢复依 [COLLABORATION-CONTRACT](COLLABORATION-CONTRACT.md)，每职责详见ability-management/design/ABILITY-SCENARIO-CONTRACTS.md。
+状态：2026-09-24 产品/自动化收敛，产品规范仍为ARCHITECTURE.md。此Profile组合现有能力，不新增workflowd、第二任务数据库或固定业务阶段机。通用交接/预算/恢复依 [COLLABORATION-CONTRACT](COLLABORATION-CONTRACT.md)，每职责详见ability-management/design/ABILITY-SCENARIO-CONTRACTS.md。
 
 ## 1. 已接受的目标
 
-每天增量接收真实工作信息、修正结构化认识并对账；晚间形成最多两个合格工作焦点，GPT深度参与研究设计、独立Session审实施计划；原生CC/Codex/Quay实际推进；用真实验收、报告、获准维护与通知交付。正常授权范围内少找人，重大目标/权限/生产效果与真实非预期产品失败才升级。
+每天增量接收真实工作信息、修正结构化认识并对账；晚间形成0–2个合格工作焦点。简单、低风险任务由原生Claude/Codex直接完成；只有复杂度、风险或Completion Boundary值得时才展开GPT深度研究/设计、独立Session review、Quay并行或真实E2E。需要的验收、文档、报告、发布与通知按目标展开，不组成固定套餐。正常授权范围内少找人，重大目标/权限/生产效果与真实非预期产品失败才升级。
 
 这不是每天必新开两项，也不要求所有任务写代码、使用每种Provider或经历每个阶段。研究、验证已有能力、报告、指导配置可以单独完成。Quay要有可验证的贡献，不为进程忙碌造任务。
 
@@ -46,9 +46,9 @@ Card拥有语义，Work Engine拥有状态/Run/lease，Board派生。current sto
 
 选择按已有业务价值/优先级、deadline、依赖、可验收和环境就绪，有来源解释；没有priority字段不默认P0，也不永久拒绝所有候选。若授权允许Coordinator排序，记录其建议与接受范围。实际effects前再次原子核scope/revocation/基线/资源/预算。
 
-## 6. GPT设计、独立审阅和研究往返
+## 6. 按需研究、设计与独立审阅
 
-采用已有CodexAppServerProvider或已验证exec适配；明确模型/推理配置、允许工具、预算/deadline。设计与plan review不同真实Session，提供问题、原始依据、候选方案/反例与具体当前代码，不只给作者摘要。
+这一段只在任务真正需要B5/B6/独立review时展开；普通已知实现、小修、简单文档、已有方案执行不为了Daily Cycle形式再跑GPT设计。需要时采用已有CodexAppServerProvider或已验证exec适配；明确模型/推理配置、允许工具、预算/deadline。设计与plan review若都要求，则使用不同真实Session，提供问题、原始依据、候选方案/反例与具体当前代码，不只给作者摘要。
 
 review receipt绑定Item/scope/source/design/plan/baseline、实际Session、requested model/config和时间；完整turn与有效final对应才算完成。模型APPROVE不授权；field缺失、旧final、同作者、自述adapter_verified不能放行。
 
@@ -88,7 +88,7 @@ source取得失败/权限撤销只冻结可能受影响的后续效果，精确s
 
 时区、晚间/次日时刻、预算和告警策略是实例配置。本轮未启用任何timer。现有unit只跑workbench render就只能叫资料刷新，不能写完整日循环LIVE。
 
-完整LIVE前至少跑通SCENARIO-ACCEPTANCE的J06：真实源变化→理解提交→current board与有效委托→设计/独立review→实际执行→验收→必需交付/回流，并完成duplicate、source漂移、权限撤销、cancel未知和partial发布恢复反例。其他独立功能可分别启用，但不能汇总成全链已完成。
+完整LIVE前至少跑通SCENARIO-ACCEPTANCE的J06：真实源变化→理解提交→current board与有效委托→真实Parent/执行→required验收→必需交付/回流，并完成duplicate、source漂移、权限撤销、cancel未知和partial发布恢复反例。GPT设计/review、Quay、E2E等可选分支通过各自适用case证明，不强塞进每次J06。其他独立功能可分别启用，但不能汇总成全链已完成。
 
 ## 11. 历史实测和当前缺口的位置
 
@@ -103,11 +103,12 @@ Daily Cycle不是单一Ability，也不是serverosd内部循环。时间只唤�
 
 | 节点 | 推荐触发 | owner |
 |---|---|---|
-| 日间轻量增量 | 每30–60分钟 | A4 scheduler → B1 |
+| 日间轻量增量 | provider event优先；否则实例配置有界poll | A4 scheduler → B1 |
 | Evening source cutoff | 19:xx实例时点 | A4 |
 | Archive catch-up | cutoff后 | B1 |
 | Structured Understanding | B1 receipt后 | B2 + A2 |
 | Daily Reconciliation | 20:00提醒；资料不完整则明示，仍可先谈已知项 | B10 |
+| Standing daily report（启用时） | 配置的report cutoff后；不阻断夜间Focus | B8 → B9 → B10 |
 | Requirement/Board reconcile | 人回复或standing policy允许 | B3 + B4 |
 | Active Focus 0–2 | 对齐/接受后，可当晚立即执行；不自动补位 | B4 |
 | Session Prep | Focus成立后 | A1 |
@@ -159,3 +160,40 @@ B2 reader应逐步从IM span扩展到Doc/Wiki、Meeting/Miaoji和Web fixed revis
 错过多个周期按来源游标与实际效果有界catch-up；状态播报不追发每个错过整点，关注文档不重建全部镜像，工作不重派已经存在的Task。连续失败显示哪个接缝落后及恢复方式，不用“routine执行成功”冒充全业务完成。
 
 验收：一晚完成后次日Focus为0；无人对齐不冻结原已授权工作；一次child结果只被接受一次；重启后补缺阶段而不重复外部效果；没有真后台执行就不显示运行中。自动补位/自动park、额外成本或新资料外发必须另有接受策略。
+
+## 17. 默认自主推进与打断预算
+
+OpenAI 2026-09-11 的 Astra 指导在本Profile里的落地原则是：description短而可区分、只读任务真正需要的资料、不要把Skill写成固定行程、明确完成边界并允许Agent在安全范围内持续做到完成。它们是G1.4的authoring/eval约束，不是新增runtime阶段。
+
+### 17.1 从请求到完成的默认行为
+
+```text
+用户表达目标/动作
+→ Native Agent先做可逆/read-only调查
+→ 解析当前Requirement/Focus（仅当真的存在或写入需要）
+→ 只加载相关Skill/refs/tools
+→ 在已接受scope和effects内持续推进
+→ 相关局部验证
+→ required文档/交付/readback
+→ Outcome 或精确 blocker/checkpoint
+```
+
+不允许把“我可以做”“我已经列计划”“第一版代码写完”“子Task DONE”“测试命令exit 0”作为默认停点。普通read/grep/计算/临时实验不因producer一词强制创建Item/Run；只有需要长期责任、独立worker、重要成本、代码/环境写入、真实E2E、外部effect或跨Session恢复时才进入相应durable控制。
+
+### 17.2 一个真正的人类停点应满足什么
+
+人工停点应至少命中一种：目标/acceptance有会改变结果的歧义；新增或扩大external/shared/production effect；敏感数据/新受众/费用范围变化；共享WIP/唯一writer冲突；需要用户持有的认证/身份；不可安全自动解决的semantic conflict；当前明确的真实产品验收unexpected FAIL停点。停点只冻结相关scope，其余可独立工作继续。
+
+“Skill要求先确认”“参考文档说按五步做”“某Provider未绑定”“当前没有Run ID”“还没读完整架构”本身都不是停人的理由。
+
+### 17.3 上下文和测试预算
+
+首次选择能力只暴露能区分相邻意图的name/description；选中后只读当前路由。复杂Skill不得因被选中就全读所有reference。项目级AGENTS/CLAUDE只给全局不变量和条件locator，不把架构/数据库/部署/测试手册设成每次编辑前置。
+
+低风险小改运行受影响的最小验证并修本次改动造成的失败；没有风险/变化证据不机械扩大到全库测试或独立review。真实Completion Boundary要求E2E/客户端/安装时再展开A7/A8。测试失败如果只是实施阶段局部问题继续修；独立真实产品验收unexpected FAIL仍遵守当前停止自动产品修改的policy。
+
+### 17.4 连续工作不能依赖用户反复说“继续”
+
+Focus一旦被接受，Parent在真实continuation receiver存在时由child result、依赖满足或允许时间窗口唤醒；恢复前对账baseline、writer、effect和旧attempt。没有receiver时准确显示“checkpoint已保存，待续”，不能伪造后台运行。UI/Session断开不改变Work Item owner；新的native Session从最小checkpoint恢复，不全量重播聊天。
+
+验收一个普通本地Work Item时记录`human_interrupt_count`及每次原因作为体验指标即可，不建立新的控制字段。目标不是绝对0次，而是每次打断都对应真实不可替代的人类决策。
