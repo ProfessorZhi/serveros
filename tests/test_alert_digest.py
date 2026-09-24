@@ -514,6 +514,44 @@ class WhenItIsWorthAMessage(Fixture):
         self.assertFalse(verdict["send"])
         self.assertIn("may occupy a line", verdict["why"])
 
+    def test_the_face_is_read_once_and_not_once_per_row(self):
+        """The rule whose breach cost this node its control plane for 25 s.
+
+        Measured 2026-09-24, hours after the two-axis gate went in: the first
+        revision of `may_interrupt` asked `presentation.attention_of` once per
+        row, and each of those calls re-read and re-parsed a 46 KB contract —
+        53.8 ms a row. The real register had 459 such rows, so `alert.digest`
+        took 24.7 s while its client waits 5.0 s. The gate answered correctly
+        and nobody could hear it: the command that should have returned
+        "nothing to report" returned a timeout.
+
+        COUNTED, NOT TIMED. A duration is a property of this machine and of
+        whatever else is running on it; the rule is that the table belongs to
+        the contract and not to the row, and a count states exactly that.
+        `may_interrupt` with no table builds one, so a caller that reverts to
+        the per-row call makes this read twelve times instead of once.
+        """
+        self.baseline()
+        for i in range(12):
+            subject = f"/proc/{i}"
+            self.put(alert(ref_of(CPU_CODE, subject), code=CPU_CODE,
+                           severity="high", subject=subject,
+                           first_seen=LATER(60 + i)))
+        reads = []
+        real = digest.face_table
+        digest.face_table = lambda: (reads.append(1), real())[1]
+        try:
+            verdict = digest.decision(self.compose(at=LATER(120)), self.cursor,
+                                      at=LATER(120))
+        finally:
+            digest.face_table = real
+        self.assertFalse(verdict["send"])
+        self.assertIn("may occupy a line", verdict["why"])
+        self.assertEqual(
+            len(reads), 1,
+            "the face was read %d times for 12 rows; it is a property of the "
+            "contract, so it is read once and handed to the rows" % len(reads))
+
     def test_a_recovery_rides_along_in_a_card_it_did_not_create(self):
         """§26. A RECOVERED is not suppressed — it appears in a card that
         exists for another reason. What it may never be is the reason."""

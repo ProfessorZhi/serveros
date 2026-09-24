@@ -113,7 +113,23 @@ short_description: Agent Engineering Workbench for a Linux work node
 # touched here, per the paragraph above: every member this change touches is
 # inherited from `plugin/bundle.yaml`, no core artifact is released from this
 # node, and none is installed on it.
-cachebuster: srv0003.20260924b
+#
+# Moved to `24c` on 2026-09-24, hours after `24b`, by the same rule: the payload
+# changed again, in `runtime/alert_digest.py`, and this is the half `24b` did not
+# finish. `24b` closed both doors with a per-row call to `presentation`, and that
+# call re-read and re-parsed a 46 KB contract every time — 53.8 ms a row.
+# Measured against this node's own register: 459 rows at high/medium came to
+# 24.7 s inside `alert.digest`, whose client waits 5.0 s, so the command that was
+# supposed to answer "nothing to report" answered with a timeout. The gate was
+# right and the node had stopped being answerable, which is not a quieter card
+# but a broken one: `tokyo-alert-digest` runs `serverosctl alert digest` through
+# `alert_digest_card.py`, and a command that times out there is a card that
+# never arrives at all. `face_table()` is the repair — the answer belongs to the
+# contract and not to the row, so it is read once and handed down, and the same
+# decision now costs 88 ms. `24b` is the label that names the revision which was
+# promoted and which timed out; leaving it in place would hand an installed
+# cache a version string that already names it.
+cachebuster: srv0003.20260924c
 
 skills:
   - name: runtime-management
