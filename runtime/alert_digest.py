@@ -224,7 +224,7 @@ def proactive_severities(block: dict | None = None) -> tuple:
     return tuple(str(word) for word in declared)
 
 
-def may_interrupt(row: dict) -> bool:
+def may_interrupt(row: dict, *, table: dict | None = None) -> bool:
     """Whether this row may occupy a LINE on the card — and so cause one.
 
     The contract keeps two axes and says they are read TOGETHER, neither
@@ -249,20 +249,59 @@ def may_interrupt(row: dict) -> bool:
 
     `criticality` is not consulted, and does not need to be. `escalation` moves
     REVIEW to ACTION_REQUIRED and BOTH are on the face, so the answer is
-    invariant under it — which is what lets this be asked per row on every tick
-    without reaching the registry. `test_attention` holds that invariant, so a
-    contract whose `escalation.to` named a level OFF the face fails there
-    rather than going quiet here.
+    invariant under it — which is what lets the answer be a TABLE read once
+    rather than a decision re-made per row. `test_attention` holds that
+    invariant, so a contract whose `escalation.to` named a level OFF the face
+    fails there rather than going quiet here.
 
     An UNDECIDED code answers False, and that is not a quieting: the code is
     counted in `presentation.alert_model`'s own `undecided` bucket, which is
     reported as the hole in the declaration that it is. A finding the renderer
     cannot print is not one that may cause a card — a card caused by it would
     be the same empty card this function exists to stop.
+
+    A caller that HAS ROWS IN HAND MUST PASS `face_table()`, and `decision`
+    does. The default here builds one table for one row, because a predicate
+    that cannot be called with one argument is a worse predicate; but building
+    it inside a loop is the defect `face_table` documents, and it is measured
+    there rather than argued.
+    """
+    table = face_table() if table is None else table
+    return bool(table.get(str(row.get("code") or "")))
+
+
+def face_table() -> dict:
+    """`{code: may it occupy a line}`, read from the contract ONCE per caller.
+
+    The answer is a property of the CONTRACT and of no row. `attention` decides
+    which codes may be printed; `severity`, which the rows carry, is the other
+    axis and not this one. So the table is built once and applied per row —
+    the same rule `alerting.listing` had to learn in the same way, in its own
+    words: "Read once, not once per row."
+
+    What breaking that rule costs is not a rounding error. Measured on this node
+    2026-09-24: the first revision of `may_interrupt` asked
+    `presentation.attention_of` once per row, and `presentation._contract()`
+    re-reads and re-parses a 46 KB YAML document on every call — 53.8 ms for one
+    row. Against the real register that came to 459 rows x 53.8 ms = 24.7 s
+    inside `alert.digest`, whose client waits 5.0 s. The gate answered correctly
+    and the node stopped being answerable: `serverosctl alert digest` timed out,
+    so the card that was correctly suppressed arrived as a FAILED command
+    instead of a quiet one. A fix that makes the daemon unreachable is not a fix.
+
+    The levels come from `presentation.code_expectations()`, which is
+    `presentation`'s OWN flattening of the three buckets and not a second
+    reading of `alerts.attention.codes` by this module — the contract says NO
+    OTHER FILE MAY ASSIGN AN ATTENTION LEVEL, and a table written out here would
+    be exactly that. An UNDECIDED code is absent from it and answers False,
+    which is what `attention_of` answers for it too: `level=None` is not on the
+    face, and the code is reported as a hole by `alert_model`'s own `undecided`
+    bucket rather than quietly levelled here.
     """
     presentation = _presentation()
-    level = (presentation.attention_of(row.get("code")) or {}).get("level")
-    return bool(presentation.on_the_face(level))
+    face = tuple(presentation.attention_policy().get("on_the_face") or ())
+    return {str(code): str(entry.get("level") or "") in face
+            for code, entry in presentation.code_expectations().items()}
 
 
 def severity_ranks() -> dict:
@@ -861,8 +900,10 @@ def decision(digest: dict, cursor: DeliveryCursor, *, at: str,
     # `HIGH_MEMORY_SUSTAINED` opens, is `immediate`, and preempts the hour — for
     # a row that can never reach the face. An immediate finding that cannot be
     # printed on a card must not preempt the interval either.
+    # ONE table for the whole decision, not one per row. See `face_table`.
+    face = face_table()
     urgent = [row for row in digest["shown"]
-              if row["immediate"] and may_interrupt(row)]
+              if row["immediate"] and may_interrupt(row, table=face)]
 
     since_digest = None
     if cursor.last_digest_at():
@@ -927,7 +968,7 @@ def decision(digest: dict, cursor: DeliveryCursor, *, at: str,
     # printing is a reason to send a card announcing that there is nothing to
     # report, so the face test decides, and the two doors above and here are the
     # same door.
-    worthy = [row for row in proactive if may_interrupt(row)]
+    worthy = [row for row in proactive if may_interrupt(row, table=face)]
     if not worthy:
         out["why"] = (f"{len(proactive)} finding(s) at {'/'.join(floor)}, and "
                       f"none of them may occupy a line on the card — a card "

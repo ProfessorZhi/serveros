@@ -259,12 +259,12 @@ class EscalationNeedsADeclarationTests(unittest.TestCase):
     def test_escalation_cannot_change_whether_a_row_may_be_printed(self):
         """The delivery gate does not pass `criticality`, and does not need to.
 
-        `alert_digest.may_interrupt` is asked once per row on every tick, and
-        reaching the registry for a criticality it would not use is a lookup per
-        row for nothing. That is only sound while BOTH ends of `escalation` are
-        on the face, so the contract is checked against itself rather than
-        trusted: a `to:` naming a level off the face would make the gate quietly
-        wrong in a direction nothing else here would see.
+        `alert_digest.face_table` is built from `attention_of(code)` alone, with
+        no criticality, and every row is then answered from that one table. That
+        is only sound while BOTH ends of `escalation` are on the face, so the
+        contract is checked against itself rather than trusted: a `to:` naming a
+        level off the face would make the gate quietly wrong in a direction
+        nothing else here would see.
         """
         for code in presentation.code_expectations():
             with self.subTest(code=code):
