@@ -32,24 +32,30 @@ recall firewall used to be the third and moved into the list in v1.2, when
 §18 gave it a module. Reading a rule in this document does not mean a program
 checks it; reading it in the list above does.
 
-## Three layers, one authority
+## Three memory layers, authority stays with the owning system
 
 ```text
 Layer A   Local runtime state       state/serveros/              this node, right now
-Layer B   Reviewable record plane   records / source / evidence  current business authority
+Layer B   Durable reference plane   source / records / evidence  reviewable authoritative inputs
 Layer C   Derived long-term memory  OpenViking + retrieval       persistent, non-authoritative
 ```
 
-**Layer B remains the authority for current business meaning.** Layer C may persist
-session-derived preferences, episodes and experience so agents can remember across sessions
-and devices, but a retrieval hit cannot change the current owner, deadline, Requirement,
-permission or deployed truth by itself.
+Memory Fabric does **not** create one product-wide authority. Source objects own source
+content/revisions; B2 owns current Claims/Views; B3 owns accepted Requirement semantics;
+Work Engine owns current work/control relationships; Agent Control owns trusted delegation;
+providers own their external bodies. Layer B means the durable source/record/evidence plane
+that memory can cite and recover from, not a universal database that replaces those owners.
+
+Layer C may persist session-derived preferences, episodes and experience so agents can
+remember across sessions and devices, but a retrieval hit cannot change the current owner,
+deadline, Requirement, permission, work state or deployed truth by itself.
 
 ```text
 Layer A  is machine-local, high-frequency, and disposable.
          Losing it costs a re-probe, never a business decision.
 Layer B  is versioned/reviewable and carries current semantic records and evidence.
-         A new device can recover authoritative work from this plane.
+         A new device can recover those durable references; live Work Engine/Agent Control
+         state is resolved from its own authority rather than reconstructed from Git.
 Layer C  is durable derived memory and an index over Layer B / Session history.
          Losing it harms recall and learned convenience, so it is backed up; work must still
          continue safely from Layer B, checkpoints and source evidence.

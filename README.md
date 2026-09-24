@@ -7,20 +7,33 @@
 ## The daily experience
 
 ```text
-Yesterday's authorized Feishu information and real work
-  -> ServerOS prepares understanding changes
-  -> discuss and correct them with Coordinator in CloudCLI
-  -> one personal Board: focus / unfinished / completed
-  -> select today's meaningful requirements
-  -> CC assembles sources and uncovers missing intent
-  -> GPT and the user participate in research and design
-  -> CC / native subagents / Quay execute, experiment and verify
-  -> readable Item results and evidence-rich E2E reports
-  -> professional daily / weekly / special reports
+During the day
+├─ Feishu IM / Doc / Wiki / Minutes / files / Follow arrive incrementally
+├─ routine facts update Understanding / Memory without a meeting
+├─ already-selected Focus work keeps moving under its logical Parent
+├─ workspace/runtime/research/Quay/tests are prepared only when needed
+└─ owned/followed/authorized shared documents are maintained in place
+
+19:xx
+└─ source catch-up + understanding reconciliation; missing material remains an explicit gap
+
+20:00
+└─ CloudCLI shows only what deserves attention:
+   automatic updates / decisions needed / conflicts / understanding gaps
+
+After the user accepts or adjusts 0–2 Focus items
+└─ authorized work may continue that evening without repeated "continue" prompts
+
+Next day or a fresh Session
+└─ resume from the current Requirement / checkpoint / worker / effect state
+   without retelling history, duplicating child work or replaying unknown effects
 ```
 
-This is a common experience, not a fixed workflow. Research may start with experiments;
-tests may send work back to design; a useful deliverable need not be code.
+This is not a mandatory workflow. A day may have no new Requirement, no Quay task and no
+report, and Focus may be zero. Research may start with experiments; tests may disprove the
+plan; the useful deliverable may be verification or prose. ServerOS should automate HOW and
+interrupt only for goals, material tradeoffs, protected effects or genuinely irreplaceable
+human input.
 
 Open a fresh Session, mention the work, and recover the **right environment,
 context, memory, capability and safety boundary** without rereading the whole world.
@@ -66,6 +79,20 @@ Runtime      observe -> health/impact/owner -> bounded recovery -> Status/Incide
 ```
 
 Memory, authority and evidence cross all five loops. Failure of one optional provider degrades only the work that depends on it; it does not create one global ServerOS `NOT_READY`.
+
+## What ServerOS organizes automatically
+
+| Object | Default automation | It does not silently do |
+|---|---|---|
+| Workspace / paths | place new outputs in the resolved worktree/artifact/test root when the canonical parent is clear; run low-frequency hygiene | move historical repos, other actors' worktrees, unique evidence or unknown roots just to make a map clean |
+| Feishu IM / files | capture new messages, edits, forwards and required attachments incrementally; preserve partial gaps and fill them later | turn every message into a Requirement, download every media item or export private material by default |
+| Followed Docs / Wiki / Web | track stable source identity/revision; reread only changed scope and update understanding/mirror | expand one Follow into a whole space or turn a bookmark into permanent full-content subscription |
+| Meetings / Minutes / recordings | keep one MeetingBundle; process late transcripts/material automatically and refresh only affected understanding | require MP3+transcript+minutes for every meeting, trust background/support audio as business intent, or create MyDocs notes for every call |
+| Owned guides / mirrors | use standing stewardship to patch allowed sections from source revisions, preserve human edits and read back | whole-body overwrite, silently change audience/ACL/owner or turn external source text into internal policy |
+| Daily / weekly reports | standing routine can compose from accepted Outcomes/evidence and maintain one logical report | rerun E2E for prose, count Tasks as成果, or stop night work because a report was sent |
+| Runtime status | patch the workday Daily Status Card and track real incidents by episode | report green merely because no human action is needed, or promote every diagnostic finding to an incident |
+
+The product rule is: **automate unambiguous placement and maintenance; treat historical or destructive restructuring as a separate effect.** ServerOS should do the locating, diffing, scoped patching, readback, indexing and continuation so the user is not the daily file operator.
 
 ## Small core, broad capability
 

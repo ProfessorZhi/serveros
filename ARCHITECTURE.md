@@ -121,10 +121,11 @@ states may remain, provided they do not enforce that method sequence.
 ### 1.3 Small fast path
 
 ServerOS-added startup context is bounded independently from context the native
-runtime loads itself. Initial engineering budgets are roughly 500 tokens for L0
-and 2,000 for an ordinary capsule, configurable by runtime/task. These are design
-budgets, not measured current performance claims; essential constraints are never
-silently truncated to meet a number.
+runtime loads itself. **No product-wide token constant is architecture.** Each Terminal
+Profile sets and periodically re-validates a small startup/capsule budget against the
+actual model/runtime, selection accuracy, compaction pressure and task outcomes. Essential
+constraints are never silently truncated merely to hit a budget, and a newer model may
+justify removing old instructions rather than increasing the allowance.
 
 Warm context resolution uses local indexes/checkpoints first. It must not require
 a full filesystem scan, remote catalogue fetch, extra LLM routing round, memory
@@ -142,12 +143,20 @@ A useful default may be overridden inside the approved boundary. Safety cannot.
 No new service, schema, report, review pass or Skill exists merely to fill a box.
 
 Automation must remove manual material transfer, repeated tool selection and unnecessary
-"continue" prompts. First specify the user-visible normal, empty, unknown, failure and
-recovery behavior, then choose the smallest implementation. A product distinction does
-not require a new durable entity. Realization rationale belongs in existing designs;
-completion belongs in the Requirement/brief; continuation belongs in existing work and
-checkpoint records; exposure belongs in existing profiles and disclosure guidance.
-The 21 Abilities are a responsibility map, not 21 stages or 21 Agents per task.
+"continue" prompts. If the user's request already implies an action and the current
+goal/effect/data/budget scope authorizes it, the default is to carry that action through
+the agreed Completion Boundary: inspect, implement, fix in-scope local failures, run the
+affected low-risk verification, update explicitly required owned documentation and report
+the actual result. "I can do this", a plan, a first implementation, a child DONE or one
+green command is not a default stopping point.
+
+First specify the user-visible normal, empty, unknown, failure and recovery behavior, then
+choose the smallest implementation. A product distinction does not require a new durable
+entity. Realization rationale belongs in existing designs; completion belongs in the
+Requirement/brief; continuation belongs in existing work and checkpoint records; exposure
+belongs in existing profiles and disclosure guidance. The 21 Abilities are a responsibility
+map, not 21 stages or 21 Agents per task. One real human boundary freezes only the affected
+scope; independent already-authorized work continues.
 
 These four principles are the product-level statement. The existing
 [Ability Design Standard](https://github.com/ProfessorZhi/ability-management/blob/main/design/ABILITY-DESIGN-STANDARD.md)
@@ -1645,6 +1654,7 @@ canonical owners when a detailed question needs more than this file:
 | G1/A1–A10/B1–B10 responsibility tree and realization mapping | ability-management PRODUCT-ABILITY-TREE.md |
 | Skill/MCP/Plugin/Provider authoring and progressive disclosure | ability-management ABILITY-AUTHORING-STANDARD.md + PROGRESSIVE-DISCLOSURE-CONTRACT.md |
 | Daily Coordinator, routine timing and finite scheduler ownership | docs/daily-work-cycle.md + docs/ABILITY-OPERATING-MODEL.md |
+| End-to-end automation, human-interrupt budget and friction regression | ability-management PRODUCT-EXPERIENCE-CONTRACT.md + docs/SCENARIO-ACCEPTANCE.md |
 | Requirement → canonical Work Item → Focus → Outcome/continuation | ability-management REQUIREMENTS-WORKITEM-DELIVERY-ARCHITECTURE.md |
 | Feishu IM/Doc/Wiki/Meeting/Drive and three-surface document continuity | ability-management FEISHU-INFORMATION-SYNC-ARCHITECTURE.md |
 | Structured Understanding, Memory and Daily Reconciliation | docs/UNDERSTANDING-MEMORY-RECONCILIATION.md + ability-management canonical contract |
