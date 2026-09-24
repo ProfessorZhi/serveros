@@ -141,3 +141,11 @@ old prose
 - 人确认“只是某人的观点”不会改项目正式优先级；
 - Current View变短后，历史证据仍可追；
 - B3/B4/B9只消费eligible/accepted semantic changes。
+
+## 2026-09-24 差量消费与不强制对话
+
+Reader扩IM、Doc/Wiki、Meeting、Web的固定版本包，继续复用现有semantic writer/receipt/claim recall；不因为多来源新建writer或understandingd。机器出处合法只证明引用位置正确，语义是否支持断言还需实际阅读和反例验收。
+
+Current View只保people/projects/topics/responsibilities；长期历史留source/receipt。普通事实和支持推论按委托agent_reconciled；业务决定通过真实接受。每日首层为自动更新/需要决定/冲突/理解缺口，实际没变化可空，用户不必每天完成三步wizard。
+
+Claim已提交而View、Memory或Board未更新时分别补对应consumer；当前Recall资格先本地纠正，不等远端provider恢复。任何新材料不自动成为Requirement，任何自己写的日报不变成独立支持证据。已授权Focus可继续，未回复不被当作接受新承诺。

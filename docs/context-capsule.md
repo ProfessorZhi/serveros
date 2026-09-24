@@ -93,3 +93,25 @@ revisions while resolving different local paths.
 
 These are focused integration scenarios, not a requirement to rerun all runtime
 suites for an ordinary capsule or document edit.
+
+## Continuation responsibility and capability exposure
+
+Daily Coordinator and Work Item Parent are separate logical roles. A Parent checkpoint
+contains the accepted Requirement revision, required/remaining results, accepted evidence
+locators, actual child attempts and unresolved effects, write scope and the next safe action.
+This is recoverable work state, not a transcript summary or a new database.
+
+Resolve relevant G1/Ability metadata after intent; load only selected Skill/route details.
+A native tool can be used directly when already sufficient. Shortlisting does not deny
+access to another eligible capability; Registry lookup remains available when the initial
+surface misses a real need. Do not probe every Provider before an ordinary local task.
+
+An invalidated fact or permission must be rejected at its authoritative read/effect boundary.
+Do not assume every terminal supports hot attachment or deletion of previously loaded text.
+Where necessary, mark supersession, stop re-injecting stale content and use supported
+compaction or a fresh native Session. Preserve the Work Item identity and safe checkpoint.
+
+Tests include a completed child received after Parent replacement, no duplicate dispatch
+after UI reconnect, a revoked source not revived by old transcript, and a trivial read that
+uses no fabricated Requirement/Run. If no real continuation trigger is installed, the user
+sees “saved, awaiting continuation”, not an unobserved background promise.

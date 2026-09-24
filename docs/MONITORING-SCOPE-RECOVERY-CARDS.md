@@ -32,7 +32,7 @@ On-demand/disposable container 只有同时满足 owner 是当前 principal、�
 
 ## 5. STANDING_INFRASTRUCTURE
 
-个人实例长期依赖的基础设施目标包括 ServerOS Core、当前 principal 的 Tailscale userspace transport、CloudCLI / Remote Desktop / BotMux 等登记后的 standing access path、Shared Laya、Shared LiteLLM Gateway，以及其它正式声明的 standing dependency。
+个人实例长期依赖的基础设施目标包括 ServerOS Core、实际Binding声明的Tailscale transport（userspace或受管tailscaled，不凭名称假定部署形态）、CloudCLI / Remote Desktop / BotMux 等登记后的 standing access path、Shared Laya、Shared LiteLLM Gateway，以及其它正式声明的 standing dependency。
 
 具体对象由 Registry + Binding + dependency resolver 解析，不由 renderer 硬编码名字。
 
@@ -50,7 +50,7 @@ OTHER_PRINCIPAL 的具体 PID、Session、容器、Work Item 不进入个人卡�
 
 ServerOS 产品拥有 recovery policy，但 resident serverosd 不是第二个 systemd。
 
-R0 Native supervisor recovery：进程异常退出优先由原生 supervisor 恢复。当前实测 Tailscale user unit 为 Restart=always；Laya Shared 为 Restart=on-failure 且启动必须通过 readiness；serverosd 为 Restart=on-failure；容器遵循自身 Docker restart policy / registered lifecycle。R0 成功后不创建 Incident，Daily Status 的“今日自动恢复”记一次即可。
+R0 Native supervisor recovery：进程异常退出优先由原生 supervisor 恢复。当前实测 Tailscale user unit 为 Restart=always；Laya Shared 为 Restart=on-failure 且启动必须通过 readiness；serverosd 为 Restart=on-failure；容器遵循自身 Docker restart policy / registered lifecycle。普通短暂退出且成功恢复不为每次restart新建Incident，Daily Status按真实周期记录恢复；若期间发生了有实际影响的事故，不因R0最终成功抹掉其episode/影响。
 
 R1 Bounded functional recovery：进程仍活着但 functional probe 持续失败时，只有明确注册且授权的资源才能生成有限 recovery intent。流程是 fresh failure → verify ownership/desired state/no conflicting maintenance → confirm native supervisor did not already recover → finite restart/reconnect worker → re-probe → recovery receipt。
 
@@ -82,7 +82,7 @@ WORKDAY = 普通周一至周五 + 国务院明确的调休上班周六/周日；
 
 ## 11. Broadcast Status Card：一天一张，最新完整，前序折叠
 
-每个 WORKDAY 第一轮 08:00 采样创建一张 Daily Status Card；同一天 09:00–20:00 只 PATCH 这张卡。
+每个WORKDAY在首个允许的播报时点创建一张Daily Status Card；08:00错过可在后续工作窗口创建，之后整点只PATCH。不追发已错过的所有小时。
 
 卡面默认：Tokyo · 今日状态 / 最后更新时间；最新状态完整展开（我的资源、整机、基础设施、我的工作环境、当前问题/今日自动恢复）；今日历史默认折叠，里面按小时保存 compact row。
 
@@ -118,8 +118,18 @@ Work Item：lost Parent continuation、lease/write 冲突、external effect unkn
 
 ## 14. 当前实现差距
 
-Tailscale/Laya/Shared Gateway 尚未完整统一到 first-class monitored-set projection；current registry 多数 reconcile mode 仍为 observe；functional recovery worker/receipt 尚需实现；CloudCLI/remote access standing endpoint 需要真实 Binding；Daily Status latest+collapsible history 尚未接 sender；CN BusinessCalendar importer/provider 尚未接 scheduler；当前 presentation 仍有旧 session/process hygiene 噪声。
+本段是实施核验清单，不声称2026-09-24此刻的installed/runtime状态。需分别验证monitored set真实Binding、R0 supervisor策略、R1授权/reconcile mode/worker/receipt、CloudCLI入口、工作日日历、daily卡更新消费者、Incident去重及空通知抑制。
+
+早期“observe为主”“未接sender”是当时观察，实施前读最新Registry、package、running与消息回执；已实现机制优先复用。只修改设计不能启用自愈、扩大监控或代替真实客户端验收。
 
 ## 15. 验收
 
 必须证明：当前用户卡不出现其它 principal 的具体 WIP；无 CPU/RAM 硬 quota 时不显示伪配额；own idle container 安全时 maintenance/安静存在；Tailscale/Laya/serverosd crash 被 native supervisor 拉起后只记 recovery history；functional recovery 只有获准资源有限执行；普通工作日只在 08:00–20:00 更新 Status；普通周末/法定休息日不生成 routine Status；国务院调休上班的周六/周日照常 Broadcast；同一工作日最多13次更新仍只有一张 Status Card；latest 完整可见、旧小时播报可折叠回看；P1夜间/节假日仍能到达，P2在quiet hours延迟而不丢；Incident详情不复制进Status；一个 Incident episode 不因采样或跨天重复 NEW。
+
+## 16. 状态真相与是否打扰的独立验收
+
+每日卡从当前资源/服务/依赖与关键coverage得出状态，不从“可发送告警条数”为0推导healthy。无须人处理的已知异常仍可见；diagnostic-only且无违反期望的迹象不能自动成为active anomaly。年久未清理不让未恢复异常消失，年龄也不把正常后台进程变故障。
+
+新Incident发送前重新检查当前相关性、episode与窗口。不存在通知内容则不发送空绿色告警；已存在卡恢复则patch。P2窗口外发生且已恢复时保留历史，待发内容必须反映当前已恢复事实；是否额外恢复提醒沿已接受的receiver策略，不伪造未恢复事故。
+
+calendar未知不冒充Mon–Fri官方工作日；只有明确fallback才执行该fallback，缺省先保留观察与配置缺口，不静默新增routine群发。此时真实P1仍按24×7策略处理。自动恢复必须有实际执行者/回执，不把observe-only显示成“系统正在修复”。

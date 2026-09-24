@@ -1,8 +1,8 @@
 # ServerOS 当前文档入口
 
-2026-09-23整合。产品总边界仍为[ARCHITECTURE.md](../ARCHITECTURE.md)：原生Agent主脑、薄Plugin、唯一Core、Work Engine/Agent Control各自权威。本轮补外部参考、重点深归档与Git/飞书方向，并把最新并行实现纳入**一个**实施计划。
+2026-09-24需求/产品/架构收敛。产品总边界仍为[ARCHITECTURE.md](../ARCHITECTURE.md)：原生Agent主脑、薄Plugin、唯一Core、Work Engine/Agent Control各自权威。本轮补外部参考、重点深归档与Git/飞书方向，并把最新并行实现纳入**一个**实施计划。
 
-## 先看三份
+## 按当前问题选择入口
 
 1. [CC-EXECUTION-PLAN](CC-EXECUTION-PLAN.md)：唯一P0–P12，当前源码/历史回执分开。提交前已读新增semantic writer、水位、Nature资料与发布排除；不重造已实现机制。
 2. [INFORMATION-DOCUMENT-LIFECYCLE](INFORMATION-DOCUMENT-LIFECYCLE.md)：Source/材料/Reference/理解/工作/交付的统一对象与权威图。
@@ -18,9 +18,11 @@
 | [重点深归档](DEEP-ARCHIVE-POLICY.md) | confirmed source、历史范围、转发包内部有界遍历、多材料与discovery分母 |
 | [Source/Document合同](https://github.com/ProfessorZhi/ability-management/blob/main/design/SOURCE-DOCUMENT-CONTRACT.md) | desired/observed、身份、版本、权限、正文authority、单向投影 |
 | [B1输入](https://github.com/ProfessorZhi/ability-management/blob/main/design/INFORMATION-INTAKE-ABILITY.md) | native/现有采集、Web质量、限定doc/Wiki与部分范围 |
-| [B2理解](https://github.com/ProfessorZhi/ability-management/blob/main/design/STRUCTURED-UNDERSTANDING-ABILITY.md) | 原生reading、现有writer、真实委托与接受、view/记忆传播 |\n| [理解、Memory与每日对账](UNDERSTANDING-MEMORY-RECONCILIATION.md) | Atomic Claim + Current View、多源Reading Packet、current-first Memory、MyDocs每日对齐与人类决策面 |
+| [B2理解](https://github.com/ProfessorZhi/ability-management/blob/main/design/STRUCTURED-UNDERSTANDING-ABILITY.md) | 原生reading、现有writer、真实委托与接受、view/记忆传播 |
+| [理解、Memory与每日对账](UNDERSTANDING-MEMORY-RECONCILIATION.md) | Atomic Claim + Current View、多源Reading Packet、current-first Memory、MyDocs每日对齐与人类决策面 |
 | [B9维护](https://github.com/ProfessorZhi/ability-management/blob/main/design/DOCUMENT-STEWARDSHIP-ABILITY.md) | Reference/自管指南/共同章节/SOP，正文与批注分责 |
-| [飞书三端与最终目录](https://github.com/ProfessorZhi/ability-management/blob/main/design/FEISHU-INFORMATION-SYNC-ARCHITECTURE.md) | 当前live MyDocs/个人笔记/公开文档/外部文档/Drive；三类文档关系、MeetingBundle、Records目录与Feishu-local-GitHub连续性 |\n| [飞书空间](https://github.com/ProfessorZhi/ability-management/blob/main/design/FEISHU-SPACE-MANAGEMENT-ABILITY.md) | 位置/对象/ACL；外部文档已存在但Source Library尚未初始化，不再默认MyDocs参考资料 |
+| [飞书三端与最终目录](https://github.com/ProfessorZhi/ability-management/blob/main/design/FEISHU-INFORMATION-SYNC-ARCHITECTURE.md) | 当前live MyDocs/个人笔记/公开文档/外部文档/Drive；三类文档关系、MeetingBundle、Records目录与Feishu-local-GitHub连续性 |
+| [飞书空间](https://github.com/ProfessorZhi/ability-management/blob/main/design/FEISHU-SPACE-MANAGEMENT-ABILITY.md) | 位置/对象/ACL；外部文档的历史观察与当前初始化/同步分开，不再默认MyDocs参考资料 |
 
 ## 协作与运行
 
@@ -33,7 +35,8 @@
 | [协作实现索引](COLLABORATION-IMPLEMENTATION.md) | 合同到主计划映射，明确新writer/水位已存在而业务消费还须验证 |
 | [21项场景](https://github.com/ProfessorZhi/ability-management/blob/main/design/ABILITY-SCENARIO-CONTRACTS.md) | 专属工作/交接；旧源码观察要按当前revision复核 |
 | [产品体验](https://github.com/ProfessorZhi/ability-management/blob/main/design/PRODUCT-EXPERIENCE-CONTRACT.md) | 首层结果、空/未知/partial/等待与真实验收 |
-| [Progressive Disclosure](https://github.com/ProfessorZhi/ability-management/blob/main/design/PROGRESSIVE-DISCLOSURE-CONTRACT.md) | 完整Ability树不整棵入prompt；description短而准、Skill根做router、references/scripts/MCP按需展开 |\n| [Ability Card & Registry](https://github.com/ProfessorZhi/ability-management/blob/main/design/ABILITY-CARD-REGISTRY-CONTRACT.md) | Product Ability/Artifact术语、Card、适用范围、来源/license、Content Digest、Author/Device分离、runtime projection |
+| [Progressive Disclosure](https://github.com/ProfessorZhi/ability-management/blob/main/design/PROGRESSIVE-DISCLOSURE-CONTRACT.md) | 完整Ability树不整棵入prompt；description短而准、Skill根做router、references/scripts/MCP按需展开 |
+| [Ability Card & Registry](https://github.com/ProfessorZhi/ability-management/blob/main/design/ABILITY-CARD-REGISTRY-CONTRACT.md) | Product Ability/Artifact术语、Card、适用范围、来源/license、Content Digest、Author/Device分离、runtime projection |
 
 ## 监控与共享Provider
 
@@ -47,9 +50,15 @@
 
 [此前反查](WORK-SCENARIO-REVIEW-20260923.md)、[旧实测](integration-readiness-20260922.md)、[历史收敛](architecture/CONSOLIDATION-REVIEW-20260921.md)和ledger保留日期/范围，不倒改成新实现的证明。新版源码推翻旧缺失判断时以主计划当前基线与实际测试为准，不把历史风险无限当待办。
 
-本次只改设计/计划/records说明，基于最新main保留并行代码/数据/测试。无payload、runtime、manifest、source文件、凭据、飞书对象、部署和授权的本轮修改；后续实现必须把新规则落实到真正入口和消费者，不靠文档改LIVE。
+本次只改设计/计划/索引与结构一致性检查，基于最新main保留并行代码/数据/测试。无payload、runtime、manifest、source文件、凭据、飞书对象、部署和授权的本轮修改；后续实现必须把新规则落实到真正入口和消费者，不靠文档改LIVE。
 
 
 ### Shared-node alert scoping
 
 Monitoring contracts explicitly separate current-principal objects, shared infrastructure and other users' WIP. Other-principal runtimes do not become the current user's cleanup alerts; known-owner lifecycle drift, Agent-session identity and one-card-per-day/episode rules are in [Monitoring Product Architecture](MONITORING-PRODUCT-ARCHITECTURE.md).
+
+## 本轮收敛与未决事项
+
+能力仓[全职责审计](https://github.com/ProfessorZhi/ability-management/blob/main/design/REQUIREMENTS-ARCHITECTURE-AUDIT-20260924.md)给出21职责、36个payload及其他Registry入口的源证据与最小迁移；[Authoring Standard](https://github.com/ProfessorZhi/ability-management/blob/main/design/ABILITY-AUTHORING-STANDARD.md)属于G1.4，不是普通任务必读的元平台。
+
+当前主线是已授权信息自动更新、已选Focus自动接续、按required结果交付、工作日daily状态与真实Incident分开。新表/服务/规则必须有真实consumer，不把每个产品概念都实现为对象。未决产品/权限选择在审计中单列；设计明确、源码存在、安装/运行和业务通过各自有证据。

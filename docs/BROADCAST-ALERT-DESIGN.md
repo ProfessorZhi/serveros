@@ -145,6 +145,8 @@ JSON合法只是格式；HTML preview只是设计预览。必须检查默认折�
 
 §7 的验收在 2026-09-24 落到了一次**同一 digest 的 SOURCE/INSTALLED 对照**（§15 的层次划分）：同一份 `alert digest`、同一个 `at`，只有解释它的模块不同。INSTALLED 出 `⚠️ 需确认 · 3 项`/orange 加三条「Claude 会话 … · 遗留进程组」；SOURCE 出 `✅ 没有需要处理的变化`/green、卡面 0 条、该码 4 条全部落进「其他 … 项低优先级」的计数（632 → 636，差集恰好是这 4 行）。读数与两层说明在 `artifacts/tmp-alert-card-scope/ACCEPTANCE.md`。这只证明 **SOURCE 层**：未安装、未重启，操作者下一张卡仍是旧样。
 
+**本轮产品复核**：上述对照保留为当时SOURCE/INSTALLED证据，只验证alert disposition变化，不证明全机健康或sender应该发送绿色空告警。当前c5d118c源码中这句话来自alert-card路径；先核message/payload和真实调用者，不能把该外观断言为Daily Status Card。后续验收须同时证明无可通知事故不新发、正常状态按自己的完整观测更新。
+
 5–10秒阅读验收：查看者不展开能指出最重要的问题或资源余量，知道影响/建议；不得用文件存在、测试数量或“首行可辨”替代。异常磁盘/关键服务不能折叠隐藏；保留source/revision与样例水印。
 
 只在独立测试接收端投递演示卡，示例在标题/正文标记，故障注入用隔离实例，不断开真实Tailscale/停止并行任务制造截图。本轮未做这些运行验收。
@@ -178,7 +180,7 @@ JSON合法只是格式；HTML preview只是设计预览。必须检查默认折�
 
 Feishu surface固定：
 
-- **Daily Status Card**：每设备/每profile每天一张；首次sample创建，后续hourly sample原位patch，次日新建。
+- **Daily Status Card**：每设备/每profile每个CN-Mainland工作日一张；工作窗口首次update创建，后续整点patch，下一工作日新建。
 - **Incident Card**：一个episode一张；持续/证据/恢复原位patch，跨天不重复新发。
 - **Diagnostic/Hygiene**：session/process历史、PID、code、seen count、积压数等主动查看。
 
@@ -193,4 +195,12 @@ Incident 标题必须指向真正 actionable subject。OS login session 只是 p
 
 已知 Work Item/Run → runtime 关系时，标题优先写业务 owner，例如“SRV-0011 / RUN-0001 · 测试 serverosd 仍在运行”。此类 known-owner lifecycle drift 先核 active lease、consumer、socket/write-scope 和资源影响；卡片本身不授权 kill。
 
-状态卡固定“一天一张、小时 patch”；incident 固定“一 episode 一张、状态 patch”。其它采样历史进 records。
+状态卡固定“每工作日一张、08:00–20:00整点patch”；incident 固定“一 episode 一张、状态 patch”。其它采样历史进 records。
+
+## 16. 每日状态与空事故通知的边界
+
+Daily Status Card与每日状态播报卡是一个对象，按工作日窗口更新；Incident Card独立跟踪episode。状态、健康/覆盖、人工动作与投递不是同一个判据。
+
+已知功能异常但无需人工：状态仍异常，显示系统/Agent/外部/观察责任；只有日志finding无违反期望：只进诊断，不机械黄灯。关键未知不能绿，已有故障不能被未知项覆盖。恢复是本周期变化，历史累计不冒充今天发生。
+
+无可提醒episode时sender不新发“没有需要处理的变化”；这不是删除告警证据，也不禁止正常routine播报。主动查询可以回答无待处理事项，但必须另说明已核健康范围。禁止用压掉finding或把全部finding升成异常两种相反补丁修同一问题。

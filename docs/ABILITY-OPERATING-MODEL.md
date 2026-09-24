@@ -1,6 +1,6 @@
 # Ability Operating Model · 定时节点、职责Owner与serverosd边界
 
-状态：2026-09-23 产品架构补充。本文把 ServerOS 的稳定 Ability 职责、Daily Cycle 的定时节点、Session/Workspace 等横向能力和唯一 Core 的边界放在一张图里。21个顶层语义职责不随 Skill / Plugin / MCP 重构改变；完整多层产品树见 ability-management [PRODUCT-ABILITY-TREE](https://github.com/ProfessorZhi/ability-management/blob/main/design/PRODUCT-ABILITY-TREE.md)。
+状态：2026-09-24 产品行为收敛。本文把 ServerOS 的稳定 Ability 职责、Daily Cycle 的定时节点、Session/Workspace 等横向能力和唯一 Core 的边界放在一张图里。21个顶层语义职责不随 Skill / Plugin / MCP 重构改变；完整多层产品树见 ability-management [PRODUCT-ABILITY-TREE](https://github.com/ProfessorZhi/ability-management/blob/main/design/PRODUCT-ABILITY-TREE.md)。
 
 ## 1. 一句话
 
@@ -33,10 +33,10 @@ Evening Reconciliation
 └─ B10 Human Reconciliation delivery
 ```
 
-同理，“选第二天工作并准备环境”是：
+同理，“选择本轮Focus并准备环境（可当晚执行）”是：
 
 ```text
-Next-day Focus Planning
+Current Focus Selection
 ├─ B3 Requirement reconcile
 ├─ B4 Board / Focus / Admission
 ├─ A1 Session prep
@@ -53,17 +53,17 @@ Profile/Recipe可以改变时间和组合，但不拥有上述职责的事实。
 | 节点 | 推荐触发 | Ability owner | 用户结果 |
 |---|---:|---|---|
 | Incremental Intake | 每30–60分钟 | A4触发 + B1 | 新消息/编辑/材料locator增量安全落地，不每次跑LLM |
-| Evening Cutoff | 20:00 local | A4 | 固定本轮cutoff/cycle_ref，不代表采集已完成 |
+| Evening Cutoff | 19:xx Asia/Shanghai实例时点 | A4 | 固定本轮cutoff/cycle_ref，不代表采集已完成 |
 | Archive Catch-up | cutoff后 | B1 | SHALLOW/DEEP/FOLLOW/REFERENCE追到cutoff；partial精确可见 |
 | Structured Understanding | B1 receipt后 | B2 + A2 | 新事实/冲突/撤回更新；旧Claim即时失效 |
-| Daily Reconciliation | B2 receipt后 | B10 | 只向人展示真正重要变化和待确认业务语义 |
+| Daily Reconciliation | 20:00提醒；资料不完整明示 | B10 | 差量对话，没有待决定项可短/空，不伪造已读完 |
 | Requirement/Board Reconcile | 人回复或策略允许继续后 | B3 + B4 | 去重需求、现有工作/候选/等待状态对齐 |
-| Next-day Focus | 建议约21:00或reconcile后 | B4 | 0–2个root focus，有来源理由，不凑数 |
+| Active Focus | 对齐/接受后 | B4 | 0–2个root focus，可当晚执行，完成后不自动补位 |
 | Session Prep | Focus成立后 | A1 | resume/create Parent Session、checkpoint与当前目标 |
 | Workspace Prep | Focus成立后 | A3 | repo/base/worktree/dirty-owner/写入范围安全就绪 |
 | Runtime Prep | Session/Workspace后 | A4 | 环境、资源、必要service、Binding ready |
 | Night Research/Execution | standing delegation允许时 | B5/B6/B7/A6/A7 | 安全研究/设计/review/实现/测试，可部分完成 |
-| Morning Resume | 建议08:30 local | A1+A3+A4+B4 | 检查source/base/runtime漂移，续昨天focus |
+| Optional Morning Catch-up | 实例需要时 | A1+A3+A4+B4 | 核已选Focus与source/base/runtime变化；不是次日才允许开始 |
 | Session Maintenance | 低频/夜间 | A1.3 | 只archive明确非活动且有checkpoint的Session |
 | Workspace Maintenance | 低频/夜间 | A3 | 只标RETIRE_CANDIDATE或清明确可再生物，不大扫除 |
 
@@ -89,7 +89,7 @@ Profile/Recipe可以改变时间和组合，但不拥有上述职责的事实。
 
 B10负责把B2的结果呈现给人并收回真实决定；B2负责语义事实，不拥有“用户已确认”的UI效果。
 
-## 5. Focus之后Session与Workspace必须显式出现
+## 5. Focus后的继续责任与按需准备
 
 ```text
 B4 Focus accepted
@@ -109,7 +109,7 @@ A1 Session       A3 Workspace
       B5/B6/B7/A6/A7...
 ```
 
-A1回答“谁在做什么/如何继续”，A3回答“在哪里安全写”，B4回答“是否被准入”，Agent Control回答“允许做什么”，A4回答“环境能不能做”。
+A1回答“谁在做什么/如何继续”，A3回答“在哪里安全写”，B4回答“是否被准入”，Agent Control回答“允许做什么”，A4回答“环境能不能做”。这些责任必须有着落，不要求所有任务依次调用所有Skill。已有Session/工作树/环境符合当前范围就复用；历史archive/restore只在实际需要时展开。
 
 ## 6. serverosd只做Node Core，不做业务总管
 
@@ -192,7 +192,7 @@ MetaCC适合提供Session错误、retry、tool use、bug-fix、tech-debt、edit-
 | 旧认识失效 | A2 | remote Memory不覆盖records |
 | 每日和用户对账 | B10 | B2不自称user_confirmed |
 | 新需求是否成立 | B3 | IM本身不自动建Item |
-| 看板/明日0–2 Focus | B4 | serverosd不选业务优先级 |
+| 看板/当前0–2 Focus | B4 | serverosd不选业务优先级，不因空槽造工作 |
 | Session resume/archive | A1 | B4不管transcript |
 | worktree/branch/dirty-owner | A3 | Session不拿cwd当项目 |
 | runtime/service/resource | A4 | Workspace不另采ps/df |
@@ -224,3 +224,11 @@ real source delta
 ```
 
 并验证duplicate trigger、source drift、grant revoke、cancel/effect unknown、parent restart、partial publication与quiet window。
+
+## 11. 自动化接续不是第二业务调度器
+
+已接受Work Item的子结果到达、已登记依赖满足或合法时间窗口到来，可通过已有有界routine唤醒原逻辑Parent；先核当前scope/owner/预算/原attempt再继续，不每个timer新建长期Session。实际没有receiver或触发机制就只称保存待续。
+
+原生Parent选择方法并验证必需交付；`serverosd`只维护被真正consumer使用的机械事实，不解释所有飞书消息或替用户选新目标。一个resident Node Core不禁止既有Provider、CloudCLI、Tailscale和实际Agent进程存在。
+
+采集/对齐/接续/状态卡各有不同节奏，不用统一“一天一次”的时钟；routine错过时点有界补缺，状态不补发每个漏小时、工作不重复创建收费Task。源/权限/目标变更只围住相关效果，其他已授权工作继续。
