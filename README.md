@@ -25,6 +25,34 @@ tests may send work back to design; a useful deliverable need not be code.
 Open a fresh Session, mention the work, and recover the **right environment,
 context, memory, capability and safety boundary** without rereading the whole world.
 
+## Architecture at a glance
+
+```text
+Human / CloudCLI / Feishu
+        │
+        ▼
+Claude Code / Codex                    native intelligence
+        │
+        ▼
+ServerOS Plugin                        thin context / selected Skills / MCP
+   ├─ serveros-node-mcp ─────────┐
+   └─ serveros-agent-mcp ────────┤
+                                 ▼
+                              serverosd
+                one resident Node Core
+            node facts / admission / leases /
+            effect coordination / self-health
+                                 │
+        ┌────────────────────────┼────────────────────────┐
+        ▼                        ▼                        ▼
+semantic/work owners         external providers       Ability Fabric
+Claims / Requirements        Feishu / GitHub          G1 registry
+Work Engine / Control        OpenViking / MetaCC      Skills / MCPs
+                             Quay / Browser / OS      Plugins / Providers
+```
+
+Abilities are stable product responsibilities; Skills, MCPs, Plugins and Providers are realizations. The Plugin is the Agent-facing composition, while `serverosd` is the resident node/control core. The two ServerOS MCPs are adapters and do not own a second copy of ServerOS state.
+
 ## Five automatic loops
 
 ServerOS is designed as five connected loops rather than one mandatory workflow:
