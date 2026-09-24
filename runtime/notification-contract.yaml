@@ -427,6 +427,12 @@ alerts:
     # the middle level and the difference is the whole point: a WARNING is
     # worth a card at the hour, and is not worth waking the interval for.
     #
+    # A severity on this list is NECESSARY and not sufficient, and reading it
+    # as sufficient was a real defect: severity answers "how bad is what was
+    # measured" and says nothing about whether a person may be interrupted. The
+    # other half is `alerts.attention.on_the_face`; `alert_digest.decision`
+    # requires both, for this door and for the immediate one.
+    #
     # LOW is absent from both, and that omission is the rule rather than an
     # oversight. A NOTICE is context for a card somebody is already reading —
     # the /dev/shm line in a dashboard, the 47th stopped container — and a
@@ -695,6 +701,24 @@ alerts:
     # Which levels may occupy a line on the alert face. WATCH and below are
     # COUNTED on the card and never printed as events: §5's "静默不等于没事"
     # is served by the count, and printing them is what made the card a dump.
+    #
+    # THIS IS ALSO THE DELIVERY GATE, and this is the right place to say so.
+    # `alerts.digest.proactive_severities` and `immediate_severities` answer
+    # "may this severity reach a card"; this answers "would the card SHOW it".
+    # A card may be caused only by a finding that clears both, because a finding
+    # that can only ever be a COUNT would send a card whose face is empty — the
+    # card arrives saying `✅ 没有需要处理的变化` and teaches its reader to skip
+    # the one surface a real finding has. Measured on this node 2026-09-24: 460
+    # findings at high/medium, every one of them `consumption` at WATCH, sent
+    # exactly that card every hour.
+    #
+    # `alert_digest.decision` reads it for BOTH doors — a finding that may not
+    # be printed may not preempt the interval either, and on this node the
+    # out-of-band door was the one actually firing. It reads it through
+    # `presentation.attention_of`, never by flattening `codes` itself, per the
+    # NO OTHER FILE rule above. It does not pass `criticality`, and does not
+    # need to: `escalation` below moves REVIEW to ACTION_REQUIRED and both are
+    # on this list, so the answer is invariant under escalation.
     on_the_face: [ACTION_REQUIRED, REVIEW]
 
     # The one escalation. `declared` plus a registration that is

@@ -166,6 +166,14 @@ def _store_io():
                  _HERE / "agent_control_store.py")
 
 
+def _presentation():
+    # Loaded at CALL time and not at import time, because `presentation.py`
+    # loads THIS module from its own top level (`presentation.alert_model`
+    # models the digest) — a module-level load here would be a cycle. Loaded
+    # lazily for a weaker version of the same reason as `_alerting`/`_graph`.
+    return _load("serveros_runtime_presentation", _HERE / "presentation.py")
+
+
 class DigestError(RuntimeError):
     pass
 
@@ -200,6 +208,11 @@ def proactive_severities(block: dict | None = None) -> tuple:
     a floor written next to the comparison that uses it is a number nobody
     reviews. An empty or missing list would mean "nothing may ever cause a
     card at the interval", which is a different product, not a default.
+
+    NECESSARY AND NOT SUFFICIENT. A severity on this list says a finding may
+    cause a card; `may_interrupt` is the other half and says the card would
+    print it. `decision` reads the two together; neither is derived from the
+    other and a caller that reads this one alone is reading half a gate.
     """
     declared = (block or policy()).get("proactive_severities")
     if not isinstance(declared, (list, tuple)) or not declared:
@@ -209,6 +222,47 @@ def proactive_severities(block: dict | None = None) -> tuple:
             f"at all becomes a card, which is the shape this key exists to "
             f"prevent")
     return tuple(str(word) for word in declared)
+
+
+def may_interrupt(row: dict) -> bool:
+    """Whether this row may occupy a LINE on the card — and so cause one.
+
+    The contract keeps two axes and says they are read TOGETHER, neither
+    derived from the other: `severity` answers "how bad is what was measured",
+    `attention` answers "may this person be interrupted". `decision` used only
+    the first, which is the collapse the contract warns about in its own words
+    — "drop 值得人知道 and the axis collapses into `severity_words` restated".
+
+    Measured on this host 2026-09-24 with that collapse in place: 460 findings
+    at high/medium — 434 `HIGH_MEMORY_SUSTAINED` and 24 `HIGH_CPU_SUSTAINED`,
+    both `consumption`, which the contract carries at WATCH — caused a card
+    every hour whose face was empty, so the card arrived saying
+    `✅ 没有需要处理的变化` and taught its reader to skip it. The face was
+    RIGHT about those rows: they are true measurements and not violated
+    expectations. The gate was wrong, and wrong in the direction that spends
+    the one surface a real finding has.
+
+    The table is read through `presentation` and never by flattening
+    `alerts.attention.codes` here: the contract says NO OTHER FILE MAY ASSIGN AN
+    ATTENTION LEVEL, and this module assigning one would be a second reader of
+    one axis.
+
+    `criticality` is not consulted, and does not need to be. `escalation` moves
+    REVIEW to ACTION_REQUIRED and BOTH are on the face, so the answer is
+    invariant under it — which is what lets this be asked per row on every tick
+    without reaching the registry. `test_attention` holds that invariant, so a
+    contract whose `escalation.to` named a level OFF the face fails there
+    rather than going quiet here.
+
+    An UNDECIDED code answers False, and that is not a quieting: the code is
+    counted in `presentation.alert_model`'s own `undecided` bucket, which is
+    reported as the hole in the declaration that it is. A finding the renderer
+    cannot print is not one that may cause a card — a card caused by it would
+    be the same empty card this function exists to stop.
+    """
+    presentation = _presentation()
+    level = (presentation.attention_of(row.get("code")) or {}).get("level")
+    return bool(presentation.on_the_face(level))
 
 
 def severity_ranks() -> dict:
@@ -771,14 +825,25 @@ def decision(digest: dict, cursor: DeliveryCursor, *, at: str,
              policy_block: dict | None = None) -> dict:
     """Whether this document is worth a message, and the key it would carry.
 
-    Two clocks, and the split is §Q2's severity filter expressed as one rule:
+    Two clocks and TWO AXES. The clock decides when a worth-saying thing may be
+    said; the axes decide whether there is one, and a document that reaches the
+    send has to clear both of them:
 
-      * something `immediate` and the immediate cooldown has elapsed -> say it
-        now, without waiting for the interval. A CRITICAL that waits an hour
-        because the cadence is hourly is the failure the split exists to stop.
-      * otherwise, anything at all and the full interval has elapsed -> say it.
+      * something `immediate`, at a severity the contract lets out of band, AND
+        that may occupy a line on the card, and the immediate cooldown has
+        elapsed -> say it now, without waiting for the interval. A CRITICAL that
+        waits an hour because the cadence is hourly is the failure the split
+        exists to stop.
+      * otherwise, something worth saying and the full interval has elapsed ->
+        say it.
       * otherwise -> do not. A quiet hour produces no card, and that is the
         intended outcome rather than a gap in the record.
+
+    The axes are `severity` (via `proactive_severities` / `immediate_severities`)
+    and `attention` (via `may_interrupt`), and the contract is explicit that they
+    are read together: severity answers "how bad is what was measured", attention
+    answers "may this person be interrupted". Reading only the first is how a
+    card comes to be sent that says there is nothing to report.
 
     Nothing is marked told here. This function decides; `record` writes.
     """
@@ -789,7 +854,15 @@ def decision(digest: dict, cursor: DeliveryCursor, *, at: str,
             f"{CONTRACT}#alerts.digest.interval_seconds is {interval!r}; with no "
             f"interval every call would be a new digest")
     cooldowns = dict((_alerting().policy() or {}).get("cooldown_seconds") or {})
-    urgent = [row for row in digest["shown"] if row["immediate"]]
+    # Both doors carry the attention test, and the immediate door is the one
+    # that was actually firing here: measured 2026-09-24, all four of this
+    # node's most recent cards arrived LESS than `interval_seconds` after the
+    # previous one, so not one of them was the interval's doing. A high-severity
+    # `HIGH_MEMORY_SUSTAINED` opens, is `immediate`, and preempts the hour — for
+    # a row that can never reach the face. An immediate finding that cannot be
+    # printed on a card must not preempt the interval either.
+    urgent = [row for row in digest["shown"]
+              if row["immediate"] and may_interrupt(row)]
 
     since_digest = None
     if cursor.last_digest_at():
@@ -838,14 +911,28 @@ def decision(digest: dict, cursor: DeliveryCursor, *, at: str,
     # card somebody is reading, and hourly context on a quiet host is a robot
     # that talks to itself.
     floor = proactive_severities(block)
-    worthy = [row for row in digest["rows"]
-              if row.get("kind") in _PROACTIVE_KINDS
-              and row.get("severity") in floor]
-    if not worthy:
+    proactive = [row for row in digest["rows"]
+                 if row.get("kind") in _PROACTIVE_KINDS
+                 and row.get("severity") in floor]
+    if not proactive:
         out["why"] = (f"{len(digest['rows'])} finding(s), none at "
                       f"{'/'.join(floor)} and none immediate — a batch of "
                       f"recoveries, notices or already-told findings is not "
                       f"worth a message of its own")
+        return out
+
+    # §27's second half, and the half that was missing. The severity floor is
+    # NECESSARY and not sufficient: it asks "may this cause a card" without ever
+    # asking "would the card show it". A finding the renderer counts instead of
+    # printing is a reason to send a card announcing that there is nothing to
+    # report, so the face test decides, and the two doors above and here are the
+    # same door.
+    worthy = [row for row in proactive if may_interrupt(row)]
+    if not worthy:
+        out["why"] = (f"{len(proactive)} finding(s) at {'/'.join(floor)}, and "
+                      f"none of them may occupy a line on the card — a card "
+                      f"caused by a finding it cannot print arrives saying there "
+                      f"is nothing to do")
         return out
 
     if since_digest is None or since_digest >= interval:
@@ -853,15 +940,15 @@ def decision(digest: dict, cursor: DeliveryCursor, *, at: str,
         out["why"] = (f"the {interval:.0f}s interval has elapsed since the last "
                       f"delivered digest, and {len(worthy)} of "
                       f"{len(digest['rows'])} finding(s) are at "
-                      f"{'/'.join(floor)}"
+                      f"{'/'.join(floor)} and may occupy a line on the card"
                       if since_digest is not None else
                       f"no digest has been delivered yet and {len(worthy)} of "
                       f"{len(digest['rows'])} finding(s) are at "
-                      f"{'/'.join(floor)}")
+                      f"{'/'.join(floor)} and may occupy a line on the card")
         return out
 
     out["why"] = (f"{len(digest['rows'])} finding(s), {len(worthy)} of them at "
-                  f"{'/'.join(floor)}, none immediate, and only "
+                  f"{'/'.join(floor)} and printable, none immediate, and only "
                   f"{since_digest:.0f}s of the {interval:.0f}s interval have "
                   f"elapsed")
     return out
