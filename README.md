@@ -25,6 +25,20 @@ tests may send work back to design; a useful deliverable need not be code.
 Open a fresh Session, mention the work, and recover the **right environment,
 context, memory, capability and safety boundary** without rereading the whole world.
 
+## Five automatic loops
+
+ServerOS is designed as five connected loops rather than one mandatory workflow:
+
+```text
+Information  source/IM/doc/meeting/web -> capture/follow -> understanding -> memory -> requirement candidates
+Work         formal requirement -> Work Item -> Focus -> Parent -> execute -> accept -> Outcome
+Capability   real gap -> native/installed/upstream -> thinnest realization -> eval/install -> fresh consumer
+Knowledge    source revision -> delta reading -> understanding -> document stewardship -> readback/Git continuity
+Runtime      observe -> health/impact/owner -> bounded recovery -> Status/Incident -> human only when needed
+```
+
+Memory, authority and evidence cross all five loops. Failure of one optional provider degrades only the work that depends on it; it does not create one global ServerOS `NOT_READY`.
+
 ## Small core, broad capability
 
 There is one resident ServerOS core daemon per managed node/runtime scope:
@@ -58,9 +72,17 @@ when the runtime actually supports it. Existing native tools remain discoverable
 A catalogue can be global while each device installs and each Session sees a different
 subset.
 
-OpenViking is the default independent memory-provider direction; MetaCC supplies
-history/intelligence. Neither replaces confirmed work facts or native live-session
-control. Quay is an execution accelerator, not a mirror of the user's personal Board.
+The target memory topology is one shared **OpenViking** service on Tokyo for cross-session,
+cross-project and cross-device associative/experience retrieval. Claude Code and Codex use
+their runtime integrations against that same private service; MetaCC supplies session
+history/intelligence, while native memory remains a local convenience. Current Claims/Views,
+source revisions, Requirements, work control and authorization still outrank any retrieved
+memory. GitHub stores versionable records/designs and suitable knowledge, not the OpenViking
+vector index or live database. ChatGPT initially reads the private GitHub/project records;
+ServerOS does not expose OpenViking to the public Internet just to give ChatGPT memory access.
+OpenViking is still a target/unbound provider until a real service, authenticated Binding and
+fresh-agent retrieval/capture are verified. Quay is an execution accelerator, not a mirror
+of the user's personal Board.
 
 ## Interfaces and information spaces
 
@@ -68,11 +90,12 @@ CloudCLI and the native terminal remain the main conversational work surfaces.
 Use a supported contextual plugin rather than requiring a CloudCLI fork.
 
 Feishu provides the principal information sources, reminders, readable work documents
-and reporting. My Document Library contains current work and reports; Personal
-Knowledge contains curated private knowledge; Published Knowledge contains maintained
-reader-facing guides; external documents remain at their canonical location under
-appropriate stewardship. Drive holds selected file/evidence assets. IM and Minutes
-remain original sources.
+and reporting. My Document Library holds dynamic work, reconciliation and reports; Personal
+Notes holds private long-term knowledge; Public Docs holds maintained owned guides; External
+Docs holds Source Cards / FOLLOW_MIRROR for long-lived read-only sources, while externally
+maintained shared documents stay in their canonical location. Drive is the binary Asset
+Plane for recordings, images, PDFs, archives and E2E evidence. IM and Minutes remain
+original source identities.
 
 GitHub work packets are the durable CC/GPT collaboration path. Authoritative bodies
 and generated human views have explicit revision links; they are not independently

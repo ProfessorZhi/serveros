@@ -459,10 +459,22 @@ database or copy the entire .claude/.codex profile between devices.
 | OpenViking-like provider | associative/episodic/procedural retrieval | registry identity, permissions or business authority |
 | MetaCC/native transcripts | historical discovery and analysis | live-session ownership |
 
-OpenViking is the selected default Memory Provider direction, independently
-deployable on Tokyo and exposed through an adapter/MCP as supported. It is not a
-serverosd subsystem and not a required second catalogue of Skills. It may index
-Skill descriptions as recall material; ability-management still owns registration.
+OpenViking is the selected default shared Memory Provider direction. The target is
+one separately supervised service on Tokyo with persistent private storage; local agents
+connect locally and approved remote devices connect through an authenticated private
+(Tailscale-capable) Binding. It is not a serverosd subsystem and it is not synchronized
+between devices through Git. Claude Code and Codex should prefer the official OpenViking
+memory integrations when compatible, because they already provide lifecycle recall/capture
+and MCP access. Their Skill-catalog injection is disabled for ServerOS profiles:
+ability-management/G1 remains the only Ability catalogue and progressive-disclosure owner.
+
+OpenViking may retain derived user/experience memory, but it is never authority for current
+business facts, Requirement/work state, permissions or Ability identity. Every high-impact
+claim retrieved from it is resolved against the current source/Claims/Views before use.
+GitHub stores reviewable/versioned records, designs and suitable knowledge; it does not
+mirror the vector index or live OpenViking database. ChatGPT-class consumers that lack an
+approved OpenViking connector read the GitHub/records plane instead of forcing public
+exposure of the memory service.
 
 ### 7.2 Retrieval and lifecycle
 

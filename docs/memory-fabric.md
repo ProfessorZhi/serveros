@@ -35,35 +35,40 @@ checks it; reading it in the list above does.
 ## Three layers, one authority
 
 ```text
-Layer A   Local runtime state     state/serveros/                this node, right now
-Layer B   Durable work memory     Git: records/ + artifacts/     the authority
-Layer C   Derived active memory   a retrieval index              rebuildable, never authority
+Layer A   Local runtime state       state/serveros/              this node, right now
+Layer B   Reviewable record plane   records / source / evidence  current business authority
+Layer C   Derived long-term memory  OpenViking + retrieval       persistent, non-authoritative
 ```
 
-**Layer B is the only authority.** The other two are indexed readings of it.
+**Layer B remains the authority for current business meaning.** Layer C may persist
+session-derived preferences, episodes and experience so agents can remember across sessions
+and devices, but a retrieval hit cannot change the current owner, deadline, Requirement,
+permission or deployed truth by itself.
 
 ```text
 Layer A  is machine-local, high-frequency, and disposable.
-         Losing it costs a re-probe, never information.
-Layer B  is versioned, shared, and the thing a new device syncs from.
-         Losing it loses work.
-Layer C  is a cache. It may be deleted at any time and rebuilt from B.
-         If deleting it loses information, it was not a cache.
+         Losing it costs a re-probe, never a business decision.
+Layer B  is versioned/reviewable and carries current semantic records and evidence.
+         A new device can recover authoritative work from this plane.
+Layer C  is durable derived memory and an index over Layer B / Session history.
+         Losing it harms recall and learned convenience, so it is backed up; work must still
+         continue safely from Layer B, checkpoints and source evidence.
 ```
 
-Layer C being "never authority" is not a limitation to work around. It is the
-property that lets it be a search index, an embedding store, or a graph — any
-of which would be a bad authority, because none of them can be diffed, reviewed
-or reverted. The moment a retrieval result outranks the record it retrieved,
-the record stops being the truth and starts being a suggestion.
+Layer C being "non-authoritative" is the key property, not "must be throwaway bytes".
+OpenViking may maintain its own persistent workspace and extracted memories. What it may not
+do is make a memory score or generated summary outrank the source/record that governs the
+current decision.
 
 ### The rule that keeps the layering honest
 
-> **If a fact exists only in Layer C, it is lost. Design as though the index is
-> already empty.**
+> **A fact that matters to current business state cannot live only in Layer C.**
+> If a retrieved experience becomes a Requirement, decision, owner, deadline or permission,
+> promote it through the normal B2/B3 acceptance path into the appropriate authority.
 
-That is the test for every new memory feature. A summary that cannot be
-regenerated from B is a Layer-B artifact that was filed in the wrong place.
+Derived personal preferences and reusable experience may remain Provider-owned memory with
+source/session provenance; exact byte-for-byte regeneration is not required for them.
+Current work, rights and commitments are required to survive a complete OpenViking outage.
 
 ## The five semantics
 
@@ -72,65 +77,70 @@ this*, and a memory system that cannot tell the two apart will file a procedure
 next to an anecdote and then weigh them equally.
 
 ```text
-Working       the live state of the thing being worked on right now
-              → the Item's own record. Not a store; if it must survive, write it down.
+Working       live state of the thing being worked on now
+              → Work Item / checkpoint; not a long-term memory store
 
-Episodic      what happened, in order: this Run, this incident, this handoff
-              → Layer B ledger records with a timeline
+Episodic      what happened: this Run, incident, handoff or Session
+              → source/history + derived OpenViking memory
 
-Semantic      what is true: a decision, a constraint, an owner, a boundary
-              → Layer B, and the only kind whose VALUE outweighs its TIMELINE
+Semantic      what is currently true: decision, constraint, owner, boundary
+              → B2/current source is authoritative; OpenViking may only retrieve hints
 
-Procedural    how to do it — a repeatable method that improved a result
-              → NOT the Memory Fabric. See below.
+Experience    what tended to work, fail or matter in similar situations
+              → OpenViking may preserve it as derived long-term memory
 
-Retrieval     an index over the above, for finding it again
-              → Layer C. Never authority, always rebuildable
+Executable    a repeatable method the system is expected to perform
+procedure     → Ability Fabric, not Memory Fabric
+
+Retrieval     finding the relevant subset again
+              → OpenViking/MetaCC/native providers; score never means truth
 ```
 
-### Why procedural memory is not memory
+### Experience is memory; executable procedure is Ability
 
-Procedural memory is the one entry in that list that lives in a **different
-plane**, and the reason is the authority question rather than tidiness:
+OpenViking can legitimately remember trajectories, tool-use experience and recurring
+patterns. The important boundary is not whether something sounds "procedural"; it is whether
+the system is expected to **execute it as a governed capability**.
 
 ```text
-Memory Fabric      what the work remembers        a record, reviewed by people
-Ability Fabric     what this machine can do       a procedure, executed by machines
+Memory Fabric      what the work learned / recalls   derived experience with provenance
+Ability Fabric     what this system can execute       versioned procedure with runtime/effects
 ```
 
-A procedure is a thing that **runs**. It has a version, a compatibility story,
-a provider, a place in a composition, and a device on which it either resolves
-or does not. Every one of those is Ability Fabric machinery, and the Memory
-Fabric has none of them. Filing a procedure as a memory record would give it a
-ledger row and no executor — and, worse, would let a Skill be changed by
-appending to a ledger instead of by a revision in `ability-management`.
+A memory such as "Playwright login usually fails when the profile lock is stale" can guide
+future investigation. It does not authorize killing a browser or redefine the testing
+Skill. Once a method is intended to run repeatably as system behavior, it needs the Ability
+Fabric's revision, compatibility, provider, effect and acceptance controls.
 
-So the flow out of memory and into an ability is explicit, and each arrow
-crosses a boundary that has a gate:
+The promotion path is therefore explicit:
 
 ```text
-a repeated observation            Layer B record, kind `observation`
-  ↓ promoted by a person
-a procedure candidate             still Layer B — a claim about method
-  ↓ distilled, written as a Skill, tested, reviewed
-an ability revision               ability-management, pinned, versioned
-  ↓ composed
-a device resolves it              the Ability Fabric answer
+repeated observations / session experience
+  ↓ relevant and supported
+experience memory / method candidate
+  ↓ accepted as a reusable system behavior
+Skill/script/provider candidate
+  ↓ G1 authoring + G1.5/A7 evaluation
+ability revision
+  ↓ composition / installation / fresh consumer
+executable capability
 ```
 
-Nothing in that chain happens automatically, and the middle step is a person's,
-not a summary's. A memory system that promoted its own habits into abilities
-would be editing the catalogue from the audit trail.
+OpenViking may generate or consolidate the experience layer automatically; it may not
+self-promote that experience into an installed Skill, permission or production behavior.
 
-### Nothing here is built yet
+### Vocabulary versus current implementation
 
-The five semantics above are a **vocabulary**, not four new record kinds. Only
-Episodic and Semantic have a home today, and they share it — the eight closed
-record kinds in `memory/record-contract.yaml` are not partitioned by semantics,
-and no field says which semantic a record belongs to. That is a gap, not a
-design: the roadmap records it. What the vocabulary buys immediately is that
-"procedural memory" can be *declined* by name instead of quietly accumulating
-in the ledger.
+The semantics above are a product vocabulary, not a requirement to add one record kind per
+row. Current records already preserve episodes and semantic facts; OpenViking is still
+UNBOUND and its official memory model is not yet wired into this product. The existing
+`memory/record-contract.yaml` therefore remains an implementation-era contract, not proof
+that all target memory semantics are live.
+
+Migration should add the minimum producer/consumer fields needed for provenance, scope and
+invalidation rather than mirror OpenViking's internal schema into ServerOS. In particular,
+experience memory can live in the Provider while executable procedures continue to enter
+G1 only through the explicit promotion path above.
 
 ## The ledger
 
@@ -478,9 +488,49 @@ back its own work and would never see the request. `pending()` and
 receiving device reads its inbox *before* the answer exists, and reading the
 ledger as of a moment is the only way to observe that without deleting from it.
 
+## Cross-project / cross-device topology
+
+The target deployment has **one shared OpenViking service on Tokyo**, supervised as an
+outer Provider like Laya but with a different job. Laya answers bounded decision questions;
+OpenViking stores/retrieves long-term context. Neither lives inside `serverosd`.
+
+```text
+Tokyo Claude/Codex ─┐
+Windows Claude/Codex├─ authenticated client / official memory plugin
+other approved Agent┘
+        ↓
+OpenViking @ Tokyo
+        ├─ user-global memories / stable preferences
+        ├─ project-scoped resources and experience
+        └─ session-derived episodic/experience memory
+```
+
+A device does not get a separate memory universe. Its identity is provenance and an
+applicability filter. Query assembly prefers the current Project/Item scope, can add
+user-global preferences/experience, and only crosses into another Project when the current
+task makes that relevant and data policy permits it.
+
+The Provider may preserve derived memories extracted from Session history; therefore it is
+more than a transient vector cache operationally. It is still **non-authoritative** for
+current business meaning. Durable current truth remains in Sources/Claims/Views/Requirement
+and work/control owners. Provider backup/recovery protects its own persistent workspace;
+GitHub is not used to version its internal DB/index.
+
+Claude Code/Codex should reuse the upstream OpenViking integrations where compatible:
+auto-recall/capture through lifecycle hooks plus explicit MCP tools. ServerOS disables the
+OpenViking Skill catalogue for its profiles so a memory provider cannot become a second
+Ability registry. Capture filters/bypass policy exclude secrets, protected raw production
+material and scopes that should not become cross-project memory.
+
+GitHub/private records are the interoperability and review plane for consumers that cannot
+reach OpenViking. A ChatGPT/Work consumer can read current `hwz-records`/project documents
+through its GitHub connector; it does not require ServerOS to expose OpenViking publicly.
+If a future authenticated ChatGPT/OpenViking connector has a real consumer, G1 can adopt it
+as another A2 realization without changing memory authority.
+
 ## Layer C, and OpenViking
 
-Layer C has a candidate implementation: OpenViking, as a retrieval and
+Layer C's selected provider direction is OpenViking, as a retrieval and
 embedding provider. It is adopted as a **provider behind a contract**, not as a
 component of the runtime, and that distinction is the whole of the deployment
 decision.
@@ -494,15 +544,16 @@ status              READY_TO_PROMOTE, or NEEDS_HUMAN with the blocker named
 
 The rule that governs it:
 
-> **OpenViking may not become the reason this round does not finish, and it may
-> not become a dependency of the node runtime.**
+> **OpenViking may not become a dependency of the node runtime or the reason unrelated
+> work stops. It may, however, run as its own explicitly adopted shared Provider service.**
 
-Concretely: if adopting it pulls in a large dependency set, requires a service
-this machine does not already run, or would put a network call on the path of
-`serverosd`, then the correct outcome is `NEEDS_HUMAN` with the finding —
-contract, adapter and fixture still delivered, the deployment deferred. A
-deferred provider that has a contract is worth more than a deployed one that has
-none, because the contract is the part that took the thought.
+Concretely: dependencies stay in the OpenViking service environment rather than the
+ServerOS runtime artifact; no OpenViking call enters `serverosd`'s tick/startup path.
+Deployment still requires an explicit Binding, authentication/data policy, persistence,
+resource measurement and rollback. The existing `memory/provider-contract.yaml` still
+describes OpenViking as a pre-deployment candidate and must be migrated together with the
+real adapter/Binding when the provider is actually adopted; this design text does not
+claim that deployment has happened.
 
 ### Why it must not enter the daemon loop
 
