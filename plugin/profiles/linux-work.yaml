@@ -93,7 +93,27 @@ short_description: Agent Engineering Workbench for a Linux work node
 # (`runtime-assets/hwz-server-os/serveros-core` does not exist), so the bump
 # belongs to whoever next releases core rather than to this change — recorded
 # here so it is a named leftover and not a silent one.
-cachebuster: srv0003.20260924a
+#
+# Moved to `24b` on 2026-09-24, hours after `24a`, by the same rule and for the
+# same reason: the payload changed again, this time in
+# `runtime/alert_digest.py` and `runtime/notification-contract.yaml`, both
+# members of this composition. The digest's send gate read the severity axis
+# alone, so on this node 460 findings at high/medium — 434
+# `HIGH_MEMORY_SUSTAINED` and 24 `HIGH_CPU_SUSTAINED`, every one of them
+# `consumption` at WATCH — caused a card an hour whose face was empty. The card
+# arrived saying `✅ 没有需要处理的变化` and taught its reader to skip the one
+# surface a real finding has. All four of the node's most recent cards had
+# arrived LESS than `interval_seconds` after the one before, so the out-of-band
+# door was the door actually firing, and the fix has to close both. Leaving the
+# label at `24a` would hand an installed cache the old gate under a version
+# string that already names it — which is exactly the failure `24a` was bumped
+# for.
+#
+# Core's label is stale for the third time for the same reason and is again NOT
+# touched here, per the paragraph above: every member this change touches is
+# inherited from `plugin/bundle.yaml`, no core artifact is released from this
+# node, and none is installed on it.
+cachebuster: srv0003.20260924b
 
 skills:
   - name: runtime-management

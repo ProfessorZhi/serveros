@@ -9,6 +9,9 @@ WHAT EACH SECTION KEEPS FALSE
     severity    "this is urgent" (LOW reaching an out-of-band send)
     cadence     "say it again" (a quiet hour producing a card) and
                 "wait for the interval" (a CRITICAL held behind an hourly clock)
+    two axes    "there is something to report" (a card caused by a finding the
+                card cannot print — the failure that sent an empty-faced card
+                once an hour on this node, through the out-of-band door)
     record      "you were told" (a composed digest marked announced by composing)
     contract    "the numbers live in the module" (the join below fails if they do)
     shape       "this is a detector" (it decides nothing the register did not)
@@ -43,6 +46,27 @@ DEVICE = "device:tokyo-shared-dev-01"
 FS = "filesystem:/"
 GROUP = "runtime-group:process-tree:codex-session:abc"
 MEM = "host:memory"
+
+#: The code the fixture's alerts carry unless a test names one.
+#:
+#: WHY THIS IS A REAL CODE AND USED TO NOT BE. This fixture used to pass the
+#: SUBJECT in the code position (`code=FS`, i.e. `code="filesystem:/"`), which
+#: is not a code any detector raises — `filesystem:/` is not in
+#: `anomaly.SEVERITY` or `resource_anomaly.CODES` at all. Nothing noticed,
+#: because `decision` read severity alone and an unrecognised code was simply
+#: carried through. It is not carried through any more: `decision` asks
+#: `presentation` whether a finding may occupy a LINE on the card, and an
+#: undecided code answers NO — `presentation.alert_model` counts those in its
+#: own `undecided` bucket rather than printing them, so a card caused by one
+#: would be a card with an empty face. That is the shape this round exists to
+#: stop, which means the fixture has to put register rows in the register:
+#: `DISK_CRITICAL` is the boundary-registration code for a filesystem subject,
+#: it is decided by `alerts.attention.codes`, and it is on the face.
+#:
+#: `CPU_SATURATED` went the same way for the same reason — it is not a code
+#: either, and the real spelling of what it meant is `HIGH_CPU_SUSTAINED`.
+CODE = "DISK_CRITICAL"
+CPU_CODE = "HIGH_CPU_SUSTAINED"
 
 # -- the declared numbers, as literals --------------------------------------
 INTERVAL = 3600
@@ -83,7 +107,7 @@ T0 = iso(0)
 LATER = lambda s: iso(s)  # noqa: E731 - a fixture, and the name is the doc
 
 
-def alert(ref: str, *, code=FS, severity="high", state="OPEN", subject=FS,
+def alert(ref: str, *, code=CODE, severity="high", state="OPEN", subject=FS,
           first_seen=T0, resolved_at=None, occurrence=1, device=DEVICE):
     return {
         "alert_ref": ref, "code": code, "severity": severity,
@@ -149,7 +173,7 @@ class Fixture(unittest.TestCase):
 
 class TheBaselineIsNotTheEvent(Fixture):
     def test_an_alert_that_predates_the_ledger_is_never_announced_as_new(self):
-        self.put(alert(ref_of(FS, FS), first_seen=iso(-86400)))
+        self.put(alert(ref_of(CODE, FS), first_seen=iso(-86400)))
         taken = self.baseline()
         self.assertTrue(taken["taken"])
         self.assertEqual(taken["baseline_keys"], 1)
@@ -160,7 +184,7 @@ class TheBaselineIsNotTheEvent(Fixture):
         self.assertIn("OPEN", document["standing"])
 
     def test_taking_the_baseline_twice_changes_nothing(self):
-        self.put(alert(ref_of(FS, FS), first_seen=iso(-86400)))
+        self.put(alert(ref_of(CODE, FS), first_seen=iso(-86400)))
         first = self.baseline(at=T0)
         second = self.baseline(at=LATER(600))
         self.assertTrue(first["taken"])
@@ -168,13 +192,13 @@ class TheBaselineIsNotTheEvent(Fixture):
         self.assertEqual(second["baseline_at"], T0)
         # And a real delta that arrived in between is still a delta: a
         # re-baseline would have swallowed it.
-        self.put(alert(ref_of(GROUP, GROUP), code="HIGH_MEMORY_SUSTAINED",
+        self.put(alert(ref_of(CODE, GROUP), code="HIGH_MEMORY_SUSTAINED",
                        severity="medium", subject=GROUP, first_seen=LATER(300)))
         document = self.compose(at=LATER(600))
         self.assertEqual(document["counts"]["NEW"], 1)
 
     def test_a_delta_composed_without_a_baseline_is_refused(self):
-        self.put(alert(ref_of(FS, FS)))
+        self.put(alert(ref_of(CODE, FS)))
         with self.assertRaises(digest.DigestError) as caught:
             self.compose()
         self.assertIn("baseline", str(caught.exception))
@@ -191,9 +215,9 @@ class TheBaselineIsNotTheEvent(Fixture):
         """A person cannot be told a thing recovered when they were never told
         it was broken. With a backlog that is the difference between a card and
         a wall of ticks."""
-        self.put(alert(ref_of(FS, FS), first_seen=iso(-86400)))
+        self.put(alert(ref_of(CODE, FS), first_seen=iso(-86400)))
         self.baseline()
-        self.put(alert(ref_of(FS, FS), first_seen=iso(-86400), state="RESOLVED",
+        self.put(alert(ref_of(CODE, FS), first_seen=iso(-86400), state="RESOLVED",
                        resolved_at=LATER(60)))
         document = self.compose(at=LATER(120))
         self.assertEqual(document["counts"]["RECOVERED"], 0)
@@ -203,9 +227,9 @@ class TheBaselineIsNotTheEvent(Fixture):
         """The opposite case, and the reason the rule is not simply 'never
         announce an unannounced recovery': a CRITICAL that came and went inside
         one interval is the only chance anybody gets to hear about it."""
-        self.put(alert(ref_of(FS, FS), first_seen=iso(-86400)))
+        self.put(alert(ref_of(CODE, FS), first_seen=iso(-86400)))
         self.baseline()
-        self.put(alert(ref_of(GROUP, GROUP), code="CPU_SATURATED", subject=GROUP,
+        self.put(alert(ref_of(CODE, GROUP), code=CPU_CODE, subject=GROUP,
                        first_seen=LATER(60), state="RESOLVED",
                        resolved_at=LATER(90)))
         document = self.compose(at=LATER(120))
@@ -221,13 +245,13 @@ class TheBaselineIsNotTheEvent(Fixture):
 class TheFourDeltas(Fixture):
     def test_a_new_identity_is_NEW(self):
         self.baseline()
-        self.put(alert(ref_of(GROUP, GROUP), code="CPU_SATURATED", subject=GROUP,
+        self.put(alert(ref_of(CODE, GROUP), code=CPU_CODE, subject=GROUP,
                        first_seen=LATER(60)))
         document = self.compose(at=LATER(120))
         self.assertEqual(document["counts"]["NEW"], 1)
 
     def test_a_severity_that_went_up_is_ESCALATED_and_a_downgrade_is_nothing(self):
-        ref = ref_of(FS, FS)
+        ref = ref_of(CODE, FS)
         self.baseline()
         self.put(alert(ref, severity="medium", first_seen=LATER(60)))
         self.assertEqual(self.by_kind(at=LATER(120)), {"NEW": 1})
@@ -243,7 +267,7 @@ class TheFourDeltas(Fixture):
         self.assertEqual(self.by_kind(at=LATER(300)), {})
 
     def test_a_resolved_alert_the_person_was_told_about_is_RECOVERED(self):
-        ref = ref_of(FS, FS)
+        ref = ref_of(CODE, FS)
         self.baseline()
         self.put(alert(ref, first_seen=LATER(60)))
         digest.record(self.cursor, self.store, at=LATER(120), generation=1,
@@ -253,7 +277,7 @@ class TheFourDeltas(Fixture):
         self.assertEqual(self.by_kind(at=LATER(300)), {"RECOVERED": 1})
 
     def test_a_resolved_alert_that_fires_again_is_REOPENED_not_NEW(self):
-        ref = ref_of(FS, FS)
+        ref = ref_of(CODE, FS)
         self.baseline()
         self.put(alert(ref, first_seen=LATER(60)))
         digest.record(self.cursor, self.store, at=LATER(120), generation=1,
@@ -270,7 +294,7 @@ class TheFourDeltas(Fixture):
         announced, the condition has not changed, and a card that re-announced
         somebody's own acknowledgement back at them is the system talking to
         itself."""
-        ref = ref_of(FS, FS)
+        ref = ref_of(CODE, FS)
         self.baseline()
         self.put(alert(ref, first_seen=LATER(60)))
         digest.record(self.cursor, self.store, at=LATER(120), generation=1,
@@ -281,7 +305,7 @@ class TheFourDeltas(Fixture):
         self.assertEqual(self.by_kind(at=LATER(400)), {})
 
     def test_an_open_alert_that_was_already_told_and_did_not_change_is_nothing(self):
-        ref = ref_of(FS, FS)
+        ref = ref_of(CODE, FS)
         self.baseline()
         self.put(alert(ref, first_seen=LATER(60)))
         digest.record(self.cursor, self.store, at=LATER(120), generation=1,
@@ -308,7 +332,7 @@ class OneIdentityOneRow(Fixture):
         """Not a second key derived here. Two systems that disagree about
         whether two sightings are the same alert is how a person is told
         twice."""
-        ref = ref_of(FS, FS)
+        ref = ref_of(CODE, FS)
         self.baseline()
         self.put(alert(ref, first_seen=LATER(60), occurrence=9))
         document = self.compose(at=LATER(120))
@@ -318,16 +342,16 @@ class OneIdentityOneRow(Fixture):
 
     def test_two_subjects_on_one_device_are_two_rows(self):
         self.baseline()
-        self.put(alert(ref_of(FS, FS), subject=FS, first_seen=LATER(60)),
-                 alert(ref_of(FS, "/data"), subject="/data", first_seen=LATER(61)))
+        self.put(alert(ref_of(CODE, FS), subject=FS, first_seen=LATER(60)),
+                 alert(ref_of(CODE, "/data"), subject="/data", first_seen=LATER(61)))
         document = self.compose(at=LATER(120))
         self.assertEqual(document["counts"]["NEW"], 2)
         self.assertEqual(len({row["key"] for row in document["rows"]}), 2)
 
     def test_the_same_subject_under_two_codes_is_two_rows(self):
         self.baseline()
-        self.put(alert(ref_of(FS, FS), code=FS, subject=FS, first_seen=LATER(60)),
-                 alert(ref_of("CPU_SATURATED", FS), code="CPU_SATURATED",
+        self.put(alert(ref_of(CODE, FS), code=CODE, subject=FS, first_seen=LATER(60)),
+                 alert(ref_of(CPU_CODE, FS), code=CPU_CODE,
                        subject=FS, first_seen=LATER(60)))
         self.assertEqual(self.compose(at=LATER(120))["counts"]["NEW"], 2)
 
@@ -340,7 +364,7 @@ class OneIdentityOneRow(Fixture):
 class TheSeveritySplit(Fixture):
     def test_only_a_declared_immediate_severity_may_go_out_of_band(self):
         self.baseline()
-        self.put(alert(ref_of(GROUP, GROUP), code="HIGH_MEMORY_SUSTAINED",
+        self.put(alert(ref_of(CODE, GROUP), code="HIGH_MEMORY_SUSTAINED",
                        severity="medium", subject=GROUP, first_seen=LATER(60)))
         document = self.compose(at=LATER(120))
         self.assertEqual(len(document["rows"]), 1)
@@ -349,7 +373,7 @@ class TheSeveritySplit(Fixture):
 
     def test_a_low_finding_is_in_the_card_and_never_immediate(self):
         self.baseline()
-        self.put(alert(ref_of(GROUP, GROUP), code="AGE_WITHOUT_ACTIVITY",
+        self.put(alert(ref_of(CODE, GROUP), code="AGE_WITHOUT_ACTIVITY",
                        severity="low", subject=GROUP, first_seen=LATER(60)))
         document = self.compose(at=LATER(120))
         self.assertEqual(document["counts"]["NEW"], 1)
@@ -357,11 +381,11 @@ class TheSeveritySplit(Fixture):
 
     def test_high_is_immediate(self):
         self.baseline()
-        self.put(alert(ref_of(FS, FS), severity="high", first_seen=LATER(60)))
+        self.put(alert(ref_of(CODE, FS), severity="high", first_seen=LATER(60)))
         self.assertTrue(self.compose(at=LATER(120))["rows"][0]["immediate"])
 
     def test_a_recovery_is_never_immediate_however_severe_it_was(self):
-        ref = ref_of(FS, FS)
+        ref = ref_of(CODE, FS)
         self.baseline()
         self.put(alert(ref, first_seen=LATER(60)))
         digest.record(self.cursor, self.store, at=LATER(120), generation=1,
@@ -374,7 +398,7 @@ class TheSeveritySplit(Fixture):
         self.baseline()
         for index in range(TOP_N + 3):
             subject = f"filesystem:/mnt/vol{index}"
-            self.put(alert(ref_of(FS, subject), subject=subject,
+            self.put(alert(ref_of(CODE, subject), subject=subject,
                            first_seen=LATER(60 + index)))
         document = self.compose(at=LATER(120))
         self.assertEqual(len(document["rows"]), TOP_N + 3)
@@ -398,7 +422,7 @@ class WhenItIsWorthAMessage(Fixture):
 
     def test_a_critical_does_not_wait_for_the_interval(self):
         self.baseline()
-        self.put(alert(ref_of(FS, FS), severity="high", first_seen=LATER(60)))
+        self.put(alert(ref_of(CODE, FS), severity="high", first_seen=LATER(60)))
         verdict = digest.decision(self.compose(at=LATER(60)), self.cursor,
                                   at=LATER(60))
         self.assertTrue(verdict["send"])
@@ -413,7 +437,7 @@ class WhenItIsWorthAMessage(Fixture):
         those 32 things were broken learns to skip the card, and the card is
         the only surface a real finding has.
         """
-        ref = ref_of(FS, FS)
+        ref = ref_of(CODE, FS)
         self.baseline()
         self.put(alert(ref, first_seen=LATER(60)))
         first = self.compose(at=LATER(120))
@@ -432,7 +456,7 @@ class WhenItIsWorthAMessage(Fixture):
         """The same for LOW. A NOTICE is a line in a card somebody is already
         reading; on a quiet host it would otherwise be an hourly card forever."""
         self.baseline()
-        self.put(alert(ref_of(GROUP, GROUP), code="AGE_WITHOUT_ACTIVITY",
+        self.put(alert(ref_of(CODE, GROUP), code="AGE_WITHOUT_ACTIVITY",
                        severity="low", subject=GROUP, first_seen=LATER(60)))
         late = self.compose(at=LATER(120 + INTERVAL + 1))
         self.assertEqual(late["counts"]["NEW"], 1)
@@ -447,16 +471,53 @@ class WhenItIsWorthAMessage(Fixture):
         when the hour arrives. Narrowing the gate to HIGH alone would have
         passed the two tests above and gone quiet on every WARNING."""
         self.baseline()
-        self.put(alert(ref_of(FS, FS), severity="medium", first_seen=LATER(60)))
+        self.put(alert(ref_of(CODE, FS), severity="medium", first_seen=LATER(60)))
         at = LATER(120 + INTERVAL + 1)
         verdict = digest.decision(self.compose(at=at), self.cursor, at=at)
         self.assertTrue(verdict["send"])
         self.assertFalse(verdict["immediate"])
 
+    def test_a_measured_noise_finding_does_not_preempt_the_interval(self):
+        """THE FAILURE THIS ROUND EXISTS FOR, in the shape the register had it.
+
+        A high `HIGH_CPU_SUSTAINED` is `immediate` by severity and is a
+        `consumption` code, which the contract carries at WATCH — so the card it
+        would preempt the hour to send cannot print it, and the reader gets a
+        card whose face is empty. Measured on this node 2026-09-24: EVERY one of
+        the four most recent cards arrived less than INTERVAL after the one
+        before it, so the out-of-band door, not the interval, was the door that
+        was firing. Reading severity alone is what let it.
+
+        Both axes are asserted here, because the whole claim is that they are
+        read together: the document still says `immediate`, and the verdict
+        still says no.
+        """
+        self.baseline()
+        self.put(alert(ref_of(CPU_CODE, GROUP), code=CPU_CODE, severity="high",
+                       subject=GROUP, first_seen=LATER(60)))
+        document = self.compose(at=LATER(60))
+        self.assertTrue(document["rows"][0]["immediate"])
+        verdict = digest.decision(document, self.cursor, at=LATER(60))
+        self.assertFalse(verdict["send"])
+        self.assertEqual(verdict["immediate"], [])
+        self.assertIn("may occupy a line", verdict["why"])
+
+    def test_a_measured_noise_finding_does_not_earn_the_interval_either(self):
+        """The same row at the hour, so the out-of-band door is not the whole
+        of it: an interval card caused by a finding it cannot print says the
+        same nothing, only later."""
+        self.baseline()
+        self.put(alert(ref_of(CPU_CODE, GROUP), code=CPU_CODE, severity="high",
+                       subject=GROUP, first_seen=LATER(60)))
+        at = LATER(120 + INTERVAL + 1)
+        verdict = digest.decision(self.compose(at=at), self.cursor, at=at)
+        self.assertFalse(verdict["send"])
+        self.assertIn("may occupy a line", verdict["why"])
+
     def test_a_recovery_rides_along_in_a_card_it_did_not_create(self):
         """§26. A RECOVERED is not suppressed — it appears in a card that
         exists for another reason. What it may never be is the reason."""
-        ref = ref_of(FS, FS)
+        ref = ref_of(CODE, FS)
         self.baseline()
         self.put(alert(ref, first_seen=LATER(60)))
         first = self.compose(at=LATER(120))
@@ -464,9 +525,19 @@ class WhenItIsWorthAMessage(Fixture):
                       state="DELIVERED", shown=first["shown"])
         self.put(alert(ref, first_seen=LATER(60), state="RESOLVED",
                        resolved_at=LATER(200)))
-        other = ref_of(GROUP, GROUP)
-        self.put(alert(other, code="HIGH_MEMORY_SUSTAINED", severity="medium",
-                       subject=GROUP, first_seen=LATER(200)))
+        # THE OTHER REASON HAS TO BE ONE THE CARD WOULD PRINT. This fixture
+        # used to make the card exist with a `HIGH_MEMORY_SUSTAINED` at medium
+        # — a `consumption` code, which the contract carries at WATCH and the
+        # renderer COUNTS instead of printing. Under the old severity-only gate
+        # that produced a card whose face was empty, so this test was asserting
+        # the defect: "a card exists for another reason" where the other reason
+        # was a row that could not appear on it. The claim it is making is
+        # unchanged and is the one worth keeping — the RECOVERED rides along and
+        # is not the cause — so the fixture supplies a reason that reaches the
+        # face.
+        other = ref_of(CODE, "/data")
+        self.put(alert(other, code=CODE, severity="medium", subject="/data",
+                       first_seen=LATER(200)))
         at = LATER(120 + INTERVAL + 1)
         document = self.compose(at=at)
         self.assertIn("RECOVERED", self.kinds(document))
@@ -481,12 +552,12 @@ class WhenItIsWorthAMessage(Fixture):
         told anything yet. After that the interval is what stops a medium
         finding from producing a card every time the timer fires."""
         self.baseline()
-        self.put(alert(ref_of(GROUP, GROUP), code="HIGH_MEMORY_SUSTAINED",
+        self.put(alert(ref_of(CODE, GROUP), code="HIGH_MEMORY_SUSTAINED",
                        severity="medium", subject=GROUP, first_seen=LATER(60)))
         first = self.compose(at=LATER(120))
         digest.record(self.cursor, self.store, at=LATER(120), generation=1,
                       state="DELIVERED", shown=first["shown"])
-        self.put(alert(ref_of(FS, "/data"), severity="medium", subject="/data",
+        self.put(alert(ref_of(CODE, "/data"), severity="medium", subject="/data",
                        first_seen=LATER(200)))
         early = self.compose(at=LATER(300))
         self.assertEqual(early["counts"]["NEW"], 1)
@@ -500,7 +571,7 @@ class WhenItIsWorthAMessage(Fixture):
         a transport that is down does not go silent — and a transport that is
         up is not asked the same thing five times in a minute."""
         self.baseline()
-        ref = ref_of(FS, FS)
+        ref = ref_of(CODE, FS)
         self.put(alert(ref, severity="high", first_seen=LATER(60)))
         first = digest.decision(self.compose(at=LATER(60)), self.cursor,
                                 at=LATER(60))
@@ -517,7 +588,7 @@ class WhenItIsWorthAMessage(Fixture):
 
     def test_the_idempotency_key_names_a_generation_and_not_a_clock(self):
         self.baseline()
-        self.put(alert(ref_of(FS, FS), severity="high", first_seen=LATER(60)))
+        self.put(alert(ref_of(CODE, FS), severity="high", first_seen=LATER(60)))
         first = digest.decision(self.compose(at=LATER(60)), self.cursor,
                                 at=LATER(60))
         self.assertEqual(first["generation"], 1)
@@ -536,7 +607,7 @@ class WhenItIsWorthAMessage(Fixture):
 class WhatActuallyHappened(Fixture):
     def test_only_a_DELIVERED_attempt_advances_the_generation(self):
         self.baseline()
-        self.put(alert(ref_of(FS, FS), first_seen=LATER(60)))
+        self.put(alert(ref_of(CODE, FS), first_seen=LATER(60)))
         document = self.compose(at=LATER(120))
         verdict = digest.decision(document, self.cursor, at=LATER(120))
         for state in ("FAILED", "UNSUPPORTED", "UNKNOWN"):
@@ -556,7 +627,7 @@ class WhatActuallyHappened(Fixture):
         self.baseline()
         for index in range(TOP_N + 2):
             subject = f"filesystem:/mnt/vol{index}"
-            self.put(alert(ref_of(FS, subject), subject=subject,
+            self.put(alert(ref_of(CODE, subject), subject=subject,
                            first_seen=LATER(60 + index)))
         document = self.compose(at=LATER(120))
         digest.record(self.cursor, self.store, at=LATER(130), generation=1,
@@ -572,7 +643,7 @@ class WhatActuallyHappened(Fixture):
     def test_the_register_is_stamped_so_the_register_does_not_contradict_it(self):
         """`alert list` reads `last_notified_at`. A person who has been told
         five digests about a disk must not find it null there."""
-        ref = ref_of(FS, FS)
+        ref = ref_of(CODE, FS)
         self.baseline()
         self.put(alert(ref, first_seen=LATER(60)))
         document = self.compose(at=LATER(120))
@@ -588,7 +659,7 @@ class WhatActuallyHappened(Fixture):
         """`pending` belongs to `alert sync`'s hop. A second surface clearing
         it would be one surface editing another's ledger — and that ledger is
         what makes the engine's silence explainable."""
-        ref = ref_of(FS, FS)
+        ref = ref_of(CODE, FS)
         alerts = {ref: alert(ref, first_seen=LATER(60))}
         alerts[ref]["pending"] = {"kind": "opened", "not_before": T0}
         self.store.commit(alerts)
@@ -606,7 +677,7 @@ class WhatActuallyHappened(Fixture):
 
     def test_a_shown_row_the_register_no_longer_holds_is_still_recorded(self):
         self.baseline()
-        ref = ref_of(FS, FS)
+        ref = ref_of(CODE, FS)
         self.put(alert(ref, first_seen=LATER(60)))
         document = self.compose(at=LATER(120))
         alerts = self.store.alerts()
@@ -620,7 +691,7 @@ class WhatActuallyHappened(Fixture):
 
     def test_a_diagnostic_may_stamp_a_bare_key_without_inventing_a_kind(self):
         self.baseline()
-        ref = ref_of(FS, FS)
+        ref = ref_of(CODE, FS)
         self.put(alert(ref, first_seen=LATER(60)))
         digest.record(self.cursor, self.store, at=LATER(130), generation=1,
                       state="DELIVERED", shown=[ref])
@@ -651,7 +722,7 @@ class TheReceiptNamesTheVersionThatWasSent(Fixture):
                              frozen=document["frozen"])
 
     def test_a_send_time_escalation_stays_pending_and_is_announced_next(self):
-        ref = ref_of(FS, FS)
+        ref = ref_of(CODE, FS)
         self.baseline()
         self.put(alert(ref, severity="medium", first_seen=LATER(60)))
         document = self.compose(at=LATER(120))
@@ -670,7 +741,7 @@ class TheReceiptNamesTheVersionThatWasSent(Fixture):
         self.assertEqual(self.compose(at=LATER(200))["counts"]["ESCALATED"], 1)
 
     def test_a_send_time_resolution_becomes_a_recovery_and_not_a_silence(self):
-        ref = ref_of(FS, FS)
+        ref = ref_of(CODE, FS)
         self.baseline()
         self.put(alert(ref, first_seen=LATER(60)))
         document = self.compose(at=LATER(120))
@@ -686,7 +757,7 @@ class TheReceiptNamesTheVersionThatWasSent(Fixture):
         self.assertEqual(self.compose(at=LATER(200))["counts"]["RECOVERED"], 1)
 
     def test_a_send_time_reopen_is_REOPENED_and_not_swallowed(self):
-        ref = ref_of(FS, FS)
+        ref = ref_of(CODE, FS)
         self.baseline()
         self.put(alert(ref, first_seen=LATER(60)))
         self.deliver(self.compose(at=LATER(120)), generation=1)
@@ -708,7 +779,7 @@ class TheReceiptNamesTheVersionThatWasSent(Fixture):
         """FAILED does not advance the generation, so the retry is the same
         document and the same idempotency key — which is what lets the
         transport collapse the two into one message."""
-        ref = ref_of(FS, FS)
+        ref = ref_of(CODE, FS)
         self.baseline()
         self.put(alert(ref, first_seen=LATER(60)))
         document = self.compose(at=LATER(120))
@@ -737,7 +808,7 @@ class TheReceiptNamesTheVersionThatWasSent(Fixture):
                          document["frozen"]["idempotency_key"])
 
     def test_a_duplicate_retry_of_one_document_is_idempotent(self):
-        ref = ref_of(FS, FS)
+        ref = ref_of(CODE, FS)
         self.baseline()
         self.put(alert(ref, first_seen=LATER(60)))
         document = self.compose(at=LATER(120))
@@ -753,7 +824,7 @@ class TheReceiptNamesTheVersionThatWasSent(Fixture):
         """Nothing was recorded, so nothing was told. The next digest is the
         same generation — the same idempotency key — and the deltas are still
         there rather than having been consumed by a send nobody recorded."""
-        ref = ref_of(FS, FS)
+        ref = ref_of(CODE, FS)
         self.baseline()
         self.put(alert(ref, first_seen=LATER(60)))
         first = self.compose(at=LATER(120))
@@ -766,7 +837,7 @@ class TheReceiptNamesTheVersionThatWasSent(Fixture):
         self.assertEqual(self.cursor.summary()["last_payload"], None)
 
     def test_a_late_answer_does_not_overwrite_the_newer_record(self):
-        ref = ref_of(FS, FS)
+        ref = ref_of(CODE, FS)
         self.baseline()
         self.put(alert(ref, severity="medium", first_seen=LATER(60)))
         first = self.compose(at=LATER(120))
@@ -789,7 +860,7 @@ class TheReceiptNamesTheVersionThatWasSent(Fixture):
         self.baseline()
         for index in range(TOP_N + 2):
             subject = f"filesystem:/mnt/vol{index}"
-            self.put(alert(ref_of(FS, subject), subject=subject,
+            self.put(alert(ref_of(CODE, subject), subject=subject,
                            first_seen=LATER(60 + index)))
         document = self.compose(at=LATER(120))
         frozen = document["frozen"]
@@ -815,7 +886,7 @@ class TheReceiptNamesTheVersionThatWasSent(Fixture):
         halves are two readings of ONE document — so `disagreed` being non-empty
         is a statement that a caller rebuilt one of them.
         """
-        ref = ref_of(FS, FS)
+        ref = ref_of(CODE, FS)
         self.baseline()
         self.put(alert(ref, first_seen=LATER(60)))
         document = self.compose(at=LATER(120))
@@ -827,12 +898,12 @@ class TheReceiptNamesTheVersionThatWasSent(Fixture):
                          "the edited row won over the frozen one")
 
     def test_a_row_the_frozen_payload_does_not_name_is_not_read_from_the_register(self):
-        ref = ref_of(FS, FS)
+        ref = ref_of(CODE, FS)
         self.baseline()
         self.put(alert(ref, first_seen=LATER(60)))
         document = self.compose(at=LATER(120))
         extra = dict(document["shown"][0])
-        extra["key"] = ref_of(GROUP, GROUP)
+        extra["key"] = ref_of(CODE, GROUP)
         out = digest.record(self.cursor, self.store, at=LATER(130), generation=1,
                             state="DELIVERED",
                             shown=document["shown"] + [extra],
@@ -844,7 +915,7 @@ class TheReceiptNamesTheVersionThatWasSent(Fixture):
     def test_a_document_without_a_frozen_block_is_recorded_as_legacy(self):
         """Absent is not the same as contradictory. An older daemon's document
         is recorded the old way, and the cursor says which way that was."""
-        ref = ref_of(FS, FS)
+        ref = ref_of(CODE, FS)
         self.baseline()
         self.put(alert(ref, first_seen=LATER(60)))
         document = self.compose(at=LATER(120))
@@ -856,7 +927,7 @@ class TheReceiptNamesTheVersionThatWasSent(Fixture):
         self.assertIsNone(self.cursor.summary()["last_payload"])
 
     def test_a_frozen_generation_that_is_not_the_one_being_recorded_is_refused(self):
-        ref = ref_of(FS, FS)
+        ref = ref_of(CODE, FS)
         self.baseline()
         self.put(alert(ref, first_seen=LATER(60)))
         document = self.compose(at=LATER(120))

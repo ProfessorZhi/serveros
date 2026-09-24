@@ -256,6 +256,25 @@ class EscalationNeedsADeclarationTests(unittest.TestCase):
                 self.assertEqual(attention["level"], "INFORMATIONAL")
                 self.assertFalse(attention["escalated"])
 
+    def test_escalation_cannot_change_whether_a_row_may_be_printed(self):
+        """The delivery gate does not pass `criticality`, and does not need to.
+
+        `alert_digest.may_interrupt` is asked once per row on every tick, and
+        reaching the registry for a criticality it would not use is a lookup per
+        row for nothing. That is only sound while BOTH ends of `escalation` are
+        on the face, so the contract is checked against itself rather than
+        trusted: a `to:` naming a level off the face would make the gate quietly
+        wrong in a direction nothing else here would see.
+        """
+        for code in presentation.code_expectations():
+            with self.subTest(code=code):
+                self.assertEqual(
+                    presentation.on_the_face(
+                        presentation.attention_of(code)["level"]),
+                    presentation.on_the_face(
+                        presentation.attention_of(code,
+                                                  criticality="critical")["level"]))
+
     def test_no_level_is_reachable_only_through_a_string(self):
         """Every level in the axis is produced by at least one code, so an
         unreadable card cannot be blamed on a level nobody could reach."""
@@ -266,6 +285,68 @@ class EscalationNeedsADeclarationTests(unittest.TestCase):
                     level in produced
                     or level == "ACTION_REQUIRED",  # escalation only, by design
                     "a level nothing produces is a level nobody reviewed")
+
+
+class TheGateAndTheFaceAreOneRuleTests(unittest.TestCase):
+    """`alert_digest.decision` may be caused only by what `alert_model` prints.
+
+    Two modules read one axis, and the failure they drift into is the one this
+    node actually had: the gate counted 460 findings at high/medium as worth a
+    card while the face classified every one of them `watch` and printed none,
+    so a card went out once an hour saying `✅ 没有需要处理的变化`. Agreeing
+    per code across the whole closed mapping is the only form of this check that
+    cannot come back a third time through a code nobody thought about.
+    """
+
+    AT = "2026-09-24T01:00:00+00:00"
+
+    @classmethod
+    def setUpClass(cls):
+        cls.codes = sorted(presentation.code_expectations())
+        cls.rows = {
+            code: {"key": f"alert:{code}", "code": code, "kind": "NEW",
+                   "severity": "high", "state": "OPEN",
+                   "subject_ref": f"subject:{code}",
+                   "first_seen": "2026-09-24T00:00:00+00:00", "owner": None}
+            for code in cls.codes
+        }
+        cls.model = presentation.alert_model(
+            {"rows": list(cls.rows.values()), "held": [],
+             "device_ref": "device:test"},
+            at=cls.AT, limit=len(cls.codes))
+
+    def test_the_join_saw_every_decided_code(self):
+        """A join over three codes agrees trivially. If the table ever stopped
+        being enumerable this has to fail rather than pass quietly."""
+        self.assertTrue(self.codes)
+        self.assertEqual(sorted(self.rows), self.codes)
+
+    def test_the_gate_and_the_face_give_the_same_answer_for_every_code(self):
+        printed = {event["ref"] for event in self.model["events"]}
+        for code, row in self.rows.items():
+            with self.subTest(code=code):
+                self.assertEqual(
+                    alert_digest.may_interrupt(row), f"alert:{code}" in printed,
+                    f"the delivery gate and the card face disagree about {code}")
+
+    def test_between_them_the_three_buckets_account_for_every_code(self):
+        """A code that landed in no bucket would make the test above pass by
+        being absent from `events`, which is the shape of a silent hole."""
+        self.assertEqual(
+            len(self.model["events"]) + self.model["watch"]["count"]
+            + self.model["undecided"]["count"], len(self.codes))
+
+    def test_a_code_the_face_counts_may_not_cause_a_card(self):
+        """`watch` and `undecided` are both off the face and both refuse. The
+        difference between them matters to a READER of the card — one is a
+        declared level below the threshold, the other is a hole in the
+        declaration — and not to the gate."""
+        printed = {event["ref"] for event in self.model["events"]}
+        for code, row in self.rows.items():
+            if f"alert:{code}" in printed:
+                continue
+            with self.subTest(code=code):
+                self.assertFalse(alert_digest.may_interrupt(row))
 
 
 class MonitoringIntegrityTests(unittest.TestCase):
