@@ -36,6 +36,38 @@
 
 不是每步先找 ServerOS 批准方法，不是每次改文档先跑全量测试，更不是为了注册表完整制造工作。
 
+## 一张图看懂整个架构
+
+```text
+你 / CloudCLI / 飞书
+        │
+        ▼
+Claude Code / Codex                     ← 主脑：理解、研究、设计、实现
+        │
+        ▼
+ServerOS Plugin                         ← 当前相关 context / Skills / MCP
+   ├─ serveros-node-mcp ─────────┐
+   └─ serveros-agent-mcp ────────┤
+                                 ▼
+                              serverosd
+                    唯一常驻 Node Core
+                 节点事实 / admission / lease /
+                 effect coordination / self-health
+                                 │
+        ┌────────────────────────┼────────────────────────┐
+        ▼                        ▼                        ▼
+语义/工作权威                外部 Provider             Ability Fabric
+B2 Claims/Views              Feishu / GitHub           G1 registry
+Requirement/Work Engine      OpenViking / MetaCC       Skills / MCPs
+Agent Control                Quay / Browser / OS       Plugins / Providers
+```
+
+这里最容易混淆的三点：
+
+- **Ability 是产品职责，Skill/MCP/Plugin 是实现方式。** 不要求每个 Ability 配齐一套 Skill+MCP+Plugin。
+- **Plugin 是 Agent 入口，serverosd 是常驻 Node Core。** Plugin 内的两个 MCP 只是适配器，不保存第二份 ServerOS 状态。
+- **OpenViking/MetaCC/GitHub 都服务记忆与协作，但不抢当前事实权威。** 当前业务事实仍由 Source、B2、Requirement、Work Engine、Agent Control 各自负责。
+
 ## 五条自动循环
 
 ServerOS 的日常自动化不是一条固定流水线，而是五条相互连接、可独立降级的循环：

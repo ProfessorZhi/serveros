@@ -45,18 +45,41 @@ This is a common story, not a mandatory sequence. Research may require experimen
 before design; tests may disprove the plan; an Item may deliver only a report.
 
 ```text
-Human: CloudCLI / terminal / phone / Feishu cards / documents
-                          |
-Native agents: Claude Code / Codex <-> GPT via GitHub work packets
-                          |
-                 ServerOS enhancement
-       Context + Memory + Ability + Work continuity + Policy
-                          |
-               Provider interfaces / adapters
- Feishu | GitHub | OpenViking | MetaCC | Quay | Browser | OS | Tailscale
-                          |
- Node facts and bounded reconciliation: one serverosd per managed node
+Human surfaces
+CloudCLI / terminal / phone / Feishu cards / documents
+                          │
+                          ▼
+Native intelligence
+Claude Code / Codex / future native agents
+                          │
+                          ▼
+ServerOS Plugin / terminal integration
+thin context + selected Skills + two ServerOS MCP surfaces
+        │                                  │
+        │ serveros-node-mcp                │ serveros-agent-mcp
+        ▼                                  ▼
+  node/read facts                    session/fleet/control intents
+        │                                  │
+        └──────────────┬───────────────────┘
+                       ▼
+                    serverosd
+ one resident Node Core: IPC / node facts / admission / leases /
+ effect coordination / bounded mechanical reconciliation / self-health
+                       │
+             ┌─────────┴─────────┐
+             ▼                   ▼
+   Work / semantic owners      External providers
+   records / Work Engine       Feishu / GitHub / OpenViking /
+   Agent Control               MetaCC / Quay / Browser /
+                               OS / Tailscale / shared services
 ```
+
+The Plugin is the Agent-facing product surface; it is not a second daemon. The two MCP
+servers are per-Agent-session adapters packaged with the ServerOS distribution. They do not
+own ServerOS state: `serveros-node-mcp` forwards node facts to `serverosd`;
+`serveros-agent-mcp` exposes Agent/Fleet operations while preserving daemon admission and
+provider ownership. Skills/MCPs/Plugins are realizations beneath stable semantic Abilities,
+not peers to the G1/A/B product responsibilities.
 
 Two product families organize the capabilities: **Agent Working Infrastructure**
 and **Information-to-Delivery**. They are navigation/composition views, not two
@@ -1611,139 +1634,32 @@ A separate review record identifies inspected sources, concrete corrected defect
 remaining implementation verification. Future changes refine this baseline from real
 work evidence, with one authority and a proportionate change surface.
 
+## 33. Canonical composition pointers
 
-## Product Ability Ownership & Operating Model · 2026-09-23 addendum
+The 2026-09-23/24 integration addenda that used to follow this section have been absorbed
+into the owning sections above. They are not a second layer of architecture. Use these
+canonical owners when a detailed question needs more than this file:
 
-The 21 G/A/B entries are stable **semantic product responsibilities**, not a requirement for 21 physical Skills. Their realizations may be Core code, Skills, specialist Skills, MCPs, Providers, Plugins or native tools, selected per terminal/runtime. The complete five-layer product tree is owned by ability-management [PRODUCT-ABILITY-TREE](https://github.com/ProfessorZhi/ability-management/blob/main/design/PRODUCT-ABILITY-TREE.md); artifact discovery remains a separate generated view.
+| Question | Canonical owner |
+|---|---|
+| G1/A1–A10/B1–B10 responsibility tree and realization mapping | ability-management PRODUCT-ABILITY-TREE.md |
+| Skill/MCP/Plugin/Provider authoring and progressive disclosure | ability-management ABILITY-AUTHORING-STANDARD.md + PROGRESSIVE-DISCLOSURE-CONTRACT.md |
+| Daily Coordinator, routine timing and finite scheduler ownership | docs/daily-work-cycle.md + docs/ABILITY-OPERATING-MODEL.md |
+| Requirement → canonical Work Item → Focus → Outcome/continuation | ability-management REQUIREMENTS-WORKITEM-DELIVERY-ARCHITECTURE.md |
+| Feishu IM/Doc/Wiki/Meeting/Drive and three-surface document continuity | ability-management FEISHU-INFORMATION-SYNC-ARCHITECTURE.md |
+| Structured Understanding, Memory and Daily Reconciliation | docs/UNDERSTANDING-MEMORY-RECONCILIATION.md + ability-management canonical contract |
+| OpenViking/MetaCC/native-memory federation | §7 + docs/memory-fabric.md + ability-management A2 design |
+| Status / Incident / Diagnostic behavior and CN work calendar | §20/§26 + docs/MONITORING-PRODUCT-ARCHITECTURE.md + docs/MONITORING-SCOPE-RECOVERY-CARDS.md |
+| serverosd, ServerOS Plugin and the two MCP surfaces | §0, §21–§23 + plugin/bundle.yaml / fleet/mcp-contract.yaml |
+| Implementation order and current source-vs-live gaps | docs/CC-EXECUTION-PLAN.md; dated readiness/ledger docs remain historical evidence |
 
-Scheduled daily work is a **Profile that composes Abilities**, not a new workflow Ability or daemon. OS/authorized scheduler wakes finite routines; B1 owns source capture, B2 semantic understanding, A2 invalidation/recall, B10 daily human reconciliation, B3/B4 requirement/board/focus, A1 session preparation, A3 workspace preparation and A4 runtime readiness. Details and the recommended instance cadence are in [Ability Operating Model](docs/ABILITY-OPERATING-MODEL.md).
+The semantic rule is simple: the Ability Tree owns responsibility, the Plugin/profile
+owns composition, serverosd owns node/control facts, providers own their external
+systems, and records/Work Engine/Agent Control own their respective business/control
+truth. A Skill, MCP, Plugin, Provider or model is never promoted into authority merely
+because it is convenient to call.
 
-`serverosd` stays the single resident Node Core: runtime/resource facts, IPC, Agent Control durable mechanical state, leases/effects, bounded reconciliation and its own observable health. It does **not** become a Feishu crawler, semantic reader, business scheduler, Session archive, Workspace manager or self-improvement daemon.
-
-Ability self-improvement is **G1.5 Ability Evaluation & Evolution**, a sub-ability of governance rather than a 22nd top-level Ability. It compares stable Responsibility Contracts with real outcomes/evals, uses MetaCC/A7/human feedback as evidence, proposes the smallest realization change and promotes only after isolated and fresh-consumer verification. It cannot rewrite its own responsibility, authorization or safety boundary to make a failing eval pass.
-
-
-## G1 Core Governance and Ability Card semantics · 2026-09-24 addendum
-
-G1 is the **Core Governance / Capability Supply Chain** for ServerOS. It is not A0 and not part of A1; A1 remains Session Continuity. G1 owns product-capability modelling, external/internal sourcing, artifact identity/provenance, adoption, distribution, installation/runtime resolution, evaluation/evolution and retirement.
-
-The product vocabulary is fixed as:
-
-```text
-Product Ability / Sub-Ability
-→ Capability Operation
-→ Ability Artifact
-→ Distribution
-→ Materialization
-→ Binding
-```
-
-A Skill/MCP/Plugin/Provider is an Ability Artifact realization, not a peer to A1/B1 product responsibilities.
-
-Every managed Artifact has a generated Ability Card. Card shows product-role mapping, what/when/not-for, applicability gates/signals, provenance/author/maintainer/publisher, license, adoption reason/status, current Revision/Content Digest, known limits/evaluation and current runtime projection. Card is not a second machine authority.
-
-Revision Content Digest remains required for exact artifact/materialization matching, package locks, drift and rollback, but digest does not establish identity, authorship, trust, authorization or business correctness. A reference-only Card digest must never be presented as the upstream source artifact digest.
-
-Author/provenance and Device/runtime identity are separate authority domains. Device/principal/runtime observations belong to A4/A5 Runtime/Fleet and are joined into Card runtime projections; authors do not own devices merely because a historical registry schema nested them.
-
-Detailed semantics and compatibility migration are owned by ability-management [Ability Card & Registry Contract](https://github.com/ProfessorZhi/ability-management/blob/main/design/ABILITY-CARD-REGISTRY-CONTRACT.md). `serverosd` consumes only the small current registry/profile/runtime projection needed for low-latency resolution; it does not crawl GitHub/marketplaces, review licenses, clone candidates, run external evaluations, build packages or self-upgrade inside its resident tick.
-
-
-## Feishu information surfaces and three-surface continuity · 2026-09-24 addendum
-
-A live read-only Feishu CLI inventory on 2026-09-24 confirmed the current human surfaces:
-
-- My Document Library already contains workbench/alignment/project/report trees;
-- `个人笔记` is the curated private knowledge space;
-- the former `配置文档` stable space is now live as `公开文档` and contains the Chinese/English Codex guides;
-- `外部文档` already exists as private team space `7688789520019360968`; it currently has only a revision-1 default-template `首页`, so the space exists but the Source Library/FOLLOW_MIRROR integration is **not yet live**;
-- Drive already has `收件箱 / 工作资料 / 临时 / 归档` and real meeting/source assets.
-
-The final document relationships are:
-
-```text
-FOLLOW_MIRROR
-  external read-only source
-  -> original source stays authoritative
-  -> stable mirror in 外部文档
-  -> records/Git preserve source+mirror revisions
-
-EXTERNAL_MAINTAINED
-  shared/external canonical document that we help maintain
-  -> update original document in authorized scope
-  -> records/Git preserve revision/history
-  -> no second editable body in our own cloud
-
-OWNED
-  -> private knowledge: 个人笔记
-  -> formal broad-reader guides: 公开文档
-  -> formal work reports: My Document Library/汇报
-```
-
-Textual managed documents use **Feishu ↔ local hwz-records ↔ private GitHub** continuity. Local checkout and GitHub are two materializations of the same Records authority, not competing writers. Each logical body declares its actual body authority and sync/write policy; no general mtime-based three-master sync is allowed.
-
-Drive is the Asset Plane. Large/binary MP3, image, PDF, PPTX/XLSX, ZIP, installer, trace and similar bytes normally remain in Drive or controlled local archive; Records/Git preserve identity, relation, MIME/size, content hash, locator and retention. IM is already a three-surface capture path through Feishu IM → records → private GitHub and is not copied into 外部文档.
-
-Meeting recording, Miaoji/transcript, auto-minutes and attachments are a MeetingBundle over Drive/source objects. Raw/automatic meeting materials do not automatically enter MyDocs; only a useful curated human note may be created there. Remote-control support sessions treat unattributed/background audio as untrusted for business semantics.
-
-Detailed directory, style-profile, Records layout and B1/B8/B9 ownership are canonicalized in ability-management [Feishu Information Surfaces & Three-Surface Sync Architecture](https://github.com/ProfessorZhi/ability-management/blob/main/design/FEISHU-INFORMATION-SYNC-ARCHITECTURE.md).
-
-
-## Monitoring product model · 2026-09-24 addendum
-
-Monitoring has three human surfaces only: **Current Status Card**, **Incident Card**, and on-demand **Diagnostic View**. The status card shows the user's own CPU/RAM/quota, host CPU/RAM, root and data filesystem capacity, and a small set of real infrastructure dependencies. Incident cards represent real failure episodes; process hygiene and historical alert ledgers do not page the user.
-
-The default Tokyo infrastructure set is resolved from actual bindings/dependencies rather than container names. Current important examples include ServerOS Core, Tailscale, Shared Laya, Shared LiteLLM Gateway and any currently required remote/browser/project runtime. ServerOS Core is critical; Tailscale peers are checked only when a specific peer/endpoint is expected; Laya availability is operational health while answer/language quality belongs to evaluation; the shared gateway is monitored as one logical service across app/readiness/database/dependencies.
-
-Resource display and resource alerts are separate. CPU/RAM are always visible, but high single samples or per-process usage do not become incidents without sustained pressure/impact. Disk/quota use role-specific percentage plus absolute remaining capacity. Root /, data /data, and the user's data quota are separate first-class numbers. Same-filesystem roles are deduplicated.
-
-Notifications are episode/transition driven: NEW, ESCALATED, REOPENED or materially changed impact/action may notify; STILL_OPEN with only age increasing does not. One episode maps to one Feishu card and is updated in place. The rolling status card is also patched in place rather than adding an hourly history message; observation history remains in durable records.
-
-Canonical details and current live gaps are in [Monitoring Product Architecture](docs/MONITORING-PRODUCT-ARCHITECTURE.md).
-
-
-## Understanding, Memory and Daily Reconciliation · 2026-09-24 addendum
-
-Structured Understanding uses **Atomic Claims + Current Views**. Claims carry source/revision/support/confirmation/correction semantics; `people/projects/topics/responsibilities` are concise current human views, not history archives. Decisions, meetings, requirements and work states do not become extra understanding directories.
-
-The reader side expands across IM spans, exact Doc/Wiki revisions, qualified Meeting/Miaoji material and Web snapshots; the existing semantic writer/receipt/claim-recall path remains the single semantic commit mechanism.
-
-Daily Reconciliation is a B10 human surface with four first-level buckets: **automatic updates, decisions needed, conflicts, understanding gaps**. It is not a raw-message review and not the daily report. MyDocs `每日对齐` is a projection of this semantic reconciliation, not a second authority.
-
-Ordinary observed facts/supported inferences may be agent-reconciled inside standing delegation. Goal, responsible party, deadline, external commitment and permission changes require real human acceptance. Source invalidation may immediately make a claim ineligible for current recall; it does not by itself cancel a business decision.
-
-Memory remains federated retrieval, not authority: current records/source first, applicable history second, MetaCC/native session history after that, optional vector retrieval last. Provider lag cannot revive stale claims.
-
-Detailed composition and current implementation gaps are in [Understanding, Memory & Daily Reconciliation](docs/UNDERSTANDING-MEMORY-RECONCILIATION.md) and the ability-management canonical contract.
-
-
-### Session hygiene and workflow incidents
-
-Monitoring must not confuse OS login sessions with A1 Agent Sessions. cgroup/loginctl session identity is transport/login provenance, not proof of a Claude/Codex session. Long-lived/background/resumable Agent sessions and IDE/tmux helpers are normal unless they violate an explicit lifecycle, hold conflicting resources, create unknown effects, or cause real capacity/Work Item impact.
-
-Process/session hygiene is diagnostic by default. User-facing workflow incidents are restricted to current Active Focus delivery integrity: lost Parent continuation without checkpoint/receiver, conflicting writer/lease, commit-unknown effects, required child output that cannot be accepted and blocks the critical path, unexpected A7 acceptance failure requiring a stop, invalidated accepted plan still about to execute, or required publication/delivery repeatedly failing.
-
-Current Status uses one rolling Feishu card per local day; incident episodes use one card for their entire lifecycle. Details are canonicalized in Monitoring Product Architecture.
-
-
-### Shared-node alert ownership
-
-Tokyo is shared. Monitoring may observe cross-user process facts, but personal Human Control surfaces are scoped to the current principal. They show the principal's own actionable objects, shared infrastructure and device-wide pressure; another user's WIP is not turned into the current user's cleanup/confirmation task.
-
-OS login sessions are provenance containers, not Agent Sessions or Work Item owners. Incident subjects resolve to the smallest actionable object: logical service, filesystem/quota, Work Item/Run, runtime instance or verified Agent Session.
-
-A runtime that outlives a known terminal Work Item/Run is a known-owner lifecycle drift, not an orphan. Before any attention escalation or cleanup, ServerOS revalidates owner state, active lease, remaining consumer, write/socket scope, resource impact and effect safety. A historical PID or alert is never sufficient authorization to stop it.
-
-Daily status is one rolling Feishu card per local day; each incident is one card per episode. Sampling updates cards and durable observations rather than generating chat history.
-
-### Monitoring scope, recovery, work calendar and card lifecycle
-
-The personal monitored set is dynamically resolved from the current principal's resource/quota and managed runtimes, Active Focus dependencies, standing/shared infrastructure and host-level aggregate pressure. It is not every process/container visible on the shared node.
-
-Recovery is layered: native systemd/Docker supervision first, optional bounded functional recovery only for explicitly registered/authorized resources, and human action for auth/config/data/effect ambiguity or exhausted recovery. Resident serverosd observes and coordinates facts; it is not an unbounded second supervisor.
-
-Routine Broadcast uses the CN-Mainland business calendar in Asia/Shanghai: official workdays, including makeup Saturdays/Sundays, update from 08:00 through 20:00; statutory/non-working days have no routine status broadcast. P1 incidents may bypass quiet hours; ordinary P2 attention waits for the next work window.
-
-Daily status uses one Feishu card per workday. The latest snapshot stays fully visible; earlier same-day broadcasts are compacted into a collapsible history within the same card. Incidents remain separate, one card per episode. Full observations live in records.
-
-Detailed contract: docs/MONITORING-SCOPE-RECOVERY-CARDS.md.
+Architecture completeness does not imply deployment completeness. A new design is complete
+when every user-visible job, authority, producer/consumer handoff, degraded behavior and
+acceptance boundary has an owner. It becomes LIVE only after the corresponding source,
+package, Binding, fresh consumer and real scenario are observed.
