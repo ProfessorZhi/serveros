@@ -1,6 +1,6 @@
 # CC 实施主计划：从当前成果完成 ServerOS 与全部 Ability
 
-2026-09-23整合版。仍为**一个 P0–P12 主计划**，专项文档提供接口与验收，不另起V版roadmap。纳入重点联系人深归档、外部参考、限定Follow、Git/飞书方向、21能力真实消费者、完整工作闭环与监控。本次只修改GitHub文档，没有运行测试、部署、实际抓取或云写入。
+2026-09-24产品需求收敛版。仍为**一个 P0–P12 主计划**，专项文档提供接口与验收，不另起V版roadmap。纳入重点联系人深归档、外部参考、限定Follow、Git/飞书方向、21能力真实消费者、完整工作闭环与监控。本次只更新隔离分支文档和结构/一致性检查；没有部署、实际业务抓取或云写入，未启动CC实施。
 
 ## 0. 完成目标与工作方式
 
@@ -17,7 +17,7 @@
 
 ## 1. 提交前复核的新起点：不要重做刚完成的代码
 
-本轮初读基线为serveros@0f99d45、records@fd526f5；设计期间远端前进，本计划已读取并采用**serveros@7b9d4172a06c7410f3a6d95473df175f71f7ad63、records@81673ebb91daee9e6a900ead38cbf6c804b723fa**。ability-management输入为5dbf5492ccd37715d6fc1509f9edc3fe20806179，MarketOps读取0b30a541ee68621ef65841596c50b07592b962df。实施使用包含本计划的最新main和真实安装，不回退这些观察基线。
+以下表格保留前轮带版本的来源审查，不重新宣称今天的live状态。前轮初读基线为serveros@0f99d45、records@fd526f5；设计期间远端前进，本计划已读取并采用**serveros@7b9d4172a06c7410f3a6d95473df175f71f7ad63、records@81673ebb91daee9e6a900ead38cbf6c804b723fa**。ability-management输入为5dbf5492ccd37715d6fc1509f9edc3fe20806179，MarketOps读取0b30a541ee68621ef65841596c50b07592b962df。实施使用包含本计划的最新main和真实安装，不回退这些观察基线。
 
 | 已读对象 | 现在可确定的代码/记录事实 | 下一步，不等于新LIVE证明 |
 |---|---|---|
@@ -34,6 +34,12 @@
 | 旧执行ledger | 记录了Plugin/Testing/release/Serper/Laya等成果，也有日循环及若干场景未通 | 作为现有资产去核验，不重新部署第二套，不将旧运行统计当现在实测 |
 
 以上仅源码/记录只读审查，未重跑新测试，也未读取主机进程或当前云ACL。没有模型client在writer模块里是正确分工，不应逼纯校验器自己做推理；应让原生Agent实际生产reading并由可信控制边界提交。
+
+### 2026-09-24设计收敛的新增来源基线
+
+serveros `c5d118cc44629e7cb264b73e3026d8ac3abbf7dc`；ability-management `d057b6a4b9ad28589806fd77fa56fd972ea3e4e3`。本轮从最新main建立独立文档worktree，保留canonical旧HEAD与所有并行工作；这不是运行安装版本。
+
+源复核确认semantic writer、水位及RUNTIME_OUTLIVED_OWNER的INFORMATIONAL迁移已存在；不能重复重造。当前alert-card空摘要/计数仍需结合真实sender与卡片purpose验收。36个payload入口、额外MUC根入口及64项registry静态审计见能力仓[审计](https://github.com/ProfessorZhi/ability-management/blob/main/design/REQUIREMENTS-ARCHITECTURE-AUDIT-20260924.md)。该记录不替代fresh runtime。
 
 ## 2. 开始只需一次范围配置
 
@@ -104,9 +110,9 @@ Web优先原生HTTP/官方接口/已有parser，核原页身份和抽取质量�
 
 ## P4 文档对象、位置和发布方向
 
-复用真实Space/publisher。保留MyDocs工作/日报等既有结构、独立个人笔记与Published Knowledge；仅复用/创建必要本人“参考资料”节点，实际ID/ACL/对象类型核对，不建同名替代库。
+复用真实Space/publisher。MyDocs保留工作/对齐/汇报，个人笔记保留私人知识，公开文档维护自有正式指南，外部文档承接外部只读Source Card/FOLLOW_MIRROR；EXTERNAL_MAINTAINED只原位维护。先核现有stable ID/ACL/对象，不建同名替代库。
 
-外部Source→获准snapshot；飞书原生Reference/指南→只读本地；Git规范→云视图；用户改投影→回源提案。没有mtime通用双向同步。自动摘要/来源区和个人批注区有可核身份，不能模板更新覆盖人改。
+每个logical正文声明body_authority/sync_mode/write_policy：外部Source→获准snapshot/mirror；飞书原生正文→records保真/阅读版本→按许可private Git；Git规范→云投影；用户改投影→回源提案。local checkout与GitHub是同一Records authority，不是两主。没有mtime通用双向同步。自动摘要/来源区和个人批注区有可核身份，不能模板更新覆盖人改。
 
 Publisher按logical identity幂等：intent→fresh baseline→真实条件写/三方patch→readback→receipt。Provider未证明CAS时保守共享冲突范围；本地锁不保护远端人写。body/media/index/send部分效果分开，未知先查不盲建。
 
@@ -128,7 +134,7 @@ Work Engine取生命周期/依赖/focus/lease，Card取目标/AC，Agent Control
 
 旧projection/store/records对账保取消/替代；缺某项目视图不是0项。current范围freshness与render时间分开。new candidate核无冲突intent/lease，不要求假stop；已有cancel/unknown必须核实际attempt。
 
-最多两个root焦点、已运行/等待继续占位、child不变第三root；合法委托允许排序时给有依据建议，不默认P0也不永远因无priority字段阻断。
+0–2个root焦点、对齐后可当晚执行，完成后不自动补位；已运行/等待继续占位、child不变第三root；合法委托允许排序时给有依据建议，不默认P0也不永远因无priority字段阻断。
 
 **退出门**：真低风险目标得到一次合法准入/dispatch；重复竞争、撤销、过期review/source/plan、旧Run结束但进程活、park/resume/partial effects正确。没有grant可给建议，不能执行。
 
@@ -144,7 +150,7 @@ Quay至少执行一项有价值研究/review/实现，实际worker产物回父�
 
 ## P8 可读资源卡与Core独立健康
 
-执行MONITORING-ACCEPTANCE M1–M6/V01–V18。资源摘要显式字段而非lines[0]；本人CPU/RAM/盘、整机余量、网关功能、必要Tailscale/隧道/Core默认可见，declared endpoint不冒充probed，unknown不0/green。
+执行MONITORING-ACCEPTANCE M1–M6及当前V01–V44中适用场景。资源摘要显式字段而非lines[0]；本人CPU/RAM/盘、整机余量、网关功能、必要Tailscale/隧道/Core默认可见，declared endpoint不冒充probed，unknown不0/green。
 
 OS/有限独立check核serverosd进程、IPC、cycle、持久化；Core坏时合法独立outbox仍能留/发该告警，恢复不双写/双发。原生Feishu 360/390px默认折叠和实际payload回读；HTML仅预览。无离机observer就不承诺整机断网必达。
 
@@ -154,9 +160,11 @@ OS/有限独立check核serverosd进程、IPC、cycle、持久化；Core坏时合
 
 ## P9 全21能力的真实载体与入口
 
-按ability-management/design/ABILITY-REALIZATION-PLAN逐项核：canonical artifact/source、shape、实际Provider/consumer、Binding、安装和用户场景。已有工具足够不新建Skill；设计和旧payload冲突要迁具体source及validator/loader，而非仅写说明。
+先按G1.4 [Authoring Standard](https://github.com/ProfessorZhi/ability-management/blob/main/design/ABILITY-AUTHORING-STANDARD.md)判断改动是否必要，再按ability-management/design/ABILITY-REALIZATION-PLAN逐项核：canonical artifact/source、shape、实际Provider/consumer、Binding、安装和用户场景。已有工具足够不新建Skill；设计和旧payload冲突要迁具体source及validator/loader，而非仅写说明。
 
 G1/A1/A2做相关依赖与薄上下文/更正；A3/A4/A5保护worktree/网络/profile/跨端lease；A6/A7/A8复用真实Quay、Testing Plugin和native发布；A9/A10保持两个Skill与真实API/jump/Runbook，人执行边界不变；B1–B10接输入/认识/需求/工作/研究/设计/实施/写作/正文/投递。
+
+优先迁已核入口债务：work-management的INBOX/每动作Run、information-management的旧reader假设、vision的无条件text-only、session-manager发布越界、report的旧Final/重跑取图、dev-doctor标准YAML错误及MUC完整.env输出示例。元数据长度/关键词只是信号；结构通过之后仍需目标runtime选择/加载/正常任务验证。realization说明留原design，不新增注册/验收数据库。
 
 **退出门**：每职责从目标普通runtime可发现/调用并有真实receiver。缺现场身份、生产许可等精确标该层，不将只会安全拒绝当正向完成。真实headed登录E2E按AC，mock/synthetic不替原路径。
 
@@ -199,3 +207,11 @@ producer/schema兼容→consumer→Skill/Plugin→pin/派生view→正常安装�
 本计划已决定Source/Reference角色、深归档、单主同步、Testing Plugin、生产两Skill、共享Laya及Parent继续。缺函数/producer/consumer、普通跨自有仓合并、数据适配和安全可逆迁移都属于实施。真实费用/数据/生产/ACL/不可逆/业务冲突或约定产品FAIL才找人，给一次聚合的小决策包。
 
 已写下当前约束不等于可信runtime已执行；必须让现有控制面消费。长任务预算用尽给准确checkpoint；未经scheduler真实登记不许口头后台承诺。对已进main的新成果先复用和回归，不反复依据旧报告重做；新证据推翻设计就在所属合同/实现修正，不无限新增同义文档。
+
+## 6. 本次文档候选与后续授权分界
+
+本次用户要求是收敛需求/产品/架构文档，不是执行P0–P12或生产切换的授权。两个仓库配套文档经review集成后才成为main新基线；实现前再核远端/installed/owner，不能从旧摘要SHA开工。
+
+未决policy保留为显式建议：真实产品FAIL后扩大自动修复、Board直接编辑自动接受、自动park/补位、未定义的监控稳定/提醒参数、无人值守安装/费用/外发范围。不得由实施者选择一个“最自动化”默认来绕过现有边界。
+
+四条真实用户链可以分片实现/验收，无需等每项未知都消失；但必需结果不能从AC里删掉。每次提交说明source改了什么、实际consumer验证了什么、哪些未启用，正常回滚/停用与实际效果回读并存。

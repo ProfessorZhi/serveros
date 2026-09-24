@@ -59,7 +59,7 @@ Bruce SOP新版本先作差异/候选规则，不自动改其原文、不解除M
 
 ## 5. 本人空间的最小变化
 
-沿用现有MyDocs工作台、每日对齐、项目/需求/报告、汇报、Inbox/归档；个人笔记和Published Knowledge保持各自既有独立空间。新增/复用的仅是MyDocs“参考资料”逻辑节点，不重编号整套目录，不建立每项目/月的空桶。
+沿用现有MyDocs工作台、每日对齐、项目/需求/报告与汇报；私人知识归个人笔记，自有正式指南归公开文档，外部来源索引/只读镜像归既有外部文档，EXTERNAL_MAINTAINED原位维护。不新增MyDocs参考库、不重编号整套目录，也不建立每项目/月的空桶。
 
 外部文章进入个人参考资料，默认原链接+我们的摘要/批注；不是全文自动转载，不进入团队正式指南。真正采用后由B5/B6/B9在原规则/指南上更新受影响部分。私人资料分享到更广读者需独立授权，不能用摘要名义绕源受众。
 
@@ -102,7 +102,7 @@ A3保护并行WIP/路径迁移，A4/B10监测Core/必要服务和可读资源，
 
 ## 11. 2026-09-24 飞书信息面与三类文档关系
 
-当前live空间已复核为 My Document Library、`个人笔记`、`公开文档`、`外部文档` 与 Drive。早期“外部参考默认放MyDocs参考资料 / Published Knowledge”的位置描述由新合同取代。
+前轮带日期的空间观察记录了My Document Library、`个人笔记`、`公开文档`、`外部文档`与Drive。本轮已把旧落位建议修改到正文；实际写入仍须重新核对象/ACL，不由历史观察宣称当前初始化或同步已完成。
 
 - `FOLLOW_MIRROR`：只读长期关注的外部doc/wiki/web等，原Source仍authority；在 `外部文档` 建稳定只读镜像，records/Git保存source+mirror版本。
 - `EXTERNAL_MAINTAINED`：别人/共享位置但由我们参与维护，原位维护，不在自己云空间复制第二正文。
@@ -111,3 +111,11 @@ A3保护并行WIP/路径迁移，A4/B10监测Core/必要服务和可读资源，
 MyDocs其余部分继续承担动态工作、每日对齐、项目工作台/认识/报告；Drive承担原始文件和MeetingBundle资产。飞书文字文档可与local `hwz-records`和private GitHub形成版本化三端连续性；Drive大二进制默认只把metadata/hash/locator关系进Git。
 
 详细合同见 ability-management [FEISHU-INFORMATION-SYNC-ARCHITECTURE](https://github.com/ProfessorZhi/ability-management/blob/main/design/FEISHU-INFORMATION-SYNC-ARCHITECTURE.md)。
+
+## 2026-09-24 统一产品落点与恢复
+
+外部长期只读内容的稳定镜像归“外部文档”；共同维护原共享正文不复制第二飞书正文；私人知识归个人笔记，正式指南归公开文档，动态工作/对齐/汇报归My Document Library。Drive是大字节Asset Plane，不做全量Git blob同步。具体关系与例外只维护在能力仓Feishu Sync Architecture，不在本篇另造目录策略。
+
+Source capture、material到达、原生reading、Claim提交、View/Memory刷新、文档发布和通知分别验证。晚到材料只补相关边；权限撤销先限制当前资格；人的直接编辑保留并按单正文authority进行三方比较。没有可靠远端条件写不自称全局原子事务。
+
+Meeting是这些输入对象上的语义source；录音/转录/自动纪要/附件可缺。UNTRUSTED_FOR_BUSINESS远控背景声音不生业务Claim；有价值时才curated note，无变化不为文档数量生成新页面。

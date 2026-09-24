@@ -40,7 +40,7 @@ B2读取actual source内容，产生有出处的观察/推论/决定候选和冲
 
 Card拥有语义，Work Engine拥有状态/Run/lease，Board派生。current store、cards、旧projection按身份/来源对账，历史ACTIVE不当今日worker；取消/被替代不自动重开。没有某项目projection与项目确有0项分开。
 
-对本profile已经选中的root先继续/结束/合法停放，再填空位。运行/委派/等待/取消未确认/unknown effect占位；历史record-only不自动占位。明确停放需checkpoint与旧writer/资源确认，不新建Item enum。
+对本profile已经选中的root先继续/结束/合法停放；完成后可以为0，不自动从backlog填空位。运行/委派/等待/取消未确认/unknown effect占位；历史record-only不自动占位。明确停放需checkpoint与旧writer/资源确认，不新建Item enum。
 
 准入从Work Engine、Agent Control、实际executor、Registry/Binding和接受需求组装；grant/scope/worker事实不塞Card当独立权威。新候选从没开始过时检查无冲突lease/intent，不要求虚构停止回执。
 
@@ -104,21 +104,21 @@ Daily Cycle不是单一Ability，也不是serverosd内部循环。时间只唤�
 | 节点 | 推荐触发 | owner |
 |---|---|---|
 | 日间轻量增量 | 每30–60分钟 | A4 scheduler → B1 |
-| Evening cutoff | 20:00 local候选 | A4 |
+| Evening source cutoff | 19:xx实例时点 | A4 |
 | Archive catch-up | cutoff后 | B1 |
 | Structured Understanding | B1 receipt后 | B2 + A2 |
-| Daily Reconciliation | B2 receipt后 | B10 |
+| Daily Reconciliation | 20:00提醒；资料不完整则明示，仍可先谈已知项 | B10 |
 | Requirement/Board reconcile | 人回复或standing policy允许 | B3 + B4 |
-| Next-day Focus <=2 | reconcile后/约21:00候选 | B4 |
+| Active Focus 0–2 | 对齐/接受后，可当晚立即执行；不自动补位 | B4 |
 | Session Prep | Focus成立后 | A1 |
 | Workspace Prep | Focus成立后 | A3 |
 | Runtime Prep | Session/Workspace后 | A4 |
-| Morning Resume | 08:30 local候选 | A1 + A3 + A4 + B4 |
+| Optional morning catch-up | 实例需要时核已选Focus；不是下一天才可执行 | A1 + A3 + A4 + B4 |
 | Session/Workspace maintenance | 低频夜间 | A1.3 / A3 |
 
 具体时间/时区/预算是instance policy；用户只说“8点”时要结合“归档今天/选明天”语境解析早晚，必要时只问这一处配置。
 
-A1 Session Prep必须显式包含：Context Resolver、agent-session-management实时控制、session-manager历史archive/restore。A3 Workspace Prep必须显式确认repo/base/worktree/dirty owner/remote freshness/write scope。完整职责见 [Ability Operating Model](ABILITY-OPERATING-MODEL.md)。
+A1 Session Prep按需要解析Context和真实session控制；只有恢复历史确有必要才调用session-manager的archive/restore，不把三个入口设为每次启动的必经步骤。A3 Workspace Prep必须显式确认repo/base/worktree/dirty owner/remote freshness/write scope。完整职责见 [Ability Operating Model](ABILITY-OPERATING-MODEL.md)。
 
 ## 13. serverosd与scheduler的边界
 
@@ -147,3 +147,15 @@ Structured Understanding完成后，B10只把真正需要人的语义变化呈�
 `My Document Library/每日对齐`保存该轮的人读projection和真实决定记录，不承担Claim authority，也不替代B8日报。没有重要变化时允许极短或空对账，不为了每天有文档制造语义。
 
 B2 reader应逐步从IM span扩展到Doc/Wiki、Meeting/Miaoji和Web fixed revisions；仍复用单一semantic writer。详见 [UNDERSTANDING-MEMORY-RECONCILIATION](UNDERSTANDING-MEMORY-RECONCILIATION.md)。
+
+## 16. 无人参与、结果到达与错过时点的产品行为
+
+对齐是delta-driven conversation：自动更新、需要决定、冲突、理解缺口按实际存在的内容显示。没有新消息或没有待决定项允许极短/空结果，不制造会议、Requirement或日报成果。20:00是提醒时点，不是用户在其他时刻不能接受需求/选择Focus。
+
+本轮cutoff固定正在解释的材料；之后新来源进入后续批次，重大变动只暂停受影响效果而不推翻全部计划。理解失败不回滚已保存raw；Claim成功而View/Board发布失败只补下游。用户未回复不接受新目标，已有授权Focus仍可推进。
+
+有限接续检查可由真实child结果、合法时间窗口或已登记依赖事件触发：核Work Item当前范围/owner/授权/预算→去重原attempt→唤醒实际Parent→Parent决定下一步。不是timer每响一次就创建一个长期Claude Session。没有已验证的receiver/scheduler只保checkpoint并显示待续。
+
+错过多个周期按来源游标与实际效果有界catch-up；状态播报不追发每个错过整点，关注文档不重建全部镜像，工作不重派已经存在的Task。连续失败显示哪个接缝落后及恢复方式，不用“routine执行成功”冒充全业务完成。
+
+验收：一晚完成后次日Focus为0；无人对齐不冻结原已授权工作；一次child结果只被接受一次；重启后补缺阶段而不重复外部效果；没有真后台执行就不显示运行中。自动补位/自动park、额外成本或新资料外发必须另有接受策略。

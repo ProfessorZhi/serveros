@@ -1,6 +1,6 @@
 # ServerOS Architecture
 
-> **Canonical product architecture — consolidated baseline, 2026-09-21.**
+> **Canonical product architecture — product-first consolidation, 2026-09-24.**
 >
 > This document owns the intended behavior and boundaries of the broad ServerOS
 > system. README files explain it; discovery notes record its history; code and
@@ -118,14 +118,22 @@ does not automatically create an Item. Candidates stay cheap until selected.
 A useful default may be overridden inside the approved boundary. Safety cannot.
 No new service, schema, report, review pass or Skill exists merely to fill a box.
 
-These four are the product-level statement. Their elaboration and rationale live in
-ability-management [Design Philosophy](https://github.com/ProfessorZhi/ability-management/blob/main/design/DESIGN-PHILOSOPHY.md):
-one main principle — do not preload the world — producing the right environment, the
-right context and the right capabilities, together with the mapping between the **L0–L3**
-levels above (the product-level ladder, authoritative here) and the Ability-layer
-**PD0–PD5** expansion in the [Progressive Disclosure Contract](https://github.com/ProfessorZhi/ability-management/blob/main/design/PROGRESSIVE-DISCLOSURE-CONTRACT.md).
-§1.2–§1.4 are not consequences of disclosure: they bound what may be made mandatory, how
-much budget the fast path gets, and what may be invented at all.
+Automation must remove manual material transfer, repeated tool selection and unnecessary
+"continue" prompts. First specify the user-visible normal, empty, unknown, failure and
+recovery behavior, then choose the smallest implementation. A product distinction does
+not require a new durable entity. Realization rationale belongs in existing designs;
+completion belongs in the Requirement/brief; continuation belongs in existing work and
+checkpoint records; exposure belongs in existing profiles and disclosure guidance.
+The 21 Abilities are a responsibility map, not 21 stages or 21 Agents per task.
+
+These four principles are the product-level statement. The existing
+[Ability Design Standard](https://github.com/ProfessorZhi/ability-management/blob/main/design/ABILITY-DESIGN-STANDARD.md)
+explains proportional realization choices. The **L0–L3** ladder above remains the product
+view; the Ability-layer **PD0–PD5** in the
+[Progressive Disclosure Contract](https://github.com/ProfessorZhi/ability-management/blob/main/design/PROGRESSIVE-DISCLOSURE-CONTRACT.md)
+expands the conditions for loading task context, selected Skills and supporting evidence.
+These are compatible descriptions, not competing runtime schemas. Sections 1.2–1.4 also
+bound what may be mandatory, the fast-path budget and when a new component is justified.
 
 ## 2. Layer 0 — Compliance and non-interference
 
@@ -205,35 +213,43 @@ containment and owner notification; redacting a later report does not undo leaka
 
 ## 3. Daily operating model
 
-Feishu remains the primary enterprise source; GitHub, native Sessions and registered
-records provide engineering evidence. The Coordinator is a replaceable Session role,
-not an immortal transcript or a second business scheduler.
+Feishu remains the primary enterprise source; GitHub, native Sessions and records
+provide engineering evidence. CloudCLI is the main conversational/control surface;
+Feishu App1 delivers reminders, summaries, status and notifications. The Daily
+Coordinator is a replaceable logical role, not an immortal transcript or a second planner.
 
-The user-selected **Daily Work Cycle** profile incrementally updates understanding,
-reconciles work, selects a focus of up to two authorized objectives in the evening,
-uses GPT deeply for research/design and independent plan review, and advances qualified
-work the next day through native agents/Quay, testing and reports. This is a default
-operating rhythm for this user, not a mandatory lifecycle for every ServerOS task.
+The selected profile prepares source catch-up, Structured Understanding and a preliminary
+Requirement delta around 19:xx, then reminds the user at 20:00 Asia/Shanghai. The conversation
+handles relevant understanding changes, Requirement changes and selection of 0–2 root
+Work Items. These are topics to reconcile, not a three-page wizard. No-decision days can
+be brief; absence of a reply is not acceptance and does not freeze already-authorized work.
 
-Existing unfinished, delegated, waiting, cancelling or uncertain-effect focus work
-counts toward the limit. Do not invent two new tasks per day or manufacture Quay
-activity. A focus can be parked only with an explicit disposition, checkpoint and
-confirmed worker/resource release; parking is not a new Item-state enum.
+An accepted Focus may start the same evening. Continuation within its accepted goal,
+effects and budget should be automatic when a real continuation receiver/trigger exists.
+A morning check is optional catch-up, not an embargo on night execution. Completion may
+leave Focus at zero; do not refill from backlog without a separately accepted policy.
+A formal Requirement is not itself permission to execute, and new source information is
+not automatically a formal Requirement.
 
-A standing, revocable delegation defines eligible projects/candidates, effects, budgets
-and publication targets. It may authorize routine selection and plan refinement without
-repeated human prompts; model text, missing human attendance and source messages do
-not mint grants. Material business changes, disputed intent, sensitive-data expansion
-and protected production mutation still need human action.
+Existing unfinished, delegated, waiting, cancelling or uncertain-effect Focus work counts
+toward the limit. Parking requires an explicit disposition, useful checkpoint and safe
+writer/resource/effect handling, not just an enum change. Do not manufacture Quay work.
 
-Daily agent reconciliation and the opportunity for human correction both remain.
-`agent_reconciled` is never reported as `user_confirmed`. Human absence does not freeze
-unrelated already-authorized work. One Board and the existing work store own work state;
-no additional daily task database or fixed quota is introduced into Core.
+Standing delegation is revocable and scoped to projects, effects, data, budgets and
+publication targets. It may authorize defined routine work and plan refinement without
+repeated prompts; this design does not mint that delegation. Material goals, ownership,
+deadlines, external commitments and permission changes use a real accepted decision.
+Ordinary supported facts may be agent_reconciled and are never called user_confirmed.
 
-See [Daily Work Cycle](docs/daily-work-cycle.md) for the phase contracts and
-[measured integration status](docs/integration-readiness-20260922.md) for what is and
-is not actually verified. Schedule, timezone and budget remain instance policy.
+The longstanding Requirements Board is a human-facing document. Accepted Requirement
+semantics, work control and execution observations retain their respective owners.
+Evidence can be updated without changing accepted goal/AC/priority. Protect direct human
+Board edits and reconcile their semantic delta; do not silently override them or treat
+unverified edits as grants. No second daily task database is introduced.
+
+See [Daily Work Cycle](docs/daily-work-cycle.md) and the capability repository's
+[Requirements/Work Item contract](https://github.com/ProfessorZhi/ability-management/blob/main/design/REQUIREMENTS-WORKITEM-DELIVERY-ARCHITECTURE.md).
+Historical measurements in integration-readiness documents do not prove current deployment.
 
 ## 4. Structured Understanding
 
@@ -378,7 +394,10 @@ its own review, release and retrieval eligibility rules.
 
 One Item may have many focused Sessions. A Session may start unbound, serve general
 work, or switch its work context explicitly. Project, Item, Session, native thread
-ID, OS process and tmux pane are different identities.
+ID, OS process and tmux pane are different identities. A stable Daily Coordinator role
+and each Work Item Parent role bind to actual native sessions independently. A new native
+transcript may resume the same responsibility; a provider Session is not inferred from
+a login/cgroup process tree.
 
 The Session record needs only logical ID, device/runtime, native locator, current
 work reference, predecessor/parent, controlling actor and last observed state.
@@ -402,6 +421,11 @@ repository/cwd hints, which outrank recent history. Cwd alone normally identifie
 Project/Repository, not Item. Ambiguous resolution stays unbound or asks one focused
 question. A topic switch changes logical context visibly; it must not let MarketOps
 writes occur inside a LiteLLM worktree because the shell cwd was left there.
+
+A shortlist is advisory and leaves a way to discover more eligible capabilities. Loaded
+text cannot be assumed removable from every native runtime. Stop reinjection, explicitly
+correct applicability, and use supported compaction or a fresh checkpoint-based Session
+when needed. Permission/claim invalidation must reach the actual read/effect boundary.
 
 ### 6.3 Checkpoints, history and handoff
 
@@ -464,28 +488,31 @@ retry; do not block Item progress or pretend memory was committed.
 
 ### 8.1 Minimal durable model
 
-work-engine owns Candidate/Item/control state, Run receipts and Board projection.
-records owns human-authored semantic documents and stable work intent in the existing
-record contract. Work-engine-controlled fields have one writer; rendered documents
-are not independent competing state machines.
+Records own accepted semantic intent; Work Engine owns current work/control relationships
+and meaningful Run receipts; Agent Control owns trusted delegation. The Board joins them
+for human use and is not another independently editable worker/grant authority.
 
 ```text
-Candidate: cheap sourced suggestion; no automatic worktree or full document pack
-Item: one user-approved durable requirement, owning Project, acceptance and scope
-Activity: optional mutable decomposition, not a required stage
-Run: one execution attempt with append-only events and evidence
-Outcome: business/adoption result, separate from execution status
+Draft Requirement: cheap sourced proposal; no canonical Work Item yet
+Formal Requirement: accepted goal, scope, AC and required completion boundary
+Work Item: exactly one canonical delivery-responsibility object per formal Requirement
+Activity: optional mutable plan, not a required stage or permanent record
+Run: meaningful durable execution/recovery/evidence boundary, not every tool call
+Outcome: actual result and accepted evidence, distinct from process exit
 ```
 
-A Run can make progress and finish: its historical events are immutable, not every
-field of the in-progress record. Corrections append a superseding event. Do not erase
-failed attempts. Existing implementation states are compatible only insofar as they
-control execution rather than dictate research/design/test ordering.
+The implementation name Item may remain for compatibility. Updates in the same Requirement
+lineage reconcile the same Work Item; independently acceptable/cancellable goals are split
+at B3, not hidden as competing root Items under one Requirement.
 
-Approved small work can go directly Item -> Run. Routine, maintenance and acquisition
-operations may produce evidence without a fabricated business Item. Where an existing
-API requires an Item-bound Run, evolve its evidence-parent contract explicitly; do
-not forge a Run simply to refresh a map.
+Read/grep, small calculations and disposable local checks need not create a Run. Independent
+workers, material cost, long/cross-session execution, code/environment changes, real acceptance
+or uncertain external effects need appropriate durable relationships and receipts. A single
+Run can contain many operations. Routine/non-Item evidence remains legitimate; do not fabricate
+a business Requirement simply because an old API requires an Item-bound record.
+
+Preserve actual attempts and corrections. Plans may change without rewriting historical
+effects; the absence of a planned step does not mean a required outcome is missing.
 
 ### 8.2 Scope, planning and completion
 
@@ -498,6 +525,19 @@ Completion means acceptance verdicts, expected deliverables, sufficient verifica
 durable evidence and a readable result. Every durable Item has a concise final
 summary; small work need not generate several new documents. A final report does
 not itself close the Item.
+
+The required result set is agreed before closure: design, code, candidate, installation,
+real-client verification, publication and delivery are included only when this goal requires
+them. Completion depth and verification rigor are independent. Parent/assigned validators
+accept version- and environment-scoped evidence; child DONE is only a local result. An
+unfulfilled required predicate remains incomplete despite substantial partial work. Later
+operational drift does not rewrite a correctly recorded historical completion.
+
+Continuation stays with a unique logical owner until completion, safe parking, reconciled
+cancellation or explicit supersession/transfer. Checkpoints name outstanding obligations,
+actual child/effect state and the next safe action. Unknown effects fence only the affected
+operations and prevent unsafe replay; old worker terminal labels alone do not release leases.
+Standing monitoring/intake responsibilities are operating policies, not eternal Work Items.
 
 Business closure can be NOT_ADOPTED, SUPERSEDED, CANCELLED or IMPLEMENTED_ELSEWHERE
 without pretending technical acceptance or live delivery passed. Record engineering
@@ -922,6 +962,11 @@ The focused design standard and portfolio live in ProfessorZhi/ability-managemen
 Those documents guide registration/implementation without becoming a second product
 architecture.
 
+G1.4 authors the smallest necessary artifact and exposure changes using the capability
+repository's [Ability Authoring Standard](https://github.com/ProfessorZhi/ability-management/blob/main/design/ABILITY-AUTHORING-STANDARD.md).
+G1.5 evaluates candidates against unchanged responsibility/permission boundaries. This is
+a governance route, not a bootstrap requirement for ordinary tasks.
+
 ### 16.7 Execution Terminal and device Ability projection
 
 Ability availability is computed for an execution context, not merely a machine:
@@ -1081,19 +1126,31 @@ Phone access is a real interaction path, not merely a monitoring screenshot.
 
 ### 20.2 Feishu cards and clean presentation
 
-Use one reusable presentation model over facts, with six useful intents: Status,
-Alert, Work progress, Reconciliation, Decision and Report. This does not require six
-services or six lifecycle engines.
+Use the existing presentation model and sender; do not add a notification platform.
+The six communication intents (Status, Alert, Work progress, Reconciliation, Decision,
+Report) are purposes, not six authorities or resident services.
 
-Status answers now: **我的资源 / 整机资源 / 共享 AI 网关**, optionally environment
-readiness. Alert answers the change: what happened, what is affected, why it matters,
-confidence/freshness and what to do. Work/Report cards summarize outcomes and link to
-human documents; Reconciliation/Decision cards link into the correct session/context.
+Daily Status Card means 每日状态播报卡. A Status Update refreshes that same card. The
+personal profile has one card per CN-Mainland business day, updated at 08:00–20:00 hourly
+in Asia/Shanghai, including officially declared makeup workdays. Latest status is fully
+readable; prior updates are compact rows in collapsed 今日历史. No routine card on days off.
 
-Severity and human attention are independent. Default attention is none, informational,
-watch, review or action-required. Deduplicate by condition/object and update the same
-incident thread; use hysteresis and bounded reminders, not raw open/resolved counts
-or generation/PID lists. Preserve technical details behind a link or expansion.
+Status answers current health, relevant resources/dependencies, observation sufficiency,
+known impact, responsibility and changes since the last update. No human action does not
+mean healthy; unknown does not mean zero; historical/diagnostic counts do not prove active
+anomalies either. Preserve known failures when other observations are missing. A healthy
+verdict requires sufficient relevant observation, not merely an empty actionable alert list.
+
+An Incident Card tracks one meaningful episode across hours/days. New interruption follows
+impact and actual attention needs, not every sample. Patch ongoing, acknowledged, recovering
+and closed episodes; a snooze does not change the condition or grant permission. A new alert
+send with no eligible episode is suppressed, not rendered as an empty green alert. Scheduled
+healthy Status updates remain valid. These two delivery paths must not be inferred from
+visual appearance; retain card purpose, message identity and payload/delivery evidence.
+
+P1 may interrupt 24×7; P2 new interruptions use the business window; P3 is diagnostic/review.
+Full rules, unknown calendar handling, recovery and scope are in
+[Monitoring Scope/Recovery/Cards](docs/MONITORING-SCOPE-RECOVERY-CARDS.md).
 
 ### 20.3 Actions are not credentials
 
@@ -1139,6 +1196,11 @@ one is a refusal that is supposed to be hard to change, and a numbered section
 sits in a document whose whole convention is that numbers move.
 
 **Exactly one thing is resident, and it is `serverosd`.**
+
+Here “one thing” refers to the ServerOS semantic Node Core per managed scope, not
+a ban on native supervisors, CloudCLI, Tailscale, shared Providers or currently
+executing Agents. Finite scheduled operations may wake an existing Parent after
+a result arrives; this is continuation plumbing, not a resident business planner.
 
 This is frozen because the pressure against it is steady and each step is
 individually reasonable. Discovery feels like it deserves a supervisor; memory
@@ -1294,7 +1356,7 @@ are required; active-active multi-node disaster machinery is not.
 | readable Item result | one logical report with revision-linked GitHub/MyDocs renderings |
 | daily/weekly/special report | formal MyDocs reporting surface, recipient delivery separately governed |
 | personal reusable method | Personal Knowledge |
-| maintained broad-audience guide | Published Knowledge or the external canonical location |
+| maintained broad-audience guide | 公开文档 for owned guides, or the original shared canonical location |
 | credentials/native auth state | vault/native store only |
 
 ### 24.2 Desired human navigation

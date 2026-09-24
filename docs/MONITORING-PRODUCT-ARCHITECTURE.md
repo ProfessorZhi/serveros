@@ -20,24 +20,13 @@
 
 ## 2. 产品只保留三种监控表面
 
-~~~text
-1. Current Status Card
-   当前资源与关键基础设施
-   一张滚动卡，原位patch
+**每日状态播报卡（Daily Status Card）**回答现在怎么样；一次Status Update只是对当天卡的更新。**事故卡（Incident Card）**跟踪一个有实际意义的异常episode。**Diagnostic View**用于主动查看技术细节、原始finding与历史。这是三种人面，不是三个新状态库。
 
-2. Incident Card
-   一个真实incident/episode一张
-   生命周期内原位patch
-   仅NEW/ESCALATED/REOPENED等真正变化打断用户
+每日状态卡每个CN-Mainland工作日一张，Asia/Shanghai 08:00–20:00整点patch；非工作日不创建routine卡。Incident跨工作日/休息日保持同episode，依实际影响及通知窗口发送或patch。详见 [Scope/Recovery/Cards](MONITORING-SCOPE-RECOVERY-CARDS.md)。
 
-3. Diagnostic View
-   主动查看
-   PID/code/ref/历史/原始probe/完整runtime与process hygiene
-~~~
+健康、观测充分性、影响、处理责任、是否需要人、是否现在通知必须分开。不需人处理不是健康；静默不能抹去当前异常；诊断/历史finding数量也不能反推异常。尚未证明异常的生命周期线索只进诊断，不让整机永久黄灯。
 
-状态卡不得混入事件台账；告警卡不得混入完整诊断账本。历史 OPEN/RESOLVED 数量、seen次数、PID/UID/code 默认只在 Diagnostic View。
-
-Feishu 当前支持 im.messages.patch 更新14天内 interactive card，因此“原位更新”是实际可实现路径，不需要每小时新增一条状态消息。
+卡片类型依据实际delivery intent、message/payload及调用路径确定，不能从绿色、标题或截图外观推断。Provider支持原位更新时优先使用；更新窗口/限制按当前实际API核验，超窗使用有连续关系的successor，不假称永远可patch。
 
 ## 3. Current Status Card 的四个默认区块
 
@@ -85,9 +74,11 @@ Feishu 当前支持 im.messages.patch 更新14天内 interactive card，因此�
 
 ### 3.4 当前问题
 
-状态卡只显示 0–2 个当前最重要且不同故障域的问题。
+首屏保留改变判断的当前问题、影响与下一责任。默认可先展示少量重要不同故障域，但其余重要当前问题要有准确数量/详情入口，不能把Focus的0–2限制套到异常数量上。
 
-没有问题就写“当前监测范围正常”；有任何 critical/important UNKNOWN 就不能全绿。
+绿色必须有足够的相关观测且没有已知active健康异常；关键未知/过期不能全绿。已知故障加部分未知优先显示故障并标缺口。普通diagnostic、已恢复累计和历史backlog不改变当前健康色。
+
+当前状态与“自上次更新以来”分开：当前0异常、本周期恢复7项可以显示“当前正常，本周期恢复7项”；累计恢复数不能冒充本周期变化。没有影响证据写影响待核，只有实际检查后才能说无影响。
 
 ## 4. 资源状态与告警是两件事
 
@@ -231,22 +222,13 @@ request/error window when traffic exists
 
 ## 7. Episode 与通知生命周期
 
-~~~text
-condition
-→ episode key = failure-domain + subject + symptom
-→ NEW
-→ ACK/SNOOZE optional
-→ UPDATED (patch same card)
-→ ESCALATED (may notify)
-→ RECOVERED (patch same card; critical可简短恢复通知)
-→ CLOSED
-~~~
+condition的身份与持续过程独立于投递。沿现有episode关系管理NEW、UPDATED、ESCALATED、RECOVERED、CLOSED和必要ACK/SNOOZE；这些词不要求新建状态机服务。一个episode对应一张事故卡，重复观测与跨天不新发。
 
-新消息通知仅在 NEW、ESCALATED、REOPENED、影响/动作需求发生实质改变，或用户配置的长期未处理 reminder 到期（例如日级，而非小时级）。
+NEW/ESCALATED/REOPENED或影响/实际所需动作改变可产生通知候选；是否打断再看受众、重要性和窗口。只有age增长不重新发送；已接受的长期reminder策略可以另提醒，但不制造新事故身份。ACK只表示知晓，snooze只改变提醒，不代表健康或授予重启权限。
 
-STILL_OPEN + 只有持续时间增加，不发新消息。
+**没有可提醒的新episode时，不创建“没有需要处理的变化”的空事故通知。** 定时健康播报仍可更新每日状态卡；主动诊断可以返回“当前无待处理事故”，但该句不是全机健康证明。恢复更新原卡/当日变化，不另发每次probe成功的消息。
 
-每个episode默认一张Feishu Incident Card，后续用 message patch 更新。状态卡也使用 rolling card；可按日轮换用于人类历史，但观察历史保存在records/receipts，不靠聊天堆24份。
+反复失败/恢复需表达不稳定，避免每次切换重新NEW。稳定观察窗口、合并间隔和升级阈值由目标服务/影响决定，不能从示例的30分钟变成全局默认。窗口外已恢复的P2在下次投递前重核：不发送仿佛仍在故障中的旧正文。
 
 ## 8. Incident Card 首层
 
@@ -265,34 +247,18 @@ PID、异常code、alert_ref、raw timestamp、seen count、probe URL、完整co
 
 ## 9. Status Card 首层示意
 
-示意仅说明信息层级，不是当前实时数字：
+以下是产品状态示例，不是Tokyo实测或固定模板：
 
-~~~text
-Tokyo · 当前状态
-02:30 采样 · 1项需注意
+| 情况 | 首层表达 | 通知行为 |
+|---|---|---|
+| 关键观测完整、无active异常 | 当前正常；我的资源/整机/基础设施可读 | 工作窗口更新当天卡 |
+| 确有异常、无需人操作 | 有异常；影响已核/待核；系统处理或观察责任 | 不因无需人就变绿；是否新Incident按影响 |
+| 异常影响当前工作 | 具体依赖、影响和下一动作 | 依P1/P2/受众策略 |
+| 关键状态过期/缺失 | 无法完整判断；最后可靠检查与缺口 | 不以空异常列表报健康 |
+| 当前恢复、此前有异常 | 当前正常/正在确认稳定；本周期恢复变化 | patch原episode，不每probe新发 |
+| 只有正常诊断/历史记录 | 正常资源状态；历史下沉 | 不因几百条finding假黄/假红 |
 
-我的资源
-CPU 1.3 核　RAM 15.5 GiB
-/data 配额 59 / 500 GiB · 剩余 441 GiB
-
-整机
-CPU 15%　RAM 65 / 247 GiB · 可用 182 GiB
-系统盘 60% · 剩余 18 GiB
-数据盘 9% · 剩余 3.6 TiB
-
-基础设施
-ServerOS 正常
-Tailscale 正常
-Laya Ready
-AI 网关 Ready
-
-需要注意
-<only real policy hits>
-
-▸ 服务与链路　▸ 资源明细
-~~~
-
-不能再写“采集三项成功→环境可用”。
+每日卡保留我的CPU/RAM/真实quota、整机聚合压力与关键存储、声明的基础设施/工作依赖、当前重要情况。未知分母不造百分比；自动处理中必须有真实执行/receipt；未实测影响不统一写“无影响”。前序播报压缩进今日历史，完整证据留records。
 
 ## 10. Ownership
 
@@ -304,13 +270,13 @@ AI 网关 Ready
 
 ## 11. 当前实现差距
 
-1. live资源卡仍使用旧summary，关键数值折叠；
-2. live告警同一事件反复新发；
-3. current alert registry被大量process-hygiene信号污染；
-4. rolling status-card patch与episode-card patch尚未接入当前sender；
-5. Laya/Tailscale/shared gateway还未统一成为monitored-set first-class projection；
-6. Core独立监测与daemon故障receipt旁路仍需真实验收；
-7. source checkout、installed artifact、running sender identity仍需按release receipt收敛，不能只改source声称上线。
+实现差距必须绑定被读取的版本，不复用早期“live仍是旧代码”的结论代替现在的安装观察。
+
+本轮设计收敛读取serveros `c5d118cc44629e7cb264b73e3026d8ac3abbf7dc`：`runtime/cards.py` 的alert路径存在“没有需要处理的变化”空摘要，以及低优先级/恢复/历史计数；`status_card`是另一个入口。`notification-contract.yaml`已把RUNTIME_OUTLIVED_OWNER作为INFORMATIONAL处理。不能说该码仍未改，也不能仅因此证明sender抑制空事故通知或每日卡健康语义正确。
+
+需验的接缝：真实message/payload目的→alert/status对应调用者；empty-incident send suppression；health/coverage与attention分离；当前变化而非历史累计；同工作日patch与跨天episode连续性；当前monitored set/功能probe；独立Core故障投递。是否安装、实际启用与客户端通过必须另读相应receipt，本轮未改变runtime或发测试消息。
+
+旧§1、§18、§22的现场读数保留为当时证据，不当当前资源/进程状态。source修复、发布cachebuster、安装、running与实际行为各有不同证明。
 
 ## 12. 验收
 
@@ -426,23 +392,11 @@ ServerOS 还需要一类不同于机器资源的 **workflow integrity incident**
 
 ## 16. 一天一张 Status Card
 
-Current Status Card 的最终发送模型：
+“一天”指本实例的CN-Mainland工作日。每device/profile第一轮获准routine update创建当天卡；08:00–20:00后续整点只patch；错过08:00可在下一允许时点建当天卡，不追发全部漏掉的小时。次一工作日新建，休息日不创建空白routine卡。
 
-~~~text
-local calendar day
-→ create one Daily Status Card on first scheduled sample
-→ every later sample PATCH the same card
-→ midnight/next day's first sample freezes yesterday and creates today's card
-~~~
+最新资源/服务/工作依赖及重要问题完整可见；前序状态压缩入今日历史。Incident只在状态卡有简短摘要和引用，正文仍在独立episode卡。全量观察属于records，不靠聊天条数保存。
 
-默认一台设备/一个监控profile每天一张。卡面显示“最后采样时间”和必要趋势；完整小时历史留 records/observations，不靠聊天消息保存。
-
-如果当天发生真实 Incident：
-- Status Card 的“当前问题”区域只放摘要和链接/引用；
-- Incident 本身拥有独立 episode card；
-- Status Card 不复制完整 incident详情。
-
-Feishu interactive card 可 patch 14 天，因此 daily status 远在可更新窗口内。
+Provider patch能力和限制以实际版本/接口验证，不将历史API窗口说明当永久承诺。具体投递以 [Scope/Recovery/Cards](MONITORING-SCOPE-RECOVERY-CARDS.md) 为唯一日历/生命周期细则。
 
 ## 17. 一个 Incident 一张 Card，不按小时/天重复
 
@@ -595,19 +549,9 @@ expected: derived from accepted lifecycle contract
 
 ## 24. Daily Status Card：一天一张，增量更新
 
-~~~text
-每日第一轮状态采样
-→ send Daily Status Card
+本节与§16同一产品：Daily Status Card = 每日状态播报卡，Status Update = 更新动作。按官方工作日和08:00–20:00窗口维护一张当天卡，latest展开、此前compact rows折叠。没有可报告的新事故不影响合法的routine状态更新；休息日没有routine卡也不意味着停止监测或P1通知。
 
-同一天后续采样
-→ PATCH 同一张卡
-
-下一本地日第一轮
-→ 冻结昨日卡
-→ send 新 Daily Status Card
-~~~
-
-默认一台 device/profile 每天一张。每次 patch 更新最后采样时间、我的资源、整机资源、shared infrastructure、0–2 个重要问题摘要，以及 Active Focus 的 workflow health 摘要。小时级 observation 留在 records，不用聊天消息保存。
+不要另建“播报卡”“状态卡”“每日卡”三套identity或sender。历史daily卡冻结不承担夜间最新状态，夜间持续episode由Incident卡准确更新。
 
 ## 25. Incident Card：一个 episode 一张
 

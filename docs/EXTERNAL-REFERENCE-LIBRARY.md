@@ -1,5 +1,3 @@
-> **2026-09-24 placement supersession**：当前 live 已存在私有知识库 `外部文档`（space_id `7688789520019360968`，当前仅默认模板首页）。只读、长期关注的外部资料使用 `FOLLOW_MIRROR` 落入该空间；参与维护的外部文档保持原位；OWNED正式指南使用 `公开文档`。本文早期“MyDocs参考资料”位置描述按此更新。详细合同见 ability-management `FEISHU-INFORMATION-SYNC-ARCHITECTURE.md`。
-
 # 外部参考资料：收藏、Follow、离线保存与知识采用
 
 状态：2026-09-23 详细产品与架构合同。细化 ARCHITECTURE.md §4–5 与 INFORMATION-DOCUMENT-LIFECYCLE.md；沿用 B1/B2/B5/B9 和现有 Feishu Space/Publisher，不增加第22个 Ability、新数据库、新 MCP 或收藏后台服务。本文不是已经把任何网页上传飞书或已启用订阅的回执。
@@ -49,7 +47,7 @@
 
 ## 5. 飞书参考笔记的可读结构
 
-默认落位到当前 live 的 **`外部文档`** Source Library。只读长期关注内容可建立 FOLLOW_MIRROR；按飞书知识库/人、网络发布方、GitHub org/repo、论文来源组织。原Source仍是正文authority。参与维护的外部doc不复制到此处，保持原位维护。
+外部来源入口默认落位到既有 **`外部文档`** Source Library；实际对象/ACL在写前重新核对。只读长期关注内容可建立 FOLLOW_MIRROR；按飞书知识库/人、网络发布方、GitHub org/repo、论文来源组织。原Source仍是正文authority。参与维护的外部doc不复制到此处，保持原位维护。
 
 一份笔记默认首层：题名、原作者/机构、原文入口、保存理由、几个有依据的要点、适用范围与未验证说明、关联项目/主题、我们的批注、最近检查/当前状态。source IDs、hash、解析器版本、同步回执放折叠详情或机器关联，不让首屏变台账。
 
@@ -67,7 +65,7 @@
 
 ## 7. 人工批注与自动更新的边界
 
-Reference Note 默认为飞书原生正文权威。自动管理的是有明确块身份的来源信息/摘要区域；个人批注是用户内容。初期Provider无法可靠保护分区时，自动刷新只提交候选差异，不整页覆盖；两个来源身份不因用户改标题而拆开。
+独立OWNED Reference Note由声明的飞书正文负责；FOLLOW_MIRROR的generated源文仍由原Source负责，批注是人的独立内容。自动管理的是有明确块身份的来源信息/摘要区域；个人批注是用户内容。初期Provider无法可靠保护分区时，自动刷新只提交候选差异，不整页覆盖；两个来源身份不因用户改标题而拆开。
 
 同步检查基于 last-applied body/分区revision、当前远端版本和新生成内容，三方比较；不能只看mtime。远端真实条件写能力须实测，revision字段存在和本地锁都不自动证明CAS。个人在生成区域修改也当冲突/用户修正处理，不把它删掉恢复模板。
 
@@ -89,7 +87,7 @@ Follow至少绑定实际账号、根doc/node、递归深度、允许格式/用�
 |---|---|---|
 | 外部网页/别人飞书文档 | 原Source | 单向捕获至获准本地；自己的参考笔记为独立衍生 |
 | 自己飞书Reference Note | 该飞书doc | 本地只读snapshot/检索/备份；本地编辑作为待回写patch，不自动反向覆盖 |
-| 自己飞书指南 | 声明的飞书doc | Source Follow、本地版本快照、必要Git metadata；源版本更新后消费者复核 |
+| 自己飞书指南 | 声明的飞书doc | 本地保真/可读版本及合规文本按声明进入private Git；媒体外置；新版本由真实consumer复核 |
 | Git工程设计/Skill规范 | 指定repo/path/ref | 版本化Git写入；飞书摘要/发布视图按接受commit更新，云人改回提案 |
 | records当前认识 | 已声明records对象 | 人读视图可投影；人的纠正成为对该权威的patch，不维护两份独立结论 |
 | 导入全文/翻译 | 各自衍生对象 | 固定源版本、生成/维护责任，不能反写原作者 |
@@ -152,3 +150,11 @@ REF01的真云写在后续获准个人测试对象做，本轮只有设计。REF
 B1负责身份/范围/获取/材料与快照；B2负责来源影响和当前理解；B5负责要点适用性核查；B9负责Reference/指南正文与共享publisher；Space负责位置/ACL；B10仅在请求需通知时投递；A2检索尊重来源与失效；G1保持Skill分发与实际工具入口。
 
 不默认新建external-reference插件/MCP：初期是information-management + document-stewardship/feishu-space-management的组合操作。只有实际消费者要求独立可复用工具入口才提供薄facade。实现接入现有计划P1/P2/P4/P5/P11，见 [CC-EXECUTION-PLAN](CC-EXECUTION-PLAN.md)。
+
+## 14. 三端连续性与取消关注
+
+本文正文遵循当前 [Feishu信息面合同](https://github.com/ProfessorZhi/ability-management/blob/main/design/FEISHU-INFORMATION-SYNC-ARCHITECTURE.md)：FOLLOW_MIRROR进入外部文档、EXTERNAL_MAINTAINED原位、OWNED按用途。Source Card只表示已收藏的入口，不意味着订阅已经开启；只读长期关注才按授权启用Follow。
+
+本地checkout与GitHub是同一个Records authority的不同materialization，不能与Feishu组成三主同步。rich document不能只存Markdown而声称无损；native block/source表示、材料关系、Style Profile按恢复/消费需要保留。unknown block无法安全patch时交proposal，不能整页重建丢信息。
+
+停止Follow不删除原source、历史或批注；撤权限制后续读取/传播，合法历史保留另看retention。任何单边失败都说明精确范围：Feishu成功/本地成功/Git未同步可以合法partial，不重建已成功对象。用户已给稳定位置/受众授权时无需每次再选目录，但不因此取得move/share/delete权限。

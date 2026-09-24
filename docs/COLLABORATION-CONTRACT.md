@@ -131,3 +131,13 @@ Follow同时可维护同一doc；publish自身revision去重，不吞后续人�
 各边最少验证：真实输入能进入、正确结果被下一consumer接受、输入变化/权限撤销拒绝旧交付、中断恢复不重复效果、一个业务失败不使无关工作永久等待。具体旅程见[SCENARIO-ACCEPTANCE](SCENARIO-ACCEPTANCE.md)，现有P0–P12仍是唯一实施计划，细化接口见[COLLABORATION-IMPLEMENTATION](COLLABORATION-IMPLEMENTATION.md)。
 
 本轮只修改设计，不创建Run/授权、执行任务或改任何runtime enum。普通Session只加载当前所需能力和这些关键边界，不把全部文档变成新的巨大bootstrap。
+
+## 15. Completion、接续与最小持久化
+
+Completion Boundary写在既有Requirement/brief的required结果中，不另建完成条件服务。Parent以当前接受版本和适用证据检查剩余义务，不按Activity计数/Run exit/child DONE/PR状态关闭。完成深度和严谨度独立；部分结果不能抵消缺失必需结果，历史完成事实也不因后来运维故障被改写。
+
+持续责任绑定逻辑Parent，不依赖同一transcript永生。checkpoint与真实继续receiver/trigger配对才构成自动接续；timer、消息送达和文件存在分别不够。短同步调用用返回值即可；长执行、显著成本、独立worker或外部效果才要求对应durable关系。Operation Attempt概念不意味着每个tool call新增表/Run。
+
+实际effects结合principal/target/action/data/受众/预算/可逆性判断，不能用单一E0–E4或“本地/远程”自动决定权限。可信控制、Provider和实际OS边界各自承担已证明的强制范围；Skill只指导，B10只呈现决定。未调解的effect unknown只围住受影响scope，不锁死所有工作。
+
+当前Focus完成可归零，不自动补位。Waiting仍有明确继续责任；park/取消/替代须协调实际writer、effect、资源和可恢复状态。不是所有后台routine都需要Work Item；长期采集/监控属于standing操作，具体建设/修复才有可完成的工作目标。

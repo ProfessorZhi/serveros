@@ -73,7 +73,7 @@
 
 **R14 · Current Card 与 Incident Card 都是稳定对象，不靠刷屏表达时间。**
 
-当前状态用一张rolling interactive card原位更新；可按日轮换，但每小时采样不生成24条聊天历史。一个incident episode对应一张card，持续时间/证据/恢复通过patch更新。只有NEW、ESCALATED、REOPENED或实质影响变化才重新打断用户。完整历史属于records/diagnostic，不属于聊天消息数量。
+当前状态使用每工作日一张Daily Status Card，在08:00–20:00窗口整点原位更新；不为每次采样新发聊天消息。一个incident episode对应一张card，持续时间/证据/恢复通过patch更新。只有NEW、ESCALATED、REOPENED或实质影响变化才重新打断用户。完整历史属于records/diagnostic，不属于聊天消息数量。
 
 **R15 · 资源首屏固定回答“我 / 设备 / 基础设施 / 当前问题”。**
 
@@ -99,4 +99,12 @@ login session、Agent Session、Work Item、Run、runtime instance 不能混用�
 
 **R20 · 卡片生命周期固定。**
 
-Daily Status 每个本地日一张并持续 patch；Incident 每个 episode 一张并持续 patch。采样次数、seen count、小时历史不作为新消息理由。
+Daily Status每个CN-Mainland工作日一张，仅工作窗口整点patch；Incident 每个 episode 一张并持续 patch。采样次数、seen count、小时历史不作为新消息理由。
+
+## 状态文案与投递目的 · 2026-09-24
+
+Daily Status Card = 每日状态播报卡；Status Update是更新动作。Incident/诊断不能靠同一个绿色标题冒充状态健康。
+
+“无需你处理”只描述人工动作；要说当前正常还需要足够相关观测、没有已知active异常。“状态未知”不能写0；诊断/历史条数不能决定颜色；已恢复必须标本周期或历史，不能混用。
+
+新事故通知没有可提醒事件时不发送空卡；定时健康状态可正常更新。当前异常无需人工也应显式但可不打断。显示自动处理中需要实际worker/receipt，显示无影响需要实际影响检查。只有卡片样式相似不能确认类型，诊断时核message/payload/producer。

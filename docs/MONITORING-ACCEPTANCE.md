@@ -92,10 +92,42 @@ SRV-0011/SRV-0005/MarketOps/LiteLLM并行任务仍受保护。真正同文件冲
 | V15 | 原生Feishu渲染 | 同一payload真实可见，HTML不是替身 |
 | V16 | 计划停机/退役临时环境 | 不发假故障，历史证据保留，当前视图不充数 |
 | V17 | 新配置未reload旧process | 显示实际running版本；待激活不是已升级 |
-| V18 | 未授权动作/错误actor | 没有实际mutation；“已知晓”不是批准重启 |\n| V19 | rolling status card | 每小时采样只patch当前卡，不新增一条聊天历史 |\n| V20 | incident still-open | 只有age增加不新发；同episode更新原卡 |\n| V21 | process-hygiene flood | 数百个high-memory/orphan/age finding不会变成数百通知 |\n| V22 | root/data/quota | 系统盘、数据盘、本人quota分别可读且阈值按role/remaining判断 |\n| V23 | Laya/Tailscale/Gateway | availability/quality/peer-idle/no-traffic语义不混淆 |\n| V24 | login session identity | cgroup/loginctl session不得渲染为Claude/Codex session，除非A1 provider有真实绑定证据 |\n| V25 | many idle agent sessions | 多个后台/可resume CC session不产生Incident |\n| V26 | outlived-login hygiene | VS Code/tmux/daemon跨login存活只进Diagnostic，除非join真实pressure/lease/work impact |\n| V27 | workflow integrity | Active Focus Parent lost、lease conflict、effect unknown、unexpected A7 FAIL可形成workflow incident |\n| V28 | daily status lifecycle | 同一天hourly采样只patch一张Status Card，第二天才新建 |\n| V29 | incident lifecycle | 同episode跨小时/跨天只patch一张Incident Card，不重复NEW |\n| V30 | shared-node principal scoping | 当前用户卡不把其它principal的WIP/PID列为自己的待处理对象 |\n| V31 | mixed login scope | 同一login scope内正常Claude/IDE与已结束Run runtime可分别归属，不整scope误报 |\n| V32 | known-owner drift | owner已知的遗留runtime先核Work Item/Run、lease、consumer和write/socket scope，再决定attention |\n| V33 | workflow alert positive | lease冲突/effect unknown/lost parent/unexpected A7 FAIL/source drift能产生有意义incident |\n| V34 | workflow alert negative | 多session、正常等待、可自动修review、后台Quay空闲不产生push |
+| V18 | 未授权动作/错误actor | 没有实际mutation；“已知晓”不是批准重启 |
+| V19 | rolling status card | 每小时采样只patch当前卡，不新增一条聊天历史 |
+| V20 | incident still-open | 只有age增加不新发；同episode更新原卡 |
+| V21 | process-hygiene flood | 数百个high-memory/orphan/age finding不会变成数百通知 |
+| V22 | root/data/quota | 系统盘、数据盘、本人quota分别可读且阈值按role/remaining判断 |
+| V23 | Laya/Tailscale/Gateway | availability/quality/peer-idle/no-traffic语义不混淆 |
+| V24 | login session identity | cgroup/loginctl session不得渲染为Claude/Codex session，除非A1 provider有真实绑定证据 |
+| V25 | many idle agent sessions | 多个后台/可resume CC session不产生Incident |
+| V26 | outlived-login hygiene | VS Code/tmux/daemon跨login存活只进Diagnostic，除非join真实pressure/lease/work impact |
+| V27 | workflow integrity | Active Focus Parent lost、lease conflict、effect unknown、unexpected A7 FAIL可形成workflow incident |
+| V28 | daily status lifecycle | 同一CN-Mainland工作日08:00–20:00整点只patch一张Status Card，下一工作日新建 |
+| V29 | incident lifecycle | 同episode跨小时/跨天只patch一张Incident Card，不重复NEW |
+| V30 | shared-node principal scoping | 当前用户卡不把其它principal的WIP/PID列为自己的待处理对象 |
+| V31 | mixed login scope | 同一login scope内正常Claude/IDE与已结束Run runtime可分别归属，不整scope误报 |
+| V32 | known-owner drift | owner已知的遗留runtime先核Work Item/Run、lease、consumer和write/socket scope，再决定attention |
+| V33 | workflow alert positive | lease冲突/effect unknown/lost parent/unexpected A7 FAIL/source drift能产生有意义incident |
+| V34 | workflow alert negative | 多session、正常等待、可自动修review、后台Quay空闲不产生push |
+| V35 | empty incident digest | 无可提醒事件不新发绿色空事故卡；定时正常Status仍可patch |
+| V36 | anomaly without human action | 有据的active功能异常仍在Status可见，不因人工动作0变healthy |
+| V37 | diagnostics without anomaly | 仅诊断/历史finding且关键观测正常不强制黄灯 |
+| V38 | known fault plus unknown | 保留已知故障并标缺口；不能用unknown冲淡故障或反称全机宕机 |
+| V39 | recovery delta versus total | 本周期恢复与历史累计分开；当前健康不说没有发生变化 |
+| V40 | flapping and stable recovery | 合并有据的不稳定过程；按服务配置确认恢复，不每次probe生成新episode |
+| V41 | off-window P2 recovered | 重核待发内容反映已恢复事实，不在次日推送过时故障正文 |
+| V42 | business calendar and missed hour | 官方调休覆盖weekday；UNKNOWN不伪造工作日；漏08:00不追发全部小时 |
+| V43 | card purpose identity | alert/status调用者、冻结payload、message与receipt可追，不凭截图外观判类型 |
+| V44 | observe-only recovery | 没有真实recovery worker/receipt时不得显示正在自动修复 |
 
 ## 5. 判据与计划关系
 
 完成需同时说明：source/probe、意味正确的model、用户可读默认面、真实consumer、故障恢复与实际安装范围。单元测试数、registry记录数、生成HTML成功、发送后有一个message_id均不能独立替代以上。
 
 这是现有P8/P9的明确产品细节和P11场景补充。监控专项不要求重新做Card/Store或新建消息平台，也不阻止无依赖Daily Cycle代码继续。其余21能力以ability-management/design/PRODUCT-EXPERIENCE-CONTRACT.md验收：真实解决用户问题，不只完成结构化文件。
+
+## 6. 2026-09-24源码复核与本轮边界
+
+本轮只读核对c5d118cc：`runtime/cards.py`的alert摘要空路径返回“没有需要处理的变化”，辅助计数包含低优先级/恢复/历史；`status_card`是独立入口。该事实定位候选消费链，不证明用户截图对应的message身份、实际installed代码或sender调度。
+
+实施必须同时测模型状态、卡片目的和投递次数：仅改文案/颜色不够，仅不发送也不能隐藏当前真实异常；数百诊断finding不自动转成数百active异常。V35–V44是待执行验收，不是本次已跑测试。
