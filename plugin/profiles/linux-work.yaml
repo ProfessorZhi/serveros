@@ -72,7 +72,28 @@ short_description: Agent Engineering Workbench for a Linux work node
 # enabled entry in `settings.json` — so a stale label here is not bookkeeping:
 # `claude plugin update` compares version strings, and an unchanged one leaves
 # every new session running the checker from before the fix.
-cachebuster: srv0003.20260923d
+#
+# Moved to `24a` on 2026-09-24, by the same rule and for the same reason. The
+# payload changed: the alert-scope and attention work edits `runtime/anomaly.py`
+# (a per-item finding is now scoped to this deployment's own uid, and a whole
+# class of hygiene codes moved off the alert face), plus
+# `runtime/notification-contract.yaml` (where that face is declared),
+# `runtime/presentation.py` (the subject word is taken from the identity layer
+# rather than from an agent name), `runtime/cards.py` and
+# `runtime/card-definitions.yaml`. All five are members of this composition, so
+# rebuilding without this bump would hand an installed cache a different payload
+# under the version string `srv0003.20260923d` — which already names the
+# revision running before the fix, and which is exactly the string that made the
+# card keep saying 需确认 after every earlier attempt to change it.
+#
+# Core's label is stale for the same reason and is NOT touched here: every
+# member above is inherited by this profile from `plugin/bundle.yaml`, so core's
+# payload has changed too, while `srv0003.20260923c` still names a released one.
+# No core artifact is being released from this node and none is installed on it
+# (`runtime-assets/hwz-server-os/serveros-core` does not exist), so the bump
+# belongs to whoever next releases core rather than to this change — recorded
+# here so it is a named leftover and not a silent one.
+cachebuster: srv0003.20260924a
 
 skills:
   - name: runtime-management
