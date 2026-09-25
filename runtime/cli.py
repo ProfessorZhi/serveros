@@ -665,6 +665,32 @@ def cmd_recipe_run(args) -> int:
     later as though somebody had.
     """
     mod = _recipes_module()
+    # Resolved BEFORE the engine exists, and that placement is the point: a
+    # relative or missing root is an argument problem, and an argument problem
+    # must not claim a key first. Until this line, the raw arguments were passed
+    # through, so an omitted `--records-root` -- what a timer issues -- reached
+    # `work` as `None` and died in the queue step with
+    # `TypeError: ... 'NoneType' and 'str'`, i.e. a caller's omission was
+    # reported as a fault in the loop. Every other surface in this file already
+    # defaults from the declared root contract; this one did not.
+    paths = paths_mod.Paths()
+    workspace_root = Path(args.workspace_root or paths.root("workspace"))
+    records_root = Path(args.records_root or workspace_root / "records")
+    # The workspace first, and that order is the message's: the records root is
+    # DERIVED from it when it is omitted, so a relative `--workspace-root` would
+    # otherwise be reported against `--records-root` -- naming a flag the caller
+    # never typed, and sending them to fix an argument they did not set.
+    for label, root in (("--workspace-root", workspace_root),
+                        ("--records-root", records_root)):
+        if not root.is_absolute():
+            # The board surfaces' rule, for their reason: a relative root
+            # resolves against whatever directory the caller stood in, so the
+            # record names an input nobody else can reproduce.
+            sys.stderr.write(
+                f"serverosctl: {label} must be absolute, got {root}. A run "
+                f"recorded against a root that came from the caller's working "
+                f"directory is one nobody else can read back.\n")
+            return EXIT_FAULT
     if args.recipe == "report" and not args.out_dir:
         # Checked here rather than left to the loop, so that a missing --out-dir
         # writes NO record: a key claimed for a run that could never have
@@ -694,7 +720,7 @@ def cmd_recipe_run(args) -> int:
         engine = mod.Engine(
             state_root=state_root, scope=args.scope, period=period,
             model=mod.default_model_invoker, transport=transport,
-            records_root=args.records_root, workspace_root=args.workspace_root,
+            records_root=records_root, workspace_root=workspace_root,
             worktree=args.worktree, run_dir=args.run_dir, out_dir=args.out_dir,
             recipient=args.recipient, channel=args.channel,
             publication_state=args.publication_state,

@@ -141,10 +141,13 @@ stops:
   NO_PROGRESS:
     normal: true
     means: >
-      a source answered and reported nothing in this window. Answered-zero,
-      which is not the same as an unanswered question -- `progress_verdict` in
-      the daily report already draws that line and this reads its verdict
-      rather than drawing a second one.
+      the earlier attempt of this scope was watched and a source answered with
+      nothing since it ended. Answered-zero, which is not the same as an
+      unanswered question -- `progress_verdict` in the daily report already
+      draws that line and this reads its verdict rather than drawing a second
+      one. A scope with no earlier attempt is never stopped here: there is no
+      attempt that could have made no progress, and a task that has not started
+      has not failed to move.
   BUDGET_EXHAUSTED:
     normal: true
     means: >
@@ -323,18 +326,31 @@ recipes:
     action: "当前 checkpoint -> 下一 Activity -> 实施/Quay -> verify -> progress"
     stops: [COMPLETED, NO_PROGRESS, NEEDS_DECISION, DECISION_SCOPE_UNKNOWN,
             BUDGET_EXHAUSTED, QUEUE_UNPRODUCED, WORK_ENGINE_UNBOUND,
-            SOURCE_UNAVAILABLE, MODEL_UNBOUND]
+            SOURCE_UNAVAILABLE, MODEL_UNBOUND, IN_FLIGHT_OR_ABANDONED]
     steps:
       - id: queue
         does: "read the authored selection for this project (today.yaml)"
       - id: classify
         does: >
           per entry: is it parked on a person, does it depend on one that is,
-          and are its dependents declared at all
-      - id: progress
+          and are its dependents declared at all. This is also where admission
+          is answered -- whether this run MAY start -- and it is answered from
+          the authored selection alone, never from what this run has already
+          produced.
+      - id: watch
         does: >
-          this window's real delta, through the daily report's own measurement
-          and its three-valued verdict
+          whether the earlier attempt of this scope has moved since it ended,
+          through the daily report's own measurement and its three-valued
+          verdict, bounded by the two instants it lies between: that attempt's
+          `finished_at` and this run's clock. NOT the period's own delta: a
+          window that does not contain the attempt being judged calls a task
+          that has not started yet "no progress", which is what a single
+          progress gate before the first dispatch did. A scope with no earlier
+          attempt has nothing to be stuck and is admitted without a watch; a
+          scope whose earlier attempt never finished is not dispatched over at
+          all (IN_FLIGHT_OR_ABANDONED); a scope with no worktree is watched
+          through the sources it does have, since no-code work is not measured
+          by a git delta.
       - id: advance
         does: "the next Activity for each ready entry"
         needs_model: true
