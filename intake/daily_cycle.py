@@ -15,13 +15,26 @@ TERMINAL = frozenset({"CLOSED", "DELIVERED", "CANCELLED"})
 PROTECTED_EFFECTS = frozenset({"production.cutover", "production.rollback", "production.mutate"})
 
 # The two fields a projection may carry about whether something is still held
-# on an Item's behalf. As of 2026-09-25 one of them has a producer and the other
-# does not, and the pair is kept together because they are read together:
+# on an Item's behalf. Both gained a producer on 2026-09-25, from two different
+# stores, and the pair is kept together because they are read together:
 # `worker_stopped` is read off the invocation receipt its admission names
-# (`intake/focus_source.worker_stopped_by_item`), while `resources_released` has
-# no producer anywhere — no board, no store, no receipt — so on this node it is
-# always absent and `focus_source.NOT_PRODUCED` says why. See `liveness` for why
-# an absent field is not read as evidence.
+# (`intake/focus_source.worker_stopped_by_item`), and `resources_released` off
+# the resource-lease namespace, whose contract's `work-item` scope names an Item
+# as a holder (`intake/focus_source.resources_released_by_item`).
+#
+# Neither is on the board, and neither is on the composed row unless its source
+# was consulted: a default composition carries neither field, which is the state
+# `liveness` below reads as silence and answers `None`. "Has a producer" and
+# "this row carries it" are two facts, and the earlier version of this comment
+# stated the first as if it settled the second — it read "one of them has a
+# producer and the other does not" and, a round earlier, would have read the same
+# way about both. See `liveness` for why an absent field is not read as evidence.
+#
+# The pair is a pair: `liveness` answers `False` only when BOTH were read, so a
+# row carrying one of them positive is undecided and not released. That is what
+# keeps this list's length load-bearing — a third field added here without a
+# producer would make every row undecided rather than falsely released, which is
+# the direction to fail in.
 LIVENESS_FIELDS = ("worker_stopped", "resources_released")
 # The accepted priority vocabulary. A row whose `priority` is not one of these
 # strings has no established priority — checked with `isinstance` rather than
@@ -103,28 +116,47 @@ def grant_reason(grant: dict, *, item: dict, action: str, now: datetime) -> str 
 def liveness(row: dict) -> tuple[bool | None, list[str]]:
     """Is something still held on this Item's behalf, and on whose word.
 
-    THREE-valued, and the third value is the point. `True` and `False` are the
-    row saying so; `None` is the row not saying. Only fields that are actually
-    present are read, so a projection that carries one of the two answers about
-    that one.
+    THREE-valued, and the third value has TWO ways in — which is what the
+    version below this one got wrong.
 
-    The version this replaces was a single expression —
+        True   a field that was read says something is still held. ONE such
+               field is enough: the answer is a negative one, and a negative
+               does not need a quorum.
+        False  EVERY field was read, and every one of them says nothing is held.
+        None   the row did not say. Either no field was read at all, or the ones
+               that were read are all positive and at least one was not read.
+
+    The third case is the one the previous version answered `False` on, and it
+    is not a hypothetical. On 2026-09-25 the lease namespace gained a producer
+    (`intake/focus_source.py`) while the receipt root stayed unnamed on this
+    node, so every live row carried `resources_released: True` and nothing
+    about a worker. Read the way that version read it, all 17 rows answered
+    "nothing is held on this Item's behalf" — a claim about a worker nobody
+    looked for — and every parked row carrying the field stopped being parked.
+    That is acceptance D's forbidden release, reachable by omitting one
+    argument: `--receipts` not named is not evidence that no worker is running.
+
+    It is the mirror of the defect that made this function three-valued in the
+    first place. That one was a single expression —
     `row.get("worker_stopped") is not True or row.get("resources_released") is
-    not True` — which collapses "the field is absent" into "the field is False"
-    and makes a silent projection read as a live worker. Measured against the
-    live 17-row personal board, that returned all 17 rows as carryover,
-    including the 7 CLOSED and 4 DELIVERED ones, and reported a node with four
-    Items in flight as OVER_CAPACITY on the strength of fourteen that had
-    finished. `tests/test_focus_source.py` carries that measurement against the
-    captured board; the direction is not a matter of taste, because a
-    projection that is silent about a worker is not evidence of one.
+    not True` — which collapsed "the field is absent" into "the field is False"
+    and made a silent projection read as a live worker: measured against the
+    live 17-row personal board it returned all 17 rows as carryover, including
+    the 7 CLOSED and 4 DELIVERED ones, and reported a node with four Items in
+    flight as OVER_CAPACITY on the strength of fourteen that had finished. One
+    direction read absence as held, the other read absence as released. Neither
+    is a reading the row supports, which is why a partial read is now `None` and
+    the CALLER reports WHICH fields were read and which were not
+    (`classify`'s `liveness_fields_read` / `liveness_fields_missing`).
     """
     present = [(field, row[field]) for field in LIVENESS_FIELDS
                if row.get(field) is not None]
-    if not present:
-        return None, []
     held = [field for field, value in present if value is not True]
-    return bool(held), held
+    if held:
+        return True, held
+    if len(present) == len(LIVENESS_FIELDS):
+        return False, []
+    return None, []
 
 
 def classify(row: dict, grants: dict[str, dict], *, now: datetime) -> dict:
@@ -161,11 +193,22 @@ def classify(row: dict, grants: dict[str, dict], *, now: datetime) -> dict:
     `priority`, and the reason the field is here rather than invented twice.
     """
     held, held_fields = liveness(row)
+    # Which of the pair the row answered and which it did not, carried to the
+    # callers because `None` has two causes and they are not the same sentence.
+    # A row nobody read either field on is missing a PRODUCER; a row that
+    # answered one is missing a READING, and the caller's text has to say which
+    # it is looking at — the version before this one printed both field names
+    # for both cases, so a row carrying `resources_released: True` was reported
+    # as carrying nothing.
+    fields_read = [f for f in LIVENESS_FIELDS if row.get(f) is not None]
+    fields_missing = [f for f in LIVENESS_FIELDS if row.get(f) is None]
     state = row.get("state")
     parked = (row.get("focus_disposition") == "PARKED" and
               row.get("parking_acknowledged") is True)
     verdict = {"id": row.get("id"), "held_fields": held_fields,
-               "liveness": held, "state": state, "action": None,
+               "liveness": held, "liveness_fields_read": fields_read,
+               "liveness_fields_missing": fields_missing,
+               "state": state, "action": None,
                "unevaluated": False}
     if held:
         # BEFORE the state test, and that order is acceptance D: an Item whose
@@ -179,9 +222,16 @@ def classify(row: dict, grants: dict[str, dict], *, now: datetime) -> dict:
         # Until 2026-09-25 no row could carry such evidence, so a parked row
         # never released its slot by being read — which is the answer the design
         # asks for: parking is acknowledged, not asserted. What the branch now
-        # admits is the one producer that exists: a `worker_stopped: True` read
-        # off the invocation receipt, which is a record of no process rather
-        # than a person's word.
+        # admits is records rather than a person's word: a `worker_stopped: True`
+        # read off the invocation receipt, and a `resources_released: True` read
+        # off the lease namespace. BOTH are required to be positive — one field
+        # reporting something still held makes `liveness` `True`, and a field
+        # nobody read makes it `None` — so a parked Item whose process is gone
+        # but whose lease is live stays parked, and so does one whose lease is
+        # empty but whose worker was never looked for. That second half is
+        # load-bearing: this branch is the one place where a MISSING field would
+        # otherwise read as a release, and `--receipts` omitted must not be able
+        # to undo a park.
         return {**verdict, "disposition": "PARKED",
                 "reason": "PARKED_RELEASE_UNCONFIRMED"}
     if state in TERMINAL:
@@ -435,19 +485,28 @@ def continue_focus(rows: list[dict], grants: dict[str, dict], accepted: dict | N
             # empty next to the held rows, which do carry one.
             because[item_id] = verdict["reason"] or "ACCEPTED_AND_ELIGIBLE"
             if verdict["unevaluated"]:
-                # Names the fact and NOT the cause. Until 2026-09-25 this said
-                # "the projection carries neither liveness field", which was the
-                # only reason a field could be missing; `worker_stopped` now has
-                # a producer, so a row can also be missing it because no receipt
-                # answered — the root was not named, no admission names this
-                # Item, or a receipt was undecidable. The cause is per Item and
-                # the composition carries it (`compose(…)[ "liveness" ]`); a
-                # sentence here would be one of several, told as the only one.
+                # Names the fact and NOT the cause, and names the FIELDS that
+                # are missing rather than the pair. Until 2026-09-25 this said
+                # "the projection carries neither liveness field", which was
+                # true only while neither had a producer; both do now, from two
+                # stores, so a row can be missing one because no receipt
+                # answered (the root was not named, no admission names this
+                # Item, a receipt was undecidable) or because the lease
+                # namespace was not read or could not be. The cause is per Item
+                # and per source, and the composition carries it
+                # (`compose(…)["liveness"]` and `["leases"]`); a sentence here
+                # would be one of several, told as the only one — which is what
+                # it already was once. The field list is not that sentence: it
+                # is what the row is missing, read off the row.
                 unevaluated.append({
-                    "id": item_id, "fields": list(LIVENESS_FIELDS),
-                    "because": "this row carries no liveness field, so whether a "
-                               "worker still holds this Item was not decided on "
-                               "it; the Item's own state is what continued it"})
+                    "id": item_id,
+                    "fields": list(verdict["liveness_fields_missing"]),
+                    "fields_read": list(verdict["liveness_fields_read"]),
+                    "because": ("this row carries nothing about "
+                                + ", ".join(verdict["liveness_fields_missing"])
+                                + ", so whether a worker or a resource is still "
+                                  "held on this Item was not decided on it; the "
+                                  "Item's own state is what continued it")})
             continue
         if verdict["disposition"] == "FINISHED":
             obligation = obligation_of(verdict)
@@ -559,10 +618,14 @@ def select_focus(rows: list[dict], grants: dict[str, dict], *, now: datetime,
             continue
         if verdict["unevaluated"]:
             unevaluated.append({
-                "id": row["id"], "fields": list(LIVENESS_FIELDS),
-                "because": "this projection carries neither field, so whether a "
-                           "worker still holds the Item was not decided here; "
-                           "the Item's own state is what admitted it"})
+                "id": row["id"],
+                "fields": list(verdict["liveness_fields_missing"]),
+                "fields_read": list(verdict["liveness_fields_read"]),
+                "because": ("this row carries nothing about "
+                            + ", ".join(verdict["liveness_fields_missing"])
+                            + ", so whether a worker or a resource still holds "
+                              "the Item was not decided here; the Item's own "
+                              "state is what admitted it")})
         candidates.append(row)
     # Priority must come from the accepted board, not LLM-generated popularity.
     chosen = _order(candidates)

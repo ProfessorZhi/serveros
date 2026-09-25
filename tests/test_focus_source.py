@@ -11,13 +11,17 @@ pointed at, wrong in a way none of them could observe — it reported all 17 row
 of the live board as unresolved work, 7 CLOSED and 4 DELIVERED among them,
 because it read the ABSENCE of a field as the field being False.
 
-The exception is `worker_stopped`, which gained a producer on 2026-09-25 and
-whose factory value is now a value a real dispatch can produce: the Item's
-admission names an action key, and the receipt `invoke_once` filed under that key
-is what says whether a worker is still held. `WorkerLivenessIsReadFromTheReceipt
-ThatOwnsIt` below drives that chain with receipts the real writer produced, and
-the same chain decides an Item whose Run is terminal. The remaining four fields
-are still invented by the factory, and `NOT_PRODUCED` still says so for each.
+The exceptions are `worker_stopped` and `resources_released`, which gained
+producers on 2026-09-25 — from two different stores — so their factory values are
+now values a real producer can emit. `worker_stopped` comes from the Item's
+admission and the receipt `invoke_once` filed under that action key;
+`resources_released` comes from the lease namespace, whose contract's
+`work-item` scope names an Item as the holder. `WorkerLivenessIsReadFromTheReceipt
+ThatOwnsIt` and `ResourceOccupancyIsReadFromTheLeaseStoreThatOwnsIt` below drive
+both chains with the real writers' own bytes, and each chain decides an Item whose
+Run is terminal. Every OTHER field the factory sets is still invented by it, and
+`NOT_PRODUCED` says so for each — checked against the table rather than against
+this sentence, in `test_the_absent_fields_are_named_with_a_reason`.
 
 That is the same failure the round keeps meeting: a surface was measured
 correctly and the measurement was read as a fact about the world. The fix for
@@ -78,10 +82,14 @@ from intake.focus_source import (
     compose,
     oldest,
     priority_level,
+    resources_released_by_item,
     rows_from_board,
     worker_stopped_by_item,
 )
 from runtime.bounded_invocation import invoke_once
+from runtime.environment import reference_states
+from runtime.lease_store import open_store
+from runtime.view import environment_effective
 
 DATA = Path(__file__).resolve().parent / "data"
 LIVE = DATA / "personal-board-live-2026-09-22.json"
@@ -194,23 +202,36 @@ class TheAdapterInventsNothing(unittest.TestCase):
             self.assertEqual(liveness(row), (None, []))
 
     def test_the_absent_fields_are_named_with_a_reason(self):
-        for field in ("resources_released", "grant_ref",
+        for field in ("focus_disposition", "parking_acknowledged", "grant_ref",
                       "scope_digest", "next_action", "blocked_by"):
             self.assertTrue(NOT_PRODUCED.get(field),
                             f"{field} is absent from every row and the module "
                             f"does not say why")
+        # And the two that are absent from a DEFAULT composition for a different
+        # reason: their producer exists, it is simply not read unless the caller
+        # supplies it. Absent-for-a-reason and absent-because-nobody-looked are
+        # two states of one field, and the next assertion keeps them from being
+        # written as one.
+        self.assertEqual(
+            [field for field in PRODUCED
+             if field in ("worker_stopped", "resources_released")
+             and field in NOT_PRODUCED], [],
+            "a field cannot be in both tables: its state would then depend on "
+            "which table the reader opened")
 
-    def test_the_field_that_gained_a_producer_left_the_table_that_says_it_has_none(self):
-        """`worker_stopped` is the one field this round moved between the two
-        tables, and a field left in both is a field whose state depends on which
-        table the reader opened. The general rule is asserted next door in
-        `CompletionIsCarriedOutAndNeverInvented`; this names the move, so that a
-        reader of the daily-work policy finds the reason it moved beside the
-        absence it replaced."""
-        self.assertIn("worker_stopped", PRODUCED)
-        self.assertNotIn("worker_stopped", NOT_PRODUCED)
-        self.assertIn("admission", PRODUCED["worker_stopped"])
-        self.assertIn("receipt", PRODUCED["worker_stopped"])
+    def test_the_fields_that_gained_a_producer_left_the_table_that_says_it_has_none(self):
+        """Both halves of the pair moved, one round apart, and to two different
+        owners. A field left in both tables is a field whose state depends on
+        which table the reader opened; this names each move so that a reader of
+        the daily-work policy finds the reason beside the absence it replaced."""
+        for field, source_words in (("worker_stopped", ("admission", "receipt")),
+                                    ("resources_released", ("work-item",
+                                                            "lease"))):
+            with self.subTest(field=field):
+                self.assertIn(field, PRODUCED)
+                self.assertNotIn(field, NOT_PRODUCED)
+                for word in source_words:
+                    self.assertIn(word, PRODUCED[field])
 
     def test_a_row_without_a_canonical_id_is_refused(self):
         broken = {"sections": [{"id": "p", "title": "t", "rows": [
@@ -302,7 +323,14 @@ class WorkerLivenessIsReadFromTheReceiptThatOwnsIt(unittest.TestCase):
         self.assertEqual(entry["action_keys"], ["dispatch-exited"])
 
     def test_a_dispatch_that_never_started_says_the_worker_stopped(self):
-        """The writer's one positive claim, and the only path that makes it."""
+        """The writer's one positive claim, and the only path that makes it.
+
+        The claim is asserted on the FIELD, and the pair is asserted to be
+        undecided: this composition consults the receipt and no lease namespace,
+        so it carries one of the two fields and `liveness` reads a partial
+        answer as partial. The version before this one asserted `(False, [])`
+        here — a release granted on a resource nobody looked at.
+        """
         self.dispatch("dispatch-nostart", [str(self.root / "no-such-binary")])
         recorded = self.receipt("dispatch-nostart")
         self.assertEqual(recorded["status"], "START_FAILED")
@@ -313,7 +341,8 @@ class WorkerLivenessIsReadFromTheReceiptThatOwnsIt(unittest.TestCase):
                                  receipts_root=self.receipts)
         row = composed["rows"][0]
         self.assertIs(row["worker_stopped"], True)
-        self.assertEqual(liveness(row), (False, []))
+        self.assertNotIn("resources_released", row)
+        self.assertEqual(liveness(row), (None, []))
         self.assertIn("NO_PROCESS_STARTED",
                       composed["liveness"]["items"]["SRV-0001"]["because"])
 
@@ -552,6 +581,222 @@ class WorkerLivenessIsReadFromTheReceiptThatOwnsIt(unittest.TestCase):
             self.assertIn(f'"{status}"', source,
                           f"{status} is in the liveness table and is not a status "
                           f"the writer writes")
+
+
+class ResourceOccupancyIsReadFromTheLeaseStoreThatOwnsIt(unittest.TestCase):
+    """The producer `resources_released` gained, exercised against the real store.
+
+    Every record here is written by `runtime/lease_store.py` and read back through
+    `runtime/view.environment_effective` — the same document `lease environment`
+    prints and `work focus` composes. No `json.dump` in this file builds a lease:
+    the question is what the ONE producer of the namespace records and what the
+    ONE derivation of a reference's state says, and a hand-built record would be
+    a test of this file's idea of both.
+
+    `state/serveros/resource-leases/` holds nothing on this node (measured
+    2026-09-25: `recorded: 0`, `absent_means: NO_LEASES_HELD`), so the last two
+    tests below are the ones that describe the live answer. They are not weaker
+    for it: "the store was read and holds nothing" is a claim the store makes,
+    and it is asserted against an empty namespace rather than assumed.
+    """
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.root = Path(self._tmp.name)
+
+    def store(self, root=None, now=None):
+        return open_store(root=root or self.root, now=now)
+
+    def declared(self, item_id, *, scope="work-item", resource="browser:chromium",
+                 sharing="shared", ttl_s=None):
+        self.store().declare(resource, scope=scope, holder=item_id,
+                             sharing=sharing, ttl_s=ttl_s)
+        return self.environment()
+
+    def environment(self, root=None):
+        """The derived document, through the function the CLI calls."""
+        return environment_effective(root=root or self.root)
+
+    def board(self, *item_ids):
+        return {"sections": [{"id": "today", "rows": [
+            {"id": i, "project": "test", "state": "INBOX"} for i in item_ids]}]}
+
+    def composed(self, item_ids, **kw):
+        return compose(self.board(*item_ids), **kw)
+
+    def test_a_live_reference_under_the_item_scope_has_not_been_released(self):
+        """The join is the contract's `work-item` scope, whose entry reads
+        「一个 Work Item 持有它」— so a holder under it IS an Item, and no name
+        matching is involved."""
+        composed = self.composed(["SRV-0001"],
+                                 environment=self.declared("SRV-0001"))
+        row = composed["rows"][0]
+        self.assertIs(row["resources_released"], False)
+        self.assertEqual(composed["leases"]["items"]["SRV-0001"]["resources"],
+                         ["browser:chromium"])
+        # And it OCCUPIES a slot: this is the field's whole purpose.
+        self.assertEqual(liveness(row), (True, ["resources_released"]))
+
+    def test_a_holder_spelled_like_an_item_under_another_scope_is_not_that_item(self):
+        """The reason the join is a scope and not a substring. A `session`-scoped
+        reference may be held by anything, spellings are not validated, and a
+        name match would answer HELD for an Item because somebody typed its id
+        into an unrelated field. It is COUNTED rather than skipped, because a
+        silent skip and "nothing held" render identically."""
+        composed = self.composed(["SRV-0001"],
+                                 environment=self.declared("SRV-0001",
+                                                           scope="session"))
+        self.assertIs(composed["rows"][0]["resources_released"], True)
+        self.assertEqual(composed["leases"]["held_by_another_scope"],
+                         ["browser:chromium:session:SRV-0001"])
+
+    def test_an_expired_reference_is_not_released(self):
+        """`runtime/environment._reference_row` reports an expired reference as
+        "no longer backed by anything" and keeps it visible on purpose: its holder
+        may have crashed, and a crashed holder is not a holder that gave the
+        resource back. Freeing the slot here is the crash case answered with
+        silence."""
+        composed = self.composed(["SRV-0001"],
+                                 environment=self.declared("SRV-0001", ttl_s=-60))
+        entry = composed["leases"]["items"]["SRV-0001"]
+        self.assertIs(composed["rows"][0]["resources_released"], False)
+        self.assertEqual(entry["because"], "REFERENCE_EXPIRED_UNRESOLVED")
+
+    def test_a_retired_reference_releases_the_item_and_the_record_may_stay(self):
+        """Two real post-release shapes, and the field answers about the ITEM in
+        both. A `shared` resource is retained by its own verdict
+        (`RETAIN / SHARED_RESOURCE_NOT_REFERENCE_OWNED` — it does not belong to
+        the reference that just left), so the record stays with no references;
+        an `exclusive` one is removed outright. The Item gave back what it held
+        either way, and whether the RESOURCE may go is `lease environment`'s
+        place to say, not this field's."""
+        for sharing in ("shared", "exclusive"):
+            with self.subTest(sharing=sharing):
+                with tempfile.TemporaryDirectory() as other:
+                    root = Path(other)
+                    self.store(root).declare("browser:chromium", scope="work-item",
+                                             holder="SRV-0001", sharing=sharing)
+                    released = self.store(root).release(
+                        "browser:chromium", scope="work-item", holder="SRV-0001")
+                    composed = self.composed(
+                        ["SRV-0001"], environment=self.environment(root))
+                    row = composed["rows"][0]
+                    self.assertIs(row["resources_released"], True)
+                    self.assertNotIn("worker_stopped", row)
+                    # One owner speaking is not the pair answering. The lease
+                    # side says the Item gave the resource back; whether its
+                    # worker is still writing is a different source's question
+                    # and nobody put it, so the pair is undecided here — and
+                    # `test_daily_cycle` carries what that costs and buys.
+                    self.assertEqual(liveness(row), (None, []))
+                    self.assertEqual(
+                        liveness({**row, "worker_stopped": True}), (False, []))
+                    # The two shapes are asserted apart, so that this test cannot
+                    # pass by both paths being one path.
+                    self.assertEqual(released["removed"], sharing == "exclusive")
+
+    def test_an_empty_namespace_answers_released_and_says_which_answer_it_is(self):
+        """A store that was read and holds nothing is an ANSWER, not a gap:
+        `fleet/state-root-contract.yaml` declares this namespace
+        `absent_means: NO_LEASES_HELD`, so an Item holding nothing is the
+        ordinary reading on an idle node. Reporting `None` instead would leave
+        every row undecided for ever.
+
+        And the two ways of arriving at `True` are told apart, because they are
+        different findings: an empty namespace, versus a namespace holding other
+        things that name no `work-item` reference of this Item. The word
+        `NO_LEASES_HELD` itself is not asserted here — it belongs to
+        `view.environment_leases`, which is the surface that prints it, and this
+        function is handed the derived document rather than that envelope."""
+        empty = self.composed(["SRV-0001", "SRV-0002"],
+                              environment=self.environment())
+        self.assertEqual(empty["leases"]["status"], "PRODUCED")
+        for row in empty["rows"]:
+            self.assertIs(row["resources_released"], True)
+            # `True` is what this OWNER says, and the pair still answers `None`
+            # while the other owner is unread — which is the live shape on this
+            # node (empty namespace, no receipt root named).
+            self.assertEqual(liveness(row), (None, []))
+        self.assertEqual(empty["leases"]["items"]["SRV-0001"]["because"],
+                         "LEASES_NAMESPACE_EMPTY")
+
+        other = self.composed(["SRV-0001", "SRV-0002"],
+                              environment=self.declared("SRV-0002"))
+        self.assertIs(other["rows"][0]["resources_released"], True)
+        self.assertEqual(other["leases"]["items"]["SRV-0001"]["because"],
+                         "NO_REFERENCE_NAMED_BY_THIS_ITEM")
+        self.assertIs(other["rows"][1]["resources_released"], False)
+
+    def test_a_namespace_nobody_could_read_is_not_an_empty_one(self):
+        """The direction that must not be taken: `view.environment_leases`
+        refuses to return an empty list for a namespace it could not read,
+        because an empty list IS the claim NO_LEASES_HELD. This function keeps
+        that apart too, and the field goes OFF the row rather than `True`."""
+        composed = self.composed(
+            ["SRV-0001"],
+            environment={"status": "UNREADABLE",
+                         "because": "the namespace exists and cannot be read"})
+        self.assertEqual(composed["leases"]["status"], "LEASES_UNREADABLE")
+        self.assertNotIn("resources_released", composed["rows"][0])
+        self.assertEqual(liveness(composed["rows"][0]), (None, []))
+
+    def test_a_composition_with_no_lease_reading_leaves_the_field_off(self):
+        composed = self.composed(["SRV-0001"])
+        self.assertEqual(composed["leases"]["status"], "LEASES_NOT_READ")
+        self.assertNotIn("resources_released", composed["rows"][0])
+        self.assertEqual(composed["rows"][0].get("worker_stopped", "absent"),
+                         "absent")
+
+    def test_a_document_that_is_not_the_owners_is_refused_not_read_as_empty(self):
+        for broken in ({"resources": "browser:chromium"}, {"ledger": []}, []):
+            with self.subTest(broken=broken):
+                composed = self.composed(["SRV-0001"], environment=broken)
+                self.assertEqual(composed["leases"]["status"],
+                                 "LEASES_DOCUMENT_UNEXPECTED")
+                self.assertNotIn("resources_released", composed["rows"][0])
+
+    def test_every_state_the_store_can_derive_is_answered_by_this_reader(self):
+        """The states are read from `runtime/environment.reference_states()`
+        rather than spelled here, so a fourth one added to the contract cannot
+        pass through this function unremarked: it would be answered `None` with a
+        reason naming it, which the test below asserts by construction."""
+        self.assertEqual(set(reference_states()), {"LIVE", "EXPIRED", "RETIRED"})
+        rows = [{"resource": "r:x", "references": [
+            {"holder": "SRV-0001", "scope": "work-item", "state": state}
+            for state in reference_states()]}]
+        reading = resources_released_by_item({"resources": rows},
+                                             item_ids={"SRV-0001"})
+        # RETIRED is the one state a stored reference row cannot carry — a
+        # retired reference leaves `references` and appears only in `history` —
+        # so it is answered `None` here rather than guessed at, and the reason
+        # names it.
+        self.assertIs(reading["items"]["SRV-0001"]["resources_released"], False)
+        self.assertEqual(reading["items"]["SRV-0001"]["because"],
+                         "REFERENCE_EXPIRED_UNRESOLVED+REFERENCE_IS_LIVE")
+
+    def test_a_terminal_run_that_still_holds_a_lease_releases_nothing(self):
+        """Acceptance D's other door, end to end through the lease store.
+
+        Same shape as the receipt-driven pair next door: the Item's Run is in a
+        terminal state and the boundary says it owes nothing, and the slot is
+        still occupied — not because a process is running but because the Item
+        holds a resource. The reason names the lease, so a reader cannot mistake
+        this for the worker case: the two fields have two readers on purpose.
+        """
+        composed = self.composed(["SRV-0001"],
+                                 environment=self.declared("SRV-0001"))
+        row = composed["rows"][0]
+        row["state"] = "CLOSED"
+        row["completion"] = {"state": "DISCHARGED", "assessed": True,
+                             "missing_fields": [], "missing_documents": [],
+                             "unreported_documents": [], "why": "the boundary says so"}
+        decision = continue_focus(composed["rows"], {}, SELECTED_ONE,
+                                  now=NOW, observed_at=CAPTURED_AT)
+        self.assertEqual(decision["selected"], ["SRV-0001"])
+        self.assertEqual(decision["because"]["SRV-0001"],
+                         "WORKER_OR_RESERVATION_HELD:resources_released")
+        self.assertEqual(decision["excluded"], [])
 
 
 class PriorityComesFromTheCardOrNotAtAll(unittest.TestCase):

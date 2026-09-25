@@ -517,6 +517,7 @@ tests/test_declared_commands.py::DeclaredCommandsExist::test_every_declared_comm
 | serveros（起点） | 3 failed, 4171 passed | — |
 | ability-management | **105 passed, 2 skipped**（`074a518`）；三个 renderer `--check` 干净 | 加 `SERVEROS_BUNDLE=<serveros worktree>/plugin` |
 | serveros（P6 切片 C：`worker_stopped` 接上它的 receipt 生产者，§9.27） | **1 failed**, 5669 passed, 20 skipped, 3936 subtests passed（660.19s） | `pytest tests/ -q`。相对上一行的 **+15 passed**（5654 → 5669）与 **+2 subtests**（3934 → 3936）就是这一片新增的测试。**那 1 条不是这一片引入的**，身份与判据见下一段 |
+| serveros（P6 切片 D：`resources_released` 接上它的 lease 生产者 + 一对字段必须先被读全，§9.28） | **5683 passed, 20 skipped, 3945 subtests passed, 0 failed**（646.90s） | `pytest tests/ -q`。算术是闭合的：上一格 5669 ＋ 这一片新增的 **13 条**（`test_focus_source.py` 的 `ResourceOccupancyIsReadFromTheLeaseStoreThatOwnsIt` 10 条 ＋ `test_daily_cycle.py` 3 条）＝ 5682，**再加回上一格那条红的 1 条** ＝ 5683；subtests 3936 ＋ **9** ＝ 3945。上一格那 1 条**这一次没有出现**——同一个文件单跑 `27 passed`、那一条参数化单跑 `4 passed`（8.10s）。**这不表示这一片修好了它**：这一片的六文件与它无涉，只表示那条红是**间歇的**，与 §9.27.6 记的探针读法一致（`container.attribution` 是四条参数化里唯一会 shell out 到 Docker 的那条）。所以它从「见过一次」变成「见过一次、缺席一次」，**不结案** |
 
 **切片 C 那一格里的那 1 条红：`container.attribution` 的 daemon/CLI 计数比对。**
 逐字是：
@@ -582,6 +583,12 @@ daemon 不写 handler 的异常日志（`journalctl --user -u serverosd.service`
 但**它今天读起来和「计数不一致」一样红**——两者都只是 `KeyError: 'result'`。
 要不要区分是一处独立的改动，不在这一片里；记下来是因为下一个人会先看到那条红、
 再看到「单跑就绿」，然后花掉我花掉的这段时间。
+
+**这一次（切片 D 的全量）它没有出现，而这不结案。** 见 §5.0 表格切片 D 那一格：全场
+`0 failed`，同一文件单跑 `27 passed`、那一条参数化单跑 `4 passed`。切片 D 的六个文件与
+`tests/test_daemon_equivalence.py` 无涉，所以这一次缺席只能读成**间歇性**的一次消失，
+与本节上面「可能是 Docker 在套件里瞬时拒绝」的读法一致，而不是「被修好了」。这一条的
+状态因此是：**见过一次、缺席一次、原因仍无本机证据**。
 
 **这一格的可归属性：现场记一次，事后又量了一次。** `intake/focus_source.py` 的 mtime 是
 `22:25:02`，落在套件窗口（`22:21:59` 起，`660.19s`）**之内**——套件跑到约四分之一时，我改了
@@ -3192,7 +3199,10 @@ status REFUSED / reason OUTPUT_ALREADY_EXISTS / worker_stopped False / direct_pr
 
 - **`resources_released` 仍然完全没有生产者**——不是 board、不是 store、不是 receipt。它在本机是
   「`worker_stopped` 的那对里的另一半」，文案已改成**与它分开**，并写明它**不是** `not worker_stopped`
-  （一次派工可以停了自己的进程、同时握着租约）。
+  （一次派工可以停了自己的进程、同时握着租约）。**（2026-09-25 更新：这一条整体被 §9.28 推翻。
+  owner 是租约 namespace，联结点是契约自己的 `work-item` scope；而且"与它分开"这句话当时是对的，
+  错的是我把"分开"写成了"lease store 对是否交还没说任何话"——`release()` ＋ `release_verdict` ＋
+  `references` 恰恰就是那份记录。错句形态保留在 §9.28.1。）**
 - **`focus_disposition` / `parking_acknowledged` / `scope_digest` / `grant_ref` / `next_action` /
   `blocked_by`** 仍是卡字段无人建。
 - **首次真实 grant 走可信用户控制仍然 PARTIAL**：`put_grant` 只被测试调用，没有 CLI 动词、没有
@@ -3213,6 +3223,141 @@ status REFUSED / reason OUTPUT_ALREADY_EXISTS / worker_stopped False / direct_pr
 - **receipt 是本片唯一的 live 缺口**：链在测试里以真 writer 自己的字节证明，但本机没有 receipt 可
   读，因为还没有任何东西通过 `invoke_once` 派活。第一个 live receipt 会由 P7/P8/P12 的运行时循环
   产生——在那之前，这一项的 live 状态是 PARTIAL，理由是精确的。
+
+### 9.28 P6 切片 D：`resources_released` 接上它的 owner，以及「一对字段必须先被读全」
+
+#### 9.28.1 owner 与联结点
+
+`resources_released` 的真 owner 是 **`state/serveros/resource-leases/`**：`fleet/state-root-contract.yaml`
+把它声明为 `class: authority`、`holds: current resource occupancy`、`producer: runtime/`、
+`required: false`、`absent_means: NO_LEASES_HELD`。生产者是 `runtime/lease_store.py`，
+读取走 `runtime/view.environment_effective`（`work focus` 里经 `view.environment_effective` 读，
+而不是自己开 store —— 否则「这个 Item 还持有什么」会有第二份推导，和 `lease environment` 那份
+在有人改其一之前都一致，而漂移的那份没人读）。
+
+**联结点是契约自己的 `work-item` scope**，不是名字匹配：`runtime/environment-contract.yaml#scopes`
+对 `work-item` 的说明是「一个 Work Item 持有它；Item 关闭时回收」，所以一个落在该 scope 下的
+holder **就是**一个 Item。而且 `lease_store.declare` 把 scope 当资源的属性（顶层 `scope` 与任何被
+声明引用的 `scope` 不等即 `Rejected`），所以「按 scope 找资源」是 store 自己的设计而不是本模块的猜。
+
+**订正一条我自己写错的句子**（§9.27.7 原文，形状留着好认）：它说租约 store「says nothing about
+whether it was given back」。这是错的，错得挺具体：`release()` 就是「交还」这个动作本身，
+`release_verdict` 是它的裁决，`references[]` 是交还之后留下的东西。我上一轮没读这个 store 就
+替它说了话，和这个仓库里反复记的那类病同形——**替一个没读过的 producer 断言它没生产**。
+
+#### 9.28.2 三值，以及为什么 EXPIRED 不是「已释放」
+
+`intake/focus_source.resources_released_by_item` 只读 owner 已经产出的两个字符串：引用的 `scope`
+与 `state`（LIVE / EXPIRED / RETIRED，由 `runtime/environment.reference_state` 推出）。取值：
+
+| 引用的 `state` | 该 Item 的 `resources_released` | 理由 |
+| --- | --- | --- |
+| `LIVE` | `False` | 还在被持有 |
+| `EXPIRED` | `False` | `environment._reference_row` 自己说它「no longer backed by anything」，且**保留可见**。崩溃的持有者不是交还了东西的持有者；答 `True` 等于把崩溃读成归还 |
+| 其它 / 缺席 | `None`（`REFERENCE_STATE_NOT_KNOWN_HERE:<state>`） | 这个名字本模块不知道，就不认 |
+| namespace 读不了 | 字段**不上行**（`LEASES_UNREADABLE`） | 空列表本身就是 `NO_LEASES_HELD` 这个断言，两者不能互串 |
+
+`RETIRED` 不会出现在这里：离开 `references` 的引用只活在 `history` 里，所以存储行永远不会携带它。
+
+#### 9.28.3 两个词，而不是一个
+
+namespace 里**什么都没有**（`rows` 为空）与 namespace 里**有别人的东西、只是没有本 Item 的
+`work-item` 引用**，是两个不同的发现，所以是两个词：`LEASES_NAMESPACE_EMPTY` 与
+`NO_REFERENCE_NAMED_BY_THIS_ITEM`。**`NO_LEASES_HELD` 这个词不在这里再拼一次**：它属于
+`view.environment_leases` 的封套，而本函数拿到的是派生文档。上一版我写的是「用契约自己的词」，
+但 `view.environment_effective` 的输出**根本不带 `absent_means`**（那是 `view.environment_leases`
+的字段，而且是 `view.py` 里的字面量、没人从契约读）——照写就是一条读不到的作者权威。现在两个词
+由本模块自己拥有，并注明与 `view.environment_leases` 的对应关系。
+
+#### 9.28.4 本机 live 读数
+
+`state/serveros/resource-leases/` 在本机**不存在**（目录没建），契约 `required: false`、
+`absent_means: NO_LEASES_HELD`。`work focus` 的实测：
+
+```
+liveness    RECEIPTS_ROOT_NOT_NAMED
+leases      PRODUCED
+  LIT-0101   released         no resource  LEASES_NAMESPACE_EMPTY
+  …（17 行同样）
+  SRV-0005   released         no resource  LEASES_NAMESPACE_EMPTY
+```
+
+**这是对空 store 的正确回答，不是「live 已验证为非空」。** 一旦 namespace 里出现一条 `work-item`
+租约，同一个字段会翻成 `False` 并让该行 `WORKER_OR_RESERVATION_HELD:resources_released`——
+那条路径由真 store 的真字节在测试里证明（`tests/test_focus_source.py` 的
+`ResourceOccupancyIsReadFromTheLeaseStoreThatOwnsIt`，10 条：LIVE / 别的 scope 的持有者 /
+`ttl_s=-60` 的 EXPIRED / shared 与 exclusive 两种释放后形态 / 空 namespace / 别人的记录 /
+UNREADABLE / 不给 environment / 非本 owner 的文档 / 终态行＋活租约）。本文件里没有一处
+`json.dump` 造租约：问的是**唯一那个生产者**记了什么、**唯一那份推导**说了什么。
+
+`work focus --json` 另两项实测（同一次运行）：`focus.leases.status` = `PRODUCED`、`items` 17 个；
+`focus.not_produced` 的键集**恰好是六个卡字段**（`blocked_by`、`focus_disposition`、`grant_ref`、
+`next_action`、`parking_acknowledged`、`scope_digest`），`resources_released` **已不在其中**——
+这是「字段离开 `NOT_PRODUCED`」这句话在 live 输出上的复核，不是靠读代码得出的。同一行的
+`resources_released: True` ＋ `worker_stopped` **不在行上**，就是 §9.28.5 那个缺陷在真实数据上的
+样本（也是修好之后的第一份样本）。`continuation.unevaluated` 为空**不能**读成「liveness 已判定」：
+板是 `STALE_BOARD`，两个函数都在 `blocked(...)` 早返回，`unevaluated` 恒空——这两件事在这一行
+输出里长得一样，是它必须被写明的原因。
+
+**严格化在真实路径上的代价是零，这一点是核过的。** `runtime/cli.py` 的 `_focus_decision` 同时读
+两个源（`--receipts` 命名的那份 receipt ＋ 无 `--state-dir` 的租约 namespace），所以 CLI 走到的那
+些行要么两个字段都在、要么两个都不在；「只读到一个」只出现在只给一个源的组装里（测试，以及
+把 `work focus` 的 `--receipts` 省略掉的 CLI 行——那时 worker 那一半本来就没被看，答 `None` 正是
+正确的话）。
+
+#### 9.28.5 这一片自己引入、又自己修掉的一个真缺陷（重要的不是修法，是它怎么露出来的）
+
+上表那四行 live 输出跑出来之后才发现：`liveness` 当时的规则是「只要有字段被读到、且它们全是
+`True`，就答 `False`（这个 Item 名下什么都没有）」。而本机每行只带 `resources_released: True`
+（receipt root 无人命名），于是**17 行全部读成「已释放」**——对 worker 那一半的断言，建立在一个
+没人看过的源上。后果不是措辞问题：
+
+- **acceptance D 禁止的那个释放，只要不写 `--receipts` 就能达成**（终态 Run、worker 仍写 → 被当成
+  已释放）。这正是计划里点名不许发生的方向。
+- `focus_disposition: PARKED` 的行会因为缺字段而被当作已释放并从 park 里放出来。
+- `unevaluated` 归零：原本「这一行是在较弱证据上被继续的」这句话，被换成了一句更强的、不成立的话。
+
+修法是把一个字段说的话与一对字段说的话分开：**一个字段答非 `True` 就足够 `True`（负向不需要
+法定人数）；`False` 只在两个字段都被读到且都答 `True` 时才给；其余答 `None`。**`classify` 新增
+`liveness_fields_read` / `liveness_fields_missing`，两处 `unevaluated` 条目改成报**缺的那些字段**
+（旧文案对着一行已经读到 `resources_released` 的行说它「两个字段都没有」，是同一类假话）。
+CLI 的标题从「这些字段没有生产者说明」改成「这些行在这些字段上没有答案」——两个字段现在都有
+生产者了，而「有没有生产者」与「这一行带没带」是两件事；末尾那句「同样字段」也改成按尾部条目的
+真实字段集打印（那句话可能是假的）。
+
+这是 §9.27 那个缺陷的**镜像**：那次是「缺席被读成 held」，这次是「缺席被读成 released」，
+两次都是把「没人说」当成了一份陈述。前者在本机被量到过（17 行全 carryover、OVER_CAPACITY 误报），
+后者是被这次 live 跑出来的。**教训精确到可复用：一个字段有了生产者，不等于那一对可以只读一半。**
+
+#### 9.28.6 变异：8 条判据各自承重
+
+改一处判据 → 跑 `tests/test_focus_source.py tests/test_daily_cycle.py` → 每条都必须死：
+
+| 变异 | 结果 |
+| --- | --- |
+| M1 `EXPIRED` 也答「已释放」 | 杀（2 红） |
+| M2 联结点改成名字匹配（不看 `work-item` scope） | 杀（1 红） |
+| M3 空 namespace 不再算答案（改答未决） | 杀（1 红） |
+| M4 读不了的 namespace 当成「什么都没持有」 | 杀（1 红） |
+| M5 `compose` 不再输出 `leases` 块 | 杀（9 红） |
+| M6 一个字段答 `True` 就算已释放（**旧的宽松读法**） | 杀（6 红） |
+| M7 缺的字段一律报成整对（不看读到没读到） | 杀（1 红） |
+| M8 `held` 判断挪到「全都读到且都答 `True`」之后 | 杀（8 红） |
+
+M6 杀 6 条、M8 杀 8 条，就是「§9.28.5 那条严格化是承重的」这句话的尸体。复原不用任何 git 动词：
+脚本持有原文，写回后比对 `sha256`，每轮清 `__pycache__`（同尺寸同秒的 pyc 会骗过校验）。
+
+#### 9.28.7 这一片没有做的事
+
+- **`worker_stopped` 的 live 状态仍是 PARTIAL**，理由与切片 C 相同且精确：本机不存在任何 receipts
+  目录，因为还没有任何东西通过 `invoke_once` 派活。第一个 live receipt 会由 P7/P8/P12 的运行时循环
+  产生。
+- **CLI 里那个 `unevaluated` 渲染块在本机不可达**：板是 `STALE_BOARD`，`select_focus` 与
+  `continue_focus` 都在 `blocked(...)` 早返回，`unevaluated` 恒为空。所以那两句话（改前的与改后的）
+  在本机**都从未被打印过**，而且这个块没有测试覆盖——它要等板的生产者存在才会第一次输出。如实记下，
+  不因为它不可达就把改动省掉：它一旦可达，就是一句会被读的话。
+- `focus_disposition` / `parking_acknowledged` / `scope_digest` / `grant_ref` / `next_action` /
+  `blocked_by` 仍是卡字段无人建（与 §9.27.7 同）；「首次真实 grant 走可信用户控制」仍 PARTIAL。
 
 ## 10. 后续每包更新哪几行
 
