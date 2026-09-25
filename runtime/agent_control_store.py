@@ -303,6 +303,18 @@ BUDGET_KEYS = ("wall_seconds", "max_attempts", "max_output_bytes")
 # a lease beside the one it meant.
 LEASE_INTENT_FIELDS = ("resource", "scope", "holder")
 
+# The fields the STORE adds to a stored checkpoint, and therefore not part of what
+# a caller wrote: the clock `put_checkpoint` was handed, and the two fields a later
+# epoch's write leaves behind on the record it takes over.
+#
+# `put_checkpoint` compares a caller's record against the stored one to decide
+# whether a second call is a retry, and these are excluded from that comparison.
+# Not a convenience: a superseded record must still answer a retry of the write
+# that created it. Comparing them would make every replay of a superseded write a
+# refusal — the caller would be told its own accepted write is not there, which is
+# the one thing a replay must never say.
+CHECKPOINT_STORE_FIELDS = ("written_at", "superseded_by", "superseded_at")
+
 # The phases a CALLER may confirm. `INTENT_RECORDED` is not among them: it is
 # the phase `admit` itself writes, so a caller confirming it would be reporting
 # this store's own act back to this store.
@@ -597,7 +609,7 @@ class AgentControlStore:
                     f"had never been granted.")
             return {"schema": SCHEMA, "contexts": {}, "approvals": {},
                     "bindings": {}, "selections": {}, "grants": {},
-                    "admissions": {}}
+                    "admissions": {}, "checkpoints": {}}
         try:
             data = json.loads(self.path.read_text(encoding="utf-8"))
         except (OSError, ValueError) as exc:
@@ -617,6 +629,7 @@ class AgentControlStore:
         data.setdefault("selections", {})
         data.setdefault("grants", {})
         data.setdefault("admissions", {})
+        data.setdefault("checkpoints", {})
         data["schema"] = SCHEMA
         return data
 
@@ -806,6 +819,196 @@ class AgentControlStore:
             if reason:
                 updated["closed_reason"] = str(reason)
             self._data["bindings"][str(ref)] = updated
+            self._flush()
+            return updated
+
+    # -- Parent checkpoints (P7 continuation) ------------------------------
+
+    def put_checkpoint(self, record: dict) -> dict:
+        """Record where a logical Parent got to before it stopped.
+
+        WRITE-ONCE PER SCOPE WHILE LIVE, where the scope is the Item at one epoch
+        of itself and not the owner. `put_binding` one screen up is immutable
+        because its central field must never change; this one is immutable
+        because a second Parent writing over a first one's record is how a
+        continuation is lost, and because the two rules it replaces are worded as
+        prose in two documents — «同一个scope中只有一个父继续owner» and «旧结果晚到
+        覆盖新epoch» in `docs/COLLABORATION-CONTRACT.md` and
+        `docs/SCENARIO-ACCEPTANCE.md` — and a rule that lives only in prose is a
+        rule a store cannot enforce.
+
+        THREE REFUSALS, and each is one of those sentences made mechanical:
+
+          * a SECOND LIVE checkpoint for the same (Item, epoch) — the scope
+            already has an owner and the message names it;
+          * an epoch BELOW the highest already recorded for that Item — a Parent
+            from an earlier epoch cannot write into the current one, which is what
+            stops a late result from a replaced Parent from landing on the new
+            epoch's state. The epoch in the key is what makes this answerable at
+            all: without it the two records would be one key and the second write
+            would silently be the only one;
+          * a record with no `checkpoint_ref` — the key is derived by
+            `runtime/continuation.build_checkpoint`, and a record that arrived
+            without one did not come through it.
+
+        AND ONE THING THIS DOES THAT IS NOT A REFUSAL. A write at a HIGHER epoch
+        than the live record for the same Item supersedes that record in the same
+        transaction. The scope is the Item; the epoch is only how it changes hands,
+        and «one continuation owner per scope» would otherwise have a moment with
+        two. Recorded on the OLD record, so the Parent that was replaced keeps its
+        state and loses only the claim to own it — and so that superseding stays a
+        statement about a scope rather than a deletion.
+
+        A REPLAY IS NOT A SECOND WRITE. An equal record minus
+        `CHECKPOINT_STORE_FIELDS` answers with the stored one, which is what a
+        retried write looks like and the same shape `put_binding` uses. Asked
+        BEFORE the two refusals, because a retry of an accepted write is a retry
+        whatever the scope's history has done since. Nothing here deletes: a
+        superseded record stays and says so.
+        """
+        ref = str(record.get("checkpoint_ref") or "")
+        if not ref:
+            raise StoreError(
+                "a checkpoint arrived with no checkpoint_ref. The key is derived "
+                "from the Item and the epoch by `runtime/continuation."
+                "build_checkpoint`, and a record that named its own key could be "
+                "filed over another Parent's")
+        item = str(record.get("work_item") or "")
+        epoch = record.get("epoch")
+        with self._mutation():
+            existing = self._data["checkpoints"].get(ref)
+            if existing is not None:
+                mine = {k: v for k, v in record.items()
+                        if k not in CHECKPOINT_STORE_FIELDS}
+                theirs = {k: v for k, v in existing.items()
+                          if k not in CHECKPOINT_STORE_FIELDS}
+                if mine == theirs:
+                    # On the returned copy and not on the stored record, which is
+                    # `admit`'s arrangement: a replayed write is a fact about this
+                    # call, and a record that carried it would make the second
+                    # replay differ from the first by that field alone.
+                    #
+                    # Asked BEFORE the two refusals below, and the order is
+                    # deliberate. A retry of an accepted write is a retry whatever
+                    # the scope's history has done since, and answering it with
+                    # «a later epoch carries this Item» would refuse a write the
+                    # store already accepted — the caller would be told its own
+                    # accepted record is not there.
+                    return {**existing, "replayed": True}
+                if existing.get("superseded_by"):
+                    raise StoreError(
+                        f"{ref} was taken over at {existing.get('superseded_at')} "
+                        f"by {existing.get('superseded_by')}, and this write is not "
+                        f"the record that is stored. {item} is carried by a later "
+                        f"epoch now, so a Parent writing different state into this "
+                        f"one would be the replaced owner writing over what "
+                        f"replaced it — which is the «旧结果晚到覆盖新epoch» failure "
+                        f"stated as a store rule instead of as prose")
+                raise StoreError(
+                    f"{ref} already holds a live checkpoint and it cannot be "
+                    f"replaced. The scope is this Item at this epoch, one "
+                    f"continuation owner at a time, and the record already there "
+                    f"was written by {existing.get('parent_owner')!r} at "
+                    f"{existing.get('written_at')}. Carry the Item on under a new "
+                    f"epoch, which takes the scope over and keeps this record "
+                    f"readable — overwriting would make the two Parents' states one "
+                    f"record and the earlier one unreadable")
+            # A new record for this ref. The Item is the scope and the epoch is
+            # only how it changes hands, so a write at a HIGHER epoch supersedes
+            # the live lower-epoch record in the same transaction.
+            #
+            # Not a refusal that asks the caller to supersede first, and that is
+            # the difference this loop makes: between the two writes there would
+            # be a moment with two live owners for one Item, and
+            # `docs/COLLABORATION-CONTRACT.md` says there is one. Doing it here
+            # also means the handover is recorded on the OLD record, so the Parent
+            # that was replaced keeps its state and loses only the claim to own it.
+            for other_ref, other in sorted(self._data["checkpoints"].items()):
+                if other_ref == ref or other.get("work_item") != item:
+                    continue
+                if other.get("superseded_by"):
+                    continue
+                other_epoch = other.get("epoch")
+                if not isinstance(other_epoch, int) or not isinstance(epoch, int):
+                    continue
+                if other_epoch > epoch:
+                    raise StoreError(
+                        f"{item} has a checkpoint at epoch {other_epoch} and this "
+                        f"one is epoch {epoch}. A Parent from an earlier epoch "
+                        f"cannot write into a later one: the Item has been carried "
+                        f"on since, and a record from the Parent that was replaced "
+                        f"would be read as the current state of work it no longer "
+                        f"owns. If this epoch is the current one, the later record "
+                        f"is the one to supersede — and superseding it is a "
+                        f"statement that this write is the successor, not a way to "
+                        f"quietly become it")
+                if other_epoch < epoch:
+                    replaced = dict(other)
+                    replaced["superseded_by"] = ref
+                    replaced["superseded_at"] = record.get("written_at")
+                    self._data["checkpoints"][other_ref] = replaced
+            self._data["checkpoints"][ref] = record
+            self._flush()
+            return {**record, "replayed": False}
+
+    def get_checkpoint(self, ref: str) -> dict | None:
+        """One checkpoint by its ref, or None if nothing was filed under it.
+
+        None rather than an empty record. «nobody checkpointed this» and «a
+        Parent checkpointed that it had nothing to say» are opposite readings,
+        and a caller that collapsed them would resume from an absence.
+        """
+        return self._read()["checkpoints"].get(str(ref))
+
+    def checkpoints(self) -> dict:
+        return dict(self._read()["checkpoints"])
+
+    def live_checkpoints(self) -> dict:
+        """Every checkpoint no later epoch has taken over.
+
+        A filter rather than a separate collection: superseding is a field on the
+        record it supersedes, so there is one list of checkpoints and this is the
+        reading of it that answers «who owns what now». A second list would be a
+        second thing to keep consistent after a restart, and the store's own
+        contract already refuses a second store for exactly this reason.
+        """
+        return {ref: record for ref, record in self._read()["checkpoints"].items()
+                if not record.get("superseded_by")}
+
+    def supersede_checkpoint(self, ref: str, *, at: str, by: str) -> dict:
+        """Hand a scope to a later epoch. Idempotent, and the record stays.
+
+        `by` is the ref of what took over — a later epoch's checkpoint of the same
+        Item. Requiring it is the point: superseding without naming the successor
+        would leave a scope with no owner at all, and «nobody owns this» is a
+        different fact from «someone else does».
+
+        Idempotent on the FIRST supersession, like `retire_admission`: the
+        question this answers is when the scope changed hands, and a second call
+        that moved that instant would move it to whenever somebody last mentioned
+        it.
+        """
+        target = str(ref or "")
+        successor = str(by or "").strip()
+        if not successor:
+            raise StoreError(
+                f"superseding {target or 'a checkpoint'} needs the ref of what took "
+                f"the scope over. A supersession that names no successor leaves the "
+                f"Item looking carried by nobody")
+        with self._mutation():
+            existing = self._data["checkpoints"].get(target)
+            if existing is None:
+                raise StoreError(
+                    f"{target or 'that ref'} has no checkpoint to supersede; "
+                    f"recording a handover of a scope this store does not hold would "
+                    f"make a scope that was never checkpointed look like one that was "
+                    f"taken over")
+            if existing.get("superseded_by"):
+                return existing
+            updated = dict(existing)
+            updated["superseded_by"] = successor
+            updated["superseded_at"] = str(at)
+            self._data["checkpoints"][target] = updated
             self._flush()
             return updated
 

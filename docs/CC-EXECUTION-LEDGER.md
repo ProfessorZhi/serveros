@@ -523,6 +523,7 @@ tests/test_declared_commands.py::DeclaredCommandsExist::test_every_declared_comm
 | serveros（P7 切片 C：`DISPATCHED` 的生产者 / `invoke_once` 的第一个生产调用者，§9.31） | **5709 passed, 20 skipped, 3947 subtests passed, 0 failed**（604.13s） | `pytest tests/ -q -p no:cacheprovider`。算术闭合：上一格 5700 ＋ 本片新增的 **9 条**（`TestTheDispatchVerb` 九条）＝ 5709；subtests 3947 ＋ **0** ＝ 3947（本片九条都没有 subtests）。这一跑读到的就是提交的那份字节：起跑前记下 `runtime/cli.py` 的 sha256 `135c11a00e159a40…`，跑完与提交前复核一致（本片另外两处改动是 `runtime/actuator-contract.yaml` 与 `tests/test_admission.py`，都不在跑动中被改）。**本片有一个必须先记的前置**：先跑的是 `tests/test_admission.py` 单文件（`115 passed in 18.77s`）作为变异检查的基线，然后 8 条变异全部被杀、每条都由它该杀的那一条测试杀死（§9.31.6），最后才是这一跑全量 |
 | serveros（P7 切片 D：回执锁改成「拒绝」而不是「等」，J07 判据 5，§9.32） | **5714 passed, 20 skipped, 3947 subtests passed, 0 failed**（647.81s） | `pytest tests/ -q -p no:cacheprovider`。算术闭合：上一格 5709 ＋ 本片新增的 **5 条**（`tests/test_bounded_invocation_paths.py` 四条 ＋ `tests/test_admission.py` 一条）＝ 5714；subtests 3947 ＋ **0** ＝ 3947（本片五条都没有 subtests）。这一跑读到的就是提交的那份字节：跑前记下 **7 个**被测文件的 sha256（`runtime/agent_control_store.py` `b54b22c4470006e0…`、`runtime/bounded_invocation.py` `c324f0dbd3c6dfce…`、`runtime/cli.py` `4ae3dc99c4a5bacae…`、`runtime/recipes.py`、`runtime/actuator-contract.yaml` 与两个测试文件），跑完 `sha256sum -c` 全部 `OK`。**本片同样有一个必须先记的前置**：先跑两个文件的合并基线（`131 passed`）作变异检查的底，然后 6 条变异 **5 杀 1 存**（§9.32.5，存活的那条 M5 与其理由记在那里），最后才是这一跑全量。本片改了错误/异常语义（新增 `LockUnavailable`），**安装产物未变**——三处改动全在 `runtime/`、`tests/` 与一份契约的散文里，所以没有 build→promote→restart |
 | serveros（P7 切片 E：退休后复用的键不再把上一轮的回执递给下一轮，§9.33） | **5718 passed, 20 skipped, 3947 subtests passed, 0 failed**（658.60s） | `pytest tests/ -q -p no:cacheprovider`。算术闭合：上一格 5714 ＋ 本片新增的 **4 条**（`TestTheDispatchVerb` 四条）＝ 5718；subtests 3947 ＋ **0** ＝ 3947（本片四条都没有 subtests）。这一跑读到的就是提交的那份字节：跑前记下 `runtime/cli.py` `5da0ffbeefadf3a3…` 与 `tests/test_admission.py` `d374fde739b10327…`，跑完两个 sha256 逐字一致；跑动中只写过 `docs/CC-EXECUTION-LEDGER.md`，而全树**没有测试读那份文件**。**本片有一个必须先记的前置**：先跑 `tests/test_admission.py` 单文件（`120 passed in 26.10s`）作变异检查的底，4 条变异**全部被杀**（§9.33.6），其中 E4 是**补了一条构造边界的测试之后**才被杀的（§9.33.5）。**本片改了拒绝语义（多出两种拒绝语的来源），安装产物未变**——三处改动全在 `runtime/`、`tests/` 与台账里，所以没有 build→promote→restart。另记一条保真度缩水：这一跑里 `tests/test_daemon_equivalence.py` 有一处断言因宿主在比较过程中变动而**未按精确相等判**（测试自己的警告如此写），环境造的、非本片，记在这里而不是省略 |
+| serveros（P7 切片 F：等待中的 Parent 留下一份可续的 checkpoint，「没有 receiver」是一句关于 fabric 的真话，§9.34） | **5782 passed, 20 skipped, 3948 subtests passed, 0 failed**（669.25s），第二遍同样三项（640.97s） | `pytest tests/ -q -p no:cacheprovider`。算术**两项都闭合**：上一格 5718 ＋ 本片新增的 **64 条**（`tests/test_continuation.py`，全部新增文件）＝ 5782；收集数 5802 ＝ 5782 ＋ 20 skipped；subtests 3947 ＋ **1** ＝ 3948，而那 **1** 是本片新增的**一个被产出的模块**被 `test_every_shipped_module_imports_from_the_install` 按产物里的 `.py` 逐个计数数到的（§9.34.8 有实测：那个循环从 111 变 112，产物里确实有 `runtime/continuation.py`）。**跑了两遍**，因为 subtest 那一格要先判它是复现还是浮动；两次 passed/skipped/subtests 三项逐字相同。这一跑读到的就是提交的那份字节：跑前记下 `runtime/continuation.py` `85079def1361b150…`、`runtime/agent_control_store.py` `71cf23e8a775c302…`、`runtime/cli.py` `3dc1df2134c1359b…`、`tests/test_continuation.py` `71088c504be23477…`，跑完 `sha256sum -c` 四项全 `OK`；跑动中只写过 `docs/CC-EXECUTION-LEDGER.md`，而全树**没有测试读那份文件**。**本片有一个必须先记的前置**：先跑 `tests/test_continuation.py` 单文件（`64 passed in 4.91s`）作变异检查的底，16 条变异**全部被杀**、无存活（§9.34.7），另有两条**等价变异**如实列出未计入。**本片改了 store 的写入语义（多出同事务取代与三处新拒绝），而且安装产物内容变了**——`plugin/bundle.yaml` 按**目录**声明 `runtime: path: runtime`，本片在那个目录下新增了一个模块。后果写清楚：`work checkpoint` 与 `work continuations` 在**装好的节点上要等下一次 build→promote→restart 才可用**，那一次是 P12 的；本片没有动 `plugin/`、`mcp/` 或任何 composition，所以本片自己不触发它。这一行的「产物未变」最初写错了，落笔后自查改成现在这句（§9.34.8） |
 
 **切片 C 那一格里的那 1 条红：`container.attribution` 的 daemon/CLI 计数比对。**
 逐字是：
@@ -4104,7 +4105,7 @@ E3 杀掉 9 条本身就值得记：它说明「方向反过来」不是一条�
 #### 9.33.8 它没做什么，以及一条邻接发现为什么不并进本片
 
 - 仍然没有 scheduler，`max_attempts` 仍然没有消费者（§9.31.8 第三条照旧）。
-- **邻接发现（本片量到，未修，列为切片 F）**：`intake/focus_source.worker_stopped_by_item` 读的
+- **邻接发现（本片量到，未修，列为切片 G）**：`intake/focus_source.worker_stopped_by_item` 读的
   是**同一个** `<receipts>/<action_key>.json`，而且它**在生产的路上** ——
   `runtime/cli.py` 的 `focus` 那条路把 `admissions` 与 `receipts_root` 交给
   `focus_source.compose`。它已经有「键相符」那道判据（`RECEIPT_NAMES_ANOTHER_ACTION_KEY`，注释里
@@ -4126,6 +4127,197 @@ E3 杀掉 9 条本身就值得记：它说明「方向反过来」不是一条�
   一条 `AVAILABLE` 的行会从 `HELD` 变成可被选中 —— 也就是 OVER_CAPACITY 那一侧。**先决定「这一
   处问的是哪一个问题」，再决定用哪条判据。**
 - 共享网关那一侧不属本仓，本片一概未动。
+
+### 9.34 P7 切片 F：等待中的 Parent 留下一份可续的 checkpoint，以及「没有 receiver」是一句关于 fabric 的真话
+
+#### 9.34.1 这一片接的是哪一环：产品点名的两半，先接能如实报告的那一半
+
+切片 E 的 §9.33.8 把 `intake/focus_source.worker_stopped_by_item` 的邻接发现列为「下一片」，
+**这个编号在落笔前就改掉了**：本片接的是延续链自己那一环，那一条改列为切片 G（§9.33.8 已就地改
+字）。理由是后台 agent 对 P7 延续链的映射给出的主断裂有**两处**，而它们的先后顺序由产品自己定：
+
+- **checkpoint 那一半不存在。** 一个必须等待的 Parent 没有任何地方可以留下「我走到哪了」；
+  `docs/context-capsule.md` 把这个对象的名字、字段和性质都写全了（「已接受的 Requirement 修订 /
+  所需剩余结果 / 已接受的证据定位器 / 实际的子尝试和未解决的影响 / 写入范围 / 下一个安全动作」，
+  并且「**不是转录摘要，也不是新数据库**」），而它没有生产者、没有消费者。
+- **唤醒那一半完全不存在。** 没有任何地方有 `wake`/`poll`/`next_parent`，`runtime/daemon.py` 的
+  `tick()` 既不读准入也不读 checkpoint，没有 scheduler。
+
+两半的顺序不是偏好。`docs/daily-work-cycle.md` §17.4 要求的是**没有 receiver 时准确显示
+「checkpoint已保存，待续」，不能伪造后台运行** —— 这句要求的前半段是 checkpoint 存在，后半段
+是那半没有的东西被**如实报告**。先把唤醒做出来，就永远量不到「没有 receiver 时」这个状态；先把
+checkpoint 做出来，那半缺失就变成一句可读的输出。所以本片的结果正是：**一个能续的 checkpoint，
+加上一句关于本机没有东西会唤醒它的真话。**
+
+#### 9.34.2 记录是一个封闭字段集，和一个只有两种的等待
+
+`runtime/continuation.py` 新建，`CHECKPOINT_FIELDS` 就是 §9.34.1 引的那六个字段加五个（Item、
+epoch、owner、下一个安全动作、等待），**闭集**，`build_checkpoint` 返回的恰好是它加上自己派生的
+两个（`checkpoint_ref`、`written_at`）。唯一的自由文本是 `next_safe_action`，界 `MAX_NEXT_ACTION = 400`。
+这不是洁癖：**一个调用者能加字段的记录，就是一个调用者会把转录放进去的记录**，而产品对这个对象的
+措辞恰好是「不是转录摘要」。同一份理由下 `WAIT_KINDS = ("child", "window")` 也是闭的，而且闭的
+方式是把「为什么少了一种」写进 docstring：**对另一个 Work Item 的依赖是真实的等待方式，本机没有
+任何存储能说出一个 Item 依赖哪些 Item**，加一个没人能核实的 kind 只会让列表更长、记录更弱。
+
+两种 kind 各自对着一样能核实的东西：
+
+- `child` 对着 **admissions**（`waiting_on.refs` 里每个 ref 都必须是这个 store 持有的 `cycle_ref`）。
+  等一个 fabric 看不见的孩子，就是 `docs/SCENARIO-ACCEPTANCE.md` 点名的「要求用户复制结果」的开头。
+- `window` 对着**写入时的时钟**（`until` 必须是晚于 `written_at` 的 instant）。已经关上的窗口不是
+  等待，把它存下来会让记录读成「现在就该续」。
+
+顺带量到一条与 retire 有关的事实并写成了测试：**`retire_admission` 保留记录**，所以一条已退休的
+admission 仍然为它记录的那个孩子作答。这不是宽容，是必须——退役不是取消，一个 Parent 在自己等的
+孩子刚跑完的那一刻读到「没有这个孩子」才是错的。
+
+#### 9.34.3 为什么 key 里只有 Item 和 epoch，没有 owner
+
+`checkpoint_key(item, epoch) = f"{item}#{int(epoch)}"`。**owner 是字段，不是 key 的一部分。** 一个
+continuation 在其中唯一的东西是「这个 Item 在它自己的第几个 epoch 上」；把 owner 放进 key，两个
+Parent 争同一个 scope 就变成两条**悄悄共存**的记录，而不是一条可读的冲突。
+
+#### 9.34.4 一个 scope 一个 owner：为什么是「同事务取代」而不是「拒绝并要求先取代」
+
+这一条是**本片自己的冒烟测出来的**，不是设计时想到的。第一版只写了「低于已记录最高 epoch 的写法
+被拒」，冒烟第 6 步立刻显示：写入 epoch 2 之后 `live_checkpoints()` 同时返回 `SRV-0001#1` 与
+`SRV-0001#2` —— 一个 Item 两个 live owner，而 `docs/COLLABORATION-CONTRACT.md` 写的是
+「同一个scope中只有一个父继续owner」。
+
+修法有两种，选了后者：
+
+- 拒绝，并要求调用者先 `supersede_checkpoint`。**不选**：两次写入之间有一段时间是两个 owner，
+  而这段窗口正好是崩溃会落进去的地方。
+- **较高 epoch 的写入在同一事务里取代较低的 live 记录。** 交接写在**旧记录**上
+  （`superseded_by`/`superseded_at`），所以被换掉的 Parent 保住自己的状态、只失去对它的主张；而
+  「一个 scope 一个 owner」从一句散文变成一条 store 规则。
+
+两条拒绝与它并存，各自对应一句产品原话：
+
+- 同一个 (Item, epoch) 的第二条 live 记录被拒，报错点名**谁**持有、**什么时候**写的
+  —— 「同一个scope中只有一个父继续owner」。
+- 早 epoch 不得写进晚 epoch 的当前状态（`other_epoch > epoch` 时拒），
+  **这就是「旧结果晚到覆盖新epoch」写成 store 规则而不是写成散文**。而且它只在 ref 是新的时才
+  可能触发：`build_checkpoint` 派生 key，所以同 Item 同 epoch 的正常撞车走的是上一条拒绝。
+
+#### 9.34.5 第二个缺陷也是本片自己的：store 写上去的字段让「已接受写入的重试」变成「你的记录不在这」
+
+这是本片改的第二处，而且它的形状值得单独写：**它是修第一处时引进来的。**
+
+重放判据是「把调用者给的记录与已存的比一比，去掉几个字段」，那几个字段原本只有 `written_at`。但
+取代是 store 事后写上去的，于是被取代过的记录比它的作者写的**多两个字段** —— 一次超时后重试的
+写入（`work checkpoint` 的那条路本来就会重试）会拿到「你的记录不是存的那份」。
+
+**一个 replay 绝不能对调用者说的，就是「你自己那份被接受的写入不在这」。** 修法是把
+`CHECKPOINT_STORE_FIELDS = ("written_at", "superseded_by", "superseded_at")` 显式列成一个常量，
+在 §9.34.2 与 §9.34.4 之间成为第三个「store 自己加的东西」的清单。变异表里的 F8 就是把它改回
+`("written_at",)`，被 `test_a_retry_of_an_accepted_write_survives_the_scope_changing_hands`
+杀掉 —— 那条测试因此是这一片最该留着的一条。
+
+顺带定下**重放的判据与两条拒绝的先后**：重放**先问**。一次被接受的写入的重试是重试，不管这个
+scope 的历史后来做了什么；放在后面问，一次已经落地的写入会被答成「更晚的 epoch 持有这个 Item」，
+也就是**调用者被告知自己那份被接受的记录不在**。这一条也写进了注释，因为它不写在代码上就看不出来。
+
+#### 9.34.6 为什么 receiver 是参数而不是字段
+
+`continuation_state(record, *, receivers_seen=None, now=None)`。**receiver 列表是参数，永远不是
+`record` 的字段。** 这是这个函数全部的安全性质：**一份能自己说出「谁会唤醒我」的记录，就是一份能
+声称后台在跑的记录** —— 而后者写起来不花任何代价，读的人也无从分辨。所以没有任何一个 checkpoint
+字段说谁会唤醒它；答案来自 fabric，`receivers()` 是这个 release 里唯一知道的地方，而
+`RECEIVERS = ()` 是**按构造为空**、不是遗漏：它是唤醒那一半将来要填的注册表，在填上之前空元组
+就是本机的量测。
+
+三个答案，第三个不是失败：`SUPERSEDED`（**先于** receiver 问题回答，因为「谁在持有」先于「什么
+会唤醒它」，而被取代记录的第二个答案说的是一个已经不是 owner 的 Parent）、
+`AWAITING_CONTINUATION`（`says` 里是产品那句话本身）、`RECEIVER_INSTALLED`。每个答案都带 `says`，
+包括那两句不是产品原话的 —— 一个要自己组织句子的读者会组织出一句不一样的，而第一句不一样的，
+就是那句声称后台在跑的。
+
+变异表里的 F7 把默认读注册表改成写死空列表，被
+`test_a_filled_registry_changes_the_answer_without_touching_the_record` 杀掉；那条测试
+**把 `RECEIVERS` patch 成非空**，所以今天的空元组是被量出来的，不是被写死的。
+
+#### 9.34.7 变异表：16 条，16 杀
+
+底是 `tests/test_continuation.py` 单文件（`64 passed in 4.91s`），只跑这一个文件 —— 这是更严的
+量法：别的文件里也有判据可能顺手抓到这些变异，只跑本切片自己的测试才回答「本切片的判据钉住了
+没有」。每个锚点都在其文件里**恰好出现一次**，第一轮 F15 的锚点出现 3 次（`if args.item:` 在
+`runtime/cli.py` 里不唯一），当场记为 ANCHOR-MISS 并改锚重跑，不把一次锚错读成「这条判据活着」。
+
+| 编号 | 文件 | 变异 | 杀它的测试 |
+| --- | --- | --- | --- |
+| F1 | `continuation.py` | `waiting_on.kind` 的闭集不再检查 | `test_a_kind_nothing_can_check_is_refused_by_name` |
+| F2 | `continuation.py` | child 不再对着 admissions 核实 | `test_a_child_this_store_does_not_hold_is_refused` ＋ CLI 那条 |
+| F3 | `continuation.py` | 窗口是否已过去不再检查 | `test_an_instant_in_the_past_is_refused` |
+| F4 | `continuation.py` | 界从 `>` 改成 `>=`（400 被拒） | `test_a_long_next_action_is_refused_at_the_bound_and_not_before` |
+| F5 | `continuation.py` | `True` 重新算作 epoch 1 | `test_a_bool_is_not_an_epoch_even_though_python_says_it_is_an_int` |
+| F6 | `continuation.py` | `SUPERSEDED` 排到 receiver 问题之后 | `test_a_taken_over_record_says_so_before_it_answers_about_waking` |
+| F7 | `continuation.py` | 默认不读注册表（空元组写死） | `test_a_filled_registry_changes_the_answer_without_touching_the_record` |
+| F8 | `agent_control_store.py` | 重放比较把取代字段算进去 | `test_a_retry_of_an_accepted_write_survives_the_scope_changing_hands` |
+| F9 | `agent_control_store.py` | 高 epoch 不再同事务取代低 epoch | `test_a_higher_epoch_takes_the_scope_over_in_the_same_transaction` 等 6 条 |
+| F10 | `agent_control_store.py` | 被取代的 scope 退回「已有一个 live checkpoint」 | `test_a_changed_write_into_a_taken_over_scope_is_refused` |
+| F11 | `agent_control_store.py` | 早 epoch 不得写进晚 epoch 的规则拿掉 | `test_a_new_record_below_the_live_epoch_is_refused` |
+| F12 | `agent_control_store.py` | `supersede_checkpoint` 不再幂等 | `test_it_is_idempotent_on_the_first_instant` |
+| F13 | `agent_control_store.py` | 取代不必点名后继者 | `test_it_names_a_successor_or_it_is_refused` |
+| F14 | `runtime/cli.py` | 两种等待同给不再被拒 | `test_both_ways_of_waiting_at_once_is_refused` |
+| F15 | `runtime/cli.py` | `--item` 不再过滤 | `test_the_item_filter_narrows_the_reading` |
+| F16 | `runtime/cli.py` | live 计数不再排除被取代的记录 | `test_the_reader_shows_a_taken_over_record_and_its_successor` |
+
+**两条等价变异如实列出，未计入 16 条**，因为跑了也不改变行为：`cmd_work_continuations` 里
+`installed = continuation.receivers()` 与把 `receivers_seen=installed` 换成 `[]` —— **本机
+`receivers()` 今天就是 `()`**，两种写法在今天的取值下是同一个问题。（它们不是「判据没被钉住」，
+是这个变异体本身不改变行为；把它们写成 SURVIVED 会把一个恒等变换记成一条漏掉的判据。）
+
+#### 9.34.8 本次读数
+
+- `pytest tests/ -q -p no:cacheprovider` → **`5782 passed, 20 skipped, 3948 subtests passed, 0 failed`（669.25s）**。
+- **跑了两遍**，因为 subtest 那一格需要一个复现判据：第二遍
+  `5782 passed, 20 skipped, 3948 subtests passed`（640.97s）。两次的 passed/skipped/subtests 三项
+  逐字相同，所以下面那条 +1 是**确定性的**（本片新增的模块被产物计数），不是宿主造成的浮动。
+- 测试数算术**精确闭合**：上一格 5718 ＋ 本片新增的 **64 条**（`tests/test_continuation.py`，全部
+  新增文件）＝ 5782；收集数 5802 ＝ 5782 passed ＋ 20 skipped。本片那 64 条**没有 subtests**，
+  这一点是单跑量到的（`64 passed in 5.02s`，无 subtests 行），不是推的。
+- **subtests 的 +1（3947 → 3948）也是本片造的，而且已经指名到底。** 这一条查得比它值得的久，
+  过程记下来因为它同时是本片最重要的一条更正：本片自己的 64 条贡献 **0** 个 subtest（单跑已证），
+  所以先按「宿主在两次跑之间变了」假设去找。找到的是
+  `tests/test_artifact_install_smoke.py::test_every_shipped_module_imports_from_the_install`：
+  它**按装好的产物里每一个 `.py` 开一个子测试**。而本片在 `runtime/` 下**新建了一个模块**，
+  `plugin/bundle.yaml` 又按**目录**声明这个 code dir（`runtime: path: runtime`）—— 所以产物里多了
+  一个文件，那个循环从 111 个子测试变成 112 个。直接建出产物问它，实测：`code_dirs()` 是
+  `['abilities','bin','context','documents','fleet','intake','mcp','memory','relations','runtime','space']`，
+  那个循环会开 **112** 个子测试，且**产物里确实有 `runtime/continuation.py`**。**算术闭合：
+  5718 ＋ 64 ＝ 5782；3947 ＋ 1 ＝ 3948，那 1 就是本片新增的这一个被产出的模块。**
+  顺带记一条关于台账自身的量测：**这个 pytest（9.1.1，未装 `pytest-subtests`）的报告对象上拿不到
+  逐条测试的 subtest 计数**，所以「subtest 增量归因」在这种情形下只能靠把产物建出来问，不能靠读数。
+- 这一跑读到的就是提交的那份字节：跑前记下四个文件的 sha256 —— `runtime/continuation.py`
+  `85079def1361b150…`、`runtime/agent_control_store.py` `71cf23e8a775c302…`、`runtime/cli.py`
+  `3dc1df2134c1359b…`、`tests/test_continuation.py` `71088c504be23477…` —— 跑完 `sha256sum -c`
+  四项全 `OK`。跑动中只写过 `docs/CC-EXECUTION-LEDGER.md`（§9.33.8 的切片编号那一个字），而全树
+  **没有测试读那份文件**（§9.33.7 已核过，本片复核未变）。
+- **本片有一个必须先记的前置**：先跑 `tests/test_continuation.py` 单文件作变异检查的底
+  （`64 passed in 4.91s`），16 条变异**全部被杀**（§9.34.7），然后才是这一跑全量。
+- **本片改了 store 的写入语义（多出取代与三处新拒绝），而且安装产物内容变了 —— 这一句是本片
+  落笔后自查改掉的，原来写的是「未变」，是错的。** `plugin/bundle.yaml` 按**目录**声明
+  `runtime: path: runtime`，而本片在那个目录下**新增了一个模块**，所以打包出来的产物多了一个文件
+  （上面那条 +1 就是同一个事实的另一个读数）。后果要说清楚：`serverosctl work checkpoint` 与
+  `work continuations` 在**装好的节点上要等下一次 build→promote→restart 才可用** ——
+  `runtime/cli.py` 的 `_continuation_module()` 按 `REPO_ROOT` 下的路径加载那个模块，装好的节点上
+  `REPO_ROOT` 是产物，模块不在就加载不了。**那一次 build→promote→restart 是 P12 的**，不是本片的；
+  本片没有动 `plugin/`、`mcp/` 或任何 composition，所以本片自己不触发它。
+
+#### 9.34.9 它没做什么
+
+- **仍然没有 scheduler**，`max_attempts` 仍然没有消费者（§9.31.8 第三条照旧）。本片造的是被唤醒
+  的那一半所依赖的**记录**，不是唤醒本身。
+- **交接那一半刻意未修，需要自己的切片。** `fleet/agent_control_router.handoff` 的 `checkpoint`
+  参数被读、被校验非空、被记为一个步骤**名字**，然后**被丢弃**；`context_handed_off` 在
+  `handoff.ok` 上**无条件**追加；`resolve_target`/`target_available`/`target_ready` 三个步骤名
+  共用同一条未分化的判据。本片量清了它为什么不能顺手修：`checkpoint` 无法被投递给 `resume`
+  （`params: []`），`session.create` 的 `instruction` 是唯一的载体，而合约明说 provider-native
+  状态不会被移动 —— 所以那三个步骤名的含义**确实未定**，三种解读都符合合约原话。**先定「这个
+  checkpoint 指的是哪一个对象」，再动它。** 本片的 checkpoint 与它不是同一个对象。
+- `continuation_state` 没有 `now` 的调用者：参数在签名里（`window` 型等待的到期本可以用它判），
+  但**没有任何生产方按到期唤醒**，所以本片没有拿它去判「到期了」，那会是第二个声称后台在跑的
+  地方。这个参数留在签名里是因为它是那个判据将要读的东西。
 
 ## 10. 后续每包更新哪几行
 
