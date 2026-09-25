@@ -114,6 +114,16 @@ COVERAGE_PRODUCED = {
     "backfilled": "files.backfilled — attachments materialized",
     "count": "links.count — link expansions declared",
     "expanded": "links.expanded — link expansions written",
+    "revisions_checked_at": "sync.revisions_checked_at — the date the collector "
+                            "last compared the recorded rows against the source",
+    "revisions_compared": "sync.revisions_compared — how many recorded messages "
+                          "that comparison actually reached",
+    "revision_count": "sync.revision_count — edits the source reported, or that "
+                      "the comparison found in the redacted text",
+    "retraction_count": "sync.retraction_count — messages the source now reports "
+                        "as deleted",
+    "restoration_count": "sync.restoration_count — messages this archive recorded "
+                         "as deleted that the source no longer reports as deleted",
 }
 
 # A digest of full length can be re-checked against the source; a truncated one
@@ -288,6 +298,73 @@ def _number(value):
     return value if isinstance(value, int) and not isinstance(value, bool) else None
 
 
+def _revisions_component(sync: dict, written) -> dict:
+    """Whether this archive still matches the source about the text it holds.
+
+    The component exists because of a silent failure this reader could not see
+    before it. The collector deduped on `message_id`, and the source answers an
+    edited message with the SAME id and new text -- so `new` came out empty, the
+    archive went on asserting the pre-edit wording, and nothing anywhere said it
+    had moved. `records/information/raw/README.md:29` is the rule it broke
+    ("源编辑/撤回保留事件关系"), and the upstream side of this component is the
+    collector's `messages.revisions.jsonl`.
+
+    Three states, and the distinction between the first two is the whole point:
+
+    COMPLETE      the manifest states a comparison ran and reached rows. Not
+                  "nothing was edited" -- that is `revision_count: 0` beside a
+                  non-zero denominator, which is a MEASURED zero. A capture where
+                  the source was re-read and had not moved is as complete as one
+                  where it had.
+    INCOMPLETE    the comparison claims to have reached nothing while the
+                  manifest says this capture holds messages. The run happened and
+                  its denominator is empty, which is a shortfall rather than an
+                  absence to report.
+    UNDECIDABLE   no `revisions_checked_at`: this capture never compared. That is
+                  the honest reading for the 47 manifests captured before the
+                  comparison existed -- their text may or may not still match the
+                  source, and this archive cannot say which. Reporting COMPLETE
+                  there would be asserting the archive agrees with a source
+                  nobody re-read.
+    """
+    checked_at = sync.get("revisions_checked_at")
+    compared = _number(sync.get("revisions_compared"))
+    # The counts are facts whether or not the date is there: a manifest that
+    # records three revisions and no comparison date still records three
+    # revisions, and dropping them would be this reader discarding what it read.
+    facts = _facts(
+        ("revisions_checked_at", checked_at),
+        ("revisions_compared", compared),
+        ("revision_count", _number(sync.get("revision_count"))),
+        ("retraction_count", _number(sync.get("retraction_count"))),
+        ("restoration_count", _number(sync.get("restoration_count"))),
+    )
+    if checked_at is None:
+        return {"state": "UNDECIDABLE", "facts": facts,
+                "why": ["no `sync.revisions_checked_at`: this capture never "
+                        "compared what it recorded against the source, so whether "
+                        "an edit or retraction happened after it was taken is not "
+                        "recorded here"]}
+    if compared is None:
+        return {"state": "UNDECIDABLE", "facts": facts,
+                "why": ["no readable `sync.revisions_compared`: the manifest says "
+                        "a comparison was made and does not say what it looked at, "
+                        "so its counts have no denominator"]}
+    if compared == 0 and isinstance(written, int) and written > 0:
+        return {"state": "INCOMPLETE", "facts": facts,
+                "why": [f"`revisions_compared` is 0 while this capture holds "
+                        f"{written} messages: the comparison ran and reached none "
+                        f"of them, so its zero counts are not a measurement of the "
+                        f"source"]}
+    if compared == 0 and written is None:
+        # 0 compared and nothing that says how many should have been reached.
+        return {"state": "UNDECIDABLE", "facts": facts,
+                "why": ["`revisions_compared` is 0 and this manifest carries no "
+                        "readable `msg_count`, so an empty comparison cannot be "
+                        "told from a comparison of an empty capture"]}
+    return {"state": "COMPLETE", "facts": facts, "why": []}
+
+
 def _chat_components(document: dict) -> dict:
     """`messages`, `attachments` and `links`, each decided from its own facts."""
     sync = _require_mapping(document.get("sync"), "`sync`")
@@ -340,6 +417,8 @@ def _chat_components(document: dict) -> dict:
     state = ("INCOMPLETE" if incomplete else
              "UNDECIDABLE" if undecidable else "COMPLETE")
     components["messages"] = {"state": state, "facts": facts, "why": why}
+
+    components["revisions"] = _revisions_component(sync, written)
 
     if "files" in document:
         files = _require_mapping(document.get("files"), "`files`")

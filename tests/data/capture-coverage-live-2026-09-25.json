@@ -18,6 +18,10 @@
       "remote_unique_message_count": 13
      },
      "state": "COMPLETE"
+    },
+    "revisions": {
+     "facts": {},
+     "state": "UNDECIDABLE"
     }
    },
    "path": "feishu/chats/groups/ai-support/oc_5d3001b2e60e6333d85237e36e00e057/manifest.json",
@@ -44,6 +48,10 @@
       "remote_unique_message_count": 206
      },
      "state": "COMPLETE"
+    },
+    "revisions": {
+     "facts": {},
+     "state": "UNDECIDABLE"
     }
    },
    "path": "feishu/chats/groups/bruce-sky-maggie/oc_0c4a3d39db26ddae068d19885c2674b7/manifest.json",
@@ -70,6 +78,10 @@
       "remote_unique_message_count": 4
      },
      "state": "COMPLETE"
+    },
+    "revisions": {
+     "facts": {},
+     "state": "UNDECIDABLE"
     }
    },
    "path": "feishu/chats/groups/call-anytime/oc_fefbc079537e9074f62da5e0abea0630/manifest.json",
@@ -95,6 +107,10 @@
       "remote_unique_message_count": 858
      },
      "state": "COMPLETE"
+    },
+    "revisions": {
+     "facts": {},
+     "state": "UNDECIDABLE"
     }
    },
    "path": "feishu/chats/groups/codex-domestic-model-support/oc_d8037405128a62c8c27520a26518e09a/manifest.json",
@@ -120,6 +136,10 @@
       "remote_unique_message_count": 204
      },
      "state": "COMPLETE"
+    },
+    "revisions": {
+     "facts": {},
+     "state": "UNDECIDABLE"
     }
    },
    "path": "feishu/chats/groups/litellm-alerts/oc_eb2df36956e50e6cc4a388cf3bece196/manifest.json",
@@ -145,6 +165,10 @@
       "remote_unique_message_count": 1491
      },
      "state": "COMPLETE"
+    },
+    "revisions": {
+     "facts": {},
+     "state": "UNDECIDABLE"
     }
    },
    "path": "feishu/chats/groups/litellm-thirdparty-api/oc_c881d6e02c098450fba154b029d06895/manifest.json",
@@ -171,6 +195,10 @@
       "remote_unique_message_count": 41
      },
      "state": "COMPLETE"
+    },
+    "revisions": {
+     "facts": {},
+     "state": "UNDECIDABLE"
     }
    },
    "path": "feishu/chats/groups/maia-zhengji-kit-vince/oc_3e647419972febd2fcd174fdef5496de/manifest.json",
@@ -197,6 +225,10 @@
       "remote_unique_message_count": 4956
      },
      "state": "COMPLETE"
+    },
+    "revisions": {
+     "facts": {},
+     "state": "UNDECIDABLE"
     }
    },
    "path": "feishu/chats/groups/nanjing-office/oc_bf4e4b395554c066f012288f6ed09fc6/manifest.json",
@@ -223,6 +255,10 @@
       "remote_unique_message_count": 52
      },
      "state": "COMPLETE"
+    },
+    "revisions": {
+     "facts": {},
+     "state": "UNDECIDABLE"
     }
    },
    "path": "feishu/chats/groups/new-hire-2026-08/oc_2ce36d153f16b8221b7840dbc16c1452/manifest.json",
@@ -249,6 +285,10 @@
       "remote_unique_message_count": 1085
      },
      "state": "COMPLETE"
+    },
+    "revisions": {
+     "facts": {},
+     "state": "UNDECIDABLE"
     }
    },
    "path": "feishu/chats/groups/online-service-ai-infra/oc_388ebd134f6ee7dcc4fbb2a6900b09cc/manifest.json",
@@ -275,6 +315,10 @@
       "remote_unique_message_count": 207
      },
      "state": "COMPLETE"
+    },
+    "revisions": {
+     "facts": {},
+     "state": "UNDECIDABLE"
     }
    },
    "path": "feishu/chats/groups/quay/oc_b4a1d65148be80c2128296ffb595b116/manifest.json",
@@ -301,6 +345,10 @@
       "remote_unique_message_count": 23
      },
      "state": "COMPLETE"
+    },
+    "revisions": {
+     "facts": {},
+     "state": "UNDECIDABLE"
     }
    },
    "path": "feishu/chats/groups/tokyo-server/oc_237ad866d2efee97d985eb39587a0ab2/manifest.json",
@@ -327,6 +375,10 @@
       "remote_unique_message_count": 124
      },
      "state": "COMPLETE"
+    },
+    "revisions": {
+     "facts": {},
+     "state": "UNDECIDABLE"
     }
    },
    "path": "feishu/chats/groups/vince-monika/oc_4d91d82e6abd8a7d2b2c03ceafcdc0e9/manifest.json",
@@ -353,6 +405,10 @@
       "remote_unique_message_count": 12
      },
      "state": "COMPLETE"
+    },
+    "revisions": {
+     "facts": {},
+     "state": "UNDECIDABLE"
     }
    },
    "path": "feishu/chats/groups/vince-zhengji-wendy-monica-marek/oc_35e2af5565082efe40cd6790e379a1cc/manifest.json",
@@ -420,6 +476,10 @@
       "remote_unique_message_count": 22
      },
      "state": "COMPLETE"
+    },
+    "revisions": {
+     "facts": {},
+     "state": "UNDECIDABLE"
     }
    },
    "path": "feishu/chats/groups/zhengji-bruce-vince/oc_f0efc4b6b27f7bc444e27a0ce54496a9/manifest.json",
@@ -446,6 +506,10 @@
       "remote_unique_message_count": 23
      },
      "state": "COMPLETE"
+    },
+    "revisions": {
+     "facts": {},
+     "state": "UNDECIDABLE"
     }
    },
    "path": "feishu/chats/groups/zhengji-erika-vince/oc_7d32ea6c6a98b741846e77a663820dab/manifest.json",
@@ -472,6 +536,10 @@
       "remote_unique_message_count": 149
      },
      "state": "COMPLETE"
+    },
+    "revisions": {
+     "facts": {},
+     "state": "UNDECIDABLE"
     }
    },
    "path": "feishu/chats/people/ann-xuan/oc_d1e448893d866dacc3f03d74db89069d/manifest.json",
@@ -498,6 +566,10 @@
       "remote_unique_message_count": 135
      },
      "state": "COMPLETE"
+    },
+    "revisions": {
+     "facts": {},
+     "state": "UNDECIDABLE"
     }
    },
    "path": "feishu/chats/people/beata-domaciuk/oc_dc39bf5aded0d478d594cc20062a524e/manifest.json",
@@ -514,7 +586,7 @@
    "components": {
     "attachments": {
      "facts": {
-      "backfilled": 0
+      "backfilled": 3
      },
      "state": "COMPLETE"
     },
@@ -536,6 +608,10 @@
       "remote_unique_message_count": 20
      },
      "state": "COMPLETE"
+    },
+    "revisions": {
+     "facts": {},
+     "state": "UNDECIDABLE"
     }
    },
    "path": "feishu/chats/people/bruce-xu/oc_078314a8279795245c2983883c13dfc1/manifest.json",
@@ -562,6 +638,10 @@
       "remote_unique_message_count": 6
      },
      "state": "COMPLETE"
+    },
+    "revisions": {
+     "facts": {},
+     "state": "UNDECIDABLE"
     }
    },
    "path": "feishu/chats/people/charles-fan/oc_b54b433408d20bdaacab5a36ec9d1c78/manifest.json",
@@ -588,6 +668,10 @@
       "remote_unique_message_count": 7
      },
      "state": "COMPLETE"
+    },
+    "revisions": {
+     "facts": {},
+     "state": "UNDECIDABLE"
     }
    },
    "path": "feishu/chats/people/charley-chen/oc_6ca6850053ff4b17eb31fdc242f347dc/manifest.json",
@@ -614,6 +698,10 @@
       "remote_unique_message_count": 45
      },
      "state": "COMPLETE"
+    },
+    "revisions": {
+     "facts": {},
+     "state": "UNDECIDABLE"
     }
    },
    "path": "feishu/chats/people/chenn-wang/oc_d2ad86220bf499e69f202c2e6f4cd78c/manifest.json",
@@ -640,6 +728,10 @@
       "remote_unique_message_count": 6
      },
      "state": "COMPLETE"
+    },
+    "revisions": {
+     "facts": {},
+     "state": "UNDECIDABLE"
     }
    },
    "path": "feishu/chats/people/cherman-wang/oc_dd15c7f231da8013e5e8301137865729/manifest.json",
@@ -666,6 +758,10 @@
       "remote_unique_message_count": 35
      },
      "state": "COMPLETE"
+    },
+    "revisions": {
+     "facts": {},
+     "state": "UNDECIDABLE"
     }
    },
    "path": "feishu/chats/people/dany-lan/oc_257b19c1023918a1aafa0e2d74660dac/manifest.json",
@@ -692,6 +788,10 @@
       "remote_unique_message_count": 32
      },
      "state": "COMPLETE"
+    },
+    "revisions": {
+     "facts": {},
+     "state": "UNDECIDABLE"
     }
    },
    "path": "feishu/chats/people/gavin-guo/oc_66d5a01353e7d1df792c557e54620423/manifest.json",
@@ -718,6 +818,10 @@
       "remote_unique_message_count": 59
      },
      "state": "COMPLETE"
+    },
+    "revisions": {
+     "facts": {},
+     "state": "UNDECIDABLE"
     }
    },
    "path": "feishu/chats/people/jason-guo/oc_dd7971e688711dfd15e2fdcff546c61c/manifest.json",
@@ -744,6 +848,10 @@
       "remote_unique_message_count": 109
      },
      "state": "COMPLETE"
+    },
+    "revisions": {
+     "facts": {},
+     "state": "UNDECIDABLE"
     }
    },
    "path": "feishu/chats/people/jie-xu/oc_772f424ce443dc906855f9ac11b55899/manifest.json",
@@ -770,6 +878,10 @@
       "remote_unique_message_count": 1
      },
      "state": "COMPLETE"
+    },
+    "revisions": {
+     "facts": {},
+     "state": "UNDECIDABLE"
     }
    },
    "path": "feishu/chats/people/kai-dong/oc_df1d3661141a995b33f71bbbac337bfd/manifest.json",
@@ -796,6 +908,10 @@
       "remote_unique_message_count": 78
      },
      "state": "COMPLETE"
+    },
+    "revisions": {
+     "facts": {},
+     "state": "UNDECIDABLE"
     }
    },
    "path": "feishu/chats/people/karl-wu/oc_57d68107884cc9f70c5b07cbb0cadb36/manifest.json",
@@ -822,6 +938,10 @@
       "remote_unique_message_count": 43
      },
      "state": "COMPLETE"
+    },
+    "revisions": {
+     "facts": {},
+     "state": "UNDECIDABLE"
     }
    },
    "path": "feishu/chats/people/kun-wu/oc_dadee0fbe89d0978a25c995d31f03d35/manifest.json",
@@ -848,6 +968,10 @@
       "remote_unique_message_count": 22
      },
      "state": "COMPLETE"
+    },
+    "revisions": {
+     "facts": {},
+     "state": "UNDECIDABLE"
     }
    },
    "path": "feishu/chats/people/lawson-huang/oc_f1d47957b63b6d2be5c1404a94e9f59e/manifest.json",
@@ -874,6 +998,10 @@
       "remote_unique_message_count": 13
      },
      "state": "COMPLETE"
+    },
+    "revisions": {
+     "facts": {},
+     "state": "UNDECIDABLE"
     }
    },
    "path": "feishu/chats/people/lucia-wang/oc_965b63bd0910c5585b2a6ff66c7959f3/manifest.json",
@@ -900,6 +1028,10 @@
       "remote_unique_message_count": 6
      },
      "state": "COMPLETE"
+    },
+    "revisions": {
+     "facts": {},
+     "state": "UNDECIDABLE"
     }
    },
    "path": "feishu/chats/people/marek-rola/oc_b6a1c4ef403a3f0f17ce860b711f4370/manifest.json",
@@ -926,6 +1058,10 @@
       "remote_unique_message_count": 63
      },
      "state": "COMPLETE"
+    },
+    "revisions": {
+     "facts": {},
+     "state": "UNDECIDABLE"
     }
    },
    "path": "feishu/chats/people/mina-wang/oc_b7c7ee51b26878f59c720c6f69607b02/manifest.json",
@@ -952,6 +1088,10 @@
       "remote_unique_message_count": 3
      },
      "state": "COMPLETE"
+    },
+    "revisions": {
+     "facts": {},
+     "state": "UNDECIDABLE"
     }
    },
    "path": "feishu/chats/people/molly-wang/oc_bea72bda3338857b0d51aa4fdde6bab4/manifest.json",
@@ -978,6 +1118,10 @@
       "remote_unique_message_count": 6
      },
      "state": "COMPLETE"
+    },
+    "revisions": {
+     "facts": {},
+     "state": "UNDECIDABLE"
     }
    },
    "path": "feishu/chats/people/monica-yang/oc_b62ab17f015d5da6d197e8dbb43e41d0/manifest.json",
@@ -1004,11 +1148,44 @@
       "remote_unique_message_count": 65
      },
      "state": "COMPLETE"
+    },
+    "revisions": {
+     "facts": {},
+     "state": "UNDECIDABLE"
     }
    },
    "path": "feishu/chats/people/nancy-zhu/oc_b3e5355702fd02254b4d481ebc31057f/manifest.json",
    "role": "chat",
    "shape": "chat_capture",
+   "verified": "RECORDED"
+  },
+  {
+   "capture": {
+    "source_message_id": "om_x100b64003b7820b0b311d5750f32668",
+    "target_type": "docx",
+    "target_url": "https://fjdynamics.feishu.cn/docx/Y15QdmqCXoPI46xRgvVccpDhnMb"
+   },
+   "capture_undeclared": [],
+   "components": {
+    "body": {
+     "facts": {
+      "content_sha256": "7d9c602c6e8cca0eceaaaac47ac9e41c559e9d007c2cd41b88a5a89bc59628ec",
+      "content_sha256_chars": 64,
+      "fetched_at": "2026-09-23"
+     },
+     "state": "COMPLETE"
+    },
+    "media": {
+     "facts": {
+      "media_count": 0,
+      "media_listed": 0
+     },
+     "state": "COMPLETE"
+    }
+   },
+   "path": "feishu/chats/people/nature-hu/oc_78148d12799e6f369059dc9f9691ed5d/links/docx-research-outreach-sop/manifest.json",
+   "role": "link",
+   "shape": "document_capture",
    "verified": "RECORDED"
   },
   {
@@ -1019,17 +1196,34 @@
     "mode"
    ],
    "components": {
+    "attachments": {
+     "facts": {
+      "backfilled": 4
+     },
+     "state": "COMPLETE"
+    },
+    "links": {
+     "facts": {
+      "count": 1,
+      "expanded": 1
+     },
+     "state": "COMPLETE"
+    },
     "messages": {
      "facts": {
       "earliest_create_time": "2026-09-11 14:04",
-      "fetched_page_count": 1,
-      "last_message_id": "om_x100b65c85fd2bca0b2adb2f6ba8ae03",
-      "latest_create_time": "2026-09-20 19:18",
-      "msg_count": 38,
+      "fetched_page_count": 2,
+      "last_message_id": "om_x100b6400b9bc90a0dee3d3ab85ff920",
+      "latest_create_time": "2026-09-23 12:03",
+      "msg_count": 92,
       "pagination_complete": true,
-      "remote_unique_message_count": 38
+      "remote_unique_message_count": 92
      },
      "state": "COMPLETE"
+    },
+    "revisions": {
+     "facts": {},
+     "state": "UNDECIDABLE"
     }
    },
    "path": "feishu/chats/people/nature-hu/oc_78148d12799e6f369059dc9f9691ed5d/manifest.json",
@@ -1142,6 +1336,10 @@
       "msg_count": 5
      },
      "state": "UNDECIDABLE"
+    },
+    "revisions": {
+     "facts": {},
+     "state": "UNDECIDABLE"
     }
    },
    "path": "feishu/chats/people/venus-liu/oc_89c0764c0664c7ec492220164e29a328/manifest.json",
@@ -1168,6 +1366,10 @@
       "remote_unique_message_count": 5
      },
      "state": "COMPLETE"
+    },
+    "revisions": {
+     "facts": {},
+     "state": "UNDECIDABLE"
     }
    },
    "path": "feishu/chats/people/vince-huang/oc_30cf50026f10afd8b91875f361efbdbd/manifest.json",
@@ -1194,6 +1396,10 @@
       "remote_unique_message_count": 20
      },
      "state": "COMPLETE"
+    },
+    "revisions": {
+     "facts": {},
+     "state": "UNDECIDABLE"
     }
    },
    "path": "feishu/chats/people/wayne-zhao/oc_a027422cc9626fd5dd86aef13080900c/manifest.json",
@@ -1220,6 +1426,10 @@
       "remote_unique_message_count": 32
      },
      "state": "COMPLETE"
+    },
+    "revisions": {
+     "facts": {},
+     "state": "UNDECIDABLE"
     }
    },
    "path": "feishu/chats/people/wendy-du/oc_ae37600aee2f227fd2cc6e6d7639d25a/manifest.json",
@@ -1246,6 +1456,10 @@
       "remote_unique_message_count": 3
      },
      "state": "COMPLETE"
+    },
+    "revisions": {
+     "facts": {},
+     "state": "UNDECIDABLE"
     }
    },
    "path": "feishu/chats/people/wenqiang-zhao/oc_dfdc4df352b80c92eddfc41c272ce0dd/manifest.json",
@@ -1280,6 +1494,10 @@
       "msg_count": 3
      },
      "state": "UNDECIDABLE"
+    },
+    "revisions": {
+     "facts": {},
+     "state": "UNDECIDABLE"
     }
    },
    "path": "feishu/chats/people/yale-huang/oc_f4b9ed4885415a496e8f0b5d24d321c8/manifest.json",
@@ -1306,6 +1524,10 @@
       "remote_unique_message_count": 17
      },
      "state": "COMPLETE"
+    },
+    "revisions": {
+     "facts": {},
+     "state": "UNDECIDABLE"
     }
    },
    "path": "feishu/chats/people/zachariah-zhao/oc_fa2a86c0b67e9e1b29cfd9a1157fb8cf/manifest.json",
@@ -1612,7 +1834,7 @@
    "components": {
     "attachments": {
      "facts": {
-      "backfilled": 65
+      "backfilled": 73
      },
      "state": "COMPLETE"
     },
@@ -1626,14 +1848,18 @@
     "messages": {
      "facts": {
       "earliest_create_time": "2026-08-17 10:44",
-      "fetched_page_count": 16,
-      "last_message_id": "om_x100b65cfb86514a4b102ad6b09f5a77",
-      "latest_create_time": "2026-09-20 19:11",
-      "msg_count": 761,
+      "fetched_page_count": 17,
+      "last_message_id": "om_x100b6407191404a0c24d66e519570eb",
+      "latest_create_time": "2026-09-23 10:12",
+      "msg_count": 808,
       "pagination_complete": true,
-      "remote_unique_message_count": 761
+      "remote_unique_message_count": 808
      },
      "state": "COMPLETE"
+    },
+    "revisions": {
+     "facts": {},
+     "state": "UNDECIDABLE"
     }
    },
    "path": "feishu/chats/people/zhangzhengji/oc_ddc206bb6093ec959b51752cc7a59533/manifest.json",
@@ -1811,51 +2037,108 @@
       "remote_unique_message_count": 76
      },
      "state": "COMPLETE"
+    },
+    "revisions": {
+     "facts": {},
+     "state": "UNDECIDABLE"
     }
    },
    "path": "feishu/chats/people/zhou-kit/oc_0d1749f1215fabe2957f0d8b71b78bdf/manifest.json",
    "role": "chat",
    "shape": "chat_capture",
    "verified": "RECORDED"
+  },
+  {
+   "capture": {
+    "method": "curl（原生 HTTP，未使用浏览器渲染）",
+    "requested_url": "https://developers.openai.com/blog/rethinking-skills-and-prompts-for-gpt-6-astra"
+   },
+   "capture_undeclared": [],
+   "components": {
+    "body": {
+     "facts": {
+      "content_sha256": "5d81cdb0cc192a429a59460d9e9045a95d441de89a191ec6db070d3b04f5394c",
+      "content_sha256_chars": 64,
+      "fetched_at": "2026-09-23T18:31+08:00"
+     },
+     "state": "COMPLETE"
+    },
+    "materials": {
+     "facts": {
+      "materials_count": 0,
+      "materials_inventoried": false
+     },
+     "state": "UNDECIDABLE"
+    },
+    "response": {
+     "facts": {
+      "final_url": "https://developers.openai.com/blog/rethinking-skills-and-prompts-for-gpt-6-astra",
+      "http_status": 200,
+      "redirected": false
+     },
+     "state": "COMPLETE"
+    }
+   },
+   "path": "web/openai-developers/rethinking-skills-and-prompts-for-gpt-6-astra/manifest.json",
+   "role": "web",
+   "shape": "web_capture",
+   "verified": "NOT_RECORDED"
   }
  ],
+ "retaken": {
+  "date": "2026-09-25",
+  "replaces": "capture-coverage-live-2026-09-22.json, removed in the same commit as this file -- nothing read it once `FIXTURE` moved, and a second 52 KB artifact no test loads is a file a later reader picks up by mistake",
+  "what_it_says_that_the_old_one_could_not": "47 of 47 chat captures report `revisions: UNDECIDABLE`. Not one manifest in this tree records a comparison of what it holds against the source, so no capture here can say whether its text still matches the source it was taken from. That is the state of the tree, not of the reader: the collector compares only after the change that introduced these fields reaches it.",
+  "why": "The reader moved, deliberately: a chat capture now carries a `revisions` component, so re-running the old reader's output against this tree reports 44 chats as having moved when nothing in the tree moved at all (measured: every one of the 44 differs only by the new component, `recorded['components'].get('revisions')` is None in all 44). Re-taken rather than loosened: the alternative -- teaching `_disagreements` to ignore a component -- would have left this file unable to say that the reader gained a question."
+ },
  "schema": "serveros/capture-coverage.v1#trimmed",
  "summary": {
   "by_role": {
    "chat": 47,
-   "link": 19
+   "link": 20,
+   "web": 1
   },
   "by_shape": {
    "chat_capture": 47,
-   "document_capture": 19
+   "document_capture": 20,
+   "web_capture": 1
   },
   "capture_undeclared": {
    "mode": 37
   },
   "components": {
    "attachments": {
-    "COMPLETE": 6
+    "COMPLETE": 7
    },
    "body": {
-    "COMPLETE": 16,
+    "COMPLETE": 18,
     "INCOMPLETE": 3
    },
    "links": {
-    "COMPLETE": 6
+    "COMPLETE": 7
+   },
+   "materials": {
+    "UNDECIDABLE": 1
    },
    "media": {
-    "COMPLETE": 14,
+    "COMPLETE": 15,
     "UNDECIDABLE": 5
    },
    "messages": {
     "COMPLETE": 45,
     "UNDECIDABLE": 2
+   },
+   "response": {
+    "COMPLETE": 1
+   },
+   "revisions": {
+    "UNDECIDABLE": 47
    }
   },
-  "denominator": 66,
+  "denominator": 68,
   "verified": {
-   "NOT_RECORDED": 5,
-   "RECORDED": 61
+   "NOT_RECORDED": 6,
+   "RECORDED": 62
   }
  }
 }
