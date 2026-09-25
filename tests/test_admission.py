@@ -1322,6 +1322,250 @@ class TestTheCli:
         assert "SRV-1" in listing.stdout, "the selection is what a review reads"
 
 
+class TestTheDispatchVerb:
+    """`work dispatch`: the producer the third phase never had.
+
+    `work admit` recorded the intent and `work confirm --phase DISPATCHED`
+    recorded what a receipts directory said, while nothing in the fabric wrote
+    one: `runtime/bounded_invocation.invoke_once` had no production caller at
+    all, which `runtime/actuator-contract.yaml` declared rather than hid, and
+    `work admit`'s own closing sentence named the gap — "the dispatch made by
+    whatever performs them".
+
+    Four properties, and each is one a dispatch can get wrong in a way nobody
+    notices: that the phase records what the receipt FILE says rather than what
+    the call returned, that the bounds are the reservation's and not the
+    command line's, that a second trigger is not a second dispatch, and that
+    every refusal happens on the near side of the spawn — a refusal that
+    arrived after the command had run would be a worker in flight with nothing
+    on the admission saying so.
+    """
+
+    @staticmethod
+    def held(env: dict) -> None:
+        """The lease phase, confirmed the way the CLI confirms it."""
+        declared = cli("lease", "declare", "browser:chromium", "--scope",
+                       "session", "--holder", "cyc-1", "--sharing", "shared",
+                       env_extra=env)
+        assert declared.returncode == 0, declared.stderr
+        confirmed = cli("work", "confirm", "cyc-1", "--phase", "LEASE_HELD",
+                        "--at", T1, env_extra=env)
+        assert confirmed.returncode == 0, confirmed.stderr
+
+    @staticmethod
+    def receipts(env: dict) -> Path:
+        return Path(env["DATA_ROOT"]) / "receipts"
+
+    @classmethod
+    def dispatch(cls, env: dict, *command: str, flags=(), cycle="cyc-1"):
+        return cli("work", "dispatch", cycle, "--cwd", env["DATA_ROOT"],
+                   "--receipts", str(cls.receipts(env)), *flags, "--", *command,
+                   env_extra=env)
+
+    def test_the_phase_records_the_receipt_the_command_wrote(self, tmp_path):
+        env = a_data_root(tmp_path)
+        seeded(env)
+        self.held(env)
+
+        done = self.dispatch(env, "/bin/sh", "-c", "echo ran-here; "
+                                                   "echo to-stderr >&2")
+
+        assert done.returncode == 0, done.stderr
+        assert "phase       DISPATCHED" in done.stdout
+        assert "status      EXITED" in done.stdout
+        assert (self.receipts(env) / "act-1.stdout").read_text() == "ran-here\n"
+        assert (self.receipts(env) / "act-1.stderr").read_text() == "to-stderr\n"
+        recorded = AgentControlStore(store_path(env)).get_admission(
+            "cyc-1")["confirmations"]["DISPATCHED"]
+        assert recorded["status"] == "EXITED"
+        assert recorded["action_key"] == "act-1"
+        # `store` and `receipt` are `_dispatch_answer`'s OWN additions —
+        # `invoke_once` writes neither on its receipt. Their presence in the
+        # recorded evidence is what says the phase was recorded from the FILE
+        # through the reader `work confirm` uses, and not from the dict the call
+        # returned; an evidence built from the return value would have neither
+        # key and the phase would be a summary of the verb instead of an answer
+        # from the store that performed the step.
+        assert recorded["store"] == str(self.receipts(env))
+        assert recorded["receipt"] == str(self.receipts(env) / "act-1.json")
+
+    def test_a_dispatch_before_the_lease_phase_runs_nothing(self, tmp_path):
+        env = a_data_root(tmp_path)
+        seeded(env)
+        before = store_path(env).read_bytes()
+
+        done = self.dispatch(env, "/bin/sh", "-c", "touch SHOULD-NOT-EXIST")
+
+        assert done.returncode != 0
+        assert "phase after LEASE_HELD" in done.stderr
+        assert "Nothing was run" in done.stderr
+        # The two properties that make this a refusal and not a report: the
+        # command did not run, and the store did not move.
+        assert not self.receipts(env).exists()
+        assert store_path(env).read_bytes() == before
+
+    def test_a_lease_released_since_the_phase_still_stops_the_dispatch(self, tmp_path):
+        """The phase says LEASE_HELD and the lease store says otherwise.
+
+        This is why the verb reads the lease store instead of the phase, and
+        the sentence under test is the lease reader's own: a released reference
+        arrives as an ABSENT one, so the reading a careless check would produce
+        ("this holder never declared it") is the wrong one.
+        """
+        env = a_data_root(tmp_path)
+        seeded(env)
+        self.held(env)
+        released = cli("lease", "release", "browser:chromium", "--scope",
+                       "session", "--holder", "cyc-1", env_extra=env)
+        assert released.returncode == 0, released.stderr
+
+        done = self.dispatch(env, "/bin/sh", "-c", "touch SHOULD-NOT-EXIST")
+
+        assert done.returncode != 0
+        assert "released its reference" in done.stderr
+        assert "nothing was run" in done.stderr
+        assert not self.receipts(env).exists()
+
+    def test_a_second_trigger_is_not_a_second_dispatch(self, tmp_path):
+        env = a_data_root(tmp_path)
+        seeded(env)
+        self.held(env)
+        first = self.dispatch(env, "/bin/sh", "-c", "echo first")
+        assert first.returncode == 0, first.stderr
+        receipt = self.receipts(env) / "act-1.json"
+        stamp = json.loads(receipt.read_text(encoding="utf-8"))["started_at"]
+        marker = Path(env["DATA_ROOT"]) / "second-trigger-ran"
+
+        second = self.dispatch(env, "/bin/sh", "-c", f"touch {marker}")
+
+        assert second.returncode == 0, second.stderr
+        assert "nothing was run" in second.stdout
+        assert not marker.exists(), "a triggered twice cycle dispatched twice"
+        assert json.loads(receipt.read_text(
+            encoding="utf-8"))["started_at"] == stamp
+
+    def test_the_command_must_come_after_the_separator(self, tmp_path):
+        """A mistyped flag is an error, not the first word of a command.
+
+        Measured rather than assumed: argparse returns everything it did not
+        recognise as leftovers in the order typed, and a command forwarded
+        without the separator would be any of it. So `--cwdx /w` has to be
+        refused here — the alternative is running `--cwdx`.
+        """
+        env = a_data_root(tmp_path)
+        seeded(env)
+        self.held(env)
+
+        for extra in ((), ("--cwdx", "/w")):
+            done = cli("work", "dispatch", "cyc-1", "--cwd", env["DATA_ROOT"],
+                       "--receipts", str(self.receipts(env)), *extra,
+                       env_extra=env)
+
+            assert done.returncode != 0, done.stdout
+            assert "must come after `--`" in done.stderr
+        assert not self.receipts(env).exists()
+
+    def test_the_bounds_are_the_reservations_and_not_the_command_line(self, tmp_path):
+        """A dispatch may not outrun what the cycle was admitted under.
+
+        The reservation is the only place the bounds are declared, so the verb
+        takes both from it and publishes no flag that could raise either —
+        asserted on the option list the same way `work admit --grant` is, which
+        is the shape a convenience added later would take.
+        """
+        env = a_data_root(tmp_path)
+        seed = AgentControlStore(store_path(env))
+        seed.put_context({"context_ref": CONTEXT})
+        seed.put_grant(a_grant(budget={"wall_seconds": 1, "max_attempts": 2,
+                                       "max_output_bytes": 200000}))
+        seed.admit(a_record(reservation={"wall_seconds": 1, "max_attempts": 2,
+                                         "max_output_bytes": 200000}))
+        self.held(env)
+        options = set(re.findall(r"(?m)^\s{2,}(--[a-z-]+)",
+                                 cli("work", "dispatch", "--help").stdout))
+        assert "--timeout" not in options
+        assert "--max-output-bytes" not in options
+        assert "--cwd" in options and "--receipts" in options
+
+        done = self.dispatch(env, "/bin/sh", "-c", "sleep 5")
+
+        assert done.returncode == 0, done.stderr
+        assert "status      TIMED_OUT" in done.stdout
+        assert "wall_seconds 1," in done.stdout
+        recorded = AgentControlStore(store_path(env)).get_admission(
+            "cyc-1")["confirmations"]["DISPATCHED"]
+        assert recorded["status"] == "TIMED_OUT"
+
+    def test_a_retired_admission_is_not_dispatched(self, tmp_path):
+        """The one refusal the phase alone would miss.
+
+        `retire` releases the action key but leaves the record, so a retired
+        admission whose phase reads DISPATCHED or LEASE_HELD is an ordinary
+        state — and a verb that checked only the phase would run the command
+        and be refused by the store afterwards, which is a worker in flight
+        with nothing saying so.
+        """
+        env = a_data_root(tmp_path)
+        seeded(env)
+        self.held(env)
+        retired = cli("work", "retire", "cyc-1", "--at", T2, env_extra=env)
+        assert retired.returncode == 0, retired.stderr
+
+        done = self.dispatch(env, "/bin/sh", "-c", "touch SHOULD-NOT-EXIST")
+
+        assert done.returncode != 0
+        assert "was retired at" in done.stderr
+        assert "Nothing was run" in done.stderr
+        assert not self.receipts(env).exists()
+
+    def test_a_command_that_cannot_start_is_not_given_an_exit_code(self, tmp_path):
+        """The one path where the writer claims something positive.
+
+        `invoke_once` sets `worker_stopped: True` and `effect:
+        NO_PROCESS_STARTED` when `Popen` itself failed, and `process_exit_code`
+        stays at its initial `None`. Printing that `None` as a code would tell
+        whoever is reading a failed dispatch that the command exited, which is
+        the one thing that did not happen.
+        """
+        env = a_data_root(tmp_path)
+        seeded(env)
+        self.held(env)
+
+        done = self.dispatch(env, "/nonexistent/nothing-here")
+
+        assert done.returncode == 0, done.stderr
+        assert "status      START_FAILED" in done.stdout
+        assert "effect      NO_PROCESS_STARTED" in done.stdout
+        assert "exit code   " not in done.stdout
+
+    def test_a_refused_dispatch_is_a_sentence_and_not_a_traceback(self, tmp_path):
+        """`invoke_once` refuses, and this verb owns the sentence it refuses with.
+
+        The case is a retired key put back to work: `retire` releases an action
+        key, so a later cycle can name it, and that helper's one-receipt-per-key
+        rule is what stops the second cycle receiving the first's result. Its
+        `ValueError` is raised before the spawn on every path, so the verb can
+        say so — asserted, because "nothing was started" is a claim.
+        """
+        env = a_data_root(tmp_path)
+        seeded(env)
+        self.held(env)
+        receipts = self.receipts(env)
+        receipts.mkdir(parents=True, exist_ok=True, mode=0o700)
+        (receipts / "act-1.json").write_text(json.dumps(
+            {"action_key": "act-1", "status": "EXITED",
+             "input_digest": "0" * 64}), encoding="utf-8")
+
+        done = self.dispatch(env, "/bin/true")
+
+        assert done.returncode != 0
+        assert "Traceback" not in done.stderr
+        assert "same action key with different input" in done.stderr
+        assert "nothing was started" in done.stderr
+        assert json.loads((receipts / "act-1.json").read_text(
+            encoding="utf-8"))["status"] == "EXITED"
+
+
 class TestTheCycleIsWhatAPersonAcceptedNotWhatTheFabricProposes:
     """`work focus` on a real tree, where the two answers are visibly two.
 

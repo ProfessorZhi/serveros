@@ -7216,9 +7216,22 @@ def _dispatch_answer(admission: dict, receipts_root: str) -> dict:
     transaction. What it means is therefore bounded and worth stating: this
     verb records what the receipts directory ANSWERS, and a caller who
     fabricates that file is fabricating evidence in the place evidence lives,
-    not through this verb. Three fields are taken and not the whole receipt —
-    `action_key`, `status` and `input_digest` are what identify the dispatch,
-    and the rest (timestamps, output paths) move as it runs.
+    not through this verb. Three fields are taken as the EVIDENCE and not the
+    whole receipt — `action_key`, `status` and `input_digest` are what identify
+    the dispatch, and the rest (timestamps, output paths) move as it runs. The
+    evidence stays three fields because it is what a confirmation is compared
+    on: a field that moves while a command runs would make the same dispatch
+    report `different evidence` the second time it was reported.
+
+    The whole record comes back beside it, under `receipt`, and it is for the
+    one caller that has to tell a person what happened: `work dispatch`, which
+    performed the step. It reads those fields off the FILE and not off
+    `invoke_once`'s return value, so that what the verb reports and what the
+    phase records are one reading of one file: a verb that printed its own
+    call's result while the phase recorded the file would be two answers to one
+    question, and the pair that disagreed would be the one nobody looked at.
+    `_dispatch_answer` is the only reader of a receipt in this file, and that
+    is the property, not an accident of how these two verbs were written.
     """
     if not receipts_root:
         raise LookupError(
@@ -7242,9 +7255,11 @@ def _dispatch_answer(admission: dict, receipts_root: str) -> dict:
             f"not an answer about this dispatch") from exc
     if not isinstance(receipt, dict):
         raise LookupError(f"{path} is not a receipt")
-    return {"action_key": receipt.get("action_key"), "status": receipt.get("status"),
-            "input_digest": receipt.get("input_digest"),
-            "store": str(Path(receipts_root)), "receipt": str(path)}
+    return {"evidence": {"action_key": receipt.get("action_key"),
+                         "status": receipt.get("status"),
+                         "input_digest": receipt.get("input_digest"),
+                         "store": str(Path(receipts_root)), "receipt": str(path)},
+            "receipt": receipt}
 
 
 def _admission_or_fault(control, store_mod, cycle_ref: str):
@@ -7295,7 +7310,7 @@ def cmd_work_confirm(args) -> int:
         if args.phase == "LEASE_HELD":
             evidence = _lease_answer(admission)
         else:
-            evidence = _dispatch_answer(admission, args.receipts)
+            evidence = _dispatch_answer(admission, args.receipts)["evidence"]
     except LookupError as exc:
         sys.stderr.write(f"serverosctl: {exc}\n")
         return EXIT_FAULT
@@ -7323,6 +7338,306 @@ def cmd_work_confirm(args) -> int:
                  "store holds no lease and no receipt; it records which half of "
                  "the cycle is done.")
     emit({"admission": confirmed, "evidence": evidence, "store": str(control.path)},
+         as_json=args.json, lines=lines)
+    return EXIT_OK
+
+
+def _receipt_lines(receipt: dict) -> list[str]:
+    """What a person needs off a receipt, in the writer's own words.
+
+    Every value here is the receipt's and not this verb's. `status` and `effect`
+    are the two fields `runtime/bounded_invocation.invoke_once` decides, and
+    `reason` is printed only when it wrote one. `process_exit_code` is printed
+    only when there IS one: `None` is the record's initial value, and a line
+    reading `exit code None` would be read as an exit status by whoever is
+    looking at a failed dispatch for the reason it failed. `worker_stopped` is
+    deliberately NOT among these, and its absence is a decision rather than an
+    omission — the field is written `False` before the spawn and is a verdict on
+    exactly one path, so the three-valued reading of it lives in one place,
+    `intake/focus_source.py#RECEIPT_LIVENESS`, and is reached through
+    `work focus --receipts`.
+    """
+    lines = [f"status      {receipt.get('status')}",
+             f"effect      {receipt.get('effect')}"]
+    if receipt.get("reason"):
+        lines.append(f"reason      {receipt['reason']}")
+    if receipt.get("process_exit_code") is not None:
+        lines.append(f"exit code   {receipt['process_exit_code']}")
+    for field in ("started_at", "finished_at", "input_digest"):
+        if receipt.get(field):
+            lines.append(f"{field:<12} {receipt[field]}")
+    return lines
+
+
+def _dispatch_argv(args) -> list[str] | None:
+    """The command to run, or None after saying why there is not one.
+
+    The tail must be introduced by `--`, and that is not decoration. Measured:
+    argparse hands back the leftovers in the order typed, and everything after
+    the separator is among them — but so is anything it did not recognise, so
+    `work dispatch cyc-1 --cwdx /w` would arrive here as the command
+    `--cwdx /w` and run it. Requiring the separator is what keeps a mistyped
+    flag an error instead of a command, and it is the one rule this function
+    adds to the module's own (which then re-checks every token).
+    """
+    tail = list(getattr(args, "trailing_argv", None) or [])
+    if not tail or tail[0] != "--":
+        sys.stderr.write(
+            "serverosctl: the command to dispatch must come after `--`, and "
+            "there is none here. That separator is what tells a mistyped flag "
+            "apart from a command: without it, anything this parser did not "
+            "recognise would be run as the first word of the dispatch. "
+            "`serverosctl work dispatch <cycle> --cwd … --receipts … -- "
+            "<command> [args…]`\n")
+        return None
+    argv = tail[1:]
+    if not argv:
+        sys.stderr.write(
+            "serverosctl: `--` was given and nothing after it. "
+            "`runtime/bounded_invocation.invoke_once` requires explicit "
+            "nonempty argv, so there is nothing to dispatch\n")
+        return None
+    return argv
+
+
+def _dispatch_already_done(control, admission: dict, args) -> int:
+    """Report the dispatch that already happened, and run nothing.
+
+    This branch is 「重复触发不双派」 answered where it can be answered exactly:
+    a second trigger for a cycle that has dispatched does not become a second
+    dispatch. The receipt is read through the same reader the phase was
+    confirmed with, so the two cannot come apart.
+
+    The command the caller typed on THIS invocation is not run, not compared
+    and not reported — and that is stated in the output rather than left to be
+    inferred, because a caller who typed one is owed the sentence. Comparing it
+    would be worse than useless: `invoke_once` refuses a second call under one
+    key with a different input, so a comparison here would refuse a replay for
+    being a replay. The phase is what says which dispatch this cycle has.
+    """
+    key = admission["action_key"]
+    try:
+        answer = _dispatch_answer(admission, args.receipts)
+    except LookupError as exc:
+        sys.stderr.write(f"serverosctl: {exc}\n")
+        return EXIT_FAULT
+    lines = [f"cycle       {admission['cycle_ref']}",
+             "phase       DISPATCHED — confirmed already; nothing was run",
+             f"action key  {key}"]
+    if admission.get("confirmed_at"):
+        lines.append(f"confirmed   {admission['confirmed_at']}")
+    lines.extend(_receipt_lines(answer["receipt"]))
+    lines.append(f"receipt     {answer['evidence']['receipt']}")
+    lines.append("")
+    lines.append("A cycle dispatches once: the phase says this one has, so the "
+                 "command given on this invocation was not used and was not "
+                 "compared. Re-running a dispatch is safe by construction — one "
+                 "action key is one receipt and `invoke_once` replays it — and "
+                 "this verb does not even reach that far. For a second attempt "
+                 "after a failure, admit a new cycle under a NEW action key: a "
+                 "reused key would hand the new cycle this receipt.")
+    emit({"admission": admission, "evidence": answer["evidence"],
+          "receipt": answer["receipt"], "store": str(control.path)},
+         as_json=args.json, lines=lines)
+    return EXIT_OK
+
+
+def cmd_work_dispatch(args) -> int:
+    """§12/P7 — perform the dispatch one admitted cycle is holding a key for.
+
+    The third phase had a reader and no producer. `intake/focus_source.py` read
+    `<receipts>/<action_key>.json` for every admission, `work confirm --phase
+    DISPATCHED` recorded what that file said, and nothing in the fabric ever
+    wrote one: `runtime/bounded_invocation.invoke_once` had no production
+    caller at all, which `runtime/actuator-contract.yaml` declared rather than
+    hid. `work admit`'s own closing sentence named the gap — "the lease is
+    declared and the dispatch made by whatever performs them" — and this is
+    that whatever.
+
+    One verb and not two, and that is the design. `invoke_once` writes its
+    receipt before it spawns and replays instead of re-running, so a crash
+    between running a command and recording that it ran is recoverable; but a
+    caller who could run the command WITHOUT the recording would be leaving a
+    worker in flight with nothing on the admission saying so, which is the
+    half-product this link exists to make impossible. The recording here is the
+    same one `work confirm --phase DISPATCHED` performs, through the same
+    reader, off the same file.
+
+    FIVE CHECKS COME BEFORE ANYTHING IS SPAWNED, and each is ordered by what it
+    would cost to check it afterwards:
+
+      1. a retired admission cannot advance — the store refuses this too, and
+         the point of checking it here is that the store's refusal would
+         otherwise land after the command had run;
+      2. a phase of DISPATCHED is a replay and runs nothing;
+      3. a phase of INTENT_RECORDED cannot skip to DISPATCHED — again refused
+         by the store, again refused here first, and this is the case where the
+         difference is starkest: the command would have run, with effects, and
+         the phase would have been refused afterwards;
+      4. the LEASE STORE IS READ, not the phase. `agent_control_store`'s own
+         note says a phase is not a permission — "the reader that wants to act
+         on that reads the lease store itself" — and this verb acts. A lease
+         released since the phase was confirmed is caught here;
+      5. the command is required to be a nonempty argv after `--`.
+
+    The bounds are the admission's, not this command line's. `wall_seconds` and
+    `max_output_bytes` come out of the reservation the cycle was admitted under,
+    because a dispatch that ran longer or wrote more than it was authorized to
+    would be an effect the grant never covered, and a flag that could raise them
+    would be that hole with a name.
+    """
+    store_mod, control = _control_store()
+    admission = _admission_or_fault(control, store_mod, args.cycle)
+    if admission is None:
+        return EXIT_FAULT
+
+    if admission.get("retired_at"):
+        sys.stderr.write(
+            f"serverosctl: {args.cycle} was retired at "
+            f"{admission['retired_at']}. A retired admission released its "
+            f"reservation and its action key, so a dispatch under that key now "
+            f"would run work no cycle is holding anything for, and its receipt "
+            f"would be evidence about a cycle already accounted for. Nothing "
+            f"was run\n")
+        return EXIT_FAULT
+
+    phase = admission.get("phase")
+    if phase == "DISPATCHED":
+        return _dispatch_already_done(control, admission, args)
+    if phase != "LEASE_HELD":
+        lease = admission["lease"]
+        sys.stderr.write(
+            f"serverosctl: {args.cycle} is at {phase} and a dispatch is the "
+            f"phase after LEASE_HELD. This is refused on ORDER and not on "
+            f"authority — a phase is not a permission, and "
+            f"`runtime/agent_control_store.confirm_admission` would refuse to "
+            f"skip it as well. The missing report is the lease store's: "
+            f"`serverosctl lease declare {lease['resource']} --scope "
+            f"{lease['scope']} --holder {lease['holder']}` then "
+            f"`serverosctl work confirm {args.cycle} --phase LEASE_HELD`. "
+            f"Nothing was run\n")
+        return EXIT_FAULT
+
+    # The verb acts, so it reads the store it is about to act under rather than
+    # the summary of it that the phase carries.
+    try:
+        _lease_answer(admission)
+    except LookupError as exc:
+        sys.stderr.write(
+            f"serverosctl: {exc}. `work dispatch` is the reader that wants to "
+            f"act on LEASE_HELD, and the phase table says that reader reads the "
+            f"lease store itself. It says this node is not holding the "
+            f"resource, so nothing was run\n")
+        return EXIT_FAULT
+
+    argv = _dispatch_argv(args)
+    if argv is None:
+        return EXIT_FAULT
+
+    input_text = ""
+    if args.input_file:
+        try:
+            input_text = Path(args.input_file).read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError) as exc:
+            sys.stderr.write(
+                f"serverosctl: {args.input_file} cannot be read as the "
+                f"dispatch's standard input ({type(exc).__name__}: {exc}). It "
+                f"is written to the child and mixed into the receipt's input "
+                f"digest, so a dispatch that could not attach it is a different "
+                f"dispatch. Nothing was run\n")
+            return EXIT_FAULT
+
+    reservation = admission["reservation"]
+    bounded = _load_module_from(REPO_ROOT / "runtime" / "bounded_invocation.py",
+                                "serveros_runtime_bounded_invocation")
+    receipts_root = args.receipts
+    try:
+        result = bounded.invoke_once(
+            key=admission["action_key"], argv=argv, cwd=Path(args.cwd),
+            receipts=Path(receipts_root), input_text=input_text,
+            timeout=reservation["wall_seconds"],
+            readonly=bool(args.read_only),
+            max_output_bytes=reservation["max_output_bytes"])
+    except ValueError as exc:
+        # Every `raise ValueError` in that helper is on the near side of the
+        # spawn — the argument checks, the symlink refusal and the
+        # same-key-different-input refusal all return before `Popen` — so the
+        # sentence below is a fact about this path and not a hope. Not softened
+        # into a per-case message here: the rules are that module's, and a
+        # second copy of them would be a second place to get them wrong.
+        sys.stderr.write(
+            f"serverosctl: `runtime/bounded_invocation.invoke_once` refused "
+            f"this dispatch: {exc}. It validates what it is handed before it "
+            f"spawns anything, so nothing was started. A dispatch whose input "
+            f"differs from an earlier one under this action key is the case it "
+            f"refuses by design: one key is one receipt, and the phase cannot "
+            f"advance under a different command\n")
+        return EXIT_FAULT
+
+    try:
+        answer = _dispatch_answer(admission, receipts_root)
+    except LookupError as exc:
+        sys.stderr.write(
+            f"serverosctl: {exc}. The command has run — this is not nothing — "
+            f"and the receipt `invoke_once` returns is not being trusted in "
+            f"its place: the file is the evidence, and one it cannot read means "
+            f"the phase cannot be recorded from it\n")
+        return EXIT_FAULT
+
+    at = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    try:
+        confirmed = control.confirm_admission(args.cycle, phase="DISPATCHED",
+                                              evidence=answer["evidence"], at=at)
+    except store_mod.StoreError as exc:
+        sys.stderr.write(
+            f"serverosctl: {exc}\n"
+            f"serverosctl: the command HAS run and the receipt is at "
+            f"{answer['evidence']['receipt']}. The phase was not recorded, and "
+            f"re-running this verb is what fixes that rather than re-running "
+            f"the command: `invoke_once` replays a receipt under an unchanged "
+            f"input instead of executing again\n")
+        return EXIT_FAULT
+
+    receipt = answer["receipt"]
+    lines = [f"cycle       {confirmed['cycle_ref']}",
+             "phase       DISPATCHED",
+             f"action key  {confirmed['action_key']}"]
+    lines.extend(_receipt_lines(receipt))
+    if result.get("replayed"):
+        lines.append("replayed    yes — this action key already carried this "
+                     "exact input, so nothing was spawned now")
+    lines.append(f"receipt     {answer['evidence']['receipt']}")
+    for stream in ("stdout", "stderr"):
+        lines.append(f"{stream:<12}"
+                     f"{Path(receipts_root) / (confirmed['action_key'] + '.' + stream)}")
+    lines.append("")
+    lines.append("Bounded by the reservation and not by this command line: "
+                 f"wall_seconds {reservation['wall_seconds']}, "
+                 f"max_output_bytes {reservation['max_output_bytes']} per "
+                 f"stream — the bounds the cycle was admitted under.")
+    lines.append(f"max_attempts {reservation['max_attempts']} is the one bound "
+                 f"this link cannot spend: one action key is one receipt, and a "
+                 f"replay is not a second attempt. A retry is a new cycle under "
+                 f"a new key — reusing this one would hand the new cycle this "
+                 f"receipt.")
+    lines.append("")
+    lines.append("The phase records what the receipts directory says, read back "
+                 "off the file rather than taken from this verb's call. The "
+                 "call is synchronous: when it returned, the direct process had "
+                 "exited or been killed, and whether a descendant is still "
+                 "running is not recorded either way. Whether a worker is still "
+                 "HELD is a different question with one owner — "
+                 "`work focus --receipts` joins a receipt to an Item.")
+    lines.append("")
+    lines.append("The exit status is this verb's and not the command's: 0 means "
+                 "the dispatch was made and the phase recorded. What the "
+                 "command did is the `status` above — a dispatch that started "
+                 "nothing, or that was killed by its own wall bound, is still a "
+                 "dispatch this verb completed, and reporting it as this verb's "
+                 "failure would invite the one thing the receipt forbids: a "
+                 "retry.")
+    emit({"admission": confirmed, "evidence": answer["evidence"],
+          "receipt": receipt, "store": str(control.path)},
          as_json=args.json, lines=lines)
     return EXIT_OK
 
@@ -8735,13 +9050,13 @@ def _cmd_architecture(args, verb: str) -> int:
     if module is None:
         return EXIT_COULD_NOT_ANSWER
     forwarded: list[str] = []
-    # REMAINDER means a flag typed after the verb reaches the checker rather
+    # The tail means a flag typed after the verb reaches the checker rather
     # than this parser, which is what keeps the checker's `--help` and its
     # `--json` its own. The global form still works, and it is merged here
     # rather than in the parser so that the two positions cannot both claim it.
     if getattr(args, "json", False):
         forwarded.append("--json")
-    forwarded.extend(getattr(args, "checker_argv", None) or [])
+    forwarded.extend(getattr(args, "trailing_argv", None) or [])
     return module.main(forwarded)
 
 
@@ -9861,6 +10176,40 @@ def build_parser() -> argparse.ArgumentParser:
                             help="the instant to record (default: now)")
     wk_confirm.set_defaults(func=cmd_work_confirm)
 
+    wk_dispatch = work_sub.add_parser(
+        "dispatch", help="§12/P7 — perform the dispatch an admitted cycle holds "
+                         "its action key for: run the command after `--` under "
+                         "`runtime/bounded_invocation.invoke_once`, then record "
+                         "the receipt it wrote as the cycle's third phase",
+        description="The command must follow `--`; every token after it is "
+                    "passed to `runtime/bounded_invocation.invoke_once` "
+                    "unchanged. The bounds are the admission's reservation, "
+                    "not this command line's.", **_COMMON)
+    wk_dispatch.add_argument("cycle")
+    wk_dispatch.add_argument("--cwd", required=True,
+                             help="the absolute directory the command runs in — "
+                                  "an Item's worktree, for a cycle that has one")
+    wk_dispatch.add_argument("--receipts", required=True,
+                             help="the absolute private directory "
+                                  "`invoke_once` writes its receipt and the two "
+                                  "output files into. Required, and there is no "
+                                  "default: it is the same directory the phase "
+                                  "is recorded from, and a guessed one would "
+                                  "record a receipt nobody can read")
+    wk_dispatch.add_argument("--input-file", default="",
+                             help="a file whose contents become the command's "
+                                  "standard input, mixed into the receipt's "
+                                  "input digest. The contents are not echoed")
+    wk_dispatch.add_argument("--read-only", action="store_true",
+                             help="record the dispatch as intended to be "
+                                  "read-only. It is written to the receipt as "
+                                  "`read_only_requested` and mixed into the "
+                                  "input digest, and `invoke_once` does not "
+                                  "enforce it — a declaration to the next "
+                                  "reader, not a sandbox")
+    wk_dispatch.set_defaults(func=_workchain_refusals(cmd_work_dispatch),
+                             accepts_unknown_argv=True)
+
     wk_retire = work_sub.add_parser(
         "retire", help="§12/P6 — close an admission, releasing its reservation "
                        "and its action key. Keeps the first retirement, and "
@@ -10829,9 +11178,12 @@ def main(argv: list[str] | None = None) -> int:
     args, unknown = parser.parse_known_args(argv)
     # Almost every verb's argv surface is closed, and a misspelled flag has to
     # be an error rather than a silently ignored argument — that is the whole
-    # value of `parse_args` here. The one exception is `architecture`, whose two
-    # verbs forward their tail to a checker whose flags this file deliberately
-    # does not re-declare, and which therefore asks for the leftovers by name.
+    # value of `parse_args` here. Two verbs are the exception, and they are
+    # different kinds of exception: `architecture` forwards its tail to a
+    # checker whose flags this file deliberately does not re-declare, and
+    # `work dispatch` takes the command it will run as the tail after `--`.
+    # Both ask for the leftovers by name, which is what `accepts_unknown_argv`
+    # means.
     #
     # `nargs=argparse.REMAINDER` was the obvious way to express "everything
     # after this point, options included", and it does not work: argparse does
@@ -10839,15 +11191,18 @@ def main(argv: list[str] | None = None) -> int:
     # (bpo-17050), so `architecture project --out d` parsed as an empty tail
     # plus one unrecognized argument. Measured, not assumed. The leftovers come
     # back from argparse in the order they were typed, which is what a forwarded
-    # argv requires and what a per-positional reconstruction would lose.
+    # argv requires and what a per-positional reconstruction would lose — and
+    # for the dispatch it is more than convenient: the tail is a command, and a
+    # parser that reordered or re-interpreted any token of it would change what
+    # runs.
     if unknown:
         if not getattr(args, "accepts_unknown_argv", False):
             parser.error("unrecognized arguments: " + " ".join(unknown))
-        args.checker_argv = unknown
+        args.trailing_argv = unknown
     elif getattr(args, "accepts_unknown_argv", False):
         # Set even when empty, so the handler never has to tell "no tail" from
         # "this verb was reached some other way".
-        args.checker_argv = []
+        args.trailing_argv = []
     # Both global flags are declared with `default=SUPPRESS` (see
     # build_parser), so an unused one is simply absent. Normalized here, once.
     if not hasattr(args, "json"):
