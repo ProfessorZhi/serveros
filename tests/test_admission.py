@@ -1410,6 +1410,62 @@ class TestTheCycleIsWhatAPersonAcceptedNotWhatTheFabricProposes:
         # one of them is today's focus.
         assert "in flight   5" in self.proposal_block(done.stdout)
 
+    def test_a_chosen_objective_that_is_delivered_but_owes_evidence_stays(
+            self, tmp_path):
+        """The other half of the pair, and the case the fixture already carried.
+
+        SAMP-0003 is `DELIVERED` — a word that sounds finished — and its
+        projection row has `outcome: null`. It has its report; what it does not
+        have is the outcome the contract names at that state. So the boundary
+        says OPEN, and the objective is still being carried, with the gap named.
+
+        The failure this pins is a reader trusting the state NAME. Read from
+        the documents alone, this Item looks finished: `work item SAMP-0003`
+        prints DELIVERED with all five documents PRESENT. That reading is what
+        made this test look unnecessary until the boundary was actually
+        computed — the fixture's own row is the counterexample.
+        """
+        tree = self.tree(tmp_path)
+        (tree["records"] / "projects" / "sample-alpha" / "board"
+         / "today.yaml").write_text(
+            "schema: serveros/today.v1\nproject: sample-alpha\n"
+            "date: '2026-09-25'\nitems:\n- SAMP-0003\n"
+            "note: a selection that was delivered and never accepted\n"
+            "authored_by: test\n",
+            encoding="utf-8")
+        done = self.focus(tree)
+        assert done.returncode == 0, done.stderr
+        cycle = self.cycle_block(done.stdout)
+        assert "objectives  1" in cycle
+        assert "SAMP-0003" in cycle
+        assert "AWAITING_ACCEPTANCE_EVIDENCE:outcome" in cycle
+        # Not the state's own reason: SAMP-0003 being carried is not reported
+        # as `TERMINAL_STATE`, which is the word that says the opposite.
+        assert "TERMINAL_STATE" not in cycle
+
+    def test_the_item_verb_prints_what_the_item_still_owes(self, tmp_path):
+        """The other face of the same answer, on the command a person runs
+        about ONE Item — because `<ID> DELIVERED` on its first line is a word,
+        and this is where the word is checked. Both directions: SAMP-0003 owes
+        an outcome, and SAMP-0004 owes nothing."""
+        tree = self.tree(tmp_path)
+        owed = cli("work", "item", "SAMP-0003", "--project", "sample-alpha",
+                   "--boards-root", str(tree["boards"]),
+                   "--records-root", str(tree["records"]),
+                   "--workspace-root", str(tree["records"].parent))
+        assert owed.returncode == 0, owed.stderr
+        assert "完成边界   未结清" in owed.stdout
+        assert "↳ 缺字段   outcome" in owed.stdout
+        # The report IS there, and saying so is the difference between this
+        # Item and one that never produced its deliverable.
+        assert "缺文档" not in owed.stdout
+
+        discharged = cli("work", "item", "SAMP-0004", "--project", "sample-alpha",
+                         "--boards-root", str(tree["boards"]),
+                         "--records-root", str(tree["records"]),
+                         "--workspace-root", str(tree["records"].parent))
+        assert "完成边界   已完成" in discharged.stdout
+
     def test_nobody_having_chosen_is_reported_as_such_and_not_as_an_empty_choice(
             self, tmp_path):
         """Both files deleted: no person has ever chosen. Focus is 0, and the

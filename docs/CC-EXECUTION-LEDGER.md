@@ -512,6 +512,7 @@ tests/test_declared_commands.py::DeclaredCommandsExist::test_every_declared_comm
 | serveros（§9.11 + §9.12 修正后**终态**） | **8 failed, 4521 passed, 20 skipped, 3718 subtests passed**（485.44s） | `pytest tests/ -q -p no:cacheprovider`。**回到既有的 8 条跨仓红**，无新增失败；pass 从 4480 涨到 4521 是本轮新增的 40 条 `tests/test_delegation.py` + `test_verification_tool.py` 里新增的一条判据 |
 | serveros（P5 尾款 + P6 切片 A 的代码，台账那条引用**还没改**时） | **1 failed**, 5607 passed, 20 skipped, 3928 subtests passed（818.82s） | `pytest tests/ -q`。**那 1 条就是上面那一族的第四次**：本节 §9.24.5 写「那个扫描器读得太字面」时，把两个假命令原样引了出来 |
 | serveros（同上，把该处引用改成**谈论**的写法之后） | **5632 passed, 20 skipped, 3928 subtests passed, 0 failed**（802.68s） | 同上。**这两行是同一次改动的前后两棵树**，中间只动了那一处引用 |
+| serveros（P6 切片 B：完成边界 + 渲染器 + 三个套件的新测试） | **5654 passed, 20 skipped, 3934 subtests passed, 0 failed**（649.58s） | `pytest tests/ -q`。相对上一行的 **+22 passed / +6 subtests** 就是这一片新增的测试；**0 failed** 是这一片唯一一处旧行为被有意改掉（无 `completion` 键的行不再被当成完成）之后的结果 |
 | serveros（`dc23707`，带覆盖） | 4207 passed, 23 skipped, 3703 subtests passed, 0 failed（459.73s） | 同上 |
 | serveros（起点） | 3 failed, 4171 passed | — |
 | ability-management | **105 passed, 2 skipped**（`074a518`）；三个 renderer `--check` 干净 | 加 `SERVEROS_BUNDLE=<serveros worktree>/plugin` |
@@ -2860,6 +2861,148 @@ refused     6
 - `work focus` 的 JSON 顶层键由 `decision` 变成 `continuation` + `proposal`。查过：
   `docs/`、`skills/`、`mcp/`、`fleet/`、`plugin/` 下**没有代码消费者**读它，只有测试读，
   所以这次改键没有把任何人打断。
+
+### 9.26 P6 切片 B：完成边界从散文变成机械可读的判据
+
+计划第 4 条的两句在这里落地：「完成边界/接受版本与真实 evidence 联结」（改动）与
+「DELIVERED/待验收是否释放责任取决于 required 结果和实际 effects，不单凭旧 enum」（验收）。
+入口是 §9.25.5 的第一条 —— `intake/workchain-contract.yaml` 的 `completion.requires`
+（"outcome is set, and report.md is present"）那句话，**在那之前没有任何代码读它**。
+
+#### 9.26.1 那句话为什么不能只当一句话
+
+`completion.requires` 读起来是一句完整的要求，但它有一个散文无法避免的性质：**它可以被绕过而
+不报错**。`DELIVERED` 这个词本身就长得像「做完了」，于是任何一处只读状态名、不读那句话的代码
+都能得出「已完成」。`current.json` 里的 `"outcome": null` 与一份存在的 `report/` 可以同时成立，
+而没有任何东西会因为它们同时成立而转红。
+
+这一片的做法是：把那句话**换成代码能对错的两张表**（`requires_fields: [outcome]`、
+`requires_documents: [report]`），散文留在原处**只给人读**，并加一条测试断言两张表与那句话点名
+的是同一批东西。§9.22.4 的教训（同一规则在两处实现，单点变异杀不死）在这里**反用**：
+两份拼写只有在「它们分叉时会转红」的前提下才是可辩护的，否则第二份就是会漂移的副本。
+
+这个块也从 `personal_board` 下**移到顶层**，与 `item_documents` 并列：Item 欠什么是 **Item
+chain 的属性**，personal board 只是它的一个读者 —— `compose_item` 会为 personal board 从不显示
+的 Item 读这个块。兄弟契约 `intake/board-contract.yaml` 的 `completion:` 本来就在顶层。
+
+#### 9.26.2 四个答案，不是一个
+
+`workchain.completion_of(row, rules)` 返回四值，其中**第一个与第四个分开**是它存在的多半理由：
+
+| 判定 | 意思 |
+| --- | --- |
+| `NOT_ASSESSED` | 契约**不在这个状态下测完成**，所以无可欠。**不是**一次通过的评估 |
+| `COMPLETE` | 状态声称完成，契约点名的一切都在 |
+| `DISCHARGED` | 状态不声称完成，但契约点名的一样不缺 —— 欠的是**人的验收**，不是活 |
+| `OPEN` | 契约要求的东西不在，缺口被逐个点名 |
+
+把 `NOT_ASSESSED` 混进 `COMPLETE`，是这一类的标准死法：一个**从未被问过的问题**会以「没查出
+问题」的样子通过审查。同一类错误本轮已经记过三次（§9.24 的 `UNPRODUCED` vs `EMPTY`、
+`NOT_ON_THIS_PROJECTION`、`NOT_ASSESSED`），所以这次把它写进返回值的**第一个字段**，而不是
+注释里。
+
+缺口也**不合并成一句**：`missing_fields`（字段没有值）、`missing_documents`（文档不在）、
+`unreported_documents`（**链上根本没提这份文档** —— 既不说在有，也不说没有）是三种不同处境，
+第三种最容易被读成第二种。`_set()` 单独判「这个字段算不算有值」：`None`、`""`、空集合都是
+**穿着值的衣服的缺席**，用 `is not None` 去查会把 `outcome: ""` 读成「outcome 已经记了」。
+
+#### 9.26.3 最承重的一处判断：义务**不进** `disposition`
+
+`classify()` 是「这一行是否仍被持有 / 是否已结束 / 是否授权」的**唯一**一份判断（§9.25.1）。
+新读数 `completion` 放哪里，这一片遇到两条路，只有一条是对的：
+
+- 把「终态但欠证据」读成 `HELD`。**错的**：`select_focus` 会把这样的行算进 `carryover`，
+  于是一条已经做完的活会被重新算成在飞 —— 正是 §9.11 修掉的 `OVER_CAPACITY` 假象会原样长回来。
+- 让 `classify` **只报告** `completion`（终态行上的第三个键），推荐器照旧 `excluded
+  TERMINAL_STATE`，**接续器**才据此继续。**对的**：一个读数、两个调用者、两个答案 —— 与
+  `priority` **同形**。
+
+这条非对称被一个测试钉住：同一行 `T-1`，推荐器报 `excluded TERMINAL_STATE`、`carryover == []`，
+而接续器 `selected == ["T-1"]`。
+
+接续器的三个新理由各自对应一种处境：`AWAITING_ACCEPTANCE_EVIDENCE:<缺口>`（DELIVERED）、
+`CLOSED_UNEVIDENCED:<缺口>`（CLOSED）、`COMPLETION_NOT_ASSESSED`（行上**没有**判定 —— 未被
+问过的问题不是有利的答案，所以目标继续，同时进 `unevaluated`）。
+
+#### 9.26.4 这一片抓到的东西：我自己读错过的那一条
+
+这一片最值得记的不是代码，是一件**被打脸的过程**。
+
+动手之前，我用 `work item SAMP-0003` 与 `SAMP-0004` 在样本树上取了读数，看到五个文档全是
+`PRESENT`，于是记下结论：「样本树上两条终态 Item **都不欠证据**」。**这个结论是错的。**
+`sample-alpha/current.json` 里 SAMP-0003 的行是：
+
+```json
+"id": "SAMP-0003", "state": "DELIVERED", "outcome": null,
+```
+
+它有一份 `report/`，但没有 `outcome` —— 契约在 `DELIVERED` 点名的两样里，缺的正好是**文档清单
+不会显示的那一样**。把完成边界算出来之后，同一条命令、同一棵树，立刻说：
+
+```text
+完成边界   未结清 —— in DELIVERED the contract requires ['outcome', 'report'], and ['outcome'] is not there
+           ↳ 缺字段   outcome
+```
+
+也就是说：**读文档清单得出的「全部 PRESENT」与读契约得出的「欠 outcome」可以同时为真**，而前者
+看起来像一个完整的答案。这条因此不再需要「本机没有实例、只能在单元层覆盖」的注解 —— 样本树里
+**本来就有**一个天然的实例，是用读者面读的时候没看见它。
+
+#### 9.26.5 顺手修的一个错标：`unevaluated` 的表头
+
+§9.25 加进来的 `unevaluated` 列表里原本只有一族字段（`worker_stopped` /
+`resources_released`），渲染器因此写死了一句「没有生产者说明 worker 是否仍持有」。这一片往里
+加了第二族（`completion`），那句话就会把「契约没在这个状态测完成」印成「没有生产者说明 worker
+是否仍持有」—— **一个关于 worker 的句子，说的却不是 worker**。
+
+修法是让表头从条目**实际点名的字段**推出来，并把条目的 `because` 印在下面。记在这里，是因为
+凡是「写死的解释句 + 后来变多的族」这个形状，都会以同样的方式错下去。
+
+#### 9.26.6 实测读数
+
+同一块样本板、同一次运行，把 `today.yaml` 改成选中 SAMP-0003：
+
+```text
+— 本次周期：人已选定、可以继续的 —
+accepted    PARTIAL — 本周期读的是 `records/projects/<p>/board/today.yaml`
+focus       PLANNED
+objectives  1
+  SAMP-0003  DELIVERED   无优先级  AWAITING_ACCEPTANCE_EVIDENCE:outcome  示例：已交付但 PR 未合并
+```
+
+对照 §9.25.4 里选中 **SAMP-0004**（CLOSED、outcome 有、report 在）时的 `objectives 0` +
+`TERMINAL_STATE`：验收里「无新选择时完成后 Focus=0」与「DELIVERED 是否释放责任取决于 required
+结果」是**同一段代码的两个分支**，而它们在同一个 fixture 上各自有一个真实实例。
+
+样本树的十一条里，**只有两条落在被检测的状态上**，其余九条是 `NOT_ASSESSED`：
+
+```text
+SAMP-0001   INBOX      未评估    ·  SAMP-0002  ACTIVE      未评估
+SAMP-0003   DELIVERED  未结清（缺字段 outcome）
+SAMP-0004   CLOSED     已完成
+SAMP-0005   CANCELLED  未评估    ·  SAMP-0006  READY       未评估
+SAMP-0007   ACTIVE     未评估    ·  SAMP-0101…0103         未评估
+```
+
+这九条不是「通过了」，是**没被测**，而输出把它们印成两句话。新增的读者面是 `work item <ID>`：
+判定印在文档清单**下面**（在证据之后，因为它是从证据得出的结论），
+`--json` 走的是同一个 `compose_item` 返回，所以两个面不会分叉。
+
+#### 9.26.7 这一片没有做的事
+
+- **`work admit` 还没有消费 `completion`。** 接续器用它决定「还占不占槽」，但准入记录本身
+  （`runtime/agent_control_store.py` 的 admission）里没有这一项：一条在飞的目标被交付但缺证据，
+  准入侧不知道。
+- **`assessed_at` 是这一片引入的**，现在等于 `[DELIVERED, CLOSED]`。这意味着 `CANCELLED` /
+  `WAITING` / `NEEDS_HUMAN` / `DELEGATED` / `INBOX` / `AVAILABLE` / `READY` / `ACTIVE` 都**不被
+  测**。对取消来说这是对的（取消不是完成），但如果以后要问「取消的活有没有留下它该留的东西」，
+  这个状态今天是空的。
+- **`worker_stopped` / `resources_released` 仍然没有生产者**（与 §9.25.5 同）。§9.26.5 只是让
+  第二族出现时不像第一族，没有给第一族补上生产者。
+- **`not_completion: [DELIVERED, CANCELLED]` 不被任何代码读**。它留在契约里是因为它对人有信息
+  （说清哪些状态不是「达成验收」），而契约里写明了这一点，免得下游把它当成一条会被执行的规则。
+- **正式 Requirement 到 canonical Work Item 的幂等对应仍然 ABSENT**；首次真实 grant 走可信用户
+  控制仍然 PARTIAL。两条都还在 P6 的剩余部分里。
 
 ## 10. 后续每包更新哪几行
 
