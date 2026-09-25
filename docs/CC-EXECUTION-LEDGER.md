@@ -299,6 +299,18 @@ anomaly(detectors, runtime/anomaly.py)
    `alerting.record_delivery()`（`alerting.py:947`，本机从没跑过）。安装动词今天的
    行号是 `scripts/release.py:885 cmd_alert_worker`；上面写的 `:528` 是旧行号。
 
+   **§9.24（2026-09-25）在这一条上又加了两笔，一笔向下、一笔向上。**
+   **向下**：`mcp/human_control.py` 的能力表里 `human.notification.transport` 一直写着
+   `SUPPORTED`，理由是「POST /api/trigger carries a ServerOS sentence into the
+   conversation」；实测不成立 —— 不写 `target.chatId`/`sessionId`/`rootMessageId` 三者，
+   服务造的是一个**合成会话**，文本变成**模型的任务**，那一轮的头部自己写着「不显示在任何
+   聊天里」并禁止发布到飞书，所以**它到不了任何人**。已降为 `UNKNOWN`，理由写在降级那一行
+   本身。**向上**：一条真正有地址的发送路径现在有了（`runtime/message_transport.py`，
+   走 `lark-cli im +messages-send`），并且一份真实日报经它送到了真实收件人（§9.24.3）。
+   **但这一跳仍然不是本条说的那一跳**：`serveros-alert-sync` 的 unit/timer 依旧不存在，
+   `cmd_alert_worker` 依旧需要一个获准的 `--conversation` —— 前者是报告投递，后者是告警
+   投递，两条腿分开记，别把一条的成功读成另一条的。
+
 第 3 条同时解释了 §8 里那个「孤立的 drop-in」：它不是残渣，是**一个设计好的跳没装**。
 
 还有一处**已测但没接线**：`monitor_card.py:994-1009`（每小时那张主卡）只调
@@ -498,6 +510,8 @@ tests/test_declared_commands.py::DeclaredCommandsExist::test_every_declared_comm
 | serveros（本轮末，不带覆盖，含 §9.10 的 `information watched`） | **8 failed, 4480 passed, 20 skipped, 3717 subtests passed**（492.73s） | `pytest tests/ -q -p no:cacheprovider`。**8 条全部是 `tests/test_architecture_check.py` 的配对断言**（本节 §5.0 那条已定案的跨仓红），无新增失败；pass 数从 4231 涨到 4480 是本节 §9.6/§9.7/§9.9/§9.10 四轮新增的测试 |
 | serveros（§9.11 standing delegation 落盘**之前**，第一次量） | **9 failed, 4520 passed, 20 skipped, 3718 subtests passed**（490.34s） | 同上。**8 条跨仓红 + 1 条新红**：`tests/test_verification_tool.py::TheStaticGraphIsALowerBound::test_the_static_input_set_is_the_test_file_alone_for_half_the_suite`——新测试文件进套件把分母从 111 推到 112，分子 55 没动。**这一格留在这里，因为它是这一轮唯一的真红**，处置见 §9.12 |
 | serveros（§9.11 + §9.12 修正后**终态**） | **8 failed, 4521 passed, 20 skipped, 3718 subtests passed**（485.44s） | `pytest tests/ -q -p no:cacheprovider`。**回到既有的 8 条跨仓红**，无新增失败；pass 从 4480 涨到 4521 是本轮新增的 40 条 `tests/test_delegation.py` + `test_verification_tool.py` 里新增的一条判据 |
+| serveros（P5 尾款 + P6 切片 A 的代码，台账那条引用**还没改**时） | **1 failed**, 5607 passed, 20 skipped, 3928 subtests passed（818.82s） | `pytest tests/ -q`。**那 1 条就是上面那一族的第四次**：本节 §9.24.5 写「那个扫描器读得太字面」时，把两个假命令原样引了出来 |
+| serveros（同上，把该处引用改成**谈论**的写法之后） | **5632 passed, 20 skipped, 3928 subtests passed, 0 failed**（802.68s） | 同上。**这两行是同一次改动的前后两棵树**，中间只动了那一处引用 |
 | serveros（`dc23707`，带覆盖） | 4207 passed, 23 skipped, 3703 subtests passed, 0 failed（459.73s） | 同上 |
 | serveros（起点） | 3 failed, 4171 passed | — |
 | ability-management | **105 passed, 2 skipped**（`074a518`）；三个 renderer `--check` 干净 | 加 `SERVEROS_BUNDLE=<serveros worktree>/plugin` |
@@ -2594,6 +2608,161 @@ work claim-recall    索引     收据 0 张，主张 0 条，涉及卡片 0 张
   工作目录切到文件自己所在目录——不是放宽白名单，而是让「发送者能指到的文件」与「CLI 允许读的
   目录」重合。
 
+### 9.24 P5：一条到不了任何人的通道，和一条到得了的
+
+计划里 P5 的验收是四件：一个收藏/Follow 增量、一个指南 scoped 维护、一个周期报告完成适用
+的 compose/publish/send、以及 J04/J10/REF01–REF12。这一轮把「send」跑到了真的收信人手里 ——
+而在跑之前先量了一遍发送通道，量出来的东西比实现本身值钱。
+
+#### 9.24.1 先量：`human.notification.transport` 写着 SUPPORTED，而它到不了任何人
+
+`mcp/human_control.py` 的能力表里这一条一直写着 `SUPPORTED`，理由是一句读起来很自然的话：
+「POST /api/trigger carries a ServerOS sentence into the conversation」。实测不是这样：
+
+```text
+BotMux /api/trigger   没有 conversationId 这个字段。
+路由靠 target.chatId / target.sessionId / target.rootMessageId 三者。
+三个都不写 —— 服务得到的是一个【合成会话】（http_async_…），
+文本变成【模型的任务】，答案从 HTTP 返回；那一轮的头部自己写着
+「不显示在任何聊天里」，并且禁止发布到飞书。
+```
+
+所以它到不了任何人，而这张卡一直说它行。这不是措辞问题，是有后果的：同一形状的两条
+`ORPHAN_PROCESS_TREE` 告警在这条路上报过 `last_delivery: DELIVERED` /
+`last_notified_at: 2026-09-20T11:28:51Z`，三份已部署的插件副本也没有一处按 `chatId` 路由。
+台账里那一栏记的是「送达」，而那个动词在这条路上没有对应的现实。**「记成 DELIVERED」与
+「真的有人收到」是两个事实，只有当第二个有证据时第一个才算数。**
+
+处置：能力降为 `UNKNOWN`，把实测到的原因写在降级的那一行**本身**（不是写在别处），
+`docs/human-control.md` 同步，`tests/test_actor_context.py` 的断言改成 `UNKNOWN`。
+这是这张表第一次**向下**修正 —— 它此前每一次纠正都是向上或平移，而向下才是这张表真正
+需要能做的事。
+
+#### 9.24.2 能到人的那条路：一个适配器，不是第二个实现
+
+`runtime/message_transport.py`（新）是唯一知道 `lark-cli im +messages-send` 的文件；
+`runtime/document_transport.py` 是唯一知道 `lark-cli` 的文件。两句不冲突，因为前者**委派**
+给后者。几处承重，每一处都是实测定的：
+
+| 判断 | 为什么不是另一种写法 |
+| --- | --- |
+| `run()` 委给 `document_transport.run`，不复制封套规则 | §9.22.4 的教训：**在两个冗余位置实现的规则无法被单点变异杀死**。封套规则写两处，删掉一处测试照样绿 |
+| 成功判据是 `ok == true`，不是 `code == 0` | 实测：成功那一次 `code` 不是 0。按 `code` 判会把成功读成失败 |
+| 收件人必须带前缀（`user:` / `chat:`） | `--user-id` 与 `--chat-id` 互斥；不带前缀就得猜一个，而猜就是替调用方决定收件人 |
+| 幂等键取 `str(intent)[:50]` | CLI 的键上限是 50 字符，超了不发 |
+| 发送前重算 sha256，不符则 `FAILED` 且**不调 CLI** | 「发出去的必须是它说要发的那份」只有在真去比一遍时才是真的 |
+
+最后一条要单说：`--idempotency-key` 的去重窗口是 **1 小时**且是**静默**的 —— 窗口内再发一条
+不报错，只是不出现。所以「没看到消息」有两种原因，这个模块**不把它们合并**：
+窗口内 → `ALREADY_DELIVERED`（同一次调用）；窗口外、或时间戳不可定位 → `None`（答不出来，
+不猜）。`report_delivery._reconcile` 因此收到的是**整个前回执**（`intent`/`report`/`audience`/
+`previous`），而不只是那个 intent 字符串。
+
+#### 9.24.3 报告投递跑到了环
+
+一份真实日报（3,916 字节，`sha256 2ba14a1d…`，周期 2026-09-25 00:00 → 20:39 +08:00）
+从 compose 到 send：
+
+| 动作 | 读数 |
+| --- | --- |
+| `report request` | outbox 记一条，`intent 73c11a28…`，`state REQUESTED`，`requested_by vince` |
+| `report deliver` | `DELIVERED`，**exit 0**；回执绑定 report 的 sha256、`provider.id lark-cli`、`transport im +messages-send`、远端 id（`om_…`）、`attempts 1` |
+| 再 deliver 一次 | `ALREADY_DELIVERED`，**没有第二条消息** |
+| 没请求就 deliver | 拒，exit 2，outbox 里 pending 仍是 1，**没有写回执文件** |
+| `report withdraw` 后再 deliver | `WITHDRAWN` → `NOTHING_REQUESTED`，exit 2 |
+
+还有一个读数教训值得记：第一次把退出码读成了 0，因为命令串在管道里，`echo $?` 取到的是
+`tail` 的状态而不是被测命令的。**管道会把退出码换掉**，而这条链上「拒绝」与「成功」正好
+是 2 和 0 —— 读错一次就会把一次拒绝记成一次成功。
+
+#### 9.24.4 收藏/Follow 增量：REF01 的真云做掉了
+
+这一半不是新抓一篇，是把既有那一篇**做完整**：
+
+- **复核原文**（新增生产者 `information/raw/web/verify_web.py`，见 §9.24.5）：重新取回、
+  身份四项与前次一致，`page_kind` 四类壳 20 个标记逐条查过、可读正文零命中。
+- **补齐一条从来没人问过的问题**：§4 四问里的 `truncated_body`，于是
+  `serverosctl information reference` 的读数由 `UNDECIDABLE` 变成 `CAPTURED`。
+  **这是补做检查，不是放宽判据** —— 另外三问的判据一个字没动。
+- **把 REF01 的真云做掉**：参考笔记（自写摘要/用途/批注，不是全文转载）发布进既有
+  「外部文档」Source Library 空间并回读，逐项都在（原文入口、作者、保存理由、三条要点
+  各带出处、适用范围、关联、批注、最近检查、折叠层机器细节）；受众未变（空间 1 人，
+  新文档成员与既有页面逐项同形）。`effects.reference_published` 由 `NOT_DONE` 变 `DONE`，
+  并明写「上一轮那笔授权没到位，本轮到位了，**不是把 NOT_DONE 改写成 DONE**」。
+
+**Follow 这一半不建，两个理由**：§3 表里 Follow 是「用户要求才启用」的那一栏，用户没有
+要求过；而且关注清单的解析器按飞书 `link_id` 定位（`watch_coverage.captures_for` 只看
+`links/<link_id>/`），一条网页链接放进去只会解析成 `NO_CAPTURE`，也就是一个**永远不会触发
+的关注**。这两条写进了 `reference-note.json` 的 `detail.sync_receipt.not_done_here`。
+
+#### 9.24.5 两条只有实测才会露出来的发现，和整库套件抓出的两个真缺陷
+
+**发现一：字节差不是内容差。** 复核那次字节 **+2,276**，而**文章正文一字未动** —— 量出来的
+差异落在站点左侧的文档导航（「Images and video」改成「Images」，并多了一个 Realtime 条目）。
+把 sha256 的变化读成「原文变了」在这里是错的，所以 `verify_web.py` 只报字节差，把内容差
+留给读者，并把量出来的首个分歧窗口记进 `_recheck.measured_delta`。按词逐位比：
+可读正文 17,290 → 17,336 字，**17,290 个是同一段文字**。
+
+**发现二：整页子串匹配会把一篇读得完整的文章判成撞上登录壳。** 这一页 `login` 出现两次，
+两次都在 `href="https://platform.openai.com/login"` 这个**导航链接的属性值**里，可读正文里
+0 次。所以壳标记按**可读正文**判；只出现在标记里的命中记在
+`markers_outside_readable_text` —— 它是事实，只是不是那个问题的答案。
+
+**整库套件抓出的两个真缺陷，两个都属于这次改动：**
+
+1. `runtime/report_delivery.py` 里一句散文被判成子命令：程序名（`serverosctl`）后面紧跟的
+   是 "is the entry point"，于是被读成 `is the`。判定它的 `tests/test_declared_commands.py`
+   从每个产品 `.py` 里读「程序名 + 两个小写词」的字面形状，再去问 parser 有没有这个动词，
+   并**不看那句话是不是在讲别的**。**那句话重写，扫描器不动** —— 它是为「注释里点名一个
+   没人建的动词」写的，而它读得那么字面正是它的工作。
+2. **一条生产出来却没有读者的观测，和没有生产是一样的。** 复核生产者写完只落了 `_recheck`
+   与 `fetch`，没写 `intake/capture_coverage.py` 一直在读的 `last_verified_at`，于是那份
+   读数把「**树**动了」读成「**读者**动了」。字段名不是新造的：`links/` 下的 manifest 一直
+   带着它，采集器与读者早就对它有共识 —— 所以修法是把复核接进一个**已经有消费者的键**，
+   而不是发明一个没人看的新键。同时 `verify_web.py` **不删自己没产出的东西**：上一次复核
+   时人写进去的量（两次字节各自的可读正文差）原样留着。
+
+因此 `tests/data/capture-coverage-live-2026-09-25.json` 被**第二次**重取，`retaken` 从一块
+变成一个**列表**，两次都留着，因为两次的原因正好相反：第一次是**读者**动了（chat capture
+新增 `revisions` 组件），第二次是**树**动了（那篇网页被复核）。写回前量过：68 个对象里
+1 个变、0 个消失、0 个新增，其余**逐字节相同**，而变的那一个恰好只差采集器写的那四个字段；
+`coverage.verified` 由 `RECORDED 62 / NOT_RECORDED 6` 变成 `63 / 5`。重取也把这次暴露的
+**本文件局限**写进了重取记录：验证日期按**天**比（`_verified_on` 取 `[:10]`），所以落在捕获
+同一天的复核无法被表成「之后」，只能重取；而 manifest 现在带着复核时间，**明天之后的复核
+就不必再重取**。测试侧同时补了一条：一个带着 `last_verified_at` 的 `web_capture` 必须读成
+`RECORDED` —— 这条键从此有测试钉着。
+
+**上面第 1 条随后在本节自己身上又发生了一次，而这正是它值得留下的原因。** 本节在写「那个
+扫描器读得太字面」时，把两个假命令**原样引在反引号里**，于是修完 `.py` 之后整库套件**第二
+次**判红 —— 同一把尺子、同一处红，只是这次造句的是**记录这条规则的文档**。按 §5.0 给的
+判据，这一行在**谈论**一条命令，不是在指示人去跑它，所以该改的是文档。修法不是把它加进
+`KNOWN_ABSENT`：那张表断言的是一件事实（「这里有一个真缺口」），而这里没有缺口，只有一个
+读者被误导的可能，所以那会是**一次假的登记**。修法是让本节不再把程序名与假参数相邻写出。
+这条规则是冷的：`SCANNED` 里含 `docs/*.md`，**记录缺陷的文字与缺陷本身受同一把尺子量**。
+
+连同 §5.0 记的三次（`relevance|cleanup` 的 fence 误读、同一句话的非 fence 版本、以及
+`'record|digest-record|receipt'` 那条**靠巧合变绿**的分段），这一族到今天是**第四次**，
+四次里三次是「文档在谈论命令」，一次是「闸门碰巧没红」。**判据仍然只有一条，而且它不在
+闸门里，在读的人手里**：这行是在指示读者去跑，还是在谈论一条命令。
+
+#### 9.24.6 没有做的，与为什么
+
+- **周期报告只到「手工串起来」这一步。** compose→publish→send 三个动词都真的跑到了环，
+  但把它们串起来的是**命令行**，不是定时器：`serveros-daily.timer` 在本机**仍是 disabled**
+  （§3.9）。所以这一环的 INTEGRATION 有了，**LIVE 没有** —— 与 B2 同一种形状。
+- **指南 scoped 维护（第二个验收项）没有做。** 真实写入仍然只发生在 ServerOS 自己的验收
+  对象上（§9.23.6 的那两条不变）。
+- **`EXTERNAL-REFERENCE-LIBRARY.md:117` 要求三种 hash 分开记**（真实原始字节 hash、
+  抽取文本 hash、用于去模板噪声的摘要 hash），本轮只落了字节 hash 与可读正文字数：
+  **抽取文本的 hash 没有**。字节留着，所以它可以重算，但今天没有那份 hash 在 manifest 里。
+- **`外部文档` 那篇 docx 的索引页今天列不出任何东西**：它的 `<sub-page-list>` 指向一个
+  **已被删除**的节点，而在其下建子节点被拒 131006（同一 space 的根节点可见列表只有未改动
+  的默认模版「首页」）。这不是本轮的活，但它决定了「外部参考笔记的长期落位」这个问题该
+  怎么问 —— 连同上面这几点，交人要定的部分收进 §11。
+- **`lark-cli` 的本地路径白名单**（工作目录 / `/tmp` / `~/files`）与本机策略（临时文件放
+  ARTIFACTS_ROOT、不建 `~/files`）仍然互相矛盾；本轮用 `--content -` 从 stdin 绕过去了，
+  **白名单本身没动**。
+
 ## 10. 后续每包更新哪几行
 
 - 改完一个包，只更新 §3.1 里对应行的四层状态 + §5 表的增删。
@@ -2707,6 +2876,18 @@ work claim-recall    索引     收据 0 张，主张 0 条，涉及卡片 0 张
 分配权力**，不是一次目录整理。在定下来之前，那两份文件留在 evidence 目录里，并且**不接任何
 常设 routine**——接了就等于用「它在哪」这个未决问题去决定「谁能改」。
 
+### 11.7 P5 留下的三条：两处位置没有定论，一条能力还没有落点
+
+| # | 事实（实测） | 为什么不是本轮 |
+| --- | --- | --- |
+| 5 | **「外部文档」空间的索引页今天列不出任何东西，而它下面建不了节点。** 那张索引页的 `<sub-page-list>` 指向一个**已被删除**的节点，所以页面上的列表是空的；试着在它下面建节点被飞书拒 `131006`；同一个 space 的**根节点**可见列表里只有未改动的默认模版「首页」。本轮把 REF01 的复核与补齐做掉了，也把这份参考**发布**进这个空间并回读确认落地，但「外部参考笔记长期住在哪」这个问题**没有答案可抄** | 两条路都要人定：**(a)** 修/重建那张索引页——改的是**别人建的一张页**，而 `131006` 说明它的父节点已经不在了，正确做法可能是**新建**一张而不是修那张；**(b)** 认定这个 space 的**根**就是长期落位，那就等于说「外部参考笔记不住在按主题分的子页下面」，与 `EXTERNAL-REFERENCE-LIBRARY.md` 的措辞不一致。这不是一次目录整理：**选哪条决定了以后谁能往里加** |
+| 6 | **`lark-cli` 的 `--content @file` 只认三处路径**（当前工作目录、`/tmp`、`~/files`），越界直接报 "outside the built-in allowlist"；而本机策略是**临时文件一律落 `ARTIFACTS_ROOT`**，并且明文**禁止造替代 `~/files` 根**。于是「按策略生成的内容」与「按工具能发的内容」之间有一处**结构性的不重合** | 本轮走的是 `--content -`（从 stdin 读），所以**今天不需要解**。但这是一处**两条规则各有出处、彼此矛盾**的地方，改哪一边都是改别人的规则：放宽白名单是改一个本机安装的工具行为，往 `~/files` 写是违反机器策略 |
+| 7 | **`human.notification.transport` 今天读 `UNKNOWN`**，而这是终报里唯一一处**向下**的修正（§9.24.1）。能到人的那条路已经存在并跑到了环（§9.24.3，`DELIVERED` 带回执），但**告警那条腿**仍然指向 BotMux 的 `/api/trigger`——它没有收件人字段，省略路由三键会得到**合成会话**，文本变成模型的任务，且头部禁止发布到飞书，**所以它到不了任何人** | 要人定的是**要不要建一个有地址的触发器**（把 `SERVEROS_ALERT_CONVERSATION` 真正绑到一个会话上），还是**接受告警次通道就这么留着**。另一件更小的：`--idempotency-key` 的去重窗口是 **1 小时且静默**，所以「报告没到」在 1 小时内重发会被**静默吞掉**——窗口过后是否重发是人的决定，不是脚本的 |
+
+这三条**同一类**：都不是「做不到」，而是「**做到需要先决定一件事，而那件事是在分配权力、或者改变别人的东西**」。
+第 5 条改的是别人建的页，第 6 条改的是别人的工具或机器策略，第 7 条改的是一个**对外可达的地址**。
+三条都记在 §9.24.6 与 §9.24.4 里有实测出处，这里只做汇总与解除条件的分类，不重复理由。
+
 ## 12. 最终报告（计划 §16 要求的那一份）
 
 **读它之前先读这一句**：这一节不是「全系统 READY 证明」。它把**已完成的实现**、**已量到的
@@ -2747,7 +2928,7 @@ Binding 一列，记 `UNBOUND`——把它读进 DESIGN 会让「没绑定」看
 | B7 | 实现 | DONE | DONE | DONE | ENABLED | 重叠旧入口未迁移 |
 | B8 | 报告发布 | DONE | DONE | PARTIAL | PARTIAL | 没有独立 artifact 是**设计选定的落法**；欠的是四处移除，被活动 consumer 挡着（§3.5） |
 | B9 | 文档维护 | DONE | DONE | NOT_MEASURED | NOT_ENABLED | 位置/ACL 侧留在 B-空间 |
-| B10 | 人机控制 | DONE | DONE | DONE | ENABLED | 告警卡面已在生产链上；status 卡面仍未接（§3.6） |
+| B10 | 人机控制 | DONE | DONE | DONE | ENABLED | 告警卡面已在生产链上；status 卡面仍未接（§3.6）。**§9.24 更正一处过高的声明**：`human.notification.transport` 的 `SUPPORTED` 是错的（那条路到不了任何人），已降为 `UNKNOWN`；四层状态不变，因为这一行的 ENABLED 靠的是**卡面**在生产链上，而那一条没变——**降的是一条能力声明，不是这一行的实测面** |
 
 数一下就得到这张表的形状：**INTEGRATION 已测 16 / 21（另 1 条 PARTIAL、4 条从未测），
 LIVE 已启用 13 / 21（另 3 条 PARTIAL、5 条 NOT_ENABLED）**。从未集成的四条是
