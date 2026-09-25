@@ -922,12 +922,14 @@ actuators:
   # answered both in one paragraph would be answering one of them by
   # implication.
   #
-  # Both entries say the same uncomfortable thing in their `why`: this call
-  # site has no production consumer today. `tests/test_bounded_invocation_paths.py`
-  # is its only caller in the tree. It is declared rather than deleted because
-  # the alternative — a module the scanner cannot see — is the failure this
-  # file exists to prevent, and because the daily loop it was written for is
-  # the thing this round is trying to reach.
+  # Both entries name the same caller, and until 2026-09-26 they said the same
+  # uncomfortable thing instead: this call site had no production consumer, and
+  # `tests/test_bounded_invocation_paths.py` was its only caller in the tree.
+  # It is declared rather than deleted because the alternative — a module the
+  # scanner cannot see — is the failure this file exists to prevent, and
+  # because the daily loop it was written for is the thing this round is
+  # trying to reach. That consumer now exists and is named in each `why`; what
+  # does NOT exist yet is a scheduler, so the reach is live and unarmed.
   # ---------------------------------------------------------------------
   - id: bounded-invocation-runs-a-supplied-argv
     kind: unresolved_argv
@@ -938,10 +940,16 @@ actuators:
       reports it because the argv is the function's first parameter and cannot
       be resolved statically; what it cannot show is everything that makes the
       reach narrow, so it is written here. The caller is a trusted, configured
-      adapter that supplies BOTH the argv and the private receipt directory —
-      the module's own docstring says it "neither authenticates a grant nor
-      sandboxes commands", and that is the design rather than a gap: the
-      authorization question belongs to the fabric's admission layer, and this
+      adapter that supplies BOTH the argv and the private receipt directory,
+      and there is now exactly one: `runtime/cli.py#cmd_work_dispatch`, reached
+      as `serverosctl work dispatch <cycle> -- <command>`. It supplies the argv
+      a person typed, the working directory and the receipt directory named on
+      that command line, and NOT the action key or the bounds — those come off
+      the admission the cycle holds, so a dispatch cannot run under a key or a
+      budget the cycle was not admitted with. The module's own docstring says
+      it "neither authenticates a grant nor sandboxes commands", and that is
+      the design rather than a gap: the authorization question belongs to the
+      fabric's admission layer, and this
       function's job is to make a spawned command bounded and idempotent. The
       bounds are real and are the reason the reach is worth granting at all:
       the receipt is written and fsynced as `STARTED` BEFORE the spawn, so a
@@ -951,14 +959,17 @@ actuators:
       output of each stream is capped at `max_output_bytes` by the reader; and
       the deadline is enforced by the same loop that drains the pipes, so a
       child that never writes cannot outlive its timeout.
-      No production caller exists on this node today — measured, and stated
-      here rather than left for the next reader to discover: `invoke_once` is
-      reached from `tests/test_bounded_invocation_paths.py` and from nowhere
-      else. Nothing in the CLI, the daemon, the MCP layer or `intake/` imports
-      it. The capability is granted now because the call site exists and an
-      undeclared call site is what this checker reports; the consumer that
-      would make it live is the daily loop, and wiring that is a separate and
-      uncompleted step rather than something this entry claims.
+      HOW FAR THE CALLER CAN BE REACHED, which is the part a reader cannot get
+      from the code: the verb is on the CLI only. It is not in the daemon, not
+      in the MCP layer (`mcp/node_mcp.py` names the daemon verbs it exposes and
+      this is not one of them), not on any observation path and not in a Run;
+      `scripts/release.py` is the only other place this repository puts a
+      spawned command behind a person, and it does it the same way. So the
+      sentence this entry replaced — that no production caller existed at all —
+      was true until 2026-09-26 and is now false, and what replaced it is
+      narrower than "it has a caller": it has one, it is a person's command
+      line, and nothing schedules it yet. The daily loop it was written for is
+      still the thing this round is trying to reach.
     sites:
       - {file: runtime/bounded_invocation.py, symbols: [invoke_once]}
 
@@ -1034,10 +1045,18 @@ actuators:
       timed out went on running. `tests/test_bounded_invocation_paths.py`
       asserts that property with a real `sleep 3; touch` that must never
       create the file.
-      Like the entry above, this capability has no production consumer today.
-      Nothing in the product can reach it, and the `STARTED` receipt it writes
-      first means a caller that finds one must reconcile the effect rather
-      than re-run: the timeout path records `effect: UNKNOWN` with the reason
-      that no automatic retry is permitted.
+      The caller is the same one the entry above names, `serverosctl work
+      dispatch`, and it is worth saying what that means for THIS reach rather
+      than leaving it to the sentence above: the kill is now something a
+      person's command can ask for, by dispatching a command that runs longer
+      than the reservation's `wall_seconds` or writes more than its
+      `max_output_bytes`. Both bounds are the admission's and neither has a
+      flag, so the worst a caller can do is spend the budget their own cycle
+      was admitted with — and the process group that dies is the one this
+      function created one screen earlier. The `STARTED` receipt it writes
+      first still means a caller that finds one must reconcile the effect
+      rather than re-run: the timeout path records `effect: UNKNOWN` with the
+      reason that no automatic retry is permitted, and `work dispatch` reports
+      that reason verbatim rather than turning it into a status.
     sites:
       - {file: runtime/bounded_invocation.py, symbols: [invoke_once]}

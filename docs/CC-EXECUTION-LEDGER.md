@@ -520,6 +520,7 @@ tests/test_declared_commands.py::DeclaredCommandsExist::test_every_declared_comm
 | serveros（P6 切片 D：`resources_released` 接上它的 lease 生产者 + 一对字段必须先被读全，§9.28） | **5683 passed, 20 skipped, 3945 subtests passed, 0 failed**（646.90s） | `pytest tests/ -q`。算术是闭合的：上一格 5669 ＋ 这一片新增的 **13 条**（`test_focus_source.py` 的 `ResourceOccupancyIsReadFromTheLeaseStoreThatOwnsIt` 10 条 ＋ `test_daily_cycle.py` 3 条）＝ 5682，**再加回上一格那条红的 1 条** ＝ 5683；subtests 3936 ＋ **9** ＝ 3945。上一格那 1 条**这一次没有出现**——同一个文件单跑 `27 passed`、那一条参数化单跑 `4 passed`（8.10s）。**这不表示这一片修好了它**：这一片的六文件与它无涉，只表示那条红是**间歇的**，与 §9.27.6 记的探针读法一致（`container.attribution` 是四条参数化里唯一会 shell out 到 Docker 的那条）。所以它从「见过一次」变成「见过一次、缺席一次」，**不结案** |
 | serveros（P7 切片 A：准入与观察拆成两个问题、四个记录目录陷阱、§9.29） | **5697 passed, 20 skipped, 3947 subtests passed, 0 failed** | `pytest tests/ -q`。算术闭合：上一格 5683 ＋ 本片新增的 **14 条**（`TheAttemptWatchTest` 12 条 ＋ `TheRecipeCommandLineTest` 2 条）＝ 5697；subtests 3945 ＋ **2** ＝ 3947。**这一格必须先记一次红**：修掉本片自己引入的 monkeypatch 泄漏之前的那一跑是 **17 failed, 5680 passed, 3947 subtests passed（812.08s）**，17 条全落在五个与本片无涉的文件里，根因是本片新测试的 `addCleanup` 把**打过补丁的** `paths_mod.Paths` 又装了回去，而那是全树共享的模块对象；因为「单文件绿、15 条变异全杀、全量却红」是这一片最有价值的那条教训，它留在这里不删。**本格不记墙钟**：这一行的文字在跑之前就已落盘，所以那一跑读到的正是提交的那份字节——这比一个秒数强，所以拿它换掉了秒数。 |
 | serveros（P7 切片 B：一个缺席的两种拼法，§9.30） | **5700 passed, 20 skipped, 3947 subtests passed, 0 failed**（636.60s） | `pytest tests/ -q`。算术闭合：上一格 5697 ＋ 本片新增的 **3 条**（`ReportTest` 三条）＝ 5700；subtests 3947 ＋ **0** ＝ 3947（本片三条都没有 subtests）。这一跑没有被改动的文件在中途换过字节：起跑前记下 `runtime/recipes.py` 的 sha256 `d0c40f45a1db42b1…`，跑完核对一致，那一跑读的就是提交的这一份。 |
+| serveros（P7 切片 C：`DISPATCHED` 的生产者 / `invoke_once` 的第一个生产调用者，§9.31） | **5709 passed, 20 skipped, 3947 subtests passed, 0 failed**（604.13s） | `pytest tests/ -q -p no:cacheprovider`。算术闭合：上一格 5700 ＋ 本片新增的 **9 条**（`TestTheDispatchVerb` 九条）＝ 5709；subtests 3947 ＋ **0** ＝ 3947（本片九条都没有 subtests）。这一跑读到的就是提交的那份字节：起跑前记下 `runtime/cli.py` 的 sha256 `135c11a00e159a40…`，跑完与提交前复核一致（本片另外两处改动是 `runtime/actuator-contract.yaml` 与 `tests/test_admission.py`，都不在跑动中被改）。**本片有一个必须先记的前置**：先跑的是 `tests/test_admission.py` 单文件（`115 passed in 18.77s`）作为变异检查的基线，然后 8 条变异全部被杀、每条都由它该杀的那一条测试杀死（§9.31.6），最后才是这一跑全量 | |
 
 **切片 C 那一格里的那 1 条红：`container.attribution` 的 daemon/CLI 计数比对。**
 逐字是：
@@ -3178,7 +3179,7 @@ status REFUSED / reason OUTPUT_ALREADY_EXISTS / worker_stopped False / direct_pr
 | `work focus --receipts <空目录>` | `liveness NO_ADMISSION_NAMES_AN_ITEM`；`items: {}`；原因原文「This is the node's normal state and not a fault: nothing has been admitted, so nothing has a worker」 |
 | `focus.not_produced` 的键 | `blocked_by, focus_disposition, grant_ref, next_action, parking_acknowledged, resources_released, scope_digest` —— **`worker_stopped` 已不在其中** |
 | control store | `admissions 0 / grants 0`（与 §2 一致） |
-| 本机 receipts 目录 | **不存在**。`invoke_once` 在本机没有任何调用者，所以哪怕有了 admission 也没有 receipt 可读 |
+| 本机 receipts 目录 | **不存在**。~~`invoke_once` 在本机没有任何调用者~~（**这句话现在不成立了**：§9.31 给了它第一个生产调用者 `serverosctl work dispatch`。目录仍然不存在，但原因换了——那个动词没有上弦，而且 live 的板是 `STALE_BOARD`、`grants 0`，所以还没有 admission 能被派工。同一格里的数字与其余四行照旧），所以哪怕有了 admission 也没有 receipt 可读 |
 
 两条 live 答案都是**精确 UNKNOWN**，不是每行一个 `False`。也正因如此 `--receipts` **没有默认值**：
 默认值会把「谁派的活」变成猜，而从一个没人跑过的目录里读出的 receipt 是对**另一次派工**的回答。
@@ -3225,6 +3226,10 @@ status REFUSED / reason OUTPUT_ALREADY_EXISTS / worker_stopped False / direct_pr
 - **receipt 是本片唯一的 live 缺口**：链在测试里以真 writer 自己的字节证明，但本机没有 receipt 可
   读，因为还没有任何东西通过 `invoke_once` 派活。第一个 live receipt 会由 P7/P8/P12 的运行时循环
   产生——在那之前，这一项的 live 状态是 PARTIAL，理由是精确的。
+  **→ 2026-09-26 订正**：产生 receipt 的那个动词已经存在（§9.31 的 `serverosctl work dispatch`），
+  但**它没有上弦、而且 live 上还不具备被调用的条件**（板 `STALE_BOARD`、`grants 0`，所以没有
+  admission 可派）。所以这一项的 live 状态**仍然是 PARTIAL**，缺的不再是「没有生产者」，
+  而是「生产者没有调度器，且它需要的准入在 live 上还造不出来」。第一个 live receipt 仍然没出现。
 
 ### 9.28 P6 切片 D：`resources_released` 接上它的 owner，以及「一对字段必须先被读全」
 
@@ -3353,7 +3358,8 @@ M6 杀 6 条、M8 杀 8 条，就是「§9.28.5 那条严格化是承重的」�
 
 - **`worker_stopped` 的 live 状态仍是 PARTIAL**，理由与切片 C 相同且精确：本机不存在任何 receipts
   目录，因为还没有任何东西通过 `invoke_once` 派活。第一个 live receipt 会由 P7/P8/P12 的运行时循环
-  产生。
+  产生。**→ 见 §9.27.7 同一条上的 2026-09-26 订正**：派工动词已经存在但没上弦，而它需要的准入
+  在 live 上还造不出来，所以这一项**照旧 PARTIAL**。
 - **CLI 里那个 `unevaluated` 渲染块在本机不可达**：板是 `STALE_BOARD`，`select_focus` 与
   `continue_focus` 都在 `blocked(...)` 早返回，`unevaluated` 恒为空。所以那两句话（改前的与改后的）
   在本机**都从未被打印过**，而且这个块没有测试覆盖——它要等板的生产者存在才会第一次输出。如实记下，
@@ -3683,6 +3689,202 @@ step        compose: wrote …/daily-report.md and …/publication-receipt.json
   这一片动的是 `report` 的缺席，不是 `work` 的观察窗口；那条要等 work-engine 自己的 attempt
   记录当主源，是另一片。
 - **`work focus` 的板仍是 `STALE_BOARD`**（§9.28.7／§9.29.7 第三条），四条里没动。
+
+### 9.31 P7 切片 C：第三个相位有了生产者，`invoke_once` 有了第一个生产调用者
+
+#### 9.31.1 那个缺陷的形状：一个相位有读者、没有生产者
+
+`runtime/agent_control_store.py` 的三个相位是
+
+```python
+ADMISSION_PHASES = ("INTENT_RECORDED", "LEASE_HELD", "DISPATCHED")
+```
+
+前两条各有自己的生产者，而且都已经在生产链上（§9.27 的 `worker_stopped`、§9.28 的
+`resources_released`）。第三条**一个生产者都没有**：
+
+- 读者是有的，而且不止一个：`intake/focus_source.py` 为每一条准入去读
+  `<receipts>/<action_key>.json`；`serverosctl work confirm --phase DISPATCHED` 把那个文件说的
+  话记下来。**读的那个文件，全机没有任何一条生产路径会写。**
+- `runtime/bounded_invocation.invoke_once` —— 那个文件唯一的写者 —— **一个生产调用者都没有**。
+  这件事 `runtime/actuator-contract.yaml` 不是漏了，是**明写在纸上**的（两条 `invoke_once`
+  条目的 `why` 里各有一句「No production caller exists on this node today — measured」）。
+- `work admit` 自己的收尾句把缺口点了名：「the lease is declared and the dispatch made by
+  whatever performs them」。**这句话当时指向一个不存在的东西**。
+
+后果是确定的，而且不是「不方便」：`DISPATCHED` 这个相位唯一的到达方式是**有人伪造一个
+receipt 文件**——也就是这个相位存在的全部理由（「有人真的跑过一个命令，回执在此」）恰恰是
+生产路径上唯一做不到的那件事。一条相位只有一个读者、没有生产者，和一条相位写了没人读，
+是两个方向同一种病。
+
+#### 9.31.2 为什么是一个动词，不是两个
+
+「跑命令」与「记下跑了」分开写会更好复用，这一片**没有**那么做，理由写在
+`cmd_work_dispatch` 的 docstring 里：`invoke_once` 在 spawn **之前**就落 receipt，而且
+同 key 重入是**重放**不是重跑，所以「跑完到记下之间崩了」是可恢复的；而一个**能跑命令却不能
+记录**的调用者会留下一个在途 worker、而准入上没有任何东西说这件事——**那正是这一条链存在的
+理由所要防的半成品**。所以 `work dispatch` 一次做完两件：先跑（写好 receipt），再从**那个
+文件**读回答案，用同一个读者、同一份文件，做与 `work confirm --phase DISPATCHED` 完全相同
+的一次记录。
+
+#### 9.31.3 五道闸门都在 spawn 之前，顺序由「事后检查要付什么」决定
+
+docstring 里把五条按**事后才发现要付的代价**排了序，这是这一片唯一一处「顺序本身是判据」的
+地方：
+
+| # | 闸门 | 事后才发现的话，代价是什么 |
+| --- | --- | --- |
+| 1 | 已退休的准入不许推进 | store 也会拒（`was retired at …`），但它的拒绝会落在**命令已经跑完之后** |
+| 2 | 相位已是 `DISPATCHED` 就是重放 | 不是拒绝，是**什么都不跑**（见 9.31.5） |
+| 3 | `INTENT_RECORDED` 不能跳到 `DISPATCHED` | 这一条差别最刺眼：命令会带着效果跑完，相位随后被拒——**工作做了、账上没有** |
+| 4 | **读租约 store，不读相位** | `agent_control_store` 自己的注解说「a phase is not a permission」，「the reader that wants to act on that reads the lease store itself」；这个动词**就是**那个读者。相位确认之后租约被释放，这里才抓得住 |
+| 5 | 命令必须是一个非空的 argv，且在 `--` 之后 | 见 9.31.4 |
+
+第 4 条不是形式主义：`LEASE_HELD` 只记「租约 store 当时那样答了一次」，它**不授权**。一个只信
+相位的动词会在租约已经被别人拿走之后照样跑命令——那就是把一条登记当成了许可证。
+
+#### 9.31.4 上限是准入的，不是这条命令行的；`--` 是必需的
+
+`wall_seconds` 与 `max_output_bytes` 从**这个 cycle 被准入时的 reservation** 里取，命令上
+没有对应的旗标（有一条测试直接钉住这件事：`--cwd`、`--receipts` 在 `--help` 里，`--timeout`
+与 `--max-output-bytes` 不在）。理由是一个跑得比被授权更久、写得比被授权更多的派工，就是
+**授权从没覆盖过的效果**，而一个能抬高它们的旗标就是这个洞有了名字。
+
+`--` 也是必需的，而且理由是量出来的不是想出来的：argparse 把没认出来的东西按输入顺序原样退回
+（`parse_known_args` 的 leftovers），所以在没有分隔符时 `work dispatch cyc-1 --cwdx /w` 会以
+「命令 `--cwdx /w`」的形状到达这里、**然后被执行**。要求分隔符，就是让一个打错的旗标仍然是
+一个错误、而不是一条命令。`nargs=argparse.REMAINDER` 是本机实测过不行的（bpo-17050），所以
+这一片的机制是 `set_defaults(accepts_unknown_argv=True)` ＋ `main()` 里把 leftovers 交给
+`args.trailing_argv`（这个名字从 `checker_argv` 改过来，因为它现在有两个用途：`architecture`
+把尾巴转给检查器，`work dispatch` 取 `--` 之后的命令）。
+
+#### 9.31.5 相位记录的是**那个文件**，不是那次调用——而这一点行为上分辨不出来
+
+这是这一片唯一一处「判据必须靠结构钉住」的地方，理由值得单独写：`invoke_once` **重放时返回的
+就是文件自己的内容**，所以「印出调用的返回值」与「读出那个文件」在行为上**同形**——一个把
+`invoke_once` 的返回值拿去记录的动词，在任何一次可观察的运行里都会印出一样的东西。所以那条
+测试钉的不是措辞，是**只有 `_dispatch_answer` 会加的两个键**：
+
+```python
+recorded = AgentControlStore(store_path(env)).get_admission("cyc-1")["confirmations"]["DISPATCHED"]
+assert recorded["store"] == str(receipts)
+assert recorded["receipt"] == str(receipts / "act-1.json")
+```
+
+配套的形状改动在 `_dispatch_answer` 的返回值上：`evidence` 仍是**三个字段**（加 store/receipt
+四个），因为它是**重放稳定性**的载体——同相位同证据的重报必须回 `replayed: True` 而不是冲突；
+而整条记录从新加的 `receipt` 键回来，给**真正做了这一步的那一个调用者**（就是 `work dispatch`
+自己）用。两个答案回答同一个问题，而**不一致的那一对正是没人会去看的那一对**——这就是为什么
+证据取的是文件那一侧。
+
+#### 9.31.6 变异：8 条判据，8 条都死
+
+脚本 `/data/home/vince/artifacts/tmp-p7/mutate_dispatch.py`；复原不用任何 git 动词（脚本自持
+原件、按 sha256 比）。基线 `115 passed in 18.77s`（`tests/test_admission.py` 单文件）。每一轮
+清 `__pycache__`，而且**必须清**：被测的 `runtime/cli.py` 是被 `bin/serverosctl` 在**子进程**
+里加载的，父进程的 `PYTHONDONTWRITEBYTECODE=1` 只阻止写、不阻止读，同尺寸同秒的旧 `.pyc` 会让
+「这条判据活着」变成缓存造出来的假结论。
+
+| # | 把哪条判据弄坏 | 结果 |
+| --- | --- | --- |
+| M1 | 相位改成记录 `invoke_once` 的**返回值**而不是 receipts 文件 | KILLED（`test_the_phase_records_the_receipt_the_command_wrote`） |
+| M2 | 删掉「还没到 `LEASE_HELD` 就不许派工」 | KILLED（`test_a_dispatch_before_the_lease_phase_runs_nothing`） |
+| M3 | 删掉「已退休的准入不许派工」 | KILLED（`test_a_retired_admission_is_not_dispatched`） |
+| M4 | 不再读租约 store（只信相位） | KILLED（`test_a_lease_released_since_the_phase_still_stops_the_dispatch`） |
+| M5 | 不要求 `--` 分隔符 | KILLED（`test_the_command_must_come_after_the_separator`） |
+| M6 | 删掉 `phase == "DISPATCHED"` 的重放分支 | KILLED（`test_a_second_trigger_is_not_a_second_dispatch`） |
+| M7 | wall 上限改成命令行常量而不是 `reservation["wall_seconds"]` | KILLED（`test_the_bounds_are_the_reservations_and_not_the_command_line`） |
+| M8 | 无条件打印 `process_exit_code` | KILLED（`test_a_command_that_cannot_start_is_not_given_an_exit_code`） |
+
+**8/8 全部由它该杀的那一条测试杀死**，没有一条是靠别的测试顺带变红的。M3 与 M6 值得各看一眼，
+因为它们的红看起来像「同一条判据在别处也被拦住了」：
+
+- **M3** 删掉退休闸门后，store 自己的 `was retired at …` 照样让动词非零退出，所以光看
+  「退出码非零」这一半是分辨不出来的；红的是**另外两半**——`"Nothing was run"` 不在 stderr 里
+  （走的是「命令已经跑过」那条分支），以及 `receipts` 目录**存在了**。也就是说这条判据真正钉的是
+  **「命令有没有跑」**，而不是「有没有报错」。
+- **M6** 删掉重放分支后，第二次触发不是重放而是**被当成错相位拒掉**：退出码非零，但
+  `test_a_second_trigger_is_not_a_second_dispatch` 要的是 `returncode == 0` 且那条
+  `touch marker` 的命令**一次都没被跑过**。所以「重复触发不双派」在这里的完整含义是
+  **既不能跑第二遍、也不能报错**——报错说明这个动词不知道自己已经派过了。
+
+#### 9.31.7 live 读数：一个隔离 DATA_ROOT 下的一次真派工
+
+`ARTIFACTS_ROOT/tmp-p7/dispatch-smoke`，`DATA_ROOT` 指向那里，全程不碰这台机器的真 state 根。
+三次调用，逐字读数：
+
+```text
+第一次（还没有 LEASE_HELD）：
+  退出码 1，stderr 里是「… is at INTENT_RECORDED and a dispatch is the phase after
+  LEASE_HELD. … Nothing was run」，`receipts/` 目录**没有被创建**。
+第二次（`lease declare browser:chromium --scope session --holder cyc-1` ＋
+        `work confirm cyc-1 --phase LEASE_HELD` 之后）：
+  退出码 0，`phase       DISPATCHED`，`status      EXITED`，
+  receipts 目录里落了 act-1.json / .stdout / .stderr / .stdin / .lock。
+第三次（同一条准入再派一次，命令换成 `touch marker`）：
+  退出码 0，印的是「nothing was run」，marker 文件**不存在**。
+```
+
+`act-1.json` 里那个写者自己决定的字段，逐字（这一格只抄它的读数，不解释）：
+
+```text
+action_key            'act-1'
+status                'EXITED'
+effect                'UNVERIFIED'
+process_exit_code     0
+worker_stopped        False
+executed_now          True
+direct_process_exited True
+descendants_verified  False
+read_only_requested   False
+input_digest          '1748b46a4da9ac7e2f7376adca394e20bb5ae031cc7c0308309b1649083c64fc'
+started_at            '2026-09-25T18:53:04.086485+00:00'
+finished_at           '2026-09-25T18:53:04.089299+00:00'
+```
+
+`act-1.stdout` = `hello-from-worker`，`act-1.stderr` = `warn-here`。准入那一侧，
+`state/serveros/runtime/agent-control/store.json` 里 `cyc-1` 现在是：
+
+```text
+phase         'DISPATCHED'
+confirmations.DISPATCHED = {action_key: 'act-1', status: 'EXITED',
+                            input_digest: '1748b46a…',
+                            store:   '…/dispatch-smoke/receipts',
+                            receipt: '…/dispatch-smoke/receipts/act-1.json'}
+```
+
+`store` 与 `receipt` 这两个键就是 9.31.5 说的那一对：它们在 `act-1.json` 里**不存在**，
+是这个动词自己加上去的，所以它们同时证明了「记录取自哪个文件」这件事。
+
+#### 9.31.8 这一片没有做的事
+
+- **没有上弦，而且没有任何调度器。** 本机没有 timer 打 `work dispatch`（§12.5 的 Daily Cycle
+  同样没上弦），所以 9.31.7 那三次是手工打的。这一片证明的是**这个动词现在会答**，不是
+  「派工会自动发生」。
+- **可达性只有 CLI 一条路，这是量过的**：`work dispatch` 不在 daemon 里、不在 MCP 面里、
+  不在观察路径上、不在任何 Run 里，`mcp/node_mcp.py` 不通用地包 CLI 动词。这段话写进了
+  `runtime/actuator-contract.yaml`（把那两条条目里「本机没有生产调用者」的散文换成了
+  「这个调用者能走多远」）。
+- **契约里那段散文没有判官——但这一片和前一片不同。** 有判官的是**调用点本身**：
+  `tests/test_mutation_guard.py::TheLiveTreeIsCovered` 断言每一个产品调用点都被声明、且没有
+  声明是过期的，**这一片正是被它逼着去改那两条 `why` 的**（原来那两句「本机没有生产调用者」
+  在这一片之后就成了假话）。没有判官的是**描述这个调用者能走多远的那几句**。改一个没人读的
+  句子，绿不绿都不说明它对——这一处仍然写在明处。
+- **`max_attempts` 在 reservation 上没有消费者**（新发现，见 §8 那一族）。`invoke_once` 是
+  **一个 action key 一条 receipt**，所以 `max_attempts: 2` 里超出 1 的那一份额度**结构上花不
+  出去**；重试是一个**新 cycle、新 key**，而重用已退休的 key 会把旧 receipt 交给新 cycle。
+  这不是这一片引入的，是这一片让它第一次可以被读到。
+- **J06/J07 六条验收里，这一片让三条从散文变成可达且可测**：「重复触发不双派」（相位检查 ＋
+  `invoke_once` 重放）、「unknown effect 先查原状态」（spawn 前落 `STARTED`，重放**从不重
+  spawn**）、「UI 断线不取消 worker」（`start_new_session=True`；派工的进程被杀，receipt 停在
+  `STARTED`，而 `RECEIPT_LIVENESS` 把那读成「槽位还占着」）。**另外三条仍然只是散文**：
+  Parent 替换后原 child 自动接回、一项等待不冻其他合法 scope、`parent_session` /
+  `handoff.completed` 没有生产者。
+- **live 的 `work admit` 仍然做不成**：板是 `STALE_BOARD`（§9.28.7／§9.29.7 第三条），
+  `work grants` 报 0 recorded / 0 authorizing，所以真机上 `work admit` 会被
+  `MISSING_OR_REVOKED_GRANT` 拒掉。**第一条真授权是人的动作**（§11 那一类），不能用一条
+  fixture 值绕过去——9.31.7 那次用的是隔离根里自己造的 `grant-1`，这正是它必须待在隔离根里的
+  原因。
 
 ## 10. 后续每包更新哪几行
 
