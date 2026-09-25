@@ -129,7 +129,42 @@ short_description: Agent Engineering Workbench for a Linux work node
 # decision now costs 88 ms. `24b` is the label that names the revision which was
 # promoted and which timed out; leaving it in place would hand an installed
 # cache a version string that already names it.
-cachebuster: srv0003.20260924c
+#
+# Moved to `24d` on 2026-09-25, by the same rule, and this time the divergence
+# was MEASURED rather than argued. Rebuilding this profile from the source trees
+# this branch carries and diffing the result against the promoted revision
+# `alert-card-scope-20260924@8ce6fe7` gives eight differing files under the same
+# version string `3.1.0+srv0003.20260924c`:
+#
+#   skills/serveros/SKILL.md                          this composition's own
+#   skills/serveros/scripts/architecture_check.py     root Skill
+#   skills/ability-management/control_plane.py        taken from
+#   skills/test-management/SKILL.md                   `ability-management` at
+#   skills/workspace-management/SKILL.md              `--ability-rev`
+#   skills/workspace-management/scripts/capacity_check.py
+#   skills/workspace-management/scripts/map_check.py
+#   README.md                                         generated from that rev
+#
+# The change is not cosmetic and it is the release the node's sessions need.
+# `skills/serveros/SKILL.md` is the root Skill every session loads, and it told
+# its reader that one machine's `/opt/applications` is this node's data volume;
+# `skills/workspace-management/SKILL.md` carried the same sentence, plus
+# `SYSTEM_ROOT`/`DATA_ROOT`/`OPS_ROOT` written as one node's literals. An
+# installed cache holding the old text under this string would go on instructing
+# new sessions to write into a path that is not this node's. That is the failure
+# this field exists to prevent, and `24b`/`24c` are both the story of it
+# happening anyway.
+#
+# The bump is made here, before the candidate build, rather than at promotion:
+# the payload has ALREADY diverged from the released string -- the build above
+# is the proof -- and a window in which a rebuild under `24c` produces something
+# other than what `24c` names is the window this field is meant never to have.
+#
+# Core's label is stale for the fourth time for the same reason and is again NOT
+# touched here, per the paragraphs above: every member this change touches is
+# inherited from `plugin/bundle.yaml`, no core artifact is released from this
+# node, and none is installed on it.
+cachebuster: srv0003.20260924d
 
 skills:
   - name: runtime-management
