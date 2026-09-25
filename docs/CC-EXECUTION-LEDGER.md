@@ -516,6 +516,86 @@ tests/test_declared_commands.py::DeclaredCommandsExist::test_every_declared_comm
 | serveros（`dc23707`，带覆盖） | 4207 passed, 23 skipped, 3703 subtests passed, 0 failed（459.73s） | 同上 |
 | serveros（起点） | 3 failed, 4171 passed | — |
 | ability-management | **105 passed, 2 skipped**（`074a518`）；三个 renderer `--check` 干净 | 加 `SERVEROS_BUNDLE=<serveros worktree>/plugin` |
+| serveros（P6 切片 C：`worker_stopped` 接上它的 receipt 生产者，§9.27） | **1 failed**, 5669 passed, 20 skipped, 3936 subtests passed（660.19s） | `pytest tests/ -q`。相对上一行的 **+15 passed**（5654 → 5669）与 **+2 subtests**（3934 → 3936）就是这一片新增的测试。**那 1 条不是这一片引入的**，身份与判据见下一段 |
+
+**切片 C 那一格里的那 1 条红：`container.attribution` 的 daemon/CLI 计数比对。**
+逐字是：
+
+```text
+FAILED tests/test_daemon_equivalence.py::test_the_daemon_and_the_cli_count_the_same_things[container.attribution-cli_args2-keys2]
+E       KeyError: 'result'
+tests/test_daemon_equivalence.py:301: KeyError
+```
+
+单跑该条：`1 passed in 1.72s`。这一条的形态与「计数不一致」完全不同，值得把它拆开写下来，
+因为它第一次暴露了那个测试里的一个缺口。
+
+**它读到的不是计数，是一个错误信封。** `_ipc(method)["result"]`（`tests/test_daemon_equivalence.py:301`）
+在 daemon 回 `{"ok": True, "method", "result"}` 时取到结果，而在 `runtime/daemon.py:1113` 的
+`except Exception as exc` 分支下，回的是 `_error(method, type(exc).__name__, str(exc))`
+——即 `{"ok": False, "method", "error": {"code", "message"}}`，**里面没有 `result` 键**。
+本机 live 实测同一个 daemon（`path.resolve` 一个不存在的 ref）：
+
+```text
+error envelope keys: ['error', 'method', 'ok']
+ok: False | method: path.resolve
+error.code: PathRefused
+has 'result'? -> False
+indexing ['result'] raises: KeyError('result')   <- 与那条红同形
+```
+
+**为什么只能是四条参数化里的这一条。** 四条里只有 `container.attribution` 会 shell out 到 Docker
+（`view.container_attribution` → `containers.inspect_all` → `probes.LiveHost.docker_ps` →
+`probes.LiveHost._run`）。`_run` 在非零退出、`OSError`、或 24 秒超时三种情况下抛
+`ProbeUnavailable`；`inspect_all` 把它包成 `DockerUnavailable`（`runtime/containers.py:1559-1560`），
+而这个类**不是** `RegistryError` 的子类，所以 `handle` 会把 `"DockerUnavailable"` 原样当作 code 报回。
+隔离复现（把 PATH 指向一个 `exit 1` 的假 `docker`，不动真 daemon、不动台上任何容器）：
+
+```text
+probes raises:      ProbeUnavailable | docker ps -a exited 1: Cannot connect to the Docker daemon …
+inspect_all raises: DockerUnavailable | docker ps -a exited 1: Cannot connect to the Docker daemon …
+code the daemon would report: DockerUnavailable
+```
+
+同一链路里另一条能抛的是 `attribution_index` 的 `TypeError`（传错了 `Registry` 与 index），
+但 daemon 传的是自己的 `self.registry`（`runtime/daemon.py:2679`），正常路径实测 0 次抛出；
+live 再测一次 `container.attribution` → `ok: True`、`containers counted: 17`、`registry_present: True`。
+所以**能产生那条红的只有 docker 那一处**。
+
+**这一片与它无关，是核过的，不是推的。** `git status --porcelain` 里这一片的六个文件是
+`docs/CC-EXECUTION-LEDGER.md`、`intake/daily_cycle.py`、`intake/focus_source.py`、`runtime/cli.py`、
+`tests/test_daily_cycle.py`、`tests/test_focus_source.py`（`grep -E "daemon|containers|probes|view|attribution"` → 无命中）。
+`runtime/daemon.py`、`runtime/containers.py`、`runtime/probes.py`、`runtime/view.py`、`runtime/attribution.py`
+**一个都没动**。
+
+**没能取到的那一件，如实写在这里：** 那个 `error.code` 的**具体值**没有被任何东西记录下来——
+daemon 不写 handler 的异常日志（`journalctl --user -u serverosd.service` 在套件窗口 22:21–22:34 内
+只有 13 条 `tick NNN: 4 observed, 0 drift, 0 decisions`），`docker` 的系统日志本用户读不到
+（「No entries」+ 权限提示），而那个测试本身在 `except` 之外把信封丢掉了。所以
+「那一次到底是什么让 docker 失败」**本机没有证据**：可能是非零退出（Docker 在一个 11 分钟、
+同机还有别的 agent 的套件里瞬时拒绝），本机现在 `docker ps -a` 实测 0.095s，24 秒超时不像。
+
+**顺手记下那个缺口（不改断言、不改测试）：** `_sample_the_pair` 里的三次 `_ipc(...)` 调用
+在 `for attempt in range(1, ATTEMPTS + 1)` 循环体内**但不被 try 包住**，所以它只在
+「`_count_agreement` 判出计数不一致」时重试；daemon 回错误信封时异常直接穿出循环，
+一次都不重试。这个形状是对的（一个答不上来的 daemon 不该被重试成一个读数），
+但**它今天读起来和「计数不一致」一样红**——两者都只是 `KeyError: 'result'`。
+要不要区分是一处独立的改动，不在这一片里；记下来是因为下一个人会先看到那条红、
+再看到「单跑就绿」，然后花掉我花掉的这段时间。
+
+**这一格的可归属性：现场记一次，事后又量了一次。** `intake/focus_source.py` 的 mtime 是
+`22:25:02`，落在套件窗口（`22:21:59` 起，`660.19s`）**之内**——套件跑到约四分之一时，我改了
+这个文件里的一行 `#:` 注释。当时的证明是把当前文件与「把那条注释改回原文」的副本做 `ast.dump`
+比对，相等。事后不必靠那句当时的断言，因为同一件事现在能**再量一次**：
+
+```text
+AST(now) == AST(now without # lines): True
+```
+
+即这棵树的 AST 与注释字节无关，而那次改动就是一条这样的注释；再把受影响的两个文件在
+**最终字节上**重跑：`117 passed, 17 subtests passed in 4.28s`。所以这一格的读数归属这棵树，
+差别只在注释字节——这不是「只改了一个文件所以不用重跑」那种推理，那种推理正是本节上面
+拆过三次的那句谎。
 
 **接线终态那一格为什么不是整跑的。** 全量是在「接线完成、台账还没记这次修改」那棵树上跑的，
 红 1 条，就是本节那条 `cleanup`。之后只动了一个文件：`docs/CC-EXECUTION-LEDGER.md`。
@@ -2854,7 +2934,8 @@ refused     6
   可读的字段、让 DELIVERED 的被选目标**只在必需结果有证据时**才释放槽位，是下一片。
 - **`focus_source.NOT_PRODUCED` 只解决了一项**（`next_action`）。`worker_stopped` /
   `resources_released` 仍然没有真实生产者，`checkpoint` 仍然只作为散文出现在
-  `runtime/recipe-contract.yaml` 里。
+  `runtime/recipe-contract.yaml` 里。**（2026-09-25 更新：`worker_stopped` 已由 §9.27 接上
+  生产者——invocation receipt；`resources_released` 与 `checkpoint` 仍无，见 §9.27.7）**
 - **正式 Requirement 到 canonical Work Item 的幂等对应**完全没做（ABSENT）。
 - **首次真实 grant 走可信用户控制**仍然 PARTIAL：`put_grant` 只有测试调用它，没有 CLI 动词、
   没有 daemon 方法、没有 MCP 工具。
@@ -2998,11 +3079,140 @@ SAMP-0007   ACTIVE     未评估    ·  SAMP-0101…0103         未评估
   测**。对取消来说这是对的（取消不是完成），但如果以后要问「取消的活有没有留下它该留的东西」，
   这个状态今天是空的。
 - **`worker_stopped` / `resources_released` 仍然没有生产者**（与 §9.25.5 同）。§9.26.5 只是让
-  第二族出现时不像第一族，没有给第一族补上生产者。
+  第二族出现时不像第一族，没有给第一族补上生产者。**（2026-09-25 更新：前半句已被 §9.27 推翻
+  ——`worker_stopped` 现在有生产者，是本机第一条真正接上的 liveness 腿；`resources_released`
+  仍然没有，且 §9.27.3 说明了为什么这两个字段必须分开读）**
 - **`not_completion: [DELIVERED, CANCELLED]` 不被任何代码读**。它留在契约里是因为它对人有信息
   （说清哪些状态不是「达成验收」），而契约里写明了这一点，免得下游把它当成一条会被执行的规则。
 - **正式 Requirement 到 canonical Work Item 的幂等对应仍然 ABSENT**；首次真实 grant 走可信用户
   控制仍然 PARTIAL。两条都还在 P6 的剩余部分里。
+
+### 9.27 P6 切片 C：`worker_stopped` 有了生产者，acceptance D 从死代码变成活规则
+
+计划第 4 条（P6）原文里点名的两条，这一片对上的是「改动」的第二句与「验收」的第二句：
+
+> **改动**：把 `focus_source.NOT_PRODUCED` 逐项变成从正确 owner 取得或精确 UNKNOWN，不硬编码「无
+> worker/资源已释放/默认有 grant」。
+> **验收**：… **旧 Run 终态但 worker 仍写不得释放** …
+
+#### 9.27.1 为什么不是「再加一个动词去写 work-engine」
+
+原打算在 serveros 侧加 `requirement adopt`（正式 Requirement 幂等地对应一个 canonical Work Item）。
+调研否掉了它，理由在两个**本仓自己的声明式文件**里：
+
+- `intake/global_board.py` 模块 docstring 原文：*"Nothing here reads the work-engine store. The store
+  is the authority and it is on the other side of a process boundary this repository deliberately does
+  not cross — `fleet/mcp-contract.yaml` owns that edge."*
+- `intake/board-contract.yaml`：`work-item.read_through: serveros-work-mcp`。
+
+serveros **不拥有**那条边，跨过去写 store 会违反本仓写下的规则。于是这一片改成：`NOT_PRODUCED`
+里唯一**有正确 owner** 的那一项（`worker_stopped`）接上它的 owner，其余各项的文案收紧成「无人生产」
+并各自说明理由 —— 这正是计划那句「从正确 owner 取得**或**精确 UNKNOWN」的后半截。
+
+Work-engine 那一半（`create_candidate`：一条需求一个候选；冲突拒绝并点名**实际命中的那一半**键）
+已在该仓提交 `cbe757a`，含 4 条测试与 2 个被杀的变异（`IS ?`、去掉 dedupe 那一半）。跨了仓边界，
+所以台账只登记它的存在与这条边界理由。
+
+#### 9.27.2 acceptance D：一条早就写好、却不可达的规则
+
+`intake/daily_cycle.classify` 里这条分支在本变更之前就在，注释也是原文：
+
+```python
+if held:
+    # BEFORE the state test, and that order is acceptance D: an Item whose
+    # Run reached a terminal state while its worker is still writing has
+    # released nothing.
+```
+
+它在本机**不可能为真**：`held` 来自 `liveness(row)`，而 `liveness` 只读行上真实存在的字段，17 行
+board 一个都不带。也就是说这条注释描述的是**一段没有任何输入能触发的顺序**——验收项写在注释里、
+写在文档里，而在唯一能跑的投影上恒假。这一片让它可达：`compose` 现在把 receipt 的答案写进行，
+「终态行 + `worker_stopped: False`」第一次真的走到 HELD，并且有一条从**真 receipt** 到
+`continue_focus` 的端到端测试（同一块 board、同一终态、同一 `DISCHARGED` 边界，只换 receipt）。
+
+#### 9.27.3 receipt 上那个字段为什么不能直接读
+
+`runtime/bounded_invocation.invoke_once` 在 spawn **之前**就把记录写成 `worker_stopped: False`，
+只有 `START_FAILED` 且 `proc is None` 一条路径会把它置 `True`。所以：
+
+- `False` 在其余所有路径上是**初始化值**，不是裁决；
+- 读初始化值为裁决 = 把「这次调用不能宣称 worker 停了」读成「worker 停了」；
+- `descendants_verified` 在整个 fabric 里**没有写入者**（实测：全仓唯一出现处就是那条初始记录），
+  所以 `EXITED` 的诚实答案是**未决**——字段留空 + `RECEIPT:EXITED:DESCENDANTS_UNVERIFIED`，
+  既不是 `False`（那会把每次跑完的派工永久留在飞，本机已经为此付过一次 OVER_CAPACITY 假警报），
+  也不是 `True`。
+
+三值读法（`True` 放行 / `False` 占槽未放 / `None` 此处未决 + 原因），表按 writer 自己的 status 逐条
+转写；同一 Item 被多条 admission 命名时 **`False` 胜过 `None` 胜过 `True`**，因为问题是「还占不占」，
+一次派工的 `True` 对另一次派工启动的进程什么也没说。字段名与原因随行输出：`work focus` 多一段
+`liveness`，`work admit` 多一行，两者取同一个 `--receipts`、没有默认值。
+
+#### 9.27.4 我自己先写错的一版：把初始值当第二个判据
+
+第一版 `_receipt_liveness` 在查表**之前**先看 `direct_process_exited is False`。这个字段同样是初始
+值，于是 `STARTED` / `START_FAILED` / `REFUSED` 三种状态被同一个理由吞掉，其中 `REFUSED`（这次
+调用**什么都没启动**）会被答成「已启动、未记录结束」→ 永久占槽。真 receipt 实测：
+
+```text
+status REFUSED / reason OUTPUT_ALREADY_EXISTS / worker_stopped False / direct_process_exited False
+```
+
+修法：删掉那个第二判据，让 status 成为唯一读法（同一事实只在一处读），并补一条 REFUSED 的实测
+测试。形状与 §9.22.4 相同：同一规则两份冗余判据，杀掉一份另一份还活着；不同点是这次两份都在
+**新写的代码**里，是变异测试逼出来的。
+
+#### 9.27.5 本机实测（2026-09-25 22:22 +08:00）
+
+| 读数 | 值 |
+| --- | --- |
+| `work focus`（不带 `--receipts`） | `liveness RECEIPTS_ROOT_NOT_NAMED`；`receipts_root: null`；17 行里带 `worker_stopped` 的 **0** 行 |
+| `work focus --receipts <空目录>` | `liveness NO_ADMISSION_NAMES_AN_ITEM`；`items: {}`；原因原文「This is the node's normal state and not a fault: nothing has been admitted, so nothing has a worker」 |
+| `focus.not_produced` 的键 | `blocked_by, focus_disposition, grant_ref, next_action, parking_acknowledged, resources_released, scope_digest` —— **`worker_stopped` 已不在其中** |
+| control store | `admissions 0 / grants 0`（与 §2 一致） |
+| 本机 receipts 目录 | **不存在**。`invoke_once` 在本机没有任何调用者，所以哪怕有了 admission 也没有 receipt 可读 |
+
+两条 live 答案都是**精确 UNKNOWN**，不是每行一个 `False`。也正因如此 `--receipts` **没有默认值**：
+默认值会把「谁派的活」变成猜，而从一个没人跑过的目录里读出的 receipt 是对**另一次派工**的回答。
+
+#### 9.27.6 变异：5 个全杀，文件按 digest 校验复原
+
+| 变异 | 结果 |
+| --- | --- |
+| `EXITED` 答「held」而不是未决 | 杀（1 红） |
+| `REFUSED` 答「released」 | 杀（1 红） |
+| 多条 admission 时 released 胜过 held | 杀（7 红） |
+| `compose` 不问答案都写字段 | 杀（3 红） |
+| 状态判断挪到 held 判断之前（删掉验收 D） | 杀（3 红） |
+
+复原不用任何 git 动词：脚本持有原文，写回后比对 `sha256`。这条纪律是当场学来的 —— 本轮早些时候
+我用 `git checkout -- <file>`「还原」一次变异，**丢掉了整个未提交的重构**（该类动词从引用取值，
+看起来像还原、实际是丢弃，退出码 0），只能凭上下文重写。
+
+#### 9.27.7 这一片没有做的事
+
+- **`resources_released` 仍然完全没有生产者**——不是 board、不是 store、不是 receipt。它在本机是
+  「`worker_stopped` 的那对里的另一半」，文案已改成**与它分开**，并写明它**不是** `not worker_stopped`
+  （一次派工可以停了自己的进程、同时握着租约）。
+- **`focus_disposition` / `parking_acknowledged` / `scope_digest` / `grant_ref` / `next_action` /
+  `blocked_by`** 仍是卡字段无人建。
+- **首次真实 grant 走可信用户控制仍然 PARTIAL**：`put_grant` 只被测试调用，没有 CLI 动词、没有
+  daemon 方法、没有 MCP 工具。
+- **`work admit` 的准入记录里不存 liveness**，只在输出里加了一行；而那一行**今天不可达**，两个
+  各自独立的原因都已在别处记过：**(a)** 没有一行 board 携带 `grant_ref`（`NOT_PRODUCED` 里那项
+  「卡字段无人建」，§2 的 live 读数也是「named 0 row(s)」）；**(b)** 没有任何 CLI 动词能记录一条
+  delegation（`put_grant` 只被测试调用，§9.25 记的 PARTIAL）。所以 `work admit` 的成功块在本机
+  走不到，准入必然停在 `NOTHING_SELECTED` / `MISSING_OR_REVOKED_GRANT` 的拒绝上——实测：隔离
+  `DATA_ROOT` 里跑 `work admit --cycle acc-d-slice-c-1 --receipts <dir>`，输出
+  `refused NOTHING_SELECTED`，拒绝分支在任何写入之前返回，隔离世界里**没有**生成 store（已核）。
+  这一行留着而不删的理由：它是**报告**（人看到的准入是在哪一次 liveness 读之下做出的），不是
+  守卫、也不是第二份规则；但要说明白——它在盘上，**今天打不出来**。要让它第一次打印，需要上面
+  两条缺口先闭合，而「首次真实 grant 走可信用户控制」正是计划点名不许用 fixture 绕过的那条。
+- **work-engine 的 `external_item_mappings` 那条 `INSERT OR IGNORE` 不可达**（实测：能让映射与候
+  选冲突的状态在 `create_candidate` 就被拒绝，到不了那一步）。按「不为不可达状态加守卫」**只记录
+  不加代码**。
+- **receipt 是本片唯一的 live 缺口**：链在测试里以真 writer 自己的字节证明，但本机没有 receipt 可
+  读，因为还没有任何东西通过 `invoke_once` 派活。第一个 live receipt 会由 P7/P8/P12 的运行时循环
+  产生——在那之前，这一项的 live 状态是 PARTIAL，理由是精确的。
 
 ## 10. 后续每包更新哪几行
 

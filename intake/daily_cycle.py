@@ -15,10 +15,13 @@ TERMINAL = frozenset({"CLOSED", "DELIVERED", "CANCELLED"})
 PROTECTED_EFFECTS = frozenset({"production.cutover", "production.rollback", "production.mutate"})
 
 # The two fields a projection may carry about whether something is still held
-# on an Item's behalf. Neither is produced anywhere on this node as of
-# 2026-09-22: `intake/focus_source.py` reads the personal board, which carries
-# neither, and says so per row. See `liveness` for why their absence is not
-# read as evidence.
+# on an Item's behalf. As of 2026-09-25 one of them has a producer and the other
+# does not, and the pair is kept together because they are read together:
+# `worker_stopped` is read off the invocation receipt its admission names
+# (`intake/focus_source.worker_stopped_by_item`), while `resources_released` has
+# no producer anywhere — no board, no store, no receipt — so on this node it is
+# always absent and `focus_source.NOT_PRODUCED` says why. See `liveness` for why
+# an absent field is not read as evidence.
 LIVENESS_FIELDS = ("worker_stopped", "resources_released")
 # The accepted priority vocabulary. A row whose `priority` is not one of these
 # strings has no established priority — checked with `isinstance` rather than
@@ -173,9 +176,12 @@ def classify(row: dict, grants: dict[str, dict], *, now: datetime) -> dict:
                 "reason": f"WORKER_OR_RESERVATION_HELD:{','.join(held_fields)}"}
     if parked and held is not False:
         # Undoing a park needs positive evidence that nothing is held any more.
-        # The board carries no liveness field, so on this node a parked row
-        # never releases its slot by being read — which is the answer the design
-        # asks for: parking is acknowledged, not asserted.
+        # Until 2026-09-25 no row could carry such evidence, so a parked row
+        # never released its slot by being read — which is the answer the design
+        # asks for: parking is acknowledged, not asserted. What the branch now
+        # admits is the one producer that exists: a `worker_stopped: True` read
+        # off the invocation receipt, which is a record of no process rather
+        # than a person's word.
         return {**verdict, "disposition": "PARKED",
                 "reason": "PARKED_RELEASE_UNCONFIRMED"}
     if state in TERMINAL:
@@ -429,12 +435,19 @@ def continue_focus(rows: list[dict], grants: dict[str, dict], accepted: dict | N
             # empty next to the held rows, which do carry one.
             because[item_id] = verdict["reason"] or "ACCEPTED_AND_ELIGIBLE"
             if verdict["unevaluated"]:
+                # Names the fact and NOT the cause. Until 2026-09-25 this said
+                # "the projection carries neither liveness field", which was the
+                # only reason a field could be missing; `worker_stopped` now has
+                # a producer, so a row can also be missing it because no receipt
+                # answered — the root was not named, no admission names this
+                # Item, or a receipt was undecidable. The cause is per Item and
+                # the composition carries it (`compose(…)[ "liveness" ]`); a
+                # sentence here would be one of several, told as the only one.
                 unevaluated.append({
                     "id": item_id, "fields": list(LIVENESS_FIELDS),
-                    "because": "the projection carries neither liveness field, so "
-                               "whether a worker still holds this Item was not "
-                               "decided here; the Item's own state is what "
-                               "continued it"})
+                    "because": "this row carries no liveness field, so whether a "
+                               "worker still holds this Item was not decided on "
+                               "it; the Item's own state is what continued it"})
             continue
         if verdict["disposition"] == "FINISHED":
             obligation = obligation_of(verdict)
