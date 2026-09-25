@@ -778,6 +778,137 @@ def cmd_document_stewardship(args) -> int:
     return EXIT_OK
 
 
+def cmd_document_publish(args) -> int:
+    """P4 — publish one section, with each consequence recorded on its own.
+
+    `document stewardship` says whether the contract holds; this acts on it.
+    Without this verb the plan's own sentence stands unrefuted —— 「文档 identity
+    resolver 存在不等于远端 publisher 已闭环」—— because every other document verb
+    here reads.
+
+    Three things are deliberately not decided in this function. Which edits are
+    allowed is the ability's (`--ability`, asked again after the live read, with
+    the text the live read found). What a write may do to a section is
+    `intake/document_publish.py`'s. How a document is reached is
+    `runtime/document_transport.py`'s, and only that file knows what `lark-cli`
+    is — a control plane that learns one tenant's cloud paths stops being a
+    control plane, which is the lesson `space/resolver.py` carries in its header.
+
+    Without `--apply` nothing is written: the run is planned and the refusals
+    are printed. Exit is 0 when the run settled, 2 when it did not start, and 1
+    when it started and something did not land — a distinction a caller
+    scripting this needs, because "not now" and "half done" are not the same
+    reason to stop.
+    """
+    mod = _load_module_from(REPO_ROOT / "intake" / "managed_documents.py",
+                            "serveros_intake_managed_documents")
+    pub = _load_module_from(REPO_ROOT / "intake" / "document_publish.py",
+                            "serveros_intake_document_publish")
+    for name in ("request", "contracts", "ability", "receipts"):
+        value = getattr(args, name)
+        if not Path(value).is_absolute():
+            sys.stderr.write(
+                f"serverosctl: --{name} must be absolute, got {value}. A publish "
+                f"whose inputs move with the caller's directory is a publish "
+                f"nobody else can reproduce or refuse.\n")
+            return EXIT_FAULT
+    state_dir = Path(args.state_dir)
+    if not state_dir.is_absolute():
+        sys.stderr.write(f"serverosctl: --state-dir must be absolute, got {state_dir}.\n")
+        return EXIT_FAULT
+
+    try:
+        request = pub.read_request(Path(args.request))
+    except (pub.Refused, pub.Malformed) as exc:
+        sys.stderr.write(f"serverosctl: {exc}\n")
+        return EXIT_FAULT
+
+    # The contract, read by the module that owns that reading rather than again
+    # here, so what this verb acts on is what `document stewardship` shows.
+    try:
+        root = mod.read_root(Path(args.contracts), state_dir,
+                             Path(args.ability), Path(args.surface_vocabulary))
+    except (mod.Refused, mod.Malformed) as exc:
+        sys.stderr.write(f"serverosctl: {exc}\n")
+        return EXIT_FAULT
+    if root["contract"] == "REGISTRY_UNREADABLE":
+        sys.stderr.write(f"serverosctl: {root['why']}\n")
+        return EXIT_FAULT
+
+    wanted = request["document"]
+    entry = next((row for row in root["documents"]
+                  if row.get("id") == wanted or row.get("locator") == wanted), None)
+    if entry is None:
+        sys.stderr.write(
+            f"serverosctl: {wanted!r} is not in the registry, so nobody has "
+            f"written down what may be done to it. Registry holds: "
+            f"{[row.get('id') for row in root['documents']]}\n")
+        return EXIT_FAULT
+    if not entry.get("locator"):
+        sys.stderr.write(f"serverosctl: {wanted!r} has no locator, so there is "
+                         f"nothing to address the write to.\n")
+        return EXIT_FAULT
+
+    ability = mod.load_ability(Path(args.ability))
+    profile, why = (mod.read_profile(Path(args.contracts), entry["profile"])
+                    if entry.get("profile") else (None, "no profile declared"))
+    if profile is None:
+        sys.stderr.write(f"serverosctl: {why}\n")
+        return EXIT_FAULT
+
+    def ask_gate(original_text=""):
+        return mod.gate(ability, profile, request.get("section"),
+                        request.get("change_class"),
+                        authority=request.get("authority"),
+                        original_text=original_text,
+                        proposed_text=request.get("content") or "")
+
+    approvals = {}
+    for item in getattr(args, "approval", None) or []:
+        change_class, _, reference = item.partition("=")
+        if not reference:
+            sys.stderr.write(f"serverosctl: --approval wants CLASS=REF, got {item!r}\n")
+            return EXIT_FAULT
+        approvals[change_class] = reference
+
+    common = {"gate_decision": ask_gate(), "approvals": approvals}
+    if not args.apply:
+        try:
+            report = pub.plan(request, entry, **common)
+        except pub.Refused as exc:
+            sys.stderr.write(f"serverosctl: refused: {exc}\n")
+            return EXIT_COULD_NOT_ANSWER
+        emit(report, as_json=args.json, lines=pub.render(report))
+        return EXIT_OK if report["planned"] else EXIT_COULD_NOT_ANSWER
+
+    transport = _load_module_from(REPO_ROOT / "runtime" / "document_transport.py",
+                                  "serveros_runtime_document_transport")
+    try:
+        built = transport.transport(entry["locator"],
+                                    with_media=bool(request.get("media")))
+    except transport.TransportFault as exc:
+        sys.stderr.write(f"serverosctl: {exc}\n")
+        return EXIT_FAULT
+
+    try:
+        report = pub.apply(request, entry, **common,
+                           fetch=built["fetch"], writers=built["writers"],
+                           receipts_dir=Path(args.receipts), gate=ask_gate)
+    except transport.TransportFault as exc:
+        sys.stderr.write(f"serverosctl: {exc}\n")
+        return EXIT_FAULT
+    except pub.Refused as exc:
+        # A refusal is an answer, not a crash, and it has to read as one: the
+        # exit code is what a caller scripts against, and a traceback reports
+        # the run as broken rather than as refused.
+        sys.stderr.write(f"serverosctl: refused: {exc}\n")
+        return EXIT_FAULT
+    emit(report, as_json=args.json, lines=pub.render(report))
+    if not report["planned"]:
+        return EXIT_COULD_NOT_ANSWER
+    return EXIT_OK if report.get("settled") else EXIT_FAULT
+
+
 def cmd_information_captured(args) -> int:
     """§B1/P1 — what the collectors were asked for, and what actually landed.
 
@@ -9920,6 +10051,55 @@ def build_parser() -> argparse.ArgumentParser:
              "the same set a source checkout does. A declared surface outside it is "
              "refused rather than defaulted")
     doc_stewardship.set_defaults(func=cmd_document_stewardship)
+
+    doc_publish = document_sub.add_parser(
+        "publish",
+        help="P4 · 把一节正文发出去。默认只计划不写；加 --apply 才写。正文/媒体/"
+             "索引/Git/送达各记一笔回执，「正文成功媒体失败」是可以被表示的，"
+             "重跑只补缺的那条边。规则不在这里重述：能不能改由 --ability 的能力"
+             "判，改的范围与读回由 intake/document_publish.py 判，怎么够到这篇"
+             "文档由 runtime/document_transport.py 管（只有它知道 lark-cli）",
+        **_COMMON)
+    doc_publish.add_argument(
+        "--request", required=True,
+        help="path to the publish request (JSON, schema "
+             "serveros/document-publish-request.v1). Required: the intent is the "
+             "input, and an intent with a defaulted field is an intent nobody "
+             "stated")
+    doc_publish.add_argument(
+        "--contracts", required=True,
+        help="path to the managed-documents registry, the same file "
+             "`document stewardship` reads")
+    doc_publish.add_argument(
+        "--state-dir", required=True,
+        help="the per-document state directory. Required because the derived "
+             "section keys live there: without it there is no live locator, and "
+             "a patch with no locator patches nothing in particular")
+    doc_publish.add_argument(
+        "--ability", required=True,
+        help="path to the document-stewardship ability's own script. Required "
+             "and undefaulted; the write gate is asked from it, twice — once to "
+             "plan, once against the text the live read found")
+    doc_publish.add_argument(
+        "--receipts", required=True,
+        help="where the per-effect receipts are written. Required: the receipts "
+             "are the only thing that makes 「正文落定、媒体没落定」 a state this "
+             "host can be in and later repair")
+    doc_publish.add_argument(
+        "--approval", action="append", metavar="CLASS=REF",
+        help="an approval for one change class on the approval tier, repeatable "
+             "(e.g. --approval RESTRUCTURE=feishu-msg-<ref>). Without one, a "
+             "RESTRUCTURE is refused rather than assumed approved")
+    doc_publish.add_argument(
+        "--apply", action="store_true",
+        help="actually write. Without it the run is planned and the refusals are "
+             "printed, and nothing is sent")
+    doc_publish.add_argument(
+        "--surface-vocabulary",
+        default=str(REPO_ROOT / "space" / "vocabulary.json"),
+        help="the closed set of surfaces a body authority may live on. Default: "
+             "the one that ships beside the kernel")
+    doc_publish.set_defaults(func=cmd_document_publish)
 
     information = sub.add_parser(
         "information", help="what was captured from the sources (§B1): the "
