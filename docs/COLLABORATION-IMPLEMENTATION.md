@@ -4,6 +4,8 @@
 
 ## 1. 已落地的实现必须复用
 
+本节保留2026-09-23源码审查范围；2026-09-25的实际Node/Plugin/终端/定时任务和新发现的recipes启动循环问题，以[现场基线](IMPLEMENTATION-BASELINE-20260925.md)及主计划为准。旧版缺失声明不是当前运行证明。
+
 本轮提交前serveros前进到7b9d417：understanding_semantic.py已经提供reading校验、委托内部分语义提交、fence内写入、候选与幂等receipt；source_waterline.py已经提供区间/gap/tail和document digest处理；understanding_patch原有content_identity/card_digest保护也已存在。
 
 因此不能再列“B2没有writer、缺hash、缺水位模块”为当前任务。当前需要验证并接通的是：真实原生Agent读取材料→生成符合范围/版本的reading→可信控制面注入授权/actor→复用现有writer→相关view/失效→下一consumer。模块不直接调用模型是分工，不是缺陷；源码存在也不证明完整J03/J06已跑。

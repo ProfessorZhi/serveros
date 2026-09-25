@@ -4,7 +4,7 @@
 
 ## 按当前问题选择入口
 
-1. [CC-EXECUTION-PLAN](CC-EXECUTION-PLAN.md)：唯一P0–P12，当前源码/历史回执分开。提交前已读新增semantic writer、水位、Nature资料与发布排除；不重造已实现机制。
+1. [CC-EXECUTION-PLAN](CC-EXECUTION-PLAN.md)：唯一P0–P12，2026-09-25现场→目标源码→真实消费者→安装/定时启用→目录收口/回退；配套[只读现场基线](IMPLEMENTATION-BASELINE-20260925.md)和[给服务器CC的短交接](CC-IMPLEMENTATION-HANDOFF.md)。
 2. [INFORMATION-DOCUMENT-LIFECYCLE](INFORMATION-DOCUMENT-LIFECYCLE.md)：Source/材料/Reference/理解/工作/交付的统一对象与权威图。
 3. [Ability Blueprint](https://github.com/ProfessorZhi/ability-management/blob/main/design/ABILITY-CANONICAL-BLUEPRINT.md)与[21项实现矩阵](https://github.com/ProfessorZhi/ability-management/blob/main/design/ABILITY-REALIZATION-PLAN.md)：最小形态、真实消费者和退出门，不是21行LIVE勾。
 
