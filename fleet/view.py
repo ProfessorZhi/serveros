@@ -16,11 +16,11 @@ existence of a `device:work-fj` entry must not make this view claim Claude is
 runnable there.
 
 So declared agents and measured runtimes are different fields. `declared_agents`
-comes from the registry and says what was authored. `agent_runtimes` and
-`provider_readiness` come from an observation and say what was found. A device
-this runtime could not reach has the first and not the second, and the second is
-present-and-typed rather than absent: `providers: []` would read as "this device
-has no providers", which is a claim nobody made.
+comes from the registry and says what was authored. `agents`, `agent_runtimes`
+and `provider_readiness` come from an observation and say what was found. A
+device this runtime could not reach has the first and not the second, and the
+second is present-and-typed rather than absent: `providers: []` would read as
+"this device has no providers", which is a claim nobody made.
 
 Every list that could be empty is instead a state word with a reason. That is
 §12's rule at this layer, and it is checked: `test_a_row_never_answers_unknown
@@ -123,15 +123,15 @@ def establish(value, *, reason: str) -> dict:
 class FleetView:
     """Composes the read-only fleet interfaces with routing and session evidence.
 
-    Every dependency is injectable. `routing` and `sessions` default to the real
-    deployments, and a test that injects a stub gets a view that differs only in
-    where the facts came from — which is the point, because the failure this
-    module is about is a view that answers confidently about a machine nobody
-    reached.
+    Every dependency is injectable. `routing`, `sessions` and `agents` default to
+    the real deployments, and a test that injects a stub gets a view that differs
+    only in where the facts came from — which is the point, because the failure
+    this module is about is a view that answers confidently about a machine
+    nobody reached.
     """
 
     def __init__(self, *, interfaces=None, routing=None, sessions=None,
-                 clock=None) -> None:
+                 agents=None, clock=None) -> None:
         self._interfaces = interfaces if interfaces is not None else interfaces_mod.Interfaces()
         # `routing` is the §7 router. It is where presence and node_runtime come
         # from for devices this runtime does not own, and it is the only object
@@ -143,6 +143,16 @@ class FleetView:
         # callable rather than a store so the view cannot grow its own session
         # ledger, which would be a second record of what the providers own.
         self._sessions = sessions
+        # `agents` answers the same shape of question one step earlier: what a
+        # device's providers say they can run, each with the provider's own
+        # readiness record. It is a separate callable from `sessions` because
+        # the two come from different provider methods — `list_agents` and
+        # `list_sessions` — and a source that answered both would be a source
+        # that could answer one of them from the other. Local for the node this
+        # process holds providers for; typed-unavailable otherwise, for the same
+        # reason `sessions` is: this control plane holds no provider for a
+        # machine it did not start one against.
+        self._agents = agents
 
     # -- facts, each from its own source ------------------------------------
 
@@ -281,6 +291,23 @@ class FleetView:
         except Exception as exc:
             return unknown(f"the session source did not answer: {type(exc).__name__}")
 
+    def _agent_summary(self, device_ref: str) -> dict:
+        """The agents this device's providers report, or why nobody said.
+
+        Deliberately NOT folded into `_session_summary`. They share a shape, a
+        failure mode and a source, and merging them would produce one callable
+        that answers two questions — which is how "the provider could not be
+        asked what it can run" quietly becomes "the provider could not be asked
+        anything", and then an agent inventory that is UNKNOWN for its own
+        reason is reported under the session source's reason instead.
+        """
+        if self._agents is None:
+            return unknown("no agent source is bound to this view")
+        try:
+            return self._agents(device_ref)
+        except Exception as exc:
+            return unknown(f"the agent source did not answer: {type(exc).__name__}")
+
     # -- the row ------------------------------------------------------------
 
     def row(self, device, *, level: str) -> dict:
@@ -331,6 +358,10 @@ class FleetView:
         row["provider_instances"] = self._instances(inventory)
         row["provider_readiness"] = self._readiness(inventory)
         row["active_sessions"] = self._session_summary(ref)
+        # The measured counterpart of L1's `declared_agents`. It is here rather
+        # than at L1 because producing it means asking every provider, and L1
+        # contacts nothing.
+        row["agents"] = self._agent_summary(ref)
         if level == "L2":
             return row
 
@@ -347,6 +378,7 @@ class FleetView:
             "presence": row["presence_provenance"],
             "inventory": inventory.get("state"),
             "sessions": (row["active_sessions"] or {}).get("state"),
+            "agents": (row["agents"] or {}).get("state"),
         }
         row["routing"] = self._routing_evidence(ref)
         return row
@@ -506,6 +538,9 @@ class FleetView:
             "providers": "the target device, through resolve-inputs",
             "provider_readiness": "the target device, per provider instance",
             "active_sessions": "the session source bound to this view",
+            "agents": ("the agent source bound to this view, which is the "
+                       "providers themselves (measured, unlike "
+                       "`declared_agents`)"),
             "not_measured_here": [
                 "provider-native session state",
                 "whether a provider would succeed if asked",

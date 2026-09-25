@@ -66,6 +66,16 @@ levels:
       - provider_instances
       - provider_readiness
       - active_sessions
+      # The agents the device's providers report, with each provider's own
+      # readiness record and whatever could not be read. This is the MEASURED
+      # counterpart of L1's `declared_agents`, and the pair is the reason both
+      # are named apart: a registry entry saying a device is FOR Claude, and a
+      # provider saying it HAS Claude, are different claims with different
+      # repairs. The readiness inside this field is the provider's own record;
+      # the row's sibling `provider_readiness` is the resolver's per-instance
+      # observation. They are two producers of one question and the view
+      # reports both rather than picking one.
+      - agents
 
     L3:
       # L2 plus provenance for every claim above. Every field here answers

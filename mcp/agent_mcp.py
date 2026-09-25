@@ -242,6 +242,27 @@ TOOLS: tuple[dict, ...] = (
      "description": "One provider on one device, from the same inventory.",
      "inputSchema": _schema({"device": _DEVICE, "provider": _STR,
                              "level": _LEVEL_DEEP}, ["device", "provider"])},
+    {"name": "agent.list",
+     "description": (
+        "The agents one device's providers report, each with its owning "
+        "provider's own readiness record. This is the MEASURED counterpart of "
+        "`device.inspect`'s `declared_agents`, and the finding it exists to "
+        "make readable is the one place it is visible: agents listed, provider "
+        "unable to execute. Readiness travels here rather than behind its own "
+        "tool so the surface stays exactly as wide as the session contract "
+        "declares it. A provider that could not be asked is reported in "
+        "`provider_errors` rather than omitted, and `complete` says whether the "
+        "list is the whole fleet or a partial one."
+     ),
+     "inputSchema": _schema({"device": _DEVICE, "level": _LEVEL_DEEP}, ["device"])},
+    {"name": "agent.inspect",
+     "description": (
+        "One agent, out of the same inventory `agent.list` serves — so the two "
+        "cannot answer differently about which agents exist. An id matching no "
+        "agent and an id matching several are reported as the two different "
+        "answers they are, each naming what the device did list."
+     ),
+     "inputSchema": _schema({"device": _DEVICE, "agent_id": _STR}, ["device", "agent_id"])},
     {"name": "agent.session.list",
      "description": (
         "Active Agent Sessions on one device. Local sessions are enumerated; a "
@@ -668,6 +689,74 @@ class AgentControlClient:
             "provider_readiness": listing["provider_readiness"],
         }
 
+    def agent_list(self, device: str, level: str = "L2") -> dict:
+        """The agents one device's providers report, readiness included.
+
+        Unpacked to the top level rather than nested under a key, because this
+        is the record `_readiness_summary` in `agent_session_service` points a
+        caller at by name: "the full record already travels on `agent.list`
+        under `providers[]`". Nesting it would make that sentence false.
+
+        The `state` word is always present and the three inventory keys are
+        absent when nothing was measured. That asymmetry is the point — a
+        caller that read `agents: []` off an unreachable device would take
+        "nobody looked" for "there are none", and those have different repairs.
+        """
+        row = self._deep_row(device, level)
+        inventory = row["agents"]
+        if not isinstance(inventory, dict):
+            return {"device_ref": row["device_ref"], "state": "UNKNOWN",
+                    "reason": "the view served no agent inventory for this device"}
+        # Passed through WHOLE, not rebuilt from the keys this method happens to
+        # know. The unknown record carries a `detail` that names the device that
+        # was asked and the device this control plane holds providers for, and
+        # an earlier draft of this method dropped it by listing `state` and
+        # `reason` by hand — which left the refusal without the half that says
+        # what to do about it.
+        return {"device_ref": row["device_ref"], **inventory}
+
+    def agent_inspect(self, device: str, agent_id: str, level: str = "L2") -> dict:
+        """One agent, resolved against the same list `agent.list` serves.
+
+        Composed from `agent_list` rather than from the service directly, for
+        the reason `agent_provider_inspect` is composed from
+        `agent_provider_list`: an inspect that read its own source could report
+        an agent the listing does not show, and a caller reconciling the two
+        would have two answers to one question.
+        """
+        listing = self.agent_list(device, level)
+        rows = listing.get("agents")
+        if rows is None:
+            # Same passthrough rule as `agent_list`: the unmeasured case is
+            # answered with the inventory's own words about why, plus the id
+            # that was asked about. `NOT_FOUND` would be a claim about the
+            # fleet, and nobody established one.
+            return {**listing, "agent_id": agent_id}
+        matches = [row for row in rows
+                   if row.get("agent_id") == agent_id
+                   or row.get("agent_ref") == agent_id]
+        if not matches:
+            return {"device_ref": listing["device_ref"], "state": "NOT_FOUND",
+                    "agent_id": agent_id,
+                    "agents_listed": [row.get("agent_id") for row in rows],
+                    "inventory_complete": listing.get("complete"),
+                    "because": ("this device's providers did not list this "
+                                "agent. `agents_listed` is what they did list, "
+                                "and a misspelling and an unenrolled agent are "
+                                "different repairs")}
+        if len(matches) > 1:
+            return {"device_ref": listing["device_ref"], "state": "AMBIGUOUS",
+                    "agent_id": agent_id,
+                    "matched": [row.get("agent_ref") for row in matches],
+                    "because": ("two agents answer to this id, so naming one "
+                                "would be this surface choosing which was "
+                                "meant. The agent_ref is the unambiguous "
+                                "spelling")}
+        return {"device_ref": listing["device_ref"], "state": "FOUND",
+                "agent": matches[0],
+                "inventory_complete": listing.get("complete"),
+                "provider_errors": listing.get("provider_errors")}
+
     def agent_session_list(self, device: str, level: str = "L2") -> dict:
         row = self._deep_row(device, level)
         return {"device_ref": row["device_ref"], "active_sessions": row["active_sessions"]}
@@ -904,6 +993,11 @@ class AgentControlClient:
             if name == "agent.provider.inspect":
                 return self.agent_provider_inspect(
                     args["device"], args["provider"], args.get("level") or "L2")
+            if name == "agent.list":
+                return self.agent_list(args["device"], args.get("level") or "L2")
+            if name == "agent.inspect":
+                return self.agent_inspect(args["device"], args["agent_id"],
+                                          args.get("level") or "L2")
             if name == "agent.session.list":
                 return self.agent_session_list(args["device"], args.get("level") or "L2")
             if name == "agent.console":
@@ -989,7 +1083,8 @@ def build(*, daemon=None, providers=None, registry=None, local_device_ref=None):
         registry=registry, context_store=DaemonContexts(daemon),
     )
     view = view_mod.FleetView(routing=router,
-                              sessions=_sessions_for(service, device_ref))
+                              sessions=_sessions_for(service, device_ref),
+                              agents=_agents_for(service, device_ref))
     # §M/§P. The console's two inputs. `bindings` is the SAME daemon handle the
     # loopback uses, so a selection recorded through the console is read back by
     # the path that gates turns, and there is no second writer. `registry` is
@@ -1049,6 +1144,43 @@ def _sessions_for(service, local_device_ref: str):
                     "reason": listing.get("reason")}
         return {"state": "KNOWN", "sessions": sessions}
     return sessions
+
+
+def _agents_for(service, local_device_ref: str):
+    """What the view asks about agents: a callable, not a store.
+
+    The same shape as `_sessions_for`, one provider method over, and the same
+    two rules. It answers for ONE device — the one this process holds providers
+    for — and a question about any other device is UNKNOWN with a reason rather
+    than this node's answer wearing that device's name.
+
+    `SessionService.agent_list` is the producer, and it was, until this was
+    wired, a producer with no consumer: it was reachable only from
+    `agent_inspect` and from tests, while `runtime/agent-session-contract.yaml`
+    declared `agent.list` read-only and two docstrings told a reader the record
+    travelled on it. That gap is what this closure exists to close, and the
+    reason it is closed here rather than by having the tool call the service
+    directly is that "a device this control plane does not hold providers for"
+    is a case the service cannot see and the view already knows how to spell.
+    """
+    def agents(device_ref: str) -> dict:
+        if str(device_ref) != local_device_ref:
+            return view_mod.unknown(
+                "this agent source answers for one device only, and this is "
+                "not it",
+                detail=(f"the view asked about {device_ref}; this control plane "
+                        f"holds providers for {local_device_ref}. An agent "
+                        f"inventory is what a PROVIDER reports, so reaching "
+                        f"another device's needs a provider running there"))
+        record = service.agent_list()
+        # `state: KNOWN` even when `provider_errors` is not empty, and
+        # deliberately: `agent_list` answers for every configured provider and
+        # reports the ones that failed beside the ones that did not, so a
+        # partial list is a KNOWN partial answer rather than an unknown one.
+        # That is why the service carries its own `complete` flag — a reader
+        # that saw only `state` would take a partial fleet for the whole one.
+        return {"state": "KNOWN", **record}
+    return agents
 
 
 def _service(daemon, providers, device_ref: str):
