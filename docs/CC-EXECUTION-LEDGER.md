@@ -697,7 +697,7 @@ MarketOps、没有两处 LiteLLM、没有 `records/` 脏资产。它正是内存
 | P3 | 记忆账本/投影/scope | `memory/{record,projection,scope,handoff}.py` | `serverosctl memory {audit,project,status,subject}` (`cli.py:6479`) | — | working；`docs/memory-fabric.md` 逐条点名这些模块 |
 | P12 | **活着的**技能面落后于 canonical | canonical：本仓 `skills/serveros/SKILL.md`（157 行，`21281cfc3c0b`）。装到机上的：插件缓存 `~/.claude/plugins/cache/hwz-server-os-linux-work/hwz-server-os-linux-work/3.1.0-srv0003.20260923d/skills/serveros/SKILL.md`（157 行，`fbfbefbc5870`）；另有 `runtime-assets/hwz-server-os/current/skills/serveros/SKILL.md` 同样落后 | — | — | **P12 待做**（不属 HUMAN_EXECUTED：装 vince 用户级 runtime/插件在本轮授权内）。**实测**：两份**逐字节只差第 143 行**，而差的那一行是**北京搬迁留下的错话** —— 活的那份还在说「`/` 是系统盘，`/opt/applications` 是数据盘」，而本机 `ls -ld /opt/applications` → **No such file or directory**；canonical 已改成与节点无关的「数据盘（机器策略里的 `DATA_ROOT`）」。同一处陈旧还落在 `skills/serveros/scripts/architecture_check.py`：两份只差一段**注释折行**，canonical 那份带着 `# node-path-ok: 考古记录` 标记而装的那份没有。**判据不是「两份文件不一样」，而是「Agent 现在照着读的那句话是不是真的」—— 它现在不是。**处置走 build→promote→restart（不手改派生安装：手改会在下次 promote 时被盖掉并再次漂移） |
 | P4 | 文档关系边 | `relations/project.py:61`（`serveros/relations.v1`），`relations/schema.yaml:29` | `python3 project.py --records ROOT --write relations/current.jsonl` | — | **partial**（比上一版进了一步）：8 个谓词里 3 个有生产者（`belongs_to`、`derived_from`、`attached_to`），其余 5 个 `declared_only`。本机实测 239 行 / 19 条报出，见 §9.8；另 5 个谓词逐条查过，**本机没有载体**，不是差功夫 |
-| P4 | Feishu 空间适配 / 共享 publisher | `skills/feishu-space-management/`：**只有 SKILL.md 文本，本仓没有代码**。`skills/document-stewardship/`：本仓同样只有文本，但**外仓有代码**——`~/.claude/skills/document-stewardship/scripts/maintain.py`（publisher 循环：取 revision N → 定位 → 校验 → 候选 patch → 重取仍为 N? → apply/STOP → 重取 → 校验），且 `plugin/profiles/linux-work.yaml:119-123` 声明它 `available` | — | — | partial。**上一版这一格把两者合成了一句「只有 SKILL.md 文本，没有代码」，那是错的**：`document-stewardship` 在外仓有实现，且 ability-management 注册表（HEAD `8d98aff`）**不持有**它——与那 8 条跨仓红同族 |
+| P4 | Feishu 空间适配 / 共享 publisher | `skills/feishu-space-management/`：**只有 SKILL.md 文本，本仓没有代码**。`skills/document-stewardship/`：本仓同样只有文本，但**外仓有代码**——`~/.claude/skills/document-stewardship/scripts/maintain.py`，且 `plugin/profiles/linux-work.yaml:119-123` 声明它 `available` | — | — | partial。**上一版这一格把两者合成了一句「只有 SKILL.md 文本，没有代码」，那是错的**：`document-stewardship` 在外仓有实现，且 ability-management 注册表（HEAD `8d98aff`）**不持有**它——与那 8 条跨仓红同族。**§9.23 再纠一次**：那个实现里**没有 publisher 循环**。文件只有 `refresh` 与 `audit` 两个动词，它自己的 docstring 写着「**它从不写文档正文，也从不写 profile**」。原来那句「取 revision N → 定位 → 校验 → 候选 patch → …」描述的是**契约要求**，被读成了**已有实现**——恰好是这一格本来要防的那种误读。真正的 publisher 是本轮新写的 `intake/document_publish.py` + `runtime/document_transport.py` |
 | P5 | 员工 KB 生产者 | `src/litellm-support/scripts/build_agent_kb.py`，输出 `dist/employee-kb/`（`dist/` 被 gitignore） | `python3 scripts/build_agent_kb.py` | — | working，但**在 ServerOS 之外** |
 | P5 | KB 消费 | `intake/support.py:187,432,534,697,855,977`（另 `read_entries` 的第三个字段 `unrecognised`，见 §9.14），契约 `intake/support-contract.yaml`；**本轮新增 `intake/support_handoff.py` + `intake/support-handoff-contract.yaml`（见 §9.19）** | `serverosctl support {entries,match,answer,check,handoff} --kb-root <path>`（support 组：`cli.py:8719` @ `4fa1748`，`:8784` @ 本工作树；旧记账写 `cli.py:7206`，实测那里是 taxonomy 转发，已纠正） | — | working，但 `--kb-root` 必填且**没有任何东西把它接到 litellm-support 那棵树**。**§9.14 修掉了一个把「没读到」印成「干净」的洞**：契约写就的那棵树读数不变（`21 entries` / `21 index rows` / exit 0），员工树现在 `entries`/`check` 都是 exit 2 并点名读过哪些文件、哪个 pattern 没匹配上。**§9.19 补上无答案转人工的状态/投递路径**：`support.answer` 那个此前无消费者的改进候选现在有消费者，两个锚未绑定时输出 `PENDING_DELIVERY`、`notified` 只在 `DELIVERED` 为真——但**两个锚在本机仍然 UNBOUND**，所以生产读数是待投递 |
 | P5 | 公开指南生产者 | — | — | — | **not found as code** |
@@ -2486,6 +2486,114 @@ work claim-recall    索引     收据 0 张，主张 0 条，涉及卡片 0 张
   `revisions UNDECIDABLE` **不是缺陷**，是「这份读数要的事实还没送到」。把它送上去是**对外动作**，
   与先前缓下的 `dbc9144` / `8ce6fe7` 同类，进 §11。
 
+### 9.23 P4：两半从来没有见过面 —— 契约读得出来，不等于发布闭得了环
+
+计划 P4 那一格的原话是「**文档 identity resolver 存在不等于远端 publisher 已闭环**」。本轮
+把这句话跑成了一次真实写入，结果那两半各自成立，合起来不成立。
+
+#### 9.23.1 先量：契约本身的两处缺陷，和一处被掩盖的 `KeyError`
+
+在被修之前，真 registry + 真 profile 上的读数是：
+
+- **P4 registry 里只有一行**（`litellm-work-doc`），而它此前被当成「文档身份解析器已存在」的
+  证据。一行 registry 不是一套契约。
+- **profile 与 registry 的关系只有半边可判。** registry 写 `relation: OWNED`，profile 写
+  `standing: CANONICAL`、`sync_mode: NONE`——**三者互不校验**，`read_delivery` 之前根本不存在，
+  三个词放在一个文件里被当成了「已经表达过」。
+- **一处被掩盖的 `KeyError`**：`derive_sections` 按 `section["key"]` 建索引，而当时那份 profile 的
+  某一节没写 `key`。这个错**在真实路径上抛的是 `KeyError`**，而当时的调用点外面套着一个宽
+  `except`，于是它变成一句「读不出契约」。**能被读到的是「读不出」，读不出的是「为什么」**。
+  本轮把它变成按名报错（`sections[2] 没有 key`），并在测试里钉住 `KeyError` 这件事本身。
+- **`relations[3].resolution` 是自相矛盾的**：同一份 state 里 `resolution: RESOLVED`，而
+  `relations[3]` 的 `resolution` 是另一回事。两个字段同名不同义，读起来像同一个判断。
+  本轮不动那份 state 的形状（它是能力的产物），只在读取侧把**它说的是什么**逐项印出来。
+
+#### 9.23.2 修：契约读取与写入分成两个模块，I/O 全部注入
+
+- `intake/managed_documents.py`（§9.22 之后的第二个 P4 提交）：把 registry + profile + state 读成
+  **契约**，规则是「缺失即 unknown，不得默认」——缺 `status` 不得读成 managed、`relation` 与
+  `standing` 不一致要**按名拒绝**、闭词表之外的 surface 不得默认。7 条变异全部被测试杀死
+  （锚点各命中一次，还原按 sha256 核对）。
+- `intake/document_publish.py`：写入的纪律。五个后果 `body/media/index/git/delivery` 各记一笔回执，
+  `ALREADY_EFFECTED` / `NOT_APPLICABLE` / `NOT_ATTEMPTED` / `UNKNOWN_OUTCOME` 互不合并。
+- `runtime/document_transport.py`：**唯一知道 `lark-cli` 的文件**。`space/resolver.py` 的头里已经写着
+  这条道理（内核学会一个租户的云路径之后就不再是内核），所以纪律留在 `intake/`，适配器单独一层。
+
+#### 9.23.3 三条「空过」——本轮最值钱的发现
+
+**这三条的共同形状是：一个检查通过了，而它其实没有执行。** 台账里 0/0 那条纪律说的是分母；
+这一组说的是**分子也可以骗人**。
+
+1. **能力的三条保护里有两条拿空原文问就空过。** `guard_protected` 的两条是**与原文比计数**的
+   （丢掉几个 `完成` 删除线、抹掉几个 `不确定`），`original_text=""` 时两条都真。所以
+   **计划阶段的闸门通过不等于写入会被允许**。修法不是改能力，是把闸门**再问一次**：读到真文档
+   之后、拿真那一节的文本问。计划报告里现在印着这句（`PLAN_GATE_NOTE`），不再让
+   「计划通过」被读成「写入会被允许」。
+2. **没观测到的受众与空受众相等。** `audience_fingerprint(None)` 一度返回 `"UNOBSERVED"`，于是
+   前后两次读**都比得出相等**——「受众没变」成了「没看也相等」。改成返回 `None`，并在报告里
+   明说「受众未观测，本次没有核对受众有没有变」。**没做的检查必须印成一个没做的检查。**
+3. **patch 把自己的锚点替换掉了。** 第一次真写的范围含节标题，而新内容里没有标题，于是那次
+   写入**吃掉了自己的锚点**，要到下一轮才表现为「找不到标题」。修法是 `find_section` 只返回
+   **正文范围**并另带回 `heading_id`，transport 据此在 `block_replace` 与 `block_insert_after`
+   之间选。**一次写入吃掉了它下一次要找的东西**，这一类只有真的写一次才会露出来。
+
+#### 9.23.4 真实写入：一个 OWNED 章节 + 一个获准镜像章节
+
+两个对象都是 ServerOS 自己建的 MyDocs 文档（只有我能看，做完可删）：
+
+```text
+源   docx/UgzGd0i5BoJZ4WxIdZCc17Obnlh   OWNED · standing CANONICAL · sync NONE
+镜像 docx/GQ17dQsN9oca3sxHtsJcANVwnIf   FOLLOW_MIRROR · standing DERIVATIVE
+                                        copied_from 指上面那篇 · sync SOURCE_REVISION
+```
+
+跑出来的（逐条对应计划里那句验收）：
+
+| 计划里的判据 | 真实动作 | 读数 |
+| --- | --- | --- |
+| 至少一个真实 OWNED | base=6 两段正文 | body **OK**（revision 7） |
+| body 成功 / media 失败 | 同一轮带一个不存在的媒体文件 | body OK，media **FAILED** |
+| **只补缺边** | base=9，同一段正文，媒体文件补上 | body **ALREADY_EFFECTED**（不重写），media **OK**，exit 0 |
+| 至少一个获准 mirror | 不说自己在写镜像 | 没有开始，`mirror_ack` **点名 copied_from**，exit 2 |
+| 同上 | 说明后写 | body **OK**（revision 4） |
+| 重复不双份 | 镜像重跑 | body **ALREADY_EFFECTED**，revision **没有动**，exit 0 |
+| 人改保留 | 人改 zone 里手工加的一句，跨六次写入 | 原样在（块 id 未变） |
+| 权限不扩大 | 写入前后 `member-list` | 逐项相同（1 人 / full_access） |
+| —— | 请求里写 `audience` | 没有开始，按名拒绝，exit 2 |
+| —— | base=7 而文档在 11 | body **REFUSED**「base moved」，**没有调 writer** |
+
+**媒体只搬了 69 字节的 1×1 PNG**，没有批量移动任何历史云对象，没有动大音视频；大件仍留在
+原处。**"Git 只留获准文本和 metadata" 这一半没有真实对象可验**——本对象的 `index`/`git`/
+`delivery` 三条边这一轮都是 `NOT_APPLICABLE`（本轮没有供应 writer），所以那是**三个未跑的分量**，
+不是三个通过。
+
+#### 9.23.5 这一轮又改了两个真缺陷，都是真实写入逼出来的
+
+- **`intent_key` 把 `base_revision` 折了进去**，而这个键自己的 docstring 写着「内容寻址、不是
+  时间寻址」。真机上量到的后果：同一段正文、中间别人的编辑抬了 base，**重跑又写了一遍**——内容
+  一字不差，却凭空多一个修订、块 id 全换、锚在这些块上的东西全断。改成内容寻址之后，
+  「没事可做」也**优先于**「base 动了」：base 陈旧只对**写**是问题，而没有写。
+- **读回比对把段落之间的断行抹掉了。** 第二次真写：内容两段，读回说「和写的不一样」，
+  **而文档一字不差**。于是模块把一篇正确的文档报成错误的。修法与它暴露的测试缺陷一起改：
+  假文档此前把所有段落压进一个块，**所以这个缺陷在假文档上永远测不出来**；现在它按真服务的
+  存法一段一块。
+
+#### 9.23.6 没有做的，与为什么
+
+- **真实写入只在 ServerOS 自己的验收对象上做过。** 没有一个真实的 Published Knowledge /
+  J04 / REF 对象被写过。计划里的判据允许这样读（「至少一个真实 OWNED 和一个获准 mirror」），
+  但账面上必须写清：**这两个 OWNED 与 mirror 都是 ServerOS 自己的**，`Codex 配置教程` 那一对
+  真实的镜像**一个字都没动**——它是否属于 ServerOS 没有证据，写它就是一次对共享面的写。
+- **`index` / `git` / `delivery` 三条边这一轮是 `NOT_APPLICABLE`。** 不是通过。
+- **常设维护契约放在哪，没有决定。** 见 §11.6。
+- **`~/.claude/skills/document-stewardship/{scripts,references}` 不在任何仓库里**，而 canonical
+  只有 `payload/SKILL.md`，注册表那张卡还写着 `Installations: (none)`。也就是说：**跑起来的那份
+  实现没有 canonical 出处**。这是 §9.22.6 那类跨仓缺口的一个新实例，本轮只记。
+- **`lark-cli` 的本地路径白名单**（工作目录 / `/tmp` / `~/files`）与本机策略（临时文件放
+  ARTIFACTS_ROOT、不建 `~/files`）**互相矛盾**：媒体那条边默认永远发不出去。修法是调用时把
+  工作目录切到文件自己所在目录——不是放宽白名单，而是让「发送者能指到的文件」与「CLI 允许读的
+  目录」重合。
+
 ## 10. 后续每包更新哪几行
 
 - 改完一个包，只更新 §3.1 里对应行的四层状态 + §5 表的增删。
@@ -2578,6 +2686,26 @@ work claim-recall    索引     收据 0 张，主张 0 条，涉及卡片 0 张
 `workspace/records` 上落这 2 个提交；**(b)** 允许对哪些源重跑同步（这一步决定 47 行里有多少能变成
 可判，多少永远是历史缺口）。**只做 (a) 而不同时定 (b)，账面上不会有任何变化**——这一条必须先说，
 否则下一次读到「47 行仍 UNDECIDABLE」会以为分支没合。
+
+### 11.6 常设维护契约放在哪：这是一个要人定的位置，不是一次搬迁
+
+`litellm-work-doc` 的契约（registry + profile）本轮**修好了，但只在一个 evidence 目录里**：
+`ARTIFACTS_ROOT/skills/serveros/RUN-20260925-p4-stewardship/`。那是一份**跑的记录**，不是它该长期
+待着的地方——按 CLAUDE.md，Skill 证据写 `ARTIFACTS_ROOT/skills/<skill>/`，而一份**常设契约**
+既不是证据也不是产物。
+
+三个候选，各有各的坏处，本轮**不选**：
+
+| 候选 | 好在哪 | 坏在哪 |
+| --- | --- | --- |
+| 能力自己（`document-stewardship` 的 canonical） | 契约与读它的规则在一起 | 那份能力**不在任何仓库里**（§9.23.6），往里写等于把契约放进一个没有出处的地方 |
+| records 树（`workspace/records/`） | 有版本、有历史、跨机可见 | records 的规矩是「raw 只存原始事实，零结论」，而 registry 是**结论**（谁负责、能改到什么程度） |
+| ServerOS 仓（`state/` 之外的一棵 `contracts/`） | 与读它的代码同版本 | `state/` 按定义是**会变的东西**、被关在 Git 外面；契约恰恰是**稳定的那半**，放进 `state/` 就把它变成了派生状态 |
+
+**为什么必须由人定**：这个位置一旦选定，就决定了「谁有权改它」——放进 records 意味着改契约是
+一次 tokyo 数据面的写；放进 ServerOS 仓意味着改契约要过一个 PR。**两条路都合理，选哪条是在
+分配权力**，不是一次目录整理。在定下来之前，那两份文件留在 evidence 目录里，并且**不接任何
+常设 routine**——接了就等于用「它在哪」这个未决问题去决定「谁能改」。
 
 ## 12. 最终报告（计划 §16 要求的那一份）
 
@@ -2851,7 +2979,7 @@ ServerOS 侧一个观测者都没有。这不是「测了没通过」，是「�
 | S1 真人 IM 报错 | `records/information/raw/sync_feishu_chat.py`（B1）+ `intake/understanding_delta.py`（B2） | `test_capture_coverage.py`、`test_understanding_delta.py` | **未跑**。缺一条真实用户消息，与一次真实只读调查的产物 |
 | S2 机器人/例外 | 黑名单 `DRIFT_WATCHLIST.txt`（采集侧 `drift_sync.py:71`、ServerOS 侧 `serverosctl information watched`，§9.10）+ 告警事件链（§3.6） | `test_watch_coverage.py`、`test_alerting.py`、`test_capture_coverage.py` | **一半在跑**：告警事件链活着（登记表 4364 条、740 条带 `last_notified_at`）。缺一条机器人消息被记成 `NONE` 的现场记录，及其读者 |
 | S3 会议 | `space/meeting_relevance.py` + `space/meeting_bundle.py`（§9.15） | `test_meeting_bundle.py`、`test_meeting_relevance.py` | **未跑**。缺一份真实会议 manifest——本机四个探针声明全是合成的 |
-| S4 自管指南 | B9 `document-stewardship`（本仓只有文本；实现与 publisher 循环在外仓 `~/.claude/skills/document-stewardship/scripts/maintain.py`） | —（该实现不在本仓，本仓没有它的测试） | **未跑**。缺一次真实 Published Knowledge patch 与它的回读 receipt |
+| S4 自管指南 | 契约读取：`intake/managed_documents.py`（本轮新增）；写入：`intake/document_publish.py` + `runtime/document_transport.py`（本轮新增）；B9 能力本身在外仓 `~/.claude/skills/document-stewardship/scripts/maintain.py`（**只有 `refresh`/`audit`，从不写正文**，见 §9.23） | `test_managed_documents.py`（29 条）、`test_document_publish.py`（55 条） | **真实写入 2026-09-25 跑通**（§9.23）：一个真实 OWNED 章节 ＋ 一个获准镜像章节，正文 OK、媒体失败后只补那条边、人改保留、权限不扩大、重跑不双份、base 动了停写。两边都在 ServerOS 自己的验收文档上，不是一个真实的 Published Knowledge 对象 |
 | S5 协作文档/SOP | `runtime/report-publication-contract.yaml` + `intake/support_handoff.py`（§9.19） | `test_report_publication.py`（31 条）、`test_support_handoff.py` | **未跑**。缺两个锚（收件人与会话）——它们 UNBOUND，所以当前读数是「待投递」而不是「已通知」 |
 | S6 日常工作 | `intake/daily_cycle.py`（`select_focus` / `review_gate` / `invalidate_claims` / `fingerprint` / `instant`）+ `runtime/workbench.py` | `test_daily_cycle.py`、`test_workbench.py` | **信息半环 2026-09-23 真的跑通了；工作半环卡在板投影的 producer 上**（§3.9、§12.5）。四条实测全 EXIT 0 且留下真实文件：`information captured`（98,685 B）、`information watched`（1,944 B）、`work understanding`（44,067 B）、`report daily`（写出 `daily-report.md` 3,891 B ＋ `publication-receipt.json` 1,209 B，其 JSON 里 `blocking` / `claimed_done_without_a_pass` / `fallbacks` 三项全空）。工作半环的读数：`work focus` 判 `BLOCKED`、理由是 `STALE_BOARD`、`selected` 空；`work grants` 0 条委派、`work admissions` 0 条在办。所以缺的不是"上弦"——是 ServerOS 自己点名的那个 producer：`focus.not_produced` 逐项列出板**还没有生产**的字段（`priorities_unproduced: 34`、无 dependency edge、`grant_ref` 一句写着 "The gap is the board's producer, not the store's"）|
 | S7 卡片 | `runtime/cards.py` + `runtime/card-definitions.yaml` + `runtime/card_delivery.py` | `test_cards.py`、`test_card_delivery.py`、`test_presentation.py` | **两面都在生产链上了。** 告警面 2026-09-22 起取 `serverosctl card alert`；status 面（每小时那张主卡）2026-09-23 起取 `serverosctl card status --with-frozen` 并写 `card record-delivery` 回执（`hwz-ops@a8272d4`），分工是 ops 量网关、措辞归 ServerOS。**原判词的两处失实已更正**：这一跳没有被"两个活动工作树"压着——`alert-card-v2` 一行没改 `monitor_card.py`，只有 `SRV-0011` 改了它，且改的是共享网关端口声明化那一段，与这一跳无关 |
