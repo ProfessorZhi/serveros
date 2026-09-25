@@ -62,6 +62,10 @@ PRODUCED = {
     "priority": "board row `priority.personal` then `priority.source`, and only when "
                 "the card declared a literal level. UNPRODUCED stays absent; see "
                 "`priority_level`.",
+    "completion": "board row `completion`, put there by `workchain.completion_of` "
+                  "from the contract's boundary and the row's own documents. Read, "
+                  "not re-derived: the daily cycle asks whether an Item still owes "
+                  "something, and a second derivation here would be a second answer",
 }
 
 # The policy's inputs the board does not carry. Each is stated here rather than
@@ -93,7 +97,11 @@ NOT_PRODUCED = {
                  "names a grant, `select_focus` reads `grants.get(None)` and "
                  "reports every candidate MISSING_OR_REVOKED_GRANT. The gap is "
                  "the board's producer, not the store's",
-    "next_action": "`select_focus` defaults to `research` when the row is silent",
+    "next_action": "the card carries no such field, and since 2026-09-25 a silent "
+                   "row is an exact answer rather than a default: `classify` "
+                   "refuses it as NEXT_ACTION_NOT_ESTABLISHED instead of asking a "
+                   "grant about an action nobody named. The version that defaulted "
+                   "to `research` hid this absence behind a sentence about a grant",
     "blocked_by": "the board carries no dependency edge",
 }
 
@@ -172,6 +180,10 @@ def rows_from_board(board: dict) -> list[dict]:
             level, _why = priority_level(row)
             if level is not None:
                 item["priority"] = level
+            # Absent when the board cannot say, and absent is a third answer
+            # rather than a favourable one — see `classify` on this node.
+            if isinstance(row.get("completion"), dict):
+                item["completion"] = row["completion"]
             unexpected = set(item) - set(PRODUCED)
             if unexpected:
                 raise Refused(

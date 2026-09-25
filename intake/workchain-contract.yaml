@@ -153,6 +153,39 @@ item_documents:
 document_states: [PRESENT, MISSING, NOT_YET_REQUIRED, UNREADABLE]
 
 # ---------------------------------------------------------------------------
+# The completion boundary. §6: 已完成 means the Item's own agreed acceptance was
+# met. Not "the run exited 0", not "the PR was opened", and not "a Quay Task
+# closed". A Quay Task is a step inside an Item and is never counted as a second
+# outcome — counting it twice would make one piece of work look like two
+# deliverables and would put a number on the board that no Item can explain.
+#
+# It sits here, beside `item_documents`, and not under `personal_board`, for the
+# reason the whole round keeps meeting: what an Item owes is a property of the
+# Item chain, and the board is one reader of it. `compose_item` reads this block
+# for an Item the personal board never shows.
+# ---------------------------------------------------------------------------
+completion:
+  states: [CLOSED]
+  requires: "outcome is set, and report.md is present"
+  # The sentence above is for a person. These two lists are the same rule in the
+  # form code can be wrong about, and `tests/test_workchain.py` asserts the
+  # sentence names exactly what the lists name — the only thing that makes
+  # keeping both spellings defensible rather than a second copy that drifts.
+  requires_fields: [outcome]
+  requires_documents: [report]
+  # Where the claim is TESTED. An Item in one of these states whose declared
+  # obligations are not all discharged is not finished, whatever its state is
+  # called: `DELIVERED` sounds done and is not, and a `CLOSED` Item missing a
+  # required document is a closure nobody can check.
+  assessed_at: [DELIVERED, CLOSED]
+  # A statement about the state machine, kept for the reader: these states are
+  # NOT the agreed acceptance being met. Which of them the daily cycle also
+  # TESTS is `assessed_at` above — this list is **not** read by code, and saying
+  # so is better than a reader assuming it is.
+  not_completion: [DELIVERED, CANCELLED]
+  quay_task_counts_as_an_outcome: false
+
+# ---------------------------------------------------------------------------
 # The personal board. §6's layout, in §6's order, top to bottom.
 #
 # `selects` is read against work-engine's states. `priority` is read against
@@ -208,18 +241,7 @@ personal_board:
   unplaced_is_named: true
 
   row:
-    fields: [id, project, kind, title, state, outcome, source_priority, personal_priority, documents, today]
-
-  # §6: 已完成 means the Item's own agreed acceptance was met. Not "the run
-  # exited 0", not "the PR was opened", and not "a Quay Task closed". A Quay
-  # Task is a step inside an Item and is never counted as a second outcome —
-  # counting it twice would make one piece of work look like two deliverables
-  # and would put a number on the board that no Item can explain.
-  completion:
-    states: [CLOSED]
-    requires: "outcome is set, and report.md is present"
-    not_completion: [DELIVERED, CANCELLED]
-    quay_task_counts_as_an_outcome: false
+    fields: [id, project, kind, title, state, outcome, source_priority, personal_priority, documents, completion, today]
 
 # ---------------------------------------------------------------------------
 # The two priorities, and why nothing writes them yet.

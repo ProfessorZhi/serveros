@@ -29,6 +29,13 @@ def item(i="T-1", **extra):
             "grant_ref": "g", "next_action": "research", **extra}
 
 
+def a_completion(state="COMPLETE", **extra):
+    """A board row's completion verdict, as `workchain.completion_of` writes it."""
+    return {"state": state, "assessed": True, "missing_fields": [],
+            "missing_documents": [], "unreported_documents": [],
+            "why": "test fixture", **extra}
+
+
 def grant():
     return {"ref": "g", "revoked": False, "valid_from": "2026-09-21T00:00:00Z",
             "expires_at": "2026-09-23T00:00:00Z", "projects": ["test"],
@@ -246,10 +253,77 @@ class ContinuationIsNotRecommendation(unittest.TestCase):
                          [{"id": "T-1", "reason": "HUMAN_EXECUTED"}])
 
     def test_an_accepted_objective_that_finished_does_not_continue(self):
-        decision = self.carry([item(state="CLOSED")], selection(["T-1"]))
+        """Finished, and the contract says nothing is owed: the slot frees."""
+        row = item(state="CLOSED", completion=a_completion())
+        decision = self.carry([row], selection(["T-1"]))
         self.assertEqual(decision["selected"], [])
         self.assertEqual(decision["excluded"],
                          [{"id": "T-1", "reason": "TERMINAL_STATE"}])
+
+    def test_a_terminal_row_with_no_verdict_is_not_a_finished_objective(self):
+        """An unasked question is not a favourable answer.
+
+        The row carries no `completion` at all, so "this objective is done" is
+        not something the cycle can say. It continues and the unanswered
+        question is named — the same rule `liveness` follows about workers, and
+        the reason this is not read as "finished" by default.
+        """
+        decision = self.carry([item(state="CLOSED")], selection(["T-1"]))
+        self.assertEqual(decision["selected"], ["T-1"])
+        self.assertEqual(decision["because"]["T-1"], "COMPLETION_NOT_ASSESSED")
+        self.assertEqual([u["fields"] for u in decision["unevaluated"]],
+                         [["completion"]])
+
+    def test_a_delivered_objective_missing_its_report_continues(self):
+        """`DELIVERED` sounds done and is not, when the contract's own
+        boundary says the report a delivery needs is not there."""
+        row = item(state="DELIVERED", completion=a_completion(
+            "OPEN", missing_documents=["report"]))
+        decision = self.carry([row], selection(["T-1"]))
+        self.assertEqual(decision["selected"], ["T-1"])
+        self.assertEqual(decision["because"]["T-1"],
+                         "AWAITING_ACCEPTANCE_EVIDENCE:report")
+        self.assertEqual(decision["excluded"], [])
+
+    def test_a_closed_objective_closed_without_its_evidence_is_named_as_such(self):
+        """A closure the contract's own rule cannot check, and the word for it
+        is different because what a reader would do about it is different."""
+        row = item(state="CLOSED", outcome=None,
+                   completion=a_completion("OPEN", missing_fields=["outcome"],
+                                           missing_documents=["report"]))
+        decision = self.carry([row], selection(["T-1"]))
+        self.assertEqual(decision["because"]["T-1"],
+                         "CLOSED_UNEVIDENCED:outcome,report")
+
+    def test_a_delivered_objective_that_owes_nothing_still_finishes(self):
+        """Discharged is not complete: what a delivered, evidenced Item waits
+        for is a person's acceptance, which is not work this cycle can hold a
+        slot for."""
+        row = item(state="DELIVERED", completion=a_completion("DISCHARGED"))
+        decision = self.carry([row], selection(["T-1"]))
+        self.assertEqual(decision["selected"], [])
+        self.assertEqual(decision["excluded"],
+                         [{"id": "T-1", "reason": "TERMINAL_STATE"}])
+
+    def test_the_two_answers_about_one_row_differ_only_where_they_should(self):
+        """The asymmetry, pinned so it cannot be tidied away by accident.
+
+        A `CLOSED` Item that still owes its report cannot take new work, so the
+        RECOMMENDER counts it where it always did — excluded, holding no slot.
+        Reading the obligation into the disposition instead would put finished
+        Items back into `carryover` and report a node whose work is done as
+        OVER_CAPACITY, which is the defect this module already carries a
+        measurement for. And the CONTINUER must not call a person's accepted
+        objective finished. Same reading, two callers, two answers.
+        """
+        row = item(state="CLOSED", completion=a_completion(
+            "OPEN", missing_documents=["report"]))
+        proposal = self.propose([row])
+        self.assertEqual(proposal["excluded"],
+                         [{"id": "T-1", "reason": "TERMINAL_STATE"}])
+        self.assertEqual(proposal["carryover"], [])
+        self.assertEqual(self.carry([row], selection(["T-1"]))["selected"],
+                         ["T-1"])
 
     def test_a_worker_still_held_continues_even_though_the_state_is_terminal(self):
         """Acceptance D, as the order of two lines. The Run is CLOSED and the

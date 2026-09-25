@@ -6713,12 +6713,21 @@ def cmd_work_focus(args) -> int:
                          f"{entry['reason']}")
     unevaluated = continuation.get("unevaluated") or []
     if unevaluated:
-        lines.append(f"unevaluated {len(unevaluated)} — 没有生产者说明 worker 是否"
-                     f"仍持有；以状态为准")
+        # The header is derived from the fields the entries NAME, and it used to
+        # be a fixed sentence about worker liveness. That sentence was true while
+        # liveness was the only family in this list; a `completion` entry under
+        # it would have read as "no producer says whether a worker still holds
+        # this", which is a different question about a different thing.
+        families = sorted({field for entry in unevaluated
+                           for field in entry["fields"]})
+        lines.append(f"unevaluated {len(unevaluated)} —— 这些字段没有生产者"
+                     f"说明，本次没有据此判定：{', '.join(families)}")
         for entry in unevaluated[:5]:
             lines.append(f"  {entry['id']:<10} {','.join(entry['fields'])}")
+            if entry.get("because"):
+                lines.append(f"    ↳ {entry['because']}")
         if len(unevaluated) > 5:
-            lines.append(f"  … 还有 {len(unevaluated) - 5} 个，同样两个字段")
+            lines.append(f"  … 还有 {len(unevaluated) - 5} 个，同样字段")
 
     # 2. The proposal. Printed, labelled, and never admitted — `work admit`
     #    reads the block above and only the block above.
@@ -7303,6 +7312,31 @@ def cmd_work_item(args) -> int:
         f"形状检查   空文件 {empty} · 符合提案小节 {matching} · 自有小节 "
         f"{diverging}（非缺陷）· 未核对 {unchecked} —— 未核对的是目录形态，"
         f"那是多份文档合起来的一件事，标题检查无从下手")
+    # The verdict on top of the evidence above, and the reason this verb is the
+    # one that prints it: a person reading `<ID> CLOSED` on the first line has
+    # just been told the Item is finished by a word, and this line is where the
+    # word is checked. Placed after the documents rather than before them
+    # because it is a conclusion drawn FROM them.
+    completion = item.get("completion")
+    if not isinstance(completion, dict):
+        # Not a default and not a pass: a chain that says nothing about the
+        # boundary is silent, and silence is not completion.
+        lines.append("完成边界   链条未给出判定 —— 缺席不是已完成")
+    else:
+        label = {"COMPLETE": "已完成", "DISCHARGED": "已结清·非完成",
+                 "OPEN": "未结清", "NOT_ASSESSED": "未评估"}.get(
+                     completion["state"], completion["state"])
+        lines.append(f"完成边界   {label} —— {completion['why']}")
+        # The three gaps are told apart because they are three different
+        # situations: a field with no value, a document that is not there, and
+        # a document the chain never mentioned at all. The last one is the one
+        # a reader would otherwise mistake for the second.
+        for name in completion.get("missing_fields") or []:
+            lines.append(f"           ↳ 缺字段   {name}")
+        for name in completion.get("missing_documents") or []:
+            lines.append(f"           ↳ 缺文档   {name}")
+        for name in completion.get("unreported_documents") or []:
+            lines.append(f"           ↳ 链上未报告 {name} —— 既不说在有，也不说没有")
     lines.append(f"卡片       {item['card']['how']}"
                  + (f" —— {item['card']['resolution_why']}"
                     if item["card"]["resolution_why"] else ""))

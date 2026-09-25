@@ -218,6 +218,58 @@ class PriorityComesFromTheCardOrNotAtAll(unittest.TestCase):
             self.assertEqual(why["state"], "NOT_A_PRIORITY_CELL")
 
 
+class CompletionIsCarriedOutAndNeverInvented(unittest.TestCase):
+    """The boundary the board computed, passed through unchanged — or absent.
+
+    `completion` is the one field here whose producer is another module in this
+    repository rather than the board's own renderer: `workchain.completion_of`
+    decides it from the contract and the row's documents, and this adapter's job
+    is to carry the answer, not to reach the same conclusion a second way. Two
+    derivations of "does this Item still owe something" would be two answers,
+    and the one a person reads would depend on which surface they asked.
+    """
+
+    def test_a_row_that_carries_a_verdict_carries_it_out_unchanged(self):
+        verdict = {"state": "OPEN", "assessed": True, "missing_fields": ["outcome"],
+                   "missing_documents": [], "unreported_documents": [],
+                   "why": "in DELIVERED the contract requires ['outcome', 'report']"}
+        board = {"sections": [{"id": "today", "rows": [
+            {"id": "X-1", "project": "p", "state": "DELIVERED",
+             "completion": dict(verdict)}]}]}
+        row = rows_from_board(board)[0]
+        self.assertEqual(row["completion"], verdict)
+
+    def test_a_row_that_carries_no_verdict_gains_none(self):
+        """Absence is a third answer and not a favourable one.
+
+        Both frozen captures predate the boundary, so every one of their rows
+        is this case — and an adapter that supplied `COMPLETE` for a silent row
+        would make the whole 2026-09-22 board read as finished work.
+        """
+        for raw in board_rows(load(LIVE)):
+            self.assertNotIn("completion", raw)
+        for row in rows_from_board(load(LIVE)):
+            self.assertNotIn("completion", row, row["id"])
+
+    def test_a_verdict_that_is_not_a_mapping_is_not_carried_as_one(self):
+        """A null or a string in that position is the board failing to answer,
+        and `classify` reads an absent verdict as NOT_ASSESSED. Coercing it
+        into a dict here would turn the failure into a value."""
+        for value in (None, "", "NOT_ASSESSED", []):
+            board = {"sections": [{"id": "today", "rows": [
+                {"id": "X-1", "project": "p", "state": "DELIVERED",
+                 "completion": value}]}]}
+            self.assertNotIn("completion", rows_from_board(board)[0], repr(value))
+
+    def test_the_two_field_tables_do_not_both_claim_it(self):
+        """`PRODUCED` says who produces a field; `NOT_PRODUCED` says why nobody
+        does. A field in both is a contradiction that would read to a caller as
+        whichever one they happened to open."""
+        self.assertIn("completion", PRODUCED)
+        self.assertNotIn("completion", NOT_PRODUCED)
+        self.assertEqual(set(PRODUCED) & set(NOT_PRODUCED), set())
+
+
 class TheAgeIsTheProjectionsNotTheRenders(unittest.TestCase):
     def test_the_live_board_is_stale_by_its_own_projections(self):
         composed = compose(load(LIVE), projection_times=LIVE_TIMES)

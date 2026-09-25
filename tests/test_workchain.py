@@ -904,15 +904,47 @@ class DeliveredIsNotCompletion(unittest.TestCase):
                 projects=projects)
         self.assertEqual(item["state"], "CLOSED")
         self.assertIn("report", [u["document"] for u in item["undecided"]])
+        # And the boundary says the same thing in the form code reads: the Item
+        # claims completion, `outcome` IS set, and what is missing is named.
+        # Before this field existed the only reader of the same rule was this
+        # assertion's neighbour above, which no caller consulted.
+        self.assertEqual(item["completion"]["state"], chain.OPEN)
+        self.assertEqual(item["completion"]["missing_fields"], [])
+        self.assertEqual(item["completion"]["missing_documents"], ["report"])
 
     def test_the_contract_says_a_quay_task_is_not_an_outcome(self):
         """§6's 已完成 is one Item's acceptance. A Quay Task is a step INSIDE
         an Item, and counting it as a second outcome would make one piece of
         work look like two deliverables.
         """
-        completion = CONTRACT["personal_board"]["completion"]
+        completion = CONTRACT["completion"]
         self.assertFalse(completion["quay_task_counts_as_an_outcome"])
         self.assertNotIn("DELIVERED", completion["states"])
+
+    def test_the_sentence_and_the_lists_name_the_same_requirements(self):
+        """`completion.requires` is prose and the two lists are code.
+
+        Two spellings of one rule is exactly what this round keeps finding
+        broken — a rule implemented twice cannot be killed by a single mutation
+        — so keeping both is defensible only while something fails when they
+        drift. This is that something, and it is deliberately one-directional:
+        every requirement the LISTS name must appear in the sentence, because a
+        requirement code enforces and the sentence hides would leave a reader
+        unable to see why an Item they consider done is reported as owing
+        something. The other direction needs the sentence to be parsed, and a
+        parser here would be a third spelling rather than a check on two.
+        """
+        completion = CONTRACT["completion"]
+        for field in completion["requires_fields"]:
+            self.assertIn(field, completion["requires"], field)
+        for name in completion["requires_documents"]:
+            self.assertIn(name, completion["requires"], name)
+
+    def test_a_state_that_claims_completion_is_also_tested_there(self):
+        """A claim nothing tests is a declaration, not a boundary."""
+        completion = CONTRACT["completion"]
+        self.assertTrue(set(completion["states"]) <= set(completion["assessed_at"]))
+        self.assertFalse(set(completion["states"]) & set(completion["not_completion"]))
 
     def test_a_cancelled_item_can_name_what_replaced_it(self):
         """取消/替代 is ONE section, and being replaced is a reference.
@@ -935,6 +967,123 @@ class DeliveredIsNotCompletion(unittest.TestCase):
             workspace_root=SAMPLE, project="sample-alpha", item_id="SAMP-0006",
             projects=projects)
         self.assertEqual(replacement["state"], "READY")
+
+
+# ---------------------------------------------------------------------------
+# The completion boundary, one answer at a time.
+# ---------------------------------------------------------------------------
+
+def a_completion_row(state="CLOSED", outcome="SUCCESS", documents=None) -> dict:
+    return {"id": "IT-1", "project": "px", "state": state, "outcome": outcome,
+            "documents": ([{"document": "report", "state": chain.PRESENT}]
+                          if documents is None else documents)}
+
+
+def a_contract(**completion) -> dict:
+    """The real contract with its `completion` block replaced, key by key."""
+    block = {"states": ["CLOSED"], "requires": "outcome is set, and report.md "
+             "is present", "requires_fields": ["outcome"],
+             "requires_documents": ["report"], "assessed_at": ["DELIVERED",
+                                                               "CLOSED"],
+             "not_completion": ["DELIVERED", "CANCELLED"]}
+    block.update(completion)
+    return {**CONTRACT, "completion": block}
+
+
+class TheCompletionBoundaryAnswersFourThings(unittest.TestCase):
+    """`completion_of` over hand-built rows, so each answer is reachable alone.
+
+    The rows are built here rather than taken from the fixture because the
+    fixture exercises the four answers through real Items; what this class adds
+    is that each answer can be reached WITHOUT the others being true, which is
+    the only way to tell four branches from one branch and three coincidences.
+    """
+
+    def setUp(self):
+        self.rules = chain._completion_rules(CONTRACT)
+
+    def test_a_state_the_contract_does_not_test_is_not_assessed(self):
+        verdict = chain.completion_of(a_completion_row(state="ACTIVE"), self.rules)
+        self.assertEqual(verdict["state"], chain.NOT_ASSESSED)
+        self.assertFalse(verdict["assessed"])
+        self.assertIn("ACTIVE", verdict["why"])
+
+    def test_closed_with_everything_present_is_complete(self):
+        verdict = chain.completion_of(a_completion_row(), self.rules)
+        self.assertEqual(verdict["state"], chain.COMPLETE)
+        self.assertTrue(verdict["assessed"])
+
+    def test_delivered_with_everything_present_is_discharged_and_not_complete(self):
+        """The state the whole field exists for: delivered is not done."""
+        verdict = chain.completion_of(a_completion_row(state="DELIVERED"),
+                                      self.rules)
+        self.assertEqual(verdict["state"], chain.DISCHARGED)
+        self.assertNotEqual(verdict["state"], chain.COMPLETE)
+        self.assertIn("acceptance", verdict["why"])
+
+    def test_a_missing_document_is_open_and_the_gap_is_named(self):
+        verdict = chain.completion_of(a_completion_row(documents=[
+            {"document": "report", "state": chain.MISSING}]), self.rules)
+        self.assertEqual(verdict["state"], chain.OPEN)
+        self.assertEqual(verdict["missing_documents"], ["report"])
+        self.assertEqual(verdict["missing_fields"], [])
+
+    def test_an_empty_outcome_is_not_an_outcome(self):
+        """`None`, `""` and `[]` are absences wearing a value's clothes."""
+        for empty in (None, "", "   ", [], {}):
+            verdict = chain.completion_of(
+                a_completion_row(outcome=empty), self.rules)
+            self.assertEqual(verdict["state"], chain.OPEN, repr(empty))
+            self.assertEqual(verdict["missing_fields"], ["outcome"], repr(empty))
+
+    def test_a_row_with_no_documents_list_is_not_assessed_rather_than_complete(self):
+        """Silence about the documents is not evidence that they are there."""
+        row = a_completion_row()
+        del row["documents"]
+        verdict = chain.completion_of(row, self.rules)
+        self.assertEqual(verdict["state"], chain.NOT_ASSESSED)
+        self.assertFalse(verdict["assessed"])
+        self.assertIn("documents", verdict["why"])
+
+    def test_a_required_document_the_row_never_mentions_is_owed_not_forgiven(self):
+        """Absent and unreported are both owed, and told apart."""
+        verdict = chain.completion_of(a_completion_row(documents=[]), self.rules)
+        self.assertEqual(verdict["state"], chain.OPEN)
+        self.assertEqual(verdict["missing_documents"], [])
+        self.assertEqual(verdict["unreported_documents"], ["report"])
+
+    def test_a_requirement_that_could_never_bite_is_refused(self):
+        """A test that cannot fail is not a test.
+
+        `report` is required at DELIVERED and CLOSED, so naming it while
+        assessing a state where it is NOT_YET_REQUIRED would leave the check
+        green for every Item — the defect class this whole section is about,
+        arriving one level down.
+        """
+        rules = chain._completion_rules(a_contract(
+            states=["READY"], assessed_at=["READY"]))
+        with self.assertRaises(chain.Refused) as caught:
+            chain.completion_of(a_completion_row(state="READY", documents=[
+                {"document": "report", "state": chain.NOT_YET_REQUIRED}]),
+                rules)
+        self.assertIn("could never fail", str(caught.exception))
+
+    def test_the_rules_refuse_a_boundary_nothing_tests(self):
+        for block, expected in (
+                ({"states": [], "assessed_at": ["CLOSED"]}, "names no state"),
+                ({"states": ["CLOSED"], "assessed_at": []}, "names no state"),
+                ({"states": ["CLOSED"], "assessed_at": ["DELIVERED"]},
+                 "never tests there"),
+                ({"not_completion": ["CLOSED"]}, "both completion and not"),
+                ({"requires_fields": [], "requires_documents": []},
+                 "nothing to check"),
+                ({"requires_documents": ["nothing-declares-this"]},
+                 "does not declare"),
+        ):
+            with self.subTest(block=block):
+                with self.assertRaises(chain.Refused) as caught:
+                    chain._completion_rules(a_contract(**block))
+                self.assertIn(expected, str(caught.exception))
 
 
 # ---------------------------------------------------------------------------

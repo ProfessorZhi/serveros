@@ -26,6 +26,12 @@ LIVENESS_FIELDS = ("worker_stopped", "resources_released")
 # a `{personal, source}` object and `{...} in {"P0"}` raises TypeError: a
 # projection this policy is pointed at must not crash it.
 PRIORITY_LEVELS = frozenset({"P0", "P1", "P2", "P3", "P4"})
+# The completion boundary's vocabulary, as the board row publishes it
+# (`workchain.completion_of`). Spelled out as literals rather than imported: the
+# contract between this module and its caller is the ROW, and importing the
+# board composer's constants would make the daily-work policy depend on the
+# projection format — the coupling `intake/focus_source.py` exists to avoid.
+COMPLETION_OPEN = "OPEN"
 
 
 def instant(value: str) -> datetime:
@@ -141,6 +147,15 @@ def classify(row: dict, grants: dict[str, dict], *, now: datetime) -> dict:
         PARKED    acknowledged as parked, and the release is not evidenced.
         ELIGIBLE  may take work, subject to what the caller asks next.
         BLOCKED   a named reason; `reason` is it.
+
+    For a row in a state the fabric considers over, the verdict also carries
+    `completion` — the contract's answer to "does this Item still owe
+    something", read off the board row. It is NOT part of `disposition`, and
+    deliberately so: a `CLOSED` Item that is missing its required report cannot
+    take new work either, so the recommender still counts it where it always
+    did, while the continuer must not call a person's accepted objective
+    finished. One reading, two callers, two answers — the same shape as
+    `priority`, and the reason the field is here rather than invented twice.
     """
     held, held_fields = liveness(row)
     state = row.get("state")
@@ -164,6 +179,14 @@ def classify(row: dict, grants: dict[str, dict], *, now: datetime) -> dict:
         return {**verdict, "disposition": "PARKED",
                 "reason": "PARKED_RELEASE_UNCONFIRMED"}
     if state in TERMINAL:
+        # The obligation is REPORTED here and nothing more is decided with it.
+        # A terminal row frees its slot either way, because the recommender's
+        # question is whether the row can take new work, and `DELIVERED` and
+        # `CLOSED` cannot. Whether an objective a person ACCEPTED is finished is
+        # the continuer's question, asked of the same field and answered
+        # differently — the split `classify`'s docstring already describes for
+        # priority, and the reason the reading lives here once.
+        verdict["completion"] = row.get("completion")
         return {**verdict, "disposition": "FINISHED", "reason": "TERMINAL_STATE"}
     if parked:
         return {**verdict, "disposition": "BLOCKED",
@@ -198,6 +221,44 @@ def classify(row: dict, grants: dict[str, dict], *, now: datetime) -> dict:
     # admitted on its state alone is a row admitted on the weaker evidence.
     verdict["unevaluated"] = held is None
     return {**verdict, "disposition": "ELIGIBLE", "reason": None}
+
+
+def obligation_of(verdict: dict) -> dict:
+    """Whether an accepted objective still owes what the contract requires.
+
+    The board row carries its own `completion` verdict; this turns it into the
+    word the cycle's `because` is written in, and keeps "assessed, and something
+    is owed" apart from "could not be assessed" — the distinction `liveness`
+    makes about workers, one field over.
+
+    A terminal state NAME is not an answer to this question, which is the whole
+    reason the field is consulted: an Item being called `CLOSED` is what the
+    boundary exists to check, not what settles it.
+
+    Returns `{"state", "assessed", "reason", "why"}`. `reason` is None when
+    nothing is owed at an assessed state, and the caller falls through to the
+    state-based reason it already had.
+    """
+    completion = verdict.get("completion")
+    state = verdict.get("state")
+    if not isinstance(completion, dict):
+        return {"state": "NOT_ASSESSED", "assessed": False, "reason": None,
+                "why": ("the board row carries no `completion` verdict, so whether "
+                        "this Item still owes what the contract requires could not "
+                        "be read here")}
+    if completion.get("state") != COMPLETION_OPEN:
+        return {"state": completion.get("state"), "assessed": True,
+                "reason": None, "why": str(completion.get("why") or "")}
+    # The three gaps are kept as three in the verdict and joined into one word
+    # here, because a reason string is what `because` carries to a person.
+    missing = (list(completion.get("missing_fields") or ())
+               + list(completion.get("missing_documents") or ())
+               + list(completion.get("unreported_documents") or ()))
+    word = {"DELIVERED": "AWAITING_ACCEPTANCE_EVIDENCE",
+            "CLOSED": "CLOSED_UNEVIDENCED"}.get(state, "OPEN_OBLIGATION")
+    return {"state": COMPLETION_OPEN, "assessed": True,
+            "reason": f"{word}:{','.join(missing)}" if missing else word,
+            "why": str(completion.get("why") or "")}
 
 
 def _order(candidates: list[dict]) -> list[dict]:
@@ -299,6 +360,18 @@ def continue_focus(rows: list[dict], grants: dict[str, dict], accepted: dict | N
     the fabric refuse to continue the very work somebody said to do — which is
     what this function was written to stop.
 
+    A FINISHED state is not the end of the question either. An accepted
+    objective whose board row says the contract's boundary is not discharged
+    (`obligation_of`: an Item called `DELIVERED` whose required report is not
+    there, or a `CLOSED` one closed without it) CONTINUES, and `because` names
+    what is missing. What it is waiting for is evidence, which is work — unlike
+    a person's acceptance, which is what a discharged-but-not-complete Item
+    waits for and which nothing here can start. Where the row carries no
+    verdict at all, the objective also continues, with
+    `COMPLETION_NOT_ASSESSED` and the unanswered question in `unevaluated`: an
+    unasked question is not a favourable answer, the same rule `liveness`
+    follows about workers.
+
     Everything else still applies. An accepted objective with no grant, no
     named action, a dependency that is not met, or a protected production
     effect is reported in `excluded` with the exact reason: a person accepting
@@ -363,6 +436,30 @@ def continue_focus(rows: list[dict], grants: dict[str, dict], accepted: dict | N
                                "decided here; the Item's own state is what "
                                "continued it"})
             continue
+        if verdict["disposition"] == "FINISHED":
+            obligation = obligation_of(verdict)
+            if obligation["state"] == "OPEN":
+                # A terminal state, and the contract's boundary says the Item
+                # still owes something: `DELIVERED` sounds finished and is not,
+                # and a `CLOSED` Item missing a required document was closed
+                # anyway. The SLOT stays — what this objective is now waiting
+                # for is the missing evidence, which is work, unlike a person's
+                # acceptance, which is not something this module can start.
+                continuing.append(item_id)
+                because[item_id] = obligation["reason"]
+                continue
+            if not obligation["assessed"]:
+                # The row carries no verdict, so "finished" is not an answer
+                # this function has: an unanswered question is not a favourable
+                # one. The objective continues and the reason says which
+                # question could not be put — the same three-valued reading
+                # `liveness` gets, one field over.
+                continuing.append(item_id)
+                because[item_id] = "COMPLETION_NOT_ASSESSED"
+                unevaluated.append({
+                    "id": item_id, "fields": ["completion"],
+                    "because": obligation["why"]})
+                continue
         excluded.append({"id": item_id, "reason": verdict["reason"]})
     over = len(continuing) > limit
     return {**base, "status": "OVER_CAPACITY" if over else "PLANNED",

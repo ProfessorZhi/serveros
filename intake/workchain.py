@@ -99,6 +99,15 @@ PRESENT = "PRESENT"
 MISSING = "MISSING"
 NOT_YET_REQUIRED = "NOT_YET_REQUIRED"
 
+#: The completion boundary's own vocabulary. `NOT_ASSESSED` is here so that
+#: "nothing was owed at this state" and "everything owed was found" are two
+#: answers rather than one: a check that was never run is not a check that
+#: passed.
+COMPLETE = "COMPLETE"
+DISCHARGED = "DISCHARGED"
+OPEN = "OPEN"
+NOT_ASSESSED = "NOT_ASSESSED"
+
 PRIORITY_LEVELS = ("P0", "P1", "P2", "P3", "P4")
 
 #: Read from the contract at load time; these are the fallbacks that make a
@@ -623,11 +632,155 @@ def _documents(item_dir: Path, state: str, rules: list[dict],
 
 
 # ---------------------------------------------------------------------------
+# The completion boundary: what an Item still owes
+# ---------------------------------------------------------------------------
+
+def _completion_rules(contract: dict) -> dict:
+    """The completion boundary from the contract, checked, or a refusal.
+
+    `requires` stays a sentence for a person. The two lists beside it are the
+    same rule in the form this module can be wrong about, and a test asserts the
+    sentence names exactly what they name — a second spelling is defensible only
+    while something fails when the two drift apart.
+
+    Three refusals here, and each is a way the block could read as satisfied
+    without ever having been checked:
+
+      * no state, or a state that `assessed_at` never tests. A claim that is
+        never tested is the defect this whole section exists for.
+      * a state listed as both completion and not.
+      * nothing to check, or a required document `item_documents` does not
+        declare — a requirement against a document nobody declares can neither
+        be satisfied nor violated, so it would report one gap forever.
+    """
+    block = contract.get("completion")
+    if not isinstance(block, dict):
+        raise Refused(
+            "`completion` is absent or is not a mapping, so nothing states what "
+            "an Item owes and every Item would read as finished.")
+    states = tuple(block.get("states") or ())
+    assessed = tuple(block.get("assessed_at") or ())
+    fields = tuple(block.get("requires_fields") or ())
+    names = tuple(block.get("requires_documents") or ())
+    if not states or not assessed:
+        raise Refused(
+            "`completion` names no state, or names one without saying where the "
+            "claim is tested. An empty requirement is not a lenient rule, it is "
+            "the absence of one.")
+    untested = sorted(set(states) - set(assessed))
+    if untested:
+        raise Refused(
+            f"`completion.states` claims completion at {untested} and "
+            f"`assessed_at` never tests there, so the claim could not be "
+            f"checked — which is a declaration, not a boundary.")
+    both = sorted(set(states) & set(block.get("not_completion") or ()))
+    if both:
+        raise Refused(
+            f"{both} is listed as both completion and not completion. One of "
+            f"the two is wrong, and code that picked either would be picking.")
+    if not fields and not names:
+        raise Refused(
+            "`completion` names nothing to check, which would make every Item "
+            "in an assessed state complete on the strength of its state alone.")
+    declared = {rule["name"] for rule in _document_rules(contract)}
+    unknown = [name for name in names if name not in declared]
+    if unknown:
+        raise Refused(
+            f"`completion.requires_documents` names {unknown}, which "
+            f"`item_documents` does not declare. A requirement against a "
+            f"document nobody declares can neither be satisfied nor violated.")
+    return {"states": frozenset(states), "assessed_at": frozenset(assessed),
+            "fields": fields, "documents": names,
+            "prose": str(block.get("requires") or "")}
+
+
+def _set(value) -> bool:
+    """Is this field set?
+
+    `None`, an empty string and an empty collection are absences wearing a
+    value's clothes, and a requirement checked with `is not None` would read
+    `outcome: ""` as an outcome having been recorded.
+    """
+    if value is None:
+        return False
+    if isinstance(value, str):
+        return bool(value.strip())
+    if isinstance(value, (list, tuple, dict, set)):
+        return bool(value)
+    return True
+
+
+def completion_of(row: dict, rules: dict) -> dict:
+    """What one Item still owes, and whether the question could be asked.
+
+    Read from the row alone: the contract names the requirements and the row
+    carries the evidence. Four answers, and keeping the first and the fourth
+    apart is most of why this function exists:
+
+        NOT_ASSESSED  the contract does not test completion at this state, so
+                      nothing is owed. **Not** an evaluation that passed.
+        COMPLETE      the state claims completion and everything required is
+                      present.
+        DISCHARGED    the state does not claim completion and nothing declared is
+                      missing — an Item waiting on a person, not on work.
+        OPEN          something the contract requires is absent, and the gap is
+                      named, with absent and not-reported kept apart.
+    """
+    state = row.get("state")
+    if state not in rules["assessed_at"]:
+        return {"state": NOT_ASSESSED, "assessed": False, "missing_fields": [],
+                "missing_documents": [], "unreported_documents": [],
+                "why": (f"the contract tests completion at "
+                        f"{sorted(rules['assessed_at'])}, and this Item is in "
+                        f"{state}")}
+    documents = row.get("documents")
+    if not isinstance(documents, list):
+        return {"state": NOT_ASSESSED, "assessed": False, "missing_fields": [],
+                "missing_documents": [], "unreported_documents": [],
+                "why": ("this row carries no `documents` list, so which required "
+                        "documents resolve could not be read")}
+    by_name = {d.get("document"): d for d in documents if isinstance(d, dict)}
+    missing_fields = [f for f in rules["fields"] if not _set(row.get(f))]
+    missing_documents, unreported = [], []
+    for name in rules["documents"]:
+        entry = by_name.get(name)
+        if entry is None:
+            # Not the same as absent: the row does not mention it. It is counted
+            # as owed either way — the requirement is declared and the row does
+            # not show it met — but a reader is told which of the two it is.
+            unreported.append(name)
+        elif entry.get("state") == NOT_YET_REQUIRED:
+            raise Refused(
+                f"`completion` is tested at {state} and names `{name}`, while "
+                f"`item_documents` does not require `{name}` at {state}. The "
+                f"test could never fail, so it is not a test.")
+        elif entry.get("state") != PRESENT:
+            missing_documents.append(name)
+    if missing_fields or missing_documents or unreported:
+        return {"state": OPEN, "assessed": True, "missing_fields": missing_fields,
+                "missing_documents": missing_documents,
+                "unreported_documents": unreported,
+                "why": (f"in {state} the contract requires "
+                        f"{list(rules['fields']) + list(rules['documents'])}, and "
+                        f"{sorted(missing_fields) + sorted(missing_documents) + sorted(unreported)} "
+                        f"is not there")}
+    claimed = state in rules["states"]
+    return {"state": COMPLETE if claimed else DISCHARGED, "assessed": True,
+            "missing_fields": [], "missing_documents": [],
+            "unreported_documents": [],
+            "why": (f"every requirement the contract names at {state} is present"
+                    + ("" if claimed else
+                       f"; {state} is not completion, so what is owed here is a "
+                       f"person's acceptance and not work"))}
+
+
+# ---------------------------------------------------------------------------
 # Composing
 # ---------------------------------------------------------------------------
 
 def _rows_of(projects: list[dict], *, records_root: Path, workspace_root: Path,
-             documents: list[dict], skeletons: dict | None = None) -> list[dict]:
+             documents: list[dict], completion: dict,
+             skeletons: dict | None = None) -> list[dict]:
     rows = []
     for project in projects:
         if project["state"] != "READ":
@@ -649,7 +802,7 @@ def _rows_of(projects: list[dict], *, records_root: Path, workspace_root: Path,
             # a directory this module guessed is a different document.
             item_dir = resolution["item_dir"]
             card = load_card(resolution, item_id)
-            rows.append({
+            row = {
                 "id": item_id,
                 "project": project["project"],
                 "kind": item.get("kind"),
@@ -669,7 +822,13 @@ def _rows_of(projects: list[dict], *, records_root: Path, workspace_root: Path,
                 "runs": sum(len(a.get("runs") or ())
                             for a in item.get("activities") or ()),
                 "deliverables": len(item.get("deliverables") or ()),
-            })
+            }
+            # Computed HERE, where the contract and the documents are both in
+            # hand, and then carried on the row. Every reader downstream — the
+            # board, the focus source, the daily cycle — gets the same answer
+            # instead of each re-deriving it from fields it happens to have.
+            row["completion"] = completion_of(row, completion)
+            rows.append(row)
     return rows
 
 
@@ -776,7 +935,7 @@ def compose_board(*, contract: dict, projects: list[dict], records_root: Path,
     documents = _document_rules(contract)
     rows = _rows_of(projects, records_root=records_root,
                     workspace_root=workspace_root, documents=documents,
-                    skeletons=skeletons)
+                    completion=_completion_rules(contract), skeletons=skeletons)
     today_by_project = today_by_project or {}
     section_specs = (contract.get("personal_board") or {}).get("sections") or []
     if not section_specs:
@@ -878,7 +1037,9 @@ def compose_item(*, contract: dict, records_root: Path, workspace_root: Path,
     row = None
     for candidate in _rows_of(projects, records_root=records_root,
                               workspace_root=workspace_root,
-                              documents=documents, skeletons=skeletons):
+                              documents=documents,
+                              completion=_completion_rules(contract),
+                              skeletons=skeletons):
         if candidate["project"] == project and candidate["id"] == item_id:
             row = candidate
             break
@@ -905,6 +1066,7 @@ def compose_item(*, contract: dict, records_root: Path, workspace_root: Path,
         "priority": row["priority"], "card": row["card"],
         "item_dir": row["item_dir"],
         "documents": row["documents"],
+        "completion": row["completion"],
         "runs": row["runs"], "deliverables": row["deliverables"],
         "undecided": undecided,
     }
