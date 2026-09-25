@@ -2763,6 +2763,104 @@ BotMux /api/trigger   没有 conversationId 这个字段。
   ARTIFACTS_ROOT、不建 `~/files`）仍然互相矛盾；本轮用 `--content -` 从 stdin 绕过去了，
   **白名单本身没动**。
 
+### 9.25 P6 切片 A：一个动词回答了两个人没说过的话
+
+计划第 4 条要修的是「拆开推荐候选与已接受 Focus 接续」，第 7 条后半要修的是「无 priority
+不阻断人已选且合法的任务」。这两条在本轮被定位成**同一个缺陷的两面**，缺陷就在
+`intake/daily_cycle.py` 的 `select_focus` 里。
+
+#### 9.25.1 那个缺陷：一个动词同时回答了两个问题
+
+`select_focus` 干的是「按空槽选候选」：板子上有 5 个在进行、容量是 2，它就挑 2 个填进去。
+于是它同时回答了两个**主语不同**的问题 ——
+
+- 「政策推荐什么？」（主语是调度器）
+- 「**人已经接受、正在接续的是什么？**」（主语是人）
+
+第二个问题的答案本来可以让 `focus = 0`，但在「按空槽选候选」的实现里**表达不出来**：
+一个周期永远不会少于 `limit` 个目标。所以「人被选定的活做完了、今天没有再选」这件事在
+这个动词上**没有形状** —— 它不是被算错，是**无从被说**。0 在这里是合法数量，而代码结构上
+不允许出现 0。
+
+拆法：`continue_focus(rows, grants, accepted, …)` 是**接续器**，只走 `accepted["items"]`
+里的行，**不问优先级**（一句一段地写在 docstring 里：推荐需要排序，被接受的目标不需要竞争
+槽位 —— 用「缺 priority」去挡住人已经选定的任务，正是这一条要修的东西）；
+`select_focus` 降为**推荐器**，返回里多一个 `recommendation_only: True`，并显式排除已被
+接受的行（同一个 Item 不该出现在两个答案里）。两者共用**一块板、一个信封、一个瞬时**：
+`runtime/cli.py` 只组合一次板子，把 `board["today"]` 交给两边。
+
+**唯一被 `work admit` 采用的那个答案是接续器**（`cmd_work_admit` 拿 `continuation` 当
+`decision`，`proposal` 丢掉）。这一句是这次拆分里最承重的一处 —— 推荐器输出得再漂亮，
+它也**不产生任何准入**。CLI 上因此印成两个明确标注的区块：「本次周期：人已选定、可以继续的」
+与「建议（不是周期，不产生任何准入）」。
+
+§9.22.4 的教训（「在两个冗余位置实现的规则无法被单点变异杀死」）在这里被直接用上：
+「这一行是否仍被持有 / 是否已结束 / 是否授权」现在**只有 `classify()` 一份**，
+`select_focus` 与 `continue_focus` 都从它取判断，并且有测试**钉住两者对同一行的分类相同**。
+`_order()` 把「没有优先级的行不能被排序」从一句守卫变成**构造上不可能**（候选里出现没有
+确定优先级的行就 `ValueError`），因为一个「如果没有优先级就跳过」的守卫正是它被绕过的路径。
+
+#### 9.25.2 一个伪造的默认值：`next_action`
+
+原实现里有一句 `row.get("next_action", "research")`。它做的事是：拿一个**没有人命名过的
+动作**去问授权，于是「这张卡的字段没有生产者」这个真实缺口，被一句关于 grant 的**听起来很
+合理的话**盖住了。现在没有 `next_action` 就是 `NEXT_ACTION_NOT_ESTABLISHED`（精确 UNKNOWN），
+而且**先于 grant 被问**（顺序写在 `classify` 里，就是验收 D 要的那个顺序）。
+
+本机实测：样本树上第一次真的出现 `SAMP-0006 READY NEXT_ACTION_NOT_ESTABLISHED`。
+**同时要记下一件不方便的事实**：本机的活板子三个 projection 都停在 2026-09-10，所以
+`work focus` 在本机**永远**先判 `STALE_BOARD`，走不到这个分支 —— 这条修正在本机的真实测量上
+**不可见**。写在这里，是为了不让后来的人把「本机没看出差别」读成「本来就没差别」。
+
+#### 9.25.3 缺席不是空：`accepted_items` 的三种「没有」
+
+`today.yaml` 读不出来有三种原因，接续器**不把它们合并**：文件不在这个 projection 上 →
+`NOT_ON_THIS_PROJECTION`；文件在但解析不了 → `SELECTION_UNREADABLE`（BLOCKED，不是空选择）；
+文件在、解析出来了、items 为空 → `SELECTION_IS_EMPTY`（一个**选择**，只是选的是零个）。
+「没有人选过」与「有人选了、选的是零」在输出里是两句话。这条与 §9.24 的 0/0 同源：
+**未完成项的分子也可能说谎。**
+
+#### 9.25.4 实测读数
+
+命令行上验收 A（同一块样本板、同一次运行、只有一个今天的重点）：
+
+```text
+— 本次周期：人已选定、可以继续的 —
+accepted    PARTIAL — 本周期读的是 records/projects/<p>/board/today.yaml
+focus       PLANNED
+objectives  1
+  SAMP-0002  ACTIVE      无优先级  STATE_HOLDS_SLOT  示例：进行中，design 有、plan 缺
+
+— 建议（不是周期，不产生任何准入） —
+proposal    OVER_CAPACITY
+in flight   5 — 已在进行、各占一个槽
+refused     6
+  SAMP-0006  READY       NEXT_ACTION_NOT_ESTABLISHED
+```
+
+把 `today.yaml` 改写成选中一个 **CLOSED** 的 Item，同一份代码给 `objectives 0` +
+`TERMINAL_STATE`，而建议块**照旧**报 `in flight 5`。这就是验收 A 的形状：**Focus 是 0，而
+「这个板子上有 5 个在进行」仍然是真话**。
+
+本机的活读数（不是样本）：`accepted UNPRODUCED`（`records/projects/*/board/today.yaml`
+一个都不存在 —— 这台机器上从没有人写过今日重点）、`focus BLOCKED (STALE_BOARD)`。
+这两条都是关于这个节点的**真话**，不是缺陷。
+
+#### 9.25.5 这一片没有做的事
+
+- **完成边界仍然是散文。** `intake/workchain-contract.yaml` 的 `completion.requires`
+  （"outcome is set, and report.md is present"）**到今天为止没有任何代码读它**。把它变成机械
+  可读的字段、让 DELIVERED 的被选目标**只在必需结果有证据时**才释放槽位，是下一片。
+- **`focus_source.NOT_PRODUCED` 只解决了一项**（`next_action`）。`worker_stopped` /
+  `resources_released` 仍然没有真实生产者，`checkpoint` 仍然只作为散文出现在
+  `runtime/recipe-contract.yaml` 里。
+- **正式 Requirement 到 canonical Work Item 的幂等对应**完全没做（ABSENT）。
+- **首次真实 grant 走可信用户控制**仍然 PARTIAL：`put_grant` 只有测试调用它，没有 CLI 动词、
+  没有 daemon 方法、没有 MCP 工具。
+- `work focus` 的 JSON 顶层键由 `decision` 变成 `continuation` + `proposal`。查过：
+  `docs/`、`skills/`、`mcp/`、`fleet/`、`plugin/` 下**没有代码消费者**读它，只有测试读，
+  所以这次改键没有把任何人打断。
+
 ## 10. 后续每包更新哪几行
 
 - 改完一个包，只更新 §3.1 里对应行的四层状态 + §5 表的增删。

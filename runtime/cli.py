@@ -6535,7 +6535,7 @@ def _work_board_markdown(board: dict) -> str:
 
 
 def _focus_decision(args):
-    """The board, the envelope, and the decision — `work focus`'s whole answer.
+    """The board, the envelope, both decisions — `work focus`'s whole answer.
 
     Shared with `work admit` rather than re-derived there, and that is the point
     of the extraction: what a cycle is admitted for must be what this verb would
@@ -6543,7 +6543,20 @@ def _focus_decision(args):
     A second composition in the admitting verb would be a second answer to one
     question, and the two would agree only until one of them was edited.
 
-    Returns the four values, or None after writing the fault to stderr. The
+    TWO DECISIONS, AND ONLY ONE OF THEM IS THE CYCLE. P6's fourth change, kept
+    here rather than in either policy:
+
+        `continuation`  what a person accepted, and whether it can still go on.
+                        THIS is what `work admit` admits, because a cycle exists
+                        to carry work somebody chose.
+        `proposal`      what might be worth proposing for the slots the
+                        continuation left. Printed. Never admitted.
+
+    They share one board, one envelope and one instant because they are two
+    questions about one situation, and composing twice would let them describe
+    different situations while looking consistent.
+
+    Returns the five values, or None after writing the fault to stderr. The
     caller returns `EXIT_FAULT`; this helper does not, because a fault path that
     returns an exit code from two places is how one of them ends up returning
     the wrong one.
@@ -6586,14 +6599,37 @@ def _focus_decision(args):
         return None
 
     if composed["observed_at"] is None:
-        decision = {"status": "BLOCKED", "reason": "PROJECTION_AGE_UNKNOWN",
-                    "selected": [], "carryover": []}
+        # One shape for both, and the shape comes from the policy module rather
+        # than from here: a caller that constructs a decision is deciding by
+        # construction, which is what this whole split exists to avoid.
+        unreadable = cycle.blocked(
+            "PROJECTION_AGE_UNKNOWN",
+            because="at least one projection this board was composed from has no "
+                    "readable `generated_at`, so the age of the FACTS is nobody's "
+                    "to state. Not the same as a young board.")
+        # `accepted_state` is still readable — the board carried `today` even
+        # though it could not date itself — so it is carried onto the blocked
+        # shape rather than dropped. What was NOT decidable is the age of the
+        # facts, and that is the only thing `PROJECTION_AGE_UNKNOWN` says.
+        accepted_here = {"accepted_state": (board.get("today") or {}).get("state", "?")}
+        continuation = {**unreadable, **accepted_here, "continuation": True}
+        proposal = {**unreadable, **accepted_here, "recommendation_only": True}
     else:
-        decision = cycle.select_focus(
-            composed["rows"], delegations["envelopes"], now=now,
+        # The selection a person authored, read off the board the producer
+        # composed rather than re-read here. `work board` carries `today`; a
+        # second read of `today.yaml` in this verb would be a second answer to
+        # "what did they choose", taken at a different instant from the board
+        # it is applied to.
+        accepted = board.get("today")
+        continuation = cycle.continue_focus(
+            composed["rows"], delegations["envelopes"], accepted, now=now,
             observed_at=composed["observed_at"],
             ttl_seconds=args.ttl, limit=args.limit)
-    return composed, delegations, decision, now
+        proposal = cycle.select_focus(
+            composed["rows"], delegations["envelopes"], now=now,
+            observed_at=composed["observed_at"],
+            ttl_seconds=args.ttl, limit=args.limit, accepted=accepted)
+    return composed, delegations, continuation, proposal, now
 
 
 def cmd_work_focus(args) -> int:
@@ -6622,7 +6658,7 @@ def cmd_work_focus(args) -> int:
     state = _focus_decision(args)
     if state is None:
         return EXIT_FAULT
-    composed, delegations, decision, now = state
+    composed, delegations, continuation, proposal, now = state
     recorded = delegations["summary"]["recorded"]
     named_by = {str(row["grant_ref"]) for row in composed["rows"]
                 if row.get("grant_ref")}
@@ -6645,46 +6681,81 @@ def cmd_work_focus(args) -> int:
     for row in delegations["rows"]:
         lines.append(f"  {row['grant_ref']:<24} {row['state']:<30} "
                      f"{row['because']}")
-    lines.append(f"decision    {decision['status']}")
-    if decision.get("reason"):
-        lines.append(f"reason      {decision['reason']}")
     lines.append("")
 
     by_id = {row["id"]: row for row in composed["rows"]}
-    selected = decision.get("selected") or []
-    lines.append(f"selected    {len(selected)}")
+
+    # 1. The cycle: what a person accepted, and whether it can still go on.
+    lines.append("— 本次周期：人已选定、可以继续的 —")
+    lines.append(f"accepted    {continuation.get('accepted_state','?')} "
+                 f"— 本周期读的是 `records/projects/<p>/board/today.yaml`")
+    lines.append(f"focus       {continuation['status']}"
+                 + (f" ({continuation['reason']})" if continuation.get("reason") else ""))
+    if continuation.get("blocked_because"):
+        lines.append(f"because     {continuation['blocked_because']}")
+    selected = continuation.get("selected") or []
+    lines.append(f"objectives  {len(selected)}")
+    because = (continuation.get("because")
+               or continuation.get("carryover_because") or {})
     for item_id in selected:
         row = by_id.get(item_id, {})
         lines.append(f"  {item_id:<10} {row.get('state','?'):<11} "
-                     f"{row.get('priority') or 'no priority'}  {row.get('title','')}")
-    because = decision.get("carryover_because") or {}
-    lines.append("")
-    lines.append(f"carryover   {len(decision.get('carryover') or [])} "
-                 f"(slots {args.limit}) — unresolved, each holding a slot")
-    for item_id in decision.get("carryover") or []:
-        row = by_id.get(item_id, {})
-        lines.append(f"  {item_id:<10} {row.get('state','?'):<11} "
-                     f"{because.get(item_id,'')}")
-    lines.append("")
-    lines.append(f"excluded    {len(decision.get('excluded') or [])}")
-    for entry in decision.get("excluded") or []:
-        row = by_id.get(entry["id"], {})
-        lines.append(f"  {entry['id']:<10} {row.get('state','?'):<11} {entry['reason']}")
-    unevaluated = decision.get("unevaluated") or []
+                     f"{row.get('priority') or '无优先级'}  {because.get(item_id,'')}"
+                     f"  {row.get('title','')}")
+    if continuation.get("continuation") and not selected and not continuation.get("reason"):
+        lines.append("  （没有——这不等于没有工作，等于没有人选过今天要带什么）")
+    excluded = continuation.get("excluded") or []
+    if excluded:
+        lines.append(f"excluded    {len(excluded)} — 人选了、但这次不能继续")
+        for entry in excluded:
+            row = by_id.get(entry["id"], {})
+            lines.append(f"  {entry['id']:<10} {row.get('state','?'):<11} "
+                         f"{entry['reason']}")
+    unevaluated = continuation.get("unevaluated") or []
     if unevaluated:
-        lines.append("")
-        lines.append(f"unevaluated {len(unevaluated)} — no producer states whether a "
-                     f"worker is still held; state decided")
+        lines.append(f"unevaluated {len(unevaluated)} — 没有生产者说明 worker 是否"
+                     f"仍持有；以状态为准")
         for entry in unevaluated[:5]:
             lines.append(f"  {entry['id']:<10} {','.join(entry['fields'])}")
         if len(unevaluated) > 5:
-            lines.append(f"  … {len(unevaluated) - 5} more, same two fields")
+            lines.append(f"  … 还有 {len(unevaluated) - 5} 个，同样两个字段")
+
+    # 2. The proposal. Printed, labelled, and never admitted — `work admit`
+    #    reads the block above and only the block above.
+    lines.append("")
+    lines.append("— 建议（不是周期，不产生任何准入） —")
+    lines.append(f"proposal    {proposal['status']}"
+                 + (f" ({proposal['reason']})" if proposal.get("reason") else ""))
+    spare = proposal.get("unused_slots")
+    if spare is not None:
+        lines.append(f"spare       {spare} of {args.limit} slot(s) "
+                     f"the accepted objectives did not take")
+    proposed = proposal.get("selected") or []
+    lines.append(f"proposed    {len(proposed)}"
+                 + ("" if proposed else " — 没有可提议的"))
+    for item_id in proposed:
+        row = by_id.get(item_id, {})
+        lines.append(f"  {item_id:<10} {row.get('state','?'):<11} "
+                     f"{row.get('priority') or '无优先级'}  {row.get('title','')}")
+    proposal_carry = proposal.get("carryover") or []
+    proposal_because = proposal.get("carryover_because") or {}
+    if proposal_carry:
+        lines.append(f"in flight   {len(proposal_carry)} — 已在进行、各占一个槽")
+        for item_id in proposal_carry:
+            row = by_id.get(item_id, {})
+            lines.append(f"  {item_id:<10} {row.get('state','?'):<11} "
+                         f"{proposal_because.get(item_id,'')}")
+    proposal_excluded = proposal.get("excluded") or []
+    lines.append(f"refused     {len(proposal_excluded)}")
+    for entry in proposal_excluded:
+        row = by_id.get(entry["id"], {})
+        lines.append(f"  {entry['id']:<10} {row.get('state','?'):<11} {entry['reason']}")
     if not named_by:
         lines.append("")
         lines.append("no row names a grant: " +
                      composed["not_produced_elsewhere"]["grants"])
-    emit({"decision": decision, "focus": composed, "delegations": delegations},
-         as_json=args.json, lines=lines)
+    emit({"continuation": continuation, "proposal": proposal, "focus": composed,
+          "delegations": delegations}, as_json=args.json, lines=lines)
     return EXIT_OK
 
 
@@ -6797,7 +6868,7 @@ def cmd_work_admit(args) -> int:
     state = _focus_decision(args)
     if state is None:
         return EXIT_FAULT
-    composed, delegations, decision, now = state
+    composed, delegations, decision, _proposal, now = state
     cycle = _load_module_from(REPO_ROOT / "intake" / "daily_cycle.py",
                               "serveros_intake_daily_cycle")
     plan = cycle.admission_plan(

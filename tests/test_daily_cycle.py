@@ -7,7 +7,16 @@ import tempfile
 import unittest
 from datetime import datetime, timezone
 from pathlib import Path
-from intake.daily_cycle import select_focus, review_gate, invalidate_claims, fingerprint, instant
+from intake.daily_cycle import (
+    accepted_items,
+    classify,
+    continue_focus,
+    fingerprint,
+    instant,
+    invalidate_claims,
+    review_gate,
+    select_focus,
+)
 from runtime.bounded_invocation import invoke_once
 
 NOW = datetime(2026, 9, 22, 1, 0, tzinfo=timezone.utc)
@@ -87,6 +96,236 @@ class SelectionTests(unittest.TestCase):
         self.assertEqual(self.choose([])['unused_slots'],2)
     def test_timezone_required(self):
         with self.assertRaises(ValueError):instant('2026-09-22T00:00:00')
+
+
+def selection(items, state=None, why="", **extra):
+    """A person's authored selection, in the shape `intake/workchain.py` writes.
+
+    `state` is derived the way `load_today` derives it rather than defaulted
+    here: a document that names Items is `SELECTED` and one that names none is
+    `EMPTY`, so a fixture cannot carry the pair (`SELECTED`, `[]`) the producer
+    cannot produce. A fixture that could would make this file test its own
+    invention.
+    """
+    items = list(items)
+    if state is None:
+        state = "SELECTED" if items else "EMPTY"
+    return {"state": state, "items": items, "why": why, "date": "2026-09-22",
+            "path": "/records/projects/test/board/today.yaml",
+            "by_project": {"test": {"state": state, "items": items,
+                                    "date": "2026-09-22", "why": why}}, **extra}
+
+
+class ContinuationIsNotRecommendation(unittest.TestCase):
+    """`select_focus` proposes; `continue_focus` carries what a person accepted.
+
+    The two questions look alike and are not, and the whole of P6's fourth change
+    is that one function was answering both. Every test here is written so that
+    it would still pass if the other function were the one under test — except
+    the ones that assert they DISAGREE, which are the point.
+    """
+
+    def carry(self, rows, accepted, g=None, **kw):
+        return continue_focus(rows, {"g": grant() if g is None else g}, accepted,
+                              now=NOW, observed_at=kw.pop("observed_at", STAMP), **kw)
+
+    def propose(self, rows, g=None, **kw):
+        return select_focus(rows, {"g": grant() if g is None else g}, now=NOW,
+                            observed_at=kw.pop("observed_at", STAMP), **kw)
+
+    def test_the_same_row_continues_and_is_not_proposed(self):
+        """One row, one acceptance, two functions, two answers — and the
+        divergence is exactly the rule. A person accepted T-1; it has no
+        established priority because no card carries one. The recommender must
+        refuse it (ordering two proposals needs a ranking, and defaulting to P0
+        would invent one). The continuer must carry it (a person already
+        decided; there is nothing to rank)."""
+        row = item(priority=None)
+        accepted = selection(["T-1"])
+        self.assertEqual(self.carry([row], accepted)["selected"], ["T-1"])
+        self.assertEqual(self.propose([row])["selected"], [])
+        self.assertEqual(self.propose([row])["excluded"],
+                         [{"id": "T-1", "reason": "PRIORITY_NOT_ESTABLISHED"}])
+
+    def test_the_recommender_does_not_propose_an_accepted_objective(self):
+        """Both functions are pointed at the same board and the same selection.
+        The accepted Item appears in the continuation and NOT in the proposal:
+        one Item in two answers would be two pieces of work, and `work admit`
+        reads the second one as a selection."""
+        rows = [item(), item("T-2")]
+        accepted = selection(["T-1"])
+        proposal = select_focus(rows, {"g": grant()}, now=NOW, observed_at=STAMP,
+                                accepted=accepted)
+        self.assertEqual(proposal["selected"], ["T-2"])
+        self.assertIn({"id": "T-1", "reason": "ALREADY_ACCEPTED_FOCUS"},
+                      proposal["excluded"])
+
+    def test_nothing_selected_is_zero_and_not_a_refill(self):
+        """Acceptance A, as arithmetic. A person recorded a selection and it is
+        finished; nothing new was chosen. Focus is 0 — and the recommender,
+        given the same board, would have filled both slots. The two numbers are
+        kept apart because only one of them is the answer to "what is today's
+        focus"."""
+        rows = [item("T-2"), item("T-3")]
+        chose_nothing = selection([])
+        kept = self.carry(rows, chose_nothing)
+        self.assertEqual(kept["selected"], [])
+        self.assertEqual(kept["reason"], "SELECTION_IS_EMPTY")
+        self.assertEqual(kept["unused_slots"], 2)
+        # The same board, asked the other question, proposes two.
+        self.assertEqual(self.propose(rows)["selected"], ["T-2", "T-3"])
+
+    def test_nobody_having_chosen_is_not_someone_choosing_nothing(self):
+        chosen = self.carry([item()], selection([]))
+        never = self.carry([item()], {"state": "UNPRODUCED", "items": [], "why": "no file"})
+        self.assertEqual(chosen["reason"], "SELECTION_IS_EMPTY")
+        self.assertEqual(never["reason"], "NO_SELECTION_AUTHORED")
+        self.assertEqual(chosen["accepted_state"], "EMPTY")
+        self.assertEqual(never["accepted_state"], "UNPRODUCED")
+        # And neither carries a digest, for `STALE_BOARD`'s reason: a decision
+        # that admits nothing has no selection to name. The digest appears only
+        # where there is something to admit, which is what `work admit` reads.
+        self.assertNotIn("selection_digest", chosen)
+        self.assertNotIn("selection_digest", never)
+        self.assertIn("selection_digest", self.carry([item()], selection(["T-1"])))
+
+    def test_a_selection_that_could_not_be_read_is_not_an_empty_one(self):
+        """An unreadable file is not a person choosing nothing. It is BLOCKED
+        and not PLANNED, because the answer to "what did they choose" is
+        unknown and a cycle that planned on it would be planning on a guess."""
+        decision = self.carry([item()], {"state": "UNREADABLE", "items": [],
+                                         "why": "the file did not parse"})
+        self.assertEqual(decision["status"], "BLOCKED")
+        self.assertEqual(decision["reason"], "SELECTION_UNREADABLE")
+        self.assertEqual(decision["blocked_because"], "the file did not parse")
+        # And the prose is not where a per-Item lookup is: a reader of a
+        # decision that reached rows finds `{id: reason}` there.
+        self.assertEqual(decision["because"], {})
+
+    def test_a_projection_without_the_selection_does_not_answer_the_question(self):
+        """Both the empty document and the missing one produce NO_SELECTION_
+        AUTHORED here — they are both `nothing was accepted` — but the reason
+        says which, because one is a person's file and the other is an adapter
+        that never carried the field."""
+        absent = self.carry([item()], None)
+        self.assertEqual(absent["accepted_state"], "NOT_ON_THIS_PROJECTION")
+        self.assertEqual(absent["reason"], "NO_SELECTION_AUTHORED")
+        self.assertIn("not the same as nobody having chosen", absent["because"])
+
+    def test_an_accepted_objective_still_needs_an_authorization(self):
+        """Acceptance is of an OBJECTIVE, not of an action. The person choosing
+        T-1 does not make the fabric able to find a grant for it."""
+        accepted = selection(["T-1"])
+        no_grant = self.carry([item()], accepted, g={})
+        self.assertEqual(no_grant["selected"], [])
+        self.assertEqual(no_grant["excluded"],
+                         [{"id": "T-1", "reason": "MISSING_OR_REVOKED_GRANT"}])
+        revoked = grant(); revoked["revoked"] = True
+        self.assertEqual(self.carry([item()], accepted, g=revoked)["selected"], [])
+
+    def test_an_accepted_objective_with_no_named_action_is_not_given_one(self):
+        """The default this replaced was `research`, and it is gone. With it,
+        this row was refused MISSING_OR_REVOKED_GRANT — a true sentence about
+        the grant, arrived at by asking it about an action nobody named. The
+        row's own gap is the one to report."""
+        row = item()
+        row.pop("next_action")
+        decision = self.carry([row], selection(["T-1"]))
+        self.assertEqual(decision["excluded"],
+                         [{"id": "T-1", "reason": "NEXT_ACTION_NOT_ESTABLISHED"}])
+        self.assertEqual(self.propose([row])["excluded"],
+                         [{"id": "T-1", "reason": "NEXT_ACTION_NOT_ESTABLISHED"}])
+
+    def test_a_protected_effect_is_not_continued_by_a_selection(self):
+        """A person choosing an objective does not authorize a production
+        cutover; that is HUMAN_EXECUTED and stays so."""
+        decision = self.carry([item(next_action="production.cutover")],
+                              selection(["T-1"]))
+        self.assertEqual(decision["selected"], [])
+        self.assertEqual(decision["excluded"],
+                         [{"id": "T-1", "reason": "HUMAN_EXECUTED"}])
+
+    def test_an_accepted_objective_that_finished_does_not_continue(self):
+        decision = self.carry([item(state="CLOSED")], selection(["T-1"]))
+        self.assertEqual(decision["selected"], [])
+        self.assertEqual(decision["excluded"],
+                         [{"id": "T-1", "reason": "TERMINAL_STATE"}])
+
+    def test_a_worker_still_held_continues_even_though_the_state_is_terminal(self):
+        """Acceptance D, as the order of two lines. The Run is CLOSED and the
+        worker is still writing: nothing has been released, so the objective
+        continues and holds its slot."""
+        row = item(state="CLOSED", worker_stopped=False)
+        decision = self.carry([row], selection(["T-1"]))
+        self.assertEqual(decision["selected"], ["T-1"])
+        self.assertEqual(decision["because"]["T-1"],
+                         "WORKER_OR_RESERVATION_HELD:worker_stopped")
+        self.assertEqual(decision["excluded"], [])
+
+    def test_an_accepted_item_that_is_not_on_the_board_is_named(self):
+        """A selection names an Item the board does not carry. Silence here
+        would be a selection that shrank without saying so."""
+        decision = self.carry([item("T-2")], selection(["T-1"]))
+        self.assertEqual(decision["excluded"],
+                         [{"id": "T-1", "reason": "ACCEPTED_ITEM_NOT_ON_THE_BOARD"}])
+
+    def test_more_accepted_objectives_than_the_profile_carries(self):
+        rows = [item("T-1"), item("T-2"), item("T-3")]
+        decision = self.carry(rows, selection(["T-1", "T-2", "T-3"]))
+        self.assertEqual(decision["status"], "OVER_CAPACITY")
+        self.assertEqual(decision["unused_slots"], 0)
+        self.assertEqual(decision["recommendation_slots"], 0)
+
+    def test_a_stale_board_blocks_both_questions(self):
+        for decision in (self.carry([item()], selection(["T-1"]),
+                                    observed_at="2026-09-21T00:00:00Z"),
+                         self.propose([item()], observed_at="2026-09-21T00:00:00Z")):
+            self.assertEqual(decision["status"], "BLOCKED")
+            self.assertEqual(decision["reason"], "STALE_BOARD")
+
+    def test_the_continuation_says_it_is_one_and_the_proposal_says_it_is_one(self):
+        self.assertTrue(self.carry([item()], selection(["T-1"]))["continuation"])
+        self.assertTrue(self.propose([item()])["recommendation_only"])
+        self.assertNotIn("continuation", self.propose([item()]))
+
+    def test_the_two_functions_classify_the_same_row_the_same_way(self):
+        """The one copy of the rule, checked rather than asserted. `classify` is
+        what both callers read; a second copy of these judgements would be a
+        second answer to 'is this row still held', which the tree's ledger
+        records as the failure a single mutation cannot catch."""
+        for row in (item(), item(state="ACTIVE"), item(state="CLOSED"),
+                    item(state="WAITING", focus_disposition="PARKED",
+                         parking_acknowledged=True), item(state="INBOX"),
+                    item(worker_stopped=False), item(next_action="production.cutover")):
+            verdict = classify(row, {"g": grant()}, now=NOW)
+            self.assertIn(verdict["disposition"],
+                          ("HELD", "FINISHED", "PARKED", "ELIGIBLE", "BLOCKED"))
+
+
+class TheOrderCannotBeAskedWithoutAPriority(unittest.TestCase):
+    def test_ordering_a_row_with_no_priority_raises_rather_than_picking_one(self):
+        from intake.daily_cycle import _order
+        with self.assertRaises(ValueError):
+            _order([item(priority=None)])
+
+    def test_and_the_filter_that_keeps_it_safe_is_the_one_that_does(self):
+        """The invariant, end to end: nothing reaches `_order` without a
+        priority because `select_focus` excluded it first, and this is the
+        assertion that the two agree."""
+        decision = select_focus([item(priority=None)], {"g": grant()}, now=NOW,
+                                observed_at=STAMP)
+        self.assertEqual(decision["selected"], [])
+        self.assertEqual(decision["excluded"],
+                         [{"id": "T-1", "reason": "PRIORITY_NOT_ESTABLISHED"}])
+
+
+class AcceptedItemsAreReadNotInvented(unittest.TestCase):
+    def test_an_absent_document_is_not_an_empty_one(self):
+        absent = accepted_items(None)
+        empty = accepted_items({"state": "EMPTY", "items": []})
+        self.assertEqual(absent["state"], "NOT_ON_THIS_PROJECTION")
+        self.assertEqual(empty["state"], "EMPTY")
+        self.assertNotEqual(absent["why"], empty["why"])
 
 
 class ReviewTests(unittest.TestCase):
