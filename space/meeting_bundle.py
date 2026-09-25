@@ -17,14 +17,23 @@ A pure function over a declaration. `assemble(declaration, observed_at=…)`
 returns two documents and writes nothing:
 
   * `reading` — what the declaration turned out to be: which required members
-    are present, which are not and what each of them IS, the projects the
-    members name, and the declared signals. This is the auditable half.
+    are present, which are not and what each of them IS, which of them may be
+    read now and what their content is, the projects the members name, and the
+    declared signals. This is the auditable half.
   * `bundle` — the `bundle` object `meeting_relevance.classify()` takes, or
     `None` when the reading refused one. This is the half the kernel sees.
 
 The pair is deliberate: a reader must be able to tell "the kernel was asked and
 said X" from "no question was put", and merging the two into one object would
 make a refused bundle look like a classified one.
+
+The reading's own two answers are equally deliberate. `state` is about the unit
+— one meeting's minute, audio, transcript and summary together — and `readable`
+is about material: which members can be read this minute, with their content.
+The plan's P2 line (已有合法 transcript 可先读，不等 MP3 或全套成员) is exactly the
+answer `state` cannot give, because "not a bundle yet" was being read as
+"nothing here is readable yet". Handing material over does not make a unit, and
+`readable` is never the object the kernel is asked about.
 
 WHAT IT REFUSES TO DO
 ---------------------
@@ -164,6 +173,33 @@ def member_kinds(vocabulary: dict) -> dict[str, str]:
                 f"the bundle contract maps {word!r} to {kind!r}, which the meeting "
                 f"vocabulary does not declare as an object_type; the declared set is "
                 f"{sorted(declared)}")
+    return {str(k): str(v) for k, v in mapping.items()}
+
+
+def content_members() -> dict[str, str]:
+    """Each `declaration.content` key, and the member whose presence gates it.
+
+    A content key is not a member: `transcript_segments` is the transcript's
+    content, and whether it may be handed over is decided by whether the machine
+    policy's `transcript` member is PRESENT — never by whether the declaration
+    attached segments. A declaration carrying segments for a transcript it
+    declared PROCESSING has content for material it did not declare present, and
+    the reader reports that rather than either handing it over or dropping it.
+
+    Every mapped word is checked against `required_members()` on each read, so a
+    contract edited to gate a key on a word the unit is not made of is a refusal
+    here and not a key nobody can ever read.
+    """
+    mapping = _values("content_member")
+    if not isinstance(mapping, dict) or not mapping:
+        raise Refused("content_member.values must be a non-empty object")
+    unit = required_members()
+    for key, word in mapping.items():
+        if word not in unit:
+            raise Refused(
+                f"the bundle contract gates the content key {key!r} on {word!r}, "
+                f"which is not one of the members this unit is made of; the "
+                f"declared set is {list(unit)}")
     return {str(k): str(v) for k, v in mapping.items()}
 
 
@@ -359,24 +395,96 @@ def _signals(declaration: dict, vocabulary: dict) -> dict:
     return {name: raw.get(name) for name in (kernel._block(vocabulary, "signals") or [])}
 
 
-def _segments(declaration: dict) -> list:
-    """The transcript's own segments, passed through unchanged.
+def _content_value(declaration: dict, key: str) -> list:
+    """One content key's value, shape-checked. The only place this is done.
 
-    A `tie` is declared by the producer of the transcript and never inferred
-    here: `meeting_relevance` treats an untied segment as incidental audio, and
-    a reader that invented a tie would silently promote a aside into work.
+    Both halves of the answer read content through here — the bundle under the
+    key the kernel reads, the readable half under the key the contract maps to a
+    member — so the two cannot come to different conclusions about what a
+    declaration's segments are, and a malformed one is refused on either path
+    rather than being refused on one and quietly reshaped on the other.
     """
     content = declaration.get("content")
     if content is None:
         return []
     if not isinstance(content, dict):
         raise Refused("declaration.content must be an object")
-    raw = content.get("transcript_segments")
+    raw = content.get(key)
     if raw is None:
         return []
     if not isinstance(raw, list):
-        raise Refused("declaration.content.transcript_segments must be a list")
+        raise Refused(f"declaration.content.{key} must be a list")
     return raw
+
+
+def _segments(declaration: dict) -> list:
+    """The transcript's own segments, passed through unchanged.
+
+    A `tie` is declared by the producer of the transcript and never inferred
+    here: `meeting_relevance` treats an untied segment as incidental audio, and
+    a reader that invented a tie would silently promote a aside into work.
+
+    The key is spelled here because it is the KERNEL's (`meeting_relevance` reads
+    `bundle.content.transcript_segments`) and not this contract's: a key that
+    drifted from the kernel's spelling would build bundles whose segments the
+    kernel reads as none, and every segment would go untied without a word.
+    """
+    return _content_value(declaration, "transcript_segments")
+
+
+def _readable(declaration: dict, present: list[str], state: str) -> dict:
+    """What may be read now, apart from whether the unit is complete.
+
+    The plan's P2 line — 已有合法 transcript 可先读，不等 MP3 或全套成员 — is about an
+    answer the reading did not have: `COMPLETE`/`INCOMPLETE` answers "is this one
+    unit", and a transcript that is already there was reported as nothing more
+    than a member marked PRESENT, with its own segments unreachable because
+    `bundle` is None for every reading that is not COMPLETE. Handing the unit
+    over and handing its material over are two different acts, and only the
+    second one is available while the audio is still being produced.
+
+    Handover does not make a unit: `readable` is not a bundle, carries no
+    `bundle_ref`, and is never the object the kernel is asked about. A caller
+    that wants a decision still waits for four members; a caller that wants to
+    read the transcript now does not.
+
+    `MIXED_SCOPE` hands nothing over and says so. The refusal there is about
+    scope — the members name more than one meeting and which was meant is not
+    this reader's to pick — and material whose meeting is undetermined is not
+    material this reader reads out under a meeting of its own choosing.
+    """
+    content: dict = {}
+    withheld: dict = {}
+    if state == "MIXED_SCOPE":
+        return {
+            "present": list(present),
+            "content": content,
+            "withheld": withheld,
+            "because": ("the scope was refused, so nothing is handed over: the "
+                        "segments belong to a meeting this reader will not name, "
+                        "and the members present are listed without their content"),
+        }
+    for key, word in content_members().items():
+        value = _content_value(declaration, key)
+        if word in present:
+            content[key] = value
+        elif value:
+            # Attached, but for a member the declaration did not call present.
+            # Reported rather than dropped: a reader told only "no content" would
+            # take away that there was none.
+            withheld[key] = word
+    return {
+        "present": list(present),
+        "content": content,
+        "withheld": withheld,
+        "because": (
+            "these members are present and readable now; the unit is not complete, "
+            "so this is not a bundle and no question was put to the kernel. Reading "
+            "this is reading material, not a decision about the meeting"
+            if state != "COMPLETE" else
+            "every required member is present, so what is readable here is the same "
+            "material the bundle carries below"),
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -429,6 +537,10 @@ def assemble(declaration: dict, *, observed_at: str, vocabulary: dict | None = N
                  for name, value in axes.items()},
         "signals": signals,
         "stray_meeting_refs": scope_reading["stray_meeting_refs"],
+        # Both halves come from ONE `not_present` map, so a member this half
+        # hands over can never be one `state` called absent.
+        "readable": _readable(declaration, [w for w in required
+                                            if not_present[w] == PRESENT], state),
         "because": _because(state, not_present, scope_reading, members),
     }
 
@@ -550,6 +662,18 @@ def render(payload: dict) -> str:
     lines.append("axes        " + "  ".join(f"{name}={value}"
                                             for name, value in reading["axes"].items()))
     lines.append(f"observed    {reading['observed_at']}")
+    readable = reading.get("readable")
+    if readable is None:
+        # Stated, not defaulted: an empty list here would say "nothing is
+        # present" about a reading this renderer knows nothing about.
+        lines.append("readable    (this reading carries no readable half)")
+    else:
+        words = readable.get("present") or []
+        lines.append("readable    " + (", ".join(words) if words else
+                                       "(nothing is present to read yet)"))
+        for key, word in (readable.get("withheld") or {}).items():
+            lines.append(f"  withheld  {key} -> the declaration calls {word} "
+                         f"{reading['not_present'].get(word, ABSENT)}")
     lines.append(f"because     {reading['because']}")
     if payload["bundle"] is None:
         lines.append("bundle      (none — no question was put to the kernel)")
