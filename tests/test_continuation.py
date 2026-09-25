@@ -53,17 +53,42 @@ Five properties, in the order a reader needs them:
      are kept apart, and it is the test that would fail first if a later slice
      wired the evaluator into the wake half by accident.
 
-A SIXTH THING THAT IS ALSO ASSERTED, because it is a property of this tree rather
-than of this feature: `runtime/continuation.py` imports no other layer of the
-repository. `runtime/agent_control_store.py` imports nothing from the repository
+  6. WHAT WAS TRIED IS READ BACK. `child_attempts` was declared in
+     `CHECKPOINT_FIELDS`, written by `work checkpoint --attempt`, validated by
+     `build_checkpoint` — whose refusal states why the field exists at all, «an
+     unnamed attempt cannot be looked up again» — and read by nothing at all.
+     `wait_state` answers about the attempt a Parent is WAITING on; `attempts_state`
+     answers about the attempts it has ALREADY MADE, which is the fact that decides
+     whether resuming means continuing the work or means dispatching a second child.
+     The design authority names both the failure and the reading:
+     `docs/SCENARIO-ACCEPTANCE.md` puts «新建第二Task» in the same row as this
+     checkpoint's reason for existing, and `docs/daily-work-cycle.md` §17.4 says
+     «恢复前对账 baseline、writer、effect 和旧 attempt».
+     `TestEveryDeclaredFieldIsRenderedOrExempt` is what keeps this from happening
+     a second time: a field added to the record and never read back is a change to
+     that test, not a silent addition.
+
+A SEVENTH THING THAT IS ALSO ASSERTED, because it is a property of this tree
+rather than of this feature: `runtime/continuation.py` imports no other layer of
+the repository. `runtime/agent_control_store.py` imports nothing from the repository
 either, and the two have to be readable together — the store holds the record and
 this module is the only thing that can say what it means. `intake/focus_source.py`
 keeps the same boundary. An import added here would be the first thread of a
 dependency between the contract and the fabric that reads it.
 
 WHAT THIS FILE DOES NOT COVER: `fleet/agent_control_router.handoff`'s own
-`checkpoint` parameter, which is a different object with a different (unfixed)
-meaning. See the ledger's §9.34.8.
+`checkpoint` parameter, which is a different object. It was a live defect until
+slice J — it was accepted and ignored — and it is now refused by name with the
+program §9 describes, so what is uncovered is no longer «what does it mean» but
+the program itself. See the ledger's §9.38.
+
+`attempts_state` DOES NOT ANSWER «ACCEPTED», and the absence is deliberate rather
+than unfinished. Nothing on this node records an acceptance as a fact separate
+from the record's own `evidence_locators` — `work checkpoint --evidence` calls one
+«an accepted evidence locator» — so «which of these results was accepted into this
+Item» is read from the record and reconciled against the attempts by whoever
+resumes. A test asserts the shape of that answer so that a later slice adding an
+acceptance store has to move it on purpose.
 
 Hermetic: a temporary directory per test, no daemon, no socket. Every instant is
 an argument.
@@ -73,6 +98,7 @@ from __future__ import annotations
 import ast
 import datetime
 import importlib.util
+import inspect
 import json
 import os
 import subprocess
@@ -597,10 +623,31 @@ class TestSupercedingDirectly:
         store.put_checkpoint(a_checkpoint(store))
         first = store.supersede_checkpoint("SRV-0001#1", at=LATER, by="SRV-0001#2")
         second = store.supersede_checkpoint("SRV-0001#1", at=TOMORROW,
-                                            by="SRV-0001#3")
+                                            by="SRV-0001#2")
         assert first["superseded_at"] == LATER
         assert second["superseded_at"] == LATER
         assert second["superseded_by"] == "SRV-0001#2"
+
+    def test_a_second_different_successor_is_refused(self, tmp_path):
+        """THE OTHER HALF OF THE SAME RULE, AND THE ONE THAT WAS SILENT.
+
+        This used to hand the same scope to `SRV-0001#3` in a second call and
+        assert the record went on saying `SRV-0001#2` — the same shape
+        `retire_admission` had for `outcome`, and the same defect: a caller told
+        nothing while the store answered from a choice nobody made. Two
+        successors for one scope is two owners of one Item, which
+        `docs/COLLABORATION-CONTRACT.md` does not allow, so the refusal is the
+        only answer that keeps the record readable.
+        """
+        store = a_store(tmp_path)
+        store.put_checkpoint(a_checkpoint(store))
+        store.supersede_checkpoint("SRV-0001#1", at=LATER, by="SRV-0001#2")
+        with pytest.raises(StoreError) as refusal:
+            store.supersede_checkpoint("SRV-0001#1", at=TOMORROW, by="SRV-0001#3")
+
+        assert "SRV-0001#2" in str(refusal.value)
+        assert "SRV-0001#3" in str(refusal.value)
+        assert store.get_checkpoint("SRV-0001#1")["superseded_by"] == "SRV-0001#2"
 
     def test_an_absent_ref_answers_none_and_not_an_empty_record(self, tmp_path):
         """«nobody checkpointed this» and «a Parent checkpointed nothing» are
@@ -1002,7 +1049,321 @@ class TestAnEvaluatorIsNotAReceiver:
 
 
 # ---------------------------------------------------------------------------
-# 5. The layer boundary this module keeps.
+# 5. What was tried is read back — the third question, and the second field
+#    this module reads that used to be written and never looked up.
+# ---------------------------------------------------------------------------
+
+
+class TestWhatWasTriedIsReadBack:
+    """`child_attempts` had a writer, a validator and a refusal that explained it,
+    and no reader. These are the answers that did not exist.
+
+    It is deliberately NOT the same question as `wait_state`. The wait is about the
+    attempt the Parent is currently waiting on — one ref, in `waiting_on`. This is
+    about the attempts it has already made, and the difference is the whole reason
+    the field exists: a Parent that resumes and reads only its wait can dispatch a
+    second child for work a first child has already done.
+    """
+
+    def test_an_attempt_the_store_still_holds_open_reads_as_open(self, tmp_path):
+        store = a_store(tmp_path)
+        record = store.put_checkpoint(
+            a_checkpoint(store, child_attempts=["cyc-1"]))
+        made = continuation.attempts_state(record, admissions=store.admissions())
+        assert made["state"] == "ATTEMPT_OPEN"
+        assert made["open"] == ["cyc-1"]
+        assert made["retired"] == []
+        assert "not a result" in made["evidence"][0]["because"]
+
+    def test_a_retired_attempt_reads_as_retired_and_carries_its_outcome(
+            self, tmp_path):
+        store = a_store(tmp_path)
+        record = store.put_checkpoint(
+            a_checkpoint(store, child_attempts=["cyc-1"]))
+        store.retire_admission("cyc-1", at=LATER, outcome="accepted")
+        made = continuation.attempts_state(record, admissions=store.admissions())
+        assert made["state"] == "ATTEMPT_RETIRED"
+        assert made["retired"] == ["cyc-1"]
+        assert made["evidence"][0]["outcome"] == "accepted"
+        assert made["evidence"][0]["retired_at"] == LATER
+
+    def test_the_same_record_answers_differently_without_being_rewritten(
+            self, tmp_path):
+        """A record whose reader is the Parent that is gone, again.
+
+        The store moved and the capsule did not. This is the second reader that
+        has to survive that, and it is the one that decides whether the Parent
+        about to resume dispatches a second child.
+        """
+        store = a_store(tmp_path)
+        stored = store.put_checkpoint(
+            a_checkpoint(store, child_attempts=["cyc-1"]))
+        before = json.loads(json.dumps(stored))
+        first = continuation.attempts_state(stored, admissions=store.admissions())
+        store.retire_admission("cyc-1", at=LATER, outcome="accepted")
+        second = continuation.attempts_state(stored, admissions=store.admissions())
+        assert first["state"] == "ATTEMPT_OPEN"
+        assert second["state"] == "ATTEMPT_RETIRED"
+        assert stored == before
+
+    def test_a_record_that_names_no_attempt_is_its_own_answer(self, tmp_path):
+        """THE ONE THAT MUST NOT BE PRINTED AS EITHER OF THE OTHER TWO.
+
+        A Parent that has made no child attempt is not a Parent whose attempts all
+        finished, and it is not one whose store cannot say. `build_checkpoint`
+        allows the field to be empty, so this is a state and not a gap — and a
+        reader that collapsed it into `ATTEMPT_RETIRED` would tell a resuming
+        Parent that everything it never started had finished.
+        """
+        store = a_store(tmp_path)
+        record = store.put_checkpoint(a_checkpoint(store))
+        made = continuation.attempts_state(record, admissions=store.admissions())
+        assert record["child_attempts"] == []
+        assert made["state"] == "ATTEMPT_NONE"
+        assert made["attempts"] == []
+        assert made["retired"] == made["open"] == made["unheld"] == []
+        assert "names no child attempt" in made["detail"]
+
+    def test_an_attempt_this_store_does_not_hold_is_unanswerable_not_unfinished(
+            self, tmp_path):
+        """The third answer, for the same reason `wait_state` has one.
+
+        `build_checkpoint` refuses to WRITE an attempt nothing can look up when it
+        appears in `waiting_on`. It can still appear here, because this field
+        records what was already done rather than claiming what the fabric can
+        still see — a store that was moved or swept holds exactly this shape — and
+        «not yet» would dispatch a second child for work that may well have
+        finished.
+        """
+        store = a_store(tmp_path)
+        record = store.put_checkpoint(
+            a_checkpoint(store, child_attempts=["cyc-1"]))
+        made = continuation.attempts_state(record, admissions={})
+        assert made["state"] == "ATTEMPT_UNANSWERABLE"
+        assert made["unheld"] == ["cyc-1"]
+        assert "no admission" in made["detail"]
+
+    def test_bringing_no_store_at_all_is_a_different_answer_from_an_empty_one(
+            self, tmp_path):
+        """Fetch the store, or go looking for the attempt. Two repairs.
+
+        The absent answer carries no `unheld` list, which is the shape
+        `wait_state` gives the same situation: «this store holds no such attempt»
+        is a statement about a store that was read, and none was brought. A list
+        that appeared in both would put the same word on two different facts.
+        """
+        store = a_store(tmp_path)
+        record = store.put_checkpoint(
+            a_checkpoint(store, child_attempts=["cyc-1"]))
+        absent = continuation.attempts_state(record)
+        empty = continuation.attempts_state(record, admissions={})
+        assert absent["state"] == empty["state"] == "ATTEMPT_UNANSWERABLE"
+        assert absent["detail"] != empty["detail"]
+        assert "not looked up at all" in absent["detail"]
+        assert "no admission" in empty["detail"]
+        assert "unheld" not in absent and empty["unheld"] == ["cyc-1"]
+
+    def test_several_attempts_are_retired_only_when_the_last_one_is(self, tmp_path):
+        store = a_store(tmp_path)
+        store.admit({"cycle_ref": "cyc-2", "grant_ref": GRANT,
+                     "selection": {"selection_digest": DIGEST, "observed_at": NOW,
+                                   "selected": ["SRV-0001"]},
+                     "reservation": dict(BUDGET),
+                     "lease": {"resource": "browser:chromium", "scope": "session",
+                               "holder": "cyc-2"},
+                     "action_key": "act-2", "admitted_at": NOW})
+        record = store.put_checkpoint(
+            a_checkpoint(store, child_attempts=["cyc-1", "cyc-2"]))
+        store.retire_admission("cyc-1", at=LATER, outcome="accepted")
+        partial = continuation.attempts_state(record, admissions=store.admissions())
+        assert partial["state"] == "ATTEMPT_OPEN"
+        assert partial["retired"] == ["cyc-1"]
+        assert partial["open"] == ["cyc-2"]
+        store.retire_admission("cyc-2", at=LATER, outcome="accepted")
+        whole = continuation.attempts_state(record, admissions=store.admissions())
+        assert whole["state"] == "ATTEMPT_RETIRED"
+        assert sorted(whole["retired"]) == ["cyc-1", "cyc-2"]
+
+    def test_one_unreadable_attempt_among_retired_ones_is_not_reported_as_finished(
+            self, tmp_path):
+        """Precedence, stated: «most of it finished» must not read as «it did»."""
+        store = a_store(tmp_path)
+        gone = {**store.admissions(), "cyc-gone": {"cycle_ref": "cyc-gone"}}
+        record = store.put_checkpoint(
+            a_checkpoint(store, admissions=gone,
+                         child_attempts=["cyc-1", "cyc-gone"]))
+        store.retire_admission("cyc-1", at=LATER, outcome="accepted")
+        made = continuation.attempts_state(record, admissions=store.admissions())
+        assert made["state"] == "ATTEMPT_UNANSWERABLE"
+        assert made["retired"] == ["cyc-1"]
+        assert made["unheld"] == ["cyc-gone"]
+
+    def test_every_answer_names_the_checkpoint_it_is_about(self, tmp_path):
+        store = a_store(tmp_path)
+        record = store.put_checkpoint(
+            a_checkpoint(store, child_attempts=["cyc-1"]))
+        for admissions in (store.admissions(), {}, None):
+            made = continuation.attempts_state(record, admissions=admissions)
+            assert made["checkpoint_ref"] == "SRV-0001#1", made["state"]
+            assert made["work_item"] == "SRV-0001"
+            assert made["epoch"] == 1
+            assert made["attempts"] == ["cyc-1"]
+            assert made["says"]
+
+    def test_the_four_answers_are_the_closed_vocabulary(self):
+        """Asserted as an equality, so a fifth word is a change and not a typo."""
+        assert continuation.ATTEMPT_ANSWERS == ("ATTEMPT_RETIRED", "ATTEMPT_OPEN",
+                                                "ATTEMPT_UNANSWERABLE",
+                                                "ATTEMPT_NONE")
+
+    def test_it_takes_no_clock(self):
+        """There is no instant in «what became of this attempt».
+
+        `wait_state` needs one because a window is a comparison. An attempt is not:
+        it is a record in a store, and the store either holds a retirement or it
+        does not. A `now` parameter here would be an invitation to expire an
+        attempt by elapsed time, which is exactly the reading `retire_admission`
+        being the only writer of `retired_at` rules out.
+        """
+        parameters = list(inspect.signature(
+            continuation.attempts_state).parameters)
+        assert parameters == ["record", "admissions"], (
+            "a clock or a board reaching this function would be a second authority "
+            "for a question the store already answers")
+
+    def test_what_was_tried_is_not_what_is_being_waited_for(self, tmp_path):
+        """The separation, on one record, with the two answers differing.
+
+        A checkpoint waiting on `cyc-2` and recording `cyc-1` as already attempted
+        is an ordinary record: the child it waits on is finished and the attempt it
+        already made is not. A reader that used one answer for the other would say
+        either «resume, everything is done» or «wait, an attempt is open», and the
+        second is the failure the field exists to prevent.
+        """
+        store = a_store(tmp_path)
+        store.admit({"cycle_ref": "cyc-2", "grant_ref": GRANT,
+                     "selection": {"selection_digest": DIGEST, "observed_at": NOW,
+                                   "selected": ["SRV-0001"]},
+                     "reservation": dict(BUDGET),
+                     "lease": {"resource": "browser:chromium", "scope": "session",
+                               "holder": "cyc-2"},
+                     "action_key": "act-2", "admitted_at": NOW})
+        record = store.put_checkpoint(
+            a_checkpoint(store, child_attempts=["cyc-1"],
+                         waiting_on={"kind": "child", "refs": ["cyc-2"]}))
+        store.retire_admission("cyc-2", at=LATER, outcome="accepted")
+        wait = continuation.wait_state(record, admissions=store.admissions(),
+                                       now=LATER)
+        made = continuation.attempts_state(record, admissions=store.admissions())
+        assert wait["state"] == "WAIT_OVER"
+        assert made["state"] == "ATTEMPT_OPEN"
+
+    def test_an_acceptance_is_not_a_state_it_can_answer(self, tmp_path):
+        """What is accepted lives on the record, and this answer says so.
+
+        `work checkpoint --evidence` calls a locator «an accepted evidence
+        locator», so the record is where acceptance is written. `attempts_state`
+        must not invent a per-attempt acceptance: the two facts are reconciled by
+        whoever resumes, and a store answer that guessed which attempt a locator
+        came from would be answering a question nothing recorded.
+        """
+        store = a_store(tmp_path)
+        record = store.put_checkpoint(
+            a_checkpoint(store, child_attempts=["cyc-1"],
+                         evidence_locators=["art://run/1"]))
+        store.retire_admission("cyc-1", at=LATER, outcome="accepted")
+        made = continuation.attempts_state(record, admissions=store.admissions())
+        assert "ACCEPTED" not in continuation.ATTEMPT_ANSWERS
+        assert set(made["evidence"][0]) == {"ref", "held", "state", "phase",
+                                           "retired_at", "outcome", "because"}, (
+            "an acceptance is not one of the facts this answer can carry; the "
+            "outcome the cycle recorded is a string and is carried verbatim")
+        assert made["evidence"][0]["outcome"] == "accepted"
+
+
+class TestEveryDeclaredFieldIsRenderedOrExempt:
+    """The mechanism, not the instance.
+
+    `child_attempts` is the field this slice found written and never read. The
+    reason it could stay that way is that nothing connected the record's field list
+    to the reading that prints it, so the fix is that connection: every field in
+    `CHECKPOINT_FIELDS` is either read by `runtime/cli.py`'s
+    `cmd_work_continuations` — the one surface a resuming Parent reads — or it is
+    in the named exemption table below with the reason it does not need to be.
+
+    Read from the AST of the function and not from its text, so that a field
+    mentioned in a comment or in a docstring does not count as read.
+    """
+
+    #: Fields that are deliberately not printed, each with its reason. One entry,
+    #: and the bar for a second is that the field is genuinely carried elsewhere
+    #: on the same screen rather than merely that nobody asked for it.
+    EXEMPT = {
+        "epoch": "carried by the ref: `checkpoint_key` is `{work_item}#{epoch}` and "
+                 "the ref is the heading of every record this verb prints, so a "
+                 "separate epoch line would be the same fact twice",
+    }
+
+    def read_by_the_verb(self) -> set:
+        source = (REPO / "runtime" / "cli.py").read_text(encoding="utf-8")
+        for node in ast.walk(ast.parse(source)):
+            if isinstance(node, ast.FunctionDef) and node.name == "cmd_work_continuations":
+                break
+        else:
+            raise AssertionError("runtime/cli.py has no cmd_work_continuations")
+        read = set()
+        for inner in ast.walk(node):
+            if (isinstance(inner, ast.Call)
+                    and isinstance(inner.func, ast.Attribute)
+                    and inner.func.attr == "get"
+                    and isinstance(inner.func.value, ast.Name)
+                    and inner.func.value.id == "record"
+                    and inner.args
+                    and isinstance(inner.args[0], ast.Constant)
+                    and isinstance(inner.args[0].value, str)):
+                read.add(inner.args[0].value)
+            elif (isinstance(inner, ast.Subscript)
+                    and isinstance(inner.value, ast.Name)
+                    and inner.value.id == "record"
+                    and isinstance(inner.slice, ast.Constant)
+                    and isinstance(inner.slice.value, str)):
+                read.add(inner.slice.value)
+        return read
+
+    def test_every_declared_field_is_rendered_or_named_as_exempt(self):
+        read = self.read_by_the_verb()
+        unread = [field for field in continuation.CHECKPOINT_FIELDS
+                  if field not in read and field not in self.EXEMPT]
+        assert unread == [], (
+            f"`work continuations` does not read {unread} off the checkpoint it is "
+            f"printing, and they are not in EXEMPT. A field a resuming Parent "
+            f"cannot see is a field the record carries for nobody — which is what "
+            f"`child_attempts` was before this slice. Either print it or add it to "
+            f"EXEMPT with the reason it is already carried on the same screen")
+
+    def test_the_exemption_table_does_not_outlive_its_reason(self):
+        """An entry for a field that is read anyway is a stale exemption, and a
+        stale exemption is how this test stops meaning anything."""
+        read = self.read_by_the_verb()
+        stale = sorted(field for field in self.EXEMPT if field in read)
+        assert stale == [], (
+            f"{stale} are exempted and read as well; the exemption is dead and "
+            f"should be removed so the reason cannot drift from the code")
+
+    def test_every_exempt_field_is_a_real_field(self):
+        unknown = sorted(set(self.EXEMPT) - set(continuation.CHECKPOINT_FIELDS))
+        assert unknown == [], f"EXEMPT names fields the record does not carry: {unknown}"
+
+    def test_every_exempt_field_states_a_reason(self):
+        thin = sorted(field for field, why in self.EXEMPT.items()
+                      if len(str(why).split()) < 8)
+        assert thin == [], (
+            f"{thin} are exempted without a reason. «Nobody asked for it» is not a "
+            f"reason; «it is already on the screen, here» is")
+
+
+# ---------------------------------------------------------------------------
+# 6. The layer boundary this module keeps.
 # ---------------------------------------------------------------------------
 
 
@@ -1031,7 +1392,7 @@ class TestThisModuleImportsNoOtherLayer:
 
 
 # ---------------------------------------------------------------------------
-# 6. The two verbs, driven through the CLI.
+# 7. The two verbs, driven through the CLI.
 # ---------------------------------------------------------------------------
 
 
@@ -1237,3 +1598,79 @@ class TestTheVerbsDriveTheStore:
         assert self.checkpoint(env).returncode == 0
         after = set(os.listdir(Path(env["DATA_ROOT"]) / "state/serveros/runtime"))
         assert before == after
+
+    def test_the_reader_prints_what_was_tried_and_what_became_of_it(self, env):
+        """The line that did not exist, on the one surface a resuming Parent reads.
+
+        `--attempt` had a help string, a validation and a refusal explaining why
+        the field exists; `work continuations` printed none of it. This is the
+        whole slice at the surface where it matters: the same record, read twice,
+        with the store having moved in between.
+        """
+        assert cli("work", "checkpoint", "SRV-0001", "--epoch", "1",
+                   "--parent", "parent-a",
+                   "--next-action", "accept the child result and continue",
+                   "--waiting-on-child", "cyc-1", "--attempt", "cyc-1",
+                   "--at", NOW, env_extra=env).returncode == 0
+        open_read = cli("work", "continuations", "--now", NOW, env_extra=env)
+        assert open_read.returncode == 0, open_read.stderr
+        assert "ATTEMPT_OPEN" in open_read.stdout
+        assert "  attempts      cyc-1" in open_read.stdout
+        assert "1 with one still open" in open_read.stdout
+
+        assert cli("work", "retire", "cyc-1", "--outcome", "accepted",
+                   "--at", LATER, env_extra=env).returncode == 0
+        after = cli("work", "continuations", "--now", LATER, env_extra=env)
+        assert after.returncode == 0, after.stderr
+        assert "ATTEMPT_RETIRED" in after.stdout
+        assert "accepted" in after.stdout
+        assert "1 all finished" in after.stdout
+        assert "so resuming does not mean dispatching a second child" in after.stdout
+
+    def test_a_checkpoint_that_tried_nothing_says_so_and_not_finished(self, env):
+        """The fourth answer, at the line a person reads.
+
+        Most checkpoints name no attempt, and the reading has to say that rather
+        than print a blank or, worse, `ATTEMPT_RETIRED` — a Parent told its
+        attempts all finished when it made none is a Parent told to skip work.
+        """
+        assert self.checkpoint(env).returncode == 0
+        listed = cli("work", "continuations", "--now", NOW, env_extra=env)
+        assert listed.returncode == 0, listed.stderr
+        assert "ATTEMPT_NONE" in listed.stdout
+        assert "— this record names no child attempt" in listed.stdout
+        assert "1 naming none" in listed.stdout
+
+    def test_an_absent_requirement_and_an_absent_evidence_are_printed_in_words(
+            self, env):
+        """Absent and empty are different readings, so neither prints as a blank."""
+        assert self.checkpoint(env).returncode == 0
+        listed = cli("work", "continuations", "--now", NOW, env_extra=env)
+        assert listed.returncode == 0, listed.stderr
+        assert "does not name a revision" in listed.stdout
+        assert "carries no accepted evidence" in listed.stdout
+
+    def test_a_named_requirement_and_accepted_evidence_are_printed(self, env):
+        """The two facts the attempts are reconciled against, and both were absent
+        from this reading while being written by the verb next to it."""
+        assert cli("work", "checkpoint", "SRV-0001", "--epoch", "1",
+                   "--parent", "parent-a",
+                   "--next-action", "accept the child result and continue",
+                   "--waiting-on-child", "cyc-1", "--requirement", "rev-7",
+                   "--evidence", "art://run/1", "--at", NOW,
+                   env_extra=env).returncode == 0
+        listed = cli("work", "continuations", "--now", NOW, env_extra=env)
+        assert listed.returncode == 0, listed.stderr
+        assert "  requirement   rev-7" in listed.stdout
+        assert "  accepted      art://run/1" in listed.stdout
+
+    def test_the_json_round_trip_carries_the_attempts_answer(self, env):
+        assert cli("work", "checkpoint", "SRV-0001", "--epoch", "1",
+                   "--parent", "parent-a", "--next-action", "continue",
+                   "--waiting-on-child", "cyc-1", "--attempt", "cyc-1",
+                   "--at", NOW, env_extra=env).returncode == 0
+        listed = cli("work", "continuations", "--json", "--now", NOW, env_extra=env)
+        assert listed.returncode == 0, listed.stderr
+        blob = json.loads(listed.stdout)
+        assert blob["attempts"]["SRV-0001#1"]["state"] == "ATTEMPT_OPEN"
+        assert blob["attempts"]["SRV-0001#1"]["attempts"] == ["cyc-1"]

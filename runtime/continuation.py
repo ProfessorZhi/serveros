@@ -122,6 +122,16 @@ WAIT_ANSWERS = ("WAIT_OVER", "WAIT_OPEN", "WAIT_UNANSWERABLE")
 #: The continuation triggers installed on this node. See the module docstring.
 RECEIVERS: tuple = ()
 
+#: The four answers to «what became of the attempts this checkpoint records».
+#:
+#: Three of them are about one attempt, and the fourth is about a record that
+#: names none — which is a fact `build_checkpoint` allows and which must not be
+#: printed as either of the other three. `ATTEMPT_UNANSWERABLE` is not «not
+#: finished»: it is «this store cannot say», kept apart for the reason
+#: `WAIT_ANSWERS` gives one screen down.
+ATTEMPT_ANSWERS = ("ATTEMPT_RETIRED", "ATTEMPT_OPEN", "ATTEMPT_UNANSWERABLE",
+                   "ATTEMPT_NONE")
+
 
 def receivers() -> tuple:
     """The continuation receivers that could wake a saved checkpoint.
@@ -524,3 +534,139 @@ def wait_state(record: dict, *, admissions: dict | None = None,
                        "has resumed the Parent"),
             "says": (f"every child it waits on has a recorded outcome, so the wait "
                      f"is over and a new Parent can resume this Item")}
+
+
+def attempts_state(record: dict, *, admissions: dict | None = None) -> dict:
+    """What became of the child attempts this checkpoint says it already made.
+
+    THE FIELD THAT WAS WRITTEN, VALIDATED, FILED, AND NEVER READ BACK. A
+    checkpoint carries `child_attempts`; `work checkpoint --attempt` writes it,
+    `build_checkpoint` validates it, and its own refusal states why the field
+    exists at all — «an unnamed attempt cannot be looked up again». Nothing
+    looked it up again. `work continuations`, the one surface a resuming Parent
+    reads, renders seven of the eleven declared fields and this is one of the
+    three it left out — so the read answered «what is left to do» and said
+    nothing about «what has already been tried», which is the fact that decides
+    whether resuming means continuing or means dispatching a second child.
+    `docs/SCENARIO-ACCEPTANCE.md` names that failure («新建第二Task») in the same
+    row as this checkpoint's own reason for existing, and
+    `docs/daily-work-cycle.md` §17.4 names the reading: «恢复前对账 baseline、
+    writer、effect 和旧 attempt».
+
+    IT ANSWERS ABOUT THE RECORD AND THE STORE, AND ABOUT NOTHING ELSE. An attempt
+    is a delegated cycle, so the admissions collection is the only thing on this
+    node that can say what became of one. There is no clock here and no board: an
+    attempt whose admission is still open has produced no result, whatever the
+    Item's Runs or its board row happen to say.
+
+    THREE ANSWERS FOR ONE ATTEMPT, AND THE THIRD IS NOT «NOT YET»:
+
+      `ATTEMPT_RETIRED`    the store holds it and it was retired, which is this
+                           store's word for «this cycle's outcome is recorded» —
+                           the same word `wait_state` reads, and `outcome` is
+                           carried back when the retirement recorded one.
+      `ATTEMPT_OPEN`       the store holds it and it still holds its reservation.
+                           A phase is deliberately not an answer: `DISPATCHED`
+                           says the child was invoked, not that it finished.
+      `ATTEMPT_UNANSWERABLE`  the store holds no such admission. Not «not yet»,
+                           for the reason `wait_state` gives: the checkpoint
+                           already exists and may name an attempt from a store
+                           that was moved, swept, or is being read from another
+                           root. `build_checkpoint` refuses an attempt nothing can
+                           look up when it appears in `waiting_on`; it can still
+                           appear HERE, because this field records what was
+                           already done rather than claiming what the fabric can
+                           still see.
+
+    ACCEPTED IS NOT A STATE THIS FUNCTION HAS, AND THAT IS NOT AN OMISSION.
+    Nothing on this node records an acceptance as a fact separate from the
+    record's own `evidence_locators` — `work checkpoint --evidence` calls one «an
+    accepted evidence locator», so what has been accepted is readable from the
+    record and not from the attempt. This function answers what the store says
+    about the attempt; the reader reconciles that against the evidence the record
+    already carries, which is what this read exists to make possible instead of
+    leaving it to be carried by hand.
+    """
+    record = record if isinstance(record, dict) else {}
+    refs = [str(ref) for ref in (record.get("child_attempts") or []) if str(ref).strip()]
+    base = {"checkpoint_ref": record.get("checkpoint_ref"),
+            "work_item": record.get("work_item"), "epoch": record.get("epoch"),
+            "attempts": refs}
+    if not refs:
+        return {**base, "state": "ATTEMPT_NONE", "evidence": [], "retired": [],
+                "open": [], "unheld": [],
+                "detail": ("this record names no child attempt, so there is "
+                           "nothing to look up. It is not a record whose attempts "
+                           "all finished: a Parent that made none says so by "
+                           "carrying none, which is a state `build_checkpoint` "
+                           "allows and not a gap in this reading"),
+                "says": "this checkpoint records no child attempt already made"}
+    if not isinstance(admissions, dict):
+        # Shaped like `wait_state`'s answer to the same situation, and for the same
+        # reason: there is no `unheld` list here, because «this store holds no such
+        # attempt» is a statement about a store that was read, and none was brought.
+        return {**base, "state": "ATTEMPT_UNANSWERABLE", "evidence": [],
+                "retired": [], "open": [],
+                "detail": ("no admissions were supplied, so the attempts this "
+                           "record names were not looked up at all. This is «nobody "
+                           "brought the store» and not «the store holds no such "
+                           "attempt»"),
+                "says": ("this reading was given no admissions, so what became of "
+                         "the attempts it records cannot be said")}
+
+    retired, open_now, unheld, evidence = [], [], [], []
+    for ref in refs:
+        held = admissions.get(ref)
+        if not isinstance(held, dict):
+            unheld.append(ref)
+            evidence.append({"ref": ref, "held": False,
+                             "state": "ATTEMPT_UNANSWERABLE",
+                             "because": ("this store holds no admission under this "
+                                         "ref, so what became of the attempt cannot "
+                                         "be read from here")})
+            continue
+        retired_at = held.get("retired_at")
+        if retired_at:
+            retired.append(ref)
+            evidence.append({"ref": ref, "held": True, "state": "ATTEMPT_RETIRED",
+                             "phase": held.get("phase"), "retired_at": retired_at,
+                             "outcome": held.get("outcome"),
+                             "because": ("this attempt was retired, so its outcome "
+                                         "is recorded — and the record is where the "
+                                         "result is read rather than carried")})
+        else:
+            open_now.append(ref)
+            evidence.append({"ref": ref, "held": True, "state": "ATTEMPT_OPEN",
+                             "phase": held.get("phase"), "retired_at": None,
+                             "outcome": None,
+                             "because": ("this admission is still open. A phase is "
+                                         "not a result: DISPATCHED says the attempt "
+                                         "was invoked, not that it finished")})
+    answer = {**base, "evidence": evidence, "retired": retired,
+              "open": open_now, "unheld": unheld}
+    counts = (f"{len(retired)} finished, {len(open_now)} still open, "
+              f"{len(unheld)} this store cannot look up")
+    if unheld:
+        return {**answer, "state": "ATTEMPT_UNANSWERABLE",
+                "detail": (f"this store holds no admission for "
+                           f"{', '.join(unheld)}, so what became of "
+                           f"{'it' if len(unheld) == 1 else 'them'} cannot be read "
+                           f"from here — which is not the same as an attempt that "
+                           f"has not finished"),
+                "says": (f"of the attempts this checkpoint records, {counts} — so a "
+                         f"Parent resuming on this record cannot yet say whether "
+                         f"one of them is still owed")}
+    if open_now:
+        return {**answer, "state": "ATTEMPT_OPEN",
+                "detail": (f"{len(open_now)} of {len(refs)} recorded attempts have "
+                           f"no recorded outcome yet"),
+                "says": (f"of the attempts this checkpoint records, {counts} — an "
+                         f"attempt without a recorded outcome is one this Parent "
+                         f"may already be paying for")}
+    return {**answer, "state": "ATTEMPT_RETIRED",
+            "detail": ("every recorded attempt has a recorded outcome. This is an "
+                       "answer about the store and about nothing else: it says the "
+                       "attempts finished, not that their results were accepted "
+                       "into this record"),
+            "says": (f"of the attempts this checkpoint records, {counts}, so "
+                     f"resuming does not mean dispatching a second child")}

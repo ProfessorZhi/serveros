@@ -34,9 +34,14 @@ Five properties, in the order a reader needs them:
      store's answer, recorded as that store gave it. Skipping, reversing,
      re-reporting a phase with different evidence, and reporting another
      resource's lease or another key's receipt are each refused by name.
-  5. RETIREMENT RELEASES AND KEEPS THE FIRST. It is not a deletion: the record
+  5. RETIREMENT RELEASES AND IS WRITTEN ONCE. It is not a deletion: the record
      stays, saying what the cycle was admitted for, because the after-the-fact
-     question is computed from exactly that.
+     question is computed from exactly that. And the one call writes TWO facts,
+     not one — when the reservation was released and how the cycle ended — so a
+     second call that would move either is refused by name rather than
+     absorbed. That second half was previously not refused: the outcome of a
+     second retirement with a different one was dropped in silence, and the
+     test below asserted the silence as though it were a rule.
 
 `RECEIPT_STATUSES` is not asserted against a hand-written list. It is derived
 from `runtime/bounded_invocation.py` by parsing it — every string that can reach
@@ -508,7 +513,7 @@ class TestThePhasesAdvanceOneAtATime:
 
 
 # ---------------------------------------------------------------------------
-# 4. Retirement releases, and keeps the first.
+# 4. Retirement releases, and is written once — both of its fields.
 # ---------------------------------------------------------------------------
 
 
@@ -517,12 +522,76 @@ class TestRetirementIsIdempotentAndKeepsTheFirst:
         store = a_store(tmp_path)
         store.admit(a_record())
         first = store.retire_admission("cyc-1", at=T1, outcome="DELIVERED")
-        again = store.retire_admission("cyc-1", at=T2, outcome="ABANDONED")
+        again = store.retire_admission("cyc-1", at=T2, outcome="DELIVERED")
 
         assert first["retired_at"] == T1
+        assert again["retired_at"] == T1, (
+            "the second call must not move the instant the reservation was released")
+
+    def test_a_retry_of_the_same_call_is_idempotent_without_an_outcome(self, tmp_path):
+        """The shape a crash-and-retry actually has: the same call, again."""
+        store = a_store(tmp_path)
+        store.admit(a_record())
+        store.retire_admission("cyc-1", at=T1)
+
+        again = store.retire_admission("cyc-1", at=T2)
+
         assert again["retired_at"] == T1
-        assert again["outcome"] == "DELIVERED", (
-            "the second call must not rewrite how the cycle ended")
+        assert not again.get("outcome")
+
+    def test_a_second_permanent_ending_is_refused_rather_than_absorbed(self, tmp_path):
+        """THE DEFECT THIS REPLACES A TEST FOR.
+
+        This used to assert `again["outcome"] == "DELIVERED"` — that the second
+        call's `ABANDONED` was dropped, described as «the second call must not
+        rewrite how the cycle ended». Keeping the first ending is right; doing
+        it SILENTLY is not, and `outcome` is now read by
+        `runtime/continuation.attempts_state` as the answer to «did this child
+        attempt finish», on the line a resuming Parent reads before deciding
+        whether to dispatch a second child. The instant and the outcome are both
+        written by this call and neither is a later write's to move, in the same
+        way `confirm_admission` refuses a second answer about one phase.
+        """
+        store = a_store(tmp_path)
+        store.admit(a_record())
+        store.retire_admission("cyc-1", at=T1, outcome="DELIVERED")
+        with pytest.raises(StoreError) as refusal:
+            store.retire_admission("cyc-1", at=T2, outcome="ABANDONED")
+
+        assert "was retired at" in str(refusal.value)
+        assert "'ABANDONED'" in str(refusal.value), (
+            "the refusal must name what the caller offered")
+        assert "'DELIVERED'" in str(refusal.value), (
+            "and what the record says, so the disagreement is readable")
+        assert store.get_admission("cyc-1")["outcome"] == "DELIVERED", (
+            "and the record is untouched by the refusal")
+
+    def test_naming_an_outcome_where_none_was_recorded_is_refused(self, tmp_path):
+        """«No outcome» is a value, so filling it in is a change to the ending.
+
+        A first call that named none recorded exactly that: the reservation was
+        released and how the cycle ended was not written down. A later call that
+        supplies one is not retrying that call — it is changing the record — and
+        the same refusal answers it, because a store that accepted the fill-in
+        would have two ways to write `outcome` and one of them unguarded.
+        """
+        store = a_store(tmp_path)
+        store.admit(a_record())
+        store.retire_admission("cyc-1", at=T1)
+        with pytest.raises(StoreError) as refusal:
+            store.retire_admission("cyc-1", at=T2, outcome="DELIVERED")
+
+        assert "names no outcome" in str(refusal.value)
+        assert not store.get_admission("cyc-1").get("outcome")
+
+    def test_a_second_retirement_with_no_outcome_is_the_same_statement(self, tmp_path):
+        store = a_store(tmp_path)
+        store.admit(a_record())
+        store.retire_admission("cyc-1", at=T1, outcome="DELIVERED")
+
+        again = store.retire_admission("cyc-1", at=T2)
+
+        assert again["outcome"] == "DELIVERED"
 
     def test_a_retired_admission_is_still_in_the_store(self, tmp_path):
         """Retiring is not un-admitting: the selection is what a review reads."""

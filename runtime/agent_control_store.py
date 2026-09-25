@@ -983,10 +983,16 @@ class AgentControlStore:
         would leave a scope with no owner at all, and «nobody owns this» is a
         different fact from «someone else does».
 
-        Idempotent on the FIRST supersession, like `retire_admission`: the
-        question this answers is when the scope changed hands, and a second call
-        that moved that instant would move it to whenever somebody last mentioned
-        it.
+        Idempotent on the FIRST supersession, like `retire_admission`, and by the
+        same rule applied to both of its facts: the question this answers is WHEN
+        the scope changed hands and TO WHOM, a second call that moved either would
+        move it to whenever somebody last mentioned it, and a second call naming a
+        DIFFERENT successor is refused rather than absorbed. That last half is the
+        one that used to be silent — a third Parent could take a scope this record
+        says a second one holds, and the record would go on saying the second —
+        and it is a question for a person for a sharper reason than `outcome` is:
+        two successors for one scope is two owners, which
+        `docs/COLLABORATION-CONTRACT.md` does not allow even for an instant.
         """
         target = str(ref or "")
         successor = str(by or "").strip()
@@ -1004,7 +1010,16 @@ class AgentControlStore:
                     f"make a scope that was never checkpointed look like one that was "
                     f"taken over")
             if existing.get("superseded_by"):
-                return existing
+                if existing["superseded_by"] == successor:
+                    return existing
+                raise StoreError(
+                    f"{target} was taken over at {existing.get('superseded_at')} by "
+                    f"{existing['superseded_by']} and this hands the same scope to "
+                    f"{successor}. A supersession is written once: the record says "
+                    f"which Parent carries this Item now, and accepting this would "
+                    f"leave two records each claiming to have succeeded the same one "
+                    f"while the store named only one of them. Which Parent carries "
+                    f"the Item is a question for a person and not a later write")
             updated = dict(existing)
             updated["superseded_by"] = successor
             updated["superseded_at"] = str(at)
@@ -1483,11 +1498,36 @@ class AgentControlStore:
                          outcome: str | None = None) -> dict:
         """Close an admission, releasing the reservation it held.
 
-        Idempotent, and it keeps the FIRST retirement. The question a retired
-        admission answers is when the cycle stopped holding its reservation,
-        and a second call that moved that instant would move it to whenever
-        somebody last mentioned the cycle — the same defect `revoke_grant` is
-        written to avoid, one collection over.
+        Written once, and the FIRST call is the one that writes it. Two facts
+        are fixed by it and both, not one: WHEN the cycle stopped holding its
+        reservation, and HOW it ended. A second call that moved the instant
+        would move it to whenever somebody last mentioned the cycle — the same
+        defect `revoke_grant` is written to avoid, one collection over. A second
+        call that moved the OUTCOME is the same defect in the other field, and
+        it is refused rather than absorbed for the reason `confirm_admission`
+        refuses a second answer about one phase: «picking the newer one here
+        would hide the disagreement rather than record it».
+
+        That second field is why this rule is not merely tidy. `outcome` was
+        defended as «the first instant is kept» and never argued about on its own
+        terms, and it had no reader that decided anything — until
+        `runtime/continuation.attempts_state`, which renders it as the answer to
+        «did this child attempt finish», on the line a resuming Parent reads
+        before deciding whether to dispatch a second child. A record that says
+        `DELIVERED` while the store was also told `ABANDONED` is a disagreement
+        somebody has to resolve, and a store that answered with the first one and
+        said nothing about the second would be answering from a choice nobody
+        made.
+
+        «No outcome» is a value here and not an absent one, so a later call may
+        neither fill it in nor replace it: what the first call recorded is how
+        the cycle ended, and a retirement that left the outcome unnamed recorded
+        exactly that. A later call that names NO outcome makes no claim about the
+        ending at all, so it is a retry and it is idempotent — it changes nothing,
+        and refusing it would tell a caller it disagreed when it said nothing. A
+        later call that names one must name the recorded one; naming a different
+        one, or naming one where the first call left none, is a change and is
+        refused by name, with the recorded value in the refusal.
 
         Retiring is not un-admitting. The record stays, and it stays saying
         what it was admitted for: `intake/daily_cycle.select_focus` computes a
@@ -1498,6 +1538,7 @@ class AgentControlStore:
         key = str(cycle_ref or "").strip()
         if not key:
             raise StoreError("retiring an admission needs the cycle's ref")
+        named = str(outcome) if outcome else None
         with self._mutation():
             record = self._data["admissions"].get(key)
             if record is None:
@@ -1506,10 +1547,23 @@ class AgentControlStore:
                     f"does not hold would make a released reservation look like "
                     f"a reservation that was never taken")
             if record.get("retired_at"):
-                return record
+                if named is None or record.get("outcome") == named:
+                    return record
+                recorded = (f"the record says {record['outcome']!r}"
+                            if record.get("outcome")
+                            else "the record names no outcome")
+                says = f"with outcome {named!r}"
+                raise StoreError(
+                    f"{key} was retired at {record['retired_at']} and this retires "
+                    f"it again {says}, where {recorded}. A retirement is written "
+                    f"once and the first call fixes both the instant the "
+                    f"reservation was released and how the cycle ended; accepting "
+                    f"this would move the ending to whenever somebody last "
+                    f"mentioned the cycle. A different ending is a question for a "
+                    f"person and not a later write")
             record["retired_at"] = str(at)
-            if outcome:
-                record["outcome"] = str(outcome)
+            if named:
+                record["outcome"] = named
             self._data["admissions"][key] = record
             self._flush()
             return record
