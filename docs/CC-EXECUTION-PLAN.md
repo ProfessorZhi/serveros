@@ -1,219 +1,258 @@
-# CC 实施主计划：从当前成果完成 ServerOS 与全部 Ability
+# CC 实施主计划：目标架构 → 真实消费者 → 安装 → 目录收口
 
-2026-09-24产品需求收敛版。仍为**一个 P0–P12 主计划**，专项文档提供接口与验收，不另起V版roadmap。纳入重点联系人深归档、外部参考、限定Follow、Git/飞书方向、21能力真实消费者、完整工作闭环与监控。本次只更新隔离分支文档和结构/一致性检查；没有部署、实际业务抓取或云写入，未启动CC实施。
+2026-09-25，依据Tokyo只读现场复核修订。仍使用唯一P0–P12计划；本页替换旧实施建议，不另建路线图或任务数据库。**本次交付是计划，未实施、未安装、未启用定时器。**
 
-## 0. 完成目标与工作方式
+## 0. 执行入口与完成定义
 
-后续用户将本计划交CC并要求实施时，在当时有效的项目/资料/费用/效果授权下连续推进。已定产品选择不再反复询问，普通代码、consumer、兼容迁移与跨自有仓库集成由执行者完成；真正新权限、业务歧义、不可逆操作与既定真实产品FAIL停点单列。
+后续用户明确要求实施时，CC先读本页和[短交接提示](CC-IMPLEMENTATION-HANDOFF.md)，按需读[现场基线](IMPLEMENTATION-BASELINE-20260925.md)及相关架构章节。不要把整棵Ability Tree、所有Skill或全部设计预先装入上下文。
 
-交付不是21个目录、一次注册FRESH或若干千测试通过，而是：
+目标不是重写ServerOS，而是让现有实现满足已对齐产品：Native Claude/Codex主脑；ServerOS Plugin提供能力入口；两个MCP适配器连接真实Core/Provider；`serverosd`保持唯一常驻Node Core；OS/既有执行器唤醒有限工作；G1、A1–A10、B1–B10按任务组合。
 
-1. 获准信息按政策捕获，转发材料覆盖真实，语义变化进入正式认识并能被下一消费者使用。
-2. 外部文章能进入正确个人飞书参考区；原文/摘要/批注/认识/规范分责，必要本地保存与Git范围明确。
-3. 当前工作从可信来源/委托/焦点到实际执行、验收及要求的文档/通知闭合；复杂度/风险需要时再展开GPT设计、独立review、Quay或真实E2E，简单任务不为覆盖Ability而强走这些分支。
-4. 正常安装入口、资源/关键服务/Core自身监控、共享Laya业务消费与失败恢复有证据。
+“完成”必须同时交付：已接受范围的源码及兼容迁移；正常构建与版本锁定；Tokyo Node Runtime及Claude/Codex正常入口安装；真实信息、工作、知识、能力、运行五条循环的适用场景；获准定时工作真正接续；目录消费者切换与保留例外；可执行回退。仅代码、测试数、PR合并或`current`链接变更都不能封板。
 
-一次委托可包含多个小commit、正规worktree和独立worker，不要求一个大补丁、21个Agent或全部能力每次都加载。Parent负责原目标的必需结果；缺真实consumer是未完成义务，不是“不需要做”。
+所有阶段保留CODE / CANDIDATE / INSTALLED / RUNNING / SCENARIO_VERIFIED事实。必需项被权限、认证或资源阻断时明确PARTIAL/BLOCKED及解除条件，继续其他独立工作，不删验收项后称全完成。
 
-## 1. 提交前复核的新起点：不要重做刚完成的代码
+## 1. 先固定正确基线，不能覆盖现用修复
 
-以下表格保留前轮带版本的来源审查，不重新宣称今天的live状态。前轮初读基线为serveros@0f99d45、records@fd526f5；设计期间远端前进，本计划已读取并采用**serveros@7b9d4172a06c7410f3a6d95473df175f71f7ad63、records@81673ebb91daee9e6a900ead38cbf6c804b723fa**。ability-management输入为5dbf5492ccd37715d6fc1509f9edc3fe20806179，MarketOps读取0b30a541ee68621ef65841596c50b07592b962df。实施使用包含本计划的最新main和真实安装，不回退这些观察基线。
-
-| 已读对象 | 现在可确定的代码/记录事实 | 下一步，不等于新LIVE证明 |
+| 来源 | 本轮观察版本 | 实施要求 |
 |---|---|---|
-| understanding_patch.py | 已有card_digest/content_identity，旧source/理解基线决定失效 | 保留回归，不再称缺hash/重造保护 |
-| 新understanding_semantic.py | 已有reading校验、按委托提交部分Claim、独立候选、fence内写入和幂等receipt；reading来自原生Agent，本模块不解释正文 | 复用该writer，核可信委托/身份接入、原生reading producer、多view/失效与真实J03/J06，不另写同功能模块 |
-| 新source_waterline.py | 已有分source的区间/gap/tail/beyond-source计算；文档按digest而非伪造位置 | 核实际capture/语义消费者；材料/发现覆盖不能由引用跨度自证 |
-| 新capture coverage测试 | 已改为按manifest/验证时间区分arrival/change/gone，不冻结旧数据总数 | 保留并按变化面验证，不以今天数量变化逼代码改假值 |
-| focus_source.py | 多项grant/worker/resource仍未在该board适配产出 | 从既有控制/执行权威join，不把动态权威塞Card |
-| B1 canonical payload | 仍有旧机器路径、full-recompute/manual-only/local-only指令 | 迁原payload、validator和实际loader，design更新不会自动生效 |
-| records新增内容 | Nature有新增消息、2个docx/1图和SOP快照；新增Bruce/Nature/项目认识记录 | 保留全部新数据，复核覆盖与出处；不重复“Nature还只有38条/无文件”的旧判断 |
-| publish-excluded.json及test_publish_plane | 新增发布排除登记及manifest联动；凭据类字节保留在受控归档、Git只安全记录 | 与按大小的heavy-media政策分开，保留当前reason-code/结构身份口径，不合并或重建 |
-| 最新records README | 报告历史远端已有含凭据图片，并明确排除当前HEAD不能撤销历史传播 | 作为优先安全待核项通知owner；不读取/重抄值、不声称仍有效。按实际权威轮换/处置，禁未授权生产变更或历史force重写 |
-| MarketOps laya.py | 已读adapter仍in-process english模式 | shared服务存在不等于该consumer已迁，接实际shared client |
-| 旧执行ledger | 记录了Plugin/Testing/release/Serper/Laya等成果，也有日循环及若干场景未通 | 作为现有资产去核验，不重新部署第二套，不将旧运行统计当现在实测 |
+| ServerOS远端main | `c5d118cc44629e7cb264b73e3026d8ac3abbf7dc` | 实施时重新fetch；本机canonical main不是最新代码 |
+| ServerOS架构PR #6 | `13f2819af52e7e1df8bcb81c0b28eee2814e3b2b` | 本计划继承此架构；PR未合并前不能称main含目标设计 |
+| Ability架构PR #4 | `5c1963e401fff7766327938dad97549633ec9673` | 接受/合并此配套设计后再锁实际artifact revision |
+| 已安装Linux Work | `alert-card-scope-20260924@8ce6fe7`，`3.1.0+srv0003.20260924c` | 比main多`dbc9144`、`8ce6fe7`两笔告警修复，必须保留其行为 |
+| records | `7368e298fe8c07f9289aeadc7fb4016f0fcd2995` | 已有source声明/采集工具，复用；不重抓全部历史 |
+| ops本地 / 远端 | `a8272d4` / `1993042` | 本地正在执行定时脚本；远端改了maps和gateway Binding，禁止直接pull活动checkout |
+| work-engine本地 / 远端 | `f6be338` / `a0f370f` | 本次差异仅README，但实施仍锁实际源/安装/数据schema |
 
-以上仅源码/记录只读审查，未重跑新测试，也未读取主机进程或当前云ACL。没有模型client在writer模块里是正确分工，不应逼纯校验器自己做推理；应让原生Agent实际生产reading并由可信控制边界提交。
+先接受两份架构PR和本计划，再把现用告警修复非force集成到实施基线；已被后续main包含的提交不重复cherry-pick。PR号/分支不是永久版本，最终记录完整SHA与依赖关系。实施从最新已接受基线新建自己的worktree；不在canonical或现有SRV/LiteLLM/MarketOps工作树施工。
 
-### 2026-09-24设计收敛的新增来源基线
+本机结构以实测host profile为准：`DATA_ROOT=/data/home/vince`，`WORKSPACE_ROOT=/data/home/vince/workspace`；产物、缓存、venv、模型、临时文件留`/data`，不能套用北京路径。详细现场证据和观察限制见基线文档。
 
-serveros `c5d118cc44629e7cb264b73e3026d8ac3abbf7dc`；ability-management `d057b6a4b9ad28589806fd77fa56fd972ea3e4e3`。本轮从最新main建立独立文档worktree，保留canonical旧HEAD与所有并行工作；这不是运行安装版本。
+## 2. 实施责任、权限与顺序
 
-源复核确认semantic writer、水位及RUNTIME_OUTLIVED_OWNER的INFORMATIONAL迁移已存在；不能重复重造。当前alert-card空摘要/计数仍需结合真实sender与卡片purpose验收。36个payload入口、额外MUC根入口及64项registry静态审计见能力仓[审计](https://github.com/ProfessorZhi/ability-management/blob/main/design/REQUIREMENTS-ARCHITECTURE-AUDIT-20260924.md)。该记录不替代fresh runtime。
+沿现有B3/B4创建或解析一个被接受的ServerOS交付Requirement及唯一Work Item；阶段是它的计划，不是13个新需求。独立worker/长执行/效果恢复使用有意义Run；普通同步编辑用工作项、Git revision和必要证据即可。预算/Session结束保存待完成项、实际child/effect、准确基线与下一动作。
 
-## 2. 开始只需一次范围配置
+当前请求只授权写计划。后续“按计划实施并安装”可承接明确的自有源码和开发安装范围，但不自动包含生产切流、共享网关重启、客户联系、新数据外发、删除历史目录或全库改ACL。从现有可信授权解析所需项目、写域、测试对象/受众、预算、窗口；缺失项一次聚合，未受影响工作先做。
 
-读ARCHITECTURE边界、最新Blueprint、本计划；每个切片再读相应focused design与场景，不每次全库注入。共同资料合同为INFORMATION-DOCUMENT-LIFECYCLE、DEEP-ARCHIVE-POLICY、EXTERNAL-REFERENCE-LIBRARY；协作为COLLABORATION-CONTRACT；监控为NODE-OBSERVABILITY/MONITORING-ACCEPTANCE。
+已安装CLAUDE/AGENTS仍有旧强流程。先区分业务提示、真实权限与实例事实；迁移经接受的canonical指引再渲染安装，不能让新提示词覆盖更高层实际保护。真实产品验收unexpected FAIL仍留证并停该产品自动修改；实施阶段局部编译/单测/adapter错误在既有scope内修复，不每步追问。
 
-从现有可信委托、host profile、source/ops Binding解析：允许项目、原文/回填范围、数据级别、可写树/文档章节、开发安装、Git目标、费用/外发预算、receiver、时区/周期、资源与撤销。缺少真正改变风险的字段一次聚合，其他工作继续。
-
-本文件不自签授权。当前LiteLLM生产/共享网关保护边界、人执行切流/回滚不变；客户联系、私人资料传播、模型API计费、云删除/ACL扩大、不可逆迁移分别核权。“禁止客户邮件”不等于所有已批准模型API都禁；可读也不等于可外发/发布。
-
-## 3. 并行保护与记录
-
-只读识别MarketOps、LiteLLM toolcall/排版验证、reasoning专用容器、SRV-0011/SRV-0005等真实owner/状态，不能从旧报告猜已结束。相同文件/资源冲突只暂停对应片段，约定作者/接口/commit/验收交接；不同工作树无冲突部分继续。
-
-不reset/clean/stash他人WIP，不force-push/批量git add，不借别人的容器/profile做故障演练。ops检出同时是部署目录时，更新文件也是运行变化，不为测试直接pull到生产路径。源数据/排除表/测试未经本任务授权不顺手改。
-
-使用既有execution记录/checkpoint，记录最新接受输入、实际结果、下游receiver和未完条件；不再建第二完成度数据库。时间/预算或真实安全停点到达时给可恢复checkpoint，不承诺不存在scheduler的后台继续。
-
-## 4. 依赖顺序
+保护`container0-litellm`、`container0-postgres`、`browser-stack`、LiteLLM reasoning预留环境、Support Bot、MarketOps、所有他人WIP、数据库/卷、current/previous与唯一证据。SRV-0011的三个测试daemon是已知历史路径，**不是按PID可杀的垃圾**；重新核owner/lease/socket/consumer/effect后才能单独处置。只读观测不意味着资源清理已获准。
 
 ```text
-P0 当前成果/owner/权限
- → P1 共同身份/角色/版本/旧入口适配
-    ├→ P2 归档/Forward/Follow/Web → P3 实际reading/writer/理解
-    ├→ P4 Doc/Space/publisher → P5 Reference/指南/知识消费
-    └→ P6 当前工作准入 → P7 GPT/Quay/继续责任
-P8监控、P9载体/环境可在无冲突域并行
-P10共享Provider真实业务消费，不阻断不依赖它的步骤
- → P11四条真实用户链与失败恢复 → P12安装/激活/目录收尾
+P0 现场/容量/基线/权限
+ ├─ P9先修全局入口与装载阻塞（不先全面改Skill）
+ ├─ P1 source/identity → P2增量采集 → P3真实理解
+ │                                  └→ P4正文/资产 → P5长期知识维护
+ ├─ P6工作准入 → P7真实Parent/child/恢复
+ ├─ P8监控+现有ops发送端（保留已装告警修复）
+ └─ P10共享Provider/Memory
+       → P9候选构建与终端隔离验收
+       → P11真实用户路径
+       → P12获准安装/切换/定时启用/目录收口/回退演练
 ```
 
-先跑小规模“真实资料→认识”和“网页→个人Reference”暴露consumer问题，不先做全catalog绿化。已有semantic/waterline和Nature资料直接进入复用/验证阶段，不从零重写。
+P0–P12是本次实施依赖，不是产品对每个日常任务施加的流水线。安装前可在隔离候选运行P11；P12后必须再跑已安装入口的关键回归，不能等安装后第一次发现缺模块。
 
-## P0 当前实现与最小实施清单
+## P0 现场复核、写入预算和隔离
 
-核远端/source、相关工作树dirty、实际安装/服务receipt、活跃writer。针对每个目标记录当前source/正常入口/receiver/已测范围/具体缺口。新代码存在不自动算运行过，旧缺口已修就从待实现转为回归。
+本轮`/`使用99%、约500MB可用，`/data`约3.6TB可用，vince XFS已用82.9G/硬限500G。实施前重测space/inode/quota，按候选构建、依赖、备份与验证的峰值预算判断是否安全。默认不在`/tmp`、系统盘cache或HOME错误分支做大写入；系统盘问题先归因、给owner处置建议，不擅自删系统日志/Docker/他人目录。容量不足只挡对应大写入/激活，允许安全只读与小型`/data`源码工作。
 
-敏感资料采用最新publish-excluded登记，保留排除与heavy-media两种原因；新增传播前检查受众。历史凭据暴露的有效性/轮换只有owner能确认，准备最小处置包，不能在文档里复制真值或未经授权重写历史。
+冻结真实host roots、Git分支/dirty/未推送refs、unit/CLI/Plugin/MCP/入口指令、触发器、受管数据库/游标/注册表的基线。只收必要非秘密字段；配置备份放受控`/data`目录，不入Git。活跃SQLite用一致性backup，不裸拷贝主文件忽略WAL。**退出**：下一个切片的代码基线、writer、目录、预算和回退点可明确，不要求全机所有UNKNOWN先变绿。
 
-**退出门**：下一切片有明确owner/base/consumer及安全范围。不要求全机每个UNKNOWN都裁定才能开始。
+## P1 身份、source与版本适配
 
-## P1 共同数据与source声明
+**复用**：`intake/source_policy.py`、`material_index.py`、`source_waterline.py`、`documents/document_governance.py`，records的`information/sources`、raw manifest及`_redact.py`。source声明与观测不同权威；不再建source/Claim数据库。
 
-复用Source/Document/manifest与实际resolver。desired关注范围/角色拟归information/sources，observed仍在manifest；DRIFT_WATCHLIST和not-archived用adapter迁移，不两个可编辑表同时决定同字段，不创建额外source数据库。
+**改动**：让IM编辑/转发包多材料、Doc/Wiki精确revision、Meeting各成员、Web snapshot都保留稳定身份、允许范围、实际coverage及缺口。material可N:M关联；来源更新、parser变更、ACL变化分别处理。保留`publish-excluded`与大媒体外置的独立判据；不得把private Git视为任意数据可上传。
 
-材料N:M关联message/forward part/source revision；网页有安全input/final/canonical关系、原始/提取hash及parser版本；Reference是自己的doc，原文/批注分责。每个新字段有实际producer/consumer和兼容测试。
+**验收**：`test_source_policy.py`、`test_source_waterline.py`及真实records小样；旧manifest兼容，多附件不覆盖，同名/跨ACL不误合，缺失不是零。新字段必须被实际reader/publisher消费；迁移先dry-run比较，再对获准数据局部执行，禁止全量重写历史。
 
-**退出门**：旧chat/doc/Web输入可解析给实际consumer，多材料不覆盖，同名/跨ACL不误合；desired变化不改observed历史。publish-excluded是发布安全登记，不是源抓取黑名单或体积清单。
+## P2 IM / Follow / Web / 会议的有限采集
 
-## P2 重点深归档、限定Follow与Web获取
+**复用**：records `information/raw/{sync_feishu_chat,expand_feishu_doc,expand_feishu_files,drift_sync}.py`和现有redaction；ServerOS `capture_coverage.py`、`watch_coverage.py`、`material_index.py`；`space/`会议解析与既有Provider。
 
-复用现有sync/expand/drift/_redact，不复制规则。普通SHALLOW、bot NONE不抓正文、已接受priority/项目群DEEP_REQUIRED。历史回填有范围和预算，新消息先保存，旧pending/index对账以实际材料与source版本为准。
+**改动**：provider事件可用就用，否则有限poll；NONE零正文、普通SHALLOW、已接受重点范围DEEP_REQUIRED。重跑只补未完成页/材料；网页登录壳/截断不算全文。Follow限定对象/子树，不因一次读或收藏自动扩大订阅。
 
-转发包内可见子消息/子转发有界遍历和去环；外部网页出链默认第一层，不扫描原群。unsupported/token缺失/限额都是discovery gap；0材料+未解析不能100%。现存文件先hash/关联验证，只补缺失，不重复回填Nature新到数据或为了旧“complete样板”忽略缺口。
+会议结束→已知Bundle→转录PROCESSING/附件pending→有界复查→材料到达→只触发受影响reading。已有合法transcript可先读，不等MP3或全套成员。原生Minutes保持原对象；Drive只放获准文件/导出及关系。support远控背景音不生业务Claim。
 
-Web优先原生HTTP/官方接口/已有parser，核原页身份和抽取质量；登录壳/JS空页/403/截断不算全文。只收藏链接不自动下载全部媒体或Follow；完整保存按实际许可/敏感性，并区分归档与Git发布。
+**验收/交付**：真实小范围IM编辑/转发附件、一个Follow revision、一个会议晚到材料，raw→receiver闭合；无变化不调用LLM/新发通知。`test_capture_coverage.py`、`test_meeting_bundle.py`、`test_meeting_relevance.py`及records既有测试按存在的版本选用。只取得source不算理解或云镜像完成。
 
-**退出门**：授权小范围新消息/forward真实落地、NONE零正文、分页/编辑/多附件/未知格式可恢复；一个公开网页真实解析、source版本可回查。当前排除图片的私有归档完整不因不在Git而判丢失。
+## P3 原生reading接现有semantic writer
 
-## P3 用已落地semantic writer接通原生理解
+**复用**：`understanding_brief.py`、`understanding_semantic.py`、`understanding_patch.py`、`claim_recall.py`和分源水位。writer不调用模型是正确分工，不补第二writer/understandingd。
 
-读取understanding_delta/proposal、水位和新understanding_semantic的真实CLI/schema，复用其fenced patch、digest、候选和幂等机制。原生Agent读取固定版本内容并生成合法reading，可信adapter从真实Agent Control解析委托/actor再提交；不让模型自填grant/subject/major-change声明成为唯一安全判据。
+**改动**：固定source版本→原生Agent实际阅读→可信adapter注入actor/委托→原writer校验/提交→四类Current View→A2资格失效。事实/有支持推论可在委托内自动reconcile；目标/负责人/期限/承诺/权限变化仍交真实接受。不能让reading中的`grant`或模型自报major-change成为权限事实。
 
-观察/有依据推论可在当前委托内agent_reconciled；重大承诺/目标/负责人/期限/权限需真实接受。现有writer能拒user_confirmed不等于来源支持已验证，引用范围合法也不自动等于断言属实。原生reading、来源支持与调用者信任一起验。
+修`runtime/recipes.py:perception`的旧耦合：单个source未答不能阻断所有成功源；先持久化各源capture，再分别推进understanding；不能把“source变了”直接解释为“新Item候选”。保留原有限routine记录/锁/预算，补consumer而非新工作流框架。
 
-复用source_waterline的区间/gap/tail和文档digest，实际材料/发现/语义覆盖仍独立；卡片引用跨度不是每份附件已读证明。自然资料、新Reference、会议纪要中的候选/噪声和多view更新分别处理；Memory未绑走records/native，不重建平台。
+**验收**：真实IM/Doc/会议来源各有一个reading及可核支持；Claim成功/View失败只补View；retraction立即影响当前recall，即使OpenViking掉线。执行`test_understanding_brief.py`、`test_understanding_semantic.py`、`test_claim_recall.py`、`test_source_waterline.py`及J03；引用范围合法不替代语义正确性。
 
-**退出门**：真实source→原生reading→已有writer commit→相关people/project/topic→下游接收；当前Nature/Bruce新认识能追源而非重新编一份。重放、源/卡变化、越引用范围、错误委托、source撤回、view写一半、材料迟到/Memory故障均有证据。源码测试数不是J03已跑。
+## P4 飞书正文 / Drive / Records三端交付
 
-## P4 文档对象、位置和发布方向
+**复用**：`documents/document_governance.py`、`intake/external_reference.py`、现有B9 `document-stewardship` / `feishu-space-management`脚本、lark-cli/原生API。文档identity resolver存在不等于远端publisher已闭环；逐个真实入口核验后补最薄adapter。
 
-复用真实Space/publisher。MyDocs保留工作/对齐/汇报，个人笔记保留私人知识，公开文档维护自有正式指南，外部文档承接外部只读Source Card/FOLLOW_MIRROR；EXTERNAL_MAINTAINED只原位维护。先核现有stable ID/ACL/对象，不建同名替代库。
+**改动**：FOLLOW_MIRROR→既有外部文档；EXTERNAL_MAINTAINED→原共享对象获准章节；OWNED→MyDocs/个人笔记/公开文档。沿既有manifest表达body_authority/sync_mode/write_policy/Style/material关系；local checkout与GitHub是一份Records权威的物化，不是三主同步。
 
-每个logical正文声明body_authority/sync_mode/write_policy：外部Source→获准snapshot/mirror；飞书原生正文→records保真/阅读版本→按许可private Git；Git规范→云投影；用户改投影→回源提案。local checkout与GitHub是同一Records authority，不是两主。没有mtime通用双向同步。自动摘要/来源区和个人批注区有可核身份，不能模板更新覆盖人改。
+先查logical ID与上次receipt，读取fresh base/current，再做可保护人改的scoped patch和readback。unknown block/富表/图片不得经Markdown往返丢掉；没有可靠条件写时不得以本地锁自称全局安全。正文、媒体、索引、Git、送达分别记录；timeout先查同一effect，不能盲重建。
 
-Publisher按logical identity幂等：intent→fresh baseline→真实条件写/三方patch→readback→receipt。Provider未证明CAS时保守共享冲突范围；本地锁不保护远端人写。body/media/index/send部分效果分开，未知先查不盲建。
+**验收**：J04/REF场景中至少一个真实OWNED和一个获准mirror/共享章节；重复不双份，人改保留，权限不扩大，body成功/media失败只补缺边。大音视频留Drive/受控archive，Git只留获准文本和metadata；不批量移动历史云对象。
 
-**退出门**：获准测试对象create/update/重复、人改冲突、媒体partial与未知结果恢复；原URL/受众不扩大；只读邻居未改；0 children正文不删；备份不变第二权威。
+## P5 长期知识维护、报告与真实接收者
 
-## P5 外部Reference、指南与知识消费
+**复用**：B8 `feishu-report`的可用行文/发布组件、`runtime/report_publication.py`、`daily_report.py`与现有B9/Support knowledge consumer。先核Support双仓真实readme与owner，不顺便接管其产品路线。
 
-执行EXTERNAL-REFERENCE-LIBRARY的REF01–REF12。用户收藏默认原链接+原创摘要/用途/批注，未读全文不编要点；完整副本需许可与材料coverage；未要求持续关注不设timer。可用已核官方文章作公开Source，实际执行再取当前版本，不在设计仓转载全文。
+**改动**：Follow→局部理解→standing stewardship复核允许区块→patch/readback；外部建议不能自动变内部政策。日报/周报从当前accepted Outcome/evidence聚合，同周期/用途/受众只有一个logical report；不重跑E2E取图，不把子Task数当产出，不因日报cutoff停止夜间Focus。
 
-源变更先标摘要待核，个人批注保持；采用建议经B2/B5/B6与相应授权再改规范，网页命令不执行。限定Wiki子树/new-child策略不能扩整库；原SOP只读/提案，shared工作doc按授权章节维护。
+发布→真实sender/知识consumer接收；有outbox但没有消费者只称待续。源撤权先阻断当前传播，历史合法保留另按retention；own publish receipt只抑制同revision自循环，不能吞后续人改。
 
-至少一份真实自管指南/共同章节由版本/截图证据支持局部更新；员工snapshot与实际Bot消费分开验证。Support缺人工receiver不阻止Reference/SOP工作；只在真实receipt后说转交/通知成功。
+**验收**：一个收藏/Follow增量、一个指南scoped维护、一个周期报告完成适用的compose/publish/send；J04/J10/REF01–REF12。没要求通知不强发；要求“发给我”只有draft不能关闭；Bot导出包存在不等于Bot已切版本。
 
-**退出门**：原网页→正确个人Reference→source/本地安全记录→检索与版本关系；重复无双份、人批注不丢，文档变化/撤权/回源提案可恢复；任何未授权全文或更广传播准确部分交付，不假已同步。
+## P6 Requirement / Work Item / Focus的真实join
 
-## P6 当前工作与多权威准入
+**复用**：`work-engine`已有Item/Run/store，`intake/workchain.py`、`focus_source.py`、`daily_cycle.py`、`runtime/agent_control_store.py`和`context/delegation.py`。Card给接受目标/AC，Work Engine给工作控制，Agent Control给可信grant，executor/lease给实际占用；不把这些动态权威塞Card独立维护。
 
-Work Engine取生命周期/依赖/focus/lease，Card取目标/AC，Agent Control取grant/scope/revoke/budget，executor取实际worker/effect，Binding给readiness。修focus_source接收这些事实，而不是向Card塞动态字段。
+**改动**：正式Requirement幂等对应一个canonical Work Item；草稿不建项，新证据不改目标。完成边界/接受版本与真实evidence联结。把`focus_source.NOT_PRODUCED`逐项变成从正确owner取得或精确UNKNOWN，不硬编码“无worker/资源已释放/默认有grant”。
 
-旧projection/store/records对账保取消/替代；缺某项目视图不是0项。current范围freshness与render时间分开。new candidate核无冲突intent/lease，不要求假stop；已有cancel/unknown必须核实际attempt。
+拆开“推荐候选”与“已接受Focus接续”；`daily_cycle.select_focus`当前会按空槽选候选，不能直接当自动接续器。0是合法当前数量；DELIVERED/待验收是否释放责任取决于required结果和实际effects，不单凭旧enum。无priority不默认为P0，也不阻断人已选且合法的任务。
 
-0–2个root焦点、对齐后可当晚执行，完成后不自动补位；已运行/等待继续占位、child不变第三root；合法委托允许排序时给有依据建议，不默认P0也不永远因无priority字段阻断。
+**验收**：无新选择时完成后Focus=0；两次触发只一次准入；更正/撤销在effects前生效；旧Run终态但worker仍写不得释放；park/cancel核实际资源与checkpoint。`test_focus_source.py`、`test_daily_cycle.py`、`test_admission.py`及work-engine对应CLI/store测试；首次真实grant走可信用户控制，不能让fixture值进入live。
 
-**退出门**：真低风险目标得到一次合法准入/dispatch；重复竞争、撤销、过期review/source/plan、旧Run结束但进程活、park/resume/partial effects正确。没有grant可给建议，不能执行。
+## P7 原生Parent、委派与真正自动接续
 
-## P7 按需GPT/Quay与实际继续责任
+**复用**：`runtime/agent_sessions.py`、`bounded_invocation.py`、`review_receipt.py`、`recipes.py`，`fleet/agent_control_router.py`及已验证的Codex/Quay Provider。把现有逻辑接通，不重写Quay调度、不建立第二Session状态库。
 
-本阶段把GPT设计/review、Quay和真实continuation接通为**可按需组合的能力**，不是要求每个Work Item都调用。复用CodexAppServerProvider/exec、review_receipt、bounded_invocation及当前Quay；当任务确实需要设计/独立review时，真实Session、输入和model/effort配置、turn完成与final归属明确。APPROVE/exit0不发授权，review finding须核证据，预算有界不无限审。
+**先修实际死锁**：`recipes.work`当前在派发之前用worktree历史差异判断进展，NONE即NO_PROGRESS；新任务尚未执行、本来没有历史产出，因此可能永远无法开始。准入检查应回答能否开始，进展观察应在真实启动后的有界窗口回答是否卡住；no-code任务也不强制需要Git差异/代码工作树。
 
-Parent在既有Run/Task/checkpoint保存asked-for/inputs/authority/resources/receiver/accepted结果/continuation。child创建≠执行≠验收≠父目标结束；退出前有真实接续consumer才说会后台继续。
+Focus接受→确保唯一logical Parent→完成当前授权步骤→等待child/依赖则写checkpoint并退出→实际事件/有界poll唤醒后继Parent→查原attempt并接收一次。输入冻结accepted revision、效果/预算、确切工作树、receiver；Parent变化不能复制Task或继承旧授权文本。需要跨设备时先做有界子问题，私网/身份/结果回传分别验证。
 
-Quay至少执行一项有价值研究/review/实现，实际worker产物回父；shell gate不是研究。浏览器由明确允许的Testing Provider，不解除全worker黑名单。父预算覆盖重试/子调用/模型对照，未知费用记录实际尝试。
+简单任务原生直达；复杂度/风险值得时才用GPT设计、独立review或Quay。评审要原始证据与准确输入，不能以APPROVE铸造grant。Quay本次至少用一个真实有价值切片验证集成，不把这一验收要求变成未来每日调用配额。
 
-**退出门**：从接受计划到真实executor、产物、独立验证与Parent接收；parent重启查原Task而非重复创建；cancel未停不释放，旧epoch晚到拒覆盖；一项等待他人WIP不停止无关工作。
+**验收**：`test_agent_mcp.py`、`test_codex_app_server_provider.py`、`test_recipes.py`及J06/J07：新任务零历史进展也能启动；UI断线不取消worker；Parent替换后原child自动接回；重复触发不双派；一项等待不冻其他合法scope；unknown effect先查原状态。`scripts/live_closure.py --yes`会真实驱动Agent，必须分配本任务自己的Agent/预算，禁止借现存会话默认执行。
 
-## P8 可读资源卡与Core独立健康
+## P8 监控真相、每日一张卡与事故接续
 
-执行MONITORING-ACCEPTANCE M1–M6及当前V01–V44中适用场景。资源摘要显式字段而非lines[0]；本人CPU/RAM/盘、整机余量、网关功能、必要Tailscale/隧道/Core默认可见，declared endpoint不冒充probed，unknown不0/green。
+**先保现用修复**：集成`dbc9144`/`8ce6fe7`或已包含它们的后继提交，保`test_alert_digest.py`、`test_attention.py`回归。当前ops sender已服从`decision.send`；不得重复把“没有任何空摘要抑制”当未实现事实。
 
-OS/有限独立check核serverosd进程、IPC、cycle、持久化；Core坏时合法独立outbox仍能留/发该告警，恢复不双写/双发。原生Feishu 360/390px默认折叠和实际payload回读；HTML仅预览。无离机observer就不承诺整机断网必达。
+**改动位置**：`runtime/{alert_digest,card_delivery,card_source,cards,presentation,alerting}.py`及对应合同；ops `scripts/tokyo-monitor/{monitor_card,alert_digest_card}.py`与实例Binding/units。旧status采用小时key、send、新卡及09–22静默规则，不等于目标08–20工作日一张卡。复用真实传输，按当日稳定identity创建一次并patch；前序compact历史下沉。同一Incident跨天保episode/message关系，不按每5分钟或每小时新发。
 
-合并现有卡片owner成果，不抢dirty；旧CLOSURE仅历史，不指作当前完整状态。隔离实例故障测试，不断真实网络、不借并行容器。
+统一官方CN工作日/调休日历的来源、年份与更新方式；缺当前日历时明确配置缺口，不伪造Mon–Fri为官方日历。状态健康由观测/覆盖/影响决定；无人动作不假绿，诊断数量不假黄；unknown/恢复/本周期变化与历史累计分开。恢复只能沿真实注册授权执行；不得因计划存在就把`reconcile_enabled`切为true。
 
-**退出门**：实际获准测试接收端可读、冻结receipt、升级/恢复/timeout/quiet/重复正确，Core独立失效路径有证据。收到一张卡不等于系统全部LIVE。
+**验收**：M1–M6、V01–V44中适用反例，特别daily message ID复用、off-window无routine新卡、P1独立、空Incident不发、sender timeout读回、Core失明仍有独立观察。只在获准测试接收端发消息，合成UI不是原生客户端验收。既有timer只在受控切换时替换其消费者，不能旁边再起第二套通知任务。
 
-## P9 全21能力的真实载体与入口
+## P9 载体、入口指令与候选包
 
-先按G1.4 [Authoring Standard](https://github.com/ProfessorZhi/ability-management/blob/main/design/ABILITY-AUTHORING-STANDARD.md)判断改动是否必要，再按ability-management/design/ABILITY-REALIZATION-PLAN逐项核：canonical artifact/source、shape、实际Provider/consumer、Binding、安装和用户场景。已有工具足够不新建Skill；设计和旧payload冲突要迁具体source及validator/loader，而非仅写说明。
+**早期切片**：先迁真正卡住普通任务的源指引：机器policy模板/渲染、work-management、information-management、dev-doctor YAML、vision、session-manager、report、MUC凭据输出示例。保非干扰/秘密/生产保护，清掉“每producer必有Run”“每云写必全量proposal”“Meeting成员必须齐全”“Codex未安装”的失效指导。
 
-G1/A1/A2做相关依赖与薄上下文/更正；A3/A4/A5保护worktree/网络/profile/跨端lease；A6/A7/A8复用真实Quay、Testing Plugin和native发布；A9/A10保持两个Skill与真实API/jump/Runbook，人执行边界不变；B1–B10接输入/认识/需求/工作/研究/设计/实施/写作/正文/投递。
+**实现规则**：G1.4按需authoring；原生够用不新造Skill。description精准，root按当前模式展开，不无条件读所有reference或强制全套research/review/test。metadata长度仅信号；安全边界实际由谁消费要验证。旧正确规则不能仅为lint/token数删除。全部21职责对照[现场职责映射](IMPLEMENTATION-BASELINE-20260925.md#5-21项责任的实施落点)，共用MCP/CLI/Provider，不要求物理载体对称。
 
-A2/OpenViking采用一份Tokyo共享Provider：复用官方Claude Code/Codex Memory Plugin与MCP，Windows等走认证私网Binding；关闭OpenViking Skill catalog，能力目录仍归G1。迁现有pre-deployment memory provider contract并接真实adapter/health/capture/recall；OpenViking内部数据库/向量索引不进Git，ChatGPT当前通过private GitHub/records协作。Provider未绑定不能阻断records/checkpoint/source/native-history路径。
+**构建/安装接缝**：`plugin/bundle.yaml`、`plugin/profiles/linux-work.yaml`、`scripts/build.py`与pack/manifest声明共同锁完整Ability SHA；更新真正改变的cache identity，不复用旧版本字符串承载新字节。两个ServerOS MCP已存在，node面转发daemon事实，agent面调用真实控制/Provider；普通原生工具/外部读取不必绕daemon，不把所有Ability变成Core业务代码。
 
-优先迁已核入口债务：work-management的INBOX/每动作Run、information-management的旧reader假设、vision的无条件text-only、session-manager发布越界、report的旧Final/重跑取图、dev-doctor标准YAML错误及MUC完整.env输出示例。元数据长度/关键词只是信号；结构通过之后仍需目标runtime选择/加载/正常任务验证。realization说明留原design，不新增注册/验收数据库。
+当前Node Runtime已装并运行，但检查到的Claude用户安装/启用列表只见ServerOS Testing，Codex配置没有两个ServerOS MCP；marketplace路径存在和历史skill usage不证明fresh加载。分别建立当前版本支持的Claude plugin、Codex plugin或MCP入口；先在隔离profile测试，再获准写正式配置，保留用户其他插件/权限/模型设置。共享部署字节不等于每个会话应加载所有Skill/schema。
 
-**退出门**：每职责从目标普通runtime可发现/调用并有真实receiver。缺现场身份、生产许可等精确标该层，不将只会安全拒绝当正向完成。真实headed登录E2E按AC，mock/synthetic不替原路径。
+**验收**：`test_build.py`、node/agent MCP测试、真实fresh Claude和Codex分别证明bootstrap可发现、两个MCP能连正确daemon、选中能力可读/可执行、可继续查未列入shortlist的能力、受保护效果拒绝。记录source pin、artifact tree hash、cache、enabled、actual runtime和场景结果，不用一行“已安装”替代。现有原生hook确切支持才采用，不臆造热卸载或协议参数。
 
-## P10 已有共享Laya与两个真实业务消费者
+## P10 共享Provider与跨会话Memory
 
-先复核已部署实例/权重/依赖/资源/合法key注入，不创建第二份服务。MarketOps当前in-process适配保留为显式实验时可以，默认共享开发模式须改走现有shared客户端；ServerOS接一个真实非安全关键用途，不以acceptance-a/b替业务consumer。
+**Laya复用优先**：现有用户级`laya-shared.service`实际在线，但执行依赖`toolchains/marketops-mvp`及canonical Ability源码cwd。先核实际消费者、版本与兼容，在授权窗口切到独立稳定Provider环境/包；不重下第二份模型、不并发起第二实例、不因调整ServerOS切坏MarketOps。已有remote新提交先检查，不以旧审计假设重做adapter。
 
-两端同instance/model、独立namespace/evidence/budget、公平有界队列；服务工具链独立于并行MarketOps mutable venv。Laya仅shadow/advisory，ready不证答案质；超长/错语言/高置信错答不自动事实化或权限放行。
+**OpenViking**：目标共享Provider尚无本轮已验证部署。先核官方当前服务/认证/native CC与Codex集成版本，冻结license/revision/model成本与capture数据范围。将`memory/provider-contract.yaml`旧“不得有新服务/完全可由Layer B重建/没有全局Provider”假设和真实adapter/测试一起迁移；保住当前业务权威、daemon无Memory启动/tick依赖。
 
-Serper复用真实SearchProvider及不可变响应，原文才支持邮箱归属；Jev调用许可与客户邮件分开，credential未注入不说无key。无data/费用许可只该LIVE实验受阻，代码/反例仍做且不删除full-MVP必要对照。
+OpenViking单独私网服务与持久数据/一致性备份，设备及项目ACL隔离；Git只放获准记录/语义与安全metadata，不放索引/数据库/凭据。优先上游SDK/HTTP/MCP/hooks组合；若版本不支持精确capture过滤或关闭Skill catalog，则禁用该自动注入/捕获路径，采用有界显式输入，不能为“原生集成”默认上传全量聊天。一个用户namespace不等于跨项目任意可读。
 
-**退出门**：两个实际入口、单模型、公平/取消/超时/停服不自动私有外发；一条有限research-only有原文和领域结果。MarketOps Docker/Compose/Hosting和客户发送延期，不借共享集成扩范围。
+**验收**：一个真实ServerOS用途及允许协调的第二实际consumer访问同一Laya实例；OpenViking用获准非敏感小样在两次fresh native Session capture→recall，后继会话能找回经验但以当前Claim纠正为准；无权项目不返回，撤销立即挡当前读取；停Provider不阻断records/checkpoint，备份恢复有证据。跨Windows验证需对应私网/身份授权，缺少时标该层未验，不能伪造跨设备完成。
 
-## P11 四条真实链和有意义的故障验证
+Serper/Jev/MetaCC复用实际Provider，区分历史搜索、长期经验和当前事实。可选Provider缺失只降级无关任务；但被本需求明确纳入的Memory/真实consumer集成仍是未完义务，不因可降级就删掉完成条件。不要把本次ServerOS实施扩大成MarketOps完整MVP或Support Bot重建。
 
-复用SCENARIO-ACCEPTANCE J01–J10、监控V系列、本轮REF01–REF12与DEEP §10。变化面相同且有效的旧结果可复用；完整套件在适当集成/发布边界运行，不每个小改重复全世界。
+## P11 验收的是用户结果，不是文件数
 
-必须正向证明：①真实消息/转发材料→正确coverage→原生reading/semantic commit→下游；②网页→本人Reference→获准本地/安全Git关系→人改/源更新；③J06当前工作/可信委托→实际Parent/worker→required AC→required文档/维护/通知→回流，并用至少一个**确实需要**复杂设计/review或Quay的case证明这些可选分支可接入；④普通安装、两业务shared Laya、资源卡/Core隔离故障。
+沿用[Scenario Acceptance](SCENARIO-ACCEPTANCE.md)、[Monitoring Acceptance](MONITORING-ACCEPTANCE.md)、REF场景及G1 authoring规则。小改只测相关范围；候选集成和安装边界再跑组合验证。重大control/effect/数据迁移安排独立review，输入含实际代码/证据而非仅作者摘要；review通过不是运行权限。
 
-事前定oracle与scope：缺陷复现成功可完成诊断，NOT_REPRODUCED不是全局修复；预期安全拒绝是测试成功；真正非预期产品AC FAIL按既定规则收证据并停该产品自动修改，不删断言/降真实度。其他独立工作继续。
+| 验收链 | 正向必须发生 | 恢复/反例必须发生 |
+|---|---|---|
+| 信息循环 | 实际获准IM/Doc/会议增量→原生reading→原writer→View/recall | 部分材料晚到、撤回、某源失败，其他源不丢；无变化不叫LLM |
+| 工作循环 | 接受目标→唯一Work Item/Focus→Parent真实推进→required结果 | 零历史产出能开始；child回收/Parent替换不双派；完成后0不补位 |
+| 知识循环 | Follow/OWNED/共享章节按正确关系维护→readback→合规Git | 人改、unknown block、partial媒体/Git/send只补缺边，无第二正文 |
+| 能力循环 | 已有工具复用或必要候选→包→fresh CC/Codex真实选择/调用 | 无关Skill不注入，两个MCP正确连接，权限/来源/pin不漂移 |
+| 运行循环 | 真资源/覆盖/影响→工作日daily卡及独立Incident | 无空新事故、不假绿/假黄；独立Core失明观察，sender失败不改健康 |
+| 跨会话Memory | 同一私有Provider里合法经验可跨Session召回 | 旧决定被纠正、项目无权、Provider停服/恢复，不从Git重建活跃grant |
 
-**退出门**：accepted必需交付都由实际consumer接受，未跑/受阻准确。生产操作未授权不执行；A9/A10可实现/只读部分与现场缺口分别记录，不把假生产fixture标LIVE。
+真实场景预先固定目标、scope、版本、oracle、受众和effects；合成故障只在隔离测试资源。正常路径必须少一次人工搬资料/说“继续”，不能只测试“会安全拒绝”。记录每个真实人工停点的原因，不引入新的计分/审批平台。所需认证/效果未授权记BLOCKED，未跑记NOT_RUN，不以fixture标LIVE。
 
-## P12 发布、有限启用与目录收口
+## P12 安装、有限启用与目录收口
 
-producer/schema兼容→consumer→Skill/Plugin→pin/派生view→正常安装→安全激活→running回读。各repo非force集成，保护远端并行成果；当前symlink更新与进程reload分别观测。
+### 12.1 候选准备：绝不覆盖live current
 
-目录stage/copy→内容/权限/引用校验→真实consumer切换→fresh验证→允许时退休旧路径。unknown/保留备份可成为正常结果，不能为了MISPLACED=0或零staging删唯一数据。保全archive tags/未推送refs、活动profile/容器及排除归档字节。
+源变更经review正常合并，记录ServerOS/Ability/Work Engine/ops/records各自适用SHA；新代码必须保现用`dbc9144`/`8ce6fe7`修复。候选构建使用自己的artifact目录与完整Ability SHA，验证两次相同输入产生相同成员/内容；所有加载依赖包括intake/documents/fleet均应在包内。模型数据、临时文件和用户状态不进不可变artifact。
 
-飞书只做授权范围必要分类/索引修复、原对象回读，不全库重排或删他人源。publish-excluded与heavy-media各保原owner，缺字节要先查合法外置记录而非判丢失。
+构建/校验示例仅说明本轮已读取的CLI形状；执行前重核最新`--help`，变量由本任务真实记录赋值，未设置就停止，不猜实例路径：
 
-完整daily timer在J06真通过及可信trigger/互斥/预算/撤销/恢复配置存在后才启；若仅workbench render，只称资料刷新。独立归档/播报可各自门通过后单独启用，但不汇总成全链已完成。
+```bash
+# 只写本任务候选；$CANDIDATE、$MARKETPLACE必须在自己的artifact root内
+python3 scripts/build.py --write --bundle plugin/profiles/linux-work.yaml \
+  --ability-repo "$ABILITY_REPO" --ability-rev "$ABILITY_SHA" \
+  --output "$CANDIDATE" --marketplace-path "$MARKETPLACE"
+python3 scripts/build.py --check --bundle plugin/profiles/linux-work.yaml \
+  --ability-repo "$ABILITY_REPO" --ability-rev "$ABILITY_SHA" \
+  --output "$CANDIDATE" --marketplace-path "$MARKETPLACE"
+# 指向隔离状态，验证候选而不stage/swap；Plugin kind也单独验证
+python3 scripts/release.py promote --dry-run --artifact "$CANDIDATE" \
+  --revision "$RELEASE_ID" --runtime-root "$CANDIDATE_DIST" \
+  --composition serveros-linux-work --kind node-runtime \
+  --state-dir "$TEST_STATE" --unit-dir "$TEST_UNITS" --bin-dir "$TEST_BIN"
+```
 
-停用先停止新准入、核真实worker，再关本轮受管trigger/恢复旧安装；数据/证据不清空。不可逆数据变化须预先备份/演练与明确权限。
+`--no-reload`**不是dry-run**：正常promote仍写revision、切链接、写unit/CLI。`promote`的daemon-reload也**不是restart**，不代表现存进程加载新版。`daily-task`当前只装workbench render；不能称它是完整日循环安装器。`alert-worker`默认可能启用timer，不能盲跑造成第二sender。
 
-**最终报告**：source/build/install/running版本；21项入口/receiver与未覆盖；四条真链；归档/discovery/材料/理解和Reference各自范围；磁盘/飞书实际回读、保留例外；安全事件待owner动作；明确停用/回滚。不要再以“只有最后消息没发”掩盖未完成的业务consumer。
+### 12.2 获准切换：Node、Claude、Codex分别核验
 
-## 5. 如何不再中途停错地方
+激活前再读容量/owner/进行中attempt/授权；记录旧current/previous、unit/drop-in、CLI链接、Plugin版本/cache/enable、scheduler状态、受管store schema及一致性backup。只暂停本次影响的写者/发送器，保留独立Core健康可见性；其他项目和共享网关不跟随停机。
 
-本计划已决定Source/Reference角色、深归档、单主同步、Testing Plugin、生产两Skill、共享Laya及Parent继续。缺函数/producer/consumer、普通跨自有仓合并、数据适配和安全可逆迁移都属于实施。真实费用/数据/生产/ACL/不可逆/业务冲突或约定产品FAIL才找人，给一次聚合的小决策包。
+沿release机制stage→verify→切`serveros-linux-work/current`→渲染准确state base→受控daemon-reload及**明确获准的目标user unit restart**。核新PID/启动时间、实际文件/版本、socket、持续tick和调用结果；只有daemon响应不能证明全部业务完成。用户bus需正确`XDG_RUNTIME_DIR`/`DBUS_SESSION_BUS_ADDRESS`，不能把远程shell缺bus误判daemon宕机。
 
-已写下当前约束不等于可信runtime已执行；必须让现有控制面消费。长任务预算用尽给准确checkpoint；未经scheduler真实登记不许口头后台承诺。对已进main的新成果先复用和回归，不反复依据旧报告重做；新证据推翻设计就在所属合同/实现修正，不无限新增同义文档。
+Claude安装对应新composition并核cache与enabled记录；Codex按其实际版本支持的plugin/MCP方式登记，分别fresh Session读取。不能只修改marketplace目录或复制Skills就宣称安装完成；不能用一次性临时覆盖config的成功替代日常入口。测试ServerOS Node MCP读实际daemon、Agent MCP遵守授权、必要Skill按需发现、历史用户插件/模型配置仍有效。
 
-## 6. 本次文档候选与后续授权分界
+A2/Laya等外部Provider独立部署/切换；其健康/认证/质量和数据迁移不挂在serverosd启动路径。相同候选跨Node/Plugin部分成功要明确版本组合；发现接口不兼容就回退受影响consumer，不让Node新、Plugin旧的混合状态长期隐身。
 
-本次用户要求是收敛需求/产品/架构文档，不是执行P0–P12或生产切换的授权。两个仓库配套文档经review集成后才成为main新基线；实现前再核远端/installed/owner，不能从旧摘要SHA开工。
+### 12.3 真正启用日常自动化
 
-未决policy保留为显式建议：真实产品FAIL后扩大自动修复、Board直接编辑自动接受、自动park/补位、未定义的监控稳定/提醒参数、无人值守安装/费用/外发范围。不得由实施者选择一个“最自动化”默认来绕过现有边界。
+先登记真实source/receiver、预算、时区/业务日历、独占trigger owner、幂等key、checkpoint和暂停/撤销方式；在受控小样跑通对应Journey后才启用该有限routine。正常启动要能在没有用户第二条“继续”消息时接下一步。没有回调支持就用有限poll，不自造常驻workflowd。
 
-四条真实用户链可以分片实现/验收，无需等每项未知都消失；但必需结果不能从AC里删掉。每次提交说明source改了什么、实际consumer验证了什么、哪些未启用，正常回滚/停用与实际效果回读并存。
+逐项启用：B1增量/Follow/会议pending复查；B2 reading→writer；晚间catch-up与20:00对齐提醒；只接续已接受Focus的Parent；需要时的B9维护/B8报告；工作日daily卡和独立incident。各自无变化可安静退出；一项失败只保该范围lag，不重抓已完成数据，不重复Task/消息。
+
+现有`tokyo-status-card.timer`/`tokyo-alert-digest.timer`必须与新消费者协调切换：保持同一责任owner，替换原sender行为而非同时启用两套。完整日循环不能由一次render或timer active证明；至少验证实际一次触发、接收、效果回读、重放不重复以及新Session接续。计划中的时间不自动取得云写/通知权限。
+
+### 12.4 目录收口按consumer证明，不按名字清空
+
+| 对象 | 收口方式 | 保留/停止条件 |
+|---|---|---|
+| canonical源码及并行worktree | 正规Git集成，新工作只在自有tree；提交/PR关系可追 | dirty/未推送ref/活跃owner不动；不得reset/clean/stash或force |
+| LinuxWork revisions/current/previous | 不可变候选、准确链接与回退版本，校验fresh运行consumer | 保current、previous、在途安装与实际回退依赖 |
+| 旧`runtime-assets/hwz-server-os/current` | 先查Plugin/CLI/MCP/marketplace/unit全部引用再提迁移 | 它当前是实目录，不可凭“旧core”名称删除 |
+| 三个SRV-0011测试daemon与产物 | 核业务owner/lease/socket/打开文件/实际影响，明确停止方案 | 历史PID/Run终态不授权kill；unknown effect/唯一证据先保留 |
+| ops脚本与Laya执行环境 | 从独立worktree准备稳定发布，再切真实unit/sender consumer | 活动ops checkout不能直接pull；共享Laya不能跟随清理失效 |
+| 原生Skills/Plugin cache/旧备份 | 比对canonical revision、安装清单、实际加载与回退需求 | 不批量删除`.claude/skills`/`.codex/skills`历史备份，不手改派生物反写源 |
+| records、state、DB、资产 | 保权威原位，备份/迁移验证，修resolver与locator而非重造同义树 | serveros.db/WAL、游标、回执、原始材料不得因“收敛目录”清空或入Git |
+| 飞书历史对象 | 新对象自动正确落位，已有对象按接受范围局部迁移/readback | 不批量重排空间、删原Minutes或复制共享正文；需独立权限 |
+
+每个候选目录执行：相关inventory→明确意图/权限→stage/copy→内容/权限校验→切全部实际consumer→fresh验证→满足retention后才退休旧路径。可证明的正常保留/DEFER是合法结果；缺producer/consumer却改名“保留例外”不能掩盖未完成。
+
+### 12.5 回退必须覆盖代码、配置、运行与语义
+
+先停止本次新增派发/发送，查在途worker与unknown effects；不重放外部请求。回退到记录的兼容release，恢复对应unit/CLI/Plugin配置并重启获准目标，重新查daemon和fresh终端；恢复旧timer前确认新owner已停。`release.py rollback`的支持范围按当前源码验证，不把它当所有数据/Provider都自动可逆。
+
+数据库/文档schema和已发生云效果单独处理：代码回退不能直接用旧state快照覆盖新grant撤销、已发送消息、游标与人改。预先写兼容/迁移反向路径，不可安全降级则停止相关写入并交具体恢复决定；保留当前日志、原始source和已接受结果。OpenViking/Laya用各自版本及持久化恢复，不复制索引进Git。
+
+## 3. CC逐片执行与最终交付
+
+每个切片按“最新accepted baseline→复用/最小改动→相关验证→真实接收→commit/checkpoint”推进。阶段是计划而非强制业务状态；同文件/环境冲突只隔离该片。不需要每片重新全量研究、独立大review或跑全库测试。
+
+一次性交付给用户：
+
+- 各仓最终commit、包的ServerOS/Ability pins及tree hash，当前/previous、实际Node PID/版本、Claude/Codex装载证明；
+- 21职责各自真实入口/receiver/有效证据/仍待身份或权限的层，按五条循环汇总，不以目录计完成度；
+- 实际启用的source、routine、触发owner、日历/窗口、最后有效结果和安全暂停方法；
+- 云文档/报告/通知真实readback，Memory/Laya实际consumer及失败降级，不把源码样例当LIVE；
+- 目录迁移前后locator、实际引用切换、删除权限与保留理由，其他并行工作未被改动；
+- 回退验证及剩余必需项。仍有required项未满足则报告PARTIAL，不用“只差部署/只差consumer”当完成。
+
+**启动委托不是本页自动执行**：本轮仅在GitHub交付计划。实施、安装、迁移和启用由后续明确委托触发；无认证/预算/权限的效果不得从本页推导授权。整个计划未改变生产人执行、共享WIP和秘密边界。

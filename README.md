@@ -2,6 +2,8 @@
 
 [中文入口](README.zh.md) · [Canonical architecture](ARCHITECTURE.md) · [Architecture review](docs/architecture/CONSOLIDATION-REVIEW-20260921.md)
 
+Implementation entry: [the single P0–P12 plan](docs/CC-EXECUTION-PLAN.md), [dated Tokyo baseline](docs/IMPLEMENTATION-BASELINE-20260925.md), and [CC handoff](docs/CC-IMPLEMENTATION-HANDOFF.md). These cover implementation, authorized installation, real acceptance, finite activation and directory convergence; they are not deployment receipts.
+
 **A personal user-space Agent Work OS that enhances Claude Code, Codex and their native tools.**
 
 ## The daily experience
