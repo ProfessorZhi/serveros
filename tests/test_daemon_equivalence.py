@@ -263,6 +263,47 @@ def _count_agreement(*, method: str, keys: str, before: int, direct: int,
     return None
 
 
+# How many times the triple is taken before a disagreement is believed.
+#
+# The bracket in `_count_agreement` closes the case where the host changes and
+# STAYS changed. It does not close the case where the host changes and comes
+# back inside the window, because that leaves the two daemon reads equal —
+# which is the shape `_count_agreement` reads as "the host held still". Its
+# docstring claims that residual window is "milliseconds instead of 1.6 s";
+# measured on this host it is not. `runtime.groups` counts other people's login
+# sessions, an sshd session scope lives about 1.7 s, and the direct CLI read
+# takes about 1.5 s of the same order — so a foreign session can be born and die
+# entirely between the daemon's two reads and leave them equal.
+# `artifacts/skills/serveros/daemon-equivalence-20260925/group-churn-probe.jsonl`
+# is the probe: interleaved triples on a shared host, with the extra and missing
+# groups named, and they are EXTERNAL `EXTERNAL_USER_SESSION` scopes appearing
+# and ending in both directions.
+#
+# A retry is not a tolerance, and it is not a weaker assertion. The numbers
+# still have to be EQUAL — nothing here accepts "close". What changes is which
+# run of the comparison is believed: a transient has to be over before the last
+# attempt, while a blind daemon has to produce the same disagreement every time,
+# which it will, because blindness is a property of the daemon rather than of
+# the moment. The hermetic test above is what makes that argument available —
+# the daemon's answer IS `view.py`'s answer computed at call time, so the daemon
+# has no cached observation to be stale, and a disagreement can only ever be two
+# readers sampling two instants.
+#
+# Stated rather than discovered later: a daemon blind only while a transient is
+# present now gets two extra chances to be sampled in a quiet moment. A daemon
+# blind to a class of facts is blind to it on every attempt and still fails on
+# the first three.
+ATTEMPTS = 3
+
+
+def _sample_the_pair(method: str, cli_args, keys):
+    """One bracketed comparison: daemon, direct observation, daemon again."""
+    before = len(_rows(_ipc(method)["result"], *keys))
+    direct = len(_rows(_cli(*cli_args), *keys))
+    after = len(_rows(_ipc(method)["result"], *keys))
+    return before, direct, after
+
+
 @pytest.mark.parametrize("method,cli_args,keys", [
     ("runtime.list", ("runtime", "list"), ("resources",)),
     ("runtime.groups", ("runtime", "groups"), ("groups",)),
@@ -274,14 +315,69 @@ def test_the_daemon_and_the_cli_count_the_same_things(method, cli_args, keys):
 
     Not a tolerance — `_count_agreement` says exactly what is asserted when the
     host holds still across the comparison and what is asserted when it does
-    not. Read that before changing anything here.
+    not, and `ATTEMPTS` says why a disagreement is retried before it is believed.
+    Read both before changing anything here.
     """
-    before = len(_rows(_ipc(method)["result"], *keys))
-    direct = len(_rows(_cli(*cli_args), *keys))
-    after = len(_rows(_ipc(method)["result"], *keys))
-    message = _count_agreement(method=method, keys=" ".join(keys), before=before,
-                               direct=direct, after=after)
-    assert message is None, message
+    message = None
+    for attempt in range(1, ATTEMPTS + 1):
+        before, direct, after = _sample_the_pair(method, cli_args, keys)
+        message = _count_agreement(method=method, keys=" ".join(keys), before=before,
+                                   direct=direct, after=after)
+        if message is None:
+            if attempt > 1:
+                warnings.warn(
+                    f"{method}: the comparison disagreed {attempt - 1} time(s) "
+                    f"before this one agreed, so the difference was a transient "
+                    f"rather than a reader that sees a smaller host. Exact equality "
+                    f"was asserted on this attempt.", stacklevel=2)
+            return
+    assert message is None, (
+        f"{message} — and it reproduced on all {ATTEMPTS} attempts, which is what "
+        f"separates a daemon that sees a subset of the host from a host that moved")
+
+
+def test_a_persistent_disagreement_is_not_retried_into_a_pass(monkeypatch):
+    """A blind daemon must still fail, however many times it is asked.
+
+    The retry above is only legitimate if it cannot convert a real disagreement
+    into a pass, so it is driven here with the blindness defect itself: a daemon
+    that reports a smaller number on every attempt. The assertion is the failure
+    plus proof it really asked `ATTEMPTS` times rather than returning early.
+    """
+    calls: list[str] = []
+
+    def always_disagrees(method, cli_args, keys):
+        calls.append(method)
+        return 136, 137, 136
+
+    monkeypatch.setattr(sys.modules[__name__], "_sample_the_pair", always_disagrees)
+    with pytest.raises(AssertionError) as raised:
+        test_the_daemon_and_the_cli_count_the_same_things(
+            "runtime.groups", ("runtime", "groups"), ("groups",))
+    assert f"all {ATTEMPTS} attempts" in str(raised.value), raised.value
+    assert len(calls) == ATTEMPTS, "the retry did not actually retry"
+
+
+def test_a_transient_disagreement_is_survived_and_said_out_loud(monkeypatch):
+    """The churn case, and the warning that keeps it from being silent.
+
+    Without the warning, a host that churns on every run would make the exact
+    assertion unreachable while the suite stayed green — which is the shape of
+    the dead guard this round keeps finding. It is asserted here so that
+    removing it fails.
+    """
+    calls: list[str] = []
+    readings = [(136, 137, 136), (137, 137, 137)]
+
+    def disagrees_once(method, cli_args, keys):
+        calls.append(method)
+        return readings[len(calls) - 1]
+
+    monkeypatch.setattr(sys.modules[__name__], "_sample_the_pair", disagrees_once)
+    with pytest.warns(UserWarning, match=r"disagreed 1 time\(s\) before this one agreed"):
+        test_the_daemon_and_the_cli_count_the_same_things(
+            "runtime.groups", ("runtime", "groups"), ("groups",))
+    assert len(calls) == 2, calls
 
 
 @pytest.mark.parametrize("before,direct,after,expected", [
