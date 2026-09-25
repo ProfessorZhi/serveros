@@ -26,6 +26,10 @@ The tests below are grouped by the thing that would be wrong if they failed:
     audio is present" into a miss.
   * `PresenceTest` — the five states, and the refusal to call anything but all
     four PRESENT a bundle.
+  * `ReadableTest` / `ContentMemberContractTest` — the reading's second answer:
+    which material can be read now, with its content, while the unit is not
+    complete. 已有合法 transcript 可先读，不等 MP3 或全套成员 is a thing `state` cannot
+    say, and handover must not be convertible into "this is a bundle".
   * `ScopeTest` — one meeting's material, `MIXED_SCOPE` when it is not, and the
     wildcard refusal read from the kernel rather than copied.
   * `AxesTest` — the round's own defect, kept as a test: a producer-side word
@@ -333,6 +337,192 @@ class PresenceTest(unittest.TestCase):
         with self.assertRaises(bundle.Refused) as caught:
             assembled(document)
         self.assertIn("recording", str(caught.exception))
+
+
+# ---------------------------------------------------------------------------
+# what may be read now, apart from whether the unit is complete
+# ---------------------------------------------------------------------------
+#: Synthetic segments. `tie` is the producer's word for "this segment is about
+#: that work item"; the reader passes it through and never invents one.
+SEGMENTS = [{"tie": "WI-0001", "text": "a synthetic segment"},
+            {"tie": None, "text": "a synthetic aside"}]
+
+
+class ReadableTest(unittest.TestCase):
+    def test_a_transcript_is_readable_while_the_audio_is_still_processing(self):
+        """The plan's P2 line as a test: 已有合法 transcript 可先读，不等 MP3 或全套成员.
+
+        Before this, the transcript's own segments were unreachable in exactly
+        this case: `bundle` is None for every reading that is not COMPLETE, and
+        the only place the segments were put was inside that bundle. "Not a unit
+        yet" was being read as "nothing here is readable yet".
+        """
+        result = assembled(declaration(
+            content={"transcript_segments": SEGMENTS},
+            members=[member("recording", "PROCESSING"),
+                     member("transcript", "PRESENT"),
+                     member("summary", "ABSENT"),
+                     member("minute", "PRESENT")]))
+        reading = result["reading"]
+        self.assertEqual(reading["state"], "INCOMPLETE")
+        self.assertIsNone(result["bundle"])
+        self.assertEqual(reading["readable"]["present"], ["transcript", "minute"])
+        self.assertEqual(reading["readable"]["content"],
+                         {"transcript_segments": SEGMENTS})
+        self.assertEqual(reading["readable"]["withheld"], {})
+
+    def test_reading_the_material_is_not_being_handed_a_bundle(self):
+        """`readable` carries nothing the kernel names a bundle by.
+
+        The two are different acts and the shape keeps them apart: a reader who
+        wanted a decision still waits for four members, and there is no
+        `bundle_ref` here to build a request of their own from.
+        """
+        result = assembled(declaration(
+            content={"transcript_segments": SEGMENTS},
+            members=[member("recording", "PROCESSING"),
+                     member("transcript", "PRESENT"),
+                     member("summary", "PRESENT"),
+                     member("minute", "PRESENT")]))
+        readable = result["reading"]["readable"]
+        self.assertNotIn("bundle_ref", readable)
+        self.assertNotIn("scope", readable)
+        self.assertEqual(sorted(readable),
+                         ["because", "content", "present", "withheld"])
+        self.assertEqual(sorted(result), ["bundle", "reading"])
+        self.assertIn("no question was put to the kernel", readable["because"])
+
+    def test_the_readable_half_and_the_state_come_from_one_not_present_map(self):
+        """A member handed over can never be one `state` called absent.
+
+        Swept over every member and every state, because the failure this guards
+        is the two halves being computed from two different readings of the same
+        declaration — which no single case would show.
+        """
+        mapping = bundle.member_kinds(VOCABULARY)
+        for word in bundle.required_members():
+            for state in PRESENT_STATES:
+                members = [member(mapping[name], "PRESENT") for name in mapping]
+                members[bundle.required_members().index(word)] = member(
+                    mapping[word], state)
+                with self.subTest(member=word, state=state):
+                    reading = assembled(declaration(
+                        content={"transcript_segments": SEGMENTS},
+                        members=members))["reading"]
+                    present = reading["readable"]["present"]
+                    for handed in present:
+                        self.assertEqual(reading["not_present"][handed], "PRESENT")
+                    self.assertEqual(
+                        present,
+                        [w for w in bundle.required_members()
+                         if reading["not_present"][w] == "PRESENT"])
+
+    def test_segments_attached_to_a_member_that_is_not_present_are_reported(self):
+        """Attached, but for a transcript the declaration did not call present.
+
+        Neither handed over nor dropped: a reader told only "no content" takes
+        away that there was none, and the declaration's own inconsistency is a
+        fact about it that somebody can act on.
+        """
+        result = assembled(declaration(
+            content={"transcript_segments": SEGMENTS},
+            members=[member("recording", "PRESENT"),
+                     member("transcript", "PROCESSING"),
+                     member("summary", "PRESENT"),
+                     member("minute", "PRESENT")]))
+        readable = result["reading"]["readable"]
+        self.assertEqual(readable["present"], ["audio", "summary", "minute"])
+        self.assertEqual(readable["content"], {})
+        self.assertEqual(readable["withheld"], {"transcript_segments": "transcript"})
+
+    def test_nothing_present_is_stated_and_not_an_empty_answer(self):
+        result = assembled(declaration(members=[]))
+        reading = result["reading"]
+        self.assertEqual(reading["state"], "INCOMPLETE")
+        self.assertIsNone(result["bundle"])
+        self.assertEqual(reading["readable"]["present"], [])
+        self.assertEqual(reading["readable"]["content"], {})
+        self.assertIn("nothing is present to read yet", bundle.render(result))
+
+    def test_a_complete_reading_hands_over_the_same_segments_the_bundle_carries(self):
+        """One producer of the content, so the two halves cannot disagree about
+        what a declaration's segments are."""
+        result = assembled(declaration(content={"transcript_segments": SEGMENTS}))
+        self.assertEqual(result["reading"]["state"], "COMPLETE")
+        self.assertEqual(result["reading"]["readable"]["content"],
+                         result["bundle"]["content"])
+        self.assertEqual(result["bundle"]["content"]["transcript_segments"], SEGMENTS)
+
+    def test_mixed_scope_hands_nothing_over(self):
+        """The refusal there is about scope: the members name more than one
+        meeting, and material whose meeting is undetermined is not read out
+        under a meeting of this reader's choosing."""
+        result = assembled(declaration(
+            content={"transcript_segments": SEGMENTS},
+            members=[member("recording", "PRESENT", meeting_ref=MEETING),
+                     member("transcript", "PRESENT", meeting_ref=OTHER_MEETING),
+                     member("summary", "PRESENT", meeting_ref=MEETING),
+                     member("minute", "PRESENT", meeting_ref=MEETING)]))
+        reading = result["reading"]
+        self.assertEqual(reading["state"], "MIXED_SCOPE")
+        self.assertIsNone(result["bundle"])
+        self.assertEqual(reading["readable"]["content"], {})
+        self.assertEqual(reading["readable"]["withheld"], {})
+        self.assertIn("scope was refused", reading["readable"]["because"])
+        # Listed, so a reader can see the material is there and is not being
+        # handed over rather than concluding it is absent.
+        self.assertIn("transcript", reading["readable"]["present"])
+
+    def test_a_malformed_segments_shape_is_refused_on_both_paths(self):
+        """The shape is checked once, so an incomplete reading cannot be the
+        path that quietly reshapes content the complete one refuses."""
+        for label, members in (
+                ("complete", [member("recording", "PRESENT"),
+                              member("transcript", "PRESENT"),
+                              member("summary", "PRESENT"),
+                              member("minute", "PRESENT")]),
+                ("incomplete", [member("recording", "PROCESSING"),
+                                member("transcript", "PRESENT"),
+                                member("summary", "PRESENT"),
+                                member("minute", "PRESENT")])):
+            with self.subTest(reading=label):
+                with self.assertRaises(bundle.Refused) as caught:
+                    assembled(declaration(content={"transcript_segments": "not a list"},
+                                          members=members))
+                self.assertIn("transcript_segments", str(caught.exception))
+
+
+class ContentMemberContractTest(unittest.TestCase):
+    """Which member gates a content key is declared, not inferred from a name."""
+
+    def test_every_content_key_is_gated_on_one_of_the_four_members(self):
+        unit = bundle.required_members()
+        mapping = bundle.content_members()
+        self.assertTrue(mapping, "the contract declares no content_member at all")
+        for key, word in mapping.items():
+            with self.subTest(key=key):
+                self.assertIn(word, unit)
+
+    def test_a_content_key_gated_on_a_word_the_unit_is_not_made_of_is_refused(self):
+        """The negative half is the point: a gate nobody can ever satisfy would
+        otherwise be a key that is silently never readable."""
+        original = bundle.contract()
+        mutated = json.loads(json.dumps(original))
+        mutated["content_member"]["values"] = {"transcript_segments": "recording"}
+        bundle._CONTRACT_CACHE = mutated
+        try:
+            with self.assertRaises(bundle.Refused) as caught:
+                bundle.content_members()
+            self.assertIn("recording", str(caught.exception))
+        finally:
+            bundle._CONTRACT_CACHE = original
+
+    def test_the_contract_says_what_the_readable_half_is_for(self):
+        """The contract is where a producer learns the two answers are not one.
+        A `readable` block that stopped explaining why would leave the next
+        editor free to fold it back into `state`."""
+        block = bundle.contract()["readable"]["_comment"]
+        self.assertIn("可先读", block)
 
 
 # ---------------------------------------------------------------------------
@@ -676,6 +866,51 @@ class CliTest(unittest.TestCase):
         self.assertIn("PROCESSING", out)
         self.assertNotIn("decision ", out)
         self.assertIn("bundle      (none", out)
+
+    def test_the_cli_prints_what_is_readable_and_still_puts_no_question(self):
+        """The reading a person gets while the audio is still coming: material
+        with no decision, and an exit code that says so."""
+        proc = cli("space", "meeting", "--sidecars", str(sidecars(declaration(
+            content={"transcript_segments": SEGMENTS},
+            members=[member("recording", "PROCESSING"),
+                     member("transcript", "PRESENT"),
+                     member("summary", "PRESENT"),
+                     member("minute", "PRESENT")]))),
+            "--observed-at", AS_OF)
+        self.assertEqual(proc.returncode, 2, proc.stdout.decode())
+        out = proc.stdout.decode()
+        self.assertIn("state       INCOMPLETE", out)
+        self.assertIn("readable    transcript, summary, minute", out)
+        self.assertNotIn("withheld", out)
+        self.assertIn("bundle      (none", out)
+
+    def test_the_cli_prints_a_withheld_key_with_the_state_that_withheld_it(self):
+        proc = cli("space", "meeting", "--sidecars", str(sidecars(declaration(
+            content={"transcript_segments": SEGMENTS},
+            members=[member("recording", "PRESENT"),
+                     member("transcript", "PROCESSING"),
+                     member("summary", "PRESENT"),
+                     member("minute", "PRESENT")]))),
+            "--observed-at", AS_OF)
+        self.assertEqual(proc.returncode, 2, proc.stdout.decode())
+        out = proc.stdout.decode()
+        self.assertIn("withheld  transcript_segments", out)
+        self.assertIn("PROCESSING", out)
+
+    def test_the_json_reading_carries_the_segments_while_no_bundle_does(self):
+        proc = cli("space", "meeting", "--sidecars", str(sidecars(declaration(
+            content={"transcript_segments": SEGMENTS},
+            members=[member("recording", "PROCESSING"),
+                     member("transcript", "PRESENT"),
+                     member("summary", "PRESENT"),
+                     member("minute", "PRESENT")]))),
+            "--observed-at", AS_OF, "--json")
+        self.assertEqual(proc.returncode, 2, proc.stderr.decode())
+        payload = json.loads(proc.stdout.decode())
+        self.assertIsNone(payload["bundle"])
+        self.assertEqual(sorted(payload), ["bundle", "reading"])
+        self.assertEqual(payload["reading"]["readable"]["content"],
+                         {"transcript_segments": SEGMENTS})
 
     def test_sidecars_without_an_observed_at_is_refused(self):
         """The reading is a statement about a meeting at an instant; one taken

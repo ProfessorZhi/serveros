@@ -45,6 +45,20 @@ member_kind:
     summary: summary
     minute: minute
 
+content_member:
+  _comment: >
+    Which ONE of the four members a `declaration.content` key belongs to. The
+    transcript's segments are not a member — they are the transcript's content —
+    and whether they may be handed over is decided by whether the machine
+    policy's `transcript` member is PRESENT, never by whether the declaration
+    bothered to attach segments. A producer that attached segments while
+    declaring the transcript PROCESSING or ABSENT has content for material it
+    did not declare present; that is reported under `withheld` and not handed
+    over. Stated here rather than inferred from the key's spelling, for the same
+    reason as `member_kind`: a key's name is not a declaration of what it is.
+  values:
+    transcript_segments: transcript
+
 presence:
   _comment: >
     What ONE declared sidecar is. Four of the five are not PRESENT, and they are
@@ -79,6 +93,21 @@ readings:
     COMPLETE: every required member is PRESENT
     INCOMPLETE: at least one required member is not PRESENT; `not_present` says which, and what each is
     MIXED_SCOPE: the declaration carries members with more than one meeting_ref; refused, with both named
+
+readable:
+  _comment: >
+    The second of the reading's two answers, and the reason it is not the first
+    one. `state` is about the UNIT — is this one meeting's minute, audio,
+    transcript and summary together; `readable` is about MATERIAL — which of
+    those members can be read this minute. The plan's P2 line (已有合法 transcript
+    可先读，不等 MP3 或全套成员) is why both exist: a transcript that is already
+    there is readable while the recording is still being produced, and saying so
+    must not be convertible into "this is a bundle". Handover does not make the
+    unit, and the state does not gate the handover — the two are computed from
+    one `not_present` map, so a member `readable` handed over can never be one
+    the state called ABSENT. Content attached to a member that is NOT present is
+    reported under `withheld` rather than handed over, and an empty `content`
+    explains itself: it is never a claim that the meeting had none.
 
 axes:
   _comment: >
