@@ -50,6 +50,7 @@ the module. The two instants that appear are arguments.
 from __future__ import annotations
 
 import ast
+import datetime
 import importlib.util
 import json
 import os
@@ -1585,6 +1586,177 @@ class TestTheDispatchVerb:
         assert "nothing was started" in done.stderr
         assert json.loads((receipts / "act-1.json").read_text(
             encoding="utf-8"))["status"] == "EXITED"
+
+    def admitted_at_the_real_clock(self, env: dict) -> AgentControlStore:
+        """One cycle admitted NOW, under a window built around now.
+
+        Built on the real clock rather than on this file's `T0`/`T1`/`T2`
+        constants, and that is forced by what the tests below are about: the
+        ordering of two instants. `seeded()` admits at `2026-01-01`, before
+        every real instant, so a receipt written now would read as younger than
+        its own admission and the comparison under test could never fire — the
+        fixture would make the criterion look satisfied without exercising it.
+        """
+        now = datetime.datetime.now(datetime.timezone.utc)
+        store = AgentControlStore(store_path(env))
+        store.put_context({"context_ref": CONTEXT})
+        store.put_grant(a_grant(
+            valid_from=(now - datetime.timedelta(hours=1)).isoformat(),
+            expires_at=(now + datetime.timedelta(days=1)).isoformat()))
+        store.admit(a_record(admitted_at=now.isoformat()))
+        return store
+
+    def declare_and_hold(self, env: dict, cycle_ref: str) -> None:
+        """The lease phase, confirmed the way the CLI confirms it."""
+        declared = cli("lease", "declare", "browser:chromium", "--scope",
+                       "session", "--holder", cycle_ref, "--sharing", "shared",
+                       env_extra=env)
+        assert declared.returncode == 0, declared.stderr
+        confirmed = cli("work", "confirm", cycle_ref, "--phase", "LEASE_HELD",
+                        env_extra=env)
+        assert confirmed.returncode == 0, confirmed.stderr
+
+    def retired_key_reused(self, env: dict, command: str):
+        """A cycle that dispatched, retired, and a new cycle on the same key.
+
+        The shape a person produces by closing one cycle and admitting the next
+        under the same readable key — permitted by design, since `retire`
+        releases the key and `admit` refuses only a second admission under a key
+        an OPEN one holds. The second admission happens after the first has
+        written its receipt, which is the ordering the criterion is about.
+
+        Returns the receipt path and the first receipt's `started_at`, so a
+        caller can assert the file was not touched.
+        """
+        store = self.admitted_at_the_real_clock(env)
+        self.declare_and_hold(env, "cyc-1")
+        first = self.dispatch(env, *command.split())
+        assert first.returncode == 0, first.stderr
+        path = self.receipts(env) / "act-1.json"
+        started_at = json.loads(path.read_text(encoding="utf-8"))["started_at"]
+
+        retired = cli("work", "retire", "cyc-1", env_extra=env)
+        assert retired.returncode == 0, retired.stderr
+        store.admit(a_record(cycle_ref="cyc-2", action_key="act-1",
+                             admitted_at=datetime.datetime.now(
+                                 datetime.timezone.utc).isoformat(),
+                             lease={"resource": "browser:chromium",
+                                    "scope": "session", "holder": "cyc-2"}))
+        self.declare_and_hold(env, "cyc-2")
+        return path, started_at
+
+    def test_a_reused_key_is_refused_a_receipt_written_before_this_cycle(self, tmp_path):
+        """The retire-then-reuse replay, refused by the verb that would record it.
+
+        `work retire` releases an action key, `admit` refuses only a second
+        admission under a key an OPEN one holds, and `invoke_once` replays one
+        receipt per key — so a cycle that takes a retired key and dispatches the
+        SAME command receives the earlier cycle's receipt and this verb would
+        record `DISPATCHED` on evidence about work that cycle never did. The
+        store's own docstring already called that outcome a defect; its guard
+        covered only open admissions, and retirement is what reopened the path.
+
+        Four assertions, and the last two are the ones a "helpful" fix would
+        drop: the receipt is untouched (it is the earlier cycle's evidence about
+        work it really did), and the reusing cycle's phase is still unrecorded,
+        so nothing downstream reads a dispatch that was not its own.
+        """
+        env = a_data_root(tmp_path)
+        path, started_at = self.retired_key_reused(env, "echo one")
+
+        again = self.dispatch(env, "echo", "one", cycle="cyc-2")
+
+        assert again.returncode != 0, again.stdout
+        assert "predates the cycle" in again.stderr
+        assert "Nothing was run" in again.stderr
+        assert json.loads(path.read_text(encoding="utf-8"))["started_at"] \
+            == started_at
+        confirmations = AgentControlStore(store_path(env)).get_admission(
+            "cyc-2")["confirmations"]
+        assert "DISPATCHED" not in confirmations
+        assert "LEASE_HELD" in confirmations, (
+            "the refusal must be about the dispatch alone; the phase the lease"
+            " store really answered is still recorded")
+
+    def test_the_confirm_verb_refuses_it_too(self, tmp_path):
+        """The other producer of `DISPATCHED`, which the same file feeds.
+
+        `work dispatch` is one way a phase records; `work confirm --phase
+        DISPATCHED` is the other, and it reads the same receipt through the same
+        reader. A check placed at `work dispatch`'s call site would leave this
+        one recording a dispatch from another cycle's evidence, so the question
+        is asked where the file is opened and both are covered by construction.
+        """
+        env = a_data_root(tmp_path)
+        self.retired_key_reused(env, "echo one")
+
+        done = cli("work", "confirm", "cyc-2", "--phase", "DISPATCHED",
+                   "--receipts", str(self.receipts(env)), env_extra=env)
+
+        assert done.returncode != 0, done.stdout
+        assert "predates the cycle" in done.stderr
+        assert "did not make" in done.stderr
+        assert "DISPATCHED" not in AgentControlStore(
+            store_path(env)).get_admission("cyc-2")["confirmations"]
+
+    def test_a_cycle_reads_its_own_receipt_without_being_refused(self, tmp_path):
+        """The direction the comparison must never catch, on real instants.
+
+        The criterion is `started_at < admitted_at`, and the case that would
+        make it wrong is a cycle reading its OWN receipt: a retry under the same
+        cycle is always dispatched after that cycle was admitted, so the
+        ordering holds — but "always" is the argument, and this is the
+        measurement. Admission and dispatch are both the real clock here, and
+        the second trigger is answered as a replay of the same cycle rather than
+        as somebody else's file.
+
+        The second trigger carries a DIFFERENT command on purpose: the phase
+        says this cycle has dispatched, so comparing the two commands would
+        refuse a replay for being a replay. What is asserted is that the
+        receipt's date was not used to refuse it.
+        """
+        env = a_data_root(tmp_path)
+        self.admitted_at_the_real_clock(env)
+        self.declare_and_hold(env, "cyc-1")
+
+        first = self.dispatch(env, "echo", "one")
+        assert first.returncode == 0, first.stderr
+        again = self.dispatch(env, "echo", "two")
+
+        assert again.returncode == 0, again.stderr
+        assert "phase       DISPATCHED — confirmed already; nothing was run" \
+            in again.stdout
+
+    def test_a_receipt_from_the_very_instant_of_admission_is_not_older(self, tmp_path):
+        """The fencepost, and it is the narrower side of it that is pinned.
+
+        The criterion is `started_at < admitted_at` — STRICTLY older. A receipt
+        written at the same instant as the admission is not evidence of an
+        earlier cycle, and refusing it would be a false refusal for any writer
+        whose clock has coarser resolution than the one that admitted the
+        cycle. Nothing can reach that instant by running a dispatch, so it is
+        constructed: the receipt carries the admission's own `admitted_at`
+        verbatim, and what the verb must then answer is the OTHER refusal — the
+        one `invoke_once` owns, about the input digest. Asserting only that a
+        fault happened would pass on either sentence; asserting which one is
+        what makes this a test of the boundary.
+        """
+        env = a_data_root(tmp_path)
+        store = self.admitted_at_the_real_clock(env)
+        self.declare_and_hold(env, "cyc-1")
+        admitted_at = store.get_admission("cyc-1")["admitted_at"]
+        receipts = self.receipts(env)
+        receipts.mkdir(parents=True, exist_ok=True, mode=0o700)
+        (receipts / "act-1.json").write_text(json.dumps(
+            {"action_key": "act-1", "status": "EXITED",
+             "started_at": admitted_at, "input_digest": "0" * 64}),
+            encoding="utf-8")
+
+        done = self.dispatch(env, "echo", "one")
+
+        assert done.returncode != 0
+        assert "same action key with different input" in done.stderr
+        assert "predates the cycle" not in done.stderr
 
     def test_one_scope_waiting_does_not_freeze_another(self, tmp_path):
         """J07's fifth criterion, on the one path in this fabric that had it.
