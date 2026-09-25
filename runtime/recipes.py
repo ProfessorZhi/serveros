@@ -877,13 +877,19 @@ def _no_worktree_block() -> dict:
     opposite reading: a scope with no code is not a checkout that failed to
     answer, and `answered: True` with nothing in it would call a task whose
     work is not in git "a task that has not moved".
+
+    Read by BOTH loops that measure a delta. `work` watches through it and
+    `report` composes it into the document, and the reason they share one
+    function rather than two is that they must not disagree about what a scope
+    with no checkout means -- which is exactly what they did while `report`
+    answered this absence with a stop.
     """
     return {"path": None, "answered": False, "commits": [], "uncommitted": [],
             "notes": [],
             "why": ("这一次没有给 --worktree，所以这个 scope 的工作差量没有 git "
                     "这一个源。这不是「检出来是空的」——是没有检出可读。"
                     "no-code 的 scope 不靠 git 差量度量，见配方契约里 work 的 "
-                    "`watch` 步骤。")}
+                    "`watch` 与 report 的 `measure` 两个步骤。")}
 
 
 def work(ctx: Context) -> None:
@@ -1117,19 +1123,30 @@ def report(ctx: Context) -> None:
         ctx.step("receipts", f"no receipt at {receipt_path}",
                  receipt=str(receipt_path))
 
-    if ctx.worktree is None:
-        ctx.unbound("SOURCE_UNAVAILABLE",
-                    "no worktree was given, so the period's work delta cannot "
-                    "be read. An absent path is a GAP in the document, and this "
-                    "loop does not write a GAP where it could have measured")
     window = daily.period_window(ctx.period)
     fallbacks = daily.Fallbacks()
-    work_delta = daily.measure_worktree(Path(ctx.worktree), window, fallbacks)
+    # No worktree is a GAP in the document, not a reason to skip writing it.
+    # Two different situations produce this input and only one of them is a
+    # mistake: a scope with no code has no checkout to pass -- the plan's own
+    # words, 「no-code任务也不强制需要Git差异/代码工作树」 -- while a caller that
+    # forgot `--worktree` is asking this loop to publish a hole. Nothing here
+    # can tell them apart, and the loop's normal stop is 本期生成完, so
+    # refusing would make the first case permanently unpublishable in order to
+    # shout at the second. What must NOT happen is the hole rendering as zero
+    # commits, and `_no_worktree_block` is the shape that prevents that: the
+    # document's 提交 section says 没有答案 and names the missing source.
+    #
+    # This is not a new stance -- it is the one the sibling case already takes,
+    # one test away: a worktree that IS passed and is not a checkout is a gap
+    # the report is still written from. Same absence, one spelling, one
+    # outcome.
+    work_delta = (_no_worktree_block() if ctx.worktree is None else
+                  daily.measure_worktree(Path(ctx.worktree), window, fallbacks))
     quay = _quay_block(ctx)
     verdict, because = daily.progress_verdict(work_delta, quay)
     ctx.step("measure",
              f"the verdict for this window is {verdict}", because=because,
-             worktree=str(ctx.worktree),
+             worktree=str(ctx.worktree) if ctx.worktree else None,
              quay=str(ctx.run_dir) if ctx.run_dir else None)
 
     # `focus` is the Item ids this period was aimed at, and only an item-scoped

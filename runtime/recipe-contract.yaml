@@ -373,7 +373,15 @@ recipes:
       - id: receipts
         does: "an existing receipt for this period, and what it says happened"
       - id: measure
-        does: "the worktree delta and the Quay gate ledger, this window"
+        does: >
+          the worktree delta and the Quay gate ledger, this window. A source
+          that did not answer makes its own section say 没有答案 and does not
+          stop the document: a scope given no `--worktree` at all is measured
+          the same way a checkout that cannot be read is, because a scope whose
+          work is not in git is not a checkout that failed. The one reading
+          this step must never produce is zero -- 无提交 and 没有源 are
+          different findings and `progress_verdict`'s three values are what
+          keeps them apart.
       - id: compose
         does: "the daily report's own composition, render and receipt"
     # No step here carries `needs_model: true`, and that is a property of the

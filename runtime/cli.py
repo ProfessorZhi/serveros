@@ -10331,8 +10331,11 @@ def build_parser() -> argparse.ArgumentParser:
     rc_run.add_argument("--workspace-root", default=None)
     rc_run.add_argument("--worktree", default=None,
                         help="the checkout a period's real work delta is read "
-                             "from. A path that is not a checkout is reported "
-                             "as a GAP, not as zero commits")
+                             "from. A path that is not a checkout, and no path "
+                             "at all, are both reported as a GAP rather than as "
+                             "zero commits: a scope whose work is not in git has "
+                             "no checkout to pass, and refusing it would make "
+                             "such a scope unable to run at all")
     rc_run.add_argument("--run-dir", default=None,
                         help="a round's directory holding `.quay/gate-events.jsonl`. "
                              "Optional; its absence is a GAP rather than an "
