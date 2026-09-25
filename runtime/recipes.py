@@ -311,6 +311,12 @@ def last_success(state_root, *, recipe_id: str, scope_ref: str) -> dict | None:
 
     Selection is by `finished_at`, and a record with no cursor does not win --
     a run that stopped before it read anything has nothing to hand forward.
+
+    Two records can carry the same `finished_at`: the clock is injectable, and
+    the default one has second resolution. The tie is broken by the record's
+    FILE NAME, which carries the period, and one period's name sorts after an
+    earlier period's -- comparing only the timestamp left the earlier record
+    winning, which is the one direction a cursor must never move in.
     """
     directory = Path(state_root) / recipe_id / scope_slug(scope_ref)
     if not directory.is_dir():
@@ -322,9 +328,9 @@ def last_success(state_root, *, recipe_id: str, scope_ref: str) -> dict | None:
             continue
         if not document.get("cursor"):
             continue
-        stamp = str(document.get("finished_at") or "")
-        if best is None or stamp > best[0]:
-            best = (stamp, document)
+        order = (str(document.get("finished_at") or ""), candidate.name)
+        if best is None or order > best[0]:
+            best = (order, document)
     return best[1] if best else None
 
 
@@ -557,7 +563,23 @@ class Context:
 # ---------------------------------------------------------------------------
 
 def perception(ctx: Context) -> None:
-    """What has moved in what this scope follows, since we last looked."""
+    """What has moved in what this scope follows, since we last looked.
+
+    Three facts are held apart here, and the separations are the point:
+
+      * **what was read, per source.** The capture is recorded as its own step
+        and the cursor is advanced one source at a time. A source that did not
+        answer is not written off as unchanged -- and, the other half of the
+        same rule, it does not take the sources that DID answer down with it. A
+        pass where one checkout is unreachable still reads the rest and still
+        reports their delta.
+      * **a source's delta, and what the delta means.** The comparison is one
+        step; the reading a moved revision warrants is another, with its own
+        cost and its own refusal.
+      * **a moved revision, and a new Item.** They are not the same fact. This
+        loop says what understanding a delta touches. Opening work is a decision
+        made from an accepted goal, and nothing here makes it.
+    """
     sources = read_sources(ctx)
     if sources["state"] != "READ":
         ctx.step("sources", f"the list of what to follow is {sources['state']}",
@@ -581,13 +603,29 @@ def perception(ctx: Context) -> None:
         else:
             observed[str(entry.get("id"))] = revision
 
+    # The capture, recorded before anything is made of it: one entry per source
+    # that answered, and the ones that did not, named with their own reasons.
+    # This is the step `recipe-contract.yaml` declares for this loop and the
+    # loop did not take; what the gap cost is not cosmetic -- `work waterline`
+    # answers "how far did the capture get, and how far did understanding get"
+    # per source, and a record with no capture step has nothing to put on the
+    # first half of that comparison.
+    ctx.step("observe",
+             f"{len(observed)} of {len(entries)} source(s) answered",
+             captured=sorted(observed),
+             unanswered=[u["id"] for u in unanswered])
     if unanswered:
-        # The cursor is NOT advanced here. A partial reading that moved the
-        # cursor would lose the unread source's next change: the revision it
-        # would be compared against would already be the newer one.
+        # Written here rather than only on the refusal below: a pass that could
+        # not read one source and then finished normally still has to say so, or
+        # the record reads as a complete reading of a list it only partly read.
+        ctx.running["outcomes"]["unread"] = unanswered
+
+    if not observed:
+        # Nothing at all was read, so there is no delta to report and no cursor
+        # to move. This is the one case where the whole pass is unanswerable.
         ctx.unbound(
             "SOURCE_UNAVAILABLE",
-            f"{len(unanswered)} of {len(entries)} source(s) did not answer: "
+            f"none of {len(entries)} source(s) answered: "
             f"{[u['id'] for u in unanswered]}. The cursor is left where it was, "
             f"so nothing this pass could not read is written off as unchanged.",
             unanswered=unanswered)
@@ -600,6 +638,20 @@ def perception(ctx: Context) -> None:
                       + (f", {len(fresh)} seen for the first time" if fresh else ""),
              moved=sorted(moved), first_seen=sorted(fresh))
 
+    if not moved and unanswered:
+        # "No change" is a statement about every source this scope follows, and
+        # a source that did not answer cannot be part of it. Stopping NO_CHANGE
+        # here would be the same write-off the refusal above exists to avoid,
+        # only quieter: the quiet period would be reported for a source the pass
+        # never looked at.
+        ctx.unbound(
+            "SOURCE_UNAVAILABLE",
+            f"{len(unanswered)} of {len(entries)} source(s) did not answer and "
+            f"the {len(observed)} that did are unchanged: "
+            f"{[u['id'] for u in unanswered]}. Nothing moved that this pass "
+            f"could see, and that is not the same as nothing moved.",
+            unanswered=unanswered)
+
     if not moved:
         # The criterion, spent in one line: no change, so the model step below
         # is not reached and no model is called. The cursor is not rewritten --
@@ -608,27 +660,46 @@ def perception(ctx: Context) -> None:
                  "every source this scope follows has the same revision as it "
                  "had at this scope's last success")
 
-    # Something moved, and turning a source delta into candidates is the step
-    # that needs a model. It is downstream of the delta on purpose: that
-    # ordering is what makes "no change produces no LLM work" a property of the
-    # code rather than a promise about it.
+    # Something moved, and saying what a source delta means for this scope's
+    # understanding is the step that needs a model. It is downstream of the
+    # delta on purpose: that ordering is what makes "no change produces no LLM
+    # work" a property of the code rather than a promise about it.
     reply = ctx.spend("refresh", ask={
-        "reason": "turn a source delta into candidate Items",
+        "reason": "say what a source delta means for this scope's understanding",
         "scope": ctx.scope["ref"],
         "period": ctx.period["id"],
         "moved": {name: {"was": cursor.get(name), "now": revision}
                   for name, revision in sorted(moved.items())},
-        "instruction": ("For each source whose revision moved, say whether the "
-                        "change is a candidate for a new Item, and if so what "
-                        "the candidate is. Say nothing about sources that did "
-                        "not move."),
+        # What this asks for, and what it refuses to ask for. A moved revision
+        # is a fact about a source. "A new Item" is a decision made from an
+        # accepted goal by the work engine, and asking a reading to propose one
+        # is the shortcut §P3 names: 「source变了」read directly as 「新Item候选」.
+        # The views are not enumerated here on purpose -- the four Current Views
+        # are directory scopes of the understanding layer, no module holds their
+        # names as a constant, and a list restated in this ask would be a second
+        # authority for a set the writer already knows.
+        "instruction": (
+            "For each source whose revision moved, say what the change may mean "
+            "for this scope's current understanding and which part of it the "
+            "change touches, so a reading can be pinned to the right range. Do "
+            "not propose Items and do not say what work to open: a revision "
+            "moving is not by itself a candidate for a new Item, and opening "
+            "work is decided from an accepted goal rather than from a delta. "
+            "Say nothing about sources that did not move."),
     })
     ctx.running["outcomes"]["refresh"] = reply
     # The cursor advances only here -- past every refusal above. A run that
     # stopped could not read one of its sources, and moving the cursor then
     # would lose that source's next change: the revision it would be compared
-    # against would already be the newer one.
-    ctx.refresh_cursor(observed)
+    # against would already be the newer one. It advances PER SOURCE: what was
+    # read is written down, and a source that did not answer keeps the revision
+    # we last actually read instead of being dropped out of the map. When every
+    # source answered there is nothing to carry and the cursor is exactly what
+    # was read -- so a source taken off the followed list does not keep an entry
+    # for a revision nobody follows any more, past the next pass that advances
+    # the cursor at all. (A quiet pass does not advance it; there is nothing to
+    # say and the record already says it.)
+    ctx.refresh_cursor({**cursor, **observed} if unanswered else observed)
 
 
 # ---------------------------------------------------------------------------

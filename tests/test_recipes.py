@@ -602,8 +602,14 @@ class TheDeltaGateTest(RecipeCase):
         self.assertEqual(result["model_calls"], 1)
         self.assertEqual(len(transport.calls), 1)
         self.assertEqual(transport.calls[0]["ask"]["reason"],
-                         "turn a source delta into candidate Items")
+                         "say what a source delta means for this scope's understanding")
         self.assertEqual(list(transport.calls[0]["ask"]["moved"]), ["followed"])
+        # And what the step is NOT asked for. A reading asked to say whether the
+        # change "is a candidate for a new Item" is the shortcut §P3 names --
+        # 「source变了」becoming 「新Item候选」 with nobody deciding it. The
+        # instruction has to refuse that in as many words, because the model
+        # reads this string and nothing else.
+        self.assertIn("Do not propose Items", transport.calls[0]["ask"]["instruction"])
 
     def test_a_source_that_did_not_answer_leaves_the_cursor_where_it_was(self):
         checkout = Path(self._tmp.name) / "followed"
@@ -627,6 +633,11 @@ class TheDeltaGateTest(RecipeCase):
         self.assertEqual(result["exit_code"], recipes.EXIT_OK)
         self.assertEqual(len(result["outcomes"]["unanswered"]), 1)
         self.assertEqual(result["outcomes"]["unanswered"][0]["id"], "followed")
+        # The stop says WHICH of the two situations this is. "Nothing at all was
+        # read" and "the sources I did read are unchanged" are different
+        # findings, and the second one is wrong here: there was no source this
+        # pass could compare at all.
+        self.assertIn("none of 1 source(s) answered", result["stopped_why"])
         # and the next run against the real checkout still compares against the
         # revision it last read, rather than against the failure.
         self.sources("one", [{"id": "followed", "kind": "git",
@@ -635,6 +646,128 @@ class TheDeltaGateTest(RecipeCase):
                            period=self.a_period(12))
         self.assertEqual(again["stopped_because"], "NO_CHANGE")
         self.assertEqual(again["cursor"]["followed"], revision)
+
+    def a_pass_with_one_source_down(self, period_hour: int, *, blind_path: Path):
+        """Two sources, one of them moved, and the other somewhere unreadable."""
+        moved = Path(self._tmp.name) / "moved"
+        a_checkout(moved)
+        blind = Path(self._tmp.name) / "blind"
+        blind_revision = a_checkout(blind)
+        self.sources("one", [{"id": "moved", "kind": "git", "path": str(moved)},
+                             {"id": "blind", "kind": "git", "path": str(blind)}])
+        self.a_run("perception", "project:one", budget=5,
+                   period=self.a_period(10), transport="counting",
+                   model=CountingTransport())
+        moved_revision = a_checkout(moved, filename="second.txt", body="two\n")
+        self.sources("one", [{"id": "moved", "kind": "git", "path": str(moved)},
+                             {"id": "blind", "kind": "git",
+                              "path": str(blind_path)}])
+        transport = CountingTransport()
+        result = self.a_run("perception", "project:one", budget=5,
+                            period=self.a_period(period_hour),
+                            transport="counting", model=transport)
+        return moved, blind, moved_revision, blind_revision, transport, result
+
+    def test_one_source_that_did_not_answer_does_not_block_the_others(self):
+        """The coupling §P3 names, as a scenario rather than as a comment.
+
+        Before this, an unreachable source refused the whole pass: the one
+        checkout that had moved was not read, no model was reached, and its
+        delta stayed pending behind a failure that had nothing to do with it.
+        """
+        moved, blind, moved_revision, blind_revision, transport, result = (
+            self.a_pass_with_one_source_down(
+                11, blind_path=Path(self._tmp.name) / "nowhere"))
+        # The source that answered is read -- all the way to the model boundary.
+        self.assertEqual(result["state"], recipes.DONE)
+        self.assertEqual(result["model_calls"], 1)
+        self.assertEqual(len(transport.calls), 1)
+        self.assertEqual(list(transport.calls[0]["ask"]["moved"]), ["moved"])
+        # And the record still says, by name and by its own reason, what nobody
+        # read. A pass that finished normally over a list it only partly read is
+        # the quiet version of the same write-off.
+        self.assertEqual([row["id"] for row in result["outcomes"]["unread"]],
+                         ["blind"])
+        self.assertIn("blind", result["outcomes"]["unread"][0]["why"])
+        # Per source, in the cursor: what was read is written down at the
+        # revision it was read at, and the source that did not answer keeps the
+        # revision we last actually read -- not a guess at where it might be.
+        self.assertEqual(result["cursor"]["moved"], moved_revision)
+        self.assertEqual(result["cursor"]["blind"], blind_revision)
+        # The capture is a step of its own, and it carries both halves.
+        steps = {step["step"]: step for step in result["steps"]}
+        self.assertEqual(steps["observe"]["detail"]["captured"], ["moved"])
+        self.assertEqual(steps["observe"]["detail"]["unanswered"], ["blind"])
+
+    def test_the_source_nobody_read_is_still_compared_against_what_was_last_read(self):
+        """The half of the rule that makes the other half safe.
+
+        Keeping the unread source's revision in the cursor is only correct if a
+        later pass still sees its next change. This is that pass.
+        """
+        moved, blind, _, blind_revision, _, _ = self.a_pass_with_one_source_down(
+            11, blind_path=Path(self._tmp.name) / "nowhere")
+        late_revision = a_checkout(blind, filename="late.txt", body="late\n")
+        # The source is reachable again, and has moved while it was not.
+        self.sources("one", [{"id": "moved", "kind": "git", "path": str(moved)},
+                             {"id": "blind", "kind": "git", "path": str(blind)}])
+        transport = CountingTransport()
+        later = self.a_run("perception", "project:one", budget=5,
+                           period=self.a_period(12), transport="counting",
+                           model=transport)
+        self.assertEqual(list(transport.calls[0]["ask"]["moved"]), ["blind"])
+        was = transport.calls[0]["ask"]["moved"]["blind"]["was"]
+        self.assertEqual(was, blind_revision)
+        self.assertEqual(later["cursor"]["blind"], late_revision)
+
+    def test_nothing_new_plus_a_source_that_did_not_answer_is_not_a_quiet_period(self):
+        """NO_CHANGE is a statement about every source, so it needs every source."""
+        answered = Path(self._tmp.name) / "answered"
+        a_checkout(answered)
+        blind = Path(self._tmp.name) / "blind"
+        a_checkout(blind)
+        self.sources("one", [{"id": "answered", "kind": "git",
+                              "path": str(answered)},
+                             {"id": "blind", "kind": "git", "path": str(blind)}])
+        self.a_run("perception", "project:one", budget=5,
+                   period=self.a_period(10), transport="counting",
+                   model=CountingTransport())
+        self.sources("one", [{"id": "answered", "kind": "git",
+                              "path": str(answered)},
+                             {"id": "blind", "kind": "git",
+                              "path": str(Path(self._tmp.name) / "nowhere")}])
+        result = self.a_run("perception", "project:one", budget=5,
+                            period=self.a_period(11))
+        self.assertEqual(result["stopped_because"], "SOURCE_UNAVAILABLE")
+        self.assertEqual(result["exit_code"], recipes.EXIT_OK)
+        self.assertEqual(result["model_calls"], 0)
+        self.assertEqual([row["id"] for row in result["outcomes"]["unanswered"]],
+                         ["blind"])
+
+    def test_a_source_taken_off_the_followed_list_does_not_keep_a_cursor_entry(self):
+        """Merging is what the unread source needs, and it has to stop somewhere.
+
+        A cursor entry is a claim about a source this scope follows. Once a
+        person narrows the list, the entry for the source they dropped is a
+        claim about nothing.
+        """
+        kept = Path(self._tmp.name) / "kept"
+        a_checkout(kept)
+        dropped = Path(self._tmp.name) / "dropped"
+        a_checkout(dropped)
+        self.sources("one", [{"id": "kept", "kind": "git", "path": str(kept)},
+                             {"id": "dropped", "kind": "git",
+                              "path": str(dropped)}])
+        self.a_run("perception", "project:one", budget=5,
+                   period=self.a_period(10), transport="counting",
+                   model=CountingTransport())
+        a_checkout(kept, filename="second.txt", body="two\n")
+        self.sources("one", [{"id": "kept", "kind": "git", "path": str(kept)}])
+        result = self.a_run("perception", "project:one", budget=5,
+                            period=self.a_period(11), transport="counting",
+                            model=CountingTransport())
+        self.assertEqual(result["state"], recipes.DONE)
+        self.assertEqual(list(result["cursor"]), ["kept"])
 
     def test_no_authored_source_list_is_a_gap_not_a_quiet_period(self):
         result = self.a_run("perception", "project:one", budget=5)
@@ -704,7 +837,7 @@ class TheModelBoundaryTest(RecipeCase):
         result = self.a_run("perception", "project:one", budget=0,
                           transport="counting", model=CountingTransport())
         self.assertEqual([step["step"] for step in result["steps"]],
-                         ["sources", "delta"])
+                         ["sources", "observe", "delta"])
         self.assertEqual(result["stopped_because"], "BUDGET_EXHAUSTED")
 
     def test_the_second_model_step_is_refused_by_a_ceiling_of_one(self):
