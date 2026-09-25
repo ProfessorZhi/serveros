@@ -5095,6 +5095,220 @@ decision  send: false
 「告警卡安静」与「没有东西需要看」在 438 这个数字面前不是同一句话，而读到这份读数的人
 应当能自己分开它们。
 
+## §9.40 切片 K：写进记录、校验过、归档过，然后从来没有被读回来
+
+### 9.40.1 缺的那一格，以及它是怎么被量出来的
+
+链上那一格是设计权威自己写的读法：`docs/daily-work-cycle.md:197` 要求恢复前对账
+「baseline、writer、effect 和**旧 attempt**」，`docs/SCENARIO-ACCEPTANCE.md:139` 把
+「child 在 Parent 退出后完成 → 新 Parent 查原 Task/receipt 并接受一次」和三条反例放在
+同一行，其中一条正是「新建第二 Task」。这一格的缺口是**机械的**：
+
+- `child_attempts` 声明在 `runtime/continuation.py:75` 的 `CHECKPOINT_FIELDS` 里（11 个
+  字段之一）；
+- 由 `work checkpoint --attempt` 写入，它的 help 就是「a child attempt already made」；
+- 由 `build_checkpoint` 校验（`continuation.py:309`），而它的拒绝文案
+  「an unnamed attempt cannot be looked up again」**自己就说明了这个字段为什么存在**；
+- **零读者。** `work continuations` —— 一个恢复中的 Parent 唯一会读的那个面 ——
+  此前只渲染 11 个字段里的 7 个。
+
+用 AST 探针在切片 K 的基线提交 `072cb65` 上量（`probe_rendered_fields.py`，只解析
+`runtime/cli.py` 里 `cmd_work_continuations` 函数体内的 `record.get(<str>)` /
+`record[<str>]`，注释与 docstring 不算）：
+
+```text
+before (072cb65): 7 of 11 declared fields read by cmd_work_continuations
+  not read: ['epoch', 'requirement_revision', 'evidence_locators', 'child_attempts']
+after (working tree): 10 of 11 declared fields read by cmd_work_continuations
+  not read: ['epoch']
+```
+
+四个没被渲染的字段里有三个是同一类事实：**这条记录是在什么前提下写的**（哪一版
+Requirement、已经带着哪些被接受的证据、已经做过哪些 attempt）。留下的唯一豁免是
+`epoch`，理由写在测试里：它由 ref 承载（`checkpoint_key` 产生 `{work_item}#{epoch}`，
+而 ref 是每条记录那行的标题）。
+
+三条反例里有两条**已经被机制盖住**，只有第三条没有：
+
+| 反例 | 现在的机制 |
+|---|---|
+| 旧结果晚到覆盖新 epoch | `put_checkpoint` 对低 epoch 的写入具名拒绝；等值重放幂等（§9.35 起） |
+| 要求用户复制结果 | `build_checkpoint` 对 `waiting_on` 里 store 看不见的 child 具名拒绝 |
+| **新建第二 Task** | **此前没有任何机制**：`child_attempts` 写进去以后没有人读回来，所以一个恢复中的 Parent 看不出这件事已经有人做过了 |
+
+### 9.40.2 本片的四笔
+
+1. **`runtime/continuation.py` 新增 `attempts_state(record, *, admissions=None)`** 与
+   三值答案 `ATTEMPT_ANSWERS`（`RETIRED` / `OPEN` / `UNANSWERABLE`）**加第四个
+   `ATTEMPT_NONE`**。第四个不是「都完成了」，也不是「说不出来」：它是一个
+   `build_checkpoint` 明确允许的事实——这条记录没有具名任何 attempt——而把它印成另外
+   两个中的任何一个，都是在告诉一个恢复中的 Parent「你没开始的事都做完了」。
+   形状照 `wait_state`：三而不是布尔（中间那个是重点）、`detail` 与 `says` 分开、
+   `evidence` 每项带 `because`、absent store 与 empty store 归同一个 state 但
+   `detail` 不同、absent 那支**不带** `unheld`（「这个 store 不持有它」是关于一个**被
+   读过的** store 的陈述，而没有人把 store 带来）。
+   它**不读时钟也不读看板**（`test_it_takes_no_clock` 断言签名里只有 record 和
+   admissions）：`wait_state` 需要时刻是因为窗口是一次比较，attempt 不是——store 要么
+   持有一条退休、要么不持有。
+   docstring 明写 **`ACCEPTED` 不是它的 state**：本机没有任何地方把「接受」记成与记录
+   自己的 `evidence_locators` 分开的事实（`work checkpoint --evidence` 的 help 就是
+   「an accepted evidence locator」），所以「哪个结果被收进了这条 Item」是从记录读、由
+   恢复的人去对账，而不是这个函数去猜。
+2. **`runtime/cli.py#cmd_work_continuations` 渲染三个字段＋逐 attempt 一行＋顶层计数行。**
+   `requirement` / `accepted` / `attempts`；absent 与 empty 分开印成两句不同的话
+   （「does not name a revision」对「carries no accepted evidence」）；
+   记录那行现在是三个答案并列
+   `SRV-0001#1  AWAITING_CONTINUATION  wait WAIT_OVER  attempts ATTEMPT_RETIRED`。
+   逐 attempt 那行只印「哪一个、什么状态、结局是什么」，因为计数行说不出**哪一个**还
+   开着，而「哪一个」正是一个恢复中的 Parent 来找的东西。
+3. **`runtime/agent_control_store.py#retire_admission` 的第二次退役不再静默。**
+   见 9.40.4。
+4. **`runtime/agent_control_store.py#supersede_checkpoint` 同一处形状。** 这个方法是
+   `retire_admission` 的邻居（它自己的 docstring 就写着「Idempotent on the FIRST
+   supersession, like `retire_admission`」），而它的静默那一半更重：第二次给出**不同的
+   后继**时，记录会继续说是第一个 —— 一个 scope 两个后继就是两个 owner，而
+   `docs/COLLABORATION-CONTRACT.md` 一瞬都不允许。本片只改它的规则，**没有给它加调用
+   者**（它在生产里仍无调用者，`put_checkpoint` 在同一个事务里内联做这件事），那是另一
+   个问题。
+
+### 9.40.3 两处被改写的既有断言，都要说明
+
+改既有断言在这条线上不是小事，所以两处都留在原地、都写明为什么：
+
+| 位置 | 原来断言的事 | 为什么改 |
+|---|---|---|
+| `tests/test_admission.py#test_retiring_twice_keeps_the_first_instant` | 第二次退役带 `outcome="ABANDONED"`，断言 `again["outcome"] == "DELIVERED"`，理由写作「the second call must not rewrite how the cycle ended」 | 「保留第一个结局」是对的，**静默**地保留不是。`outcome` 现在是 `attempts_state` 读的那个字段，它会印在一句决定「要不要派第二个 child」的话里；一个说 `DELIVERED` 而同时被告诉过 `ABANDONED` 的记录，是在替一个没人做过的选择作答 |
+| `tests/test_continuation.py#test_it_is_idempotent_on_the_first_instant` | 第二次 `supersede_checkpoint` 传 `by="SRV-0001#3"`，断言记录仍说 `SRV-0001#2` | 同上，而这里更硬：两个后继就是一瞬两个 owner |
+
+**这不是在推翻一个被接受的架构决定。** 两处原 docstring 都只为「时刻」辩护
+（`retire_admission` 的原文是「it keeps the FIRST retirement … a second call that moved
+that instant」），**从未就 `outcome`／`by` 推理**；台账 §9.37.2 里当时量到的也是
+「**`retired_at` 是唯一判据**，理由是它是这个 store 里唯一一个**只由 `retire_admission`
+写**的字段」——当时那句话是对的：`outcome` 同样只由 `retire_admission` 写，但它那时不
+决定任何事，所以「唯一判据」的说法站得住。本片把它变成了决定一件事的字段（`attempts_state`
+印它、而那行决定要不要派第二个 child），于是它得按同一条房规走。房规就在同一个文件里，
+`confirm_admission` 的 docstring 原文：「idempotent when the evidence is equal and refused
+when it is not … picking the newer one here would hide the disagreement rather than record
+it」。
+
+### 9.40.4 一条规则，两个方法，四种调用
+
+规则一句话：**一次退休（一次交接）只写一次，写它的是第一次调用；后来的调用只许重复，
+不许改。** 落到四种调用上：
+
+| 后来的调用 | 结果 | 为什么 |
+|---|---|---|
+| 不带 outcome 的重放 | 幂等，记录一字不动 | 它对「结局是什么」没有做出任何声明。拒绝它会告诉一个调用者「你不同意」，而它什么都没说 |
+| 带**相同** outcome | 幂等 | 它和记录说的是同一件事 |
+| 带**不同** outcome | **具名拒绝**，拒绝里同时印出调用者给的与记录里的 | 两个不同的结局是一个给人看的问题，不是一次更晚的写入 |
+| 在记录**没有** outcome 时给出一个 | **具名拒绝** | 「没有结局」是一个值而不是缺席：第一次调用记下的就是「释放了预留、结局没有写下来」。允许补写就等于给了这个字段第二条写入路径，而那条路径不是任何东西的重试 |
+
+`supersede_checkpoint` 照同一条规则（第二个后继等价于「带不同 outcome」那一格）。
+`cmd_work_retire` 的 docstring 也一并改了，它此前只讲时刻。
+
+### 9.40.5 枚举差测试：把「声明」和「渲染」连起来
+
+`child_attempts` 能一直不被读回来，机制上的原因是：**没有任何东西把记录的字段表与打印
+它的那段代码连起来**。所以本片的修法之一就是补上这条连接。
+
+`tests/test_continuation.py#TestEveryDeclaredFieldIsRenderedOrExempt` 读
+`runtime/cli.py` 的 **AST**（不是文本：注释与 docstring 里提到的字段不算被读），取出
+`cmd_work_continuations` 函数体内所有 `record.get("X")` / `record["X"]`，然后要求：
+
+- `CHECKPOINT_FIELDS` 里每个字段要么在集合里，要么在一张**具名豁免表**里（唯一的条目是
+  `epoch`，理由是它在 ref 里并且 ref 是每条记录的标题）；
+- 豁免表里不允许有**已经会被读**的字段（否则理由会和代码漂开，测试就不再意味着什么）；
+- 豁免表里不允许出现记录里没有的字段；
+- 豁免理由必须是一句真话，不是占位（少于 8 个词算不合格：「没人要」不是理由，
+  「它已经在同一屏上了，在这里」才是）。
+
+这条测试是活的，由变异 K8/K9 证明：把 `requirement` 那行的 `record.get(...)` 换成
+`None`，或者把 attempts 那行改成读 `made_here["attempts"]`（功能等价，但看不到它在读
+字段），枚举差测试都会红。
+
+### 9.40.6 变异表：13 条 13 杀
+
+`mutate_slice_k.py`，每条改**源码**、`rm -rf __pycache__`、只跑声称覆盖它的那些用例、
+要求至少一条转红，然后 `cp` 还原并用 sha256 逐字节核对（每一轮都核，收尾再核一次）。
+13 条全部被杀，没有幸存者：
+
+| # | 变异 | 转红的用例数 |
+|---|---|---|
+| K1 | 第四个答案印成第三个（`ATTEMPT_NONE` → `ATTEMPT_RETIRED`） | 1 |
+| K2 | 读不到的 attempt 不再是它自己的答案（`if unheld:` → `if False:`） | 2 |
+| K3 | 已退休的 attempt 不再带回结局（`outcome` → `None`） | 1 |
+| K4 | 没带 store 的那支也给出 `unheld` 列表 | 1 |
+| K5 | 词汇表少掉第四个词 | 2 |
+| K6 | `attempts_state` 长出一个 `now` 参数 | 1 |
+| K7 | 顶层计数行数错那一栏 | 1 |
+| K8 | `requirement` 那行不再读记录（枚举差测试同时红） | 2 |
+| K9 | attempts 那行不再从记录读字段（功能等价，只有枚举差测试能看见） | 1 |
+| K10 | 记录那行的 `attempts` 印成 wait 的答案 | 1（另一条通过，红一条即算杀） |
+| K11 | 第二次退役又变回静默吸收 | 2 |
+| K12 | 同一次重放变成拒绝 | 1 |
+| K13 | 第二个后继又变回静默吸收 | 1 |
+
+跑完 `git status --short` 0 行、HEAD 仍是 `0f00e63`，两个被改的文件与备份逐字节相同。
+
+#### 9.40.7 全量跑：四遍 rc=0，而计数只有第四遍抓到了
+
+冻结提交 `0f00e6312726878448c452680ebab72d5dbb1853`，跑前跑后 `git status --short` 都是 0 行、
+HEAD 未变。解释器 `/data/home/vince/envs/python/serveros-test/bin/python -m pytest <worktree>/tests -q`。
+
+| 遍 | 起点 | rc=0 于 | 耗时 | 读数 |
+|---|---|---|---|---|
+| 1 | 06:28:33 | 06:39:06 | 633 s | **计数丢失**，见下 |
+| 2 | 紧接第 1 遍 | 06:49:30 | ≤624 s | **计数丢失** |
+| 3 | 06:49:58 | 07:00:19 | 621 s | **计数丢失** |
+| 4 | 07:02:14 | 07:12:40 | 623.15 s | **5870 passed, 20 skipped, 3993 subtests passed** |
+
+**前三遍的计数是真的丢了，不是没跑。** 捕获写成 `… | tail -4`（第三遍改成 `tail -12`，仍然
+没用），而 `sys:1: ResourceWarning: unclosed file <_io.TextIOWrapper name=… encoding='UTF-8'>`
+这一族是**解释器收尾时**打到 stderr 的，位置**在 pytest 摘要行之后**，于是被 tail 窗口整段挤掉：
+第一、二遍只留下 4 条 warning、第三遍留下 12 条，摘要行一次都没进文件。退出码这一侧是对的
+（`${PIPESTATUS[0]}`），四遍都是 0；第四遍改成「原始日志落盘 + 只 grep 摘要行」才把它读出来。
+**本片的全量证据是四遍 rc=0，而计数只有第四遍一份。**
+
+三条与算术有关的读数：
+
+- **passed 的算术闭合。** 上一格（切片 J）的读数是 5843；
+  `git diff 072cb65 0f00e63 -- tests/` 数出本片**新增 27 个 `def test_`**
+  （`test_continuation.py` 23 条、`test_admission.py` 4 条），**删掉 0 条**。
+  5843 ＋ 27 ＝ **5870**，与第四遍逐字相符。（`072cb65` 是切片 J 的台账提交，只动了
+  `docs/CC-EXECUTION-LEDGER.md` 一个文件 317 行，所以它和切片 J 的代码提交在测试计数上
+  是同一棵树。）
+- **subtests 不变：3993 → 3993。** 本片新增的用例没有一条用 subtest，所以这一格不应当动，
+  它确实没动。
+- **warning 是哪一种要看清楚。** 第四遍摘要行逐字是「5870 passed, 20 skipped, 3993 subtests
+  passed in 623.15s」，**里面没有 warning 计数** —— 也就是 pytest 自己计数为 0，而上面那族
+  `ResourceWarning` 是在摘要打印**之后**由解释器收尾打出来的，**不在 pytest 的计数里**。
+  这同时回答了切片 J 那格留下的悬念：J 第二遍摘要里写的「**1 warning**」是被 pytest **计数**
+  的，因此与本片这族收尾期 warning **不是同一个身份**，本片不主张自己这族是它。
+- **那族 warning 本片没有追。** 对象是「一个 raw fd 上包出来的 `TextIOWrapper`」
+  （`os.fdopen` 的形状，所以 `name` 是描述符号而不是路径，读不出是谁泄漏的）。唯一便宜的
+  排查是看调用点：`runtime/` 与 `intake/`、`relations/` 里所有文本模式的 `fdopen` 都在 `with`
+  里（`ability_projection.py:336`、`understanding_brief.py:428`、`understanding_patch.py:606`、
+  `understanding_semantic.py:2171`、`project.py:433`），`bounded_invocation.py:147` 是二进制
+  模式且在调用处被 `with` 包着 —— **所以它不在本片的改动范围内，也不能由本片顺手断定是谁**。
+  定位它要再跑一遍十分钟的套件加 `-W error::ResourceWarning`，那是另一件事，本片没有做。
+
+### 9.40.8 它没做什么，以及仍未关闭的
+
+- **`attempts_state` 不回答「哪个结果被接受了」**，这是刻意的而不是没做完：本机没有
+  接受记录（`evidence_locators` 是记录级的），加一个 store 是一个更大的决定，本片把它
+  写成一条断言（`test_an_acceptance_is_not_a_state_it_can_answer`）而不是悄悄留白。
+- **`WAIT_KINDS` 仍然只有 `child` / `window`**，`work continuations` 里因此没有「已
+  登记的依赖事件」这一 kind。原因没变（没有任何 store 说得清 Item 之间的依赖），本片
+  没有动它。
+- **`supersede_checkpoint` 在生产里仍无调用者。** 本片改的是它的规则，不是它的接线；
+  给它加调用者需要一个真实的丢场景，且 `put_checkpoint` 已经在同一个事务里内联做了这
+  件事，所以「这个方法是死代码」本身是一个独立的问题。
+- **唤醒那一半仍然空着**，原因已在 §9.38.9 量清（缺的是一条跑 delegation 检查、并且是
+  trigger owner 的 routine，与一条真的被记录下来的 grant）。
+- `attempts_state` 的 `outcome` 是 `retire_admission` 的原话，本片没有给它加词表——一个
+  自由文本字段在记录里出现一次和出现两次是同一类问题，但收口它需要先有消费者愿意按
+  词表判。
+
 ## 10. 后续每包更新哪几行
 
 - 改完一个包，只更新 §3.1 里对应行的四层状态 + §5 表的增删。
