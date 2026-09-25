@@ -621,6 +621,225 @@ class TestRetirementIsIdempotentAndKeepsTheFirst:
 
 
 # ---------------------------------------------------------------------------
+# 4b. The take-up of a result: once, on the edge, by a named Parent.
+# ---------------------------------------------------------------------------
+
+
+def a_dispatched(store: AgentControlStore, ref: str = "cyc-1") -> dict:
+    """Drive `ref` to a retired cycle whose receipt was reported.
+
+    The phase where a result can exist at all: `accept_admission` refuses a cycle
+    that never reached `DISPATCHED`, and that refusal is asserted below rather
+    than assumed, so the tests that are about the WRITE need a fixture that
+    really got there.
+    """
+    held = store.admissions()[ref]
+    store.confirm_admission(
+        ref, phase="LEASE_HELD",
+        evidence={"act": "DECLARE", "resource": held["lease"]["resource"]}, at=T1)
+    store.confirm_admission(
+        ref, phase="DISPATCHED",
+        evidence={"action_key": held["action_key"], "status": "EXITED"}, at=T1)
+    return store.retire_admission(ref, at=T2, outcome="DELIVERED")
+
+
+class TestATakeUpIsWrittenOnceOnTheEdge:
+    def test_a_take_up_records_who_and_which_locator(self, tmp_path):
+        """The two facts `docs/COLLABORATION-CONTRACT.md` puts in `accepted_by`.
+
+        «接收者及其验证结果，所接受的确切输入输出版本» — one field naming both, and
+        this is the write that fills it in. Neither is defaulted: a take-up that
+        cannot be attributed to a Parent, or that does not say which result, is
+        the record a resuming Parent came here for and did not get.
+        """
+        store = a_store(tmp_path)
+        store.admit(a_record())
+        a_dispatched(store)
+
+        taken = store.accept_admission("cyc-1", at=T2, by="parent-a",
+                                       locator="art://run/1")
+
+        assert taken["accepted_by"] == "parent-a"
+        assert taken["accepted_locator"] == "art://run/1"
+        assert taken["accepted_at"] == T2
+        assert taken["retired_at"] == T2
+        assert store.get_admission("cyc-1")["accepted_locator"] == "art://run/1"
+
+    def test_an_open_cycle_has_no_result_to_take_up(self, tmp_path):
+        """`retired_at` is the store's word for «this cycle's outcome is recorded».
+
+        An acceptance before that would name a result nothing has produced, and
+        unlike a missing dispatch this is not a state a remedy can fix by
+        reporting something already true — the cycle genuinely has not ended.
+        """
+        store = a_store(tmp_path)
+        store.admit(a_record())
+        store.confirm_admission("cyc-1", phase="LEASE_HELD",
+                                evidence={"act": "DECLARE",
+                                          "resource": "browser:chromium"}, at=T1)
+        with pytest.raises(StoreError) as refusal:
+            store.accept_admission("cyc-1", at=T2, by="parent-a",
+                                   locator="art://run/1")
+
+        assert "still open at LEASE_HELD" in str(refusal.value)
+        assert not store.get_admission("cyc-1").get("accepted_at")
+
+    def test_a_cycle_that_never_dispatched_carries_no_remedy_because_there_is_none(
+            self, tmp_path):
+        """The guard that is about what can EXIST, and the remedy it does NOT name.
+
+        A result comes from an invocation whose receipt was reported, and that
+        phase is `DISPATCHED`. A cycle retired earlier was recorded as abandoned,
+        so there is no result.
+
+        The obvious remedy — report the receipt now, then accept — was in this
+        refusal's text until this test walked it, and it does not exist:
+        `confirm_admission` refuses a cycle already retired, for the same reason it
+        refuses a second answer about a phase. A refusal that names a next step
+        which the next verb then refuses is worse than one that names none, so the
+        refusal says there is no catch-up and calls the disagreement a person's.
+        """
+        store = a_store(tmp_path)
+        store.admit(a_record())
+        store.confirm_admission("cyc-1", phase="LEASE_HELD",
+                                evidence={"act": "DECLARE",
+                                          "resource": "browser:chromium"}, at=T1)
+        store.retire_admission("cyc-1", at=T2, outcome="ABANDONED")
+        with pytest.raises(StoreError) as refusal:
+            store.accept_admission("cyc-1", at=T2, by="parent-a",
+                                   locator="art://run/1")
+
+        assert "never reached DISPATCHED" in str(refusal.value)
+        assert "a person's to settle" in str(refusal.value), (
+            "the refusal has to say what the state actually is, which is a "
+            "disagreement between two records rather than a missing report")
+        assert not store.get_admission("cyc-1").get("accepted_at")
+
+    def test_reporting_the_receipt_after_a_retirement_is_refused_by_the_store(
+            self, tmp_path):
+        """«No catch-up» is a fact about the store, not a claim in one refusal.
+
+        This is what makes the sentence above true rather than wishful: the step
+        that would have been the remedy is refused by `confirm_admission` on its
+        own terms, so no code path exists that could turn an abandoned cycle into
+        one with a result after the fact.
+        """
+        store = a_store(tmp_path)
+        store.admit(a_record())
+        store.confirm_admission("cyc-1", phase="LEASE_HELD",
+                                evidence={"act": "DECLARE",
+                                          "resource": "browser:chromium"}, at=T1)
+        store.retire_admission("cyc-1", at=T2, outcome="ABANDONED")
+        with pytest.raises(StoreError) as refusal:
+            store.confirm_admission("cyc-1", phase="DISPATCHED",
+                                    evidence={"action_key": "act-1",
+                                              "status": "EXITED"}, at=T2)
+
+        assert "was retired at" in str(refusal.value)
+        assert store.get_admission("cyc-1")["phase"] == "LEASE_HELD"
+
+    def test_the_same_parent_and_locator_may_retry(self, tmp_path):
+        """A retry after a crash is the same call, and it keeps the first instant."""
+        store = a_store(tmp_path)
+        store.admit(a_record())
+        a_dispatched(store)
+        store.accept_admission("cyc-1", at=T2, by="parent-a",
+                               locator="art://run/1")
+
+        again = store.accept_admission("cyc-1", at=T0, by="parent-a",
+                                       locator="art://run/1")
+
+        assert again["accepted_at"] == T2, (
+            "the second call must not move the instant the take-up happened")
+        assert again["accepted_at"] == store.get_admission("cyc-1")["accepted_at"]
+
+    def test_a_second_parent_is_refused_by_name(self, tmp_path):
+        """THE DISAGREEMENT THIS GUARD MAKES VISIBLE.
+
+        A second take-up by a different Parent is not a retry: it is two claims
+        about who holds this Item and which result is in it. Keeping the first one
+        silently would be the same defect `retire_admission` was fixed for, and
+        picking the newer one would hide the disagreement rather than record it.
+        """
+        store = a_store(tmp_path)
+        store.admit(a_record())
+        a_dispatched(store)
+        store.accept_admission("cyc-1", at=T2, by="parent-a",
+                               locator="art://run/1")
+        with pytest.raises(StoreError) as refusal:
+            store.accept_admission("cyc-1", at=T0, by="parent-b",
+                                   locator="art://run/1")
+
+        assert "'parent-b'" in str(refusal.value), (
+            "the refusal must name what the caller offered")
+        assert "'parent-a'" in str(refusal.value), (
+            "and what the record says, so the disagreement is readable")
+        assert "was taken up at" in str(refusal.value)
+        assert store.get_admission("cyc-1")["accepted_by"] == "parent-a", (
+            "and the record is untouched by the refusal")
+
+    def test_a_second_locator_is_refused_by_name(self, tmp_path):
+        """Same Parent, a different result: still two answers to one question."""
+        store = a_store(tmp_path)
+        store.admit(a_record())
+        a_dispatched(store)
+        store.accept_admission("cyc-1", at=T2, by="parent-a",
+                               locator="art://run/1")
+        with pytest.raises(StoreError) as refusal:
+            store.accept_admission("cyc-1", at=T2, by="parent-a",
+                                   locator="art://run/2")
+
+        assert "'art://run/1'" in str(refusal.value)
+        assert "'art://run/2'" in str(refusal.value)
+        assert store.get_admission("cyc-1")["accepted_locator"] == "art://run/1"
+
+    def test_a_cycle_never_admitted_is_refused(self, tmp_path):
+        store = a_store(tmp_path)
+        with pytest.raises(StoreError) as refusal:
+            store.accept_admission("cyc-none", at=T2, by="parent-a",
+                                   locator="art://run/1")
+
+        assert "no admission" in str(refusal.value)
+
+    def test_an_unnamed_parent_is_refused(self, tmp_path):
+        store = a_store(tmp_path)
+        store.admit(a_record())
+        a_dispatched(store)
+        with pytest.raises(StoreError) as refusal:
+            store.accept_admission("cyc-1", at=T2, by="   ",
+                                   locator="art://run/1")
+
+        assert "names the Parent" in str(refusal.value)
+        assert not store.get_admission("cyc-1").get("accepted_at")
+
+    def test_an_unnamed_locator_is_refused(self, tmp_path):
+        store = a_store(tmp_path)
+        store.admit(a_record())
+        a_dispatched(store)
+        with pytest.raises(StoreError) as refusal:
+            store.accept_admission("cyc-1", at=T2, by="parent-a", locator="")
+
+        assert "names the locator" in str(refusal.value)
+        assert not store.get_admission("cyc-1").get("accepted_at")
+
+    def test_the_three_keys_are_declared_at_admission(self, tmp_path):
+        """Absent and None are different, and the reader cannot tell them apart.
+
+        `runtime/continuation.attempts_state` reads these three to answer «was
+        this result taken up», and a record written before this verb existed has
+        no such key at all. Declaring them at admission is what keeps a missing
+        key from meaning «this store answered None».
+        """
+        store = a_store(tmp_path)
+        store.admit(a_record())
+
+        fresh = store.get_admission("cyc-1")
+        assert fresh["accepted_at"] is None
+        assert fresh["accepted_by"] is None
+        assert fresh["accepted_locator"] is None
+
+
+# ---------------------------------------------------------------------------
 # The six things `admit` refuses, each naming what to change.
 # ---------------------------------------------------------------------------
 
@@ -1392,6 +1611,138 @@ class TestTheCli:
         assert "0 open of 1 recorded" in listing.stdout
         assert f"(retired {T2})" in listing.stdout
         assert "SRV-1" in listing.stdout, "the selection is what a review reads"
+
+
+def seeded_retired(env: dict) -> None:
+    """`seeded(env)` driven on to a retired cycle whose receipt was reported.
+
+    Through the store rather than through three more verbs, because what the
+    class below is about is this verb's rendering and its exit code. The state
+    itself is the one `TestATakeUpIsWrittenOnceOnTheEdge` builds by hand.
+    """
+    store = AgentControlStore(store_path(env))
+    held = store.admissions()["cyc-1"]
+    store.confirm_admission("cyc-1", phase="LEASE_HELD",
+                            evidence={"act": "DECLARE",
+                                      "resource": held["lease"]["resource"]}, at=T1)
+    store.confirm_admission("cyc-1", phase="DISPATCHED",
+                            evidence={"action_key": held["action_key"],
+                                      "status": "EXITED"}, at=T1)
+    store.retire_admission("cyc-1", at=T2, outcome="DELIVERED")
+
+
+class TestTheAcceptVerb:
+    def test_accept_records_the_take_up_and_prints_who_and_which(self, tmp_path):
+        env = a_data_root(tmp_path)
+        seeded(env)
+        seeded_retired(env)
+
+        done = cli("work", "accept", "cyc-1", "--by", "parent-a",
+                   "--locator", "art://run/1", "--at", T2, env_extra=env)
+
+        assert done.returncode == 0, done.stderr
+        assert "taken up by parent-a" in done.stdout
+        assert "locator     art://run/1" in done.stdout
+        assert f"taken up at {T2}" in done.stdout
+        assert f"retired at  {T2}" in done.stdout, (
+            "the ending is printed too: a take-up is only possible after it, and "
+            "a reader deciding whether to accept this result needs both")
+        store = AgentControlStore(store_path(env))
+        stored = store.get_admission("cyc-1")
+        assert stored["accepted_by"] == "parent-a"
+        assert stored["accepted_locator"] == "art://run/1"
+        assert stored["accepted_at"] == T2
+        listing = cli("work", "admissions", env_extra=env)
+        assert "taken up      parent-a as art://run/1 at " + T2 in listing.stdout, (
+            "the audit reading of one cycle answers «who took its result up» too")
+
+    def test_the_same_call_again_is_idempotent(self, tmp_path):
+        env = a_data_root(tmp_path)
+        seeded(env)
+        seeded_retired(env)
+        cli("work", "accept", "cyc-1", "--by", "parent-a",
+            "--locator", "art://run/1", "--at", T2, env_extra=env)
+
+        again = cli("work", "accept", "cyc-1", "--by", "parent-a",
+                    "--locator", "art://run/1", "--at", T0, env_extra=env)
+
+        assert again.returncode == 0, again.stderr
+        assert f"taken up at {T2}" in again.stdout, (
+            "the first instant is the one this store kept")
+
+    def test_a_second_parent_is_a_fault_that_names_both(self, tmp_path):
+        env = a_data_root(tmp_path)
+        seeded(env)
+        seeded_retired(env)
+        cli("work", "accept", "cyc-1", "--by", "parent-a",
+            "--locator", "art://run/1", env_extra=env)
+
+        done = cli("work", "accept", "cyc-1", "--by", "parent-b",
+                   "--locator", "art://run/1", env_extra=env)
+
+        assert done.returncode != 0
+        assert "'parent-b'" in done.stderr and "'parent-a'" in done.stderr, (
+            "both names, so the disagreement is readable rather than reported")
+        assert done.stdout == ""
+
+    def test_a_cycle_that_never_dispatched_is_a_fault(self, tmp_path):
+        """The store's refusal, arriving as a sentence and not as a traceback."""
+        env = a_data_root(tmp_path)
+        seeded(env)
+        store = AgentControlStore(store_path(env))
+        store.confirm_admission("cyc-1", phase="LEASE_HELD",
+                                evidence={"act": "DECLARE",
+                                          "resource": "browser:chromium"}, at=T1)
+        store.retire_admission("cyc-1", at=T2, outcome="ABANDONED")
+
+        done = cli("work", "accept", "cyc-1", "--by", "parent-a",
+                   "--locator", "art://run/1", env_extra=env)
+
+        assert done.returncode != 0
+        assert "never reached DISPATCHED" in done.stderr
+        assert "Traceback" not in done.stderr
+
+    def test_a_cycle_this_store_does_not_hold_is_a_fault(self, tmp_path):
+        env = a_data_root(tmp_path)
+        seeded(env)
+
+        done = cli("work", "accept", "cyc-9", "--by", "parent-a",
+                   "--locator", "art://run/1", env_extra=env)
+
+        assert done.returncode != 0
+        assert "no admission" in done.stderr
+
+    def test_the_two_names_are_required_on_the_command_line(self, tmp_path):
+        """No default and no prompt: a take-up nobody can be attributed to is not
+        `accepted_by`, and one that does not say which result is not either."""
+        env = a_data_root(tmp_path)
+        seeded(env)
+        seeded_retired(env)
+
+        missing_by = cli("work", "accept", "cyc-1", "--locator", "art://run/1",
+                         env_extra=env)
+        missing_locator = cli("work", "accept", "cyc-1", "--by", "parent-a",
+                              env_extra=env)
+
+        assert missing_by.returncode != 0
+        assert missing_locator.returncode != 0
+        assert AgentControlStore(store_path(env)).get_admission(
+            "cyc-1")["accepted_at"] is None
+
+    def test_json_is_the_stored_admission(self, tmp_path):
+        env = a_data_root(tmp_path)
+        seeded(env)
+        seeded_retired(env)
+
+        done = cli("work", "accept", "cyc-1", "--by", "parent-a",
+                   "--locator", "art://run/1", "--at", T2, "--json",
+                   env_extra=env)
+
+        assert done.returncode == 0, done.stderr
+        payload = json.loads(done.stdout)
+        assert payload["admission"]["accepted_by"] == "parent-a"
+        assert payload["admission"]["phase"] == "DISPATCHED"
+        assert payload["store"] == str(store_path(env))
 
 
 class TestTheDispatchVerb:

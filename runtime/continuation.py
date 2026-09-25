@@ -122,15 +122,23 @@ WAIT_ANSWERS = ("WAIT_OVER", "WAIT_OPEN", "WAIT_UNANSWERABLE")
 #: The continuation triggers installed on this node. See the module docstring.
 RECEIVERS: tuple = ()
 
-#: The four answers to «what became of the attempts this checkpoint records».
+#: The five answers to «what became of the attempts this checkpoint records».
 #:
-#: Three of them are about one attempt, and the fourth is about a record that
-#: names none — which is a fact `build_checkpoint` allows and which must not be
-#: printed as either of the other three. `ATTEMPT_UNANSWERABLE` is not «not
-#: finished»: it is «this store cannot say», kept apart for the reason
-#: `WAIT_ANSWERS` gives one screen down.
-ATTEMPT_ANSWERS = ("ATTEMPT_RETIRED", "ATTEMPT_OPEN", "ATTEMPT_UNANSWERABLE",
-                   "ATTEMPT_NONE")
+#: Four of them are about one attempt, and the fifth is about a record that names
+#: none — which is a fact `build_checkpoint` allows and which must not be printed
+#: as any of the others. `ATTEMPT_UNANSWERABLE` is not «not finished»: it is «this
+#: store cannot say», kept apart for the reason `WAIT_ANSWERS` gives one screen
+#: down. `ATTEMPT_ACCEPTED` and `ATTEMPT_RETIRED` are the two answers that would
+#: otherwise be one: both mean the attempt finished, and they differ in whether
+#: anything says its result was taken into the Item.
+#:
+#: The TUPLE's order is «how finished, then the two odd ones», which is not the
+#: order the record-level answer is decided in. `attempts_state` decides most
+#: cautiously first (a store it cannot read outranks an open attempt, and an open
+#: attempt outranks a finished one), so a caller that wants the precedence reads
+#: that function and not this tuple.
+ATTEMPT_ANSWERS = ("ATTEMPT_ACCEPTED", "ATTEMPT_RETIRED", "ATTEMPT_OPEN",
+                   "ATTEMPT_UNANSWERABLE", "ATTEMPT_NONE")
 
 
 def receivers() -> tuple:
@@ -578,14 +586,24 @@ def attempts_state(record: dict, *, admissions: dict | None = None) -> dict:
                            already done rather than claiming what the fabric can
                            still see.
 
-    ACCEPTED IS NOT A STATE THIS FUNCTION HAS, AND THAT IS NOT AN OMISSION.
-    Nothing on this node records an acceptance as a fact separate from the
-    record's own `evidence_locators` — `work checkpoint --evidence` calls one «an
-    accepted evidence locator», so what has been accepted is readable from the
-    record and not from the attempt. This function answers what the store says
-    about the attempt; the reader reconciles that against the evidence the record
-    already carries, which is what this read exists to make possible instead of
-    leaving it to be carried by hand.
+    ACCEPTED IS ONE OF ITS STATES NOW, AND IT WAS NOT WHEN THIS FUNCTION WAS
+    WRITTEN. The paragraph that used to stand here said nothing on this node
+    records an acceptance as a fact separate from the record's own
+    `evidence_locators`, and that was true of the node it was written on — a test
+    held the shape of that answer so that a later slice adding an acceptance store
+    would have to move it on purpose. Slice L added one:
+    `runtime/agent_control_store.accept_admission` writes who took a cycle's
+    result up and which locator they took up, once, on the edge. So the answer is
+    read from the store like the other four and is NOT inferred from the record.
+
+    WHAT THAT DOES NOT CLAIM. The store records the take-up; it does not verify
+    that the record carries the locator. `evidence_locators` is the Item's own
+    restatement, written by that Parent when it next checkpoints, so between the
+    two the record is legitimately one write behind the edge, and an answer that
+    called that a disagreement would be inventing a rule the design does not
+    state. What this function answers is «the store says a take-up was recorded»,
+    which is the fact a resuming Parent needs before it decides whether it is
+    about to accept the same result a second time.
     """
     record = record if isinstance(record, dict) else {}
     refs = [str(ref) for ref in (record.get("child_attempts") or []) if str(ref).strip()]
@@ -594,7 +612,7 @@ def attempts_state(record: dict, *, admissions: dict | None = None) -> dict:
             "attempts": refs}
     if not refs:
         return {**base, "state": "ATTEMPT_NONE", "evidence": [], "retired": [],
-                "open": [], "unheld": [],
+                "accepted": [], "open": [], "unheld": [],
                 "detail": ("this record names no child attempt, so there is "
                            "nothing to look up. It is not a record whose attempts "
                            "all finished: a Parent that made none says so by "
@@ -606,7 +624,7 @@ def attempts_state(record: dict, *, admissions: dict | None = None) -> dict:
         # reason: there is no `unheld` list here, because «this store holds no such
         # attempt» is a statement about a store that was read, and none was brought.
         return {**base, "state": "ATTEMPT_UNANSWERABLE", "evidence": [],
-                "retired": [], "open": [],
+                "retired": [], "accepted": [], "open": [],
                 "detail": ("no admissions were supplied, so the attempts this "
                            "record names were not looked up at all. This is «nobody "
                            "brought the store» and not «the store holds no such "
@@ -614,37 +632,70 @@ def attempts_state(record: dict, *, admissions: dict | None = None) -> dict:
                 "says": ("this reading was given no admissions, so what became of "
                          "the attempts it records cannot be said")}
 
-    retired, open_now, unheld, evidence = [], [], [], []
+    retired, accepted, open_now, unheld, evidence = [], [], [], [], []
     for ref in refs:
         held = admissions.get(ref)
         if not isinstance(held, dict):
             unheld.append(ref)
             evidence.append({"ref": ref, "held": False,
                              "state": "ATTEMPT_UNANSWERABLE",
+                             "accepted_at": None, "accepted_by": None,
+                             "accepted_locator": None,
                              "because": ("this store holds no admission under this "
                                          "ref, so what became of the attempt cannot "
                                          "be read from here")})
             continue
         retired_at = held.get("retired_at")
+        accepted_at = held.get("accepted_at")
         if retired_at:
             retired.append(ref)
-            evidence.append({"ref": ref, "held": True, "state": "ATTEMPT_RETIRED",
-                             "phase": held.get("phase"), "retired_at": retired_at,
-                             "outcome": held.get("outcome"),
-                             "because": ("this attempt was retired, so its outcome "
-                                         "is recorded — and the record is where the "
-                                         "result is read rather than carried")})
+            if accepted_at:
+                # `accepted` is a SUBSET of `retired` and not a third list beside
+                # it: a take-up is only possible after the cycle's outcome was
+                # recorded, so every accepted ref is also a retired one, and two
+                # lists that overlapped by construction would make a consumer
+                # count the same attempt twice.
+                accepted.append(ref)
+                evidence.append({"ref": ref, "held": True,
+                                 "state": "ATTEMPT_ACCEPTED",
+                                 "phase": held.get("phase"),
+                                 "retired_at": retired_at,
+                                 "outcome": held.get("outcome"),
+                                 "accepted_at": accepted_at,
+                                 "accepted_by": held.get("accepted_by"),
+                                 "accepted_locator": held.get("accepted_locator"),
+                                 "because": ("this attempt was retired and a "
+                                             "take-up of its result is recorded "
+                                             "against it, so the Item is not short "
+                                             "of this one — and the same result is "
+                                             "not to be accepted twice")})
+            else:
+                evidence.append({"ref": ref, "held": True,
+                                 "state": "ATTEMPT_RETIRED",
+                                 "phase": held.get("phase"),
+                                 "retired_at": retired_at,
+                                 "outcome": held.get("outcome"),
+                                 "accepted_at": None, "accepted_by": None,
+                                 "accepted_locator": None,
+                                 "because": ("this attempt was retired, so its "
+                                             "outcome is recorded — and nothing "
+                                             "says whether the result was taken "
+                                             "up, which the record's own accepted "
+                                             "evidence is what answers")})
         else:
             open_now.append(ref)
             evidence.append({"ref": ref, "held": True, "state": "ATTEMPT_OPEN",
                              "phase": held.get("phase"), "retired_at": None,
-                             "outcome": None,
+                             "outcome": None, "accepted_at": None,
+                             "accepted_by": None, "accepted_locator": None,
                              "because": ("this admission is still open. A phase is "
                                          "not a result: DISPATCHED says the attempt "
                                          "was invoked, not that it finished")})
     answer = {**base, "evidence": evidence, "retired": retired,
-              "open": open_now, "unheld": unheld}
-    counts = (f"{len(retired)} finished, {len(open_now)} still open, "
+              "accepted": accepted, "open": open_now, "unheld": unheld}
+    taken_up = (f" ({len(accepted)} of them taken up)" if accepted
+                else " (none of them taken up)")
+    counts = (f"{len(retired)} finished{taken_up}, {len(open_now)} still open, "
               f"{len(unheld)} this store cannot look up")
     if unheld:
         return {**answer, "state": "ATTEMPT_UNANSWERABLE",
@@ -663,10 +714,27 @@ def attempts_state(record: dict, *, admissions: dict | None = None) -> dict:
                 "says": (f"of the attempts this checkpoint records, {counts} — an "
                          f"attempt without a recorded outcome is one this Parent "
                          f"may already be paying for")}
-    return {**answer, "state": "ATTEMPT_RETIRED",
-            "detail": ("every recorded attempt has a recorded outcome. This is an "
-                       "answer about the store and about nothing else: it says the "
-                       "attempts finished, not that their results were accepted "
-                       "into this record"),
+    if len(accepted) != len(retired):
+        short = [ref for ref in retired if ref not in accepted]
+        return {**answer, "state": "ATTEMPT_RETIRED",
+                "detail": ("every recorded attempt has a recorded outcome, and no "
+                           "take-up of a result is recorded for "
+                           + ", ".join(short)
+                           + ". Both are answers about the store: it says nothing "
+                             "about whether the result was refused — a required "
+                             "revision or a registered gap is the Parent's next "
+                             "checkpoint, and it is the record that carries it"),
+                "says": (f"of the attempts this checkpoint records, {counts}, so "
+                         f"resuming does not mean dispatching a second child — and "
+                         f"for the ones with no take-up it means reading the "
+                         f"record's accepted evidence before accepting one")}
+    return {**answer, "state": "ATTEMPT_ACCEPTED",
+            "detail": ("every recorded attempt has a recorded outcome and a "
+                       "take-up of its result is recorded against it. This is an "
+                       "answer about the store and about nothing else: it does not "
+                       "check that the record's own accepted evidence names the "
+                       "same locators, which is a restatement that Parent writes "
+                       "when it next checkpoints"),
             "says": (f"of the attempts this checkpoint records, {counts}, so "
-                     f"resuming does not mean dispatching a second child")}
+                     f"resuming means continuing from results the Item already has "
+                     f"rather than dispatching a second child")}

@@ -7126,6 +7126,15 @@ def cmd_work_admissions(args) -> int:
                          f"  (the latest of {len(confirmations)})")
         if admission.get("outcome"):
             lines.append(f"  outcome       {admission['outcome']}")
+        if admission.get("accepted_at"):
+            # Printed here as well as on the continuation line, because the two
+            # readings are asked by different people: a Parent resuming the Item
+            # reads `work continuations`, and a person auditing what a cycle held
+            # and who took its result up reads this one. The same field, two
+            # audiences, and neither is a summary of the other.
+            lines.append(f"  taken up      {admission['accepted_by']} as "
+                         f"{admission['accepted_locator']} at "
+                         f"{admission['accepted_at']}")
     emit({"admissions": held, "open": len(open_now), "store": str(control.path)},
          as_json=args.json, lines=lines)
     return EXIT_OK
@@ -7837,6 +7846,60 @@ def cmd_work_retire(args) -> int:
     return EXIT_OK
 
 
+def cmd_work_accept(args) -> int:
+    """§12/P7 — take a retired cycle's result up, once, on the edge.
+
+    THE SECOND HALF OF §17.4's SENTENCE. `docs/daily-work-cycle.md` §17.4 names
+    the reading a resuming Parent does — «恢复前对账 baseline、writer、effect 和
+    旧 attempt» — and `docs/CC-EXECUTION-PLAN.md` names the act: the successor
+    Parent looks the original attempt up AND ACCEPTS THE RESULT ONCE. `work
+    continuations` answers the looking-up; this verb is the accepting, and
+    `runtime/agent_control_store.accept_admission` is what it writes.
+
+    WHY THE EDGE. The fact «somebody took this cycle's result up» belongs to the
+    delegated edge and not to the receipt (`bounded_invocation` writes one receipt
+    per action key with replay semantics, so a second writer there would be a
+    second answer to «what did the invocation return») and not to the checkpoint
+    record (`--evidence` carries accepted locators already, but that list is the
+    Item's own restatement, accumulated and rewritten every epoch — a take-up
+    recorded there could be a whole epoch newer than the edge that produced it).
+    The two are deliberately one write apart: a Parent reads this store before it
+    decides whether it is about to accept the same result twice.
+
+    WHAT IT DOES NOT DO: it does not decide the verdict. Whether the result is
+    accepted, needs a specific revision, or leaves a registered gap is the Parent's
+    judgement and it goes in the record it writes next. This writes down that a
+    take-up happened, who did it, and as which locator — the fact a later reader
+    needs in order to see that it already happened.
+    """
+    store_mod, control = _control_store()
+    try:
+        taken = control.accept_admission(
+            args.cycle,
+            at=args.at or datetime.datetime.now(
+                datetime.timezone.utc).isoformat(),
+            by=args.by, locator=args.locator)
+    except store_mod.StoreError as exc:
+        sys.stderr.write(f"serverosctl: {exc}\n")
+        return EXIT_FAULT
+    lines = [f"cycle       {taken['cycle_ref']}",
+             f"phase       {taken['phase']}",
+             f"retired at  {taken['retired_at']}"]
+    if taken.get("outcome"):
+        lines.append(f"outcome     {taken['outcome']}")
+    lines.append(f"taken up by {taken['accepted_by']}")
+    lines.append(f"locator     {taken['accepted_locator']}")
+    lines.append(f"taken up at {taken['accepted_at']}")
+    lines.append("")
+    lines.append("A result is accepted once, and this call is idempotent only for "
+                 "the same Parent and the same locator. What the Item now carries "
+                 "is still the record's own `--evidence` line, written when that "
+                 "Parent next checkpoints.")
+    emit({"admission": taken, "store": str(control.path)}, as_json=args.json,
+         lines=lines)
+    return EXIT_OK
+
+
 def _continuation_module():
     return _load_module_from(REPO_ROOT / "runtime" / "continuation.py",
                              "serveros_runtime_continuation")
@@ -8009,9 +8072,25 @@ def cmd_work_continuations(args) -> int:
     answers: they are the two facts a resuming Parent reconciles the attempts
     against — which revision of the Requirement this record was written under, and
     which evidence this record already carries. `work checkpoint --evidence` calls
-    one «an accepted evidence locator», so what has been accepted is a fact about
-    the record; there is no place on this node that records an acceptance as a
-    separate fact about an attempt, and this surface does not invent one.
+    one «an accepted evidence locator», so `accepted` here is the RECORD's own
+    restatement of what the Item has.
+
+    THE OTHER HALF OF «LOOK UP THE ATTEMPT AND ACCEPT THE RESULT ONCE» IS ON THE
+    LINE NOW, AND IT WAS NOT. The paragraph that stood here said there was nowhere
+    on this node that records an acceptance as a separate fact about an attempt.
+    There is: `work accept <cycle>` writes who took a retired cycle's result up and
+    as which locator, once, on the edge — so `attempts` can answer
+    `ATTEMPT_ACCEPTED` instead of stopping at «it finished», which was the fact
+    that could not distinguish «resume from this result» from «accept it a second
+    time».
+
+    THE TWO SPELLINGS OF `accepted` ON THIS SCREEN ARE TWO LEVELS, NOT TWO COPIES.
+    The per-attempt `taken up by` line is «a take-up of THIS cycle is recorded»;
+    the `accepted` line per checkpoint is «the Item's record now carries this
+    evidence». They are allowed to be one write apart, because that record is
+    restated by the Parent when it next checkpoints. A reading that called that lag
+    a disagreement would invent a rule the design does not state, so this surface
+    prints both and reconciles neither.
     """
     continuation = _continuation_module()
     store_mod, control = _control_store()
@@ -8055,7 +8134,9 @@ def cmd_work_continuations(args) -> int:
              + ("" if live else " — nothing held to wait on"),
              f"attempts      {made} recorded on {len(live)} live checkpoint"
              + ("" if len(live) == 1 else "s") + " — "
-             + f"{len(by_answer['ATTEMPT_RETIRED'])} all finished, "
+             + f"{len(by_answer['ATTEMPT_ACCEPTED'])} all taken up, "
+             + f"{len(by_answer['ATTEMPT_RETIRED'])} all finished with a take-up "
+             + f"outstanding, "
              + f"{len(by_answer['ATTEMPT_OPEN'])} with one still open, "
              + f"{len(by_answer['ATTEMPT_UNANSWERABLE'])} this store cannot look up, "
              + f"{len(by_answer['ATTEMPT_NONE'])} naming none",
@@ -8106,10 +8187,18 @@ def cmd_work_continuations(args) -> int:
             if not entry["held"]:
                 lines.append(f"    {entry['ref']}  {entry['state']}  — this store "
                              f"holds no such admission")
+            elif entry["state"] == "ATTEMPT_ACCEPTED":
+                lines.append(f"    {entry['ref']}  {entry['state']}  taken up by "
+                             f"{entry['accepted_by']} as "
+                             f"{entry['accepted_locator']} at "
+                             f"{entry['accepted_at']}"
+                             + (f"  (outcome {entry['outcome']})"
+                                if entry.get("outcome") else ""))
             elif entry["state"] == "ATTEMPT_RETIRED":
                 lines.append(f"    {entry['ref']}  {entry['state']}  "
                              + (entry.get("outcome") or "— no outcome recorded")
-                             + f"  at {entry['retired_at']}")
+                             + f"  at {entry['retired_at']}  — no take-up of its "
+                               f"result is recorded")
             else:
                 lines.append(f"    {entry['ref']}  {entry['state']}  "
                              f"phase {entry.get('phase')}")
@@ -10663,6 +10752,25 @@ def build_parser() -> argparse.ArgumentParser:
     wk_retire.add_argument("--at", default="",
                            help="the instant to record (default: now)")
     wk_retire.set_defaults(func=cmd_work_retire)
+
+    wk_accept = work_sub.add_parser(
+        "accept", help="§12/P7 — record that a retired cycle's result was taken "
+                       "up, once, by a named Parent as a named locator. Writes "
+                       "no verdict", **_COMMON)
+    wk_accept.add_argument("cycle",
+                           help="the cycle whose result is being taken up")
+    wk_accept.add_argument("--by", required=True,
+                           help="the Parent taking it up. Required, because an "
+                                "acceptance that cannot be attributed to one is "
+                                "not the handoff object's `accepted_by`")
+    wk_accept.add_argument("--locator", required=True,
+                           help="the exact input/output revision taken up. "
+                                "Required, because an acceptance that does not "
+                                "say which result is the fact a resuming Parent "
+                                "came here for")
+    wk_accept.add_argument("--at", default="",
+                           help="the instant to record (default: now)")
+    wk_accept.set_defaults(func=cmd_work_accept)
 
     wk_checkpoint = work_sub.add_parser(
         "checkpoint", help="§12/P7 — save where a logical Parent got to because "
