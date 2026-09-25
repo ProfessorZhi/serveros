@@ -24,6 +24,16 @@ STAMP = NOW.isoformat()
 
 
 def item(i="T-1", **extra):
+    """A board row with every field the policy reads already present.
+
+    `worker_stopped: True` is no longer invented here: since 2026-09-25 a real
+    dispatch produces it, in the one case where the receipt records that no
+    process was started. The other four fields are still set by this factory and
+    by no producer on this node. `tests/test_focus_source.py` carries the chain
+    from the receipt to these rows, and the case this factory's default is NOT —
+    a dispatch whose process was started and not recorded gone — which is the one
+    that keeps a terminal Item's slot occupied.
+    """
     return {"id": i, "project": "test", "state": "READY", "scope_digest": "scope",
             "priority": "P1", "worker_stopped": True, "resources_released": True,
             "grant_ref": "g", "next_action": "research", **extra}

@@ -6570,8 +6570,27 @@ def _focus_decision(args):
                               "serveros_intake_daily_cycle")
     delegation_mod = _load_module_from(REPO_ROOT / "context" / "delegation.py",
                                        "serveros_context_delegation")
+    store_mod, control = _control_store()
     try:
-        composed = focus_mod.compose(board)
+        # `worker_stopped` is the one row field that does not come from the
+        # board, and it comes from here: for each Item, the admission that named
+        # it, then the receipt its `action_key` points at. This is the same store
+        # the grants below are read from, and BOTH verbs that compose a decision
+        # (`work focus`, `work admit`) come through this function so that the
+        # rows an admission is made against are the rows focus printed — a second
+        # composition in the admitting verb would be a second answer, and the two
+        # would agree only until one of them was edited.
+        #
+        # What this is NOT: one transaction across the board files and the
+        # control store. They are two stores, and P6 asks for "可恢复幂等关系，
+        # 不假装跨库事务" rather than for a lock neither store can take.
+        admissions = control.admissions()
+    except store_mod.StoreError as exc:
+        sys.stderr.write(f"serverosctl: {exc}\n")
+        return None
+    try:
+        composed = focus_mod.compose(board, admissions=admissions,
+                                     receipts_root=args.receipts)
     except focus_mod.Refused as exc:
         sys.stderr.write(f"serverosctl: {exc}\n")
         return None
@@ -6583,7 +6602,6 @@ def _focus_decision(args):
     # before it enters the map. A grant file is deliberately not an option:
     # there is no shape of authority this fabric refuses more firmly, and no
     # way to tell one from a file somebody edited.
-    store_mod, control = _control_store()
     try:
         recorded, contexts = control.grants(), control.contexts()
     except store_mod.StoreError as exc:
@@ -6672,6 +6690,22 @@ def cmd_work_focus(args) -> int:
         + ", ".join(f"{name} {stamp or 'undated'}"
                     for name, stamp in sorted(composed["projection_times"].items())),
         f"rows        {len(composed['rows'])}",
+    ]
+    # The one row field that does not come from the board, printed with every
+    # link of its chain: a reader has to be able to tell "no worker is held"
+    # from "nothing here could say", and the whole reason `worker_stopped` is
+    # absent rather than False when the chain broke is that the second must not
+    # read as the first.
+    liveness = composed.get("liveness") or {}
+    lines.append(f"liveness    {liveness.get('status', '?')}")
+    for item_id, entry in sorted((liveness.get("items") or {}).items()):
+        answer = entry.get("worker_stopped")
+        word = ("stopped" if answer is True else
+                "held" if answer is False else "undecided-here")
+        lines.append(f"  {item_id:<10} {word:<16} "
+                     f"{','.join(entry.get('action_keys') or []) or 'no action key'}"
+                     f"  {entry.get('because', '')}")
+    lines += [
         f"delegations {delegations['summary']['recorded']} recorded · "
         f"{delegations['summary']['authorizing']} authorizing"
         + ("" if recorded else " — none recorded on this node"),
@@ -6931,6 +6965,9 @@ def cmd_work_admit(args) -> int:
                                    for k in sorted(stored["reservation"])),
         f"phase       {stored['phase']}",
         f"replayed    {'yes — same intent, same admission' if stored.get('replayed') else 'no'}",
+        f"liveness    {((composed.get('liveness') or {}).get('status')) or '?'} — "
+        f"the rows above were selected with this read; `--receipts` omitted means "
+        f"no receipt was opened and no row could be held by one",
         "",
         "recorded, not acted on: the lease is declared and the dispatch made by",
         "whatever performs them, and each reports back through",
@@ -9632,6 +9669,31 @@ def build_parser() -> argparse.ArgumentParser:
                              help="what a relative `card_locator` resolves "
                                   "against (default: this node's workspace root)")
 
+    def _add_receipts(parser_) -> None:
+        """The one root that answers whether a dispatch's worker is still held.
+
+        On the two verbs that compose a decision — `focus` and `admit` — and on
+        both rather than on the one that looks like it needs it: the rows the
+        admitting verb selects are computed from the same rows focus printed, so
+        a liveness read that reached one verb and not the other would let a
+        person be shown one selection and have another admitted. Both take it or
+        neither does.
+
+        There is deliberately no default. The directory belongs to whoever
+        dispatched, `runtime/bounded_invocation.invoke_once` takes it as an
+        argument, and a guess here would read receipts from a place nobody ran
+        this — the same reason `_dispatch_answer` refuses to guess it. Omitted,
+        `worker_stopped` is absent from every row and the composition SAYS so
+        rather than reporting `False`, which would blame the worker for a
+        missing flag.
+        """
+        parser_.add_argument("--receipts", default="",
+                             help="the directory `runtime/bounded_invocation."
+                                  "invoke_once` wrote its receipts to. Omitted, "
+                                  "no receipt is read and `worker_stopped` stays "
+                                  "off every row — an absent field, not a "
+                                  "released one")
+
     wk_board = work_sub.add_parser(
         "board", help="§6's sections in §6's order: 今日重点 → P0 → P1 → 待排期 "
                       "→ 等待 → 待验收 → 取消 → 已完成", **_COMMON)
@@ -9647,6 +9709,7 @@ def build_parser() -> argparse.ArgumentParser:
                       "from the board's own rows over the oldest projection's "
                       "age. Reads; admits nothing", **_COMMON)
     _add_work_roots(wk_focus, project_required=False)
+    _add_receipts(wk_focus)
     wk_focus.add_argument("--ttl", type=int, default=900,
                           help="how old the underlying projection may be, in "
                                "seconds (default 900)")
@@ -9670,6 +9733,7 @@ def build_parser() -> argparse.ArgumentParser:
                       "reservation and its lease/dispatch intent in one write. "
                       "Records the intent; performs nothing", **_COMMON)
     _add_work_roots(wk_admit, project_required=False)
+    _add_receipts(wk_admit)
     wk_admit.add_argument("--cycle", required=True,
                           help="the ref this cycle is admitted under, and what a "
                                "resume names. There is deliberately no --grant: "
