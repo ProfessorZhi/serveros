@@ -1760,9 +1760,9 @@ def render(report: dict) -> None:
 # --------------------------------------------------------------------------
 
 # There is no built-in path, and the absence is the point. Until §Q6 these
-# five arguments fell back to `/opt/applications/data/home-hwz/...` — one
-# machine's layout, compiled into a checker whose whole job is to find claims
-# that do not describe the machine they are being read on. On Tokyo it did not
+# five arguments fell back to `/opt/applications/data/home-hwz/...`  # node-path-ok: 考古记录
+# — one machine's layout, compiled into a checker whose whole job is to find
+# claims that do not describe the machine they are being read on. On Tokyo it did not
 # fail loudly: it pointed at a directory that does not exist and reported on
 # it, which is this checker manufacturing the exact declared-vs-actual gap it
 # exists to find.

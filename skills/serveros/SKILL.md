@@ -140,7 +140,7 @@ Skill + Plugin      操作语义与发行入口
 - 不移动活动 worktree / 容器 / venv / bind mount；未知消费者标 `DEFER`。
 - 不输出 credential / token / cookie / 私钥；registry、observation、report、log 里都不写值。
 - **root 磁盘压力只 observe / explain / recommend。** 永远不自动删未知内容，不 `docker system prune`，
-  不 `docker volume prune`。`/` 是系统盘，`/opt/applications` 是数据盘，两者分开报。
+  不 `docker volume prune`。系统盘（`/`）与数据盘（机器策略里的 `DATA_ROOT`）分开报，不合并成一个数。
 - machine state 只在 `DATA_ROOT/state/serveros/`；`~/.serveros` 保持小。
 - 能力发布由 canonical 构建（reusable Skill 源在 `ability-management`），**禁止从 runtime 反向覆盖 canonical**。
 
