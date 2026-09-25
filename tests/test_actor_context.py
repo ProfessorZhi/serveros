@@ -20,9 +20,12 @@ A test that only covered (1) would pass against a daemon that accepted
 from __future__ import annotations
 
 import importlib.util
+import inspect
 import json
+import os
 import socket
 import sys
+import threading
 from pathlib import Path
 
 import pytest
@@ -588,3 +591,212 @@ def test_the_session_contract_vocabulary_has_no_unused_states():
     # lands in is the same pathology one layer down.
     contract = approval_mod.contract()  # the approval contract, for its own vocabulary
     assert contract["consumption"]["model"] == "single-use"
+
+
+# ---------------------------------------------------------------------------
+# The mint path — §5's doorway, reached by a real caller over a real socket
+#
+# Until this existed, `agent.context.attach` had no producer anywhere in the
+# repository. Every test above reaches it the way a test can and a caller
+# cannot: `handle(..., peer={"pid": 4242})`, with the report and the peer pid
+# both written by the test. So the mechanism was proven and the door was never
+# used, and since every mutating Agent Session action requires a `context_ref`,
+# nothing that changes a session had ever passed admission from a live caller.
+# These tests open the door the way a caller does — a connection — and the
+# interesting assertions are about what the kernel says on the other end.
+# ---------------------------------------------------------------------------
+
+node_mcp = _load("serveros_mcp_node_shared", MCP / "node_mcp.py")
+
+
+class _ServingDaemon:
+    """A real daemon on a real socket, accepting on a thread.
+
+    Not `handle()` in-process, and the difference is the entire subject of
+    these tests: `SO_PEERCRED` is filled in per connection by the kernel. A
+    test that passed `peer={"pid": ...}` itself would be measuring its own
+    fixture, which is how this door came to look proven while being unused.
+
+    `serve(n)` accepts exactly the `n` connections the test expects, so a test
+    that expects no call gets no thread rather than a fixture that quietly
+    absorbs one.
+    """
+
+    def __init__(self, daemon_obj):
+        self.daemon = daemon_obj
+        self.server = daemon_obj._open_socket()
+        self._threads: list[threading.Thread] = []
+
+    def serve(self, count: int = 1) -> None:
+        def loop():
+            for _ in range(count):
+                connection, _ = self.server.accept()
+                try:
+                    self.daemon._serve_connection(connection)
+                finally:
+                    connection.close()
+
+        thread = threading.Thread(target=loop, daemon=True)
+        thread.start()
+        self._threads.append(thread)
+
+    def client(self, timeout: float = 20.0):
+        return node_mcp.DaemonClient(self.daemon.socket_path, timeout=timeout)
+
+    def close(self) -> None:
+        for thread in self._threads:
+            thread.join(timeout=10)
+        self.server.close()
+
+
+@pytest.fixture
+def serving_daemon(daemon):
+    served = _ServingDaemon(daemon)
+    try:
+        yield served
+    finally:
+        served.close()
+
+
+def _verified_provider():
+    return BotMuxHumanControlProvider(
+        runner=lambda: {"schema": "botmux.current-actor.v2", "status": "ok",
+                        "user": "hwz", "chatId": "oc_conversation",
+                        "messageId": "om_message"},
+        clock=lambda: NOW)
+
+
+def _blocked_provider():
+    return BotMuxHumanControlProvider(
+        runner=lambda: {"schema": "botmux.current-actor.v2", "status": "blocked",
+                        "error": "current_actor_unverified"},
+        clock=lambda: NOW)
+
+
+def test_a_verified_turn_mints_a_context_over_a_real_socket(serving_daemon):
+    """The producer §5 was missing, exercised the way a caller uses it.
+
+    Everything below the `attach` call is the real path: the provider's own
+    probe result, this process's pid, a real connection, the kernel's
+    `SO_PEERCRED`, and the daemon's store. Nothing is passed in that a caller
+    could not supply.
+    """
+    serving_daemon.serve(1)
+    result = human_control.attach_context(_verified_provider(),
+                                          daemon=serving_daemon.client())
+
+    assert result["attached"] is True, result
+    assert result["context_ref"].startswith("human-context:")
+    assert result["actor_ref"] == "human:hwz"
+    # The daemon echoes what it bound to, and it is this process — because this
+    # process ran the probe.
+    assert result["observed_by_pid"] == os.getpid()
+
+    # The ref it handed back is one the control plane will actually accept,
+    # which is the only thing the caller wanted a ref for.
+    record = serving_daemon.daemon.control_store().get_context(result["context_ref"])
+    assert record is not None
+    assert actor.authorizes(record, NOW)["authorizes"] is True
+
+
+def test_a_report_observed_by_another_process_is_refused_through_this_path(
+        serving_daemon):
+    """The pid is not decoration: it is the one thing the caller cannot fake.
+
+    Driven through `attach_context` rather than through `handle`, because the
+    refusal only matters if a caller meets it — a mechanism nobody can reach is
+    a mechanism nobody can be stopped by.
+    """
+    serving_daemon.serve(1)
+    result = human_control.attach_context(_verified_provider(), pid=99999,
+                                          daemon=serving_daemon.client())
+
+    assert result["attached"] is False
+    assert result["state"] == "REFUSED"
+    assert result["actor_ref"] is None
+    assert "observed by pid 99999" in result["detail"]
+    assert f"arrived from pid {os.getpid()}" in result["detail"]
+
+
+def test_a_blocked_provider_mints_nothing_and_never_knocks(serving_daemon):
+    """"No context" and "a context about nobody" must not be the same outcome.
+
+    The load-bearing half is the store: the daemon here is reachable and has
+    one, so "attached: false" is only credible if it is still empty. A path
+    that tried and was refused would leave the same store empty — which is why
+    the refusal is returned before the call rather than after it, and why this
+    test asserts the emptiness instead of trusting the flag.
+    """
+    result = human_control.attach_context(_blocked_provider(),
+                                          daemon=serving_daemon.client(timeout=1.0))
+
+    assert result["attached"] is False
+    assert result["state"] == "BLOCKED"
+    assert result["actor_ref"] is None
+    assert "current_actor_unverified" in result["detail"]
+    minted = _call(serving_daemon.daemon, "agent.control.status", {})["result"]
+    assert minted["store"]["contexts"] == 0
+
+
+def test_a_probe_that_names_no_turn_mints_nothing(serving_daemon):
+    """The consequence of not letting the caller supply the conversation.
+
+    A verified name with no conversation attached is not a context with an
+    empty location — it is a report missing one of the fields that make it
+    evidence, and it is refused as such. The cheap repair would be to default
+    the field to something plausible, and that is what would put a fabricated
+    location into an audit record.
+    """
+    nameless = BotMuxHumanControlProvider(
+        runner=lambda: {"schema": "botmux.current-actor.v2", "status": "ok",
+                        "user": "hwz"},
+        clock=lambda: NOW)
+    serving_daemon.serve(1)
+    result = human_control.attach_context(nameless, daemon=serving_daemon.client())
+
+    assert result["attached"] is False and result["state"] == "REFUSED"
+    assert "conversation_ref" in result["detail"]
+    assert _call(serving_daemon.daemon,
+                 "agent.control.status", {})["result"]["store"]["contexts"] == 0
+
+
+def test_the_mint_path_has_no_parameter_for_evidence():
+    """A structural refusal, kept structural.
+
+    The moment this function takes a report — or an actor, or a status — the
+    door that only the process which ran the probe may walk through becomes a
+    door anyone can hand evidence to, and no amount of checking downstream
+    would restore it. Asserted against the signature rather than against a
+    behaviour, because the behaviour is the thing that would be redefined.
+    """
+    parameters = set(inspect.signature(human_control.attach_context).parameters)
+    assert parameters == {"provider", "daemon", "pid"}, (
+        "attach_context grew a parameter; if it can be handed evidence, an "
+        "actor, or the conversation the observation is recorded against, it is "
+        "no longer an observation being presented")
+
+
+def test_the_attach_verb_exits_nonzero_when_no_context_was_minted(serving_daemon,
+                                                                monkeypatch,
+                                                                capsys):
+    """The command's verb is `attach`, so its exit code reports whether it did.
+
+    `--identify` and the other modes here always exit 0 because they are
+    questions and a question that was answered succeeded, even when the answer
+    was "nobody was identified". An act that did not happen returning 0 is the
+    declaration-read-as-fact failure this repository keeps finding.
+    """
+    monkeypatch.setattr(human_control, "BotMuxHumanControlProvider",
+                        _blocked_provider)
+    assert human_control.main(["--attach"]) == 1
+    blocked = json.loads(capsys.readouterr().out)
+    assert blocked["attached"] is False and blocked["state"] == "BLOCKED"
+
+    serving_daemon.serve(1)
+    monkeypatch.setattr(human_control, "BotMuxHumanControlProvider",
+                        _verified_provider)
+    assert human_control.main(["--attach",
+                               "--socket", str(serving_daemon.daemon.socket_path)]) == 0
+    attached = json.loads(capsys.readouterr().out)
+    assert attached["attached"] is True
+    assert attached["observed_by_pid"] == os.getpid()

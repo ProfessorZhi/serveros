@@ -25,9 +25,22 @@ was stuck in, and `turn_state: TURN_UNKNOWN` is printed beside a success for
 that reason rather than being smoothed into a boolean.
 
 WHAT IT MUTATES, because a script that starts a CLI must say so out loud: it
-creates one BotMux session and runs two turns in it. On this deployment that
-posts to the bot's chat. It therefore refuses to run without `--yes`, and it
-never prints the dashboard token it authenticates with.
+mints a trusted actor context, creates one agent session and runs two turns in
+it. On this deployment that posts to the bot's chat. It therefore refuses to run
+without `--yes`, and it never prints the dashboard token it authenticates with.
+
+WHAT IT SPEAKS, because this file was wrong about it for a round and the wrong
+version was invisible. Every call below goes through the Agent Session MCP
+surface by the name that surface declares — `agent.session.create`, not
+`session.create` — addresses a device and a runtime on an envelope the router
+closes per action, and presents a `context_ref` minted by the one doorway that
+can mint one (`mcp/human_control.py#attach_context`). A mutation without a
+context_ref is refused by the router with `INVALID_CONTEXT`, so a closure that
+had no context had never reached a provider at all. The test that keeps this
+true reads the calls this file makes and checks each one against
+`mcp/agent_mcp.py`'s declared tool schemas, rather than against a fake written
+here: the earlier fake agreed with the script and disagreed with the graph, and
+two stubs that agree with each other prove nothing about either.
 """
 from __future__ import annotations
 
@@ -51,8 +64,17 @@ FOLLOWUP_MARKER = "SERVEROS_AGENT_SESSION_FOLLOWUP_OK"
 # the question here is only whether a turn runs at all.
 INSTRUCTION = "Reply with exactly this token and nothing else: {marker}"
 
+# `session_role` has no default anywhere in this stack, by design: a thread is
+# created with a stated purpose, and a default would be a guess about somebody's
+# intent recorded as a fact. This closure crosses Items — it is an acceptance of
+# the control plane, not of any one Item's work — so it is `coordinator`, which
+# is the role that takes no `bound_item_ref`.
+SESSION_ROLE = "coordinator"
+
 
 def _load(name: str, path: Path):
+    if name in sys.modules:
+        return sys.modules[name]
     spec = importlib.util.spec_from_file_location(name, path)
     module = importlib.util.module_from_spec(spec)
     sys.modules[name] = module
@@ -63,9 +85,14 @@ def _load(name: str, path: Path):
 class Closure:
     """One live closure, with every step's verdict kept."""
 
-    def __init__(self, client, *, deadline_seconds: float = 180.0,
+    def __init__(self, client, *, device: str, context_ref: str,
+                 runtime: str = "", deadline_seconds: float = 180.0,
                  poll_seconds: float = 5.0, sleep=time.sleep, now=time.monotonic):
         self.client = client
+        self.device = device
+        self.context_ref = context_ref
+        # Set from the agent the caller asked for, before any session exists.
+        self.runtime = runtime
         self.deadline_seconds = deadline_seconds
         self.poll_seconds = poll_seconds
         self.sleep = sleep
@@ -75,7 +102,27 @@ class Closure:
     def _record(self, step: str, **fields) -> None:
         self.steps.append({"step": step, **fields})
 
-    def _await_answer(self, ref: str, trigger_id: str | None) -> dict:
+    def _answer(self, name: str, arguments: dict) -> dict:
+        """One tool call, with a refusal reported as a refusal.
+
+        The surface answers a routed control action with `ok: False` and a
+        reason word rather than raising, so a closure that read straight into
+        `answer["result"]` would report a KeyError where the control plane had
+        said something specific. The refusal is carried out with the step and
+        the reason intact.
+        """
+        answer = self.client.call(name, arguments)
+        if answer.get("ok") is False:
+            raise SystemExit(
+                f"{name} was refused: {answer.get('reason')}: "
+                f"{answer.get('detail')}. This is the control plane answering, "
+                f"not the harness failing — the reason names what to repair.")
+        return answer
+
+    def _result(self, name: str, arguments: dict) -> dict:
+        return self._answer(name, arguments).get("result") or {}
+
+    def _await_answer(self, session_ref: str, trigger_id: str | None) -> dict:
         """Poll until the provider reports a finished turn, or the deadline.
 
         A timeout is reported as TURN_DID_NOT_FINISH rather than as a failure
@@ -83,49 +130,67 @@ class Closure:
         still running is not a session that failed.
         """
         deadline = self.now() + self.deadline_seconds
-        last = {}
+        last: dict = {}
         while True:
-            last = self.client.call("session.result",
-                                    {"ref": ref, "trigger_id": trigger_id})
+            args = {"session_ref": session_ref, "runtime": self.runtime,
+                    "device": self.device}
+            if trigger_id:
+                args["trigger_id"] = trigger_id
+            last = self._result("agent.session.result", args)
             if last.get("turn_state") in ("TURN_COMPLETED", "TURN_FAILED"):
                 return last
             if self.now() >= deadline:
                 return dict(last, turn_state="TURN_DID_NOT_FINISH")
             self.sleep(self.poll_seconds)
 
-    def run(self, *, agent_id: str, provider_id: str) -> dict:
-        agents = self.client.call("agent.list")
-        known = [a.get("agent_id") for a in agents.get("agents") or []]
-        if agent_id not in known:
+    def run(self, *, agent: dict) -> dict:
+        agent_id = agent["agent_id"]
+        self.runtime = self.runtime or str(agent.get("agent_runtime") or "")
+        if not self.runtime:
             raise SystemExit(
-                f"no agent {agent_id!r} on this device; the provider reports "
-                f"{known}. A closure against an agent that is not enrolled is "
-                "not a closure")
-        self._record("agent.list", agents=known)
+                f"the inventory lists {agent_id!r} with no `agent_runtime`, and "
+                f"the envelope requires one rather than deriving it: which "
+                f"runtime a device DECLARES is an authoring statement, and "
+                f"routing on a declaration would make a registry entry into a "
+                f"capability. Row: {json.dumps(agent, sort_keys=True, default=str)}")
 
-        created = self.client.call("session.create", {
-            "provider": provider_id, "agent_id": agent_id,
+        created = self._result("agent.session.create", {
+            "device": self.device,
+            "runtime": self.runtime,
+            "agent_id": agent_id,
             "instruction": INSTRUCTION.format(marker=SMOKE_MARKER),
             "idempotency_key": "serveros-live-closure-smoke",
+            "context_ref": self.context_ref,
+            "session_role": SESSION_ROLE,
         })
-        ref = created["session_ref"]
-        self._record("session.create", session_ref=ref,
+        ref = created.get("session_ref")
+        if not ref:
+            raise SystemExit(
+                "the provider created a session and returned no session_ref, so "
+                "there is nothing to send a follow-up to. It answered: "
+                + json.dumps(created, sort_keys=True, default=str))
+        self._record("agent.session.create", session_ref=ref,
                      trigger_id=created.get("trigger_id"),
-                     admission=(created.get("admission") or {}).get("decision"),
-                     provider_readiness=(created.get("provider_readiness") or {}).get("status"))
+                     turn_state=created.get("turn_state"),
+                     provider=created.get("provider"))
         smoke = self._await_answer(ref, created.get("trigger_id"))
-        self._record("session.result(first turn)", turn_state=smoke.get("turn_state"),
+        self._record("agent.session.result(first turn)",
+                     turn_state=smoke.get("turn_state"),
                      output=smoke.get("output"), error_code=smoke.get("error_code"))
 
-        sent = self.client.call("session.send", {
-            "ref": ref,
+        sent = self._result("agent.session.send", {
+            "device": self.device,
+            "session_ref": ref,
+            "runtime": self.runtime,
             "instruction": INSTRUCTION.format(marker=FOLLOWUP_MARKER),
             "turn_idempotency_key": "serveros-live-closure-followup",
+            "context_ref": self.context_ref,
         })
-        self._record("session.send", session_ref=ref,
-                     admission=(sent.get("admission") or {}).get("decision"))
+        self._record("agent.session.send", session_ref=ref,
+                     trigger_id=sent.get("trigger_id"))
         follow = self._await_answer(ref, sent.get("trigger_id") or created.get("trigger_id"))
-        self._record("session.result(second turn)", turn_state=follow.get("turn_state"),
+        self._record("agent.session.result(second turn)",
+                     turn_state=follow.get("turn_state"),
                      output=follow.get("output"), error_code=follow.get("error_code"))
 
         return {
@@ -140,30 +205,57 @@ class Closure:
         }
 
 
-def _agent_and_provider(client, requested_agent: str | None) -> tuple[str, str]:
-    """The agent to drive, and the provider that owns it.
+def _agent_for(client, device: str, requested: str | None) -> dict:
+    """The agent to drive, from the provider's own inventory.
 
-    Discovered rather than defaulted: a hard-coded `larkAppId` would make this
+    Discovered rather than defaulted: a hard-coded agent id would make this
     program fail on every device but the one it was written on, and the whole
-    point of the control plane is that the second device is not a rewrite.
+    point of the control plane is that the second device is not a rewrite. The
+    runtime the envelope requires comes from this same row, because the two
+    facts are one observation — asking twice would let them disagree.
     """
-    agents = client.call("agent.list").get("agents") or []
+    listing = client.call("agent.list", {"device": device})
+    agents = listing.get("agents") or []
     if not agents:
-        raise SystemExit("this device exposes no agents; nothing to close over")
-    chosen = None
+        raise SystemExit(
+            f"this device exposes no agents; nothing to close over. The provider "
+            f"answered {json.dumps(listing, sort_keys=True, default=str)}")
     for agent in agents:
-        if requested_agent in (None, agent.get("agent_id")):
-            chosen = agent
-            break
-    if chosen is None:
-        raise SystemExit(f"no enrolled agent named {requested_agent!r}")
-    return chosen["agent_id"], chosen["provider"]
+        if requested in (None, agent.get("agent_id"), agent.get("agent_ref")):
+            return agent
+    listed = sorted(str(a.get("agent_id")) for a in agents)
+    raise SystemExit(
+        f"no enrolled agent named {requested!r}; the provider reports {listed}. "
+        f"A closure against an agent that is not enrolled is not a closure")
+
+
+def _mint_context():
+    """The one doorway that mints a trusted actor context.
+
+    Not optional and not a parameter. Every mutating Agent Session action is
+    refused by the router with `INVALID_CONTEXT` when it carries no ref, and a
+    ref can only come from a HumanControlProvider's own observation presented to
+    serverosd by the process that made it. A closure that took a ref as an
+    argument would be testing whatever the operator pasted in.
+    """
+    human_control = _load("serveros_mcp_human_control_for_closure",
+                          MCP / "human_control.py")
+    result = human_control.attach_context(human_control.BotMuxHumanControlProvider())
+    if not result.get("attached"):
+        raise SystemExit(
+            f"no trusted context was minted, so no mutation could be admitted. "
+            f"state={result.get('state')!r} detail={result.get('detail')!r}. "
+            f"BLOCKED means the identity surface answered and declined to verify "
+            f"this process — which is the correct answer outside a BotMux turn. "
+            f"Run this from inside one.")
+    return result["context_ref"]
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="live-closure",
                                      description=__doc__.splitlines()[0])
     parser.add_argument("--agent", help="agent id to drive; default: the first enrolled one")
+    parser.add_argument("--device", help="device ref; default: this node's authored ref")
     parser.add_argument("--json", action="store_true")
     parser.add_argument("--deadline", type=float, default=180.0,
                         help="seconds to wait for one turn before reporting that it did not finish")
@@ -173,9 +265,9 @@ def main(argv: list[str] | None = None) -> int:
 
     if not args.yes:
         sys.stderr.write(
-            "refusing without --yes: this creates a real BotMux session and runs two "
-            "real turns in it. That is a live mutation on a shared device, and a "
-            "script that performs one must be asked to.\n")
+            "refusing without --yes: this mints a trusted context, creates a real "
+            "agent session and runs two real turns in it. That is a live mutation "
+            "on a shared device, and a script that performs one must be asked to.\n")
         return 2
     if not os.environ.get("SERVEROS_BOTMUX_DASHBOARD_TOKEN"):
         sys.stderr.write(
@@ -186,10 +278,15 @@ def main(argv: list[str] | None = None) -> int:
 
     agent_mcp = _load("serveros_agent_mcp_for_closure", MCP / "agent_mcp.py")
     client = agent_mcp.AgentControlClient()
-    agent_id, provider_id = _agent_and_provider(client, args.agent)
+    # The authored device ref, not a hostname: which device this is is an
+    # authoring statement, and §4 forbids deriving it from the machine.
+    device = args.device or str(client.router.local_device_ref)
 
-    result = Closure(client, deadline_seconds=args.deadline).run(
-        agent_id=agent_id, provider_id=provider_id)
+    context_ref = _mint_context()
+    agent = _agent_for(client, device, args.agent)
+
+    result = Closure(client, device=device, context_ref=context_ref,
+                     deadline_seconds=args.deadline).run(agent=agent)
 
     if args.json:
         json.dump(result, sys.stdout, indent=2, sort_keys=True, default=str)
