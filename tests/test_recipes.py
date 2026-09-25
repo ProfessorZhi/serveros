@@ -1439,6 +1439,77 @@ class ReportTest(RecipeCase):
         # loop is not allowed to flatten.
         self.assertIn("这不是「没有进展」", measure["detail"]["because"])
 
+    def test_a_scope_with_no_worktree_at_all_still_gets_its_report(self):
+        """The deadlock this loop shared with `work`, and the word it used.
+
+        Before this, `ctx.worktree is None` stopped the run with
+        SOURCE_UNAVAILABLE -- while the case one test above, a worktree that IS
+        passed and is not a checkout, is a gap the report is still written from.
+        One absence, two spellings, two outcomes: a scope whose work is not in
+        git has no checkout to pass, so it could never publish a report at all.
+
+        The report is now written, and the hole has to be NAMED in it rather
+        than rendered as zero commits. 没有答案 and 无提交 are different
+        findings, which is why the second one is asserted NOT to appear.
+        """
+        out = self.state_root / "out"
+        result = self.a_run("report", "project:one", out_dir=out)
+        self.assertEqual(result["state"], recipes.DONE)
+        self.assertEqual(result["exit_code"], recipes.EXIT_OK)
+        self.assertNotEqual(result.get("stopped_because"), "SOURCE_UNAVAILABLE")
+        measure = [s for s in result["steps"] if s["step"] == "measure"][0]
+        self.assertIsNone(measure["detail"]["worktree"])
+        self.assertIn("缺口", measure["detail"]["because"])
+        rendered = (out / "daily-report.md").read_text(encoding="utf-8")
+        self.assertIn("UNKNOWN", rendered)
+        self.assertIn("**没有答案。**", rendered)
+        self.assertNotIn("窗口内没有提交", rendered)
+
+    def test_the_two_spellings_of_no_checkout_reach_one_reading(self):
+        """A path that is not a checkout, and no path at all, side by side.
+
+        They are not the same situation -- one is a scope with no code, the
+        other may be a caller that forgot -- but they are the same input to
+        every reader downstream, so the document has to answer them the same
+        way. What stays different is the one thing that is knowable: the step
+        records which of the two it was actually given.
+        """
+        absent_out = self.state_root / "out-absent"
+        absent = self.a_run("report", "project:one", out_dir=absent_out,
+                            period=self.a_period(10))
+        given_path = Path(self._tmp.name) / "not-a-checkout"
+        given_out = self.state_root / "out-given"
+        given = self.a_run("report", "project:one", out_dir=given_out,
+                           period=self.a_period(11), worktree=given_path)
+        for result, out in ((absent, absent_out), (given, given_out)):
+            self.assertEqual(result["state"], recipes.DONE)
+            measure = [s for s in result["steps"] if s["step"] == "measure"][0]
+            self.assertIn("缺口", measure["detail"]["because"])
+            self.assertIn("**没有答案。**",
+                          (out / "daily-report.md").read_text(encoding="utf-8"))
+        absent_measure = [s for s in absent["steps"] if s["step"] == "measure"][0]
+        given_measure = [s for s in given["steps"] if s["step"] == "measure"][0]
+        self.assertIsNone(absent_measure["detail"]["worktree"])
+        self.assertEqual(given_measure["detail"]["worktree"], str(given_path))
+
+    def test_the_word_this_loop_gave_up_is_still_reachable(self):
+        """What removing the no-worktree stop did NOT remove.
+
+        SOURCE_UNAVAILABLE stays in this recipe's `stops`, and a declaration is
+        only honest while something can still produce it: a record that does not
+        parse stops the run under that word, worktree or not. Without this the
+        fix would have quietly retired a vocabulary entry the contract lists --
+        and a reader would have no way to tell that from a word nothing reaches.
+        """
+        path = self.record("report", "project:one")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("{ this is not json", encoding="utf-8")
+        result = self.a_run("report", "project:one",
+                            out_dir=self.state_root / "out")
+        self.assertEqual(result["stopped_because"], "SOURCE_UNAVAILABLE")
+        self.assertEqual(result["exit_code"], recipes.EXIT_OK)
+        self.assertEqual(path.read_text(encoding="utf-8"), "{ this is not json")
+
     def test_the_loop_refuses_to_write_a_report_nobody_gave_it_a_place_for(self):
         """The backstop inside the loop.
 

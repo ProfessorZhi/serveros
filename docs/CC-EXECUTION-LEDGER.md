@@ -519,6 +519,7 @@ tests/test_declared_commands.py::DeclaredCommandsExist::test_every_declared_comm
 | serveros（P6 切片 C：`worker_stopped` 接上它的 receipt 生产者，§9.27） | **1 failed**, 5669 passed, 20 skipped, 3936 subtests passed（660.19s） | `pytest tests/ -q`。相对上一行的 **+15 passed**（5654 → 5669）与 **+2 subtests**（3934 → 3936）就是这一片新增的测试。**那 1 条不是这一片引入的**，身份与判据见下一段 |
 | serveros（P6 切片 D：`resources_released` 接上它的 lease 生产者 + 一对字段必须先被读全，§9.28） | **5683 passed, 20 skipped, 3945 subtests passed, 0 failed**（646.90s） | `pytest tests/ -q`。算术是闭合的：上一格 5669 ＋ 这一片新增的 **13 条**（`test_focus_source.py` 的 `ResourceOccupancyIsReadFromTheLeaseStoreThatOwnsIt` 10 条 ＋ `test_daily_cycle.py` 3 条）＝ 5682，**再加回上一格那条红的 1 条** ＝ 5683；subtests 3936 ＋ **9** ＝ 3945。上一格那 1 条**这一次没有出现**——同一个文件单跑 `27 passed`、那一条参数化单跑 `4 passed`（8.10s）。**这不表示这一片修好了它**：这一片的六文件与它无涉，只表示那条红是**间歇的**，与 §9.27.6 记的探针读法一致（`container.attribution` 是四条参数化里唯一会 shell out 到 Docker 的那条）。所以它从「见过一次」变成「见过一次、缺席一次」，**不结案** |
 | serveros（P7 切片 A：准入与观察拆成两个问题、四个记录目录陷阱、§9.29） | **5697 passed, 20 skipped, 3947 subtests passed, 0 failed** | `pytest tests/ -q`。算术闭合：上一格 5683 ＋ 本片新增的 **14 条**（`TheAttemptWatchTest` 12 条 ＋ `TheRecipeCommandLineTest` 2 条）＝ 5697；subtests 3945 ＋ **2** ＝ 3947。**这一格必须先记一次红**：修掉本片自己引入的 monkeypatch 泄漏之前的那一跑是 **17 failed, 5680 passed, 3947 subtests passed（812.08s）**，17 条全落在五个与本片无涉的文件里，根因是本片新测试的 `addCleanup` 把**打过补丁的** `paths_mod.Paths` 又装了回去，而那是全树共享的模块对象；因为「单文件绿、15 条变异全杀、全量却红」是这一片最有价值的那条教训，它留在这里不删。**本格不记墙钟**：这一行的文字在跑之前就已落盘，所以那一跑读到的正是提交的那份字节——这比一个秒数强，所以拿它换掉了秒数。 |
+| serveros（P7 切片 B：一个缺席的两种拼法，§9.30） | **5700 passed, 20 skipped, 3947 subtests passed, 0 failed**（636.60s） | `pytest tests/ -q`。算术闭合：上一格 5697 ＋ 本片新增的 **3 条**（`ReportTest` 三条）＝ 5700；subtests 3947 ＋ **0** ＝ 3947（本片三条都没有 subtests）。这一跑没有被改动的文件在中途换过字节：起跑前记下 `runtime/recipes.py` 的 sha256 `d0c40f45a1db42b1…`，跑完核对一致，那一跑读的就是提交的这一份。 |
 
 **切片 C 那一格里的那 1 条红：`container.attribution` 的 daemon/CLI 计数比对。**
 逐字是：
@@ -3533,9 +3534,10 @@ passed**（12.71s），全量见 §5 那一格。
 
 #### 9.29.7 这一片没有做的事
 
-- **`report` 面同一个病的兄弟还在**：`recipe run --recipe report` 在 `ctx.worktree is None` 时
-  仍然直接 `SOURCE_UNAVAILABLE`（`runtime/recipes.py` 的 report 循环）。它比 `work` 轻——一份
-  日报确实可以没有代码差量——但「没有 worktree」与「worktree 读不了」在那条路上仍然是一个词。
+- **~~`report` 面同一个病的兄弟还在~~ → 已由 §9.30 结掉**：`recipe run --recipe report` 在
+  `ctx.worktree is None` 时仍然直接 `SOURCE_UNAVAILABLE`（`runtime/recipes.py` 的 report 循环）。
+  它比 `work` 轻——一份日报确实可以没有代码差量——但「没有 worktree」与「worktree 读不了」在
+  那条路上仍然是一个词。（原文保留，处置见 §9.30。）
 - **no-code 且两个源都没有的 scope 只能准入一次**（见 §9.29.3）。下一片把它换成 work-engine
   自己的 attempt 记录当主源。
 - **`work focus` 的板仍是 `STALE_BOARD`**，`select_focus` / `continue_focus` 都在早返回，
@@ -3544,6 +3546,143 @@ passed**（12.71s），全量见 §5 那一格。
 - **「从声明根取 records 根」这段解析在 `runtime/cli.py` 里已经被抄了第五遍**（§9.29.5 的修法
   与四个兄弟面逐字同形）。这一片照抄而不是抽公共函数，因为抽它会碰到四个与 P7 无关的命令面；
   **该抽的时候是接线那一片**，那时才会有第六、第七个调用者来证明它值得抽。
+
+### 9.30 P7 切片 B：一个缺席的两种拼法，和一个被让出去但没被退休的词
+
+#### 9.30.1 那个死锁精确到什么程度：同一个缺席，两种拼法，两个答案
+
+`report` 循环里那一行是：
+
+```python
+    if ctx.worktree is None:
+        ctx.unbound("SOURCE_UNAVAILABLE",
+                    "no worktree was given, so the period's work delta cannot "
+                    "be read. An absent path is a GAP in the document, and this "
+                    "loop does not write a GAP where it could have measured")
+```
+
+它旁边就有一个**同一个缺席的另一半**，而且它的答案相反：同一份 `ReportTest` 里紧挨着的一条
+测试（`test_a_worktree_that_is_not_a_checkout_is_a_gap_not_zero_commits`）钉的是「给了
+`--worktree`、那个路径不是检出」——那一条**照样把日报写出来**，缺口照样印在纸上。两条并排读：
+
+| 调用方打的字 | 引擎读到 | 这一次的结果 |
+| --- | --- | --- |
+| 不给 `--worktree` | `None` | `STOPPED / SOURCE_UNAVAILABLE`，**一个字都不写** |
+| 给一个不存在的路径 | 一个字符串 | `DONE`，日报写下缺口，exit 0 |
+
+**同一次缺席，只因为拼法不同就有两个答案。** 而两者里没有一个能分辨它面对的是哪一种处境：
+一个 no-code 的 scope **没有检出可以给**（计划自己的话：「no-code任务也不强制需要Git差异/
+代码工作树」），一个忘了打的调用方**是在要求这份循环把洞发布出去**。这里没有第三种输入可以
+用来区分它们，所以按「缺 worktree 就停」写的后果是确定的：**no-code 的 scope 永远发不出一份
+日报**——不是「这一次不行」，是这个 scope 在整条生命周期里一份也发不出来。
+
+那一行自己的注解与它旁边那条测试的 docstring 直接矛盾：注解写「this loop does not write a GAP
+where it could have measured」，而那条测试的 docstring 写「This is the one place the loop does
+NOT stop on a source that did not answer, and §7's own normal stop for this loop is why:
+本期生成完」。两句都是这个循环该守的规矩，冲突的是**缺席**该按哪一句算。
+
+#### 9.30.2 改法：不是把闸门挪走，是让两个拼法回到同一个读数
+
+`report` 的 `measure` 步骤改用 `work` 那个循环已经在用的缺口块：
+
+```python
+    work_delta = (_no_worktree_block() if ctx.worktree is None else
+                  daily.measure_worktree(Path(ctx.worktree), window, fallbacks))
+```
+
+`_no_worktree_block()` **一个字都没改**（除了 docstring 里补上「两个循环都读它」与那句指向
+`report` 的 `measure` 步骤的注解）。这一片刻意不新造第二个形状：两个循环要是各自有一份「没有
+检出」的形态，那就是这一次要修的那个病换了个地方住。
+
+**这个取舍是明写在纸上的，不是顺手让掉的**：停在原地时，一个忘了打 `--worktree` 的定时器会
+在日志里被喊一嗓子；改成缺口之后，它拿到的是一份**带一个被点名的洞**的日报。让这个取舍站得
+住的不是「反正日报更重要」，是两条读数都在纸面上、且两条都指向同一个缺席：
+
+* 运行记录里 `measure` 步骤的 `worktree` 字段是 `None`（**不是字符串 `"None"`**——改前那一行
+  是 `str(ctx.worktree)`，缺省时会印出一个叫 `None` 的路径；见 9.30.4 的 N3）；
+* 文档的「提交」一节印的是 `**没有答案。** 这一次没有给 --worktree，…`。
+
+而这份文档**绝对不能**做的那件事，被 N2 那条变异当场演出来了（见 9.30.4）。
+
+#### 9.30.3 让出去的只是「停」，不是那个词
+
+`SOURCE_UNAVAILABLE` 仍然在 `report.stops` 里，而**一条声明只有在还有东西能产出它的时候才是
+真话**。这一片删掉的是这个循环里产出它的**一条**路径，不是这条词。剩下的那条路径是引擎级的：
+键自己的记录读不出来时，`Engine.run` 照样用这个词停下来——**给不给 `--worktree` 都一样**。
+所以新加的第三条测试（`test_the_word_this_loop_gave_up_is_still_reachable`）钉的不是这一次的
+修法，而是**这一次没有顺手拿走的东西**：没有它就没有任何东西能分辨「这个词还有人产」与
+「这个词已经没人产、只是还写在契约里」。
+
+#### 9.30.4 变异：4 条判据，4 条都死
+
+脚本 `/data/home/vince/artifacts/tmp-p7/mutate_slice_b.py`；复原不用任何 git 动词（脚本自持
+原件、按 sha256 比），每轮清 `__pycache__`。
+
+| # | 把哪条判据弄坏 | 结果 |
+| --- | --- | --- |
+| N1 | 把「没有给 `--worktree`」退回成一次 `SOURCE_UNAVAILABLE` 停机（改前那一行） | KILLED（`test_a_scope_with_no_worktree_at_all_still_gets_its_report`） |
+| N2 | 把缺口块报成 `answered: True`（「源答了、是空的」） | KILLED（3 条：`TheAttemptWatchTest::test_a_no_code_scope_with_no_readable_source_says_so` ＋ `ReportTest` 两条） |
+| N3 | 缺省时印 `str(ctx.worktree)`（改前的形状，一个叫 `None` 的路径） | KILLED（`test_a_scope_with_no_worktree_at_all_still_gets_its_report`） |
+| N4 | 条件表达式的另一臂：两个拼法都不再报出「到底给了什么」 | KILLED（`test_the_two_spellings_of_no_checkout_reach_one_reading`） |
+
+**N2 值得单独读一遍**，因为它把这一片要防的那个错原样演出来了。把缺口块改成
+`answered: True` 之后，两条 report 测试红在同一句话上：
+
+```text
+AssertionError: '缺口' not found in
+'工作树答了：窗口内一条记录都没有。这不是「没查」——是查了，结果是零。'
+```
+
+**「没有这个源」被渲染成了一句安静的周期。** 这就是 `progress_verdict` 那三个值存在的全部
+理由，也是这条判据不能只靠「测试数够不够」来保证的例子。
+
+#### 9.30.5 live 读数：同一棵树、同一个动词，改前改后各跑一次
+
+在这台机器上真的跑 `serverosctl recipe run`，两次都**不给 `--worktree`**，只换 period
+（键是 `recipe+scope+period`，不换就只会读到单飞闸门）：
+
+```text
+改前（把那一行放回去）：
+state       STOPPED  previous NEVER_RUN
+stopped     SOURCE_UNAVAILABLE — no worktree was given, so the period's work
+            delta cannot be read. …
+step        window: …      step        receipts: …
+            （两步，到此为止；`--out-dir` 下**没有**任何文件）
+
+改后（提交的这一份字节）：
+state       DONE  previous NEVER_RUN
+stopped     COMPLETED — the finite step list ran to its end
+step        window · receipts · measure: the verdict for this window is UNKNOWN
+step        compose: wrote …/daily-report.md and …/publication-receipt.json
+```
+
+写出来的那份文档里，两句话是它自己要说的：
+
+```text
+**本周期进展：UNKNOWN。** 没有任何一个源答上来：工作树与 Quay 都返回了缺口。
+**这不是「没有进展」。** 没答和答了零是两件事，…
+**没有答案。** 这一次没有给 --worktree，所以这个 scope 的工作差量没有 git 这一个源。
+这不是「检出来是空的」——是没有检出可读。…
+```
+
+两次跑记录进的是**真 state 根**（`state/serveros/recipes/report/project-serveros/`），
+`--out-dir` 在 `ARTIFACTS_ROOT` 下。改前那一跑留下的记录不删：它是「同一个动词上一次是这样
+答的」的凭据。
+
+#### 9.30.6 这一片没有做的事
+
+- **契约里那段散文没有判官。** `runtime/recipe-contract.yaml#recipes[report].steps[measure]`
+  这次被改写了（写清「一个没答的源让那一节说自己没有答案，不让文档停下」），`runtime/cli.py`
+  的 `--worktree` 帮助也改了（P7 计划里那句 no-code 不强制要工作树）。**两者都是散文，没有一条
+  测试读它们的措辞**（契约里被测试读的是**闭集**：`stops` 的词表、`model_steps` 的 `needs_model`）。
+  这是这一片最弱的一处，写在明处：改一个没人读的句子，绿不绿都不说明它对。
+- **`report` 这一面仍然没有回执生产者**：本机没有 timer 打这个动词（§12.5 的 Daily Cycle
+  同样没上弦），所以 9.30.5 那两次是手工打的。它证明的是**这个动词现在会答**，不是
+  「日报每天都在发」。
+- **no-code 且两个源都没有的 scope 只能准入一次**（§9.29.3／§9.29.7 第二条）**仍然没修**。
+  这一片动的是 `report` 的缺席，不是 `work` 的观察窗口；那条要等 work-engine 自己的 attempt
+  记录当主源，是另一片。
+- **`work focus` 的板仍是 `STALE_BOARD`**（§9.28.7／§9.29.7 第三条），四条里没动。
 
 ## 10. 后续每包更新哪几行
 
