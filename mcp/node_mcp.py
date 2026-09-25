@@ -52,6 +52,21 @@ class DaemonUnavailable(Exception):
     """The control plane did not answer. Refused, not approximated."""
 
 
+class DaemonRefused(DaemonUnavailable):
+    """The control plane answered, and the answer was no.
+
+    Kept apart from the parent because the two send an operator to different
+    places: "serverosd is not listening" is an outage to repair, and "serverosd
+    refused this call" is a decision to read. Until this existed, every refusal
+    — a forged payload, a report observed by another process, an action this
+    actor may not take — arrived as `DaemonUnavailable`, which says the control
+    plane was unavailable at the one moment it was working exactly as designed.
+
+    A subclass, so callers that only want "no answer" keep catching the parent
+    and none of them change behaviour.
+    """
+
+
 # ---------------------------------------------------------------------------
 # The tool surface (§24). Each entry names the daemon method it forwards to.
 # ---------------------------------------------------------------------------
@@ -685,7 +700,7 @@ class DaemonClient:
             ) from exc
         if not response.get("ok"):
             error = response.get("error") or {}
-            raise DaemonUnavailable(
+            raise DaemonRefused(
                 f"serverosd refused {method!r}: {error.get('code')}: "
                 f"{error.get('message')}"
             )

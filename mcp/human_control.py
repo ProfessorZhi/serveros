@@ -45,6 +45,16 @@ it verifies inside one is not something this module may claim to know, so it
 does not claim it. A provider status of BLOCKED produces no actor and no
 context — see `Report.as_report()` below, which has no field in which to put an
 actor it did not get.
+
+`attach_context` is the other half of that sentence, and the producer §5 was
+missing. It carries a VERIFIED report to serverosd over the socket and comes
+back with the `context_ref` the control plane resolves the actor from. It
+attaches only what this process observed — there is no parameter for evidence —
+and it stamps the pid that ran the probe, which the daemon checks against the
+kernel's answer for the connection. On this device, from a process that is not
+inside a BotMux turn, the honest outcome is `attached: false` with
+`state: BLOCKED`: the probe declined, so there is nobody for a context to be
+about, and this module does not invent one.
 """
 from __future__ import annotations
 
@@ -149,6 +159,105 @@ class ActorReport:
             "provenance": self.provenance,
             "actor_ref": f"human:{self.actor_id}" if self.actor_id else None,
         }
+
+
+def attach_context(provider: HumanControlProvider, *, daemon=None,
+                   pid: int | None = None) -> dict:
+    """Present what this process observed to serverosd, and get a context ref.
+
+    This is the producer half of §5, and until it existed §5's only doorway had
+    no caller anywhere in the repository: `agent.context.attach` was implemented,
+    documented and tested, and nothing ever knocked. The consequence was not a
+    cosmetic gap — every mutating Agent Session action (`session.create`,
+    `session.send`, `session.resume`, `session.stop`, `session.handoff`) requires
+    a `context_ref`, so the entire control plane was reachable only by tests that
+    built the report by hand and passed the peer dict themselves.
+
+    The three things this function must get right, and why each is not a choice:
+
+    * **It attaches what it observed, not what it was told.** There is no
+      `report` parameter. A caller that could hand in evidence would be exactly
+      the forged-identity model §5 forbids — the door is meant to be trustworthy
+      precisely because only the process that ran the probe may walk through it.
+
+    * **Not even the conversation is the caller's to choose.** `identify` takes
+      a `conversation_ref` and prefers it over what the probe answered, which is
+      right for a caller asking a question about a conversation it already has.
+      It is wrong here: the record says which turn this identity was observed
+      in, and a caller able to write that field can steer an audit trail. So the
+      mint passes nothing and the transport's own `chatId` / `messageId` land in
+      the record. A probe that names no conversation produces a report missing a
+      required field, which `build` refuses — no context, rather than a context
+      with a plausible-looking location.
+
+    * **The pid is this process, because this process ran the probe.** `identify`
+      runs `botmux actor current --json` as a child of the calling process, so
+      "who observed this" and "who is presenting this" are the same process by
+      construction. `provider_pid` is that answer, and the daemon checks it
+      against `SO_PEERCRED` — the kernel's answer, not ours. Supplying a
+      different pid is not a bypass; it is the refusal at
+      `runtime/daemon.py#_r_agent_context_attach` that names both pids.
+
+    * **A provider that did not verify produces nothing.** BLOCKED and
+      UNSUPPORTED return here without an attach attempt, and `detail` is the
+      provider's own sentence. A refused context is not an empty one:
+      `actor_ref` is None and no ref is minted, because a context is always
+      ABOUT somebody.
+
+    Four outcomes, kept apart because each sends a reader somewhere different:
+
+      attached, with a `context_ref`   the control plane will resolve this actor
+      BLOCKED / UNSUPPORTED            no human was identified; nobody to mint
+      REFUSED                          serverosd answered and said no; read the
+                                       reason, it names which mechanism
+      UNREACHABLE                      serverosd did not answer at all
+
+    `pid` exists so a test can drive the wrong-observer refusal through this
+    path rather than around it.
+    """
+    report = provider.identify()
+    base = {"provider": report.provider_id, "transport": report.transport,
+            "attached": False, "actor_ref": None}
+    if report.status != "VERIFIED":
+        return {**base, "state": report.status, "detail": report.detail,
+                "note": ("no context was minted and no attach was attempted: this "
+                         "process was not identified as a human, and ServerOS "
+                         "mints a context about somebody or mints nothing")}
+
+    node_mcp = _node_mcp()
+    client = daemon if daemon is not None else node_mcp.DaemonClient()
+    evidence = {**report.as_report(),
+                "provider_pid": os.getpid() if pid is None else int(pid)}
+    try:
+        result = client.call("agent.context.attach", {"report": evidence})
+    except node_mcp.DaemonRefused as exc:
+        return {**base, "state": "REFUSED", "observed_by_pid": evidence["provider_pid"],
+                "detail": str(exc),
+                "note": ("serverosd answered and said no. The refusals are the "
+                         "mechanism, not an obstacle: each one names which of "
+                         "observed-by-the-wrong-process, forged payload, or no "
+                         "identified human it was, and this one is in `detail`.")}
+    except node_mcp.DaemonUnavailable as exc:
+        return {**base, "state": "UNREACHABLE", "observed_by_pid": evidence["provider_pid"],
+                "detail": str(exc),
+                "note": ("serverosd did not answer, so nothing was presented and "
+                         "nothing was minted. This is a different repair from a "
+                         "refusal: the control plane is not there.")}
+
+    return {"provider": report.provider_id, "transport": report.transport,
+            "attached": True, **result}
+
+
+def _node_mcp():
+    """`mcp/node_mcp.py`, loaded under the name `mcp/agent_mcp.py` gives it.
+
+    One copy, not two: a second copy would give this module a different
+    `DaemonClient` — and therefore a different `DaemonRefused`, which is caught
+    by name below and would slip through as its parent. The two surfaces also
+    share the socket they talk to, so there is nothing to gain by not sharing
+    the class that talks to it.
+    """
+    return _load("serveros_mcp_node_shared", _REPO / "mcp" / "node_mcp.py")
 
 
 class HumanControlProvider(Protocol):
@@ -591,6 +700,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--capabilities", action="store_true")
     parser.add_argument("--observe", action="store_true")
     parser.add_argument("--identify", action="store_true")
+    parser.add_argument("--attach", action="store_true",
+                        help="identify this process, then present that evidence "
+                             "to serverosd for a trusted actor context")
+    parser.add_argument("--socket", default=None,
+                        help="serverosd socket to attach on; defaults to this "
+                             "node's")
     parser.add_argument("--device", default="device:server-beijing")
     args = parser.parse_args(argv)
 
@@ -599,6 +714,21 @@ def main(argv: list[str] | None = None) -> int:
         report = provider.identify()
         json.dump({**report.as_report(), "detail": report.detail},
                   sys.stdout, indent=2, sort_keys=True)
+    elif args.attach:
+        client = None
+        if args.socket:
+            client = _node_mcp().DaemonClient(Path(args.socket))
+        result = attach_context(provider, daemon=client)
+        json.dump(result, sys.stdout, indent=2, sort_keys=True)
+        sys.stdout.write("\n")
+        # The verb is `attach`, so the exit code reports whether a context was
+        # actually minted. The other modes here always exit 0 because they are
+        # questions, and a question that was answered — even with "nobody was
+        # identified" — succeeded. This one is an act, and a command that exits
+        # 0 for an attach that did not happen is the declaration-read-as-fact
+        # failure this repository keeps finding. The typed reason is in the
+        # output either way.
+        return 0 if result.get("attached") else 1
     elif args.observe:
         json.dump(provider.observe(device_ref=args.device), sys.stdout,
                   indent=2, sort_keys=True)

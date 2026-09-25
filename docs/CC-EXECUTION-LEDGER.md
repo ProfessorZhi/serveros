@@ -4469,6 +4469,170 @@ G5 被杀。
 - 没有新增任何动词、没有扩大服务面的宽度：`agent.list` / `agent.inspect` 是被**声明过**的两个，
   这一片做的是让声明是真的，不是加新的。
 
+### 9.36 P7 切片 H：§5 唯一可信 context 门第一次有了生产者
+
+#### 9.36.1 这一片接的是哪一环：一道门从来没被敲过
+
+切片 G 走的是「供应商声明了一个没人服务的动词」。这一片走的是它的**最贵版本**：一个动词
+被服务了、被文档写了、被测试测了，而**没有任何生产者**。
+
+`runtime/daemon.py#_r_agent_context_attach` 是 §5 唯一的铸 context 通道（它自己的 docstring
+第一行就这么写：「Mint a trusted context from a provider report. §5's only doorway.」）。在
+本片之前，从 HEAD 上量的调用者清单是：
+
+```text
+git grep -n "agent\.context\.attach" HEAD -- | cat
+  runtime/daemon.py          7 处：全是它的实现、派发表、注释
+  tests/test_actor_context.py  6 处
+  tests/test_approval.py       1 处
+  ← 生产代码里 0 个调用者
+git grep -n "provider_pid" HEAD -- | cat
+  runtime/daemon.py:2174      1 处：它是**读者**
+  tests/…                     5 处：全是手写的夹具
+  ← 生产代码里 0 个**生产者**
+```
+
+所以「变更型 Agent Session 动作从来没有从活跃调用者通过准入」**不是推测，是可达性事实**：
+`fleet/agent_control_router.route` 对每一个 mutating 动作要求可解析的 `context_ref`，而能铸出
+一个的东西只被测试敲过。整条控制面是**只能由测试抵达**的 —— 测试自己手搭 report、自己传 peer
+字典，于是那道「报告必须由出示它的那个进程观察」的门**从来没有对过一个真进程**。
+
+#### 9.36.2 为什么 `provider_pid` 属于**动作**而不属于报告
+
+`context/actor.py` 的 `PROVIDER_REPORT_FIELDS` 九项里**刻意没有** `provider_pid`，而
+`digest_of` 只哈希 provider 自己的字段 —— 于是同一个事件重放不会铸出第二个 context。
+`tests/test_actor_context.py:150` 那条测试把理由写成了断言：
+
+```python
+second = actor.build({**VERIFIED_REPORT, "provider_pid": 9999}, now="…:45+00:00")
+assert first["context_ref"] == second["context_ref"], (
+    "provider_pid is deliberately outside the digest: it binds the report "
+    "to a process, and a restart must not make the same event a new context")
+```
+
+**这一条是整片设计的枢纽**：它意味着 `provider_pid` 是 `attach` 这个**动作**的属性，不是报告的
+字段。所以生产者不能去「填一个字段」，它只能**出示自己是谁** —— 而 `runtime/daemon.py:2174` 那
+一侧拿 `_peer_credentials(connection)`（`SO_PEERCRED`，**内核**填的）去比。给一个别的 pid 不是
+绕过，是撞上那里按名字点出两个 pid 的那条拒绝。
+
+#### 9.36.3 `attach_context` 的四条不可选
+
+| 不做什么 | 为什么 |
+| --- | --- |
+| 不收 `report` 参数 | 能交证据的调用者就是 §5 明令禁止的伪造身份模型；这道门可信，正因为它只放行跑过探针的那个进程 |
+| pid 不由调用者给 | 探针 `botmux actor current --json` 是**本进程的子进程**，所以「谁观察的」与「谁出示的」按构造是同一个进程；`pid` 参数只为让测试**从这条路上**触发错误观察者拒绝，而不是绕过去 |
+| 连 conversation 都不由调用者选 | `identify` 会**优先**采信传入的 `conversation_ref` —— 对一个问「我已有的那个会话」的调用者是对的，在这里是错的：记录里那一栏说的是**这次身份是在哪个 turn 里被观察到的**，能写它的调用者就能操纵审计轨迹。所以铸造时不传，探针自己的 `chatId`/`messageId` 落进记录；探针没点名 turn，报告就缺一个必填字段，`build` 拒掉 —— **没有 context，而不是一个有看起来合理的位置的 context** |
+| 未 VERIFIED 的 provider 什么都不产生 | 拒绝掉的 context 不是空 context：`actor_ref` 是 `None`，一个 ref 都不铸，因为 context 永远是**关于某个人**的 |
+
+**第三条是这一片被自己改掉的一个伪造面。** 初版签名有 `conversation_ref` / `message_ref` 两个
+参数，写完之后才发现 `identify` 的优先序会把它们当成权威 —— 于是补了一条测试
+（`test_a_probe_that_names_no_turn_mints_nothing`）把「探针没报 turn 就没有 context」这个
+**后果**钉住，而不是只在 docstring 里写一句。
+
+#### 9.36.4 三种失败各去一个地方，和本机的诚实活体结局
+
+四种结局分开报，因为每一种把读者送去不同地方：
+
+| 结局 | 含义 |
+| --- | --- |
+| `attached` ＋ `context_ref` | 控制面会用这个 ref 解出 actor |
+| `BLOCKED` / `UNSUPPORTED` | 没有识别出人，没有东西可铸；`detail` 是 provider 自己的句子 |
+| `REFUSED` | serverosd **答了**，答的是不。`detail` 指出是哪种机制 |
+| `UNREACHABLE` | serverosd 根本没答 |
+
+**本机的活体结局是 `BLOCKED`，而且它是正确答案。** 从不是 BotMux turn 的进程里跑探针，
+`botmux actor current --json` 返回 `{"status":"blocked","error":"current_actor_unverified"}`
+（退出码 0），于是 `attach_context` 返回 `attached: false`、`state: BLOCKED` —— **不是**伪造
+一个 context。这与本模块 docstring 里那句「它不声称知道的东西，它就不声称」是同一句。
+
+#### 9.36.5 `DaemonRefused`：一次拒绝曾被报成「控制面不可用」
+
+`mcp/node_mcp.py#DaemonClient.call` 在收到 `{"ok": false}` 时抛的是
+`DaemonUnavailable` —— 也就是说，**在控制面按设计正常工作的那一刻，调用方被告知它不可用**。
+伪造的 payload、由别的进程观察的报告、这个 actor 不许做的动作，全都从同一个类型出口出去。
+
+新增 `DaemonRefused(DaemonUnavailable)`：**子类**，所以只想要「没有答案」的调用者照旧全捕获，
+一处都不用改；想要分开读「答案是不是」的可以分开读。两种情形的修法不同 ——「serverosd 没在听」
+是去修一个故障，「serverosd 拒绝了这个调用」是去读一个决定。
+
+**这条不是设计出来的，是踩出来的。** 本片初版 `attach_context` 把 `DaemonClient.call` 的返回
+当成信封读（`answer.get("ok")`），而它的契约是：**拒绝时抛异常、成功时返回已拆封的 `result`**
+（不是 `{ok, result}`）。症状是三个测试失败在 `state: REFUSED, reason: null, detail: null`；
+排查是把原始返回单独打印出来（一个带 `context_ref`/`actor_ref`/`observed_by_pid`/`freshness`
+的字典，**没有 `ok` 键**）。这也是「拒绝要能被读」这件事必须在类型上分开的直接原因：混在一起
+时，一个读错层级的调用者给出的症状与「控制面挂了」一模一样。
+
+#### 9.36.6 消费者：`scripts/live_closure.py` 曾经错在哪六层
+
+这个脚本是 H 的消费者，也是「§5 终于有了真实调用者」这句话的证据。它此前**从来没有跑通过**，
+而它的测试全绿，因为它错在七处，其中七处是**它的桩与它互相印证**。逐层：
+
+1. **裸名**：它发 `session.create`，而合约与服务面说的是 `agent.session.create`。
+2. **`agent.list` 不带 `device`**，而那是它的必填键。
+3. **信封键错**：它发 `{"ref": ref}`，而 action 的字段叫 `session_ref`。
+4. **缺必填**：`context_ref`、`session_role`、`runtime` 都没有；`session_role` 在整条栈里
+   **没有默认值**（它是「这段会话是为了什么」的陈述，默认值会把猜测记成事实），本片按
+   `coordinator` 报 —— 跨 Item，因此不带 `bound_item_ref`。
+5. **把 `provider` 当 `create` 的参数**：它不是参数（provider 从解析出的目标来），而
+   `agent_mcp._payload` 只挑已知键，所以这个字段是**被静默忽略**的。
+6. **读错了响应层级**：它读 `created["session_ref"]`，而 `AgentControlResponse.show()` 把
+   provider 的答案放在 `result` 里，所以要读 `created["result"]["session_ref"]`。
+7. 而以上六处能被**同时**写错而测试全绿，是因为 `tests/test_live_closure.py` 的 `FakeClient`
+   实现了**同一批裸名、同一种信封、同一处层级**。两个桩互相印证，谁也证明不了图。
+
+本片把脚本改成说真实的图（真实动词名、真实信封、`device`/`runtime`/`context_ref`/
+`session_role`、`created["result"]["session_ref"]`），并让它**自己先铸一个可信 context**
+（`attach_context`），铸不出来就带 `state`/`detail` 退出并说明 BLOCKED 是正确答案。
+
+#### 9.36.7 那次「桩遮住了接线」现在有一条常驻的门
+
+新增的 `EveryCallTheHarnessMakesIsOneTheSurfaceDeclares` **驱动而非阅读**：把脚本真实发出的
+每一个 `(name, arguments)` 拿去与 `mcp/agent_mcp.py` 自己的工具表对账 ——
+名字在 `tool_names()` 里、每个键在该工具 `inputSchema.properties` 里、每个 required 键齐全，
+并且每一个 mutating 调用都真的出示了 `context_ref`（这一条单独断言，因为
+「schema 要求」与「实际发出」是两件事，一次编辑就能把它们分开）。
+
+三个变异，逐个被杀：
+
+| # | 变异 | 死因 |
+| --- | --- | --- |
+| M1 | create 用裸名 `session.create` | 11 failed（名字门 ＋ 其余） |
+| M2 | create 不带 `context_ref` | 2 failed（schema 门 ＋ context 门） |
+| M3 | create 带上 `provider` 参数（旧脚本的习惯） | 1 failed（`properties` 里没有它） |
+
+同时改掉的两条旧断言：`test_the_followup_is_sent_to_the_session_the_create_returned` 从
+`sent[0]["ref"]` 改成 `sent[0]["session_ref"]`；`FakeClient` 回答的是真实的四个动词名与
+`{"ok":…,"result":…}` 形状。
+
+#### 9.36.8 本次读数
+
+- 本片直接触及的五个测试文件：`test_actor_context` ＋ `test_node_mcp` ＋ `test_agent_mcp` ＋
+  `test_agent_sessions` ＋ `test_live_closure` → **208 passed, 163 subtests passed in 14.63s**。
+- `tests/test_live_closure.py` 单文件：**20 passed in 0.11s**（改前 14 条）。
+- 三条**反向**读数，都是实测出来的，而不是「应该成立」：
+  **(a)** 每一轮变异前 `rm -rf __pycache__`（理由见内存里那条「同尺寸同秒的『还原』骗得过 pyc
+  校验」——不这么做，「这条判据活着」会是缓存造出来的假结论）；
+  **(b)** 每一轮之后**逐字节**比对备份（H 这一片用 `cp` 备份 ＋ `diff -q` 复核，
+  收尾时输出 `restored-identical`；G 那一片的电池里是 `assert sha(path) != pre` 与跑完
+  `assert sha(path) == pre` 两条断言）；
+  **(c)** 全程**不用任何 git 还原类动词** —— `checkout --` / `restore` 从引用取值，看起来像
+  还原、实际是丢弃。H 这一片的五次变异里每一次都复核了恢复；G 那一片的十二轮另加断言。
+- **活体读数：没有。** 这个脚本会在 bot 聊天里发消息，而且现在还会先铸一个 context ——
+  按 §21 那属于「生产/共享关键效应」，**需要用户批准，本片没有擅自跑**。它的活体结局由
+  §9.36.4 的探针读数代表：在非 turn 进程里它会在铸 context 这一步停下并说 BLOCKED，那正是
+  设计要的行为，而不是一次失败。
+
+#### 9.36.9 它没做什么
+
+- **没有造第二个 context 生产者。** `agent.context.attach` 仍然只有一个入口，本片做的是让
+  那一个入口**第一次有真实调用者**，不是放宽它。
+- **没有唤醒/接收方那一半。** `runtime/continuation.RECEIVERS` 的 `tick()` 消费方仍然不存在；
+  在那之前 `continuation_state` 说 `RECEIVER_INSTALLED` 就是产品明令禁止的「伪造后台运行」。
+- **没有修交接的 `checkpoint` 缺口**（§9.34.9 第二条照旧）。
+- **没有跑一次真实 `live_closure.py`**（见 §9.36.8 最后一条）。
+- 没有把 `--attach` 变成默认：它是一个动词，退出码报的是**有没有铸出 context**（`0` / `1`），
+  与这个 CLI 其它模式（都是问题，因此都退 `0`）刻意不同。
+
 ## 10. 后续每包更新哪几行
 
 - 改完一个包，只更新 §3.1 里对应行的四层状态 + §5 表的增删。
