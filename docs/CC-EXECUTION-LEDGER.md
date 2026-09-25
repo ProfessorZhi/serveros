@@ -4777,7 +4777,323 @@ Parent 吧。那正是 §17.4 点名的诱惑。本片没有接，理由是这�
 
 #### 9.37.10 冻结树上的全量读数
 
-（本节在切片 I 提交后回填；跑前记 HEAD，连跑两遍，跑后复核 `git status --short` 与 HEAD。）
+`b6a07cef52f304a49098529e2026e707a689a88d`，跑前 `git status --short` 0 行，
+2026-09-26T05:28:19+08:00 起跑，连跑两遍：
+
+| 遍 | 读数 | 用时 |
+|---|---|---|
+| 1 | 5831 passed, 20 skipped, 3988 subtests passed | 622.31 s (0:10:22) |
+| 2 | 5831 passed, 20 skipped, 3988 subtests passed | 613.11 s (0:10:13) |
+
+跑后 `git status --short` 仍 0 行、`git rev-parse HEAD` 未变。两遍逐字相同，所以它不是
+一次侥幸。跑动期间工作树**没有被编辑穿过** —— §9.35.8 与 §9.37.8 记下的两次作废读数
+都是这个原因（起跑后又在改源码）。本片把这条纪律用成了前置条件：源码编辑全部在起跑
+之前完成并提交，然后才在冻结的提交上跑。
+
+## §9.38 切片 J：§9 的交接程序，五处被声明的东西没有消费者
+
+切片 F 造了 `fleet/agent_control_router.handoff`（§9 的唯一实现），并在 §9.34.9 里
+**刻意没有顺手修它**，理由是三种解读都符合合约原话：「先定『这个 checkpoint 指的是
+哪一个对象』，再动它」。本片定的就是这个 —— 然后沿着这个答案把五处逐条钉死。
+
+### 9.38.1 那个 checkpoint 指的是哪一个对象
+
+**是延续存储里的记录 ref，不是状态本身、也不是一个开关。**
+`runtime/continuation.py#checkpoint_key(item, epoch)` 返回
+`f"{work_item}#{int(epoch)}"`（例如 `SRV-0001#1`），`build_checkpoint` 把它写在
+`checkpoint_ref` 字段里，`serverosctl work checkpoint` 打印的正是它 —— 而 `mcp/agent_mcp.py`
+给这个参数声明的类型本来就是 `_STR`。产品 ref 与工具 schema 一直是同一个东西，
+中间那层是唯一读错它的一层。
+
+所以第一步的判据从「有个真值」变成「有一个非空字符串」：`HandoffOutcome` 新增声明字段
+`checkpoint: str | None`，在**每一个** return 上记录（包括拒绝），于是「没给」与「没填」
+在答案里是两个可分辨的东西。消费者是下一个 Parent，经 `serverosctl work continuations`
+按 Item 读那张表 —— 交接传的从来不是状态，是**哪一个记录持有状态**。
+
+### 9.38.2 为什么不把它前传给 provider
+
+这是 §9.34.9 说「必须先定」的那一问，也是本片唯一一处**明确写下「没有通道」**的地方，
+理由不是懒：`agent.session.resume` 在 `fleet/agent-control-contract.yaml` 里是
+`params: []` / `optional: []`，loopback 的 resume 分支（`_dispatch`）不读任何参数。
+把 ref 塞进 `target_params` 会得到三层里最坏的一种失败 —— 合约看着对、调用点看着对、
+下一层把它丢掉而**没有一层会报错**。这正是这个仓库反复量到的形状（声明了没有读者的
+东西），所以写进合约的 `handoff.checkpoint`：
+
+- `is`：ref，不是开关；
+- `consumer`：下一个 Parent，经 `work continuations`；
+- `is_not_forwarded`：不前传，因为没有通道，并**点名** `params: []` 与 resume 分支；
+- `refs_are_not_parsed_here`：router 记录 ref 的**原值**，不解析它的格式 ——
+  `checkpoint_key` 拥有格式，第二个解析器就是第二个答案；
+- `step_order_against_the_resolver`：下面 9.38.4 那张表。
+
+### 9.38.3 `context_handed_off` 曾经可以在一个什么都没确立的 `ok` 上追加
+
+`created.ok` 只说目标**作答了**，不说目标**持有会话**。改前 `handed = created.result or {}`
+之后**无条件** `completed.append("context_handed_off")` —— 于是 `release_source: True` 会在
+一个什么都没确立的 `ok` 上停掉源，停掉**唯一一个有人有证据存在的会话**。
+
+这条缺口可达，而且不是靠构造出来的：loopback 的 `_record`（「没有 `session_ref` 的作答
+要拒」）**只对 create 生效**（`_dispatch` 里只有 `session.create` 分支走到 `_record`），
+`session.resume` 把 provider 的答案原样返回。改后 `session_ref` 缺失即 `INVALID_CONTEXT`、
+停在 `context_handed_off`、源保留 —— 与 `_record` 对 create **同词同因**：控制面没有收到
+的 ref，就是 ServerOS 叫不出名字的会话。
+
+### 9.38.4 三个步骤名共用一条判据，其中一个是**不可能**被拒绝的
+
+`_stop_step(reason)` 从**理由词**反推步骤。读过生产方之后这条判据对两个词都错：
+`DEVICE_UNREACHABLE` 与 `NODE_RUNTIME_UNAVAILABLE` 各有**两个不同平面的生产者** ——
+resolver（一个路由都没命名）与 transport（路由已命名、送不到）。按词映射对其中一个必错，
+实际对两个都错：`target_available` 成了任何失败都到不了的步骤名，而「设备解析出来了、
+节点运行时够不着」被报成 `target_ready` —— 叫调用者去等一个永远不会 ready 的设备。
+
+现在读 resolver **自己写的两个事实**，两个都不在这里推导：
+
+- `resolved["refused_by"]`：`abilities/target.py#resolve` 写的拒绝步骤
+  （`record["refused_by"] = refusal["step"]`），经 `HANDOFF_STEP_FOR_RESOLVER_STEP` 映射。
+  未映射的步骤抛 `TargetError` —— 与 `_refuse` 对理由词同风格：要么在一张表里拒绝，
+  要么不拒绝。
+- `answer.route`：resolver 自己的 `route_kind`。`_step_route` 是链条的**最后**一步，
+  所以一个命名了的 route 就说明前面每一步都同意了。`NAMED_ROUTES = ("local", "fleet")`。
+
+| resolver 步骤 | 交接步骤 | 为什么 |
+|---|---|---|
+| `device` / `agent_runtime` / `provider_instance` / `adapter` | `resolve_target` | 这四步回答「**哪一个**目标能承载」，拒绝即没解析出来 |
+| `support` / `readiness` / `admission` | `target_ready` | 能承载它的目标**不**现在做 |
+| `route` | **没有对应项，而且是点名的** | 见下 |
+
+`route` 是这张表里唯一被点名的缺席：`_step_route` **只在更早的步骤把 `route_kind` 置为
+`"none"` 时才拒绝**，而链条在那里就断了 —— 所以 `refused_by == "route"` 不可达。
+`test_every_resolver_step_has_a_handoff_step_or_a_reason_it_has_none` 钉的是这个枚举差：
+`unmapped == ["route"]`，resolver 加一步而两张顺序表没对齐就是一条转红的判据，不是一个
+猜出来的停止点。
+
+### 9.38.5 §9 的第六步此前**没有任何调用者能到达**
+
+`_stop_request` 构造停止请求时不转发 `request.approvals`，于是
+`abilities/target.py#_step_admission` 里 `approval.decide(approvals=[])` 恒返回
+`APPROVAL_REQUIRED`。`source_released` 被声明、被排序、被写进 `HANDOFF_STEPS`、
+被 `work` 的渲染读着 —— 而它是**不可达的**，`release_source` 是一个不可能有效果的参数。
+本片转发 `approvals`。
+
+这不是 §22 旁路：批准仍由 `approval.decide` 针对**停止自己**的 action / target / params
+判定，为 handoff 铸的批准（action 不符）不匹配，为**别的 session** 铸的批准报
+`APPROVAL_BINDING_MISMATCH` 并让源继续跑。两条都有用例：
+`test_a_release_a_person_approved_releases_the_source`（第一次到达 `source_released`）与
+`test_an_approval_for_another_session_leaves_the_source_running`（真的批准、不同的会话、
+源保留）。
+
+### 9.38.6 第五处是写测试时撞上的，不是读出来的
+
+`to_device_ref` 缺席时 `_resume_request(request)` 把目标请求寻址到 `""`，
+`abilities/target.py#_validate_request` 抛 `Rejected` —— 一个异常从一个「不是答案就抛异常」
+的契约里穿出去，调用者无法与 router 的 bug 区分。合约把 `to_device_ref` 列在
+`optional`，而 optional 不等于不读。现在在跑 resolver 之前报 `INVALID_CONTEXT`、停在
+`resolve_target`。
+
+**这条是切片 J 里唯一一条「测试先于认识」的缺陷**：五条新用例里有五条同时以
+`Rejected` 冒泡失败，而失败信息（`request.device_ref is required`）指向的是一个我原本
+以为已经修好的地方。它是这一片真正的第 5 处，而不是 4 处加一个测试写法问题。
+
+### 9.38.7 变异表：10 条，10 杀；其中一条差点存活
+
+| # | 变异 | 结果 |
+|---|---|---|
+| J1 | checkpoint 退回真值判断 | 3 failed |
+| J2 | 忽略 `resolved["refused_by"]`，只按 route 判 | 1 failed |
+| J3 | `agent_runtime` 映射到 `target_ready` | 1 failed |
+| J4 | 命名了的 route 送不到也报 `target_ready` | 1 failed |
+| J5 | 停止重新丢下 approvals | 2 failed |
+| J6 | 一个没命名会话的 `ok` 也释放源 | 1 failed |
+| J7 | outcome 不再携带 checkpoint | 1 failed |
+| J8 | 对应表里少一个 resolver 步骤 | 2 failed |
+| J9 | 没有目的地的交接重新寻址到空设备 | 1 failed |
+| J10 | 能承载却不肯做的目标报成没解析出来 | 1 failed |
+
+**J2 值得单独记：它在第一版里会存活。** resolver 的每一次拒绝都发生在 route 步骤
+**之前**，所以 `answer.route` 在那些答案上都是 `None`，「读 `refused_by`」与「没有 route
+就退回 `resolve_target`」给的是同一个答案 —— 判据看着是活的，其实两个读法不可分辨。
+补一条在 `support` 步被拒（`ACTION_UNSUPPORTED`，应当是 `target_ready`）的用例，两个
+读法才分开，J2 随即被杀。这与 §9.35.7 那条「先存活、再被钉死」是同一种发现：
+**变异存活不是电池坏了，是它指出了一个判据的真空白。**
+
+纪律与 G/H/I 三片相同：每轮前 `rm -rf __pycache__`（`tests/` 用 `importlib` 从显式路径
+装载模块，**吃 pyc 缓存**，同尺寸同秒的还原会骗过它），每轮后逐字节复核（收尾哈希与
+备份相等），全程不用任何 git 还原类动词。
+
+### 9.38.8 本次读数
+
+- `tests/test_agent_control_router.py`：**84 passed, 7 subtests passed in 16.37s**
+  （改前 72 条用例，新增 12 条）。
+- 本片相关六文件（`test_agent_control_router` ＋ `test_target_resolver` ＋
+  `test_approval` ＋ `test_agent_mcp` ＋ `test_coordination` ＋ `test_continuation`）：
+  **393 passed, 170 subtests passed in 38.09s**。
+- 冻结提交 `a58716da79bac2c3d197f307140787dd33999ccf` 上的两遍全量读数见 §9.38.10。
+
+### 9.38.9 它没做什么
+
+- **没有唤醒/接收方那一半**（§9.37.9 第一条照旧）。本片修的是交接**程序内部**的四步，
+  交接完成之后「谁来把下一个 Parent 起来」仍然没有实现者。**但本片顺手量清了它缺的到底是
+  什么，结论与直觉相反：缺的不是一个架构决定，是两件具体的东西。** 写在这里以免下一个人
+  从零再推一遍。
+
+  先排除一个错误答案。要唤醒一个 Parent 就得**创建会话**，而 `session.create` 按准入是
+  `delegation` 类 → `ALLOW`（`runtime/agent-session-contract.yaml:270`），所以卡住它的
+  不是准入。卡住它的是 **actor**：每一个变更型 session 动作都从 `context_ref` 解析 actor，
+  而全仓只有一个铸 ref 的门 —— `mcp/human_control.py#attach_context`，它**没有 `report`
+  参数**（「一个能交出证据的调用者，就是 §5 禁止的那个伪造身份模型」），`provider_pid`
+  由内核按 `SO_PEERCRED` 与 socket 对端核对（`runtime/daemon.py:2174`），而 provider
+  自己在 BotMux 轮次之外答 BLOCKED —— 一次没验证过的观测**什么都不铸**。所以「daemon 自己
+  起来伪造一个 actor」这条路是被关闭的，不是靠约定关闭的。
+
+  但「谁在**没有真人在轮次里**的情况下授权一个 cycle」这个问题，**架构已经回答了**，答案在
+  `context/delegation.py`：**「a grant is a scope on a trusted context, and it authorizes a
+  cycle only while that context still IS one」** —— grant 的 `delegated_by` 必须解析到一个
+  `context/actor.py#authorizes` **此刻仍然接受**的 context，所以 grant 不能比它派生自的那次
+  委托活得久、不能靠改自己的 `expires_at` 延长、不能靠写一个文件凭空造出来；而这个映射的
+  唯一消费者是 `intake/daily_cycle.select_focus`。也就是说，自动继续的 authority **本来就
+  设计成「一个人委托出去的 context」**，而不是「一个 daemon 给自己铸的身份」。一个持有有效
+  grant 的 receiver 去唤醒 Parent，不是在伪造身份 —— 它是在搬运一个**人已经委托过的**目标。
+
+  于是真正缺的是两件具体的东西，都不是设计空白：
+  1. **一条真的跑这个检查、并且是 trigger owner 的 routine。** `runtime/daemon.py` 的 tick
+     既不读准入也不读 checkpoint（`runtime/continuation.py:33-40` 把这句话写成了模块
+     docstring），`RECEIVERS`（`runtime/continuation.py:123`）是「唤醒那一半将来要填的
+     注册表」，`receivers()` 是它唯一的读口 —— 在填上之前空元组就是本机的量测。
+  2. **一条真的被记录下来的 grant。** 本机 store 里 grants / admissions 为 0（§9.37 之后
+     的读数），而「记录工作循环的第一次真实委派」是一个**已经摆在用户面前等决定**的条目。
+     一条 routine 加一条不存在的 grant，什么都不会发生 —— 这正是 `RECEIVERS = ()` 在说的
+     那句话，而不是「不知道 actor 该是谁」。
+
+  这两件的顺序也是确定的：routine 的唯一职责是**去查那条 grant 还在不在**（delegation 的
+  四态里只有 `AUTHORIZED` 会把 grant 放进映射），所以没有 grant 就没有可查的对象。**本片
+  没有做这两件**：它们属于「工作循环的第一次真实委派」那条线，本片只把它**是什么、缺什么、
+  为什么不缺决定**量清楚并留在这里。
+- **没有把 checkpoint 投递出去**，并且是明确地、写进合约地不投递（9.38.2）。这不是
+  「本片没做」，是这个参数**在目标架构里就不该到 provider 那一层**。
+- **没有改 `WAIT_KINDS`**，`waiting_on` 仍然只有 `child` 与 `window`（§9.37.9 第二条照旧）。
+- **没有 `child_attempts` 的消费者**（§9.37.9 第三条照旧）。
+- **没有跑一次真实 `live_closure.py`**（§9.36.8 最后一条照旧）。
+- **没有把 `NodeControlTransport.send` 对 `connector(...)` 的异常包起来。** 探针那条路
+  是包的（`resolve_inputs` 的 `try/except Exception: return {}`），投递那条路不是：
+  `send()` 第 824 行 `answer = self.connector(envelope) or {}` 裸露，而 `route()` 只捕
+  `TransportFailure`（`TransportUnavailable` 继承的是 `FleetError`，不是它）——
+  所以 `connector` 抛 `TransportUnavailable` 会一路穿到调用者。今天不可达（部署里
+  `connector` 是 `None`），但**装上第一个真实 connector 的那天**它就是「设备没答」
+  变成一次未捕获异常。本片**没有修**：它属于 transports 那一层而不是交接程序，而且
+  修它要动「哪些异常算拒绝、拒绝用什么词」这条线 —— 那是 `fleet/transport.py` 与
+  理由词表的事。记在这里以免丢掉。
+
+### 9.38.10 冻结提交上的全量读数
+
+`a58716da79bac2c3d197f307140787dd33999ccf`（本片提交），跑前 `git status --short` 0 行，
+2026-09-26T05:57:09+08:00 起跑，连跑两遍：
+
+| 遍 | 读数 | 用时 |
+|---|---|---|
+| 1 | 5843 passed, 20 skipped, 3993 subtests passed | 633.50 s (0:10:33) |
+| 2 | 5843 passed, 20 skipped, **1 warning**, 3993 subtests passed | 630.63 s (0:10:30) |
+
+跑后 `git status --short` 仍 0 行、`git rev-parse HEAD` 未变，所以跑动期间工作树**没有被
+编辑穿过** —— §9.35.8、§9.37.8 记下的两次作废读数都是这个原因，本片把「源码编辑全部在起跑
+之前完成并提交」用成了前置条件。
+
+与切片 I 的同一棵树相比：5831 → **5843** 条、3988 → **3993** 个 subtest，正好是本片新增的
+12 条用例与 5 个 subtest，没有别的用例被牵动。
+
+**两遍之间唯一的差异是第二遍多出一条 warning，这里不平掉它。** 读数文件只留了
+`pytest -q` 摘要的尾三行（`command grep -E "passed|failed|error" | tail -3`），所以那条
+warning 的**身份没有留在证据里**，本片没有回去把它补抓 —— 补抓要再跑一遍十分钟的套件，
+而那会把一条已知的不一致换成一条未知的。能说的是：两遍在**会红的那些数上逐字相同**
+（5843 / 20 / 3993），且两遍摘要行里都没有 `failed` / `error` —— `-q` 的摘要只在有失败时
+才印那些词。**pytest 自己的退出码没有被捕获**：那条命令的末端是 `command grep … | tail -3`，
+记录的 0 是管道末端的。所以「两遍都通过」的证据是摘要行，不是退出码，这一句不能混着说。
+
+## §9.39 用户点名的那张卡：判词已经在活体上，而且是「不发」
+
+这一节不是一次实现，是一次**量测**。用户 09-24 直接点名要求改一件事：
+
+> ✅ 没有需要处理的变化 / 09-24 18:48 更新 / … / 只读告警 · 未执行终止、重启或清理操作
+> 这都没需要报警 为什还弹出来 就别谈出来了啊 去改一下
+
+台账里此前**没有这一条的落点**（`command grep -n "没有需要处理的变化"` 在
+`docs/CC-EXECUTION-LEDGER.md` 上 0 命中）。本片顺手把它量清楚，因为 §12 的终报要能对它
+给出一个带证据的答案，而不是一句「已经修了」。
+
+### 9.39.1 那句话是谁说的
+
+`runtime/cards.py:291` —— 卡面在既没有事件、也没有 integrity 主体时的返回值就是
+`"✅ 没有需要处理的变化"`。所以用户看到的是**卡面模型**的一句真话：这一刻确实没有东西
+值得占一行。让这句话变成一条「弹出来」的，不是这句话本身，而是**有一个东西在它上面加了
+一句「这也是个事件，发出去」**。
+
+### 9.39.2 闸门与卡面曾经是两条规则
+
+`tests/test_attention.py#TheGateAndTheFaceAreOneRuleTests` 的 docstring 把这个形状记成了
+本机真实发生过的事（原文照抄）：
+
+> the gate counted 460 findings at high/medium as worth a card while the face classified
+> every one of them `watch` and printed none, so a card went out once an hour saying
+> `✅ 没有需要处理的变化`.
+
+也就是说：**闸门**（`alert_digest.decision`）按 severity 算「值一张卡」，**卡面**
+（`alert_model` / `presentation`）按另一套判据算「值一行」，两套判据在一台机器上并存，
+于是每小时发一张自己都印不出东西的卡。修法不是调阈值，是把两条规则合成一条：
+`decision` 只能由**卡面印得出来的东西**造成，并且按 code 在**整个闭合映射**上逐条对齐
+（docstring 的判词：「Agreeing per code across the whole closed mapping is the only form
+of this check that cannot come back a third time through a code nobody thought about.」）。
+
+### 9.39.3 活体读数：它现在是「不发」，而且理由就是用户那句话
+
+2026-09-26T06:01+08:00 于活体上直接读（`serverosctl alert digest --json`，与 ops 的 timer
+每 5 分钟跑的**同一条只读命令**）：
+
+```text
+generation 252
+counts    NEW 496 · ESCALATED 0 · REOPENED 1 · RECOVERED 7391
+backlog   94
+decision  send: false
+          interval_seconds 3600.0
+          seconds_since_last_digest 57786.05
+          immediate []
+          why: "438 finding(s) at high/medium, and none of them may occupy a line on
+                the card — a card caused by a finding it cannot print arrives saying
+                there is nothing to do"
+```
+
+`why` 那一句就是**用户那句话的判词版**：「一张由它印不出来的 finding 造成的卡，到达时说的
+就是没有事情要做」。三个可以核的点：
+
+1. `send: false` —— 这一轮不会发卡，而此刻 `counts.NEW` 是 496，所以它不是「因为没有增量
+   才不发」，是**判据算出这些 finding 没有一个能占一行**。
+2. `seconds_since_last_digest ≈ 57786s ≈ 16.05h`（约 09-25 13:58 北京时间）—— 距离上一张
+   真的发出去的卡已经 16 小时，与「这条闸门在活体上一直在拒」一致。
+3. `interval_seconds 3600.0` —— 「一小时一张」的节奏由 `decision` 自己携带，不是由 timer
+   的 5 分钟周期决定的；timer 只是来问。
+
+### 9.39.4 它是**活的**，不只是源码里有
+
+用户问的是「为什么还弹出来」，所以「源码里修了」不是答案，**装上的那一版里修了**才是。
+三处实测把这条钉住：
+
+- `which serverosctl` → `~/.local/bin/serverosctl` → `runtime-assets/hwz-server-os/
+  serveros-linux-work/current` → `revisions/alert-card-scope-20260924@8ce6fe7`。
+- `current` 这个符号链接的 mtime 是 **2026-09-24 19:43** —— 在用户那张 18:48 的卡**之后**，
+  而该 revision 的提交名就叫 `alert-card-scope`。
+- 那一版里 `runtime/cards.py` 有这句话、`runtime/alert_digest.py:863 decision()` 的初值是
+  `{"send": False, …}`，只有判据成立的两处（`:931`、`:980`）才置 `send = True`。
+
+所以处置是：**用户 18:48 投诉 → 同日晚 19:43 promote 一个叫 `alert-card-scope` 的 revision
+→ 今天在活体上读出来是「不发」**。这不是本片修的，本片做的是把它量成一条**有证据、
+有名字、有时间**的结论，因为它此前在台账里没有任何落点。
+
+### 9.39.5 顺带量到、但没有被这条闸门解释的一件事
+
+`backlog 94` 与 `counts.NEW 496` 说明：登记表里仍有 438 条 high/medium、94 条积压，
+而**这张卡现在对它们一个字都不说**。这是设计的选择而不是漏报 —— 卡面把它们全部归为
+`watch`，而 `watch` 不占行。设计上的承接者是**例行状态卡**（每个工作日一张、同一消息
+按小时补丁），不是这张按事件走的告警卡。本片**没有**去改这个分工，只把它记在这里：
+「告警卡安静」与「没有东西需要看」在 438 这个数字面前不是同一句话，而读到这份读数的人
+应当能自己分开它们。
 
 ## 10. 后续每包更新哪几行
 
