@@ -54,6 +54,7 @@ import importlib.util
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -1319,6 +1320,132 @@ class TestTheCli:
         assert "0 open of 1 recorded" in listing.stdout
         assert f"(retired {T2})" in listing.stdout
         assert "SRV-1" in listing.stdout, "the selection is what a review reads"
+
+
+class TestTheCycleIsWhatAPersonAcceptedNotWhatTheFabricProposes:
+    """`work focus` on a real tree, where the two answers are visibly two.
+
+    The tree is `intake/samples/workchain`, which exists to be run against with
+    nothing stubbed (its own README says so). It is COPIED into the temporary
+    directory first, because two of these tests write a `today.yaml` and a test
+    that edits the fixture it asserts on is testing its own editing.
+
+    What is being pinned is P6's fourth change, and the failure it replaces is
+    not a crash: `select_focus` fills every spare slot it can, so a verb that
+    printed it as the cycle could never report fewer objectives than the
+    profile carries. On a day when a person selected one Item and it finished,
+    that verb said two — and the two were proposals.
+    """
+
+    def tree(self, tmp_path: Path) -> dict:
+        sample = REPO / "intake" / "samples" / "workchain"
+        for part in ("boards", "records"):
+            shutil.copytree(sample / part, tmp_path / part)
+        return {"boards": tmp_path / "boards", "records": tmp_path / "records"}
+
+    def focus(self, tree: dict, *extra: str) -> subprocess.CompletedProcess:
+        return cli("work", "focus", "--boards-root", str(tree["boards"]),
+                   "--records-root", str(tree["records"]),
+                   "--workspace-root", str(tree["records"].parent),
+                   # The fixture's projections are dated 2026-01-01, which is
+                   # older than any TTL a caller would pass. The board's age is
+                   # not what these tests are about — `test_daily_cycle.py` and
+                   # `test_focus_source.py` hold it — so the window is opened
+                   # wide rather than the fixture's dates rewritten, which
+                   # would be editing the evidence to fit the assertion.
+                   "--ttl", "999999999", *extra)
+
+    def cycle_block(self, stdout: str) -> str:
+        return stdout.split("— 本次周期")[1].split("— 建议")[0]
+
+    def proposal_block(self, stdout: str) -> str:
+        return stdout.split("— 建议")[1]
+
+    def test_the_objective_a_person_chose_is_the_cycle(self, tmp_path):
+        """The fixture's `sample-alpha/board/today.yaml` names SAMP-0002. It is
+        in the cycle and the five in-flight Items beside it are NOT — they are
+        the proposal's, in a block of their own."""
+        done = self.focus(self.tree(tmp_path))
+        assert done.returncode == 0, done.stderr
+        cycle = self.cycle_block(done.stdout)
+        assert "objectives  1" in cycle
+        assert "SAMP-0002" in cycle
+        for other in ("SAMP-0007", "SAMP-0101", "SAMP-0102", "SAMP-0103"):
+            assert other not in cycle, f"{other} is in flight, not chosen"
+        assert "focus       PLANNED" in cycle
+
+    def test_the_proposal_is_printed_and_is_not_the_cycle(self, tmp_path):
+        """The same run, the other block. `OVER_CAPACITY` and five in flight is
+        the recommender's answer about this board; reading it as the cycle is
+        the defect, and the two blocks are how a reader tells them apart."""
+        done = self.focus(self.tree(tmp_path))
+        proposal = self.proposal_block(done.stdout)
+        assert "proposal    OVER_CAPACITY" in proposal
+        assert "in flight   5" in proposal
+        assert "SAMP-0007" in proposal
+
+    def test_a_chosen_objective_that_is_finished_leaves_focus_at_zero(self, tmp_path):
+        """Acceptance A, on the command line.
+
+        The selection is rewritten to name SAMP-0004 — the fixture's one CLOSED
+        Item, outcome set and every required document present. Nothing new was
+        chosen. Focus is 0, the reason is on the Item, and the recommender is
+        still proposing — which is exactly the pair of numbers that used to be
+        one number.
+        """
+        tree = self.tree(tmp_path)
+        (tree["records"] / "projects" / "sample-alpha" / "board"
+         / "today.yaml").write_text(
+            "schema: serveros/today.v1\nproject: sample-alpha\n"
+            "date: '2026-09-25'\nitems:\n- SAMP-0004\n"
+            "note: a selection that has since finished\nauthored_by: test\n",
+            encoding="utf-8")
+        done = self.focus(tree)
+        assert done.returncode == 0, done.stderr
+        cycle = self.cycle_block(done.stdout)
+        assert "objectives  0" in cycle
+        assert "SAMP-0004" in cycle and "TERMINAL_STATE" in cycle
+        # And the other answer is not zero: the fabric still sees five
+        # objectives in flight on this board. Two numbers, one run, and only
+        # one of them is today's focus.
+        assert "in flight   5" in self.proposal_block(done.stdout)
+
+    def test_nobody_having_chosen_is_reported_as_such_and_not_as_an_empty_choice(
+            self, tmp_path):
+        """Both files deleted: no person has ever chosen. Focus is 0, and the
+        word is `NO_SELECTION_AUTHORED` — not `SELECTION_IS_EMPTY`, which would
+        say somebody chose nothing."""
+        tree = self.tree(tmp_path)
+        for project in ("sample-alpha", "sample-beta"):
+            path = tree["records"] / "projects" / project / "board" / "today.yaml"
+            if path.exists():
+                path.unlink()
+        done = self.focus(tree)
+        cycle = self.cycle_block(done.stdout)
+        assert "accepted    UNPRODUCED" in cycle
+        assert "NO_SELECTION_AUTHORED" in cycle
+        assert "objectives  0" in cycle
+
+    def test_work_admit_admits_the_cycle_and_not_the_proposal(self, tmp_path):
+        """The verb that writes, pointed at the same board.
+
+        It refuses — no grant is recorded on this node and no row can name one
+        — and the refusal names SAMP-0002, the Item a person chose. That is the
+        assertion that matters: `work admit` read the cycle block. If it had
+        read the proposal, the sentence would name SAMP-0007.
+        """
+        tree = self.tree(tmp_path)
+        env = a_data_root(tmp_path)
+        done = cli("work", "admit", "--boards-root", str(tree["boards"]),
+                   "--records-root", str(tree["records"]),
+                   "--workspace-root", str(tree["records"].parent),
+                   "--ttl", "999999999", "--cycle", "cyc-1",
+                   "--action-key", "act-1", "--resource", "browser:chromium",
+                   "--scope", "session", env_extra=env)
+        assert done.returncode == 0, done.stderr
+        assert "refused     SELECTION_CARRIES_NO_GRANT" in done.stdout
+        assert "SAMP-0002" in done.stdout
+        assert "SAMP-0007" not in done.stdout
 
 
 class TestTheStoreIsStillReadableByOlderConsumers:
