@@ -11,7 +11,7 @@ between runtimes, and nothing anywhere recorded where a Parent had got to when i
 chose to wait. `docs/context-capsule.md` and `docs/daily-work-cycle.md` §17.4 both
 name the object, and neither had a producer or a consumer.
 
-Four properties, in the order a reader needs them:
+Five properties, in the order a reader needs them:
 
   1. THE RECORD IS A CAPSULE AND NOT A TRANSCRIPT. `CHECKPOINT_FIELDS` is closed
      and `build_checkpoint` returns exactly that set plus the two fields it
@@ -38,8 +38,22 @@ Four properties, in the order a reader needs them:
      `TestTheReceiverIsAskedOfTheFabric` monkeypatches the registry non-empty, so
      the empty tuple this release ships is a measurement and not a constant the
      reader has been hardcoded to repeat.
+  5. THE WAIT IS EVALUATED, AND EVALUATING IT IS NOT WAKING ANYTHING. This one
+     arrived late and was the largest hole in the chain: `waiting_on` was
+     written, validated against the admissions, filed and printed — and no code
+     anywhere decided whether the thing it names had happened. A checkpoint read
+     identically the moment it was written and a week after its child had
+     finished. `wait_state` answers «has it happened yet» from the admission
+     store and the clock, in three words rather than two, so that a store which
+     cannot answer is not made to answer «over» (which resumes a Parent on no
+     evidence) or «not yet» (which parks one forever behind a store problem).
+     It does not fill `RECEIVERS`: an answer about a child's recorded outcome
+     must never be printed as «something will wake this», because nothing on
+     this node runs by itself. `TestAnEvaluatorIsNotAReceiver` is where the two
+     are kept apart, and it is the test that would fail first if a later slice
+     wired the evaluator into the wake half by accident.
 
-A FIFTH THING THAT IS ALSO ASSERTED, because it is a property of this tree rather
+A SIXTH THING THAT IS ALSO ASSERTED, because it is a property of this tree rather
 than of this feature: `runtime/continuation.py` imports no other layer of the
 repository. `runtime/agent_control_store.py` imports nothing from the repository
 either, and the two have to be readable together — the store holds the record and
@@ -97,6 +111,10 @@ StoreError = store_mod.StoreError
 NOW = "2026-09-26T10:00:00+00:00"
 LATER = "2026-09-26T11:00:00+00:00"
 TOMORROW = "2026-09-27T10:00:00+00:00"
+# An instant strictly past `TOMORROW`, for the window tests. `LATER` is not one:
+# it is an hour after `NOW` and a day BEFORE the window it reads against, which
+# is the arithmetic a window test is most likely to get wrong.
+DAY_AFTER = "2026-09-28T10:00:00+00:00"
 CONTEXT = "ctx-delegated-1"
 GRANT = "grant-1"
 BUDGET = {"wall_seconds": 900, "max_attempts": 2, "max_output_bytes": 200000}
@@ -683,7 +701,308 @@ class TestTheReceiverIsAskedOfTheFabric:
 
 
 # ---------------------------------------------------------------------------
-# 4. The layer boundary this module keeps.
+# 4. The wait is evaluated, and evaluating is not waking.
+# ---------------------------------------------------------------------------
+
+
+class TestTheWaitIsEvaluatedAndNotOnlyRecorded:
+    """`waiting_on` was written, checked against the store, printed — and never
+    evaluated. These are the answers that did not exist.
+
+    The evaluation is against two authorities and no others: the admission
+    collection for a child, the clock for a window. Nothing here starts a
+    process, and a `WAIT_OVER` is what a NEW Parent reads — it is not a claim
+    that something resumed the old one.
+    """
+
+    def test_a_child_with_no_recorded_outcome_leaves_the_wait_open(self, tmp_path):
+        store = a_store(tmp_path)
+        record = store.put_checkpoint(a_checkpoint(store))
+        wait = continuation.wait_state(record, admissions=store.admissions(),
+                                       now=NOW)
+        assert wait["state"] == "WAIT_OPEN"
+        assert wait["outstanding"] == ["cyc-1"]
+        assert wait["settled"] == []
+
+    def test_the_wait_is_over_once_the_child_has_a_recorded_outcome(self, tmp_path):
+        store = a_store(tmp_path)
+        record = store.put_checkpoint(a_checkpoint(store))
+        store.retire_admission("cyc-1", at=LATER, outcome="accepted")
+        wait = continuation.wait_state(record, admissions=store.admissions(),
+                                       now=LATER)
+        assert wait["state"] == "WAIT_OVER"
+        assert wait["settled"] == ["cyc-1"]
+        assert wait["outstanding"] == []
+
+    def test_the_same_record_answers_differently_without_being_rewritten(
+            self, tmp_path):
+        """The store moved; the capsule did not. That is the whole point.
+
+        A record that had to be rewritten to notice its child had finished would
+        be a record whose reader is the Parent that is gone — which is the
+        situation the checkpoint exists to survive.
+        """
+        store = a_store(tmp_path)
+        stored = store.put_checkpoint(a_checkpoint(store))
+        before = json.loads(json.dumps(stored))
+        first = continuation.wait_state(stored, admissions=store.admissions(),
+                                        now=NOW)
+        store.retire_admission("cyc-1", at=LATER, outcome="accepted")
+        second = continuation.wait_state(stored, admissions=store.admissions(),
+                                         now=LATER)
+        assert first["state"] == "WAIT_OPEN"
+        assert second["state"] == "WAIT_OVER"
+        assert stored == before
+        # The stored record is the same one, minus the write-result flag the
+        # store never keeps (`test_the_stored_record_does_not_carry_the_replay_flag`).
+        assert store.get_checkpoint("SRV-0001#1") == {
+            k: v for k, v in before.items() if k != "replayed"}
+
+    def test_being_invoked_is_not_having_finished(self, tmp_path):
+        """`DISPATCHED` is a receipt, and a receipt is not a result.
+
+        `runtime/bounded_invocation.invoke_once` writes that phase when the child
+        was CALLED, and the receipt it writes can even say `EXITED` — the child
+        ran and returned. None of that is this store's word for «this cycle's
+        outcome is recorded»: `retire_admission` is the only writer of
+        `retired_at`, and it is what the evaluator asks for. Reading a phase as a
+        result would resume a Parent while its child was still running, or while
+        nobody had yet decided what the child's exit meant.
+        """
+        store = a_store(tmp_path)
+        record = store.put_checkpoint(a_checkpoint(store))
+        store.confirm_admission("cyc-1", phase="LEASE_HELD",
+                                evidence={"act": "DECLARE",
+                                          "resource": "browser:chromium"}, at=NOW)
+        store.confirm_admission("cyc-1", phase="DISPATCHED",
+                                evidence={"action_key": "act-1",
+                                          "status": "EXITED"}, at=NOW)
+        assert store.admissions()["cyc-1"]["phase"] == "DISPATCHED"
+        assert store.admissions()["cyc-1"]["retired_at"] is None
+        wait = continuation.wait_state(record, admissions=store.admissions(),
+                                       now=LATER)
+        assert wait["state"] == "WAIT_OPEN"
+        assert wait["outstanding"] == ["cyc-1"]
+        assert "not a result" in wait["evidence"][0]["because"]
+
+    def test_a_child_this_store_does_not_hold_is_unanswerable_and_not_not_yet(
+            self, tmp_path):
+        """The third answer, and the reason there are three.
+
+        «Not yet» would park a Parent forever behind a store that simply is not
+        this one; «over» would resume it on no evidence at all. The record is
+        honest about which question it could not answer, and names the ref.
+        """
+        store = a_store(tmp_path)
+        record = store.put_checkpoint(a_checkpoint(store))
+        wait = continuation.wait_state(record, admissions={}, now=NOW)
+        assert wait["state"] == "WAIT_UNANSWERABLE"
+        assert wait["unheld"] == ["cyc-1"]
+        assert "cyc-1" in wait["says"]
+
+    def test_bringing_no_store_at_all_is_a_different_answer_from_an_empty_one(
+            self, tmp_path):
+        """Two readings, two repairs: fetch the store, or look for the child.
+
+        Collapsing them would tell a reader that the child is missing from a
+        store nobody opened.
+        """
+        store = a_store(tmp_path)
+        record = store.put_checkpoint(a_checkpoint(store))
+        absent = continuation.wait_state(record, now=NOW)
+        empty = continuation.wait_state(record, admissions={}, now=NOW)
+        assert absent["state"] == empty["state"] == "WAIT_UNANSWERABLE"
+        assert absent["detail"] != empty["detail"]
+        assert "not looked up at all" in absent["detail"]
+        assert "no admission" in empty["detail"]
+
+    def test_several_children_are_over_only_when_the_last_one_is(self, tmp_path):
+        store = a_store(tmp_path)
+        store.admit({"cycle_ref": "cyc-2", "grant_ref": GRANT,
+                     "selection": {"selection_digest": DIGEST, "observed_at": NOW,
+                                   "selected": ["SRV-0001"]},
+                     "reservation": dict(BUDGET),
+                     "lease": {"resource": "browser:chromium", "scope": "session",
+                               "holder": "cyc-2"},
+                     "action_key": "act-2", "admitted_at": NOW})
+        record = store.put_checkpoint(
+            a_checkpoint(store, waiting_on={"kind": "child",
+                                            "refs": ["cyc-1", "cyc-2"]}))
+        store.retire_admission("cyc-1", at=LATER, outcome="accepted")
+        partial = continuation.wait_state(record, admissions=store.admissions(),
+                                          now=LATER)
+        assert partial["state"] == "WAIT_OPEN"
+        assert partial["settled"] == ["cyc-1"]
+        assert partial["outstanding"] == ["cyc-2"]
+        store.retire_admission("cyc-2", at=LATER, outcome="accepted")
+        whole = continuation.wait_state(record, admissions=store.admissions(),
+                                        now=LATER)
+        assert whole["state"] == "WAIT_OVER"
+        assert sorted(whole["settled"]) == ["cyc-1", "cyc-2"]
+
+    def test_one_unreadable_child_among_settled_ones_is_not_reported_as_over(
+            self, tmp_path):
+        """«Most of it finished» must not read as «it finished».
+
+        The record is written while the store still held both children — that is
+        the only way past `build_checkpoint` — and read after one of them is
+        gone. A store can lose an admission between those two moments, and the
+        reading has to survive it.
+        """
+        store = a_store(tmp_path)
+        both = {**store.admissions(), "cyc-gone": {"cycle_ref": "cyc-gone"}}
+        record = store.put_checkpoint(
+            a_checkpoint(store, admissions=both,
+                         waiting_on={"kind": "child",
+                                     "refs": ["cyc-1", "cyc-gone"]}))
+        store.retire_admission("cyc-1", at=LATER, outcome="accepted")
+        wait = continuation.wait_state(record, admissions=store.admissions(),
+                                       now=LATER)
+        assert wait["state"] == "WAIT_UNANSWERABLE"
+        assert wait["settled"] == ["cyc-1"]
+        assert wait["unheld"] == ["cyc-gone"]
+
+    def test_a_window_that_has_not_closed_is_open_and_says_how_long(
+            self, tmp_path):
+        store = a_store(tmp_path)
+        record = store.put_checkpoint(
+            a_checkpoint(store, waiting_on={"kind": "window", "until": TOMORROW}))
+        wait = continuation.wait_state(record, admissions={}, now=NOW)
+        assert wait["state"] == "WAIT_OPEN"
+        assert wait["seconds_remaining"] == 86400.0
+
+    def test_a_window_that_has_closed_is_over_and_says_by_how_much(
+            self, tmp_path):
+        store = a_store(tmp_path)
+        record = store.put_checkpoint(
+            a_checkpoint(store, waiting_on={"kind": "window", "until": TOMORROW}))
+        wait = continuation.wait_state(record, admissions={}, now=DAY_AFTER)
+        assert wait["state"] == "WAIT_OVER"
+        assert wait["over_by_seconds"] == 86400.0
+
+    def test_the_window_is_read_against_the_clock_it_was_given_and_no_other(
+            self, tmp_path):
+        """The clock is an argument, so this file has no wall clock in it.
+
+        A reader that reached for the time itself would make the same record
+        answer differently between two runs of the same test, and the answer
+        would be about the machine rather than about the work. The boundary is
+        included: exactly at `until` the window is over, which is the same
+        comparison `build_checkpoint` refuses a NEW record on.
+        """
+        store = a_store(tmp_path)
+        record = store.put_checkpoint(
+            a_checkpoint(store, waiting_on={"kind": "window", "until": TOMORROW}))
+        for clock, expected in ((NOW, "WAIT_OPEN"), (LATER, "WAIT_OPEN"),
+                                (TOMORROW, "WAIT_OVER"), (DAY_AFTER, "WAIT_OVER")):
+            assert continuation.wait_state(record, admissions={}, now=clock)[
+                "state"] == expected, clock
+
+    def test_a_window_whose_end_cannot_be_read_is_unanswerable(self, tmp_path):
+        """A record this store holds and this evaluator cannot compare."""
+        store = a_store(tmp_path)
+        record = store.put_checkpoint(
+            a_checkpoint(store, waiting_on={"kind": "window", "until": TOMORROW}))
+        broken = dict(record, waiting_on={"kind": "window", "until": "soon"})
+        wait = continuation.wait_state(broken, admissions={}, now=NOW)
+        assert wait["state"] == "WAIT_UNANSWERABLE"
+        assert "waiting_on.until" in wait["detail"]
+
+    def test_a_reading_with_no_clock_is_unanswerable_and_not_open(self, tmp_path):
+        """`now` has no default either, for the same reason `receivers()` has none.
+        A default would be this module answering with a time it made up."""
+        store = a_store(tmp_path)
+        record = store.put_checkpoint(
+            a_checkpoint(store, waiting_on={"kind": "window", "until": TOMORROW}))
+        wait = continuation.wait_state(record, admissions={})
+        assert wait["state"] == "WAIT_UNANSWERABLE"
+        assert "reading clock" in wait["detail"]
+
+    def test_a_kind_nothing_can_evaluate_is_unanswerable_and_named(self, tmp_path):
+        store = a_store(tmp_path)
+        record = store.put_checkpoint(a_checkpoint(store))
+        broken = dict(record, waiting_on={"kind": "another-item",
+                                          "refs": ["SRV-9999"]})
+        wait = continuation.wait_state(broken, admissions=store.admissions(),
+                                       now=NOW)
+        assert wait["state"] == "WAIT_UNANSWERABLE"
+        assert "another-item" in wait["detail"]
+
+    def test_a_record_with_no_wait_at_all_is_unanswerable_and_not_over(
+            self, tmp_path):
+        """There is no boolean here, so «no wait» cannot fall through to «over».
+
+        A value that defaulted to «over» would resume a Parent on a record whose
+        wait never parsed — the shape `build_checkpoint` refuses to write and
+        which a hand-edited or older store can still hold.
+        """
+        wait = continuation.wait_state({"work_item": "SRV-0001", "epoch": 1},
+                                       admissions={}, now=NOW)
+        assert wait["state"] == "WAIT_UNANSWERABLE"
+        assert wait["waiting_on"] is None
+        assert "no readable `waiting_on`" in wait["detail"]
+
+    def test_every_answer_names_the_checkpoint_it_is_about(self, tmp_path):
+        """A caller holds a mapping of these; an answer without the ref would
+        have to be carried beside it, and carried facts get separated."""
+        store = a_store(tmp_path)
+        record = store.put_checkpoint(a_checkpoint(store))
+        for admissions, now in ((store.admissions(), NOW), ({}, NOW),
+                                (None, NOW), ({}, None)):
+            wait = continuation.wait_state(record, admissions=admissions, now=now)
+            assert wait["checkpoint_ref"] == "SRV-0001#1", wait["state"]
+            assert wait["work_item"] == "SRV-0001"
+            assert wait["epoch"] == 1
+            assert wait["says"]
+
+    def test_the_three_answers_are_the_closed_vocabulary(self, tmp_path):
+        """Asserted as an equality, so a fourth word is a change and not a typo."""
+        assert continuation.WAIT_ANSWERS == ("WAIT_OVER", "WAIT_OPEN",
+                                             "WAIT_UNANSWERABLE")
+
+
+class TestAnEvaluatorIsNotAReceiver:
+    """The separation that keeps «the child finished» from reading as «something
+    is running».
+
+    A WAIT_OVER is the most tempting thing in this module to wire into the wake
+    half: the child is done, so surely something should continue the Parent. It
+    is exactly the temptation §17.4 names. Nothing continues a Parent here —
+    resuming is what a new Parent does — so the evaluator's answer must not move
+    the receiver answer by one character.
+    """
+
+    def test_a_wait_that_is_over_does_not_make_the_fabric_say_woken_from(
+            self, tmp_path):
+        store = a_store(tmp_path)
+        record = store.put_checkpoint(a_checkpoint(store))
+        store.retire_admission("cyc-1", at=LATER, outcome="accepted")
+        wait = continuation.wait_state(record, admissions=store.admissions(),
+                                       now=LATER)
+        state = continuation.continuation_state(record, receivers_seen=[])
+        assert wait["state"] == "WAIT_OVER"
+        assert state["state"] == "AWAITING_CONTINUATION"
+        assert "checkpoint 已保存，待续" in state["says"]
+        assert "nothing will wake it" in state["says"]
+
+    def test_the_evaluator_says_out_loud_that_it_resumes_nothing(self, tmp_path):
+        """The sentence, because a reader who only sees WAIT_OVER will assume."""
+        store = a_store(tmp_path)
+        record = store.put_checkpoint(a_checkpoint(store))
+        store.retire_admission("cyc-1", at=LATER, outcome="accepted")
+        wait = continuation.wait_state(record, admissions=store.admissions(),
+                                       now=LATER)
+        assert "nothing else" in wait["detail"]
+        assert "a new Parent can resume this Item" in wait["says"]
+
+    def test_this_release_still_installs_no_receiver(self):
+        """The measurement, re-asserted where a wired evaluator would break it."""
+        assert continuation.RECEIVERS == ()
+        assert continuation.receivers() == ()
+
+
+# ---------------------------------------------------------------------------
+# 5. The layer boundary this module keeps.
 # ---------------------------------------------------------------------------
 
 
@@ -712,7 +1031,7 @@ class TestThisModuleImportsNoOtherLayer:
 
 
 # ---------------------------------------------------------------------------
-# 5. The two verbs, driven through the CLI.
+# 6. The two verbs, driven through the CLI.
 # ---------------------------------------------------------------------------
 
 
@@ -805,6 +1124,89 @@ class TestTheVerbsDriveTheStore:
         assert listed.returncode == 0
         assert "receivers" in listed.stdout
         assert "none installed" in listed.stdout
+
+    def test_the_writing_verb_reports_the_wait_it_has_just_recorded(self, env):
+        """Free at write time, and the only moment nobody is looking.
+
+        A Parent that checkpoints on a child whose result has already arrived
+        has waited for nothing, and the verb that made the record is the last
+        reader in a position to say so without being asked.
+        """
+        done = self.checkpoint(env)
+        assert done.returncode == 0, done.stderr
+        assert "wait          WAIT_OPEN" in done.stdout
+
+        cli("work", "retire", "cyc-1", "--outcome", "accepted", "--at", LATER,
+            env_extra=env)
+        late = cli("work", "checkpoint", "SRV-0001", "--epoch", "1",
+                   "--parent", "parent-a",
+                   "--next-action", "accept the child result and continue",
+                   "--waiting-on-child", "cyc-1", "--at", LATER, env_extra=env)
+        assert late.returncode == 0, late.stderr
+        assert "wait          WAIT_OVER" in late.stdout
+        assert "replayed" in late.stdout
+
+    def test_a_window_wait_is_read_against_the_clock_the_reader_is_given(
+            self, env):
+        """The read half, and the flag that makes it deterministic.
+
+        Without `--at` this verb would compare a stored instant with whatever
+        time it happened to be, and the same store would read differently on
+        two runs — an answer about the machine rather than about the work.
+        """
+        assert cli("work", "checkpoint", "SRV-0001", "--epoch", "1",
+                   "--parent", "parent-a", "--next-action", "carry on",
+                   "--waiting-on-window", TOMORROW, "--at", NOW,
+                   env_extra=env).returncode == 0
+        open_read = cli("work", "continuations", "--now", NOW, env_extra=env)
+        assert open_read.returncode == 0, open_read.stderr
+        assert "WAIT_OPEN" in open_read.stdout
+        assert "0 over, 1 still open, 0 unreadable" in open_read.stdout
+
+        due = cli("work", "continuations", "--now", TOMORROW, env_extra=env)
+        assert due.returncode == 0, due.stderr
+        assert "WAIT_OVER" in due.stdout
+        assert "resumable     SRV-0001#1" in due.stdout
+
+    def test_the_reading_names_the_resumable_checkpoint_and_keeps_saying_awaiting(
+            self, env):
+        """The two questions on one line, which is where they are hardest to
+        confuse: the child has finished AND nothing on this node will wake the
+        Parent that wrote this down."""
+        assert self.checkpoint(env).returncode == 0
+        assert cli("work", "retire", "cyc-1", "--outcome", "accepted",
+                   "--at", LATER, env_extra=env).returncode == 0
+        listed = cli("work", "continuations", "--now", LATER, env_extra=env)
+        assert listed.returncode == 0, listed.stderr
+        assert "SRV-0001#1  AWAITING_CONTINUATION  wait WAIT_OVER" in listed.stdout
+        assert "checkpoint 已保存，待续" in listed.stdout
+        assert "a new Parent can resume this Item" in listed.stdout
+
+    def test_a_child_this_store_does_not_hold_reads_as_unreadable_not_as_waiting(
+            self, env):
+        """The store is the authority, and a record can outlive its admission.
+
+        `build_checkpoint` refuses to WRITE this shape — that is the test above
+        it — and it can still be read: a store that was moved, swept or replaced
+        holds checkpoints naming children it no longer has. The hand-edit below
+        is the only way to produce that state through the CLI, and it is what
+        such a store looks like on disk. The reading must say «cannot say», in
+        both directions: «not yet» would park a Parent forever behind a store
+        problem, and «over» would resume one on no evidence.
+        """
+        assert self.checkpoint(env).returncode == 0
+        path = (Path(env["DATA_ROOT"]) / "state/serveros/runtime/agent-control"
+                / "store.json")
+        data = json.loads(path.read_text(encoding="utf-8"))
+        assert "cyc-1" in data["admissions"]
+        del data["admissions"]["cyc-1"]
+        path.write_text(json.dumps(data), encoding="utf-8")
+
+        listed = cli("work", "continuations", "--now", NOW, env_extra=env)
+        assert listed.returncode == 0, listed.stderr
+        assert "WAIT_UNANSWERABLE" in listed.stdout
+        assert "1 unreadable" in listed.stdout
+        assert "not in this store" in listed.stdout
 
     def test_the_json_round_trip_carries_the_record_and_its_state(self, env):
         written = cli("work", "checkpoint", "SRV-0001", "--epoch", "1",

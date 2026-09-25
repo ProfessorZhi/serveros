@@ -7891,6 +7891,12 @@ def cmd_work_checkpoint(args) -> int:
         return EXIT_FAULT
 
     state = continuation.continuation_state(stored)
+    # The wait is evaluated HERE, at the moment it is written, and not only when
+    # somebody reads it later. A Parent that checkpoints on a child whose result
+    # has already arrived has waited for nothing, and saying so now is cheaper
+    # than letting it be discovered by whoever next reads the store — which is
+    # the one moment nobody is looking.
+    wait = continuation.wait_state(stored, admissions=admissions, now=now)
     lines = [
         f"checkpoint  {stored['checkpoint_ref']}",
         f"item        {stored['work_item']}",
@@ -7908,10 +7914,13 @@ def cmd_work_checkpoint(args) -> int:
         "",
         f"continuation  {state['state']}",
         f"  {state['says']}",
+        "",
+        f"wait          {wait['state']}",
+        f"  {wait['says']}",
     ]
     if stored.get("replayed"):
         lines.insert(1, "replayed    yes — same scope, same checkpoint")
-    emit({"checkpoint": stored, "continuation": state,
+    emit({"checkpoint": stored, "continuation": state, "wait": wait,
           "store": str(control.path)}, as_json=args.json, lines=lines)
     return EXIT_OK
 
@@ -7957,18 +7966,32 @@ def cmd_work_continuations(args) -> int:
     «没有 receiver 时准确显示"checkpoint已保存，待续"，不能伪造后台运行».
 
     It reads the store and `runtime/continuation.receivers()` and nothing else —
-    no board, no projection, no clock. Whether a checkpoint is being woken is not
-    a question about the board, and answering it from a projection that may be
-    stale is how a saved checkpoint starts reading as a running one.
+    no board, no projection. One clock, and only one: a window wait is a
+    comparison against an instant and this verb is where that comparison is
+    printed. The clock is `--now`, through the same `_reading_clock` `work grants`
+    judges delegations with — a second spelling of «the instant this reading is
+    made at» would be a second set of refusals for one question. Whether a
+    checkpoint is being woken is not a question about the board, and answering it
+    from a projection that may be stale is how a saved checkpoint starts reading
+    as a running one.
 
     The receiver answer comes from that registry and not from the record, which is
     the only arrangement under which «no receiver is installed» can be true of the
     fabric rather than a field somebody left off.
+
+    TWO QUESTIONS, KEPT APART. `continuation` is «will anything wake this», and it
+    still answers `AWAITING_CONTINUATION` because nothing on this node runs by
+    itself. `wait` is «has the thing it waits for happened yet», and that one IS
+    answerable — the children are in the admission store and the window has an
+    instant. Printing only the first was the defect this section fixes: a reader
+    saw `AWAITING_CONTINUATION` on a checkpoint whose child finished last week,
+    with the one fact that had changed nowhere on the line.
     """
     continuation = _continuation_module()
     store_mod, control = _control_store()
     try:
         held = control.checkpoints()
+        admissions = control.admissions()
     except store_mod.StoreError as exc:
         sys.stderr.write(f"serverosctl: {exc}\n")
         return EXIT_FAULT
@@ -7978,18 +8001,37 @@ def cmd_work_continuations(args) -> int:
     installed = continuation.receivers()
     states = {ref: continuation.continuation_state(record, receivers_seen=installed)
               for ref, record in held.items()}
+    read_at, why = _reading_clock(args.now or datetime.datetime.now(
+        datetime.timezone.utc).isoformat())
+    if read_at is None:
+        sys.stderr.write(f"serverosctl: {why}\n")
+        return EXIT_FAULT
+    waits = {ref: continuation.wait_state(record, admissions=admissions, now=read_at)
+             for ref, record in held.items()}
     live = [ref for ref, state in states.items() if state["state"] != "SUPERSEDED"]
+    ready = [ref for ref in live if waits[ref]["state"] == "WAIT_OVER"]
+    unreadable = [ref for ref in live if waits[ref]["state"] == "WAIT_UNANSWERABLE"]
     lines = [f"store         {control.path}",
              f"checkpoints   {len(live)} live of {len(held)} recorded"
              + ("" if held else " — no Parent has checkpointed on this node"),
              f"receivers     "
              + (", ".join(str(r) for r in installed) if installed
                 else "none installed — a saved checkpoint is not being woken by "
-                     "anything on this node")]
+                     "anything on this node"),
+             f"waits         {len(ready)} over, "
+             + f"{len(live) - len(ready) - len(unreadable)} still open, "
+             + f"{len(unreadable)} unreadable"
+             + ("" if live else " — nothing held to wait on"),
+             f"read at       {read_at}"]
+    if ready:
+        # Named, not counted. A WAIT_OVER is the one answer here a person can act
+        # on — it says the Item can be resumed now — and a count would send them
+        # to the list to find out which.
+        lines.append(f"resumable     {', '.join(sorted(ready))}")
     for ref in sorted(held):
-        record, state = held[ref], states[ref]
+        record, state, wait = held[ref], states[ref], waits[ref]
         lines.append("")
-        lines.append(f"{ref}  {state['state']}")
+        lines.append(f"{ref}  {state['state']}  wait {wait['state']}")
         lines.append(f"  parent        {record.get('parent_owner')}")
         waiting = record.get("waiting_on") or {}
         lines.append(f"  waiting on    {waiting.get('kind')} "
@@ -8006,7 +8048,9 @@ def cmd_work_continuations(args) -> int:
         for effect in record.get("unresolved_effects") or []:
             lines.append(f"  unresolved    {effect}")
         lines.append(f"  {state['says']}")
-    emit({"checkpoints": held, "states": states, "receivers": list(installed),
+        lines.append(f"  wait          {wait['says']}")
+    emit({"checkpoints": held, "states": states, "waits": waits,
+          "receivers": list(installed), "read_at": read_at,
           "store": str(control.path)}, as_json=args.json, lines=lines)
     return EXIT_OK
 
@@ -10590,10 +10634,13 @@ def build_parser() -> argparse.ArgumentParser:
 
     wk_continuations = work_sub.add_parser(
         "continuations", help="§12/P7 — the Parent checkpoints this node holds, "
-                              "and whether anything would wake them. Reads the "
-                              "store and the receiver registry", **_COMMON)
+                              "whether anything would wake them, and whether what "
+                              "each is waiting for has happened yet", **_COMMON)
     wk_continuations.add_argument("--item", default="",
                                   help="only this Work Item's checkpoints")
+    wk_continuations.add_argument("--now", default="",
+                                  help="the instant to read a window against "
+                                       "(default: now)")
     wk_continuations.set_defaults(func=cmd_work_continuations)
 
     wk_item = work_sub.add_parser(

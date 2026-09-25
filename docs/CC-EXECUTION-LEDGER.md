@@ -4633,6 +4633,152 @@ assert first["context_ref"] == second["context_ref"], (
 - 没有把 `--attach` 变成默认：它是一个动词，退出码报的是**有没有铸出 context**（`0` / `1`），
   与这个 CLI 其它模式（都是问题，因此都退 `0`）刻意不同。
 
+---
+
+## §9.37 切片 I：等待被求值（`runtime/continuation.wait_state` ＋ `work continuations`）
+
+本片的编号是 §9.34.9 第二条与 §9.36.8 都指过的那一环：P7 延续链里「子级结果到达 → 继续」
+的前半截。切片 F（§9.34）造了 checkpoint，切片 H（§9.36）造了它的准入缺口，而 checkpoint
+里那个 `waiting_on` 字段从切片 F 起就是**被写、被校验、被打印、从来没有被求值**的。
+
+#### 9.37.1 那个洞是量出来的，不是推出来的
+
+`command grep -rn "waiting_on"` 在 `runtime/continuation.py` 之外只命中 `runtime/cli.py` 的
+**写入**与**打印**两处（`--waiting-on-child` / `--waiting-on-window` 的解析，和两段把它渲染成
+文字的代码）。没有任何代码决定「等的东西到了没有」。所以：
+
+- 一份 checkpoint **写下的那一刻**与**子级完成一周之后**读起来完全一样；
+- `continuation_state` 只有 `AWAITING_CONTINUATION` 一种真实结局 —— 那不是懒惰，是**没有第二
+  个问题可问**；
+- `docs/daily-work-cycle.md:158` 列的那条链（核 scope/owner/预算 → 去重原 attempt → 唤醒
+  Parent → Parent 决定下一步）第一格就断着：「真实 child 结果或合法时间窗口到了吗」没人答。
+
+#### 9.37.2 落在 L2 的问题问在 L2 的权威上
+
+`wait_state` 只问两个权威，两个都不是它自己造出来的：
+
+- **`window`** —— 时钟。`until` 与 `now` 用 `_instant` 读，**与 `build_checkpoint` 接受它们时
+  同一个量具**。边界是 `>=`：窗口在 `until` 那一刻就已经结束，这正是 `build_checkpoint` 对
+  **新**记录写 `until <= now` 就拒的那条比较。
+- **`child`** —— 准入集合，也就是 `build_checkpoint` 已经拿它校验过 child 等待的那个集合。
+  **`retired_at` 是唯一判据**，理由是它是这个 store 里唯一一个**只由 `retire_admission` 写**的
+  字段。`phase` 刻意不算：`DISPATCHED` 只表示 `runtime/bounded_invocation.invoke_once` 写了
+  回执（子级**被调用过**），而回执本身可以写着 `EXITED`（子级跑完并返回了）——那仍然不是
+  「这一轮的结果被记下来了」。把 phase 当结果，就是在一个子级还在跑（或没人决定它的退出了
+  算什么意思）的时候恢复 Parent。
+
+#### 9.37.3 三个答案而不是布尔，中间那个是要点
+
+`WAIT_ANSWERS = ("WAIT_OVER", "WAIT_OPEN", "WAIT_UNANSWERABLE")`。一个**读不出**的子级不能被
+逼着回答「还没」或「已经」：并进「还没」会把 Parent 永久停在某个 store 故障后面；并进「已经」
+会在没有任何证据的情况下恢复它 —— **后一种才是这套词汇存在的目的：让它无法被表达**。
+
+`admissions=None`（没人把 store 带来）与 `admissions={}`（store 里没有这个子级）**分开报**，
+因为修法不同：一个是去取 store，一个是去找那个子级。两者都是 `WAIT_UNANSWERABLE`，
+`detail` 说清是哪一个。
+
+**部分完成永不读成完成。** 一份 checkpoint 可以点多个子级，等待在**最后一个**有结局时结束；
+`settled` / `outstanding` / `unheld` 三个清单把「哪些是哪些」写在答案里，不让人从布尔去推。
+
+#### 9.37.4 求值不是唤醒 —— 本片最想被记住的一条
+
+`wait_state` 是这套东西里**最容易被接进唤醒半边**的东西：子级完成了，那总该有东西去继续
+Parent 吧。那正是 §17.4 点名的诱惑。本片没有接，理由是这一条**不是风格而是事实**：
+`runtime/daemon.py` 的 tick 既不读准入也不读 checkpoint，`RECEIVERS` 仍是空元组 ——
+本 release 没有任何东西会自己跑。所以：
+
+- `continuation_state` 的答案**一个字没变**，包括产品原句 `checkpoint 已保存，待续`；
+- `RECEIVERS` 仍然为空、`receivers()` 仍然返回它；
+- `wait_state` 的 `says` 里明写「a new Parent can resume this Item」，`detail` 里明写
+  「it says the wait is over, not that anything has resumed the Parent」；
+- `tests/test_continuation.py::TestAnEvaluatorIsNotAReceiver` 钉住这个分离 —— 它是将来有人
+  手滑把求值器接进唤醒半边时**第一个会红的**测试；
+- 变异 I10 就是那次手滑（让 `cmd_work_continuations` 在 `WAIT_OVER` 时把
+  `receivers_seen` 填成非空），**1 failed 被杀**。
+
+这条与切片 H 的 `provider_pid` 是同一种纪律：**一个字段能回答的问题，与它能被拿去回答的
+问题，不是同一件事**。
+
+#### 9.37.5 求值器的消费者：两个动词，不是一个
+
+按 §5 第 6 条「代码有了但没接 consumer 不算落地」，求值器带着它的读数一起落地：
+
+- `work continuations`（读半边）：新增 `waits`（按 ref 的答案映射）、`read_at`，摘要行
+  `waits N over, M still open, K unreadable`，`resumable` 行**逐个点名**（一个能行动的答案不该
+  只给计数），每条记录的行头从 `{ref}  {state}` 变成 `{ref}  {state}  wait {WAIT_STATE}`，
+  `says` 两问各印一句。
+- `work checkpoint`（写半边）：写完**当场**报一次 wait。理由：一个 Parent 在**子级结果已经
+  到达之后**才 checkpoint，等于什么都没等，而**写这条记录的人**是最后一个无需被问就会看到
+  这一点的读者。F 的测试 `test_a_retired_admission_still_answers_for_the_child_it_records`
+  已经确认「已退役的准入仍然可以为它的子级作证」，所以这条路径是真的可达，不是假想。
+- 时钟用 `--now`、复用 `work grants` 的 `_reading_clock`。**没有引入第二个读时钟**：同一个
+  「这次读数发生在哪一刻」有两个拼写就会有第二套拒法（拒绝无时区的、拒绝读不出的），而
+  那份会漂移。`work checkpoint --at` 不动 —— 那是**写**时钟，由 `build_checkpoint` 校验。
+
+#### 9.37.6 本片改了什么
+
+| 文件 | 改动 |
+| --- | --- |
+| `runtime/continuation.py` | 模块 docstring 增「AND AN EVALUATOR IS NOT A RECEIVER」一段；新增 `WAIT_ANSWERS`（含「three and not a boolean」的理由）；新增 `wait_state(record, *, admissions=None, now=None)` |
+| `runtime/cli.py` | `cmd_work_continuations` 读 admissions、求值、印摘要与逐条 `wait`、JSON 加 `waits`/`read_at`、`--now`；`cmd_work_checkpoint` 写完报一次 `wait`；argparse 加 `--now` |
+| `tests/test_continuation.py` | docstring 从「Four properties」改成「Five properties」并把求值列为第 5 条；`DAY_AFTER` 常量（附「`LATER` 不是它」的注释）；新增 §4 两个类共 20 条；CLI 段新增 4 条 |
+
+#### 9.37.7 变异表：11 条，11 杀
+
+| # | 变异 | 死因 |
+| --- | --- | --- |
+| I1 | 把 `phase` 也当成有结局（`retired_at or phase in (LEASE_HELD, DISPATCHED)`） | 1 failed（`being_invoked_is_not_having_finished`） |
+| I2 | 读不出的子级报成「还在等」 | 4 failed |
+| I3 | 读不出的子级报成「已结束」 | 4 failed |
+| I4 | 没带 store 折叠成空 store | 1 failed |
+| I5 | 窗口在 `until` 那一刻仍然算开着（`>` 代 `>=`） | 2 failed（边界那一条） |
+| I6 | 缺读时钟时回落到墙上时钟 | 1 failed |
+| I7 | 求值器不认识的 kind 当成 child 处理 | 1 failed |
+| I8 | 没有 `waiting_on` 的记录读成「开着」 | 1 failed |
+| I9 | 写动词不再报它刚记下的 wait | 1 failed |
+| I10 | 求值器开始填 `receivers_seen`（§9.37.4 说的那次手滑） | 1 failed |
+| I11 | 读半边不再点名哪个 checkpoint 可续 | 1 failed |
+
+三条纪律与 G/H 两片相同：每轮前 `rm -rf __pycache__`（`tests/test_continuation.py` 用
+`importlib` 从显式路径装载 `runtime/continuation.py`，**吃 pyc 缓存**）；每轮后逐字节 `diff -q`
+复核（收尾输出 `restored-identical`）；全程不用任何 git 还原类动词。
+
+#### 9.37.8 本次读数
+
+- `tests/test_continuation.py`：**88 passed in 8.06s**（`git diff` 数出新增 24 条、删除 0 条，
+  所以改前是 64 条）。
+- 本片相关六文件（`test_continuation` ＋ `test_serverosctl` ＋ `test_declared_commands` ＋
+  `test_declared_implementations` ＋ `test_core_ability_boundary` ＋ `test_admission`）：
+  **333 passed in 27.30s**。
+- 渲染读数（`ARTIFACTS_ROOT/tmp-p7/wait-read` 上的一次真实跑动，不是断言）：同一份记录，
+  子级未退役时读作 `waits 0 over, 1 still open, 0 unreadable` ＋ `WAIT_OPEN`；
+  `work retire cyc-1` 之后**不改记录**再读，读作 `waits 1 over, 0 still open, 0 unreadable`
+  ＋ `resumable SRV-0001#1` ＋ 行头 `SRV-0001#1  AWAITING_CONTINUATION  wait WAIT_OVER`。
+  **两问并列**：子级结束了，而没有东西会唤醒写下它的那个 Parent。
+- **一次被作废的全量跑动，如实记下。** 本片开头在 `b7327c7` 上起了两遍全量（任务
+  `bae9zizag`），跑动中本片的源码编辑穿过了它（第一遍尚未结束时 `runtime/cli.py` 已在改），
+  所以那次读数**归属不干净**，已用 `TaskStop` 停掉而不是留下来当交付读数 —— 这与 §9.35.8
+  把「跑动中被编辑穿过」的全量判为不干净是同一条规矩。**在切片 I 提交后于冻结树上重跑**
+  的读数，记在 §9.37.10。
+
+#### 9.37.9 它没做什么
+
+- **没有唤醒/接收方那一半。** `RECEIVERS` 仍然是空元组，`runtime/daemon.py` 的 tick 仍然不读
+  准入也不读 checkpoint。`WAIT_OVER` 不是「正在自动继续」，它只回答「现在能不能继续」，而
+  **继续一直是新 Parent 做的事**（`docs/daily-work-cycle.md:158` 那条链的「唤醒实际 Parent」
+  一格照旧缺着，而且它缺的**不是求值器**）。
+- **没有 `--at` 那一半的 `waiting_on` 依赖事件。** `WAIT_KINDS` 仍然只有 `child` 与 `window`；
+  模块 docstring 里「第三个 kind 刻意缺席」那段照旧，本片没有加 kind。
+- **没有去重原 attempt。** `docs/daily-work-cycle.md:158` 那条链的「去重原 attempt」是
+  `child_attempts` 的消费者，仍然没有 —— 本片只造了第一格。
+- **没有修交接的 `checkpoint` 缺口**（§9.34.9 第二条照旧：被丢弃的参数、无条件追加的
+  `context_handed_off`、四个步骤名对一个判据）。
+- **没有跑一次真实 `live_closure.py`**（§9.36.8 最后一条照旧）。
+
+#### 9.37.10 冻结树上的全量读数
+
+（本节在切片 I 提交后回填；跑前记 HEAD，连跑两遍，跑后复核 `git status --short` 与 HEAD。）
+
 ## 10. 后续每包更新哪几行
 
 - 改完一个包，只更新 §3.1 里对应行的四层状态 + §5 表的增删。
