@@ -4105,7 +4105,9 @@ E3 杀掉 9 条本身就值得记：它说明「方向反过来」不是一条�
 #### 9.33.8 它没做什么，以及一条邻接发现为什么不并进本片
 
 - 仍然没有 scheduler，`max_attempts` 仍然没有消费者（§9.31.8 第三条照旧）。
-- **邻接发现（本片量到，未修，列为切片 G）**：`intake/focus_source.worker_stopped_by_item` 读的
+- **邻接发现（本片量到，未修；这一条原先在这里被写为「列为切片 G」，而那个字母被 §9.35 先落了 ——
+  那条发现**仍然未做**，只是不再占着这个字母。同一族的改法在 §9.34.1 有过一次，那里是把本片
+  自己改掉的那个编号就地改正）**：`intake/focus_source.worker_stopped_by_item` 读的
   是**同一个** `<receipts>/<action_key>.json`，而且它**在生产的路上** ——
   `runtime/cli.py` 的 `focus` 那条路把 `admissions` 与 `receipts_root` 交给
   `focus_source.compose`。它已经有「键相符」那道判据（`RECEIPT_NAMES_ANOTHER_ACTION_KEY`，注释里
@@ -4318,6 +4320,154 @@ scope 的历史后来做了什么；放在后面问，一次已经落地的写�
 - `continuation_state` 没有 `now` 的调用者：参数在签名里（`window` 型等待的到期本可以用它判），
   但**没有任何生产方按到期唤醒**，所以本片没有拿它去判「到期了」，那会是第二个声称后台在跑的
   地方。这个参数留在签名里是因为它是那个判据将要读的东西。
+
+### 9.35 P7 切片 G：`agent.list` 从「被声明的名字」变成「被服务的动词」
+
+#### 9.35.1 这一片接的是哪一环：合约声明了它、一处 docstring 指向它、而没有工具服务它
+
+`runtime/agent-session-contract.yaml` 的 `support.actions` 声明十一个 provider 动词，`admission`
+把它们分进 `read_only` / `delegation` / `human_gated` 三组，而 §11 那一侧另有一道门断言这三组
+**成划分**。这三件事都成立，且它们**都没有说过任何一个面是否服务这些动词**。其中两个 ——
+`agent.list` 与 `agent.inspect` —— 被**没有任何工具服务**：
+
+```text
+合约：support.actions 十一个动词里，read_only 组列着 agent.list / agent.inspect
+      （本片的门实测：11 个动词，只有这两个的名字本身已经带 `agent.` 前缀）
+docstring：mcp/agent_session_service.py:142 的 _readiness_summary 对调用者说
+      「the full record already travels on `agent.list` under `providers[]`」
+      —— 它指名的那个地方在 HEAD 里不存在
+实现：SessionService.agent_list 存在，但除它自己的测试之外没有调用者
+```
+
+**并且这一处引用必须写准，因为它比「两处」更锋利**：改动前 `git show HEAD:mcp/agent_mcp.py`
+里 `agent.list` **一次都没有出现过**。而定义「哪些名字被服务」的正是这个文件里的 `TOOLS`，所以
+那句 docstring 指名的是一条**当时不存在的路** —— 它同时是**唯一**一条说得出那条路该长什么样的
+记录（合约只说动词存在，不说它由谁服务）。
+
+**这一条是本节初稿自己写错、复核后改正的**：初稿记成「两处 docstring」并点了
+`agent_mcp.agent_provider_list` 的名字，那个数字与那个位置都**没有实测**。复核后的全仓读数
+（HEAD，按文件）：
+
+```text
+1  docs/ability-fabric.md          1  mcp/agent_session_service.py     ← 就是那一处
+1  mcp/codex_app_server_provider.py  2  runtime/agent-session-contract.yaml
+3  scripts/live_closure.py          2  tests/test_live_closure.py
+0  mcp/agent_mcp.py                 ← 服务面的工具表，一次都没提过
+```
+
+把一份引用写多与写少一样贵：多写的那一处会把下一个人的核查引到一个**根本没说过这句话**的地方。
+
+**为什么每一道已有的门都没发现它**：每一道门都在遍历一个**那两个名字不在其上**的清单 ——
+服务面那道门遍历 `TOOLS`（它们不在），合约那道门遍历合约自己的分组（它们在里面，但那道门只
+问「有没有两张表重合」，不问「有没有人服务」）。这是台账反复记的那一族缺陷的又一例，而这一例
+的形式最干净：**两个清单各自都合格，缺的是它们之间的那一条**。
+
+#### 9.35.2 它落在 L2，不是 L1
+
+`declared_agents` 在 L1，来自 registry，而 L1「不联系任何东西」（`fleet/view-contract.yaml` 的
+原话）。被**测量**到的那一半要问每一个 provider，所以它落在 L2：`fleet/view-contract.yaml` 的
+L2 新增 `agents`，`fleet/view.py` 的 `row()` 在 `active_sessions` 之后加
+`row["agents"] = self._agent_summary(ref)`。
+
+**为什么不原地把 `declared_agents` 升级成测量值**：registry 说「这个设备**被授权为** Claude 服务」，
+provider 说「这个设备**有** Claude」。两个不同的主张，两种不同的修法（一个去改登记，一个去看
+provider 的传输），而把它们合成一个字段就等于**让一个字段同时为两件事作证**。合约里逐字写了
+这一句，本片的 `agents` 字段说明也逐字重复了它。
+
+#### 9.35.3 `_agent_summary` 为什么不并进 `_session_summary`
+
+两者形状相同（一个 dict 带 `state`）、失败模式相同（来源不答 → UNKNOWN）、来源相邻
+（`list_agents` 与 `list_sessions` 是同一个 provider 的两个方法）。合并的代价是**一个 callable
+回答两个问题**，于是「provider 说不出它能跑什么」会悄悄变成「provider 什么都答不上」，然后一个
+**有它自己理由**的 UNKNOWN 会被报在那个 session 来源的理由下。docstring 里这一句是这一片的
+设计判词：它们是两个来源，所以是两个参数、两个 callable。
+
+#### 9.35.4 单一设备规则是照抄的，不是重新推导的
+
+`_sessions_for` 已经为这条规则付过一次账（它的 docstring 写着「`sessions: []` 会读成『那个设备
+没有活动会话』—— 一句关于一台没人问过的机器的断言」）。`_agents_for` **直接复制它**，不重新推导：
+只回答本进程持有 provider 的那一个设备；别的设备是 UNKNOWN，且 `detail` 同时点名**被问的设备**与
+**本进程持有 provider 的设备**。两种声称是同一个谎的粗细两版：粗的是把本节点的答案戴上别人的名字，
+细的是一句 `agents: []`。
+
+#### 9.35.5 三条未知与两条拒绝，各说各的字
+
+| 情形 | 答案 | 为什么不是更省字的那一个 |
+| --- | --- | --- |
+| provider 答不了 | `provider_errors[]` 里一条 + `complete: false` | 空清单会读成「设备没有 agent」；`complete` 若无失败可丢就成了装饰 |
+| 问的是别的设备 | UNKNOWN，且**没有 `agents` 键** | 空数组是同一个谎的细版；`detail` 指出该找谁 |
+| `agent.inspect` 的清单读不到 | 原样透传 UNKNOWN + `agent_id` | `NOT_FOUND` 是一句**关于舰队**的断言，而这里没人建立过一句 |
+| `agent.inspect` 零匹配 | `NOT_FOUND` + `agents_listed` + `inventory_complete` | 拼错与没登记是两种修法，清单是唯一能把它们分开的东西 |
+| `agent.inspect` 一对多 | `AMBIGUOUS` + 两个 `agent_ref` | 挑第一个就是**这个面替调用者决定了它指的是哪一个**；`agent_ref` 是无歧义的拼法 |
+
+#### 9.35.6 整条记录原样透传，不按方法已知的键重建
+
+`agent_list` 返回的是 `{"device_ref": ..., **inventory}`。这一条是被**自己吃到的一次缺陷**写进
+注释的：早期草稿手写 `state` / `reason` 两个键，于是把 UNKNOWN 记录里那段「问了哪个设备、本进程
+为哪个设备持有 provider」的 `detail` 丢了 —— **拒绝里那一半告诉人怎么修的东西**没了。同族缺陷
+在本台账里已经出现过（§9.34.5 的「store 自己加的东西」），这里是它的一个正向版本：一个**减法**
+造出来的同形缺陷。
+
+#### 9.35.7 变异表：12 条，12 杀；其中一条是**先存活、再被钉死的**
+
+| # | 变异 | 死因 |
+| --- | --- | --- |
+| G1 | 动词不再去取视图的 agent 来源（改读 `provider_readiness`） | 1 failed |
+| G2 | 清单按方法已知的键重建（丢 `detail`） | 1 failed |
+| G3 | 单一设备规则从 **agent** 来源里去掉（只去掉这一个，`_sessions_for` 那个留着） | 2 failed |
+| G4 | 部分舰队报成整个舰队（`complete` 硬编 `True`） | 1 failed |
+| G5 | **`build()` 不再给视图接 agent 来源**（删掉 `agents=`） | 1 failed ← 这就是那条先存活的 |
+| G6 | 一对多时取第一个 | 1 failed |
+| G7 | 零匹配时不说列了什么 | 1 failed |
+| G8 | 读不到的清单变成一次 miss | 1 failed |
+| G9 | 行不再携带被测量的清单 | 1 failed |
+| G10 | `_agent_summary` 真的折进 `_session_summary`（直接转调） | 1 failed |
+| G11 | 视图不再在 L2 声明 `agents` | 1 failed |
+| G12 | 服务面不再声明那两个动词 | 1 failed |
+
+**G5 的经过值得单独记，因为它是这一片唯一一条真正有信息量的读数。** 第一轮电池里它**存活了**：
+把 `agents=` 从 `agent_mcp.build()` 里删掉之后，`TheAgentInventoryAndTheSourceItReads` 整类
+**全绿**。原因不是判据弱，是**架错了对象**：那一类里每一个测试都用 `tests/test_agent_mcp.py`
+**自己的** `build()` 搭图，而被测的那一个是 `mcp/agent_mcp.py` 的 `build()` —— 两个 builder，
+一个被测。这正是本台账反复记的「两份拷贝」形状，也是 §9.35.1 那条缺陷的**同族变体**：清单给
+自己发合格证，换成 builder 给自己发合格证。
+
+补的那条门（`test_the_deployment_actually_wires_an_agent_source`）刻意跑**部署的** builder：
+`agent_mcp.build(daemon=FakeDaemon())`，无网络。它可被证伪的原因是两条路的答案**不同字**：
+接上了 → codex provider 从本机 app-server 答、botmux 因为没有 dashboard token 落进
+`provider_errors`，答案是 `KNOWN` 且 `complete: False`；没接上 → UNKNOWN 加一个理由。补完之后
+G5 被杀。
+
+#### 9.35.8 本次读数
+
+- 本片两个测试文件的定局读数：`tests/test_agent_mcp.py` + `tests/test_view.py`
+  → **136 passed, 163 subtests passed in 15.75s**。
+- 变异电池基线（七文件：`test_agent_mcp` / `test_view` / `test_node_mcp` /
+  `test_fleet_transport` / `test_core_ability_boundary` / `test_human_console` / `test_global_board`）
+  → **288 passed, 179 subtests passed**；十二轮里每一轮都是 `exit=1` 且**单点失败**
+  （除 G3 那轮是 2 failed，因为它同时打在两个来源共有的那条规则上）。
+- 全量第一遍：**5793 passed, 20 skipped, 3988 subtests passed, 0 failed（622.77s）**。
+  算术闭合：上一格 5782 ＋ 本片 **11 条**（`TestTheSurfaceIsTheDeclaredOne` 两条 ＋
+  `TheAgentInventoryAndTheSourceItReads` 九条）＝ 5793；subtests 3948 ＋ **40** ＝ 3988。
+- **关于这一跑必须声明的一件事：它的归属不干净。** 它在跑动过程中被切片 H 的源码编辑穿过了
+  （`mcp/human_control.py`、`mcp/node_mcp.py` 在本跑进行到 97% 前后被改），而本仓的测试有一批是
+  在**测试执行时**用 `importlib` 从源文件装载被测模块的 —— 也就是那些用例读到的是 H 的字节。
+  所以这一跑是「跑完时那棵树的绿」，**不是 G 的干净读数**。切片 H 落账时的那两遍全量会把这件事
+  一起交代（**本行不点名一个当时还不存在的节号** —— 这正是本节 9.35.1 刚记的那条毛病），而这一跑
+  如实记在这里而不是省略。
+
+#### 9.35.9 它没做什么
+
+- **没碰 `agent.session.*` 的任何行为**。十一个动词里只有此前没人服务的那两个被接上；其余九个
+  一个字节未动。
+- **没有把 `declared_agents` 升级成测量值**（理由见 §9.35.2）。
+- **没有让 `agent.inspect` 从别处取源**：它由 `agent_list` 组成，理由与 `agent_provider_inspect`
+  由 `agent_provider_list` 组成相同 —— 一个从自己的源读的 inspect 能报出一个列表里没有的 agent，
+  于是同一个问题有两个答案。
+- **`worker_stopped_by_item` 那条邻接发现仍然未做**（§9.33.8 那一格），本片只是把它的编号占位
+  改正了。
+- 没有新增任何动词、没有扩大服务面的宽度：`agent.list` / `agent.inspect` 是被**声明过**的两个，
+  这一片做的是让声明是真的，不是加新的。
 
 ## 10. 后续每包更新哪几行
 

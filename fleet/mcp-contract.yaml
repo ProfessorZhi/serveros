@@ -256,6 +256,8 @@ surfaces:
       - agent.runtime.inspect
       - agent.provider.list
       - agent.provider.inspect
+      - agent.list
+      - agent.inspect
       - agent.session.list
       - agent.session.inspect
       - agent.session.result
@@ -269,6 +271,9 @@ surfaces:
       - the fleet read model, at a disclosure level the caller names (§12/§13)
       - Agent Runtime declarations and what each can consume
       - provider inventory and readiness observations, per device
+      - the agent inventory a device's providers report, with each provider's
+        own readiness record (`agent.list`). The measured counterpart of the
+        registry's `declared_agents`, which this surface does not own
       - typed normalization of provider-backed Agent/session operations
       - forwarding a control action to the §7 router, which resolves, admits and
         routes before any provider sees it
@@ -407,6 +412,8 @@ section_11:
     agent.runtime.inspect: serveros-agent-mcp
     agent.provider.list: serveros-agent-mcp
     agent.provider.inspect: serveros-agent-mcp
+    agent.list: serveros-agent-mcp
+    agent.inspect: serveros-agent-mcp
     agent.session.list: serveros-agent-mcp
     agent.session.inspect: serveros-agent-mcp
     # Served on the node surface, where the fact lives: materialization status

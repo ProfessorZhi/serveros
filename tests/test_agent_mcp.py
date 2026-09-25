@@ -229,7 +229,12 @@ def build(*, daemon=None, provider=None, providers=None, decision="ALLOW"):
                                                     device_refs=(FJ, DELL))],
         context_store=agent_mcp.DaemonContexts(daemon))
     view = agent_mcp.view_mod.FleetView(routing=router, sessions=lambda ref: {
-        "state": "KNOWN", "sessions": service.session_list().get("sessions") or []})
+        "state": "KNOWN", "sessions": service.session_list().get("sessions") or []},
+        # The agent source is the REAL one, unlike the session lambda above: it
+        # is the closure under test for `agent.list`, and a fixture that
+        # answered from a lambda would be asserting this file's idea of what
+        # one device's agents are rather than the deployment's.
+        agents=agent_mcp._agents_for(service, device_ref))
     return agent_mcp.AgentControlClient(router=router, view=view), service, daemon
 
 
@@ -356,6 +361,83 @@ class TestTheSurfaceIsTheDeclaredOne(unittest.TestCase):
                 owned[name] = surface
         self.assertNotIn("shared_names", contract,
                          "an exemption block is back; §11's set partitions or it does not")
+
+    def test_every_verb_the_session_contract_declares_has_a_name_here(self):
+        """The session contract's verb lists, turned into a checkable table.
+
+        `runtime/agent-session-contract.yaml` declares eleven provider verbs,
+        partitions them into `read_only`, `delegation` and `human_gated`, and
+        §11's set is elsewhere asserted to partition. None of that said whether
+        any surface SERVES them, and two of them — `agent.list` and
+        `agent.inspect` — were served by nothing: declared read-only in the
+        contract, named as a surface by two docstrings in `mcp/`, and backed by
+        a `SessionService.agent_list` that only its own tests ever called. The
+        gap was invisible because every existing gate iterated a list that the
+        missing names were not on.
+
+        The mapping is derived rather than tabulated: the surface's name for a
+        provider verb is `agent.<verb>`, and `agent.list` is already spelled
+        that way. A table here would be a second copy of a naming convention,
+        and the copy would be the one that fell behind.
+        """
+        contract = yaml.safe_load(
+            (REPO / "runtime/agent-session-contract.yaml").read_text())
+        admission = contract["admission"]
+        declared = list(contract["support"]["actions"])
+        served = set(agent_mcp.tool_names())
+        absent = set(self.contract()["surfaces"]["serveros-agent-mcp"]["explicitly_absent"])
+
+        # The partition, before the mapping: a verb in two lists is a verb with
+        # two admission rules, and the one that took effect would be whichever
+        # the reader looked at first.
+        groups = {name: set(admission[name])
+                  for name in ("read_only", "delegation", "human_gated")}
+        pairs = [("read_only", "delegation"), ("read_only", "human_gated"),
+                 ("delegation", "human_gated")]
+        for left, right in pairs:
+            with self.subTest(left=left, right=right):
+                self.assertEqual(set(), groups[left] & groups[right],
+                                 f"{left} and {right} overlap")
+        self.assertEqual(set(declared), set().union(*groups.values()),
+                         "a verb is declared outside the three admission lists")
+
+        for verb in declared:
+            with self.subTest(verb=verb):
+                spelled = verb if verb.startswith("agent.") else f"agent.{verb}"
+                if spelled in absent:
+                    self.assertNotIn(spelled, served,
+                                     "a verb cannot be both served and absent")
+                    continue
+                self.assertIn(spelled, served,
+                              f"{verb} is declared in the session contract and no "
+                              f"tool serves it; the surface's name for it is "
+                              f"{spelled}")
+
+    def test_every_tool_this_surface_declares_can_be_dispatched(self):
+        """A tool in `TOOLS` that `call()` cannot route is a name in a menu.
+
+        The reverse of the check above, and needed for the same reason: the two
+        lists are written in different places, and the failure is one of them
+        gaining a name the other did not.
+        """
+        client = build()[0]
+        # Only the dispatch is under test, so the arguments are the shortest
+        # ones the tools' own schemas allow, and the ref is a well-formed one so
+        # that a routed action gets as far as the router rather than stopping
+        # at the ref parser. What an action then does with them is every other
+        # test in this file.
+        arguments = {"device": LOCAL, "runtime": "agent-runtime:claude-code",
+                     "agent_id": "a1", "context_ref": "human-context:x/y",
+                     "session_role": "coordinator",
+                     "session_ref": router_mod.semantics.session_ref(
+                         LOCAL, "provider:fixture", "s1")}
+        for spec in agent_mcp.TOOLS:
+            with self.subTest(tool=spec["name"]):
+                try:
+                    client.call(spec["name"], arguments)
+                except Exception as exc:  # noqa: BLE001 - the message is the evidence
+                    self.assertNotIn("unimplemented Agent MCP operation", str(exc),
+                                     f"{spec['name']} is declared and not dispatched")
 
     def test_every_tool_schema_is_closed(self):
         for spec in agent_mcp.TOOLS:
@@ -979,6 +1061,160 @@ class TheSessionSourceAnswersForOneDevice(unittest.TestCase):
                               "reason": "no provider is live"})(LOCAL)
         self.assertEqual(answer["state"], "NOT_RUNNING")
         self.assertEqual(answer["reason"], "no provider is live")
+
+
+class TheAgentInventoryAndTheSourceItReads(unittest.TestCase):
+    """`agent.list` / `agent.inspect`, and the one-device rule behind them.
+
+    Two different claims are under test and they need different fixtures. The
+    first is what the verb ANSWERS about a device: the provider rows, with each
+    provider's own readiness record beside them, because the finding this
+    exists for — agents listed, provider unable to execute — is only readable
+    when both halves are on one record. The second is WHICH device it is
+    allowed to answer about, which is the rule `_sessions_for` already had to
+    learn the hard way and which this closure copies rather than re-derives.
+    """
+
+    def test_the_verb_serves_the_providers_agents_with_their_readiness(self):
+        client, service, _ = build()
+        answer = client.agent_list(LOCAL)
+        self.assertEqual("KNOWN", answer["state"])
+        self.assertEqual(["a1"], [row["agent_id"] for row in answer["agents"]])
+        self.assertEqual(LOCAL, answer["device_ref"])
+        # The load-bearing half. Without readiness on the same record an
+        # operator reads a listed agent as a runnable one, which is the exact
+        # overstatement §64 added a second axis to prevent.
+        self.assertTrue(answer["providers"], "readiness did not travel with the inventory")
+        self.assertTrue(answer["complete"])
+
+    def test_a_provider_that_cannot_be_asked_is_not_an_empty_fleet(self):
+        """A broken provider is evidence, and it is not an empty list.
+
+        The distinction is the module's own rule, restated where it is cheapest
+        to get wrong: an agent inventory that comes back `agents: []` with no
+        error reads as "this device has no agents". The service records the
+        failure instead, and `complete` is what tells a reader the list is
+        partial — a field that would be decorative if the failure were dropped.
+        """
+        class Broken(FakeProvider):
+            def list_agents(self, *, device_ref):
+                raise RuntimeError("the provider's transport is down")
+
+        client, _, _ = build(provider=Broken())
+        answer = client.agent_list(LOCAL)
+        self.assertEqual([], answer["agents"])
+        self.assertEqual(1, len(answer["provider_errors"]))
+        self.assertIn("transport is down", answer["provider_errors"][0]["error"])
+        self.assertFalse(answer["complete"],
+                         "a partial fleet was reported as the whole one")
+
+    def test_a_remote_device_is_unknown_and_names_no_agents(self):
+        """The failure this rule was written for, one provider method over.
+
+        The fixture's service HAS an agent, so an implementation that answered
+        for whatever device it was asked about would return that agent here and
+        be caught. `agents: []` would be the subtler version of the same lie:
+        "that device has no agents" about a machine nobody asked.
+        """
+        client, _, _ = build()
+        for remote in (FJ, DELL):
+            with self.subTest(device=remote):
+                answer = client.agent_list(remote)
+                self.assertEqual("UNKNOWN", answer["state"])
+                self.assertNotIn("agents", answer)
+                self.assertIn(remote, answer["detail"])
+                self.assertIn(LOCAL, answer["detail"])
+
+    def test_inspect_resolves_against_the_list_the_verb_serves(self):
+        client, _, _ = build()
+        answer = client.agent_inspect(LOCAL, "a1")
+        self.assertEqual("FOUND", answer["state"])
+        self.assertEqual("a1", answer["agent"]["agent_id"])
+        self.assertEqual(client.agent_list(LOCAL)["agents"][0], answer["agent"])
+
+    def test_inspect_says_what_was_listed_when_nothing_matches(self):
+        """Not `NOT_FOUND` with nothing beside it.
+
+        A misspelling and an unenrolled agent have different repairs, and the
+        list is what tells them apart — the same reason the closure harness
+        carries the provider's own list into its refusal.
+        """
+        client, _, _ = build()
+        answer = client.agent_inspect(LOCAL, "a2")
+        self.assertEqual("NOT_FOUND", answer["state"])
+        self.assertEqual(["a1"], answer["agents_listed"])
+        self.assertTrue(answer["inventory_complete"])
+
+    def test_inspect_refuses_to_choose_between_two_agents(self):
+        """Two matches is its own answer, not the first one winning.
+
+        The agent_ref is the unambiguous spelling, so the refusal can say which
+        two were meant rather than leaving a caller to guess which agent it had
+        just addressed.
+        """
+        class TwoAgents(FakeProvider):
+            def list_agents(self, *, device_ref):
+                return [{"agent_id": "a1", "agent_ref": "agent:p1/a1"},
+                        {"agent_id": "a1", "agent_ref": "agent:p2/a1"}]
+
+        client, _, _ = build(provider=TwoAgents())
+        answer = client.agent_inspect(LOCAL, "a1")
+        self.assertEqual("AMBIGUOUS", answer["state"])
+        self.assertEqual(["agent:p1/a1", "agent:p2/a1"], answer["matched"])
+
+    def test_an_unreadable_inventory_is_not_a_missing_agent(self):
+        """`NOT_FOUND` is a claim about a fleet. This is the case where nobody
+        established one, and answering with a miss would send a caller to enrol
+        an agent that may already be there."""
+        client, _, _ = build()
+        answer = client.agent_inspect(FJ, "a1")
+        self.assertEqual("UNKNOWN", answer["state"])
+        self.assertNotIn("agents_listed", answer)
+        self.assertEqual("a1", answer["agent_id"])
+
+    def test_the_deployment_actually_wires_an_agent_source(self):
+        """`build()` — the wiring the MCP server runs, not this file's fixture.
+
+        Found by a mutation that survived: dropping `agents=` from
+        `agent_mcp.build()` left the whole class above green, because every test
+        in it assembles its own graph through this file's own `build()`. Two
+        builders, one of them tested — the same two-copies shape the ledger
+        keeps recording, so the deployment's builder gets its own assertion.
+
+        It runs with no network on purpose. `build()` against the real providers
+        is the honest measure: the codex provider answers from its own local
+        app-server, the botmux one lands in `provider_errors` because this test
+        has no dashboard token, and the answer is `KNOWN` with
+        `complete: False`. A wiring that dropped the agent source would answer
+        UNKNOWN with a reason instead, which is what makes this falsifiable.
+        """
+        client = agent_mcp.build(daemon=FakeDaemon())
+        answer = client.agent_list(LOCAL)
+        self.assertEqual("KNOWN", answer["state"],
+                         "the deployment's view has no agent source bound")
+        self.assertTrue(answer["agents"], "the deployment listed no agent at all")
+        self.assertFalse(answer["complete"])
+        self.assertTrue(answer["provider_errors"])
+        for row in answer["agents"]:
+            with self.subTest(agent=row.get("agent_id")):
+                self.assertEqual(LOCAL, row.get("device_ref"))
+                self.assertTrue(row.get("provider"), "an agent with no owning provider")
+
+    def test_the_source_refuses_a_remote_device_rather_than_answering_for_it(self):
+        service = fake_agent_service()
+        source = agent_mcp._agents_for(service, LOCAL)
+        answer = source(FJ)
+        self.assertEqual("UNKNOWN", answer["state"])
+        self.assertIn(FJ, answer["detail"])
+        self.assertIn(LOCAL, answer["detail"])
+
+
+def fake_agent_service():
+    class _Service:
+        def agent_list(self):
+            return {"device_ref": LOCAL, "agents": [{"agent_id": "a1"}],
+                    "providers": [], "provider_errors": [], "complete": True}
+    return _Service()
 
 
 def fake_service(listing):
