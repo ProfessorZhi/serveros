@@ -39,6 +39,18 @@ background run nobody started. `RECEIVERS` is empty BY CONSTRUCTION and not by
 oversight: it is the registry the wake half will fill, and until then the empty
 tuple is the measurement.
 
+AND AN EVALUATOR IS NOT A RECEIVER, which is why `wait_state` does not fill it.
+`wait_state` below answers a different question from «will something wake this»:
+it answers «has the thing this checkpoint waits for happened yet», from the
+admissions collection and the clock. That answer is what a NEW Parent reads to
+decide whether resuming now is possible — and resuming is, and has always been,
+what a new Parent does (`cmd_work_continuations`: «Resuming is what `work
+continuations` and a new Parent do»). Nothing in this release runs by itself, so
+an evaluator that can say «the child has a recorded outcome» must not be allowed
+to make `continuation_state` start saying a receiver is installed: that sentence
+would be a promise about a process nobody started, made out of a read. The two
+are kept apart on purpose and `tests/test_continuation.py` pins the separation.
+
 WHAT THIS MODULE DOES NOT DO. It does not decide that a Parent should wait. The
 caller states what it is waiting on and this module refuses the shapes that are
 not a wait; whether the work could simply have gone on is a question about the
@@ -97,6 +109,15 @@ WAIT_KINDS = ("child", "window")
 #: One sentence, so one line. Long enough for a real instruction and too short
 #: for a transcript.
 MAX_NEXT_ACTION = 400
+
+#: The three answers to «has the thing this checkpoint waits for happened yet».
+#:
+#: Three and not a boolean, because the middle one is the point: a store that
+#: cannot answer must not be made to answer «over». Collapsing an unreadable
+#: child into «not yet» would park a Parent forever behind a store problem, and
+#: collapsing it into «over» would resume one on no evidence — the second is the
+#: failure this vocabulary exists to make impossible to express.
+WAIT_ANSWERS = ("WAIT_OVER", "WAIT_OPEN", "WAIT_UNANSWERABLE")
 
 #: The continuation triggers installed on this node. See the module docstring.
 RECEIVERS: tuple = ()
@@ -335,3 +356,171 @@ def continuation_state(record: dict, *, receivers_seen=None, now: str | None = N
             "says": (f"checkpoint saved and a continuation receiver is installed "
                      f"({', '.join(str(r) for r in installed)}); whether it wakes "
                      f"this one depends on the wait it was filed with")}
+
+
+def wait_state(record: dict, *, admissions: dict | None = None,
+               now: str | None = None) -> dict:
+    """Whether the wait this checkpoint was filed with is over yet.
+
+    THE QUESTION `waiting_on` WAS WRITTEN TO ASK, AND UNTIL NOW NOTHING ANSWERED.
+    Every other part of a wait already existed: `build_checkpoint` validates it
+    against the admissions collection, the store files it under the Item and the
+    epoch, and `cmd_work_continuations` prints it. What did not exist anywhere in
+    this tree was code that evaluated it — so a checkpoint read exactly the same
+    at the moment it was written and a week after the child had finished, and the
+    one question it exists to make answerable, «can this Parent carry on yet»,
+    had no answer at all.
+
+    IT EVALUATES. IT DOES NOT RESUME, AND IT DOES NOT WAKE. Nothing here starts a
+    process, and a WAIT_OVER is not a claim that something will: it is what a new
+    Parent reads to decide whether resuming now is possible, and resuming in this
+    architecture is a new Parent (see the module docstring — there is no daemon,
+    and a receiver that ran by itself would be the fabrication §17.4 forbids).
+
+    TWO KINDS, TWO AUTHORITIES, NEITHER INVENTED HERE:
+
+      `window`  the clock. `until` against `now`, both read with the same
+                tolerance `build_checkpoint` used to accept them.
+      `child`   the admissions collection, which is where `build_checkpoint`
+                already checks a child wait against. A child's result has arrived
+                when its admission was RETIRED: `retire_admission` is the only
+                writer of `retired_at`, and retiring is this store's word for
+                «this cycle's outcome is recorded». A phase is deliberately NOT
+                that — `DISPATCHED` says a receipt was written, i.e. the child
+                was invoked, which is the state the whole wait is meant to
+                outlive. Reading a phase as a result would resume a Parent while
+                its child was still running.
+
+    PARTIAL IS WAIT_OPEN AND NEVER WAIT_OVER. A checkpoint may name several
+    children, and the wait ends when the last of them has a recorded outcome.
+    `settled` and `outstanding` name which is which, so nobody has to infer «some
+    of them» from a boolean.
+
+    A CHILD THE STORE DOES NOT HOLD IS UNANSWERABLE AND NOT «NOT YET» — and that
+    is a change of reading from `build_checkpoint`'s, for a different question.
+    There, an unknown child is refused at write time because a wait the fabric
+    cannot confirm would have to be carried by hand. Here the record already
+    exists and may name a child this store no longer holds (`retire_admission`
+    keeps records, but a store can be moved, swept, or read from another root).
+    The honest answer is that this reading cannot say, which is why it is not
+    folded into either of the two answers that can.
+
+    `admissions` ABSENT IS ITS OWN CASE, apart from «this store holds no such
+    child»: one repair is to bring the store, the other is that the child is not
+    in it. Both are WAIT_UNANSWERABLE and `detail` says which one this is.
+    """
+    record = record if isinstance(record, dict) else {}
+    wait = record.get("waiting_on")
+    wait = wait if isinstance(wait, dict) else None
+    base = {"checkpoint_ref": record.get("checkpoint_ref"),
+            "work_item": record.get("work_item"), "epoch": record.get("epoch"),
+            "waiting_on": wait}
+    if wait is None or not str(wait.get("kind") or "").strip():
+        return {**base, "state": "WAIT_UNANSWERABLE", "evidence": [],
+                "detail": ("this record carries no readable `waiting_on`, so there "
+                           "is no wait to evaluate. It is not a wait that is over: "
+                           "a record with nothing to wait for is a record whose "
+                           "wait cannot be read"),
+                "says": ("this checkpoint's wait is unreadable, so whether it can "
+                         "be resumed cannot be said from it")}
+
+    kind = str(wait["kind"]).strip()
+    if kind == "window":
+        until = _instant(wait.get("until"))
+        moment = _instant(now) if now else None
+        if until is None or moment is None:
+            missing = ("waiting_on.until" if until is None else "the reading clock")
+            return {**base, "state": "WAIT_UNANSWERABLE", "until": wait.get("until"),
+                    "evidence": [],
+                    "detail": (f"{missing} is not an instant, so the window cannot "
+                               f"be compared with anything. A window is a "
+                               f"comparison and a comparison with a value nobody "
+                               f"can read has no answer"),
+                    "says": ("this checkpoint waits on a window whose end cannot be "
+                             "read, so whether it has passed cannot be said")}
+        if moment >= until:
+            return {**base, "state": "WAIT_OVER", "until": wait["until"],
+                    "over_by_seconds": round((moment - until).total_seconds(), 3),
+                    "evidence": [{"until": wait["until"], "read_at": str(now)}],
+                    "detail": ("the window has closed. This is an answer about the "
+                               "clock and about nothing else: it says the wait is "
+                               "over, not that anything has resumed the Parent"),
+                    "says": (f"the window ended at {wait['until']}, so the wait is "
+                             f"over and a new Parent can resume this Item")}
+        return {**base, "state": "WAIT_OPEN", "until": wait["until"],
+                "seconds_remaining": round((until - moment).total_seconds(), 3),
+                "evidence": [{"until": wait["until"], "read_at": str(now)}],
+                "detail": "the window has not closed yet",
+                "says": (f"the window ends at {wait['until']}; the wait is not over "
+                         f"yet")}
+
+    if kind != "child":
+        return {**base, "state": "WAIT_UNANSWERABLE", "evidence": [],
+                "detail": (f"waiting_on.kind is {kind!r}, which this evaluator has "
+                           f"no authority for. `WAIT_KINDS` is closed and this is "
+                           f"not one of {list(WAIT_KINDS)}, so a record carrying it "
+                           f"was not written by `build_checkpoint`"),
+                "says": ("this checkpoint's kind of wait is one nothing here can "
+                         "evaluate, so whether it is over cannot be said")}
+
+    refs = list(wait.get("refs") or [])
+    if not refs:
+        return {**base, "state": "WAIT_UNANSWERABLE", "evidence": [],
+                "detail": ("a child wait with no refs names nothing to look up, so "
+                           "there is nothing whose result could have arrived"),
+                "says": ("this checkpoint waits on no named child, so whether the "
+                         "wait is over cannot be said")}
+    if not isinstance(admissions, dict):
+        return {**base, "state": "WAIT_UNANSWERABLE", "evidence": [],
+                "refs": refs,
+                "detail": ("no admissions were supplied, so the children this "
+                           "checkpoint waits on were not looked up at all. This is "
+                           "«nobody brought the store» and not «the store holds no "
+                           "such child»"),
+                "says": ("this reading was given no admissions, so it cannot say "
+                         "whether the children it waits on have finished")}
+
+    settled, outstanding, unheld, evidence = [], [], [], []
+    for ref in refs:
+        held = admissions.get(ref)
+        if not isinstance(held, dict):
+            unheld.append(ref)
+            evidence.append({"ref": ref, "held": False})
+            continue
+        retired_at = held.get("retired_at")
+        if retired_at:
+            settled.append(ref)
+            evidence.append({"ref": ref, "held": True, "retired_at": retired_at,
+                             "outcome": held.get("outcome")})
+        else:
+            outstanding.append(ref)
+            evidence.append({"ref": ref, "held": True, "retired_at": None,
+                             "phase": held.get("phase"),
+                             "because": ("this admission is still open. A phase is "
+                                         "not a result: DISPATCHED says the child "
+                                         "was invoked, not that it finished")})
+    answer = {**base, "refs": refs, "settled": settled,
+              "outstanding": outstanding, "unheld": unheld, "evidence": evidence}
+    if unheld:
+        return {**answer, "state": "WAIT_UNANSWERABLE",
+                "detail": (f"this store holds no admission for "
+                           f"{', '.join(unheld)}, so whether their results have "
+                           f"arrived cannot be read from here. This is not «not "
+                           f"yet»: the child may have finished and the record of "
+                           f"it may simply not be in this store"),
+                "says": (f"{', '.join(unheld)} is not in this store, so whether the "
+                         f"wait is over cannot be said")}
+    if outstanding:
+        return {**answer, "state": "WAIT_OPEN",
+                "detail": (f"{len(outstanding)} of {len(refs)} children have no "
+                           f"recorded outcome yet, and the wait ends when the last "
+                           f"one does"),
+                "says": (f"waiting on {', '.join(outstanding)}, whose admission has "
+                         f"no recorded outcome yet, so the wait is not over")}
+    return {**answer, "state": "WAIT_OVER",
+            "detail": ("every child this checkpoint waits on has a recorded "
+                       "outcome. This is an answer about the store and about "
+                       "nothing else: it says the wait is over, not that anything "
+                       "has resumed the Parent"),
+            "says": (f"every child it waits on has a recorded outcome, so the wait "
+                     f"is over and a new Parent can resume this Item")}
