@@ -7829,6 +7829,188 @@ def cmd_work_retire(args) -> int:
     return EXIT_OK
 
 
+def _continuation_module():
+    return _load_module_from(REPO_ROOT / "runtime" / "continuation.py",
+                             "serveros_runtime_continuation")
+
+
+def cmd_work_checkpoint(args) -> int:
+    """§12/P7 — save where a logical Parent got to, because it has to wait.
+
+    THE VERB THAT MAKES `docs/daily-work-cycle.md` §17.4 doable. Before it there
+    was no record a Parent could leave, so the only way to wait for a child was to
+    keep a process alive holding a session, a lease and a slot for the length of
+    somebody else's work — or to hand the result back to a person, which is the
+    failure `docs/SCENARIO-ACCEPTANCE.md` names as «要求用户复制结果».
+
+    IT DOES NOT DECIDE THAT THE PARENT SHOULD WAIT, and it cannot: whether the work
+    could simply have gone on is a question about the task, and `--waiting-on-child`
+    / `--waiting-on-window` are the caller stating what it is waiting for.
+    `runtime/continuation.build_checkpoint` refuses the shapes that are not a wait,
+    including «waiting on a child this store holds no admission for» — a wait on
+    something the fabric cannot see is a wait that would have to be answered by
+    hand.
+
+    THE RECEIVER IS NOT A FIELD, deliberately. A record that could name its own
+    receiver would be a record that can claim a background run, and this release
+    has none installed. What the reader says about that is
+    `runtime/continuation.continuation_state`'s answer, not this verb's.
+
+    It records and it acts on nothing. Nothing is woken, nothing is released, and
+    the process that runs it is expected to exit.
+    """
+    continuation = _continuation_module()
+    store_mod, control = _control_store()
+    try:
+        admissions = control.admissions()
+    except store_mod.StoreError as exc:
+        sys.stderr.write(f"serverosctl: {exc}\n")
+        return EXIT_FAULT
+
+    waiting_on = _waiting_on(args)
+    if waiting_on is None:
+        return EXIT_FAULT
+    now = (args.at or datetime.datetime.now(datetime.timezone.utc).isoformat())
+    try:
+        record = continuation.build_checkpoint(
+            work_item=args.item, epoch=args.epoch, parent_owner=args.parent,
+            next_safe_action=args.next_action, waiting_on=waiting_on,
+            admissions=admissions, now=now,
+            requirement_revision=args.requirement,
+            remaining_results=args.remaining, evidence_locators=args.evidence,
+            child_attempts=args.attempt, unresolved_effects=args.unresolved_effect,
+            write_scope=args.write_scope)
+    except ValueError as exc:
+        sys.stderr.write(f"serverosctl: {exc}. Nothing was written\n")
+        return EXIT_FAULT
+
+    try:
+        stored = control.put_checkpoint(record)
+    except store_mod.StoreError as exc:
+        sys.stderr.write(f"serverosctl: {exc}. Nothing was written\n")
+        return EXIT_FAULT
+
+    state = continuation.continuation_state(stored)
+    lines = [
+        f"checkpoint  {stored['checkpoint_ref']}",
+        f"item        {stored['work_item']}",
+        f"epoch       {stored['epoch']}",
+        f"parent      {stored['parent_owner']}",
+        f"waiting on  {stored['waiting_on']['kind']} "
+        + (", ".join(stored["waiting_on"].get("refs") or [])
+           if stored["waiting_on"]["kind"] == "child"
+           else f"until {stored['waiting_on'].get('until')}"),
+        f"next        {stored['next_safe_action']}",
+        f"remaining   {len(stored['remaining_results'])}"
+        + (": " + ", ".join(stored["remaining_results"])
+           if stored["remaining_results"] else " — nothing outstanding"),
+        f"written at  {stored['written_at']}",
+        "",
+        f"continuation  {state['state']}",
+        f"  {state['says']}",
+    ]
+    if stored.get("replayed"):
+        lines.insert(1, "replayed    yes — same scope, same checkpoint")
+    emit({"checkpoint": stored, "continuation": state,
+          "store": str(control.path)}, as_json=args.json, lines=lines)
+    return EXIT_OK
+
+
+def _waiting_on(args) -> dict | None:
+    """What this Parent is waiting for, or None having said why it cannot be read.
+
+    Exactly one of the two ways, because they are different answers and a record
+    carrying both would leave a reader to guess which one resumes it. The
+    check is here rather than in argparse for the repository's usual reason: the
+    message has to be a sentence about the work, and argparse's is about the
+    command line.
+    """
+    children = list(args.waiting_on_child or [])
+    window = args.waiting_on_window
+    if children and window:
+        sys.stderr.write(
+            "serverosctl: --waiting-on-child and --waiting-on-window were both "
+            "given. They are two ways of waiting and a checkpoint records one of "
+            "them; a record carrying both would leave whoever resumes it to guess "
+            "which one ends the wait. Nothing was written\n")
+        return None
+    if children:
+        return {"kind": "child", "refs": children}
+    if window:
+        return {"kind": "window", "until": window}
+    sys.stderr.write(
+        "serverosctl: a checkpoint needs something to wait for. Pass "
+        "`--waiting-on-child <cycle>` for a delegated cycle this store holds an "
+        "admission for, or `--waiting-on-window <iso instant>` for a window that "
+        "ends it. There is no value for «nothing»: a Parent with a next safe action "
+        "it could take has nothing to checkpoint, and saving one anyway is the "
+        "«第一版实现就返回等用户继续» failure this verb exists to not commit. "
+        "Nothing was written\n")
+    return None
+
+
+def cmd_work_continuations(args) -> int:
+    """§12/P7 — the Parent checkpoints this node holds, and what would wake each.
+
+    The read half of `work checkpoint`, and the place the product's sentence about
+    an absent receiver has to be able to appear. `docs/daily-work-cycle.md` §17.4:
+    «没有 receiver 时准确显示"checkpoint已保存，待续"，不能伪造后台运行».
+
+    It reads the store and `runtime/continuation.receivers()` and nothing else —
+    no board, no projection, no clock. Whether a checkpoint is being woken is not
+    a question about the board, and answering it from a projection that may be
+    stale is how a saved checkpoint starts reading as a running one.
+
+    The receiver answer comes from that registry and not from the record, which is
+    the only arrangement under which «no receiver is installed» can be true of the
+    fabric rather than a field somebody left off.
+    """
+    continuation = _continuation_module()
+    store_mod, control = _control_store()
+    try:
+        held = control.checkpoints()
+    except store_mod.StoreError as exc:
+        sys.stderr.write(f"serverosctl: {exc}\n")
+        return EXIT_FAULT
+    if args.item:
+        held = {ref: record for ref, record in held.items()
+                if record.get("work_item") == args.item}
+    installed = continuation.receivers()
+    states = {ref: continuation.continuation_state(record, receivers_seen=installed)
+              for ref, record in held.items()}
+    live = [ref for ref, state in states.items() if state["state"] != "SUPERSEDED"]
+    lines = [f"store         {control.path}",
+             f"checkpoints   {len(live)} live of {len(held)} recorded"
+             + ("" if held else " — no Parent has checkpointed on this node"),
+             f"receivers     "
+             + (", ".join(str(r) for r in installed) if installed
+                else "none installed — a saved checkpoint is not being woken by "
+                     "anything on this node")]
+    for ref in sorted(held):
+        record, state = held[ref], states[ref]
+        lines.append("")
+        lines.append(f"{ref}  {state['state']}")
+        lines.append(f"  parent        {record.get('parent_owner')}")
+        waiting = record.get("waiting_on") or {}
+        lines.append(f"  waiting on    {waiting.get('kind')} "
+                     + (", ".join(waiting.get("refs") or [])
+                        if waiting.get("kind") == "child"
+                        else f"until {waiting.get('until')}"))
+        lines.append(f"  next          {record.get('next_safe_action')}")
+        lines.append(f"  remaining     "
+                     + (", ".join(record.get("remaining_results") or [])
+                        or "— nothing outstanding"))
+        lines.append(f"  write scope   "
+                     + (", ".join(record.get("write_scope") or []) or "— unnamed"))
+        lines.append(f"  written at    {record.get('written_at')}")
+        for effect in record.get("unresolved_effects") or []:
+            lines.append(f"  unresolved    {effect}")
+        lines.append(f"  {state['says']}")
+    emit({"checkpoints": held, "states": states, "receivers": list(installed),
+          "store": str(control.path)}, as_json=args.json, lines=lines)
+    return EXIT_OK
+
+
 def cmd_work_item(args) -> int:
     """§6 — one Item's chain: which document exists, and where it stops."""
     chain = _workchain_module()
@@ -10368,6 +10550,51 @@ def build_parser() -> argparse.ArgumentParser:
     wk_retire.add_argument("--at", default="",
                            help="the instant to record (default: now)")
     wk_retire.set_defaults(func=cmd_work_retire)
+
+    wk_checkpoint = work_sub.add_parser(
+        "checkpoint", help="§12/P7 — save where a logical Parent got to because "
+                           "it has to wait for a child or a window, then stop. "
+                           "Records; wakes nothing", **_COMMON)
+    wk_checkpoint.add_argument("item", help="the canonical Work Item id")
+    wk_checkpoint.add_argument("--epoch", type=int, required=True,
+                               help="which epoch of that Item this Parent carries")
+    wk_checkpoint.add_argument("--parent", required=True,
+                               help="the logical Parent's own ref")
+    wk_checkpoint.add_argument("--next-action", required=True,
+                               help="the one bounded sentence a resuming Parent "
+                                    "reads; this is what replaces replaying a "
+                                    "session")
+    wk_checkpoint.add_argument("--waiting-on-child", action="append", default=[],
+                               metavar="CYCLE",
+                               help="a delegated cycle this store holds an "
+                                    "admission for. Repeatable")
+    wk_checkpoint.add_argument("--waiting-on-window", default="",
+                               metavar="ISO",
+                               help="an instant that ends the wait. Must be after "
+                                    "the write clock")
+    wk_checkpoint.add_argument("--requirement", default="",
+                               help="the accepted Requirement revision")
+    wk_checkpoint.add_argument("--remaining", action="append", default=[],
+                               help="a required result not yet produced. Repeatable")
+    wk_checkpoint.add_argument("--evidence", action="append", default=[],
+                               help="an accepted evidence locator. Repeatable")
+    wk_checkpoint.add_argument("--attempt", action="append", default=[],
+                               help="a child attempt already made. Repeatable")
+    wk_checkpoint.add_argument("--unresolved-effect", action="append", default=[],
+                               help="an effect left unknown. Repeatable")
+    wk_checkpoint.add_argument("--write-scope", action="append", default=[],
+                               help="a write scope this Parent holds. Repeatable")
+    wk_checkpoint.add_argument("--at", default="",
+                               help="the write clock (default: now)")
+    wk_checkpoint.set_defaults(func=cmd_work_checkpoint)
+
+    wk_continuations = work_sub.add_parser(
+        "continuations", help="§12/P7 — the Parent checkpoints this node holds, "
+                              "and whether anything would wake them. Reads the "
+                              "store and the receiver registry", **_COMMON)
+    wk_continuations.add_argument("--item", default="",
+                                  help="only this Work Item's checkpoints")
+    wk_continuations.set_defaults(func=cmd_work_continuations)
 
     wk_item = work_sub.add_parser(
         "item", help="one Item's chain: which document exists, which is "
