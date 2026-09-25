@@ -7799,9 +7799,17 @@ def cmd_work_retire(args) -> int:
     second — so this is what a finished cycle runs, and it is also what a cycle
     runs when it is abandoned.
 
-    Idempotent, and it keeps the FIRST retirement. A second call that moved the
-    instant would move it to whenever somebody last mentioned the cycle, and the
-    question a retired admission answers is when the reservation was released.
+    Idempotent, and it keeps the FIRST retirement — both of the fields that call
+    writes. A second call that moved the instant would move it to whenever
+    somebody last mentioned the cycle, and the question a retired admission
+    answers is when the reservation was released. A second call that moved the
+    `outcome` is refused rather than absorbed: this is the write that answers
+    «did this cycle finish, and how», `work continuations` now prints it on the
+    line that decides whether a resuming Parent dispatches a second child, and a
+    store that kept the first ending while a second one was offered would be
+    answering from a choice nobody made. Retrying the same call stays
+    idempotent, which is what a retry after a crash is.
+
     It is not a deletion: the record stays, saying what the cycle was admitted
     for, because a review afterwards is computed from exactly that.
     """
@@ -7979,13 +7987,31 @@ def cmd_work_continuations(args) -> int:
     the only arrangement under which «no receiver is installed» can be true of the
     fabric rather than a field somebody left off.
 
-    TWO QUESTIONS, KEPT APART. `continuation` is «will anything wake this», and it
-    still answers `AWAITING_CONTINUATION` because nothing on this node runs by
+    THREE QUESTIONS, KEPT APART. `continuation` is «will anything wake this», and
+    it still answers `AWAITING_CONTINUATION` because nothing on this node runs by
     itself. `wait` is «has the thing it waits for happened yet», and that one IS
     answerable — the children are in the admission store and the window has an
-    instant. Printing only the first was the defect this section fixes: a reader
-    saw `AWAITING_CONTINUATION` on a checkpoint whose child finished last week,
-    with the one fact that had changed nowhere on the line.
+    instant. Printing only the first was one defect: a reader saw
+    `AWAITING_CONTINUATION` on a checkpoint whose child finished last week, with
+    the one fact that had changed nowhere on the line.
+
+    `attempts` is the third, and it is a different question from either: «what
+    became of the child attempts this record says it already made». `wait` asks
+    about the attempt this Parent is waiting ON; `attempts` asks about the ones it
+    already made, which is the fact that decides whether resuming means continuing
+    the work or means dispatching a second child — `docs/SCENARIO-ACCEPTANCE.md`
+    names «新建第二Task» beside this checkpoint's own reason for existing, and
+    `docs/daily-work-cycle.md` §17.4 names the reading: «恢复前对账 baseline、
+    writer、effect 和旧 attempt». `child_attempts` was written and validated and
+    never read back until this line existed.
+
+    `requirement` and `accepted` are printed for the same reason and are NOT
+    answers: they are the two facts a resuming Parent reconciles the attempts
+    against — which revision of the Requirement this record was written under, and
+    which evidence this record already carries. `work checkpoint --evidence` calls
+    one «an accepted evidence locator», so what has been accepted is a fact about
+    the record; there is no place on this node that records an acceptance as a
+    separate fact about an attempt, and this surface does not invent one.
     """
     continuation = _continuation_module()
     store_mod, control = _control_store()
@@ -8008,9 +8034,14 @@ def cmd_work_continuations(args) -> int:
         return EXIT_FAULT
     waits = {ref: continuation.wait_state(record, admissions=admissions, now=read_at)
              for ref, record in held.items()}
+    attempts = {ref: continuation.attempts_state(record, admissions=admissions)
+                for ref, record in held.items()}
     live = [ref for ref, state in states.items() if state["state"] != "SUPERSEDED"]
     ready = [ref for ref in live if waits[ref]["state"] == "WAIT_OVER"]
     unreadable = [ref for ref in live if waits[ref]["state"] == "WAIT_UNANSWERABLE"]
+    made = sum(len(attempts[ref]["attempts"]) for ref in live)
+    by_answer = {answer: [ref for ref in live if attempts[ref]["state"] == answer]
+                 for answer in continuation.ATTEMPT_ANSWERS}
     lines = [f"store         {control.path}",
              f"checkpoints   {len(live)} live of {len(held)} recorded"
              + ("" if held else " — no Parent has checkpointed on this node"),
@@ -8022,6 +8053,12 @@ def cmd_work_continuations(args) -> int:
              + f"{len(live) - len(ready) - len(unreadable)} still open, "
              + f"{len(unreadable)} unreadable"
              + ("" if live else " — nothing held to wait on"),
+             f"attempts      {made} recorded on {len(live)} live checkpoint"
+             + ("" if len(live) == 1 else "s") + " — "
+             + f"{len(by_answer['ATTEMPT_RETIRED'])} all finished, "
+             + f"{len(by_answer['ATTEMPT_OPEN'])} with one still open, "
+             + f"{len(by_answer['ATTEMPT_UNANSWERABLE'])} this store cannot look up, "
+             + f"{len(by_answer['ATTEMPT_NONE'])} naming none",
              f"read at       {read_at}"]
     if ready:
         # Named, not counted. A WAIT_OVER is the one answer here a person can act
@@ -8031,7 +8068,8 @@ def cmd_work_continuations(args) -> int:
     for ref in sorted(held):
         record, state, wait = held[ref], states[ref], waits[ref]
         lines.append("")
-        lines.append(f"{ref}  {state['state']}  wait {wait['state']}")
+        lines.append(f"{ref}  {state['state']}  wait {wait['state']}  "
+                     f"attempts {attempts[ref]['state']}")
         lines.append(f"  parent        {record.get('parent_owner')}")
         waiting = record.get("waiting_on") or {}
         lines.append(f"  waiting on    {waiting.get('kind')} "
@@ -8045,12 +8083,43 @@ def cmd_work_continuations(args) -> int:
         lines.append(f"  write scope   "
                      + (", ".join(record.get("write_scope") or []) or "— unnamed"))
         lines.append(f"  written at    {record.get('written_at')}")
+        lines.append(f"  requirement   "
+                     + (record.get("requirement_revision")
+                        or "— this record does not name a revision"))
+        accepted = record.get("evidence_locators") or []
+        lines.append(f"  accepted      "
+                     + (", ".join(accepted)
+                        or "— this record carries no accepted evidence"))
+        made_here = attempts[ref]
+        # The refs are read off the RECORD and the answers off the store: what was
+        # tried is the record's fact, and what became of it is the store's. Printing
+        # `made_here["attempts"]` here would be correct and would hide from
+        # `TestEveryDeclaredFieldIsRenderedOrExempt` that this verb reads the field.
+        tried = record.get("child_attempts") or []
+        lines.append(f"  attempts      "
+                     + (", ".join(tried)
+                        or "— this record names no child attempt"))
+        for entry in made_here["evidence"]:
+            # One line per attempt, because the counts above cannot say WHICH
+            # one is still open, and «which one» is the whole reason a resuming
+            # Parent looks.
+            if not entry["held"]:
+                lines.append(f"    {entry['ref']}  {entry['state']}  — this store "
+                             f"holds no such admission")
+            elif entry["state"] == "ATTEMPT_RETIRED":
+                lines.append(f"    {entry['ref']}  {entry['state']}  "
+                             + (entry.get("outcome") or "— no outcome recorded")
+                             + f"  at {entry['retired_at']}")
+            else:
+                lines.append(f"    {entry['ref']}  {entry['state']}  "
+                             f"phase {entry.get('phase')}")
         for effect in record.get("unresolved_effects") or []:
             lines.append(f"  unresolved    {effect}")
         lines.append(f"  {state['says']}")
         lines.append(f"  wait          {wait['says']}")
+        lines.append(f"  attempts say  {made_here['says']}")
     emit({"checkpoints": held, "states": states, "waits": waits,
-          "receivers": list(installed), "read_at": read_at,
+          "attempts": attempts, "receivers": list(installed), "read_at": read_at,
           "store": str(control.path)}, as_json=args.json, lines=lines)
     return EXIT_OK
 
