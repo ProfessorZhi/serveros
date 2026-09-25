@@ -7206,6 +7206,123 @@ def _lease_answer(admission: dict) -> dict:
             "store": str(store.root)}
 
 
+def _iso_instant(value) -> datetime.datetime | None:
+    """One ISO instant off a receipt or an admission, or None if unreadable.
+
+    Tolerance is deliberate and bounded. Both fields are written by this tree —
+    `invoke_once` sets `started_at`, `work admit` sets `admitted_at` — and both
+    write UTC with an offset. A record carrying a naive instant is read as UTC
+    rather than refused: every writer here is UTC, and refusing would turn a
+    formatting difference into a claim about a cycle's history. A value that is
+    not an instant at all answers None, because the caller's question is a
+    comparison and "cannot be compared" is not an answer to it.
+    """
+    if not isinstance(value, str) or not value.strip():
+        return None
+    try:
+        instant = datetime.datetime.fromisoformat(value)
+    except ValueError:
+        return None
+    if instant.tzinfo is None:
+        instant = instant.replace(tzinfo=datetime.timezone.utc)
+    return instant
+
+
+def _receipt_predates_the_admission(receipt: dict, admission: dict,
+                                    path: Path) -> str | None:
+    """The sentence for a receipt older than the cycle reading it, or None.
+
+    WHY THIS EXISTS. Added 2026-09-26 (slice E). `work retire` releases an
+    action key, and `admit` refuses only a second admission under a key an
+    OPEN one holds — so the next cycle may name a key an earlier cycle held,
+    and that is by design: the retirement note says «released, so another
+    admission may hold it now». `runtime/bounded_invocation.invoke_once` keeps
+    one receipt per action key and REPLAYS it when the input digest matches, so
+    a cycle that names a retired key with the same command receives the earlier
+    cycle's receipt. Both producers of the `DISPATCHED` phase — `work dispatch`
+    and `work confirm --phase DISPATCHED` — read that one file as THIS
+    admission's evidence, and the phase would then say this cycle dispatched,
+    on the evidence of a command another cycle ran.
+
+    `agent_control_store.admit`'s own docstring already calls that outcome a
+    defect — "the receipt would say `replayed: True` about work it never did" —
+    and its guard covers only admissions still open. Retirement is what
+    reopens the path.
+
+    THE CRITERION IS ONE COMPARISON, and it cannot misjudge the case that has
+    to keep working: a retry under the SAME cycle is always dispatched after
+    that cycle was admitted, so its `started_at` is later than its
+    `admitted_at` and the receipt reads as its own. What the comparison catches
+    is exactly a receipt written before this cycle existed.
+
+    A receipt that names a DIFFERENT action key steps aside here: that case is
+    already refused, and refused with a sharper sentence —
+    `confirm_admission` answers "evidence about a different dispatch" — so
+    asking this question first would replace a precise answer with a vaguer
+    one.
+
+    WHAT IT DOES NOT ANSWER, and it is worth being plain about: a receipt
+    carrying no readable `started_at`. There is then no comparison to make, and
+    this returns None rather than refusing — the caller falls through to the
+    readers it already had (the receipt's own `action_key`, and the store's
+    evidence comparison). `invoke_once` always writes that field, so the case
+    needs a file this tree did not write, which the receipt reader's own
+    contract already puts outside itself.
+    """
+    key = str(admission.get("action_key") or "")
+    if key and receipt.get("action_key") != key:
+        return None
+    started_at = receipt.get("started_at")
+    admitted_at = admission.get("admitted_at")
+    started = _iso_instant(started_at)
+    admitted = _iso_instant(admitted_at)
+    if started is None or admitted is None or started >= admitted:
+        return None
+    return (
+        f"the receipt at {path} was written at {started_at} and "
+        f"{admission.get('cycle_ref')} was admitted at {admitted_at}. The file "
+        f"predates the cycle, so it is the dispatch of an earlier cycle that "
+        f"held this action key — `work retire` released the key and this cycle "
+        f"took it, but one action key is one receipt and the older one is still "
+        f"the file `invoke_once` replays")
+
+
+def _refuse_a_replayed_receipt(admission: dict, receipts_root: str) -> bool:
+    """Refuse, having written why, a dispatch carrying an earlier cycle's receipt.
+
+    True means the refusal is written and the caller must run nothing. This is
+    asked BEFORE the spawn, and the placement is the point: `invoke_once` would
+    not have started anything either — a matching digest makes it replay rather
+    than execute — but "nothing was started" is a sentence about a spawn that
+    did not happen, and a verb that can say the stronger one owes it to whoever
+    is reading.
+
+    A missing file, an unreadable one, a receipt for another key and a receipt
+    with no date all return False: each is a different question with an owner
+    that already answers it, and `invoke_once` and the store are downstream.
+    """
+    key = str(admission.get("action_key") or "")
+    if not key or not receipts_root:
+        return False
+    path = Path(receipts_root) / (key + ".json")
+    try:
+        receipt = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False
+    if not isinstance(receipt, dict):
+        return False
+    why = _receipt_predates_the_admission(receipt, admission, path)
+    if why is None:
+        return False
+    sys.stderr.write(
+        f"serverosctl: {why}. Nothing was run and nothing was written. A retry "
+        f"is a new cycle under a NEW action key: admitting one under this key "
+        f"would hand it this same receipt, and the phase would record a "
+        f"dispatch that was never this cycle's. The receipt stays where it is — "
+        f"it is the earlier cycle's evidence about work that cycle really did\n")
+    return True
+
+
 def _dispatch_answer(admission: dict, receipts_root: str) -> dict:
     """What the receipts directory says about this admission's action key.
 
@@ -7255,6 +7372,18 @@ def _dispatch_answer(admission: dict, receipts_root: str) -> dict:
             f"not an answer about this dispatch") from exc
     if not isinstance(receipt, dict):
         raise LookupError(f"{path} is not a receipt")
+    # Before anything is read off the file: is this file about THIS cycle's
+    # dispatch at all? Every reader of a receipt in this file goes through this
+    # function, so the question is asked once, in the place the receipt is
+    # opened — and `work confirm --phase DISPATCHED`, which records the phase
+    # without running anything, is covered by asking it here rather than at
+    # `work dispatch`'s call site alone.
+    why = _receipt_predates_the_admission(receipt, admission, path)
+    if why is not None:
+        raise LookupError(
+            f"{why}. The phase being confirmed would record a dispatch under "
+            f"this cycle that this cycle did not make, and a reader of the "
+            f"phase table afterwards could not tell that from one it did")
     return {"evidence": {"action_key": receipt.get("action_key"),
                          "status": receipt.get("status"),
                          "input_digest": receipt.get("input_digest"),
@@ -7463,7 +7592,7 @@ def cmd_work_dispatch(args) -> int:
     same one `work confirm --phase DISPATCHED` performs, through the same
     reader, off the same file.
 
-    FIVE CHECKS COME BEFORE ANYTHING IS SPAWNED, and each is ordered by what it
+    SIX CHECKS COME BEFORE ANYTHING IS SPAWNED, and each is ordered by what it
     would cost to check it afterwards:
 
       1. a retired admission cannot advance — the store refuses this too, and
@@ -7478,7 +7607,18 @@ def cmd_work_dispatch(args) -> int:
          note says a phase is not a permission — "the reader that wants to act
          on that reads the lease store itself" — and this verb acts. A lease
          released since the phase was confirmed is caught here;
-      5. the command is required to be a nonempty argv after `--`.
+      5. THE RECEIPTS DIRECTORY IS ASKED WHOSE DISPATCH ITS FILE IS (added
+         2026-09-26, slice E). This cycle may be holding an action key an
+         earlier, since-retired cycle held, and `invoke_once` replays that
+         cycle's receipt instead of running anything — so the phase would
+         record this cycle as having dispatched on another cycle's evidence.
+         The answer is one comparison, `started_at` against `admitted_at`, and
+         `_receipt_predates_the_admission` says why it cannot misjudge a retry
+         under the same cycle. It is checked here rather than only inside the
+         receipt reader because `invoke_once` would not have started anything
+         either — it replays — and «Nothing was run» is the stronger sentence
+         only this side of the call can say;
+      6. the command is required to be a nonempty argv after `--`.
 
     The bounds are the admission's, not this command line's. `wall_seconds` and
     `max_output_bytes` come out of the reservation the cycle was admitted under,
@@ -7528,6 +7668,9 @@ def cmd_work_dispatch(args) -> int:
             f"act on LEASE_HELD, and the phase table says that reader reads the "
             f"lease store itself. It says this node is not holding the "
             f"resource, so nothing was run\n")
+        return EXIT_FAULT
+
+    if _refuse_a_replayed_receipt(admission, args.receipts):
         return EXIT_FAULT
 
     argv = _dispatch_argv(args)

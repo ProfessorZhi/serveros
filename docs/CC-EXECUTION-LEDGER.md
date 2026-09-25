@@ -522,6 +522,7 @@ tests/test_declared_commands.py::DeclaredCommandsExist::test_every_declared_comm
 | serveros（P7 切片 B：一个缺席的两种拼法，§9.30） | **5700 passed, 20 skipped, 3947 subtests passed, 0 failed**（636.60s） | `pytest tests/ -q`。算术闭合：上一格 5697 ＋ 本片新增的 **3 条**（`ReportTest` 三条）＝ 5700；subtests 3947 ＋ **0** ＝ 3947（本片三条都没有 subtests）。这一跑没有被改动的文件在中途换过字节：起跑前记下 `runtime/recipes.py` 的 sha256 `d0c40f45a1db42b1…`，跑完核对一致，那一跑读的就是提交的这一份。 |
 | serveros（P7 切片 C：`DISPATCHED` 的生产者 / `invoke_once` 的第一个生产调用者，§9.31） | **5709 passed, 20 skipped, 3947 subtests passed, 0 failed**（604.13s） | `pytest tests/ -q -p no:cacheprovider`。算术闭合：上一格 5700 ＋ 本片新增的 **9 条**（`TestTheDispatchVerb` 九条）＝ 5709；subtests 3947 ＋ **0** ＝ 3947（本片九条都没有 subtests）。这一跑读到的就是提交的那份字节：起跑前记下 `runtime/cli.py` 的 sha256 `135c11a00e159a40…`，跑完与提交前复核一致（本片另外两处改动是 `runtime/actuator-contract.yaml` 与 `tests/test_admission.py`，都不在跑动中被改）。**本片有一个必须先记的前置**：先跑的是 `tests/test_admission.py` 单文件（`115 passed in 18.77s`）作为变异检查的基线，然后 8 条变异全部被杀、每条都由它该杀的那一条测试杀死（§9.31.6），最后才是这一跑全量 |
 | serveros（P7 切片 D：回执锁改成「拒绝」而不是「等」，J07 判据 5，§9.32） | **5714 passed, 20 skipped, 3947 subtests passed, 0 failed**（647.81s） | `pytest tests/ -q -p no:cacheprovider`。算术闭合：上一格 5709 ＋ 本片新增的 **5 条**（`tests/test_bounded_invocation_paths.py` 四条 ＋ `tests/test_admission.py` 一条）＝ 5714；subtests 3947 ＋ **0** ＝ 3947（本片五条都没有 subtests）。这一跑读到的就是提交的那份字节：跑前记下 **7 个**被测文件的 sha256（`runtime/agent_control_store.py` `b54b22c4470006e0…`、`runtime/bounded_invocation.py` `c324f0dbd3c6dfce…`、`runtime/cli.py` `4ae3dc99c4a5bacae…`、`runtime/recipes.py`、`runtime/actuator-contract.yaml` 与两个测试文件），跑完 `sha256sum -c` 全部 `OK`。**本片同样有一个必须先记的前置**：先跑两个文件的合并基线（`131 passed`）作变异检查的底，然后 6 条变异 **5 杀 1 存**（§9.32.5，存活的那条 M5 与其理由记在那里），最后才是这一跑全量。本片改了错误/异常语义（新增 `LockUnavailable`），**安装产物未变**——三处改动全在 `runtime/`、`tests/` 与一份契约的散文里，所以没有 build→promote→restart |
+| serveros（P7 切片 E：退休后复用的键不再把上一轮的回执递给下一轮，§9.33） | **5718 passed, 20 skipped, 3947 subtests passed, 0 failed**（658.60s） | `pytest tests/ -q -p no:cacheprovider`。算术闭合：上一格 5714 ＋ 本片新增的 **4 条**（`TestTheDispatchVerb` 四条）＝ 5718；subtests 3947 ＋ **0** ＝ 3947（本片四条都没有 subtests）。这一跑读到的就是提交的那份字节：跑前记下 `runtime/cli.py` `5da0ffbeefadf3a3…` 与 `tests/test_admission.py` `d374fde739b10327…`，跑完两个 sha256 逐字一致；跑动中只写过 `docs/CC-EXECUTION-LEDGER.md`，而全树**没有测试读那份文件**。**本片有一个必须先记的前置**：先跑 `tests/test_admission.py` 单文件（`120 passed in 26.10s`）作变异检查的底，4 条变异**全部被杀**（§9.33.6），其中 E4 是**补了一条构造边界的测试之后**才被杀的（§9.33.5）。**本片改了拒绝语义（多出两种拒绝语的来源），安装产物未变**——三处改动全在 `runtime/`、`tests/` 与台账里，所以没有 build→promote→restart。另记一条保真度缩水：这一跑里 `tests/test_daemon_equivalence.py` 有一处断言因宿主在比较过程中变动而**未按精确相等判**（测试自己的警告如此写），环境造的、非本片，记在这里而不是省略 |
 
 **切片 C 那一格里的那 1 条红：`container.attribution` 的 daemon/CLI 计数比对。**
 逐字是：
@@ -3980,6 +3981,150 @@ M5 的读法与处置：`flock` 本身产生非争用 errno 的唯一现实途�
   work it never did」），但那一条判据只覆盖**开着的**准入，退休把这条路重新打开。判据本身很干
   净、可判：**回执的 `started_at` 早于这条准入的 `admitted_at`，它就不可能是这条准入的派工**
   （同一条 cycle 的重试不会被它误伤，因为重试必然晚于自己的准入）。列为下一片，不在本片内改。
+- 共享网关那一侧不属本仓，本片一概未动。
+
+### 9.33 P7 切片 E：一条退休后复用的键，把上一轮的回执递给了下一轮
+
+#### 9.33.1 那个缺陷的形状：唯一性只在「开着的」准入之间，而回执是一键一份
+
+三件事各自都对，合起来是错的：
+
+- `agent_control_store.admit` 的唯一性判据是
+  `if other.get("action_key") == action_key and not other.get("retired_at")` —— 只挡**开着的**
+  第二条准入；
+- `work retire` 的报错文本自己写着「released, so another admission may hold it now」—— 复用
+  是设计，不是漏；
+- `runtime/bounded_invocation.invoke_once` **一个 action key 一份回执**，而且输入 digest 相同时
+  **重放**而不重跑。
+
+于是：cycle-1 用 `act-1` 派了一条命令、拿到回执；cycle-1 被退休、键被释放；cycle-2 用**同一个**
+`act-1` 派**同样的**命令 —— `invoke_once` 把 cycle-1 那份回执原样交出来。而 `runtime/cli.py` 里
+有两个生产者会读那一个文件当作「本 cycle 的派工证据」：`work dispatch` 与
+`work confirm --phase DISPATCHED`。两者都会把 cycle-2 的相位记成 `DISPATCHED`，**证据来自另一条
+cycle 跑过的、cycle-2 一次都没跑过的命令**。
+
+store 在 `admit` 的 docstring 里已经把这条结果明说成缺陷 ——「the receipt would say
+`replayed: True` about work it never did」—— 但那一条判据只覆盖**开着的**准入。**退休是重新打开
+这条路的那一步**，所以判据放在 `admit` 里对它无效。
+
+#### 9.33.2 判据是一条比较，以及为什么它误伤不了必须继续工作的情形
+
+判据：**回执的 `started_at` 早于这条准入的 `admitted_at`，它就不可能是这条准入的派工。**
+
+它误伤不了同一条 cycle 的重试，理由不是「大概不会」，是构造上的：重试必然发生在这条 cycle 被准入
+**之后**，所以 `started_at >= admitted_at`，比较不成立。比较抓到的恰好是「这份文件写在这条 cycle
+存在之前」。
+
+两句前提值得写下来，因为它们决定这个判据能问多细：
+
+- 两个时刻**都是本树写的**：`invoke_once` 写 `started_at`，`work admit` 写 `admitted_at`，都写
+  带 offset 的 UTC。所以一个 naive 的时刻被**读作 UTC** 而不是被拒 —— 把格式差异升级成关于一条
+  cycle 历史的主张是过度；而一个**根本不是时刻**的值答 `None`，因为调用者问的是一个比较，
+  「没法比」不是它的答案。
+- `confirm_admission` **不校验** `at` 是否落在 grant 窗口内（原样存 `confirmed_at`），所以
+  「一条 `--at T1` 的确认落在真实时钟的窗口里」是合法的。这不影响本判据：`admitted_at` 由
+  `work admit` 写、永远是 `now`，所以一条回执只可能来自**更早的** cycle。而「`--at` 不校验
+  窗口」本身是另一条待办，不在本片。
+
+#### 9.33.3 为什么既在 spawn 前问、又在唯一那个读者里问
+
+`_dispatch_answer` 是 `runtime/cli.py` 里**唯一**读回执的地方。这是性质而不是巧合：两个生产者都
+从它读，所以把问题问在「文件被打开的那个地方」一次覆盖两条路 —— 将来第三个读回执的人也不会绕过
+它。
+
+但只问在那里不够。`work confirm --phase DISPATCHED` **不 spawn**，所以拿掉 spawn 前那一问，
+`work dispatch` 拒绝语里的「Nothing was run」就从事实变成希望 —— `invoke_once` 本来也不会起进程
+（digest 相同时它重放），但「什么都没起」是关于一次**没有发生的 spawn** 的句子，而一个能说更强
+那句话的动词欠读者那一句。所以 spawn 前另有一问；两处问的是**同一个函数**，所以不会漂移。
+
+#### 9.33.4 两种「让开」是有区别的
+
+- **键不同**：`_receipt_predates_the_admission` 直接让开（返回 `None`），因为 store 的
+  `dispatch_evidence_conflict` 已经用一句更准的话拒了这一对 ——「evidence about a different
+  dispatch」。先问这个，会把一句准话换成一句泛话。
+- **日期读不出**（字段不在、空串、不是时刻）：也让开，落到读者本来就有的那两道判据（回执自己的
+  `action_key`、store 的证据比较）。它不是拒绝，因为这里没有可做的比较；而 `invoke_once` 总会写
+  `started_at`，所以这个情形需要一份**本树没写过**的文件，而那已经在回执读者自己的契约之外。
+
+第一版的设计不是这样：当时打算「没有日期就拒」。是**已有的那条测试**把它改掉的 ——
+`test_a_refused_dispatch_is_a_sentence_and_not_a_traceback` 特意种了一份键正确、**没有
+`started_at`** 的回执，并期待 `invoke_once` 那句「same action key with different input」。一条新
+判据去抢那句更准的话，是把别人的答案换掉。
+
+#### 9.33.5 测试为什么是这四条，以及那条 fencepost 是怎么被补出来的
+
+- **假时钟会让判据看起来成立而其实没被考到。** 本文件既有的 fixture 起于 `T0 = 2026-01-01`，
+  而 `work admit` 写的永远是真实时钟。所以新增的 helper 走**真实时钟**：`admitted_at` 取
+  `datetime.now(timezone.utc)`，grant 窗口取 `now-1h … now+1d`。用 `T0` 会造出一条「回执晚于
+  准入」的循环，测试绿，而判据一次都没被走到。
+- **两个生产者必须各有一条。** 只修一处的话：网页那条测试绿、`work confirm` 那条红。两条都在。
+- **反例不是装饰。** 第三条测试是**正例**：一条 cycle 读**自己的**回执，断言的是那句
+  `phase DISPATCHED — confirmed already; nothing was run`，也就是没有被新判据拦下。没有它，
+  「干脆全都拒」这种更坏的实现一样绿。
+- **fencepost 是补出来的，不是编出来的。** 第一轮变异里 E4（把边界 `>=` 改成 `>`，也就是「只有
+  两个时刻完全相等时才不拒」）**存活** —— 没有任何测试能造出两个**恰好相等**的时刻。处置不是把
+  它记成「未被钉住」，而是先确认这个 fencepost **是构造得出来的**：种一份 `started_at`
+  **逐字等于**该准入 `admitted_at` 的回执（digest 用 `"0"*64`），断言回来的拒绝是
+  「same action key with different input」而**不是**「predates the cycle」。这条只能靠**种文件**
+  造出来 —— 真的跑一次派工永远得不出两个相等的时刻。补上之后 E4 被杀。
+- **没有 sleep。** 四条全靠**种**进去的时刻，不靠时间流逝；判据本身是两个字符串的比较，没有可等
+  的东西。
+
+#### 9.33.6 变异表：4 条，4 杀
+
+| M | 弄坏什么 | 结果 | 抓到它的 |
+| --- | --- | --- | --- |
+| E1 | 回执读者里那条判据拿掉（`why = None`） | **KILLED** | `test_the_confirm_verb_refuses_it_too` |
+| E2 | `work dispatch` 的 spawn 前预检拿掉 | **KILLED** | `test_a_reused_key_is_refused_a_receipt_written_before_this_cycle` |
+| E3 | 比较方向反过来（`started <= admitted`） | **KILLED** | **9 条**（`test_confirm_dispatch_records_a_receipt_invoke_once_wrote`、`test_the_phase_records_the_receipt_the_command_wrote`、`test_a_second_trigger_is_not_a_second_dispatch` …） |
+| E4 | 边界从 `>=` 改成 `>` | **KILLED** | `test_a_receipt_from_the_very_instant_of_admission_is_not_older` |
+
+E3 杀掉 9 条本身就值得记：它说明「方向反过来」不是一条微妙的变异，而是会把一套已经在用的行为整片
+翻掉 —— 这正是「这条判据是承重的、不是装饰」该有的读数。E4 是唯一一条需要为它补测试的（见
+§9.33.5），补的方式是**构造**那个边界而不是放宽断言。
+
+#### 9.33.7 本次读数
+
+- 变异轮基线：`tests/test_admission.py` 单文件 **120 passed in 26.10s**（本片之前是 116，本片新增
+  4 条）。E1/E2/E4 三轮各约 26.5 秒，E3 那轮 23.75 秒 —— 四轮**都没有 sleep**，所以没有一轮因为
+  「等超时」而变长。这与 §9.32 的 M1/M2 恰成对照：那两轮各约 105 秒，而**那 80 秒的差额本身是
+  证据**（测试要等 holder 的 wall 到期）。本片没有可等的东西，所以四轮齐平 —— 齐平也是一条读数。
+- 全量：**5718 passed, 20 skipped, 3947 subtests passed, 0 failed（658.60s）**。算术闭合：上一格
+  5714 ＋ 本片新增 **4 条**（`TestTheDispatchVerb` 四条）＝ 5718；subtests 3947 ＋ **0** ＝ 3947
+  （本片四条都没有 subtests）。
+- 这一跑读到的就是提交的那份字节：跑前记下 `runtime/cli.py`
+  `5da0ffbeefadf3a3…` 与 `tests/test_admission.py` `d374fde739b10327…`，跑完两个 sha256 逐字一致。
+  跑动中只写过 `docs/CC-EXECUTION-LEDGER.md` 一次，而全树**没有测试读那份文件**（两次命中都只在
+  docstring 里），所以它不影响这一跑读到的字节。
+- 一条如实记录的**保真度缩水**：这一跑里 `tests/test_daemon_equivalence.py` 有一处断言**没有按精确
+  相等判**。测试自己的警告写着宿主在比较过程中动过（daemon 读到 154 组、随后 153 组），于是它改判
+  153 是否落在 153..154 的括号内，并明说「一个恰好偏差这个量的盲目 daemon 会通过这一跑」。这是
+  **环境造的，不是本片造的**，但它确实是这一跑里唯一一条被放宽的断言，所以记在这里而不是省略。
+
+#### 9.33.8 它没做什么，以及一条邻接发现为什么不并进本片
+
+- 仍然没有 scheduler，`max_attempts` 仍然没有消费者（§9.31.8 第三条照旧）。
+- **邻接发现（本片量到，未修，列为切片 F）**：`intake/focus_source.worker_stopped_by_item` 读的
+  是**同一个** `<receipts>/<action_key>.json`，而且它**在生产的路上** ——
+  `runtime/cli.py` 的 `focus` 那条路把 `admissions` 与 `receipts_root` 交给
+  `focus_source.compose`。它已经有「键相符」那道判据（`RECEIPT_NAMES_ANOTHER_ACTION_KEY`，注释里
+  点名 `runtime/agent_control_store.dispatch_evidence_conflict` 是同一判据的 owner —— 而
+  `intake/` 下**没有任何一个模块** import `runtime.*`，所以那是照抄），**但没有时刻比较**。
+- **为什么不在本片照抄一遍**：因为在那一处，判据问的**不是同一个问题**。`work dispatch` 问的是
+  「这份回执是不是**这条 cycle 的派工证据**」；`worker_stopped_by_item` 问的是「这个 Item 上
+  **还有没有一个进程被占着**」。一份早于准入的回执**仍然可能**是某个真在跑的进程的唯一记录 ——
+  一个键一份回执，没有第二份文件。
+- 触发条件比它看上去窄，这一点本片量清楚了：`retire_admission` **保留**记录（「Retiring is not
+  un-admitting」），所以同一个键上会有两条准入同时指着它 —— 退休的那条与活着的那条。它们读的是
+  同一份回执：退休那条的读**仍然是对的**（回执就是它起的那个进程），活着那条的读才是错的。Item
+  级聚合是「held 胜过 undecidable 胜过 released」，所以只有当复用同一个键的新准入**指向另一个
+  Item** 时，那个 Item 的答案才会错；指向同一个 Item 时答案仍然是对的，因为那个进程确实是它的
+  worker。
+- 三种候选各有代价，所以这是个**先定问题、再定判据**的决定，不是一次照抄：`False`（现状）＝拿
+  另一条 cycle 的进程说这个 Item 被占，正是要修的那件事；`None` ＝「这条准入没有被证明起过
+  进程」，方向安全（不释放），但它会让 `daily_cycle.classify` 里 `if held:` 那一支不再命中，于是
+  一条 `AVAILABLE` 的行会从 `HELD` 变成可被选中 —— 也就是 OVER_CAPACITY 那一侧。**先决定「这一
+  处问的是哪一个问题」，再决定用哪条判据。**
 - 共享网关那一侧不属本仓，本片一概未动。
 
 ## 10. 后续每包更新哪几行
