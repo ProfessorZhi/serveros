@@ -40,12 +40,14 @@ already had it:
                            three-valued progress verdict, the composition, the
                            render, the receipt and the publish.
   `runtime/agent_control_store.py`
-                           the one exclusive lock in this tree (`_exclusive`)
-                           and the one atomic JSON write (`_atomic_write`).
-                           Both are reached the way `runtime/daily_report.py`
-                           already reaches them, for the reason written there:
-                           a second implementation of either is a second place
-                           for the same bug to live.
+                           the exclusive lock implementation this tree has
+                           (`_exclusive`, and `_exclusive_nowait` for the one
+                           caller whose critical section is a whole command
+                           rather than a file write) and the one atomic JSON
+                           write (`_atomic_write`). Both are reached the way
+                           `runtime/daily_report.py` already reaches them, for
+                           the reason written there: a second implementation of
+                           either is a second place for the same bug to live.
 
 The consequence worth naming: this file opens no lock, replaces no file and runs
 no command itself. It has no actuator call sites of its own, which is why

@@ -57,6 +57,8 @@ import re
 import shutil
 import subprocess
 import sys
+import threading
+import time
 from pathlib import Path
 
 import pytest
@@ -1356,6 +1358,25 @@ class TestTheDispatchVerb:
     def receipts(env: dict) -> Path:
         return Path(env["DATA_ROOT"]) / "receipts"
 
+    @staticmethod
+    def await_receipt(env: dict, key: str, timeout: float = 30.0) -> None:
+        """Wait until a dispatch is inside its receipt lock.
+
+        `invoke_once` writes `STARTED` INSIDE the lock and immediately before
+        `Popen`, so this file existing is proof that the lock is held. That is
+        what keeps the test below deterministic: nothing there asserts that a
+        sleep was long enough, and the command it starts cannot finish except
+        by the test's own hand.
+        """
+        path = TestTheDispatchVerb.receipts(env) / f"{key}.json"
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            if path.exists():
+                return
+            time.sleep(0.01)
+        raise AssertionError(f"{path.name} never appeared, so no dispatch ever "
+                             f"reached the lock this test is about")
+
     @classmethod
     def dispatch(cls, env: dict, *command: str, flags=(), cycle="cyc-1"):
         return cli("work", "dispatch", cycle, "--cwd", env["DATA_ROOT"],
@@ -1564,6 +1585,71 @@ class TestTheDispatchVerb:
         assert "nothing was started" in done.stderr
         assert json.loads((receipts / "act-1.json").read_text(
             encoding="utf-8"))["status"] == "EXITED"
+
+    def test_one_scope_waiting_does_not_freeze_another(self, tmp_path):
+        """J07's fifth criterion, on the one path in this fabric that had it.
+
+        `invoke_once` holds this action key's receipt lock across the whole life
+        of the command it guards, and it used to take it with a BLOCKING
+        `flock`. A second dispatch under the same key therefore waited for the
+        first one's command to finish — here until a marker this test creates
+        only after it has read the refusal, and in production up to the
+        reservation's `wall_seconds`. The fixture caps that at 20 so a regressed
+        verb cannot park this test for the 900 the shared budget names; the
+        answer it eventually got for the wait is the one the receipt's own
+        input-digest check gives immediately, so the wait bought nothing and
+        cost another scope's clock.
+
+        The key is shared only because the first cycle was RETIRED — `admit`
+        refuses a second open admission under a key an open one holds. Reuse
+        after retirement is what a person produces by closing one cycle and
+        admitting the next under the same readable key, and it is the only
+        shape in which two scopes can collide here at all.
+
+        `holder.is_alive()` is the assertion a wait cannot satisfy, and it is a
+        fact rather than a threshold: the holder is gated on a file that does
+        not exist yet.
+        """
+        env = a_data_root(tmp_path)
+        small = {"wall_seconds": 20, "max_attempts": 2, "max_output_bytes": 200000}
+        seed = AgentControlStore(store_path(env))
+        seed.put_context({"context_ref": CONTEXT})
+        seed.put_grant(a_grant(budget=dict(small)))
+        seed.admit(a_record(reservation=dict(small)))
+        self.held(env)
+        marker = Path(env["DATA_ROOT"]) / "first-scope-still-running"
+        command = ["/bin/sh", "-c",
+                   f"while [ ! -f {marker} ]; do sleep 0.05; done"]
+        holder = threading.Thread(target=self.dispatch, args=(env, *command))
+        holder.start()
+        try:
+            self.await_receipt(env, "act-1")
+            retired = cli("work", "retire", "cyc-1", "--at", T2, env_extra=env)
+            assert retired.returncode == 0, retired.stderr
+            seed.admit(a_record(cycle_ref="cyc-2", action_key="act-1",
+                                reservation=dict(small),
+                                lease={"resource": "browser:chromium",
+                                       "scope": "session", "holder": "cyc-2"}))
+            declared = cli("lease", "declare", "browser:chromium", "--scope",
+                           "session", "--holder", "cyc-2", "--sharing", "shared",
+                           env_extra=env)
+            assert declared.returncode == 0, declared.stderr
+            confirmed = cli("work", "confirm", "cyc-2", "--phase", "LEASE_HELD",
+                            "--at", T1, env_extra=env)
+            assert confirmed.returncode == 0, confirmed.stderr
+
+            second = self.dispatch(env, *command, cycle="cyc-2")
+
+            assert second.returncode != 0, second.stdout
+            assert "act-1.lock" in second.stderr
+            assert "Nothing was run" in second.stderr
+            assert holder.is_alive(), (
+                "the holder finished before the second dispatch answered, so "
+                "nothing here was shown about waiting")
+        finally:
+            marker.write_text("go\n", encoding="utf-8")
+            holder.join(timeout=60)
+        assert not holder.is_alive()
 
 
 class TestTheCycleIsWhatAPersonAcceptedNotWhatTheFabricProposes:

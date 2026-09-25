@@ -3,6 +3,19 @@
 Only a trusted, configured adapter supplies argv and this private directory.
 This helper neither authenticates a grant nor sandboxes commands. Direct-process
 exit is deliberately not a claim about business results or descendant termination.
+
+Why the receipt lock REFUSES instead of waiting
+-----------------------------------------------
+One action key is one receipt, so the read of the receipt and the write of it
+have to be one step, and a lock is how that is done. That lock is held from
+before `Popen` until after the group is reaped — the whole life of the command.
+A caller that BLOCKED on it would therefore be waiting for another dispatch's
+command to finish, up to its full `wall_seconds`, and would then be told what
+the receipt's own digest check would have said at once. On a host where several
+Items dispatch concurrently, that is one scope's work freezing another's for no
+answer, which J07's fifth criterion names: 一项等待不冻其他合法 scope. So the
+lock is taken non-blocking and contention comes back as a `ValueError` — an
+immediate, and truthful, refusal to start anything.
 """
 from __future__ import annotations
 import hashlib
@@ -15,6 +28,7 @@ import signal
 import subprocess
 import sys
 import time
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -52,6 +66,44 @@ def _store_io():
                  _HERE / "agent_control_store.py")
 
 
+@contextmanager
+def _receipt_lock(lock: Path):
+    """This action key's receipt lock, refused rather than waited for.
+
+    The translation lives here rather than in `invoke_once` so that the
+    `ValueError` contract is one place: every `ValueError` this module raises
+    is on the NEAR side of `Popen`, which is what `serverosctl work dispatch`
+    tells a person when it prints the message —「nothing was started」— and a
+    lock refusal raised after the spawn would make that sentence false. It is
+    raised from the acquisition, so nothing was written here either: no
+    `STARTED` receipt, no stdin/stdout/stderr files. The only file this path
+    touches is the lock sidecar, which already existed and is a kernel lock
+    rather than a record.
+
+    Why the caller is told to retry rather than to re-key: a retry is safe and
+    is the right move — if that dispatch finished with the same input, the next
+    call REPLAYS its receipt instead of executing again, and the phase records
+    from the same file. Deriving a second key to get around this would be the
+    one thing the receipt cannot protect against: two keys mean two receipts,
+    two executions of one command.
+    """
+    store = _store_io()
+    try:
+        with store._exclusive_nowait(lock):
+            yield
+    except store.LockUnavailable as exc:
+        raise ValueError(
+            f"another dispatch under this action key is still running: {exc}. "
+            f"This is not a queue and it does not wait: that lock is held for "
+            f"the whole life of the command it guards, so waiting would have "
+            f"blocked this call for another dispatch's full wall budget only to "
+            f"receive the same answer. Nothing was run and nothing was written. "
+            f"Retry when that dispatch finishes — the same input replays its "
+            f"receipt rather than executing again, and if the input differs the "
+            f"refusal you get then is the one that refusal is for"
+        ) from None
+
+
 def invoke_once(*, key: str, argv: list[str], cwd: Path, receipts: Path,
                 input_text: str = "", timeout: int = 120, readonly: bool = True,
                 max_output_bytes: int = 2_000_000) -> dict:
@@ -72,7 +124,7 @@ def invoke_once(*, key: str, argv: list[str], cwd: Path, receipts: Path,
                 "input": input_text, "readonly": readonly, "timeout": timeout,
                 "max_output_bytes": max_output_bytes}, sort_keys=True).encode()).hexdigest()
     path = receipts / (key + ".json")
-    with _store_io()._exclusive(receipts / (key + ".lock")):
+    with _receipt_lock(receipts / (key + ".lock")):
         if path.is_symlink():
             raise ValueError("symlink receipt refused")
         if path.exists():

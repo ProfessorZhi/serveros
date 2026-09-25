@@ -134,6 +134,7 @@ lock this file could take.
 """
 from __future__ import annotations
 
+import errno
 import fcntl
 import hashlib
 import json
@@ -188,6 +189,72 @@ def _exclusive(lock: Path):
     handle = os.open(lock, os.O_CREAT | os.O_RDWR, 0o600)
     try:
         fcntl.flock(handle, fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(handle, fcntl.LOCK_UN)
+    finally:
+        os.close(handle)
+
+
+class LockUnavailable(RuntimeError):
+    """Another holder has the lock. The answer about that lock, not a wait on it.
+
+    Deliberately NOT a `StoreError`, and the difference is what a caller is
+    supposed to do next. A `StoreError` is a fact about the request — the
+    record conflicts, the authority is gone, the phase is wrong — and retrying
+    it unchanged is a mistake. This is a fact about the moment: the caller
+    asked a question whose answer is "someone else is inside", and asking again
+    after they leave is exactly right. Folding the two together would give one
+    exception a retry instruction that is right for half of its raisers.
+
+    It is a `RuntimeError` because it is neither the caller's argument nor the
+    filesystem being wrong: the arguments are fine and the file is fine, and
+    the only thing standing in the way is somebody else's work.
+    """
+
+
+@contextmanager
+def _exclusive_nowait(lock: Path):
+    """Take the write lock, or report who has it — never wait for it.
+
+    `_exclusive` above is right for a store mutation, and this variant exists
+    because that one is wrong for the receipt lock in
+    `runtime/bounded_invocation.invoke_once`. The two critical sections are not
+    comparable: a mutation holds its lock for a read-modify-write of one small
+    JSON file, so waiting for it is bounded by the time it takes to write JSON,
+    while the receipt lock is held across the whole life of the command it
+    guards — up to that admission's `wall_seconds`, plus the group kill and the
+    reap. A caller that waits there is not waiting for a file; it is waiting for
+    another scope's work to end, and the wait buys nothing, because the
+    receipt's own `input_digest` check would give the same answer the instant
+    the lock was granted. So the contention is reported and the caller turns it
+    into a refusal it can explain and a person can act on.
+
+    J07's fifth criterion is the requirement: 一项等待不冻其他合法 scope. The
+    freeze in this fabric had exactly one mechanism and it was this one.
+
+    `LOCK_NB` is the whole difference from `_exclusive`: with it the call raises
+    instead of sleeping. Everything else is unchanged, including the property
+    that matters most — the kernel drops the lock when the holder exits, however
+    it exits, so a holder that was killed does not leave a lock anybody has to
+    clear (`runtime/state_root.py` warns about the other reading, where a lock
+    file's mere EXISTENCE is taken as an occupied resource).
+    """
+    lock.parent.mkdir(parents=True, exist_ok=True)
+    handle = os.open(lock, os.O_CREAT | os.O_RDWR, 0o600)
+    try:
+        try:
+            fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError as exc:
+            # EWOULDBLOCK and EAGAIN are the same number on Linux; EACCES is
+            # what a lock held by another process reports in some other
+            # filesystems. Both mean the same thing here and nothing else does,
+            # so anything else is re-raised rather than renamed.
+            if exc.errno not in (errno.EAGAIN, errno.EACCES):
+                raise
+            raise LockUnavailable(
+                f"{lock} is held by a writer that has not finished") from None
         try:
             yield
         finally:

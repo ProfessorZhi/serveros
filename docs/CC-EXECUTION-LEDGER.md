@@ -520,7 +520,8 @@ tests/test_declared_commands.py::DeclaredCommandsExist::test_every_declared_comm
 | serveros（P6 切片 D：`resources_released` 接上它的 lease 生产者 + 一对字段必须先被读全，§9.28） | **5683 passed, 20 skipped, 3945 subtests passed, 0 failed**（646.90s） | `pytest tests/ -q`。算术是闭合的：上一格 5669 ＋ 这一片新增的 **13 条**（`test_focus_source.py` 的 `ResourceOccupancyIsReadFromTheLeaseStoreThatOwnsIt` 10 条 ＋ `test_daily_cycle.py` 3 条）＝ 5682，**再加回上一格那条红的 1 条** ＝ 5683；subtests 3936 ＋ **9** ＝ 3945。上一格那 1 条**这一次没有出现**——同一个文件单跑 `27 passed`、那一条参数化单跑 `4 passed`（8.10s）。**这不表示这一片修好了它**：这一片的六文件与它无涉，只表示那条红是**间歇的**，与 §9.27.6 记的探针读法一致（`container.attribution` 是四条参数化里唯一会 shell out 到 Docker 的那条）。所以它从「见过一次」变成「见过一次、缺席一次」，**不结案** |
 | serveros（P7 切片 A：准入与观察拆成两个问题、四个记录目录陷阱、§9.29） | **5697 passed, 20 skipped, 3947 subtests passed, 0 failed** | `pytest tests/ -q`。算术闭合：上一格 5683 ＋ 本片新增的 **14 条**（`TheAttemptWatchTest` 12 条 ＋ `TheRecipeCommandLineTest` 2 条）＝ 5697；subtests 3945 ＋ **2** ＝ 3947。**这一格必须先记一次红**：修掉本片自己引入的 monkeypatch 泄漏之前的那一跑是 **17 failed, 5680 passed, 3947 subtests passed（812.08s）**，17 条全落在五个与本片无涉的文件里，根因是本片新测试的 `addCleanup` 把**打过补丁的** `paths_mod.Paths` 又装了回去，而那是全树共享的模块对象；因为「单文件绿、15 条变异全杀、全量却红」是这一片最有价值的那条教训，它留在这里不删。**本格不记墙钟**：这一行的文字在跑之前就已落盘，所以那一跑读到的正是提交的那份字节——这比一个秒数强，所以拿它换掉了秒数。 |
 | serveros（P7 切片 B：一个缺席的两种拼法，§9.30） | **5700 passed, 20 skipped, 3947 subtests passed, 0 failed**（636.60s） | `pytest tests/ -q`。算术闭合：上一格 5697 ＋ 本片新增的 **3 条**（`ReportTest` 三条）＝ 5700；subtests 3947 ＋ **0** ＝ 3947（本片三条都没有 subtests）。这一跑没有被改动的文件在中途换过字节：起跑前记下 `runtime/recipes.py` 的 sha256 `d0c40f45a1db42b1…`，跑完核对一致，那一跑读的就是提交的这一份。 |
-| serveros（P7 切片 C：`DISPATCHED` 的生产者 / `invoke_once` 的第一个生产调用者，§9.31） | **5709 passed, 20 skipped, 3947 subtests passed, 0 failed**（604.13s） | `pytest tests/ -q -p no:cacheprovider`。算术闭合：上一格 5700 ＋ 本片新增的 **9 条**（`TestTheDispatchVerb` 九条）＝ 5709；subtests 3947 ＋ **0** ＝ 3947（本片九条都没有 subtests）。这一跑读到的就是提交的那份字节：起跑前记下 `runtime/cli.py` 的 sha256 `135c11a00e159a40…`，跑完与提交前复核一致（本片另外两处改动是 `runtime/actuator-contract.yaml` 与 `tests/test_admission.py`，都不在跑动中被改）。**本片有一个必须先记的前置**：先跑的是 `tests/test_admission.py` 单文件（`115 passed in 18.77s`）作为变异检查的基线，然后 8 条变异全部被杀、每条都由它该杀的那一条测试杀死（§9.31.6），最后才是这一跑全量 | |
+| serveros（P7 切片 C：`DISPATCHED` 的生产者 / `invoke_once` 的第一个生产调用者，§9.31） | **5709 passed, 20 skipped, 3947 subtests passed, 0 failed**（604.13s） | `pytest tests/ -q -p no:cacheprovider`。算术闭合：上一格 5700 ＋ 本片新增的 **9 条**（`TestTheDispatchVerb` 九条）＝ 5709；subtests 3947 ＋ **0** ＝ 3947（本片九条都没有 subtests）。这一跑读到的就是提交的那份字节：起跑前记下 `runtime/cli.py` 的 sha256 `135c11a00e159a40…`，跑完与提交前复核一致（本片另外两处改动是 `runtime/actuator-contract.yaml` 与 `tests/test_admission.py`，都不在跑动中被改）。**本片有一个必须先记的前置**：先跑的是 `tests/test_admission.py` 单文件（`115 passed in 18.77s`）作为变异检查的基线，然后 8 条变异全部被杀、每条都由它该杀的那一条测试杀死（§9.31.6），最后才是这一跑全量 |
+| serveros（P7 切片 D：回执锁改成「拒绝」而不是「等」，J07 判据 5，§9.32） | **5714 passed, 20 skipped, 3947 subtests passed, 0 failed**（647.81s） | `pytest tests/ -q -p no:cacheprovider`。算术闭合：上一格 5709 ＋ 本片新增的 **5 条**（`tests/test_bounded_invocation_paths.py` 四条 ＋ `tests/test_admission.py` 一条）＝ 5714；subtests 3947 ＋ **0** ＝ 3947（本片五条都没有 subtests）。这一跑读到的就是提交的那份字节：跑前记下 **7 个**被测文件的 sha256（`runtime/agent_control_store.py` `b54b22c4470006e0…`、`runtime/bounded_invocation.py` `c324f0dbd3c6dfce…`、`runtime/cli.py` `4ae3dc99c4a5bacae…`、`runtime/recipes.py`、`runtime/actuator-contract.yaml` 与两个测试文件），跑完 `sha256sum -c` 全部 `OK`。**本片同样有一个必须先记的前置**：先跑两个文件的合并基线（`131 passed`）作变异检查的底，然后 6 条变异 **5 杀 1 存**（§9.32.5，存活的那条 M5 与其理由记在那里），最后才是这一跑全量。本片改了错误/异常语义（新增 `LockUnavailable`），**安装产物未变**——三处改动全在 `runtime/`、`tests/` 与一份契约的散文里，所以没有 build→promote→restart |
 
 **切片 C 那一格里的那 1 条红：`container.attribution` 的 daemon/CLI 计数比对。**
 逐字是：
@@ -3885,6 +3886,101 @@ confirmations.DISPATCHED = {action_key: 'act-1', status: 'EXITED',
   `MISSING_OR_REVOKED_GRANT` 拒掉。**第一条真授权是人的动作**（§11 那一类），不能用一条
   fixture 值绕过去——9.31.7 那次用的是隔离根里自己造的 `grant-1`，这正是它必须待在隔离根里的
   原因。
+
+### 9.32 P7 切片 D：回执锁不再让一项等、把另一项冻住（J07 判据 5）
+
+#### 9.32.1 那个缺陷的形状：一把持「整条命令的命」的锁，被用阻塞的方式取了
+
+`runtime/bounded_invocation.invoke_once` 在拿到「这个 action key 的回执」和写它之间必须是一
+步，所以它取锁——而那一把锁是从 `Popen` **之前**一直持到整个进程组被 reap **之后**，也就是
+持着「这条命令的整条命」。取法一直是 `flock(LOCK_EX)`，阻塞的。
+
+它在 §9.31 之前不是生产可达的：`invoke_once` 当时一个生产调用者都没有。`work dispatch` 落地
+之后它是了，于是 J07 验收判据的第 5 条——**「一项等待不冻其他合法 scope」**——变成一条可判、
+可触发、而且判据已经写在纸上的缺陷：同一个 action key 上的第二个调用者会**等**第一个命令跑完，
+上限就是这条准入 reservation 里的 `wall_seconds`（本机 fixture 与生产同形，900 秒），然后拿到
+的答案是回执自己的 `input_digest` 当场就能给的那一个。
+
+本片之前查过全机：**这条是唯一一条「一项在等、把另一项卡在锁上」的路径**。`recipes._write_record`
+与 store 自己的 `_mutation` 也取锁，但它们的临界区是写一个小 JSON。
+
+#### 9.32.2 为什么是「拒绝」而不是「等」或「放行」
+
+- **不能放行。** 一个 key 一份回执是这个模块的全部意义所在：放行就等于两条 receipt、两次执行，
+  正是 `admit` 的 docstring 里点名的那种「the receipt would say `replayed: True` about work it
+  never did」。
+- **不能等。** 等的收益是零：锁一旦到手，回执的 digest 判据给出的答案与「当场被拒」是同一个，
+  因为争用的那一方**不可能**用同样的输入拿到一个不同的答案；而成本是另一个 scope 的整个 wall
+  budget。收益为零、成本是他人的时间，这不是「保守」。
+- **第三个选项**：当场拒绝，带上键名、说明为什么不是队列、给出可执行的动作（等它跑完再重试——
+  同输入重放回执，不重跑）。而且拒绝发生在 `Popen` **之前**，所以 `work dispatch` 那句
+  「nothing was started」仍然是事实而不是希望。
+- 反过来说为什么另外两处**保持阻塞**：那两处的临界区是一个小文件的读改写，等它是有界的；
+  只有持「整条命令」的那一把不能等。所以 store 里是两个函数而不是一个开关。
+
+#### 9.32.3 两处异常的区分是承重的，不是风格
+
+- `LockUnavailable` **故意不是** `StoreError`。前者是「此刻有人在里面」，重试是对的；后者是
+  「你请求本身有问题」，原样重试是错的。合成一个，就会给一半的抛出者配上一句错的重试指令。
+- errno 判据：只有 `EAGAIN`／`EACCES` 被说成「有人正拿着」；其它 `OSError` **原样抛出**。
+  否则一把**打不开**的锁会被报成「别人正拿着」，操作者会一直重试一件不会发生的事。
+
+#### 9.32.4 测试为什么是这几条，以及为什么里面没有 sleep
+
+- **门闩文件**：被测的命令门在「某个标记文件存在」上，而 `STARTED` 写在锁**内**、`Popen`
+  **前**，所以那个文件一出现就证明锁已被持有。断言用的是 `holder.is_alive()` 这个**事实**，
+  不是一个时间阈值；释放只发生在测试自己的 `finally` 里。
+- **「另一个 key 不被冻住」不是装饰**：没有它，「把锁取在整个 receipts 目录上」这种更坏的实现
+  与修好的实现一样绿。它钉的是「锁的身份是 key」。
+- **「拒绝要求的重试确实重放」**：计数器自证（同输入重放、不重跑）。这句拒绝里写给操作者的
+  指令必须是真的，否则它比等待更坏。
+- **产品面那条**：两个 scope 共用一个 key。这个形状只能靠**退休后的复用**造出来——`admit`
+  明确拒绝两条**开着的**准入共用一个 key——而这正是人会产生它的方式：关掉一个 cycle，用同一个
+  好读的键开下一个。断言是：第二个**当场**被拒、消息里点出是哪把锁（`act-1.lock`），而第一个
+  仍在跑。
+
+#### 9.32.5 变异表：6 条，5 杀 1 存——存的那条留着，且没有为它造假测试
+
+| M | 弄坏什么 | 结果 | 抓到它的 |
+| --- | --- | --- | --- |
+| M1 | 把阻塞锁原样放回来（就是这条缺陷本身） | **KILLED** | 持有者仍在跑时的拒绝、重试重放、跨 scope 三条 |
+| M2 | 去掉 `LOCK_NB`（函数还在，但它会等） | **KILLED** | 同上三条 |
+| M3 | 丢掉 `LockUnavailable` → `ValueError` 的翻译 | **KILLED** | 同上三条 |
+| M4 | 锁按**目录**取而不是按 key 取 | **KILLED** | 「另一个 key 不被冻住」、「打不开的锁」、拒绝那条 |
+| M5 | 去掉 errno 判据（什么 `OSError` 都说成争用） | **SURVIVED** | —— |
+| M6 | 拒绝消息里不再带出锁的路径 | **KILLED** | 同上三条 |
+
+M5 的读法与处置：`flock` 本身产生非争用 errno 的唯一现实途径是把**内核锁表耗尽**，测试安排不
+出来；所以那一行是**防御性的、未被钉住**，如实记在这里，而不是省略、也不是为它加一条读起来像
+判据的假测试。
+
+**顺带订正一条本片自己写错的**：M5 的第一版测试 docstring 说「把锁路径做成目录，`flock` 拿不
+上」——实测是 `os.open` 先以 `EISDIR` 失败，`flock` 根本没被调到，所以那条测试钉的是「打不开
+的锁不被说成争用」，不是「flock 的非争用错误」。docstring 已按实测改写，M5 相应记为存活。
+
+#### 9.32.6 本次读数
+
+- 变异轮：基线 `131 passed`（`tests/test_bounded_invocation_paths.py` + `tests/test_admission.py`
+  两个文件）。M1/M2 那两轮各耗时约 105 秒而不是 26 秒——原因就是被测的东西：测试要等到 holder
+  的 wall（20 秒）到期，才轮到「第二次调用有没有被拒」这个断言。**那 80 秒的差额本身就是证据。**
+- 全量：**5714 passed, 20 skipped, 3947 subtests passed, 0 failed（647.81s）**。
+  算术闭合：上一格 5709 ＋ 本片新增 **5 条**（`test_bounded_invocation_paths.py` 四条 +
+  `test_admission.py` 一条）＝ 5714；subtests 3947 ＋ **0** ＝ 3947。
+- 这一跑读到的就是提交的那份字节：跑前记下 7 个被测文件的 sha256，跑完 `sha256sum -c` 全部 `OK`
+  （其中 `runtime/cli.py` 此前有一次编辑是**文本替换**而不是整文件重写，所以记的是内容而不是
+  「文件没动过」）。
+
+#### 9.32.7 它没做什么，以及一条邻接的新发现（未处置，列为切片 E）
+
+- 仍然没有 scheduler；`max_attempts` 仍然没有消费者（§9.31.8 第三条照旧）。
+- **邻接发现（本片量到，未修）**：`retire` 释放一个 action key 之后，下一个 cycle 复用同一个
+  key，而命令输入**相同**时，`invoke_once` 会**重放**上一轮的 receipt，`work dispatch` 于是把
+  复用者的相位记成 `DISPATCHED`——**这条准入的派工证据来自另一条 cycle 跑的命令**。store 在
+  `admit` 的 docstring 里把这条结果明说成缺陷（「the receipt would say `replayed: True` about
+  work it never did」），但那一条判据只覆盖**开着的**准入，退休把这条路重新打开。判据本身很干
+  净、可判：**回执的 `started_at` 早于这条准入的 `admitted_at`，它就不可能是这条准入的派工**
+  （同一条 cycle 的重试不会被它误伤，因为重试必然晚于自己的准入）。列为下一片，不在本片内改。
+- 共享网关那一侧不属本仓，本片一概未动。
 
 ## 10. 后续每包更新哪几行
 
