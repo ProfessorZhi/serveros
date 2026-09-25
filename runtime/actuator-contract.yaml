@@ -405,6 +405,26 @@ actuators:
       same argument again: `tempfile.mkstemp` names the temporary, the unlink
       runs only in the `except` arm, and it therefore removes a file this
       process created one statement earlier and nothing else.
+
+      `intake/document_publish.py#write_receipt` is the seventh site and the
+      fourth `mkstemp` one, and it is the one whose temporary shares a directory
+      with a file a PERSON may have written: the receipt directory is the
+      caller's, named `--receipts`. That is not a widening, it is the reason the
+      temporary is `.tmp`-suffixed and library-named — the only file this unlink
+      can reach is the one `mkstemp` handed back in this call, whatever else is
+      in that directory. The commit half of the same function is declared under
+      `atomic-write-commit`.
+
+      `runtime/report_delivery.py#_write` is the eighth and the last, and it is
+      the same function as `document_publish.py#write_receipt` under a
+      different name, which is why the two arrived in the same round: the
+      delivery outbox and its receipts are read back by the next attempt to
+      answer "has this already gone out?", and half a record there is not a
+      missing record — it is the answer "we cannot tell", which is the one
+      answer that must never be manufactured. Both of that function's callers
+      write into the directory `report daily` published into, which also holds
+      the report a person reads; the `mkstemp` name is what keeps this unlink
+      off that file.
     sites:
       - {file: relations/project.py, symbols: [write]}
       - {file: runtime/ability_projection.py, symbols: [write_atomic]}
@@ -417,6 +437,8 @@ actuators:
       - {file: intake/understanding_patch.py, symbols: [write]}
       - {file: intake/understanding_semantic.py, symbols: [_atomic_write]}
       - {file: intake/understanding_brief.py, symbols: [write]}
+      - {file: intake/document_publish.py, symbols: [write_receipt], verb: ".unlink()"}
+      - {file: runtime/report_delivery.py, symbols: [_write], verb: ".unlink()"}
 
   - id: atomic-write-commit
     kind: fs_mutation
@@ -468,6 +490,29 @@ actuators:
       written relative to whatever directory a CLI happened to stand in is one
       the session cannot find. It was written in the round that added the verb
       and declared in this one, because the guard's run is what says so.
+
+      `intake/document_publish.py#write_receipt` is the seventh site and the
+      first here whose destination is named by the CALLER and then read back by
+      this process later. `receipts_dir` arrives from the CLI and is refused
+      unless absolute, so the path cannot come from the cwd; the file it writes
+      is what the next run reads to learn what already happened. That is why the
+      commit half is atomic as well: the replace is the instant the answer to
+      "did we already write this?" changes, and a reader who catches the file
+      between `mkstemp` and `replace` reads the previous answer — which is true
+      — rather than half of the new one, which is not. Half a receipt is a wrong
+      answer to "what did we already do", and that answer is exactly what stops
+      a second write to a document the first one has already touched. The unlink
+      half of the same function is declared under `atomic-write-temp-cleanup`.
+
+      `runtime/report_delivery.py#_write` is the eighth and closes the round:
+      the delivery outbox and its receipts, written atomically for exactly the
+      reason above and one more. A receipt is what a LATER attempt reads to
+      decide whether to send again — so a receipt that is half-written is not
+      merely lossy, it is the state machine reading a torn record as an answer.
+      The destinations are two files in the directory `report daily` published
+      into, beside the report a person reads and the publication receipt that
+      says which version it is. Those two files are written atomically by
+      `runtime/daily_report.py` for the same reason and are declared above.
     sites:
       - {file: relations/project.py, symbols: [write]}
       - {file: runtime/ability_projection.py, symbols: [write_atomic]}
@@ -481,6 +526,8 @@ actuators:
       - {file: intake/understanding_patch.py, symbols: [write]}
       - {file: intake/understanding_semantic.py, symbols: [_atomic_write]}
       - {file: intake/understanding_brief.py, symbols: [write]}
+      - {file: intake/document_publish.py, symbols: [write_receipt], verb: ".replace()"}
+      - {file: runtime/report_delivery.py, symbols: [_write], verb: ".replace()"}
 
   - id: daemon-owns-its-socket
     kind: fs_mutation
@@ -914,6 +961,59 @@ actuators:
       uncompleted step rather than something this entry claims.
     sites:
       - {file: runtime/bounded_invocation.py, symbols: [invoke_once]}
+
+  - id: the-cli-is-run-from-one-place
+    kind: unresolved_argv
+    verb: subprocess.run
+    why: >-
+      `subprocess.run(argv, capture_output=True, text=True, timeout=timeout,
+      cwd=cwd)` in `runtime/document_transport.py#run` — one function, now five
+      call shapes, and the argv is the function's parameter, so the scanner
+      reports it rather than reading it. The scanner cannot resolve the argv for
+      the reason its own docstring gives: `LARK_CLI` is the module constant
+      `"lark-cli"`, named instead of assumed on PATH so a host without it fails
+      with a sentence rather than a `FileNotFoundError`. So what is fixed is
+      what the binary is ASKED TO DO, and what varies is which binary answers.
+
+      The document half is four shapes and is the same four the publish module's
+      contract names: `docs +fetch` (a document's blocks and revision with ids),
+      `drive +member-list` (its membership), `docs +update` (replace or insert
+      one section's body, with `--revision-id` passed through so the service's
+      own currency check runs as well as the caller's), `docs +media-insert`
+      (one local file). The fifth is the message half and lives in
+      `runtime/message_transport.py`: `im +messages-send --as bot --user-id|
+      --chat-id … --markdown … --idempotency-key …`, which is how a period
+      report reaches a person.
+
+      **The fifth shape is why this entry's name is about `run` and not about
+      documents.** That module does not grow its own subprocess call: it loads
+      this one by path and borrows `run`. The rule it is borrowing is not the
+      invocation — it is the envelope check, which is that a write command's
+      success is `ok: true` and not `code == 0`, a distinction the CLI's own
+      shared documentation names as the dangerous mistake. Two copies of that
+      rule would be two places to get it wrong, and a mutation in one would
+      leave the other looking alive; so there is one, and both surfaces go
+      through it. The cost is that this declaration covers argv shapes built in
+      a second file, which is stated here rather than left to be inferred.
+
+      Neither caller holds a credential or reads one. Both run an
+      already-authenticated CLI and pass through what it returns. `cwd` is passed
+      by exactly one caller, `media_writer`, and it passes the SOURCE FILE's own
+      directory, because the CLI reads a local path only if it is under its
+      working directory, `/tmp` or `~/files` — this host's policy puts temp files
+      under the artifacts root and does not create `~/files`, so the default
+      working directory would refuse every media file this path is allowed to
+      send. A caller who can name a path can name one in that directory, so the
+      narrowing is not lost by moving.
+
+      The separation is the point rather than an accident of layering:
+      `space/resolver.py` carries the lesson in its own header — a kernel
+      primitive that learns one tenant's cloud paths stops being a kernel
+      primitive. `intake/document_publish.py` and `runtime/report_delivery.py`
+      hold the disciplines and know nothing about how a document or a message is
+      reached; these two transports are the halves that do.
+    sites:
+      - {file: runtime/document_transport.py, symbols: [run]}
 
   - id: bounded-invocation-kills-the-group-it-created
     kind: process_termination

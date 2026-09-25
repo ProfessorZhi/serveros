@@ -694,9 +694,14 @@ def read_manifest(path: Path) -> dict:
     declared, undeclared = _capture_half(shape, document)
     # `last_verified_at` sits at the manifest's top level on a document capture
     # and inside `sync` on a chat capture. Both are read; neither is inferred
-    # from the other. A web capture carries neither, and is reported as
-    # `NOT_RECORDED` rather than given one: a fetch that never re-checked
-    # anything has nothing to record here.
+    # from the other. A web capture written by the fetch that first saw it
+    # carries neither and is reported as `NOT_RECORDED` rather than given one:
+    # a fetch that never re-checked anything has nothing to record here. A web
+    # capture that HAS been re-checked carries the top-level key like any other
+    # manifest — as of 2026-09-25 `information/raw/web/verify_web.py` writes it,
+    # so the sentence above is about a manifest nobody has revisited rather
+    # than about the shape. The key is not reserved to one shape and this
+    # branch never asked it to be: it reads the manifest, not a family.
     verified_at = document.get("last_verified_at")
     if shape == "chat_capture":
         verified_at = verified_at or \

@@ -48,11 +48,18 @@ share is that a cloud service happens to hold both.
 
 ## The six capabilities, and the two words that matter
 
-`mcp/human_control.py:471-509`, measured on this device rather than assumed:
+`mcp/human_control.py:483-566`, measured on this device rather than assumed:
 
 ```text
 human.conversation.context     SUPPORTED    /api/sessions reports chatId, chatType, sessionId
-human.notification.transport   SUPPORTED    POST /api/trigger carries a ServerOS sentence
+human.notification.transport   UNKNOWN      an unaddressed POST /api/trigger is a SYNTHETIC
+                                            session: the text becomes a model's task and its
+                                            answer returns over HTTP. The service's own header
+                                            for that turn says the reply is "not shown in a
+                                            chat" and forbids posting to Feishu, so this path
+                                            reaches no person. Corrected downward from SUPPORTED
+                                            on 2026-09-25; an addressed trigger (`target.chatId`)
+                                            is what would settle it
 human.identity.verify          UNKNOWN      `botmux actor current --json` verifies only
                                             inside a BotMux turn; from a non-turn process
                                             it answers status=blocked, current_actor_unverified

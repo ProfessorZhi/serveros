@@ -528,8 +528,24 @@ class BotMuxHumanControlProvider:
                     "request fingerprint an approval is about; a returned key is bound "
                     "to nothing. See request_approval, which still refuses"),
                 "human.notification.transport": support(
-                    "SUPPORTED",
-                    "POST /api/trigger carries a ServerOS sentence into the conversation"),
+                    "UNKNOWN",
+                    "Measured 2026-09-25 and corrected DOWNWARD from SUPPORTED, "
+                    "which is the direction this table had not yet been corrected "
+                    "in. `POST /api/trigger` with no `target.chatId` does not carry "
+                    "a sentence into a conversation: the service creates a SYNTHETIC "
+                    "session (`target.chatId` comes back as `http_async_…`) and hands "
+                    "the text to a MODEL as a task, whose answer is returned over HTTP "
+                    "to the caller. The header the service builds for that turn says "
+                    "in as many words that the reply is 'not shown in a chat' and "
+                    "instructs the model not to post to Feishu. So the path this "
+                    "provider uses reaches no person, and a receipt read off it says "
+                    "a model was asked. The surface does exist — a trigger that names "
+                    "a real `target.chatId` routes into that chat — and it has never "
+                    "been observed to deliver anything from here, so the state is "
+                    "UNKNOWN rather than UNSUPPORTED: what would settle it is one "
+                    "addressed trigger whose message is seen at the other end. Until "
+                    "then `runtime/notifications.py#deliver` refuses before calling, "
+                    "which is the intended reading of this word."),
                 "human.interactive.rendering": support(
                     "UNKNOWN",
                     "`botmux send --card-file` and `--card-json` are documented, and "
