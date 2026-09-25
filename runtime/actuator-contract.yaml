@@ -955,7 +955,13 @@ actuators:
       the receipt is written and fsynced as `STARTED` BEFORE the spawn, so a
       crash in the window between them is visible rather than absent; the
       action key is a 100-character `[a-zA-Z0-9_-]` token; a second call with
-      the same key and a different input digest raises instead of running; the
+      the same key and a different input digest raises instead of running; that
+      key's receipt lock is taken with `LOCK_NB`, so a call that finds another
+      dispatch inside it is refused by name instead of waiting — the lock is
+      held across the whole life of the command it guards, and a wait there
+      would freeze one scope for another one's wall budget to receive an answer
+      the digest check already had (since 2026-09-26; the wait was real, and it
+      is J07's fifth criterion); the
       output of each stream is capped at `max_output_bytes` by the reader; and
       the deadline is enforced by the same loop that drains the pipes, so a
       child that never writes cannot outlive its timeout.

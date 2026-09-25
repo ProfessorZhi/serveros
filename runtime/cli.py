@@ -7560,18 +7560,23 @@ def cmd_work_dispatch(args) -> int:
             max_output_bytes=reservation["max_output_bytes"])
     except ValueError as exc:
         # Every `raise ValueError` in that helper is on the near side of the
-        # spawn — the argument checks, the symlink refusal and the
-        # same-key-different-input refusal all return before `Popen` — so the
-        # sentence below is a fact about this path and not a hope. Not softened
-        # into a per-case message here: the rules are that module's, and a
-        # second copy of them would be a second place to get them wrong.
+        # spawn — the argument checks, the symlink refusal, the
+        # same-key-different-input refusal and (since 2026-09-26) the
+        # receipt-lock refusal all return before `Popen` — so the sentence
+        # below is a fact about this path and not a hope. Not softened into a
+        # per-case message here: the rules are that module's, and a second copy
+        # of them would be a second place to get them wrong.
         sys.stderr.write(
             f"serverosctl: `runtime/bounded_invocation.invoke_once` refused "
             f"this dispatch: {exc}. It validates what it is handed before it "
-            f"spawns anything, so nothing was started. A dispatch whose input "
-            f"differs from an earlier one under this action key is the case it "
-            f"refuses by design: one key is one receipt, and the phase cannot "
-            f"advance under a different command\n")
+            f"spawns anything, so nothing was started. Two refusals come from "
+            f"there by design, and the message above says which: input that "
+            f"differs from an earlier dispatch under this action key (one key "
+            f"is one receipt, and the phase cannot advance under a different "
+            f"command), and a receipt lock another dispatch still holds — "
+            f"which it reports at once rather than waiting on, because that "
+            f"lock is held for the whole life of the command it guards and the "
+            f"wait would have frozen this scope for another one's wall budget\n")
         return EXIT_FAULT
 
     try:

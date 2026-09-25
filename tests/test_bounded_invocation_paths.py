@@ -37,6 +37,19 @@ A note on what is NOT asserted, because asserting it would be the thing this
 round keeps finding: `effect: UNVERIFIED` on a clean exit is not a claim that
 nothing happened. It is the statement that this layer does not know, and the
 assertion below is that the receipt says so.
+
+THE FIFTH THING THIS FILE RUNS, ADDED 2026-09-26
+------------------------------------------------
+The receipt lock. It is held from before `Popen` until after the group is
+reaped, so it is held across the entire life of the command it guards, and
+until today it was taken with a BLOCKING `flock` — which meant that a second
+caller under the same action key waited for that command to finish (up to its
+full wall budget) to be told what the receipt's own digest check would have
+answered immediately. J07's fifth criterion names this directly — 一项等待不冻
+其他合法 scope — and `work dispatch` is what made the path reachable in
+production. The tests at the end of this file assert the property that
+replaced it: contention is refused, promptly and by name, and a scope with its
+own key is not held up by one that is working.
 """
 from __future__ import annotations
 
@@ -44,6 +57,7 @@ import json
 import os
 import subprocess
 import tempfile
+import threading
 import time
 import unittest
 from pathlib import Path
@@ -215,6 +229,144 @@ class BoundedInvocationPaths(unittest.TestCase):
         with self.assertRaises(ValueError):
             invoke_once(key="prompt", argv=argv, cwd=self.cwd, receipts=self.receipts,
                         input_text="second prompt", timeout=30)
+
+    # -- the receipt lock: who waits, and who is told -----------------------
+    def await_receipt(self, key: str, timeout: float = 30.0) -> None:
+        """Wait until a dispatch is inside its lock.
+
+        `STARTED` is written INSIDE the lock and immediately before `Popen`, so
+        this file existing is proof that the lock is held. That is what keeps
+        these tests deterministic: nothing here asserts that a sleep was long
+        enough, and the gate below cannot be released by any path except the
+        test's own `finally`.
+        """
+        path = self.receipts / f"{key}.json"
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            if path.exists():
+                return
+            time.sleep(0.01)
+        self.fail(f"{path.name} never appeared, so the holder never got its lock")
+
+    @staticmethod
+    def gated(marker: Path, then: str = "") -> list[str]:
+        """A command that cannot finish until the marker file exists."""
+        script = f"while [ ! -f {marker} ]; do sleep 0.05; done"
+        return ["/bin/sh", "-c", f"{script}; {then}" if then else script]
+
+    def test_a_held_receipt_lock_is_refused_rather_than_waited_for(self):
+        """J07's fifth criterion, at the layer that had the only mechanism for it.
+
+        The wait this refuses is not a wait for a file: that lock is held for
+        the whole life of the command it guards, so a caller that blocked on it
+        would be waiting for another dispatch — here, until a marker this test
+        creates only AFTER it has seen the refusal. `holder.is_alive()` is the
+        assertion a wait could not satisfy, and it is a fact rather than a
+        threshold: the holder is gated on a file that does not yet exist.
+        """
+        marker = self.cwd / "release-one"
+        call = dict(key="held", argv=self.gated(marker), cwd=self.cwd,
+                    receipts=self.receipts, timeout=30)
+        holder = threading.Thread(target=invoke_once, kwargs=call)
+        holder.start()
+        try:
+            self.await_receipt("held")
+            with self.assertRaises(ValueError) as caught:
+                invoke_once(**call)
+            # The lock is named, so this cannot be a different refusal wearing
+            # the same exception type — and the input is IDENTICAL, so a lock
+            # that was free would have replayed rather than raised.
+            self.assertIn("held.lock", str(caught.exception))
+            self.assertIn("Nothing was run", str(caught.exception))
+            self.assertTrue(holder.is_alive(),
+                            "the holder had already finished, so the refusal "
+                            "above proved nothing about waiting")
+        finally:
+            marker.write_text("go\n")
+            holder.join(timeout=30)
+            self.assertFalse(holder.is_alive())
+
+    def test_a_second_action_key_completes_while_the_first_is_still_running(self):
+        """The lock is per action key, which is what bounds the refusal.
+
+        Without this, replacing the blocking lock with a refused one would be
+        an improvement nobody could tell from a lock taken on the whole receipt
+        directory — the same refusal, hiding a worse defect.
+        """
+        marker = self.cwd / "release-two"
+        holder = threading.Thread(target=invoke_once, kwargs=dict(
+            key="scope-a", argv=self.gated(marker), cwd=self.cwd,
+            receipts=self.receipts, timeout=30))
+        holder.start()
+        try:
+            self.await_receipt("scope-a")
+            other = invoke_once(key="scope-b", argv=["/bin/sh", "-c", "echo b"],
+                                cwd=self.cwd, receipts=self.receipts, timeout=30)
+            self.assertEqual(other["status"], "EXITED")
+            self.assertEqual((self.receipts / "scope-b.stdout").read_text(), "b\n")
+            self.assertTrue(holder.is_alive(),
+                            "the other scope finished first, so nothing here "
+                            "was shown to run beside it")
+        finally:
+            marker.write_text("go\n")
+            holder.join(timeout=30)
+            self.assertFalse(holder.is_alive())
+
+    def test_the_retry_the_refusal_asks_for_replays_instead_of_running_again(self):
+        """The refusal's instruction has to be true, or it is worse than a wait.
+
+        An operator is told to retry once that dispatch finishes. What makes
+        that safe is `input_digest`, and a command that counts its own runs is
+        the only way to assert it: a retry that executed again would be the
+        double dispatch the whole receipt exists to prevent.
+        """
+        marker = self.cwd / "release-three"
+        counter = self.cwd / "runs-after-contention"
+        call = dict(key="contended",
+                    argv=self.gated(marker, then=f"echo x >> {counter}"),
+                    cwd=self.cwd, receipts=self.receipts, timeout=30)
+        holder = threading.Thread(target=invoke_once, kwargs=call)
+        holder.start()
+        try:
+            self.await_receipt("contended")
+            with self.assertRaises(ValueError) as caught:
+                invoke_once(**call)
+            self.assertIn("contended.lock", str(caught.exception))
+        finally:
+            marker.write_text("go\n")
+            holder.join(timeout=30)
+            self.assertFalse(holder.is_alive())
+
+        retried = invoke_once(**call)
+        self.assertTrue(retried["replayed"])
+        self.assertFalse(retried["executed_now"])
+        self.assertEqual(counter.read_text().count("x"), 1,
+                         "the retry executed the command instead of replaying")
+
+    def test_a_lock_that_cannot_be_opened_is_not_reported_as_contention(self):
+        """A fault on the lock file is not somebody holding it.
+
+        The refusal above tells an operator that another dispatch is running and
+        that retrying once it finishes is the move. A fault on the lock file
+        itself must not be dressed as that, or the retries never end. Asserted
+        with a lock path that is a directory, so `os.open` fails with `EISDIR`,
+        and against the exception's own TYPE rather than a message: what is
+        being pinned is that the fault arrived unchanged.
+
+        What this does NOT reach, measured rather than assumed: a non-contention
+        error from `flock` itself. `_exclusive_nowait` re-raises those too, and
+        no test can produce one — the errno it guards against is what the
+        kernel reports when its lock table is exhausted. So that line stays
+        (folding every errno into "somebody holds it" would be a lie) and is
+        recorded as unpinned instead of being implied to be covered.
+        """
+        (self.receipts / "held.lock").mkdir()
+        with self.assertRaises(OSError) as caught:
+            invoke_once(key="held", argv=["/bin/sh", "-c", "true"], cwd=self.cwd,
+                        receipts=self.receipts, timeout=30)
+        self.assertIsInstance(caught.exception, IsADirectoryError,
+                              "a lock that could not be opened was reported as "
+                              "one another writer holds")
 
     # -- the guards around the four paths ----------------------------------
     def test_a_receipt_directory_another_user_can_read_is_refused(self):
