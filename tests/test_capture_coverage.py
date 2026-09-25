@@ -499,8 +499,14 @@ class TestAWebPageIsItsOwnShapeAndItsOwnQuestions:
         assert "example.invalid/b" in " ".join(response["why"])
 
     def test_the_identity_block_keeps_the_address_out_of_the_chat_id(self, page):
+        """The address is under its own key, and `chat_id` is absent — not null.
+
+        Absence is the stronger claim and the one that is true: a page has no
+        chat, so the question is not one this shape can be asked. A key that is
+        present and empty says it was asked and answered.
+        """
         record = the_page(page)
-        assert record["identity"]["chat_id"] is None
+        assert "chat_id" not in record["identity"]
         assert record["identity"]["name"] == "An Article"
         assert record["identity"]["url"] == "https://example.invalid/article"
 
@@ -527,6 +533,64 @@ class TestAWebPageIsItsOwnShapeAndItsOwnQuestions:
         write(tree, "people/x/oc_x/links/slug", {"something": "else"})
         record = cc.read_root(tree.parents[3])["objects"][0]
         assert "`source`+`fetch`" in record["why"]
+
+
+# --------------------------------------------------------------------------
+# a document names itself the way the two readers beside this one name it
+# --------------------------------------------------------------------------
+
+class TestADocumentKeepsItsAddress:
+    """Twenty of the twenty document captures in the live tree carry no `chat`.
+
+    `shape_of` reads this shape from `url` + `content_sha256`, which is what the
+    collector writes and what the tree holds — measured over
+    `records/information/raw`: 47 chat, 20 link, 1 web, and **0 of the 20 link
+    manifests** have a `chat` block. Until this the reader answered them with
+    `chat_id: None`, which is a key present and empty for a question this shape
+    cannot be asked, and it did not surface the one field the shape does have.
+
+    Both readers beside this one already use that field: `source_policy.identity_of`
+    keys a document by `document["url"]`, and `material_index._identity_of` reads
+    `document.get("url")`. This is the third reader agreeing with them, not a
+    third convention.
+    """
+
+    def _documents(self, records: Path) -> list[dict]:
+        return [o for o in cc.read_root(records)["objects"]
+                if o["shape"] == "document_capture"]
+
+    def test_a_document_carries_its_url_and_not_a_chat_id(self, tree):
+        write(tree, "people/x/oc_x/links/doc", document_manifest())
+        records = self._documents(tree.parents[3])
+        assert len(records) == 1
+        assert records[0]["identity"] == {"url": "https://example.invalid/doc",
+                                          "name": "T"}
+
+    def test_two_captures_of_one_document_share_one_address(self, tree):
+        """The tree really holds this: one document captured twice, under two
+        directories, neither of them a re-fetch. Keyed by nothing, the two are
+        indistinguishable from two different documents — and so were the twenty
+        documents that share a title with nobody."""
+        write(tree, "people/x/oc_x/links/doc", document_manifest())
+        write(tree, "people/y/oc_y/links/doc", document_manifest())
+        records = self._documents(tree.parents[3])
+        assert len(records) == 2
+        assert {r["identity"]["url"] for r in records} == \
+            {"https://example.invalid/doc"}
+
+    def test_one_title_is_not_one_address(self, tree):
+        """Two documents that share a title are two documents. The title is
+        carried as a label and never as the key — 20 documents in the live tree
+        hold 19 distinct titles, with one title used by two different addresses,
+        so a reader that merged on the title would merge two documents."""
+        write(tree, "people/x/oc_x/links/doc",
+              document_manifest(url="https://example.invalid/one"))
+        write(tree, "people/x/oc_x/links/other",
+              document_manifest(url="https://example.invalid/two"))
+        records = self._documents(tree.parents[3])
+        assert {r["identity"]["name"] for r in records} == {"T"}
+        assert {r["identity"]["url"] for r in records} == \
+            {"https://example.invalid/one", "https://example.invalid/two"}
 
 
 # --------------------------------------------------------------------------

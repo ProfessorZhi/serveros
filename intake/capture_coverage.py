@@ -379,6 +379,44 @@ def _chat_components(document: dict) -> dict:
     return components
 
 
+def _identity(shape: str, document: dict, chat: dict) -> dict:
+    """Who this capture is of, in that shape's own terms.
+
+    A key is emitted only for the shape that HAS the thing. Until this, every
+    shape got a `chat_id`, and on every document manifest in the records tree it
+    is `None` -- 20 of 20, because a document manifest carries no `chat` block
+    at all (`shape_of` reads it as `url` + `content_sha256`). A key present and
+    empty is not an absent key: it says the question was asked and answered,
+    when the shape has no such field. The cost is not tidiness. It left every
+    document in the tree keyed by nothing, so the two captures of ONE document
+    that the tree really holds, under two different directories, are two objects
+    here and the record cannot say they are one -- while the twenty documents
+    that share a title with nobody are equally indistinguishable.
+
+    The address is not smuggled into `chat_id` for the reason `web_capture`
+    already gives: a reader asking one question must not be handed another's
+    answer. This is the reader that had nothing, not a third convention --
+    `source_policy.identity_of` keys a document capture by `document["url"]`,
+    `material_index._identity_of` reads `document.get("url")`, and
+    `watch_coverage` reports the manifest's `url` on every link row. All three
+    read the same manifests this module reads.
+    """
+    if shape == "chat_capture":
+        # `title` is kept as the fallback it always was, not because a chat
+        # manifest here has one -- measured, 0 of the tree's 47 do -- but
+        # because dropping it would change a NAME on some other tree to make a
+        # point about KEYS, which is not the change this function is.
+        return {"chat_id": chat.get("chat_id"),
+                "name": chat.get("name") or document.get("title")}
+    if shape == "web_capture":
+        web_source = _require_mapping(document.get("source"), "`source`")
+        observed = _require_mapping(document.get("identity_observed"),
+                                    "`identity_observed`")
+        return {"url": web_source.get("requested_url"),
+                "name": observed.get("title")}
+    return {"url": document.get("url"), "name": document.get("title")}
+
+
 def _document_components(document: dict) -> dict:
     """`body` and `media`, each decided from its own facts."""
     components: dict = {}
@@ -590,20 +628,7 @@ def read_manifest(path: Path) -> dict:
         components = _web_components(document)
     else:
         components = _document_components(document)
-    identity = {
-        "chat_id": chat.get("chat_id"),
-        "name": chat.get("name") or document.get("title"),
-    }
-    if shape == "web_capture":
-        # A page has no chat to be identified by. Its own address is added
-        # under its own key rather than smuggled into `chat_id`, so a reader
-        # asking one question never gets the other's answer, and the `name` a
-        # renderer prints is the page's title as the page declared it.
-        web_source = _require_mapping(document.get("source"), "`source`")
-        observed = _require_mapping(document.get("identity_observed"),
-                                   "`identity_observed`")
-        identity["url"] = web_source.get("requested_url")
-        identity["name"] = observed.get("title")
+    identity = _identity(shape, document, chat)
     return {
         "shape": shape,
         "identity": identity,
