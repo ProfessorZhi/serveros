@@ -26,26 +26,43 @@ individually easy to get wrong are each given their own class:
 
 THE CAPTURE
 -----------
-`tests/data/capture-coverage-live-2026-09-22.json`
-    `serverosctl information captured --json` over `/data/home/vince/workspace/records`,
-    captured 2026-09-22, sha256 of the FULL output
-    `7434bee1d2640795b874168368d3338549bd1c1136dab8c8ecd41f01a6fdee09`; the file
-    here is trimmed to `path`/`role`/`shape`/`capture`/component `state` and
-    `facts`, dropping the `why` prose and the `unstructured` sentences. The trim
-    is mechanical, so a test that reads it can still be checked against the
-    original by digest. Nothing in it was written by hand.
+`tests/data/capture-coverage-live-2026-09-25.json`
+    `capture_coverage.read_root` over `/data/home/vince/workspace/records`,
+    reduced by `_trimmed` below — `path`/`role`/`shape`/`capture`/component
+    `state` and `facts`/`verified`, dropping the `why` prose and the
+    `unstructured` sentences — sha256 `f2d749c467e49452f0fb0d62093fa4fa37749d6b869dbe0b3989ec25f2eabdda`,
+    58665 bytes. The trim is mechanical and is the same function the test
+    compares with, so the file can be re-derived rather than trusted. Nothing in
+    it was written by hand. It carries a `retaken` block naming the previous
+    capture, the file that replaced it, and why.
 
-The capture is dated and the records root is alive. On 2026-09-23 the collector
-rewrote one manifest the capture had already read and added one the capture could
-not have — a document link under `feishu/chats/people/nature-hu/<chat>/links/`.
-The 65 manifests that were neither still read exactly as they did, which is the
-measurement that separates the two ways a re-run can differ. So the live-tree
-test compares per manifest and directionally rather than by summary total: a
-capture landing, or a manifest the collector re-verified, is the TREE advancing;
-a captured manifest reading differently without that is the READER moving. Only
-the second is a failure. Comparing totals makes the first look like the second,
-which is this module's neighbour's whole subject — a total standing in for the
-positions underneath it.
+Re-taken on 2026-09-25 because the READER moved and the move was the point: a
+chat capture now carries a `revisions` component. Re-run against the 2026-09-22
+file, that single addition reports 44 manifests as having moved, and measured,
+every one of the 44 differs by nothing else. Loosening the comparison to ignore
+a component would have left this file unable to say that the reader gained a
+question, so the file was re-taken and the reason written into it instead. The
+2026-09-22 file was removed in the same change: nothing read it once `FIXTURE`
+moved, and a second capture no test loads is a file a later reader picks up by
+mistake.
+
+What the new one says that the old one could not: 47 of 47 chat captures report
+`revisions: UNDECIDABLE`. No manifest in this tree records a comparison of what
+it holds against the source it was taken from, so no capture here can say whether
+an edit or retraction happened after it was taken. That is the state of the tree,
+not a defect of this reader — the collector compares only after the change that
+introduced those fields reaches it.
+
+The capture is dated and the records root is alive. Since 2026-09-22 the
+collector has rewritten manifests the earlier capture had already read and added
+others it could not have seen: one document link under
+`feishu/chats/people/nature-hu/<chat>/links/` and one page captured from outside
+this workspace under `web/`. So the live-tree test compares per manifest and
+directionally rather than by summary total: a capture landing, or a manifest the
+collector re-verified, is the TREE advancing; a captured manifest reading
+differently without that is the READER moving. Only the second is a failure.
+Comparing totals makes the first look like the second, which is this module's
+neighbour's whole subject — a total standing in for the positions underneath it.
 
 The live-tree test does not assert the captured numbers against constants alone:
 it re-walks the real records root and asserts the report's denominator equals the
@@ -58,18 +75,33 @@ import importlib.util
 import json
 import subprocess
 import sys
+from datetime import date, timedelta
 from pathlib import Path
 
 import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 CLI = REPO_ROOT / "runtime" / "cli.py"
-FIXTURE = Path(__file__).resolve().parent / "data" / "capture-coverage-live-2026-09-22.json"
+FIXTURE = Path(__file__).resolve().parent / "data" / "capture-coverage-live-2026-09-25.json"
 LIVE_RECORDS = Path("/data/home/vince/workspace/records")
 # The day the capture above was taken, from its own name. A manifest the
 # collector re-verified after this day is the tree advancing; one that reads
 # differently without that is the reader moving.
-CAPTURED_ON = "2026-09-22"
+#
+# Re-taken on 2026-09-25, and this constant moved with it. The reader gained a
+# `revisions` component, which makes all 47 chat captures read differently
+# without their manifests having changed -- and under the old date every one of
+# them would have been reported as the reader having moved, which is true and
+# useless, because the reader moving was the point. The file states the reason
+# and what the re-take newly shows.
+CAPTURED_ON = "2026-09-25"
+# "Some time after the capture", computed from it rather than written down. Two
+# tests below need a re-verification date that is after `CAPTURED_ON`, and both
+# used the literal 2026-09-23 -- correct until the capture was re-taken, at which
+# point the literal silently became BEFORE the capture and one of them started
+# failing for a reason that had nothing to do with what it tests.
+AFTER_CAPTURE = (date.fromisoformat(CAPTURED_ON) + timedelta(days=1)).isoformat() \
+    + "T12:47:12"
 
 
 def _load():
@@ -269,7 +301,13 @@ class TestNoObjectLevelVerdict:
         record = cc.read_root(tree.parents[3])["objects"][0]
         assert "verdict" not in record
         assert "status" not in record["coverage"]
-        assert sorted(record["coverage"]["components"]) == ["messages"]
+        # Two independent questions, counted separately. `revisions` is present on
+        # every chat capture and UNDECIDABLE on a manifest that never compared
+        # itself against the source — present-and-undecided rather than absent,
+        # because a reader that left it out would let "never checked" read as
+        # "nothing to check".
+        assert sorted(record["coverage"]["components"]) == ["messages", "revisions"]
+        assert record["coverage"]["components"]["revisions"]["state"] == "UNDECIDABLE"
 
     def test_a_paginated_chat_with_pending_attachments_reports_both(self, tree):
         document = chat_manifest(
@@ -299,6 +337,97 @@ class TestNoObjectLevelVerdict:
         # Counted over two objects but one component each: an object-level count
         # would have had to collapse them.
         assert summary["components"]["attachments"] == {"COMPLETE": 1}
+
+
+# --------------------------------------------------------------------------
+# the archive's own record of whether it still matches the source
+# --------------------------------------------------------------------------
+
+class TestTheRevisionQuestion:
+    """A capture can be complete about what it wrote and silent about whether
+    what it wrote is still true.
+
+    The collector deduped on `message_id`, and the source answers an edited
+    message with the same id and new text — so the edit was dropped, the archive
+    went on asserting the pre-edit wording, and nothing said it had moved. The
+    component below is the second question, asked separately, and the states it
+    must not collapse are `COMPLETE` (compared, and here is what it found),
+    `UNDECIDABLE` (never compared) and `INCOMPLETE` (compared, and reached
+    nothing).
+    """
+
+    def _chat(self, tree, **sync_over):
+        sync = dict(chat_manifest()["sync"])
+        sync.update(sync_over)
+        write(tree, "people/x/oc_x", chat_manifest(sync=sync))
+
+    def _revisions(self, tree):
+        return cc.read_root(tree.parents[3])["objects"][0]["coverage"] \
+            ["components"]["revisions"]
+
+    def test_a_manifest_that_never_compared_says_so(self, tree):
+        self._chat(tree)
+        component = self._revisions(tree)
+        assert component["state"] == "UNDECIDABLE"
+        assert "revisions_checked_at" in component["why"][0]
+        # Present and undecided, not absent: a reader that left the component out
+        # would let "never checked" read as "nothing to check".
+        assert component["facts"] == {}
+
+    def test_a_measured_zero_is_complete_not_undecidable(self, tree):
+        """0 revisions beside a denominator of 4,956 is a measurement."""
+        self._chat(tree, revisions_checked_at="2026-09-25",
+                   revisions_compared=4956, revision_count=0,
+                   retraction_count=0, restoration_count=0)
+        component = self._revisions(tree)
+        assert component["state"] == "COMPLETE"
+        # `0` is a fact and survives the round trip; dropping it would make
+        # "compared and found nothing" indistinguishable from "never compared".
+        assert component["facts"]["revision_count"] == 0
+        assert component["facts"]["revisions_compared"] == 4956
+
+    def test_a_comparison_that_reached_nothing_is_a_shortfall(self, tree):
+        self._chat(tree, revisions_checked_at="2026-09-25", revisions_compared=0,
+                   revision_count=0, retraction_count=0, restoration_count=0)
+        component = self._revisions(tree)
+        assert component["state"] == "INCOMPLETE"
+        assert "43" in component["why"][0]          # the msg_count it should have reached
+
+    def test_zero_compared_and_no_local_count_is_undecidable(self, tree):
+        self._chat(tree, revisions_checked_at="2026-09-25", revisions_compared=0,
+                   revision_count=0, msg_count=None,
+                   remote_unique_message_count=None)
+        assert self._revisions(tree)["state"] == "UNDECIDABLE"
+
+    def test_a_comparison_with_no_denominator_is_undecidable(self, tree):
+        self._chat(tree, revisions_checked_at="2026-09-25", revision_count=3)
+        component = self._revisions(tree)
+        assert component["state"] == "UNDECIDABLE"
+        # The count it did record is kept: the manifest says three revisions and
+        # dropping that would be this reader discarding what it read.
+        assert component["facts"]["revision_count"] == 3
+        assert "revisions_compared" in component["why"][0]
+
+    def test_a_chat_can_be_complete_about_its_messages_and_not_about_this(self, tree):
+        """The two questions are counted separately — this is the live tree's own
+        shape, where all 47 chats are `messages: COMPLETE` and none has compared."""
+        self._chat(tree)
+        components = cc.read_root(tree.parents[3])["objects"][0]["coverage"]["components"]
+        assert components["messages"]["state"] == "COMPLETE"
+        assert components["revisions"]["state"] == "UNDECIDABLE"
+        summary = cc.read_root(tree.parents[3])["summary"]["components"]
+        assert summary["messages"] == {"COMPLETE": 1}
+        assert summary["revisions"] == {"UNDECIDABLE": 1}
+
+    def test_the_cli_reports_it(self, tree):
+        self._chat(tree, revisions_checked_at="2026-09-25", revisions_compared=43,
+                   revision_count=1, retraction_count=1, restoration_count=0)
+        result = cli("information", "captured", "--records-root", str(tree.parents[3]),
+                     "--json")
+        assert result.returncode == 0, result.stderr
+        payload = json.loads(result.stdout)
+        facts = payload["objects"][0]["coverage"]["components"]["revisions"]["facts"]
+        assert (facts["revision_count"], facts["retraction_count"]) == (1, 1)
 
 
 # --------------------------------------------------------------------------
@@ -863,7 +992,7 @@ class TestWhatCountsAsATreeThatMoved:
     def test_a_manifest_the_collector_rewrote_is_neither_the_reader_nor_a_finding(self):
         """The reader said 38 and now says 92 — because the TREE says it changed."""
         recorded = {CAPTURED_PATH: _captured_entry(38)}
-        live = {CAPTURED_PATH: _live_entry(92, "2026-09-23T12:47:12")}
+        live = {CAPTURED_PATH: _live_entry(92, AFTER_CAPTURE)}
         gone, moved, arrived = _disagreements(recorded, live)
         assert (gone, moved, arrived) == ([], [], [])
         # Not vacuous: the reading really did differ, and the trim shows it.
@@ -893,7 +1022,7 @@ class TestWhatCountsAsATreeThatMoved:
         assert _disagreements(recorded, {}) == ([CAPTURED_PATH], [], [])
 
     def test_a_manifest_the_capture_could_not_have_seen_has_arrived(self):
-        live = {CAPTURED_PATH: _live_entry(38, "2026-09-23T12:47:12")}
+        live = {CAPTURED_PATH: _live_entry(38, AFTER_CAPTURE)}
         assert _disagreements({}, live) == ([], [], [CAPTURED_PATH])
 
 
@@ -905,21 +1034,23 @@ class TestAgainstTheRecordedCapture:
         """The captured numbers, as the shipped file's own record.
 
         These pin the FILE, not the reader's current output: the capture is
-        what was read on 2026-09-22, and a total here changing means the
+        what was read on 2026-09-25, and a total here changing means the
         shipped artifact was edited rather than that the reader moved. Whether
         the reader still produces these numbers of the manifests is a different
         question and is asked per manifest, below.
         """
         captured = json.loads(FIXTURE.read_text(encoding="utf-8"))["summary"]
-        assert captured["denominator"] == 66
-        assert captured["by_shape"] == {"chat_capture": 47, "document_capture": 19}
-        assert captured["by_role"] == {"chat": 47, "link": 19}
+        assert captured["denominator"] == 68
+        assert captured["by_shape"] == {"chat_capture": 47, "document_capture": 20,
+                                        "web_capture": 1}
+        assert captured["by_role"] == {"chat": 47, "link": 20, "web": 1}
         assert captured["components"]["messages"] == {"COMPLETE": 45,
                                                      "UNDECIDABLE": 2}
-        assert captured["components"]["body"] == {"COMPLETE": 16, "INCOMPLETE": 3}
-        assert captured["components"]["media"] == {"COMPLETE": 14, "UNDECIDABLE": 5}
+        assert captured["components"]["body"] == {"COMPLETE": 18, "INCOMPLETE": 3}
+        assert captured["components"]["media"] == {"COMPLETE": 15, "UNDECIDABLE": 5}
+        assert captured["components"]["revisions"] == {"UNDECIDABLE": 47}
         assert captured["capture_undeclared"] == {"mode": 37}
-        assert captured["verified"] == {"RECORDED": 61, "NOT_RECORDED": 5}
+        assert captured["verified"] == {"RECORDED": 62, "NOT_RECORDED": 6}
 
     def test_the_live_tree_still_produces_what_the_capture_recorded(self):
         """Each captured manifest reads the same, unless the tree says it changed.
