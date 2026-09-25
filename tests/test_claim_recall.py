@@ -671,9 +671,34 @@ class TestAnIdThatNamesMoreThanOneClaim:
         assert "more than one span" in row["why"]
         assert "30–40" in row["why"]
 
-    def test_two_entries_owning_one_line_is_a_conflict(self, tree):
-        # A record the writer cannot make and a damaged one can: both entries of
-        # one commit claiming ownership, which is one reading and two cards.
+    def test_two_cards_each_holding_a_line_for_one_id_is_a_conflict(self, tree):
+        # A person's edit, and the state no rule can read: the claim's line
+        # copied into the card that only routed to it. Both cards now carry a
+        # line for c1 and neither says the other is the owner, so which card the
+        # claim lives in is not in the record at all.
+        tree.commit("one", tree.reading([tree.claim("c1", "她说周五交付", [11])]))
+        view = tree.root / VIEW
+        view.write_text(
+            "# widget\n\n项目视角。\n\n<!-- serveros:semantic:begin -->\n"
+            "<!-- serveros:semantic:claims -->\n"
+            "- `c1` **[OBSERVED_FACT]** alice：她说周五交付（agent_reconciled）\n"
+            "<!-- serveros:semantic:claims:end -->\n"
+            "<!-- serveros:semantic:end -->\n", encoding="utf-8")
+        row = tree.one("c1")
+        assert row["verdict"] == cr.CONFLICT
+        assert row["recallable"] is False
+        assert "two claims in two cards" in row["why"]
+
+    def test_a_receipt_claiming_ownership_the_card_does_not_show_is_not_believed(
+            self, tree):
+        # The other side of the same question, and the answer goes the other way
+        # on purpose. Here the damaged thing is the receipt: both entries of one
+        # commit say OWNER, while the card one of them names carries a REFERENCE
+        # line for that id. The writer never puts a reference under an owner
+        # entry, so one of the two is wrong — and the card is the artifact a
+        # person reads and can see for themselves which of the two kinds of line
+        # it holds. Believing the receipt would report a second owner of a claim
+        # nothing in the tree says it owns.
         tree.commit("one", tree.reading([tree.claim("c1", "她说周五交付", [11])]))
 
         def both_own_it(document):
@@ -681,10 +706,63 @@ class TestAnIdThatNamesMoreThanOneClaim:
                 entry["role"] = us.OWNER
 
         tree.edit_receipt(change=both_own_it)
+        roles = cr.build_index(tree.root)["claims"]["c1"]
+        assert sorted(roles["owners"]) == [CARD]
+        assert sorted(roles["referenced_by"]) == [VIEW]
         row = tree.one("c1")
-        assert row["verdict"] == cr.CONFLICT
+        assert row["verdict"] == cr.CURRENT
+        assert row["recallable"] is True
+        assert row["card"] == CARD
+
+    def test_a_view_that_later_owns_a_claim_of_its_own_stays_a_view(self, tree):
+        # The ordinary sequence, and the one this module used to read as the
+        # conflict above: the first commit puts a REFERENCE to c1 into VIEW, the
+        # second OWNS a different claim in VIEW. Both entries are legal, and the
+        # second one's `claims` is what the card carries afterwards — so taking
+        # every carried id under that write's role reports c1 as owned by two
+        # cards, which is "no rule can decide" for a record every rule can read.
+        # A claim nobody may recall because a card points at it is the whole of
+        # what A2 exists to prevent.
+        tree.commit("one", tree.reading([tree.claim("c1", "她说周五交付", [11])]))
+        tree.commit("two", tree.reading(
+            [tree.claim("c2", "VIEW 自己的主张", [35], card=VIEW, views=[])],
+            low=30, high=40, card=VIEW), committed_at=SECOND)
+        roles = cr.build_index(tree.root)["claims"]["c1"]
+        assert sorted(roles["owners"]) == [CARD]
+        assert sorted(roles["referenced_by"]) == [VIEW]
+        first = tree.one("c1")
+        assert first["verdict"] == cr.CURRENT
+        assert first["recallable"] is True
+        assert first["card"] == CARD
+        second = tree.one("c2")
+        assert second["verdict"] == cr.CURRENT
+        assert second["card"] == VIEW
+
+    def test_a_reference_no_receipt_explains_is_not_read_as_ownership(self, tree):
+        # The same rule one write further back, where the record really is
+        # silent: receipt "one" is what put c1 into VIEW as a reference, and with
+        # it gone nothing in the record says how that id got into that card. The
+        # card's own text does say — it points at the owner rather than holding
+        # the line — and a person reading that card can see which of the two it
+        # is. Reading the id as owned by whoever wrote the card last would make a
+        # view the owner of somebody else's claim and report it CURRENT, which is
+        # the one answer the line in front of them rules out.
+        tree.commit("one", tree.reading([tree.claim("c1", "她说周五交付", [11])]))
+        tree.commit("two", tree.reading(
+            [tree.claim("c2", "VIEW 自己的主张", [35], card=VIEW, views=[])],
+            low=30, high=40, card=VIEW), committed_at=SECOND)
+        gone = [path for path in tree.receipts()
+                if json.loads(path.read_text(encoding="utf-8"))["committed_at"]
+                == STAMP]
+        assert len(gone) == 1, "the receipt for the first commit is the one deleted"
+        gone[0].unlink()
+        roles = cr.build_index(tree.root)["claims"]["c1"]
+        assert sorted(roles["owners"]) == []
+        assert sorted(roles["referenced_by"]) == [VIEW]
+        row = tree.one("c1")
+        assert row["verdict"] == cr.MISSING
+        assert row["card"] is None
         assert row["recallable"] is False
-        assert "two claims in two cards" in row["why"]
 
     def test_a_conflict_is_not_quietly_resolved_by_precedence(self, tree):
         # The record also names the claim as replaced and the source has also

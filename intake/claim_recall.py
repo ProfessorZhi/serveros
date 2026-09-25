@@ -371,6 +371,47 @@ def _carried(card: Path) -> tuple[set[str], str | None]:
     return ids, _semantic.card_digest(text)
 
 
+def _role_from_card(cache: dict[str, dict[str, str]], records_root, card: str,
+                    claim_id: str) -> str | None:
+    """What one card's text says about one id, read once per card."""
+    if card not in cache:
+        cache[card] = _roles_in_card(Path(records_root) / card)
+    return cache[card].get(claim_id)
+
+
+def _roles_in_card(card: Path) -> dict[str, str]:
+    """Each id a card carries now, and whether the card holds it or points at it.
+
+    Read off the line's own shape rather than from a second reading of what the
+    claim is: the writer puts an owning line and a reference line in a card with
+    the same `- \\`id\\`` front, and only the reference carries the arrow — see
+    `understanding_semantic._view_reference`, whose shape this is reading. The id
+    half comes from the writer's own `_line_id`, so this cannot disagree with the
+    merge about what a line names.
+
+    Consulted only when no earlier write in this sequence says which role an id
+    was carried under, which is the case of an earlier receipt that is gone. The
+    record's own account of a write outranks a reading of the file that write
+    produced, so this is the SECOND opinion and never the first.
+    """
+    try:
+        text = card.read_text(encoding="utf-8")
+    except OSError:
+        return {}
+    region = _semantic.claims_region(_semantic.fence_parts(text)[1])
+    if region is None:
+        return {}
+    roles: dict[str, str] = {}
+    for line in region[1].splitlines():
+        claim_id = _semantic._line_id(line)
+        if claim_id is None:
+            continue
+        after = line.split(f"`{claim_id}`", 1)[1].lstrip()
+        roles[claim_id] = (_semantic.VIEW if after.startswith("→")
+                           else _semantic.OWNER)
+    return roles
+
+
 def build_index(records_root: Path | str) -> dict:
     """What the durable record says about every claim, with the cards read.
 
@@ -397,6 +438,11 @@ def build_index(records_root: Path | str) -> dict:
                                     str(e["path"].name)))
     #: Per card, the ids the last write of that card left it carrying.
     carried_before: dict[str, set[str]] = {}
+    #: Per card, the role its own text gives each id it carries — a card can
+    #: carry an id as the line it owns or as a reference to somebody else's, and
+    #: the two are not interchangeable. Read at most once per card, and only
+    #: when the loop asks; see the `settled` branch below.
+    card_roles: dict[str, dict[str, str]] = {}
     for entry in ordered:
         receipt = entry["receipt"]
         key = list(receipt.get("key") or [])
@@ -441,7 +487,37 @@ def build_index(records_root: Path | str) -> dict:
                                         written.get("claims") or [])
             for claim_id in written.get("claims") or []:
                 row = _row(claims, claim_id)
-                if role == _semantic.OWNER:
+                # WHICH role this id is carried under is read off the line the
+                # card actually holds, and never off "this write was an owner
+                # write, so everything in its list is owned".
+                #
+                # `written[i].claims` is what the card CARRIES after the write,
+                # so the write's own role is a statement about the ids it put
+                # there and not about the ones that were already in the card — a
+                # reference line and an owner line are different things, and a
+                # view card read as an owner of every claim it merely points at
+                # is the "two cards own one line" conflict this module reports as
+                # "no rule can decide", produced by two writes the writer is
+                # entitled to make.
+                #
+                # The card's text is the right second source rather than the role
+                # an earlier receipt recorded, and that is not a preference
+                # between two equal things: the role a write records and the line
+                # it leaves agree in every state the writer produces, so they can
+                # differ only after somebody edits a card by hand — and there the
+                # text is what the person who reads the card sees, while an index
+                # that quietly believed the receipt would report a claim as
+                # pointed at by a card whose own line says it is held there.
+                #
+                # It is asked only for ids this write did not put, and this
+                # write's own role is left as the fallback for a card that is not
+                # there or carries no claims region — where the record's account
+                # is the only account left.
+                settled = _role_from_card(card_roles, records_root, owner,
+                                          claim_id)
+                if settled is None:
+                    settled = role
+                if settled == _semantic.OWNER:
                     # Ownership is not per write: a card that carries a line
                     # owns it however the line got there.
                     row["owners"][owner] = True

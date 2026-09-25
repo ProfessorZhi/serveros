@@ -287,24 +287,34 @@ recipes:
     name: 增量感知
     loop: §7 Perception
     trigger: "授权源事件，或一次增量定时"
-    action: "source delta -> filtered understanding -> candidate refresh"
+    action: "source delta -> filtered understanding -> what a reading must cover"
     stops: [NO_CHANGE, BUDGET_EXHAUSTED, SOURCE_UNAVAILABLE, SOURCES_UNPRODUCED,
             MODEL_UNBOUND]
     steps:
       - id: sources
         does: "read the scope's authored list of what it follows"
       - id: observe
-        does: "read each source's revision now"
+        does: >
+          read each source's revision now, one source at a time, and record what
+          answered and what did not with each one's own reason. This is the
+          capture: the half `work waterline` compares understanding against, and
+          the fact a source that did not answer is not allowed to overwrite.
       - id: delta
         does: >
-          compare against this scope's cursor. Nothing moved -> NO_CHANGE, and
-          the model step below is never reached.
+          compare the sources that answered against this scope's cursor. Nothing
+          moved AND every source answered -> NO_CHANGE, and the model step below
+          is never reached. Nothing moved and a source did not answer ->
+          SOURCE_UNAVAILABLE: "no change" is a statement about every source this
+          scope follows, and a source nobody read cannot be part of it.
       - id: refresh
-        does: "turn the delta into candidates"
+        does: "say what the delta means for this scope's understanding"
         needs_model: true
-        # The step that would turn a source delta into candidate Items. This is
-        # the only place a model is warranted in this loop, and it is downstream
-        # of `delta` on purpose.
+        # The step that says what understanding a moved revision touches, and
+        # the only place a model is warranted in this loop. Downstream of
+        # `delta` on purpose. It is NOT a step that proposes Items: a revision
+        # moving is a fact about a source, while opening work is a decision made
+        # from an accepted goal, and a reading asked to produce Item candidates
+        # is how 「source变了」 becomes 「新Item候选」 without anybody deciding it.
 
   - id: work
     name: 执行
