@@ -5309,6 +5309,294 @@ HEAD 未变。解释器 `/data/home/vince/envs/python/serveros-test/bin/python -
   自由文本字段在记录里出现一次和出现两次是同一类问题，但收口它需要先有消费者愿意按
   词表判。
 
+### 9.41 P7 切片 L：一条异步边能不能回答「是否已被接受」
+
+#### 9.41.1 链上这一格是设计自己命名的动作，而代码里已经有一句拒绝替它开了口
+
+`docs/CC-EXECUTION-PLAN.md:126` 把 P7 的链写成一步接一步：「…实际事件/有界poll唤醒后继
+Parent→**查原attempt并接收一次**。输入冻结accepted revision、效果/预算、确切工作树、
+receiver」。切片 K 交付的是「查原attempt」；**「接收一次」是这同一步剩下的那一半**。
+
+这不是我从动词里推出来的。`runtime/continuation.py#build_checkpoint` 拒绝「一个 child 等待
+却不具名任何 child」时的原文就是：
+
+> a child wait names no child, so there is nothing for a later Parent to look up **and
+> nothing to accept the result of**
+
+**代码自己已经把这个动作命名了**，而本机没有任何地方记它。
+
+设计权威逐字，四处，各自说的是同一件事的不同面：
+
+- `docs/ABILITY-OPERATING-MODEL.md:247`（A6 那一行）：producer = child result / Quay Task
+  terminal，receiver = 当前 Work Item Parent，receiver 不可用时「**结果durable保存为待接收**；
+  新Parent可接原结果，不重派」。
+- `docs/ABILITY-OPERATING-MODEL.md:257`：「每条异步边至少能够回答原producer
+  identity/revision、当前receiver、**是否已被接受**、是否仍适用于当前Work Item/epoch。
+  timeout/断线先查同一attempt/result，再决定是否补派」。
+- `docs/COLLABORATION-CONTRACT.md:52`：交接对象那九行关系里就有一行
+  `| accepted_by | 接收者及其验证结果，所接受的确切输入输出版本 |`；`:55` 接着说
+  「发送资料只是offered；接收者确认版本、权限、能力和验收边界后才accepted。**accepted表示
+  接了任务，不表示结果已验。** producer送达文件后不能自动推进父阶段；**parent根据真实结果
+  接受/要求具体修订/登记准确缺口**」。
+- `docs/daily-work-cycle.md:162`（B4 的验收清单）：「**一次child结果只被接受一次**」；
+  `docs/SCENARIO-ACCEPTANCE.md:139` 把「child在Parent退出后完成 → **新Parent查原
+  Task/receipt并接受一次**」和三条反例放在同一行。
+
+`COLLABORATION-CONTRACT:55` 里有**两个** accepted，不能混成一个：接收者接了**任务**
+（`ABILITY-OPERATING-MODEL.md:61` 的「接收者确认可执行才accepted」），和 Parent 收了**结果**。
+本片做的是后者。前者在这个 fabric 里是 grant/scope 的事，并且它已经落在 admission 的
+`phase`/`confirmations` 上（`DISPATCHED` 那一步是被报告过的回执），本片不动它。
+
+#### 9.41.2 读数：本机没有这个事实
+
+`probe_acceptance_gap.py`（只解析源码，不导入树里的任何模块 —— 全量跑在旁边进行时，
+导入会写字节码缓存，那是下一轮变异会读到假结论的那条老陷阱）。三条清单一并印出来，
+因为缺口是它们之间的**关系**，不是其中任何一条：
+
+```text
+1. what an admission record carries
+   1a. the record `admit` stores — the whole shape, written once
+       line 1383: ['cycle_ref', 'intent_digest', 'selection_digest', 'selection',
+                    'grant_ref', 'reservation', 'lease', 'action_key', 'phase',
+                    'admitted_at', 'confirmations', 'retired_at', 'outcome']
+   1b. the keys the other two writers add afterwards (key -> written by, line)
+       confirmations    confirm_admission:1477
+       confirmed_at     confirm_admission:1492
+       outcome          retire_admission:1566
+       phase            confirm_admission:1491
+       retired_at       retire_admission:1564
+
+2. the statuses the invocation receipt can carry
+   RECEIPT_STATUSES   ['STARTED', 'EXITED', 'REFUSED', 'TIMED_OUT', 'OUTPUT_LIMIT',
+                       'START_FAILED', 'IO_FAILED']
+   the receipt's own keys   ['action_key', 'descendants_verified',
+                             'direct_process_exited', 'effect', 'input_digest',
+                             'process_exit_code', 'read_only_requested',
+                             'started_at', 'status', 'worker_stopped']
+
+3. the answers the resuming reader can give
+   ATTEMPT_ANSWERS    ['ATTEMPT_RETIRED', 'ATTEMPT_OPEN', 'ATTEMPT_UNANSWERABLE',
+                       'ATTEMPT_NONE']
+
+4. every line in runtime/ that DEFINES an acceptance-shaped name
+   cli.py:468  def accept(self, packet):
+   daily_report.py:161  def accepted_kinds(document: dict | None = None) -> tuple:
+   daily_report.py:181  def refuse_unaccepted(named_inputs, document: dict | None = None) -> None:
+```
+
+- admission 的 13 个字段（`admit` 一次写下的那一份）里没有它；
+- 回执的 `status` 是一串**执行**结局（`RECEIPT_STATUSES` 逐字引自
+  `runtime/bounded_invocation.invoke_once`：STARTED / EXITED / REFUSED / TIMED_OUT /
+  OUTPUT_LIMIT / START_FAILED / IO_FAILED），`effect` 说的是「这个进程有没有留下效果」，
+  都不是「这个结果被收下了」；
+- 切片 K 刚写下的 `ATTEMPT_ANSWERS` 四个词里也没有它，而且 K 的 docstring 里有一句
+  「ACCEPTED IS NOT A STATE THIS FUNCTION HAS」—— 那句在写下时是真的，本片让它不再真，
+  所以要**在同一处改写它并写明为什么**，而不是留着一句过期的话。
+
+`command grep -rn "accept" runtime/*.py` 的结果同样只有散文：runtime/ 里带 accept 的**定义**
+只有 `cli.py:468 def accept(self, packet)`（node 传输的握手）与 `daily_report.py` 的
+`accepted_kinds`（那是文档种类）。没有一个在说「这个结果被收下了」。
+
+#### 9.41.3 记在哪一级：边上，不写进回执，也不新增 store
+
+1. **边上。** 设计说的是「每条**异步边**…是否已被接受」，而这条边在本机就是 admission：
+   它是唯一同时持有 cycle_ref / grant_ref / reservation / lease / action_key / retired_at /
+   outcome 的记录，也是 `waiting_on.refs`、`child_attempts` 里每一个 ref 指向的东西。
+2. **不写进回执。** `runtime/bounded_invocation` 的回执按 action_key 一次性写入，它的
+   docstring 写着同一 key 的第二次调用「REPLAYS its receipt instead of executing again」；
+   接受不是执行的一部分，而让 Parent 去写另一个 store 的命名空间，就是给接受开出第二条
+   写入路径 —— 正是这个仓反复找到的那种形状。
+3. **不新增 store。** `docs/context-capsule.md:99-102` 明说 checkpoint「not a transcript
+   summary or **a new database**」，而它已经承载 Item 级的写法：`evidence_locators`，它的
+   help 逐字就是「an accepted evidence locator」。所以两级各记一件事，**不重复**：
+
+   | 级 | 记什么 | 谁是权威 |
+   |---|---|---|
+   | 边（admission） | 这件事**发生过一次**，谁收的、收的是哪个 locator、什么时候 | `agent_control_store` |
+   | 记录（checkpoint） | Item 现在**是什么状态**：哪些证据已被接受、哪些结果还欠着 | `continuation` + 写它的 Parent |
+
+   这也解释了为什么 `evidence_locators` 是**累积**的、而边上的事实只能是**一次**的：
+   `evidence_locators` 是每个 epoch 对 Item 状态的重述（locator 按设计会重复出现，
+   §9.39 已量过），而「收下了」是关于一次动作的陈述，动作不能重述。
+
+#### 9.41.4 本片落的四笔
+
+**一、`runtime/agent_control_store.py#accept_admission`**（新动词，插在 `retire_admission`
+之后、`replace` 之前）。它是这个事实的唯一写者，形状照 `retire_admission`：
+
+- 两个**参数**守卫：`who` 与 `locator` 都必须具名。理由逐字接
+  `docs/COLLABORATION-CONTRACT.md:52` 的 `accepted_by` 定义（「接收者及其验证结果，所接受的
+  确切输入输出版本」）—— 一个无法归属到某个 Parent 的接受不是那条记录；一个不说收了哪个
+  结果的接受，正是恢复中的 Parent 来找的那件事实而它没给。
+- 两个**状态**守卫，都关于「什么能存在」：必须已有 `retired_at`（否则没有结果可收），
+  必须到过 `ADMISSION_PHASES[-1]`（`DISPATCHED`，否则这次调用没被报告过回执）。
+- **写一次**：第一次调用把 `who` 与 `where` 两件事一起写；后来的调用两件都对 = 重试
+  （幂等，即使 `at` 不同 —— 它是同一个陈述）；`by` 或 `locator` 任一不同 = **具名拒绝并
+  同时印出记录里的值**，因为「在这里挑新的那个」会把分歧藏起来而不是记下来（房规原文，
+  `retire_admission` 的第二次 `outcome` 用的是同一句）。
+- 它**不判定** verdict。
+
+**二、`admit` 的存储字典新增三个声明键**（`accepted_at` / `accepted_by` /
+`accepted_locator`，初值 None）。声明而不是缺席，理由与 `retired_at` 当初被声明一样：
+`attempts_state` 要读这三个键，而在 `accept_admission` 存在之前写下的记录**根本没有这个
+键**，那样「键不存在」与「这个 store 答了 None」在读的人那里没有区别。
+
+**三、`runtime/continuation.py`**：`ATTEMPT_ANSWERS` 四词变五词（`ATTEMPT_ACCEPTED` 在最前，
+并在常量注释里写明**元组顺序不是记录级答案的判定顺序**）；`attempts_state` 逐 ref 读那三个
+键、新增 `accepted` 子集列表、计数改成「N finished (M of them taken up), …」，记录级判定
+顺序为 `UNANSWERABLE > OPEN > 有未接受的 retired > 全 accepted`；必要时**原地改写**那段
+「ACCEPTED IS NOT A STATE THIS FUNCTION HAS, AND THAT IS NOT AN OMISSION」。
+
+**四、`runtime/cli.py`**：新动词 `work accept <cycle> --by --locator [--at]`（照
+`cmd_work_retire` 的形状）；`cmd_work_continuations` 的 docstring 加两段（「这条边现在能回答
+ACCEPTED」与「同一个屏幕上的两个 accepted 是两级，不是两份」）、顶层 `attempts` 计数行多一列
+`all taken up`、逐 attempt 行多一个 `ATTEMPT_ACCEPTED` 分支并在 `ATTEMPT_RETIRED` 行尾加
+「no take-up of its result is recorded」；`cmd_work_admissions` 每个 cycle 多一行
+`taken up`。
+
+第 2 级与第 4 级都有消费者，而且是**两个不同的人**：恢复 Item 的 Parent 读
+`work continuations`，审计一个 cycle 占了什么、谁收了它的结果的人读 `work admissions`。
+同一个字段，两个受众，互不为对方的摘要。
+
+#### 9.41.5 一次当场纠错：拒绝文案里那条「补救」是假的
+
+`accept_admission` 的第二个状态守卫（`phase != DISPATCHED`）初版的拒绝里写着：
+
+> If the invocation did happen, `confirm_admission` is idempotent: reporting the receipt
+> it left and then accepting is how a resumed cycle catches up
+
+这是我从「`confirm_admission` 幂等」顺手推出来的一句话，**没有走一遍**。测试
+`test_the_remedy_the_refusal_names_is_the_one_that_works` 一走就撞上 `confirm_admission`
+自己的守卫：「was retired at … A retired admission is what the cycle did, and a confirmation
+arriving after that would rewrite the ending of a cycle already accounted for」。
+
+所以**补救不存在**，而且这是设计上正确的：§9.40 刚立的「一次退休只写一次」同样封住了事后
+补报。真实的形状是：一个 retired 在 `DISPATCHED` 之前的 cycle 被记为**被放弃**，这个 store
+不会事后把它拆开让一个结果出现；如果那次调用真的发生过，那份 ending 是错的，需要人裁定
+两份记录里哪份是错的。
+
+**一条拒绝文案里写的补救，与任何别的句子一样，是要被走一遍的** —— 它走了这一步才暴露。
+测试因此拆成两条：一条断言拒绝说明这是人的判断，另一条断言 `confirm_admission` 在 retired
+之后**确实**拒绝 —— 让「没有补救」成为关于 store 的事实，而不是一句声称。
+
+#### 9.41.6 被有意识移动的既有断言（四处）
+
+| 断言 | 原文 | 现在 | 为什么移动 / 为什么不移动 |
+|---|---|---|---|
+| `test_the_four_answers_are_the_closed_vocabulary`（`tests/test_continuation.py:1213`） | 四个词，等号断言 | `test_the_five_answers_are_the_closed_vocabulary`，五个词 | K 的 docstring 自己写着「Asserted as an equality, so a fifth word is a change and not a typo」，本片就是那个 change |
+| `test_an_acceptance_is_not_a_state_it_can_answer`（`:1261`） | `assert "ACCEPTED" not in continuation.ATTEMPT_ANSWERS` ＋ evidence 的 7 个键 | `test_an_acceptance_is_a_state_the_edge_records`，旧断言**逐字留在 docstring 里** | K 的代码 docstring 明说它是在为「a later slice adding an acceptance store」留位置；本片是那个 slice |
+| 模块 docstring 的 `attempts_state DOES NOT ANSWER «ACCEPTED»` 段（`:85-91`） | 「the absence is deliberate rather than unfinished」 | 「NOW ANSWERS … AND IT DID NOT WHEN THIS FILE WAS WRITTEN」，并列出移了什么、没移什么 | 同一句留下的交接 |
+| `test_the_reader_prints_what_was_tried_and_what_became_of_it`（`:1744`） | `assert "1 all finished" in after.stdout` | `assert "1 all finished with a take-up outstanding" in after.stdout` | 旧串仍是新串的子串（所以它并没有失败），改是因为**子串匹配会让计数那句话的新部分无人断言** |
+
+**没有移动的是那条区分**：接受从 **store** 读出，绝不从记录自己的 `evidence_locators`、也
+绝不从自由文本 `outcome` 推出。三处钉住它：上面第 2 行那个测试（同一记录，`store.accept_admission`
+前后读到两个答案，而记录一字未动）、本片新增的
+`test_a_free_text_outcome_is_not_an_acceptance`（本文件 14 处以上 `outcome="accepted"` 的
+fixture 因此从「会误导」变成「有用的反例」）、以及 CLI 侧那条
+（`--json` 与屏幕都显示记录自己的 `accepted` 行始终为空）。
+
+#### 9.41.7 本片新增的用例
+
+`tests/test_continuation.py`：净 +3 条 `def test_`（101 → 104），先加一个共用 helper
+`a_dispatched(store, ref)`。三条是「同一条记录读三次、只有 store 动」、
+「自由文本 outcome 不是接受」、「一条未接受混在已接受里 → 记录级 RETIRED 且 `accepted ⊆
+retired`」；CLI 侧加一条把 `work accept` 之后的重读钉在屏幕文本上。
+
+`tests/test_admission.py`：净 +18 条（99 → 117），两个类。`TestATakeUpIsWrittenOnceOnTheEdge`
+（11 条，store 层：成功、仍开着时拒绝、未到 DISPATCHED 时拒绝、**补报回执同样被拒**、同参重试
+幂等、不同 by 具名拒绝、不同 locator 具名拒绝、未 admit 的 cycle、空 by、空 locator、
+三个键在 admit 时就已声明）。`TestTheAcceptVerb`（7 条，CLI 层：五行输出、同参重试、
+不同 by 是 EXIT_FAULT 且两个名字都印出、未到 DISPATCHED 的句子而非 traceback、store 里没有的
+cycle、两个参数在命令行上必填、`--json` 往返）。
+
+**两片合计净 +21 条**（18 ＋ 3），所以本片全量的预期是 `5870 + 21 = 5891`；subtests 那一格
+本片没有一条用例用 subtest，预期仍是 3993。
+
+#### 9.41.8 变异电池：15 条，15 杀，0 存活
+
+每轮改一行 → 删掉仓里所有 `__pycache__` → 跑 `tests/test_continuation.py` ＋
+`tests/test_admission.py` → 从字节备份还原 → `sha256` 核对。删缓存那一步不是装饰：同尺寸
+同秒的还原会让 Python 继续供给过期 `.pyc`，一条活着的断言会读成死的
+（`pyc-cache-defeats-same-size-mutation-reverts`）。
+
+| 变异 | 结果 |
+|---|---|
+| accepted 永远不被识别 | 3 failed, 253 passed |
+| `accepted` 列表永远不填 | 3 failed, 253 passed |
+| 记录级答案不再谨慎（恒 ACCEPTED） | 8 failed, 248 passed |
+| 计数句不说谁被收下了 | 2 failed, 254 passed |
+| evidence 里把 locator 当成 Parent 印出 | 2 failed, 254 passed |
+| 仍开着的 cycle 也能被接收 | 1 failed, 255 passed |
+| 没到 DISPATCHED 的 cycle 也能被接收 | 2 failed, 254 passed |
+| 后来的接收被静默吸收（第一次赢） | 3 failed, 253 passed |
+| 同一个 Parent 换了 locator 读作重试 | 3 failed, 253 passed |
+| 无名的 Parent 也能接收 | 1 failed, 255 passed |
+| 无名的 locator 也能接收 | 1 failed, 255 passed |
+| `admit` 少声明一个键 | 2 failed, 254 passed |
+| 逐 attempt 的 accepted 行不印 | 1 failed, 255 passed |
+| locator 用 Parent 的名字写入 | 2 failed, 254 passed |
+| 计数从错的答案上读 | 1 failed, 255 passed |
+
+跑完五个文件与备份逐字节相同（脚本自带最后一道 `sha256` 断言，非零退出会写 `SURVIVED`）。
+
+**第一次跑有两条没有按预期进行，两条都记下来**：
+
+1. 「计数句不说谁被收下了」**第一次存活**。它改的是 `says` 里那句
+   `N finished (M of them taken up)`，而当时**没有一条用例断言这个括号** —— CLI 断言的
+   `1 all taken up` 是顶层计数行，不是这句话。补了三条断言（`(none of them taken up)` /
+   `(1 of them taken up)` 两处）之后它被杀。这正是变异电池的用处：**一条我以为是断言的东西
+   其实无人读**。
+2. 「后来的接收被静默吸收」第一次**锚点未命中**（脚本按 12 空格缩进找，实际是 16/24/20），
+   脚本显式 `SKIP` 并以非零码退出而不是继续 —— 锚点对不上是脚本的缺陷，不该当成变异结果。
+
+#### 9.41.9 全量读数
+
+一次跑，捕获方式与切片 K 的第四遍相同（原始日志落盘 ＋ 只 `grep` 摘要行），因为 K 已经量过：
+解释器收尾期那族 `ResourceWarning: unclosed file` 打在 pytest 摘要行**之后**，`tail` 窗口会
+把计数挤掉。
+
+```text
+HEAD 1fc99b58534703aa24615b8806ecfad2df4614ba  dirty 5
+start 2026-09-26T07:40:21+08:00
+rc=0 at 2026-09-26T07:50:58+08:00
+5891 passed, 20 skipped, 3993 subtests passed in 633.26s (0:10:33)
+dirty after 5  HEAD 1fc99b5
+runtime/agent_control_store.py: OK   runtime/continuation.py: OK   runtime/cli.py: OK
+tests/test_admission.py: OK          tests/test_continuation.py: OK
+```
+
+- **算术闭合**：上一格 5870 ＋ 本片净新增的 **21** 条 `def test_`（`test_admission.py`
+  99 → 117，`test_continuation.py` 101 → 104，删 0 条）＝ **5891**。
+- **subtests** 3993 → 3993：本片没有一条用例用 subtest，与上一格相同。
+- **`dirty 5` 而不是 0**：K 那一格记的是 0，因为那时本片的前身已经提交；本片的五个文件还在
+  工作树里未提交，所以跑前跑后都是 5 —— 这既是读数的一部分，也是它必须写清楚的地方：
+  跑前 5、跑后 5、HEAD 未变，说明这一跑**没有额外写进任何东西**。
+- 五个被改文件的 `sha256` 在跑前记下、跑后 `sha256sum -c` 逐行 `OK`：这一跑读到的就是
+  将要提交的那份字节。
+- 那族收尾期 `ResourceWarning` 本片**没有再追**，K 的 §9.40.7 已经把它记在案上；本片没有
+  新增关于它的证据，也不打算用一次没做的追查冒充结论。
+
+#### 9.41.10 它没做什么，仍未关闭的
+
+- **不判定 verdict。** 它写的是「这件事发生过一次，谁收的，收的是哪个 locator」，
+  `docs/COLLABORATION-CONTRACT.md:55` 的后半 ——「parent 根据真实结果接受/要求具体修订/登记
+  准确缺口」—— 落在 Parent **下一次** checkpoint 的 `evidence_locators`/`remaining_results`
+  上，本片不代它做，也不从 `outcome` 猜。
+- **不校验两级一致。** 记录是否已经重述这个 locator，是那个 Parent 下次写记录时的事；
+  两者合法地相差一次写入，把它们的不一致叫成 disagreement 就是在发明设计没写的规则。
+- **不做唤醒那一半。** 「让后继 Parent 醒过来」是切片 I/J 关掉的（`receivers()` 的答案 +
+  `WAIT_OVER`）；本片只补上醒来之后要做的两件事里的第二件。
+- **`WAIT_KINDS` 仍只有 `child` / `window`**，`work continuations` 里仍然没有「已
+  完成但没人收」的专门等待种类（§9.40 已记）。
+- **新动词 `work accept` 在装好的节点上要等下一次 `build→promote→restart`**，与切片
+  F–K 的新模块一样，那一次是 P12 的；本片没有动 `plugin/`、`mcp/` 或任何 composition，
+  所以本片自己不触发它。
+- 仍然开着的那些与前几片相同（接收方/唤醒那一半的前置、`supersede_checkpoint` 仍无生产者、
+  `NodeControlTransport.send` 不包裹 connector 异常、`outcome` 仍是自由文本、
+  `max_attempts` 在准入预留上无消费者、`~/.claude/skills/document-stewardship/{scripts,references}`
+  不在仓库、`serveros-daily.timer` 已禁用、`SERVEROS_ALERT_CONVERSATION` 无落点……），
+  本片一条也没有改变它们的状态。
+
 ## 10. 后续每包更新哪几行
 
 - 改完一个包，只更新 §3.1 里对应行的四层状态 + §5 表的增删。
