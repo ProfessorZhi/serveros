@@ -38,6 +38,7 @@ semantics = _load("serveros_runtime_agent_sessions", ROOT / "runtime" / "agent_s
 provider_instance = _load("serveros_abilities_provider_instance",
                           ROOT / "abilities" / "provider_instance.py")
 actor = _load("_serveros_context_actor", ROOT / "context" / "actor.py")
+approval = _load("serveros_runtime_approval", ROOT / "runtime" / "approval.py")
 
 
 # A context ServerOS really minted, from a report a HumanControlProvider really
@@ -77,6 +78,10 @@ ANCHOR = "2026-09-14T00:00:00Z"
 # motivated §17 actually named.
 ITEM = "LIT-0101"
 OTHER_ITEM = "LIT-0205"
+# §9's first step, as the continuation store issues it: `<work_item>#<epoch>`.
+# A ref and not a flag, because what makes a lost session recoverable is knowing
+# WHICH record holds the state.
+CHECKPOINT = "SRV-0001#1"
 
 
 # ---------------------------------------------------------------------------
@@ -157,6 +162,34 @@ class RecordingService:
 
     def names(self) -> list[str]:
         return [name for name, _ in self.calls]
+
+
+class AnonymousService(RecordingService):
+    """A target whose resume answers without naming the session it is holding.
+
+    The loopback applies `_record` — the rule that an answer naming no session
+    is refused — only to creates. A resume returns the provider's answer
+    verbatim, so an `ok` with no session in it reaches the handoff intact. This
+    fixture is that shape, and the handoff is the layer that has to decide what
+    such an `ok` is worth.
+    """
+
+    def resume(self, **kwargs):
+        self.calls.append(("resume", kwargs))
+        return {"action": "resume", "state": "RUNNING"}
+
+
+def resume_to(device: str = LOCAL, *, context_ref: str = CONTEXT_REF,
+              session_ref: str = "session:a:b:c"):
+    """A handoff's target request, addressed explicitly.
+
+    `handoff()` derives one from `to_device_ref` when the caller supplies none,
+    and a caller that supplies none is refused — so a test that means "the local
+    device" has to say so rather than relying on a default that does not exist.
+    """
+    return router_mod.request_from_payload(payload(
+        "agent.session.resume", device, context_ref=context_ref,
+        session_ref=session_ref))
 
 
 def fake_node_transport(*, device_refs=(FJ, DELL), mode="ok", reason=None,
@@ -995,7 +1028,7 @@ class TestHandoff(unittest.TestCase):
         outcome = r.handoff(router_mod.request_from_payload(payload(
             "agent.session.handoff", LOCAL, context_ref=CONTEXT_REF,
             session_ref="session:a:b:c",
-            params={"checkpoint": {"summary": "state"},
+            params={"checkpoint": CHECKPOINT,
                     "to_device_ref": FJ, "target_action": "agent.session.resume",
                     "release_source": True})))
         self.assertFalse(outcome.ok)
@@ -1014,7 +1047,7 @@ class TestHandoff(unittest.TestCase):
             router_mod.request_from_payload(payload(
                 "agent.session.handoff", LOCAL, context_ref=CONTEXT_REF,
                 session_ref="session:a:b:c",
-                params={"checkpoint": {"summary": "state"}})),
+                params={"checkpoint": CHECKPOINT})),
             create_request=router_mod.request_from_payload(payload(
                 "agent.session.result", LOCAL, session_ref="session:a:b:c")))
         self.assertTrue(outcome.ok, outcome.reason)
@@ -1050,7 +1083,7 @@ class TestHandoff(unittest.TestCase):
             router_mod.request_from_payload(payload(
                 "agent.session.handoff", LOCAL, context_ref=CONTEXT_REF,
                 session_ref="session:a:b:c",
-                params={"checkpoint": {"summary": "state"},
+                params={"checkpoint": CHECKPOINT,
                         "release_source": True,
                         "target_action": "agent.session.result"})),
             create_request=router_mod.request_from_payload(payload(
@@ -1079,7 +1112,7 @@ class TestHandoff(unittest.TestCase):
             router_mod.request_from_payload(payload(
                 "agent.session.handoff", LOCAL, context_ref=CONTEXT_REF,
                 session_ref="session:a:b:c",
-                params={"checkpoint": {"summary": "state"},
+                params={"checkpoint": CHECKPOINT,
                         "release_source": True,
                         "target_action": "agent.session.result"})),
             create_request=router_mod.request_from_payload(payload(
@@ -1088,6 +1121,249 @@ class TestHandoff(unittest.TestCase):
         self.assertEqual(outcome.reason, "ACTION_UNSUPPORTED")
         self.assertTrue(outcome.source_preserved)
         self.assertNotIn("stop", source.names())
+
+    # -- §9's first step: an anchor, not a flag ----------------------------
+
+    def test_a_handoff_records_the_checkpoint_it_is_anchored_to(self):
+        source = self._source()
+        r = router(source)
+        outcome = r.handoff(
+            router_mod.request_from_payload(payload(
+                "agent.session.handoff", LOCAL, context_ref=CONTEXT_REF,
+                session_ref="session:a:b:c",
+                params={"checkpoint": CHECKPOINT})),
+            create_request=router_mod.request_from_payload(payload(
+                "agent.session.result", LOCAL, session_ref="session:a:b:c")))
+        self.assertTrue(outcome.ok, outcome.reason)
+        self.assertEqual(outcome.checkpoint, CHECKPOINT)
+        self.assertEqual(outcome.show()["checkpoint"], CHECKPOINT)
+
+    def test_a_checkpoint_that_is_not_a_ref_is_refused(self):
+        # The parameter used to accept any truthy value and then drop it, so
+        # `{"summary": "state"}` was "a checkpoint exists" — a precondition
+        # nothing could ever check. What the MCP surface declares is a string and
+        # what the store issues is `<work_item>#<epoch>`; a mapping is neither.
+        source = self._source()
+        r = deployed_router(source)
+        for value in ({"summary": "state"}, "", "   ", 7, None):
+            with self.subTest(value=value):
+                outcome = r.handoff(router_mod.request_from_payload(payload(
+                    "agent.session.handoff", LOCAL, context_ref=CONTEXT_REF,
+                    session_ref="session:a:b:c", params={"checkpoint": value})))
+                self.assertFalse(outcome.ok)
+                self.assertEqual(outcome.reason, "INVALID_CONTEXT")
+                self.assertEqual(outcome.stopped_at, "checkpoint")
+                self.assertIsNone(outcome.checkpoint)
+                self.assertNotIn("checkpoint", outcome.completed)
+                self.assertEqual(source.names(), [])
+
+    # -- §9's second step: there has to be somewhere to go ------------------
+
+    def test_a_handoff_with_no_destination_is_refused_rather_than_raised(self):
+        # `to_device_ref` is optional in the contract and optional is not the
+        # same as unread. With none, the procedure addressed the empty device
+        # and the resolver rejected the malformed request — an exception out of
+        # a function whose whole contract is that "no" is an answer, and one a
+        # caller cannot tell from a bug in the router.
+        source = self._source()
+        r = router(source)
+        outcome = r.handoff(router_mod.request_from_payload(payload(
+            "agent.session.handoff", LOCAL, context_ref=CONTEXT_REF,
+            session_ref="session:a:b:c",
+            params={"checkpoint": CHECKPOINT, "release_source": True})))
+        self.assertFalse(outcome.ok)
+        self.assertEqual(outcome.reason, "INVALID_CONTEXT")
+        self.assertEqual(outcome.stopped_at, "resolve_target")
+        self.assertEqual(outcome.completed, ("checkpoint",))
+        self.assertTrue(outcome.source_preserved)
+        self.assertEqual(outcome.checkpoint, CHECKPOINT)
+        self.assertEqual(source.names(), [])
+
+    # -- §9's last step: what may be released, and on what evidence --------
+
+    def test_the_source_is_not_released_on_an_answer_that_names_no_session(self):
+        # `ok` says the target ANSWERED. It does not say the target is holding a
+        # session, and releasing the source on an answer that establishes nothing
+        # would end the only session anybody has evidence for — the failure the
+        # order of these six steps exists to prevent, arriving through the one
+        # door the order does not cover.
+        source = AnonymousService()
+        r = router(source)
+        outcome = r.handoff(
+            router_mod.request_from_payload(payload(
+                "agent.session.handoff", LOCAL, context_ref=CONTEXT_REF,
+                session_ref="session:a:b:c",
+                params={"checkpoint": CHECKPOINT, "release_source": True})),
+            create_request=resume_to())
+        self.assertFalse(outcome.ok)
+        self.assertEqual(outcome.reason, "INVALID_CONTEXT")
+        self.assertEqual(outcome.stopped_at, "context_handed_off")
+        self.assertNotIn("context_handed_off", outcome.completed)
+        self.assertTrue(outcome.source_preserved)
+        self.assertEqual(outcome.checkpoint, CHECKPOINT)
+        self.assertNotIn("stop", source.names(),
+                         "the source was stopped on an answer that named no session")
+
+    def test_a_release_a_person_approved_releases_the_source(self):
+        # §9's last step, reached for the first time. `session.stop` is
+        # human-gated, and the approval is for the STOP — its own action, its own
+        # target, its own parameters — so the handoff carries what a person
+        # approved rather than granting itself authority. Without forwarding it,
+        # `approvals` was always empty and `source_released` was a step name no
+        # caller could arrive at.
+        source = self._source()
+        context = minted_context()
+        now = provider_instance.now_utc()
+        r = router(source, context_store={context["context_ref"]: context})
+        stop_approval = approval.issue(
+            action="session.stop",
+            target={"device_ref": LOCAL, "session_ref": "session:a:b:c",
+                    "agent_runtime": RUNTIME, "provider": KIND_PROVIDER},
+            params={}, context=context, now=now)
+        outcome = r.handoff(
+            router_mod.request_from_payload(payload(
+                "agent.session.handoff", LOCAL, context_ref=context["context_ref"],
+                session_ref="session:a:b:c",
+                params={"checkpoint": CHECKPOINT, "release_source": True},
+                approvals=[stop_approval])),
+            create_request=resume_to(context_ref=context["context_ref"]))
+        self.assertTrue(outcome.ok, outcome.reason)
+        self.assertEqual(outcome.completed[-1], "source_released")
+        self.assertFalse(outcome.source_preserved)
+        self.assertIn("stop", source.names())
+        self.assertEqual(outcome.checkpoint, CHECKPOINT)
+
+    def test_an_approval_for_another_session_leaves_the_source_running(self):
+        # The binding check is what keeps a forwarded approval from being a
+        # bypass: an approval a person really gave, for a different session, is
+        # reported as a binding mismatch and the source keeps running. This is
+        # the half of the release that must not be lost by making it reachable.
+        source = self._source()
+        context = minted_context()
+        now = provider_instance.now_utc()
+        r = router(source, context_store={context["context_ref"]: context})
+        elsewhere = approval.issue(
+            action="session.stop",
+            target={"device_ref": LOCAL, "session_ref": "session:another:1",
+                    "agent_runtime": RUNTIME, "provider": KIND_PROVIDER},
+            params={}, context=context, now=now)
+        outcome = r.handoff(
+            router_mod.request_from_payload(payload(
+                "agent.session.handoff", LOCAL, context_ref=context["context_ref"],
+                session_ref="session:a:b:c",
+                params={"checkpoint": CHECKPOINT, "release_source": True},
+                approvals=[elsewhere])),
+            create_request=resume_to(context_ref=context["context_ref"]))
+        self.assertFalse(outcome.ok)
+        self.assertEqual(outcome.reason, "APPROVAL_BINDING_MISMATCH")
+        self.assertEqual(outcome.stopped_at, "source_released")
+        self.assertTrue(outcome.source_preserved)
+        self.assertNotIn("stop", source.names())
+
+    # -- where a failed handoff stopped, read off the answer ---------------
+
+    def test_a_device_that_does_not_declare_the_runtime_did_not_resolve(self):
+        # The reason word is AGENT_RUNTIME_UNAVAILABLE, and the word alone used
+        # to make this `target_ready` — telling a reader to wait for a device
+        # that will never carry this runtime. The resolver refused at its own
+        # `agent_runtime` step, which is a resolution failure: pick another
+        # device. `device:tokyo-shared-dev-01` declares claude-code and not
+        # codex, which is what makes this a mismatch about the runtime rather
+        # than one about reachability.
+        source = self._source()
+        r = deployed_router(source)
+        outcome = r.handoff(router_mod.request_from_payload(payload(
+            "agent.session.handoff", LOCAL,
+            context_ref=CONTEXT_REF, session_ref="session:a:b:c",
+            params={"checkpoint": CHECKPOINT,
+                    "to_device_ref": "device:tokyo-shared-dev-01"})))
+        self.assertFalse(outcome.ok)
+        self.assertEqual(outcome.reason, "AGENT_RUNTIME_UNAVAILABLE")
+        self.assertEqual(outcome.stopped_at, "resolve_target")
+
+    def test_a_target_that_would_not_carry_the_verb_did_not_resolve_and_was_not_ready(self):
+        # The refusal happens at the resolver's `support` step, which is a
+        # target that could carry the request and will not — so the answer is
+        # `target_ready`, and the step is read off the resolver rather than
+        # guessed from the route. Nothing was routed here, so a reader of the
+        # route alone would have called this a resolution failure and sent the
+        # caller to look at the device.
+        source = ok_service(support={
+            "session.create": {"state": "SUPPORTED"},
+            "session.inspect": {"state": "SUPPORTED"},
+            "session.result": {"state": "SUPPORTED"},
+            "session.resume": {"state": "UNSUPPORTED",
+                               "reason": "this provider does not resume"},
+        })
+        r = router(source)
+        outcome = r.handoff(
+            router_mod.request_from_payload(payload(
+                "agent.session.handoff", LOCAL, context_ref=CONTEXT_REF,
+                session_ref="session:a:b:c",
+                params={"checkpoint": CHECKPOINT})),
+            create_request=resume_to())
+        self.assertFalse(outcome.ok)
+        self.assertEqual(outcome.reason, "ACTION_UNSUPPORTED")
+        self.assertEqual(outcome.stopped_at, "target_ready")
+        self.assertTrue(outcome.source_preserved)
+
+    def test_a_target_that_probed_well_and_could_not_be_delivered_is_not_available(self):
+        # A route WAS named and nothing answered at the other end of it — the
+        # one shape §9's `target_available` names, and the one it could never be
+        # reached by before. The fixture is the realistic one the fake node
+        # documents: a node that is up and answers probes, and whose control
+        # call is what fails.
+        source = self._source()
+        node = fake_node_transport(mode="refuse", reason="DEVICE_UNREACHABLE")
+        r = router(source, node)
+        outcome = r.handoff(router_mod.request_from_payload(payload(
+            "agent.session.handoff", FJ, context_ref=CONTEXT_REF,
+            session_ref="session:a:b:c",
+            params={"checkpoint": CHECKPOINT, "to_device_ref": FJ})))
+        self.assertFalse(outcome.ok)
+        self.assertEqual(outcome.reason, "DEVICE_UNREACHABLE")
+        self.assertEqual(outcome.stopped_at, "target_available")
+        self.assertTrue(outcome.source_preserved)
+
+    def test_a_target_that_answered_for_itself_is_not_ready(self):
+        # Same route, same delivery, and the target's own answer: the difference
+        # between "nothing was there" and "it said no" is the difference between
+        # the two steps, and only the reason tells them apart.
+        source = self._source()
+        node = fake_node_transport(mode="refuse", reason="PROVIDER_ERROR")
+        r = router(source, node)
+        outcome = r.handoff(router_mod.request_from_payload(payload(
+            "agent.session.handoff", FJ, context_ref=CONTEXT_REF,
+            session_ref="session:a:b:c",
+            params={"checkpoint": CHECKPOINT, "to_device_ref": FJ})))
+        self.assertFalse(outcome.ok)
+        self.assertEqual(outcome.reason, "PROVIDER_ERROR")
+        self.assertEqual(outcome.stopped_at, "target_ready")
+
+    def test_every_resolver_step_has_a_handoff_step_or_a_reason_it_has_none(self):
+        # The table is what keeps the two orders readable against each other, so
+        # a step added to the resolver is a failure here rather than a step whose
+        # stop point is a guess. `route` is the one step with no entry and it is
+        # named rather than omitted: it refuses only when an earlier step set
+        # `route_kind` to "none", and the chain stops at that step.
+        steps = target.steps_in_order()
+        unmapped = [step for step in steps
+                    if step not in router_mod.HANDOFF_STEP_FOR_RESOLVER_STEP]
+        self.assertEqual(unmapped, ["route"])
+        for step in router_mod.HANDOFF_STEP_FOR_RESOLVER_STEP.values():
+            self.assertIn(step, router_mod.HANDOFF_STEPS)
+
+    def test_the_contract_says_what_the_checkpoint_is_for_and_what_it_is_not(self):
+        # The parameter had no reader anywhere: required, then dropped. A reader
+        # of the contract would reasonably have assumed it travelled to the
+        # target, so the limit is stated where a caller looks rather than left to
+        # be discovered by tracing `target_params` down a layer.
+        declared = router_mod.contract()["handoff"]["checkpoint"]
+        self.assertIn("continuation store", declared["is"])
+        self.assertIn("work continuations", declared["consumer"])
+        self.assertIn("does not travel to the provider",
+                      declared["is_not_forwarded"])
+        self.assertIn("params: []", declared["is_not_forwarded"])
 
 
 # ---------------------------------------------------------------------------

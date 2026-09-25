@@ -1178,12 +1178,19 @@ class HandoffOutcome:
     stopped_at: str | None
     source_preserved: bool
     detail: dict = field(default_factory=dict)
+    #: The ref of the record this handoff is anchored to, recorded verbatim and
+    #: carried back on every answer — including the refusals, so that a reader
+    #: can tell "no checkpoint was named" from "the field was not filled in".
+    #: §9's `checkpoint` is a ref and not a flag: what makes a lost session
+    #: recoverable is knowing WHICH record holds the state.
+    checkpoint: str | None = None
 
     def show(self) -> dict:
         return {
             "ok": self.ok, "reason": self.reason,
             "completed": list(self.completed), "stopped_at": self.stopped_at,
             "source_preserved": self.source_preserved,
+            "checkpoint": self.checkpoint,
             "detail": self.detail,
             "order": list(HANDOFF_STEPS),
         }
@@ -1207,23 +1214,71 @@ def handoff(*, router: FleetAgentControlRouter, request: AgentControlRequest,
     completed: list[str] = []
 
     checkpoint = (request.params or {}).get("checkpoint")
-    if not checkpoint:
-        return HandoffOutcome(False, "INVALID_CONTEXT", tuple(completed),
-                              "checkpoint", True,
-                              {"why": "a handoff with nothing to hand over moves a "
-                                      "session and leaves its state behind"})
+    if not isinstance(checkpoint, str) or not checkpoint.strip():
+        # A ref, not a flag, and this is where the two differ: the parameter
+        # used to accept any truthy value and was then dropped, so a handoff
+        # could not be told from a handoff whose checkpoint was never written.
+        # `fleet/agent-control-contract.yaml#handoff.checkpoint` says where the
+        # ref's reader actually is and why it does not travel to the provider.
+        return HandoffOutcome(
+            False, "INVALID_CONTEXT", tuple(completed), "checkpoint", True,
+            {"why": "a handoff is anchored to a checkpoint, and the checkpoint is "
+                    "the ref of one — `<work_item>#<epoch>`, what "
+                    "`work checkpoint` prints. What arrived was "
+                    + ("nothing" if checkpoint is None else type(checkpoint).__name__)
+                    + ", so nothing says the state was preserved before the session "
+                      "was moved, and a handoff with nothing to hand over moves a "
+                      "session and leaves its state behind"})
     completed.append("checkpoint")
+
+    # §9's second step, and the reason it is checked before the resolver runs: a
+    # handoff that names no destination is not a request the resolver can
+    # refuse. Without `to_device_ref` this built a target request addressed to
+    # the empty device, and the resolver rejected it — an exception out of a
+    # procedure whose contract is that "no" is an answer. An unnamed destination
+    # is a resolution failure, so it is reported as one; `to_device_ref` being
+    # optional in the contract is not permission for it to go unread.
+    if create_request is None and not str(
+            (request.params or {}).get("to_device_ref") or ""):
+        return HandoffOutcome(
+            False, "INVALID_CONTEXT", tuple(completed), "resolve_target", True,
+            {"why": "a handoff names no destination, so there is nothing to "
+                    "resolve. `to_device_ref` is how the procedure is told where "
+                    "the session goes, and a request that does not say is "
+                    "malformed rather than refused"},
+            checkpoint=checkpoint)
 
     created = router.route(create_request or _resume_request(request))
     if not created.ok:
         # Nothing was stopped. The source session is exactly as it was, and the
         # reason is the target's own — not a handoff-specific rewording of it.
         return HandoffOutcome(False, created.reason, tuple(completed),
-                              _stop_step(created.reason), True,
-                              {"target": created.show()})
+                              _stop_step(created), True,
+                              {"target": created.show()},
+                              checkpoint=checkpoint)
     completed.extend(["resolve_target", "target_available", "target_ready"])
 
+    # §9, one layer below the rule the order states. `created.ok` says the
+    # target ANSWERED; it does not say the target is holding a session. The gap
+    # is the whole of the release decision, because an ok answer that names no
+    # session leaves nothing for the context to have been handed TO — and a
+    # procedure that released the source on one would have ended the only
+    # session anybody has evidence for.
+    #
+    # This is the rule `_record` already applies to a create, in the same word
+    # and for the same reason: a ref the control plane did not receive is a
+    # session ServerOS cannot name, and identity is the one thing a control verb
+    # has no business establishing on the provider's behalf.
     handed = created.result or {}
+    if not handed.get("session_ref"):
+        return HandoffOutcome(
+            False, "INVALID_CONTEXT", tuple(completed), "context_handed_off", True,
+            {"target": created.show(),
+             "why": "the target answered and named no session, so there is no "
+                    "session the context was handed to. The source is untouched: "
+                    "releasing it here would end the only session that is known "
+                    "to exist"},
+            checkpoint=checkpoint)
     completed.append("context_handed_off")
 
     release = (request.params or {}).get("release_source")
@@ -1234,7 +1289,8 @@ def handoff(*, router: FleetAgentControlRouter, request: AgentControlRequest,
                                       "was not requested, and a handoff that stops "
                                       "the source by default is a handoff that "
                                       "loses it whenever the target turns out to "
-                                      "be unsuitable an hour later"})
+                                      "be unsuitable an hour later"},
+                              checkpoint=checkpoint)
 
     stopped = router.route(_stop_request(request))
     if not stopped.ok:
@@ -1242,16 +1298,70 @@ def handoff(*, router: FleetAgentControlRouter, request: AgentControlRequest,
                               True, {"target": handed, "stop": stopped.show(),
                                      "why": "the target is running and the source is "
                                             "still running; both exist and neither "
-                                            "was lost"})
+                                            "was lost"},
+                              checkpoint=checkpoint)
     completed.append("source_released")
     return HandoffOutcome(True, None, tuple(completed), None, False,
-                          {"target": handed, "stop": stopped.result})
+                          {"target": handed, "stop": stopped.result},
+                          checkpoint=checkpoint)
 
 
-def _stop_step(reason: str | None) -> str:
-    """Which step a failed handoff stopped at, named by what was not done."""
-    return "resolve_target" if reason in ("DEVICE_UNREACHABLE",
-                                          "NODE_RUNTIME_UNAVAILABLE") else "target_ready"
+# The handoff step each resolver step corresponds to. The two orders ask the
+# same question in different words: the first four steps establish WHICH target
+# could carry the request, and the last three whether it would do it now. Kept
+# as one table rather than re-derived at each call site, so that a step added to
+# one order and not the other is visible here.
+HANDOFF_STEP_FOR_RESOLVER_STEP = {
+    "device": "resolve_target",
+    "agent_runtime": "resolve_target",
+    "provider_instance": "resolve_target",
+    "adapter": "resolve_target",
+    "support": "target_ready",
+    "readiness": "target_ready",
+    "admission": "target_ready",
+}
+
+#: The route kinds that mean a route was NAMED. `_step_route` is the last step of
+#: the resolver's chain, so a record carrying one of these is a record where
+#: every step before it agreed and the request was addressed somewhere.
+NAMED_ROUTES = ("local", "fleet")
+
+
+def _stop_step(answer: AgentControlResponse) -> str:
+    """Which step a failed handoff stopped at, read off the answer.
+
+    Read, and not re-derived from the reason word, because the word does not
+    answer this question. `DEVICE_UNREACHABLE` and `NODE_RUNTIME_UNAVAILABLE`
+    are each produced on two planes — by the resolver, where no route was ever
+    named, and by a transport, after a route WAS named and nothing could be
+    delivered to it. Mapping the word alone therefore had to be wrong for one of
+    the two, and it was wrong in the other direction: a device that resolved and
+    whose runtime could not carry the request was reported as `target_ready`, a
+    step whose name tells the reader to wait for something that will never be
+    ready.
+
+    Two facts on the answer decide it, both copied from the layer that
+    established them and neither derived here: `refused_by` names the resolver
+    step that refused, and `route` is the resolver's own `route_kind`, which is
+    set only after every step before it agreed.
+    """
+    refused_by = (answer.resolved or {}).get("refused_by")
+    if refused_by:
+        step = HANDOFF_STEP_FOR_RESOLVER_STEP.get(refused_by)
+        if step is None:
+            raise TargetError(
+                f"the resolver refused at {refused_by!r}, which corresponds to no "
+                f"handoff step; §9's order and the resolver's order have to be "
+                f"readable against each other or the stop point is a guess")
+        return step
+    if answer.route not in NAMED_ROUTES:
+        # No route was named, so there was nothing to be available or ready.
+        return "resolve_target"
+    if answer.reason in ("DEVICE_UNREACHABLE", "NODE_RUNTIME_UNAVAILABLE"):
+        # A route was named and the request never reached the other end of it.
+        return "target_available"
+    # The target was reached, and what came back is the target's own answer.
+    return "target_ready"
 
 
 def _resume_request(request: AgentControlRequest) -> AgentControlRequest:
@@ -1268,10 +1378,24 @@ def _resume_request(request: AgentControlRequest) -> AgentControlRequest:
 
 
 def _stop_request(request: AgentControlRequest) -> AgentControlRequest:
+    """The stop this handoff would perform, carrying the caller's approvals.
+
+    `session.stop` is human-gated, so the stop needs an approval bound to the
+    STOP — its own action, its own target, its own parameters. Forwarding what
+    the caller presented is not the compound action granting itself authority:
+    `approval.decide` still decides it against this request, and an approval
+    minted for the handoff or for another session is reported as
+    APPROVAL_REQUIRED, APPROVAL_BINDING_MISMATCH or APPROVAL_CONTEXT_MISMATCH
+    and leaves the source running. NOT forwarding it is what left §9's last step
+    unreachable: with `approvals` always empty, `source_released` was a step
+    name no caller could arrive at, and `release_source` was a parameter with no
+    possible effect.
+    """
     return AgentControlRequest(
         action="agent.session.stop", device_ref=request.device_ref,
         agent_runtime=request.agent_runtime,
         params={}, context_ref=request.context_ref,
+        approvals=tuple(request.approvals or ()),
         session_ref=request.session_ref, correlation_id=request.correlation_id)
 
 
