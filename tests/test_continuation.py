@@ -82,13 +82,24 @@ slice J — it was accepted and ignored — and it is now refused by name with t
 program §9 describes, so what is uncovered is no longer «what does it mean» but
 the program itself. See the ledger's §9.38.
 
-`attempts_state` DOES NOT ANSWER «ACCEPTED», and the absence is deliberate rather
-than unfinished. Nothing on this node records an acceptance as a fact separate
-from the record's own `evidence_locators` — `work checkpoint --evidence` calls one
-«an accepted evidence locator» — so «which of these results was accepted into this
-Item» is read from the record and reconciled against the attempts by whoever
-resumes. A test asserts the shape of that answer so that a later slice adding an
-acceptance store has to move it on purpose.
+`attempts_state` NOW ANSWERS «ACCEPTED», AND IT DID NOT WHEN THIS FILE WAS
+WRITTEN. The sentence that stood here said nothing on this node records an
+acceptance as a fact separate from the record's own `evidence_locators`, and asked
+for a later slice adding an acceptance store to move it on purpose. Slice L is
+that slice: `work accept` writes `accepted_at`/`accepted_by`/`accepted_locator` on
+the admission — once, and only after the cycle retired — so `ATTEMPT_ACCEPTED` is
+one of the answers now and the closed vocabulary has five words.
+
+WHAT MOVED AND WHAT DID NOT. `test_the_four_answers_are_the_closed_vocabulary`
+became five; `test_an_acceptance_is_not_a_state_it_can_answer` became
+`test_an_acceptance_is_a_state_the_edge_records`, and the old assertion it carried
+is quoted in that test's docstring rather than deleted. What did NOT move is the
+distinction the old test existed for: an acceptance is answered from the STORE and
+never inferred from the record's own evidence or from a free-text `outcome`. Two
+tests hold that: the fixtures here retire with `outcome="accepted"` and must still
+read as retired-but-not-taken-up, and
+`TestTheVocabularyIsTheStoreAndTheRecordIsTheRestatement` asserts the two levels
+stay two.
 
 Hermetic: a temporary directory per test, no daemon, no socket. Every instant is
 an argument.
@@ -185,6 +196,24 @@ def a_checkpoint(store: AgentControlStore, **over) -> dict:
               "admissions": store.admissions(), "now": NOW}
     fields.update(over)
     return continuation.build_checkpoint(**fields)
+
+
+def a_dispatched(store: AgentControlStore, ref: str = "cyc-1") -> None:
+    """Drive `ref` from an admission to a reported dispatch, the way P7 does.
+
+    Not to a retirement: `retire_admission` is the ending each test states for
+    itself, and the acceptance tests need to reach the phase where a result can
+    exist at all — `accept_admission` refuses a cycle that never got there, which
+    is asserted on the store's own side in `tests/test_admission.py`.
+    """
+    held = store.admissions()[ref]
+    store.confirm_admission(
+        ref, phase="LEASE_HELD",
+        evidence={"act": "DECLARE", "resource": held["lease"]["resource"]},
+        at=NOW)
+    store.confirm_admission(
+        ref, phase="DISPATCHED",
+        evidence={"action_key": held["action_key"], "status": "EXITED"}, at=NOW)
 
 
 def a_data_root(tmp_path: Path) -> dict:
@@ -1210,9 +1239,21 @@ class TestWhatWasTriedIsReadBack:
             assert made["attempts"] == ["cyc-1"]
             assert made["says"]
 
-    def test_the_four_answers_are_the_closed_vocabulary(self):
-        """Asserted as an equality, so a fifth word is a change and not a typo."""
-        assert continuation.ATTEMPT_ANSWERS == ("ATTEMPT_RETIRED", "ATTEMPT_OPEN",
+    def test_the_five_answers_are_the_closed_vocabulary(self):
+        """Asserted as an equality, so a sixth word is a change and not a typo.
+
+        The TUPLE's order is not the order this answer is decided in, and the
+        names say which is which on purpose: `ATTEMPT_ACCEPTED` and
+        `ATTEMPT_RETIRED` are the two finished answers, `ATTEMPT_OPEN` is the
+        unfinished one, `ATTEMPT_UNANSWERABLE` is the store that was not read, and
+        `ATTEMPT_NONE` is a record naming no attempt. The record-level answer is
+        decided most cautiously first — an unreadable store outranks an open
+        attempt and an open attempt outranks a finished one — which is asserted by
+        the mixing tests below and pinned here only to the extent that the tuple is
+        not reordered to look like a precedence.
+        """
+        assert continuation.ATTEMPT_ANSWERS == ("ATTEMPT_ACCEPTED",
+                                                "ATTEMPT_RETIRED", "ATTEMPT_OPEN",
                                                 "ATTEMPT_UNANSWERABLE",
                                                 "ATTEMPT_NONE")
 
@@ -1258,27 +1299,110 @@ class TestWhatWasTriedIsReadBack:
         assert wait["state"] == "WAIT_OVER"
         assert made["state"] == "ATTEMPT_OPEN"
 
-    def test_an_acceptance_is_not_a_state_it_can_answer(self, tmp_path):
-        """What is accepted lives on the record, and this answer says so.
+    def test_an_acceptance_is_a_state_the_edge_records(self, tmp_path):
+        """The assertion this test used to carry, and why it had to move.
 
-        `work checkpoint --evidence` calls a locator «an accepted evidence
-        locator», so the record is where acceptance is written. `attempts_state`
-        must not invent a per-attempt acceptance: the two facts are reconciled by
-        whoever resumes, and a store answer that guessed which attempt a locator
-        came from would be answering a question nothing recorded.
+        It used to read:
+
+            assert "ACCEPTED" not in continuation.ATTEMPT_ANSWERS
+            assert set(made["evidence"][0]) == {"ref", "held", "state", "phase",
+                                                "retired_at", "outcome", "because"}
+
+        and its docstring said an acceptance is written on the record, so this
+        function must not invent a per-attempt one. That was true of a node with no
+        acceptance on the edge; slice L put one there, so the closed vocabulary is
+        five words and an evidence entry carries three more keys. The fact the old
+        test refused to invent is now a fact something records — and the reason it
+        refused is still why the answer is read from the STORE: the record's own
+        `evidence_locators` is printed beside it on the same screen and is never
+        the source of this answer.
         """
         store = a_store(tmp_path)
+        a_dispatched(store)
+        record = store.put_checkpoint(
+            a_checkpoint(store, child_attempts=["cyc-1"],
+                         evidence_locators=["art://run/1"]))
+        store.retire_admission("cyc-1", at=LATER, outcome="DELIVERED")
+        before = continuation.attempts_state(record, admissions=store.admissions())
+        assert before["state"] == "ATTEMPT_RETIRED"
+        assert before["accepted"] == []
+        assert before["retired"] == ["cyc-1"]
+        assert "(none of them taken up)" in before["says"], (
+            "the sentence a Parent reads says which of the finished attempts "
+            "still hold a result nobody has taken up")
+        store.accept_admission("cyc-1", at=LATER, by="parent-a",
+                               locator="art://run/1")
+        made = continuation.attempts_state(record, admissions=store.admissions())
+        assert made["state"] == "ATTEMPT_ACCEPTED"
+        assert made["accepted"] == ["cyc-1"]
+        assert "(1 of them taken up)" in made["says"]
+        assert set(made["evidence"][0]) == {"ref", "held", "state", "phase",
+                                           "retired_at", "outcome", "accepted_at",
+                                           "accepted_by", "accepted_locator",
+                                           "because"}
+        assert made["evidence"][0]["accepted_by"] == "parent-a"
+        assert made["evidence"][0]["accepted_locator"] == "art://run/1"
+        assert made["evidence"][0]["accepted_at"] == LATER
+
+    def test_a_free_text_outcome_is_not_an_acceptance(self, tmp_path):
+        """`outcome` has no vocabulary here, so «accepted» in it means nothing.
+
+        This file's fixtures retire with `outcome="accepted"` in a dozen places,
+        because that is a plausible thing for a producer to write and the store
+        carries it verbatim. None of those is a take-up, and this test is what
+        keeps them from being misleading fixtures: the free-text field is never the
+        source of the answer, so the same record reads as retired until
+        `accept_admission` runs and accepted only after.
+        """
+        store = a_store(tmp_path)
+        a_dispatched(store)
         record = store.put_checkpoint(
             a_checkpoint(store, child_attempts=["cyc-1"],
                          evidence_locators=["art://run/1"]))
         store.retire_admission("cyc-1", at=LATER, outcome="accepted")
         made = continuation.attempts_state(record, admissions=store.admissions())
-        assert "ACCEPTED" not in continuation.ATTEMPT_ANSWERS
-        assert set(made["evidence"][0]) == {"ref", "held", "state", "phase",
-                                           "retired_at", "outcome", "because"}, (
-            "an acceptance is not one of the facts this answer can carry; the "
-            "outcome the cycle recorded is a string and is carried verbatim")
         assert made["evidence"][0]["outcome"] == "accepted"
+        assert made["evidence"][0]["state"] == "ATTEMPT_RETIRED"
+        assert made["state"] == "ATTEMPT_RETIRED"
+        assert made["accepted"] == []
+
+    def test_a_record_with_one_untaken_result_reads_as_retired(self, tmp_path):
+        """The record-level answer is the cautious one, and `accepted` is a subset.
+
+        Two attempts, one taken up. The record is not `ATTEMPT_ACCEPTED`, because
+        that would tell a resuming Parent the Item is not short of anything this
+        checkpoint recorded while one of its results sits unread. And `accepted`
+        is a subset of `retired` rather than a third list beside it: a take-up is
+        only possible after the retirement, so two lists that overlapped by
+        construction would make a consumer count one attempt twice.
+        """
+        store = a_store(tmp_path)
+        a_dispatched(store)
+        store.admit({"cycle_ref": "cyc-2", "grant_ref": GRANT,
+                     "selection": {"selection_digest": DIGEST, "observed_at": NOW,
+                                   "selected": ["SRV-0001"]},
+                     "reservation": dict(BUDGET),
+                     "lease": {"resource": "browser:chromium", "scope": "session",
+                               "holder": "cyc-2"},
+                     "action_key": "act-2", "admitted_at": NOW})
+        a_dispatched(store, "cyc-2")
+        record = store.put_checkpoint(
+            a_checkpoint(store, child_attempts=["cyc-1", "cyc-2"]))
+        store.retire_admission("cyc-1", at=LATER, outcome="DELIVERED")
+        store.retire_admission("cyc-2", at=LATER, outcome="DELIVERED")
+        store.accept_admission("cyc-1", at=LATER, by="parent-a",
+                               locator="art://run/1")
+        made = continuation.attempts_state(record, admissions=store.admissions())
+        assert made["state"] == "ATTEMPT_RETIRED"
+        assert made["accepted"] == ["cyc-1"]
+        assert set(made["accepted"]) <= set(made["retired"]) == {"cyc-1", "cyc-2"}
+        assert "cyc-2" in made["detail"]
+        assert "(1 of them taken up)" in made["says"], (
+            "the count is the whole point: «2 finished» alone would tell a "
+            "resuming Parent the Item is not short of anything")
+        states = {entry["ref"]: entry["state"] for entry in made["evidence"]}
+        assert states == {"cyc-1": "ATTEMPT_ACCEPTED",
+                          "cyc-2": "ATTEMPT_RETIRED"}
 
 
 class TestEveryDeclaredFieldIsRenderedOrExempt:
@@ -1624,8 +1748,46 @@ class TestTheVerbsDriveTheStore:
         assert after.returncode == 0, after.stderr
         assert "ATTEMPT_RETIRED" in after.stdout
         assert "accepted" in after.stdout
-        assert "1 all finished" in after.stdout
+        assert "1 all finished with a take-up outstanding" in after.stdout
         assert "so resuming does not mean dispatching a second child" in after.stdout
+
+    def test_a_take_up_shows_on_the_line_a_resuming_parent_reads(self, env):
+        """One record read three times; only the store moves between them.
+
+        That is the whole claim in one screen: «what became of this attempt» is
+        read from the store rather than restated on the record, so the same bytes
+        answer `ATTEMPT_OPEN`, then `ATTEMPT_RETIRED`, then `ATTEMPT_ACCEPTED` as
+        the cycle finishes and its result is taken up. The `accepted` line further
+        down that screen is the RECORD's own list and stays empty throughout, which
+        is the separation this asserts rather than merely describes.
+        """
+        assert self.checkpoint(env, "--attempt", "cyc-1").returncode == 0
+        store = AgentControlStore(
+            Path(env["DATA_ROOT"]) / "state/serveros/runtime/agent-control"
+            / "store.json")
+        a_dispatched(store)
+        assert store.retire_admission("cyc-1", at=LATER,
+                                      outcome="DELIVERED")["retired_at"] == LATER
+
+        finished = cli("work", "continuations", "--now", LATER, env_extra=env)
+        assert finished.returncode == 0, finished.stderr
+        assert "ATTEMPT_RETIRED" in finished.stdout
+        assert "1 all finished with a take-up outstanding" in finished.stdout
+        assert "no take-up of its result is recorded" in finished.stdout
+        assert "1 all taken up" not in finished.stdout
+
+        taken = cli("work", "accept", "cyc-1", "--by", "parent-a",
+                    "--locator", "art://run/1", "--at", LATER, env_extra=env)
+        assert taken.returncode == 0, taken.stderr
+
+        after = cli("work", "continuations", "--now", LATER, env_extra=env)
+        assert after.returncode == 0, after.stderr
+        assert "ATTEMPT_ACCEPTED" in after.stdout
+        assert "1 all taken up" in after.stdout
+        assert "taken up by parent-a as art://run/1" in after.stdout
+        assert "carries no accepted evidence" in after.stdout, (
+            "the record's own restatement is written by the Parent when it next "
+            "checkpoints and is not this verb's to fill in")
 
     def test_a_checkpoint_that_tried_nothing_says_so_and_not_finished(self, env):
         """The fourth answer, at the line a person reads.

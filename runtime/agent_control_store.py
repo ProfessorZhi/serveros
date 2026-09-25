@@ -1394,6 +1394,15 @@ class AgentControlStore:
                 "confirmations": {},
                 "retired_at": None,
                 "outcome": None,
+                # Declared here and not merely absent, for the reason `retired_at`
+                # is: `runtime/continuation.attempts_state` reads these three to
+                # answer «was this result taken up», and on a record written
+                # before `accept_admission` existed the honest reading of a
+                # missing key would be indistinguishable from a store that
+                # answered None. One shape, written once, at admission.
+                "accepted_at": None,
+                "accepted_by": None,
+                "accepted_locator": None,
             }
             self._data["admissions"][cycle] = stored
             self._flush()
@@ -1564,6 +1573,143 @@ class AgentControlStore:
             record["retired_at"] = str(at)
             if named:
                 record["outcome"] = named
+            self._data["admissions"][key] = record
+            self._flush()
+            return record
+
+    def accept_admission(self, cycle_ref: str, *, at: str, by: str,
+                         locator: str) -> dict:
+        """Record that this cycle's result was taken up. Written once.
+
+        THE OTHER HALF OF «LOOK UP THE ATTEMPT». `retire_admission` records that
+        a cycle ended and how; it says nothing about whether what the cycle
+        produced reached the Item, and on this node nothing else did either — so
+        a resuming Parent could read «this attempt finished» and still not know
+        whether to take its result up or to dispatch a second child.
+        `docs/ABILITY-OPERATING-MODEL.md` asks every asynchronous edge to answer
+        «是否已被接受» and names the state a result waits in when no receiver is
+        available («结果durable保存为待接收»); `docs/daily-work-cycle.md` puts
+        «一次child结果只被接受一次» in B4's acceptance list; and the handoff
+        object has a row for it — `accepted_by`, «接收者及其验证结果，所接受的确切
+        输入输出版本». This is where that fact is written, once.
+
+        WHY THE EDGE AND NOT THE RECORD. A checkpoint restates the Item's state:
+        `evidence_locators` accumulates what has been accepted and every epoch
+        rewrites it, so it can say what is accepted now and cannot say that an
+        act happened ONCE. The admission is the edge — the cycle, its grant, its
+        reservation, its lease, its receipt — and a take-up belongs to it. Two
+        levels, two facts, neither a copy of the other.
+
+        WHY NOT THE RECEIPT. `runtime/bounded_invocation.invoke_once` writes one
+        receipt per action key and replays it verbatim for the same input, and its
+        `status` is how the EXECUTION ended. Acceptance is not part of an
+        execution, and a Parent writing into that store's namespace would be a
+        second writer for a record whose whole rule is one writer.
+
+        THE TWO GUARDS ARE ABOUT WHAT CAN EXIST. `retired_at` is this store's word
+        for «this cycle's outcome is recorded», and until it is set there is
+        nothing to take up. `DISPATCHED` is its word for «the invocation's receipt
+        was reported», and a cycle that never reached it has nothing that could
+        produce a result.
+
+        THERE IS NO CATCH-UP FOR THE SECOND ONE, AND THE REFUSAL SAYS SO RATHER
+        THAN INVENTING ONE. A crash between performing the step and reporting it
+        leaves exactly that state, and the obvious remedy — report the receipt
+        now, then accept — does not exist: `confirm_admission` refuses a cycle
+        that has already been retired, which is the same rule that keeps a
+        second confirmation from rewriting a settled phase. So a cycle retired
+        below `DISPATCHED` was recorded as abandoned, and this store will not
+        take that record apart afterwards to make a result appear. If the
+        invocation really did happen, the ending is wrong and a person has to
+        settle which of the two records is the mistake. Naming a remedy that the
+        next verb would refuse is worse than naming none.
+
+        WRITTEN ONCE, AND THE FIRST CALL WRITES BOTH FACTS. Who took the result up
+        and which locator was taken up, both, not one. A later call that repeats
+        both is a retry and is idempotent, including one arriving at a later
+        instant: it is the same statement. A later call naming a different Parent,
+        or a different locator, is refused by name with the record's own values in
+        the refusal, for the reason `confirm_admission` gives about one step
+        reported twice — «picking the newer one here would hide the disagreement
+        rather than record it» — and «一次child结果只被接受一次» has no exception
+        for a second Parent that did not look first.
+
+        WHAT IT DOES NOT DO: it does not decide the verdict.
+        `docs/COLLABORATION-CONTRACT.md` gives the receiving side three answers
+        about a producer's work — accept it, require a specific revision, register
+        the accurate gap — and this verb performs the FIRST. The other two are the
+        Parent's next `work checkpoint`, where a required revision becomes a
+        remaining result and a gap becomes an unresolved effect; `outcome` is free
+        text on this store and a verdict vocabulary invented here would be a
+        second definition of what that record says.
+        """
+        key = str(cycle_ref or "").strip()
+        who = str(by or "").strip()
+        where = str(locator or "").strip()
+        if not who:
+            raise StoreError(
+                "an acceptance names the Parent that took the result up. The "
+                "handoff object's `accepted_by` is «接收者及其验证结果，所接受的"
+                "确切输入输出版本», and a take-up that cannot be attributed to a "
+                "Parent is not that record — the next reader could not tell "
+                "whether the Item's owner or a stranger accepted it")
+        if not where:
+            raise StoreError(
+                "an acceptance names the locator of what was taken up. The same "
+                "field carries «所接受的确切输入输出版本», so an acceptance with no "
+                "locator would claim a result was accepted while saying nothing "
+                "about which one — the fact a resuming Parent needs in order to "
+                "see it in the record")
+        with self._mutation():
+            record = self._data["admissions"].get(key)
+            if record is None:
+                raise StoreError(
+                    f"{key} has no admission. An acceptance is a report about a "
+                    f"result taken up from a delegated cycle, and recording one "
+                    f"for a cycle this store never admitted would put an accepted "
+                    f"result on a cycle with no grant behind it")
+            if not record.get("retired_at"):
+                raise StoreError(
+                    f"{key} is still open at {record.get('phase')}. `retired_at` "
+                    f"is this store's word for «this cycle's outcome is "
+                    f"recorded», and until it is set there is no result to take "
+                    f"up: an acceptance now would name a result nothing has "
+                    f"produced yet. A cycle that ran and did not retire is a "
+                    f"cycle whose ending nobody has written down, which is a "
+                    f"different state from a result that arrived")
+            if record.get("phase") != ADMISSION_PHASES[-1]:
+                raise StoreError(
+                    f"{key} was retired at {record['retired_at']} while at "
+                    f"{record.get('phase')} and never reached "
+                    f"{ADMISSION_PHASES[-1]}. A result can only come from an "
+                    f"invocation whose receipt was reported, and that phase is "
+                    f"this store's word for it — so this cycle was recorded as "
+                    f"abandoned rather than finished, and there is no result to "
+                    f"take up. `confirm_admission` refuses a retired cycle too, "
+                    f"and deliberately: reporting the receipt now would rewrite "
+                    f"the ending this store has already accounted for. So there "
+                    f"is no catch-up for a later write to make here. If the "
+                    f"invocation did happen, this ending is wrong — it recorded "
+                    f"{record.get('outcome')!r} — and which of the two records is "
+                    f"the mistake is a person's to settle")
+            recorded = record.get("accepted_at")
+            if recorded:
+                if (record.get("accepted_by") == who
+                        and record.get("accepted_locator") == where):
+                    return record
+                raise StoreError(
+                    f"{key} was taken up at {recorded} by "
+                    f"{record.get('accepted_by')!r} as "
+                    f"{record.get('accepted_locator')!r}, and this takes it up by "
+                    f"{who!r} as {where!r}. A result is accepted once and the "
+                    f"first call is the one that writes it: a second acceptance "
+                    f"is either the same Parent retrying, which is idempotent "
+                    f"above, or a disagreement about who holds this Item and "
+                    f"which result is in it. That is a question for a person and "
+                    f"not a later write")
+            record["accepted_at"] = str(at)
+            record["accepted_by"] = who
+            record["accepted_locator"] = where
             self._data["admissions"][key] = record
             self._flush()
             return record
