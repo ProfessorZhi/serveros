@@ -518,6 +518,7 @@ tests/test_declared_commands.py::DeclaredCommandsExist::test_every_declared_comm
 | ability-management | **105 passed, 2 skipped**（`074a518`）；三个 renderer `--check` 干净 | 加 `SERVEROS_BUNDLE=<serveros worktree>/plugin` |
 | serveros（P6 切片 C：`worker_stopped` 接上它的 receipt 生产者，§9.27） | **1 failed**, 5669 passed, 20 skipped, 3936 subtests passed（660.19s） | `pytest tests/ -q`。相对上一行的 **+15 passed**（5654 → 5669）与 **+2 subtests**（3934 → 3936）就是这一片新增的测试。**那 1 条不是这一片引入的**，身份与判据见下一段 |
 | serveros（P6 切片 D：`resources_released` 接上它的 lease 生产者 + 一对字段必须先被读全，§9.28） | **5683 passed, 20 skipped, 3945 subtests passed, 0 failed**（646.90s） | `pytest tests/ -q`。算术是闭合的：上一格 5669 ＋ 这一片新增的 **13 条**（`test_focus_source.py` 的 `ResourceOccupancyIsReadFromTheLeaseStoreThatOwnsIt` 10 条 ＋ `test_daily_cycle.py` 3 条）＝ 5682，**再加回上一格那条红的 1 条** ＝ 5683；subtests 3936 ＋ **9** ＝ 3945。上一格那 1 条**这一次没有出现**——同一个文件单跑 `27 passed`、那一条参数化单跑 `4 passed`（8.10s）。**这不表示这一片修好了它**：这一片的六文件与它无涉，只表示那条红是**间歇的**，与 §9.27.6 记的探针读法一致（`container.attribution` 是四条参数化里唯一会 shell out 到 Docker 的那条）。所以它从「见过一次」变成「见过一次、缺席一次」，**不结案** |
+| serveros（P7 切片 A：准入与观察拆成两个问题、四个记录目录陷阱、§9.29） | **5697 passed, 20 skipped, 3947 subtests passed, 0 failed** | `pytest tests/ -q`。算术闭合：上一格 5683 ＋ 本片新增的 **14 条**（`TheAttemptWatchTest` 12 条 ＋ `TheRecipeCommandLineTest` 2 条）＝ 5697；subtests 3945 ＋ **2** ＝ 3947。**这一格必须先记一次红**：修掉本片自己引入的 monkeypatch 泄漏之前的那一跑是 **17 failed, 5680 passed, 3947 subtests passed（812.08s）**，17 条全落在五个与本片无涉的文件里，根因是本片新测试的 `addCleanup` 把**打过补丁的** `paths_mod.Paths` 又装了回去，而那是全树共享的模块对象；因为「单文件绿、15 条变异全杀、全量却红」是这一片最有价值的那条教训，它留在这里不删。**本格不记墙钟**：这一行的文字在跑之前就已落盘，所以那一跑读到的正是提交的那份字节——这比一个秒数强，所以拿它换掉了秒数。 |
 
 **切片 C 那一格里的那 1 条红：`container.attribution` 的 daemon/CLI 计数比对。**
 逐字是：
@@ -3358,6 +3359,191 @@ M6 杀 6 条、M8 杀 8 条，就是「§9.28.5 那条严格化是承重的」�
   不因为它不可达就把改动省掉：它一旦可达，就是一句会被读的话。
 - `focus_disposition` / `parking_acknowledged` / `scope_digest` / `grant_ref` / `next_action` /
   `blocked_by` 仍是卡字段无人建（与 §9.27.7 同）；「首次真实 grant 走可信用户控制」仍 PARTIAL。
+
+### 9.29 P7 切片 A：一个闸门问的两个问题被拆开，以及一次 live 跑出来的第二个死锁
+
+入口是计划 §P7 那一行（`docs/CC-EXECUTION-PLAN.md:124`）与基线第 74 行：
+
+> 「**先修实际死锁**：`recipes.work`当前在派发之前用worktree历史差异判断进展，NONE即
+> NO_PROGRESS；新任务尚未执行、本来没有历史产出，因此可能永远无法开始。准入检查应回答能否
+> 开始，进展观察应在真实启动后的有界窗口回答是否卡住；no-code任务也不强制需要Git差异/代码
+> 工作树。」
+
+#### 9.29.1 那个死锁精确到什么程度：它是**一个**闸门在同一个位置回答了两个问题
+
+改前的 `work` 在派发之前只有一道 progress 判断，而它同时被当成准入用。两个问题不同：
+
+| 问题 | 该由谁答 | 改前由谁答 |
+| --- | --- | --- |
+| **这一次能不能开始？** | 人已经授权过的选中项（`today.yaml` + `classify`） | 本周期 worktree 差量：新任务本来没有产出 → `NONE` → `NO_PROGRESS` |
+| **上一次是不是卡住了？** | 那一次尝试**结束之后**的窗口里，有没有源答过 | 同一个判断，窗口也取自 period |
+
+两个方向都错：新任务永远不能开始（它的「产出」按构造就不在这个窗口里），而一个真的有产出的
+尝试，只要它自己的产出落在同一个 period 窗口内，就会被算成「有进展」——**一次尝试自己的产出
+是「它没有卡住」的反面证据**。所以修法不是把闸门挪走，而是把两个问题分给两个位置：
+
+- **准入**只读授权选中（`ready`），不需要任何源，因此第一次尝试直接进派发；
+- **watch**只在上一次尝试**结束之后**问「有没有动过」，窗口是**两个读到的时刻**
+  （`earlier.finished_at` 与本次运行的钟），不是 period。
+
+`runtime/recipe-contract.yaml` 的 `NO_PROGRESS.means` 同步改成「观察的是这一次 scope 的更早
+那次尝试」，并写明**没有更早尝试的 scope 永远不会在这里被停**——「还没开始」不是「没有进展」。
+`work.steps` 的 `progress` 改名 `watch`，`work.stops` 补上 `IN_FLIGHT_OR_ABANDONED`
+（它一直是引擎会产出的词，改前只是没写进这一行的闭集里）。
+
+#### 9.29.2 「更早的那次尝试」从哪来：不加新存储，但四个坑都在同一个目录里
+
+主体是 `_earlier_attempt(ctx)`：读**这个 scope 自己的记录目录**，按「时刻、文件名」排序取最新
+的一条。不新增任何存储，因为记录目录本来就是「这个 key 有没有跑过」的唯一权威
+（`fleet/state-root-contract.yaml` 把「路径即 key」写成了设计而不是巧合）。四个坑：
+
+| 坑 | 为什么这是个坑 | 处置 |
+| --- | --- | --- |
+| **本次运行自己的记录** | 引擎在调 loop **之前**就写下 CLAIM（这正是崩溃可见的原因），所以 loop 一开始跑，目录里最新的一条就是它自己：读回来会把**每一次第一次尝试**读成「刚刚结束、没有产出的一次更早尝试」，也就是要修的那个死锁换成反面的面具 | 按文件名排除自己那一条（在同一个目录里比，与两个根怎么写无关） |
+| **拒绝副本的时刻** | `--retake` 的提示语指向「重跑那个 period」，而**重跑遭遇 `_refuse` 时会把被拒记录的时间戳抄进副本**（`state`/`key`/`claimed_at`/`finished_at` 都抄）。若只按文件名排，一个更晚 period 的拒绝副本会压过真正更晚结束的那次尝试 | 排序键是 `(finished_at or claimed_at, 文件名)`：时刻在前，因为被拒副本携带的是**很久以前**的 claim 时刻；文件名只在同秒时做 tie-break（与 `last_success` 同规则） |
+| **放不进时间顺序的记录** | 一条能 parse、但没有可读 `finished_at`/`claimed_at` 的记录**没有位置**。按字符串排的话 `"None"` 排在 ISO 时刻**之后**，于是它会赢下这一次扫描——那是在替记录发明它读不到的那个事实 | 单独收进 `unread_records` 并**报出来**（不静默跳过：静默跳过会让这次运行拿一条更老的尝试当最新的那次来判断） |
+| **一个源没答不能拖垮答了的源** | `perception` 立的规矩在记录库这一侧同样成立 | 可读、可定位的记录照常参与；读不了的只被**点名**，不阻断 watch |
+
+#### 9.29.3 三个值、一个没有 worktree 的块，和一个「能 parse 但不是对象」的挡板
+
+- **`progress_verdict` 的三值原样使用**：`NONE` 只在「至少有一个源答了、且两条源都是零」时给出；
+  「没有任何源答上来」是 `UNKNOWN` → `SOURCE_UNAVAILABLE`。这条线在日报里已经画过一次，这里读
+  它的裁定而不是自己再画一条。
+- **`_no_worktree_block()`** 是 `measure_worktree` 那个块的**缺口形态**（`answered: False`），
+  不是「检出来是空的」。**这正是 §9.28.5 的镜像**：那次是「缺席被读成 released」，这次是「没有
+  这个源」不能读成「这个源答了零」——否则一个 no-code 的 scope 会被判成「没有动过」。
+- **`read_record` 的非对象挡板**：一个能 parse 成 list 的 JSON 以前会从 reader 里抛出来，于是
+  「有人留了一个这个产品读不了的文件」被读成「这个产品坏了」。现在它与 parse 不出来走同一句话。
+- **`_watch_window` 的两条读不到的边**（M14/M15 各钉一条，都是单测级、都真的可达）：一条能被
+  `claimed_at` 定位、但**没有可读 `finished_at`** 的记录，答的是「观察不了，缺的是这个字段」
+  而不是 `None` 往下抛——「结束时刻没人写得出来」不等于「没有动过」；而起点晚于本次运行的钟
+  （两个时刻互相矛盾）是**拒绝**而不是夹紧，夹紧会挑一个印出来当作测量结果。
+
+`work` 里那份 `--worktree` 缺席的块与 `--run-dir` 缺席的块**同时在工作**，所以 no-code 的 scope
+在**有 Quay 账本**时真的会被观察到并派发（`test_a_no_code_scope_is_watched_through_the_source_it
+_does_have`）；两个源都没有时它只能准入一次，那个缺口被**命名**为 `SOURCE_UNAVAILABLE` 而不是
+掩饰成 `NO_PROGRESS`（下一片用 work-engine 自己的 attempt 记录当主源，那才是它的第一类公民形态）。
+
+#### 9.29.4 变异：15 条判据，15 条都死
+
+改一处判据 → 跑 `tests/test_recipes.py` → 每条都必须死。脚本
+`/data/home/vince/artifacts/tmp-p7/mutate_slice_a.py`；复原不用任何 git 动词（脚本自持原件、
+写回后比 `sha256`），每轮清 `__pycache__`（同尺寸同秒的 pyc 会让「这条判据活着」成为缓存造出来
+的假结论）。
+
+| 变异 | 结果 |
+| --- | --- |
+| M1 把自己这一次的 CLAIMED 记录也算进「更早的尝试」 | 杀（12 红） |
+| M2 只按文件名排序，不看时刻 | 杀（1 红：`…retake_that_the_refusal_points_at_unsticks_the_scope`） |
+| M3 删掉「上一次只 CLAIM 没有结果」这一支 | 杀（2 红） |
+| M4 观察窗口的起点取自 period | 杀（5 红） |
+| M5 观察窗口的终点取自 period 的 end | 杀（4 红） |
+| M6 没有 `--worktree` 的 scope 报成「读到了，是空的」 | 杀（1 红） |
+| M7 恢复「没有 worktree 就不准开始」这条旧闸门 | 杀（1 红，见下） |
+| M8 删掉 `read_record` 的非对象挡板 | 杀（1 红） |
+| M9 把「放不进时间顺序」的记录直接拿去排序 | 杀（1 红） |
+| M10 一份都读不出来的 scope 当成第一次尝试放行 | 杀（2 红） |
+| M11 把 `--records-root` 的原始参数直接交给 Engine（**修之前那一行**） | 杀（1 红） |
+| M12 删掉「root 必须是绝对路径」这条拒绝 | 杀（2 红） |
+| M13 拒绝时先报派生出来的 `--records-root`，而不是调用者真正打的那个 flag | 杀（1 红） |
+| M14 起点读不出来也照样给一个窗口 | 杀（1 红） |
+| M15 两个时刻互相矛盾时夹紧（clamp）而不是拒绝 | 杀（1 红） |
+
+**表里的红数取自跑在终态字节上的那一轮**（`15/15`，baseline `76 passed, 6 subtests passed`）。
+其中 M1 / M4 / M5 / M12 四条的红数比这轮早些时候记录的多（12/5/4/2，而不是 11/4/3/1）：
+这不是判据变强了，是**套件在这几轮之间长大了**，同一条变异被后来新增的测试多杀掉几条——
+把红数当成「这条变异有多坏」是读错了它，它只是「这一轮有几条测试因它而红」。
+
+**M7 第一次是活的**（那一轮脚本里是 12 条，它是唯一一条没被杀掉的），而它正好指出了测试里一个真空洞：改前
+「没有 worktree 就不准开始」与「没有源答得上来」**产出同一个词**（`SOURCE_UNAVAILABLE`）、同一
+个退出码、同一个空的 advance 列表——两次运行**只有靠「读到了什么」才能分辨**。补的那条测试
+（`…is_watched_through_the_source_it_does_have`：Quay 账本里有窗口内的一条闸门记录）才让两条路分开。
+**教训是「同一个词可以盖住两个事实」，而不是「测试数不够」。**
+
+#### 9.29.5 live 读数：同一台机器上跑出来的第二个死锁（不是这一片引入的）
+
+`recipe run` 在这个节点上**一次都没跑过**（下面这次之前 `state/serveros/recipes/` 不存在；这次
+把它建了起来，里面只有这两条读数）。先在活节点上跑一次默认形态（真 records 根、`--budget 0`）：
+
+```text
+recipe      work
+key         work|project:serveros|20260925T0900+0800-20260925T1000+0800
+state       STOPPED  previous NEVER_RUN
+stopped     FAULT — TypeError: unsupported operand type(s) for /: 'NoneType' and 'str'
+model       0 call(s) of a ceiling of 0 from --budget
+```
+
+原因不在 loop 里：`cmd_recipe_run` 把 `--records-root` 的**原始参数**直接交给 Engine，而它省略时
+是 `None`；`work` 的第一件事是 `today_path(records_root, project)`，于是 `None / "projects"`。
+**这个文件里其余每一个动词都从声明根取默认值，只有这一个没有**——而省略 `--records-root` 正是
+定时器会发出的形态。修在 CLI（默认取 `Paths().root("workspace")/records`、非绝对路径拒绝、拒绝时
+报**调用者真正打的那个 flag**），并且在 Engine 存在**之前**判，所以一个可笑的参数不会先占下 key。
+修后同一棵树、同一个 period：
+
+```text
+state       STOPPED  previous STOPPED
+stopped     QUEUE_UNPRODUCED — no selection was recorded at /data/home/vince/workspace/records/projects/serveros/board/today.yaml
+model       0 call(s) of a ceiling of 0 from --budget
+step        queue: the authored selection is UNPRODUCED
+```
+
+**这就是本机今天的真话**：loop 走到了它的第一步、读的是一个**没人写过**的今日选中项，并且
+`QUEUE_UNPRODUCED` 与 `NO_PROGRESS` 是两个词。**watch 在本机还观察不到**，因为四个项目
+（`litellm` / `multi-user-claw` / `serveros` / `tokyo`）**没有一个**有
+`board/today.yaml`——写今日重点是**人的动作**（或 P8 例程的动作），不是这次改动能替它产生的。
+这与 §9.25.4 记的 `accepted UNPRODUCED` 是同一个缺口，现在它在 recipe 这一侧也被真的走了一遍。
+
+另外记两件事，**都不是这一片修的**：
+
+- **一次 STOPPED 记录上的重跑会把上一次的 `stopped_because` 覆盖掉**（记录说的是这个 key 现在
+  怎么样，不是它历来怎么样；上一次的痕迹只剩 `previous_state`）。上面那对前后读数因此只活在
+  terminal 里，盘上留下的是后一次——这不是缺陷，但读记录的人要知道。
+- **`FAULT` 的退出码与 `cmd_recipe_run` 自己的 docstring 不一致**：docstring 说「1 a fault」，
+  而 `exit_code_for` 只按契约的 `normal` 分档，`FAULT` 是 `normal: false` → 实际退出 2。上面那
+  次 FAULT 实测就是 `exit=2`。改它会动一条公开的退出码面（读它的是调度器），归到 P8/P9 接线时
+  一起定，**不在一片里顺手改**。
+
+#### 9.29.6 我自己的测试把整库弄红了一条线（这一片自己引入、自己修掉）
+
+新测试类要给 `Paths().root("workspace")` 一个替身，而它的 `addCleanup` 写成了
+`setattr(self.cli.paths_mod, "Paths", self.cli.paths_mod.Paths)`——**在打补丁之后取的值，
+也就是那个替身自己**。`paths_mod` 是这棵树里每个模块都从它那里取 `Paths` 的**同一个模块对象**，
+于是替身活过了这个测试，覆盖了后面每一个用到根契约的文件。全量第一次跑：
+
+```text
+17 failed, 5680 passed, 20 skipped, 1 warning, 3947 subtests passed in 812.08s
+```
+
+17 条分布在五个文件里（`test_runtime.py` 4、`test_serverosctl.py` 3、`test_state_root.py` 8、
+`test_view.py` 1、`test_workchain.py` 1），报的全是同一句话：
+
+```text
+AssertionError: `recipe run` asked the root contract for 'home'; the declared root this path may take is `workspace`
+```
+
+**`tests/test_recipes.py` 单独跑从头到尾都是绿的**，变异 15 条也全是它自己一个进程里跑的——
+所以这一条只有整库能看见。修法是把原件在打补丁**之前**取下来（`original = ...Paths` 再
+`addCleanup(setattr, ..., original)`）。修后那五个文件 + 本文件同跑 **455 passed, 12 subtests
+passed**（12.71s），全量见 §5 那一格。
+
+教训不是「cleanup 要写对」，而是两条可复用的：**打补丁的模块对象如果是全树共用的那一个，
+泄漏的范围是整棵树而不只是这个文件**；以及**单文件绿 + 变异全杀，仍然可能是一次整库红**——
+这正是每一次收口都要跑一遍全量的理由（本轮的算术也可以自证：5683 ＋ 本片 14 条 ＝ 5697 总数，
+17 条失败 + 5680 通过正好是 5697，**没有一条是产品逻辑被改坏**）。
+
+#### 9.29.7 这一片没有做的事
+
+- **`report` 面同一个病的兄弟还在**：`recipe run --recipe report` 在 `ctx.worktree is None` 时
+  仍然直接 `SOURCE_UNAVAILABLE`（`runtime/recipes.py` 的 report 循环）。它比 `work` 轻——一份
+  日报确实可以没有代码差量——但「没有 worktree」与「worktree 读不了」在那条路上仍然是一个词。
+- **no-code 且两个源都没有的 scope 只能准入一次**（见 §9.29.3）。下一片把它换成 work-engine
+  自己的 attempt 记录当主源。
+- **`work focus` 的板仍是 `STALE_BOARD`**，`select_focus` / `continue_focus` 都在早返回，
+  §9.28.7 记的那两个渲染块在本机仍然不可达。
+- **准入/观察都还没有上弦**：没有任何 timer 跑 `recipe run`（§12.5 的 Daily Cycle 同样没上弦）。
+- **「从声明根取 records 根」这段解析在 `runtime/cli.py` 里已经被抄了第五遍**（§9.29.5 的修法
+  与四个兄弟面逐字同形）。这一片照抄而不是抽公共函数，因为抽它会碰到四个与 P7 无关的命令面；
+  **该抽的时候是接线那一片**，那时才会有第六、第七个调用者来证明它值得抽。
 
 ## 10. 后续每包更新哪几行
 

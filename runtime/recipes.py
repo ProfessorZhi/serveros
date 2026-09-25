@@ -345,6 +345,14 @@ def read_record(path) -> dict | None:
         # somebody must look at, and answering NEVER_RUN here would erase it.
         return {"schema": SCHEMA_RECORD, "state": "UNREADABLE",
                 "path": str(path), "unreadable": True}
+    if not isinstance(document, dict):
+        # JSON that parses into something that is not an object is the same
+        # finding as JSON that does not parse: nobody can say what this file
+        # recorded. It is NOT the same as a crash -- a list here used to raise
+        # out of a reader, which turned "somebody left a file this product
+        # cannot read" into "this product is broken".
+        return {"schema": SCHEMA_RECORD, "state": "UNREADABLE",
+                "path": str(path), "unreadable": True}
     document["path"] = str(path)
     return document
 
@@ -380,18 +388,25 @@ def _lock_path(path: Path) -> Path:
 # Sources
 # ---------------------------------------------------------------------------
 
-def _quay_block(ctx: Context) -> dict:
-    """Quay's ledger for this window, or the honest shape of not reading it.
+def _quay_block(ctx: Context, window: dict | None = None) -> dict:
+    """Quay's ledger for `window`, or the honest shape of not reading it.
 
     The absent shape is `runtime/cli.py#cmd_report_daily`'s, field for field.
     It is deliberately not `{"gates": []}`: an empty gate list is a measurement
     that came back zero, and this is a source nobody read. `progress_verdict`
     reads `answered` and would call the second one "no progress" if the field
     were missing.
+
+    The window is the caller's, and that is not a detail: `report` measures the
+    period it is reporting on, while `work` watches the span since the attempt
+    it is judging. Reading one of those two with the other's window would count
+    a gate from before or after what the run is asking about, and the verdict
+    would be about neither.
     """
+    if window is None:
+        window = ctx.daily.period_window(ctx.period)
     if ctx.run_dir:
-        return ctx.daily.measure_quay(Path(ctx.run_dir),
-                                      ctx.daily.period_window(ctx.period),
+        return ctx.daily.measure_quay(Path(ctx.run_dir), window,
                                       ctx.daily.Fallbacks())
     return {"root": None, "ledger": None, "tasks_dir": None, "answered": False,
             "gates": [], "tasks": [], "problems": [], "notes": [],
@@ -748,6 +763,129 @@ def _read_entry(ctx, item_id: str) -> dict:
     }
 
 
+def _earlier_attempt(ctx: Context) -> tuple[dict | None, list]:
+    """This scope's most recent attempt of this loop, this run's own excluded.
+
+    §7's 进展观察 is about an attempt that has already happened. "Has it moved?"
+    is only answerable against the moment it ended, so the record returned is
+    the one whose `finished_at` is the latest -- and a record that STOPPED
+    counts, because a stopped attempt is still an attempt that happened. A
+    record and its tie are ordered exactly as `last_success` orders them
+    (timestamp, then file name, which carries the period) and for the same
+    reason: the clock has second resolution and can repeat.
+
+    THIS RUN'S OWN RECORD IS EXCLUDED, and the engine's write order is why it
+    has to be. The claim is written BEFORE the loop is called -- that is what
+    makes a crash visible -- so by the time a loop body runs, this scope's
+    directory already contains a record for this key, and it is the newest one
+    in it. Reading it back would make every FIRST attempt look like an earlier
+    attempt that had just finished with no output, which is the deadlock this
+    step was moved to remove, wearing the opposite mask.
+
+    A record that cannot be READ or cannot be PLACED IN TIME is not one of the
+    candidates, and it is returned separately rather than dropped: a silent skip
+    would let this run judge an older attempt as if it were the latest one. It
+    is the second half that is easy to miss -- the ordering key is an instant,
+    so a record carrying neither a `finished_at` nor a `claimed_at` that parses
+    has no place among the others, and sorting it to one end of them would be
+    this function inventing the very fact it is supposed to read.
+
+    What neither of those does is BLOCK the watch: `perception`'s rule holds on
+    this store too, that a source which did not answer does not take down the
+    ones that did. Readable, placeable records are still read, and the others
+    are named with their own reasons.
+    """
+    directory = Path(ctx.state_root) / ctx.recipe / scope_slug(ctx.scope["ref"])
+    if not directory.is_dir():
+        return None, []
+    mine = record_path(ctx.state_root, recipe_id=ctx.recipe,
+                       scope_ref=ctx.scope["ref"], period_id=ctx.period["id"])
+    best, unreadable = None, []
+    for candidate in sorted(directory.glob("*.json")):
+        # By name, in this scope's own directory: the same key, without
+        # depending on how the two roots happen to be spelled.
+        if candidate.name == mine.name:
+            continue
+        document = read_record(candidate)
+        if not document:
+            continue
+        if document.get("unreadable"):
+            unreadable.append({
+                "path": str(candidate),
+                "why": ("这一份不是一个能读的对象，所以没人能说它记了什么。"
+                        "parse 不出来的记录不是「没跑过」")})
+            continue
+        when = document.get("finished_at") or document.get("claimed_at")
+        if ctx.daily._parse_instant(when) is None:
+            unreadable.append({
+                "path": str(candidate),
+                "why": (f"这一份既没有可读的 finished_at 也没有可读的 claimed_at "
+                        f"（读到的是 {when!r}），放不进其它尝试的时间顺序里，"
+                        f"也没有任何一段可以从它之后开始量")})
+            continue
+        order = (str(when), candidate.name)
+        if best is None or order > best[0]:
+            best = (order, document)
+    return (best[1] if best else None), unreadable
+
+
+def _watch_window(ctx: Context, earlier: dict) -> tuple[dict | None, str]:
+    """Two instants: when the earlier attempt ended, and this run's clock.
+
+    NOT the period, and both halves of that are load-bearing. A window that
+    does not contain the attempt being judged would call a task which has not
+    started yet "no progress" -- the defect this step was moved for. And the
+    far end is `now` rather than the period's end for the same reason at the
+    other end: a window that opens before the attempt finished would count that
+    attempt's own output as movement since it.
+
+    Both ends are read rather than computed, and a start after the end is
+    REFUSED rather than clamped: the two instants contradict each other, and a
+    clamp would silently pick one of them and print it as an answer.
+
+    An attempt with no readable `finished_at` returns `(None, why)` rather than
+    raising, because that is a reading about a record rather than a fault in
+    this code: `_earlier_attempt` has already dropped the records it could not
+    place in time, so this is the last line for one that is readable and
+    placeable but whose end nobody wrote down.
+    """
+    start, end = earlier.get("finished_at"), ctx.now()
+    if ctx.daily._parse_instant(start) is None:
+        return None, (f"它没有可读的 finished_at（读到的是 {start!r}），"
+                      f"所以没有一个时刻可以当观察窗口的起点："
+                      f"结束时刻没人写得出来的尝试，不等于一个没有动过的尝试")
+    if ctx.daily._parse_instant(end) is None:
+        raise Refused(
+            f"this run's clock says {end!r}, which is not a timestamp carrying "
+            f"an offset. A watch window is between two instants, and the one "
+            f"this run would take its half from is not one")
+    if ctx.daily._parse_instant(start) > ctx.daily._parse_instant(end):
+        raise Refused(
+            f"the earlier attempt finished at {start} and this run's clock says "
+            f"{end}: that attempt ended in the future. Nothing can be said about "
+            f"what has moved since a moment that has not arrived, and clamping "
+            f"the window to the clock would print a span nobody measured")
+    return {"start": start, "end": end}, ""
+
+
+def _no_worktree_block() -> dict:
+    """The work delta of a scope that was given no worktree, shaped as a gap.
+
+    Field for field `daily_report.measure_worktree`'s block, because it is
+    `progress_verdict` that reads it and that function is right to treat a
+    non-answering source as a gap. What the `why` has to prevent is the
+    opposite reading: a scope with no code is not a checkout that failed to
+    answer, and `answered: True` with nothing in it would call a task whose
+    work is not in git "a task that has not moved".
+    """
+    return {"path": None, "answered": False, "commits": [], "uncommitted": [],
+            "notes": [],
+            "why": ("这一次没有给 --worktree，所以这个 scope 的工作差量没有 git "
+                    "这一个源。这不是「检出来是空的」——是没有检出可读。"
+                    "no-code 的 scope 不靠 git 差量度量，见配方契约里 work 的 "
+                    "`watch` 步骤。")}
+
+
 def work(ctx: Context) -> None:
     """The next Activity for the entries a person has already approved."""
     chain = _workchain()
@@ -810,27 +948,85 @@ def work(ctx: Context) -> None:
                  f"every entry of the selection is parked on a person: "
                  f"{sorted(awaiting)}")
 
-    if ctx.worktree is None:
+    # ── 准入与观察是两件事 ───────────────────────────────────────────────
+    # Admission answers "may this start", and `ready` above is that answer: the
+    # authored selection, what is parked on a person, and what depends on it.
+    # The watch answers a different question -- "has the attempt that already
+    # ran moved?" -- and it was the SAME gate asking the second question of the
+    # FIRST attempt, over a window that could not contain that attempt's own
+    # output because the attempt had not run yet. A task with no earlier
+    # attempt therefore stopped NO_PROGRESS forever, and no suite caught it
+    # because the fixture committed inside the window it measured.
+    earlier, unreadable = _earlier_attempt(ctx)
+    if unreadable:
+        # Named even where it decides nothing: a watch that read every record
+        # but one has not read every record.
+        ctx.running["outcomes"]["unread_records"] = list(unreadable)
+    earlier_name = (None if earlier is None
+                    else Path(str(earlier.get("path") or "?")).name)
+
+    if earlier is None and unreadable:
         ctx.unbound(
             "SOURCE_UNAVAILABLE",
-            "no worktree was given, so this window's real delta cannot be "
-            "measured. A path that was not given is not a period with no work "
-            "in it")
-    window = ctx.daily.period_window(ctx.period)
-    fallbacks = ctx.daily.Fallbacks()
-    delta = ctx.daily.measure_worktree(Path(ctx.worktree), window, fallbacks)
-    quay = _quay_block(ctx)
-    verdict, because = ctx.daily.progress_verdict(delta, quay)
-    ctx.step("progress", f"this window's verdict is {verdict}", because=because,
-             worktree=str(ctx.worktree))
-    if verdict == ctx.daily.UNKNOWN:
-        ctx.unbound("SOURCE_UNAVAILABLE", because)
-    if verdict == ctx.daily.NONE:
-        # §7's "无新进展" stop. The verdict is the daily report's own, with its
-        # three values, so that "a source answered zero" and "no source
-        # answered" cannot collapse into one word here after the report went to
-        # the trouble of separating them.
-        ctx.stop("NO_PROGRESS", because)
+            f"this scope has {len(unreadable)} record(s) of this loop and not "
+            f"one of them can be read, so nobody can say whether an attempt has "
+            f"already run. That is not the same fact as a first attempt, and "
+            f"admitting one over it is the write-off this word exists to "
+            f"prevent: a record nobody can read is not a record that was never "
+            f"written -- "
+            + "; ".join(f"{Path(row['path']).name}：{row['why']}"
+                        for row in unreadable),
+            unreadable=list(unreadable))
+    elif earlier is None:
+        ctx.step("watch",
+                 "this scope has no earlier attempt of this loop to be stuck: "
+                 "nothing can have made no progress, so the selection is "
+                 "admitted and no source is read for a watch")
+    elif earlier.get("state") == "CLAIMED":
+        ctx.unbound(
+            "IN_FLIGHT_OR_ABANDONED",
+            f"this scope's most recent attempt of this loop ({earlier_name}) "
+            f"was claimed at {earlier.get('claimed_at')} and no outcome "
+            f"followed it. Whether that attempt finished its work is not in the "
+            f"record, so this run will not start a second one over it: that is "
+            f"a question for a person, or `--retake` over that period's own key",
+            earlier=earlier_name)
+    else:
+        window, window_why = _watch_window(ctx, earlier)
+        if window is None:
+            ctx.unbound("SOURCE_UNAVAILABLE",
+                        f"this scope's earlier attempt ({earlier_name}) cannot "
+                        f"be watched, so nothing was measured and nothing was "
+                        f"dispatched over it: {window_why}",
+                        earlier=earlier_name)
+        fallbacks = ctx.daily.Fallbacks()
+        delta = (_no_worktree_block() if ctx.worktree is None else
+                 ctx.daily.measure_worktree(Path(ctx.worktree), window,
+                                            fallbacks))
+        quay = _quay_block(ctx, window=window)
+        verdict, because = ctx.daily.progress_verdict(delta, quay)
+        ctx.step("watch",
+                 f"the earlier attempt ({earlier_name}) ended at "
+                 f"{earlier.get('finished_at')}, and what has moved since is "
+                 f"{verdict}",
+                 verdict=verdict, because=because, window=window,
+                 earlier=earlier_name,
+                 worktree=str(ctx.worktree) if ctx.worktree else None,
+                 quay=str(ctx.run_dir) if ctx.run_dir else None)
+        if verdict == ctx.daily.UNKNOWN:
+            ctx.unbound("SOURCE_UNAVAILABLE", because)
+        if verdict == ctx.daily.NONE:
+            # §7's "无新进展" stop. The verdict is the daily report's own, with
+            # its three values, so that "a source answered zero" and "no source
+            # answered" cannot collapse into one word here after the report went
+            # to the trouble of separating them. What this loop adds is WHICH
+            # attempt it is about: the earlier one, over the span it ended at.
+            ctx.stop(
+                "NO_PROGRESS",
+                f"the earlier attempt ({earlier_name}) ended at "
+                f"{earlier.get('finished_at')} and no readable source has "
+                f"anything since then. This run did not ask for a next Activity "
+                f"over it, and called no model: {because}")
 
     for item in ready:
         if not ctx.work_engine:

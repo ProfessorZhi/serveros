@@ -38,6 +38,7 @@ are the ones a plausible-looking implementation would fail:
 """
 import importlib.util
 import json
+import os
 import re
 import subprocess
 import unittest
@@ -132,12 +133,32 @@ class RecipeCase(unittest.TestCase):
         return path
 
     def a_run(self, recipe_id, scope, *, budget=0, period=None, transport=None,
-              model=None, retake=False, **kwargs):
+              model=None, retake=False, now=None, **kwargs):
         engine = recipes.Engine(
             state_root=self.state_root, scope=scope, period=period or PERIOD,
             model=model, transport=transport, records_root=self.records_root,
-            now="2026-09-20T12:00:00+09:00", **kwargs)
+            # `now` is injected, and a test that watches one attempt from the
+            # next has to inject two different ones: the window between them is
+            # the thing under test, and a clock left to the host would put the
+            # window wherever the suite happened to run.
+            now=(now if now is not None else "2026-09-20T12:00:00+09:00"),
+            **kwargs)
         return engine.run(recipe_id=recipe_id, budget=budget, retake=retake)
+
+    def a_queue(self, project, cards):
+        """A board and an authored selection: what `work` reads first."""
+        import yaml
+        root = self.records_root / "projects" / project
+        (root / "board").mkdir(parents=True, exist_ok=True)
+        (root / "board" / "today.yaml").write_text(
+            yaml.safe_dump({"date": "2026-09-20",
+                            "items": [name for name, _ in cards]}),
+            encoding="utf-8")
+        for name, card in cards:
+            directory = root / "items" / name
+            directory.mkdir(parents=True, exist_ok=True)
+            (directory / "card.yaml").write_text(yaml.safe_dump(card),
+                                                 encoding="utf-8")
 
     def a_checkout_with_work(self, name="worked"):
         """A checkout with one commit, made once per test."""
@@ -873,20 +894,6 @@ class TheModelBoundaryTest(RecipeCase):
 # ---------------------------------------------------------------------------
 
 class DecisionsTest(RecipeCase):
-    def a_queue(self, project, cards):
-        import yaml
-        root = self.records_root / "projects" / project
-        (root / "board").mkdir(parents=True, exist_ok=True)
-        (root / "board" / "today.yaml").write_text(
-            yaml.safe_dump({"date": "2026-09-20",
-                            "items": [name for name, _ in cards]}),
-            encoding="utf-8")
-        for name, card in cards:
-            directory = root / "items" / name
-            directory.mkdir(parents=True, exist_ok=True)
-            (directory / "card.yaml").write_text(yaml.safe_dump(card),
-                                                 encoding="utf-8")
-
     def test_declared_none_and_undeclared_are_different_answers(self):
         self.a_queue("one", [("A", {"state": "ACTIVE", "depends_on": []}),
                              ("B", {"state": "ACTIVE"})])
@@ -954,6 +961,450 @@ class DecisionsTest(RecipeCase):
             now="2026-09-20T12:00:00+09:00").run(recipe_id="work", budget=0)
         self.assertEqual(result["stopped_because"], "QUEUE_UNPRODUCED")
         self.assertEqual(result["exit_code"], recipes.EXIT_COULD_NOT_ANSWER)
+
+
+# ---------------------------------------------------------------------------
+# The watch: admission and 进展观察 are two questions
+# ---------------------------------------------------------------------------
+
+class TheAttemptWatchTest(RecipeCase):
+    """基线 74: 新任务不能被「尚无产出」阻止启动；准入/进展watch分开.
+
+    The defect these tests pin is not a wrong answer. It is a gate in the wrong
+    place: `work` measured THIS period's delta before dispatching, so a task
+    that had not started yet -- and therefore had no output in this period, by
+    construction -- stopped NO_PROGRESS, forever. Nothing in this suite caught
+    it, and the reason is worth stating: `a_checkout_with_work` commits inside
+    the window the loop measured, so the fixture answered the question the gate
+    asked before the gate could ask it.
+
+    So the first test here is the deadlock itself, and the window in it is the
+    one a real new task has: no output in it, because the task has not run yet.
+    """
+
+    def a_ready_queue(self, project="one", name="B"):
+        self.a_queue(project, [(name, {"state": "ACTIVE", "depends_on": []})])
+        return name
+
+    def a_commit(self, checkout, *, name="second.txt", at):
+        """One more commit, dated by the test rather than by the host clock.
+
+        The watch window lies between two instants this file chooses, and a
+        commit whose date came from the machine would land inside it or outside
+        it depending on when the suite ran. So the date is given, and it is the
+        one reading in these tests that is not injected through the engine.
+        """
+        (checkout / name).write_text("two\n", encoding="utf-8")
+        env = {**os.environ, "GIT_AUTHOR_DATE": at, "GIT_COMMITTER_DATE": at}
+        run = lambda *argv: subprocess.run(                       # noqa: E731
+            ["git", "-C", str(checkout), *argv], capture_output=True,
+            text=True, env=env)
+        run("add", name)
+        run("commit", "-q", "-m", "two")
+        return run("rev-parse", "HEAD").stdout.strip()
+
+    def a_first_attempt(self, checkout=None, *, hour=10, now=None, period=None,
+                        run_dir=None):
+        self.a_ready_queue()
+        return self.a_run(
+            "work", "project:one", budget=1,
+            period=period if period is not None else self.a_period(hour),
+            now=now, worktree=checkout, run_dir=run_dir,
+            work_engine=str(ROOT / "bin" / "serverosctl"),
+            transport="counting", model=CountingTransport())
+
+    def a_quay_ledger(self, at, *, verdict="pass", name="quay-run"):
+        """One gate event, in the layout `measure_quay` looks for it.
+
+        `_quay_layout` reads `<run>/.quay/gate-events.jsonl`, and the row has
+        to carry what that reader takes a finding from: a verdict Quay actually
+        uses, and a timestamp inside the window. The whole point of this source
+        in these tests is that it answers, so a row the reader would put in
+        `unknown_verdicts` or `out_of_window` would test the opposite.
+        """
+        run_dir = Path(self._tmp.name) / name
+        (run_dir / ".quay").mkdir(parents=True, exist_ok=True)
+        (run_dir / ".quay" / "gate-events.jsonl").write_text(
+            json.dumps({"item_id": "ITEM-0001", "gate": "verify",
+                        "verdict": verdict, "timestamp": at}) + "\n",
+            encoding="utf-8")
+        return str(run_dir)
+
+    def test_a_first_attempt_is_admitted_though_its_window_holds_no_output(self):
+        """The deadlock, at the exact place the loop had it.
+
+        The period is in 2000 and the only commit in the checkout was made in
+        2026, so the delta this run would have measured before the fix holds
+        nothing at all -- which is every new task's situation on the day it is
+        picked up. The run has to reach `advance` and ask for a next Activity.
+
+        This also pins the OTHER half of the same rule, which is why the step
+        list is asserted in full: the engine writes this run's claim before it
+        calls the loop, so a watch that read this scope's newest record without
+        excluding this run's own would find one -- itself, claimed a moment ago,
+        with no outcome -- and stop IN_FLIGHT_OR_ABANDONED instead.
+        """
+        self.a_queue("one", [("B", {"state": "ACTIVE", "depends_on": []})])
+        period = {"start": "2000-01-01T00:00:00+09:00",
+                  "end": "2000-01-01T23:59:00+09:00",
+                  "id": "20000101T0000+0900-20000101T2359+0900"}
+        transport = CountingTransport()
+        result = self.a_run(
+            "work", "project:one", budget=1, period=period,
+            worktree=self.a_checkout_with_work(),
+            work_engine=str(ROOT / "bin" / "serverosctl"),
+            transport="counting", model=transport)
+        self.assertEqual(result["state"], recipes.DONE)
+        self.assertEqual(result["model_calls"], 1)
+        self.assertEqual(len(transport.calls), 1)
+        # Two `advance` steps and two `classify` steps: the model call and the
+        # dispatch record it, and classify reports twice. The sequence is
+        # asserted in full because WHERE the watch sits is the fix.
+        self.assertEqual([step["step"] for step in result["steps"]],
+                         ["queue", "classify", "classify", "watch",
+                          "advance", "advance"])
+        self.assertIn("no earlier attempt", result["steps"][3]["did"])
+
+    def test_a_second_attempt_over_a_window_that_moved_advances(self):
+        """The watch, over the span it is supposed to be about.
+
+        The window is not asserted by eye: it is two instants, and both of them
+        are read from the two runs' records. A window that came from the period
+        instead would open at 11:00 and miss the commit at 10:45 -- the commit
+        the earlier attempt itself produced.
+        """
+        checkout = self.a_checkout_with_work()
+        first = self.a_first_attempt(checkout, now="2026-09-20T10:30:00+09:00")
+        self.assertEqual(first["state"], recipes.DONE)
+        self.a_commit(checkout, at="2026-09-20T10:45:00+09:00")
+        transport = CountingTransport()
+        second = self.a_run(
+            "work", "project:one", budget=1, period=self.a_period(11),
+            now="2026-09-20T11:00:00+09:00", worktree=checkout,
+            work_engine=str(ROOT / "bin" / "serverosctl"),
+            transport="counting", model=transport)
+        self.assertEqual(second["state"], recipes.DONE)
+        self.assertEqual(second["model_calls"], 1)
+        watch = [s for s in second["steps"] if s["step"] == "watch"][0]
+        self.assertEqual(watch["detail"]["verdict"], "SOME")
+        self.assertEqual(watch["detail"]["window"],
+                         {"start": "2026-09-20T10:30:00+09:00",
+                          "end": "2026-09-20T11:00:00+09:00"})
+        self.assertEqual(watch["detail"]["earlier"],
+                         f"{self.a_period(10)['id']}.json")
+
+    def test_a_second_attempt_over_a_window_that_did_not_move_asks_for_nothing(self):
+        """The gate that should have been here, and what it has to say.
+
+        Same two runs, no commit in between. The run stops without asking the
+        work-engine for anything, and the assertion that matters is the empty
+        transport: 无变化不产生 LLM 工作 is an ordering property, and a count of
+        zero is how it is checked.
+        """
+        checkout = self.a_checkout_with_work()
+        self.a_first_attempt(checkout, now="2026-09-20T10:30:00+09:00")
+        transport = CountingTransport()
+        second = self.a_run(
+            "work", "project:one", budget=1, period=self.a_period(11),
+            now="2026-09-20T11:00:00+09:00", worktree=checkout,
+            work_engine=str(ROOT / "bin" / "serverosctl"),
+            transport="counting", model=transport)
+        self.assertEqual(second["stopped_because"], "NO_PROGRESS")
+        self.assertEqual(second["exit_code"], recipes.EXIT_OK)
+        self.assertEqual(transport.calls, [])
+        self.assertEqual([s["step"] for s in second["steps"] if s["step"] == "advance"],
+                         [])
+        # And the stop names the attempt it is about, not "this window": a
+        # reader has to be able to tell which attempt was watched.
+        self.assertIn("2026-09-20T10:30:00+09:00", second["stopped_why"])
+
+    def test_a_scope_with_no_worktree_is_admitted_and_advanced(self):
+        """基线 74 的后半句: no-code 不强依赖 Git 差异.
+
+        Before this, `ctx.worktree is None` stopped the run with
+        SOURCE_UNAVAILABLE before the dispatch loop was reached, so an Item
+        whose work is not in a git checkout could not run this loop at all --
+        not once, not ever. The worktree is a way to measure a delta, not a
+        condition for having work.
+        """
+        self.a_ready_queue()
+        result = self.a_run(
+            "work", "project:one", budget=1, period=PERIOD,
+            work_engine=str(ROOT / "bin" / "serverosctl"),
+            transport="counting", model=CountingTransport())
+        self.assertEqual(result["state"], recipes.DONE)
+        self.assertEqual(result["model_calls"], 1)
+        self.assertIn("advance", [step["step"] for step in result["steps"]])
+
+    def test_a_no_code_scope_with_no_readable_source_says_so(self):
+        """And the second attempt of a no-code scope is still watched.
+
+        With no worktree and no `--run-dir` there is nothing to watch it
+        THROUGH. That is the one place this loop can only admit a scope once,
+        and the word is SOURCE_UNAVAILABLE rather than NO_PROGRESS: nobody read
+        anything, which is not the same as nothing having moved. The later P7
+        slices replace this watch's source with the work-engine's own attempt
+        record; until then the gap is named instead of being papered over.
+        """
+        self.a_first_attempt(checkout=None, now="2026-09-20T10:30:00+09:00")
+        second = self.a_run("work", "project:one", budget=1,
+                            period=self.a_period(11),
+                            now="2026-09-20T11:00:00+09:00",
+                            work_engine=str(ROOT / "bin" / "serverosctl"),
+                            transport="counting", model=CountingTransport())
+        self.assertEqual(second["stopped_because"], "SOURCE_UNAVAILABLE")
+        self.assertNotEqual(second["stopped_because"], "NO_PROGRESS")
+        self.assertEqual([s for s in second["steps"] if s["step"] == "advance"], [])
+
+    def test_a_no_code_scope_is_watched_through_the_source_it_does_have(self):
+        """The other half of "no-code 不靠 git 差量度量": it still has sources.
+
+        Same two runs as the moved-window test with the worktree taken away and
+        a Quay ledger put in its place: the earlier attempt ended at 10:30, a
+        gate event landed at 10:45, and the watch has to answer SOME from the
+        one source this scope has and dispatch.
+
+        Why this needs its own test rather than riding on the one above: a loop
+        that refused a scope for WANT OF A WORKTREE would stop
+        SOURCE_UNAVAILABLE -- the same word the UNKNOWN verdict produces -- with
+        the same exit code and the same empty advance list. The two runs are
+        indistinguishable except by what they found, and "found a gate event"
+        versus "read nothing" is exactly the difference the whole watch exists
+        to keep.
+        """
+        run_dir = self.a_quay_ledger("2026-09-20T10:45:00+09:00")
+        first = self.a_first_attempt(checkout=None,
+                                     now="2026-09-20T10:30:00+09:00",
+                                     run_dir=run_dir)
+        self.assertEqual(first["state"], recipes.DONE)
+        transport = CountingTransport()
+        second = self.a_run(
+            "work", "project:one", budget=1, period=self.a_period(11),
+            now="2026-09-20T11:00:00+09:00", run_dir=run_dir,
+            work_engine=str(ROOT / "bin" / "serverosctl"),
+            transport="counting", model=transport)
+        self.assertEqual(second["state"], recipes.DONE)
+        self.assertEqual(second["model_calls"], 1)
+        watch = [s for s in second["steps"] if s["step"] == "watch"][0]
+        self.assertEqual(watch["detail"]["verdict"], "SOME")
+        self.assertIsNone(watch["detail"]["worktree"])
+        self.assertEqual(watch["detail"]["window"],
+                         {"start": "2026-09-20T10:30:00+09:00",
+                          "end": "2026-09-20T11:00:00+09:00"})
+
+    def test_a_record_with_no_readable_end_is_a_reading_not_an_exception(self):
+        """The last line for a record that is readable and placeable anyway.
+
+        `_earlier_attempt` drops the records it cannot place in time, and it can
+        place this one -- through its `claimed_at`. So the only thing missing is
+        the instant the watch would measure FROM, and the answer has to be a
+        reading about a record (it cannot be watched, and here is which field
+        nobody wrote) rather than a `None` that raises somewhere below. A record
+        whose end nobody wrote is not evidence that nothing moved.
+
+        Both halves are unit-level and both are reachable in production: this
+        record shape comes from a hand-written or older record, which is exactly
+        why the branch exists rather than being unreachable-by-construction.
+        """
+        ctx = recipes.Context(engine=self.an_engine("project:one"),
+                              running=running_record())
+        window, why = recipes._watch_window(
+            ctx, {"finished_at": None, "claimed_at": "2026-09-20T10:00:00+09:00"})
+        self.assertIsNone(window)
+        self.assertIn("finished_at", why)
+        self.assertIn("不等于一个没有动过的尝试", why)
+
+        # And the other end: two instants that contradict each other are
+        # REFUSED rather than clamped. Clamping would pick one of the two and
+        # print the span it invented as a measurement.
+        with self.assertRaises(recipes.Refused) as caught:
+            recipes._watch_window(ctx, {"finished_at": "2026-09-20T13:00:00+09:00"})
+        self.assertIn("ended in the future", str(caught.exception))
+
+    def test_an_attempt_that_never_finished_is_not_dispatched_over(self):
+        """A CLAIMED record, produced the way a kill produces one.
+
+        Not by hand. The record this reads has to be the record the engine
+        writes, or the test and the engine would agree on a shape neither of
+        them has -- so the run is interrupted where a kill interrupts it: after
+        the claim, before any outcome.
+        """
+        self.a_ready_queue()
+        original = recipes.LOOPS["work"]
+
+        def dies(_ctx):
+            raise KeyboardInterrupt("the process was killed here")
+
+        recipes.LOOPS["work"] = dies
+        try:
+            with self.assertRaises(KeyboardInterrupt):
+                self.a_run("work", "project:one", budget=0,
+                           period=self.a_period(10))
+        finally:
+            recipes.LOOPS["work"] = original
+
+        claimed = recipes.read_record(
+            self.record("work", "project:one", self.a_period(10)))
+        self.assertEqual(claimed["state"], "CLAIMED")
+        self.assertIsNone(claimed["finished_at"])
+
+        transport = CountingTransport()
+        result = self.a_run(
+            "work", "project:one", budget=1, period=self.a_period(11),
+            work_engine=str(ROOT / "bin" / "serverosctl"),
+            transport="counting", model=transport)
+        self.assertEqual(result["stopped_because"], "IN_FLIGHT_OR_ABANDONED")
+        self.assertEqual(result["exit_code"], recipes.EXIT_COULD_NOT_ANSWER)
+        self.assertEqual(transport.calls, [])
+        self.assertIn("20260920T1000", result["stopped_why"])
+
+    def test_the_retake_that_the_refusal_points_at_unsticks_the_scope(self):
+        """The remedy in that `why`, exercised rather than asserted in words.
+
+        The chain a crash leaves is real: a claim nobody finished (period 10),
+        then a refusal that says so (period 11), and that refusal's `why` tells
+        a person to retake period 10. For the advice to be true, three things
+        have to hold -- the retake must be able to RUN (it is refused by the
+        same gate unless this run's own record is excluded from the scan), it
+        must be the attempt the NEXT period watches (ordered by the instant it
+        ended, not by its file name, which is an older period's), and the window
+        must open at it.
+        """
+        self.a_ready_queue()
+        checkout = self.a_checkout_with_work()
+        original = recipes.LOOPS["work"]
+
+        def dies(_ctx):
+            raise KeyboardInterrupt("the process was killed here")
+
+        recipes.LOOPS["work"] = dies
+        try:
+            with self.assertRaises(KeyboardInterrupt):
+                self.a_run("work", "project:one", budget=0,
+                           period=self.a_period(10))
+        finally:
+            recipes.LOOPS["work"] = original
+
+        refused = self.a_run(
+            "work", "project:one", budget=1, period=self.a_period(11),
+            now="2026-09-20T11:00:00+09:00", worktree=checkout,
+            work_engine=str(ROOT / "bin" / "serverosctl"),
+            transport="counting", model=CountingTransport())
+        self.assertEqual(refused["stopped_because"], "IN_FLIGHT_OR_ABANDONED")
+
+        retaken = self.a_run(
+            "work", "project:one", budget=1, period=self.a_period(10),
+            now="2026-09-20T12:00:00+09:00", retake=True, worktree=checkout,
+            work_engine=str(ROOT / "bin" / "serverosctl"),
+            transport="counting", model=CountingTransport())
+        self.assertNotEqual(retaken["stopped_because"], "IN_FLIGHT_OR_ABANDONED")
+
+        # A commit made BEFORE the retake ended and after the refusal: it is in
+        # the period, and it is in the refusal's window, and it is in no window
+        # that a later attempt is allowed to count as movement since -- because
+        # the attempt that ended last ended after it.
+        self.a_commit(checkout, at="2026-09-20T11:30:00+09:00")
+        later = self.a_run(
+            "work", "project:one", budget=1, period=self.a_period(13),
+            now="2026-09-20T13:00:00+09:00", worktree=checkout,
+            work_engine=str(ROOT / "bin" / "serverosctl"),
+            transport="counting", model=CountingTransport())
+        watch = [s for s in later["steps"] if s["step"] == "watch"][0]
+        self.assertEqual(watch["detail"]["earlier"],
+                         f"{self.a_period(10)['id']}.json")
+        self.assertEqual(watch["detail"]["window"],
+                         {"start": "2026-09-20T12:00:00+09:00",
+                          "end": "2026-09-20T13:00:00+09:00"})
+        self.assertEqual(watch["detail"]["verdict"], "NONE")
+        self.assertEqual(later["stopped_because"], "NO_PROGRESS")
+
+    def test_a_record_nobody_can_read_is_not_a_first_attempt(self):
+        """One reading nothing can be made of, and the fact it is not zero.
+
+        A record that does not parse cannot be placed in time, so "is there an
+        earlier attempt?" has no answer here -- and answering "no" would admit a
+        second attempt over an attempt nobody can account for. That is the same
+        write-off `load_today` exists to prevent, one directory over.
+        """
+        self.a_ready_queue()
+        path = self.record("work", "project:one", self.a_period(10))
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("{ this is not json", encoding="utf-8")
+        transport = CountingTransport()
+        result = self.a_run(
+            "work", "project:one", budget=1, period=self.a_period(11),
+            worktree=self.a_checkout_with_work(),
+            work_engine=str(ROOT / "bin" / "serverosctl"),
+            transport="counting", model=transport)
+        self.assertEqual(result["stopped_because"], "SOURCE_UNAVAILABLE")
+        self.assertEqual(result["exit_code"], recipes.EXIT_OK)
+        self.assertEqual(transport.calls, [])
+        self.assertIn(f"{self.a_period(10)['id']}.json", result["stopped_why"])
+
+    def test_a_record_whose_clock_reading_carries_no_offset_is_reported(self):
+        """A timestamp nobody can put on a clock, as a scope's only record.
+
+        The claim in this record was written by the engine from a clock reading
+        that carries no offset -- `now` is injectable, and a caller that injects
+        a naive one gets a record whose instant belongs to no clock. It parses,
+        so the reader does not catch it, and the scan must not sort it among the
+        attempts either: the ordering key IS an instant, and this one is not
+        one. The word that must NOT come out is IN_FLIGHT_OR_ABANDONED, which
+        would say the claim is open -- that is a claim about a moment, and
+        nobody knows which clock this moment is on.
+        """
+        self.a_ready_queue()
+        original = recipes.LOOPS["work"]
+
+        def dies(_ctx):
+            raise KeyboardInterrupt("the process was killed here")
+
+        recipes.LOOPS["work"] = dies
+        try:
+            with self.assertRaises(KeyboardInterrupt):
+                self.a_run("work", "project:one", budget=0,
+                           period=self.a_period(9), now="2026-09-20T09:00:00")
+        finally:
+            recipes.LOOPS["work"] = original
+        naive = recipes.read_record(
+            self.record("work", "project:one", self.a_period(9)))
+        self.assertEqual(naive["state"], "CLAIMED")
+        self.assertEqual(naive["claimed_at"], "2026-09-20T09:00:00")
+
+        result = self.a_run(
+            "work", "project:one", budget=1, period=self.a_period(10),
+            worktree=self.a_checkout_with_work(),
+            work_engine=str(ROOT / "bin" / "serverosctl"),
+            transport="counting", model=CountingTransport())
+        self.assertEqual(result["stopped_because"], "SOURCE_UNAVAILABLE")
+        rows = result["outcomes"]["unread_records"]
+        self.assertEqual([Path(row["path"]).name for row in rows],
+                         [f"{self.a_period(9)['id']}.json"])
+        self.assertIn("claimed_at", rows[0]["why"])
+
+    def test_a_record_nobody_can_read_does_not_take_the_readable_ones_down(self):
+        """The other half of that rule, and the one §P3 already settled.
+
+        A file that cannot be read is not allowed to block the watch over the
+        records that can. The corrupt record here is an OLD period's, the newest
+        record is readable, and the watch proceeds -- with the unreadable one
+        named in the record rather than silently skipped.
+        """
+        corrupt = self.record("work", "project:one", self.a_period(9))
+        corrupt.parent.mkdir(parents=True, exist_ok=True)
+        corrupt.write_text("[]", encoding="utf-8")
+        checkout = self.a_checkout_with_work()
+        self.a_first_attempt(checkout, now="2026-09-20T10:30:00+09:00")
+        self.a_commit(checkout, at="2026-09-20T10:45:00+09:00")
+        second = self.a_run(
+            "work", "project:one", budget=1, period=self.a_period(11),
+            now="2026-09-20T11:00:00+09:00", worktree=checkout,
+            work_engine=str(ROOT / "bin" / "serverosctl"),
+            transport="counting", model=CountingTransport())
+        self.assertEqual(second["state"], recipes.DONE)
+        names = [row["path"] for row in second["outcomes"]["unread_records"]]
+        self.assertEqual(names, [str(corrupt)])
+        self.assertIn("parse", second["outcomes"]["unread_records"][0]["why"])
 
 
 # ---------------------------------------------------------------------------
@@ -1069,6 +1520,115 @@ class WhereRecordsGoTest(unittest.TestCase):
         spec.loader.exec_module(paths_mod)
         self.assertIn(recipes.NAMESPACE,
                       paths_mod.VOCABULARIES["state"])
+
+
+class TheRecipeCommandLineTest(RecipeCase):
+    """`recipe run`'s own two roots — the surface no test drove until now.
+
+    Found by a live run, not by this file: on the real node,
+
+        serverosctl recipe run --recipe work --scope project:<p> --budget 0 ...
+
+    claimed its key and then died in the queue step with
+    `TypeError: unsupported operand type(s) for /: 'NoneType' and 'str'`, because
+    `--records-root` -- which `work` reads `today.yaml` through -- was passed
+    through as the raw argument and is `None` when omitted. Every other surface
+    in `runtime/cli.py` already defaults it from the declared root contract;
+    this one did not, and no test in this file goes through `cmd_recipe_run` at
+    all (they construct `Engine` directly), so nothing said so.
+
+    The default is not a convenience here. `--records-root` omitted is what a
+    timer issues, and a loop whose FIRST act is to read an authored input must
+    answer "I was not told where to read it" or read where the node declares --
+    it must not fail inside `Path.__truediv__` and call that a fault in itself.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.workspace = Path(self._tmp.name) / "workspace"
+        (self.workspace / "records" / "projects" / "one").mkdir(parents=True)
+        spec = importlib.util.spec_from_file_location(
+            "serveros_runtime_cli_for_recipes", ROOT / "runtime" / "cli.py")
+        self.cli = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(self.cli)
+
+    def a_declared_workspace(self):
+        """`Paths().root("workspace")`, redirected at this test's tmp tree.
+
+        The declaration is the root contract, which on this node is read from
+        the host profile; a test that read the real one would take its records
+        root from the machine it happens to run on. What is being pinned is
+        WHERE the default comes from, so the stand-in answers for that one root
+        and refuses to answer for any other.
+
+        The original is captured BEFORE the patch and restored in `addCleanup`,
+        and the first version of this helper got that wrong in a way only a
+        whole-suite run shows: it wrote `self.cli.paths_mod.Paths` back as the
+        cleanup, i.e. the patched lambda restated itself. `paths_mod` is the
+        module every other surface in this tree loads `Paths` from, so the
+        stand-in outlived the test and the NEXT files to use it -- 17 tests
+        across five files -- failed on a root contract that had been replaced by
+        a test double. Alone, this file was green throughout.
+        """
+        workspace = self.workspace
+
+        class _Declared:
+            def root(self, name):
+                assert name == "workspace", (
+                    f"`recipe run` asked the root contract for {name!r}; the "
+                    f"declared root this path may take is `workspace`")
+                return workspace
+
+        declared = _Declared()
+        original = self.cli.paths_mod.Paths
+        self.cli.paths_mod.Paths = lambda *a, **k: declared
+        self.addCleanup(setattr, self.cli.paths_mod, "Paths", original)
+        return declared
+
+    def a_command(self, *extra):
+        return ["recipe", "run", "--recipe", "work", "--scope", "project:one",
+                "--budget", "0", "--state-root", str(self.state_root),
+                "--period-start", PERIOD["start"], "--period-end", PERIOD["end"],
+                *extra]
+
+    def run_command(self, argv):
+        import contextlib
+        import io
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            code = self.cli.main(argv)
+        return code, out.getvalue(), err.getvalue()
+
+    def test_an_omitted_records_root_is_the_node_s_declared_one(self):
+        """The live defect, at the command line that produced it."""
+        self.a_declared_workspace()
+        code, out, err = self.run_command(self.a_command())
+        self.assertEqual(code, self.cli.EXIT_COULD_NOT_ANSWER, out + err)
+        self.assertNotIn("TypeError", out + err)
+        self.assertIn("QUEUE_UNPRODUCED", out)
+        self.assertIn(str(self.workspace / "records" / "projects" / "one"
+                          / "board" / "today.yaml"), out)
+        # And the run reached its first step rather than failing before it: the
+        # queue step is what read the selection, and what it read was missing.
+        self.assertIn("queue", out)
+
+    def test_a_relative_root_is_refused_before_a_key_is_claimed(self):
+        """A caller's omission is not a fault in the loop -- and a relative path
+        resolves against whatever directory the caller stood in, which is not a
+        root anybody else can reproduce. The refusal happens before the engine
+        exists, so no record is written for a run that could never have read its
+        input."""
+        self.a_declared_workspace()
+        for label, extra in (("--records-root", ["--records-root", "records"]),
+                             ("--workspace-root",
+                              ["--workspace-root", "somewhere"])):
+            with self.subTest(label=label):
+                code, out, err = self.run_command(self.a_command(*extra))
+                self.assertEqual(code, self.cli.EXIT_FAULT)
+                self.assertIn(f"{label} must be absolute", err)
+                self.assertFalse((self.state_root / "work").exists(),
+                                 "a refused argument claimed no key")
+                self.assertNotIn("recipe      work", out)
 
 
 if __name__ == "__main__":
