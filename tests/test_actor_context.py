@@ -353,7 +353,21 @@ def test_capabilities_do_not_claim_a_capability_that_was_never_observed():
         "anybody from here. Calling that SUPPORTED would be the declaration "
         "running ahead of the data, which is the pathology this round exists "
         "to stop repeating.")
-    assert caps["human.notification.transport"]["state"] == "SUPPORTED"
+    notification = caps["human.notification.transport"]
+    assert notification["state"] == "UNKNOWN", (
+        "corrected DOWNWARD from SUPPORTED on 2026-09-25, and it is the first "
+        "correction in this table that goes that way. An unaddressed "
+        "POST /api/trigger — which is what this provider sends — is a synthetic "
+        "session: the service hands the text to a model as a task whose answer "
+        "comes back over HTTP, under a header that says it is 'not shown in a "
+        "chat' and forbids posting to Feishu. Nothing reaches a person. The "
+        "surface exists (an addressed trigger routes into a real chat) and has "
+        "never been observed to deliver from here, which is UNKNOWN and not "
+        "UNSUPPORTED.")
+    assert "http_async" in notification["reason"] or "synthetic" in notification["reason"], (
+        "the reason has to name the measurement, not just the verdict: the next "
+        "reader has to be able to tell 'we have never seen it work' from 'we "
+        "watched it not work', and only one of those can be argued with")
     # Four UNKNOWNs as of 2026-09-15, two of them corrected downward-from-
     # UPWARD: approval and rendering were UNSUPPORTED, which claims the surface
     # does not exist. The CLI measurement says the surfaces do exist (`ask

@@ -312,6 +312,126 @@ def cmd_report_daily(args) -> int:
     return EXIT_OK
 
 
+# ── P5 · 投递：把「写了两份文件」补成 compose → publish → send ─────────────────
+
+def _report_delivery_module():
+    return _load_module_from(REPO_ROOT / "runtime" / "report_delivery.py",
+                             "serveros_runtime_report_delivery")
+
+
+def _report_sender(recipient):
+    """The `sender` `runtime/report_delivery.py` delivers through, as a callable.
+
+    Constructed in the CLI because this is the composition point: the discipline
+    is in `runtime/report_delivery.py`, the surface is in
+    `runtime/message_transport.py`, and nothing else needs to know both.
+
+    It is NOT `_alert_provider()`, and that is a measured finding rather than a
+    preference. `BotMuxHumanControlProvider.notify` posts to `/api/trigger` with
+    no `target.chatId`, and an unaddressed trigger is a synthetic session: the
+    text is handed to a MODEL as a task, the model's answer returns over HTTP to
+    the caller, and the header the service builds for it says it is "not shown in
+    a chat" and forbids posting to Feishu. A receipt read off that path would say
+    a model was asked. The report would reach no person, and the receipt saying
+    DELIVERED would be the exact class of false green this round exists to
+    remove.
+    """
+    mod = _load_module_from(REPO_ROOT / "runtime" / "message_transport.py",
+                            "serveros_runtime_message_transport")
+    return mod.sender(recipient)
+
+
+def cmd_report_request(args) -> int:
+    """§P5 — 记下「有人要求把这一版报告发给这个收件人」。这一步不发送任何东西。
+
+    待发意图与投递是两件事，分开的理由不是设计洁癖：一条记下来的意图可以在静默期内
+    存在，而它的内容版本、收件人和授权都要在真正发送的那一刻重新查一次。合在一起做，
+    就等于在请求的那一刻把这三个答案冻结下来。
+    """
+    mod = _report_delivery_module()
+    try:
+        result = mod.request(Path(args.out_dir), recipient=args.recipient,
+                             requested_by=args.requested_by, why=args.why,
+                             channel=args.channel, at=args.at)
+    except mod.Refused as exc:
+        sys.stderr.write(f"serverosctl: {exc}\n")
+        return EXIT_COULD_NOT_ANSWER
+    emit(result, as_json=args.json, lines=mod.render(result))
+    return EXIT_OK
+
+
+def cmd_report_withdraw(args) -> int:
+    """§P5 — 停止请求。已经发出去的消息不因此撤回。"""
+    mod = _report_delivery_module()
+    try:
+        result = mod.withdraw(Path(args.out_dir), because=args.because, at=args.at)
+    except mod.Refused as exc:
+        sys.stderr.write(f"serverosctl: {exc}\n")
+        return EXIT_COULD_NOT_ANSWER
+    emit(result, as_json=args.json, lines=mod.render(result))
+    return EXIT_OK
+
+
+def cmd_report_deliver(args) -> int:
+    """§P5 — 对一条待发请求做一次尝试，并记下通道的回答。
+
+    Three inputs are the caller's and are not inferred here:
+
+      * `--authorization` — the caller has just re-checked that sending is still
+        allowed, and says what it re-checked. Required: an authorization is a
+        property of the moment of sending, and a default would silently deliver
+        on the strength of an older decision;
+      * `--conversation` — who receives it, and which kind of destination that
+        is (`user:` or `chat:`). Absent it is not an error, it is the honest
+        answer `PENDING_CONSUMER`: a queue with no consumer is waiting, not
+        failing;
+      * `--out-dir` — which published report this is about. The version comes
+        from the publication receipt in that directory, re-read now.
+
+    Exit is 0 for a settled delivery, 2 when nothing was attempted (including
+    `PENDING_CONSUMER` — nothing tried, nothing to repair), and 1 when an
+    attempt was made and did not land.
+    """
+    mod = _report_delivery_module()
+    recipient = args.conversation or os.environ.get("SERVEROS_REPORT_CONVERSATION")
+    sender = None
+    if recipient:
+        try:
+            sender = _report_sender(recipient)
+        except Exception as exc:  # noqa: BLE001 - the reason is the answer
+            # Not fatal. The entry is still queued, and saying so is the true
+            # answer; a receiver that cannot be named is a missing consumer,
+            # which is what PENDING_CONSUMER names. Note the direction: this is
+            # the receiver refusing to be guessed at, and a guess that put a
+            # daily report in a group instead of a direct message would not be
+            # undoable.
+            sys.stderr.write(
+                f"serverosctl: no delivery transport could be constructed "
+                f"({type(exc).__name__}: {exc}). The entry stays pending.\n")
+            sender = None
+    authorization = None
+    if args.withhold:
+        authorization = {"authorized": False, "because": args.withhold}
+    elif args.authorization:
+        authorization = {"authorized": True, "because": args.authorization}
+    try:
+        result = mod.deliver(Path(args.out_dir), sender=sender,
+                             authorization=authorization, at=args.at)
+    except mod.Refused as exc:
+        sys.stderr.write(f"serverosctl: {exc}\n")
+        return EXIT_COULD_NOT_ANSWER
+    lines = mod.render(result)
+    lines.append(f"pending     {mod.pending_count(Path(args.out_dir))} 条仍在待发")
+    emit(result, as_json=args.json, lines=lines)
+    if result.get("state") == "DELIVERED":
+        return EXIT_OK
+    if result.get("state") == "ALREADY_DELIVERED":
+        return EXIT_OK
+    if result.get("state") in ("NOTHING_REQUESTED", "PENDING_CONSUMER"):
+        return EXIT_COULD_NOT_ANSWER
+    return EXIT_FAULT
+
+
 def _recipes_module():
     return _load_module_from(REPO_ROOT / "runtime" / "recipes.py",
                              "serveros_runtime_recipes")
@@ -804,11 +924,22 @@ def cmd_document_publish(args) -> int:
                             "serveros_intake_managed_documents")
     pub = _load_module_from(REPO_ROOT / "intake" / "document_publish.py",
                             "serveros_intake_document_publish")
-    for name in ("request", "contracts", "ability", "receipts"):
-        value = getattr(args, name)
+    # The flag is carried beside its value rather than derived from the dest
+    # name, so the refusal quotes what the caller actually typed. Deriving it
+    # would print `--request` for a caller who typed `--request`, but it would
+    # also make the string `"request"` appear in this function — and `request`
+    # is a field name in `abilities/target-contract.yaml`, so a reader-scanning
+    # guard sees this loop as a consumer of that field. It is not, and the two
+    # readings are indistinguishable from the AST. (See the ledger's note on
+    # what a tuple full of strings costs: the collision resolves in the
+    # direction of weakening an exemption, so it is silent.)
+    for flag, value in (("--request", args.request),
+                        ("--contracts", args.contracts),
+                        ("--ability", args.ability),
+                        ("--receipts", args.receipts)):
         if not Path(value).is_absolute():
             sys.stderr.write(
-                f"serverosctl: --{name} must be absolute, got {value}. A publish "
+                f"serverosctl: {flag} must be absolute, got {value}. A publish "
                 f"whose inputs move with the caller's directory is a publish "
                 f"nobody else can reproduce or refuse.\n")
             return EXIT_FAULT
@@ -9815,6 +9946,82 @@ def build_parser() -> argparse.ArgumentParser:
     rp_daily.add_argument("--attempted-at", default=None,
                           help="when the caller attempted delivery, if it did")
     rp_daily.set_defaults(func=cmd_report_daily)
+
+    rp_request = report_sub.add_parser(
+        "request",
+        help="record that somebody asked for THIS version of a published report "
+             "to go to THIS recipient. It sends nothing: the version, the "
+             "recipient and the authorization are all re-read at the moment of "
+             "sending, and freezing them here would freeze the wrong three "
+             "answers", **_COMMON)
+    rp_request.add_argument(
+        "--out-dir", required=True,
+        help="the directory `report daily` published into. The version is read "
+             "from the publication receipt there, not from an argument: a "
+             "version supplied by the caller is one the receipt cannot "
+             "corroborate")
+    rp_request.add_argument("--recipient", required=True,
+                            help="who is to receive it")
+    rp_request.add_argument(
+        "--requested-by", required=True,
+        help="who asked. Required: 'somebody asked for this' with nobody named "
+             "is the sentence this field exists to make unwritable")
+    rp_request.add_argument(
+        "--why", required=True,
+        help="why this report is going to this recipient. Required for the same "
+             "reason: a delivery with no stated purpose is one nobody can "
+             "review later")
+    rp_request.add_argument("--channel", default=None,
+                            help="the channel or transport, if the requester "
+                                 "named one")
+    rp_request.add_argument("--at", default=None,
+                            help="when it was requested, ISO-8601. A default "
+                                 "difference, not a default value: absent means "
+                                 "the clock was read here, which is recorded")
+    rp_request.set_defaults(func=cmd_report_request)
+
+    rp_withdraw = report_sub.add_parser(
+        "withdraw",
+        help="stop a pending request. This does not retract a message that has "
+             "already gone out — nothing here can — and it does not delete the "
+             "record that the request existed", **_COMMON)
+    rp_withdraw.add_argument("--out-dir", required=True)
+    rp_withdraw.add_argument("--because", required=True,
+                             help="why it is being withdrawn. A withdrawal with "
+                                  "no reason is indistinguishable from somebody "
+                                  "losing interest, and the next reader has to "
+                                  "tell those apart")
+    rp_withdraw.add_argument("--at", default=None, help="ISO-8601, as `request`")
+    rp_withdraw.set_defaults(func=cmd_report_withdraw)
+
+    rp_deliver = report_sub.add_parser(
+        "deliver",
+        help="make ONE attempt at the pending request and record what the "
+             "channel said. A missing consumer answers PENDING_CONSUMER, which "
+             "is a queue that is waiting and not a delivery that failed",
+        **_COMMON)
+    rp_deliver.add_argument("--out-dir", required=True)
+    rp_deliver.add_argument(
+        "--conversation", default=None,
+        help="who receives it, as user:<open_id> or chat:<chat_id>. The prefix "
+             "is required because the transport's two destination flags are "
+             "mutually exclusive and this command will not guess which one a "
+             "bare identifier means — a daily report delivered to a group "
+             "instead of to one person cannot be taken back. Absent (and with "
+             "SERVEROS_REPORT_CONVERSATION unset) the answer is "
+             "PENDING_CONSUMER: no attempt is made and none is recorded")
+    rp_deliver.add_argument(
+        "--authorization", default=None,
+        help="what the caller just re-checked, and found still true, about "
+             "sending now. Required to send: an authorization is a property of "
+             "the moment, and a stored one would deliver tomorrow's report on "
+             "the strength of yesterday's decision")
+    rp_deliver.add_argument(
+        "--withhold", default=None,
+        help="the opposite decision, and it is a refusal with a reason rather "
+             "than silence: the entry stays pending and the reason is printed")
+    rp_deliver.add_argument("--at", default=None, help="ISO-8601, as `request`")
+    rp_deliver.set_defaults(func=cmd_report_deliver)
 
     recipe = sub.add_parser(
         "recipe", help="§7's three finite loops, and what each run recorded",

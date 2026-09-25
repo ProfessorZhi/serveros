@@ -30,12 +30,15 @@ THE CAPTURE
     `capture_coverage.read_root` over `/data/home/vince/workspace/records`,
     reduced by `_trimmed` below — `path`/`role`/`shape`/`capture`/component
     `state` and `facts`/`verified`, dropping the `why` prose and the
-    `unstructured` sentences — sha256 `f2d749c467e49452f0fb0d62093fa4fa37749d6b869dbe0b3989ec25f2eabdda`,
-    58665 bytes. The trim is mechanical and is the same function the test
+    `unstructured` sentences — sha256 `c52871f73e1897d76412c985f2d25920681d32b260a5e63a65fe29ab8a7af987`,
+    60699 bytes. The trim is mechanical and is the same function the test
     compares with, so the file can be re-derived rather than trusted. Nothing in
-    it was written by hand. It carries a `retaken` block naming the previous
-    capture, the file that replaced it, and why.
+    it was written by hand. It carries a `retaken` LIST, one entry per retake,
+    each naming what it replaced and why — the first because the reader moved,
+    the second because the tree did.
 
+THE TWO RETAKES, AND WHY KEEPING BOTH IS THE POINT
+--------------------------------------------------
 Re-taken on 2026-09-25 because the READER moved and the move was the point: a
 chat capture now carries a `revisions` component. Re-run against the 2026-09-22
 file, that single addition reports 44 manifests as having moved, and measured,
@@ -46,12 +49,34 @@ question, so the file was re-taken and the reason written into it instead. The
 moved, and a second capture no test loads is a file a later reader picks up by
 mistake.
 
-What the new one says that the old one could not: 47 of 47 chat captures report
-`revisions: UNDECIDABLE`. No manifest in this tree records a comparison of what
-it holds against the source it was taken from, so no capture here can say whether
-an edit or retraction happened after it was taken. That is the state of the tree,
-not a defect of this reader — the collector compares only after the change that
-introduced those fields reaches it.
+Re-taken AGAIN the same day, and the second entry in `retaken` records why,
+because the reason is the opposite one. This time the tree moved: one web
+manifest was re-checked by a producer that did not exist when this capture was
+written (`information/raw/web/verify_web.py` in the records checkout), and it
+now reads differently in exactly four facts — `capture.method` curl → urllib,
+`body.content_sha256` 5d81cdb0 → 674e9e4e, `body.fetched_at`, and
+`coverage.verified.state` NOT_RECORDED → RECORDED. Measured before writing: 68
+objects, 1 changed, 0 gone, 0 arrived, every other object byte-identical. A
+reader that had moved moves more than one manifest, and not into the four fields
+the collector wrote.
+
+That retake exposed a real limit of THIS FILE rather than of the reader, and it
+is written into the entry: verification dates are compared at DAY resolution
+(`_verified_on` keeps `[:10]`), so a re-check landing on the same day as the
+capture cannot be represented as "after" it, and is reported as the reader
+moving. The file was re-taken rather than the rule loosened — the rule's reason
+still holds, since a same-day stamp is not evidence of anything the capture
+could not have seen. What changed is that the manifest now carries the
+re-verification, so a re-check landing tomorrow needs no retake at all.
+
+What the second one says that the first could not: 1 of 68 manifests can say it
+was independently re-checked after its capture, and it is the single web page —
+`coverage.verified` is RECORDED 63 / NOT_RECORDED 5, where the same day's
+earlier capture read 62 / 6. The other 67 still cannot say it: 47 of 47 chat
+captures report `revisions: UNDECIDABLE`, because no manifest in this tree
+records a comparison of what it holds against the source it was taken from.
+That is the state of the tree, not a defect of this reader — the collector
+compares only after the change that introduced those fields reaches it.
 
 The capture is dated and the records root is alive. Since 2026-09-22 the
 collector has rewritten manifests the earlier capture had already read and added
@@ -646,6 +671,34 @@ class TestAWebPageIsItsOwnShapeAndItsOwnQuestions:
         assert verified["state"] == "NOT_RECORDED"
         assert verified["at"] is None
 
+    def test_a_fetch_that_has_been_re_checked_reports_the_date_it_was(
+            self, tmp_path):
+        """The other half of the test above, and it is the half that matters.
+
+        `NOT_RECORDED` is a reading about a manifest nobody has revisited, not
+        about the `web_capture` shape — and the two are easy to confuse when the
+        only manifest in the tree is a one-shot fetch. Measured 2026-09-25: the
+        re-check producer (`information/raw/web/verify_web.py` in the records
+        checkout) began writing the top-level key, and this reader's sibling
+        reading in `tests/test_capture_coverage.py`'s live-tree test turned a
+        re-verified manifest into "the reader moved" for exactly that reason —
+        the tree advanced and the manifest said so in a key nothing read.
+
+        So the key is asked for here by name, on the shape that did not carry
+        it, so it cannot go back to being unread without this going red.
+        """
+        tree = tmp_path / "records" / "information" / "raw" / "feishu" / "chats"
+        tree.mkdir(parents=True)
+        records = tmp_path / "records"
+        write_web(records, WEB_SLUG, web_manifest(
+            last_verified_at="2026-09-25T20:43:34+08:00"))
+        verified = the_page(records)["coverage"]["verified"]
+        assert verified["state"] == "RECORDED"
+        # Printed as the manifest wrote it. Not aged against a clock, and not
+        # narrowed to a day: the resolution belongs to the collector.
+        assert verified["at"] == "2026-09-25T20:43:34+08:00"
+        assert verified["why"] == ""
+
     def test_every_web_fact_is_named_by_the_producer_table(self, page):
         """The table is load-bearing: a fact with no named producer refuses."""
         record = the_page(page)
@@ -1050,7 +1103,12 @@ class TestAgainstTheRecordedCapture:
         assert captured["components"]["media"] == {"COMPLETE": 15, "UNDECIDABLE": 5}
         assert captured["components"]["revisions"] == {"UNDECIDABLE": 47}
         assert captured["capture_undeclared"] == {"mode": 37}
-        assert captured["verified"] == {"RECORDED": 62, "NOT_RECORDED": 6}
+        # 63/5 rather than 62/6: the one web manifest was re-checked and now
+        # carries the top-level date. The number moved because the TREE moved —
+        # see the second `retaken` entry in the file, which records the four
+        # facts that differ and the measurement that every other object is
+        # identical. A reader that had moved would have moved more than one.
+        assert captured["verified"] == {"RECORDED": 63, "NOT_RECORDED": 5}
 
     def test_the_live_tree_still_produces_what_the_capture_recorded(self):
         """Each captured manifest reads the same, unless the tree says it changed.

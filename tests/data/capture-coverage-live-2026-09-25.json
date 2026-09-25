@@ -2050,16 +2050,16 @@
   },
   {
    "capture": {
-    "method": "curl（原生 HTTP，未使用浏览器渲染）",
+    "method": "urllib（原生 HTTP，未使用浏览器渲染）",
     "requested_url": "https://developers.openai.com/blog/rethinking-skills-and-prompts-for-gpt-6-astra"
    },
    "capture_undeclared": [],
    "components": {
     "body": {
      "facts": {
-      "content_sha256": "5d81cdb0cc192a429a59460d9e9045a95d441de89a191ec6db070d3b04f5394c",
+      "content_sha256": "674e9e4e553966457eef59e4c21860da959d3bc28c94cd9e110169892c305e41",
       "content_sha256_chars": 64,
-      "fetched_at": "2026-09-23T18:31+08:00"
+      "fetched_at": "2026-09-25T21:05:42+08:00"
      },
      "state": "COMPLETE"
     },
@@ -2082,15 +2082,23 @@
    "path": "web/openai-developers/rethinking-skills-and-prompts-for-gpt-6-astra/manifest.json",
    "role": "web",
    "shape": "web_capture",
-   "verified": "NOT_RECORDED"
+   "verified": "RECORDED"
   }
  ],
- "retaken": {
-  "date": "2026-09-25",
-  "replaces": "capture-coverage-live-2026-09-22.json, removed in the same commit as this file -- nothing read it once `FIXTURE` moved, and a second 52 KB artifact no test loads is a file a later reader picks up by mistake",
-  "what_it_says_that_the_old_one_could_not": "47 of 47 chat captures report `revisions: UNDECIDABLE`. Not one manifest in this tree records a comparison of what it holds against the source, so no capture here can say whether its text still matches the source it was taken from. That is the state of the tree, not of the reader: the collector compares only after the change that introduced these fields reaches it.",
-  "why": "The reader moved, deliberately: a chat capture now carries a `revisions` component, so re-running the old reader's output against this tree reports 44 chats as having moved when nothing in the tree moved at all (measured: every one of the 44 differs only by the new component, `recorded['components'].get('revisions')` is None in all 44). Re-taken rather than loosened: the alternative -- teaching `_disagreements` to ignore a component -- would have left this file unable to say that the reader gained a question."
- },
+ "retaken": [
+  {
+   "date": "2026-09-25",
+   "replaces": "capture-coverage-live-2026-09-22.json, removed in the same commit as this file -- nothing read it once `FIXTURE` moved, and a second 52 KB artifact no test loads is a file a later reader picks up by mistake",
+   "what_it_says_that_the_old_one_could_not": "47 of 47 chat captures report `revisions: UNDECIDABLE`. Not one manifest in this tree records a comparison of what it holds against the source, so no capture here can say whether its text still matches the source it was taken from. That is the state of the tree, not of the reader: the collector compares only after the change that introduced these fields reaches it.",
+   "why": "The reader moved, deliberately: a chat capture now carries a `revisions` component, so re-running the old reader's output against this tree reports 44 chats as having moved when nothing in the tree moved at all (measured: every one of the 44 differs only by the new component, `recorded['components'].get('revisions')` is None in all 44). Re-taken rather than loosened: the alternative -- teaching `_disagreements` to ignore a component -- would have left this file unable to say that the reader gained a question."
+  },
+  {
+   "date": "2026-09-25",
+   "replaces": "the file of the same name taken earlier the same day; re-taken in place, so nothing is replaced",
+   "what_it_says_that_the_old_one_could_not": "One of 68 manifests can now say it was independently re-checked after its capture, and it is the single web page; coverage.verified is RECORDED 63 / NOT_RECORDED 5 where the earlier capture of the same day read 62 / 6. What the other 67 still cannot say is the thing the first retake named: none of them records a comparison of what it holds against the source it was taken from, so no chat capture here can say whether its text still matches. Also newly visible: this file compares verification dates at DAY resolution, so a re-verification that lands on the same day as the capture is not representable as 'after' it — which is why this retake is dated the same day as the capture it corrects, and why a manifest re-checked tomorrow can be represented without another retake.",
+   "why": "The TREE moved, not the reader — which is the opposite of why this file was re-taken the first time, and the reason the two retakes are both recorded. On 2026-09-25 one web manifest was re-checked by a producer that had not existed when this capture was taken (information/raw/web/verify_web.py in the records checkout) and now reads differently in exactly four facts: capture.method curl to urllib, body.content_sha256 5d81cdb0 to 674e9e4e, body.fetched_at to 2026-09-25T21:05:42+08:00, and coverage.verified.state NOT_RECORDED to RECORDED. Measured before writing: of 68 objects, 1 changed, 0 gone, 0 arrived, and every other object is byte-identical. A reader that had moved would have moved more than one manifest, and would have moved it somewhere other than the four fields the collector wrote. Re-taken rather than loosened: the alternative — teaching _disagreements to ignore a component — is the move the first retake already refused, and it would leave this file unable to say that a manifest was re-checked at all."
+  }
+ ],
  "schema": "serveros/capture-coverage.v1#trimmed",
  "summary": {
   "by_role": {
@@ -2137,8 +2145,8 @@
   },
   "denominator": 68,
   "verified": {
-   "NOT_RECORDED": 6,
-   "RECORDED": 62
+   "NOT_RECORDED": 5,
+   "RECORDED": 63
   }
  }
 }
