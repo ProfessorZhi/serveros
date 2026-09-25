@@ -346,6 +346,85 @@ class ContinuationIsNotRecommendation(unittest.TestCase):
                          "WORKER_OR_RESERVATION_HELD:worker_stopped")
         self.assertEqual(decision["excluded"], [])
 
+    def test_one_positive_field_is_not_a_release(self):
+        """Acceptance D reached the other way, and the way it is actually
+        reachable on this node.
+
+        The lease namespace has a producer and the receipt root is named by
+        nobody, so every live row carries `resources_released: True` and nothing
+        about a worker. Read as a release, that frees a terminal Item whose
+        worker may still be writing — the same failure acceptance D forbids,
+        reachable by omitting `--receipts`. One field speaking is one field
+        speaking, so the pair answers `None` and the row continues on its state;
+        the test below completes the pair and the same row releases.
+
+        This is the mirror of the test above: that one is a single NEGATIVE
+        field holding an Item, this one is a single POSITIVE field not releasing
+        it. A negative needs no quorum, a release does.
+        """
+        row = item(state="CLOSED", completion=a_completion())
+        del row["worker_stopped"]
+        decision = self.carry([row], selection(["T-1"]))
+        self.assertEqual(decision["selected"], [])
+        self.assertEqual(decision["excluded"],
+                         [{"id": "T-1", "reason": "TERMINAL_STATE"}])
+        self.assertEqual([u["fields"] for u in decision["unevaluated"]], [])
+        # Terminal rows are excluded on their state either way — which is why
+        # the undecided reading has to be checked on a row whose state does NOT
+        # decide it, or this test would pass with `liveness` collapsing absence
+        # into "released" again.
+        live = item(state="READY", next_action="research")
+        del live["worker_stopped"]
+        undecided = self.carry([live], selection(["T-1"]))
+        self.assertEqual(undecided["selected"], ["T-1"])
+        self.assertEqual(undecided["because"]["T-1"], "ACCEPTED_AND_ELIGIBLE")
+        self.assertEqual([u["fields"] for u in undecided["unevaluated"]],
+                         [["worker_stopped"]])
+        self.assertEqual([u["fields_read"] for u in undecided["unevaluated"]],
+                         [["resources_released"]])
+
+    def test_the_pair_read_and_both_positive_is_the_only_release(self):
+        """Both owners answering, and both saying nothing is held. The row the
+        two tests around this one each half-say, said whole."""
+        row = item(state="READY", next_action="research")
+        verdict = classify(row, {"g": grant()}, now=NOW)
+        self.assertIs(verdict["liveness"], False)
+        self.assertEqual(verdict["liveness_fields_read"],
+                         ["worker_stopped", "resources_released"])
+        self.assertEqual(verdict["liveness_fields_missing"], [])
+        self.assertFalse(verdict["unevaluated"])
+        # And one of the two being false is enough to hold, in either order.
+        for field in ("worker_stopped", "resources_released"):
+            with self.subTest(field=field):
+                self.assertIs(
+                    classify({**row, field: False}, {"g": grant()}, now=NOW)["liveness"],
+                    True)
+
+    def test_a_parked_item_is_not_released_by_a_field_nobody_read(self):
+        """Undoing a park is the one place a missing field would otherwise read
+        as a release, and the word for a park that is still standing says so.
+
+        A parked row whose lease namespace is empty and whose worker was never
+        looked for stays parked: the first is a positive answer about a
+        resource, the second is silence about a process, and a park needs both.
+        `PARKED` is not in the continuation's carrying set either way — a parked
+        Item does not hold a slot in this answer and the reason says why.
+        """
+        parked = item(state="CLOSED", focus_disposition="PARKED",
+                      parking_acknowledged=True)
+        del parked["worker_stopped"]
+        decision = self.carry([parked], selection(["T-1"]))
+        self.assertEqual(decision["selected"], [])
+        self.assertEqual(decision["excluded"],
+                         [{"id": "T-1", "reason": "PARKED_RELEASE_UNCONFIRMED"}])
+        # With both owners answering, the same parked row is released.
+        released = item(state="CLOSED", focus_disposition="PARKED",
+                        parking_acknowledged=True, completion=a_completion())
+        decision = self.carry([released], selection(["T-1"]))
+        self.assertEqual(decision["selected"], [])
+        self.assertEqual(decision["excluded"],
+                         [{"id": "T-1", "reason": "TERMINAL_STATE"}])
+
     def test_an_accepted_item_that_is_not_on_the_board_is_named(self):
         """A selection names an Item the board does not carry. Silence here
         would be a selection that shrank without saying so."""

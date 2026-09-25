@@ -6572,7 +6572,7 @@ def _focus_decision(args):
                                        "serveros_context_delegation")
     store_mod, control = _control_store()
     try:
-        # `worker_stopped` is the one row field that does not come from the
+        # `worker_stopped` is the first row field that does not come from the
         # board, and it comes from here: for each Item, the admission that named
         # it, then the receipt its `action_key` points at. This is the same store
         # the grants below are read from, and BOTH verbs that compose a decision
@@ -6588,9 +6588,27 @@ def _focus_decision(args):
     except store_mod.StoreError as exc:
         sys.stderr.write(f"serverosctl: {exc}\n")
         return None
+    # `resources_released`, the second such field, comes from a THIRD store: the
+    # resource-lease namespace. Read through `view.environment_effective` rather
+    # than opened here, so that this verb and `lease environment` cannot derive a
+    # reference's state two ways — and with no `--state-dir`, because `work focus`
+    # has none and `open_store`'s `None` means the root contract, which is the
+    # only correct answer for a verb answering about the live node.
+    #
+    # A namespace that cannot be read does NOT fault the verb. The read is about
+    # leases, the verb is about focus, and a broken store must not make `work
+    # focus` unavailable — but it must not be silently reported as "nothing is
+    # held" either, so the failure is handed to `compose` as a named status and
+    # the field goes OFF every row rather than `True`. That distinction is
+    # `view.environment_leases`'s own refusal, kept here rather than undone.
+    try:
+        environment = view_mod.environment_effective(answered_by="serverosctl")
+    except lease_store_mod.LeaseError as exc:
+        environment = {"status": "UNREADABLE", "because": str(exc)}
     try:
         composed = focus_mod.compose(board, admissions=admissions,
-                                     receipts_root=args.receipts)
+                                     receipts_root=args.receipts,
+                                     environment=environment)
     except focus_mod.Refused as exc:
         sys.stderr.write(f"serverosctl: {exc}\n")
         return None
@@ -6691,11 +6709,16 @@ def cmd_work_focus(args) -> int:
                     for name, stamp in sorted(composed["projection_times"].items())),
         f"rows        {len(composed['rows'])}",
     ]
-    # The one row field that does not come from the board, printed with every
-    # link of its chain: a reader has to be able to tell "no worker is held"
-    # from "nothing here could say", and the whole reason `worker_stopped` is
-    # absent rather than False when the chain broke is that the second must not
-    # read as the first.
+    # The two row fields that do not come from the board, printed with every
+    # link of their chains: a reader has to be able to tell "nothing is held"
+    # from "nothing here could say", and the whole reason each field is absent
+    # rather than False when its chain broke is that the second must not read as
+    # the first.
+    #
+    # Printed as TWO blocks because they are two sources. One block holding both
+    # statuses would let a reader take the lease store's silence for the
+    # receipt's answer, which is the same substitution these fields exist to
+    # refuse, one level up.
     liveness = composed.get("liveness") or {}
     lines.append(f"liveness    {liveness.get('status', '?')}")
     for item_id, entry in sorted((liveness.get("items") or {}).items()):
@@ -6705,6 +6728,21 @@ def cmd_work_focus(args) -> int:
         lines.append(f"  {item_id:<10} {word:<16} "
                      f"{','.join(entry.get('action_keys') or []) or 'no action key'}"
                      f"  {entry.get('because', '')}")
+    leases = composed.get("leases") or {}
+    lines.append(f"leases      {leases.get('status', '?')}")
+    for item_id, entry in sorted((leases.get("items") or {}).items()):
+        answer = entry.get("resources_released")
+        word = ("released" if answer is True else
+                "held" if answer is False else "undecided-here")
+        lines.append(f"  {item_id:<10} {word:<16} "
+                     f"{','.join(entry.get('resources') or []) or 'no resource'}"
+                     f"  {entry.get('because', '')}")
+    for named_elsewhere in leases.get("held_by_another_scope") or []:
+        # An Item id used as a holder under a scope that is not the Item's own.
+        # Printed as a finding, because a silent skip and "nothing held" would
+        # render identically on the lines above.
+        lines.append(f"  ! {named_elsewhere} is held under a scope that is not "
+                     f"`work-item`, so it is not this Item's occupancy")
     lines += [
         f"delegations {delegations['summary']['recorded']} recorded · "
         f"{delegations['summary']['authorizing']} authorizing"
@@ -6752,16 +6790,30 @@ def cmd_work_focus(args) -> int:
         # liveness was the only family in this list; a `completion` entry under
         # it would have read as "no producer says whether a worker still holds
         # this", which is a different question about a different thing.
+        #
+        # It no longer says "no producer answers for these", because that is no
+        # longer the only way a field can be missing: both liveness fields have
+        # producers now, so a row can be missing one because the source was not
+        # consulted (`--receipts` not named; a lease namespace that could not be
+        # read). "Has a producer" and "this row carries it" are two facts and
+        # this line does not know which one it is looking at. What it does know
+        # is which fields are missing on which row, so that is what it prints.
         families = sorted({field for entry in unevaluated
                            for field in entry["fields"]})
-        lines.append(f"unevaluated {len(unevaluated)} —— 这些字段没有生产者"
-                     f"说明，本次没有据此判定：{', '.join(families)}")
+        lines.append(f"unevaluated {len(unevaluated)} —— 这些行在这些字段上没有"
+                     f"答案，本次没有据此判定：{', '.join(families)}")
         for entry in unevaluated[:5]:
-            lines.append(f"  {entry['id']:<10} {','.join(entry['fields'])}")
+            read = entry.get("fields_read") or []
+            lines.append(f"  {entry['id']:<10} missing {','.join(entry['fields'])}"
+                         + (f"（已读到 {','.join(read)}）" if read else ""))
             if entry.get("because"):
                 lines.append(f"    ↳ {entry['because']}")
         if len(unevaluated) > 5:
-            lines.append(f"  … 还有 {len(unevaluated) - 5} 个，同样字段")
+            # Not "same fields": the tail can differ from the five above, and
+            # saying otherwise is a claim about rows this line did not read.
+            tail = sorted({tuple(entry["fields"]) for entry in unevaluated[5:]})
+            lines.append(f"  … 还有 {len(unevaluated) - 5} 个，缺的字段是 "
+                         + "／".join(",".join(fields) for fields in tail))
 
     # 2. The proposal. Printed, labelled, and never admitted — `work admit`
     #    reads the block above and only the block above.
@@ -6968,6 +7020,10 @@ def cmd_work_admit(args) -> int:
         f"liveness    {((composed.get('liveness') or {}).get('status')) or '?'} — "
         f"the rows above were selected with this read; `--receipts` omitted means "
         f"no receipt was opened and no row could be held by one",
+        f"leases      {((composed.get('leases') or {}).get('status')) or '?'} — "
+        f"read from the lease namespace with no `--state-dir`, so it is the node's "
+        f"own; a namespace that could not be read leaves `resources_released` off "
+        f"every row rather than reporting nothing held",
         "",
         "recorded, not acted on: the lease is declared and the dispatch made by",
         "whatever performs them, and each reports back through",

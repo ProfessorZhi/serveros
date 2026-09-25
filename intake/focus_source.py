@@ -39,10 +39,18 @@ nothing it does not carry: the rows come from `work board` exactly as before,
 and the liveness half is a second, separately named source in the document
 (`liveness`), whose every link is reported whether it held or broke.
 
-`resources_released`, the field that reads as its pair, still has no producer
-anywhere — not even on that receipt — so it stays in `not_produced`. Two fields
-that read as a pair are one field and one gap, and one sentence covering both
-is how the gap stays invisible.
+`resources_released`, the field that reads as its pair, has a producer too, and
+it is a different one: the resource-lease namespace
+(`state/serveros/resource-leases/`, produced by `runtime/lease_store.py`, read
+through `runtime/environment.effective`). Its join to an Item is the contract's
+own `work-item` scope, and `resources_released_by_item` says why that and not a
+name match. What stands between the two fields is NOT one gap measured twice —
+it was, until 2026-09-25, and this paragraph said so: "still has no producer
+anywhere — not even on that receipt". That sentence was wrong about the lease
+store, which records a reference being retired every time one is retired. It is
+kept here as the correction rather than deleted, because the shape it had is the
+shape to watch for: one sentence covering two fields, written from the field
+that had no source and applied to the pair.
 
 Two derivations it declines, both because a nearer-looking answer would be a
 wronger one:
@@ -94,6 +102,16 @@ PRODUCED = {
                       "that exists but cannot claim the worker stopped is `False`, "
                       "which is what keeps a terminal Run from releasing. See "
                       "`liveness` in the composed document for every link",
+    "resources_released": "the `state` of every reference the resource-lease "
+                          "namespace holds for this Item under the contract's "
+                          "`work-item` scope, reached by "
+                          "`resources_released_by_item` below. Present only when "
+                          "the namespace was read; a live or an EXPIRED reference "
+                          "is `False`, and EXPIRED is `False` on the store's own "
+                          "reasoning about an unbacked claim. It is NOT `not "
+                          "worker_stopped`: a cycle can have stopped its process "
+                          "and still be holding a lease, which is why the two "
+                          "fields have two readers and two reasons",
 }
 
 # The policy's inputs the board does not carry. Each is stated here rather than
@@ -101,16 +119,6 @@ PRODUCED = {
 # unpointable and a reader of the composed rows cannot tell a field the fabric
 # has not built from one this adapter forgot.
 NOT_PRODUCED = {
-    "resources_released": "the other half of what used to be one entry. "
-                          "`worker_stopped` gained a producer on 2026-09-25 (the "
-                          "invocation receipt, via `worker_stopped_by_item`); this "
-                          "one has no producer anywhere — not on that receipt, not "
-                          "on the board, not in the lease store, which records "
-                          "which holder holds a resource and says nothing about "
-                          "whether it was given back. It is NOT `not "
-                          "worker_stopped`: a cycle can have stopped its process and "
-                          "still be holding a lease, and one sentence covering both "
-                          "fields would answer about the wrong one",
     "focus_disposition": "the field that would mark an Item PARKED is part of the "
                          "same proposed card extension as the priorities",
     "parking_acknowledged": "same",
@@ -489,30 +497,221 @@ def worker_stopped_by_item(admissions: dict | None, *, receipts_root, item_ids) 
             "items": items_out}
 
 
+#: Which scope's references are the Item's own.
+#:
+#: Read from `runtime/environment-contract.yaml#scopes`, whose `work-item` entry
+#: is "一个 Work Item 持有它；Item 关闭时回收" — a scope whose holder IS a Work
+#: Item. That is the whole reason the join may be exact: a `session`- or
+#: `project`-scoped reference whose holder happens to be spelled like an Item is
+#: not that Item holding a resource, and nothing in the store validates the
+#: spelling of a holder. Matching on a name without this scope would be the
+#: substring guess this file refuses elsewhere, and it would answer HELD for an
+#: Item because somebody typed its id into an unrelated field.
+ITEM_SCOPE = "work-item"
+
+#: Where the lease half of a row comes from, link by link, in the same shape as
+#: `LIVENESS_CHAIN` and for the same reason: a reader of the composed document
+#: has to be able to see which fact was read, not just that one was.
+LEASES_CHAIN = (
+    "one file per resource under `state/serveros/resource-leases/`, written by "
+    "`runtime/lease_store.py`",
+    "that record's `references[]`, each a `(scope, holder)` pair whose state is "
+    "derived by `runtime/environment.reference_state`",
+    "`runtime/environment.effective`'s per-resource rows — the document "
+    "`lease environment` prints and `work focus` now composes",
+)
+
+
+def resources_released_by_item(environment: dict | None, *, item_ids) -> dict:
+    """Whether each Item still holds something, from the store that knows.
+
+    THE CORRECT OWNER, and there is no second one. "Has this been given back" is
+    a question about occupancy, occupancy is what `state/serveros/resource-leases/`
+    is authority for (`fleet/state-root-contract.yaml`: `class: authority`,
+    `holds: current resource occupancy`), and the namespace's own producer
+    records a retirement every time one happens. Nothing here is derived from a
+    Run's state, from a card field, or from the Item's own state.
+
+    `environment` is the DERIVED document, not the raw records: it is the
+    `runtime/environment.effective` output whose `resources[].references[]` rows
+    already carry a `state`. Taking the raw files instead would mean deciding
+    LIVE vs EXPIRED here, which is `runtime/environment.reference_state`'s rule —
+    a second copy of it would agree until one of them was edited, and the copy
+    that drifts is the one nobody reads.
+
+    That means the whole answer rests on two strings the owner produced: the
+    reference's `scope` and its `state`. Neither is re-derived here.
+
+    An EMPTY namespace is an answer, not a gap: the contract declares
+    `absent_means: NO_LEASES_HELD`, so a store that was read and holds nothing
+    naming this Item answers `True` — the Item released what it held, because it
+    held nothing. `None` is reserved for the case where the store could not be
+    read at all, and the two must not be conflated in either direction: reading
+    an unreadable namespace as "nothing held" is the claim
+    `view.environment_leases` refuses to make on the node's behalf, and reading
+    an empty one as "undecidable" would put every row in flight forever.
+
+    Returns `{"status", "because", "items"}`. `items` answers per Item the
+    document speaks about; an Item the document names nowhere gets `True` with a
+    reason saying so, because that absence is the store's positive statement
+    that nothing is held on its behalf.
+    """
+    if environment is None:
+        return {"status": "LEASES_NOT_READ",
+                "because": "no lease reading was supplied for this composition, "
+                           "so the namespace was not consulted and no row carries "
+                           "the field. Unlike `--receipts` there is nothing to "
+                           "name here — the namespace is resolved by the root "
+                           "contract, not chosen by whoever dispatched — so this "
+                           "is a caller that did not read it, and the field is "
+                           "left OFF rather than reported `True`, which would "
+                           "release an Item on a fact nobody looked at",
+                "items": {}}
+    if isinstance(environment, dict) and environment.get("status") == "UNREADABLE":
+        return {"status": "LEASES_UNREADABLE",
+                "because": str(environment.get("because")
+                               or "the lease namespace could not be read"),
+                "items": {}}
+    rows = environment.get("resources") if isinstance(environment, dict) else None
+    if not isinstance(rows, list):
+        return {"status": "LEASES_DOCUMENT_UNEXPECTED",
+                "because": "the lease reading carries no `resources` list, so it "
+                           "is not the document `runtime/environment.effective` "
+                           "produces and nothing can be read off it. Reported "
+                           "rather than treated as empty: an empty list is the "
+                           "claim `NO_LEASES_HELD`",
+                "items": {}}
+
+    # `held` wins over undecidable, and undecidable wins over released — the same
+    # order as `worker_stopped_by_item`, and for the same reason: the question is
+    # whether anything is STILL held, so one reference that cannot be shown given
+    # back is enough, and a released reference says nothing about the next one.
+    per_item: dict[str, list[tuple[bool | None, str, str]]] = {}
+    elsewhere: set[str] = set()
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        resource = str(row.get("resource") or "")
+        for reference in row.get("references") or []:
+            if not isinstance(reference, dict):
+                continue
+            holder = reference.get("holder")
+            if not isinstance(holder, str) or holder not in item_ids:
+                continue
+            if reference.get("scope") != ITEM_SCOPE:
+                # An Item id appearing as a holder under another scope. Not this
+                # Item's occupancy, and worth counting: if this ever fires, the
+                # scope vocabulary and how holders are spelled have drifted
+                # apart, and a silent skip would read as "nothing held".
+                elsewhere.add(f"{resource}:{reference.get('scope')}:{holder}")
+                continue
+            state = str(reference.get("state") or "")
+            if state == "LIVE":
+                per_item.setdefault(holder, []).append(
+                    (False, "REFERENCE_IS_LIVE", resource))
+            elif state == "EXPIRED":
+                # `runtime/environment._reference_row` is explicit that an
+                # expired reference is "no longer backed by anything" and is
+                # reported rather than dropped: its holder may have crashed, and
+                # a crashed holder is not a holder that gave the resource back.
+                # Answering `True` here would free a slot on a claim that
+                # stopped being backed — the crash case answered with silence.
+                per_item.setdefault(holder, []).append(
+                    (False, "REFERENCE_EXPIRED_UNRESOLVED", resource))
+            else:
+                per_item.setdefault(holder, []).append(
+                    (None, f"REFERENCE_STATE_NOT_KNOWN_HERE:{state or 'none'}",
+                     resource))
+
+    # Two names for one answer, because the two are different findings: a
+    # namespace holding nothing at all is `fleet/state-root-contract.yaml`'s
+    # `absent_means: NO_LEASES_HELD` read one size up, and a namespace holding
+    # other things while naming no `work-item` reference of this Item says
+    # something narrower. The first word is NOT reused here: it belongs to
+    # `view.environment_leases`, whose envelope carries it, and this function is
+    # handed the derived document instead. Spelling a second time, without the
+    # reader that owns it, is how one fact acquires two spellings and a person
+    # learns to compare them.
+    nothing = "NO_REFERENCE_NAMED_BY_THIS_ITEM"
+    if not rows:
+        nothing = "LEASES_NAMESPACE_EMPTY"
+
+    items_out: dict[str, dict] = {}
+    for item_id in sorted(item_ids):
+        found = per_item.get(item_id)
+        if not found:
+            items_out[item_id] = {
+                "resources_released": True,
+                "resources": [],
+                "because": nothing,
+            }
+            continue
+        if any(value is False for value, _b, _r in found):
+            answer, reasons = False, [b for v, b, _r in found if v is False]
+        elif any(value is None for value, _b, _r in found):
+            answer, reasons = None, [b for v, b, _r in found if v is None]
+        else:
+            answer, reasons = True, [b for v, b, _r in found if v is True]
+        entry = {"resources": sorted({r for _v, _b, r in found}),
+                 "because": "+".join(sorted(set(reasons)))}
+        if answer is not None:
+            entry["resources_released"] = answer
+        items_out[item_id] = entry
+
+    unheld = sum(1 for entry in items_out.values()
+                 if entry["because"] == nothing)
+    return {"status": "PRODUCED",
+            "because": (f"{len(rows)} resource record(s) were read; {unheld} of "
+                        f"{len(item_ids)} Item(s) are named by no `{ITEM_SCOPE}` "
+                        f"reference, which is the store saying they hold "
+                        f"nothing. A reference whose state this function cannot "
+                        f"read is named per Item rather than summed here"),
+            # An Item id used as a holder under some other scope. Empty on every
+            # namespace seen so far, and it is reported rather than dropped
+            # because a silent skip and "nothing held" render identically.
+            "held_by_another_scope": sorted(elsewhere),
+            "items": items_out}
+
+
 def compose(board: dict, *, projection_times: dict | None = None,
-            admissions: dict | None = None, receipts_root=None) -> dict:
+            admissions: dict | None = None, receipts_root=None,
+            environment: dict | None = None) -> dict:
     """The board as focus rows, with the age of the FACTS it was composed from.
 
     `observed_at` is the oldest `generated_at` among the projections, and it is
     `None` when any projection's age is unknown. Both are answers a caller must
     handle: `select_focus` reads `None` as not fresh, which is the right
     outcome for an age nobody can state.
+
+    Two of a row's keys do not come from the board, and each comes from a
+    different store: `admissions` + `receipts_root` give `worker_stopped`, and
+    `environment` gives `resources_released`. Both default to "not read", which
+    leaves the field OFF the row — `daily_cycle.liveness` reads that as silence,
+    and silence is the correct rendering of a source nobody consulted. The two
+    are reported in separate blocks of the document — `liveness` and `leases` —
+    rather than one, so a status cannot be attributed to the wrong chain.
     """
     if projection_times is None:
         projection_times = read_projections(board.get("projects") or [])
     observed_at = oldest(projection_times)
     rows = rows_from_board(board)
+    item_ids = {row["id"] for row in rows}
     liveness = worker_stopped_by_item(
-        admissions, receipts_root=receipts_root,
-        item_ids={row["id"] for row in rows})
+        admissions, receipts_root=receipts_root, item_ids=item_ids)
+    leases = resources_released_by_item(environment, item_ids=item_ids)
     for row in rows:
         entry = liveness["items"].get(row["id"]) or {}
         if "worker_stopped" in entry:
-            # The ONE key this function adds to a row, and it adds it only when
-            # the receipt answered. Absent otherwise, which `daily_cycle.liveness`
-            # reads as "this projection is silent" — the third value, and the
-            # reason the field is not defaulted here.
+            # The TWO keys this function adds to a row, from two different
+            # stores, and each is added only when ITS source answered. Absent
+            # otherwise, which `daily_cycle.liveness` reads as "this projection
+            # is silent" — the third value, and the reason neither field is
+            # defaulted here. They are kept out of the row loop's head because
+            # they are separate facts: a row may carry one and not the other.
             row["worker_stopped"] = entry["worker_stopped"]
+        lease_entry = leases["items"].get(row["id"]) or {}
+        if "resources_released" in lease_entry:
+            row["resources_released"] = lease_entry["resources_released"]
     _check_declared(rows)
     return {
         "rows": rows,
@@ -525,6 +724,15 @@ def compose(board: dict, *, projection_times: dict | None = None,
                      "because": liveness["because"],
                      "receipts_root": str(receipts_root) if receipts_root else None,
                      "items": liveness["items"]},
+        # A SECOND LIVENESS SOURCE, named apart from the first because it is one:
+        # `worker_stopped` is read off a process receipt and this off the lease
+        # namespace, and a document with one `liveness` key holding two chains
+        # would let a reader take the second's status for the first's.
+        "leases": {"chain": list(LEASES_CHAIN),
+                   "status": leases["status"],
+                   "because": leases["because"],
+                   "held_by_another_scope": leases.get("held_by_another_scope", []),
+                   "items": leases["items"]},
         "not_produced": dict(NOT_PRODUCED),
         "not_produced_elsewhere": dict(NOT_PRODUCED_ELSEWHERE),
     }
