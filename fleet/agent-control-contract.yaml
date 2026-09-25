@@ -249,6 +249,43 @@ handoff:
     then cannot start the target has lost the session. A handoff that starts the
     target and then cannot stop the source has two sessions — visible,
     recoverable, and far cheaper.
+  checkpoint:
+    is: >-
+      The ref of a record in the continuation store — `<work_item>#<epoch>`, the
+      ref `serverosctl work checkpoint` prints. §9's first step is the one that
+      makes a lost session recoverable, so the procedure requires a ref and not
+      a flag, and what it records is which record holds the state.
+    consumer: >-
+      The next Parent, through `serverosctl work continuations`, which reads the
+      store by Item. The handoff does not carry the state; the checkpoint names
+      the record that holds it, and the outcome carries that ref back so a
+      reader of the handoff can go and read it.
+    is_not_forwarded: >-
+      It does not travel to the provider, and there is no channel for it to
+      travel on. `agent.session.resume` declares `params: []` and `optional: []`,
+      and the loopback's resume branch reads no parameters — so a ref placed in
+      `target_params` would be dropped one layer down with the contract and the
+      call site both looking correct. A ServerOS ref handed to a provider action
+      is the declaration-with-no-reader shape this repository keeps finding, and
+      the honest answer is that there is no channel rather than one nobody reads.
+    refs_are_not_parsed_here: >-
+      The procedure requires a ref and records it verbatim; it does not parse it.
+      `runtime/continuation.py#checkpoint_key` owns the format, and a second
+      parser of one format is a second answer to what a ref is. Whether a ref
+      exists is the store's to say; this procedure records what the caller
+      stated, which is why the ref is in the outcome.
+    step_order_against_the_resolver: >-
+      §9's six steps and the resolver's eight ask the same question in different
+      words, and a failed handoff is named by the resolver step that refused.
+      `device`, `agent_runtime`, `provider_instance` and `adapter` answer WHICH
+      target could carry the request and are `resolve_target`; `support`,
+      `readiness` and `admission` are `target_ready`, because a target that could
+      carry it did not. The resolver's `route` step cannot refuse — it refuses
+      only when an earlier step set `route_kind` to "none", and the chain stops
+      at that step — so `target_available` is reached by a route that was named
+      and then could not be delivered to, which is a transport failure and not a
+      resolution one.
+
   release_default: false
   release_default_because: >-
     A handoff that stops the source by default is a handoff that loses it
