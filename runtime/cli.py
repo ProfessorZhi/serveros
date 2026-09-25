@@ -730,6 +730,54 @@ def cmd_document_resolve(args) -> int:
     return EXIT_OK
 
 
+def cmd_document_stewardship(args) -> int:
+    """P4 — the maintenance contracts we hold, read as contracts.
+
+    `document resolve` answers what a document **is**. This answers what we have
+    undertaken to **do** about it: which of the three delivery forms governs it,
+    what its body authority is, how its copy follows that authority, and what
+    each change class is allowed to do to each declared section. Both halves are
+    P4's, and the plan's own sentence is why they are two verbs and not one:
+    「文档 identity resolver 存在不等于远端 publisher 已闭环」.
+
+    The rules are not restated here. `--ability` names the ability's own script
+    and its `authorize_edit` / `dynamic_state_fields` / `derive_sections` are
+    loaded from it, because a fail-closed gate re-stated in a second place is a
+    gate that can disagree with itself, and the half that says `allow` is the
+    half that writes. ServerOS checks the contract **before** calling in, so a
+    profile the ability would crash on is reported with the field named rather
+    than as a traceback.
+
+    Read-only. It sends nothing, writes nothing, and reads no clock: whether a
+    document has moved since the last observation needs a fetch, and a fetch is
+    the ability's.
+    """
+    mod = _load_module_from(REPO_ROOT / "intake" / "managed_documents.py",
+                            "serveros_intake_managed_documents")
+    for name in ("contracts", "ability"):
+        value = getattr(args, name)
+        if not Path(value).is_absolute():
+            sys.stderr.write(
+                f"serverosctl: --{name} must be absolute, got {value}. A "
+                f"maintenance contract read relative to whatever directory the "
+                f"caller stood in is a contract nobody else can reproduce.\n")
+            return EXIT_FAULT
+    state_dir = Path(args.state_dir)
+    if not state_dir.is_absolute():
+        sys.stderr.write(
+            f"serverosctl: --state-dir must be absolute, got {state_dir}.\n")
+        return EXIT_FAULT
+    try:
+        report = mod.read_root(Path(args.contracts), state_dir,
+                              Path(args.ability),
+                              Path(args.surface_vocabulary))
+    except (mod.Refused, mod.Malformed) as exc:
+        sys.stderr.write(f"serverosctl: {exc}\n")
+        return EXIT_FAULT
+    emit(report, as_json=args.json, lines=mod.render(report))
+    return EXIT_OK
+
+
 def cmd_information_captured(args) -> int:
     """§B1/P1 — what the collectors were asked for, and what actually landed.
 
@@ -9843,6 +9891,35 @@ def build_parser() -> argparse.ArgumentParser:
              "that ships beside the kernel, so an installed node judges by the "
              "same closed set a source checkout does")
     doc_resolve.set_defaults(func=cmd_document_resolve)
+
+    doc_stewardship = document_sub.add_parser(
+        "stewardship",
+        help="P4 · 我们长期维护哪些文档、每一篇的交付形态/正文权威/写策略是什么，"
+             "以及这份契约本身能不能被写闸门问。规则从 `--ability` 指名的能力脚本"
+             "加载（不在这里重述一遍）。读，不写；不发任何东西，不读时钟", **_COMMON)
+    doc_stewardship.add_argument(
+        "--contracts", required=True,
+        help="path to the managed-documents registry. Required and undefaulted: "
+             "the registry IS the answer to '有哪些', and a defaulted one would "
+             "report on documents nobody listed")
+    doc_stewardship.add_argument(
+        "--state-dir", required=True,
+        help="the directory holding one state file per document. Required even "
+             "when it is empty: 'never observed' and 'observed and unchanged' "
+             "are different readings and only the state file can tell them apart")
+    doc_stewardship.add_argument(
+        "--ability", required=True,
+        help="path to the document-stewardship ability's own script. Required "
+             "and undefaulted — a searched-for gate is a gate whose version "
+             "nobody can state, and an unstated path would let a second copy of "
+             "the rules decide in its place")
+    doc_stewardship.add_argument(
+        "--surface-vocabulary", default=str(REPO_ROOT / "space" / "vocabulary.json"),
+        help="the closed set of surfaces a body authority may live on. Default: "
+             "the one that ships beside the kernel, so an installed node judges by "
+             "the same set a source checkout does. A declared surface outside it is "
+             "refused rather than defaulted")
+    doc_stewardship.set_defaults(func=cmd_document_stewardship)
 
     information = sub.add_parser(
         "information", help="what was captured from the sources (§B1): the "
