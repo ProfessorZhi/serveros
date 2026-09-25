@@ -2347,6 +2347,145 @@ ALL SIX CAUGHT, tree byte-identical
 `DECLARATION_UNREADABLE` 那条路径的 `_load` 也是同一个吞异常的写法，但它的观测已经是诚实的，
 **不在本单元里顺手改**——一次只动一处，绿才能归因。
 
+### 9.22 P3：原生 reading 接上现有 semantic writer —— 三处旧耦合、一个真缺陷、一条只有套件覆盖的验收项
+
+**这一包的判词必须分两半写**，因为它的验收条款有四条，而**真材料只量到了三条**。
+把四条合起来说「P3 通过」正是这份台账从第一节起就在防的读法。
+
+计划原话（`docs/CC-EXECUTION-PLAN.md:80`）：
+
+> 复用 `understanding_brief.py`、`understanding_semantic.py`、`understanding_patch.py`、
+> `claim_recall.py` 和分源水位；writer 不调用模型是正确分工，不补第二 writer/understandingd。
+> ……修 `runtime/recipes.py:perception` 的旧耦合：单个 source 未答不能阻断所有成功源；
+> 先持久化各源 capture，再分别推进 understanding；不能把「source 变了」直接解释为「新 Item 候选」。
+>
+> **验收**：真实 IM/Doc/会议来源各有一个 reading 及可核支持；Claim 成功/View 失败只补 View；
+> retraction 立即影响当前 recall，即使 OpenViking 掉线。执行 `test_understanding_brief.py`、
+> `test_understanding_semantic.py`、`test_claim_recall.py`、`test_source_waterline.py` 及 J03；
+> 引用范围合法不替代语义正确性。
+
+#### 9.22.1 改的是三处耦合，不是三处写法
+
+`perception` 此前把「一个源没答」当成了整个 pass 的判决。三处各自独立：
+
+| 耦合 | 改前 | 改后 |
+| --- | --- | --- |
+| 单个源未答阻断所有成功源 | 只要有一个源没答，整轮不推进 | 新增 `observe` 步：先记下**哪些源答了、哪些没答**（`captured` / `unanswered`），成功源照常推进 |
+| 一个源都没读到 = 一次失败的推进 | 与「部分源没答」同一个分支 | `if not observed` 单独判 `SOURCE_UNAVAILABLE`——**这是唯一一种整轮不可答的情形** |
+| 「源变了」= 「有新 Item 候选」 | `refresh` 的 ask 把 revision 问成候选 | ask 改成「说这个 delta 对本 scope 的认识意味着什么」并明写 `Do not propose Items` |
+
+**第二处还有一个不显眼的分支**：源**都没动、但有人没答**，此前被读成「安静周期」。
+它不是安静周期——沉默的源可能正是有内容的那个。现在这一情形也判 `SOURCE_UNAVAILABLE`。
+
+**cursor 逐源推进，而不是整批覆盖。** 全答的那次直接换成观测到的集合；有人没答的那次
+`{**cursor, **observed}`——**没答的源保留上一次的水位**，否则下次重启会把它从「没读过」
+悄悄变成「读过了」。这一条正是计划里「先持久化各源 capture，再分别推进 understanding」
+在**现有记录形状内**的落法：一个显式的 per-source `observe` 步，逐源 cursor，
+**没有**新增第二条持久化水位线，也**没有**再放松 `last_success`。
+
+#### 9.22.2 两个在改的过程中露出来的缺口
+
+**(a) `observe` 是契约里声明了、代码里从没发出过的一步。** `recipe-contract.yaml` 的
+perception 段里一直写着它，而 `ctx.step` 里一次都没有。契约与实现不一致，而**不一致的方向
+是契约更诚实**——它描述的正是这一包要做的事。所以这一处不是「补一个步骤」，是**让代码追上契约**。
+
+**(b) `last_success` 的平局没有判据。** 排序只看 `finished_at`，而夹具的时钟是固定的，
+于是所有候选的 `finished_at` 相同，谁被选中取决于目录遍历顺序——**上一轮全量套件里已经红了
+一条，报出来的却是「顺序不定」**。加文件名为第二键，平局才有确定的答案。
+
+#### 9.22.3 真材料上的验收：四条里量到三条
+
+验收材料在 `$ARTIFACTS_ROOT/tmp-p3/acceptance/`（`records/` 是理解层与所引原始来源的副本，
+36 M）。两次 reading 都针对**真的**飞书来源区间，写进的是**真的**收据。
+
+| 验收项 | 判词 | 证据 |
+| --- | --- | --- |
+| 真实 IM 来源有一个 reading 及可核支持 | **真材料上做到** | reading A 落在真实区间 1418–1422，在委托内以 `agent_reconciled` 提交 2 条 `OBSERVED_FACT`；其中一条同时以**引用线**写进 `projects/litellm.md`；卡 prose 在 fence 外**逐字节**未变（`head.rstrip("\n") == live.rstrip("\n")` → True，追加字节恰为 `'\n\n'`）；recall 两条均 `CURRENT` |
+| retraction 立即影响当前 recall | **真材料上做到** | reading B 落在真实区间 1423–1491，提交 1 条新主张并携带一条指向 `wb-1420-astra-torch-only` 的 RETRACTION，依据是真实消息 1476；recall **当场**印出不可召回，理由逐字是「remote 可以掉线、被撤回的事实仍不得回来」。复跑合计 `CURRENT 2, RETRACTED 1` |
+| 目标/负责人/期限/承诺/权限变化仍交真实接受 | **真材料上做到两次** | 一条 `ACCEPTED_DECISION` 停在 awaiting（「要做什么不是机器可以接受的」）；一条**碰了 deadline** 的观察（真实消息 1452）停在 awaiting（「这条主张改变期限，无论事实多确定，那是人的决定」） |
+| **Claim 成功 / View 失败只补 View** | **只有套件覆盖，真材料没量到** | 这一轮每张 view 卡都在，**没有产生 PARTIAL**。该性质由 `tests/test_understanding_semantic.py` 里为「守着它的卡写成功、写进 view 失败，必须可读为 PARTIAL、可恢复、且绝不是所有消费者已对齐」而写的那组覆盖 |
+
+第四行是本节的要点：**它在盘上、被测过、但这一轮的真材料没有把它逼出来**。
+所以 P3 的判词是「三条在真材料上成立，一条由套件担保」，不是「P3 全绿」。
+
+计划点名的四个测试文件与 J03：
+
+```text
+tests/test_understanding_brief.py tests/test_understanding_semantic.py
+tests/test_claim_recall.py tests/test_source_waterline.py
+→ 333 passed in 14.25s
+```
+
+J03（`docs/SCENARIO-ACCEPTANCE.md` 的信息增量场景）里**属于本包**的几条，逐条对上：
+「一条真实获准信息改变相应认识」→ 上表第一行；「无新信息不造工作」→ `delta.does` 的
+`NO_CHANGE` 分支；「source 正文变而 range 不变旧确认拒绝」→
+`test_a_reading_whose_range_is_no_longer_proposed_is_refused_by_name`；
+「capture 已提交而语义阶段崩溃，重启仅续理解」→ 9.22.1 的逐源 cursor 与四条新测试；
+「会议负责人/期限不明确保持 candidate」→ 上表第二行的 deadline 那条。
+**J03 里不属于本包的（附件只取需要的、bot 消息计数、分页与过期附件）不在这里声称。**
+
+#### 9.22.4 验收跑出来一个真缺陷：`claim_recall` 的角色是从「这一次写入」读的
+
+**这是本轮唯一一处产品缺陷，而且是验收跑出来的，不是读代码读出来的。**
+
+`build_index` 为每张卡记「它现在载着哪些 id」时，用的角色是**本次写入的角色**：
+
+```python
+if role == _semantic.OWNER:
+    row["owners"][owner] = True      # 本次是 owner 写，则它载着的每个 id 都记成持有
+else:
+    row["referenced_by"][owner] = True
+```
+
+而模块自己写着 `written.claims` 是**写完之后卡载着的**东西。于是：一张 view 卡先引用别人的主张，
+**后来**为自己的主张写一次 OWNER——两次都是 writer 有权做的写入——那条引用线就被记成所有权，
+`len(owners) > 1`，判 `CONFLICT`（「一个 id 在两个卡里是两个主张」），**这条主张从此不可召回**。
+换句话说：**对任何 view 卡的正常第二次写入都会触发它。**
+
+修法：角色从**卡自己的那一行**读（`→` 开头的是引用，其余是持有），且**只在本次写入没有放下
+这个 id 时**才问；卡不在、或没有 claims 区，就退回本次写入的角色——那里记录是仅剩的口径。
+两个新助手 `_role_from_card` / `_roles_in_card` 加在 `build_index` 之前，逐卡至多读一次，
+缓存挂在 `card_roles` 上。
+
+**为什么读卡的正文是对的、而不是在两种同样好的东西之间挑一个**：写入记下的角色与它留下的
+那一行，在 writer 能产出的**每一个**状态里都一致，所以两者只可能因**手改卡**而分歧；而那时
+正文是读卡的人看到的东西，一个悄悄相信收据的索引，会把一条主张报成「被一张自己那行写着引用的
+卡所持有」。
+
+**验证**：73 条聚焦测试；四条变异**全部致命**（M1 退回「本次角色管所有载着的 id」4 条红、
+M2 角色不读正文恒 OWNER 32 条红、M3 去掉兜底 2 条红、M4 反转箭头判据 11 条红），
+**存活 0 条、无效 0 条、还原按 sha256 一致**；真材料根复跑读数回到 `CURRENT 2, RETRACTED 1`。
+
+**测试改了构造，没删断言。** 冲突态的构造从「收据撒谎」搬到「卡被手改」
+（`test_two_cards_each_holding_a_line_for_one_id_is_a_conflict`），并新增两条钉住新规则：
+一条说**收据声称的持有若卡上不显示就不被相信**，一条说**引用线在没有收据解释时不被读成所有权**。
+判词一个没动。
+
+#### 9.22.5 活体读数：三个面，读法与改前一致
+
+```text
+work waterline       sources  UNREADABLE 1 · UNRESOLVED 1 · LABELS_NOT_CONTIGUOUS 3 · BEHIND 44 · NOT_POSITIONAL 20
+work understanding   card     14 份 · BEHIND 3 · UNMEASURABLE 7 · UNTRACEABLE 4
+work claim-recall    索引     收据 0 张，主张 0 条，涉及卡片 0 张
+```
+
+**「收据 0 张」的正确读法上一轮我读错过一次，这里更正并记下来。** 我当时的结论是
+「没有卡能接受一条已提交的主张」，因为活体卡读出来全是 `claims NO_FENCE`。**错了**：
+`_replace_fence` 对**没有 fence 的卡是追加**一条 fence（`text + separator + FENCE_BEGIN + …`），
+所以 `NO_FENCE` 不是拒绝的理由。全节点零收据**真实的意思是**：writer 从没在真材料上跑过。
+这一条把「零」从「这一层收不了」改读成「这一层还没被用过」——**而分母就是 0 张收据本身**。
+
+#### 9.22.6 没有做的，与为什么
+
+- **没有第二 writer、没有 understandingd、没有让 writer 调模型。** 计划明写这是分工不是缺陷。
+- **没有在 recipe 记录里加第二条持久化水位线。** 见 9.22.1 末段：per-source `observe` 已落在
+  现有记录形状内，再加一条水位线会让「哪个水位是权威」变成一个新的、没人能回答的问题。
+- **P2 的 revision 事实不在活体 records 树里。** `capture_coverage._revisions_component` 要的
+  manifest 字段（`sync.revisions_checked_at` / `sync.revisions_compared`）只存在于 P2 分支的
+  工作树，活体 `workspace/records` 的任何 manifest 里都没有。所以 waterline 那一行
+  `revisions UNDECIDABLE` **不是缺陷**，是「这份读数要的事实还没送到」。把它送上去是**对外动作**，
+  与先前缓下的 `dbc9144` / `8ce6fe7` 同类，进 §11。
+
 ## 10. 后续每包更新哪几行
 
 - 改完一个包，只更新 §3.1 里对应行的四层状态 + §5 表的增删。
@@ -2405,6 +2544,40 @@ ALL SIX CAUGHT, tree byte-identical
 在 `~/.claude/settings.json` 的 `SessionStart` 下注册 `drift_sync.py`。**五条都是外部/共享面动作**，
 理由逐条写在 §7.2，不在这里重复——重复会漂移。第五条是 2026-09-22 新加的那条，
 它在此之前**只是 §9 表格里的一句散文**（§9.20 讲了这一句怎么第一次有了读者）。
+
+### 11.5 P2 的 revisions 事实：生产者在一支 2 提交之外的分支上，**而且送货还不够**
+
+**这条是 9.22.6 的落点，写在这里是因为它不是 ServerOS 的产品缺陷，是一次对共享面的写。**
+
+实测（2026-09-25）：
+
+```text
+活体   /data/home/vince/workspace/records           main  HEAD 7368e29  工作树干净
+分支   worktrees/records/P2-IM-REVISIONS                  HEAD 56783f1  工作树干净
+差     main..HEAD = 2 提交 · 7 文件 · +1093 −45
+其中   information/raw/sync_feishu_chat.py   ← revisions_checked_at / revisions_compared 的生产者
+       information/raw/drift_sync.py
+       information/raw/tests/test_sync_feishu_chat.py / test_drift_watchlist.py
+活体树里含 `revisions_checked_at` 的文件：**0 个**
+```
+
+`capture_coverage._revisions_component` 要的正是 manifest 的 `sync.revisions_checked_at` 与
+`sync.revisions_compared`（后者的存在是为了让「0 条改动」是一个**测出来的零**而不是「根本没比」）。
+活体 waterline 里 **47 个源**因此报 `revisions` UNDECIDABLE。
+
+**为什么本轮不做，有两层，第二层比第一层重要：**
+
+1. **第一层**：把 `main` 快进 2 个提交是**对 canonical 共享检出的写**，而这个树的干净是**刚量的、
+   随时会变**的（记忆里记着它曾有只存在于磁盘的未提交资产）。这一层是纪律问题。
+2. **第二层**：**送货不足以让那 47 行变绿。** 字段是 `sync_feishu_chat.py` **跑到真源上**才写进
+   manifest 的。所以即使代码到位，只有**此后重新同步过**的源才会有这个字段，
+   之前的历史 manifest 仍然没有——那 47 行里有一部分是**不可逆的历史**，
+   不是「补一次就没了」。而「跑到真源上」是一次**面向飞书的动作**。
+
+所以正确的解除条件不是「合一支分支」，而是人要决定两件事：**(a)** 允许在
+`workspace/records` 上落这 2 个提交；**(b)** 允许对哪些源重跑同步（这一步决定 47 行里有多少能变成
+可判，多少永远是历史缺口）。**只做 (a) 而不同时定 (b)，账面上不会有任何变化**——这一条必须先说，
+否则下一次读到「47 行仍 UNDECIDABLE」会以为分支没合。
 
 ## 12. 最终报告（计划 §16 要求的那一份）
 
