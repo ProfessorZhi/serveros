@@ -511,6 +511,38 @@ class ReleaseTests(unittest.TestCase):
         self.assertEqual(shell.returncode, 0, shell.stderr)
         self.assertEqual(release.fingerprint(art), shell.stdout.split()[0])
 
+    def test_bytecode_is_not_part_of_the_payload(self):
+        """A revision's hash must survive the revision being run.
+
+        The staged directory is what the node executes out of, so the first
+        start writes `__pycache__` into the tree whose hash the manifest quotes.
+        If that changed the number, every healthy node would report itself as
+        tampered with on the second measurement — which is what happened here on
+        2026-09-26, against a revision that differed from its record by 34 `.pyc`
+        files and by nothing else.
+
+        The departure from the quoted shell pipeline is pinned rather than
+        assumed: with the bytecode excluded, `find` produces the same number the
+        Python does. So the recipe is unchanged for the payload, and the payload
+        is what the records were hashed over.
+        """
+        art = make_artifact(self.base, "a")
+        before = release.fingerprint(art)
+        cache = art / "runtime" / "__pycache__"
+        cache.mkdir(parents=True, exist_ok=True)
+        (cache / "daemon.cpython-312.pyc").write_bytes(b"\x00derived\n")
+        (art / "stray.pyc").write_bytes(b"\x00derived\n")
+        self.assertEqual(release.fingerprint(art), before)
+        # The literal pipeline, restricted to the files that ARE the payload.
+        shell = subprocess.run(
+            "find . -type f "
+            "! -path '*/__pycache__/*' ! -name '*.pyc' ! -name '*.pyo' "
+            "-print0 | sort -z | xargs -0 sha256sum | sha256sum",
+            shell=True, cwd=art, stdout=subprocess.PIPE, text=True,
+            env={**os.environ, "LC_ALL": "C"})
+        self.assertEqual(shell.returncode, 0, shell.stderr)
+        self.assertEqual(release.fingerprint(art), shell.stdout.split()[0])
+
     def test_fingerprint_changes_when_the_tree_changes(self):
         art = make_artifact(self.base, "a")
         before = release.fingerprint(art)
