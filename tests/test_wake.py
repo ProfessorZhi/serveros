@@ -1146,3 +1146,90 @@ class TestTheCadenceFitsInsideTheAuthorityItSpends:
         """The control: five minutes, which was really installed, does not fit."""
         stale = int(actor_module().contract()["freshness"]["stale_after_seconds"])
         assert period_seconds("*-*-* *:1/5:00") + seconds("30s") >= stale
+
+
+# ---------------------------------------------------------------------------
+# 8. One fact, three surfaces, one reading.
+# ---------------------------------------------------------------------------
+
+
+class TestEverySurfaceAnswersTheReceiverQuestionFromOneReading:
+    """`work checkpoint` used to answer «nothing will wake it» on an armed node.
+
+    FOUND BY READING THE OUTPUT OF THE PARENT THE ROUTINE HAD JUST STARTED. The
+    wake was real — a receipt, an exit 0, a briefing on stdin — and the Parent's
+    own checkpoint, three seconds later, printed:
+
+        checkpoint 已保存，待续 — SRV-0001 epoch 2 is held by
+        wake-parent-successor and no continuation receiver is installed on this
+        node, so nothing will wake it.
+
+    on the node whose routine was armed, had just fired, and had started that
+    process. `RECEIVERS` is filled by `wake.fill_registry` and by nothing else;
+    `work wake` and `work continuations` both call it, and `work checkpoint` —
+    the third surface that reports the same state — did not. Its answer came from
+    the module's import-time empty tuple, which is a measurement of nothing.
+
+    THE READER THAT FOUND IT IS THE ONE THAT MATTERS. A Parent is started by the
+    routine, so it is the one reader guaranteed to be told «nothing will wake
+    you» precisely when something did — and the product's literal for the
+    unwired state («待续») is the sentence a Parent reports to whoever it hands
+    the Item back to. The other two surfaces existed and agreed with each other,
+    which is what made this one look like it agreed too.
+
+    WHAT THE TESTS ASSERT IS AGREEMENT, not a value. «Both say installed when I
+    installed one» is the property, with the uninstalled case as the control that
+    keeps it from being satisfied by printing a constant — and the last test pins
+    that the reading is still an ARGUMENT rather than a field, so the fix did not
+    reintroduce the record that can claim its own background run.
+    """
+
+    def write_it(self, env: dict, host: Path, *extra: str):
+        """One `work checkpoint`, against a node whose units are `host`."""
+        return cli("work", "checkpoint", ITEM, "--epoch", "1", "--parent", "p-1",
+                   "--next-action", "carry the Item on", "--waiting-on-window",
+                   TOMORROW, "--at", NOW, "--unit-dir", str(host),
+                   *extra, env_extra=env)
+
+    @pytest.mark.parametrize("equipped", [True, False])
+    def test_the_two_verbs_agree_about_whether_a_receiver_is_installed(
+            self, tmp_path, equipped):
+        """Written by one verb and read by the other, on the same unit directory."""
+        env = a_data_root(tmp_path)
+        host = units(tmp_path, armed=equipped)
+        written = self.write_it(env, host, "--json")
+        assert written.returncode == 0, written.stderr
+        listed = cli("work", "continuations", "--json", "--unit-dir", str(host),
+                     "--now", NOW, env_extra=env)
+        assert listed.returncode == 0, listed.stderr
+        expected = "RECEIVER_INSTALLED" if equipped else "AWAITING_CONTINUATION"
+        assert json.loads(written.stdout)["continuation"]["state"] == expected
+        assert json.loads(listed.stdout)["states"][f"{ITEM}#1"]["state"] == expected
+
+    def test_an_unwired_node_still_prints_the_products_own_literal(self, tmp_path):
+        """The control, in the words the acceptance criterion names.
+
+        A timer whose unit file exists but was never enabled is not a receiver,
+        which is the dangling half this file's `units()` fixture already covers:
+        taking it for one would trade this defect for its mirror image.
+        """
+        env = a_data_root(tmp_path)
+        done = self.write_it(env, units(tmp_path, armed=False))
+        assert done.returncode == 0, done.stderr
+        assert "checkpoint 已保存，待续" in done.stdout
+        assert "no continuation receiver is installed" in done.stdout
+
+    def test_the_writer_still_cannot_name_its_own_receiver(self, tmp_path):
+        """What the fix must not have done: put the receiver into the record.
+
+        `continuation_state` takes the list as an argument precisely so that a
+        checkpoint cannot carry a claim about what would wake it. Filling the
+        argument from a measurement keeps that; the record is asserted to carry
+        no receiver field at all, which is the difference between a reading and
+        a declaration.
+        """
+        env = a_data_root(tmp_path)
+        written = self.write_it(env, units(tmp_path), "--json")
+        assert written.returncode == 0, written.stderr
+        record = json.loads(written.stdout)["checkpoint"]
+        assert not [key for key in record if "receiver" in str(key)]
