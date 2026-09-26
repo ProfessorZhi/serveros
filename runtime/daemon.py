@@ -3187,12 +3187,14 @@ def default_socket_path() -> Path:
 def default_state_dir() -> Path:
     """The state root's `runtime/` directory.
 
-    Same two inputs as `registry.default_path`, resolved the same way, because
-    they are the same fact: where this node keeps its state. Written out a
-    second time they would agree until one of them was edited.
+    The state root comes from `registry.state_root` and is not recomposed here.
+    This function used to build the same pair itself, which is how the daemon
+    and the verbs came to disagree about where the control store is: the
+    daemon honoured `SERVEROS_STATE_DIR` and `cli._agent_control_store_path`
+    did not, so a node whose service file exported it had two control stores.
+    `registry.state_root` is the one producer of that answer now.
     """
-    state = os.environ.get("SERVEROS_STATE_DIR") or str(_paths.Paths().root("state"))
-    return Path(state) / "runtime"
+    return registry_mod.state_root() / "runtime"
 
 
 def main(argv: list[str] | None = None) -> int:

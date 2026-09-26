@@ -6464,9 +6464,18 @@ def _agent_control_store_path() -> Path:
     absent store is a node where nothing has been recorded — a fact, not a
     missing measurement — and the daemon's own `_load` draws that distinction
     from the other side.
+
+    AND IT IS THE DAEMON'S OWN FILE, which it was not. `daemon.py` composes
+    `default_state_dir()/agent-control/store.json` and that function honours
+    `SERVEROS_STATE_DIR`; this one read the path contract and never looked at
+    the variable. On a node whose unit exports it — every node
+    `scripts/release.py continuation-wake --state-dir` installs on — the daemon
+    wrote one store and every verb read another, and both answered as if the
+    other did not exist. The state root now comes from `registry.state_root`,
+    the one producer, and `tests/test_control_store_path.py` pins the two
+    compositions to the same file rather than to the same prose.
     """
-    paths = paths_mod.Paths()
-    return Path(paths.resolve("state/runtime/agent-control")["path"]) / "store.json"
+    return registry_mod.state_root() / "runtime" / "agent-control" / "store.json"
 
 
 def _control_store():
@@ -8121,6 +8130,18 @@ def _continuation_module():
                              "serveros_runtime_continuation")
 
 
+def _wake_module():
+    """`runtime/wake.py`, under the name its own `fill_registry` needs.
+
+    This loader passing `serveros_runtime_continuation` to
+    `_continuation_module` above is not incidental: `wake.fill_registry` writes
+    to that module object's `RECEIVERS`, and a second name would be a second
+    module object this file then read a different registry out of.
+    """
+    return _load_module_from(REPO_ROOT / "runtime" / "wake.py",
+                             "serveros_runtime_wake")
+
+
 def cmd_work_checkpoint(args) -> int:
     """§12/P7 — save where a logical Parent got to, because it has to wait.
 
@@ -8270,6 +8291,192 @@ def _waiting_on(args) -> dict | None:
     return None
 
 
+def _no_receiver_sentence(equipment: dict) -> str:
+    """Why nothing will wake a checkpoint here, in the terms of what is missing.
+
+    «none installed» was the whole answer while the registry was empty by
+    construction, and it stops being enough the moment a unit can exist half
+    installed: a timer that is not in the wanted set and a service with no Parent
+    to start are two different repairs, and a reader told only «none installed»
+    would go looking for a unit that is already on disk.
+
+    Every branch here is a measurement of this node's unit directory, so the
+    answer is about the fabric and not about a field somebody left off — which is
+    the property `continuation.continuation_state` depends on when it prints the
+    product's sentence.
+    """
+    if not equipment.get("armed") and not equipment.get("wired"):
+        return ("none installed — a saved checkpoint is not being woken by "
+                "anything on this node")
+    if not equipment.get("armed"):
+        return (f"none installed — {equipment['service']} is wired to "
+                f"{equipment['launcher'][0]} and {equipment['timer']} is not in "
+                f"the wanted set, so nothing fires it")
+    return (f"none installed — {equipment['timer']} is armed and "
+            f"{equipment['service']} names no --parent, so every tick would "
+            f"start nothing and exit 0")
+
+
+def cmd_work_wake(args) -> int:
+    """§17.4/P7 — resume a checkpoint whose wait has ended, once per attempt.
+
+    THE VERB THE WAKE HALF DID NOT HAVE. `work checkpoint` saves where a Parent
+    got to; `work continuations` reads it back and, until now, could only ever
+    answer that nothing would wake it, because `runtime/continuation.RECEIVERS`
+    was empty by construction and by design — and that empty tuple was the
+    measurement, not an oversight. This verb is what the routine runs, and it is
+    also what a person runs to see what that routine WOULD do (`--dry-run`),
+    which is the reading an operator needs after a timer has been misbehaving and
+    the one a doing-only surface cannot give them.
+
+    IT RUNS THE PLAN AND THE PLAN IS THE WHOLE DECISION. Four facts, each from a
+    store or a file: is this checkpoint still the one that owns its Item
+    (`live_checkpoints`), has what it waits for happened
+    (`continuation.wait_state`), does a grant that still authorizes now name this
+    Item (`context/delegation.envelopes` plus one comparison), and how many
+    attempts has this epoch already recorded (the receipts `invoke_once` writes).
+    Nothing is remembered between runs, which is what lets the same call be made
+    by a timer with no memory and by a person at a terminal and give one answer.
+
+    AND IT WILL NOT WAKE WITHOUT A PARENT, WHICH IS `--parent` AND NOT A DEFAULT.
+    A `work wake` that decided «this Item is ready» and then reported success
+    having started nothing would be the fabrication §17.4 names, reached from the
+    other side: the checkpoint is not being resumed, and the reader is told the
+    node handled it. So without `--parent` this verb decides, prints what it
+    decided, and says out loud that nothing could be started.
+
+    THE RECEIVER IT REPORTS IS MEASURED, NOT DECLARED. `wake.equipment` reads the
+    unit directory and the rendered `ExecStart=`, because a timer with no Parent
+    is not a receiver and neither is a Parent with no timer. `fill_registry`
+    writes that measurement into the registry `work continuations` reads, so both
+    surfaces answer the same question from the same reading.
+
+    IT STARTS A NATIVE PARENT AND NOT A SESSION. What it does is spawn a process
+    with the checkpoint briefing on stdin; whether that process may then act is a
+    question about the delegation it was handed, which is named in the briefing
+    and re-checked by the Parent for itself. The receiver has no `context_ref` of
+    its own and could not mint one — that is the whole reason it carries a
+    delegation rather than asserting authority.
+    """
+    wake = _wake_module()
+    continuation = _continuation_module()
+    wake.fill_registry(continuation, unit_dir=args.unit_dir)
+    store_mod, control = _control_store()
+    read_at, why = _reading_clock(args.now or datetime.datetime.now(
+        datetime.timezone.utc).isoformat())
+    if read_at is None:
+        sys.stderr.write(f"serverosctl: {why}\n")
+        return EXIT_FAULT
+
+    parent = str(args.parent or "").strip()
+    if parent and not Path(parent).is_absolute():
+        sys.stderr.write(
+            f"serverosctl: --parent {parent!r} is not an absolute path. A Parent "
+            f"found through whatever PATH the caller happens to have is one whose "
+            f"identity depends on who ran the timer, and the receipt — which is "
+            f"the record of what was started — would not be able to say which "
+            f"executable it was. Nothing was started\n")
+        return EXIT_FAULT
+    if args.budget and args.budget < 0:
+        sys.stderr.write(
+            f"serverosctl: --budget {args.budget} is negative. The bound on a "
+            f"Parent is a number of seconds it may run, and there is no negative "
+            f"one. Nothing was started\n")
+        return EXIT_FAULT
+
+    try:
+        plan = wake.plan(control, now=read_at, item=args.item or None,
+                         unit_dir=args.unit_dir, receipts=args.receipts)
+    except store_mod.StoreError as exc:
+        sys.stderr.write(f"serverosctl: {exc}\n")
+        return EXIT_FAULT
+
+    results: list = []
+    because = None
+    if args.dry_run or not parent:
+        because = ("--dry-run: this is what this node would wake, and nothing was "
+                   "started" if args.dry_run else
+                   "no --parent was given, so nothing could be started; the plan "
+                   "above is what this node would wake")
+    else:
+        cwd = Path(args.cwd) if args.cwd else Path.home()
+        if not cwd.is_dir():
+            sys.stderr.write(
+                f"serverosctl: --cwd {cwd} is not a directory. A Parent started "
+                f"in a directory that does not exist fails as a START_FAILED "
+                f"receipt, which reads like a broken launcher rather than a "
+                f"wrong working directory. Nothing was started\n")
+            return EXIT_FAULT
+        results = wake.wake(plan["rows"], launcher=[parent], cwd=cwd,
+                            receipts=plan["receipts"],
+                            budget=args.budget or None)
+
+    lines = [f"store         {control.path}",
+             f"receipts      {plan['receipts']}",
+             f"read at       {read_at}",
+             f"receiver      "
+             + (", ".join(str(r) for r in wake.installed(args.unit_dir))
+                if wake.installed(args.unit_dir)
+                else _no_receiver_sentence(plan["equipment"])),
+             f"checkpoints   {len(plan['rows'])} considered of "
+             f"{len(control.checkpoints())} recorded"
+             + (f" — only {args.item}" if args.item else ""),
+             f"to wake       "
+             + (", ".join(plan["would_wake"]) if plan["would_wake"]
+                else "none — every checkpoint here is held, refused or taken over, "
+                     "and the reasons are below")]
+    if plan["counts"]:
+        lines.append("reasons       "
+                     + ", ".join(f"{reason} {count}"
+                                 for reason, count in sorted(plan["counts"].items())))
+    for row in plan["rows"]:
+        lines.append("")
+        lines.append(f"{row['checkpoint_ref']}  {row['action']}  {row['reason']}")
+        lines.append(f"  item          {row['work_item']} epoch {row['epoch']}  "
+                     f"held by {row['parent_owner']}")
+        lines.append(f"  says          {row['says']}")
+        if row["authorized_by"] or row["grants_considered"]:
+            lines.append(f"  authority     "
+                         + (row["authorized_by"] or "none authorizes this Item")
+                         + (f"  (considered: "
+                            f"{', '.join(row['grants_considered'])})"
+                            if row["grants_considered"] else ""))
+        if row["action_key"]:
+            lines.append(f"  next safe     {row['next_safe_action']}")
+            lines.append(f"  attempt       {row['attempt']} of "
+                         f"{row['attempts_allowed']}, up to "
+                         f"{row['wall_seconds']}s  "
+                         f"({row['attempts_terminal']} already recorded)")
+            lines.append(f"  action key    {row['action_key']}")
+        elif row["attempts_allowed"]:
+            lines.append(f"  attempt       {row['attempts_terminal']} of "
+                         f"{row['attempts_allowed']} already recorded")
+    if results:
+        lines.append("")
+        lines.append("what was started")
+        for entry in results:
+            lines.append(f"  {entry['action_key']}  {entry['result']}  "
+                         f"{entry.get('receipt_status') or '—'}  "
+                         f"exit {entry.get('process_exit_code')}")
+            lines.append(f"    {entry['because']}")
+            if entry.get("receipt"):
+                lines.append(f"    receipt  {entry['receipt']}   launcher "
+                             f"{' '.join(entry['launcher'])}  cwd {entry['cwd']}  "
+                             f"bound {entry['timeout']}s")
+    if because:
+        lines.append("")
+        lines.append(because)
+    if plan["rows"] and not plan["would_wake"] and not results:
+        lines.append("")
+        lines.append("Nothing on this node is being resumed by this run, and each "
+                     "line above says why. A checkpoint that is HELD has not been "
+                     "forgotten: its wait is still open, and the next tick after "
+                     "the wait ends is the one that wakes it.")
+    emit({**plan, "results": results, "because": because}, as_json=args.json,
+         lines=lines)
+    return EXIT_OK
+
+
 def cmd_work_continuations(args) -> int:
     """§12/P7 — the Parent checkpoints this node holds, and what would wake each.
 
@@ -8345,6 +8552,13 @@ def cmd_work_continuations(args) -> int:
     child, two readings, and the one that says who owes it now is the new one's.
     """
     continuation = _continuation_module()
+    # The registry is FILLED FROM WHAT IS INSTALLED before it is read, and this is
+    # one of the two places that does it (`work wake` is the other). Reading
+    # `receivers()` without filling it would answer from the module's import-time
+    # value, which is the empty tuple — a measurement of nothing in particular,
+    # and one that would keep saying «nothing will wake it» on a node where the
+    # timer is armed.
+    _wake_module().fill_registry(continuation)
     store_mod, control = _control_store()
     try:
         held = control.checkpoints()
@@ -8363,6 +8577,7 @@ def cmd_work_continuations(args) -> int:
     # exactly when `continuation_state` answers `SUPERSEDED`.
     live = sorted(ref for ref in held if ref in control.live_checkpoints())
     installed = continuation.receivers()
+    equipment = _wake_module().equipment()
     states = {ref: continuation.continuation_state(record, receivers_seen=installed)
               for ref, record in held.items()}
     read_at, why = _reading_clock(args.now or datetime.datetime.now(
@@ -8391,8 +8606,7 @@ def cmd_work_continuations(args) -> int:
              + ("" if held else " — no Parent has checkpointed on this node"),
              f"receivers     "
              + (", ".join(str(r) for r in installed) if installed
-                else "none installed — a saved checkpoint is not being woken by "
-                     "anything on this node"),
+                else _no_receiver_sentence(equipment)),
              f"waits         {len(ready)} over, "
              + f"{len(live) - len(ready) - len(unreadable)} still open, "
              + f"{len(unreadable)} unreadable"
@@ -11248,6 +11462,40 @@ def build_parser() -> argparse.ArgumentParser:
                                   help="the instant to read a window against "
                                        "(default: now)")
     wk_continuations.set_defaults(func=cmd_work_continuations)
+
+    wk_wake = work_sub.add_parser(
+        "wake", help="§17.4/P7 — resume a checkpoint whose wait has ended, by "
+                     "starting one Parent for it. What the continuation routine "
+                     "runs on its timer, and what a person runs to see what it "
+                     "would do", **_COMMON)
+    wk_wake.add_argument("--item", default="",
+                         help="only this Work Item's checkpoints")
+    wk_wake.add_argument("--now", default="",
+                         help="the instant to read a window against (default: now)")
+    wk_wake.add_argument("--dry-run", action="store_true",
+                         help="decide and print, and start nothing")
+    wk_wake.add_argument("--parent", default="",
+                         help="the executable a wake starts, as one absolute path. "
+                              "Without it this verb decides and starts nothing — "
+                              "which is what `--dry-run` prints and what an "
+                              "install without a Parent is refused for")
+    wk_wake.add_argument("--budget", type=int, default=0,
+                         help="the longest one Parent may run, in seconds. Each "
+                              "attempt is clamped to the smaller of this and the "
+                              "grant's own budget.wall_seconds")
+    wk_wake.add_argument("--cwd", default="",
+                         help="the working directory a Parent starts in "
+                              "(default: $HOME, the same as the unit's "
+                              "WorkingDirectory=)")
+    wk_wake.add_argument("--receipts", type=Path, default=None,
+                         help="where the per-attempt receipts live (default: "
+                              "beside the control store, under "
+                              "<state>/serveros/runtime/wake/receipts)")
+    wk_wake.add_argument("--unit-dir", type=Path, default=None,
+                         help="where to look for the installed units when "
+                              "reporting whether a receiver is equipped "
+                              "(default: the user's systemd unit directory)")
+    wk_wake.set_defaults(func=cmd_work_wake)
 
     wk_item = work_sub.add_parser(
         "item", help="one Item's chain: which document exists, which is "

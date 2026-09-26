@@ -196,8 +196,8 @@ REGISTRY_RELATIVE = "runtime/registry/resources.yaml"
 _paths = _sibling("serveros_runtime_paths", "paths.py")
 
 
-def default_path() -> Path:
-    """This node's registry document. A path, whether or not it exists.
+def state_root() -> Path:
+    """This node's state root — the directory the path contract calls `state`.
 
     `SERVEROS_STATE_DIR` is honoured: the unit the installer renders sets it,
     and a variable a node's own service file exports is a statement about that
@@ -206,9 +206,25 @@ def default_path() -> Path:
     exported `DATA_ROOT`, which is every node but one — and the way that
     surfaced was an error message naming a directory the operator had never
     heard of, from a host they were not on.
+
+    THE ONE PRODUCER OF THIS ANSWER, and this function exists because it had
+    three. `daemon.default_state_dir` and `cli._agent_control_store_path` each
+    built the pair themselves, and the third of them built only HALF of it: the
+    CLI read the contract and never looked at the variable, so on a node whose
+    service file exported `SERVEROS_STATE_DIR` — which is every node
+    `scripts/release.py continuation-wake --state-dir` installs on — the daemon
+    wrote the control store to one file and every verb read another. Both
+    answered without complaint, the store the daemon wrote was invisible to the
+    verbs, and the two only agreed while the override happened to equal the
+    contract's answer. Found by installing the wake routine against an explicit
+    state root and watching the receiver read an empty store.
     """
-    state = os.environ.get(STATE_DIR_ENV) or str(_paths.Paths().root("state"))
-    return Path(state) / REGISTRY_RELATIVE
+    return Path(os.environ.get(STATE_DIR_ENV) or _paths.Paths().root("state"))
+
+
+def default_path() -> Path:
+    """This node's registry document. A path, whether or not it exists."""
+    return state_root() / REGISTRY_RELATIVE
 
 
 def load_default(path: str | Path | None = None) -> "Registry":
