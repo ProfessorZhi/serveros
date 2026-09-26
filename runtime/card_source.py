@@ -97,6 +97,16 @@ def _load(name: str, filename: str):
     return module
 
 
+business_calendar = _load("serveros_runtime_business_calendar",
+                          "business_calendar.py")
+
+#: Where the instance's business-calendar declaration lives: the same
+#: `~/.serveros/` the binding lives in, one directory for what this node
+#: declares about itself. This is an ALIAS of `business_calendar.DEFAULT_PATH`
+#: and not a second literal, so the two names cannot drift apart.
+DEFAULT_CALENDAR_PATH = business_calendar.DEFAULT_PATH
+
+
 # ---------------------------------------------------------------------------
 # Reading
 # ---------------------------------------------------------------------------
@@ -367,7 +377,7 @@ def _mine_section(summary: dict | None, user_services: dict | None,
 
 
 def snapshot(collected: dict, *, at: str, binding: dict | None = None,
-             node_label: str | None = None,
+             node_label: str | None = None, calendar: dict | None = None,
              reads_order=("summary", "top", "user_services", "runtime_list")) -> dict:
     """The three blocks, in the shape `presentation.status_model` consumes.
 
@@ -376,16 +386,44 @@ def snapshot(collected: dict, *, at: str, binding: dict | None = None,
     from the gather would mean re-adding a command to the card's read list later
     to answer a question the card already asked once. It appears in `detail` so
     that the number of reads the card made is inspectable.
+
+    `calendar` is `load_calendar`'s READING rather than a declaration, so the
+    three states survive as far as the model: §9's UNKNOWN has two causes and
+    §10's window depends on which one it is. A reading that is not `READ` also
+    becomes a collection gap — the same treatment every other unread thing on
+    this card gets, for the same reason: a person reading `calendar=UNKNOWN`
+    needs to know whether nobody imported a calendar or the one on disk does not
+    validate, and a gap line is where this card already answers that kind of
+    question.
+
+    A caller that supplies NO reading gets no schedule block and no gap, and
+    this is the shape that keeps the function honest about where it reads: it
+    shapes what it was handed and opens no file of its own. A default here that
+    went and read `~/.serveros/business-calendar.yaml` would make every caller's
+    answer depend on the machine the caller happened to be on, which is the
+    property that separates a renderer from a report about one host. The callers
+    that do read it — `serverosctl card status` and this module's own CLI — pass
+    the reading in, and `presentation._schedule` names the unread case in words.
     """
     reads = collected.get("reads") or {}
     gaps = list(collected.get("gaps") or [])
     summary = reads.get("summary")
+    schedule = None
+    if calendar is not None:
+        schedule = business_calendar.routine_window(at, reading=calendar)
+        if calendar.get("state") != "READ":
+            gaps.append({
+                "read": "business_calendar",
+                "command": calendar.get("path") or str(DEFAULT_CALENDAR_PATH),
+                "why": (calendar.get("reason") or "工作日历未读到")
+                       + (f"：{calendar['detail']}" if calendar.get("detail") else "")})
     return {
         "schema": SCHEMA,
         "at": at,
         "node_label": node_label,
         "gaps": [f"{g['read']}（{' '.join(g['command'].split())}）未读到：{g['why']}"
                  for g in gaps],
+        **({"schedule": schedule} if schedule else {}),
         "mine": _mine_section(summary, reads.get("user_services"),
                               reads.get("runtime_list"), gaps),
         "host": _host_section(summary, gaps),
@@ -435,10 +473,25 @@ def load_binding(path=None, *, device_ref: str | None = None) -> dict | None:
     return None
 
 
+def load_calendar(path=None) -> dict:
+    """The instance's business-calendar reading, never a declaration-or-None.
+
+    Unlike `load_binding` this does NOT collapse to None, and the difference is
+    deliberate rather than an inconsistency: a binding that is absent means the
+    gateway block says UNBOUND, which is one statement, whereas a calendar that
+    is absent means «this node cannot say whether today is a workday», which
+    §9 names as its own state with its own consequence. Returning None here
+    would throw away which of «not imported» and «did not validate» this node
+    is in, and the window that depends on it.
+    """
+    return business_calendar.read_declaration(Path(path) if path else None)
+
+
 def main(argv: list[str] | None = None) -> int:  # pragma: no cover - hand check
     import argparse
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--gateway-binding", default="")
+    parser.add_argument("--business-calendar", default="")
     parser.add_argument("--device-ref", default="")
     parser.add_argument("--out", default="")
     parser.add_argument("--at", default="")
@@ -446,7 +499,8 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover - hand check
     collected = gather()
     snap = snapshot(collected, at=args.at, node_label=args.device_ref or None,
                     binding=load_binding(args.gateway_binding or None,
-                                         device_ref=args.device_ref or None))
+                                         device_ref=args.device_ref or None),
+                    calendar=load_calendar(args.business_calendar or None))
     text = json.dumps(snap, ensure_ascii=False, indent=2)
     if args.out:
         Path(args.out).write_text(text, encoding="utf-8")

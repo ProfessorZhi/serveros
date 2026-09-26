@@ -705,6 +705,15 @@ def status_card(model: dict) -> dict:
     els: list[dict] = _sample_line(model)
     els.append(md(f"**环境可用性** {health.get('verdict_text')}\n"
                   f"**观测** {health.get('observation_text')}"))
+    # Why this card exists now, said on the face rather than in the log. §10
+    # gives routine broadcasts a window and §11 gives each workday one card, and
+    # neither is checkable by a reader who cannot see which day the card thinks
+    # it is and whether it was inside the window — so the schedule line is
+    # printed before the blocks and not folded into the footer with the
+    # collection stamp, which answers a different question.
+    schedule = model.get("schedule") or {}
+    if schedule.get("says"):
+        els.append(md(f"**播报日程** {schedule['says']}"))
     for name in model.get("order") or presentation.SECTIONS:
         section = (model.get("sections") or {}).get(name) or {}
         lines = section.get("lines") or []

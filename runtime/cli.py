@@ -5131,11 +5131,15 @@ def _card_common(args) -> tuple[dict, str, str]:
                                       device_ref=getattr(args, "device_ref", "") or None)
         snapshot = source.snapshot(
             source.gather(), at=at,
-            node_label=getattr(args, "device_ref", "") or None, binding=binding)
+            node_label=getattr(args, "device_ref", "") or None, binding=binding,
+            calendar=source.load_calendar(
+                getattr(args, "business_calendar", "") or None))
         model = presentation.status_model(snapshot, at=at, binding=binding,
                                           sample=bool(args.sample))
         caption = ("status card — three blocks and the line above them. "
-                   "The gateway block is UNBOUND unless a service binding names it")
+                   "The gateway block is UNBOUND unless a service binding names it; "
+                   "the schedule line is calendar=UNKNOWN until a business "
+                   "calendar is imported")
     else:
         document = _read_card_document(args)
         if isinstance(document, tuple):
@@ -10438,6 +10442,13 @@ def build_parser() -> argparse.ArgumentParser:
     card_sub.choices["status"].add_argument(
         "--device-ref", default="", metavar="REF",
         help="which device's binding to read, e.g. device:tokyo-shared-dev-01")
+    card_sub.choices["status"].add_argument(
+        "--business-calendar", default="", metavar="PATH",
+        help="the instance's business-calendar declaration "
+             "(default ~/.serveros/business-calendar.yaml). Without one the "
+             "schedule line reads calendar=UNKNOWN and this card claims no "
+             "routine broadcast window — a node that has not imported a "
+             "calendar does not get to assume Monday to Friday")
     _add_card("alert", cmd_card_alert,
               "at most three events, each with its what/impact/certainty/"
               "action/evidence fields, and a count of what did not fit",
