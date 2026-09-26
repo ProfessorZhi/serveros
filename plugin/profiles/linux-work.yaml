@@ -164,7 +164,43 @@ short_description: Agent Engineering Workbench for a Linux work node
 # touched here, per the paragraphs above: every member this change touches is
 # inherited from `plugin/bundle.yaml`, no core artifact is released from this
 # node, and none is installed on it.
-cachebuster: srv0003.20260924d
+#
+# Moved to `27a` on 2026-09-27, by the same rule, and again MEASURED. Rebuilding
+# this profile from `serveros-completion-20260925@0f8bb9c` against
+# `--ability-rev 368c1be` and diffing the result against the payload built under
+# `24d` gives six differing files under the version string
+# `3.1.0+srv0003.20260924d`:
+#
+#   README.md                                        generated from that rev
+#   skills/ability-management/control_plane.py       taken from
+#   skills/test-management/SKILL.md                  `ability-management` at
+#   skills/workspace-management/SKILL.md             `--ability-rev`
+#   skills/workspace-management/scripts/capacity_check.py
+#   skills/workspace-management/scripts/map_check.py
+#
+# It is the same defect `24d` was moved to repair, one repository further on.
+# `24d` was bumped for sentences in `skills/serveros` and
+# `skills/workspace-management` that told a reader one machine's
+# `/opt/applications` is this node's data volume. The same literals survived
+# here: `skills/test-management/SKILL.md` spells the test environment root as
+# `/opt/applications/data/home-hwz/workspace/test-envs/...`, and
+# `skills/workspace-management/SKILL.md` states `SYSTEM_ROOT = /home/hwz` and
+# `DATA_ROOT   = /opt/applications/data/home-hwz` as absolute facts of the node
+# the reader is on. A session that installs a cache under `24d` would be
+# instructed to write into paths that do not exist here, which is the failure
+# this field exists to prevent and which `24b`, `24c` and `24d` are all, in
+# turn, the story of.
+#
+# That `24d` was never promoted is why no installed cache holds it. It is not a
+# reason the string may be reused: `24d` already names a payload, and this
+# rebuild produces a different one under it.
+#
+# The bump is made here, before the candidate build, for the reason the
+# paragraphs above give.
+#
+# Core's label is stale for the fifth time for the same reason and is again NOT
+# touched here.
+cachebuster: srv0003.20260927a
 
 skills:
   - name: runtime-management
