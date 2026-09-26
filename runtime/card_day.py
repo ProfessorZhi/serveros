@@ -20,7 +20,25 @@ WHAT §11 ASKS FOR, IN FOUR SENTENCES
 
 The first two are `decide`; the third is `fold`; the fourth is the window
 `business_calendar.routine_window` already computed. Every one of them is
-answered here without a clock and without a transport.
+answered here without reading a clock and without sending anything: the instants
+are parameters, and the one number borrowed from the transport is the service's
+own update window, which is a declaration rather than a call.
+
+THE OTHER HALF OF 「只 patch 一张」, WHICH IS WHERE THE MESSAGE LIVES
+--------------------------------------------------------------------
+«Only patch ONE Status Card» has a chat-message half that no document in this
+tree held: the decision above says which CARD this instant is about, and nothing
+said WHICH MESSAGE carries it. A card created at 08:00 is a message; the patches
+at 09:00 and 10:00 have to land on that same message, and a system that does not
+remember its id can only send a second one. So `open.message` is where the day's
+card remembers the message it went out in, `decide` answers the message half
+alongside the card half, and `announce` is the verb that records it.
+
+The verdict is deliberately not "patch if you can, otherwise send". It answers
+`PATCH_MESSAGE` only when a message identity is genuinely in hand and still
+inside the service's window, and otherwise says `NEW_MESSAGE` WITH the reason it
+could not be a patch — a missing identity and an expired one are different
+findings and the reader has to be able to tell them apart.
 
 THE ROW IS A CLOSED SET OF FIELDS, AND THAT IS THE POINT
 --------------------------------------------------------
@@ -82,6 +100,36 @@ REASONS = (NEW_WORKDAY, SAME_WORKDAY, NOT_A_WORKDAY, CALENDAR_UNKNOWN,
 #: The reasons a schedule may carry that this module passes through unchanged.
 PASSED_THROUGH = (BEFORE_WINDOW, AFTER_WINDOW)
 
+#: The message half of the same decision: what happens to the chat message that
+#: SHOWS the card. Closed set for the same reason `ACTIONS` is — a caller
+#: branching on a third spelling of "send it" is a caller that will send twice.
+NEW_MESSAGE = "NEW_MESSAGE"
+PATCH_MESSAGE = "PATCH_MESSAGE"
+NO_MESSAGE = "NO_MESSAGE"
+MESSAGE_ACTIONS = (NEW_MESSAGE, PATCH_MESSAGE, NO_MESSAGE)
+
+#: Why the message half answered what it did. «SEND, and the reason is that we
+#: never recorded an id» and «SEND, and the reason is that the card is brand
+#: new» are different findings; a single SEND would hide the first one, and the
+#: first one is the missing link this whole section exists to close.
+NEVER_SENT = "NEVER_SENT"
+IN_HAND = "IN_HAND"
+IDENTITY_MISSING = "IDENTITY_MISSING"
+IDENTITY_EXPIRED = "IDENTITY_EXPIRED"
+IDENTITY_UNDATED = "IDENTITY_UNDATED"
+NOT_ROUTINE = "NOT_ROUTINE"
+MESSAGE_REASONS = (NEVER_SENT, IN_HAND, IDENTITY_MISSING, IDENTITY_EXPIRED,
+                   IDENTITY_UNDATED, NOT_ROUTINE)
+
+#: What an announcement did to the binding. Three words rather than a boolean:
+#: «this card had no message yet» and «this card's message was replaced» are
+#: different events, and a single `changed: true` reports the first one as the
+#: second — which reads as «somebody re-sent the card» when nobody did.
+BOUND = "BOUND"
+UNCHANGED = "UNCHANGED"
+REBOUND = "REBOUND"
+ANNOUNCE_CHANGES = (BOUND, UNCHANGED, REBOUND)
+
 #: The row's whole vocabulary. `hhmm` and `local` are the calendar's clock, not
 #: the machine's — §9 puts the timezone in the declaration, and a row stamped in
 #: another zone would disagree with the window it claims to be inside.
@@ -103,6 +151,30 @@ def _load(name: str, path: Path):
 
 def _calendar():
     return _load("serveros_runtime_business_calendar", _HERE / "business_calendar.py")
+
+
+def _transport():
+    """`runtime/message_transport.py`, for the one number that is its property.
+
+    Loaded under the SAME module name `runtime/cli.py` loads it as, so this is
+    one copy and not two: a test that pins the window in one of them would
+    otherwise be pinning a document nobody reads. What is read from it is a
+    constant — the service's own update window — and not a call: this module
+    still sends nothing.
+    """
+    return _load("serveros_runtime_message_transport",
+                 _HERE / "message_transport.py")
+
+
+def update_window_days() -> int:
+    """How long the service lets a sent card be changed. Read, not copied.
+
+    A literal here would be the second place the number lives, and the two would
+    disagree the first time the service moved its window — at which point this
+    module would promise a patch the transport refuses, or refuse one it would
+    have accepted.
+    """
+    return _transport().CARD_UPDATE_WINDOW_DAYS
 
 
 def _store_io():
@@ -203,6 +275,11 @@ def decide(document: dict, *, schedule: dict, at: str) -> dict:
     def answer(action: str, why: str, says: str, **extra) -> dict:
         base.update({"action": action, "reason": why, "says": says})
         base.update(extra)
+        # The message half, attached at the single point every answer leaves
+        # through. It is computed from the answer and not passed in, so no
+        # return path can forget it and leave a caller to assume the card's
+        # message is somebody else's question.
+        base["message"] = message_verdict(action, document.get("open"), at=at)
         return base
 
     if not day_ref or sched.get("kind") == "UNKNOWN" or reason == CALENDAR_UNKNOWN:
@@ -295,6 +372,107 @@ def _will_fold(open_day: dict, tick: int) -> bool:
     if not isinstance(latest, dict):
         return False
     return latest.get("tick") != tick
+
+
+def _moment(value) -> datetime.datetime | None:
+    """An instant this module can place on a timeline, or `None`.
+
+    An unreadable instant and a naive one both give `None`, and a naive one is
+    not read as UTC: the window is fourteen days wide, so assuming a zone for a
+    value that carries none can move the answer by nearly a day in either
+    direction — which is the difference between patching a card and refusing to.
+    """
+    try:
+        moment = datetime.datetime.fromisoformat(str(value))
+    except (TypeError, ValueError):
+        return None
+    return moment if moment.tzinfo is not None else None
+
+
+def message_verdict(action: str, open_day, *, at: str) -> dict:
+    """What happens to the message carrying today's card, and why.
+
+    The companion of the card decision, never a substitute for it: `action` is
+    what `decide` answered about the CARD, and this answers about the chat
+    message that shows it. It exists because «只 patch 一张» is unenforceable
+    from the card alone — the patches have to land on the same message, and only
+    a recorded identity makes that possible.
+
+    PATCH_MESSAGE is answered only when a message identity is genuinely in hand
+    AND still inside the service's window at this instant. Every other answer is
+    NEW_MESSAGE, and each carries the reason it is not a patch, because «we
+    never recorded an id» and «the id is too old to use» need different fixes.
+    The age is `at` minus the recorded send time — this instant against that
+    one, both given — so nothing here reads a clock.
+    """
+    window = update_window_days()
+    verdict = {"action": None, "reason": None, "remote_id": None,
+               "window_days": window, "says": ""}
+
+    if action == SKIP:
+        verdict.update({
+            "action": NO_MESSAGE, "reason": NOT_ROUTINE,
+            "says": "这一拍不动当天卡，也就没有要发的消息"})
+        return verdict
+
+    if action == CREATE:
+        # By construction: the document this instant produces has no message
+        # recorded yet, because the message does not exist until somebody sends
+        # this card.
+        verdict.update({
+            "action": NEW_MESSAGE, "reason": NEVER_SENT,
+            "says": ("这是一张新建的当天卡，还没有消息承载它：本次新发一条，"
+                     "从下一拍起都是 patch 这一条")})
+        return verdict
+
+    message = open_day.get("message") if isinstance(open_day, dict) else None
+    if not isinstance(message, dict) or not str(message.get("remote_id") or ""):
+        # What this document does NOT know, and must not pretend to: whether the
+        # card ever went out. If it did, sending now makes a second card; if it
+        # did not, sending now is exactly right. Only the delivery ledger can
+        # tell those apart, so the sentence names it instead of picking one.
+        verdict.update({
+            "action": NEW_MESSAGE, "reason": IDENTITY_MISSING,
+            "says": ("当天卡已经在，但没有记下承载它的那条消息，因此无从 patch。"
+                     "如果它已经发出过，这时新发一条就是第二张卡（V28 只允许"
+                     "一张）；如果还没有发出过，那就还没有消息。"
+                     "这件事只有投递台账知道（`card deliveries`），"
+                     "这一份文档只能如实说它没有记下是哪一条；"
+                     "发出后用 `card day-announce --message-id` 记下即可")})
+        return verdict
+
+    remote_id = str(message["remote_id"])
+    sent, now = _moment(message.get("at")), _moment(at)
+    if sent is None or now is None:
+        verdict.update({
+            "action": NEW_MESSAGE, "reason": IDENTITY_UNDATED,
+            "remote_id": remote_id,
+            "says": (f"记下了承载卡的那条消息，但它的发出时间（或这一刻）"
+                     f"读不出来，{window} 天可改窗口因此无法判断。"
+                     f"无法判断就不声称可以 patch，也不在这里改发一条新的")})
+        return verdict
+
+    age_days = (now - sent).total_seconds() / 86400
+    if age_days > window:
+        verdict.update({
+            "action": NEW_MESSAGE, "reason": IDENTITY_EXPIRED,
+            "remote_id": remote_id,
+            "says": (f"承载当天卡的那条消息已经发出约 {int(age_days)} 天，"
+                     f"超过 {window} 天可改窗口，改不动了；只能新发一条，"
+                     f"而那意味着第二张卡")})
+        return verdict
+
+    # Two sentences rather than one because «-0.0 天前发出» is what a
+    # backdated instant produces, and a reading nobody can place on a timeline
+    # is worse than no reading: what the caller needs from this line is whether
+    # the window still holds, and that is answerable in both cases.
+    since = (f"发出约 {age_days:.1f} 天" if age_days > 0
+             else "记下的发出时间不早于这一拍")
+    verdict.update({
+        "action": PATCH_MESSAGE, "reason": IN_HAND, "remote_id": remote_id,
+        "says": (f"承载当天卡的消息在手（{since}，在 {window} 天可改窗口内）："
+                 f"本次 patch 这一条，不新发")})
+    return verdict
 
 
 # ---------------------------------------------------------------------------
@@ -508,7 +686,7 @@ def summary(document: dict | None) -> dict:
     open_day = document.get("open")
     if not isinstance(open_day, dict):
         return {"schema": SCHEMA, "day_ref": None, "updates": 0, "latest": None,
-                "history": [], "lines": [], "missed_ticks": 0,
+                "history": [], "lines": [], "missed_ticks": 0, "message": None,
                 "previous": document.get("previous"),
                 "says": "今天还没有当天的卡"}
     history = [check_row(r) for r in (open_day.get("history") or [])]
@@ -525,6 +703,11 @@ def summary(document: dict | None) -> dict:
         "updated_at": open_day.get("updated_at"),
         "latest": latest,
         "history": history,
+        # Which message carries this card, or `None` when nobody has recorded
+        # one. A reader needs the second case as much as the first: it is the
+        # difference between «the next update patches the message that is
+        # already there» and «the next update can only be a second card».
+        "message": open_day.get("message"),
         # The folded panel's lines. They travel in the model rather than being
         # formatted by the renderer, because a renderer that knew how to read a
         # row would be a second reader of the row schema.
@@ -596,6 +779,22 @@ class DayStore:
                 check_row(item)
             if open_day.get("latest") is not None:
                 check_row(open_day["latest"])
+            message = open_day.get("message")
+            if message is not None:
+                if not isinstance(message, dict) \
+                        or not str(message.get("remote_id") or ""):
+                    raise CardDayError(
+                        f"the open day in {self.path} has a `message` that names "
+                        f"no message. A binding to nothing would let the next "
+                        f"update believe it can patch the card, when the only "
+                        f"message it could reach is whichever one it guessed")
+                if not str(message.get("at") or ""):
+                    raise CardDayError(
+                        f"the message in {self.path} carries no `at`. The "
+                        f"service's update window is measured from when a message "
+                        f"was sent, and one that cannot be placed on a timeline "
+                        f"makes that window unanswerable — which is a reason to "
+                        f"refuse, not a reason to assume it is fresh")
         data["schema"] = SCHEMA
         data.setdefault("previous", None)
         return data
@@ -625,6 +824,73 @@ class DayStore:
         self._data = next_doc
         return {"decision": action, "wrote": True, "written": written,
                 "row": row_, "day": summary(self._data)}
+
+    def announce(self, *, remote_id: str, at: str) -> dict:
+        """Record which message carries today's card. The second writer.
+
+        Split from `advance` rather than folded into it because the two facts
+        arrive at different times: the decision about the card is computable
+        from the calendar, and the message id only exists AFTER somebody sent
+        it. A verb that took both would have to be called twice anyway, once
+        with a blank.
+
+        Rebinding is allowed — a re-sent card lives in a new message, and the id
+        that is no longer current must not stay in place or every later update
+        would patch a message the receiver is not looking at. What is NOT lost
+        by rebinding is the old one: the delivery ledger holds it against the
+        version that went out (that is what a receipt's `remote_id` is for), so
+        this document keeps only the binding that is current.
+        """
+        message_id = str(remote_id or "").strip()
+        if not message_id:
+            raise CardDayError(
+                "an announcement needs the message it is about. Recording «a "
+                "message» without an identity is the state this verb exists to "
+                "end: the next update would have to guess, and a guess that "
+                "reaches the wrong message edits somebody else's card")
+        if any(character.isspace() for character in message_id):
+            raise CardDayError(
+                "a message id is one token, and this one contains whitespace, "
+                "so it names no message. The value is not repeated here")
+        if message_id.startswith("oc_"):
+            raise CardDayError(
+                "that is a chat id, not a message id: `oc_` names a "
+                "conversation and `om_` names one message in it. Binding the "
+                "conversation would aim every later patch at a chat")
+        if not str(at or ""):
+            raise CardDayError(
+                "an announcement needs the instant it was made: the service's "
+                "update window is measured from the message's own send time, and "
+                "an instant nobody wrote down cannot be measured later")
+        open_day = self._data.get("open")
+        if not isinstance(open_day, dict) or not open_day.get("day_ref"):
+            raise CardDayError(
+                "there is no card for this message to carry. Announcing one "
+                "would file a message under a day that has no card, and the "
+                "card created afterwards would open beside a binding that "
+                "already claims to carry it")
+        previous = open_day.get("message")
+        held = str(previous.get("remote_id") or "") if isinstance(previous, dict) else ""
+        if not held:
+            change = BOUND
+            message = {"remote_id": message_id, "at": str(at)}
+        elif held == message_id:
+            change = UNCHANGED
+            # The first binding wins the timestamp. Re-stamping an unchanged
+            # message with a later instant would push the service's window
+            # forward every time somebody re-ran the announcement, and that
+            # window is a property of when the message was SENT.
+            message = dict(previous)
+        else:
+            change = REBOUND
+            message = {"remote_id": message_id, "at": str(at)}
+        next_doc = dict(self._data)
+        next_doc["open"] = dict(open_day)
+        next_doc["open"]["message"] = message
+        _store_io()._atomic_write(self.path, next_doc)
+        self._data = next_doc
+        return {"announced": True, "change": change, "message": message,
+                "day_ref": open_day.get("day_ref"), "day": summary(self._data)}
 
     def summary(self) -> dict:
         return summary(self._data)

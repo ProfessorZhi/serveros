@@ -5265,7 +5265,8 @@ def cmd_card_record_delivery(args) -> int:
         return EXIT_FAULT
     params = {"kind": args.kind, "state": args.state,
               "card": document["card"], "frozen": document.get("frozen"),
-              "reason": args.reason, "idempotency_key": args.idempotency_key}
+              "reason": args.reason, "idempotency_key": args.idempotency_key,
+              "remote_id": args.message_id}
     payload, code = _card_answer("card.record-delivery", params)
     if code != EXIT_OK:
         return code
@@ -5274,7 +5275,11 @@ def cmd_card_record_delivery(args) -> int:
              f"结果        {entry.get('state')}",
              f"所记版本    {entry.get('version')}",
              f"载荷        {entry.get('payload_bytes')} 字节 · "
-             f"{str(entry.get('payload_hash') or '')[:12]}"]
+             f"{str(entry.get('payload_hash') or '')[:12]}",
+             # Printed as a fact about this send and not as advice: an absent
+             # one is the difference between «this card can be updated in place»
+             # and «the next update can only be a second message».
+             f"消息        {entry.get('remote_id') or '（通道没给，下一次改不了这一条）'}"]
     if not entry.get("delivered"):
         lines.append(f"未送达      {entry.get('reason')}")
     emit(payload, as_json=args.json, lines=lines)
@@ -5292,7 +5297,8 @@ def cmd_card_deliveries(args) -> int:
     rows = payload.get("recent") or []
     for row in rows:
         lines.append(f"  {row.get('at')}  {row.get('state'):<11} "
-                     f"{row.get('version')}")
+                     f"{row.get('version')}  ·  "
+                     f"{row.get('remote_id') or '（无消息 id：改不了这一条）'}")
     if not rows:
         lines.append("  （没有记录：这个节点还没有投递过这种卡）")
     emit(payload, as_json=args.json, lines=lines)
@@ -5348,9 +5354,13 @@ def cmd_card_day(args) -> int:
          lines=[f"决定        {action['action']}/{action['reason']}",
                 f"当天身份    {action['day_ref'] or '（不可用）'}",
                 f"时点        {action['tick']}/{action['ticks_per_workday']}",
+                f"消息        {action['message']['action']}/"
+                f"{action['message']['reason']}",
                 f"当天卡      {day['says']}",
                 "",
                 action["says"],
+                "",
+                action["message"]["says"],
                 "",
                 "本命令不写任何东西，也不发送任何东西：它回答的是这一拍对当天的卡"
                 "应该发生什么。落盘在 `card day-advance`，发送由已经持有 "
@@ -5388,14 +5398,62 @@ def cmd_card_day_advance(args) -> int:
              f"落盘        {'是' if result['wrote'] else '否（这一拍不动当天的卡）'}",
              f"当天身份    {action['day_ref'] or '（不可用）'}",
              f"时点        {action['tick']}/{action['ticks_per_workday']}",
+             f"消息        {action['message']['action']}/"
+             f"{action['message']['reason']}",
              f"当天卡      {day['says']}",
              "",
              action["says"],
+             "",
+             action["message"]["says"],
              ""]
     if result.get("row"):
         lines.append(f"行          {module.row_says(result['row'])}")
     lines.append("本命令只写当天卡这一份文档，不渲染、不发送。")
     emit(payload, as_json=getattr(args, "json", False), lines=lines)
+    return EXIT_OK
+
+
+def cmd_card_day_announce(args) -> int:
+    """§11. Record which message carries today's card — the second writer.
+
+    It writes AFTER the send and not before it: the id does not exist until the
+    card has gone out, and a binding written in advance would name a message
+    nobody has. That is also why it is a verb of its own rather than a flag on
+    `card day-advance`, which is computable from the calendar alone.
+
+    What it buys is the difference between the next tick patching the message
+    already in the chat and the next tick being a second card. §11's acceptance
+    criterion asks for one card per workday, and this is the half of that which
+    lives in the chat rather than in the document.
+    """
+    module = _card_day_module()
+    at = getattr(args, "at", "") or _card_clock()
+    try:
+        store = _day_store(module, args)
+        result = store.announce(remote_id=args.message_id, at=at)
+    except module.CardDayError as exc:
+        sys.stderr.write(f"serverosctl: {exc}\n")
+        return EXIT_FAULT
+    day, message = result["day"], result["message"]
+    change_says = {
+        module.BOUND: "第一次记下（这一张原本还没有消息承载）",
+        module.UNCHANGED: "没变（本来就是这一条）",
+        module.REBOUND: "换了另一条消息承载（原来那条不再是它的去处）",
+    }
+    payload = {"schema": module.SCHEMA, "at": at, "store": str(store.path),
+               "announced": result["announced"], "change": result["change"],
+               "message": message, "day": day}
+    emit(payload, as_json=getattr(args, "json", False),
+         lines=[f"当天身份    {result['day_ref']}",
+                f"承载消息    {message['remote_id']}",
+                f"记下的发出时间  {message['at']}",
+                f"绑定        {result['change']} · "
+                + change_says.get(result["change"], "（无法命名的变化）"),
+                f"当天卡      {day['says']}",
+                "",
+                "本命令只记下「哪条消息承载当天的卡」，不发送、不改动任何消息："
+                "从下一拍起，`card day` 的判决会变成 PATCH_MESSAGE，"
+                "而 patch 这个动作仍然由持有 transport 的那一侧执行。"])
     return EXIT_OK
 
 
@@ -10587,6 +10645,14 @@ def build_parser() -> argparse.ArgumentParser:
                           help="DELIVERED, FAILED, UNSUPPORTED or UNKNOWN")
     card_rec.add_argument("--reason", default="",
                           help="why, when the outcome was not DELIVERED")
+    card_rec.add_argument(
+        "--message-id", default="", metavar="ID",
+        help="the message this send produced, when the sender has it. It is "
+             "what makes a later update of that same message possible instead "
+             "of a second message, so a receipt that drops it is a receipt for "
+             "a send nobody can reach afterwards. Omit it only when the "
+             "transport answered without one — the absence is recorded as an "
+             "absence and not filled in")
     card_rec.add_argument("--idempotency-key", default="",
                           help="override the key the frozen block carries. The "
                                "default comes from the rendering: it names the "
@@ -10654,6 +10720,34 @@ def build_parser() -> argparse.ArgumentParser:
              "advanced with it holds a sample row, which is what the flag says")
     card_adv.add_argument("--at", default="", help="override the instant")
     card_adv.set_defaults(func=cmd_card_day_advance)
+
+    # §11's message half. Separate from `day-advance` because the id it records
+    # does not exist until the card has been sent, and because this is the ONE
+    # surface that can say «the next update patches the message already in the
+    # chat» rather than «the next update is a second card».
+    card_ann = card_sub.add_parser(
+        "day-announce",
+        help="§11 · record which message carries today's card, so the next "
+             "update is a patch of it and not a second card. Writes the day "
+             "store; sends and edits nothing",
+        **_COMMON)
+    card_ann.add_argument(
+        "--message-id", required=True, metavar="ID",
+        help="the message the just-sent card lives in (the transport answers "
+             "with it, and `card record-delivery --message-id` keeps it in the "
+             "ledger)")
+    card_ann.add_argument(
+        "--day-store", default="", metavar="PATH",
+        help="the document this command writes "
+             "(default ~/.serveros/cards/day.json)")
+    card_ann.add_argument(
+        "--at", default="",
+        help="override the instant recorded as when that message was SENT. The "
+             "default is now, which is the right answer when this runs "
+             "immediately after the send; a hand-run against a message sent "
+             "earlier must say so, because the service's update window is "
+             "measured from this value")
+    card_ann.set_defaults(func=cmd_card_day_announce)
 
     registration = sub.add_parser(
         "registration", help="the loop from 'something is running' to a "

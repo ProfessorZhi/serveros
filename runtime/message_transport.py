@@ -40,6 +40,13 @@ WHAT IT REFUSES TO DO
   rather than sending twice. Because that dedupe is time-boxed, the question can
   only be asked inside the window; outside it the answer is `None` — "cannot be
   asked" — and the entry stays pending rather than becoming a second message.
+- **It does not send a second message when it cannot change the first.**
+  `update` patches the card at the message id it is given, and every refusal
+  names which one it is: no id, a send time that cannot be placed on a timeline,
+  past the service's 14-day window, or over its content ceiling. None of them
+  falls back to sending, because a fallback there leaves two cards in the chat —
+  the thing V28 forbids by name — and the caller is the only one who can decide
+  that a second card is the right answer.
 - **It does not hold a credential and reads none.** It runs an
   already-authenticated CLI and passes through what that CLI returns.
 """
@@ -48,6 +55,7 @@ from __future__ import annotations
 import datetime
 import hashlib
 import importlib.util
+import json
 from pathlib import Path
 
 SCHEMA = "serveros/message-transport.v1"
@@ -66,6 +74,21 @@ IDEMPOTENCY_WINDOW_SECONDS = 3600
 #: The prefix a recipient has to carry. Two flags, mutually exclusive at the
 #: CLI, and the choice between them is the caller's.
 RECIPIENT_KINDS = {"user": "--user-id", "chat": "--chat-id"}
+
+#: How long a sent card stays updatable, and how large its content may be. Both
+#: are the service's bounds and not policies chosen here — they are quoted from
+#: the CLI's own description of `im messages patch` («the message must have been
+#: sent within the last 14 days, and `content` must be a JSON-serialized string
+#: no larger than 30 KB»). A caller that wants a different number is arguing
+#: with the service, not with this module.
+CARD_UPDATE_WINDOW_DAYS = 14
+CARD_CONTENT_LIMIT_BYTES = 30 * 1024
+#: «30 KB» does not say whether KB counts bytes or characters, so this module
+#: refuses on EITHER reading rather than picking one and being quietly lenient
+#: on the other. The cost of the stricter reading is one refusal with a
+#: sentence; the cost of the looser one is a person looking at the previous
+#: card while the caller believes the update went out.
+CARD_CONTENT_LIMIT_CHARS = 30 * 1000
 
 
 class TransportFault(Exception):
@@ -114,6 +137,20 @@ def split_recipient(recipient: str) -> tuple[str, str]:
             f"两种目的地在这个通道上是互斥的两个参数，不加前缀就等于让这里替调用方猜；"
             f"猜错的后果是一份日报落进一个群，而不是一个人的私聊，这个动作收不回来")
     return RECIPIENT_KINDS[kind], value
+
+
+def card_content(card) -> str:
+    """A card as the message content the service wants: a JSON string.
+
+    The two verbs wrap the same object differently and this is the one place
+    that difference is written down. `+messages-send` takes the card AS the
+    message content (`--content '<card json>'`, `--msg-type interactive`);
+    `messages patch` takes it inside a request body whose `content` is that same
+    JSON **serialized into a string**. Getting this wrong does not fail loudly:
+    the service accepts the request and puts the card's text on the screen as
+    text, which the receiver reads as a card that broke.
+    """
+    return json.dumps(card, ensure_ascii=False, separators=(",", ":"))
 
 
 def _age_seconds(attempted_at) -> float | None:
@@ -201,6 +238,85 @@ class LarkMessageSender:
                 "provider": {"id": "lark-cli",
                              "transport": "im +messages-send",
                              "remote_id": remote_id,
+                             "identity": self.identity,
+                             "recipient": self.recipient}}
+
+    def update(self, request: dict) -> dict:
+        """Make the card already at `request["message_id"]` say `request["card"]`.
+
+        This is the other half of V28's «只 patch 一张»: the decision about the
+        day's card says WHICH card, and this says how the chat message showing
+        it changes without a second one appearing. The verb is
+        `im messages patch` and not `im +messages-edit`, and that is the CLI's
+        own division rather than a preference: its help sends «Editing an
+        interactive card» to the first and calls the second the text and
+        post-rich editor. A card edited through the post path is not a card.
+
+        Four things are refused HERE, each with its own sentence, because the
+        alternative is a service error the caller reads as «the card did not
+        change»:
+
+          * no message id — a patch names one message, and «the most recent
+            one» is not an identity;
+          * a send that cannot be placed on a timeline — the 14-day window is
+            then unanswerable, and an unanswerable window is not a fresh one;
+          * a message outside that window — the service would refuse it;
+          * content over the ceiling, measured exactly as `card_content`
+            produces it.
+
+        Nothing here falls back to sending when it cannot patch. A refused patch
+        leaves the previous card on screen and says so; a send would leave TWO
+        cards, which is the one thing V28 forbids by name.
+        """
+        transport = "im messages patch"
+
+        def refused(why: str) -> dict:
+            return {"state": "FAILED", "why": why,
+                    "provider": {"id": "lark-cli", "transport": transport,
+                                 "remote_id": None, "identity": self.identity,
+                                 "recipient": self.recipient}}
+
+        message_id = str(request.get("message_id") or "")
+        if not message_id:
+            return refused("没有 message id：patch 必须指名改哪一条，"
+                           "「最近那条」不是一个身份。没有改动任何东西，也没有"
+                           "改发一条新的——那会变成第二张卡")
+        age = _age_seconds(request.get("sent_at"))
+        if age is None:
+            return refused(
+                f"这条消息是什么时候发的读不出来（sent_at="
+                f"{request.get('sent_at')!r}），{CARD_UPDATE_WINDOW_DAYS} 天可改"
+                f"窗口因此无法判断；无法判断就不据此改一张可能已经改不动的卡，"
+                f"也没有改发一条新的")
+        if age > CARD_UPDATE_WINDOW_DAYS * 86400:
+            return refused(
+                f"这条消息已经发出约 {int(age // 86400)} 天，超过飞书 "
+                f"{CARD_UPDATE_WINDOW_DAYS} 天的可改窗口：改不动了，只能新发一条，"
+                f"而新发一条是另一张卡——这个判断属于调用方，不属于这里")
+        content = card_content(request.get("card"))
+        size, chars = len(content.encode("utf-8")), len(content)
+        if size > CARD_CONTENT_LIMIT_BYTES or chars > CARD_CONTENT_LIMIT_CHARS:
+            return refused(
+                f"要 patch 的卡片内容是 {size} 字节 / {chars} 字符，超过服务声明的"
+                f"上限（{CARD_CONTENT_LIMIT_BYTES} 字节 或 "
+                f"{CARD_CONTENT_LIMIT_CHARS} 字符，哪个先到算哪个）。"
+                f"没有改动任何东西")
+
+        argv = [self.cli, "im", "messages", "patch", "--as", self.identity,
+                "--message-id", message_id,
+                # The request body, and the reason `card_content` exists: this
+                # `content` is the card JSON as a STRING inside the body.
+                "--data", json.dumps({"content": content}, ensure_ascii=False),
+                "--format", "json"]
+        answer = run(argv, timeout=self.timeout)
+        echoed = (answer.get("data") or {}).get("message_id")
+        return {"state": "DELIVERED",
+                "why": ("通道接受了这次卡片更新"
+                        + ("" if echoed else
+                           "，但回答里没有回显 message id——更新已受理，回执按请求"
+                           "里指名的那一条记，而不是猜一条")),
+                "provider": {"id": "lark-cli", "transport": transport,
+                             "remote_id": echoed or message_id,
                              "identity": self.identity,
                              "recipient": self.recipient}}
 
