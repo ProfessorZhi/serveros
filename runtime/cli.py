@@ -8159,10 +8159,22 @@ def cmd_work_checkpoint(args) -> int:
     something the fabric cannot see is a wait that would have to be answered by
     hand.
 
-    THE RECEIVER IS NOT A FIELD, deliberately. A record that could name its own
-    receiver would be a record that can claim a background run, and this release
-    has none installed. What the reader says about that is
-    `runtime/continuation.continuation_state`'s answer, not this verb's.
+    THE RECEIVER IS NOT A FIELD, AND IT IS STILL MEASURED HERE. A record that
+    could name its own receiver would be a record that can claim a background
+    run, so `continuation_state` takes the list as an ARGUMENT — but an argument
+    still has to be filled from a reading, and this verb was not reading.
+    `RECEIVERS` is filled by `runtime/wake.fill_registry`, which `work wake` and
+    `work continuations` call; this one did not, so it answered
+    `AWAITING_CONTINUATION` and printed the product's unwired literal — «no
+    continuation receiver is installed on this node, so nothing will wake it» —
+    on a node whose routine is armed and running.
+
+    THE READER THAT FOUND IT IS THE ONE THAT MATTERS. This verb is written for a
+    Parent, and the Parent it was found on had just been STARTED BY that routine:
+    the process the receiver wakes is the one reader guaranteed to be holding a
+    wrong answer, because it is the one running on the node where the receiver is
+    installed. The two calls below are the same measurement the other two
+    surfaces make, so all three answer one question from one reading.
 
     AND IT SAYS WHAT THIS WRITE HAS JUST TAKEN OVER. A Parent writing at a higher
     epoch is a new owner: the store supersedes the record it replaced in the same
@@ -8177,6 +8189,10 @@ def cmd_work_checkpoint(args) -> int:
     the process that runs it is expected to exit.
     """
     continuation = _continuation_module()
+    # Filled before the state below is read, from the node's own unit directory.
+    # See the docstring: without this the answer is the module's import-time
+    # empty tuple, which is a measurement of nothing and reads as «unwired».
+    _wake_module().fill_registry(continuation, unit_dir=args.unit_dir)
     store_mod, control = _control_store()
     try:
         admissions = control.admissions()
@@ -8207,7 +8223,8 @@ def cmd_work_checkpoint(args) -> int:
         sys.stderr.write(f"serverosctl: {exc}. Nothing was written\n")
         return EXIT_FAULT
 
-    state = continuation.continuation_state(stored)
+    state = continuation.continuation_state(stored,
+                                            receivers_seen=continuation.receivers())
     # The wait is evaluated HERE, at the moment it is written, and not only when
     # somebody reads it later. A Parent that checkpoints on a child whose result
     # has already arrived has waited for nothing, and saying so now is cheaper
@@ -8552,13 +8569,18 @@ def cmd_work_continuations(args) -> int:
     child, two readings, and the one that says who owes it now is the new one's.
     """
     continuation = _continuation_module()
-    # The registry is FILLED FROM WHAT IS INSTALLED before it is read, and this is
-    # one of the two places that does it (`work wake` is the other). Reading
-    # `receivers()` without filling it would answer from the module's import-time
+    # The registry is FILLED FROM WHAT IS INSTALLED before it is read. Reading
+    # `receivers()` without filling it answers from the module's import-time
     # value, which is the empty tuple — a measurement of nothing in particular,
-    # and one that would keep saying «nothing will wake it» on a node where the
-    # timer is armed.
-    _wake_module().fill_registry(continuation)
+    # and one that keeps saying «nothing will wake it» on a node where the timer
+    # is armed.
+    #
+    # This comment used to name the places that did it — «this one and `work
+    # wake`» — and `work checkpoint`, the reader most likely to be a Parent that
+    # the routine itself started, was not among them. A list of callers is the
+    # thing that goes stale; the reading is what has to be shared, so every verb
+    # that answers this question now measures it here.
+    _wake_module().fill_registry(continuation, unit_dir=args.unit_dir)
     store_mod, control = _control_store()
     try:
         held = control.checkpoints()
@@ -11450,6 +11472,10 @@ def build_parser() -> argparse.ArgumentParser:
                                help="a write scope this Parent holds. Repeatable")
     wk_checkpoint.add_argument("--at", default="",
                                help="the write clock (default: now)")
+    wk_checkpoint.add_argument("--unit-dir", type=Path, default=None,
+                               help="where to look for the installed units when "
+                                    "reporting whether a receiver is equipped "
+                                    "(default: the user's systemd unit directory)")
     wk_checkpoint.set_defaults(func=cmd_work_checkpoint)
 
     wk_continuations = work_sub.add_parser(
@@ -11461,6 +11487,11 @@ def build_parser() -> argparse.ArgumentParser:
     wk_continuations.add_argument("--now", default="",
                                   help="the instant to read a window against "
                                        "(default: now)")
+    wk_continuations.add_argument("--unit-dir", type=Path, default=None,
+                                  help="where to look for the installed units "
+                                       "when reporting whether a receiver is "
+                                       "equipped (default: the user's systemd "
+                                       "unit directory)")
     wk_continuations.set_defaults(func=cmd_work_continuations)
 
     wk_wake = work_sub.add_parser(
