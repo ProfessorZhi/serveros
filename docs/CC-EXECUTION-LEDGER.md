@@ -7422,6 +7422,14 @@ promote 会盖掉它并再次漂移。
   的规则量到 **0**。这是这半条缺陷第一次有载体级的读数。
 - **没关闭**：`runtime-assets/hwz-server-os/current`（§9.50.4），它连同「重建还是退役」一起
   作为一条 proposal 留在 §9 表 `P12` 行里。
+- **一句必须附上的限定**：上面量到 0 的那一版是**已装的** `3.1.0-srv0003.20260927a`，而
+  `27a` **在量完之后就被取代了**。§J09（`b8f7d21`，02:13）改了 `runtime/daemon.py`、
+  `runtime/cli.py`、`scripts/runtime_truth.py` 与 `ARTIFACT.json` 的字节而**没有改任何文件名**，
+  于是 cachebuster 移到 `srv0004.20260927a`，promote 落点变成
+  `serveros-linux-work/current -> revisions/serveros-j09-identity-20260927@b8f7d21`，
+  而**已装缓存仍是 `27a`**（`installed_plugins.json` 未动），且盘上**还没有 `srv0004` 的候选
+  构建**。所以这句话的正确读法是：**「`27a` 这一版按规则量到 0」成立，而「这台机器上的载体
+  现在是干净的」只在下一次 `build→promote→install` 之前成立**——那一次的产物会有不同的字节。
 - **没关闭（与 §9.49.4 结尾同一份清单，本条一条未动）**：P7 唤醒半的两件前置（§9.38.9）、
   `WAIT_KINDS` 仍只有 `child`/`window`、`NodeControlTransport.send` 不包裹 connector 异常、
   `drift_sync.py` 没有调度器、约 40 处未守护的考古站点、`supersede_checkpoint` 的退役评估。
@@ -8016,3 +8024,43 @@ resident checkpoint，且 pinned 的还不是共享服务用的 `laya-multilingu
 没有说 21 个职责「已完成」。没有说「仅剩外部授权」——上表之外仍有**归属他人**（SRV-0011、
 SRV-0005）与**等生产者**（板投影、document-stewardship、会议 manifest）的缺口，它们既不是
 权限问题也不是本轮能自行闭合的问题。
+
+---
+
+### 12.14 §J09：运行中的节点现在能证明自己是谁（`b8f7d21` + `e5118e5`）
+
+**缺的是两处，缺法不同**：`ARTIFACT.json`/`RELEASE.json` 都不记 source commit（ability
+pin 只在 README 散文里），而 daemon 的 `node.status` 不报任何 revision。于是 `@50a86fa`
+按 `node_revision` 自己的 docstring 只是一个 promote 当时的**声称**。
+
+**三处落点**：`build.py` 的 `artifact_manifest` 增 `source` 块（commit/ref/**tree_clean**/
+未提交数/basis + ability pin）；daemon 启动经 `_HERE.parent` 读一次并冻结
+（**不调 git**），另加 `_pointer_state` 在**查询时**把身份与 `current` 当面对质
+（身份冻结因为「我是谁」不变，指针实时因为 promote 会移动它而什么都不重启）；
+`serverosctl status` 印出六行且 **DRIFT 退 1**。`tree_clean` 是承重字段——从脏检出构建
+**有** commit 而**没有**内容身份，取不到时如实记 basis，**不回退到分支名**。
+
+**一处取舍**：`source` **不进** `runtime_truth` 的逐字节比较。重算发生在**检查者**的检出
+（canonical），构建发生在 worktree，两者 HEAD 与未提交数都不同 ⇒ 当作内容比会把每个正确
+安装读成漂移。排除不等于不检查：`tree_hash` 覆盖整个 artifact，`node_revision` 用更强
+的问法核它。真机上 7 条漂移路径全是 `.claude-plugin/*` 一类，**没有 `ARTIFACT.json`**。
+
+**现场**：`current -> revisions/serveros-j09-identity-20260927@b8f7d21`，
+`release … · 3.1.0+srv0004.20260927a · tree 6deb6de3fa61`，
+`source b8f7d210161b (serveros-completion-20260925, clean) · ability-management@368c1be63a0d`，
+`pointer AGREEMENT`。用户 §3 列的八项逐项对上。restart 前的同一条命令报两行 `UNKNOWN`
+并说明理由——那不是故障，是旧 daemon 说不出自己是谁的如实回答。
+
+**测试 8 条**（J09 的 5 个用例 + 排除逻辑的两道相反判据 + CLI 3 条），
+**变异 3 处**（恒判 AGREEMENT / 回退分支名 / 清空 `ATTRIBUTION_ONLY`）全部被咬住。
+cachebuster 移到 `srv0004.20260927a`：四成员字节变了而文件名没变，同一版本串不能再
+描述新载荷。逐项证据见 `SRV-0011/RUN-0001/verification/R9-j09-runtime-identity.md`。
+
+**本片没做**：没有建第二版本数据库；没有让 daemon 去 Git 猜版本；没有把标签当证明。
+**遗留一条真实发现**：`runtime_truth` 的 node 行仍报 `SOURCE_RUNTIME_DRIFT`，因为
+canonical `src/serveros` 还没有这两个提交（重算得 `srv0003`，artifact 是 `srv0004`）。
+这是预期的，等提交进 canonical main 后自然转 OK；它属于 §6/§12 的收敛范围而不是本片。
+
+**一处并发事实**：本文件在 **02:14:12** 被另一个 actor 追加了 8 行（评论本片的
+§9.50.4 限定与 cachebuster 移动）。不是我的写入，位于同一 worktree，按政策**不碰、
+不丢、不代为提交**，仅此记明。
