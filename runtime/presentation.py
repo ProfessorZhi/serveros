@@ -1374,6 +1374,7 @@ def status_model(snapshot: dict, *, at: str, binding: dict | None = None,
         "env_health": env_health(sections, at=at, gaps=gaps),
         "sections": sections,
         "order": list(SECTIONS),
+        "schedule": _schedule(snapshot),
         "coverage": {
             # §3. The shared gateway and the personal container0 are different
             # things and the card says which of them each number came from.
@@ -1382,6 +1383,34 @@ def status_model(snapshot: dict, *, at: str, binding: dict | None = None,
             "note": ("共享网关与个人 container0 分开呈现；同一台机器上的两个"
                      "对象，不是同一件事"),
         },
+    }
+
+
+def _schedule(snapshot: dict) -> dict:
+    """Which day this card belongs to, and why it was allowed to exist now.
+
+    The snapshot carries this block when `card_source.snapshot` computed it from
+    an instance's calendar declaration. When it does not — a fixture written
+    before this block existed, or a caller that gathered without reading the
+    calendar at all — the answer is UNKNOWN and NOT "a workday", so the card
+    prints the same `calendar=UNKNOWN` a node with no imported calendar prints.
+    Two different causes, one honest sentence each: the alternative is a card
+    that silently implies a rhythm nobody verified, which is the thing
+    `docs/MONITORING-SCOPE-RECOVERY-CARDS.md` §9 forbids in the words «不冒充
+    Mon–Fri 官方工作日».
+    """
+    payload = snapshot.get("schedule")
+    if isinstance(payload, dict) and payload.get("says"):
+        return payload
+    return {
+        "kind": UNKNOWN,
+        "calendar": "UNREAD",
+        "day_ref": None,
+        "in_window": None,
+        "route": "NO_ROUTINE_BROADCAST",
+        "reason": "CALENDAR_UNKNOWN",
+        "says": ("本次采集没有读工作日历，因此不判断今天是不是工作日、也不给出"
+                 "播报窗口（calendar=UNKNOWN）"),
     }
 
 

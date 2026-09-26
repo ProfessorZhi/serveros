@@ -734,6 +734,34 @@ class RendererRefusesTests(unittest.TestCase):
                                  ["card", "html", "json", "model"])
 
 
+#: A synthetic year, for the reason `tests/test_business_calendar.py` gives at
+#: length: an official calendar copied into this tree would be a copy nobody
+#: re-verifies, and this fixture's own Saturday-as-workday is what makes it
+#: unmistakable for one.
+SYNTHETIC_CALENDAR = {
+    "schema": "serveros/business-calendar.v1",
+    "jurisdiction": "CN-Mainland",
+    "timezone": "Asia/Shanghai",
+    "source": {"document_id": "synthetic-test-notice-2031",
+               "revision": "synthetic-rev-1"},
+    "years": {"2031": {"workdays": ["2031-06-07"],
+                       "non_working_days": ["2031-06-09"]}},
+    "imported_at": "2030-12-01T00:00:00+08:00",
+    "verified_at": "2030-12-01T00:00:00+08:00",
+}
+
+
+def calendar_reading(document=None, *, state="ABSENT", reason="未导入",
+                     path="/synthetic/business-calendar.yaml"):
+    """A reading in the shape `card_source.load_calendar` returns."""
+    if document is None:
+        return {"state": state, "declaration": None, "path": path,
+                "reason": reason, "detail": "" if state == "ABSENT" else "理由"}
+    return {"state": "READ",
+            "declaration": source.business_calendar.declaration(document),
+            "path": path, "reason": "", "detail": ""}
+
+
 class StatusSourceTests(unittest.TestCase):
     """The producer, exercised against a stub so that the card's ability to be
     fed does not depend on the host being up."""
@@ -921,6 +949,93 @@ class StatusSourceTests(unittest.TestCase):
         designed answer, and the module has no fallback to reach for."""
         self.assertIsNone(source.load_binding("/nonexistent/path/nope.yaml"))
         self.assertFalse(hasattr(source, "guess_gateway"))
+
+
+    # -- the schedule
+
+    def _scheduled(self, *, at="2031-06-10T09:30:00+08:00", reading=None, **kwargs):
+        snap = source.snapshot(self._gather(**kwargs), at=at,
+                               node_label="device:stub",
+                               calendar=reading if reading is not None
+                               else calendar_reading(SYNTHETIC_CALENDAR))
+        return snap, presentation.status_model(snap, at=at)
+
+    def test_a_reading_inside_the_window_reaches_the_rendered_card(self):
+        snap, model = self._scheduled()
+        self.assertEqual(snap["schedule"]["route"], "ROUTINE_UPDATE")
+        self.assertEqual(snap["schedule"]["tick"], 2)
+        line = [text for text in _markdown(cards.status_card(model))
+                if text.startswith("**播报日程**")]
+        self.assertEqual(len(line), 1, "the schedule line is not on the card")
+        self.assertIn("2031-06-10", line[0])
+        self.assertIn("08:00–20:00", line[0])
+        self.assertIn("2/13", line[0])
+
+    def test_the_day_identity_is_the_one_a_dedupe_would_use(self):
+        snap, _ = self._scheduled()
+        self.assertEqual(snap["schedule"]["day_ref"],
+                         f"CN-Mainland/2031-06-10")
+
+    def test_a_second_tick_of_the_same_day_is_the_same_day_ref(self):
+        first, _ = self._scheduled(at="2031-06-10T09:30:00+08:00")
+        second, _ = self._scheduled(at="2031-06-10T11:00:00+08:00")
+        self.assertEqual(first["schedule"]["day_ref"], second["schedule"]["day_ref"])
+        self.assertNotEqual(first["schedule"]["tick"], second["schedule"]["tick"])
+
+    def test_a_rest_day_claims_no_routine_broadcast(self):
+        snap, model = self._scheduled(at="2031-06-09T12:00:00+08:00")
+        self.assertEqual(snap["schedule"]["reason"], "NON_WORKING_DAY")
+        self.assertFalse(snap["schedule"]["in_window"])
+        text = " ".join(_markdown(cards.status_card(model)))
+        self.assertIn("不创建例行状态卡", text)
+
+    def test_an_unimported_calendar_is_a_gap_and_not_a_workday(self):
+        """§9's third kind, and the reason the reading is carried rather than a
+        declaration: «not imported» and «did not validate» repair differently."""
+        for state, reason in (("ABSENT", "本年度官方日历尚未导入"),
+                              ("INVALID", "文件存在但无法解析")):
+            snap, model = self._scheduled(reading=calendar_reading(
+                None, state=state, reason=reason))
+            self.assertEqual(snap["schedule"]["kind"], "UNKNOWN")
+            self.assertIsNone(snap["schedule"]["in_window"],
+                              "an unknown calendar was answered as «outside the "
+                              "window», which is a decision it did not make")
+            self.assertEqual(snap["schedule"]["route"], "NO_ROUTINE_BROADCAST")
+            self.assertEqual(len(snap["gaps"]), 1)
+            self.assertIn("business_calendar", snap["gaps"][0])
+            self.assertIn(reason, snap["gaps"][0])
+            text = " ".join(_markdown(cards.status_card(model)))
+            self.assertIn("calendar=UNKNOWN", text, state)
+            self.assertIn("观察与记录照常", text, state)
+            self.assertNotIn("在常规播报窗口", text, state)
+
+    def test_a_caller_that_supplies_no_reading_gets_no_schedule_and_no_gap(self):
+        """The shaper opens no file of its own: a snapshot made without a
+        reading must not depend on the machine it was made on."""
+        snap = source.snapshot(self._gather(), at="2031-06-10T09:30:00+08:00")
+        self.assertNotIn("schedule", snap)
+        self.assertEqual(snap["gaps"], [])
+        model = presentation.status_model(snap, at="2031-06-10T09:30:00+08:00")
+        text = " ".join(_markdown(cards.status_card(model)))
+        self.assertIn("calendar=UNKNOWN", text)
+        self.assertIn("没有读工作日历", text)
+
+    def test_the_reading_chooses_which_file_and_the_default_is_the_instance_one(self):
+        self.assertTrue(str(source.DEFAULT_CALENDAR_PATH).endswith(
+            ".serveros/business-calendar.yaml"))
+        self.assertIs(source.DEFAULT_CALENDAR_PATH,
+                      source.business_calendar.DEFAULT_PATH,
+                      "the path was written down a second time and can now drift")
+        reading = source.load_calendar("/nonexistent/path/nope.yaml")
+        self.assertEqual(reading["state"], "ABSENT")
+        self.assertEqual(reading["path"], "/nonexistent/path/nope.yaml")
+
+    def test_the_window_bounds_are_the_designs_and_not_a_local_choice(self):
+        snap, _ = self._scheduled()
+        self.assertEqual(snap["schedule"]["window"],
+                         [source.business_calendar.WINDOW_FIRST_HOUR,
+                          source.business_calendar.WINDOW_LAST_HOUR])
+        self.assertEqual(snap["schedule"]["ticks_per_workday"], 13)
 
 
 if __name__ == "__main__":
