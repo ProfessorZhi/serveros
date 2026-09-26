@@ -184,6 +184,25 @@ class WhatWasSentIsRecorded(Fixture):
         with self.assertRaises(card_delivery.CardDeliveryError):
             self.record(state="PROBABLY")
 
+    def test_the_receipt_keeps_the_message_the_send_produced(self):
+        """Without it the identity is dropped at the ledger, and the only way to
+        update that card afterwards is a second message — V28's «只 patch 一张»
+        is unenforceable from the card alone."""
+        out = self.record(remote_id="om_recorded")
+        self.assertEqual(out["entry"]["remote_id"], "om_recorded")
+        self.assertEqual(self.ledger.last_delivered("status")["remote_id"],
+                         "om_recorded")
+
+    def test_a_send_with_no_message_id_keeps_the_absence(self):
+        """The transport reports this case rather than refusing it, so the
+        ledger has to be able to hold it — and a receipt that filled the gap
+        with a guess would point a later patch at a message nobody can name."""
+        out = self.record(remote_id=None)
+        self.assertIsNone(out["entry"]["remote_id"])
+        self.assertIsNone(self.ledger.last_delivered("status")["remote_id"])
+        self.assertIn("remote_id", json.loads(self.path.read_text(encoding="utf-8"))
+                      ["entries"][-1])
+
     def test_the_ledger_keeps_the_kinds_apart(self):
         self.record()
         self.record(kind="recovery")
@@ -220,6 +239,155 @@ class WhatWasSentIsRecorded(Fixture):
         window and quietly consume the escalations of the same hour."""
         self.assertNotEqual(card_delivery.ledger_path(STATE),
                             alert_digest.cursor_path(STATE))
+
+
+# ---------------------------------------------------------------------------
+# the id the receipt keeps is a message id or it is nothing
+# ---------------------------------------------------------------------------
+
+
+class WhatCountsAsAMessageId(unittest.TestCase):
+    """The receipt is the only place the send's message id is kept, so it is
+    also the only place that can catch a value which is not one.
+
+    The failure this prevents is quiet: a receipt filed against a conversation,
+    or against a hand-typed value with a space in it, reads exactly like a
+    receipt filed against a message — and the next update of that card then
+    aims at something nobody can name.
+    """
+
+    def test_an_absent_id_is_none_and_not_an_empty_string(self):
+        """`''` would be a claim about a message; `None` is the absence of one.
+        The ledger has to be able to hold the absence, because the transport
+        reports "no id in the answer" rather than refusing the send."""
+        for absent in (None, "", "   "):
+            self.assertIsNone(card_delivery.check_remote_id(absent), repr(absent))
+
+    def test_a_value_that_is_not_text_is_refused_rather_than_stringified(self):
+        """`str(b"om_x")` is `"b'om_x'"`: an id-shaped value naming nothing.
+        This is how a missing `.decode()` upstream would reach the ledger."""
+        for not_text in (b"om_x", 7, ["om_x"]):
+            with self.assertRaises(card_delivery.CardDeliveryError) as caught:
+                card_delivery.check_remote_id(not_text)
+            self.assertIn("arrives as text", str(caught.exception))
+
+    def test_a_message_id_comes_back_as_one_token(self):
+        self.assertEqual(card_delivery.check_remote_id("om_abc123"), "om_abc123")
+        self.assertEqual(card_delivery.check_remote_id("  om_abc123  "),
+                         "om_abc123")
+
+    def test_an_identity_that_is_not_a_message_is_refused_without_echoing_it(self):
+        for value in ("oc_a_conversation", "ou_a_person", "on_a_union"):
+            with self.assertRaises(card_delivery.CardDeliveryError) as caught:
+                card_delivery.check_remote_id(value)
+            text = str(caught.exception)
+            self.assertNotIn(value.split("_", 1)[1], text,
+                             "the refusal copies the identifier into a log")
+
+    def test_a_value_with_whitespace_inside_it_is_refused(self):
+        """It cannot address a message, and it is exactly what a hand-run
+        command produces when a shell variable is quoted empty."""
+        with self.assertRaises(card_delivery.CardDeliveryError) as caught:
+            card_delivery.check_remote_id("om_a om_b")
+        self.assertIn("one token", str(caught.exception))
+
+    def test_the_record_path_applies_the_rule_and_not_only_the_helper(self):
+        """A rule the row writer does not call is a rule the daemon can walk
+        around — and the daemon is the only writer over the socket."""
+        with tempfile.TemporaryDirectory() as tmp:
+            ledger = card_delivery.CardLedger(
+                Path(tmp) / "cards" / "delivery.json")
+            with self.assertRaises(card_delivery.CardDeliveryError):
+                ledger.record("status", at=AT, state="DELIVERED",
+                              version="status@abc", remote_id="oc_a_room")
+            self.assertEqual(ledger.entries(), [])
+
+
+# ---------------------------------------------------------------------------
+# the hop the id travels: the command that files the receipt
+# ---------------------------------------------------------------------------
+
+
+class TheCommandCarriesTheMessageToTheLedger(unittest.TestCase):
+    """`serverosctl card record-delivery` is the ONE surface that writes a
+    receipt, and the id reaches the ledger through a daemon request.
+
+    The fake here is a daemon; the parser, the envelope reading and the request
+    the command builds are the ones that ship. What it exists to catch is a
+    keyword dropped between the flag and the params — which would leave every
+    receipt looking complete and every later update unable to find its message.
+    """
+
+    def setUp(self):
+        self.dir = Path(tempfile.mkdtemp(prefix="card-receipt-cli-"))
+        self.addCleanup(__import__("shutil").rmtree, self.dir, ignore_errors=True)
+        cli = _load("serveros_runtime_cli_for_receipts",
+                    ROOT / "runtime" / "cli.py")
+        self.cli = cli
+        self.sent = []
+        self._real = cli.ask_daemon
+
+        def answer(method, params=None, **kw):
+            self.sent.append((method, params))
+            return {"recorded": True,
+                    "entry": {"kind": params.get("kind"), "state": params.get("state"),
+                              "version": params.get("frozen", {}).get("version"),
+                              "payload_bytes": 10, "payload_hash": "a" * 64,
+                              "remote_id": (params.get("remote_id") or "") or None,
+                              "delivered": True}}
+
+        cli.ask_daemon = answer
+        self.addCleanup(lambda: setattr(cli, "ask_daemon", self._real))
+        self.card = card()
+        self.frozen = card_delivery.freeze_card("status", self.card, at=AT)
+        self.envelope = self.dir / "envelope.json"
+        self.envelope.write_text(
+            json.dumps({"card": self.card, "frozen": self.frozen}),
+            encoding="utf-8")
+
+    def run_cli(self, *argv):
+        import io
+        from contextlib import redirect_stdout, redirect_stderr
+        out, err = io.StringIO(), io.StringIO()
+        with redirect_stdout(out), redirect_stderr(err):
+            code = self.cli.main(list(argv))
+        return code, out.getvalue() + err.getvalue()
+
+    def test_the_message_id_reaches_the_daemon_request(self):
+        code, text = self.run_cli(
+            "card", "record-delivery", "--kind", "status", "--state", "DELIVERED",
+            "--card-file", str(self.envelope), "--message-id", "om_cli_receipt")
+        self.assertEqual(code, 0, text)
+        method, params = self.sent[-1]
+        self.assertEqual(method, "card.record-delivery")
+        self.assertEqual(params["remote_id"], "om_cli_receipt")
+
+    def test_without_the_flag_the_request_says_there_is_no_id(self):
+        """Not `None` invented at the flag and not a placeholder: the absence is
+        passed on as the empty value the daemon turns into «there was none»."""
+        code, text = self.run_cli(
+            "card", "record-delivery", "--kind", "status", "--state", "DELIVERED",
+            "--card-file", str(self.envelope))
+        self.assertEqual(code, 0, text)
+        _method, params = self.sent[-1]
+        self.assertIn("remote_id", params)
+        self.assertFalse(params["remote_id"])
+
+    def test_the_command_prints_which_message_it_filed_the_receipt_against(self):
+        code, text = self.run_cli(
+            "card", "record-delivery", "--kind", "status", "--state", "DELIVERED",
+            "--card-file", str(self.envelope), "--message-id", "om_cli_receipt")
+        self.assertEqual(code, 0, text)
+        self.assertIn("om_cli_receipt", text)
+
+    def test_a_receipt_with_no_message_says_so_rather_than_leaving_a_gap(self):
+        """The line has to be readable: a blank column and «this one cannot be
+        updated in place» are different facts about the same send."""
+        code, text = self.run_cli(
+            "card", "record-delivery", "--kind", "status", "--state", "DELIVERED",
+            "--card-file", str(self.envelope))
+        self.assertEqual(code, 0, text)
+        self.assertIn("改不了这一条", text)
 
 
 # ---------------------------------------------------------------------------

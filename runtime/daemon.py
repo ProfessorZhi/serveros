@@ -2099,6 +2099,14 @@ class Daemon:
             payload_bytes=frozen.get("payload_bytes"),
             idempotency_key=(params.get("idempotency_key")
                              or frozen.get("idempotency_key")),
+            # The message this send produced, when the sender has it. Kept
+            # rather than dropped: it is what lets a later update of the same
+            # card be a patch of that message instead of a second one, and a
+            # receipt that loses it is a receipt for a send nobody can reach.
+            # Handed on as it arrived: what a message id IS is one rule, and it
+            # lives in `card_delivery.check_remote_id`, on the ledger's side of
+            # this call rather than here.
+            remote_id=params.get("remote_id"),
             reason=params.get("reason"))
 
     def _r_card_deliveries(self, params) -> dict:

@@ -62,6 +62,10 @@ presentation = _load("serveros_runtime_presentation",
                      ROOT / "runtime" / "presentation.py")
 source = _load("serveros_runtime_card_source", ROOT / "runtime" / "card_source.py")
 cli = _load("serveros_runtime_cli_for_cards", ROOT / "runtime" / "cli.py")
+#: The same name `runtime/card_day.py` loads it under, so one test below can
+#: assert that the window it reads is the window this file pins.
+transport = _load("serveros_runtime_message_transport",
+                  ROOT / "runtime" / "message_transport.py")
 
 YEAR = 2031
 OFFICIAL_WORK_SATURDAY = "2031-06-07"   # a workday although it is a Saturday
@@ -969,6 +973,330 @@ COLLECTED = {
 }
 
 
+class TheCardRemembersWhichMessageCarriesIt(unittest.TestCase):
+    """«只 patch 一张» has a chat-message half, and this is that half.
+
+    V28 says one Status Card per workday. A card is a MESSAGE, so the patches at
+    09:00 and 10:00 have to land on the message the 08:00 creation went out in —
+    and a system that never wrote down which message that was can only send a
+    second one. The verdict is therefore not «patch if you can, else send»: it
+    answers PATCH_MESSAGE only when an identity is genuinely in hand and still
+    inside the service's window, and otherwise says NEW_MESSAGE with the reason
+    it could not be a patch, because a missing identity and an expired one are
+    different findings with different fixes.
+    """
+
+    def setUp(self):
+        self.dir = Path(tempfile.mkdtemp(prefix="card-day-message-"))
+        self.addCleanup(shutil.rmtree, self.dir, ignore_errors=True)
+        self.store = card_day.DayStore(self.dir / "day.json")
+
+    # -- the module reads the transport's number rather than copying it ------
+
+    def test_the_module_it_reads_is_the_same_copy_the_cli_loads(self):
+        """Loaded under the CLI's own module name: two copies would make a test
+        that pinned the window in one of them a test about a document nobody
+        reads."""
+        self.assertIs(card_day._transport(), transport)
+
+    def test_the_window_is_the_transports_own_number_and_not_a_copy(self):
+        self.assertEqual(card_day.update_window_days(),
+                         transport.CARD_UPDATE_WINDOW_DAYS)
+
+    def test_the_verdict_reads_that_number_rather_than_carrying_a_copy_of_it(self):
+        """「这个函数返回传输层那个数」与「判决真的用了它」是两句话。
+
+        一个写在 `message_verdict` 里的字面量 14 会让上面每一条都继续绿，而服务改
+        窗口的那一天没有人会知道——所以这里把那个数搬走，答案必须跟着搬：同一份
+        文档、同一个时刻，窗口 30 天时这一条还能改，3 天时它已经改不动了。
+        """
+        self.advance_to(at(PLAIN_WORKDAY, 8))
+        self.store.announce(remote_id="om_day_one", at="2031-05-27T09:00:00+08:00")
+        self.addCleanup(setattr, transport, "CARD_UPDATE_WINDOW_DAYS",
+                        transport.CARD_UPDATE_WINDOW_DAYS)
+        transport.CARD_UPDATE_WINDOW_DAYS = 30
+        wider = self.verdict_at(at(PLAIN_WORKDAY, 9))
+        transport.CARD_UPDATE_WINDOW_DAYS = 3
+        narrower = self.verdict_at(at(PLAIN_WORKDAY, 9))
+        self.assertEqual(wider["window_days"], 30)
+        self.assertEqual(narrower["window_days"], 3)
+        self.assertEqual(wider["action"], card_day.PATCH_MESSAGE)
+        self.assertEqual(narrower["action"], card_day.NEW_MESSAGE)
+        self.assertEqual(narrower["reason"], card_day.IDENTITY_EXPIRED)
+
+    def test_the_module_borrows_a_declaration_and_not_a_call(self):
+        """What it borrows is a constant. Nothing in this file sends anything,
+        and the transport is loaded for one number rather than for its verbs."""
+        source_text = (ROOT / "runtime" / "card_day.py").read_text(encoding="utf-8")
+        for verb in ("+messages-send", "messages patch", "document_transport"):
+            self.assertNotIn(verb, source_text, verb)
+
+    # -- the three card answers, and the message answer each one gets --------
+
+    def test_a_new_card_has_no_message_so_its_send_is_a_new_message(self):
+        instant = at(PLAIN_WORKDAY, 8)
+        action = card_day.decide(self.store.read(), schedule=schedule(instant),
+                                 at=instant)
+        self.assertEqual(action["action"], card_day.CREATE)
+        self.assertEqual(action["message"]["action"], card_day.NEW_MESSAGE)
+        self.assertEqual(action["message"]["reason"], card_day.NEVER_SENT)
+        self.assertIsNone(action["message"]["remote_id"])
+
+    def test_the_created_document_carries_no_message_at_all(self):
+        """Absent rather than empty: a document that recorded `message: {}` would
+        have to be read as «there is one and we lost it»."""
+        instant = at(PLAIN_WORKDAY, 8)
+        result = self.store.advance(schedule=schedule(instant), at=instant,
+                                    model=model())
+        self.assertEqual(result["decision"]["message"]["reason"],
+                         card_day.NEVER_SENT)
+        self.assertIsNone(result["day"]["message"])
+        self.assertNotIn("message", result["written"])
+
+    def test_a_tick_that_does_not_touch_the_card_has_no_message_to_answer(self):
+        instant = at(OFFICIAL_REST_MONDAY, 8)
+        action = card_day.decide(self.store.read(), schedule=schedule(instant),
+                                 at=instant)
+        self.assertEqual(action["action"], card_day.SKIP)
+        self.assertEqual(action["message"]["action"], card_day.NO_MESSAGE)
+        self.assertEqual(action["message"]["reason"], card_day.NOT_ROUTINE)
+
+    def test_a_recorded_message_makes_the_next_tick_a_patch_of_it(self):
+        self.advance_to(at(PLAIN_WORKDAY, 8))
+        self.store.announce(remote_id="om_day_one", at=at(PLAIN_WORKDAY, 8, 0, 5))
+        instant = at(PLAIN_WORKDAY, 9)
+        action = card_day.decide(self.store.read(), schedule=schedule(instant),
+                                 at=instant)
+        self.assertEqual(action["action"], card_day.PATCH)
+        self.assertEqual(action["message"]["action"], card_day.PATCH_MESSAGE)
+        self.assertEqual(action["message"]["reason"], card_day.IN_HAND)
+        self.assertEqual(action["message"]["remote_id"], "om_day_one")
+
+    def test_a_card_with_no_recorded_message_does_not_claim_it_can_patch(self):
+        """The one this whole section exists for. Without a recorded id there is
+        nothing to patch — and the sentence must not settle whether the card ever
+        went out, because this document cannot know: if it did, sending now makes
+        a second card, and if it did not, sending now is exactly right."""
+        self.advance_to(at(PLAIN_WORKDAY, 8))
+        instant = at(PLAIN_WORKDAY, 9)
+        action = card_day.decide(self.store.read(), schedule=schedule(instant),
+                                 at=instant)
+        self.assertEqual(action["message"]["action"], card_day.NEW_MESSAGE)
+        self.assertEqual(action["message"]["reason"], card_day.IDENTITY_MISSING)
+        self.assertIn("只有投递台账知道", action["message"]["says"])
+        self.assertIn("card deliveries", action["message"]["says"])
+
+    # -- the service's window, at the boundary and past it -------------------
+
+    def test_a_message_still_inside_the_window_is_patched(self):
+        self.advance_to(at(PLAIN_WORKDAY, 8))
+        self.store.announce(remote_id="om_day_one", at=at("2031-05-27", 9))
+        # 第 14 天整仍在窗口内：边界是「超过」而不是「达到」
+        self.assertEqual(self.verdict_at(at(PLAIN_WORKDAY, 9))["action"],
+                         card_day.PATCH_MESSAGE)
+
+    def test_a_message_past_the_window_is_not_patched(self):
+        self.advance_to(at(PLAIN_WORKDAY, 8))
+        self.store.announce(remote_id="om_day_one", at=at("2031-05-20", 9))
+        verdict = self.verdict_at(at(PLAIN_WORKDAY, 9))
+        self.assertEqual(verdict["action"], card_day.NEW_MESSAGE)
+        self.assertEqual(verdict["reason"], card_day.IDENTITY_EXPIRED)
+        self.assertEqual(verdict["remote_id"], "om_day_one")
+        self.assertEqual(verdict["window_days"], transport.CARD_UPDATE_WINDOW_DAYS)
+
+    def test_a_send_time_that_cannot_be_placed_on_a_timeline_is_not_patched(self):
+        """The transport's own rule, one level up: an unanswerable window is not a
+        fresh one, so the age is refused rather than assumed."""
+        self.advance_to(at(PLAIN_WORKDAY, 8))
+        self.store.announce(remote_id="om_day_one", at="上周二")
+        verdict = self.verdict_at(at(PLAIN_WORKDAY, 9))
+        self.assertEqual(verdict["action"], card_day.NEW_MESSAGE)
+        self.assertEqual(verdict["reason"], card_day.IDENTITY_UNDATED)
+
+    def test_a_naive_send_time_is_not_read_as_utc(self):
+        self.advance_to(at(PLAIN_WORKDAY, 8))
+        self.store.announce(remote_id="om_day_one", at="2031-06-10T08:00:05")
+        self.assertEqual(self.verdict_at(at(PLAIN_WORKDAY, 9))["reason"],
+                         card_day.IDENTITY_UNDATED)
+
+    # -- what an announcement did to the binding -----------------------------
+
+    def test_the_first_announcement_is_not_reported_as_a_rebind(self):
+        """`changed: true` would read as «somebody re-sent the card» when nobody
+        did, which is why this is three words rather than a boolean."""
+        self.advance_to(at(PLAIN_WORKDAY, 8))
+        first = self.store.announce(remote_id="om_a", at=at(PLAIN_WORKDAY, 8, 0, 5))
+        self.assertEqual(first["change"], card_day.BOUND)
+        again = self.store.announce(remote_id="om_a", at=at(PLAIN_WORKDAY, 19))
+        self.assertEqual(again["change"], card_day.UNCHANGED)
+        other = self.store.announce(remote_id="om_b", at=at(PLAIN_WORKDAY, 19, 1))
+        self.assertEqual(other["change"], card_day.REBOUND)
+        self.assertEqual(other["message"]["remote_id"], "om_b")
+
+    def test_repeating_an_announcement_does_not_move_the_send_time_forward(self):
+        """The window is measured from when the message was SENT, not from when
+        somebody last recorded it. If a repeat re-stamped the binding, a message
+        too old to patch would become patchable by re-running the command."""
+        self.advance_to(at(PLAIN_WORKDAY, 8))
+        self.store.announce(remote_id="om_a", at=at("2031-05-20", 9))
+        self.store.announce(remote_id="om_a", at=at(PLAIN_WORKDAY, 9))
+        self.assertEqual(self.verdict_at(at(PLAIN_WORKDAY, 9))["reason"],
+                         card_day.IDENTITY_EXPIRED)
+
+    def test_an_announcement_with_no_message_is_refused(self):
+        self.advance_to(at(PLAIN_WORKDAY, 8))
+        before = self.store.path.read_bytes()
+        with self.assertRaises(card_day.CardDayError) as caught:
+            self.store.announce(remote_id="", at=at(PLAIN_WORKDAY, 8, 0, 5))
+        self.assertIn("identity", str(caught.exception))
+        self.assertEqual(self.store.path.read_bytes(), before)
+
+    def test_a_chat_id_is_refused_and_the_value_is_not_echoed(self):
+        """`oc_` and `om_` are both opaque ids and the pair is easy to swap, so
+        the refusal names which is which — without copying the value into a log,
+        which is what the identifier rule is about."""
+        self.advance_to(at(PLAIN_WORKDAY, 8))
+        with self.assertRaises(card_day.CardDayError) as caught:
+            self.store.announce(remote_id="oc_not_a_message",
+                                at=at(PLAIN_WORKDAY, 8, 0, 5))
+        text = str(caught.exception)
+        self.assertIn("oc_", text)
+        self.assertNotIn("not_a_message", text)
+
+    def test_a_value_that_cannot_be_a_message_id_is_refused(self):
+        """`om_a om_b` is what a hand-run command produces when a shell variable
+        was quoted empty. Stored, it would make the next tick answer
+        PATCH_MESSAGE about a message nothing can address — and a binding is
+        the one thing a later update is aimed by."""
+        self.advance_to(at(PLAIN_WORKDAY, 8))
+        before = self.store.path.read_bytes()
+        for value in ("om_a om_b", "   "):
+            with self.assertRaises(card_day.CardDayError):
+                self.store.announce(remote_id=value, at=at(PLAIN_WORKDAY, 8, 0, 5))
+        self.assertEqual(self.store.path.read_bytes(), before)
+        # Whitespace alone is not a binding to be corrected; it is the absence
+        # of one, and the absence is what the next tick then reports.
+        self.assertEqual(self.verdict_at(at(PLAIN_WORKDAY, 9))["reason"],
+                         card_day.IDENTITY_MISSING)
+
+    def test_a_padded_id_is_the_same_id(self):
+        """Padding is not a different message, and treating it as one would
+        make a re-announcement look like a rebind."""
+        self.advance_to(at(PLAIN_WORKDAY, 8))
+        self.store.announce(remote_id="om_padded",
+                            at=at(PLAIN_WORKDAY, 8, 0, 5))
+        again = self.store.announce(remote_id="  om_padded  ",
+                                    at=at(PLAIN_WORKDAY, 19))
+        self.assertEqual(again["change"], card_day.UNCHANGED)
+        self.assertEqual(again["message"]["at"], at(PLAIN_WORKDAY, 8, 0, 5))
+
+    def test_an_announcement_needs_the_instant_it_was_made(self):
+        self.advance_to(at(PLAIN_WORKDAY, 8))
+        with self.assertRaises(card_day.CardDayError) as caught:
+            self.store.announce(remote_id="om_a", at="")
+        self.assertIn("instant", str(caught.exception))
+
+    def test_a_message_with_no_card_to_carry_is_refused(self):
+        """A binding filed before the card exists would leave the card created
+        afterwards sitting beside a binding that already claims to carry it."""
+        with self.assertRaises(card_day.CardDayError) as caught:
+            self.store.announce(remote_id="om_a", at=at(PLAIN_WORKDAY, 8, 0, 5))
+        self.assertIn("no card", str(caught.exception))
+        self.assertFalse(self.store.path.exists())
+
+    # -- the next workday, and the document on disk --------------------------
+
+    def test_the_next_workday_starts_with_no_message_beside_its_previous(self):
+        """The two flips happen in one write: `previous` records the day that
+        closed, and the new day records no message, so its first tick is a NEW
+        message rather than a patch aimed at yesterday's card."""
+        self.advance_to(at(PLAIN_WORKDAY, 8))
+        self.store.announce(remote_id="om_yesterday", at=at(PLAIN_WORKDAY, 8, 0, 5))
+        instant = at(NEXT_WORKDAY, 8)
+        result = self.store.advance(schedule=schedule(instant), at=instant,
+                                    model=model())
+        self.assertEqual(result["decision"]["action"], card_day.CREATE)
+        self.assertEqual(result["decision"]["message"]["reason"],
+                         card_day.NEVER_SENT)
+        self.assertNotIn("message", result["written"])
+        self.assertEqual(result["written"]["day_ref"], f"CN-Mainland/{NEXT_WORKDAY}")
+        self.assertEqual(result["day"]["previous"]["day_ref"],
+                         f"CN-Mainland/{PLAIN_WORKDAY}")
+
+    def test_a_binding_that_names_no_message_is_refused_when_it_is_read_back(self):
+        """A hand-edited store is a document like any other, and this one would
+        let the next update believe it can patch a card while the only message it
+        could reach is whichever one it guessed."""
+        self.advance_to(at(PLAIN_WORKDAY, 8))
+        data = json.loads(self.store.path.read_text(encoding="utf-8"))
+        data["open"]["message"] = {"at": at(PLAIN_WORKDAY, 8, 0, 5)}
+        self.store.path.write_text(json.dumps(data, ensure_ascii=False),
+                                   encoding="utf-8")
+        with self.assertRaises(card_day.CardDayError) as caught:
+            card_day.DayStore(self.store.path)
+        self.assertIn("names no message", str(caught.exception))
+
+    def test_a_binding_with_no_send_time_is_refused_when_it_is_read_back(self):
+        self.advance_to(at(PLAIN_WORKDAY, 8))
+        data = json.loads(self.store.path.read_text(encoding="utf-8"))
+        data["open"]["message"] = {"remote_id": "om_a"}
+        self.store.path.write_text(json.dumps(data, ensure_ascii=False),
+                                   encoding="utf-8")
+        with self.assertRaises(card_day.CardDayError) as caught:
+            card_day.DayStore(self.store.path)
+        self.assertIn("unanswerable", str(caught.exception))
+
+    def test_the_reader_reports_a_nameless_binding_as_a_gap_and_not_a_crash(self):
+        """`card_source` reads the same document, and what it must do with a
+        store it cannot read is say so — a rendered card that raised here would
+        take the whole status card down with one bad field."""
+        self.advance_to(at(PLAIN_WORKDAY, 8))
+        data = json.loads(self.store.path.read_text(encoding="utf-8"))
+        data["open"]["message"] = {"at": at(PLAIN_WORKDAY, 8, 0, 5)}
+        self.store.path.write_text(json.dumps(data, ensure_ascii=False),
+                                   encoding="utf-8")
+        reading = source.load_day_store(self.store.path)
+        self.assertEqual(reading["state"], "INVALID")
+        snapshot = source.snapshot(COLLECTED, at=at(PLAIN_WORKDAY, 9),
+                                   calendar=source.load_calendar(None), day=reading)
+        self.assertIn("card_day_store", snapshot["coverage"]["reads_missing"])
+        self.assertNotIn("day", snapshot)
+
+    def test_every_message_answer_is_in_the_closed_vocabularies(self):
+        """Walked over the answers rather than asserted per case: a branch added
+        later that spelled its own action would leave `MESSAGE_ACTIONS` a comment
+        about the branches somebody remembered."""
+        self.advance_to(at(PLAIN_WORKDAY, 8))
+        instants = [at(OFFICIAL_REST_MONDAY, 8), at(PLAIN_WORKDAY, 7),
+                    at(PLAIN_WORKDAY, 9), at(PLAIN_WORKDAY, 21),
+                    at(NEXT_WORKDAY, 8)]
+        for instant in instants:
+            action = card_day.decide(self.store.read(),
+                                     schedule=schedule(instant), at=instant)
+            with self.subTest(instant=instant):
+                self.assertIn(action["message"]["action"], card_day.MESSAGE_ACTIONS)
+                self.assertIn(action["message"]["reason"], card_day.MESSAGE_REASONS)
+            self.store.advance(schedule=schedule(instant), at=instant,
+                               model=model())
+        no_calendar_action = card_day.decide(
+            self.store.read(), schedule=no_calendar(at(PLAIN_WORKDAY, 9)),
+            at=at(PLAIN_WORKDAY, 9))
+        self.assertIn(no_calendar_action["message"]["action"],
+                      card_day.MESSAGE_ACTIONS)
+        self.assertIn(no_calendar_action["message"]["reason"],
+                      card_day.MESSAGE_REASONS)
+
+    # -- helpers -------------------------------------------------------------
+
+    def advance_to(self, instant: str) -> dict:
+        return self.store.advance(schedule=schedule(instant), at=instant,
+                                  model=model())
+
+    def verdict_at(self, instant: str) -> dict:
+        return card_day.decide(self.store.read(), schedule=schedule(instant),
+                               at=instant)["message"]
+
+
 class TheTwoCommandsReadAndWriteDifferentThings(unittest.TestCase):
     """`card day` answers and `card day-advance` writes, and nothing else does.
 
@@ -1198,6 +1526,62 @@ class TheTwoCommandsReadAndWriteDifferentThings(unittest.TestCase):
             self.assertEqual(code, 0, text)
             self.assertIn("--day-store", str(text), verb)
             self.assertIn("--business-calendar", str(text), verb)
+
+    def test_the_announce_verb_records_the_message_the_card_went_out_in(self):
+        """The verb exists because the id does not exist until the card has been
+        sent, and until it is recorded the next tick can only be a second card.
+        So the test is the flip: BOUND first, then the reader's answer changes."""
+        _code, _payload = self.advance(at(PLAIN_WORKDAY, 8))
+        before = self.day(at(PLAIN_WORKDAY, 9))[1]
+        self.assertEqual(before["decision"]["message"]["reason"],
+                         card_day.IDENTITY_MISSING)
+        code, payload = self.run_cli(
+            "card", "day-announce", "--day-store", str(self.store),
+            "--message-id", "om_cli_one", "--at", at(PLAIN_WORKDAY, 8, 0, 5),
+            "--json")
+        self.assertEqual(code, 0)
+        self.assertEqual(payload["change"], card_day.BOUND)
+        self.assertEqual(payload["message"]["remote_id"], "om_cli_one")
+        after = self.day(at(PLAIN_WORKDAY, 9))[1]
+        self.assertEqual(after["decision"]["message"]["action"],
+                         card_day.PATCH_MESSAGE)
+        self.assertEqual(after["decision"]["message"]["remote_id"], "om_cli_one")
+        self.assertEqual(after["day"]["message"]["remote_id"], "om_cli_one")
+
+    def test_the_announce_verb_refuses_without_touching_the_document(self):
+        self.advance(at(PLAIN_WORKDAY, 8))
+        before = self.store.read_bytes()
+        code, text = self.run_cli(
+            "card", "day-announce", "--day-store", str(self.store),
+            "--message-id", "oc_a_chat_not_a_message",
+            "--at", at(PLAIN_WORKDAY, 9))
+        self.assertEqual(code, 1)
+        self.assertNotIn("a_chat_not_a_message", str(text))
+        self.assertEqual(self.store.read_bytes(), before)
+
+    def test_the_announce_verb_is_declared_with_the_id_it_requires(self):
+        code, text = self.run_cli("card", "day-announce", "--help")
+        self.assertEqual(code, 0, text)
+        self.assertIn("--message-id", str(text))
+        self.assertIn("--day-store", str(text))
+
+    def test_the_announce_verb_is_not_runnable_without_the_id(self):
+        """A flag that the help mentions and the parser does not require reads
+        as optional, and the run without it would be the one that records
+        nothing while appearing to have recorded the binding.
+
+        断言的是**退出码 2**，也就是 argparse 那层拒绝：不带这个旗标时，store 那层
+        也会拒绝（退出码 1），所以「非零」这一条读不出是谁拒绝的——而这两件事的修法
+        不同（补一个旗标 vs. 去查为什么没有消息 id）。
+        """
+        self.advance(at(PLAIN_WORKDAY, 8))
+        before = self.store.read_bytes()
+        code, text = self.run_cli("card", "day-announce",
+                                  "--day-store", str(self.store),
+                                  "--at", at(PLAIN_WORKDAY, 8, 0, 5))
+        self.assertEqual(code, 2, text)
+        self.assertIn("--message-id", str(text))
+        self.assertEqual(self.store.read_bytes(), before)
 
 
 def temp_store(case: unittest.TestCase) -> "card_day.DayStore":

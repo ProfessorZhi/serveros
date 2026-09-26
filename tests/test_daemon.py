@@ -45,6 +45,10 @@ registry_mod = _load("serveros_runtime_registry", "registry.py")
 health_mod = _load("serveros_runtime_health", "health.py")
 probes_mod = _load("serveros_runtime_probes", "probes.py")
 daemon_mod = _load("serveros_runtime_daemon", "daemon.py")
+# §3. The card receipt ledger, loaded under the same name `runtime/daemon.py`
+# loads it under — so what these tests read back is the ledger the daemon
+# actually writes to, and not a second instance of the same class.
+card_delivery_mod = _load("serveros_runtime_card_delivery", "card_delivery.py")
 # §27. Loaded so the unavailable-provider tests can drive the REAL inventory
 # over a host whose reads all fail, rather than a fake that models the failure
 # shapes — and therefore tests the fake.
@@ -2413,3 +2417,106 @@ def test_a_digest_composed_on_an_empty_register_is_quieter_not_louder(daemon_fac
     assert document["silent_resolutions"] == 0
     assert document["decision"]["send"] is False
     assert "changed" in document["decision"]["why"]
+
+
+# ---------------------------------------------------------------------------
+# §3/V28 · the receipt keeps the message the send produced
+# ---------------------------------------------------------------------------
+
+
+def _a_status_card():
+    """One rendered card, small enough to read. Every value is about nobody."""
+    return {
+        "schema": "2.0",
+        "config": {"wide_screen_mode": True},
+        "header": {"template": "grey",
+                   "title": {"tag": "plain_text", "content": "本机 · 资源播报"}},
+        "body": {"elements": [{"tag": "markdown", "content": "CPU 3.2%"}]},
+    }
+
+
+def _frozen_status(card):
+    return card_delivery_mod.freeze_card(
+        "status", card, at="2026-09-12T00:00:00+00:00")
+
+
+def test_a_delivery_keeps_the_message_the_sender_reported(daemon_factory):
+    """The message id does not exist until the card has been sent, so the
+    receipt is the only place it can be kept — and the daemon is the only
+    writer of the ledger.
+
+    A daemon that dropped this parameter would leave every receipt looking
+    complete while making «update that card in place» impossible to carry out,
+    which is the failure mode this whole slice exists to close.
+    """
+    daemon = daemon_factory()
+    card = _a_status_card()
+    answer = daemon.handle({
+        "method": "card.record-delivery",
+        "params": {"kind": "status", "state": "DELIVERED", "card": card,
+                   "frozen": _frozen_status(card),
+                   "remote_id": "om_from_the_transport"}})
+    assert answer["ok"] is True, answer
+    assert answer["result"]["entry"]["remote_id"] == "om_from_the_transport"
+    # Read back through the other RPC, because a value that is written into the
+    # answer without reaching the document is the same defect one hop later.
+    read_back = daemon.handle({"method": "card.deliveries",
+                               "params": {"kind": "status"}})["result"]
+    assert read_back["last_delivered"]["remote_id"] == "om_from_the_transport"
+
+
+def test_a_send_the_transport_could_not_name_keeps_the_absence(daemon_factory):
+    """The transport reports "the answer carried no id" rather than refusing the
+    send, so the daemon has to be able to file that. It is stored as `None` and
+    not as `''`: the key is present, so a reader can tell «this send has no
+    message» from «nobody wrote this field», and the two need different
+    answers from whoever looks next.
+    """
+    daemon = daemon_factory()
+    card = _a_status_card()
+    for absent in (None, "", "   "):
+        answer = daemon.handle({
+            "method": "card.record-delivery",
+            "params": {"kind": "status", "state": "DELIVERED", "card": card,
+                       "frozen": _frozen_status(card), "remote_id": absent}})
+        assert answer["ok"] is True, answer
+        assert answer["result"]["entry"]["remote_id"] is None
+    ledger = json.loads(
+        (Path(daemon.state_dir) / "cards" / "delivery.json").read_text(
+            encoding="utf-8"))
+    assert all("remote_id" in row for row in ledger["entries"])
+
+
+def test_a_card_that_does_not_hash_to_the_version_is_refused(daemon_factory):
+    """A receipt's whole value is that its version and the payload that went out
+    are the same thing. The pair is checked here rather than trusted, because
+    the caller is a sender that composed both — and a receipt that accepted a
+    mismatched pair would certify a card that was never sent."""
+    daemon = daemon_factory()
+    edited = _a_status_card()
+    edited["header"]["template"] = "red"
+    answer = daemon.handle({
+        "method": "card.record-delivery",
+        "params": {"kind": "status", "state": "DELIVERED", "card": edited,
+                   "frozen": _frozen_status(_a_status_card()),
+                   "remote_id": "om_x"}})
+    assert answer["ok"] is False, answer
+    assert "two different payloads" in json.dumps(answer)
+    assert daemon.card_ledger().entries() == []
+
+
+def test_a_receipt_against_something_that_is_not_a_message_is_refused(
+        daemon_factory):
+    """`oc_` names a conversation, and a card filed against one would make every
+    later patch aim at a chat. The refusal must not repeat the identifier, and
+    it must not have written anything on its way to refusing."""
+    daemon = daemon_factory()
+    card = _a_status_card()
+    answer = daemon.handle({
+        "method": "card.record-delivery",
+        "params": {"kind": "status", "state": "DELIVERED", "card": card,
+                   "frozen": _frozen_status(card),
+                   "remote_id": "oc_a_conversation"}})
+    assert answer["ok"] is False, answer
+    assert "a_conversation" not in json.dumps(answer)
+    assert daemon.card_ledger().entries() == []

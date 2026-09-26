@@ -78,6 +78,15 @@ KEEP = 20
 DELIVERED = "DELIVERED"
 OUTCOMES = (DELIVERED, "FAILED", "UNSUPPORTED", "UNKNOWN")
 
+#: Ids that are NOT message ids, by the prefix Lark gives them. `oc_` names a
+#: conversation, `ou_` a user and `on_` a union identity; only `om_` names one
+#: message in one conversation. The list is a deny list rather than an `om_`
+#: allow list because a receipt is written from what the transport answered:
+#: refusing a form this tree has not seen would throw away a real send, while
+#: accepting a chat id would file the receipt against a message that does not
+#: exist and make every later patch aim at a conversation.
+NOT_MESSAGE_PREFIXES = ("oc_", "ou_", "on_")
+
 
 def _load(name: str, path: Path):
     if name in sys.modules:
@@ -113,6 +122,47 @@ def check_kind(kind: str) -> str:
             f"{kind!r} is not one of {', '.join(KINDS)} — a receipt filed "
             f"under a kind no renderer produces cannot be read back")
     return kind
+
+
+def check_remote_id(value) -> str | None:
+    """Which message this receipt is for, or `None` for "the sender has none".
+
+    The receipt is the only place this id is kept, so it is also the place the
+    two ways of getting it wrong have to be caught. An empty value is the
+    transport answering without one — a fact the ledger is required to hold, so
+    it is returned as `None` and not as `''`. A value that is present but is
+    not a message id is REFUSED rather than stored: it is what a later patch
+    would be aimed at, and a receipt pointing at a conversation or at a typo is
+    a receipt for a send nobody can reach. Nothing raised here repeats the
+    value; it is an identifier like any other.
+    """
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        # Refused rather than stringified. `str(b"om_x")` is `"b'om_x'"`, which
+        # is a well-formed-looking id naming nothing — the exact quiet failure
+        # this function exists to stop, arriving through a missing `.decode()`
+        # somewhere upstream.
+        raise CardDeliveryError(
+            f"a message id arrives as text, and this one is a "
+            f"{type(value).__name__}. A receipt that stringified it would name "
+            f"a message nobody can reach. The value is not repeated here")
+    message_id = value.strip()
+    if not message_id:
+        return None
+    if any(character.isspace() for character in message_id):
+        raise CardDeliveryError(
+            "a message id is one token, and this one contains whitespace, so "
+            "it names no message. The value is not repeated here")
+    for prefix in NOT_MESSAGE_PREFIXES:
+        if message_id.startswith(prefix):
+            raise CardDeliveryError(
+                f"`{prefix}` names an identity that is not a message — `oc_` a "
+                f"conversation, `ou_` and `on_` a person. Only `om_` names one "
+                f"message, so a receipt filed against this value would make "
+                f"every later update aim at the wrong thing. The value is not "
+                f"repeated here")
+    return message_id
 
 
 def freeze_card(kind: str, card: dict, *, at: str,
@@ -210,7 +260,7 @@ class CardLedger:
 
     def record(self, kind: str, *, at: str, state: str, version: str,
                payload_hash: str | None = None, payload_bytes: int | None = None,
-               idempotency_key: str | None = None,
+               idempotency_key: str | None = None, remote_id: str | None = None,
                reason: str | None = None) -> dict:
         """One line: which version this send carried, and what happened to it.
 
@@ -219,8 +269,20 @@ class CardLedger:
         null would make "the card that failed to arrive" and "a send nobody
         composed a card for" read the same, and only one of those is worth
         waking somebody about.
+
+        `remote_id` is the message the send produced — the transport answers
+        with one, and it is what makes a later update of THAT message possible
+        instead of a second message. It is `None` when the transport answered
+        without one, and that absence is kept rather than filled in: a receipt
+        that guessed an id would point a later patch at a message nobody can
+        name. It is not required for DELIVERED, because the transport itself
+        reports that case rather than refusing it.
         """
         kind = check_kind(kind)
+        # Checked here and not at the call sites: this is the only door the row
+        # goes through, so one rule covers every caller — including the daemon,
+        # which is the only writer over the socket.
+        remote_id = check_remote_id(remote_id)
         if state not in OUTCOMES:
             raise CardDeliveryError(
                 f"{state!r} is not one of {', '.join(OUTCOMES)} — an outcome "
@@ -233,6 +295,10 @@ class CardLedger:
             "payload_hash": payload_hash,
             "payload_bytes": payload_bytes,
             "idempotency_key": idempotency_key,
+            # The message this send produced, so that the NEXT update of the
+            # same card can be a patch of it. Without this the identity is
+            # dropped here and the only way forward is a second message.
+            "remote_id": remote_id,
             "delivered": state == DELIVERED,
         }
         if state != DELIVERED:
