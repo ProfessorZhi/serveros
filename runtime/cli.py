@@ -1653,7 +1653,13 @@ def _identity_lines(payload: dict) -> list[str]:
     release_id = fields.get("release_id")
     if release_id:
         tree = fields.get("tree_hash")
+        version = fields.get("artifact_version")
+        # The label and the artifact version answer different questions — which
+        # release this is, and which PAYLOAD it carries — and a build promoted
+        # under a new label with an unchanged cachebuster is exactly the pair
+        # that must be told apart.
         lines.append(f"release     {release_id}"
+                     + (f" · {version}" if version else " · version UNKNOWN")
                      + (f" · tree {str(tree)[:12]}" if tree else " · tree UNKNOWN"))
     else:
         lines.append("release     UNKNOWN — " + (

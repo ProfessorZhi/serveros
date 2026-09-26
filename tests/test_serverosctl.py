@@ -749,6 +749,7 @@ def test_status_says_which_release_is_running_and_where_it_was_built(
     out = capsys.readouterr().out
     assert code == cli_mod.EXIT_OK, out
     assert "rev-a@1111111" in out
+    assert "3.1.0+srv0003.20260927a" in out
     assert "aaaaaaaaaaaa" in out and "ability-management@bbbbbbbbbbbb" in out
     assert "AGREEMENT" in out
 
