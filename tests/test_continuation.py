@@ -673,14 +673,26 @@ class TestSupercedingDirectly:
 
         A second call that moved that instant would move it to whenever somebody
         last mentioned it — the same rule `retire_admission` keeps.
+
+        The first instant is written by `put_checkpoint` here and not by the call
+        below, and that is the fixture this test needed once the successor had to
+        resolve: a live epoch-1 record plus a written epoch-2 record is exactly the
+        state `put_checkpoint` hands over in, so by the time this verb is called
+        the handover has already happened. What is asserted is unchanged — the two
+        calls answer the same instant and the same successor.
         """
         store = a_store(tmp_path)
         store.put_checkpoint(a_checkpoint(store))
+        store.put_checkpoint(a_second_parent(store))
+        handed_at = store.get_checkpoint("SRV-0001#1")["superseded_at"]
         first = store.supersede_checkpoint("SRV-0001#1", at=LATER, by="SRV-0001#2")
         second = store.supersede_checkpoint("SRV-0001#1", at=TOMORROW,
                                             by="SRV-0001#2")
-        assert first["superseded_at"] == LATER
-        assert second["superseded_at"] == LATER
+        assert first["superseded_at"] == handed_at
+        assert second["superseded_at"] == handed_at
+        # Neither call moved it, which is the property: both named instants are
+        # later than the one the store holds and neither became it.
+        assert second["superseded_at"] not in (LATER, TOMORROW)
         assert second["superseded_by"] == "SRV-0001#2"
 
     def test_a_second_different_successor_is_refused(self, tmp_path):
@@ -693,16 +705,142 @@ class TestSupercedingDirectly:
         successors for one scope is two owners of one Item, which
         `docs/COLLABORATION-CONTRACT.md` does not allow, so the refusal is the
         only answer that keeps the record readable.
+
+        The third epoch is written rather than named, for the same reason as above:
+        a successor this store does not hold is now refused one screen earlier, so
+        a test about which of two REAL successors wins has to hold both of them.
         """
         store = a_store(tmp_path)
         store.put_checkpoint(a_checkpoint(store))
-        store.supersede_checkpoint("SRV-0001#1", at=LATER, by="SRV-0001#2")
+        store.put_checkpoint(a_second_parent(store))
+        store.put_checkpoint(a_checkpoint(store, epoch=3, parent_owner="parent-c",
+                                          next_safe_action="carry the Item on",
+                                          waiting_on={"kind": "window",
+                                                      "until": TOMORROW}))
         with pytest.raises(StoreError) as refusal:
             store.supersede_checkpoint("SRV-0001#1", at=TOMORROW, by="SRV-0001#3")
 
         assert "SRV-0001#2" in str(refusal.value)
         assert "SRV-0001#3" in str(refusal.value)
         assert store.get_checkpoint("SRV-0001#1")["superseded_by"] == "SRV-0001#2"
+
+    def test_a_successor_this_store_does_not_hold_is_refused(self, tmp_path):
+        """«nobody owns this» with a name in it.
+
+        The successor has to RESOLVE, or the refusal one screen up («needs the ref
+        of what took the scope over») is answered by any string at all: the record
+        would say a Parent carries the Item, `live_checkpoints` would answer for
+        that name, and nothing that could be resumed would exist. The last
+        assertion is the one that matters — the refusal leaves the Item with the
+        owner it had.
+        """
+        store = a_store(tmp_path)
+        store.put_checkpoint(a_checkpoint(store))
+        with pytest.raises(StoreError) as refusal:
+            store.supersede_checkpoint("SRV-0001#1", at=LATER, by="SRV-0001#99")
+
+        assert "SRV-0001#99" in str(refusal.value)
+        assert "no checkpoint under that ref" in str(refusal.value)
+        assert not store.get_checkpoint("SRV-0001#1").get("superseded_by")
+        assert sorted(store.live_checkpoints()) == ["SRV-0001#1"]
+
+    def test_a_successor_of_another_item_is_refused(self, tmp_path):
+        """A scope changes hands inside one Item.
+
+        The other Item's epoch is HIGHER, so the Item is the only check that can
+        refuse this — a same-epoch fixture would pass with the check deleted.
+        """
+        store = a_store(tmp_path)
+        store.put_checkpoint(a_checkpoint(store))
+        store.put_checkpoint(a_checkpoint(store, work_item="SRV-0002", epoch=2,
+                                          parent_owner="parent-b",
+                                          next_safe_action="carry that Item on",
+                                          waiting_on={"kind": "window",
+                                                      "until": TOMORROW}))
+        with pytest.raises(StoreError) as refusal:
+            store.supersede_checkpoint("SRV-0001#1", at=LATER, by="SRV-0002#2")
+
+        assert "SRV-0002#2" in str(refusal.value)
+        assert "changes hands inside one Item" in str(refusal.value)
+        assert not store.get_checkpoint("SRV-0001#1").get("superseded_by")
+        assert sorted(store.live_checkpoints()) == ["SRV-0001#1", "SRV-0002#2"]
+
+    def test_a_scope_is_not_handed_to_an_earlier_epoch(self, tmp_path):
+        """The current owner cannot be replaced by the record it replaced.
+
+        Reachable, and the reason this is a store rule rather than a remark: after
+        the epoch-2 write the Item is carried by `#2` and `#1` says so. Handing
+        `#2` back to `#1` would make the two records name each other as the
+        successor — each claiming to have replaced the other — and an Item with no
+        live owner at all.
+        """
+        store = a_store(tmp_path)
+        store.put_checkpoint(a_checkpoint(store))
+        store.put_checkpoint(a_second_parent(store))
+        with pytest.raises(StoreError) as refusal:
+            store.supersede_checkpoint("SRV-0001#2", at=LATER, by="SRV-0001#1")
+
+        assert "LATER epoch of the same Item" in str(refusal.value)
+        assert "name each other" in str(refusal.value)
+        assert not store.get_checkpoint("SRV-0001#2").get("superseded_by")
+        assert sorted(store.live_checkpoints()) == ["SRV-0001#2"]
+
+    def test_a_record_cannot_be_its_own_successor(self, tmp_path):
+        store = a_store(tmp_path)
+        store.put_checkpoint(a_checkpoint(store))
+        with pytest.raises(StoreError, match="cannot be handed to itself"):
+            store.supersede_checkpoint("SRV-0001#1", at=LATER, by="SRV-0001#1")
+
+        assert not store.get_checkpoint("SRV-0001#1").get("superseded_by")
+
+    def test_a_handover_written_before_these_checks_still_replays(self, tmp_path):
+        """The checks govern what may be written NEXT, not what is already there.
+
+        A store written before them can hold a successor this store does not have
+        — that is what the three refusals above are about — and the call that wrote
+        it is still a replay of it. The alternative is a store that refuses its own
+        history: told that the record it is looking at is not the record it is
+        looking at. Which Parent carries the Item is then a person's question, and
+        the message for that is one screen up.
+        """
+        store = a_store(tmp_path)
+        store.put_checkpoint(a_checkpoint(store))
+        document = json.loads(store.path.read_text())
+        document["checkpoints"]["SRV-0001#1"]["superseded_by"] = "SRV-0001#99"
+        document["checkpoints"]["SRV-0001#1"]["superseded_at"] = LATER
+        store.path.write_text(json.dumps(document))
+
+        replayed = store.supersede_checkpoint("SRV-0001#1", at=TOMORROW,
+                                              by="SRV-0001#99")
+        assert replayed["superseded_by"] == "SRV-0001#99"
+        assert replayed["superseded_at"] == LATER
+        assert not store.live_checkpoints()
+
+    def test_an_epoch_this_store_cannot_compare_is_not_a_handover(self, tmp_path):
+        """A successor whose epoch cannot be compared has no known direction.
+
+        The store writes integer epochs, so this is a record it did not write —
+        and a handover whose direction cannot be established is not one it can
+        record. `put_checkpoint` SKIPS such a record while looking for one to
+        supersede; here the caller is NAMING it, so a skip would mean writing a
+        claim the store cannot check. Edited on disk rather than through the
+        store, because the store is the thing whose records have to be wrong.
+        """
+        store = a_store(tmp_path)
+        store.put_checkpoint(a_checkpoint(store))
+        store.put_checkpoint(a_second_parent(store))
+        store.put_checkpoint(a_checkpoint(store, epoch=3, parent_owner="parent-c",
+                                          next_safe_action="carry the Item on",
+                                          waiting_on={"kind": "window",
+                                                      "until": TOMORROW}))
+        document = json.loads(store.path.read_text())
+        document["checkpoints"]["SRV-0001#2"]["epoch"] = "2"
+        store.path.write_text(json.dumps(document))
+
+        # The target is the live record, so this is not a replay: the store is
+        # being asked to hand the current scope to an epoch it cannot compare.
+        with pytest.raises(StoreError, match="cannot compare"):
+            store.supersede_checkpoint("SRV-0001#3", at=LATER, by="SRV-0001#2")
 
     def test_an_absent_ref_answers_none_and_not_an_empty_record(self, tmp_path):
         """«nobody checkpointed this» and «a Parent checkpointed nothing» are
@@ -1584,11 +1722,14 @@ class TestTheItemOwesWhatItsEarlierEpochsLeft:
     def test_the_chain_is_the_epochs_of_the_item_and_not_the_pointers(self, tmp_path):
         """A pointer this store cannot resolve does not break the chain.
 
-        `runtime/agent_control_store.supersede_checkpoint` requires only that the
-        ref being superseded EXISTS — it does not require its successor to be a
-        checkpoint of this store, or of this Item. A reading that walked the
-        pointers would inherit that. This one orders by the Item's epochs, so the
-        epoch order the store enforces is the whole of what it depends on.
+        When this was written, `runtime/agent_control_store.supersede_checkpoint`
+        required only that the ref being superseded EXISTED: it would hand a scope
+        to a ref the store did not hold, or to another Item's record, or to an
+        earlier epoch. All three are refused now — this test is about a store whose
+        file says otherwise, which is a store written before that guard, hand-edited,
+        or restored from a backup, and the store still replays its own history rather
+        than refusing it. A reading that walked the pointers would inherit whatever
+        such a file says; this one orders by the Item's epochs.
         """
         store = a_store(tmp_path)
         a_dispatched(store)
