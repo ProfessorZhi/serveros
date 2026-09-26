@@ -685,18 +685,27 @@ actuators:
     kind: exec
     verb: systemctl
     why: >-
-      Three subcommands a person types, and the only places in the shipped
+      Four subcommands a person types, and the only places in the shipped
       surface that change what systemd is running. `cmd_promote` and
       `cmd_rollback` point the node's unit at a revision and reload.
       `cmd_alert_worker` reloads, then ENABLES A TIMER — added in §W, and it is
       the one that needed saying out loud: enabling `serveros-alert-sync.timer`
       is the act that makes a condition on this machine reach a person, and it
       is separate from `promote` precisely so that it stays one explicit act
-      with a destination a person supplies. None of the three is reachable from
-      the daemon, the MCP layer or any observation path; `--enable-reconcile`
-      does not reach them and no Run can invoke them.
+      with a destination a person supplies. `cmd_continuation_wake` — added in
+      §9.48 — writes the wake routine's two units and then does exactly one
+      thing: `systemctl --user daemon-reload`, which is a re-read and not a
+      restart, and which leaves every checkpoint on the node exactly as it was.
+      It does NOT enable or start the timer, and `--no-reload` skips the reload
+      WITHOUT turning the command into a dry run: the units are still written
+      and are simply not seen by the manager yet. Arming stays a separate
+      command a person types, the same polarity `cmd_daily_task` chose — a
+      receiver that starts waking Parents before anybody has chosen a Parent is
+      the failure mode, not the goal. None of the four is reachable from the
+      daemon, the MCP layer or any observation path; `--enable-reconcile` does
+      not reach them and no Run can invoke them.
     sites:
-      - {file: scripts/release.py, symbols: [cmd_promote, cmd_rollback, cmd_alert_worker]}
+      - {file: scripts/release.py, symbols: [cmd_promote, cmd_rollback, cmd_alert_worker, cmd_continuation_wake]}
 
   # ---------------------------------------------------------------------
   # The card source. The card is a consumer, and a consumer that imports

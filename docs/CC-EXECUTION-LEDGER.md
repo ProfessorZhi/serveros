@@ -6889,6 +6889,290 @@ tests/test_daemon.py            5165938e667147dd1f45730ecdfa26007dd07274021268dd
   `drift_sync.py` 没有调度器、约 40 处未守护的考古站点、`supersede_checkpoint` 的退役评估、
   以及切片 F–N 的新模块在装好的节点上都还没有那一次 `build→promote→restart`（P12）。
 
+## §9.48 P7 唤醒半边：接收器是量出来的，周期是推出来的
+
+#### 9.48.1 靶子：`RECEIVERS` 空着，而「空」此前有两种读法
+
+`runtime/continuation.py` 里有一个模块级名字 `RECEIVERS: tuple = ()`，它自己的 docstring 把
+它叫作「the registry the wake half will fill」。本片之前它在本机一直空着，而**空有两种意
+思**，此前没有任何东西能把它们分开：
+
+- 这个节点上**没有**接收器（装机时没 enable 那个 routine）；
+- 这个节点上**有**接收器，只是没有人去问过它（注册表从 import 起就是那个空元组）。
+
+两者印的是同一句话：「… no continuation receiver is installed on this node, so nothing will
+wake it」。第一句是**测量**，第二句是**没测**——而 §9.47.4 那一格刚说过：**一个能表示「什
+么都不是」的词，就不再是一个名字。** 本片要交付的是把这两句拆开：**每一个回答这个问题的界
+面，都在回答之前先量一次。**
+
+#### 9.48.2 接收器是量出来的，不是声明出来的（`runtime/wake.py`）
+
+新的 `runtime/wake.py` 是唤醒半边的全部。它答的第一个问题是「这个节点上到底有没有东西会去
+唤醒一个等待」，而这个答案由**两半**组成，并且分开报：
+
+| 字段 | 量什么 | 怎么量 |
+|---|---|---|
+| `armed` | timer 在不在 wanted set 里 | 读 `<unit_root>/timers.target.wants/serveros-continuation-wake.timer` 这条 symlink |
+| `wired` | 它起来之后真的会去启动一个 Parent 吗 | 从渲染后的 `ExecStart=` 里读出 `--parent` 的值；没渲染的 `@…@` 占位符算「没有」 |
+| `installed` | **两半都要** | `armed and wired` |
+
+- **不问 `systemctl`。** 一次 oneshot 完全可能在**没有 bus** 的 manager 里跑，而这里问的是
+  「它在不在 wanted set 里」——一个关于目录的事实。（这条在 fixture 里真的被踩到过：一条悬空
+  的 symlink 也要算「在」，因为 systemd 的判据就是「文件在不在」。）
+- **两半分开，是因为修法不同**：「timer 在、没有 launcher」与「有 launcher、timer 不在」是两
+  种不同的修法。
+- **不对称的方向是选过的**：少报一个接收器会让读者保守，多报一个会让 `continuation_state` 对
+  一个永远不会唤醒任何东西的节点说 `RECEIVER_INSTALLED`——那正是 §17.4 禁止的那种句子。
+- **`fill_registry()` 是 `RECEIVERS` 的唯一写入者**，而且是**赋值不是追加**：第二次调用反映
+  的是**现在**装了哪些 unit，一个已经卸载的接收器不能继续被报成「有一个后台在跑」。它被*读
+  者*（`work continuations`、`work checkpoint`）与 *routine 自己*（它就是这个答案）通过**同
+  一个函数**调用——两边问的都是「这个节点上有没有东西会去唤醒一个 checkpoint」，而依赖谁问
+  的答案就是两个答案。
+- `tests/test_wake.py` 里有一条**扫源码**的用例：全仓对 `RECEIVERS` 的赋值只允许出现在
+  `continuation.py` 与 `wake.py` 两处，第三处就是下一次漂移的起点。
+
+#### 9.48.3 一次唤醒＝一次 `invoke_once`
+
+唤醒的执行面没有新机制，它落到既有的 `runtime/bounded_invocation.invoke_once` 上：
+
+- **key 是推出来的，不是收的**：`continuation-wake-<item>-e<epoch>-a<attempt>`。收一个调用方
+  给的 key，会让同一 epoch 的两次唤醒都成为「第一次」。
+- **一次评估九种出口**：七种 `REFUSE`（`SUPERSEDED`、`WAIT_UNANSWERABLE`、
+  `NO_AUTHORIZING_GRANT`、`NO_ATTEMPT_BUDGET`/`NO_WALL_BUDGET`/`BUDGET_EXHAUSTED`、
+  `WAKE_IN_FLIGHT`、`ATTEMPTS_EXHAUSTED`、`BRIEFING_OVER_BOUND`）、一种 `HOLD`
+  （`WAIT_OPEN`）、一种 `WAKE`（`READY`）。这九种不能塌成一个「没醒」：等待还没结束与没有授
+  权是两件事，而前者不该消耗任何东西。
+- **一次唤醒的结果词只有四个**：`WOKEN` / `REPLAYED` / `REFUSED` / `NOT_STARTED`。
+  `REPLAYED` 不是失败，也不是第二次启动，是 `invoke_once` 在说「这个 key 已经带着这份输
+  入」——回执在做它唯一该做的事。
+- **回执只声称它量到的东西**（实测读数）：`effect: UNVERIFIED`、`descendants_verified: false`、
+  `direct_process_exited: true`、`worker_stopped: false`。它没有说 Parent 的**效果**被验证过
+  ——那是 `work accept` 的事。
+- **`STARTED` 残留要停下来，不能重放**：回执在 spawn **之前**写，所以残留的 `STARTED` 要么是
+  正在跑、要么是写者中途死了；后者按模块自己的话「requires reconciliation, never blind
+  replay」。
+- **`--parent` 是一个可执行文件、不带参数**，并且安装器对不是路径的值直接拒：`ExecStart=` 由
+  systemd 切开、这里的 `launcher_argv` 又读回来，一条要靠两个读者都读对的命令行，是总有一天
+  会被其中一个读成别的样子的命令行。
+
+#### 9.48.4 周期不是挑的，是推出来的（本片承重的那个数字）
+
+这是整片里唯一一处「改一个数字」的改动，而那个数字是**算出来的**：
+
+- 唤醒花的授权是一份 **delegation**，而一份 delegation 只在它的可信 context 仍然 FRESH 时授
+  权：`context/actor-context-contract.yaml` 是 `stale_after_seconds: 300` /
+  `window_seconds: 900`，`context/delegation.derivation` 在**读的那一刻**把存下来的 context
+  与那次 tick 的时刻相比——**从不读存下来的判决**。
+- 因此一个**周期 ≥ 那个阈值**的接收器不是「慢一点的接收器」，而是**结构上无法触发**的那一
+  种：任何在委托最后一次被观察到之后、超过一个周期才结束的等待，唯一能唤醒它的那一拍到达
+  时，context 已经 STALE，于是**按名字被拒**——`DELEGATION_DOES_NOT_AUTHORIZE`，而它文档里
+  的修法是「刷新上下文」，也就是**要有人再一次被观察到**——那正是接收器存在的意义所在（不
+  用人）。**五分钟恰好等于那个阈值**，所以一个五分钟的接收器是「装了、武装了、结构上醒不
+  了」。
+- 这是**实测**的，不是推演的：本机上老制式（`*-*-* *:1/5:00`）的两拍——21:41 与 21:46——各自到
+  达时**等待都已经结束了**（那个 checkpoint 的等待在更早的一轮里就闭合了），两拍都给出
+  `REFUSE / NO_AUTHORIZING_GRANT`。原因就是上面那条算术：它们要花的那份委托，上下文最后一次
+  被观察到是 13:31:00Z，21:41 那一拍读到 600 秒、21:46 那一拍读到 900 秒——**两拍都过了 300 秒
+  的阈值**。用一个更贴切的说法：那两拍是「按计划到达、按名字被拒、什么也没唤醒」的实物。
+- 新制式 `*-*-* *:*:20` ＋ `AccuracySec=30s`：**周期 + 精度 = 90 < 300**，可捕获的窗口是
+  `300 − (60 + 30) = 210` 秒，而从「child 的结果到达」到「Parent 被重新启动」的**最坏延迟就
+  是那 90 秒**。这不是一个队列的轮询间隔，因为**没有队列**：一拍在它跑的那一刻用准入 store
+  求值，所以一次早到的 tick 只花一次 store 读，加上每份活 checkpoint 一次回执读。
+- **`:20` 也不是口味**，是同机上五个 timer 相位的读数（`hwz-monitor`/`tokyo-status-card` 在
+  `:00`，三个 5 分钟步进的是 `:02`/`:03`/`:04`）。理由不是对称：这个 unit **会启动一个
+  Parent**，而一个在监控采样窗里启动的 Parent 会把它自己与它的子进程放进那个监控正在量的数
+  字里——而那个监控是人要读的东西。
+- 这三条算术**钉在测试里**而不是留在注释里：`period + accuracy < stale_after_seconds`、
+  `stale − (period + accuracy) >= period`，并且把**本机装过的那条老表达式**当作被拒的对照
+  组。一条被改慢的 timer 会**按名字**挂掉那个测试，消息里写出是哪两个数字不合。
+- `Persistent=false` 保持不变：持久的是**checkpoint 与回执**，不是 timer。一次漏掉的 tick 救
+  不了任何东西（等待结束这件事不会因为没人看而消失，下一拍照常会唤醒它），而一个每分钟且带
+  catch-up 的 unit 只会在每次开机时补出一串多余的 attempt。
+
+#### 9.48.5 三处真缺陷（本片的重心，全部是实测发现的）
+
+**(a) 一个自己能写出、却读不回来的 key。** `action_key` 拼出来的名字，与 `attempts_recorded`
+用 `ATTEMPT_KEY` 解析回来的，必须互为逆。解析器最初写作 `[A-Za-z0-9_]+`，**读不回**
+`SRV-0001` 这种形状——而这个产品里每一个 Item 都是这种形状。后果不是报错，是**静默**：回执
+永远不会被数到，于是 attempt 恒为 1，而 `invoke_once` 对同一个 key 给出 `REPLAYED`——模块会
+报「已经唤醒了」，而实际上什么都没有跑。修法是把 `ATTEMPT_KEY` 右锚定且贪婪
+（`^continuation-wake-(?P<item>.+)-e(?P<epoch>\d+)-a(?P<attempt>\d+)$`），并在 `action_key`
+里把**往返本身**断言出来：写得出却读不回的名字，是一个永远找不到回执的名字。
+
+**(b) 一个答案有三个生产者。** `daemon.default_state_dir()` 自己读 `SERVEROS_STATE_DIR`，
+`cli._agent_control_store_path()` 读路径合同、从不看那个变量。在不导出变量的节点上两者恰好落
+在同一个目录，于是不可见——**但在导出变量的节点上这份不可见性就没了**，而每一个
+`scripts/release.py continuation-wake --state-dir <path>` 装过的节点都导出它（渲染出来的
+unit 里带着 `Environment=SERVEROS_STATE_DIR=<path>`）。那样一个节点上，守护进程写一个 store、
+每个 verb 读另一个，两个都答得像另一个不存在。**发现方式**：拿一个显式 state root 装唤醒
+routine，然后看着接收器读到一个空 store。修法是让 `registry.state_root()` 成为唯一生产者，
+`daemon` 与 `cli` 都改调它；`tests/test_control_store_path.py` 把「两个组成落成同一个文件」
+当作等式断言，并额外钉住「变量不导出时什么都没动」——那是这个修法敢在活节点上做的唯一理由。
+
+**(c) 一个装了接收器的节点上，由一个刚被唤醒的 Parent 印出「没有任何东西会唤醒你」。** 这是
+本片最重要的一处。`RECEIVERS` 只由 `wake.fill_registry` 填，而 `cmd_work_checkpoint` 没有调
+它，于是它从 import 期的空元组作答——**一次对什么都没有的测量，读起来像「未接线」**。同一时
+刻、同一个节点上，`work continuations` 印的是 `RECEIVER_INSTALLED`。发现方式值得记下来：**读
+到它的是那个刚被这个接收器启动的 Parent 自己的输出**——正好是最要紧的那个读者。修法是在每个
+回答这个问题的动词里做**同一次测量**，并把结果作为 `receivers_seen` 参数传下去；记录里仍然
+**不许**出现接收器字段（参数来自读的一侧）。变异验证：把 `fill_registry` 调用临时换成
+`pass  # MUTATED`，`equipped=True` 那一格给出 `AWAITING_CONTINUATION`——**与生产上看到的逐字
+相同**——而两格对照仍全过；还原后 59 passed。
+
+#### 9.48.6 真实正向实测：两次完整序列
+
+用户对这一片的要求是逐字的：**「至少真实跑一次：Parent 退出 → child 完成 → 用户不发第二条消
+息 → successor Parent 自动恢复并继续。没有正向实测，不算 P7 完成。」** 两次都跑了，**同一个
+场景，一次没改、一次改了**：
+
+| | run 1（候选 `…c@76a1e6c`） | run 2（候选 `…d@ebbec8c`） |
+|---|---|---|
+| seed：上下文被观察到、checkpoint 落盘 | 21:46:38 | 21:52:12 |
+| tick A：child 还没结束 | 21:47:37 `HOLD / WAIT_OPEN` | 21:52:47 `HOLD / WAIT_OPEN` |
+| child 真的结束（真实动词 `work retire`） | 21:47:59 | 21:53:13 |
+| tick B：**此后没有任何人的动作** | 21:48:47 `WAKE / READY` | 21:53:24 `WAKE / READY` |
+
+两次 tick A 都**不产生任何回执、不花掉任何 attempt**——等待还没结束的那一拍什么都不做。两次
+tick B 都真的启动了 successor Parent，回执都是 `EXITED exit 0`：
+
+```text
+run 1  started_at 2026-09-26T13:48:47.485777+00:00  finished_at 2026-09-26T13:48:48.307395+00:00
+run 2  started_at 2026-09-26T13:53:23.485705+00:00  finished_at 2026-09-26T13:53:24.332936+00:00
+```
+
+两者的 `input_digest` 不同（`4c17701e…` / `21e45397…`），因为 briefing 带着时刻——**同一份回执
+不会被两次不同的唤醒共用**。Parent 的替身把它的证据写进了归档：`briefing.txt`（2506 字节，
+也正好是回执里 `stdin` 的 2506 字节）、`authority.json`、`continuation.md`、
+`checkpoint-epoch-2.json`、`started-by.txt`（`ppid 3558367`、`journal_stream 8:2561682877`、
+`parent_exe` 是那条**真实的** `serverosctl work wake --parent …` 命令行）。epoch 2 在
+21:48:48.290182（北京时间）落盘，store 里 epoch 1 变成 `SUPERSEDED — superseded at … by
+SRV-0001#2`。
+
+**两次的差别正是 §9.48.5(c) 那个缺陷**：同一个场景、同一个动词，Parent 自己印出来的续接状
+态，从 run 1 的
+
+```text
+continuation  AWAITING_CONTINUATION
+  … no continuation receiver is installed on this node, so nothing will wake it
+```
+
+变成 run 2 的
+
+```text
+continuation  RECEIVER_INSTALLED
+  routine:serveros-continuation-wake
+```
+
+也就是说：**真的有一个接收器把它唤醒了，而它在自己的记录里此前不承认这一点。**
+
+时间都落在 300 秒的 FRESH 窗口内：委托被观察到，到它被用来唤醒，中间隔了 **129 秒**（run 1：
+13:46:38Z → 13:48:47Z）与 **71 秒**（run 2：13:52:12Z → 13:53:23Z）；child 结束到唤醒隔了 48 秒
+（run 1）与 11 秒（run 2）。
+
+**把老制式代进去，这两个数都不能说明它行。** 五分钟的一拍在 21:51:00 与 21:56:00：run 1 的等待
+在 21:47:59 结束，能唤醒它的那一拍是 21:51:00，那时 context 已经 264 秒——**只剩 36 秒的余量**；
+run 2 的那一拍是 21:56:00、age 228 秒，余量 72 秒。也就是说老制式在这两次上会**靠运气赢**，而
+运气不是设计：等待结束得再晚 37 秒（run 1），唯一候选的那一拍就会带着 301 秒的 context 到达，
+然后**按名字被拒**。这不是推演——21:41 与 21:46 那两拍就是同一件事的实物：等待已经结束、一拍
+按计划到达、`REFUSE / NO_AUTHORIZING_GRANT`。**接收器武装着，而它结构上醒不了。**
+
+#### 9.48.7 隔离与拆除
+
+- 现场是一个 scratch 的 runtime root ＋ scratch 的 state root，**唯一的例外是真实
+  `~/.config/systemd/user`**——systemd 的 user manager 只读那里，所以「真的被一个 timer 唤
+  醒」这件事没法在别处证明。写进去的只有那两个 unit 文件。
+- 收尾已执行：`disable --now`、删掉那两个文件、`daemon-reload`。wanted set 已回到
+  `tokyo-alert-digest.timer` + `tokyo-status-card.timer`，manager 里已经没有那个 unit，而**节
+  点自己的测量随之如实变回**「receivers none installed — a saved checkpoint is not being woken
+  by anything on this node」。这最后一句是本片最想留下的性质：**拆掉之后读数变了**，说明读数
+  是活的。
+- 没有把任何东西长期留在本机（那一次安装属于 P12/R6）；**没有新增
+  `continuationd`/`workflowd`/`parentd`**；没有把 tick 接进守护进程（`runtime/daemon.py` 里仍
+  然没有对 admissions/checkpoint 的读取，有测试扫源码钉住这一点）。
+
+#### 9.48.8 本片没说什么
+
+- **接收器不做业务规划。** 它只搬运一份**人已经做出的**委托：`work wake` 在跑的那一刻重核
+  context，把判决写进 briefing，再启动一个**自己会再重核一遍**的 Parent。全仓只有
+  `mcp/human_control.py#attach_context` 一处铸 `context_ref`，守护进程根本没有 `report` 参
+  数——**Authority is moved, never created.** 接收器没有自己的 context，也不铸一个；它只负责
+  唤醒。
+- **长期授权不能越过委托的 FRESH 窗口。** 那条不变式是既有的（授权自己的 `expires_at` 管不
+  了它的委托上下文还活着多久），本片一个字也没有动它；本片动的是**周期**。
+- **唤醒仍然只在委托还新鲜时发生。** 人离开之后，等待仍然如实显示「待续」，而
+  `DELEGATION_DOES_NOT_AUTHORIZE` 的修法仍然是「刷新上下文」——那是设计，不是缺口。
+- 仍未关闭（与前几格相同，本片一条也没有改变它们的状态）：P7 唤醒半的两件前置（§9.38.9）、
+  `WAIT_KINDS` 仍只有 `child`/`window`、`NodeControlTransport.send` 不包裹 connector 异常、
+  `drift_sync.py` 没有调度器、约 40 处未守护的考古站点、`supersede_checkpoint` 的退役评估、
+  以及切片 F–N 的新模块在装好的节点上都还没有那一次 `build→promote→restart`（P12）——**本片
+  把 `runtime/wake.py` 也加进了这一串**：它在候选 root 上被真实跑过、真的唤醒过一次，但还没
+  有进到节点上装着的那个 composition 里。
+
+#### 9.48.9 本片新增的用例
+
+- `tests/test_wake.py`：**新文件**，54 条 `def test_`，9 个类。每一个类钉的是一条判据而不是
+  一个函数：
+
+| 类 | 钉住的 |
+|---|---|
+| `TestAReceiverIsMeasured` | 两半分开报；未渲染的 `@…@` 占位符不算 launcher；「什么都没装」读成「什么都没装」 |
+| `TestItRefusesMoreThanItWakes` | 九种出口的**闭集**，以及 `WAIT_OPEN` 是**挂起**而不是拒绝 |
+| `TestTheBoundIsTheGrants` | 每一种授权/预算缺失各自是一个理由，含「一个布尔不是预算」 |
+| `TestOneAttemptIsOneStart` | 回执是唯一的计数来源；`STARTED` 残留停下来；**key 的往返**（9.48.5(a)） |
+| `TestTheBriefingCarriesAndDoesNotDecide` | briefing 的四处「自己再核一遍」；它**不说**工作已完成、不说范围更大；超界**拒绝**而不是截断 |
+| `TestTheRoutineIsNotATick` | 守护进程的 tick 仍然不读 checkpoint；唤醒半边只能从自己的入口进 |
+| `TestTheVerbDecidesAndReports` | `--dry-run` 什么都不启动；相对的 `--parent` 在计划之前就被拒 |
+| `TestTheCadenceFitsInsideTheAuthorityItSpends` | 9.48.4 的三条**算术**，并把老表达式当被拒的对照组 |
+| `TestEverySurfaceAnswersTheReceiverQuestionFromOneReading` | 9.48.5(c)：两个动词必须给**同一个**答案；未接线的节点仍印产品自己的字面量；记录里**不许**出现接收器字段 |
+
+- `tests/test_control_store_path.py`：**新文件**，6 条，2 个类。`TestOneStateRoot` 把「两个组成
+  落成同一个文件」当作**等式**断言（变量设与不设两格），`TestTheUnitTheInstallerRendersActually
+  RedirectsIt` 把「unit 渲染出来的那个变量确实指向 verb 读的那个文件」钉住——这是 9.48.5(b)
+  那个缺陷的后果，写在运维会看见的地方。
+- `tests/test_continuation.py`：**净 0**（删 2 增 2）。那两条原本写的是「this release has no
+  receiver installed」，本片把它们的**理由**换掉了：注册表有写入者了，而一个什么都没装的节点
+  上它仍然是空的。改的是理由，不是判据——因为一条「这个 release 没有唤醒半边」的断言，在唤
+  醒半边存在之后就不再是一句话了。
+- **全片净新增 `def test_` 60 条**（新增 62、删除 2），**0 条 `subTest`**（`git diff -U0`）。
+
+#### 9.48.10 全量读数（两跑：那一跑抓到的两处声明面，与修好后的这一跑）
+
+本片第一次全量跑出了 **2 处失败**，而两处都是**声明面**——即「产品长了一样东西，而某个登记
+表还不知道」。修法是**申报**，不是放宽：
+
+1. `tests/test_core_freeze.py::TheResidentSurfaceIsClosed::test_the_tree_declares_exactly_these_units`
+   —— 树上多了两个 unit 文件，而 `RESIDENT_UNITS | NON_RESIDENT_UNITS` 里没有它们。修法是给唤
+   醒 routine 一个**自己的集合** `WAKE_UNITS`（连同一段说明：前两组一个「发送」、一个「写目
+   录」，而这一组**启动一个 Parent**，是三者中唯一花授权的那一个），并把它并进 `NON_RESIDENT_
+   UNITS`。并进来之后，那条「每一个其它 unit 都证明不是常驻的」的用例**自动开始检查它们**：
+   `.timer` 不许有 `ExecStart=`、必须写 `Unit=`；`.service` 必须是 `Type=oneshot` 且没有
+   `Restart=`。
+2. `tests/test_mutation_guard.py::TheLiveTreeIsCovered::test_every_product_call_site_is_declared`
+   —— 新的 undeclared 恰好一条：`scripts/release.py:1279 exec systemctl cmd_continuation_wake`。
+   修法是把 `cmd_continuation_wake` 加进 `release-promotes-and-rolls-back-units` 的 `sites`，并
+   把那段 `why` 从「三条子命令」改写成「四条」——因为在合同里，**一句写错条数的 why 是一句会
+   被下一个人照着信的 why**。改写顺带把两件运维必须知道的事写进了合同：`daemon-reload` 是**重
+   读不是重启**；`--no-reload` **不是** dry-run，unit 照样写下去，只是 manager 还没看见它。
+
+修好后的这一跑（**最终字节**）：
+
+```text
+6219 passed, 20 skipped, 4005 subtests passed in 659.45s (0:10:59)
+rc=0
+```
+
+- 与上一格（§9.47 记的 6154 passed）相比，通过数增加了 **65**：**60 条新 `def test_`**（新增
+  62、删除 2 的净数）加上 `test_the_key_reads_back_into_the_attempt_it_names` 的参数化展开
+  （5 个 Item 名）。6154 ＋ 60 ＋ 5 ＝ 6219 ——**这个加法闭合**，不是估的。
+- **subtests：本片自己的两跑是闭合的，跨格的那 1 不闭合，如实标出。** 本片第一次全量（unit 集
+  合还没改、`test_core_freeze.py` 一个循环都没动）读到 **4001**；加上两个新 unit 分别进两个
+  `subTest(unit=rel)` 循环，正好 **＋4**，于是这一跑 4005 —— 这一半是**量出来的加法**。
+  但 §9.47 记的是 4000，而它的树与被改文件集合与这里相同；同一棵树读出不同的数，说明**这两格
+  不是同一支量具量出来的**。本片按自己量到的记，并让 passed/skipped 承担跨格比较（它们在上面
+  是闭合的）。
+- 这一跑跑的是**最终字节**：台账本节（含 `WAKE_UNITS`、actuator 合同的第四条）与
+  `runtime/wake.py` 一起，就是 `rc=0` 覆盖的那棵树。
+
 ## 10. 后续每包更新哪几行
 
 - 改完一个包，只更新 §3.1 里对应行的四层状态 + §5 表的增删。
