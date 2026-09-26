@@ -789,11 +789,19 @@ def predecessors(record: dict, checkpoints: dict | None = None) -> list[dict]:
     «What came before this one» is the question `superseded_by` is a POINTER to
     and not an answer to. The pointer says which record took the scope over, and
     the store writes it on takeover — but a reading that walked the pointers
-    would inherit every way a pointer can fail to compose. It can: the standalone
-    `runtime/agent_control_store.supersede_checkpoint` writes a successor without
-    requiring the successor to be a checkpoint of this store, or of this Item, so
-    a chain built from pointers can leave the Item it started in. That verb is
-    measured, not guessed — its guard is only «the ref being superseded exists».
+    would inherit every way a pointer can fail to compose, and a store on disk is
+    a file rather than a proof of the rules that wrote it.
+
+    THAT IS NOT HYPOTHETICAL, AND IT WAS MEASURED RATHER THAN IMAGINED. Both
+    writers of that field now enforce the same three conditions (see
+    `runtime/agent_control_store.supersede_checkpoint`, which refuses a successor
+    this store does not hold, one of another Item, and one at an earlier epoch) —
+    but it did not when this function was written, so records exist that a
+    pointer-walking chain would follow out of the Item it started in, and the
+    store's idempotent branch still REPLAYS such a record rather than refusing
+    its own history. A reading that had to walk pointers would have to decide what
+    to do about that; this one does not have to decide anything, because the
+    order it uses is the Item's epochs.
 
     SO THE ORDER COMES FROM THE STORE'S OWN MODEL AND NOT FROM THE POINTERS:
     «The scope is the Item; the epoch is only how it changes hands.» This

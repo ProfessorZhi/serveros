@@ -981,7 +981,15 @@ class AgentControlStore:
         `by` is the ref of what took over — a later epoch's checkpoint of the same
         Item. Requiring it is the point: superseding without naming the successor
         would leave a scope with no owner at all, and «nobody owns this» is a
-        different fact from «someone else does».
+        different fact from «someone else does». **AND THE NAME HAS TO RESOLVE.**
+        A successor this store does not hold is the same «no owner at all» with a
+        ref in it — the record would say a Parent carries the Item and no such
+        Parent would exist anywhere — so the three things the sentence above says
+        about `by` are checked rather than assumed: this store holds it, it is a
+        checkpoint of the SAME Item, and its epoch is HIGHER than the one it
+        replaces. `put_checkpoint` already enforces exactly these three when it
+        supersedes in the same transaction; the same field has two writers and
+        they must agree about what may be written into it.
 
         Idempotent on the FIRST supersession, like `retire_admission`, and by the
         same rule applied to both of its facts: the question this answers is WHEN
@@ -993,6 +1001,14 @@ class AgentControlStore:
         and it is a question for a person for a sharper reason than `outcome` is:
         two successors for one scope is two owners, which
         `docs/COLLABORATION-CONTRACT.md` does not allow even for an instant.
+
+        The three checks above run AFTER the idempotent branch and not before, for
+        the reason `put_checkpoint` asks its replay question before its two
+        refusals: a replay of what the store already says is a replay whatever the
+        record says, and a store written before these checks existed must still be
+        able to answer the call that wrote it. They govern what may be written
+        NEXT, and they do not turn a record already on disk into a refusal of its
+        own history.
         """
         target = str(ref or "")
         successor = str(by or "").strip()
@@ -1020,6 +1036,49 @@ class AgentControlStore:
                     f"leave two records each claiming to have succeeded the same one "
                     f"while the store named only one of them. Which Parent carries "
                     f"the Item is a question for a person and not a later write")
+            # The three things the docstring's first paragraph says `by` IS,
+            # checked in the order a caller would repair them.
+            carried_by = self._data["checkpoints"].get(successor)
+            if carried_by is None:
+                raise StoreError(
+                    f"{target} would be handed to {successor}, and this store holds "
+                    f"no checkpoint under that ref. That is «nobody owns this» with "
+                    f"a name in it: the record would say a Parent carries the Item, "
+                    f"and `live_checkpoints` would answer for it while nothing that "
+                    f"could be resumed exists. Name the checkpoint that took the "
+                    f"scope over, and write it before handing the scope to it")
+            if str(carried_by.get("work_item") or "") != str(existing.get("work_item")
+                                                            or ""):
+                raise StoreError(
+                    f"{target} carries "
+                    f"{existing.get('work_item') or 'an unnamed Item'} and "
+                    f"{successor} is a checkpoint of "
+                    f"{carried_by.get('work_item') or 'an unnamed Item'}. A scope "
+                    f"changes hands inside one Item — «the scope is the Item; the "
+                    f"epoch is only how it changes hands» — so this would say one "
+                    f"Item is carried by a record of another")
+            mine, theirs = existing.get("epoch"), carried_by.get("epoch")
+            if not isinstance(mine, int) or not isinstance(theirs, int):
+                raise StoreError(
+                    f"{target} or {successor} carries an epoch this store cannot "
+                    f"compare (it writes integers), so whether {successor} is later "
+                    f"than the scope it is being handed cannot be established. A "
+                    f"handover whose direction is unknown is not one this store can "
+                    f"record")
+            if successor == target:
+                raise StoreError(
+                    f"{target} cannot be handed to itself. A supersession names "
+                    f"what took the scope over, and a record that replaced itself "
+                    f"took nothing over — it would write `superseded_by` onto the "
+                    f"record it points at, which is a scope nobody owns looking "
+                    f"exactly like one that was handed on")
+            if theirs <= mine:
+                raise StoreError(
+                    f"{successor} is epoch {theirs} and {target} is epoch {mine}: a "
+                    f"supersession goes to a LATER epoch of the same Item, and this "
+                    f"would hand the current scope to a record from before it. The "
+                    f"two records would then name each other as the successor — each "
+                    f"claiming to have replaced the other, and no live owner at all")
             updated = dict(existing)
             updated["superseded_by"] = successor
             updated["superseded_at"] = str(at)
