@@ -5216,6 +5216,19 @@ def _emit_card(args) -> int:
             args._card_kind, card, at=at,
             idempotency_key=getattr(args, "idempotency_key", "") or None)
         payload = {"card": card, "frozen": frozen}
+        # §29. Which incident this card is about, so that the sender can ask the
+        # delivery ledger «may I change the message that already carries this»
+        # BEFORE it sends, instead of sending a second card for an episode that
+        # already has one. Present only when the card leads with an event: a
+        # status card is about a workday and has none, and a card whose face
+        # came out empty is about no single incident — absent rather than
+        # invented, because a sender that filed a receipt under a made-up
+        # episode would patch another incident's message.
+        incident = _incident_of(model)
+        if incident is not None:
+            payload["incident"] = incident
+            lines.append(f"incident  {incident['episode']}"
+                         f"（{incident['ref']}）")
         lines.append(f"version   {frozen['version']} "
                      f"({frozen['payload_bytes']} 字节)")
     lines.append("")
@@ -5223,6 +5236,45 @@ def _emit_card(args) -> int:
                  "怎么显示；发送由已经持有 transport 的命令负责。")
     emit(payload, as_json=True, lines=lines)
     return EXIT_OK
+
+
+def _incident_of(model: dict) -> dict | None:
+    """§29. The incident the card in a `--with-frozen` envelope is about.
+
+    The FIRST event on the face, and the word «first» is a rule rather than a
+    position in a list: `alert_model` sorts its events by the declared attention
+    axis (ties keep the digest document's row order, `sort` being stable) and
+    the renderer prints them in that same order. So the head of that list is the
+    finding the card leads with — measured, not assumed: with a REVIEW row and a
+    WATCH row, only the REVIEW one reaches `events`, and the first line of the
+    rendered card is the head of it. The episode itself is carried by the event
+    (`presentation._event_of`, which calls `alert_digest.episode_of`) so that
+    this function names an incident in the vocabulary the delivery ledger files
+    receipts under, and not in a second one composed here.
+
+    Read here, from the model, and not by the sender from the card: which event
+    a card leads with is a rendering question, and a second answer to it in ops
+    would be a second ordering — the two would disagree the first time a code's
+    attention level moved.
+
+    `None` when there is no event to name: a status card is about a workday, and
+    a card whose face came out empty is about no single incident. `events` is
+    reported alongside the episode because a card carries up to three, and a
+    receipt that named one of three would otherwise read as if the message were
+    about that incident alone.
+    """
+    events = model.get("events") if isinstance(model, dict) else None
+    if not isinstance(events, list) or not events:
+        return None
+    first = events[0]
+    if not isinstance(first, dict):
+        return None
+    episode = str(first.get("episode") or "").strip()
+    if not episode:
+        return None
+    return {"episode": episode, "ref": first.get("ref"),
+            "code": first.get("code"), "event": first.get("event"),
+            "events_on_card": len(events)}
 
 
 def _card_delivery():
