@@ -5597,6 +5597,224 @@ tests/test_admission.py: OK          tests/test_continuation.py: OK
   不在仓库、`serveros-daily.timer` 已禁用、`SERVEROS_ALERT_CONVERSATION` 无落点……），
   本片一条也没有改变它们的状态。
 
+### 9.42 P7 切片 M：「Parent 替换后原 child 自动接回」
+
+#### 9.42.1 靶子：P7 验收行里最后一条仍是散文的判据
+
+§9.31.8 逐字记着 P7 那一行还剩三条只是散文：「Parent 替换后原 child 自动接回、一项等待不冻
+其他合法 scope、`parent_session` / `handoff.completed` 没有生产者」。第二条已由切片 D（§9.32）
+关闭，第三条属唤醒那一半（§9.38.9），所以**本片打的是第一条**。它不是一句新需求：它是这一行
+自己的验收判据，而判据在这次之前只以散文形态存在。
+
+#### 9.42.2 读数：一条正在跑的 child，与一条说自己没有 child 的记录
+
+`probe-m-before.py`（隔离 store，不碰活数据）先把这个缺口读成一条可复现的事实：
+
+```text
+Item SRV-0001   epoch 1  parent-a  child_attempts=["cyc-1"]  superseded_by=SRV-0001#2
+                epoch 2  parent-b  （一个 attempt 都不具名）   live
+cyc-1           phase DISPATCHED   retired_at None   → 仍在跑
+live_checkpoints()          ['SRV-0001#2']
+恢复中的 Parent 读到的那条     ATTEMPT_NONE
+predecessor_open            ['SRV-0001#1']   ← 只有知道要顺着外键走过去的读者才捞得回来
+```
+
+**child 没有丢。** store 里它还在，按 cycle 键着，`unresolved_effects` 也还在。丢的是**读数**：
+Item 现在只从 epoch 2 那条记录被读，而那条记录名字里没有任何 child，于是「这个 Item 欠什么」
+在每一个按 live 记录取的计数里都答「什么都不欠」—— 一份还在跑的 child 底下。「原 child 自动
+接回」之所以只能写成散文，正是因为没有一处读数跨得过 epoch。
+
+#### 9.42.3 单位是 Item，且链不顺着指针走
+
+两句话都是 store 自己说的，本片只是把它们读成定义：
+
+- **单位是 Item：**「The scope is the Item; the epoch is only how it changes hands.」一个在
+  epoch 1 下派出的 child 是 epoch 2 下**这个 Item 的**义务，新的 owner 没有被交给它，也不能
+  因此不算数。
+- **顺序来自 Item 的 epoch，不来自 `superseded_by`：** 指针是「谁接管了」的记录，不是「曾经
+  是什么」的答案。**而 `runtime/agent_control_store.supersede_checkpoint` 的守卫只要求被取代
+  的 ref 存在 —— 它不要求后继者是本 store、本 Item 的 checkpoint。** 顺着指针走的链会因此继承
+  指针失败的全部方式，包括走出它出发的那个 Item。那个缺口本片**量到了、没有改**（见 §9.42.10），
+  改为让成功链**只依赖 store 自己强制的那件事**：同 Item 的 epoch 次序。
+
+于是三个答案，而不是一个布尔：
+
+| 前驱 epoch 里的 attempt | 新 owner 欠吗 | 为什么 |
+|---|---|---|
+| `ATTEMPT_OPEN` | 欠（carried） | store 持有它，没有任何 outcome，有人在付钱 |
+| `ATTEMPT_RETIRED` | 欠（carried） | outcome 有了、没人收结果；读那份结果才是新 owner 欠的 |
+| `ATTEMPT_ACCEPTED` | 不欠（进 `closed`） | `work accept` 只写一次，Item 已经有那份结果了 |
+| `ATTEMPT_UNANSWERABLE` | 不欠、也**不丢** | 记录级答案升为 `ATTEMPTS_CARRIED_UNANSWERABLE`：「我读不到的一个 epoch 可能留下了东西」不是「什么都不欠」 |
+
+**两个读数互不重叠**，这是它可用的前提：记录**自己具名**的 attempt 绝不再计入 carried（那个
+Parent 已经手抄了一份，`attempts_state` 为它作答），所以屏幕顶层的 `attempts` 行与 `carried over`
+行的计数**相加不会算两遍**。这条性质有专门的用例钉住（`test_a_successor_that_names_the_attempt_itself_does_not_carry_it`）。
+
+#### 9.42.4 本片落的四笔
+
+**一、`runtime/continuation.py` 新增 `predecessors(record, checkpoints)`**：按 Item 的 epoch 次序
+给出「这个 Item 从哪些 epoch 走过来」，从最早的开始。三条排除各有理由，并且各自有用例：别的 Item
+的记录绝不是前驱；**store 仍算 live 的更低 epoch 不是前驱**（那意味着一个 Item 两个 owner，是
+`put_checkpoint` 拒绝、更高 epoch 的写入在同一事务里解掉的形状 —— 盘上真有也只是「一次没人做过的
+接管」，读数不得发明它）；`epoch` 不是 epoch 的记录不是本 store 写下的，也就不算一次交接。
+不可读的入参答空表而不抛。
+
+**二、`runtime/continuation.py` 新增 `carried_attempts(record, *, checkpoints, admissions)`**：
+返回 `{checkpoint_ref, work_item, epoch, predecessors, evidence, carried, closed, unreadable,
+state, detail, says}`。`evidence` 每条是 `attempts_state` 的条目**加上** `named_by` /
+`named_by_epoch` / `named_by_parent` —— 即「这是哪个 epoch、由谁派出、为什么它现在算这个 Item
+的」。记录级判定顺序 `UNANSWERABLE > CARRIED > NOTHING`，与 `attempts_state` 同源；三条 `says`
+都做单复数处理。新增闭集词汇 `CARRIED_ANSWERS`（三词，等号断言）。
+
+**三、`runtime/continuation.py` 的 `build_checkpoint` 抽出一个 `_is_epoch`**（正整数且不是 bool），
+内联判据换成它 —— 语义逐字相同，本片不借重构改判定。同时把模块 docstring 补一段
+「AND A READING OF ONE RECORD IS NOT A READING OF THE ITEM」，写明
+`attempts_state` 答的是一个**记录**的问题、`carried_attempts` 答的是一个 **Item** 的问题。
+
+**四、`runtime/cli.py` 的两个动词**：
+
+- `work checkpoint` 在**写入的那一刻**说出这次写入接管了什么（这是唯一一个说这句话不花钱的
+  时刻：更高 epoch 的写入与取代在同一个事务里发生）。屏幕多三段：`carried over  <state>`、
+  `  <says>`、逐 attempt 的 `    <ref>  <state>  named by <who> (epoch N, <parent>)`；`--json`
+  多一个 `carried`。
+- `work continuations` 顶层多一条计数行
+  `carried over  N attempt(s) left by an earlier epoch and no take-up closes — <refs>`，并在
+  **拥有该 Item 的那条记录**下面印 `carried over` 块 —— 不印在被取代的那条下面：义务是 Item 的，
+  印在哪一条就是「现在谁欠它」的陈述。被取代的那条自己那块仍然具名同一个 child，两个读数同时在
+  屏幕上，互不为对方的摘要。
+- 顺带：`live` 改为**调用 store 自己的 `store.live_checkpoints()`**。这个函数在此之前**零调用者**，
+  `runtime/cli.py` 曾自行重写了同一条过滤规则（`live_checkpoints()` 在本片拿到它在本仓的第一个
+  调用者）；注释写明「one continuation owner per scope」是 store 自己要说的。
+
+#### 9.42.5 屏幕读数（三个瞬间）
+
+`probe-m-screen.sh`，隔离 store，逐屏核对。关键的是**同一块里两行并列**：
+
+```text
+##########################################################################
+# 替换之后：恢复中的 Parent 读到的
+SRV-0001#2  AWAITING_CONTINUATION  wait WAIT_OPEN  attempts ATTEMPT_NONE
+  attempts      — this record names no child attempt
+  carried over  ATTEMPTS_CARRIED  from SRV-0001#1
+    this Item came through 1 earlier epoch and still owes 1 attempt no take-up
+    closes (cyc-1), so resuming here means reading it and not dispatching a
+    second child for the same work
+    cyc-1  ATTEMPT_OPEN  named by SRV-0001#1 (epoch 1, parent-a)
+```
+
+顶层同时出现两行，且相加不重复：
+
+```text
+attempts      0 recorded on 1 live checkpoint — 0 all taken up, 0 all finished with
+              a take-up outstanding, 0 with one still open, 0 this store cannot look
+              up, 1 naming none
+carried over  1 attempt left by an earlier epoch and no take-up closes — cyc-1
+```
+
+**结果被收走之后，同一块变成 `NOTHING_CARRIED`，而证据行仍在**（`cyc-1  ATTEMPT_ACCEPTED
+named by SRV-0001#1`）—— 「不再欠」与「从来没听说过」在屏幕上必须长得不一样，这是本片读数的
+第三个答案存在的全部理由。
+
+#### 9.42.6 被有意识移动的既有断言（三处）
+
+| 断言 | 原文 | 现在 | 为什么移动 |
+|---|---|---|---|
+| `tests/test_continuation.py` 模块 docstring（`:14`） | 「Five properties」 | 「Seven properties」＋新增第 7 条（`:71`）「THE RECORD IS NOT THE ITEM, AND THE ITEM IS WHAT OWES」 | 本片就是把那条性质立成第 7 条；旧计数留着会让 docstring 自己说错 |
+| 同文件「A SEVENTH THING THAT IS ALSO ASSERTED」（`:83`） | 第七 | 「AN EIGHTH THING」 | 同上，序号顺移 |
+| `build_checkpoint` 的 epoch 判据（`runtime/continuation.py:272`） | `if not isinstance(epoch, int) or isinstance(epoch, bool) or epoch < 1:` | `if not _is_epoch(epoch):` | 判据被 `predecessors` 也要用；**语义逐字保留**，本片不借这次抽取改任何判定（F5 那条变异仍然成立） |
+
+#### 9.42.7 本片新增的用例
+
+`tests/test_continuation.py`：净 **+19** 条 `def test_`（104 → 123），两处：
+
+- 新类 `TestTheItemOwesWhatItsEarlierEpochsLeft`（**14** 条，读数层）：闭集词汇等号断言；首个
+  epoch 什么都不接；**替换后的 Parent 接住前驱的 open child**（同时断言该记录自己的
+  `attempts_state` 仍是 `ATTEMPT_NONE`，并断言 provenance 三键）；retired 未被接受也算欠；
+  已接受不算欠（进 `closed`）；后继自己具名就不算 carried（互不重叠）；`cyc-gone` 让记录级答案
+  升为 UNANSWERABLE 且**仍列出能读到的 `cyc-1`**；`admissions=None` 是「nobody brought the
+  store」；链是 epoch 序而不是指针；**一个 Item 换过两次手就欠两个 epoch**（顺序断言）；
+  别的 Item 的记录绝不是前驱；store 仍算 live 的低 epoch 不是前驱；**epoch 不是 epoch 的记录
+  不是一次交接**；非 dict 入参答空而不抛（含 `checkpoints=None` 与「没有 Item」两种）。
+- `TestTheVerbsDriveTheStore` 末尾 **+5** 条（CLI 层）：写入动词说出它接管了什么、读数的
+  `carried over` 块印在拥有它的那条记录下面（含顶层计数行）、没有前驱的 Parent 什么都不印
+  （含 `0 attempts … nothing came through with anything open`）、后继自己具名就什么都不印、
+  `--json` 带上这份读数且**被取代的那条不在 `carried` 映射里**。
+
+新增 helper `a_second_parent(store, **over)`（epoch 2，**不具名任何 attempt** —— 这正是本片要的
+形状，不是 fixture 的疏漏）。`tests/test_admission.py` 未动（117 → 117）。预期全量
+`5891 + 19 = 5910`。
+
+#### 9.42.8 变异电池：17 条，17 杀，0 存活
+
+每轮改一行 → `rm -rf` 仓里所有 `__pycache__` → 跑 `tests/test_continuation.py` → 从字节备份
+`cp` 还原并 `sha256` **逐字节核对**（`/data/home/vince/artifacts/tmp-p7/mutate_slice_m.py`）。
+锚点在文件里必须恰好出现一次，命中不到就显式 `SKIP` 并让电池非零退出 —— 不把锚错读成一条活着的
+判据。**首轮 15 条：13 杀、2 存活、1 SKIP。三条都当场处理，一条也没有当成「通过了」**：
+
+- **存活 1（别的 Item 的记录变成前驱）**：原有那条 `test_a_record_of_another_item_is_never_a_predecessor`
+  的 fixture 把另一个 Item 的记录也写成 epoch 1，于是 `other["epoch"] < epoch` 这一句**替我挡住了
+  那个突变** —— 用例在 Item 过滤被删掉时照样通过。这是**测试自己的假绿**：判据没有被钉住，只是
+  被另一个条件遮住了。修法是把另一个 Item 的 epoch 提到 2，让 Item 成为唯一有效的过滤，并把这段
+  理由写进 docstring。
+- **存活 2（epoch 不是 epoch 的记录不跳过）**：那条守卫**此前没有任何用例**。新增
+  `test_an_epoch_the_store_did_not_write_is_not_a_handover`：`build_checkpoint` 写的是整数
+  epoch，所以一条形状不对的 epoch 不是本 store 写下的 —— 把它读成一个 epoch 就是从**一个没有任何
+  东西校验过的字段**里发明一次交接。它同时补上了 `predecessors` 的 `checkpoints=None` 与
+  「没有 Item」两个入参分支。
+- **SKIP（缺 admissions 那一支）**：我的锚点 `if not isinstance(admissions, dict):` 在
+  `runtime/continuation.py` 里出现 **3 次**（`attempts_state`、`wait_state`、`carried_attempts`
+  各一）。按电池自己的规矩，这不是「死了」，是**电池坏了**：换成两行锚点后重跑，杀掉。
+
+补完三条后**重跑整盘 17 条：17 杀、0 存活、0 SKIP**，还原后三个文件回到 `sha256` 逐字节相同。
+
+#### 9.42.9 全量读数
+
+一次跑，捕获方式与 K/L 相同（原始日志落盘 ＋ 只 `grep` 摘要行：收尾期那族
+`ResourceWarning: unclosed file` 打在摘要行之后，`tail` 会把计数挤掉）。
+
+```text
+HEAD 1341a6ad2af670a6eadae4703d748bad8fb9caf1  dirty 3
+start 2026-09-26T08:14:22+08:00
+rc=0 at 2026-09-26T08:25:04+08:00
+5910 passed, 20 skipped, 3993 subtests passed in 641.67s (0:10:41)
+dirty after 3  HEAD 1341a6a
+runtime/continuation.py: OK   runtime/cli.py: OK   tests/test_continuation.py: OK
+```
+
+- **算术闭合**：上一格 5891 ＋ 本片净新增的 **19** 条 `def test_`（`test_continuation.py`
+  104 → 123，删 0 条）＝ **5910**。
+- **subtests** 3993 → 3993：本片没有一条用例用 subtest，与前两格相同。
+- **`dirty 3` 而不是 0**：本片的三个文件还在工作树里未提交，跑前跑后都是 3、HEAD 未变 ——
+  这一跑**没有额外写进任何东西**。
+- 三个文件跑前记下 `sha256`、跑后 `sha256sum` 逐行相同：这一跑读到的就是将要提交的那份字节。
+
+#### 9.42.10 它没做什么，仍未关闭的
+
+- **不唤醒、不续跑。** 本片全部在「醒来之后要做什么」这一侧。`receivers()` 仍然答
+  `RECEIVERS: tuple = ()`：**这个节点上没有任何东西会因为一份保存好的 checkpoint 而醒过来**，
+  屏幕上的 `receivers  none installed — a saved checkpoint is not being woken by anything on
+  this node` 就是这句话。§9.38.9 记下的两件前置（一条真的跑这个检查、并且是 trigger owner 的
+  routine ＋ 一条真的被记录下来的 grant）**本片仍然不具备**，而那是「工作循环的第一次真实委派」
+  那条摆在人面前等决定的线，本片不替人做那个决定，也不伪造一条 grant。
+- **不决定一个继承来的 attempt 该不该继续。** 放弃它、取代它、继续它是三个不同的动作，三个都是
+  Parent 的。本片只说「它还在那儿、还欠着、是谁派出的」。
+- **不检查继承来的 retired attempt 的结果还能不能收。** 那是
+  `accept_admission` 自己的问题（§9.41 已立）。本片不代它答。
+- **不新增 store、不新增文件、不新增动词。** 只新增两个读函数与两处渲染；`work checkpoint` /
+  `work continuations` 的输出面变大，语义不变。
+- **`supersede_checkpoint` 那个守卫缺口仍然开着、且仍然没有生产调用者**：它只要求被取代的 ref
+  存在，不要求后继者是本 store、本 Item 的 checkpoint，也没有 CLI 动词，只有测试调它。本片
+  **量到它、用它论证了「链不顺着指针走」、没有改它** —— 改它要移动 §9.40 刚钉住的 F12/F13 两条
+  用例，而那是「确保唯一 logical Parent」那条相邻的环，不是本片这一格。本片改为让成功链不依赖
+  指针，并用一条测试把这个决定钉住（把 `superseded_by` 改成不存在的 `SRV-0001#99`，仍然接得住）。
+- **`WAIT_KINDS` 仍只有 `child` / `window`**；接收方/唤醒那一半的前置、`NodeControlTransport.send`
+  不包裹 connector 异常、`SERVEROS_ALERT_CONVERSATION` 无落点、`max_attempts` 在准入预留上无
+  消费者、`~/.claude/skills/document-stewardship/{scripts,references}` 不在仓库、
+  `serveros-daily.timer` 已禁用…… 与前几格相同，本片一条也没有改变它们的状态。
+- **切片 F–M 的新模块在装好的节点上仍然没有 `checkpoint` / `continuations` / `accept` 这些动词**
+  （P12 的 `build→promote→restart` 那一次）；本片没有动 `plugin/`、`mcp/` 或任何 composition，
+  所以本片自己不触发它。
+
 ## 10. 后续每包更新哪几行
 
 - 改完一个包，只更新 §3.1 里对应行的四层状态 + §5 表的增删。
