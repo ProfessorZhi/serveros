@@ -1355,6 +1355,13 @@ def status_model(snapshot: dict, *, at: str, binding: dict | None = None,
     the part that was missing: the one-line verdict, the binding-selected
     gateway, and the refusal to let a section that was not read render as a
     section that was fine.
+
+    `snapshot["day"]` — today's card and the hours it folded — travels through
+    unchanged when it is there and is ABSENT when it is not. Unlike the schedule
+    this gets no degraded sentence of its own: the calendar's absence has an
+    acceptance criterion that names the word `calendar=UNKNOWN`, and the day
+    card's absence has none, so a fixture written without a day store renders
+    without a day block rather than with an invented one.
     """
     gaps = list(snapshot.get("gaps") or [])
     sections = {
@@ -1375,6 +1382,7 @@ def status_model(snapshot: dict, *, at: str, binding: dict | None = None,
         "sections": sections,
         "order": list(SECTIONS),
         "schedule": _schedule(snapshot),
+        "day": snapshot.get("day") or None,
         "coverage": {
             # §3. The shared gateway and the personal container0 are different
             # things and the card says which of them each number came from.

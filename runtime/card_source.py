@@ -106,6 +106,12 @@ business_calendar = _load("serveros_runtime_business_calendar",
 #: and not a second literal, so the two names cannot drift apart.
 DEFAULT_CALENDAR_PATH = business_calendar.DEFAULT_PATH
 
+card_day = _load("serveros_runtime_card_day", "card_day.py")
+
+#: The day's own card, beside the delivery ledger under `~/.serveros/cards/`.
+#: An ALIAS for the same reason as the calendar's: one fact, one literal.
+DEFAULT_DAY_STORE_PATH = card_day.DEFAULT_PATH
+
 
 # ---------------------------------------------------------------------------
 # Reading
@@ -378,6 +384,7 @@ def _mine_section(summary: dict | None, user_services: dict | None,
 
 def snapshot(collected: dict, *, at: str, binding: dict | None = None,
              node_label: str | None = None, calendar: dict | None = None,
+             day: dict | None = None,
              reads_order=("summary", "top", "user_services", "runtime_list")) -> dict:
     """The three blocks, in the shape `presentation.status_model` consumes.
 
@@ -396,14 +403,30 @@ def snapshot(collected: dict, *, at: str, binding: dict | None = None,
     validate, and a gap line is where this card already answers that kind of
     question.
 
-    A caller that supplies NO reading gets no schedule block and no gap, and
-    this is the shape that keeps the function honest about where it reads: it
-    shapes what it was handed and opens no file of its own. A default here that
-    went and read `~/.serveros/business-calendar.yaml` would make every caller's
-    answer depend on the machine the caller happened to be on, which is the
-    property that separates a renderer from a report about one host. The callers
-    that do read it — `serverosctl card status` and this module's own CLI — pass
-    the reading in, and `presentation._schedule` names the unread case in words.
+    `day` is `load_day_store`'s READING — today's card and the hours it folded.
+    A READING that says ABSENT renders the day's own sentence, because the
+    caller asked and «今天还没有当天的卡» is the answer: it is the normal state
+    of a workday before its first tick, and after the first tick it is the
+    visible sign that nothing is advancing the day. Only INVALID becomes a
+    collection gap, because that is the state somebody has to fix.
+
+    It is treated differently from the calendar in one respect, and the
+    difference is not an inconsistency: §9's acceptance criterion says the word
+    `calendar=UNKNOWN` must appear on the diagnostic, so an unread calendar can
+    never be silent AND is always a gap. No criterion says a day store's absence
+    is a fault, and it is not one — an empty day is what a day looks like before
+    it starts — so it speaks without a gap.
+
+    A caller that supplies NO reading gets no schedule block and no day block,
+    and this is the shape that keeps the function honest about where it reads:
+    it shapes what it was handed and opens no file of its own. That distinction —
+    «handed a reading that says absent» versus «handed nothing» — is the one the
+    two branches below carry. A default here that went and read
+    `~/.serveros/business-calendar.yaml` would make every caller's answer depend
+    on the machine the caller happened to be on, which is the property that
+    separates a renderer from a report about one host. The callers that do read
+    it — `serverosctl card status` and this module's own CLI — pass the reading
+    in, and `presentation._schedule` names the unread calendar case in words.
     """
     reads = collected.get("reads") or {}
     gaps = list(collected.get("gaps") or [])
@@ -417,6 +440,16 @@ def snapshot(collected: dict, *, at: str, binding: dict | None = None,
                 "command": calendar.get("path") or str(DEFAULT_CALENDAR_PATH),
                 "why": (calendar.get("reason") or "工作日历未读到")
                        + (f"：{calendar['detail']}" if calendar.get("detail") else "")})
+    day_card = None
+    if day is not None:
+        if day.get("state") == "INVALID":
+            gaps.append({
+                "read": "card_day_store",
+                "command": day.get("path") or str(DEFAULT_DAY_STORE_PATH),
+                "why": (day.get("reason") or "当天卡状态读不到")
+                       + (f"：{day['detail']}" if day.get("detail") else "")})
+        else:
+            day_card = day.get("day")
     return {
         "schema": SCHEMA,
         "at": at,
@@ -424,6 +457,7 @@ def snapshot(collected: dict, *, at: str, binding: dict | None = None,
         "gaps": [f"{g['read']}（{' '.join(g['command'].split())}）未读到：{g['why']}"
                  for g in gaps],
         **({"schedule": schedule} if schedule else {}),
+        **({"day": day_card} if day_card else {}),
         "mine": _mine_section(summary, reads.get("user_services"),
                               reads.get("runtime_list"), gaps),
         "host": _host_section(summary, gaps),
@@ -487,11 +521,35 @@ def load_calendar(path=None) -> dict:
     return business_calendar.read_declaration(Path(path) if path else None)
 
 
+def load_day_store(path=None) -> dict:
+    """Today's card as a READING — never a raise, never a silent empty day.
+
+    Three states, and the middle one is why this wrapper exists rather than the
+    caller holding a `DayStore`: a store that is not on disk means today's card
+    has not been created, which is an answer; a store that IS on disk and cannot
+    be read is a fault somebody has to fix, and `DayStore` raises for it so that
+    nothing quietly starts over. A renderer cannot afford the raise — it would
+    turn an unreadable card memory into no card at all — so the fault becomes a
+    state and the state becomes a collection gap.
+    """
+    target = Path(path) if path else DEFAULT_DAY_STORE_PATH
+    try:
+        store = card_day.DayStore(target)
+    except card_day.CardDayError as exc:
+        return {"state": "INVALID", "day": None, "path": str(target),
+                "reason": "当天卡状态文件读不到", "detail": str(exc)}
+    absent = not target.exists()
+    return {"state": "ABSENT" if absent else "READ", "day": store.summary(),
+            "path": str(target), "reason": "" if not absent else "今天还没有当天的卡",
+            "detail": ""}
+
+
 def main(argv: list[str] | None = None) -> int:  # pragma: no cover - hand check
     import argparse
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--gateway-binding", default="")
     parser.add_argument("--business-calendar", default="")
+    parser.add_argument("--day-store", default="")
     parser.add_argument("--device-ref", default="")
     parser.add_argument("--out", default="")
     parser.add_argument("--at", default="")
@@ -500,7 +558,8 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover - hand check
     snap = snapshot(collected, at=args.at, node_label=args.device_ref or None,
                     binding=load_binding(args.gateway_binding or None,
                                          device_ref=args.device_ref or None),
-                    calendar=load_calendar(args.business_calendar or None))
+                    calendar=load_calendar(args.business_calendar or None),
+                    day=load_day_store(args.day_store or None))
     text = json.dumps(snap, ensure_ascii=False, indent=2)
     if args.out:
         Path(args.out).write_text(text, encoding="utf-8")
