@@ -1092,6 +1092,10 @@ class Daemon:
             # claim — a send is recorded against a VERSION, not a clock.
             "card.record-delivery": self._r_card_record_delivery,
             "card.deliveries": self._r_card_deliveries,
+            # The incident half of the same ledger: whether the message that
+            # carries one episode may still be patched, which is the question
+            # V29 answers with «不重复 NEW» across hours and days.
+            "card.incident": self._r_card_incident,
         }
 
     def handle(self, request: dict, *, peer: dict | None = None) -> dict:
@@ -1191,7 +1195,12 @@ class Daemon:
                 # the daemon owns. The node MCP still declares `alert.list` and
                 # `alert.inspect` and nothing else, so nothing here is reachable
                 # from a chat message.
-                "card.record-delivery", "card.deliveries",
+                # `card.incident` is the third: a READ of the same ledger, asked
+                # there rather than opened by the caller because this daemon is
+                # its only writer. It answers which message carries one episode
+                # and whether it may still be patched; it sends and edits
+                # nothing, so what it adds to the socket is a lookup.
+                "card.record-delivery", "card.deliveries", "card.incident",
                 # SYS-02. Two READS and no write, and that is a decision rather
                 # than an unfinished edge. Declaring and releasing a desired
                 # reference are acts a caller performs on its own behalf, and
@@ -2107,6 +2116,11 @@ class Daemon:
             # lives in `card_delivery.check_remote_id`, on the ledger's side of
             # this call rather than here.
             remote_id=params.get("remote_id"),
+            # Same rule for the episode: which kind of receipt must carry one
+            # and which must not is `card_delivery.record`'s judgement, and a
+            # second copy of it here would be the copy that drifts. This node
+            # passes on what the sender said the card was about.
+            episode=params.get("episode"),
             reason=params.get("reason"))
 
     def _r_card_deliveries(self, params) -> dict:
@@ -2129,6 +2143,24 @@ class Daemon:
                      "attempted, and an attempt nobody composed a card for "
                      "would have no version at all."),
         }
+
+    def _r_card_incident(self, params) -> dict:
+        """§29's «同 episode 跨小时、跨天只 patch 一张», answered from the ledger.
+
+        Read-only, and it comes through this node rather than being read by the
+        caller for the reason `card.deliveries` does: the ledger has exactly one
+        writer and this is it. A caller that opened the file itself would be
+        reading a document somebody else may be rewriting, and the answer it
+        needed — which message carries THIS episode — is a lookup, not a dump.
+
+        Nothing here sends, edits or remembers: the answer is a judgement about
+        a message that already exists, and the caller is the one that acts on it.
+        """
+        kind = _required(params, "kind")
+        episode = _required(params, "episode")
+        at = str(params.get("at") or "") or _iso(self._now())
+        return card_delivery_mod.incident_verdict(
+            self.card_ledger(), kind=kind, episode=episode, at=at)
 
     def _r_alert_record_delivery(self, params) -> dict:
         """§12. What actually happened when somebody tried to say it."""

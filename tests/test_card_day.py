@@ -996,12 +996,60 @@ class TheCardRemembersWhichMessageCarriesIt(unittest.TestCase):
     def test_the_module_it_reads_is_the_same_copy_the_cli_loads(self):
         """Loaded under the CLI's own module name: two copies would make a test
         that pinned the window in one of them a test about a document nobody
-        reads."""
-        self.assertIs(card_day._transport(), transport)
+        reads — and here the daemon is the only writer of that document, so a
+        second copy would be a second reading of it."""
+        self.assertIs(card_day._delivery(), card_delivery)
 
     def test_the_window_is_the_transports_own_number_and_not_a_copy(self):
         self.assertEqual(card_day.update_window_days(),
                          transport.CARD_UPDATE_WINDOW_DAYS)
+
+    def test_the_words_this_verdict_answers_in_are_the_ledgers_own(self):
+        """A day's verdict and a card's receipt have to be written in the same
+        words: a reader branching on the receipt's word and a verdict that
+        spelled the same answer differently would not recognise each other, and
+        the reader that failed to recognise «patch it» sends a second card."""
+        for name in ("NEW_MESSAGE", "PATCH_MESSAGE", "NEVER_SENT", "IN_HAND",
+                     "IDENTITY_MISSING", "IDENTITY_EXPIRED", "IDENTITY_UNDATED"):
+            self.assertEqual(getattr(card_day, name), getattr(card_delivery, name),
+                             name)
+        # The two words that are this file's own are exactly the difference: a
+        # routine broadcast can say «nothing to send this hour», and an incident
+        # has no such hour.
+        self.assertEqual(card_day.MESSAGE_ACTIONS,
+                         (card_delivery.NEW_MESSAGE, card_delivery.PATCH_MESSAGE,
+                          card_day.NO_MESSAGE))
+        self.assertEqual(card_day.MESSAGE_REASONS,
+                         card_delivery.MESSAGE_REASONS + (card_day.NOT_ROUTINE,))
+
+    def test_the_shared_words_are_borrowed_rather_than_written_out_again(self):
+        """A same-valued literal passes every behavioural test above — the words
+        are short strings, and two copies of «IN_HAND» are equal — so this one
+        reads the source. It is what makes this file follow the ledger the day
+        somebody renames one of them, instead of going quietly out of step."""
+        source_text = (ROOT / "runtime" / "card_day.py").read_text(encoding="utf-8")
+        for name in ("NEW_MESSAGE", "PATCH_MESSAGE", "NEVER_SENT", "IN_HAND",
+                     "IDENTITY_MISSING", "IDENTITY_EXPIRED", "IDENTITY_UNDATED"):
+            self.assertIn(f"{name} = _delivery().{name}", source_text, name)
+
+    def test_the_judgment_about_the_message_is_the_ledgers_and_not_a_second_one(self):
+        """「判决在那边」与「这里真的问了它」是两句话。
+
+        把 `binding_verdict` 换成「总是可以 patch」，上面每一条都还会绿——所以这
+        里让那一份判决给出一个这里没有句子可说的理由，这个函数必须拒绝，而不是
+        顺着往下答一句「patch 它」。
+        """
+        instant = at(PLAIN_WORKDAY, 8)
+        self.advance_to(instant)
+        self.store.announce(remote_id="om_day_one", at=instant)
+        judged = {"action": card_delivery.NEW_MESSAGE, "reason": "A_REASON_FROM_NOWHERE",
+                  "remote_id": "om_day_one", "window_days": 14, "age_days": 0.0}
+        original = card_delivery.binding_verdict
+        self.addCleanup(setattr, card_delivery, "binding_verdict", original)
+        card_delivery.binding_verdict = lambda *a, **k: dict(judged)
+        with self.assertRaises(card_day.CardDayError):
+            card_day.message_verdict(card_day.PATCH, self.store.read()["open"],
+                                     at=instant)
 
     def test_the_verdict_reads_that_number_rather_than_carrying_a_copy_of_it(self):
         """「这个函数返回传输层那个数」与「判决真的用了它」是两句话。
