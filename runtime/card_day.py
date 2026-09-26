@@ -86,11 +86,6 @@ _HERE = Path(__file__).resolve().parent
 
 SCHEMA = "serveros/card-day.v1"
 
-#: The card's own memory, beside the delivery ledger and never inside it. Which
-#: document this names for a given state directory is `day_path`, and the two
-#: are checked against each other in the tests rather than by eye.
-DEFAULT_PATH = Path.home() / ".serveros" / "cards" / "day.json"
-
 CREATE = "CREATE"
 PATCH = "PATCH"
 SKIP = "SKIP"
@@ -157,6 +152,19 @@ def _delivery():
     and verdicts over given instants; this module still sends nothing.
     """
     return _load("serveros_runtime_card_delivery", _HERE / "card_delivery.py")
+
+
+def _registry():
+    """`runtime/registry.py`, for the ONE producer of the state root.
+
+    Loaded under the same module name `runtime/cli.py` and `runtime/daemon.py`
+    load it as, like every other sibling here. One thing is read from it —
+    `state_root()`, which honours `SERVEROS_STATE_DIR` and falls back to the
+    path contract — and it is asked rather than recomposed, because a module
+    that built the pair itself is how the daemon and the verbs came to disagree
+    about where the control store is (§9.48.5).
+    """
+    return _load("serveros_runtime_registry", _HERE / "registry.py")
 
 
 def update_window_days() -> int:
@@ -235,6 +243,36 @@ def day_path(state_path) -> Path:
     the register would be erased by a pass that has nothing to do with cards.
     """
     return Path(state_path).parent.parent / "cards" / "day.json"
+
+
+def default_path() -> Path:
+    """Where the day's memory sits when the caller names no store.
+
+    The SAME computation as `day_path`, over the file the ledger's own directory
+    is already anchored on: `runtime/daemon.py#card_ledger` builds
+    `<state_dir>/alerts/state.json` and hands it to `card_delivery.ledger_path`,
+    and this hands the same file to the sibling function. So on a node the day's
+    card and the receipt ledger are one directory apart by construction, which is
+    what the module's own first sentence claims and what a reader checking
+    "which message carries today's card" needs to be true.
+
+    It used to be `~/.serveros/cards/day.json`, and that was wrong for a reason
+    written down where it can be checked rather than argued:
+    `fleet/node-root-contract.yaml` declares `~/.serveros/` to hold three named
+    files and states that "large state does not live here" — an entry of that
+    root can be deleted and re-derived. A day's card cannot: losing the record of
+    which message carries it is what makes the next tick create the second card
+    V28 forbids (`card day-advance` refuses to replace an unreadable store at
+    all, for exactly this reason). A document whose loss is the harm does not
+    belong in a root whose entries are all disposable. The ledger never was
+    there; only this document was, and that is how one feature's two documents
+    came to have two answers to "where does a card live".
+
+    Asked at CALL time rather than frozen into a constant, because the answer is
+    a function of the environment `registry.state_root` reads — the same reason
+    `cli._agent_control_store_path` asks it per call.
+    """
+    return day_path(_registry().state_root() / "runtime" / "alerts" / "state.json")
 
 
 def empty() -> dict:
@@ -957,7 +995,7 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover - hand check
         datetime.timezone.utc).astimezone().isoformat()
     reading = _calendar().read_declaration(args.calendar or None)
     schedule = _calendar().routine_window(at, reading=reading)
-    store = DayStore(args.store or DEFAULT_PATH)
+    store = DayStore(args.store or default_path())
     action = decide(store.read(), schedule=schedule, at=at)
     payload = {"schedule": schedule, "decision": action, "day": store.summary()}
     if args.json:

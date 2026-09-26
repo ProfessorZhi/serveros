@@ -108,9 +108,19 @@ DEFAULT_CALENDAR_PATH = business_calendar.DEFAULT_PATH
 
 card_day = _load("serveros_runtime_card_day", "card_day.py")
 
-#: The day's own card, beside the delivery ledger under `~/.serveros/cards/`.
-#: An ALIAS for the same reason as the calendar's: one fact, one literal.
-DEFAULT_DAY_STORE_PATH = card_day.DEFAULT_PATH
+#: The day's own card, beside the delivery ledger under the state root's
+#: `runtime/cards/`. An ALIAS for the same reason as the calendar's — one fact,
+#: one answer — and an alias of the FUNCTION rather than of its result, because
+#: the answer is a function of the state root and freezing it here would be a
+#: second reading of an answer `registry.state_root` owns.
+#:
+#: The sentence above used to say the ledger was under `~/.serveros/cards/`,
+#: which was never true of a node: the ledger is written by the daemon as
+#: `<state_dir>/cards/delivery.json` and always was. Only the day store pointed
+#: somewhere else, so the two documents of one feature lived in two roots and a
+#: reader sent to `card deliveries` for "which message carries today's card"
+#: landed in a directory the card itself was not in.
+DEFAULT_DAY_STORE_PATH = card_day.default_path
 
 
 # ---------------------------------------------------------------------------
@@ -445,7 +455,7 @@ def snapshot(collected: dict, *, at: str, binding: dict | None = None,
         if day.get("state") == "INVALID":
             gaps.append({
                 "read": "card_day_store",
-                "command": day.get("path") or str(DEFAULT_DAY_STORE_PATH),
+                "command": day.get("path") or str(DEFAULT_DAY_STORE_PATH()),
                 "why": (day.get("reason") or "当天卡状态读不到")
                        + (f"：{day['detail']}" if day.get("detail") else "")})
         else:
@@ -532,7 +542,7 @@ def load_day_store(path=None) -> dict:
     turn an unreadable card memory into no card at all — so the fault becomes a
     state and the state becomes a collection gap.
     """
-    target = Path(path) if path else DEFAULT_DAY_STORE_PATH
+    target = Path(path) if path else DEFAULT_DAY_STORE_PATH()
     try:
         store = card_day.DayStore(target)
     except card_day.CardDayError as exc:

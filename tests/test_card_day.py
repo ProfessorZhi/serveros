@@ -66,6 +66,11 @@ cli = _load("serveros_runtime_cli_for_cards", ROOT / "runtime" / "cli.py")
 #: assert that the window it reads is the window this file pins.
 transport = _load("serveros_runtime_message_transport",
                   ROOT / "runtime" / "message_transport.py")
+#: The one producer of the state root, loaded under the name `runtime/cli.py`
+#: and `runtime/daemon.py` load it as. The day store's default is derived from
+#: it, so the tests that pin the default have to be able to ask the same
+#: question the module asks rather than restate its answer.
+registry = _load("serveros_runtime_registry", ROOT / "runtime" / "registry.py")
 
 YEAR = 2031
 OFFICIAL_WORK_SATURDAY = "2031-06-07"   # a workday although it is a Saturday
@@ -802,20 +807,57 @@ class TheDaysMemoryIsOneDocumentBesideTheDeliveryLedger(unittest.TestCase):
         self.assertEqual(card_day.day_path(state),
                          card_delivery.ledger_path(state).parent / "day.json")
 
-    def test_the_default_path_is_where_an_instances_own_state_resolves_to(self):
-        """`~/.serveros/business-calendar.yaml` is the sibling default, and the
-        same parent: one instance, one directory of card documents."""
-        instance_state = Path.home() / ".serveros" / "state" / "alerts.json"
-        self.assertEqual(card_day.day_path(instance_state), card_day.DEFAULT_PATH)
+    def test_the_default_path_is_where_a_nodes_own_state_resolves_to(self):
+        """The default is the day's memory BESIDE THE LEDGER on a node, and it
+        is the same computation: `default_path` anchors on the file the daemon
+        anchors the ledger on, under the state root `registry.state_root`
+        answers with.
 
-    def test_the_renderers_default_and_the_writers_default_are_one_path(self):
-        """`card_source.DEFAULT_DAY_STORE_PATH` is an ALIAS and not a second
-        literal: two defaults that drift would have `card status` rendering one
-        file while `card day-advance` writes another, and both would look right.
+        It used to be `~/.serveros/cards/day.json`, which made the two documents
+        of one feature live in two roots — the ledger under the state root and
+        the day store under a root `fleet/node-root-contract.yaml` restricts to
+        three files and to state that can be deleted and re-derived. This test
+        no longer compares against a literal because there is no literal left to
+        compare: the assertion IS the siblingship.
         """
-        self.assertEqual(source.DEFAULT_DAY_STORE_PATH, card_day.DEFAULT_PATH)
+        register = (registry.state_root() / "runtime" / "alerts" / "state.json")
+        self.assertEqual(card_day.default_path(), card_day.day_path(register))
+        self.assertEqual(card_day.default_path(),
+                         card_delivery.ledger_path(register).parent / "day.json")
+
+    def test_the_default_path_is_a_question_and_not_a_frozen_answer(self):
+        """Asked at call time, so `SERVEROS_STATE_DIR` is honoured the way the
+        daemon honours it.
+
+        The failure this forecloses is §9.48.5's, in a new place: an import-time
+        constant would freeze whichever root the importing process happened to
+        see, and a sender whose unit exports no state root would write the day's
+        memory to the contract's answer while the daemon wrote the ledger to the
+        exported one. Both would look right.
+        """
+        import os
+        saved = os.environ.get("SERVEROS_STATE_DIR")
+        os.environ["SERVEROS_STATE_DIR"] = "/somewhere/else"
+        try:
+            self.assertEqual(card_day.default_path(),
+                             Path("/somewhere/else/runtime/cards/day.json"))
+        finally:
+            if saved is None:
+                os.environ.pop("SERVEROS_STATE_DIR", None)
+            else:
+                os.environ["SERVEROS_STATE_DIR"] = saved
+
+    def test_the_renderers_default_and_the_writers_default_are_one_answer(self):
+        """`card_source.DEFAULT_DAY_STORE_PATH` is an ALIAS and not a second
+        answer: two defaults that drift would have `card status` rendering one
+        file while `card day-advance` writes another, and both would look right.
+        Aliased as the FUNCTION rather than as its result, so the env is read by
+        one producer and not two.
+        """
+        self.assertIs(source.DEFAULT_DAY_STORE_PATH, card_day.default_path)
+        self.assertEqual(source.DEFAULT_DAY_STORE_PATH(), card_day.default_path())
         reading = source.load_day_store()
-        self.assertEqual(reading["path"], str(card_day.DEFAULT_PATH))
+        self.assertEqual(reading["path"], str(card_day.default_path()))
 
     def test_an_absent_store_is_an_empty_day_and_not_an_error(self):
         store = card_day.DayStore(self.path / "nothing-here.json")
