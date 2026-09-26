@@ -18,6 +18,7 @@ Hermetic: no docker, no systemd, no socket on the real machine, no network.
 """
 from __future__ import annotations
 
+import datetime
 import importlib.util
 import json
 import socket
@@ -2519,4 +2520,120 @@ def test_a_receipt_against_something_that_is_not_a_message_is_refused(
                    "remote_id": "oc_a_conversation"}})
     assert answer["ok"] is False, answer
     assert "a_conversation" not in json.dumps(answer)
+    assert daemon.card_ledger().entries() == []
+
+
+#: One instant, held still, so that the fourteen-day window is a fact about
+#: these tests rather than about when they ran: the receipt is filed at it and
+#: the verdict is asked at an instant derived from it.
+EPOCH = 1789000000.0
+FILED_AT = datetime.datetime.fromtimestamp(EPOCH, datetime.timezone.utc)
+
+
+def _later(**over):
+    return (FILED_AT + datetime.timedelta(**over)).isoformat()
+
+
+def _frozen_alert(card):
+    """The same card, sent as an incident. The kind is in the version, so a
+    receipt for this one cannot be confused with a status card's."""
+    return card_delivery_mod.freeze_card("alert", card, at=_later())
+
+
+def test_a_receipt_keeps_the_episode_it_was_filed_under(daemon_factory):
+    """An incident receipt without its episode is a receipt for «some card».
+
+    The next hour — and the next day — look the same incident up by that word,
+    so a daemon that dropped it would leave every receipt looking complete while
+    making «same episode, one card» unanswerable, which leaves a second card as
+    the only way forward.
+    """
+    daemon = daemon_factory(clock=lambda: EPOCH)
+    card = _a_status_card()
+    answer = daemon.handle({
+        "method": "card.record-delivery",
+        "params": {"kind": "alert", "state": "DELIVERED", "card": card,
+                   "frozen": _frozen_alert(card),
+                   "episode": "abc123def456", "remote_id": "om_incident"}})
+    assert answer["ok"] is True, answer
+    assert answer["result"]["entry"]["episode"] == "abc123def456"
+    # Read back through the other RPC: a value written into the answer without
+    # reaching the document is the same defect one hop later.
+    read_back = daemon.handle({"method": "card.deliveries",
+                               "params": {"kind": "alert"}})["result"]
+    assert read_back["last_delivered"]["episode"] == "abc123def456"
+
+
+def test_an_incident_receipt_that_names_no_episode_is_refused(daemon_factory):
+    """The rule lives on the ledger's side of this call — `record` is the only
+    door a row goes through — so the daemon passes on what the sender said and
+    writes nothing when the answer is «no episode»."""
+    daemon = daemon_factory(clock=lambda: EPOCH)
+    card = _a_status_card()
+    answer = daemon.handle({
+        "method": "card.record-delivery",
+        "params": {"kind": "alert", "state": "DELIVERED", "card": card,
+                   "frozen": _frozen_alert(card), "remote_id": "om_incident"}})
+    assert answer["ok"] is False, answer
+    assert daemon.card_ledger().entries() == []
+
+
+def test_the_incident_rpc_answers_out_of_the_ledger(daemon_factory):
+    """V29, over the socket: an episode that already has a message is patched
+    and not sent again — and the answer comes from what was SENT, which is the
+    only document that survives the hour and the day boundary."""
+    daemon = daemon_factory(clock=lambda: EPOCH)
+    card = _a_status_card()
+    daemon.handle({
+        "method": "card.record-delivery",
+        "params": {"kind": "alert", "state": "DELIVERED", "card": card,
+                   "frozen": _frozen_alert(card), "episode": "abc123def456",
+                   "remote_id": "om_incident"}})
+    answer = daemon.handle({
+        "method": "card.incident",
+        "params": {"kind": "alert", "episode": "abc123def456",
+                   "at": _later(hours=6)}})["result"]
+    assert answer["action"] == "PATCH_MESSAGE", answer
+    assert answer["reason"] == "IN_HAND", answer
+    assert answer["remote_id"] == "om_incident", answer
+
+    # …and an episode nobody has sent for is a first send, asked the same way.
+    other = daemon.handle({
+        "method": "card.incident",
+        "params": {"kind": "alert", "episode": "bbb222ccc333",
+                   "at": _later(hours=6)}})["result"]
+    assert other["action"] == "NEW_MESSAGE", other
+    assert other["reason"] == "NEVER_SENT", other
+
+
+def test_the_incident_rpc_is_a_read(daemon_factory):
+    """A verdict is not a send, a patch or a note-to-self: asking it twice has
+    to leave the ledger exactly as it was, or the second ask would be answering
+    a question the first one changed."""
+    daemon = daemon_factory(clock=lambda: EPOCH)
+    card = _a_status_card()
+    daemon.handle({
+        "method": "card.record-delivery",
+        "params": {"kind": "alert", "state": "DELIVERED", "card": card,
+                   "frozen": _frozen_alert(card), "episode": "abc123def456",
+                   "remote_id": "om_incident"}})
+    before = json.dumps(daemon.card_ledger().entries(), sort_keys=True)
+    for _ in range(2):
+        daemon.handle({"method": "card.incident",
+                       "params": {"kind": "alert", "episode": "abc123def456",
+                                  "at": _later(hours=6)}})
+    assert json.dumps(daemon.card_ledger().entries(), sort_keys=True) == before
+
+
+def test_the_incident_rpc_refuses_what_it_cannot_answer(daemon_factory):
+    """Two refusals, and both are refusals rather than guesses: a card family
+    that is about a workday has no episode to look up, and a verdict asked
+    about «the episode» names none — a call that answered either by defaulting
+    would aim a patch at whichever incident it found first."""
+    daemon = daemon_factory(clock=lambda: EPOCH)
+    for params in ({"kind": "status", "episode": "abc123def456"},
+                   {"kind": "alert", "episode": ""},
+                   {"kind": "alert"}):
+        answer = daemon.handle({"method": "card.incident", "params": params})
+        assert answer["ok"] is False, answer
     assert daemon.card_ledger().entries() == []

@@ -5266,7 +5266,7 @@ def cmd_card_record_delivery(args) -> int:
     params = {"kind": args.kind, "state": args.state,
               "card": document["card"], "frozen": document.get("frozen"),
               "reason": args.reason, "idempotency_key": args.idempotency_key,
-              "remote_id": args.message_id}
+              "remote_id": args.message_id, "episode": args.episode}
     payload, code = _card_answer("card.record-delivery", params)
     if code != EXIT_OK:
         return code
@@ -5280,6 +5280,12 @@ def cmd_card_record_delivery(args) -> int:
              # one is the difference between «this card can be updated in place»
              # and «the next update can only be a second message».
              f"消息        {entry.get('remote_id') or '（通道没给，下一次改不了这一条）'}"]
+    if entry.get("kind") in module.PER_EPISODE_KINDS:
+        # The word a later hour or a later day looks this receipt up by — and
+        # the row cannot exist without it, because `record` refuses a receipt
+        # for one of these kinds that names no episode. Which kinds those are
+        # is read from the module rather than listed here.
+        lines.append(f"episode     {entry.get('episode')}")
     if not entry.get("delivered"):
         lines.append(f"未送达      {entry.get('reason')}")
     emit(payload, as_json=args.json, lines=lines)
@@ -5296,11 +5302,57 @@ def cmd_card_deliveries(args) -> int:
              f"条目        {payload.get('entries')}"]
     rows = payload.get("recent") or []
     for row in rows:
+        episode = row.get("episode")
+        # A row written before episodes existed shows nothing here rather than
+        # an invented one: the reader has to be able to tell «this receipt says
+        # which incident it was about» from «this one predates the field».
         lines.append(f"  {row.get('at')}  {row.get('state'):<11} "
                      f"{row.get('version')}  ·  "
-                     f"{row.get('remote_id') or '（无消息 id：改不了这一条）'}")
+                     f"{row.get('remote_id') or '（无消息 id：改不了这一条）'}"
+                     + (f"  ·  {episode}" if episode else ""))
     if not rows:
         lines.append("  （没有记录：这个节点还没有投递过这种卡）")
+    emit(payload, as_json=args.json, lines=lines)
+    return EXIT_OK
+
+
+def cmd_card_incident(args) -> int:
+    """§29. Which message carries THIS episode, and may it still be patched.
+
+    The incident twin of `card day`: «同 episode 跨小时、跨天只 patch 一张，不重复
+    NEW». What makes that answerable is the delivery ledger — it is the only
+    document that survives the hour and the day boundary — so this reads it
+    through the daemon, which is the ledger's only writer, rather than opening
+    the file itself.
+
+    It answers about a MESSAGE and not about whether the finding is worth
+    saying: «this hour has nothing to report» is `alert_digest.decision`'s
+    judgement and is made before this command is ever asked. Nothing here sends,
+    edits or remembers anything.
+    """
+    at = getattr(args, "at", "") or _card_clock()
+    payload, code = _card_answer("card.incident",
+                                 {"kind": args.kind, "episode": args.episode,
+                                  "at": at})
+    if code != EXIT_OK:
+        return code
+    age = payload.get("age_days")
+    window = f"{payload.get('window_days')} 天"
+    if isinstance(age, (int, float)) and age > 0:
+        window += f"，这条消息已发出约 {age:.1f} 天"
+    lines = [f"kind        {payload.get('kind')}",
+             f"episode     {payload.get('episode')}",
+             f"本次        {payload.get('action')}/{payload.get('reason')}",
+             f"消息        "
+             + (payload.get("remote_id")
+                or "（没有：这个 episode 还没有发出过卡，或者那一行回执里没记下）"),
+             f"所据版本    " + (payload.get("version") or "（没有：没有发过的卡就没有版本）"),
+             f"可改窗口    {window}",
+             "",
+             payload.get("says") or "",
+             "",
+             "本命令不写任何东西，也不发送、不修改任何消息：它回答的是「下一拍关于"
+             "这个 episode 该做什么」，发送由已经持有 transport 的那一侧负责。"]
     emit(payload, as_json=args.json, lines=lines)
     return EXIT_OK
 
@@ -10659,6 +10711,14 @@ def build_parser() -> argparse.ArgumentParser:
                                "instant, so a re-render is a new key and the "
                                "cadence-window rule stays with whoever runs "
                                "the clock")
+    card_rec.add_argument(
+        "--episode", default="", metavar="EPISODE",
+        help="which incident this send was about, for an alert or a recovery "
+             "card. It is what a later hour or a later day looks the receipt up "
+             "by, so «same episode, one card» is answerable at all — the value "
+             "is `episode_of`'s, and a status card must not carry one. Required "
+             "for --kind alert and --kind recovery, and refused for --kind "
+             "status, by the receipt writer rather than here")
     card_rec.set_defaults(func=cmd_card_record_delivery)
 
     card_del = card_sub.add_parser(
@@ -10669,6 +10729,33 @@ def build_parser() -> argparse.ArgumentParser:
     card_del.add_argument("--limit", type=int, default=10,
                           help="how many recent entries to print")
     card_del.set_defaults(func=cmd_card_deliveries)
+
+    # §29's incident half, and the ONE question about an episode that is asked
+    # of what was SENT rather than of what is true now: the message carries the
+    # card across hours and across days, so the ledger — not this hour's reading
+    # of the alerts — is the document that can answer it.
+    card_inc = card_sub.add_parser(
+        "incident", help="§29 · which message carries this episode, and whether "
+                         "it may still be patched: PATCH_MESSAGE inside the "
+                         "service's window, otherwise NEW_MESSAGE (or "
+                         "SUCCESSOR_MESSAGE once the message has aged out). "
+                         "Reads the delivery ledger; sends and edits nothing",
+        **_COMMON)
+    card_inc.add_argument(
+        "--kind", required=True, choices=list(_card_delivery().PER_EPISODE_KINDS),
+        help="which incident card family: an episode belongs to these and not "
+             "to a status card, which is about a workday")
+    card_inc.add_argument(
+        "--episode", required=True, metavar="EPISODE",
+        help="the episode of the incident this is about — `alert_digest."
+             "episode_of`, which is the alert ref and the open period rather "
+             "than anything this command can derive")
+    card_inc.add_argument("--at", default="",
+                          help="override the instant the update window is "
+                               "measured at. The default is now, and the "
+                               "window is measured against when the recorded "
+                               "message was SENT")
+    card_inc.set_defaults(func=cmd_card_incident)
 
     # §11. One card per workday, and the two halves of that: `card day` answers
     # what this instant does to today's card and writes nothing, `card

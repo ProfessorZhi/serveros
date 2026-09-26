@@ -21,8 +21,9 @@ WHAT §11 ASKS FOR, IN FOUR SENTENCES
 The first two are `decide`; the third is `fold`; the fourth is the window
 `business_calendar.routine_window` already computed. Every one of them is
 answered here without reading a clock and without sending anything: the instants
-are parameters, and the one number borrowed from the transport is the service's
-own update window, which is a declaration rather than a call.
+are parameters, and the one number this module needs from the transport — the
+service's own update window — is read through `card_delivery`, which is where
+the transport is loaded.
 
 THE OTHER HALF OF 「只 patch 一张」, WHICH IS WHERE THE MESSAGE LIVES
 --------------------------------------------------------------------
@@ -40,6 +41,15 @@ inside the service's window, and otherwise says `NEW_MESSAGE` WITH the reason it
 could not be a patch — a missing identity and an expired one are different
 findings and the reader has to be able to tell them apart.
 
+Whether the identity is still usable is the same question an Incident Card asks
+about the message carrying an episode, so it is answered ONCE, in
+`card_delivery.binding_verdict`, and this module asks it rather than deciding it
+again. Two readings of the fourteen-day window would be two chances to read it
+wrongly, and the wrong one would be the one promising a patch the transport
+refuses. What stays here is what is about a WORKDAY: whether a routine patch is
+due at all, and what the reader is told — the same finding is not the same
+sentence for a day's card and for an incident.
+
 THE ROW IS A CLOSED SET OF FIELDS, AND THAT IS THE POINT
 --------------------------------------------------------
 §11 says a history row keeps «关键人读数字和状态» and does not copy
@@ -52,9 +62,12 @@ the one caller who read the docstring.
 
 WHAT IT IS NOT ALLOWED TO DO
 ----------------------------
-No clock, no render, no send, no transport. It does not decide that a card
-should be sent: it decides what happens to the DAY's card, and a caller that
-ignores the answer has ignored a judgement rather than a suggestion.
+No clock, no render, no send, and no transport of its own: the one number it
+needs from the transport is read through `card_delivery`, and this module loads
+that for the number and for the shared verdict, and for nothing else. It does
+not decide that a card should be sent: it decides what happens to the DAY's
+card, and a caller that ignores the answer has ignored a judgement rather than a
+suggestion.
 
 An unreadable store is REFUSED rather than replaced, for a reason that is
 specific to this document: starting over would give the same workday a second
@@ -100,27 +113,6 @@ REASONS = (NEW_WORKDAY, SAME_WORKDAY, NOT_A_WORKDAY, CALENDAR_UNKNOWN,
 #: The reasons a schedule may carry that this module passes through unchanged.
 PASSED_THROUGH = (BEFORE_WINDOW, AFTER_WINDOW)
 
-#: The message half of the same decision: what happens to the chat message that
-#: SHOWS the card. Closed set for the same reason `ACTIONS` is — a caller
-#: branching on a third spelling of "send it" is a caller that will send twice.
-NEW_MESSAGE = "NEW_MESSAGE"
-PATCH_MESSAGE = "PATCH_MESSAGE"
-NO_MESSAGE = "NO_MESSAGE"
-MESSAGE_ACTIONS = (NEW_MESSAGE, PATCH_MESSAGE, NO_MESSAGE)
-
-#: Why the message half answered what it did. «SEND, and the reason is that we
-#: never recorded an id» and «SEND, and the reason is that the card is brand
-#: new» are different findings; a single SEND would hide the first one, and the
-#: first one is the missing link this whole section exists to close.
-NEVER_SENT = "NEVER_SENT"
-IN_HAND = "IN_HAND"
-IDENTITY_MISSING = "IDENTITY_MISSING"
-IDENTITY_EXPIRED = "IDENTITY_EXPIRED"
-IDENTITY_UNDATED = "IDENTITY_UNDATED"
-NOT_ROUTINE = "NOT_ROUTINE"
-MESSAGE_REASONS = (NEVER_SENT, IN_HAND, IDENTITY_MISSING, IDENTITY_EXPIRED,
-                   IDENTITY_UNDATED, NOT_ROUTINE)
-
 #: What an announcement did to the binding. Three words rather than a boolean:
 #: «this card had no message yet» and «this card's message was replaced» are
 #: different events, and a single `changed: true` reports the first one as the
@@ -153,17 +145,18 @@ def _calendar():
     return _load("serveros_runtime_business_calendar", _HERE / "business_calendar.py")
 
 
-def _transport():
-    """`runtime/message_transport.py`, for the one number that is its property.
+def _delivery():
+    """`runtime/card_delivery.py`, for the number and the verdict it owns.
 
-    Loaded under the SAME module name `runtime/cli.py` loads it as, so this is
-    one copy and not two: a test that pins the window in one of them would
-    otherwise be pinning a document nobody reads. What is read from it is a
-    constant — the service's own update window — and not a call: this module
-    still sends nothing.
+    Loaded under the SAME module name `runtime/cli.py` and `runtime/daemon.py`
+    load it as, so this is one copy and not two — and the daemon is the only
+    writer of the ledger, so a second copy here would be a second reading of a
+    document somebody else is writing. Two things are read from it: the
+    service's update window (through `update_window_days`) and the judgment
+    about whether a recorded message may still be patched. Both are declarations
+    and verdicts over given instants; this module still sends nothing.
     """
-    return _load("serveros_runtime_message_transport",
-                 _HERE / "message_transport.py")
+    return _load("serveros_runtime_card_delivery", _HERE / "card_delivery.py")
 
 
 def update_window_days() -> int:
@@ -174,7 +167,42 @@ def update_window_days() -> int:
     module would promise a patch the transport refuses, or refuse one it would
     have accepted.
     """
-    return _transport().CARD_UPDATE_WINDOW_DAYS
+    return _delivery().update_window_days()
+
+
+# ---------------------------------------------------------------------------
+# the message half's vocabulary
+# ---------------------------------------------------------------------------
+# Down here rather than with the other closed sets because two of these words
+# are not this file's: a card's receipt and a card's verdict are written in the
+# same words in `card_delivery`, and a reader that branched on a spelling this
+# file invented would not recognise the one the ledger writes.
+
+#: The message half of the same decision: what happens to the chat message that
+#: SHOWS the card. Closed set for the same reason `ACTIONS` is — a caller
+#: branching on a third spelling of "send it" is a caller that will send twice.
+NEW_MESSAGE = _delivery().NEW_MESSAGE
+PATCH_MESSAGE = _delivery().PATCH_MESSAGE
+#: This one is this file's own: «this instant has no message to send» is a
+#: thing only a routine broadcast can say — an incident card has no such hour.
+NO_MESSAGE = "NO_MESSAGE"
+MESSAGE_ACTIONS = (NEW_MESSAGE, PATCH_MESSAGE, NO_MESSAGE)
+
+#: Why the message half answered what it did. «SEND, and the reason is that we
+#: never recorded an id» and «SEND, and the reason is that the card is brand
+#: new» are different findings; a single SEND would hide the first one, and the
+#: first one is the missing link this whole section exists to close.
+#:
+#: NEVER_SENT and NOT_ROUTINE are this file's; the three IDENTITY_* words are
+#: `card_delivery`'s, because the verdict that produces them is answered there.
+NEVER_SENT = _delivery().NEVER_SENT
+IN_HAND = _delivery().IN_HAND
+IDENTITY_MISSING = _delivery().IDENTITY_MISSING
+IDENTITY_EXPIRED = _delivery().IDENTITY_EXPIRED
+IDENTITY_UNDATED = _delivery().IDENTITY_UNDATED
+NOT_ROUTINE = "NOT_ROUTINE"
+MESSAGE_REASONS = (NEVER_SENT, IN_HAND, IDENTITY_MISSING, IDENTITY_EXPIRED,
+                   IDENTITY_UNDATED, NOT_ROUTINE)
 
 
 def _store_io():
@@ -374,21 +402,6 @@ def _will_fold(open_day: dict, tick: int) -> bool:
     return latest.get("tick") != tick
 
 
-def _moment(value) -> datetime.datetime | None:
-    """An instant this module can place on a timeline, or `None`.
-
-    An unreadable instant and a naive one both give `None`, and a naive one is
-    not read as UTC: the window is fourteen days wide, so assuming a zone for a
-    value that carries none can move the answer by nearly a day in either
-    direction — which is the difference between patching a card and refusing to.
-    """
-    try:
-        moment = datetime.datetime.fromisoformat(str(value))
-    except (TypeError, ValueError):
-        return None
-    return moment if moment.tzinfo is not None else None
-
-
 def message_verdict(action: str, open_day, *, at: str) -> dict:
     """What happens to the message carrying today's card, and why.
 
@@ -404,6 +417,14 @@ def message_verdict(action: str, open_day, *, at: str) -> dict:
     never recorded an id» and «the id is too old to use» need different fixes.
     The age is `at` minus the recorded send time — this instant against that
     one, both given — so nothing here reads a clock.
+
+    WHICH of those answers holds is not decided here. «Is the message this card
+    remembers still changeable at `at`» is the same question an Incident Card
+    asks about the message carrying an episode, and `card_delivery` answers it
+    once for both; this function asks and then says it in the day's own words.
+    What is left here is the part that is about a WORKDAY: whether a routine
+    patch is due at all, and the sentences — the same finding is not the same
+    sentence for a day's card and for an incident.
     """
     window = update_window_days()
     verdict = {"action": None, "reason": None, "remote_id": None,
@@ -425,14 +446,19 @@ def message_verdict(action: str, open_day, *, at: str) -> dict:
                      "从下一拍起都是 patch 这一条")})
         return verdict
 
-    message = open_day.get("message") if isinstance(open_day, dict) else None
-    if not isinstance(message, dict) or not str(message.get("remote_id") or ""):
+    judged = _delivery().binding_verdict(
+        open_day.get("message") if isinstance(open_day, dict) else None,
+        at=at, window_days=window)
+    remote_id = judged["remote_id"]
+
+    if judged["reason"] == IDENTITY_MISSING:
         # What this document does NOT know, and must not pretend to: whether the
         # card ever went out. If it did, sending now makes a second card; if it
         # did not, sending now is exactly right. Only the delivery ledger can
         # tell those apart, so the sentence names it instead of picking one.
         verdict.update({
             "action": NEW_MESSAGE, "reason": IDENTITY_MISSING,
+            "remote_id": remote_id,
             "says": ("当天卡已经在，但没有记下承载它的那条消息，因此无从 patch。"
                      "如果它已经发出过，这时新发一条就是第二张卡（V28 只允许"
                      "一张）；如果还没有发出过，那就还没有消息。"
@@ -441,9 +467,7 @@ def message_verdict(action: str, open_day, *, at: str) -> dict:
                      "发出后用 `card day-announce --message-id` 记下即可")})
         return verdict
 
-    remote_id = str(message["remote_id"])
-    sent, now = _moment(message.get("at")), _moment(at)
-    if sent is None or now is None:
+    if judged["reason"] == IDENTITY_UNDATED:
         verdict.update({
             "action": NEW_MESSAGE, "reason": IDENTITY_UNDATED,
             "remote_id": remote_id,
@@ -452,27 +476,38 @@ def message_verdict(action: str, open_day, *, at: str) -> dict:
                      f"无法判断就不声称可以 patch，也不在这里改发一条新的")})
         return verdict
 
-    age_days = (now - sent).total_seconds() / 86400
-    if age_days > window:
+    if judged["reason"] == IDENTITY_EXPIRED:
         verdict.update({
             "action": NEW_MESSAGE, "reason": IDENTITY_EXPIRED,
             "remote_id": remote_id,
-            "says": (f"承载当天卡的那条消息已经发出约 {int(age_days)} 天，"
-                     f"超过 {window} 天可改窗口，改不动了；只能新发一条，"
-                     f"而那意味着第二张卡")})
+            "says": (f"承载当天卡的那条消息已经发出约 "
+                     f"{int(judged['age_days'])} 天，超过 {window} 天可改窗口，"
+                     f"改不动了；只能新发一条，而那意味着第二张卡")})
         return verdict
 
-    # Two sentences rather than one because «-0.0 天前发出» is what a
-    # backdated instant produces, and a reading nobody can place on a timeline
-    # is worse than no reading: what the caller needs from this line is whether
-    # the window still holds, and that is answerable in both cases.
-    since = (f"发出约 {age_days:.1f} 天" if age_days > 0
-             else "记下的发出时间不早于这一拍")
-    verdict.update({
-        "action": PATCH_MESSAGE, "reason": IN_HAND, "remote_id": remote_id,
-        "says": (f"承载当天卡的消息在手（{since}，在 {window} 天可改窗口内）："
-                 f"本次 patch 这一条，不新发")})
-    return verdict
+    if judged["reason"] == IN_HAND:
+        # Two sentences rather than one because «-0.0 天前发出» is what a
+        # backdated instant produces, and a reading nobody can place on a
+        # timeline is worse than no reading: what the caller needs from this
+        # line is whether the window still holds, and that is answerable in
+        # both cases.
+        age_days = judged["age_days"]
+        since = (f"发出约 {age_days:.1f} 天" if age_days > 0
+                 else "记下的发出时间不早于这一拍")
+        verdict.update({
+            "action": PATCH_MESSAGE, "reason": IN_HAND, "remote_id": remote_id,
+            "says": (f"承载当天卡的消息在手（{since}，在 {window} 天可改窗口内）："
+                     f"本次 patch 这一条，不新发")})
+        return verdict
+
+    # Unreachable through the four reasons above, and refused rather than
+    # answered: falling through would mean answering «patch it» about a reason
+    # this file cannot read, which is the one wrong answer this verdict exists
+    # to avoid.
+    raise CardDayError(
+        f"`binding_verdict` answered {judged['reason']!r}, which is not one of "
+        f"the four reasons it declares; this verdict has no sentence for it and "
+        f"will not fall through to a patch")
 
 
 # ---------------------------------------------------------------------------
