@@ -7198,6 +7198,107 @@ alert-worker` 存在的理由。台账这一节上方的相位表同步订正。
 也没有改**，所以本片实测过的性质仍然成立；改的是一段论证的**前提**里不该出现的那个词——「装好
 的文件」。一个说自己是读数的句子，读者的信任就是从那里来的。
 
+## §9.49 R2 现场核对：两处「实现没有落在它自己写的意图上」
+
+R2 是「P8 接到真正 live sender」。按 §1 的切换（integration → consumer → install → journey），
+动手之前先把**发布面与现场**量清楚，因为这一段要碰的是真机上的生产点。量出来的第一件事不是
+「可以开工」，而是两个缺陷——两个都不是设计问题，是**产品没有落进它自己写下的那句话里**。
+
+#### 9.49.1 开工前量到的现场（都是测量，不是推断）
+
+| 事实 | 值 | 怎么量的 |
+| --- | --- | --- |
+| worktree HEAD | `1cbdd83` | `git rev-parse HEAD` |
+| `origin/main` | `1cbdd83` | `git rev-parse origin/main` |
+| 正在跑的安装版本 | `alert-card-scope-20260924@8ce6fe7` | `runtime-assets/hwz-server-os/serveros-linux-work/current` 那条软链 |
+| 两者关系 | `merge-base = c5d118c`；分支独有提交 2 个（`dbc9144`、`8ce6fe7`） | `git merge-base` / `git log --not` |
+| 分支是否带来 HEAD 没有的内容 | **没有**：`git diff --name-status HEAD 8ce6fe7` 中 `^A` 计数 **0**；`plugin/profiles/linux-work.yaml` 只差 cachebuster `24c`→`24d`（HEAD 是超集） | 逐文件 diff |
+| 守护进程自报 | socket `/run/user/1002/serveros/serveros.sock`，`state_dir /data/home/vince/state/serveros/runtime` | `serverosctl status --json`（装好的那一版） |
+| 投递台账 | `<state>/runtime/cards/delivery.json`，`entries 20`，最新一条 `2026-09-26T13:00:44Z`（北京 21:00）、`kind: status`、`idempotency_key: tokyo-monitor-2026092621`、`payload_bytes: 3658` | 直接读该文件 |
+| `~/.serveros/` 内容 | 只有 `node.yaml`、`targets.yaml` | `ls -a` |
+
+最后一行值得单独看一眼：**台账已经在写，而写它的是 ops 那个老发送方**（`tokyo-monitor-*` 的
+幂等键）。也就是说「谁在投递」这一跳此刻是**旧发送方 → 新台账**，这正是 R2 要收敛的那个缝。
+
+#### 9.49.2 缺陷一：当天卡的两个默认落点都错（一个没申报、一个在明令不放大状态的 root 里）
+
+`runtime/card_day.py` 的类文档写这张卡在 delivery ledger 旁边，而实现这句话语义的 `day_path()`
+**没有任何生产调用者**；默认值是一个常量 `~/.serveros/cards/day.json`。三处独立的反证：
+
+1. `fleet/node-root-contract.yaml` 声明那个 root 只放三个文件，并明写 "Large state does not live
+   here" 与 "every file in it can be deleted and re-derived"。当天卡**恰恰不可重新推导**——丢了它
+   就是造出 V28 禁止的第二张卡。所以这条路径把一个不可推导的东西放进了「什么都可以删」的目录。
+2. 它实际落在 `<state>/runtime/cards/`，而这个 namespace 在**两份 authority 里都 grep 不到**，
+   可 live 已经在写 `delivery.json`（上表）。**一个生产者在写一个没有 authority 说的 namespace。**
+3. `card_source.DEFAULT_DAY_STORE_PATH` 是同一事实的第二份拷贝，`serverosctl` 四处
+   `--day-store` 的 help 印的是那个假地址。
+
+修法用本仓自己的 CONTRACT_GAP 教义「a ruling that widens it, not a move」：`state-root-contract`
+的 `runtime.children` 加 `cards:`（producer 记 `runtime/card_delivery.py`——`card_day.day_path` 是
+同一个函数的同一种形状，写两个文件名的 producer 会解析不到任何东西），`paths.py` 的
+`STATE_SERVEROS_RUNTIME` 加 `"cards"`，`card_day.default_path()` 由**同一条生产者**
+`registry.state_root()` 推出的**函数**，`card_source` 的那个常量改为该函数的别名（`is`，不是
+`==`），四处 help 改成真话。
+
+判据：`tests/test_card_day.py` 三条——默认路径必须等于
+`card_delivery.ledger_path(register).parent / "day.json"`、必须随 `SERVEROS_STATE_DIR` 变、
+渲染器与写卡器必须是同一个答案。**实测**（worktree 真解释器）：带与不带
+`SERVEROS_STATE_DIR` 两种环境 `card day --json` 都答
+`store: /data/home/vince/state/serveros/runtime/cards/day.json`，与守护进程自报的 `state_dir`
+同目录——「siblingship」在真机上成立。
+
+#### 9.49.3 缺陷二：日历的默认落点被本机自己的 `path.admit` 按名拒绝（实测）
+
+```
+PathRefused: '/data/home/vince/.serveros/business-calendar.yaml':
+`~/.serveros` holds identity and binding only (§41). Allowed:
+['node.yaml', 'targets.yaml', 'controller.yaml'].
+```
+
+这是**守护进程**对 `path.admit` 的回答，而同一个产品另一头
+`serverosctl card day --business-calendar` 的 help 印的正是
+`(default ~/.serveros/business-calendar.yaml)`。**印出来的补救办法是产品自己拒绝的**：操作者照
+写，这个 root 里就躺着一个合同说不存在的文件。同一类还有第二处——`~/.serveros/service-bindings.yaml`
+（`card_source` 读的投递绑定）。`command grep -r "Path.home()" runtime/` 里只有这两处，都由 card
+子系统引入。
+
+修法**不是搬走，也不是把 `files:` 加宽**：`files:` 的注释明写它是一条声明「node.py 打开这个
+文件」，加一个别的模块读的名字就是把那条声明变成假的。修法是**加第二个 key**，各自说各能守住的
+话——`fleet/node-root-contract.yaml` 新增 `declarations:`（每条带 `opened_by:` 与
+`absent_means:`），`paths.py` 把一条元组拆成 `HOME_DOT_SERVEROS_FILES` 与
+`HOME_DOT_SERVEROS_DECLARATIONS`、`ALLOWED` 为两者之和，`conformance.declaration_conflicts`
+改成拿**两份 key 的并集**比对 `admit()` 真正读的那条元组（按 key 分别比会把一份完全正确的合同
+报成冲突，而决定一次写入成不成功的是并集）。
+
+**这条修法与两处会挡它的条文正面相对，所以写在合同里：** §41 的「bindings only」与
+`admit()` 拒绝语里的「move it rather than widen this list」管的是**机器状态**漂进这个 root，而
+这两份都不是状态；两者都**只对本机成立**（管辖域、时区、`fallback.declared_by:` 点名是谁定的、
+投递目标），所以「放进仓库」也不可用——仓库里的一份副本对两台机器不可能是同一个答案。它仍然过
+`never_in_this_root` 全部五项与 `rules:` 全部四条，包括「删掉这个目录只丢一个本机绑定，且没有
+不可重新推导的东西」。
+
+**实测行为中性：** `architecture check --json` 与装好的那一版**逐条相同**（6 条，id 一一对应：
+`BOOTSTRAP_ABILITY_REGISTERED`、`TRANSITIONAL_GENERATED_SURFACE`、`UNREGISTERED_DATA_ROOT`、
+`MAP_VIEW_UNBOUND`×3）。它走的是 `skills/serveros/scripts/architecture_check.py`，全文不读这套
+词表（`command grep` 0 命中）；`conformance.collect` 只在测试里被调，本机没有动词暴露它。
+`path.admit` 的实际变化要等下一次 promote。
+
+#### 9.49.4 这两条修了什么、没修什么
+
+- 修了：当天卡的落点有 authority 且与台账同目录；日历与投递绑定两个默认落点**从「被拒绝」变成
+  「被声明」**，因此 9.44/9.46/9.47 反复写下的那句「本机没有 `~/.serveros/business-calendar.yaml`」
+  终于**有了一个合法的地方可以放**。
+- **没修**：日历内容仍然是缺的。节点上仍然没有那份文件，`card day` 仍然答
+  `SKIP CALENDAR_UNKNOWN` / `day_kind: UNKNOWN`——`9.44.7` 那条裁定继续生效：导入要的是官方
+  通知的 revision 与发布日，**那是人的输入，不替它编一个**。现在不同的是：这份缺口有了合法的
+  闭合路径，而不是一句指向被拒绝路径的提示。
+- **没修**：九个 card 动词在装好的节点上仍然只有五个（`record-delivery` 缺
+  `--message-id`/`--episode`），仍等 R6 的 `build→promote→restart`；ops 两个发送方仍未被改写，
+  仍是**单一 sender owner**（老的 tokyo 那一个），因此**没有**出现「老的也在发、新的也在发」。
+- 仍未关闭（与前几格相同）：P7 唤醒半的两件前置（§9.38.9）、`WAIT_KINDS` 仍只有
+  `child`/`window`、`NodeControlTransport.send` 不包裹 connector 异常、`drift_sync.py` 没有调
+  度器、约 40 处未守护的考古站点、`supersede_checkpoint` 的退役评估。
+
 ## 10. 后续每包更新哪几行
 
 - 改完一个包，只更新 §3.1 里对应行的四层状态 + §5 表的增删。
