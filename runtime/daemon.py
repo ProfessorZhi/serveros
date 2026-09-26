@@ -61,6 +61,192 @@ from pathlib import Path
 _HERE = Path(__file__).resolve().parent
 
 
+def _pointer_state(root: Path) -> dict:
+    """`current` against a running process, measured NOW.
+
+    The identity above is frozen because "which bytes am I" does not change
+    while a process runs. This is the other half, and it must NOT be frozen:
+    `current` is a pointer a promote moves, and the whole failure this exposes
+    is that a promote moves it while nothing restarts the daemon. An answer
+    cached at startup would agree with itself forever and report a
+    promote-without-restart as health.
+
+    Read only where the layout says a pointer exists. A daemon started from a
+    source checkout lives at `<repo>/runtime`, has no `revisions/` above it and
+    no `current` to compare against — inventing one there would be the same
+    false answer in a different costume.
+    """
+    parent = root.parent
+    if parent.name != "revisions":
+        return {
+            "state": "NOT_APPLICABLE", "current": None, "agreement": None,
+            "detail": (f"{root} is not a revision of an installed composition, so "
+                       "there is no `current` pointer to compare this process "
+                       "against"),
+        }
+    link = parent.parent / "current"
+    try:
+        target = link.resolve(strict=True)
+    except OSError as exc:
+        return {
+            "state": "NO_POINTER", "current": None, "agreement": None,
+            "detail": f"{link} is not a readable symlink ({exc.__class__.__name__})",
+        }
+    agrees = target == root
+    return {
+        "state": "AGREEMENT" if agrees else "DRIFT",
+        "current": str(target),
+        "agreement": agrees,
+        "detail": (
+            f"this process is running {root.name} and `current` names it"
+            if agrees else
+            f"this process is running {root.name}, but `current` points at "
+            f"{target.name} — a promote moved the pointer and this process was "
+            "not restarted, so it is executing the revision `current` used to "
+            "name. `release.py promote` reloads units but does NOT restart"),
+    }
+
+
+def _read_identity_file(path: Path) -> dict:
+    """One installer record, or an honest absence.
+
+    Absence is a RESULT here, not an error: a daemon started straight out of a
+    source checkout has no ARTIFACT.json beside it, and the useful answer to
+    "which artifact are you" is then `nothing, and here is why` rather than a
+    crash or a default that reads like a version.
+    """
+    try:
+        raw = path.read_bytes()
+    except FileNotFoundError:
+        return {"present": False, "why": "absent"}
+    except OSError as exc:
+        return {"present": False, "why": f"unreadable ({exc.__class__.__name__})"}
+    try:
+        value = json.loads(raw)
+    except ValueError as exc:
+        return {"present": False, "why": f"not JSON ({exc})"}
+    if not isinstance(value, dict):
+        return {"present": False, "why": f"not an object ({type(value).__name__})"}
+    return {"present": True, "value": value}
+
+
+def _installed_identity(here: Path | None = None) -> dict:
+    """Who this process is, in the terms the installer wrote down.
+
+    Read ONCE, from the revision this process was launched out of, and never
+    re-read. That is the whole point: `current` is a pointer that moves, and a
+    daemon that re-resolved it would answer "where the release is now" while
+    being asked "which bytes am I running". Those are different questions, and
+    the gap between them is exactly the drift this exists to expose — a promote
+    swaps the symlink and nothing restarts, so the running process is the only
+    witness to the older answer.
+
+    The path is taken from `__file__`, already resolved, so it is the directory
+    the interpreter actually loaded this module from — not a lookup of the
+    `current` symlink, which would reintroduce the confusion above.
+
+    The daemon does not run git, and must not: it holds no checkout, the build
+    recorded the revision at assembly time, and a daemon that went looking for
+    a repository would report whichever one happened to be nearest instead of
+    the one it was built from.
+    """
+    # `here` is the directory the runtime modules live in (`<rev>/runtime`), and
+    # `_HERE` is exactly that. A caller that passes the FILE instead would get
+    # `absent` one level too deep — a silent, confident wrong answer of the kind
+    # this function exists to remove — so both spellings are accepted.
+    base = here or _HERE
+    # `.resolve()` is not tidiness: `root` must be where the bytes ARE, and a
+    # path left pointing through `current` would make the identity agree with
+    # the pointer by construction — the exact self-confirming answer that lets
+    # a promote-without-restart go unnoticed. Non-existent paths resolve to
+    # themselves, so this costs nothing in a test that builds a fake revision.
+    root = (base.parent if base.name == "daemon.py" else base).parent.resolve()
+    artifact = _read_identity_file(root / "ARTIFACT.json")
+    release = _read_identity_file(root / "RELEASE.json")
+
+    def _get(doc: dict, *keys, default=None):
+        node = doc
+        for key in keys:
+            if not isinstance(node, dict):
+                return default
+            node = node.get(key)
+            if node is None:
+                return default
+        return node
+
+    art = artifact.get("value") or {}
+    rel = release.get("value") or {}
+
+    # Flattened, because these are the questions actually asked of a running
+    # node, and each one carries what it rests on. `None` here is never "same
+    # as before"; it is "this build could not establish it".
+    fields = {
+        "release_id": _get(rel, "revision"),
+        "tree_hash": _get(rel, "tree_hash"),
+        "previous_release_id": _get(rel, "previous"),
+        "composition": _get(rel, "composition") or _get(art, "composition"),
+        "artifact_version": _get(art, "version"),
+        "artifact_cachebuster": _get(art, "cachebuster"),
+        "source_commit": _get(art, "source", "serveros", "commit"),
+        "source_ref": _get(art, "source", "serveros", "ref"),
+        "source_tree_clean": _get(art, "source", "serveros", "tree_clean"),
+        "source_worktree_changes": _get(art, "source", "serveros", "worktree_changes"),
+        "ability_management_revision": _get(
+            art, "source", "ability_management", "revision"),
+    }
+
+    unestablished = []
+    if not artifact["present"]:
+        unestablished.append(
+            f"artifact identity: ARTIFACT.json {artifact['why']} at {root}")
+    elif fields["source_commit"] is None:
+        unestablished.append(
+            f"source commit: this artifact records none "
+            f"({_get(art, 'source', 'serveros', 'basis') or 'no basis given'})")
+    if not release["present"]:
+        unestablished.append(
+            f"release identity: RELEASE.json {release['why']} at {root}")
+    if fields["artifact_version"] is None and artifact["present"]:
+        unestablished.append("artifact version: ARTIFACT.json carries no `version`")
+
+    # The two records are written by different steps and nothing forces them to
+    # agree. Where they can be compared, they are: `composition` is the field
+    # both carry, and a disagreement means these two files describe two
+    # different artifacts. That is not a small inconsistency to average out —
+    # it means neither record can be used to answer "which release is this",
+    # so the answer is CONFLICT and not whichever one was read last.
+    conflicts = []
+    if artifact["present"] and release["present"]:
+        a_comp, r_comp = _get(art, "composition"), _get(rel, "composition")
+        if a_comp and r_comp and a_comp != r_comp:
+            conflicts.append(
+                f"ARTIFACT.json declares composition {a_comp!r} and RELEASE.json "
+                f"declares {r_comp!r} — the two records in one revision describe "
+                "two different artifacts, so neither can be trusted to say which "
+                "release is installed")
+    agreement = ("CONFLICT" if conflicts else
+                 "AGREEMENT" if (artifact["present"] and release["present"]) else
+                 "UNKNOWN")
+
+    return {
+        "root": str(root),
+        "artifact": artifact,
+        "release": release,
+        "fields": fields,
+        "agreement": agreement,
+        "conflicts": conflicts,
+        "unestablished": unestablished,
+        "note": (
+            "Read once, from the revision this process was launched out of — "
+            "`root` is where this module was loaded from, NOT where the "
+            "`current` pointer aims now. Comparing the two is how a promote "
+            "that nobody restarted becomes visible. `fields.source_tree_clean` "
+            "is the only thing connecting a commit to these bytes: false or "
+            "null means the commit names the checkout, not the content."
+        ),
+    }
+
+
 def _load(name: str, filename: str):
     if name in sys.modules:
         return sys.modules[name]
@@ -522,6 +708,11 @@ class Daemon:
         # cannot say how long it has been up and when it last looked is asking
         # a reader to trust an answer without being able to date it.
         self.started_at = self._now()
+        # §J09. Frozen at construction, reported read-only. A node runtime that
+        # cannot say which release it is running is asking an operator to
+        # identify it from the outside — from a symlink it may have stopped
+        # following an hour ago.
+        self.identity = _installed_identity()
         self.interval: float | None = None
         self.ticks = 0
         self.last_tick_monotonic: float | None = None
@@ -1662,6 +1853,16 @@ class Daemon:
             "reconcile_enabled": self.enable_reconcile,
             "state_dir": str(self.state_dir),
             "socket": str(self.socket_path),
+            # J09: which bytes this process is. Frozen at startup, so it keeps
+            # naming the release that was promoted when the process began even
+            # after `current` has moved on — which is the fact an operator
+            # needs and the symlink cannot supply.
+            "identity": self.identity,
+            # ...and the same question asked from the other side, live. The two
+            # together are the whole answer: one says what this process is, the
+            # other says whether the release it belongs to has moved on without
+            # it.
+            "pointer": _pointer_state(Path(self.identity["root"])),
             "note": (
                 "`reconcile_enabled` is this process's interlock, not a "
                 "resource's permission: every resource whose `reconcile.mode` "

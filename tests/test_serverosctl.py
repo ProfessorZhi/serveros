@@ -708,6 +708,87 @@ def test_the_status_verb_asks_the_daemon_rather_than_computing_locally(
     assert "reconcile   disabled" in out
 
 
+def _identity_fields(**overrides):
+    fields = {"release_id": "rev-a@1111111", "tree_hash": "9" * 64,
+              "previous_release_id": None, "composition": "serveros-linux-work",
+              "artifact_version": "3.1.0+srv0003.20260927a",
+              "artifact_cachebuster": "srv0003.20260927a",
+              "source_commit": "a" * 40, "source_ref": "main",
+              "source_tree_clean": True, "source_worktree_changes": 0,
+              "ability_management_revision": "b" * 40}
+    fields.update(overrides)
+    return fields
+
+
+def _identity(**overrides):
+    identity = {"root": "/revs/rev-a", "agreement": "AGREEMENT", "conflicts": [],
+                "unestablished": [], "fields": _identity_fields(),
+                "artifact": {"present": True, "value": {}},
+                "release": {"present": True, "value": {}}, "note": "…"}
+    identity.update(overrides)
+    return identity
+
+
+def _pointer(state, **overrides):
+    pointer = {"state": state, "current": None, "agreement": None, "detail": ""}
+    pointer.update(overrides)
+    return pointer
+
+
+def test_status_says_which_release_is_running_and_where_it_was_built(
+        tmp_path, monkeypatch, capsys):
+    """§J09 — the operator surface, which is where this is actually read.
+
+    The daemon answering a question nobody asked would satisfy a payload check
+    and fail the section: `serverosctl status` is the line an operator reads."""
+    thread = _fake_daemon(tmp_path, monkeypatch, _status_reply(
+        identity=_identity(), pointer=_pointer("AGREEMENT", current="/revs/rev-a",
+                                               agreement=True)))
+    code = cli_mod.main(["status"])
+    thread.join(timeout=5)
+    out = capsys.readouterr().out
+    assert code == cli_mod.EXIT_OK, out
+    assert "rev-a@1111111" in out
+    assert "aaaaaaaaaaaa" in out and "ability-management@bbbbbbbbbbbb" in out
+    assert "AGREEMENT" in out
+
+
+def test_a_pointer_that_moved_without_a_restart_is_a_fault_not_a_success(
+        tmp_path, monkeypatch, capsys):
+    """Exit 1, the same as a stale answer, and for the same reason.
+
+    The daemon is up and healthy and everything else it says is true — about a
+    release `current` has moved past. A monitor reading exit 0 here has been
+    told "fine" about the wrong release."""
+    thread = _fake_daemon(tmp_path, monkeypatch, _status_reply(
+        identity=_identity(), pointer=_pointer(
+            "DRIFT", current="/revs/rev-b", agreement=False,
+            detail="this process is running rev-a, but `current` points at rev-b")))
+    code = cli_mod.main(["status"])
+    thread.join(timeout=5)
+    out = capsys.readouterr().out
+    assert code == cli_mod.EXIT_FAULT, out
+    assert "DRIFT" in out and "rev-b" in out
+
+
+def test_a_daemon_that_cannot_say_which_release_it_is_says_so(
+        tmp_path, monkeypatch, capsys):
+    """An older daemon is a finding, not a silent omission.
+
+    `_status_reply()` carries no `identity`, which is exactly what a daemon
+    built before this field existed answers. Printing nothing would let a
+    reader assume the question was asked and answered."""
+    thread = _fake_daemon(tmp_path, monkeypatch, _status_reply())
+    code = cli_mod.main(["status"])
+    thread.join(timeout=5)
+    out = capsys.readouterr().out
+    assert code == cli_mod.EXIT_OK, out
+    assert "UNKNOWN" in out
+    assert "cannot be established" in out
+    # ...and no pointer verdict either, rather than a default that reads as OK.
+    assert "did not compare itself" in out
+
+
 def test_the_status_verb_cannot_answer_without_a_daemon_and_does_not_guess(
         tmp_path, monkeypatch, capsys):
     """Exit 2, not 0 and not 1. "Could not look" is its own answer.

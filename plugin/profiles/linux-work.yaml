@@ -198,9 +198,19 @@ short_description: Agent Engineering Workbench for a Linux work node
 # The bump is made here, before the candidate build, for the reason the
 # paragraphs above give.
 #
+# Moved to `srv0004` on 2026-09-27 because §J09 changed the payload without
+# changing any file NAME: `runtime/daemon.py` now reads and reports the
+# installation's own identity, `runtime/cli.py` prints it, and `scripts/
+# runtime_truth.py` compares the artifact's recorded source. Four members that
+# were already on the list carry different bytes, and `ARTIFACT.json` itself
+# gained a `source` block — so a rebuild of this profile produces a different
+# artifact under the version string `srv0003` still names. That is the case this
+# comment exists for, and the builder cannot see it: it compares a profile
+# against its parent, not against what has already been released.
+#
 # Core's label is stale for the fifth time for the same reason and is again NOT
 # touched here.
-cachebuster: srv0003.20260927a
+cachebuster: srv0004.20260927a
 
 skills:
   - name: runtime-management

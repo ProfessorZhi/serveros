@@ -220,6 +220,11 @@ NODE_COMPOSITION = "serveros-linux-work"
 NODE_UNIT = "serverosd.service"
 TREE_MANIFEST = "RELEASE.json"
 
+# The artifact's own record, and the one field in it that is attribution rather
+# than deliverable content. See `_content_bytes`.
+ARTIFACT_MANIFEST = "ARTIFACT.json"
+ATTRIBUTION_ONLY = frozenset({"source"})
+
 # Drift classes that are NOT about the bytes on disk agreeing with each other.
 # A chain can be internally perfect and still be the wrong release; these name
 # the ways that happens.
@@ -358,6 +363,42 @@ def tree_hash(root: Path) -> str | None:
     return digest.hexdigest() if found else None
 
 
+def _content_bytes(rel: Path, raw: bytes) -> bytes:
+    """`raw`, minus the keys that are attribution rather than content.
+
+    §J09. `ARTIFACT.json` records `source` — the revision the BUILD ran in and
+    whether that checkout was clean. That is a fact about the machine that
+    assembled these bytes, not about the bytes, and it cannot survive a
+    recomputation: `expected_artifact` rebuilds from the checkout doing the
+    INSPECTING, which is a different checkout with a different HEAD and a
+    different amount of uncommitted work. Comparing it as content would report a
+    correctly installed artifact as drifted the moment the building checkout and
+    the inspecting checkout diverge — which is the normal case, since one is a
+    worktree and the other is canonical. That is the false report the recompute
+    docstring warns about, produced by the checker.
+
+    Excluding it here is not excluding it from checking. `RELEASE.json` records a
+    tree hash over the whole artifact, `ARTIFACT.json` included, and
+    `node_revision` verifies that hash against the directory — so an edited
+    source record is caught, by a stronger question than "is this one of the
+    expected bytes". The same shape of argument as `ignore` below, for the same
+    reason.
+
+    Both sides go through this, so the two are compared in one normal form
+    rather than in their own serializations.
+    """
+    if rel != Path(ARTIFACT_MANIFEST):
+        return raw
+    try:
+        doc = json.loads(raw)
+    except ValueError:
+        return raw
+    if not isinstance(doc, dict) or not (ATTRIBUTION_ONLY & doc.keys()):
+        return raw
+    return (json.dumps({k: v for k, v in doc.items() if k not in ATTRIBUTION_ONLY},
+                       indent=2, sort_keys=True) + "\n").encode()
+
+
 def tree_drift(expected: dict[Path, bytes], root: Path,
                ignore: tuple[Path, ...] = ()) -> list[str]:
     """Name every difference between an expected file set and a directory.
@@ -373,6 +414,12 @@ def tree_drift(expected: dict[Path, bytes], root: Path,
     describes by `node_revision`, which is a stronger question than "is it one
     of the expected members". The default is empty, so every existing caller
     keeps comparing whole trees.
+
+    `_content_bytes` is the same bargain applied one level finer: one FILE is
+    still compared, minus the fields that describe the build rather than the
+    artifact. It is not a parameter because every caller compares artifacts, and
+    a caller able to opt out of it would be a second definition of what the
+    artifact is.
     """
     if not root.is_dir():
         return [f"missing tree {root}"]
@@ -383,7 +430,7 @@ def tree_drift(expected: dict[Path, bytes], root: Path,
     reasons += [f"missing {rel}" for rel in sorted((expected_rels - skip) - actual)]
     reasons += [f"unexpected {rel}" for rel in sorted(actual - expected_rels)]
     for rel in sorted((expected_rels - skip) & actual):
-        if (root / rel).read_bytes() != expected[rel]:
+        if _content_bytes(rel, (root / rel).read_bytes()) != _content_bytes(rel, expected[rel]):
             reasons.append(f"content {rel}")
     return reasons
 
@@ -885,6 +932,44 @@ def canonical_provenance(ability_repo: Path, pin: str, canonical_ref: str) -> di
         return out
     out["detail"] = f"git merge-base exited {proc.returncode}"
     return out
+
+
+def _source_note(rev_dir: Path | None) -> str:
+    """What the artifact records about where it was built. §J09.
+
+    Read, never recomputed — and that is the honest limit, not a shortcut.
+    Verifying this attribution would mean rebuilding from the commit it names,
+    so what this file can contribute is to print the claim next to the label it
+    corroborates, and to say which parts of it are unproven. A commit with no
+    `tree_clean: true` beside it does not identify these bytes, and rendering it
+    like one that does would make the strongest statement in the report out of
+    the weakest evidence.
+    """
+    if rev_dir is None:
+        return ""
+    try:
+        doc = json.loads((rev_dir / ARTIFACT_MANIFEST).read_bytes())
+    except (OSError, ValueError):
+        return " · the artifact records no source revision"
+    source = doc.get("source") if isinstance(doc, dict) else None
+    serveros = (source or {}).get("serveros") or {}
+    commit = serveros.get("commit")
+    if not commit:
+        basis = serveros.get("basis")
+        return (" · the artifact records no source revision"
+                + (f" ({basis})" if basis else ""))
+    text = f" · built from {str(commit)[:12]}"
+    if serveros.get("tree_clean") is True:
+        text += " (clean)"
+    elif serveros.get("tree_clean") is False:
+        text += (f" (with {serveros.get('worktree_changes')} uncommitted — the "
+                 "commit names the checkout, not these bytes)")
+    else:
+        text += " (content unproven)"
+    ability = (source.get("ability_management") or {}).get("revision")
+    if ability:
+        text += f", ability-management@{str(ability)[:12]}"
+    return text
 
 
 def node_revision(runtime_root: Path, composition: str, release) -> dict:
@@ -1673,7 +1758,13 @@ def collect(args) -> dict:
         f"{node['revision_dir'] or node['root']}"
         + (f"  sha256={node['manifest']['tree_hash'][:12]}" if node["manifest"] else ""),
         node_verdict, node_detail,
-        note=node["detail"] if node_verdict == OK else "",
+        # §J09. The revision label above (`main@0a98bb6`) is a CLAIM written at
+        # promote time; the artifact's own record is the evidence for it, and the
+        # two belong on one line so a reader can tell a verified attribution from
+        # a stated one. Unproven is printed as unproven — `tree_clean` false is
+        # "this commit names the checkout, not these bytes", and an absent record
+        # is not the same string as a clean one.
+        note=(node["detail"] if node_verdict == OK else "") + _source_note(rev_dir),
         # A machine with no node runtime for this composition has no running
         # surface to converge, and reporting that as a failure would make this
         # file unusable on every machine that is not this node. The exclusion is

@@ -823,8 +823,61 @@ def declared_artifact_kinds(bundle: dict, bundle_path: Path) -> list[str]:
     return list(kinds)
 
 
+def source_identity(repo: Path, ability_repo: Path, ability_rev: str) -> dict:
+    """What this artifact was assembled FROM, as far as the build can prove it.
+
+    Two claims that a reader keeps wanting to collapse into one, and the whole
+    reason this record exists is that they are not one:
+
+      the COMMIT     names a revision of the repository the artifact was read
+                     from. It is a fact about that repository, and it is
+                     available whenever the build ran inside a checkout.
+      the CONTENT    is what actually went into the bytes. `tree_clean` is the
+                     only field that connects the two: an artifact assembled
+                     from a checkout with uncommitted work HAS a commit and HAS
+                     no content identity, and reporting the commit without the
+                     flag is exactly the false attribution this record exists to
+                     prevent. The artifact's own tree hash answers a different
+                     question — which bytes, not which source.
+
+    A build outside a git checkout is not an error and not a zero: `basis` says
+    which of the two facts is unavailable and why, so a reader gets UNKNOWN with
+    a reason rather than a commit that was never observed.
+    """
+    def _run(*args: str) -> str | None:
+        proc = subprocess.run(["git", "-C", str(repo), *args],
+                              stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        if proc.returncode != 0:
+            return None
+        return proc.stdout.decode(errors="replace").strip()
+
+    commit = _run("rev-parse", "--verify", "HEAD^{commit}")
+    porcelain = _run("status", "--porcelain") if commit else None
+    dirty = None if porcelain is None else [l for l in porcelain.splitlines() if l.strip()]
+    ref = _run("rev-parse", "--abbrev-ref", "HEAD") if commit else None
+    basis = ("read from the checkout this build ran in"
+             if commit is not None else
+             "this build did not run inside a git checkout, so no source "
+             "revision can be named — the artifact's tree hash still identifies "
+             "its bytes, and it does not identify a commit")
+    return {
+        "serveros": {
+            "commit": commit,
+            "ref": ref,
+            "tree_clean": (None if dirty is None else not dirty),
+            "worktree_changes": (None if dirty is None else len(dirty)),
+            "basis": basis,
+        },
+        "ability_management": {
+            "repo": str(ability_repo),
+            "revision": ability_rev,
+        },
+    }
+
+
 def artifact_manifest(bundle: dict, version: str, skills: list[str],
-                      members: list[str], kinds: list[str]) -> dict:
+                      members: list[str], kinds: list[str],
+                      source: dict) -> dict:
     """The build's statement about what it produced, written INTO the artifact.
 
     It travels with the bytes for the same reason the composition declaration in
@@ -835,6 +888,12 @@ def artifact_manifest(bundle: dict, version: str, skills: list[str],
     `members` is the complete list of what was written, and it is what turns "no
     undeclared files" into a comparison against a record instead of a rule about
     which filenames look suspicious.
+
+    `source` is the artifact naming its own provenance, frozen at build time.
+    It is here rather than derived by whoever reads the artifact because the
+    derivation needs the repository, and the artifact is read precisely where
+    the repository is not — the daemon that runs it holds no checkout and must
+    never go looking for one.
     """
     return {
         "schema": "serveros/artifact.v1",
@@ -850,6 +909,7 @@ def artifact_manifest(bundle: dict, version: str, skills: list[str],
         # facts the payload already states.
         "mcp_servers": sorted(entry["name"] for entry in _declared_servers(bundle)),
         "members": members,
+        "source": source,
     }
 
 
@@ -913,7 +973,8 @@ def plan(bundle_path: Path, ability_repo: Path, ability_rev: str, output: Path,
                      | {str(rel) for rel in manifests}
                      | {"README.md", ARTIFACT_MANIFEST_NAME})
     manifests[Path(ARTIFACT_MANIFEST_NAME)] = artifact_manifest(
-        bundle, version, skills, members, kinds)
+        bundle, version, skills, members, kinds,
+        source_identity(repo_root(), ability_repo, ability_rev))
     return files, manifests, readme, marketplace, version
 
 
