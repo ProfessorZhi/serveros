@@ -6405,6 +6405,217 @@ tests/test_cards.py              dcf29e1735fe26779404243e6547f20653f2722ad18eb7f
   `drift_sync.py` 没有调度器、约 40 处未守护的考古站点、`supersede_checkpoint` 的退役评估、
   以及切片 F–N 的新模块在装好的节点上都还没有那一次 `build→promote→restart`（P12）。
 
+## §9.46 切片 C：当天卡记住是哪一条**消息**承载它
+
+#### 9.46.1 靶子：§11 的「只 patch 一张」还有聊天消息那一半，此前一个落点也没有
+
+§9.45 交付了「今天是什么样的日子」与「这一拍对当天卡做什么」。四句话里的第三句在**文档**
+上完成了。但「只 patch 一张」这句话真正的主语是**消息**：08:00 建的那张卡是一条聊天记录，
+09:00 与 10:00 的更新必须落在**同一条**记录上。这棵树里没有任何地方记得它的 id，因此也没有
+任何地方能让「下一次是 patch 而不是新发」成为可判定的回答——一个不记得自己发过哪条消息的
+系统，只可能再发一条。
+
+本片补的是这半张：文档记住承载它的那条消息（`open.message`），判决同时回答消息那一半
+（`decide(...)["message"]`），并给「记下它」一个动词（`card day-announce`）。
+
+#### 9.46.2 八处落点
+
+| 落点 | 是什么 | 在哪 |
+| --- | --- | --- |
+| 动词 | `im messages patch`——**不是** `im +messages-edit`，后者是文本/富文本编辑器 | `message_transport.LarkMessageSender.update` |
+| 载荷 | `--data '{"content": "<把卡片 JSON 序列化成的字符串>"}'` | `message_transport.card_content` |
+| 四个本地拒绝 | 没有 id／时刻读不出／超出 14 天／超出 30 KB，**四者都不回落到新发** | 同上 |
+| message id 是什么 | 一个 token、必须是文本、不是 `oc_`/`ou_`/`on_` | `card_delivery.check_remote_id`，`record()` 是唯一入口 |
+| 回执留住它 | `remote_id` 进台账行 | `card_delivery.record`；daemon 原样透传 |
+| 绑定 | `open.message = {remote_id, at}`，三词闭集 BOUND/UNCHANGED/REBOUND | `card_day.DayStore.announce` |
+| 判决 | `PATCH_MESSAGE`/`NEW_MESSAGE`/`NO_MESSAGE` ＋ 六种理由 | `card_day.message_verdict` |
+| 两个命令 | `card day-announce --message-id`（required）、`card record-delivery --message-id` | `runtime/cli.py` |
+
+`card day` 与 `card day-advance` 的输出里也多了两行（消息判决与它的整句），因为「下一拍是
+patch 还是新发」是人真正要看的那个决定。
+
+#### 9.46.3 载荷形态的不对称：两个动词包同一个对象的方式不同（实测钉死）
+
+- `+messages-send --content '<card json>'`：`--content` **就是**卡片 JSON。
+- `im messages patch --data '{"content": …}'`：`content` 是那个 JSON **序列化成字符串**之后再
+  装进请求体。
+
+写错了**不会报错**：服务接受请求，然后把卡片的正文当**文本**放到屏幕上，读的人看到的是一张
+坏掉的卡。所以这个差别只在 `card_content` 一处写下来，`update` 从它取值，
+`test_the_body_is_built_by_the_one_helper` 钉住「通道用的就是这一个」。手工读数：请求体里
+`content` 的类型是 `str`，`content == card_content(card)` 为 True。
+
+#### 9.46.4 服务自述的三条界，以及为什么两边都拒
+
+`im messages patch` 自己声明：消息必须 14 天内发出、`content` 是不大于 30 KB 的 JSON 序列化
+字符串、仅 interactive。
+
+- **14 天**：`CARD_UPDATE_WINDOW_DAYS = 14`，**被读、不被抄**。`card_day.update_window_days()`
+  从 transport 取这个常量，`card_day` 里没有第二份 14——两处数字会在服务移动窗口的那天第一次
+  分歧，那时本模块会承诺一次 transport 拒绝的 patch（或拒绝一次它本会接受的）。
+- **30 KB**：`KB` 没说清是字节还是字符，所以**两边都拒**：`CARD_CONTENT_LIMIT_BYTES = 30*1024`、
+  `CARD_CONTENT_LIMIT_CHARS = 30*1000`，哪个先到算哪个。严一点的成本是一句拒绝；松一点的成本是
+  调用方以为更新发出去了，而人看着的还是上一张卡。
+
+#### 9.46.5 两条时钟：同一件事在两个模块里是两种形状
+
+- `message_transport.update` 拿**真机器时钟**量窗口（`_age_seconds(sent_at)` 对 now）——因为它
+  真的要去改一条消息，而「现在」只有一个。
+- `card_day.message_verdict` 的两个时刻**都由参数给**（这一拍的 `at` 与记下的那个 `at`），不读
+  时钟——因为它是**判断**：同一份文档在不同时刻必须给出同一个答案，而要回答的是「这一拍」。
+
+这个差别在手工检查里先骗过了我自己的脚本：我拿 `2031-05-01` 当「超窗」样本，通道那半边却答了
+`DELIVERED`——那个时刻在真机器时钟（2026-09-26）看来是**未来**，age 为负，窗口当然没超。换成
+`2026-01-01`（约 268 天前）后拒绝如期出现。这是脚本自己的 bug，不是代码的；但它顺带把「两条
+时钟不是一条」量成了读数。
+
+#### 9.46.6 六种理由，以及一句诚实边界
+
+`NEVER_SENT`／`IN_HAND`／`IDENTITY_MISSING`／`IDENTITY_EXPIRED`／`IDENTITY_UNDATED`／
+`NOT_ROUTINE`。判决是**故意**不做成「能 patch 就 patch，否则就发」的：`PATCH_MESSAGE` 只在
+「身份确实在手、且还在服务窗口内」时给出，其余一律 `NEW_MESSAGE` **并带上不能 patch 的理由**
+——「我们从没记下 id」和「id 太旧用不了」需要不同的修法，一个笼统的 SEND 会把第一件藏起来，
+而第一件正是这一节存在的理由。
+
+`IDENTITY_MISSING` 那一句说的是它**不知道**的事：这份文档不知道卡是否真的发出过。真发出过，
+这时新发一条就是第二张卡（V28 只允许一张）；没发出过，那就还没有消息。只有投递台账
+（`card deliveries`）能分辨这两者，所以句子**指向台账**，而不替读者挑一个世界。
+
+#### 9.46.7 三词闭集代替布尔值
+
+`BOUND`／`UNCHANGED`／`REBOUND`（`ANNOUNCE_CHANGES`）。「这张卡原本还没有消息」与「这张卡的
+消息被换掉了」是两件事，一个 `changed: true` 会把第一件报成第二件——读起来像「有人重发了
+卡」，而没有人重发。
+
+窗口从**发出时刻**量：同一条 id 重复 announce 保持首次的 `at`。否则每重跑一次公告就把服务的
+可改窗口往后推一点，而那个窗口是「消息什么时候发出去的」的属性，不是「谁什么时候又敲了一遍
+命令」的属性。
+
+#### 9.46.8 一条规则一处写
+
+- 「message id 是什么」只有 `card_delivery.check_remote_id` 一处实现，`record()` 是唯一入口，
+  所以这一条规则覆盖每一个调用方，包括守护进程（socket 上唯一的写入者）。daemon 那边是
+  `remote_id=params.get("remote_id")`：**原样转交**，不在自己这里再判一次。
+- **deny list 而不是 allow list**：只拒 `oc_`/`ou_`/`on_`。两边代价不对称——拒掉一个本树没见
+  过的**合法**形态会丢掉一次真实发送；接受一个 chat id 会让后续每一次 patch 都瞄准**会话**。
+- **非文本拒绝而不是 stringify**：`str(b"om_x")` 是 `"b'om_x'"`，一个看起来良构、谁也寻不到
+  的值——正是这个函数要拦的静默失败，而它会从一个上游漏掉的 `.decode()` 进来。同理，含空白的
+  值也拒（一个 token 里有空白就不指名任何消息），且两句都不回显那个值。
+
+#### 9.46.9 手工跑过的真路径（读数）
+
+六节：A 真 CLI 逐拍（13 拍，一拍一个进程）、B 绑定时限与时刻、C 消费者一侧、D 通道半边（真
+模块 + 假 `run`）、E 落盘文档形状、F 说明为什么**不在这里**跑 `card record-delivery`。
+
+A 的读数按顺序为：还没有卡 → 新建且 `NEVER_SENT` → 写入（CREATE）→ `IDENTITY_MISSING`
+（卡在、消息不在）→ `BOUND` → `PATCH_MESSAGE/IN_HAND` → 同一条再报是 `UNCHANGED` 且发出时刻
+不动 → `REBOUND` → `oc_` 被拒（rc=1，不回显）→ 含空白被拒（rc=1）→ 不带 `--message-id` 被
+parser 拒（rc=2）→ 次一工作日新建一张。B：窗口 14 天（20 天前 → `IDENTITY_EXPIRED`）、不带
+时区的时刻 → `IDENTITY_UNDATED`。D：四次拒绝里通道只被碰过 1 次（那条成功的 patch）。
+
+两条如实记下、本片**没有擅自改**的观察：
+
+1. **`previous` 是一个五字段摘要**（`day_ref`/`kind`/`opened_at`/`closed_at`/`updates`），
+   **没有 `message` 这一栏**，也没有 `history`/`latest`。所以跨日之后「上一张卡的消息」不在
+   这个文档里——`announce` 的 docstring 正是这么写的：旧的 id 由投递台账保存，本文件只保留
+   当前的那个绑定。
+2. **`card status --at <早于文档 open day 的时刻>` 渲染的是文档当前的 open day**，不是传入
+   时刻所属的那一天：把 store 推到 2031-06-11 之后，用 06-10T12:00 去读，印出来仍是
+   `CN-Mainland/2031-06-11`。这条命令上 `--at` 的主语是「这一拍对**当前文档**说什么」，不是
+   「那一天是什么」。
+
+#### 9.46.10 本片新增的用例
+
+**58** 条 `def test_`，删除 **0** 条，全在四个文件里：`test_message_transport.py` +12、
+`test_card_delivery.py` +12、`test_card_day.py` +30、`test_daemon.py` +4。`git diff
+--name-only -- tests/` 只有这四个文件，测试目录里没有第五个文件被改动一个字节。
+
+承重的几条：`test_the_body_carries_the_card_as_a_string_and_not_as_an_object`、
+`test_a_patch_with_no_message_id_is_refused_without_a_call`、`test_content_over_the_ceiling_is_refused_on_either_reading`、`test_a_refusal_never_falls_back_to_sending`、
+`test_the_module_borrows_a_declaration_and_not_a_call`、
+`test_the_verdict_reads_that_number_rather_than_carrying_a_copy_of_it`（把
+`transport.CARD_UPDATE_WINDOW_DAYS` 先改 30 再改 3，看判决跟着走）、
+`test_repeating_an_announcement_does_not_move_the_send_time_forward`、
+`test_an_announcement_needs_the_instant_it_was_made`、
+`test_the_announce_verb_is_not_runnable_without_the_id`（钉 argparse 层的 rc=2）、
+`test_the_record_path_applies_the_rule_and_not_only_the_helper`、
+`test_a_card_that_does_not_hash_to_the_version_is_refused`、
+`test_a_send_the_transport_could_not_name_keeps_the_absence`。
+
+约定沿用前几片：同一个文件用**同一个模块名** `_load(...)`，才能与 CLI/daemon 共享同一份对象，
+而不是各自加载出一份看着一样、其实不同的副本；`test_card_day.py`/`test_card_delivery.py` 用
+`unittest.TestCase`，`test_message_transport.py`/`test_daemon.py` 用 pytest fixture。
+
+#### 9.46.11 变异电池：35 条，35 杀，0 存活，0 SKIP
+
+覆盖五个实现文件（`message_transport` 的动词与四个拒绝与载荷、`card_delivery` 的 id 规则与
+回执、`card_day` 的判决与绑定与读者、`cli` 的两个命令、`daemon` 的透传与版本校验），逐条锚点
+在文件里必须只出现一次，`__pycache__` 每轮清一次（同尺寸同秒的还原会骗过 pyc 校验）。
+
+首轮 **33 杀 / 2 存活**。两条都不是冗余代码，而是**我的断言钉错了对象**：
+
+- **C22（判决里的窗口写成字面量 `14`）**：原测试只钉了 `update_window_days()` **返回** 14，没有
+  钉判决**用了**它。补一条把 `transport.CARD_UPDATE_WINDOW_DAYS` 先改 30 再改 3 的用例（断言
+  `window_days` 30/3、action 与 reason 跟着变），重跑后 C22 被杀。
+- **C33（`--message-id` 的 `required=True` → `False`）**：原断言只写了 `code != 0`，而 store 层
+  的拒绝也返回非零，于是「参数缺失」与「值不合法」两件事被同一个断言放过。改成断言 `code == 2`
+  （argparse 层）并检查文本含 `--message-id`，重跑后 C33 被杀。
+
+子集重跑 **2/2 杀**。**35 杀、0 存活、0 SKIP**，还原后五个文件与备份**逐字节相同**。
+
+#### 9.46.12 全量读数
+
+```text
+HEAD 2db4db1  dirty 9
+start 2026-09-26T11:10:35+08:00
+rc=0 at 2026-09-26T11:21:18+08:00
+6109 passed, 20 skipped, 4000 subtests passed in 639.62s (0:10:39)
+dirty after 9  HEAD 2db4db1
+
+runtime/message_transport.py   cfdc1cb89d22f9cb302b8c185b04e137776112b554fe8e1d058ac1730b35b959
+runtime/card_delivery.py       9cdb8ba6ad1e2038334703ecc74edeb4e84308bc8229f043ad74170017362e04
+runtime/card_day.py            001e6ab868dddf262abbd43da80b082848d9e05e5c737696479c653f7ab549ff
+runtime/cli.py                 4789a571e58fa5a9136909a7d188322d68e3b011b93f07476acee162b5961b82
+runtime/daemon.py              b0f48688de0baac4da6f2d78dc798b11baba0c188c32d04a513db5195c09043e
+tests/test_message_transport.py 881c5a284877e6fcabe4cc578a3c7eb74bf0d1ee0d606b3305f630a147cc5210
+tests/test_card_delivery.py    b67d77944905440874c5da458ffba91cac1c62a3ee2e45b50d0ee4b2b70bc386
+tests/test_card_day.py         e5b232150f01c9c22d7e895843e301b2023ce2bdaf10d6feee2dfd504e74376b
+tests/test_daemon.py           4107da0c4b33b8d9b4d0dc53d9f32c2e57fb5867d070652e9d9e670e0c848828
+```
+
+- **算术闭合**：上一格 6051 ＋ 本片净新增 **58** 条 `def test_`（`git diff -U0` 逐文件计数
+  12/12/30/4，删除 0 条，且测试目录里没有第五个文件）＝ **6109** ✓。
+- **subtests 3995 → 4000，+5，而且这 5 条有出处**：本片新增的
+  `test_every_message_answer_is_in_the_closed_vocabularies` 里有**一个**
+  `self.subTest(instant=instant)`，循环 5 个时刻（休息日 08:00、工作日 07:00/09:00/21:00、次一
+  工作日 08:00），一次循环一条 subtest，恰好 +5。**不是** §9.45 里那条制品 import 计数——本片
+  没有新增运行时模块，同一支命令（`-k test_every_shipped_module_imports_from_the_install`）
+  在同一棵树上仍然量出 **114 个模块**，与上一格逐字相同，这是**量过**的而不是推出来的。
+- 前五格的五个 sha256 与变异电池备份的前缀逐项吻合（`cfdc1cb89d22`/`9cdb8ba6ad1e`/
+  `001e6ab868dd`/`4789a571e58f`/`b0f48688de0b`），即「还原后逐字节相同」这句话与全量读数来自
+  同一份字节。
+- **跑前跑后 9 个文件的 sha256 逐字节相同，HEAD 未变，dirty 9 → 9。** 这一跑没有写进任何东西；
+  台账这一节是在跑完之后写的，因此台账自己也不在那一跑的输入里。
+
+#### 9.46.13 它没做什么，仍未关闭的
+
+- **没有发送、没有改动任何一条消息。** 手工检查里通道那半边用的是真模块 + 假 `run`
+  （`/nonexistent/lark-cli`），一次真实 patch 都没有发生；`card day-announce` 只写当天的 store，
+  而且写的是 `artifacts/tmp-p8/` 下的临时文档。
+- **没有从文档一侧真的调过 `card record-delivery`。** 台账的唯一写入者是守护进程，而本机**此刻
+  就有活着的守护进程**（`serverosd`，状态目录在 `…/work-items/serveros/SRV-0011/RUN-0001/
+  release/…` 下，另有 `runtime-assets` 下那一条）。从手工脚本写进去会在一个活着的节点上留下
+  真收据。那条路径由 `tests/test_daemon.py` 在临时 state 目录上驱动，C34/C35 两个变异覆盖。
+- **ops 发送方还没有切到 `update`。** 本片交付的是「可以 patch 什么」与「记下是哪一条」；真正
+  让告警卡从「每次新发」变成「patch 同一条」是 ops 那一侧的改动，属于 P8 的其余部分。
+- 本机上仍然没有 `~/.serveros/business-calendar.yaml`、也没有 `~/.serveros/cards/day.json`
+  （本片没有创建它们），因此 `card day` 在本机的默认答案仍是 `SKIP/CALENDAR_UNKNOWN`；
+  `~/.serveros/` 下只有 `node.yaml` 与 `targets.yaml`。
+- 仍未关闭（与前几格相同，本片一条也没有改变它们的状态）：P7 唤醒半的两件前置（§9.38.9）、
+  `WAIT_KINDS` 仍只有 `child`/`window`、`NodeControlTransport.send` 不包裹 connector 异常、
+  `drift_sync.py` 没有调度器、约 40 处未守护的考古站点、`supersede_checkpoint` 的退役评估、
+  以及切片 F–N 的新模块在装好的节点上都还没有那一次 `build→promote→restart`（P12）。
+
 ## 10. 后续每包更新哪几行
 
 - 改完一个包，只更新 §3.1 里对应行的四层状态 + §5 表的增删。
