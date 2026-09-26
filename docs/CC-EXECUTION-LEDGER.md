@@ -6616,6 +6616,279 @@ tests/test_daemon.py           4107da0c4b33b8d9b4d0dc53d9f32c2e57fb5867d070652e9
   `drift_sync.py` 没有调度器、约 40 处未守护的考古站点、`supersede_checkpoint` 的退役评估、
   以及切片 F–N 的新模块在装好的节点上都还没有那一次 `build→promote→restart`（P12）。
 
+## §9.47 切片 D：一个 episode 一张事故卡，跨小时也跨天
+
+#### 9.47.1 靶子：V29 全句的主语是一个此前零读者的词
+
+V29（`docs/MONITORING-ACCEPTANCE.md:106`）写的是「同episode跨小时/跨天只patch一张Incident
+Card，不重复NEW」；`docs/MONITORING-PRODUCT-ARCHITECTURE.md:556–567` 把同一件事展开成一张表
+（NEW 只发一次，UPDATED/ESCALATED/ACK/RECOVERED/CLOSED 都 patch），并给出**唯一**允许新建
+的出口：「只有平台 patch 窗口到期且 episode 仍持续时，才创建 successor card，并保持同一个
+episode continuity」。
+
+§9.46 关掉的是 §11 这句话里**当天卡**那一半（一个工作日一张卡、记住承载它的那条消息）。事故
+卡那一半此前一个落点也没有，原因是这句话的主语——`episode`——**全树没有一个读者**：
+
+- `runtime/alert_digest.py:124` `EPISODE_FIELDS = ("first_seen", "resolved_at")`，`:734`
+  `episode_of(row)` 用 `sha256(key|first_seen|resolved_at)[:16]` 造出它；
+- `runtime/notification-contract.yaml:477–480` 与 `:501` 逐字写明 `episode: "alert_ref +
+  first_seen + resolved_at"`、`receipt_field: last_payload`；
+- 而全树**没有任何一处**把两条投递按 episode 比对过。台账（§9.46 交付）记得住「发了哪一条
+  消息」，却记不住「这条消息是关于哪一起事故的」——于是 09:00 的那一拍只能看见「有一条卡发过
+  了」，看不见「它就是 08:00 那条」，唯一能做的事就是再发一条。
+
+本片补的是这半张：**回执记住它关于哪个 episode**，**判决回答这个 episode 下一次该做什么**，
+并给「问一次」一个动词（`card incident`）。
+
+#### 9.47.2 八处落点
+
+| 落点 | 是什么 | 在哪 |
+| --- | --- | --- |
+| episode 是什么 | 非文本拒绝／strip／含空白拒绝；两句都不回显那个值 | `card_delivery.check_episode` |
+| 哪些卡有 episode | `PER_EPISODE_KINDS = (ALERT, RECOVERY)`；**对称**两拒 | `card_delivery.record` 是唯一入口 |
+| 回执留住它 | `episode` 进台账行（缺失的键保持缺失，不补一个） | `card_delivery.record` |
+| 哪条消息承载它 | `CardLedger.carries(kind, episode)` | `card_delivery.CardLedger` |
+| **共享判决** | `binding_verdict(binding, at, window_days)`：四个理由 | `card_delivery.binding_verdict` |
+| 事故卡的答案 | 五拍：`NEW_MESSAGE·NEVER_SENT`／`PATCH_MESSAGE·IN_HAND`／`SUCCESSOR_MESSAGE·IDENTITY_EXPIRED`／两个 `IDENTITY_MISSING`·`IDENTITY_UNDATED` | `card_delivery.incident_verdict` |
+| 两个命令 | `card record-delivery --episode`、`card deliveries` 每行印 episode、新命令 `card incident --kind --episode --at` | `runtime/cli.py` |
+| socket 上一处 | op `card.incident`（ops 表与 `handler_map()` 清单**两处**都要写），`episode` 原样透传 | `runtime/daemon.py` |
+
+#### 9.47.3 episode 的形态规则只写一处，而且和行写入侧是同一读法
+
+`check_episode` 的四条：不是文本就拒（`str(b"0f3a…")` 是 `b'0f3a…'`，一个看起来良构、谁也
+寻不到的值——正是 §9.46 里 `check_remote_id` 拦的那类静默失败）；`strip()`；strip 之后为空就
+拒；含任何空白就拒。三句拒绝**都不回显那个值**：回显会把一个可能来自外部输入的东西复制进日志。
+
+`record()` 是唯一入口，所以这条规则覆盖每一个调用方——包括守护进程（socket 上唯一的写入
+者）。daemon 那边是 `episode=params.get("episode")`：原样转交，不在自己这里再判一次。
+
+台账 `_load` 里还有一道**逐行**校验：`episode` 这一栏存在（哪怕是 `null`）就必须是一个合法
+token，否则整份台账拒绝服务。理由是这一片才有的：**一行 episode 读不出来的记录，是任何查询
+都找不到的记录**，而查询找不到它的后果，就是这个 episode 收到第二张卡。
+
+一个刻意的非对称：**键缺失保持缺失**。§9.46 之前写下的行里没有 `episode` 这一栏，那不是
+「格式错误」，是「那时候还没有这个词」——替历史行编一个 episode，会让一次真实发送变成一次
+错误归因。
+
+#### 9.47.4 对称的 kind 规则，以及为什么「status 必须不带 episode」不是整洁
+
+两条规则成对：`alert`/`recovery` 的回执**必须**带 episode，`status` 的回执**必须不带**。
+
+第一条是 V29 可判定的前提——没有它，台账说得出「哪张卡发出去了」，说不出「那就是这一拍的
+同一起事故」。第二条不是对称的美学：`status` 卡是关于**一个工作日**的，它没有 episode；允许
+它带一个，会让 `episode` 这个词同时命名两件东西，而读者只看得见拼写。用本片自己的说法：
+**一个能表示「什么都不是」的词，就不再是一个名字。**
+
+#### 9.47.5 `carries`：被拒的那次 patch 之后，还认不认得出那条消息
+
+`carries(kind, episode)` 取的是该 episode **最后一个「指名了消息」的行**，而不是最后一行。
+这个区别是在手工检查里被量出来的，它对应一条真实的误诊路径：
+
+```text
+08:00  DELIVERED  episode=…9c24  remote_id=om_hand_incident   ← 卡真的发出去了
+09:00  FAILED     episode=…9c24  remote_id=None               ← 服务拒绝了这次 patch
+```
+
+「最后一行」会答「发出过卡、但回执丢了 id」（`IDENTITY_MISSING`），于是读者去修一张**完好
+的**回执——而下一步就是给同一个 episode 发第二张卡。被拒的 patch 陈述的是**一次尝试**，不是
+**哪条消息承载这个 episode**，所以它不作数；一条从没记下 id 的行（09:30 那一行）仍然是一行，
+于是「记过、但没指名消息」与「什么都没记过」保持可分——这是三种状态，不是两种。
+
+#### 9.47.6 一份判决、两句不同的话：`binding_verdict` 是唯一起草处
+
+「承载它的消息还能不能改」是**一个**问题。§9.46 在 `card_day.message_verdict` 里答过一次，
+事故卡要答的是同一个问题——两处实现会在窗口移动的那天第一次分歧，那时当天卡会承诺一次
+transport 拒绝的 patch。
+
+所以判决收敛到 `card_delivery.binding_verdict(binding, *, at, window_days)`，返回
+`{action, reason, remote_id, window_days, age_days}`，四个理由 `IDENTITY_MISSING`／
+`IDENTITY_UNDATED`／`IDENTITY_EXPIRED`／`IN_HAND`（只有最后一个给 `PATCH_MESSAGE`，其余
+`NEW_MESSAGE`）。
+
+**它不造句。** 句子留在两个调用方：当天卡说「承载当天卡的消息……」，事故卡说「承载这个 episode
+的消息……」。两句都必须说，而且都必须不同——一句共用的话会在两处中的一处说错主语。`card_day`
+也不再自己加载 `message_transport`：窗口与词汇都从 `card_delivery` 借（`_delivery()` 用的
+是**同一个模块名**，所以是同一份对象，不是看着一样的第二份），`card_day` 自己的
+`_transport()`／`_moment()` 删除。
+
+#### 9.47.7 五种答案，两处拒绝而不是猜
+
+`incident_verdict` 的五个出口：
+
+| 台账里 | 答案 | 理由 |
+| --- | --- | --- |
+| 没有这个 episode 的任何行 | `NEW_MESSAGE` | `NEVER_SENT` |
+| 有行、有 id、窗口内 | `PATCH_MESSAGE` | `IN_HAND` |
+| 有行、有 id、超窗 | `SUCCESSOR_MESSAGE` | `IDENTITY_EXPIRED`（句子必须要求 continuity） |
+| 有行、回执没记 id | `NEW_MESSAGE` | `IDENTITY_MISSING` |
+| 有行、时刻读不出 | `NEW_MESSAGE` | `IDENTITY_UNDATED` |
+
+两处**拒绝而不是猜**：`status` 这类关于工作日的卡族（判词会瞄准它先撞上的那一行），以及空的
+episode（「那个 episode」不是一个 episode）。
+
+它还**不回答「这件事值不值得说」**。V35 的抑制住在 `alert_digest.decision`，一个顺带决定相关性
+的判决就是加在已有闸门前面的第二道闸。
+
+超窗那一句是本片唯一的**允许行动**：`SUCCESSOR_MESSAGE` 不是 `NEW_MESSAGE` 的别名，两者的
+区别就是那句话——新卡必须**显式标注**它接续的是同一个 episode。
+
+#### 9.47.8 两条时钟（实测对照）
+
+`message_transport.update` 拿**真机器时钟**量窗口（它真的要去改一条消息）；`binding_verdict`
+与 `incident_verdict` 的两个时刻**都是参数**——它们是判断，同一份台账在不同时刻必须给出同一个
+答案，而回答的是「这一拍」。`_moment` 对**不带时区**的值返回 `None` 而不是按 UTC 读：窗口宽
+14 天，替一个没有时区的值假设一个，能在两个方向上把它挪掉将近一天，那就是「patch 一条消息」
+与「拒绝 patch」的差别。
+
+#### 9.47.9 手工跑过的真路径（读数）
+
+六节，脚本在 `artifacts/tmp-p8/handcheck_slice_d.py`：
+
+- **A 真 CLI 打真守护进程**（只读命令）。两条读数**不是**「命令能跑」：本机跑着的守护进程是
+  切片 D 之前的 composition，它答 `UNKNOWN_METHOD` 并**逐条报出它服务的 61 个名字**——
+  `card.record-delivery`／`card.deliveries` 在，`card.incident` 不在。rc=2，没有假装成功。
+  同一个脚本读工作树源码：`"card.incident"` 出现 **2 处**（ops 表、随 socket 报出去的清单）。
+  两边对得上，差的是那台机器上跑着的那一份——把切片 D 放上节点是 P12 的事。
+- **A 的另两条是 parser 层**：`--kind status` 被拒（rc=2，usage 里 choices 只有 `alert`/
+  `recovery`）、不带 `--episode` 被拒（rc=2）。两条都在**没有碰守护进程**的情况下发生。
+- **B 六拍**：`PATCH_MESSAGE·IN_HAND`（0.3 天）→ `SUCCESSOR_MESSAGE·IDENTITY_EXPIRED`
+  （40 天）→ `NEW_MESSAGE·IDENTITY_MISSING` → 第三条的时刻**晚于**这一拍，答
+  `PATCH_MESSAGE·IN_HAND` 且句子里写明「记下的发出时间不早于这一拍」→ 手写进去的一行（见下）
+  答 `NEW_MESSAGE·IDENTITY_UNDATED`：「无法判断就不声称可以 patch，也不据此改发一张新的」→
+  一条谁也没发出过的 episode 答 `NEW_MESSAGE·NEVER_SENT`。
+- **C `carries` 五行**：被拒的那一行（09:00 FAILED）存在时，`carries(…9c24)` 仍答 08:00 那条
+  `om_hand_incident`；`carries` 对没有 id 的行返回该行本身（`remote_id=None`），对没有行的
+  episode 返回 `None`——三种状态都打出来了。
+- **D 同一份判决、两句不同的话**：同一 binding、同一时刻，当天卡说「承载**当天卡**的消息在
+  手……」，事故卡说「承载**这个 episode** 的消息在手……」；`"当天卡" in …` 一句 True 一句
+  False——这是「一份判决、两句话」的读数，不是修辞。
+- **E 借来的词汇与借来的窗口**：七个词 `is` 同一个对象（True×7）；窗口两边都读同一个
+  `message_transport`（`day._delivery() is cd` True）；两个动作集合的差集恰好是
+  `{NO_MESSAGE}` 与 `{SUCCESSOR_MESSAGE}`，两个理由集合的差集恰好是 `{NOT_ROUTINE}`——**借
+  来的只是词本身**，各自多出来的那个词各自说得出口。
+- **F 没有在这里跑的命令**：`card record-delivery --episode` 走守护进程，本机此刻就有活着的
+  守护进程，拿一张假卡去写会在一个活着的节点上留下**真收据**；那条路径由
+  `tests/test_daemon.py` 在临时 state 目录上驱动（D32/D33/D34 三个变异覆盖）。
+
+B 里那第五行是**手写进 JSON 的**：走 `record` 的调用方写的都是它自己那一刻（守护进程写
+`_iso(self._now())`，CLI 写 `--at` 或同一个时刻），所以这一棵树里没有一条调用路径会产出
+`at` 读不出来的行。`IDENTITY_UNDATED` 这个分支存在，是为了别人写的行——旧 schema、另一个
+写入者、被手工改过的文件——而一个只在代码里存在的分支，正是那种「测试全绿、真到手上才发现」
+的分支。所以手工检查把它真的造出来读了一次。
+
+#### 9.47.10 本片新增的用例
+
+**45** 条 `def test_`，删除 **0** 条，全在三个文件里：`test_card_delivery.py` +37、
+`test_daemon.py` +5、`test_card_day.py` +3。`git diff --name-only -- tests/` 只有这三个文件。
+
+承重的几条：
+
+- `test_the_last_row_wins_only_when_it_names_a_message`——把那两行台账摆出来，钉住被拒的
+  patch 不作数；
+- `test_the_two_card_families_disagree_about_what_they_call_it`——同一份判决，两句话，主语不同；
+- `test_the_judgment_about_the_message_is_the_ledgers_and_not_a_second_one`——把
+  `card_delivery.binding_verdict` 换成一个返回凭空理由的桩，看 `card_day` 是否**拒绝**（它
+  会 `raise CardDayError`），而不是把那个理由当成第四个自己认识的值；
+- `test_the_shared_words_are_borrowed_rather_than_written_out_again`——读源码断言
+  `f"{name} = _delivery().{name}"`，因为「借」这件事只有写法能证明；
+- `test_the_module_it_reads_is_the_same_copy_the_cli_loads`——`assertIs(card_day._delivery(),
+  card_delivery)`；
+- `test_the_words_this_verdict_answers_in_are_the_ledgers_own`——七个词逐个 `assertEqual`，
+  并断言两个集合的差集**恰好**是各自多出来的那个词；
+- `test_a_row_whose_episode_cannot_be_read_stops_the_ledger`——一行坏 episode 让整份台账
+  拒绝服务；
+- `test_a_workdays_receipt_may_not_carry_an_episode`／`test_an_incident_receipt_must_name_one`
+  ——对称的两拒；
+- `test_a_verdict_about_no_episode_is_refused`——这条**本来就在**，本片把它改了：原来只断言
+  「抛了 `CardDeliveryError`」，而 `carries` 也为空 episode 拒绝，于是断言在两层都能过（见
+  9.47.11 的 D16）。现在它断言拒绝句里含 `verdict`，即**这一层**在说话。改在原有用例内部，
+  不新增 `def test_`，所以上面 45 这个数不受影响。
+
+约定沿用前几片：同一个文件用**同一个模块名** `_load(...)`；`test_card_day.py`／
+`test_card_delivery.py` 用 `unittest.TestCase`，`test_daemon.py` 用 pytest + `daemon_factory`。
+
+#### 9.47.11 变异电池：35 条，35 杀，0 存活，0 SKIP
+
+覆盖四个实现文件（`card_delivery` D1–D22：episode 的形态与三种拒绝、`carries` 的两条取法、
+共享判决的四个理由与窗口、事故判决的五个出口；`card_day` D23–D25：窗口不许写字面量、判决不许
+自己下、借来的词不许抄写一遍；`cli` D26–D31：`--episode` 的透传与必填、印不印 episode 行、
+动词与它的 choices；`daemon` D32–D35：透传、op 名、op 声明的两处清单）。
+
+逐条锚点在文件里必须只出现一次（dry-run 验过 35/35 唯一，其中 D9 的缩进错在 dry-run 里当场
+被抓住），`__pycache__` 每轮清一次（同尺寸同秒的还原会骗过 pyc 校验）。
+
+首轮 **34 杀 / 1 存活**，0 SKIP。存活的那一条既不是冗余代码，也不是测试漏了行为，而是一次
+**「两个层都会拒绝」**：
+
+- **D16（`incident_verdict` 自己的守卫 `if not episode:` 去掉）**。它下面一行就是
+  `ledger.carries(kind, episode)`，而 `carries` **同样**为空 episode 拒绝。所以这个变异在异常
+  类型上**等价**：原来那条断言写的是 `with self.assertRaises(CardDeliveryError)`，两层都让
+  它过。
+- **不靠推理，量一次**：把 `runtime/` 复制到 artifacts 下的一份副本里、**只在那份副本上**做这
+  个改动（工作树一个字节都没动），同一组输入（`""`、`"  "`、`None`）喂给两份模块：
+
+  | 输入 | pristine | D16 |
+  | --- | --- | --- |
+  | `""` / `"  "` / `None` | `an incident verdict is about one episode, and this call named none: «the episode» is not an episode` | `which message carries an episode is a question about one episode, and this call named none` |
+
+  两者都抛 `CardDeliveryError`——**差别是句子**，也就是**哪一层在说话**。
+- 所以这条守卫不是死代码：它决定调用方读到的**诊断**。第一句说的是「**这次调用**错了」，
+  第二句把读者送到台账去查一个**它没来得及问的**问题。原来的断言只看异常类型，于是「两层都
+  拒」这件事让断言在两处都能过——与 §9.46 的 C33 是同一类错误：**断言钉错了对象**。
+- 补的是同一条用例的**后半**（在原有测试内部加断言，不新增 `def test_`，所以 9.47.10 的计数
+  不受影响）：拒绝句里必须含 `verdict`，三个输入逐个检查。子集重跑 **1/1 杀**。
+
+**35 杀、0 存活、0 SKIP**，还原后四个文件与备份**逐字节相同**（`371adc1918e7`／
+`a74c8140857d`／`01f395352805`／`a5ef3323d3d8`）。
+
+#### 9.47.12 全量读数
+
+```text
+HEAD 75798c1  dirty 7   (工作树里只有本片这 7 个文件；台账这一节是跑完之后写的)
+start 2026-09-26T12:30:31+08:00
+rc=0 at 2026-09-26T12:41:28+08:00
+6154 passed, 20 skipped, 1 warning, 4000 subtests passed in 653.43s (0:10:53)
+dirty after 7  HEAD 75798c1
+
+runtime/card_delivery.py        371adc1918e74594f2fb708d6d14f45acbb8c6761d6fe4f8924ae2dc9b33f2b6
+runtime/card_day.py             a74c8140857d2fe010a0e933d033edd4d6d586ed07541a7423ce5cf1c357817b
+runtime/cli.py                  01f395352805df88a009c2526ea5125af0c541b822d4718e6458787c5e216ef2
+runtime/daemon.py               a5ef3323d3d815e8c4ea19ed964c05ff54f15495f5dbfbc9e72e7ead877061b3
+tests/test_card_delivery.py     d9bff86baf5d5032c77adc6bbd6da767b03b74d71bbbf0c2916269af66f3161a
+tests/test_card_day.py          383eb3d55c194db6737811b06bdc2a5a4e2491db3b96f88682c4076cf5a9e0c0
+tests/test_daemon.py            5165938e667147dd1f45730ecdfa26007dd07274021268dd7af3eaf3ae851ba5
+```
+
+- **算术闭合**：上一格 6109 ＋ 本片净新增 **45** 条 `def test_`（`git diff -U0` 逐文件计数
+  37/5/3，删除 0 条）＝ **6154** ✓。
+- **subtests 仍是 4000**：本片新增的用例里 **0** 个 `subTest`（`git diff -U0 -- tests/ |
+  grep -c subTest` = 0）。这个数**没有动**，与「上一格 3995 → 4000 的那 +5 有出处」是同一支
+  量具量出来的。
+- 本片**没有新增运行时模块**，所以那一支制品 import 计数应仍是 **114 个模块**——这一条是**推**
+  的，不是量的（没有为它单独跑一次 `-k` 探针），按 §9.46 的口径记在这里。
+- 全量那一跑是本片的**第三次运行**（手工检查、变异电池、全量），跑的是**最终字节**：D16 的补
+  断言是在第一次全量跑完之后加的，所以 9.47.12 这一跑重跑了一次，上面 7 个 sha256 就是这一跑
+  跑的字节。跑前跑后 7 个文件的 sha256 逐字节相同，HEAD 未变，dirty 7 → 7：这一跑没有写进任
+  何东西。
+
+#### 9.47.13 它没做什么，仍未关闭的
+
+- **没有发送、没有改动任何一条消息。** 手工检查里没有一条命令会发出卡；通道那半边的真路径
+  （`update`）本片一个字也没有改。
+- **没有从本机真的调过 `card record-delivery --episode`。** 本机此刻有活着的守护进程，写进去
+  会留下真收据；那条路径由 `tests/test_daemon.py` 在临时 state 目录上驱动。
+- **没有改变本机上任何一条已写下的台账行。** 本片新增的 `episode` 栏对历史行保持缺失，`_load`
+  也不会替它们补一个。
+- **ops 发送方仍然没有切到 `update`，也仍然没有按 episode 查判决。** 本片交付的是「可判定的
+  问题」与「问它的动词」；让告警卡真的从「每次新发」变成「patch 同一条」是 ops 那一侧的改动，
+  属于 P8 的其余部分，而且**真实效果需要批准**。
+- **`card.incident` 还没有在节点上**（读数见 9.47.9 A）：装好的 composition 里没有这个 op，
+  那一次 `build→promote→restart` 仍是 P12。
+- 仍未关闭（与前几格相同，本片一条也没有改变它们的状态）：P7 唤醒半的两件前置（§9.38.9）、
+  `WAIT_KINDS` 仍只有 `child`/`window`、`NodeControlTransport.send` 不包裹 connector 异常、
+  `drift_sync.py` 没有调度器、约 40 处未守护的考古站点、`supersede_checkpoint` 的退役评估、
+  以及切片 F–N 的新模块在装好的节点上都还没有那一次 `build→promote→restart`（P12）。
+
 ## 10. 后续每包更新哪几行
 
 - 改完一个包，只更新 §3.1 里对应行的四层状态 + §5 表的增删。
