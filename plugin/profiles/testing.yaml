@@ -74,7 +74,42 @@ version: "1.0.0"
 # different payload than the one it was named for. `a` was only ever loaded
 # with `--plugin-dir`, which caches nothing, so no cache is stale; the label
 # moved because the content did, and not because a target was chosen first.
-cachebuster: srvtest0001.20260922b
+#
+# Moved to `27a` on 2026-09-27, and this time the divergence was MEASURED on
+# this node rather than argued. `build.py --check` over this composition, read
+# from `serveros-completion-20260925@50a86fa` against
+# `--ability-rev 368c1be63a0d6bf48ae83d91ce6008094ba048ef`, reports against the
+# payload built under `22b`:
+#
+#   README.md                              generated from that rev
+#   skills/test-management/SKILL.md        taken from `ability-management`
+#   RELEASE.json                           present in the installed payload and
+#                                          produced by no build here
+#
+# The one that forces the move is the second. The installed payload instructs
+# its reader that this node's test-environment root is
+# `/opt/applications/data/home-hwz/workspace/test-envs/<repo>/<ITEM>/` — one
+# machine's literal, written as an absolute fact about whichever node is
+# reading. It is not cosmetic on the machine that carries this plugin: the
+# entry is ENABLED here, so every new session that resolves `test-management`
+# is told to write into a directory that does not exist on this host. The
+# payload that replaces it writes `$WORKSPACE_ROOT/test-envs/<repo>/<ITEM>/`,
+# and `WORKSPACE_ROOT` is a symbol this node's own root contract fills in.
+#
+# This is the same defect `srv0003.20260924d` and `srv0003.20260927a` were both
+# moved to repair, one composition over: the literals lived in the shared
+# `ability-management` Skills, so every composition that inherits one inherits
+# the stale sentence with it. The workbench composition was rebuilt and
+# promoted; this one was not, and its installed cache has been serving the old
+# text under a version string that still names it. Keeping `22b` would leave
+# that cache in place, because `claude plugin update` compares version strings
+# and an unchanged one is read as "already current".
+#
+# `RELEASE.json` is reported by the same check and is NOT touched here: it is a
+# file this node's installed payload carries and no build in this repository
+# produces, so it belongs to whatever wrote it, not to this composition. Named
+# so that it is a recorded leftover rather than a silent one.
+cachebuster: srvtest0001.20260927a
 
 skills:
   - name: automated-testing
