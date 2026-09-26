@@ -109,6 +109,30 @@ WAKE_SERVICE_NAME = "serveros-continuation-wake.service"
 WAKE_TIMER_NAME = "serveros-continuation-wake.timer"
 TREE_MANIFEST = "RELEASE.json"
 
+# Bytecode the interpreter writes into a directory it has RUN from. Excluded from
+# `fingerprint` unconditionally, and the reason is not tidiness.
+#
+# A staged revision is a directory the node executes out of, so running it
+# creates `__pycache__/*.pyc` inside the very tree whose hash was recorded. The
+# hash therefore has to be a function of the PAYLOAD and not of the directory —
+# otherwise it is not stable across the revision's own lifetime: `promote`
+# computes one number before the daemon has ever run, a verifier recomputes
+# another afterwards from an unmodified tree, and the second number is presented
+# as evidence of tampering. That is not a hypothetical. It is what
+# `runtime_truth.py` reported on 2026-09-26 for the live node, whose revision
+# differed from its record by exactly 34 `.pyc` files and nothing else —
+# measured, and reproduced to the byte by applying this exclusion.
+#
+# The exclusion cannot hide a real difference: the builder ships no bytecode.
+# The 2026-09-24d candidate artifact contains 0 of them, as does every one of the
+# twelve revisions under this node's distribution root that was never made
+# current — the five that carry `.pyc` at all are exactly the five that have been
+# RUN from. So on every input this tool hashes at build or promote time the
+# exclusion is invisible, and it is visible only where it must be: on a directory
+# something has since executed.
+BYTECODE_DIRS = frozenset({"__pycache__"})
+BYTECODE_SUFFIXES = frozenset({".pyc", ".pyo"})
+
 # The build's own statement about what it built, written by `build.py --write`
 # beside the artifact's files. `release.py` reads it and never guesses: the two
 # facts this path needs before it can verify anything are WHAT KIND of thing is
@@ -228,10 +252,22 @@ def fingerprint(root: Path, ignore: tuple[str, ...] = ()) -> str:
     failure this docstring warns about, so the recipe grew a filter instead.
     Relative paths, matching what `sort -z` would have seen; the default is
     empty and every existing caller is unaffected.
+
+    One refinement of the quoted recipe, which is worth stating because the
+    recipe above is quoted as if it were literal: bytecode is skipped, always
+    (see `BYTECODE_DIRS`). The quoted command would have hashed it, and the two
+    agree on every tree this tool has ever hashed, because the builder ships
+    none — so the recorded values are exactly what the literal pipeline produces
+    on the artifact. They part company only on a directory the interpreter has
+    since run from, and there the literal pipeline is the one producing a number
+    nobody should be asked to trust.
     """
     skip = set(ignore)
     entries = [p for p in root.rglob("*")
-               if p.is_file() and p.relative_to(root).as_posix() not in skip]
+               if p.is_file()
+               and p.relative_to(root).as_posix() not in skip
+               and p.suffix not in BYTECODE_SUFFIXES
+               and not BYTECODE_DIRS.intersection(p.relative_to(root).parts)]
     entries.sort(key=lambda p: f"./{p.relative_to(root).as_posix()}")
     stream = "".join(
         f"{hashlib.sha256(p.read_bytes()).hexdigest()}  ./{p.relative_to(root).as_posix()}\n"

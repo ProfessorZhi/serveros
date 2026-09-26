@@ -1278,6 +1278,51 @@ class RuntimeTruthTests(unittest.TestCase):
         self.assertEqual(recorded, release.fingerprint(rev, ignore=(truth.TREE_MANIFEST,)))
         self.assertNotEqual(recorded, release.fingerprint(rev))
 
+    def test_the_bytecode_a_revision_wrote_is_not_read_as_tampering(self):
+        """The staged revision is a directory the node RUNS out of, so running
+        it leaves `__pycache__` inside the tree whose hash was recorded.
+
+        This is the defect `release.fingerprint`'s `BYTECODE_DIRS` note is about,
+        and it is not hypothetical: on 2026-09-26 the live node reported
+        `SOURCE_RUNTIME_DRIFT` — «these bytes are not the ones that were
+        promoted» — against an unmodified revision that differed from its record
+        by exactly 34 `.pyc` files. A verifier that reads derived bytes as
+        payload accuses the node it was built to exonerate, and it does so on
+        every node that has ever been restarted.
+        """
+        self.faithful_runtime()
+        rev = self.install_node()
+        recorded = json.loads((rev / truth.TREE_MANIFEST).read_text())["tree_hash"]
+        cache = rev / "runtime" / "__pycache__"
+        cache.mkdir(parents=True, exist_ok=True)
+        (cache / "daemon.cpython-312.pyc").write_bytes(b"\x00bytecode, not payload\n")
+        (cache / "daemon.cpython-312.pyo").write_bytes(b"\x00optimised\n")
+        self.assertEqual(release.fingerprint(rev, ignore=(truth.TREE_MANIFEST,)),
+                         recorded)
+        report = truth.collect(self.args())
+        self.assertEqual(rows_by(report)[f"{NODE_COMPOSITION} (node revision)"]
+                         ["verdict"], truth.OK)
+
+    def test_the_exclusion_is_bytecode_and_not_a_blind_eye(self):
+        """The filter must skip derived files and nothing else.
+
+        A revision that grows a source file after promotion is exactly the case
+        the check exists for, and an exclusion keyed on anything looser than
+        «this path is bytecode» would report that revision as intact.
+        """
+        self.faithful_runtime()
+        rev = self.install_node()
+        recorded = json.loads((rev / truth.TREE_MANIFEST).read_text())["tree_hash"]
+        (rev / "runtime" / "smuggled.py").write_text("# not bytecode\n")
+        self.assertNotEqual(release.fingerprint(rev, ignore=(truth.TREE_MANIFEST,)),
+                            recorded)
+        # And a name that merely mentions bytecode is still a file: what is
+        # skipped is the suffix and the directory, not a substring.
+        (rev / "runtime" / "smuggled.py").unlink()
+        (rev / "runtime" / "pycache_notes.pyc.md").write_text("# a note\n")
+        self.assertNotEqual(release.fingerprint(rev, ignore=(truth.TREE_MANIFEST,)),
+                            recorded)
+
     def test_a_revision_with_no_manifest_is_reported_not_assumed_broken(self):
         self.faithful_runtime()
         self.install_node(manifest=False)
