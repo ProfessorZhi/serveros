@@ -76,6 +76,21 @@ CONVERSATION_PLACEHOLDER = "@SERVEROS_ALERT_CONVERSATION@"
 # hash-verified directory the next update replaces. `render_unit` raises when the
 # template names it and no value is supplied.
 WORKBENCH_OUT_PLACEHOLDER = "@SERVEROS_WORKBENCH_OUT@"
+# The wake routine's three, and all three are REQUIRED for the same reason the
+# conversation is: each has a plausible unrendered form. A unit that woke no
+# Parent would run, exit 0, and report nothing to wake — indistinguishable from
+# a node with no resumable checkpoints, which is the one reading §17.4 forbids.
+WAKE_PARENT_PLACEHOLDER = "@SERVEROS_WAKE_PARENT@"
+WAKE_BUDGET_PLACEHOLDER = "@SERVEROS_WAKE_BUDGET@"
+WAKE_TIMEOUT_PLACEHOLDER = "@SERVEROS_WAKE_TIMEOUT@"
+# The margin between the receiver's own bound on a Parent (`--budget`, which
+# `runtime/wake.py` clamps each attempt to) and the unit's `TimeoutStartSec=`.
+# `TimeoutStartSec` bounds the whole cgroup, so it has to be the LARGER of the
+# two — it is the outer limit that catches a wake which never reaches its inner
+# one, and the command needs those seconds to read the store, write a receipt
+# and be killed cleanly if the Parent overran. Too small and systemd kills a
+# Parent that was inside its grant; too large and it bounds nothing.
+WAKE_MARGIN_SECONDS = 60
 
 UNIT_NAME = "serverosd.service"
 # §W's production delivery runtime. A oneshot and its timer, NOT a second
@@ -87,6 +102,11 @@ ALERT_TIMER_NAME = "serveros-alert-sync.timer"
 # the install prints the one command that arms it and nothing arms it otherwise.
 DAILY_SERVICE_NAME = "serveros-daily.service"
 DAILY_TIMER_NAME = "serveros-daily.timer"
+# §17.4's wake half. A oneshot and its timer, on the same footing as the two
+# above and installed DISABLED: arming a routine that starts agent processes is
+# an act somebody approves, not a side effect of a promotion.
+WAKE_SERVICE_NAME = "serveros-continuation-wake.service"
+WAKE_TIMER_NAME = "serveros-continuation-wake.timer"
 TREE_MANIFEST = "RELEASE.json"
 
 # The build's own statement about what it built, written by `build.py --write`
@@ -238,7 +258,10 @@ def _symlink_swap(link: Path, target: Path) -> None:
 
 def render_unit(template: str, runtime_dir: Path, state_dir: Path, *,
                 conversation: str | None = None,
-                workbench_out: str | None = None) -> str:
+                workbench_out: str | None = None,
+                wake_parent: str | None = None,
+                wake_budget: str | None = None,
+                wake_timeout: str | None = None) -> str:
     """Write a unit template out for THIS node.
 
     `conversation` is keyword-only and has no default because there is no
@@ -248,6 +271,11 @@ def render_unit(template: str, runtime_dir: Path, state_dir: Path, *,
     `--conversation` with nothing after it. Both produce a worker that runs,
     fails to send, and reports that as nothing to do. Raising here is the only
     outcome that says what is actually wrong.
+
+    The wake routine's three are required for the same reason and are the reason
+    this docstring is not one sentence longer: a waker with no Parent runs on
+    cadence, wakes nothing, and exits 0 — a success report for a node whose
+    checkpoints are not being resumed. See `WAKE_PARENT_PLACEHOLDER`.
     """
     rendered = template.replace(RUNTIME_PLACEHOLDER, str(runtime_dir))
     rendered = rendered.replace(STATE_PLACEHOLDER, str(state_dir))
@@ -267,8 +295,26 @@ def render_unit(template: str, runtime_dir: Path, state_dir: Path, *,
                 f"nobody chose and reports success"
             )
         rendered = rendered.replace(WORKBENCH_OUT_PLACEHOLDER, workbench_out)
+    for placeholder, value, why in (
+            (WAKE_PARENT_PLACEHOLDER, wake_parent,
+             "a wake routine with no Parent to start would fire on its timer, "
+             "wake nothing and exit 0, which is a success report for a node "
+             "whose checkpoints are not being resumed"),
+            (WAKE_BUDGET_PLACEHOLDER, wake_budget,
+             "a wake routine with no budget would spend whatever the grant said "
+             "regardless of what the node's own timer can absorb"),
+            (WAKE_TIMEOUT_PLACEHOLDER, wake_timeout,
+             "the unit's outer bound would be unset, and an unbounded oneshot is "
+             "a timer that silently stops firing")):
+        if placeholder in template:
+            if not value:
+                raise ValueError(f"unit names {placeholder} and none was "
+                                 f"supplied; {why}")
+            rendered = rendered.replace(placeholder, str(value))
     left = [p for p in (RUNTIME_PLACEHOLDER, STATE_PLACEHOLDER,
-                        CONVERSATION_PLACEHOLDER, WORKBENCH_OUT_PLACEHOLDER)
+                        CONVERSATION_PLACEHOLDER, WORKBENCH_OUT_PLACEHOLDER,
+                        WAKE_PARENT_PLACEHOLDER, WAKE_BUDGET_PLACEHOLDER,
+                        WAKE_TIMEOUT_PLACEHOLDER)
             if p in rendered]
     if left:
         raise ValueError(f"unit still carries an unrendered placeholder: {left}")
@@ -647,6 +693,20 @@ def verify_node_runtime(rev_dir: Path, state_dir: Path) -> dict:
                         workbench_out="template-check")
         except ValueError as exc:
             problems.append(f"runtime/{DAILY_SERVICE_NAME}: {exc}")
+
+    # §17.4's wake routine, checked the same way. It carries the most
+    # placeholders of the three and the quietest failure of the three: an
+    # unrendered `--parent` leaves the receiver starting a program named after a
+    # placeholder, which fails as a `START_FAILED` receipt and reads as a broken
+    # launcher rather than as an artifact that cannot be installed.
+    wake_template = rev_dir / "runtime" / WAKE_SERVICE_NAME
+    if wake_template.is_file():
+        try:
+            render_unit(wake_template.read_text(), rev_dir, state_dir,
+                        wake_parent="/template-check", wake_budget="1",
+                        wake_timeout=str(1 + WAKE_MARGIN_SECONDS))
+        except ValueError as exc:
+            problems.append(f"runtime/{WAKE_SERVICE_NAME}: {exc}")
 
     # The entry point must resolve the runtime it ships with. `bin/` and
     # `runtime/` find each other by relative path, so a revision carrying one
@@ -1086,6 +1146,150 @@ def cmd_daily_task(args) -> int:
     return 0
 
 
+def cmd_continuation_wake(args) -> int:
+    """§17.4 · install the wake routine: a oneshot and its timer, DISABLED.
+
+    THE HALF THAT WAS MISSING. `runtime/continuation.py` writes what a waiting
+    Parent leaves behind, and until this command existed nothing on the node
+    filled its `RECEIVERS` — so a checkpoint was durable, readable, and resumed
+    only by a person. The product's sentence for that state («checkpoint已保存，
+    待续») was true, and this is the act that changes what is true.
+
+    IT IS NOT PART OF `promote`, for the same reason `alert-worker` is not: a
+    promotion places a revision and points the node at it, and that must keep
+    working on a node whose operator has not decided what a Parent is here. The
+    Parent command line is not a fact about a build — it is a fact about this
+    node's agents — so it is supplied at install time and its absence fails the
+    install rather than producing a waker that fires and wakes nothing.
+
+    ONE EXECUTABLE AND NOT A COMMAND LINE. `--parent` is a path, validated as an
+    absolute executable with no whitespace and no `@`. Two readers have to agree
+    about it — systemd splits `ExecStart=` into argv, and `runtime/wake.py` reads
+    the rendered unit back to decide whether a receiver is `wired` — and anything
+    that has to survive both correctly is anything that will one day be read
+    differently by one of them. An install that needs arguments writes a wrapper
+    and points `--parent` at it.
+
+    TWO BOUNDS, AND THEY ARE THE SAME TWO `runtime/wake.py` APPLIES. `--budget`
+    is the longest one Parent may run as far as this node is concerned. The
+    grant's own `budget.wall_seconds` is the other, and the receiver uses the
+    smaller. `TimeoutStartSec=` is rendered to `--budget` plus a margin, because
+    it bounds the whole unit cgroup and therefore has to be the OUTER of the two:
+    a systemd bound below the receiver's own would kill Parents the receiver
+    considered to be inside their grant, and the receipt would say `TIMED_OUT`
+    about a wake that never got to finish inside its own limits.
+
+    DISABLED BY DEFAULT, like `daily-task` and unlike `alert-worker`. Arming a
+    routine that starts agent processes is an act somebody approves; the install
+    prints the one command that arms it and arms nothing itself.
+    """
+    root = args.runtime_root / args.composition
+    current = current_revision(root)
+    if not current:
+        print(f"REFUSED nothing is promoted: {root / 'current'} is not a symlink.",
+              file=sys.stderr)
+        print("        The routine runs the revision's own `bin/serverosctl`; "
+              "install one first.", file=sys.stderr)
+        return 1
+    rev_dir = root / "revisions" / current
+
+    service_template = rev_dir / "runtime" / WAKE_SERVICE_NAME
+    timer_template = rev_dir / "runtime" / WAKE_TIMER_NAME
+    for path in (service_template, timer_template):
+        if not path.is_file():
+            print(f"REFUSED {path} is missing from revision {current}.", file=sys.stderr)
+            print("        An artifact built before the wake half existed cannot "
+                  "install one.", file=sys.stderr)
+            return 1
+
+    parent = str(args.parent)
+    problem = None
+    if not Path(parent).is_absolute():
+        problem = ("--parent is not an absolute path. The unit runs it from a "
+                   "user manager whose PATH is whatever the machine happens to "
+                   "have, and a Parent found by luck is a receiver that works "
+                   "until the day it does not")
+    elif any(c.isspace() for c in parent) or "@" in parent:
+        problem = ("--parent carries whitespace or `@`. Two readers have to agree "
+                   "about this value — systemd splitting `ExecStart=` and "
+                   "`runtime/wake.py` reading the unit back — so it is one path "
+                   "and the arguments belong in a wrapper")
+    elif not Path(parent).is_file():
+        problem = "--parent is not a file that exists"
+    elif not os.access(parent, os.X_OK):
+        problem = "--parent is not executable"
+    if problem:
+        print(f"REFUSED {problem}.", file=sys.stderr)
+        print("        A receiver that cannot start a Parent is one that fires, "
+              "wakes nothing, and exits 0 — a success report for a node whose "
+              "checkpoints are not being resumed. The install refuses instead.",
+              file=sys.stderr)
+        return 1
+
+    budget = args.budget
+    if not isinstance(budget, int) or isinstance(budget, bool) or budget <= 0:
+        print(f"REFUSED --budget {budget!r} is not a positive number of seconds.",
+              file=sys.stderr)
+        print("        A receiver with no bound on a Parent either spends "
+              "without limit or has a deadline nobody chose.", file=sys.stderr)
+        return 1
+
+    try:
+        service_text = render_unit(service_template.read_text(), root / "current",
+                                   args.state_dir, wake_parent=parent,
+                                   wake_budget=str(budget),
+                                   wake_timeout=str(budget + WAKE_MARGIN_SECONDS))
+    except ValueError as exc:
+        print(f"REFUSED {exc}", file=sys.stderr)
+        return 1
+    # The timer carries no placeholder, and running it through the same renderer
+    # anyway is what keeps "which files are rendered" from becoming a second list
+    # to maintain.
+    timer_text = render_unit(timer_template.read_text(), root / "current", args.state_dir)
+
+    if args.dry_run:
+        print(f"would install  {args.unit_dir / WAKE_SERVICE_NAME}")
+        print(f"would install  {args.unit_dir / WAKE_TIMER_NAME}")
+        print(f"  revision     {current}")
+        print(f"  parent       {parent}")
+        print(f"  budget       {budget}s per Parent "
+              f"(TimeoutStartSec {budget + WAKE_MARGIN_SECONDS}s)")
+        exec_line = next((l for l in service_text.splitlines()
+                          if l.startswith("ExecStart=")), "")
+        print(f"  {exec_line}")
+        print("  NOT enabled  (arm it yourself; nothing wakes a checkpoint until "
+              "the timer is in the wanted set)")
+        return 0
+
+    args.unit_dir.mkdir(parents=True, exist_ok=True)
+    (args.unit_dir / WAKE_SERVICE_NAME).write_text(service_text)
+    (args.unit_dir / WAKE_TIMER_NAME).write_text(timer_text)
+    print(f"installed      {args.unit_dir / WAKE_SERVICE_NAME}")
+    print(f"installed      {args.unit_dir / WAKE_TIMER_NAME}")
+    print(f"  revision     {current}")
+    print(f"  parent       {parent}")
+    print(f"  budget       {budget}s per Parent")
+
+    if args.no_reload:
+        print("  not enabled. Nothing wakes a checkpoint until you arm it:")
+        print(f"    systemctl --user enable --now {WAKE_TIMER_NAME}")
+        print("  or run it once, by hand, and read what it decided:")
+        print(f"    systemctl --user start {WAKE_SERVICE_NAME}")
+        return 0
+    subprocess.run(["systemctl", "--user", "daemon-reload"], check=False)
+    # `daemon-reload` is NOT a restart and this is not enabling: systemd has
+    # re-read the unit files, no timer is in the wanted set, and every
+    # checkpoint on this node stays exactly as it is.
+    print("  installed and NOT enabled — daemon-reload happened, which is not a "
+          "restart and not an arming. Arm it with:")
+    print(f"    systemctl --user enable --now {WAKE_TIMER_NAME}")
+    print("  and check it before trusting it:")
+    print(f"    serverosctl work wake --dry-run      # what it would wake, now")
+    print(f"    systemctl --user start {WAKE_SERVICE_NAME}")
+    print(f"    journalctl --user -u {WAKE_SERVICE_NAME} -n 40")
+    return 0
+
+
 def main() -> int:
     home = Path.home()
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
@@ -1171,6 +1375,25 @@ def main() -> int:
                         "because §8 puts a daily task on the approved list and "
                         "putting it on the list is the whole reason it exists")
     p.set_defaults(func=cmd_daily_task)
+
+    p = sub.add_parser(
+        "continuation-wake",
+        help="§17.4 · install the continuation wake routine (a oneshot and its "
+             "timer), DISABLED. Separate from promote because the Parent command "
+             "line is a fact about this node and not about a build")
+    common(p)
+    p.add_argument("--parent", type=Path, required=True,
+                   help="the executable a wake starts, as ONE absolute path. "
+                        "Required and not defaulted: a waker with no Parent "
+                        "fires on its timer, wakes nothing and exits 0, which "
+                        "reads exactly like a node with nothing to resume. "
+                        "Arguments belong in a wrapper script, not here")
+    p.add_argument("--budget", type=int, required=True,
+                   help="the longest one Parent may run, in seconds. Required: "
+                        "the receiver clamps each attempt to the smaller of this "
+                        "and the grant's own budget.wall_seconds, and the unit's "
+                        "TimeoutStartSec is rendered from it")
+    p.set_defaults(func=cmd_continuation_wake)
 
     args = ap.parse_args()
     return args.func(args)

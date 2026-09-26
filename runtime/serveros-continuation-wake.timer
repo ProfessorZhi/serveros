@@ -1,0 +1,59 @@
+[Unit]
+Description=Resume a ServerOS checkpoint whose wait has ended, every minute
+
+[Timer]
+# EVERY MINUTE, at :20 seconds — deliberately off every other timer on this host,
+# and the offsets are a reading of the installed files rather than a taste:
+#
+#   hwz-monitor.timer          *-*-* *:00:00    hourly
+#   tokyo-status-card.timer    *-*-* *:00:00    hourly
+#   botmux-watchdog.timer      *:02/5:00        five-minute stride
+#   tokyo-alert-digest.timer   *:03/5           five-minute stride
+#   serveros-alert-sync.timer  *:04/5:00        five-minute stride
+#
+# :20 collides with none of them. The reason to care is not symmetry: this unit
+# SPAWNS a Parent, and a Parent started inside the monitor's sampling window puts
+# its own CPU and its own children into the numbers that monitor is measuring —
+# and the monitor is the thing a person reads.
+#
+# WHY ONE MINUTE AND NOT FIVE. This is the load-bearing number in this file, and
+# it is derived rather than chosen. The authority a wake spends is a DELEGATION,
+# and a delegation authorizes only while its trusted context is FRESH:
+# `context/actor-context-contract.yaml` carries `stale_after_seconds: 300` and
+# `window_seconds: 900`, and `context/delegation.derivation` judges the stored
+# context against the instant the tick runs — at READ time, never from a stored
+# verdict. A cadence at or above that stale threshold is therefore not a slower
+# receiver: it is one that CANNOT FIRE for any wait that ends more than one
+# period after the delegation was last observed, because the only tick that could
+# have woken it arrives carrying a context that has gone STALE and is refused BY
+# NAME — `DELEGATION_DOES_NOT_AUTHORIZE`, whose documented repair is «refresh the
+# context», meaning a person observed again, which is precisely what a receiver
+# exists to not require. Five minutes equals the threshold, so a five-minute
+# receiver was armed and structurally unable to wake.
+#
+# WHAT THE PERIOD BUYS, IN SECONDS, AND WHY IT IS STATED HERE. The largest gap
+# between two consecutive ticks is the period plus `AccuracySec` — systemd may
+# delay a tick, never skip one — so a wait that ends inside the first
+# `300 - (60 + 30) = 210` seconds of its delegation's freshness is caught by a
+# tick that still authorizes, and the worst-case delay from a child's result
+# arriving to the Parent being started again is the same 90 seconds. This is not
+# a polling interval for a queue, because there is no queue: a tick evaluates the
+# wait from the admissions store at the instant it runs, so an early tick costs
+# one store read and one receipt read per live checkpoint.
+#
+# `tests/test_wake.py` pins that arithmetic against the contract instead of
+# leaving it as prose here — a timer edited to a slower cadence fails that test by
+# name, and the message says which two numbers disagreed.
+OnCalendar=*-*-* *:*:20
+AccuracySec=30s
+# `Persistent=false`. The durable state is the CHECKPOINT and the RECEIPT, not
+# the timer: a wait that ends while this unit is not running stays ended, and the
+# next ordinary tick wakes it. A catch-up would therefore rescue nothing — and
+# because `invoke_once`'s receipts survive a missed tick as well, all a catch-up
+# could add is a second attempt in a burst for work one attempt covers, while a
+# per-minute unit with a catch-up would fire that burst on every boot.
+Persistent=false
+Unit=serveros-continuation-wake.service
+
+[Install]
+WantedBy=timers.target

@@ -899,12 +899,17 @@ class TestTheReceiverIsAskedOfTheFabric:
         assert state["state"] == "RECEIVER_INSTALLED"
         assert state["receivers"] == ["runtime.tick"]
 
-    def test_this_release_has_no_receiver_installed(self):
+    def test_an_uninstalled_node_reports_no_receiver(self):
         """The measurement the module docstring makes, asserted where it ages.
 
-        Not a wish: `runtime/daemon.py`'s tick reads neither admissions nor
-        checkpoints, so there is nothing to register. A future slice that
-        installs one will have to change this line, which is the point.
+        The registry has a writer now — `runtime/wake.py#fill_registry` — and the
+        answer did not change for a node with nothing installed: the wake routine
+        is a unit on a timer, and a test process has none. What DID change is the
+        reason, and that is why this test is stated as «the registry is empty
+        where nothing is installed» rather than as «this release has no wake
+        half». `tests/test_wake.py` pins the other direction — that a node with
+        both halves reports one — because a registry nothing can fill would still
+        pass this line.
         """
         assert continuation.receivers() == ()
         assert continuation.RECEIVERS == ()
@@ -1235,8 +1240,17 @@ class TestAnEvaluatorIsNotAReceiver:
         assert "nothing else" in wait["detail"]
         assert "a new Parent can resume this Item" in wait["says"]
 
-    def test_this_release_still_installs_no_receiver(self):
-        """The measurement, re-asserted where a wired evaluator would break it."""
+    def test_a_wired_evaluator_still_installs_no_receiver(self):
+        """The measurement, re-asserted where a wired evaluator would break it.
+
+        `wait_state` can now say `WAIT_OVER`, which is the answer a resuming
+        Parent reads — and the temptation that creates is for an evaluator that
+        has decided «this can be resumed» to also decide «so something will
+        resume it». It must not: whether a unit is installed is a fact about a
+        unit directory, and this module reads a store. The line is here rather
+        than only in the docstring because it is the one place a future edit
+        would cross it.
+        """
         assert continuation.RECEIVERS == ()
         assert continuation.receivers() == ()
 

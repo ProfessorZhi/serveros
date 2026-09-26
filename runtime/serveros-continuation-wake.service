@@ -1,0 +1,140 @@
+# serveros-continuation-wake — user unit, oneshot. §17.4's wake half.
+#
+# WHAT THIS IS
+# ------------
+# `runtime/continuation.py` writes what a logical Parent leaves behind when it
+# has to wait, and answers «will anything wake this». Until this unit existed the
+# answer was no, and it was no BY CONSTRUCTION: `RECEIVERS` in that module is
+# «the registry the wake half will fill», and nothing filled it. So a checkpoint
+# was durable, readable, and resumed only by a person typing a command — and the
+# product's sentence for that state, «checkpoint已保存，待续», was the truth.
+#
+# This unit is what types it:
+#
+#     Parent waits -> work checkpoint          (the Parent, before it exits)
+#                            |
+#                            v
+#          child result / window closes        (the store, whenever it happens)
+#                            |
+#                            v
+#            serverosctl work wake --parent …  <-- this unit, on a timer
+#                            |
+#                            v
+#                 one Native Parent, briefed   (a new session, not a revived one)
+#
+# WHY IT IS NOT A SECOND SERVEROS DAEMON
+# --------------------------------------
+# `Type=oneshot`, no `Restart=`, no socket, no `RuntimeDirectory=`. And it is not
+# a tick inside `serverosd` either, for a reason larger than tidiness: every
+# mutating session action on this node resolves its actor from a `context_ref`,
+# and the one gate that mints a ref refuses to take a report from its caller. A
+# daemon loop cannot mint one, and neither can this unit. What a routine CAN do
+# is carry a delegation a person already made — `context/delegation.py`: «a grant
+# is a scope on a trusted context, and it authorizes a cycle only while that
+# context still IS one» — so `work wake` re-checks that context at the instant it
+# runs, names it in the briefing, and starts a Parent that re-checks it again.
+# Authority is moved, never created.
+#
+# The consequence is stated rather than hidden: a node where no recorded grant
+# authorizes is a node where this unit wakes nothing, and it says so per
+# checkpoint instead of exiting quietly.
+#
+# WHY `--parent` AND NOT A DEFAULT
+# --------------------------------
+# `scripts/release.py continuation-wake` REFUSES to render this unit without a
+# Parent command line and a wake budget, and that is deliberate. An armed timer
+# whose service starts a command that starts nothing is a receiver that reports
+# itself installed while every checkpoint on the node stays unwoken — the exact
+# fabrication §17.4 forbids, wearing a systemd unit's clothes. So the install
+# fails instead, saying which of the two is missing.
+#
+# `--budget` is the outer bound this unit may spend on one Parent, and the unit
+# passes it to `TimeoutStartSec=` below. The inner bound is the grant's own
+# `budget.wall_seconds`; `runtime/wake.py` applies the SMALLER of the two, so a
+# Parent is never killed by whichever layer happened to notice first.
+#
+# WHY THE TIMER IS NOT A QUEUE
+# ----------------------------
+# `Persistent=false` on the timer. The durable thing is the CHECKPOINT, not the
+# timer: a checkpoint whose wait ends while this unit is not running stays live
+# and stays ready, and the next ordinary tick wakes it. So catching up a missed
+# run rescues nothing — and `invoke_once`'s own receipts survive a missed tick
+# too, which means a catch-up could only produce two attempts in a burst for work
+# that one attempt would have covered.
+#
+# WHAT IT DOES NOT DO
+# -------------------
+# It does not decide what the work is, does not plan, does not choose the Parent's
+# working directory, does not receive a child's result, and does not widen
+# anything. Its whole decision is four reads — is this checkpoint still the owner,
+# has its wait ended, does a grant that still authorizes name this Item, and has
+# this epoch already been woken as many times as the grant allows.
+#
+# WHY THERE IS NO PATH= HERE — the sibling's measurement, 2026-09-14
+# ------------------------------------------------------------------
+# `hwz-monitor.service` sets an explicit PATH because its ExecStart is a shell
+# script calling `lark-cli`, which lives in /usr/local/bin. Neither is true here:
+# ExecStart is an absolute path inside the revision, and its interpreter comes
+# from the shim's `#!/usr/bin/env python3`. Measured rather than assumed —
+#
+#     $ systemctl --user show-environment | grep ^PATH
+#     PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:...
+#
+# — which is the environment a user unit is started with.
+#
+# WHY `ReadWritePaths=` IS ABSENT — the sibling's measured header
+# --------------------------------------------------------------
+# `serverosd.service` carries a table showing that `ReadWritePaths=` ALONE puts a
+# user unit into a private user namespace on this host, where `pgrep` runs, exits
+# 0, and matches nothing. This unit SPAWNS a Parent, so unlike an observer it does
+# care — and caring is exactly why the property is absent rather than added: the
+# Parent it starts must be visible to `process_top`, `process_trace` and every
+# other attribution surface on this node, and an unmeasured isolation property
+# here would make a running Parent unattributable. `NoNewPrivileges=yes` is kept:
+# it is the property measured harmless to /proc visibility, and it stops a future
+# edit from adding an escalation.
+
+[Unit]
+Description=ServerOS continuation wake — resume a checkpoint whose wait has ended, once per attempt
+Documentation=file:%h/.serveros/node.yaml
+# Ordering only, and NOT `Wants=`. This unit is not the thing that should be
+# starting the control plane; if the daemon is down the command exits 2 with
+# "no node runtime at <socket>", which systemd records as a failed unit and which
+# `systemctl --user status serveros-continuation-wake` shows. That failure IS the
+# honest answer: the alternative is a waker that quietly reports nothing to wake,
+# which is indistinguishable from a node with no resumable checkpoints.
+After=serverosd.service network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h
+# The same rendering as the daemon's unit, and for the same reason: a routine is
+# a surface OF one node, and a template that hardcoded one node's state root
+# would install a second node's waker reading the first node's checkpoints.
+Environment=SERVEROS_STATE_DIR=@SERVEROS_STATE_DIR@
+# Both placeholders are required and `scripts/release.py` refuses to render this
+# unit without them. See the header.
+ExecStart=@SERVEROS_RUNTIME@/bin/serverosctl work wake --parent @SERVEROS_WAKE_PARENT@ --budget @SERVEROS_WAKE_BUDGET@
+# Bounded, because an unbounded oneshot is a timer that silently stops firing —
+# and here it is worse than that: systemd bounds the unit's whole cgroup, so
+# TimeoutStartSec is also the point at which a still-working Parent is killed
+# from outside. It is rendered from the same `--budget` the receiver clamps to,
+# plus the margin the command needs to read the store and write its receipt.
+TimeoutStartSec=@SERVEROS_WAKE_TIMEOUT@
+# NO `Restart=`. A retry loop here would be a second producer of a policy the
+# routine does not own: how many attempts an Item gets is the GRANT's
+# `budget.max_attempts`, spent through `invoke_once`'s receipts, and a Restart=
+# beside it would spend attempts nobody recorded. The next timer tick is the
+# retry, and the receipt is what says whether there is one to spend.
+NoNewPrivileges=yes
+
+# NO `RuntimeDirectory=`. It is worth naming because it is the one property a
+# copy-paste from the daemon's unit would bring along, and it would be actively
+# harmful: systemd REMOVES a RuntimeDirectory when the unit that declared it
+# stops, so a oneshot declaring `RuntimeDirectory=serveros` would delete
+# %t/serveros — and with it the daemon's socket — on every tick. The daemon owns
+# that directory; this unit only connects to it.
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=serveros-continuation-wake

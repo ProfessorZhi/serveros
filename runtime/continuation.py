@@ -30,14 +30,27 @@ and the person reading it has no way to tell. So no field of a checkpoint says w
 will wake it; the answer comes from the fabric, and `receivers()` below is the one
 place in this release that knows.
 
-WHAT RECEIVERS() ANSWERS TODAY, and it is not a placeholder. This release has no
-continuation trigger installed: `runtime/daemon.py`'s tick reads neither
-admissions nor checkpoints, so nothing on this node wakes a saved checkpoint. The
-honest consequence is the product's own sentence — a checkpoint is saved and
-awaiting continuation — and a reader that said anything else would be reporting a
-background run nobody started. `RECEIVERS` is empty BY CONSTRUCTION and not by
-oversight: it is the registry the wake half will fill, and until then the empty
-tuple is the measurement.
+WHAT RECEIVERS() ANSWERS, AND WHO FILLS IT. `runtime/wake.py` is the wake half,
+and `wake.fill_registry` is the only writer of the name below. It fills it by
+MEASURING this node — is `serveros-continuation-wake.timer` in the wanted set,
+and does its service name a Parent to start — because a registry written from a
+declaration would be a registry that could claim a background run that nobody
+installed, and that claim is the one thing §17.4 forbids from the other side.
+Both halves are required: a timer with no Parent fires and wakes nothing, and a
+Parent with no timer is never reached.
+
+So the empty tuple is still a measurement, and it is the one that holds on a node
+where the routine is not installed — which is every node until an operator runs
+`scripts/release.py continuation-wake` and arms it. The honest consequence there
+is the product's own sentence: a checkpoint is saved and awaiting continuation,
+and a reader that said anything else would be reporting a background run nobody
+started.
+
+AND IT IS STILL NOT A TICK. `runtime/daemon.py`'s tick reads neither admissions
+nor checkpoints, and that has not changed — deliberately. The daemon's loop
+evaluates detectors, and a loop that also started session-shaped work would make
+every tick a possible writer of authority. The wake is a bounded oneshot on its
+own timer, and it carries a delegation rather than minting one.
 
 AND AN EVALUATOR IS NOT A RECEIVER, which is why `wait_state` does not fill it.
 `wait_state` below answers a different question from «will something wake this»:
@@ -45,11 +58,12 @@ it answers «has the thing this checkpoint waits for happened yet», from the
 admissions collection and the clock. That answer is what a NEW Parent reads to
 decide whether resuming now is possible — and resuming is, and has always been,
 what a new Parent does (`cmd_work_continuations`: «Resuming is what `work
-continuations` and a new Parent do»). Nothing in this release runs by itself, so
-an evaluator that can say «the child has a recorded outcome» must not be allowed
-to make `continuation_state` start saying a receiver is installed: that sentence
-would be a promise about a process nobody started, made out of a read. The two
-are kept apart on purpose and `tests/test_continuation.py` pins the separation.
+continuations` and a new Parent do»). An evaluator that can say «the child has a
+recorded outcome» must not be allowed to make `continuation_state` start saying a
+receiver is installed, and the reason did not change when the registry got a
+writer: whether a unit is installed is a fact about a unit directory, and an
+evaluator reading a store cannot see one. The two are kept apart on purpose and
+`tests/test_continuation.py` pins the separation.
 
 AND A READING OF ONE RECORD IS NOT A READING OF THE ITEM. `attempts_state` below
 answers «what became of the attempts this record names», which is a question
@@ -132,6 +146,13 @@ MAX_NEXT_ACTION = 400
 WAIT_ANSWERS = ("WAIT_OVER", "WAIT_OPEN", "WAIT_UNANSWERABLE")
 
 #: The continuation triggers installed on this node. See the module docstring.
+#:
+#: Written by `runtime/wake.py#fill_registry` and by nothing else, and filled
+#: only by MEASURING this node's unit directory. `cmd_work_continuations` and
+#: `cmd_work_wake` both call it before they read `receivers()`, so the two
+#: surfaces answer from one measurement rather than from this import-time value.
+#: The empty tuple is what an uninstalled node reports, and that is the state
+#: every node starts in.
 RECEIVERS: tuple = ()
 
 #: The five answers to «what became of the attempts this checkpoint records».
