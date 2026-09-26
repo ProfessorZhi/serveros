@@ -296,6 +296,20 @@ def census_child(argv: list) -> int:
     # stand in for one.
     sys.dont_write_bytecode = True
 
+    # `pytest.main()` runs in THIS process, so `sys.path[0]` is this script's own
+    # directory and NOT the repository root. A developer runs `python -m pytest`
+    # from the repository root, and `-m` is what puts that root on the path — so a
+    # test module that imports a top-level package (`from intake.daily_cycle
+    # import ...`) collects there and does not collect here. The difference is
+    # invisible in the record, which is what made it worth pinning down: a
+    # collection error arrives as ONE failing case named after the module, which
+    # reads exactly like a test that ran and failed. Measured 2026-09-26: three of
+    # 136 files (`test_bounded_invocation_paths`, `test_daily_cycle`,
+    # `test_focus_source`) failed this way and all three pass under `python -m
+    # pytest`. The path the child runs under is the path the suite is written for.
+    if str(repo) not in sys.path:
+        sys.path.insert(0, str(repo))
+
     try:
         import pytest
     except ImportError as exc:  # pragma: no cover - environment guarantee
