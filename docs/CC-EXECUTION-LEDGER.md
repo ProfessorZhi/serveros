@@ -5807,6 +5807,12 @@ runtime/continuation.py: OK   runtime/cli.py: OK   tests/test_continuation.py: O
   **量到它、用它论证了「链不顺着指针走」、没有改它** —— 改它要移动 §9.40 刚钉住的 F12/F13 两条
   用例，而那是「确保唯一 logical Parent」那条相邻的环，不是本片这一格。本片改为让成功链不依赖
   指针，并用一条测试把这个决定钉住（把 `superseded_by` 改成不存在的 `SRV-0001#99`，仍然接得住）。
+  > **切片 N 更正（这是本片自己的一个判断错了，不是后来者改的口）。** 上面「改它要移动 F12/F13」
+  > 是**我在没有量之前写下的推断，而它是错的**：切片 N 加了那三条守卫，F12/F13 两条断言
+  > （`test_it_is_idempotent_on_the_first_instant`、`test_it_names_a_successor_or_it_is_refused`）
+  > **一条也没有动**，动的只是另外两条用例的 fixture（它们原本点名一个 store 里根本不存在的
+  > 后继者）。同样被证伪的还有「本片这一格」这个划分：那三条守卫就是 P7 那一行自己写的
+  > 「唯一逻辑 Parent」，并且量出来的形状比记在这里的更糟（见 §9.43.2）。
 - **`WAIT_KINDS` 仍只有 `child` / `window`**；接收方/唤醒那一半的前置、`NodeControlTransport.send`
   不包裹 connector 异常、`SERVEROS_ALERT_CONVERSATION` 无落点、`max_attempts` 在准入预留上无
   消费者、`~/.claude/skills/document-stewardship/{scripts,references}` 不在仓库、
@@ -5814,6 +5820,161 @@ runtime/continuation.py: OK   runtime/cli.py: OK   tests/test_continuation.py: O
 - **切片 F–M 的新模块在装好的节点上仍然没有 `checkpoint` / `continuations` / `accept` 这些动词**
   （P12 的 `build→promote→restart` 那一次）；本片没有动 `plugin/`、`mcp/` 或任何 composition，
   所以本片自己不触发它。
+
+### 9.43 P7 切片 N：唯一逻辑 Parent —— 写这个字段的有两个写者，只有一个在守规则
+
+#### 9.43.1 靶子：P7 那一行自己写的「唯一逻辑 Parent」
+
+P7 的验收链里有一格是**唯一逻辑 Parent**。`runtime/agent_control_store.py` 里写
+`superseded_by` 这个字段的有**两个写者**：`put_checkpoint`（同一事务里，更高 epoch 取代更低
+的 live 记录）与 `supersede_checkpoint`（独立动词）。第一个写者把三条条件都强制了 —— 同 Item、
+更高 epoch、取代发生在同一事务里；**第二个写者只强制了一条**：被取代的 ref 存在。切片 M 是
+撞上这一点的（`predecessors` 的 docstring 因此选择按 epoch 排序而不是顺着指针走），而
+§9.42.10 把它记成「相邻的环、本片不改」。
+
+#### 9.43.2 读数：三种形状它今天全都接受，而第三种最难看
+
+`probe-n-before.py`，同一支探针跑在两棵树上（HEAD 的 `runtime/` 与工作树），逐条对照：
+
+```text
+                                        BEFORE                  AFTER
+1. by=<本 store 不持有的 ref>            ACCEPTED                REFUSED
+   superseded_by = SRV-0001#99           live = []               live = ['SRV-0001#1']
+2. by=<另一个 Item 的 checkpoint>         ACCEPTED                REFUSED
+   superseded_by = SRV-0002#1            SRV-0001 由 SRV-0002 的记录承载
+3. by=<更早的 epoch>                     ACCEPTED                REFUSED
+   #1 ←→ #2 互为后继                      live = []               live = ['SRV-0001#2']
+```
+
+- 第一种把「没人为这个 Item 负责」写成了「有，名字在这里」：记录说某个 Parent 承载着这个
+  Item，而那个 Parent 在 **store 里任何地方都不存在** —— `live_checkpoints()` 会为这个名字作答，
+  可恢复的东西一件也没有。
+- 第二种让**一个 Item 由另一个 Item 的记录承载**。
+- 第三种最难看，也是最不可辩的：`#1` 说 `#2` 取代了它、`#2` 说 `#1` 取代了它 —— **互为后继，
+  零个 live owner**，而 `docs/COLLABORATION-CONTRACT.md` 的「同一个 scope 只有一个父继续
+  owner」连一瞬间都不允许。
+
+#### 9.43.3 一条规则、四条检查，以及为什么它们排在幂等分支之后
+
+规则就写在那个函数自己的 docstring 第一段里（「`by` 是**同一个 Item 的更高 epoch** 的
+checkpoint」），本片只是把那句话变成机械的：**这个 store 持有它**、**同一个 Item**、
+**更高 epoch**，再加一条自我继任（`by == target`：「取代了自己的记录什么都没接管」）。
+四条按调用者会修的次序排，每条都附带「拒绝之后这个 Item 仍然有主人」。
+
+**四条都排在幂等分支之后**，理由是 `put_checkpoint` 已经立过的同一条：一个被写下的交接的
+重放，无论这个 scope 后来发生了什么，都还是重放；而在这四条检查存在之前写下的 store，必须
+仍然能回答写下它的那次调用。**它们管的是「接下来可以写什么」，不是「盘上已经有什么」** ——
+这个差别有一条用例专门钉住（一个后继者为 `SRV-0001#99` 的旧 store，重放仍然作答）。至于
+「哪个 Parent 承载这个 Item」这种真正没法从已有记录读出的事，拒绝文案就在上一屏，仍然是
+人的问题。
+
+#### 9.43.4 一个必须记下的后果：这个动词的「首次写入」在可达状态里不可达
+
+这是本片量出来的结论，不是本片造成的收窄。`probe-n-unreachable.py` 做的是一次**有界穷举**：
+从空 store 出发，用 `put_checkpoint` 走 2 个 Item × 3 个 epoch 的所有写入序列（上限 4 次写），
+把每个**去重后可达的状态**留下，再在这个状态里把**每一对有序 ref** 交给
+`supersede_checkpoint` 在副本上跑一次，看文档有没有被改：
+
+```text
+                                  BEFORE(HEAD)         AFTER(工作树)
+可达状态（≤4 次写，2 Item×3 epoch）      56                   56
+supersede 调用改变了文档的状态数          50                    0
+```
+
+也就是说：加了这四条之前，**56 个可达状态里有 50 个**至少有一对 ref 能让这个动词真的写下去，
+而打印出来的每一对都是上面三种形状之一（`('SRV-0001#2','SRV-0001#1')` 是更早的 epoch，
+`('SRV-0001#1','SRV-0002#1')` 是别的 Item）。**一对待写的「合法」组合都不在里面**，因为
+`put_checkpoint` 已经在唯一能发生的时刻把交接做完了：更高 epoch 的 checkpoint 一存在，更低
+epoch 的 live 记录就已经被取代。所以这个动词今天实际是「**回放既有交接**」加五条拒绝，
+`updated = dict(existing)` 那两行在有界穷举里没有一条路走到。**本片没有删它**（删是一个退役
+决定，该走 §20 那张表），但把它记成候选，理由比 §9.42.10 写的更硬：它的写入路径不可达。
+
+#### 9.43.5 本片落的四笔
+
+1. `runtime/agent_control_store.py#supersede_checkpoint`：四条检查 ＋ docstring 扩写
+   （「AND THE NAME HAS TO RESOLVE」＋「同一个字段有两个写者，它们必须就什么能写进去达成一致」
+   ＋ 为什么这四条排在幂等分支之后）。
+2. `runtime/continuation.py#predecessors` 的 docstring：**它引用的事实变了，所以那一段改写**。
+   原文说「那个动词写的后继者不必是本 store、本 Item 的 checkpoint，所以顺着指针的链会走出
+   它出发的那个 Item」。现在两个写者都强制了同样三条；这一段改成：**盘上的一个 store 是一个
+   文件、不是写出它的那些规则的证明**，而这些记录在守卫之前就存在了、`supersede_checkpoint`
+   的幂等分支至今仍然**回放**它们而不是拒绝自己的历史 —— 所以「不顺着指针走」这个决定仍然
+   成立，只是理由从「那个动词允许」换成了「文件不作证」。
+3. `tests/test_continuation.py` 同一条测试的 docstring 同一处改写（同一个句子在两处）。
+4. `docs/CC-EXECUTION-LEDGER.md` §9.42.10 加一条**自己的更正**：见 §9.43.8。
+
+#### 9.43.6 被有意识移动的既有断言（两处 fixture，零处断言）
+
+| 用例 | 原文 | 现在 | 为什么移动 |
+|---|---|---|---|
+| `test_it_is_idempotent_on_the_first_instant` | `by="SRV-0001#2"`，而 `#2` 从未被写进 store；断言第一次调用写下的 `superseded_at == LATER` | fixture 先 `put_checkpoint(a_second_parent)`，断言改成「两次调用都没有把那个时刻挪走」 | 「第一次」现在总是 `put_checkpoint` 写的（§9.43.4），所以那个时刻不能再由这次调用产生；**被断言的性质没变** |
+| `test_a_second_different_successor_is_refused` | 同上，`by="SRV-0001#3"` 也不存在 | fixture 先写 epoch 3，再要求它被拒 | 「两个**真实**后继者里哪一个赢」需要一个能被持有的第二者；否则这一条会先撞上「后继者不存在」那条拒绝而**看起来**通过了 |
+
+**`test_it_names_a_successor_or_it_is_refused` 与 `test_a_ref_this_store_does_not_hold_is_refused`
+一个字也没有动** —— §9.40 的 F12/F13 两条变异仍然成立（§9.42.10 那条更正说的就是这件事）。
+
+#### 9.43.7 本片新增的用例
+
+`tests/test_continuation.py`：净 **+6** 条 `def test_`（123 → 129），全部在
+`TestSupercedingDirectly`：后继者本 store 不持有（含「拒绝之后这个 Item 仍然有主人」）；
+后继者是另一个 Item 的 checkpoint（**那个 Item 的 epoch 更高**，否则 epoch 那一腿会替我挡住
+这条判据 —— 切片 M 的变异电池刚在同一个坑里抓到我一次）；scope 不被交给更早的 epoch；
+一条记录不能是自己的后继；一个 store 比较不了的 epoch 不是一次交接；以及**守卫之前写下的
+交接仍然重放**（幂等分支排在这四条之前的证据）。`tests/test_admission.py` 未动（117 → 117）。
+预期全量 `5910 + 6 = 5916`。
+
+#### 9.43.8 变异电池：7 条，7 杀，0 存活
+
+`mutate_slice_n.py`，同一套规矩（锚点必须唯一，否则显式 `SKIP` 并非零退出；每轮删
+`__pycache__`；从字节备份 `cp` 还原并 `sha256` 逐字节核对）。七条：后继者不存在被接受、
+别的 Item 的 checkpoint 被接受、记录可以是自己的后继、可以交给更早的 epoch、比较不了的 epoch
+那一腿被删、**重放被当成新交接拒绝**（这条钉的是那四条排在哪一侧）、以及把后继者按 target 的
+ref 去查（这条证明查的是**哪一个 ref**）。**7 杀、0 存活、0 SKIP**，还原后
+`runtime/agent_control_store.py` 与备份逐字节相同。
+
+一条脚注：删掉「比较不了的 epoch」那一腿时，`theirs <= mine` 会拿 `"2" <= 3` 抛
+`TypeError`，所以那条被**崩掉**而不是被判定 —— 杀掉一个变异并不需要它是体面的失败，
+但这一腿的作用因此可以说清楚：它把一个 `TypeError` 换成一条具名拒绝。
+
+#### 9.43.9 全量读数
+
+```text
+HEAD 574735d  dirty 3
+start 2026-09-26T08:32:24+08:00
+rc=0 at 2026-09-26T08:43:32+08:00
+5916 passed, 20 skipped, 3993 subtests passed in 668.25s (0:11:08)
+dirty after 4  HEAD 574735d
+runtime/agent_control_store.py: OK   runtime/continuation.py: OK
+tests/test_continuation.py: OK
+```
+
+- **算术闭合**：上一格 5910 ＋ 本片净新增的 **6** 条 `def test_`（`test_continuation.py`
+  123 → 129，删 0 条）＝ **5916**。subtests 3993 → 3993。
+- **`dirty 3` → `dirty 4`，而多出来的那一个是台账自己。** 这一跑期间我改了
+  `docs/CC-EXECUTION-LEDGER.md`（§9.42.10 的更正），所以跑后多一个 `M`。三个**被测试读到的**
+  文件跑前跑后 `sha256` 逐行相同，HEAD 未变 —— 这一跑没有写进任何东西，多的那一个是在跑的过程
+  里被我自己改的，不是它。
+- 三棵树的读数都是同一支探针：`probe-n-before.py` 跑在 HEAD 的 `runtime/`（`git archive` 取出
+  的一棵**未经改动**的树）与工作树上；`probe-n-unreachable.py` 同样跑两棵。用同一支量具量前后，
+  而不是两次手写的读数。
+
+#### 9.43.10 它没做什么，仍未关闭的
+
+- **没有删 `supersede_checkpoint`。** 它的写入路径在有界穷举里不可达（§9.43.4），而删除是一个
+  退役决定、要走 §20 那张表；本片把它记成**候选**，并把它仍然没有生产调用者这件事与「写入路径
+  不可达」并排放着 —— 前者是事实，后者是它为什么可以是事实的解释。
+- **没有改 `put_checkpoint`。** 它的三条条件本来就是对的；本片让第二个写者同意第一个。
+  唯一被改的排序是**新检查**排在**既有幂等分支**之后，而不是既有分支本身。
+- **没有给这个动词加 CLI 动词**，也没有让任何东西开始调它。
+- **`WAIT_KINDS` 仍只有 `child` / `window`**；接收方/唤醒那一半的前置（§9.38.9 的两件）、
+  `NodeControlTransport.send` 不包裹 connector 异常、`SERVEROS_ALERT_CONVERSATION` 无落点、
+  `max_attempts` 在准入预留上无消费者、`~/.claude/skills/document-stewardship/{scripts,references}`
+  不在仓库、`serveros-daily.timer` 已禁用，以及切片 F–N 的新模块在装好的节点上都还没有
+  `build→promote→restart` 那一次（P12）—— 与前几格相同，本片一条也没有改变它们的状态。
+- **一个仍然开着的问题，写在这里以免下一个人重新推**：既然 `supersede_checkpoint` 的写入路径
+  不可达，`put_checkpoint` 在事务里做的取代会不会有**它自己**的可达性问题？本片的有界穷举顺带
+  量了同一条边 —— 56 个可达状态里 `live_checkpoints()` 从没有同时给出两个 owner，也没有在
+  Item 有记录时给出零个。那不是本片证明的定理（穷举是有界的），是 56 个状态上的量测。
 
 ## 10. 后续每包更新哪几行
 
