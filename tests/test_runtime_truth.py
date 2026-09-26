@@ -69,6 +69,23 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from test_build import _git as git  # noqa: E402
 from test_build import make_ability_repo, write_pack_contract  # noqa: E402
 
+# §J09. The node runtime is asked to answer "which release am I", and the point
+# of these tests is that the answer comes from the INSTALLATION rather than from
+# a checkout: `_installed_identity` is given the revision directory and reads
+# what the installer wrote there. Loaded under a name of its own for the same
+# reason `test_daemon.py` does — two modules called `daemon` in one process is
+# how a test starts asserting against someone else's copy.
+_dspec = importlib.util.spec_from_file_location("serveros_runtime_daemon_rt",
+                                               ROOT / "runtime" / "daemon.py")
+daemon = importlib.util.module_from_spec(_dspec)
+_dspec.loader.exec_module(daemon)
+
+# The rendering half of the same answer. §J09 is not satisfied by a field that
+# exists in a JSON payload nobody prints: `serverosctl status` is where an
+# operator reads it, so the text is asserted as well as the structure.
+sys.path.insert(0, str(ROOT))
+from runtime import cli  # noqa: E402
+
 
 def rows_by(report: dict) -> dict[str, dict]:
     return {r["component"]: r for r in report["rows"]}
@@ -461,6 +478,243 @@ class RuntimeTruthTests(unittest.TestCase):
         self.assertEqual([r["component"] for r in rows if r["verdict"] != truth.OK], [])
         self.assertNotEqual(report["verdict"], truth.SOURCE_RUNTIME_DRIFT)
         self.assertNotEqual(report["verdict"], truth.MISSING)
+
+    # ---- §J09: the running node proving who it is ------------------------
+
+    def _installed_identity(self, rev_dir: Path) -> dict:
+        """The runtime's own answer, read the way it reads it: from the
+        revision directory, with no repository and no git anywhere near it."""
+        return daemon._installed_identity(rev_dir / "runtime")
+
+    def test_an_installed_node_can_say_which_release_and_source_it_is(self):
+        """The five things §J09 requires, from one read of the installation.
+
+        Every one of them is answered from what `release.py` staged, so this
+        passes on a machine with no checkout — which is the only kind of machine
+        that runs a node.
+        """
+        rev = self.install_node()
+        identity = self._installed_identity(rev)
+        fields = identity["fields"]
+
+        self.assertEqual(fields["release_id"], "main@0a98bb6")
+        self.assertEqual(fields["tree_hash"], release.fingerprint(self.node_artifact))
+        self.assertTrue(fields["artifact_version"], "no artifact version recorded")
+        self.assertEqual(fields["source_commit"], git(self.serveros, "rev-parse", "HEAD"))
+        self.assertEqual(fields["ability_management_revision"], self.rev)
+        # ...and the record that connects the commit to these bytes. Without
+        # it the commit names a checkout, not a content.
+        self.assertIs(fields["source_tree_clean"], True)
+
+        self.assertEqual(identity["agreement"], "AGREEMENT")
+        self.assertEqual(identity["unestablished"], [])
+        self.assertEqual(identity["conflicts"], [])
+        # The root is where the bytes are, not where the pointer aims: it is
+        # this comparison that makes a promote-without-restart visible.
+        self.assertEqual(Path(identity["root"]), rev.resolve())
+        self.assertEqual(daemon._pointer_state(Path(identity["root"]))["state"],
+                         "AGREEMENT")
+
+    def test_a_pointer_moved_without_a_restart_is_drift_not_health(self):
+        """`promote` moves `current` and does NOT restart.
+
+        This is the case the whole section is for. The running process is
+        unchanged and still healthy; what changed is the release it belongs to.
+        Every other answer it gives is now about a node nobody thinks is
+        running, so this must read as drift.
+        """
+        first = self.install_node(label="rev-a@1111111")
+        identity = self._installed_identity(first)
+        self.assertEqual(daemon._pointer_state(Path(identity["root"]))["state"],
+                         "AGREEMENT")
+
+        second = self.install_node(label="rev-b@2222222")
+
+        pointer = daemon._pointer_state(Path(identity["root"]))
+        self.assertEqual(pointer["state"], "DRIFT")
+        self.assertIs(pointer["agreement"], False)
+        self.assertEqual(Path(pointer["current"]), second.resolve())
+        # Both names in one sentence, because "there is drift" without "between
+        # what and what" is not actionable.
+        self.assertIn(first.name, pointer["detail"])
+        self.assertIn(second.name, pointer["detail"])
+        # The frozen half did NOT move with it. An identity re-read at query
+        # time would have followed the pointer and reported agreement.
+        self.assertEqual(identity["fields"]["release_id"], "rev-a@1111111")
+
+    def test_an_artifact_and_a_release_record_that_disagree_are_not_a_pass(self):
+        """Two records in one revision describing two artifacts.
+
+        Nothing forces these to agree — different steps write them — so when
+        they disagree the answer is CONFLICT. Rendering it as whichever record
+        was read last is how a machine reports a confident identity for a
+        revision that is not internally consistent.
+        """
+        rev = self.install_node()
+        doc = json.loads((rev / "ARTIFACT.json").read_text())
+        doc["composition"] = "some-other-composition"
+        (rev / "ARTIFACT.json").write_text(json.dumps(doc, indent=2) + "\n")
+
+        identity = self._installed_identity(rev)
+        self.assertEqual(identity["agreement"], "CONFLICT")
+        self.assertEqual(len(identity["conflicts"]), 1)
+        self.assertIn("some-other-composition", identity["conflicts"][0])
+        self.assertIn(NODE_COMPOSITION, identity["conflicts"][0])
+        # A record that conflicts is still readable, and both spellings are
+        # reported rather than one being picked.
+        self.assertEqual(identity["fields"]["artifact_version"],
+                         json.loads((rev / "ARTIFACT.json").read_text())["version"])
+
+        # ...and the missing half is a DIFFERENT answer, not the same one.
+        (rev / "RELEASE.json").unlink()
+        gone = self._installed_identity(rev)
+        self.assertEqual(gone["agreement"], "UNKNOWN")
+        self.assertEqual(gone["conflicts"], [])
+        self.assertTrue(any("RELEASE.json" in u for u in gone["unestablished"]))
+
+    def test_a_source_commit_that_cannot_be_proven_is_unknown_not_the_branch(self):
+        """The trap this section names: `main@0a98bb6` is a CLAIM.
+
+        A revision label and a README both say which revision the bytes came
+        from, and neither is evidence — the label is written at promote time by
+        whoever promotes. An artifact with no source record must therefore say
+        UNKNOWN, and in particular must not fall back to the branch name, which
+        is exactly the string that reads like an answer.
+        """
+        rev = self.install_node()
+        doc = json.loads((rev / "ARTIFACT.json").read_text())
+        del doc["source"]
+        (rev / "ARTIFACT.json").write_text(json.dumps(doc, indent=2) + "\n")
+
+        identity = self._installed_identity(rev)
+        fields = identity["fields"]
+        self.assertIsNone(fields["source_commit"])
+        self.assertIsNone(fields["source_ref"])
+        self.assertIsNone(fields["source_tree_clean"])
+        self.assertTrue(any(u.startswith("source commit") for u in identity["unestablished"]),
+                        identity["unestablished"])
+
+        lines = cli._identity_lines({"identity": identity})
+        source_line = next(l for l in lines if l.startswith("source"))
+        self.assertIn("UNKNOWN", source_line)
+        # The label is right there in `release_id` and must not leak into the
+        # line that answers "which source": `main` is a branch, not a commit.
+        self.assertNotIn("main", source_line)
+        self.assertNotIn("main", " ".join(identity["unestablished"]))
+
+    def test_after_a_restart_the_running_identity_is_the_current_revision(self):
+        """The other half of the drift pair, and the reason it is safe to call
+        drift a fault: a restart resolves it, and the identity follows."""
+        self.install_node(label="rev-a@1111111")
+        second = self.install_node(label="rev-b@2222222")
+
+        restarted = self._installed_identity(second)
+        self.assertEqual(restarted["fields"]["release_id"], "rev-b@2222222")
+        pointer = daemon._pointer_state(Path(restarted["root"]))
+        self.assertEqual(pointer["state"], "AGREEMENT")
+        self.assertIs(pointer["agreement"], True)
+        self.assertEqual(Path(pointer["current"]), second.resolve())
+        self.assertEqual(restarted["agreement"], "AGREEMENT")
+
+    def test_a_rebuild_from_another_checkout_is_agreement_not_drift(self):
+        """§J09 — the source record describes the BUILD, not the artifact.
+
+        `expected_artifact` recomputes from the checkout doing the inspecting,
+        which is not the checkout that built what is installed: one is a
+        worktree, the other canonical. Their HEADs and their uncommitted work
+        differ, so an artifact carrying its own source would read as drifted on
+        every correctly installed node. The delivery question is "are these the
+        bytes canonical builds", and it must survive a different answer to
+        "where were they built".
+        """
+        root = self.base / "drift-probe"
+        root.mkdir()
+        other = self.base / "other-checkout"
+        other.mkdir()
+
+        def artifact(commit: str, dirty: int) -> dict:
+            doc = {"schema": "serveros/artifact.v1", "composition": NODE_COMPOSITION,
+                   "name": "hwz-server-os-fixture-node", "version": "1.0.0",
+                   "members": ["ARTIFACT.json"],
+                   "source": {"serveros": {"commit": commit, "ref": "main",
+                                           "tree_clean": dirty == 0,
+                                           "worktree_changes": dirty}}}
+            return doc
+
+        installed = artifact("a" * 40, 5)
+        (root / "ARTIFACT.json").write_text(json.dumps(installed, indent=2) + "\n")
+        (root / "runtime").mkdir()
+        (root / "runtime" / "daemon.py").write_bytes(b"# identical\n")
+
+        expected = {
+            Path("ARTIFACT.json"): json.dumps(artifact("b" * 40, 0),
+                                              indent=2).encode(),
+            Path("runtime/daemon.py"): b"# identical\n",
+        }
+        self.assertEqual(truth.tree_drift(expected, root), [])
+
+    def test_but_a_changed_field_of_that_same_record_is_still_drift(self):
+        """The exclusion is one key wide, and this is the width.
+
+        A normalizer that quietly accepted the whole file would turn the
+        artifact manifest into a file nobody checks. Everything in it except
+        `source` is deliverable content and is compared byte for byte.
+        """
+        root = self.base / "drift-probe-2"
+        root.mkdir()
+        (root / "ARTIFACT.json").write_text(json.dumps(
+            {"schema": "serveros/artifact.v1", "version": "2.0.0",
+             "source": {"serveros": {"commit": "a" * 40}}}, indent=2) + "\n")
+        expected = {Path("ARTIFACT.json"): json.dumps(
+            {"schema": "serveros/artifact.v1", "version": "1.0.0",
+             "source": {"serveros": {"commit": "b" * 40}}}, indent=2).encode()}
+        self.assertEqual(truth.tree_drift(expected, root),
+                         [f"content {truth.ARTIFACT_MANIFEST}"])
+
+        # A file that is not the artifact record is compared whole, source key
+        # or not — the exclusion is keyed on the FILE as well as the field.
+        (root / "RELEASE.json").write_text(json.dumps({"source": "x"}) + "\n")
+        expected[Path("RELEASE.json")] = json.dumps({"source": "y"}).encode()
+        self.assertIn(f"content {truth.TREE_MANIFEST}",
+                      truth.tree_drift(expected, root))
+
+    def test_the_report_prints_the_artifacts_source_beside_the_label(self):
+        """§J09 — the label is a claim; this is what the artifact says.
+
+        Three states that print alike if they are not told apart: a proven
+        attribution, an attribution that names a checkout rather than these
+        bytes, and none at all. The second is the dangerous one — it looks like
+        the first in every respect except the parenthetical.
+        """
+        for name, source, wanted in (
+            ("clean", {"serveros": {"commit": "a" * 40, "tree_clean": True,
+                                    "worktree_changes": 0},
+                       "ability_management": {"revision": "b" * 40}},
+             ["built from aaaaaaaaaaaa", "(clean)", "ability-management@bbbbbbbbbbbb"]),
+            ("dirty", {"serveros": {"commit": "a" * 40, "tree_clean": False,
+                                    "worktree_changes": 3}},
+             ["built from aaaaaaaaaaaa", "3 uncommitted",
+              "names the checkout, not these bytes"]),
+            ("absent", {}, ["records no source revision"]),
+        ):
+            root = self.base / f"source-note-{name}"
+            root.mkdir()
+            doc = {"schema": "serveros/artifact.v1"}
+            if source:
+                doc["source"] = source
+            (root / "ARTIFACT.json").write_text(json.dumps(doc))
+
+            note = truth._source_note(root)
+            for fragment in wanted:
+                self.assertIn(fragment, note, name)
+            # A clean record must not also print the caveat, and vice versa:
+            # the parenthetical is the whole difference between them.
+            if name == "clean":
+                self.assertNotIn("uncommitted", note)
+
+        # No revision to read is not the same finding as a revision with no
+        # record, and neither is an empty string that renders as nothing.
+        self.assertEqual(truth._source_note(None), "")
 
     def test_uncommitted_source_work_is_unknown_not_ok(self):
         """A dirty checkout must not be reported as a verified chain.

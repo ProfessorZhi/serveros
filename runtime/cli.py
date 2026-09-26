@@ -1613,6 +1613,89 @@ def cmd_device_show(args) -> int:
     return EXIT_OK
 
 
+def _identity_lines(payload: dict) -> list[str]:
+    """§J09 — which release this process is, in the installer's terms.
+
+    Two halves that must not be collapsed: `identity` is what the process says
+    about ITSELF, frozen at startup; `pointer` is `current` read now. Print only
+    the first and a promote-without-restart reads as health; print only the
+    second and the process's own answer is lost.
+
+    Printed even when the daemon reported no identity at all, because "the
+    running node cannot say which release it is" is a finding about the node.
+    A status command that silently drops the line turns that finding into an
+    absence nobody notices, which is the failure mode this whole section is
+    about: the outside world reading identity off a symlink the process may
+    have stopped following.
+
+    Every UNKNOWN here carries its reason. `None` is never rendered as a
+    value, and never as "unchanged" — a daemon built without a source record
+    is a different fact from one whose record says `clean`.
+    """
+    identity = payload.get("identity")
+    if not identity:
+        # Two questions, both unanswered, and they are not the same question:
+        # "which release am I" and "is that still the release `current` names".
+        # One line would fold the second into the first and read as if only the
+        # first had been asked.
+        return [
+            "release     UNKNOWN — this daemon reported no install identity, "
+            "so which release is running cannot be established from here",
+            "pointer     UNKNOWN — this daemon did not compare itself against "
+            "`current`",
+        ]
+
+    fields = identity.get("fields") or {}
+    art = ((identity.get("artifact") or {}).get("value")) or {}
+    rel = identity.get("release") or {}
+
+    lines = []
+    release_id = fields.get("release_id")
+    if release_id:
+        tree = fields.get("tree_hash")
+        lines.append(f"release     {release_id}"
+                     + (f" · tree {str(tree)[:12]}" if tree else " · tree UNKNOWN"))
+    else:
+        lines.append("release     UNKNOWN — " + (
+            f"RELEASE.json {rel.get('why', 'absent')} at {identity.get('root')}"
+            if not rel.get("present") else "RELEASE.json carries no `revision`"))
+
+    commit = fields.get("source_commit")
+    ability = fields.get("ability_management_revision")
+    tail = (f" · ability-management@{str(ability)[:12]}" if ability
+            else " · ability-management UNKNOWN")
+    if commit:
+        clean, changes = fields.get("source_tree_clean"), fields.get("source_worktree_changes")
+        # The distinction the artifact exists to keep: a commit names a
+        # checkout, only `tree_clean` connects it to these bytes.
+        state = ("clean" if clean is True else
+                 f"{changes} uncommitted" if clean is False else
+                 "content unproven")
+        lines.append(f"source      {str(commit)[:12]}"
+                     f" ({fields.get('source_ref') or 'detached'}, {state}){tail}")
+    else:
+        basis = ((art.get("source") or {}).get("serveros") or {}).get("basis")
+        lines.append(f"source      UNKNOWN — {basis or 'not recorded in the artifact'}"
+                     f"{' · ability-management@' + str(ability)[:12] if ability else ''}")
+
+    lines.append(f"root        {identity.get('root')}")
+
+    pointer = payload.get("pointer")
+    if pointer is None:
+        # An old daemon that does not serve the field. Saying nothing would let
+        # a reader assume the pointer was checked and agreed.
+        lines.append("pointer     UNKNOWN — this daemon did not compare itself "
+                     "against `current`")
+    else:
+        state = pointer.get("state")
+        current = pointer.get("current")
+        lines.append(f"pointer     {state}"
+                     + (f" · current → {current}" if current else "")
+                     + (f"\n            {pointer['detail']}"
+                        if state not in ("AGREEMENT", None) else ""))
+    return lines
+
+
 def cmd_status(args) -> int:
     """The node runtime, as it describes itself. §52.
 
@@ -1649,6 +1732,12 @@ def cmd_status(args) -> int:
         f" (process interlock)",
         f"state       {payload['state_dir']}",
         f"socket      {payload['socket']}",
+    ]
+    # `payload["identity"]`, not `payload.get(...)`: an OLD daemon that does not
+    # serve the field is exactly one of the states worth naming, and a KeyError
+    # here would be a worse answer than the honest UNKNOWN below.
+    lines += _identity_lines(payload)
+    lines += [
         "",
         payload["note"],
     ]
@@ -1656,7 +1745,18 @@ def cmd_status(args) -> int:
     # Stale is a fault: the daemon is answering, and its answer is about a
     # node it stopped looking at. Exit 1 so a shell can tell it from a
     # healthy run without parsing the text.
-    return EXIT_FAULT if stale else EXIT_OK
+    #
+    # §J09: so is DRIFT, for the same reason and one more. The daemon is up and
+    # healthy, but it is executing a revision `current` has moved past, so every
+    # other answer it gives describes a node nobody thinks is running. A
+    # monitor that reads exit 0 here has been told "fine" about the wrong
+    # release — the false pass this section exists to remove.
+    #
+    # `NO_POINTER` and `NOT_APPLICABLE` are NOT faults: they say this machine
+    # has no `current` to compare against, which is a fact about the layout
+    # rather than about the node. Only a measured disagreement fails.
+    drifted = (payload.get("pointer") or {}).get("state") == "DRIFT"
+    return EXIT_FAULT if (stale or drifted) else EXIT_OK
 
 
 def cmd_ability_list(args) -> int:
