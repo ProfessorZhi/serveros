@@ -5976,6 +5976,187 @@ tests/test_continuation.py: OK
   量了同一条边 —— 56 个可达状态里 `live_checkpoints()` 从没有同时给出两个 owner，也没有在
   Item 有记录时给出零个。那不是本片证明的定理（穷举是有界的），是 56 个状态上的量测。
 
+### 9.44 P8 切片 A：播报日程 —— 一张卡要先知道「今天是什么样的日子」
+
+#### 9.44.1 靶子：§9 与 §10 各写了一头，中间那一头没有落点
+
+设计文档里 §9 说工作日历是**一个实例声明**（jurisdiction / timezone / source 定位符 + revision /
+发布日期，官方调休覆盖 weekday 推导），§10 说常规播报窗口是**工作日 08:00–20:00 含两端**、
+每工作日最多 13 次 routine update，§11 说**每工作日一张状态卡、不打补丁不补发**。三节都在，
+而没有任何东西把「今天是什么样的日子」变成一个可被卡片读到的答案。实测（`git grep` 在
+HEAD 的 `runtime/` 全目录）：`workday|工作日|调休` **零命中**，一个文件都没有。窗口这件事
+在 `runtime/` 里当时只以两种形态存在：`runtime/recipe-contract.yaml:84` 的
+`window: "08:00-09:00"`（配方触发窗口，与「每日状态播报」是两件事，措辞撞车而已）和若干
+偶然的时间戳字面量。
+
+#### 9.44.2 读数：三个问题、三种答案，而 UNKNOWN 必须是第三种
+
+新模块 `runtime/business_calendar.py` 只回答三件事：**今天是什么类型的日子** / **现在在不
+在窗口内** / **是 13 个时点里的第几个**。
+
+| 轴 | 取值 |
+|---|---|
+| 日子 | `WORKDAY` / `NON_WORKING_DAY` / **`UNKNOWN`** |
+| 日子的权威 | `declared-workday` / `declared-rest` / `weekday` / `weekday-fallback` |
+| 窗口原因 | `IN_WINDOW` / `BEFORE_WINDOW` / `AFTER_WINDOW` / `NON_WORKING_DAY` / `CALENDAR_UNKNOWN` |
+| 路由 | `ROUTINE_UPDATE` / `NO_ROUTINE_BROADCAST` |
+
+- **UNKNOWN 不能并进「非工作日」**，这是本片最要紧的一条判决。把「没导入」读成「今天不播报」
+  是拿缺数据当结论，而它恰好错在会**静默停播**的方向；`docs/MONITORING-ACCEPTANCE.md` 的
+  V42 要求诊断里出现 `calendar=UNKNOWN`，且明确**不得**把周一至周五伪装成官方工作日。
+- **窗口边界不落在代码的措辞里**：`WINDOW_FIRST_HOUR = 8`、`WINDOW_LAST_HOUR = 20` 与
+  `ROUTINE_UPDATES_PER_WORKDAY = 20 - 8 + 1 = 13` 是同一条设计事实的两种写法，有一条用例
+  同时钉住两端与 13，另有一条变异把任一端改成开区间。
+- **13 这个数只在代码里出现一次**：它是从两个边界算出来的，不是第二处字面量。
+
+#### 9.44.3 模块形态：不持有时钟、不建卡、不打补丁，无声明时不猜时区
+
+- 日子由**声明**决定：`years.<year>.workdays` / `non_working_days` 覆盖 weekday 推导
+  （官方调休就是这么表达的）；实例自己声明的 fallback 规则只有 `weekday` 一条，而**报告权威
+  时说的是 `weekday-fallback` 而不是 `weekday`** —— 「这是官方日历说的」与「这是实例说按
+  星期算的」必须在卡面上可分辨。有一条变异专钉这件事（A5）。
+- **没被覆盖的年份不是「没有工作日」，也不是「照 weekday 算」**：是 UNKNOWN。三条出路各自
+  对应第 9 节里的三种成因。
+- `read_declaration` 返回的是一个 **READING**（`{state: ABSENT|INVALID|READ, declaration,
+  path, reason, detail}`），不是值、也不是 `None`：§9 的 UNKNOWN 有两种成因，**修法不同**
+  （没有导入 vs 导入了但不合规），一个 `None` 会把它们并成一件事。
+- 模块**不打开卡、不发卡、不补发、不持有时钟**；时间由调用方给。**无声明时也不猜时区** ——
+  节点连「今天是哪天」都不该说。这是刻意的：§9 把时区权威放在声明里，第二来源会是一个被
+  渲染成事实的猜测。
+
+#### 9.44.4 消费链：读 → 快照 → 模型 → 渲染器 → 命令
+
+本片交付的是一个**链**，不是一座孤岛模块；五笔如下（每一笔都有变异钉住）：
+
+| 位置 | 落点 |
+|---|---|
+| `runtime/card_source.py` | `load_calendar(path)`；`snapshot(..., calendar=)` 计算 `schedule`，非 READ 时**同时**产一条具名缺口（read 名 `business_calendar`，command 用 READING 自己的 path） |
+| `runtime/card_source.py` | `DEFAULT_CALENDAR_PATH` 是 `business_calendar.DEFAULT_PATH` 的**别名而不是第二处字面量** —— 两个名字不能各自漂 |
+| `runtime/presentation.py` | `status_model` 新增 `schedule`；**拿不到读数时降级成 `calendar=UNKNOWN` 的措辞**，不是空、也不是工作日 |
+| `runtime/cards.py` | 状态卡新增 `**播报日程** …` 一行 |
+| `runtime/cli.py` | `card status --business-calendar PATH` |
+
+一条**纯整形器规则**在这里被写实：`snapshot` 不打开任何文件。收不到 reading 的调用方不会得到
+schedule 块、也不会得到缺口 —— 这条规则不是洁癖，见 §9.44.6。
+
+#### 9.44.5 手工跑过的五条真路径
+
+同一支合成声明（`artifacts/tmp-p8/synthetic-calendar.yaml`，2031 年：周六 06-07 是调休工作日、
+周一 06-09 是休息日），走真 CLI：`card status --json --at … --business-calendar …`，把卡面
+解码后逐条读回来：
+
+```text
+无日历          calendar=UNKNOWN：没有日历声明，也没有被指定的时区，因此不判断这是哪一种日子
+                ——本机不拿自己的时区替它作答。…（<path> 不存在，本年度的官方工作日历尚未导入）
+声明的工作日     2031-06-10 是工作日，现在是 09:30（Asia/Shanghai），在常规播报窗口
+                08:00–20:00 内 · 今天第 2/13 个时点
+声明的休息日     2031-06-09 是休息日，不创建例行状态卡，也不补发；事故卡另按 P1/P2 策略
+调休的周六       2031-06-07 是工作日，现在是 08:00（Asia/Shanghai），在常规播报窗口
+                08:00–20:00 内 · 今天第 1/13 个时点
+窗口之后        2031-06-10 是工作日，但现在是 21:00（Asia/Shanghai），晚于常规播报窗口
+                08:00–20:00，当日卡不再因普通采样变化，不新增
+```
+
+第四条是这五条里唯一一条**不能由 `datetime.weekday()` 推出**的答案：那一天是周六。
+
+#### 9.44.6 两处被测试抓到的自身缺陷
+
+本片有两处是我自己写出来、被测试抓住、并由测试定住不再回来的东西。它们值得留在账上，因为
+两个都是**默认值**出的错 —— 默认值是没人会去读的那种代码。
+
+1. **一个纯整形器去读了宿主的主目录。** `snapshot` 曾把 `calendar=None` 默认成
+   `read_declaration()`，于是 `tests/test_cards.py` 在**根本没有日历**的用例里，输出里多出
+   一条关于 `/data/home/vince/.serveros/business-calendar.yaml` 的采集缺口。也就是说：一个
+   合成输入上的纯函数，其答案取决于**跑它的那台机器上恰好有没有那个文件**。修正是让
+   `calendar=None` 意味着「没有读数」：不打开文件、不产缺口、不产 schedule 块。
+2. **`calendar=UNKNOWN` 在卡面上找不到。** `routine_window` 的 UNKNOWN 分支此前把句子交给
+   `day()` 的某个分支生成，而那个分支在「无声明且无时区」时**只谈时区** —— 于是最需要被
+   诊断看见的那个 token 在真正会出现它的那条路径上缺席。修正是在这一条分支里**保证**它
+   （缺则前置），并加一条属性用例：四种 UNKNOWN 形状里 `says.count("calendar=UNKNOWN") == 1`
+   —— 既要出现，也只出现一次。
+
+#### 9.44.7 本片新增的用例与算术
+
+| 文件 | 净变化 | 内容 |
+|---|---|---|
+| `tests/test_business_calendar.py`（新） | **+47** | 声明必须说清自己从哪来（13，全是拒绝）、读不到是一个答案而不是异常（5）、官方日历覆盖 weekday 推导（10）、窗口含两端（14，含四种 UNKNOWN）、`day_ref` 是去重会用的那个身份（3）、卡面上的句子来自设计（2） |
+| `tests/test_card_cli.py`（新） | **+5** | 这条链此前**没有任何自动化在驱动它**：卡片的每一部分都被测过，命令没有。装载的是 `cli._card_modules` 解析到的**同一个模块对象**，因此被打桩的 `source.gather` 就是命令会调用的那一个 |
+| `tests/test_cards.py`（改） | **+8**（57 → 65） | 全部落在 `StatusSourceTests`（13 → 21）：窗口内的读数上卡、身份是去重会用的那个、一天两个时点共用一个 day_ref、休息日不声称例行播报、未导入的日历是一条缺口而不是一个工作日、不给读数的调用方没有 schedule 也没有缺口、默认路径只有一处字面量、窗口边界是设计的而不是本地的 |
+
+算术：**5916 ＋ 60 ＝ 5976**（实测 5976）。
+
+#### 9.44.8 变异电池：18 条，18 杀，0 存活，0 SKIP
+
+`mutate_slice_a.py`，同一套规矩（锚点必须唯一否则显式 `SKIP` 并非零退出、每轮删
+`__pycache__`、从字节备份 `cp` 还原并 `sha256` 逐字节核对）。**18 条跨 5 个文件**，覆盖上面
+那条链的每一跳：官方工作日/休息日不再覆盖推导、未覆盖年份按已覆盖处理、`_weekly` 永远返回
+WORKDAY、fallback 冒报成官方推导、窗口下界/上界改成开区间、UNKNOWN 被答成「窗口之外」、
+UNKNOWN 不再指名 `calendar=UNKNOWN`、同一天同时出现在两个列表里被接受、没有定位符的 source
+被接受、休息日声称在窗口内、`day_ref` 丢掉管辖区、非 READ 的日历不再成为缺口、快照丢掉
+schedule、渲染器丢掉那一行、模型降级时冒报成工作日、命令不再把它被要求读的日历传下去。
+
+**18 杀、0 存活、0 SKIP**，还原后五个文件与备份**逐字节相同**（五个 sha256 见 §9.44.9）。
+另有一条脚注记在这里：`tests/test_business_calendar.py` 与 `tests/test_card_cli.py` 里
+`subTest` 出现 **0** 次，所以本片对 subtests 总数的贡献不来自这两个新文件 —— 这件事在
+§9.44.9 里要用到。
+
+#### 9.44.9 全量读数
+
+```text
+HEAD 3ccd6ea  dirty 8
+start 2026-09-26T09:07:56+08:00
+rc=0 at 2026-09-26T09:18:49+08:00
+5976 passed, 20 skipped, 3994 subtests passed in 652.92s (0:10:52)
+dirty after 8  HEAD 3ccd6ea
+
+runtime/business_calendar.py  bb4ddb466707173df80c652a2bab8aff490e7487457a37a04137b6373ce7b2ba
+runtime/card_source.py        5b616b4a5903a28810e85f4b10f36dcc5a252f48c4aa73ba0ccf3cad57445651
+runtime/cards.py              5d47364da72fd0b5a4f773fec319901548754517f1549349ca86cfa4b1de4eb3
+runtime/cli.py                e44fef2ba80ae31a26be7062a796734d0fbdc3313b735df778e4b35e67d394c5
+runtime/presentation.py       e00cf278721ceaef21fafb3eb1fd310dac44bcf4d9cd0e9704035eb8c0379a9c
+tests/test_business_calendar.py  db7f3bdec837b25300e264f9e43af06970e335668773f8e96033fa20eee5dd4c
+tests/test_card_cli.py           7b9f74387eb40603f1debb834cfaa7a2070c60e9c7bf6565e438bff4d13d68d5
+tests/test_cards.py              dcf29e1735fe26779404243e6547f20653f2722ad18eb7fefda446912131bd6f
+```
+
+- **算术闭合**：上一格 5916 ＋ 本片净新增 **60** 条 `def test_`（47 ＋ 5 ＋ 8，删 0 条）
+  ＝ **5976** ✓。
+- **subtests 3993 → 3994，而多出来的那 1 条不是新用例** —— 本片新增的两个测试文件里
+  `subTest` 出现 0 次，`tests/test_cards.py` 在两棵树上都是 2709。我先把差异夹逼到一条
+  具体的循环上再写结论：`tests/test_artifact_install_smoke.py::
+  test_every_shipped_module_imports_from_the_install` 遍历**装出来的制品**里的每一个 `.py`
+  并逐个 import（`tests/test_artifact_install_smoke.py:252-258`），而 `runtime/business_calendar.py`
+  进了制品。同一支命令量两棵树：HEAD **112**、工作树 **113**。所以那 +1 是「制品多了一个
+  模块」，不是「多了一条断言」；它顺带是**新模块在安装布局下真的能 import** 的证据（构建按
+  文件复制，未跟踪的新文件也会进制品 —— 这条本身值得记）。
+  量具：`git archive HEAD` 取出的一棵**未经改动**的树放在 `artifacts/tmp-p8/head-tree/`
+  （该树跑全量需要三个环境变量，见下），同一支 `pytest` 命令、同一个 `-p no:randomly`。
+- **跑前跑后 8 个文件的 sha256 逐字节相同，HEAD 未变，dirty 8 → 8。** 这一跑没有写进任何
+  东西；台账这一节是在跑完之后写的，因此台账自己也不在那一跑的输入里（与 §9.43.9 那次
+  「dirty 3 → 4」不同）。
+- 一条给下一个人的注记：那棵 `git archive` 出来的树**不能直接跑全量**，
+  `tests/test_architecture_check.py` 会先要 `SERVEROS_COMPOSITION_EVALUATOR`、再要
+  `SERVEROS_OPS_REPO`（`tests/test_packs.py` 还要 `SERVEROS_ABILITY_REPO`），因为
+  workspace-root 的祖先回溯在那棵树下面找不到任何 workspace。这不是缺口，是那几条用例
+  刻意把「找不到」做成失败而不是静默跳过（§9.18、§9.40 记过它们的由来）；写在这里是为了
+  下一个人不要把它当成第二次发现。
+
+#### 9.44.10 它没做什么，仍未关闭的
+
+- **没有建卡、没有补发、没有打补丁。** §11 的「一天一张、最新完整、前序折叠」一件也没做
+  —— 本片只回答了「今天是什么样的日子」这一问。
+- **没有触到任何生产面。** 节点上的状态卡要等 P12 的 `build→promote→restart` 才会带上这一行。
+  今天 live 的 ops 发送方仍在用 `/data/home/vince/workspace/ops/scripts/tokyo-monitor/monitor_card.py:105-106`
+  的 `QUIET_START_HOUR = 22` / `QUIET_END_HOUR = 9`：那是**免打扰时段**，与 §10 的**常规播报
+  窗口**是两件事，本片**没有**把它们并起来，也没有动那个文件（它是生产部署点上的运行件）。
+- **没有导入任何工作日历。** 本节点的 `~/.serveros/business-calendar.yaml` 仍然不存在，这
+  正是「今天的默认答案是 `calendar=UNKNOWN`」的原因。导入要的是官方通知的 revision 与
+  发布日，那是人的输入，本片**不替它编一个**。
+- 仍未关闭（与前几格相同，本片一条也没有改变它们的状态）：P7 唤醒半的两件前置（§9.38.9）、
+  `WAIT_KINDS` 仍只有 `child`/`window`、`NodeControlTransport.send` 不包裹 connector 异常、
+  `drift_sync.py` 没有调度器、约 40 处未守护的考古站点、`supersede_checkpoint` 的退役评估、
+  以及切片 F–N 的新模块在装好的节点上都还没有那一次 `build→promote→restart`（P12）。
+
 ## 10. 后续每包更新哪几行
 
 - 改完一个包，只更新 §3.1 里对应行的四层状态 + §5 表的增删。
