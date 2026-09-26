@@ -532,12 +532,14 @@ def compare(surface: dict, exceptions: dict[str, dict],
 # ---------------------------------------------------------------------------
 
 
-def node_root_contract(repo_root: Path) -> dict | None:
-    """The `~/.serveros/` file contract, read from its authority.
+def _node_root_key(repo_root: Path, key: str) -> dict | None:
+    """One named section of the node-root contract, or `None` if unread.
 
-    `None` when it is unreadable — which is NOT an empty dict, for the reason
-    this whole project keeps rediscovering: an authority that could not be read
-    must not present as an authority that forbids nothing.
+    `None` and `{}` are different answers and this is the function that keeps
+    them apart: a contract that could not be read, and a contract that declares
+    that this root holds nothing, must not collapse into one another. The
+    caller above the keys — `declaration_conflicts` — reports them separately
+    for exactly that reason.
     """
     path = repo_root / NODE_ROOT_CONTRACT
     if yaml is None or not path.is_file():
@@ -546,31 +548,81 @@ def node_root_contract(repo_root: Path) -> dict | None:
         document = yaml.safe_load(path.read_text())
     except Exception:  # noqa: BLE001 - an unparseable contract is a fact
         return None
-    files = (document or {}).get("files")
-    if not isinstance(files, dict):
+    section = (document or {}).get(key)
+    if not isinstance(section, dict):
         return None
-    return {name: (spec or {}) for name, spec in files.items()}
+    return {name: (spec or {}) for name, spec in section.items()}
+
+
+def node_root_contract(repo_root: Path) -> dict | None:
+    """Everything `~/.serveros/` may hold, keyed by name, with its spec.
+
+    The two keys are merged because the readers of this function want the
+    root's whole inventory: `collect()` renders each name's `absent_means`, and
+    a declaration's absence is a state this node reports out loud
+    (`CALENDAR_NOT_IMPORTED`), not a gap in the table.
+
+    `None` when the contract is unreadable — which is NOT an empty dict, for
+    the reason this whole project keeps rediscovering: an authority that could
+    not be read must not present as an authority that forbids nothing. The
+    `files:` key is the one that decides readability, because it is the key
+    that existed first and the one `fleet/node.py` answers to; a contract
+    without it is not a contract this function can read, whatever else it
+    carries.
+    """
+    files = _node_root_key(repo_root, "files")
+    if files is None:
+        return None
+    merged = dict(files)
+    merged.update(_node_root_key(repo_root, "declarations") or {})
+    return merged
 
 
 def node_root_files(repo_root: Path) -> list[str] | None:
-    contract = node_root_contract(repo_root)
+    """The names `fleet/node.py` opens — the `files:` key alone."""
+    contract = _node_root_key(repo_root, "files")
     return None if contract is None else sorted(contract)
+
+
+def node_root_declarations(repo_root: Path) -> list[str] | None:
+    """The names this root carries that `node.py` does not open.
+
+    `None` when the key is absent, which is not the same as a key that is
+    present and empty: the first says the authority has not been read, the
+    second says the root carries none — and `declaration_conflicts` must not
+    report the first as a disagreement with what `paths.py` transcribes.
+    """
+    section = _node_root_key(repo_root, "declarations")
+    return None if section is None else sorted(section)
 
 
 def declaration_conflicts(paths, repo_root: Path) -> list[dict]:
     """Where two authorities declare one vocabulary differently.
 
     `~/.serveros/` has two declarations: `fleet/node-root-contract.yaml`, which
-    `fleet/node.py` reads and which names the files it opens, and the tuple
-    `paths.py` carries so `admit()` can refuse a stray write. A transcription
-    that disagrees with its source is not a style problem — `admit()` returned
-    REFUSED for `~/.serveros/node.yaml`, a canonical path, while the test that
-    covered the branch asserted `targets.yaml`, the one name both versions
-    happened to contain. Testing the intersection of two disagreeing lists is
-    how the disagreement survives.
+    names what the root holds, and the tuple `paths.py` carries so `admit()`
+    can refuse a stray write. A transcription that disagrees with its source is
+    not a style problem — `admit()` returned REFUSED for
+    `~/.serveros/node.yaml`, a canonical path, while the test that covered the
+    branch asserted `targets.yaml`, the one name both versions happened to
+    contain. Testing the intersection of two disagreeing lists is how the
+    disagreement survives.
+
+    Two contract keys, one comparison. `files:` and `declarations:` are
+    compared as a UNION against `paths.HOME_DOT_SERVEROS_ALLOWED`, because that
+    tuple is what `admit()` consults and what the surface report shows: a name
+    in either key that `paths.py` does not carry is a path this product refuses
+    while its own contract says it is legal, whichever key it sits under.
+    Comparing per key would report a conflict for a contract that is exactly
+    right — the merged tuple is not equal to either half on its own — and it is
+    the union that decides whether a write succeeds. So an absent
+    `declarations:` key is a conflict like any other: `paths.py` would then be
+    admitting two names the authority never declared, which is the same drift,
+    one key over. Only an unreadable contract is reported as unreadable rather
+    than as a disagreement, and that branch is above.
     """
-    authority = node_root_files(repo_root)
-    if authority is None:
+    authority_files = node_root_files(repo_root)
+    if authority_files is None:
         return [finding(
             "DECLARATION_AUTHORITY_UNREADABLE", "~/.serveros",
             f"{NODE_ROOT_CONTRACT} is readable and declares the file vocabulary",
@@ -579,13 +631,17 @@ def declaration_conflicts(paths, repo_root: Path) -> list[dict]:
             "fleet/node-root-contract.yaml",
             "MEDIUM", "OPEN",
             declared=list(paths.vocabulary("home")))]
+    declarations = node_root_declarations(repo_root) or []
+    authority = sorted(set(authority_files) | set(declarations))
     declared = sorted(paths.vocabulary("home"))
     if declared == authority:
         return []
     return [finding(
         "DECLARATION_CONFLICT", "~/.serveros",
-        f"paths.py's allow-list equals {NODE_ROOT_CONTRACT}::files",
+        f"paths.py's allow-list equals {NODE_ROOT_CONTRACT}::files "
+        f"plus ::declarations",
         f"paths.py={declared} authority={authority} "
+        f"files={authority_files} declarations={declarations} "
         f"paths-only={sorted(set(declared) - set(authority))} "
         f"authority-only={sorted(set(authority) - set(declared))}",
         "fleet/node-root-contract.yaml owns the vocabulary; paths.py transcribes it",

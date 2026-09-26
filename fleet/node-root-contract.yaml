@@ -36,10 +36,12 @@ root:
 # The files this root BINDS. These are the names `fleet/node.py` opens
 # (`NODE_FILE`, `TARGETS_FILE`, and `controller.yaml` via
 # `local_controller_declaration`), and the same list is transcribed into
-# `paths.HOME_DOT_SERVEROS_ALLOWED`, which is what `admit()` refuses stray
-# writes against. `conformance.declaration_conflicts` asserts the two lists are
-# equal, so a name added here is not a comment — it is the claim "node.py opens
-# this file", and a name that is not true makes that check report HIGH drift.
+# `paths.HOME_DOT_SERVEROS_FILES`, one of the two halves of the tuple
+# `admit()` refuses stray writes against. `conformance.declaration_conflicts`
+# asserts this key and that tuple are equal — and the `declarations:` key
+# further down against its own tuple, the same way — so a name added here is
+# not a comment: it is the claim "node.py opens this file", and a name that is
+# not true makes that check report HIGH drift.
 #
 # `README.md` is NOT in this list, and must not be added to it — and it is not
 # merely unwritten, it is gone. A file of that name used to sit here; it was
@@ -104,6 +106,60 @@ files:
     # No field of this file can hold a token. That is not an oversight: a
     # declaration records *that* a surface was authorized, and the authorized
     # client holds its own credential in its own credential store.
+
+# Host-level declarations this root CARRIES but `node.py` does not open.
+#
+# Why a second key instead of one more name under `files:` — `files:` makes one
+# specific claim, "node.py opens this file", and a name added there to satisfy a
+# different reader would falsify it. This key makes the claim it can keep: the
+# module in `opened_by` opens it, on this host, read-only, at the path
+# `<root>/<name>`. `paths.HOME_DOT_SERVEROS_DECLARATIONS` transcribes these
+# names and `conformance.declaration_conflicts` asserts the two are equal, the
+# same way `files:` and `paths.HOME_DOT_SERVEROS_FILES` are asserted equal.
+#
+# This key exists because the alternative was measured and found to be a dead
+# end. `serverosctl card day --business-calendar` printed
+# `default ~/.serveros/business-calendar.yaml` as the place to put the year's
+# notice, while this node's own `path.admit` refused that exact path by name:
+# `admit()` consulted `HOME_DOT_SERVEROS_ALLOWED`, which held the three names
+# above and nothing else, and neither declaration had a name there. A printed
+# remedy that the product refuses is worse than a missing file — the operator's
+# next move is to write it anyway, and then the root holds a file the contract
+# says cannot exist.
+#
+# The rule this does NOT break: §41's "bindings only" and the "move it rather
+# than widen this list" line in `admit()`'s refusal are about MACHINE STATE
+# drifting into this root, and neither declaration is state. Both are
+# per-host by construction — a jurisdiction, a timezone, a fallback's
+# `declared_by:` naming the person who decided it, and a set of delivery
+# targets — so a copy in the repository cannot be the same answer for two
+# hosts, which is why "put it in the repository" is not available either. Both
+# pass `never_in_this_root` and both pass the `rules:` at the bottom, including
+# "deleting this directory loses one host's local binding, and nothing that is
+# not re-derivable": one is re-derived from the notice it cites, the other from
+# a person's decision.
+declarations:
+  business-calendar.yaml:
+    opened_by: runtime/business_calendar.py
+    holds: >-
+      the business-day calendar this host's broadcasts are scheduled by —
+      which days are workdays, which are rest days, and which year the
+      declaration covers
+    # The declaration carries its own `source:` (a notice locator plus the date
+    # it was published), which is the whole reason it may live here: what is
+    # lost by deleting this file is re-obtainable from that locator. The
+    # absence is the state the card surface already renders out loud — a
+    # missing year is `CALENDAR_UNKNOWN`, never a fallback to Monday-to-Friday
+    # presented as an official one.
+    absent_means: CALENDAR_NOT_IMPORTED
+  service-bindings.yaml:
+    opened_by: runtime/card_source.py
+    holds: >-
+      where this host's card deliveries point — one entry per service, saying
+      which conversation a card of that kind is sent to
+    # Same shape as `targets.yaml` one key up, and the same reason it is not
+    # committed: it names routes that exist for this host only.
+    absent_means: NO_SERVICE_BINDINGS
 
 never_in_this_root:
   - credentials, tokens, refresh tokens, cookies, private keys, code verifiers
