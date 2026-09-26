@@ -104,9 +104,25 @@ SCHEDULED_UNITS = {
     "runtime/serveros-daily.timer",
 }
 
+# §9.48's continuation wake routine: a fourth set rather than four more entries
+# above, because the claim is different in kind. The delivery worker sends
+# something and the daily render writes a directory a person opens; this pair
+# STARTS A PARENT, and it is the only one of the three that spends authority
+# when it fires — which is why what it must not carry is worth its own line
+# here rather than a footnote on somebody else's.
+#
+# It is listed rather than left implicit so that a fifth unit is still a diff,
+# and it is asserted NOT resident for the same reason as the other two: a
+# resident unit is a process with a lifetime the node did not choose, while
+# these two are a oneshot a timer fires and a timer that fires it.
+WAKE_UNITS = {
+    "runtime/serveros-continuation-wake.service",
+    "runtime/serveros-continuation-wake.timer",
+}
+
 # Every unit that is not the resident daemon. Named once so the sub-tests below
 # cannot cover a set somebody added and forgot to wire in.
-NON_RESIDENT_UNITS = DELIVERY_UNITS | SCHEDULED_UNITS
+NON_RESIDENT_UNITS = DELIVERY_UNITS | SCHEDULED_UNITS | WAKE_UNITS
 
 # The daemon may not open a network socket (§W: "serverosd 不做网络调用"). It
 # is checked as an AST property of the daemon's own loader closure rather than
