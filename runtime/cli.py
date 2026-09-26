@@ -7927,6 +7927,15 @@ def cmd_work_checkpoint(args) -> int:
     has none installed. What the reader says about that is
     `runtime/continuation.continuation_state`'s answer, not this verb's.
 
+    AND IT SAYS WHAT THIS WRITE HAS JUST TAKEN OVER. A Parent writing at a higher
+    epoch is a new owner: the store supersedes the record it replaced in the same
+    transaction, and the attempts that record dispatched end up named by nothing
+    the new owner wrote — the criterion «Parent替换后原child自动接回», with no
+    reader in the loop. `runtime/continuation.carried_attempts` reads them off the
+    Item's earlier epochs, and this verb prints that reading at the one moment it
+    costs nothing. A Parent that had to be told to go looking for its
+    predecessor's children would not satisfy the criterion.
+
     It records and it acts on nothing. Nothing is woken, nothing is released, and
     the process that runs it is expected to exit.
     """
@@ -7968,6 +7977,14 @@ def cmd_work_checkpoint(args) -> int:
     # than letting it be discovered by whoever next reads the store — which is
     # the one moment nobody is looking.
     wait = continuation.wait_state(stored, admissions=admissions, now=now)
+    # And what this write has just TAKEN OVER, for the same reason and at the one
+    # moment it is free. A Parent writing at a higher epoch is a new owner: the
+    # store supersedes the record it replaced in the same transaction, and the
+    # attempts that record dispatched become this Item's again. Saying so here is
+    # «原child自动接回» with a reader present — the alternative is a Parent that
+    # would have to know to walk the records it never saw.
+    carried = continuation.carried_attempts(
+        stored, checkpoints=control.checkpoints(), admissions=admissions)
     lines = [
         f"checkpoint  {stored['checkpoint_ref']}",
         f"item        {stored['work_item']}",
@@ -7988,11 +8005,19 @@ def cmd_work_checkpoint(args) -> int:
         "",
         f"wait          {wait['state']}",
         f"  {wait['says']}",
+        "",
+        f"carried over  {carried['state']}",
+        f"  {carried['says']}",
     ]
+    for entry in carried["evidence"]:
+        lines.append(f"    {entry['ref']}  {entry['state']}  named by "
+                     f"{entry['named_by']} (epoch {entry['named_by_epoch']}, "
+                     f"{entry['named_by_parent']})")
     if stored.get("replayed"):
         lines.insert(1, "replayed    yes — same scope, same checkpoint")
     emit({"checkpoint": stored, "continuation": state, "wait": wait,
-          "store": str(control.path)}, as_json=args.json, lines=lines)
+          "carried": carried, "store": str(control.path)},
+         as_json=args.json, lines=lines)
     return EXIT_OK
 
 
@@ -8091,6 +8116,17 @@ def cmd_work_continuations(args) -> int:
     restated by the Parent when it next checkpoints. A reading that called that lag
     a disagreement would invent a rule the design does not state, so this surface
     prints both and reconciles neither.
+
+    ONE READING PER RECORD AND ONE READ PER ITEM, AND NEITHER IS THE OTHER'S
+    SUMMARY. The per-record `attempts` block is what the RECORD names; the
+    `carried over` block under a live record is what the ITEMS it owns still owe
+    from the epochs that came before — «Parent替换后原child自动接回», which had no
+    reader before this line existed. They are disjoint by construction: an attempt
+    the record names is never also carried, so the two counts on the header (the
+    `attempts` line and the `carried over` line) add up without counting anything
+    twice. The attempt is printed under the record that OWNS the Item, and the
+    superseded record it came from still prints it in its own block — the same
+    child, two readings, and the one that says who owes it now is the new one's.
     """
     continuation = _continuation_module()
     store_mod, control = _control_store()
@@ -8103,6 +8139,13 @@ def cmd_work_continuations(args) -> int:
     if args.item:
         held = {ref: record for ref, record in held.items()
                 if record.get("work_item") == args.item}
+    # Which checkpoints the store still counts as owning their Item comes from the
+    # STORE and not from a filter composed here. `live_checkpoints` is its answer
+    # to «who owns what now» and this is its first caller: «one continuation owner
+    # per scope» is a rule `put_checkpoint` enforces, so the set is the store's to
+    # state. The two agree by construction — a record carries `superseded_by`
+    # exactly when `continuation_state` answers `SUPERSEDED`.
+    live = sorted(ref for ref in held if ref in control.live_checkpoints())
     installed = continuation.receivers()
     states = {ref: continuation.continuation_state(record, receivers_seen=installed)
               for ref, record in held.items()}
@@ -8115,12 +8158,18 @@ def cmd_work_continuations(args) -> int:
              for ref, record in held.items()}
     attempts = {ref: continuation.attempts_state(record, admissions=admissions)
                 for ref, record in held.items()}
-    live = [ref for ref, state in states.items() if state["state"] != "SUPERSEDED"]
+    # The Item-scope reading, on the same records and from the same store. Only
+    # for the records that own their Item: a superseded record carries nothing —
+    # it is what was carried FROM.
+    carried = {ref: continuation.carried_attempts(record, checkpoints=held,
+                                                  admissions=admissions)
+               for ref, record in held.items() if ref in live}
     ready = [ref for ref in live if waits[ref]["state"] == "WAIT_OVER"]
     unreadable = [ref for ref in live if waits[ref]["state"] == "WAIT_UNANSWERABLE"]
     made = sum(len(attempts[ref]["attempts"]) for ref in live)
     by_answer = {answer: [ref for ref in live if attempts[ref]["state"] == answer]
                  for answer in continuation.ATTEMPT_ANSWERS}
+    carried_refs = sorted({ref for ref in live for ref in carried[ref]["carried"]})
     lines = [f"store         {control.path}",
              f"checkpoints   {len(live)} live of {len(held)} recorded"
              + ("" if held else " — no Parent has checkpointed on this node"),
@@ -8140,6 +8189,18 @@ def cmd_work_continuations(args) -> int:
              + f"{len(by_answer['ATTEMPT_OPEN'])} with one still open, "
              + f"{len(by_answer['ATTEMPT_UNANSWERABLE'])} this store cannot look up, "
              + f"{len(by_answer['ATTEMPT_NONE'])} naming none",
+             # A SECOND COUNT OF ATTEMPTS, AND NOT A SECOND COPY OF THE FIRST. The
+             # line above counts what the live RECORDS name; this one counts what
+             # the ITEMS still owe from the epochs that came before them. They are
+             # disjoint by construction — `carried_attempts` skips every attempt the
+             # record in hand names — so a reader that adds the two is not counting
+             # anything twice. Without this line the header read «0 with one still
+             # open» for an Item whose replaced Parent had a child running.
+             f"carried over  {len(carried_refs)} attempt"
+             + ("" if len(carried_refs) == 1 else "s")
+             + " left by an earlier epoch and no take-up closes"
+             + (f" — {', '.join(carried_refs)}" if carried_refs
+                else " — nothing came through with anything open"),
              f"read at       {read_at}"]
     if ready:
         # Named, not counted. A WAIT_OVER is the one answer here a person can act
@@ -8202,14 +8263,30 @@ def cmd_work_continuations(args) -> int:
             else:
                 lines.append(f"    {entry['ref']}  {entry['state']}  "
                              f"phase {entry.get('phase')}")
+        if ref in carried:
+            # Under the record that OWNS the Item, and not under the one that was
+            # replaced: the obligation is the Item's, and where it is printed is
+            # the statement of who owes it now. The superseded record's own block
+            # above still names the attempt, so both readings of the same child are
+            # on the screen and neither is the other's summary.
+            held_over = carried[ref]
+            lines.append(f"  carried over  {held_over['state']}"
+                         + (f"  from {', '.join(held_over['predecessors'])}"
+                            if held_over["predecessors"] else ""))
+            lines.append(f"    {held_over['says']}")
+            for entry in held_over["evidence"]:
+                lines.append(f"    {entry['ref']}  {entry['state']}  named by "
+                             f"{entry['named_by']} (epoch {entry['named_by_epoch']}, "
+                             f"{entry['named_by_parent']})")
         for effect in record.get("unresolved_effects") or []:
             lines.append(f"  unresolved    {effect}")
         lines.append(f"  {state['says']}")
         lines.append(f"  wait          {wait['says']}")
         lines.append(f"  attempts say  {made_here['says']}")
     emit({"checkpoints": held, "states": states, "waits": waits,
-          "attempts": attempts, "receivers": list(installed), "read_at": read_at,
-          "store": str(control.path)}, as_json=args.json, lines=lines)
+          "attempts": attempts, "carried": carried, "receivers": list(installed),
+          "read_at": read_at, "store": str(control.path)},
+         as_json=args.json, lines=lines)
     return EXIT_OK
 
 

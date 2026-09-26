@@ -51,6 +51,18 @@ to make `continuation_state` start saying a receiver is installed: that sentence
 would be a promise about a process nobody started, made out of a read. The two
 are kept apart on purpose and `tests/test_continuation.py` pins the separation.
 
+AND A READING OF ONE RECORD IS NOT A READING OF THE ITEM. `attempts_state` below
+answers «what became of the attempts this record names», which is a question
+about a record. `carried_attempts` answers «what does this Item still owe from
+the epochs it came through», which is a question about the Item — and the store's
+own sentence is that the ITEM is the scope and the epoch is only how it changes
+hands. So a Parent that replaces another writes a record that legitimately names
+no attempt, and the reading a person needs is not a field of it: the child the
+replaced Parent dispatched is the Item's obligation under the new epoch. The two
+readings are kept apart because neither is the other's summary — an attempt is
+reported by exactly one of them, and a reader adding the two counts together
+counts nothing twice.
+
 WHAT THIS MODULE DOES NOT DO. It does not decide that a Parent should wait. The
 caller states what it is waiting on and this module refuses the shapes that are
 not a wait; whether the work could simply have gone on is a question about the
@@ -140,6 +152,24 @@ RECEIVERS: tuple = ()
 ATTEMPT_ANSWERS = ("ATTEMPT_ACCEPTED", "ATTEMPT_RETIRED", "ATTEMPT_OPEN",
                    "ATTEMPT_UNANSWERABLE", "ATTEMPT_NONE")
 
+#: The three answers to «what does this Item's continuation still owe from the
+#: epochs it came through».
+#:
+#: A THIRD VOCABULARY BECAUSE IT IS A THIRD QUESTION. `ATTEMPT_ANSWERS` is about
+#: one record's own field; this is about the Item, whose scope the store says
+#: outlives the epoch that happened to hold it. A reading that answered the
+#: second question with the first vocabulary would have to say `ATTEMPT_NONE`
+#: about an Item with a child still running — which is a true statement about the
+#: record and a false one about the work.
+#:
+#: `ATTEMPTS_CARRIED_UNANSWERABLE` IS FIRST AND IS THE SAME RULE AS
+#: `ATTEMPTS_UNANSWERABLE` one tuple up: a store this reading cannot open outranks
+#: an attempt it can see is still running, because the answer has to be the one a
+#: reader can act on and «an epoch I cannot read may have left something behind»
+#: is not «nothing is outstanding».
+CARRIED_ANSWERS = ("ATTEMPTS_CARRIED_UNANSWERABLE", "ATTEMPTS_CARRIED",
+                   "NOTHING_CARRIED")
+
 
 def receivers() -> tuple:
     """The continuation receivers that could wake a saved checkpoint.
@@ -179,6 +209,19 @@ def _instant(value) -> datetime.datetime | None:
     if moment.tzinfo is None:
         moment = moment.replace(tzinfo=datetime.timezone.utc)
     return moment
+
+
+def _is_epoch(value) -> bool:
+    """One epoch: a positive integer, and NOT a bool.
+
+    `isinstance(True, int)` is True, so `epoch=True` would otherwise be epoch 1 —
+    the one value a caller arrives at by accident rather than by intent. This is
+    `build_checkpoint`'s refusal written once and read in two places, because the
+    reading below orders records by epoch and an ordering that accepted a bool
+    would sort a record that named no epoch at all.
+    """
+    return (isinstance(value, int) and not isinstance(value, bool)
+            and value >= 1)
 
 
 def _as_list(value, field: str, why: str) -> list[str]:
@@ -226,7 +269,7 @@ def build_checkpoint(*, work_item: str, epoch, parent_owner: str, next_safe_acti
             "a checkpoint without a work_item is a record of nothing; the Item is "
             "what a later Parent matches on and what makes an old-epoch record "
             "unable to be mistaken for a current one")
-    if not isinstance(epoch, int) or isinstance(epoch, bool) or epoch < 1:
+    if not _is_epoch(epoch):
         raise ValueError(
             f"epoch {epoch!r} is not a positive integer. The epoch is the half of "
             f"the key that lets the same Item be carried by a second Parent "
@@ -738,3 +781,227 @@ def attempts_state(record: dict, *, admissions: dict | None = None) -> dict:
             "says": (f"of the attempts this checkpoint records, {counts}, so "
                      f"resuming means continuing from results the Item already has "
                      f"rather than dispatching a second child")}
+
+
+def predecessors(record: dict, checkpoints: dict | None = None) -> list[dict]:
+    """The records this Item came through, oldest epoch first.
+
+    «What came before this one» is the question `superseded_by` is a POINTER to
+    and not an answer to. The pointer says which record took the scope over, and
+    the store writes it on takeover — but a reading that walked the pointers
+    would inherit every way a pointer can fail to compose. It can: the standalone
+    `runtime/agent_control_store.supersede_checkpoint` writes a successor without
+    requiring the successor to be a checkpoint of this store, or of this Item, so
+    a chain built from pointers can leave the Item it started in. That verb is
+    measured, not guessed — its guard is only «the ref being superseded exists».
+
+    SO THE ORDER COMES FROM THE STORE'S OWN MODEL AND NOT FROM THE POINTERS:
+    «The scope is the Item; the epoch is only how it changes hands.» This
+    function reads that sentence as a definition — the epochs of THIS Item, below
+    the one in hand, that the store no longer counts as live. The pointer stays
+    on the records as the reason, and whether it is internally consistent is a
+    question for the store rather than something this reading has to trust.
+
+    A LOWERE-EPOCH RECORD THE STORE STILL COUNTS AS LIVE IS NOT A PREDECESSOR. It
+    would mean an Item with two owners, which `put_checkpoint` refuses and which
+    a higher-epoch write resolves in the same transaction, so the shape is
+    unreachable through the store — and if one is on disk anyway, calling it a
+    record the Item came through would invent a handover nobody made.
+
+    An unreadable argument answers the empty list and not an error: this is one
+    half of a reading, and the half that answers «nothing came before» is
+    legitimately empty for the first epoch of every Item.
+    """
+    record = record if isinstance(record, dict) else {}
+    item = str(record.get("work_item") or "")
+    epoch = record.get("epoch")
+    if not item or not _is_epoch(epoch) or not isinstance(checkpoints, dict):
+        return []
+    mine = str(record.get("checkpoint_ref") or "")
+    came_through = []
+    for ref, other in checkpoints.items():
+        if not isinstance(other, dict) or str(ref) == mine:
+            continue
+        if str(other.get("work_item") or "") != item:
+            continue
+        if not other.get("superseded_by"):
+            continue
+        if not _is_epoch(other.get("epoch")):
+            continue
+        if other["epoch"] < epoch:
+            came_through.append(other)
+    return sorted(came_through,
+                  key=lambda held: (held["epoch"],
+                                    str(held.get("checkpoint_ref") or "")))
+
+
+def carried_attempts(record: dict, *, checkpoints: dict | None = None,
+                     admissions: dict | None = None) -> dict:
+    """What this Item still owes from the epochs an earlier Parent held it.
+
+    THE ACCEPTANCE CRITERION «Parent替换后原child自动接回», WHICH WAS PROSE UNTIL
+    THIS FUNCTION. A Parent is replaced by a new Parent at a higher epoch; the
+    store supersedes the old record in the same transaction and the new record is
+    whatever its caller wrote. Nothing carries the old epoch's attempts into it,
+    so the child the replaced Parent dispatched survives only as a historical
+    block that a reader has to know to walk — and the record the Item is now
+    being read through answers `ATTEMPT_NONE` about an Item with a child still
+    running. That is not a gap in the store: the child is still there, keyed by
+    its cycle. It is a gap in the READING, and it is the reason «原child自动接回»
+    could only be asserted as prose.
+
+    THE UNIT IS THE ITEM AND NOT THE RECORD, because the store's own sentence
+    says so: «The scope is the Item; the epoch is only how it changes hands.»
+    A child dispatched under one epoch is the Item's obligation under the next
+    one, and the reading has to be able to say that without the new owner having
+    been handed anything.
+
+    WHAT IS CARRIED, AND WHAT IS NOT — and each of the three is a different one:
+
+      `ATTEMPT_OPEN`     carried. The store holds it and no outcome is recorded,
+                         so somebody is still paying for it.
+      `ATTEMPT_RETIRED`  carried. An outcome exists and no take-up of the result
+                         is recorded, so reading the result is what the new owner
+                         owes. One take-up closes it: `ATTEMPT_ACCEPTED` is NOT
+                         carried, because `work accept` writes once and the Item
+                         already has that result.
+      `ATTEMPT_UNANSWERABLE`  NOT carried and NOT dropped: the record-level answer
+                         becomes `ATTEMPTS_CARRIED_UNANSWERABLE`, because «an
+                         epoch I cannot read may have left something behind» is
+                         not «nothing is outstanding». Same rule as
+                         `attempts_state`'s, one vocabulary up.
+
+    AN ATTEMPT THE RECORD ITSELF NAMES IS NOT CARRIED, AND THAT IS WHAT MAKES THE
+    TWO READINGS COMPOSE. A successor that writes `child_attempts` has carried
+    them forward by hand and `attempts_state` answers for them; a successor that
+    does not gets this answer instead. Every attempt is reported by exactly one
+    of the two and never by both, so a reader that adds the counts together is
+    not counting anything twice.
+
+    WHAT IT DOES NOT DO, in the shape the rest of this module states it. It does
+    not resume and it does not wake: nothing here starts a process, and the new
+    owner is still a new Parent (`receivers()` is the one place that could ever
+    say otherwise). It does not decide that an inherited attempt SHOULD be
+    continued — abandoning it, superseding it and continuing it are three
+    different acts and all three are the Parent's. And it does not check that the
+    result of an inherited, retired attempt can still be taken up, which is
+    `runtime/agent_control_store.accept_admission`'s question and not this one's.
+    """
+    record = record if isinstance(record, dict) else {}
+    came = predecessors(record, checkpoints)
+    base = {"checkpoint_ref": record.get("checkpoint_ref"),
+            "work_item": record.get("work_item"),
+            "epoch": record.get("epoch"),
+            "predecessors": [str(held.get("checkpoint_ref") or "")
+                             for held in came]}
+    if not came:
+        return {**base, "state": "NOTHING_CARRIED", "carried": [], "closed": [],
+                "unreadable": [], "evidence": [],
+                "detail": ("this record is the first epoch of this Item the store "
+                           "holds, so there is no earlier Parent whose attempts it "
+                           "could be carrying. That is a different fact from «the "
+                           "Item came through three epochs and they are all closed», "
+                           "and `predecessors` tells the two apart"),
+                "says": ("this Item has no earlier epoch in this store, so nothing "
+                         "was carried into this one")}
+    if not isinstance(admissions, dict):
+        return {**base, "state": "ATTEMPTS_CARRIED_UNANSWERABLE", "carried": [],
+                "closed": [], "unreadable": [], "evidence": [],
+                "detail": ("no admissions were supplied, so what this Item's "
+                           "earlier epochs dispatched was not looked up at all. "
+                           "This is «nobody brought the store» and not «the earlier "
+                           "epochs left nothing behind», the same distinction "
+                           "`attempts_state` draws and for the same reason"),
+                "says": ("this reading was given no admissions, so whether an "
+                         "earlier epoch of this Item left an attempt behind cannot "
+                         "be said")}
+    own = {str(ref) for ref in (record.get("child_attempts") or [])
+           if str(ref).strip()}
+    carried, closed, unreadable, evidence = [], [], [], []
+    for older in came:
+        by = {"named_by": older.get("checkpoint_ref"),
+              "named_by_epoch": older.get("epoch"),
+              "named_by_parent": older.get("parent_owner")}
+        for entry in attempts_state(older, admissions=admissions)["evidence"]:
+            ref = str(entry.get("ref"))
+            if ref in own:
+                # Named by the record in hand, so it is that record's own attempt
+                # and `attempts_state` is the reading that answers for it. Counted
+                # once, never twice.
+                continue
+            where = (f"epoch {older.get('epoch')} of this Item, carried by "
+                     f"{older.get('parent_owner')}")
+            if entry["state"] == "ATTEMPT_UNANSWERABLE":
+                unreadable.append(ref)
+                because = (f"{where}, names this attempt and this store holds no "
+                           f"admission under the ref — so whether that epoch left "
+                           f"something behind cannot be read from here")
+            elif entry["state"] == "ATTEMPT_ACCEPTED":
+                closed.append(ref)
+                because = (f"{where}, dispatched it and a take-up of its result is "
+                           f"recorded against it, so nothing about it is left for "
+                           f"the Parent that carries the Item now")
+            elif entry["state"] == "ATTEMPT_RETIRED":
+                carried.append(ref)
+                because = (f"{where}, dispatched it; its outcome is recorded and no "
+                           f"take-up of the result is, so what the Parent that "
+                           f"carries the Item now owes is to read that result — this "
+                           f"record does not name it, which is why it is here rather "
+                           f"than in the record's own list")
+            else:
+                carried.append(ref)
+                because = (f"{where}, dispatched it and no outcome is recorded, so "
+                           f"somebody is still paying for it — this record does not "
+                           f"name it, which is why it is here rather than in the "
+                           f"record's own list")
+            evidence.append({**entry, **by, "because": because})
+    answer = {**base, "evidence": evidence, "carried": carried, "closed": closed,
+              "unreadable": unreadable}
+    epochs = len(came)
+    verb = "epoch" if epochs == 1 else "epochs"
+    if unreadable:
+        # The one answer that says both halves. An item that owes one thing and
+        # cannot be read about another is not «nothing is outstanding», and it is
+        # also not just «unreadable»: what could be read is still owed.
+        owed = (f" and {len(carried)} of those it still owes"
+                if carried else "")
+        return {**answer, "state": "ATTEMPTS_CARRIED_UNANSWERABLE",
+                "detail": (f"this Item came through {epochs} earlier {verb}, and "
+                           f"this store holds no admission for "
+                           f"{', '.join(unreadable)} — so whether that epoch left "
+                           f"an attempt behind cannot be read from here. That is "
+                           f"not the same as an Item with nothing outstanding"),
+                "says": (f"this Item came through {epochs} earlier {verb}, and "
+                         f"{len(unreadable)} attempt"
+                         + ("" if len(unreadable) == 1 else "s")
+                         + f" named there cannot be looked up in this store"
+                         + owed
+                         + f", so what the new owner inherits cannot be said in "
+                           f"full from here")}
+    if carried:
+        return {**answer, "state": "ATTEMPTS_CARRIED",
+                "detail": (f"this Item came through {epochs} earlier {verb} and "
+                           f"{len(carried)} attempt"
+                           + ("" if len(carried) == 1 else "s")
+                           + f" nothing has closed "
+                           + ("is" if len(carried) == 1 else "are")
+                           + f" still its own: {', '.join(carried)}. "
+                           f"They are not fields of this record, and the Parent "
+                           f"carrying the Item now owes them whether or not it was "
+                           f"told"),
+                "says": (f"this Item came through {epochs} earlier {verb} and still "
+                         f"owes {len(carried)} attempt"
+                         + ("" if len(carried) == 1 else "s")
+                         + f" no take-up closes ({', '.join(carried)}), so resuming "
+                           f"here means reading "
+                         + ("it" if len(carried) == 1 else "them")
+                         + f" and not dispatching a second child for the same "
+                           f"work")}
+    return {**answer, "state": "NOTHING_CARRIED",
+            "detail": (f"this Item came through {epochs} earlier {verb} and every "
+                       f"attempt those Parents dispatched has a take-up recorded "
+                       f"against it, so nothing was left behind for the Parent that "
+                       f"carries the Item now"),
+            "says": (f"this Item came through {epochs} earlier {verb} and "
+                     + ("it left" if epochs == 1 else "they left")
+                     + f" nothing open, so there is nothing carried into this one")}
