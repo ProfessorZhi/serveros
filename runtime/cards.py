@@ -714,6 +714,18 @@ def status_card(model: dict) -> dict:
     schedule = model.get("schedule") or {}
     if schedule.get("says"):
         els.append(md(f"**播报日程** {schedule['says']}"))
+    # §11: one card per workday, the latest fully expanded and the day's earlier
+    # hours folded. The folded half is printed only when there IS one — a panel
+    # that opens onto nothing is one tap away from the explanation it looks like
+    # it is hiding, which is why the section blocks open one conditionally too.
+    # The lines arrive already formatted in the model: a renderer that knew how
+    # to read a history row would be a second reader of the row's schema.
+    day = model.get("day") or {}
+    if day.get("says"):
+        els.append(md(f"**当天卡** {day['says']}"))
+        if day.get("lines"):
+            els.append(panel(f"今日历史（{len(day['lines'])} 小时）",
+                             list(day["lines"]), expanded=False))
     for name in model.get("order") or presentation.SECTIONS:
         section = (model.get("sections") or {}).get(name) or {}
         lines = section.get("lines") or []

@@ -5133,13 +5133,15 @@ def _card_common(args) -> tuple[dict, str, str]:
             source.gather(), at=at,
             node_label=getattr(args, "device_ref", "") or None, binding=binding,
             calendar=source.load_calendar(
-                getattr(args, "business_calendar", "") or None))
+                getattr(args, "business_calendar", "") or None),
+            day=source.load_day_store(getattr(args, "day_store", "") or None))
         model = presentation.status_model(snapshot, at=at, binding=binding,
                                           sample=bool(args.sample))
         caption = ("status card — three blocks and the line above them. "
                    "The gateway block is UNBOUND unless a service binding names it; "
                    "the schedule line is calendar=UNKNOWN until a business "
-                   "calendar is imported")
+                   "calendar is imported; the day line names today's card and "
+                   "folds the hours it has already reported")
     else:
         document = _read_card_document(args)
         if isinstance(document, tuple):
@@ -5294,6 +5296,106 @@ def cmd_card_deliveries(args) -> int:
     if not rows:
         lines.append("  （没有记录：这个节点还没有投递过这种卡）")
     emit(payload, as_json=args.json, lines=lines)
+    return EXIT_OK
+
+
+def _card_day_module():
+    """The day module, reached through the source's own alias.
+
+    Not a fourth `_load_module_from` call: `card_source` already loads
+    `card_day.py`, and a second loader is a second seam a test would have to
+    know about to hold the same module still.
+    """
+    return _card_modules()[0].card_day
+
+
+def _day_store(module, args):
+    """The store both day verbs act on, and the refusal is not swallowed here.
+
+    `DayStore` raises on a document it cannot read, and this is the one place
+    that decides what a command does with that: print the reason and exit with
+    a fault. Replacing the file would be the quiet alternative, and it is the
+    wrong one — a fresh document gives the same workday a second NEW card.
+    """
+    return module.DayStore(getattr(args, "day_store", "") or module.DEFAULT_PATH)
+
+
+def cmd_card_day(args) -> int:
+    """§11. What this instant does to TODAY's card. Reads, writes nothing.
+
+    Its answer is a judgement and not a suggestion: the day's card is created at
+    the first allowed tick, patched at the ones after it, and not touched
+    outside the window. A caller that ignores this has overruled a decision —
+    which is allowed, and is then a decision it made rather than one nobody
+    took.
+    """
+    module = _card_day_module()
+    source = _card_modules()[0]
+    at = getattr(args, "at", "") or _card_clock()
+    try:
+        store = _day_store(module, args)
+        schedule = source.business_calendar.routine_window(
+            at, reading=source.load_calendar(
+                getattr(args, "business_calendar", "") or None))
+        action = module.decide(store.read(), schedule=schedule, at=at)
+    except module.CardDayError as exc:
+        sys.stderr.write(f"serverosctl: {exc}\n")
+        return EXIT_FAULT
+    day = store.summary()
+    payload = {"schema": module.SCHEMA, "at": at, "store": str(store.path),
+               "schedule": schedule, "decision": action, "day": day}
+    emit(payload, as_json=getattr(args, "json", False),
+         lines=[f"决定        {action['action']}/{action['reason']}",
+                f"当天身份    {action['day_ref'] or '（不可用）'}",
+                f"时点        {action['tick']}/{action['ticks_per_workday']}",
+                f"当天卡      {day['says']}",
+                "",
+                action["says"],
+                "",
+                "本命令不写任何东西，也不发送任何东西：它回答的是这一拍对当天的卡"
+                "应该发生什么。落盘在 `card day-advance`，发送由已经持有 "
+                "transport 的那一侧负责。"])
+    return EXIT_OK
+
+
+def cmd_card_day_advance(args) -> int:
+    """§11. Take today's card one tick forward — the ONE writer of the store.
+
+    The row it writes is extracted from the model this same invocation rendered,
+    so the folded history says what the card said rather than what a later
+    reading would have said. A tick that decides SKIP writes nothing and needs
+    no model: the day is not reporting this hour, and a row for it would be the
+    history growing an hour the day never broadcast.
+    """
+    module = _card_day_module()
+    args._card_kind = "status"
+    model, _caption, at = _card_common(args)
+    if isinstance(model, dict) and model.get("schema") == "serveros/card-error.v1":
+        emit(model, as_json=True)
+        return EXIT_FAULT
+    try:
+        store = _day_store(module, args)
+        result = store.advance(schedule=model.get("schedule") or {}, at=at,
+                               model=model)
+    except module.CardDayError as exc:
+        sys.stderr.write(f"serverosctl: {exc}\n")
+        return EXIT_FAULT
+    action, day = result["decision"], result["day"]
+    payload = {"schema": module.SCHEMA, "at": at, "store": str(store.path),
+               "decision": action, "wrote": result["wrote"],
+               "row": result.get("row"), "day": day}
+    lines = [f"决定        {action['action']}/{action['reason']}",
+             f"落盘        {'是' if result['wrote'] else '否（这一拍不动当天的卡）'}",
+             f"当天身份    {action['day_ref'] or '（不可用）'}",
+             f"时点        {action['tick']}/{action['ticks_per_workday']}",
+             f"当天卡      {day['says']}",
+             "",
+             action["says"],
+             ""]
+    if result.get("row"):
+        lines.append(f"行          {module.row_says(result['row'])}")
+    lines.append("本命令只写当天卡这一份文档，不渲染、不发送。")
+    emit(payload, as_json=getattr(args, "json", False), lines=lines)
     return EXIT_OK
 
 
@@ -10449,6 +10551,13 @@ def build_parser() -> argparse.ArgumentParser:
              "schedule line reads calendar=UNKNOWN and this card claims no "
              "routine broadcast window — a node that has not imported a "
              "calendar does not get to assume Monday to Friday")
+    card_sub.choices["status"].add_argument(
+        "--day-store", default="", metavar="PATH",
+        help="today's card and the hours it folded "
+             "(default ~/.serveros/cards/day.json, the same document "
+             "`card day-advance` writes). Absent means the card prints no day "
+             "line at all; present and unreadable becomes a named gap, because "
+             "the alternative to a fault is not silence")
     _add_card("alert", cmd_card_alert,
               "at most three events, each with its what/impact/certainty/"
               "action/evidence fields, and a count of what did not fit",
@@ -10494,6 +10603,57 @@ def build_parser() -> argparse.ArgumentParser:
     card_del.add_argument("--limit", type=int, default=10,
                           help="how many recent entries to print")
     card_del.set_defaults(func=cmd_card_deliveries)
+
+    # §11. One card per workday, and the two halves of that: `card day` answers
+    # what this instant does to today's card and writes nothing, `card
+    # day-advance` is the ONE writer. The split is the same one §3 states for the
+    # delivery ledger — a reader that could also write is a reader whose reading
+    # is a decision nobody recorded.
+    card_day = card_sub.add_parser(
+        "day", help="§11 · whether today is a workday, whether today's card "
+                    "exists, and what this tick does to it: CREATE at the first "
+                    "allowed tick, PATCH at the ones after, SKIP otherwise. "
+                    "Reads and writes nothing",
+        **_COMMON)
+    card_day.add_argument(
+        "--business-calendar", default="", metavar="PATH",
+        help="the business-calendar declaration the day identity comes from "
+             "(default ~/.serveros/business-calendar.yaml). Without one there is "
+             "no day to file a card under, and this answers "
+             "SKIP/CALENDAR_UNKNOWN")
+    card_day.add_argument(
+        "--day-store", default="", metavar="PATH",
+        help="today's card and the hours it folded "
+             "(default ~/.serveros/cards/day.json)")
+    card_day.add_argument("--at", default="", help="override the instant")
+    card_day.set_defaults(func=cmd_card_day)
+
+    card_adv = card_sub.add_parser(
+        "day-advance", help="§11 · take today's card one tick forward and fold "
+                            "the hour it replaces. The ONE writer of the day "
+                            "store; sends nothing",
+        **_COMMON)
+    card_adv.add_argument(
+        "--business-calendar", default="", metavar="PATH",
+        help="as on `card status` and `card day`")
+    card_adv.add_argument(
+        "--day-store", default="", metavar="PATH",
+        help="the document this command writes "
+             "(default ~/.serveros/cards/day.json)")
+    card_adv.add_argument(
+        "--gateway-binding", default="", metavar="PATH",
+        help="the service-binding document the rendered hour is built with, as "
+             "on `card status`: the row records what the card said, so it is "
+             "the same rendering that is folded")
+    card_adv.add_argument(
+        "--device-ref", default="", metavar="REF",
+        help="which device's binding to read, e.g. device:tokyo-shared-dev-01")
+    card_adv.add_argument(
+        "--sample", action="store_true",
+        help="render the hour as 示例. Every layout fixture uses it; a store "
+             "advanced with it holds a sample row, which is what the flag says")
+    card_adv.add_argument("--at", default="", help="override the instant")
+    card_adv.set_defaults(func=cmd_card_day_advance)
 
     registration = sub.add_parser(
         "registration", help="the loop from 'something is running' to a "
