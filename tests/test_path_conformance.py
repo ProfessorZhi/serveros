@@ -50,8 +50,46 @@ paths_mod = _load("serveros_runtime_paths", "paths.py")
 conformance = _load("serveros_runtime_conformance", "conformance.py")
 
 
-def node_contract(files: dict) -> dict:
-    return {"schema": "serveros/node-root.v1", "files": files}
+def _spec(names) -> dict:
+    """A contract section that declares names and says nothing else about them.
+
+    The specs are empty on purpose: this file tests the VOCABULARY, and a spec
+    with `absent_means` in it would make the `DECLARED_ENTRY_ABSENT` findings in
+    these worlds depend on a field that has nothing to do with the comparison
+    under test.
+    """
+    return {name: {} for name in names}
+
+
+# Derived from `paths.py` rather than written out, so a fixture that is supposed
+# to be "the transcription matching its authority" cannot disagree with the
+# transcription it is standing in for. A hardcoded copy here would pass while
+# `paths.py` moved, which is the failure these tests are about.
+DEFAULT_FILES = _spec(paths_mod.HOME_DOT_SERVEROS_FILES)
+DEFAULT_DECLARATIONS = _spec(paths_mod.HOME_DOT_SERVEROS_DECLARATIONS)
+
+
+#: `declarations` has three distinct inputs and the difference is the point:
+#: `None` means "the set `paths.py` transcribes", `OMITTED` means "the key is not
+#: in the document at all", and a dict is that dict. A two-argument helper that
+#: could not express the middle one would make "the contract does not carry this
+#: key" untestable.
+OMITTED = object()
+
+
+def node_contract(files: dict, declarations=DEFAULT_DECLARATIONS) -> dict:
+    """A synthetic `node-root-contract.yaml`.
+
+    `declarations` defaults to the full set `paths.py` transcribes, because
+    `declaration_conflicts` compares the union of both keys: a fixture that
+    omitted the key would be a contract declaring two fewer names than the
+    allow-list, and every test below would then pass or fail for a reason none
+    of them is about. A test that means to disagree passes `declarations=`.
+    """
+    document = {"schema": "serveros/node-root.v1", "files": files}
+    if declarations is not OMITTED:
+        document["declarations"] = declarations
+    return document
 
 
 @pytest.fixture
@@ -64,7 +102,8 @@ def world(tmp_path):
     """
 
     def build(*, data=(), workspace=(), state=(), artifacts=(), home=(),
-              runtime_state=(), node_files=None):
+              runtime_state=(), node_files=None,
+              node_declarations=DEFAULT_DECLARATIONS):
         root = tmp_path / "node"
         data_root = root / "data"
         workspace_root = data_root / "workspace"
@@ -79,8 +118,8 @@ def world(tmp_path):
 
         repo = tmp_path / "repo"
         (repo / "fleet").mkdir(parents=True, exist_ok=True)
-        contract = node_contract(node_files if node_files is not None
-                                 else {"node.yaml": {}, "targets.yaml": {}, "controller.yaml": {}})
+        contract = node_contract(node_files if node_files is not None else DEFAULT_FILES,
+                                 node_declarations)
         (repo / conformance.NODE_ROOT_CONTRACT).write_text(
             yaml.safe_dump(contract, sort_keys=False))
 
@@ -190,8 +229,52 @@ def test_a_transcription_that_disagrees_with_its_authority_is_high_drift(world):
 
 
 def test_a_matching_transcription_is_not_reported(world):
-    report = world(node_files={"node.yaml": {}, "targets.yaml": {}, "controller.yaml": {}})
+    report = world(node_files=DEFAULT_FILES)
     assert of(report, "DECLARATION_CONFLICT") == []
+
+
+def test_the_declarations_half_is_compared_too(world):
+    """The half that had no comparison until the calendar needed one.
+
+    `DECLARATION_CONFLICT` compared `::files` against the allow-list and
+    nothing else, so `paths.py` could admit a name no key of the contract
+    declared — measured: `admit()` refused
+    `~/.serveros/business-calendar.yaml` while `serverosctl card day` printed
+    that path as the place to put the year's notice. A check that compares one
+    of two keys is the intersection problem one layer up: the contract and the
+    transcription agree on three names and the disagreement sits in the fourth.
+
+    Both directions are asserted, because the two failures are repaired
+    differently: a transcription that admits an undeclared name is fixed by
+    declaring it or by removing it, and a contract that declares a name the
+    transcription does not admit is fixed by adding it to `paths.py` — until
+    then the product refuses a path its own authority says is legal.
+    """
+    # The contract declares one name fewer than `paths.py` admits.
+    report = world(node_declarations=_spec(
+        list(paths_mod.HOME_DOT_SERVEROS_DECLARATIONS)[:-1]))
+    found = of(report, "DECLARATION_CONFLICT")
+    assert len(found) == 1
+    assert found[0]["severity"] == "HIGH"
+    assert paths_mod.HOME_DOT_SERVEROS_DECLARATIONS[-1] in found[0]["observed"]
+
+    # And the key removed altogether is the same drift, not an unreadable
+    # contract: `paths.py` is still admitting two names nothing declared.
+    # Asserted as its own case because "the contract says this root carries no
+    # declarations" and "the contract does not mention declarations" are two
+    # different documents that happen to compare the same way here.
+    absent = world(node_declarations=OMITTED)
+    assert len(of(absent, "DECLARATION_CONFLICT")) == 1
+    empty = world(node_declarations={})
+    assert len(of(empty, "DECLARATION_CONFLICT")) == 1
+
+    # A name in the contract that `paths.py` does not admit is the other
+    # direction, and it is the one that makes the product refuse a legal write.
+    invented = world(node_declarations=_spec(
+        (*paths_mod.HOME_DOT_SERVEROS_DECLARATIONS, "observations.yaml")))
+    found = of(invented, "DECLARATION_CONFLICT")
+    assert len(found) == 1
+    assert "observations.yaml" in found[0]["observed"]
 
 
 def test_an_unreadable_authority_is_not_an_authority_that_forbids_nothing(world, tmp_path):
@@ -302,7 +385,8 @@ def test_the_vocabulary_comes_from_the_contract_not_a_copy(world):
 def test_every_vocabulary_is_addressable_by_name():
     """`VOCABULARIES` is what the check indexes. A tuple reachable by no name is
     a vocabulary nothing can be asked to conform to."""
-    for area in ("data", "workspace", "state", "runtime", "artifacts", "home"):
+    for area in ("data", "workspace", "state", "runtime", "artifacts", "home",
+                 "home-files", "home-declarations"):
         assert paths_mod.Paths().vocabulary(area)
     with pytest.raises(paths_mod.PathRefused):
         paths_mod.Paths().vocabulary("not-an-area")
@@ -340,6 +424,13 @@ def test_the_node_root_holds_bindings_only(world, tmp_path):
     answer. The file was retired rather than exempted, so the report is quiet
     for the right reason — and if one reappears, reporting it is correct.
     Asserting the *exemption* here is what would let the bad ruling back in.
+
+    The two host-level declarations are admitted, and the boundary between them
+    and `README.md` is asserted rather than asserted-in-prose: the retired file
+    restated this root's OWN contract, while a calendar states a fact cited
+    from outside and a service binding states a route this host has. The last
+    line keeps the two halves of the vocabulary from collapsing into one, which
+    would make `::files` and `::declarations` uncheckable separately.
     """
     report = world(home=("README.md",))
     assert of(report, "UNDECLARED_ENTRY", "README.md")
@@ -356,8 +447,13 @@ def test_the_node_root_holds_bindings_only(world, tmp_path):
     for name in ("README.md", *paths_mod.HOME_DOT_SERVEROS_FORBIDDEN):
         with pytest.raises(paths_mod.PathRefused):
             paths.admit(str(home / ".serveros" / name))
-    # Positive control: all three of the list, not the intersection. A test that
+    # Positive control: the whole list, not the intersection. A test that
     # asserted one shared name is what hid the A1 defect in architecture_check.py
     # and the disagreeing allow-list here.
     for name in paths_mod.HOME_DOT_SERVEROS_ALLOWED:
         paths.admit(str(home / ".serveros" / name))
+    assert not (set(paths_mod.HOME_DOT_SERVEROS_FILES)
+                & set(paths_mod.HOME_DOT_SERVEROS_DECLARATIONS))
+    assert set(paths_mod.HOME_DOT_SERVEROS_ALLOWED) == (
+        set(paths_mod.HOME_DOT_SERVEROS_FILES)
+        | set(paths_mod.HOME_DOT_SERVEROS_DECLARATIONS))

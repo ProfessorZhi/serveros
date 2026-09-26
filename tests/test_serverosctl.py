@@ -30,6 +30,7 @@ def _load(name: str, filename: str):
 
 
 paths_mod = _load("serveros_runtime_paths", "paths.py")
+conformance_mod = _load("serveros_runtime_conformance", "conformance.py")
 cli_mod = _load("serveros_runtime_cli", "cli.py")
 # Loaded for the card-clock test, which has to ask whether the value the CLI
 # hands the card model is one the model can parse.
@@ -252,10 +253,24 @@ def test_the_allowlist_covers_every_file_the_node_root_contract_names(paths, roo
     disagreement survives, so this asserts the whole set and both refusals
     around it: the names the authority declares are admitted, and the invented
     ones are not.
+
+    The set is read from the contract rather than written out here, because a
+    literal list is a third copy of the vocabulary and this file has already
+    been the place where two copies disagreed. It now covers both keys, so a
+    name added to either one is exercised by this test the day it is added —
+    which is the property the earlier version lacked for `::declarations`, the
+    key whose two names `admit()` refused while the CLI printed them as the
+    place to put a file.
     """
-    for declared in ("node.yaml", "targets.yaml", "controller.yaml"):
-        result = paths.admit(str(Path(roots["home"]) / ".serveros" / declared))
-        assert result["admitted"] is True, declared
+    declared = conformance_mod.node_root_contract(REPO)
+    assert declared, "the node-root contract was not readable, so nothing was compared"
+    assert "controller.yaml" in declared and "business-calendar.yaml" in declared, (
+        "the contract is read through both keys; a mapping holding one of them "
+        "means the other half of the vocabulary is untested here"
+    )
+    for name in declared:
+        result = paths.admit(str(Path(roots["home"]) / ".serveros" / name))
+        assert result["admitted"] is True, name
 
     # The phantom names are refused rather than quietly allowed to accumulate:
     # a list widened to accept everything stops being a closed vocabulary.

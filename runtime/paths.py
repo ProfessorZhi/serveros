@@ -345,7 +345,11 @@ FORBIDDEN_SUFFIXES = ("legacy", "legacy-artifacts", "old-artifacts",
 # documentation the disposition "repo/docs or artifacts", so a document beside
 # these files is a second statement of what `node-root-contract.yaml` already
 # states — inside the one root whose design principle is that a thing has one
-# answer.
+# answer. `HOME_DOT_SERVEROS_DECLARATIONS` below is not a hole in that: the
+# retired `README.md` restated the contract's OWN facts, and a declaration here
+# states a fact that comes from outside the root and is cited (`source:` in the
+# calendar) or decided (the fallback's `declared_by:`) — neither of which has a
+# repository copy that could be the same answer.
 #
 # §38 first read the standing `UNDECLARED_ENTRY / MEDIUM / OPEN` finding as a
 # false alarm and classified the file as an entry document instead. That was
@@ -355,7 +359,40 @@ FORBIDDEN_SUFFIXES = ("legacy", "legacy-artifacts", "old-artifacts",
 # the right reason rather than by exemption. `admit()` refuses the name in
 # either case — it reads this tuple directly, never the exception table — so the
 # write side needed no change to make the read side honest.
-HOME_DOT_SERVEROS_ALLOWED = ("node.yaml", "targets.yaml", "controller.yaml")
+# The names `fleet/node.py` opens. `conformance.declaration_conflicts` asserts
+# this tuple equals `files:` in `fleet/node-root-contract.yaml`, one list to one
+# key, so a name here is a claim that node.py reads that file.
+HOME_DOT_SERVEROS_FILES = ("node.yaml", "targets.yaml", "controller.yaml")
+# Host-level declarations this root CARRIES that `node.py` does not open. Two,
+# and both were already being read from this directory by modules that ship in
+# this tree before either had a name here: `runtime/business_calendar.py` reads
+# `business-calendar.yaml` (the calendar this host's broadcasts are scheduled
+# by) and `runtime/card_source.py` reads `service-bindings.yaml` (where this
+# host's card deliveries point).
+#
+# They were refused. `admit()` consulted one tuple, `serverosctl card day
+# --business-calendar` printed `default ~/.serveros/business-calendar.yaml` as
+# the place to put the year's notice, and this node's own standing `path.admit`
+# answered that exact path with `PathRefused` — measured on the running daemon,
+# not inferred. A gap whose printed remedy is illegal is worse than a gap: the
+# operator's next move is to write it anyway, and then the root holds a file the
+# product says cannot exist.
+#
+# The fix is a second list rather than a wider first one, because the two make
+# different claims. `files:` claims "node.py opens this"; this one claims "the
+# module named by `declarations:` in the contract opens this, on this host". A
+# single merged list would have to be a claim about node.py that is false — and
+# §41's own refusal text, "a durable document belongs in the repository, not
+# beside a host binding", is about MACHINE STATE drifting in: neither of these
+# two is state, neither is derivable from nothing (one carries the notice it was
+# transcribed from and the person who declared the fallback, the other is a
+# person's decision about this host), and both are per-host by construction,
+# which a repository copy cannot express.
+HOME_DOT_SERVEROS_DECLARATIONS = ("business-calendar.yaml", "service-bindings.yaml")
+# What `admit()` accepts. The union, so that a write is refused by exactly the
+# rule it breaks and a caller reading the surface report sees the whole closed
+# set rather than the half of it that node.py happens to open.
+HOME_DOT_SERVEROS_ALLOWED = HOME_DOT_SERVEROS_FILES + HOME_DOT_SERVEROS_DECLARATIONS
 # Names that are known landing spots for a root drifting into a second state
 # root, and the reason this tuple is read rather than decorative: it existed
 # from an earlier round with no consumer anywhere, so `admit()` refused these
@@ -369,6 +406,13 @@ HOME_DOT_SERVEROS_FORBIDDEN = ("reports", "observations", "registry", "proposals
 # vocabularies of `~/.serveros/` and of `state/serveros/runtime/` — and they are
 # here because both are closed sets that get checked the same way. This map sits
 # below all six on purpose: a map that names them has to be defined after them.
+# The `home-*` pair is here because `~/.serveros/` is one root with two keys in
+# its contract, and `declaration_conflicts` checks one key against one tuple:
+# `home` is what `admit()` accepts and what the surface report shows, while
+# `home-files` and `home-declarations` are the two halves that each have to
+# answer to their own key. Collapsing them would re-create the defect this
+# round is about — a check that compares a merged list to one of its parts
+# reports a conflict for a contract that is exactly right.
 VOCABULARIES = {
     "data": DATA_ROOT_TOP_LEVEL,
     "workspace": WORKSPACE_TOP_LEVEL,
@@ -376,6 +420,8 @@ VOCABULARIES = {
     "runtime": STATE_SERVEROS_RUNTIME,
     "artifacts": ARTIFACT_NAMESPACES,
     "home": HOME_DOT_SERVEROS_ALLOWED,
+    "home-files": HOME_DOT_SERVEROS_FILES,
+    "home-declarations": HOME_DOT_SERVEROS_DECLARATIONS,
 }
 
 
@@ -1028,11 +1074,13 @@ class Paths:
                         )
                     raise PathRefused(
                         f"{path!r}: `~/.serveros` holds identity and binding "
-                        f"only (§41). Allowed: {list(HOME_DOT_SERVEROS_ALLOWED)}. "
-                        f"Reports, proposals, large observations and machine "
-                        f"state belong under DATA_ROOT/state/serveros. If this "
-                        f"is drifting into a second state root, that is the "
-                        f"signal to move it rather than to widen this list."
+                        f"(§41), and the host-level declarations "
+                        f"`fleet/node-root-contract.yaml` names. Allowed: "
+                        f"{list(HOME_DOT_SERVEROS_ALLOWED)}. Reports, proposals, "
+                        f"large observations and machine state belong under "
+                        f"DATA_ROOT/state/serveros. If this is drifting into a "
+                        f"second state root, that is the signal to move it "
+                        f"rather than to widen this list."
                     )
                 return
             # HOME's shape is not ServerOS's to extend. A write whose first
