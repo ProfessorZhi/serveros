@@ -116,7 +116,7 @@ source revision 一列给的是**指纹成立的那次 revision**，也就是 pa
 | A4 | 运行环境/Fleet | runtime-management、test-management | `skills/runtime-management`、`skills/test-management` | Skill ×2 | 早于本轮 | `serverosd`、`serveros-node` MCP | 原生 | srv0003.20260915a | DONE | DONE | ENABLED | — |
 | A5 | Fleet 交接 | fleet-coordination | `skills/fleet-coordination` | Skill | 早于本轮 | 已授权 transport | **UNBOUND** | srv0003.20260915a | DONE | DONE | PARTIAL | 单设备路径，跨设备动词 absent |
 | A6 | 委派 | cc-quay-delegation | `skills/cc-quay-delegation` | Skill | 早于本轮 | 原生 Quay 0.11.0 | 原生（quay@quay 已装） | srv0003.20260915a | DONE | DONE | ENABLED | — |
-| A7 | 自动化测试 | automated-testing | `skills/automated-testing` + `plugin/profiles/testing.yaml` | Skill + Plugin composition `serveros-testing` | ce6e103（Skill）/ f5e563b（profile） | 目标 CC 以正规 install 加载 | 原生 | `1.0.0+srvtest0001.20260922b` | DONE | DONE | **ENABLED** | 见 §3.3 |
+| A7 | 自动化测试 | automated-testing | `skills/automated-testing` + `plugin/profiles/testing.yaml` | Skill + Plugin composition `serveros-testing` | ce6e103（Skill）/ f5e563b（profile） | 目标 CC 以正规 install 加载 | 原生 | `1.0.0+srvtest0001.20260927a` | DONE | DONE | **ENABLED** | 见 §3.3、§9.50 |
 | A8 | 构建发布 | build-release | `skills/build-release` | Skill | **ce6e103** | 项目 builder/CI | 原生 | 随 `srv0003.20260922a` | DONE | DONE | ENABLED | 已加进 `pack:litellm-development`（§7 第 5 条） |
 | A9 | 生产观察 | production-observation | `skills/production-observation` | Skill | **ce6e103** | 既有 API/CLI/跳板 | **UNBOUND** | 无 | DONE | NOT_MEASURED | NOT_ENABLED | 未装进任何 composition |
 | A10 | 生产变更 | production-change | `skills/production-change` | Skill | **ce6e103** | 调用 A9 + 真实 Runbook | **UNBOUND** | 无 | DONE | NOT_MEASURED | NOT_ENABLED | 同 A8；且 READY≠切流授权 |
@@ -178,6 +178,12 @@ details    serveros-testing  Skills (2)  automated-testing, test-management  ~21
 `installed_plugins.json`**。已装路径
 `~/.claude/plugins/cache/serveros-testing/serveros-testing/1.0.0-srvtest0001.20260922b`，
 `installedAt 2026-09-22T06:53:45Z`。
+
+> 上面这一段记的是**那一次**安装，它对那一刻成立。已装路径此后随 cachebuster 移到了
+> `1.0.0-srvtest0001.20260927a`（`lastUpdated 2026-09-26T16:33:29Z`），
+> 因为 `22b` 那份载荷把 `skills/test-management/SKILL.md` 里的测试环境根写成了一台机器的
+> 字面量。载体级的实测见 §9.50；`22b` 的缓存仍在盘上，规则对它的 `skills/` 量到 **1** 条，
+对 `27a` 量到 **0** 条。
 
 §7 里那两条旧决策（「要不要给 `serveros-testing` 注册第二条 plugin 记录」「要不要在这台
 共享机上装它」）因此都已关闭：注册表里它是**独立的第二条 plugin 记录**（§3.7），安装走的
@@ -803,7 +809,7 @@ MarketOps、没有两处 LiteLLM、没有 `records/` 脏资产。它正是内存
 `records/information/understanding/{people,projects,topics}/*.md` | **两侧都已接线**：读 `serverosctl work understanding`（`intake/understanding_delta.py`）、写 `serverosctl work understanding-patch`（`intake/understanding_patch.py`） | — | **两半都补上了**：读的一侧见 §9.7（14 份卡逐份对账到源，`BEHIND 3 · UNMEASURABLE 7 · UNTRACEABLE 4`）；写的一侧见 §9.9（15 条提议全 `AWAITING`，`--write`+`--verify` ok）。设计要的「最小 incremental writer」不再缺口。**仍未 LIVE**：没有任何消费者读这份 patch |
 | P3 | Minutes / MeetingBundle | 无 Python 类。`space/meeting-policy.schema.yaml:30` 声明结构；内核 `space/meeting_relevance.py:69`；**生产者 `space/meeting_bundle.py`（§9.15）** + 契约 `space/meeting-bundle-contract.yaml` | ~~`python3 space/meeting_relevance.py --request`（**未接 serverosctl**）~~ **已接线**：`serverosctl space meeting`（`--request` 与 `--sidecars` 两条入口） | — | 内核 working，**接线已补**（§9.5）；**生产者也补上了**（§9.15）：会议自己声明的 sidecar 现在能组装成内核收得下的 bundle，`COMPLETE` 才把问题递给内核，`INCOMPLETE`/`MIXED_SCOPE` 只给读数不给问题。**仍未 LIVE**：本机没有任何真实会议 manifest 可测，四个探针声明是合成的（`RUN-20260922-raw-coverage/meeting-bundle/*.json`） |
 | P3 | 记忆账本/投影/scope | `memory/{record,projection,scope,handoff}.py` | `serverosctl memory {audit,project,status,subject}` (`cli.py:6479`) | — | working；`docs/memory-fabric.md` 逐条点名这些模块 |
-| P12 | **活着的**技能面落后于 canonical | canonical：本仓 `skills/serveros/SKILL.md`（157 行，`21281cfc3c0b`）。装到机上的：插件缓存 `~/.claude/plugins/cache/hwz-server-os-linux-work/hwz-server-os-linux-work/3.1.0-srv0003.20260923d/skills/serveros/SKILL.md`（157 行，`fbfbefbc5870`）；另有 `runtime-assets/hwz-server-os/current/skills/serveros/SKILL.md` 同样落后 | — | — | **P12 待做**（不属 HUMAN_EXECUTED：装 vince 用户级 runtime/插件在本轮授权内）。**实测**：两份**逐字节只差第 143 行**，而差的那一行是**北京搬迁留下的错话** —— 活的那份还在说「`/` 是系统盘，`/opt/applications` 是数据盘」，而本机 `ls -ld /opt/applications` → **No such file or directory**；canonical 已改成与节点无关的「数据盘（机器策略里的 `DATA_ROOT`）」。同一处陈旧还落在 `skills/serveros/scripts/architecture_check.py`：两份只差一段**注释折行**，canonical 那份带着 `# node-path-ok: 考古记录` 标记而装的那份没有。**判据不是「两份文件不一样」，而是「Agent 现在照着读的那句话是不是真的」—— 它现在不是。**处置走 build→promote→restart（不手改派生安装：手改会在下次 promote 时被盖掉并再次漂移） |
+| P12 | **活着的**技能面落后于 canonical | canonical：本仓 `skills/serveros/SKILL.md`（157 行，`21281cfc3c0b`）。装到机上的：插件缓存 `~/.claude/plugins/cache/hwz-server-os-linux-work/hwz-server-os-linux-work/3.1.0-srv0003.20260923d/skills/serveros/SKILL.md`（157 行，`fbfbefbc5870`）；另有 `runtime-assets/hwz-server-os/current/skills/serveros/SKILL.md` 同样落后 | — | — | **P12 待做**（不属 HUMAN_EXECUTED：装 vince 用户级 runtime/插件在本轮授权内）。**实测**：两份**逐字节只差第 143 行**，而差的那一行是**北京搬迁留下的错话** —— 活的那份还在说「`/` 是系统盘，`/opt/applications` 是数据盘」，而本机 `ls -ld /opt/applications` → **No such file or directory**；canonical 已改成与节点无关的「数据盘（机器策略里的 `DATA_ROOT`）」。同一处陈旧还落在 `skills/serveros/scripts/architecture_check.py`：两份只差一段**注释折行**，canonical 那份带着 `# node-path-ok: 考古记录` 标记而装的那份没有。**判据不是「两份文件不一样」，而是「Agent 现在照着读的那句话是不是真的」—— 它现在不是。**处置走 build→promote→restart（不手改派生安装：手改会在下次 promote 时被盖掉并再次漂移）。**2026-09-27 更新（§9.50）**：那条处置**已被执行，而且第一次是量出来的**。两个 composition 的 cachebuster 各自移到 `27a`（`50a86fa` / `512f886`），promote 与 install 都真的落了盘（`installed_plugins.json`：`…linux-work` `3.1.0+srv0003.20260927a` `lastUpdated 2026-09-26T16:11:47Z`；`serveros-testing` `1.0.0+srvtest0001.20260927a` `16:33:29Z`）。把本仓这条规则指向**已装载荷**的 `skills/`（不是指向仓库）：`27a` 两个各 **0** 条，被取代的 `23d` **13** 条、`22b` **1** 条，而两版 `skills/` 文件清单逐条相同（26 文件 / 5 条 Skill），所以这是同一套文件上的比较。**第一个落点关闭。** 第二个落点 `runtime-assets/hwz-server-os/current`（`3.1.0+srv0003.20260923c`）**仍逐字节只差第 143 行**，但它**没有消费者**：`enabledPlugins` 与 `extraKnownMarketplaces` 里都没有 `hwz-server-os`，四棵配置面 `command grep` 这棵树 **0 命中**，`ps` 无一条引用它，`skillUsage["hwz-server-os:serveros"]` 最后读于 **2026-09-20 01:30**。「那句错话躺在一个载体里」与「有 Agent 正在被这句话教」是两句不同的话：**前者成立，后者不成立**。这一格的处置因此从「待做」变成**一条 proposal**——重建这个基座 composition，或退役这个被取代的载体；理由与读数见 §9.50.4 |
 | P4 | 文档关系边 | `relations/project.py:61`（`serveros/relations.v1`），`relations/schema.yaml:29` | `python3 project.py --records ROOT --write relations/current.jsonl` | — | **partial**（比上一版进了一步）：8 个谓词里 3 个有生产者（`belongs_to`、`derived_from`、`attached_to`），其余 5 个 `declared_only`。本机实测 239 行 / 19 条报出，见 §9.8；另 5 个谓词逐条查过，**本机没有载体**，不是差功夫 |
 | P4 | Feishu 空间适配 / 共享 publisher | `skills/feishu-space-management/`：**只有 SKILL.md 文本，本仓没有代码**。`skills/document-stewardship/`：本仓同样只有文本，但**外仓有代码**——`~/.claude/skills/document-stewardship/scripts/maintain.py`，且 `plugin/profiles/linux-work.yaml:119-123` 声明它 `available` | — | — | partial。**上一版这一格把两者合成了一句「只有 SKILL.md 文本，没有代码」，那是错的**：`document-stewardship` 在外仓有实现，且 ability-management 注册表（HEAD `8d98aff`）**不持有**它——与那 8 条跨仓红同族。**§9.23 再纠一次**：那个实现里**没有 publisher 循环**。文件只有 `refresh` 与 `audit` 两个动词，它自己的 docstring 写着「**它从不写文档正文，也从不写 profile**」。原来那句「取 revision N → 定位 → 校验 → 候选 patch → …」描述的是**契约要求**，被读成了**已有实现**——恰好是这一格本来要防的那种误读。真正的 publisher 是本轮新写的 `intake/document_publish.py` + `runtime/document_transport.py` |
 | P5 | 员工 KB 生产者 | `src/litellm-support/scripts/build_agent_kb.py`，输出 `dist/employee-kb/`（`dist/` 被 gitignore） | `python3 scripts/build_agent_kb.py` | — | working，但**在 ServerOS 之外** |
@@ -7298,6 +7304,155 @@ PathRefused: '/data/home/vince/.serveros/business-calendar.yaml':
 - 仍未关闭（与前几格相同）：P7 唤醒半的两件前置（§9.38.9）、`WAIT_KINDS` 仍只有
   `child`/`window`、`NodeControlTransport.send` 不包裹 connector 异常、`drift_sync.py` 没有调
   度器、约 40 处未守护的考古站点、`supersede_checkpoint` 的退役评估。
+
+## §9.50 P12 的载体半边：那句错话从「装在机上」量到 0
+
+§9 那张表里的 `P12` 行量的是同一个缺陷的两个落点，处置写的是
+`build→promote→restart（不手改派生安装）`。这一格记的是：**那条处置已经被执行，
+而且执行的结果第一次是量出来的，不是推出来的**——在此之前只有「canonical 改对了」
+这个仓库级的读数，没有载体级的读数。
+
+#### 9.50.1 现场
+
+| 事实 | 值 | 怎么量的 |
+| --- | --- | --- |
+| worktree HEAD | `512f886` | `git rev-parse HEAD` |
+| `origin/main` | `512f886` | `git rev-parse origin/main`；工作树 0 porcelain（**02:00 那一刻**，见 §9.50.6） |
+| 启用的 ServerOS composition | `hwz-server-os-linux-work@…` 与 `serveros-testing@…` 两条 | `settings.json` 的 `enabledPlugins` |
+| 已装（linux-work） | `3.1.0+srv0003.20260927a`，`lastUpdated 2026-09-26T16:11:47Z`（北京 09-27 00:11） | `installed_plugins.json` |
+| 已装（testing） | `1.0.0+srvtest0001.20260927a`，`lastUpdated 2026-09-26T16:33:29Z`（北京 09-27 00:33） | 同上 |
+| promote 落点 | `serveros-linux-work/current -> revisions/serveros-completion-20260925@50a86fa`；`serveros-testing/current -> …@512f886` | 读两条软链 |
+| 守护进程 | PID 3179306，跑的是 `serveros-linux-work/current/bin/serverosd`，每 tick `4 observed, 0 drift` | `systemctl --user status serverosd.service` |
+
+`27a` 这两个字符串单独看只是一次改名，所以「promote 与 install 真的发生了」要单独说：
+改名把 `claude plugin update` 的版本比较从「未变即已是最新」变成一次真更新，而
+**那一次更新确实落了盘**（上表 `lastUpdated` 两条）。
+
+#### 9.50.2 量法：把仓内自己的规则指向**装好的载荷**，而不是指向仓库
+
+`tests/test_no_node_absolute_paths.py` 的 docstring 把范围写死成 `skills/`，并逐条说明
+`runtime/*.py`、`context/`、`abilities/*.yaml` 为什么在范围外——它们带着考古，而考古是代码的
+论据，重写它就是删证据。**那份范围说的是仓库。** 而 P12 说的缺陷发生在**交付物**上：一个会话
+读到的不是本仓的 `skills/`，是插件缓存里那份装好的 `skills/`；`serveros-linux-work` 的四条
+Skill 还是从 `ability-management` 在 `--ability-rev` 上取来的。
+
+于是量具这样接：**同一份 `NODE_PATH` 正则、同一份 `SCANNED_SUFFIXES`、同一份 `node-path-ok`
+豁免**（`from test_no_node_absolute_paths import …`），只把根换成两个已装载荷的 `skills/`。
+没有写第二条正则——两份规则会漂移，而漂移的那份没人读。
+
+#### 9.50.3 实测
+
+| 载荷 | 装在机上？ | 读到的文件 | 违规 |
+| --- | --- | --- | --- |
+| `hwz-server-os-linux-work/3.1.0-srv0003.20260927a` | **是，ENABLED** | 26 | **0** |
+| `serveros-testing/1.0.0-srvtest0001.20260927a` | **是，ENABLED** | 2 | **0** |
+| `hwz-server-os-linux-work/3.1.0-srv0003.20260923d`（上一版） | 否，已被取代 | 26 | **13** |
+| `serveros-testing/1.0.0-srvtest0001.20260922b`（上一版） | 否，已被取代 | 2 | **1** |
+
+**两版的 `skills/` 文件清单逐条相同**（26 个文件、5 条 Skill：`ability-management` /
+`runtime-management` / `serveros` / `test-management` / `workspace-management`；
+`find | sort` 之后连路径清单的 md5 都相同），所以 `13 → 0` / `1 → 0` 是**同一套文件**上的
+比较，不是两次不同的扫描。
+
+分母 26 要说出来。`test_the_scan_actually_reaches_files` 这条控制正是为「空的扫描」写的——
+那条规则曾经死过一次，它 walk 了一个不存在的目录并报干净。26 是**这条 composition 技能面的
+全部**，不是一次被截断的遍历。
+
+被取代的 `23d` 那 13 条（修前）：
+
+```text
+ability-management/control_plane.py:3499                      /home/hwz
+serveros/scripts/architecture_check.py:1763                   /opt/applications/data
+test-management/SKILL.md:17                                   /opt/applications/data
+workspace-management/SKILL.md:25,26,27,134,228,229,296,329    /home/hwz, /opt/applications/data
+workspace-management/scripts/map_check.py:32,383              /data/scratch/vince
+```
+
+三件事值得单独说：
+
+1. **`map_check.py` 那两条指向 `/data/scratch/vince`，是本机自己的路径。** 规则禁的是「一个
+   节点的绝对路径」，不区分它是不是本节点——一条把本机 scratch 写死的说明同样只对一台机器
+   成立。修后那两行写的是 `` ## §3 `<SCRATCH_ROOT 的实测路径>`（SCRATCH_ROOT） ``。
+2. **`architecture_check.py:1763` 在 `23d` 里没有 `node-path-ok`、在 canonical 里有**
+   （§9 表 `P12` 行已记过）。`27a` 里它带着标记，所以它计 0 是**被豁免**，不是被删掉——
+   考古那句话还在，只是它现在自己声明了它是考古。
+3. `workspace-management/SKILL.md` 一个文件占 8 条：`SYSTEM_ROOT = /home/hwz` 与
+   `DATA_ROOT = /opt/applications/data/home-hwz` 被当成读者所在节点的事实写下来。修后是
+   `本机 host profile 的 node.roots.identity_home   # 不在此写死任何一台机器的路径`——
+   句子从「陈述」变成「读者自己那台机器填进去的符号」，这才是这类文字该有的形状。
+
+#### 9.50.4 没修的那一半：`runtime-assets/hwz-server-os/current`
+
+§9 表 `P12` 行点名的第二个落点**仍然落后**，实测与它写的一字不差：
+
+```text
+$ diff runtime-assets/hwz-server-os/current/skills/serveros/SKILL.md <canonical>/skills/serveros/SKILL.md
+143c143
+<   不 `docker volume prune`。`/` 是系统盘，`/opt/applications` 是数据盘，两者分开报。
+---
+>   不 `docker volume prune`。系统盘（`/`）与数据盘（机器策略里的 `DATA_ROOT`）分开报，不合并成一个数。
+```
+
+那份载体的身份是 `hwz-server-os`、`3.1.0+srv0003.20260923c`、`kinds: [node-runtime, plugin]`；
+`runtime-assets/hwz-server-os/current` 是一个**实目录**（不是软链），日期停在 09-23 00:59。
+
+**但它现在没有消费者，这是量出来的，不是推断的：**
+
+| 查什么 | 结果 |
+| --- | --- |
+| `settings.json` 的 `enabledPlugins` | 没有 `hwz-server-os`（只有 `…linux-work` 与 `serveros-testing`） |
+| `settings.json` 的 `extraKnownMarketplaces` | 没有 `hwz-server-os` |
+| 谁引用 `runtime-assets/hwz-server-os/current` 这棵**不带子目录**的树 | `.claude/settings.json`、`.claude/plugins/`、`.codex/config.toml`、`~/.serveros/` 四处 `command grep` → **0 命中** |
+| 活进程 | `ps -eo pid,cmd` 里没有一条 cmdline 含这棵树 |
+| 最后一次被读 | `.claude.json` 的 `skillUsage["hwz-server-os:serveros"]`，`lastUsedAt 1789839012132` = 北京 **2026-09-20 01:30** |
+
+于是这里有一句必须分开说的话：**「那句错话还躺在一个载体里」与「有 Agent 正在被这句话教」
+是两句不同的话。** 前者成立，后者不成立——`hwz-server-os` 这个基座 composition 没有任何注册
+指向它，它的三代缓存（`3.1.0-srv0003.20260915a` / `23a` / `23c`）是孤儿，而 `skillUsage`
+说它已经七天没被读过。
+
+**处置因此是 proposal，不是本片的动作**：要么把这个基座 composition 重新走一次
+`build→promote`（它没有任何 marketplace 注册，重建要先决定注册到哪），要么把这个被取代的
+载体退役。**手改它的第 143 行不在选项里**——那正是 `P12` 行排除的「手改派生安装」，下次
+promote 会盖掉它并再次漂移。
+
+#### 9.50.5 这一片关闭了什么、没关闭什么
+
+- **关闭（P12 的载体半边）**：两个**已启用**的插件缓存各自那份 `skills/`，现在按本仓自己
+  的规则量到 **0**。这是这半条缺陷第一次有载体级的读数。
+- **没关闭**：`runtime-assets/hwz-server-os/current`（§9.50.4），它连同「重建还是退役」一起
+  作为一条 proposal 留在 §9 表 `P12` 行里。
+- **没关闭（与 §9.49.4 结尾同一份清单，本条一条未动）**：P7 唤醒半的两件前置（§9.38.9）、
+  `WAIT_KINDS` 仍只有 `child`/`window`、`NodeControlTransport.send` 不包裹 connector 异常、
+  `drift_sync.py` 没有调度器、约 40 处未守护的考古站点、`supersede_checkpoint` 的退役评估。
+- **没有新开平台、没有新开文件、没有动 `plugin/` 或任何 composition**：这一格的证据就是
+  命令与输出，量具是仓内已有的那一条规则换了个根。
+
+#### 9.50.6 落笔时的前提：这个工作树同时有第二个写入者
+
+上面每一个读数都在 **02:00 前后**取得，那一刻工作树是干净的（`git status --porcelain` 空、
+`HEAD = origin/main = 512f886`）。**量完之后、落笔之前，同一个工作树里出现了第二个写入者**：
+`git status --porcelain` 从 0 行变成 7 行，其中 6 行不是本片写的，mtime 落在
+**02:04–02:12**：
+
+```text
+02:04:52  scripts/build.py              （+65）
+02:07:16  runtime/daemon.py             （+201）
+02:11:15  scripts/runtime_truth.py      （+95）
+02:12:15  tests/test_runtime_truth.py   （+254）
+02:12:22  tests/test_serverosctl.py     （+81）
+02:12:30  runtime/cli.py                （+102）
+```
+
+本片因此**没有提交**，也有意不提交：一次 commit 要么把这些 WIP 卷进来（禁止），要么在别人
+正在写的分支上造一个只含台账的提交。**本片的证据也没有跑全量套件**——全量套件在这个前提下
+读不出可信的结论，它测的会是一棵正在被改的树，红绿都归不到任何一个 revision 上。上面
+9.50.3 那组读数不依赖套件：它们是一次只读的目录扫描，输入是**磁盘上已装好的载荷**，
+与这 7 个文件无关。
+
+这不是本片要处置的事，是**记录**：`serveros-completion-20260925` 此刻有两个写入者，而
+机器策略要求它在动手前先取新快照。本片只写 `docs/CC-EXECUTION-LEDGER.md` 一个文件，
+它没有被那 6 个文件里的任何一个碰过。
 
 ## 10. 后续每包更新哪几行
 
