@@ -5375,7 +5375,7 @@ def _day_store(module, args):
     a fault. Replacing the file would be the quiet alternative, and it is the
     wrong one — a fresh document gives the same workday a second NEW card.
     """
-    return module.DayStore(getattr(args, "day_store", "") or module.DEFAULT_PATH)
+    return module.DayStore(getattr(args, "day_store", "") or module.default_path())
 
 
 def cmd_card_day(args) -> int:
@@ -10900,8 +10900,9 @@ def build_parser() -> argparse.ArgumentParser:
     card_sub.choices["status"].add_argument(
         "--day-store", default="", metavar="PATH",
         help="today's card and the hours it folded "
-             "(default ~/.serveros/cards/day.json, the same document "
-             "`card day-advance` writes). Absent means the card prints no day "
+             "(default: the state root's `runtime/cards/day.json` — beside the "
+             "delivery ledger, and the same document `card day-advance` "
+             "writes). Absent means the card prints no day "
              "line at all; present and unreadable becomes a named gap, because "
              "the alternative to a fault is not silence")
     _add_card("alert", cmd_card_alert,
@@ -11013,7 +11014,8 @@ def build_parser() -> argparse.ArgumentParser:
     card_day.add_argument(
         "--day-store", default="", metavar="PATH",
         help="today's card and the hours it folded "
-             "(default ~/.serveros/cards/day.json)")
+             "(default: the state root's `runtime/cards/day.json`, beside the "
+             "delivery ledger)")
     card_day.add_argument("--at", default="", help="override the instant")
     card_day.set_defaults(func=cmd_card_day)
 
@@ -11028,7 +11030,8 @@ def build_parser() -> argparse.ArgumentParser:
     card_adv.add_argument(
         "--day-store", default="", metavar="PATH",
         help="the document this command writes "
-             "(default ~/.serveros/cards/day.json)")
+             "(default: the state root's `runtime/cards/day.json`, beside the "
+             "delivery ledger)")
     card_adv.add_argument(
         "--gateway-binding", default="", metavar="PATH",
         help="the service-binding document the rendered hour is built with, as "
@@ -11062,7 +11065,8 @@ def build_parser() -> argparse.ArgumentParser:
     card_ann.add_argument(
         "--day-store", default="", metavar="PATH",
         help="the document this command writes "
-             "(default ~/.serveros/cards/day.json)")
+             "(default: the state root's `runtime/cards/day.json`, beside the "
+             "delivery ledger)")
     card_ann.add_argument(
         "--at", default="",
         help="override the instant recorded as when that message was SENT. The "

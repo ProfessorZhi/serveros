@@ -257,6 +257,50 @@ namespaces:
           detector is what answers that — and a RESOLVED row is not evidence
           that a fault was fixed by anything this system did, because nothing
           this system does fixes anything.
+      cards:
+        class: authority
+        holds: >-
+          the two documents the card subsystem keeps — the delivery ledger
+          (which card version a transport was handed, and under what state) and
+          the day's own memory (today's card, which message carries it, and the
+          hours it has folded)
+        # The producer is the module that DEFINES the directory, and it is one
+        # module rather than two on purpose: `card_day.day_path` is documented
+        # as "`card_delivery.ledger_path` for the same reason and the same
+        # shape", so the day store follows this convention instead of restating
+        # it. A producer field naming both files would be a sentence, and a
+        # sentence naming two files resolves to neither — which is why
+        # `agent-control` above spells its two-writer situation out instead.
+        producer: runtime/card_delivery.py
+        required: false
+        absent_means: NO_CARDS_RECORDED
+        # Declared 2026-09-26, and it was a CONTRACT_GAP in the sense §38 gives
+        # the word: the vocabulary was behind reality and the fix is a ruling
+        # that widens it, not a move. `<state>/runtime/cards/` had been on disk
+        # since the card ledger shipped (the 21:00 broadcast wrote
+        # `delivery.json`), no declaration here named it, and the node's own
+        # `architecture check` could not see it: the namespace comparison reads
+        # top-level entries only, so an undeclared CHILD of a declared parent is
+        # outside what that check covers. It was found by wiring the card
+        # subsystem to this node's live sender, not by reading.
+        #
+        # `~/.serveros/` was the alternative home and is refused by that root's
+        # own contract rather than by preference: `fleet/node-root-contract.yaml`
+        # declares three files and says "large state does not live here", i.e.
+        # every entry there can be deleted and re-derived. A day's card cannot —
+        # losing the record of which message carries it is what makes the next
+        # tick create the second card V28 forbids — so it is not a legitimate
+        # member of a disposable root. Until 2026-09-26 the day store pointed
+        # there anyway, and the one feature's two documents sat in two roots.
+        not_a_claim: >
+          not a metrics store and not a history of what the node saw. The folded
+          rows are the card's own memory of what it already said, kept so that a
+          reader can tell «this hour says nothing new» from «this hour was never
+          reported»; they are not a series and cannot answer "what was the disk
+          usage at 3pm". Nothing here is a claim about the world — the ledger
+          records what a TRANSPORT did with a payload, and a DELIVERED row is
+          evidence that the service accepted a message, not that a person read
+          it.
   fleet:
     class: projection
     holds: fleet-level observed state as seen from this node

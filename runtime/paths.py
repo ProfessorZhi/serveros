@@ -169,6 +169,20 @@ STATE_SERVEROS_RUNTIME = (
     # daemon is its only producer and `state_dir` is the one root every daemon
     # write is resolved through.
     "alerts",
+    # §11/§29 add the card subsystem's two documents: the delivery ledger and
+    # the day's own memory. Declared here by the same rule as `alerts` above —
+    # the namespace is the contract and the directory is the state — and this
+    # one was written before it was declared: `<state>/runtime/cards/` held
+    # `delivery.json` from the day the ledger shipped, and no list named it.
+    # The declaration is the fix `fleet/state-root-contract.yaml` calls a ruling
+    # that widens the vocabulary rather than a move, because the documents are
+    # where they belong and only the list was behind.
+    #
+    # Both documents are here and not under `~/.serveros/`, which
+    # `fleet/node-root-contract.yaml` restricts to three files and to state that
+    # can be deleted and re-derived. The day store cannot: losing it re-creates
+    # the day's card, which is the one thing V28 forbids a second of.
+    "cards",
 )
 
 # Artifacts has exactly two canonical namespaces for NEW writes (§34).
