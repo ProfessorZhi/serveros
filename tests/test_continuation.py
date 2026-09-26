@@ -11,7 +11,7 @@ between runtimes, and nothing anywhere recorded where a Parent had got to when i
 chose to wait. `docs/context-capsule.md` and `docs/daily-work-cycle.md` §17.4 both
 name the object, and neither had a producer or a consumer.
 
-Five properties, in the order a reader needs them:
+Seven properties, in the order a reader needs them:
 
   1. THE RECORD IS A CAPSULE AND NOT A TRANSCRIPT. `CHECKPOINT_FIELDS` is closed
      and `build_checkpoint` returns exactly that set plus the two fields it
@@ -68,7 +68,19 @@ Five properties, in the order a reader needs them:
      a second time: a field added to the record and never read back is a change to
      that test, not a silent addition.
 
-A SEVENTH THING THAT IS ALSO ASSERTED, because it is a property of this tree
+  7. THE RECORD IS NOT THE ITEM, AND THE ITEM IS WHAT OWES. «Parent替换后原child
+     自动接回» was the last of P7's acceptance criteria that had no code behind it,
+     and the reason is in the two sentences above: `attempts_state` answers about
+     the attempts a RECORD names, and a Parent that replaces another writes a
+     record that names none. The store already says which unit is the real one —
+     «The scope is the Item; the epoch is only how it changes hands» — so the
+     child the replaced Parent dispatched is the Item's obligation under the new
+     epoch, and `carried_attempts` is the reading that says so. It is checked
+     against the store at the moment the new owner writes, not only when somebody
+     reads, because a Parent that had to be told to go looking would not be a
+     Parent the child was automatically reconnected to.
+
+AN EIGHTH THING THAT IS ALSO ASSERTED, because it is a property of this tree
 rather than of this feature: `runtime/continuation.py` imports no other layer of
 the repository. `runtime/agent_control_store.py` imports nothing from the repository
 either, and the two have to be readable together — the store holds the record and
@@ -214,6 +226,20 @@ def a_dispatched(store: AgentControlStore, ref: str = "cyc-1") -> None:
     store.confirm_admission(
         ref, phase="DISPATCHED",
         evidence={"action_key": held["action_key"], "status": "EXITED"}, at=NOW)
+
+
+def a_second_parent(store: AgentControlStore, **over) -> dict:
+    """Epoch 2 of the same Item, written by the Parent that replaced the first.
+
+    IT NAMES NO ATTEMPT, and that is the shape this section is about rather than
+    an omission in the fixture: a new Parent starting its own epoch has no reason
+    to know what the epoch it replaced dispatched, and nothing in the store makes
+    it find out. The wait is a window so that the record is a valid checkpoint on
+    its own terms — the child belongs to the epoch that dispatched it.
+    """
+    return a_checkpoint(store, epoch=2, parent_owner="parent-b",
+                        next_safe_action="carry the Item on",
+                        waiting_on={"kind": "window", "until": TOMORROW}, **over)
 
 
 def a_data_root(tmp_path: Path) -> dict:
@@ -1405,6 +1431,278 @@ class TestWhatWasTriedIsReadBack:
                           "cyc-2": "ATTEMPT_RETIRED"}
 
 
+class TestTheItemOwesWhatItsEarlierEpochsLeft:
+    """«Parent替换后原child自动接回», which was prose until this reading existed.
+
+    The child is never lost — «the scope is the Item» — but the record the Item is
+    now read through names nothing, so every count taken over live records says
+    the Item owes nothing while a child of it is still running. These tests are
+    about the reading that spans the epochs, and about the three answers it needs
+    rather than the two a boolean would give.
+    """
+
+    def test_the_closed_vocabulary_is_three_words(self):
+        """An equality, so a fourth word is a change and not a typo."""
+        assert continuation.CARRIED_ANSWERS == ("ATTEMPTS_CARRIED_UNANSWERABLE",
+                                                "ATTEMPTS_CARRIED",
+                                                "NOTHING_CARRIED")
+
+    def test_the_first_epoch_of_an_item_carries_nothing(self, tmp_path):
+        store = a_store(tmp_path)
+        store.put_checkpoint(a_checkpoint(store, child_attempts=["cyc-1"]))
+        record = store.get_checkpoint("SRV-0001#1")
+        got = continuation.carried_attempts(record, checkpoints=store.checkpoints(),
+                                            admissions=store.admissions())
+        assert got["state"] == "NOTHING_CARRIED"
+        assert got["predecessors"] == []
+        assert got["carried"] == []
+        assert "no earlier epoch" in got["says"]
+
+    def test_an_open_child_of_the_replaced_parent_is_carried_by_the_new_one(
+            self, tmp_path):
+        """The criterion itself, and the reading a resuming Parent needs.
+
+        Nothing here hands the child to the second Parent: it wrote its own
+        record, superseded the first in the same transaction, and the answer says
+        what the Item still owes anyway.
+        """
+        store = a_store(tmp_path)
+        a_dispatched(store)
+        store.put_checkpoint(a_checkpoint(store, child_attempts=["cyc-1"]))
+        store.put_checkpoint(a_second_parent(store))
+
+        assert store.live_checkpoints() == {"SRV-0001#2": store.checkpoints()["SRV-0001#2"]}
+        second = store.get_checkpoint("SRV-0001#2")
+        # The record's OWN answer is unchanged and still correct about itself.
+        assert continuation.attempts_state(
+            second, admissions=store.admissions())["state"] == "ATTEMPT_NONE"
+
+        got = continuation.carried_attempts(second, checkpoints=store.checkpoints(),
+                                            admissions=store.admissions())
+        assert got["state"] == "ATTEMPTS_CARRIED"
+        assert got["predecessors"] == ["SRV-0001#1"]
+        assert got["carried"] == ["cyc-1"]
+        assert got["closed"] == []
+        assert "cyc-1" in got["says"]
+        assert "dispatching a second child" in got["says"]
+        entry = got["evidence"][0]
+        assert entry["named_by"] == "SRV-0001#1"
+        assert entry["named_by_epoch"] == 1
+        assert entry["named_by_parent"] == "parent-a"
+        assert entry["state"] == "ATTEMPT_OPEN"
+        assert "no outcome is recorded" in entry["because"]
+
+    def test_a_result_nobody_took_up_is_carried_too(self, tmp_path):
+        """Finished is not discharged. «Old attempt» is reconciled by reading the
+        result, and `retire_admission` records that there is one to read."""
+        store = a_store(tmp_path)
+        a_dispatched(store)
+        store.put_checkpoint(a_checkpoint(store, child_attempts=["cyc-1"]))
+        store.retire_admission("cyc-1", at=LATER, outcome="the child finished")
+        store.put_checkpoint(a_second_parent(store))
+
+        got = continuation.carried_attempts(store.get_checkpoint("SRV-0001#2"),
+                                            checkpoints=store.checkpoints(),
+                                            admissions=store.admissions())
+        assert got["state"] == "ATTEMPTS_CARRIED"
+        assert got["carried"] == ["cyc-1"]
+        assert got["evidence"][0]["state"] == "ATTEMPT_RETIRED"
+        assert "read that result" in got["evidence"][0]["because"]
+
+    def test_a_result_already_taken_up_is_not_carried(self, tmp_path):
+        """One take-up closes it, and the Item already has that result — which is
+        the difference L's store made to this reading and the reason it is a
+        third answer rather than a second one."""
+        store = a_store(tmp_path)
+        a_dispatched(store)
+        store.put_checkpoint(a_checkpoint(store, child_attempts=["cyc-1"]))
+        store.retire_admission("cyc-1", at=LATER, outcome="the child finished")
+        store.accept_admission("cyc-1", at=LATER, by="parent-b", locator="run-7")
+        store.put_checkpoint(a_second_parent(store))
+
+        got = continuation.carried_attempts(store.get_checkpoint("SRV-0001#2"),
+                                            checkpoints=store.checkpoints(),
+                                            admissions=store.admissions())
+        assert got["state"] == "NOTHING_CARRIED"
+        assert got["carried"] == []
+        assert got["closed"] == ["cyc-1"]
+        assert got["evidence"][0]["state"] == "ATTEMPT_ACCEPTED"
+
+    def test_a_successor_that_names_the_attempt_itself_does_not_carry_it(
+            self, tmp_path):
+        """THE PROPERTY THAT MAKES THE TWO READINGS COMPOSE rather than overlap.
+
+        A Parent that restates its predecessor's attempt in its own record has
+        carried it forward by hand, and `attempts_state` answers for it. Counting
+        it here as well would make a reader adding the two counts up count one
+        child twice.
+        """
+        store = a_store(tmp_path)
+        a_dispatched(store)
+        store.put_checkpoint(a_checkpoint(store, child_attempts=["cyc-1"]))
+        store.put_checkpoint(a_second_parent(store, child_attempts=["cyc-1"]))
+
+        second = store.get_checkpoint("SRV-0001#2")
+        assert continuation.attempts_state(
+            second, admissions=store.admissions())["state"] == "ATTEMPT_OPEN"
+        got = continuation.carried_attempts(second, checkpoints=store.checkpoints(),
+                                            admissions=store.admissions())
+        assert got["state"] == "NOTHING_CARRIED"
+        assert got["carried"] == []
+        assert got["evidence"] == []
+
+    def test_an_attempt_this_store_cannot_look_up_outranks_an_open_one(
+            self, tmp_path):
+        """Same precedence as `attempts_state`'s, one vocabulary up: a store this
+        reading cannot open is not «the Item owes nothing»."""
+        store = a_store(tmp_path)
+        a_dispatched(store)
+        store.put_checkpoint(a_checkpoint(store, child_attempts=["cyc-1", "cyc-gone"]))
+        store.put_checkpoint(a_second_parent(store))
+
+        got = continuation.carried_attempts(store.get_checkpoint("SRV-0001#2"),
+                                            checkpoints=store.checkpoints(),
+                                            admissions=store.admissions())
+        assert got["state"] == "ATTEMPTS_CARRIED_UNANSWERABLE"
+        assert got["unreadable"] == ["cyc-gone"]
+        # Reported AND not dropped: what could be read is still named, and the
+        # sentence says both halves rather than stopping at «cannot be read».
+        assert got["carried"] == ["cyc-1"]
+        assert "cannot be looked up in this store" in got["says"]
+        assert "and 1 of those it still owes" in got["says"]
+
+    def test_no_admissions_brought_is_not_the_same_as_nothing_carried(self, tmp_path):
+        store = a_store(tmp_path)
+        store.put_checkpoint(a_checkpoint(store, child_attempts=["cyc-1"]))
+        store.put_checkpoint(a_second_parent(store))
+
+        got = continuation.carried_attempts(store.get_checkpoint("SRV-0001#2"),
+                                            checkpoints=store.checkpoints())
+        assert got["state"] == "ATTEMPTS_CARRIED_UNANSWERABLE"
+        assert "nobody brought the store" in got["detail"]
+
+    def test_the_chain_is_the_epochs_of_the_item_and_not_the_pointers(self, tmp_path):
+        """A pointer this store cannot resolve does not break the chain.
+
+        `runtime/agent_control_store.supersede_checkpoint` requires only that the
+        ref being superseded EXISTS — it does not require its successor to be a
+        checkpoint of this store, or of this Item. A reading that walked the
+        pointers would inherit that. This one orders by the Item's epochs, so the
+        epoch order the store enforces is the whole of what it depends on.
+        """
+        store = a_store(tmp_path)
+        a_dispatched(store)
+        store.put_checkpoint(a_checkpoint(store, child_attempts=["cyc-1"]))
+        store.put_checkpoint(a_second_parent(store))
+        records = dict(store.checkpoints())
+        records["SRV-0001#1"] = {**records["SRV-0001#1"],
+                                 "superseded_by": "SRV-0001#99"}
+
+        got = continuation.carried_attempts(records["SRV-0001#2"],
+                                            checkpoints=records,
+                                            admissions=store.admissions())
+        assert got["predecessors"] == ["SRV-0001#1"]
+        assert got["carried"] == ["cyc-1"]
+
+    def test_an_item_that_changed_hands_twice_owes_both_epochs(self, tmp_path):
+        """The chain is longer than one handover, and it is read oldest first.
+
+        The order is a reading and not a detail: the two attempts below are
+        reported in the order the Item lived through them, which is what makes
+        the list something a resuming Parent can walk rather than a bag of refs.
+        """
+        store = a_store(tmp_path)
+        a_dispatched(store)
+        store.put_checkpoint(a_checkpoint(store, child_attempts=["cyc-1"]))
+        store.put_checkpoint(a_second_parent(store))
+        store.put_checkpoint(a_checkpoint(store, epoch=3, parent_owner="parent-c",
+                                          next_safe_action="carry the Item on",
+                                          waiting_on={"kind": "window",
+                                                      "until": TOMORROW}))
+
+        got = continuation.carried_attempts(store.get_checkpoint("SRV-0001#3"),
+                                            checkpoints=store.checkpoints(),
+                                            admissions=store.admissions())
+        assert got["predecessors"] == ["SRV-0001#1", "SRV-0001#2"]
+        assert got["carried"] == ["cyc-1"]
+        assert got["evidence"][0]["named_by"] == "SRV-0001#1"
+
+    def test_a_record_of_another_item_is_never_a_predecessor(self, tmp_path):
+        """The other Item's epoch is HIGHER, so the Item is the only filter left.
+
+        With both at epoch 1 the epoch comparison would exclude `SRV-0001#1` on
+        its own and this test would pass with the Item filter deleted — which is
+        the state the mutation battery found it in before this fixture changed.
+        """
+        store = a_store(tmp_path)
+        store.put_checkpoint(a_checkpoint(store, child_attempts=["cyc-1"]))
+        store.put_checkpoint(a_second_parent(store))
+        elsewhere = store.put_checkpoint(a_checkpoint(
+            store, work_item="SRV-0002", epoch=2, child_attempts=["cyc-1"],
+            waiting_on={"kind": "window", "until": TOMORROW}))
+
+        assert continuation.predecessors(elsewhere, store.checkpoints()) == []
+        got = continuation.carried_attempts(elsewhere, checkpoints=store.checkpoints(),
+                                            admissions=store.admissions())
+        assert got["state"] == "NOTHING_CARRIED"
+        assert got["carried"] == []
+
+    def test_an_epoch_the_store_did_not_write_is_not_a_handover(self, tmp_path):
+        """The reading does not repair the store's records, it reads the ones the
+        store stands behind. `build_checkpoint` writes an integer epoch, so a
+        record carrying one of another shape was not written by this store — and
+        reading it as an epoch of this Item would invent a handover out of a
+        field nothing validated.
+        """
+        store = a_store(tmp_path)
+        a_dispatched(store)
+        store.put_checkpoint(a_checkpoint(store, child_attempts=["cyc-1"]))
+        store.put_checkpoint(a_second_parent(store))
+        records = dict(store.checkpoints())
+        records["SRV-0001#1"] = {**records["SRV-0001#1"], "epoch": "1"}
+
+        assert continuation.predecessors(records["SRV-0001#2"], records) == []
+        got = continuation.carried_attempts(records["SRV-0001#2"], checkpoints=records,
+                                            admissions=store.admissions())
+        assert got["state"] == "NOTHING_CARRIED"
+        assert got["carried"] == []
+
+    def test_a_lower_epoch_the_store_still_counts_as_live_is_not_a_predecessor(
+            self, tmp_path):
+        """A handover nobody made is not one this reading may invent. The store's
+        write rules make the shape unreachable; a store on disk with one in it is
+        still not a record the Item came through."""
+        store = a_store(tmp_path)
+        store.put_checkpoint(a_checkpoint(store, child_attempts=["cyc-1"]))
+        second = a_second_parent(store)
+        records = {"SRV-0001#1": store.get_checkpoint("SRV-0001#1"),
+                   "SRV-0001#2": second}
+        records["SRV-0001#1"] = {k: v for k, v in records["SRV-0001#1"].items()
+                                 if k not in ("superseded_by", "superseded_at")}
+
+        assert continuation.predecessors(second, records) == []
+        assert continuation.carried_attempts(
+            second, checkpoints=records,
+            admissions=store.admissions())["state"] == "NOTHING_CARRIED"
+
+    def test_a_record_that_is_not_a_record_answers_rather_than_raising(self):
+        """Every reader in this module takes the same shape of argument, and the
+        reading below is what a caller composes with a store it may not have."""
+        assert continuation.predecessors(None, {}) == []
+        # No records to read at all — a caller that has no store to hand, which is
+        # the other half of what a caller is allowed to be missing.
+        assert continuation.predecessors({"work_item": "SRV-0001", "epoch": 1},
+                                         None) == []
+        # And a record with no Item: nothing it could be an epoch OF.
+        assert continuation.predecessors({"epoch": 1, "superseded_by": "x"},
+                                         {"other": {"work_item": "SRV-0001",
+                                                    "epoch": 1,
+                                                    "superseded_by": "x"}}) == []
+        got = continuation.carried_attempts(None, checkpoints={}, admissions={})
+        assert got["state"] == "NOTHING_CARRIED"
+        assert got["predecessors"] == []
+
+
 class TestEveryDeclaredFieldIsRenderedOrExempt:
     """The mechanism, not the instance.
 
@@ -1836,3 +2134,91 @@ class TestTheVerbsDriveTheStore:
         blob = json.loads(listed.stdout)
         assert blob["attempts"]["SRV-0001#1"]["state"] == "ATTEMPT_OPEN"
         assert blob["attempts"]["SRV-0001#1"]["attempts"] == ["cyc-1"]
+
+    def test_the_verb_that_replaces_a_parent_says_what_it_has_taken_over(self, env):
+        """«原child自动接回» with a reader present.
+
+        The second Parent writes its own epoch, the store supersedes the first in
+        the same transaction, and this verb is the one moment at which saying what
+        was taken over costs nothing. A Parent that had to be told to go looking
+        for its predecessor's children would not be a Parent the child was
+        reconnected to.
+        """
+        assert cli("work", "checkpoint", "SRV-0001", "--epoch", "1",
+                   "--parent", "parent-a", "--next-action", "wait for cyc-1",
+                   "--waiting-on-child", "cyc-1", "--attempt", "cyc-1",
+                   "--at", NOW, env_extra=env).returncode == 0
+        replaced = cli("work", "checkpoint", "SRV-0001", "--epoch", "2",
+                       "--parent", "parent-b", "--next-action", "carry the Item on",
+                       "--waiting-on-window", TOMORROW, "--at", LATER,
+                       env_extra=env)
+        assert replaced.returncode == 0, replaced.stderr
+        assert "carried over  ATTEMPTS_CARRIED" in replaced.stdout
+        assert ("cyc-1  ATTEMPT_OPEN  named by SRV-0001#1 (epoch 1, parent-a)"
+                in replaced.stdout)
+
+    def test_the_reader_puts_the_carried_attempt_under_the_record_that_owns_it(
+            self, env):
+        assert cli("work", "checkpoint", "SRV-0001", "--epoch", "1",
+                   "--parent", "parent-a", "--next-action", "wait for cyc-1",
+                   "--waiting-on-child", "cyc-1", "--attempt", "cyc-1",
+                   "--at", NOW, env_extra=env).returncode == 0
+        assert cli("work", "checkpoint", "SRV-0001", "--epoch", "2",
+                   "--parent", "parent-b", "--next-action", "carry the Item on",
+                   "--waiting-on-window", TOMORROW, "--at", LATER,
+                   env_extra=env).returncode == 0
+        listed = cli("work", "continuations", "--now", LATER, env_extra=env)
+        assert listed.returncode == 0, listed.stderr
+        # The header counts the Item's obligations and not only the records' own
+        # fields: without this line it read «0 with one still open» for an Item
+        # whose replaced Parent had a child running.
+        assert ("carried over  1 attempt left by an earlier epoch and no take-up "
+                "closes — cyc-1" in listed.stdout)
+        assert "carried over  ATTEMPTS_CARRIED  from SRV-0001#1" in listed.stdout
+        # And the record that was replaced still prints the same child in its own
+        # block: two readings of one attempt, and the new one says who owes it.
+        assert listed.stdout.count("cyc-1") >= 3
+
+    def test_a_parent_that_replaced_nothing_prints_nothing_carried(self, env):
+        done = self.checkpoint(env)
+        assert done.returncode == 0, done.stderr
+        assert "carried over  NOTHING_CARRIED" in done.stdout
+        assert "no earlier epoch in this store" in done.stdout
+        listed = cli("work", "continuations", "--now", NOW, env_extra=env)
+        assert "carried over  NOTHING_CARRIED" in listed.stdout
+        assert ("carried over  0 attempts left by an earlier epoch and no take-up "
+                "closes — nothing came through with anything open" in listed.stdout)
+
+    def test_a_successor_that_names_the_attempt_itself_prints_nothing_carried(
+            self, env):
+        """The disjointness a reader relies on to add the two counts up."""
+        assert cli("work", "checkpoint", "SRV-0001", "--epoch", "1",
+                   "--parent", "parent-a", "--next-action", "wait for cyc-1",
+                   "--waiting-on-child", "cyc-1", "--attempt", "cyc-1",
+                   "--at", NOW, env_extra=env).returncode == 0
+        replaced = cli("work", "checkpoint", "SRV-0001", "--epoch", "2",
+                       "--parent", "parent-b", "--next-action", "carry the Item on",
+                       "--waiting-on-window", TOMORROW, "--attempt", "cyc-1",
+                       "--at", LATER, env_extra=env)
+        assert replaced.returncode == 0, replaced.stderr
+        assert "carried over  NOTHING_CARRIED" in replaced.stdout
+
+    def test_the_json_carries_the_carried_reading(self, env):
+        assert cli("work", "checkpoint", "SRV-0001", "--epoch", "1",
+                   "--parent", "parent-a", "--next-action", "wait for cyc-1",
+                   "--waiting-on-child", "cyc-1", "--attempt", "cyc-1",
+                   "--at", NOW, env_extra=env).returncode == 0
+        replaced = cli("work", "checkpoint", "SRV-0001", "--epoch", "2",
+                       "--parent", "parent-b", "--next-action", "carry the Item on",
+                       "--waiting-on-window", TOMORROW, "--at", LATER,
+                       "--json", env_extra=env)
+        assert replaced.returncode == 0, replaced.stderr
+        assert json.loads(replaced.stdout)["carried"]["state"] == "ATTEMPTS_CARRIED"
+        listed = cli("work", "continuations", "--json", "--now", LATER,
+                     env_extra=env)
+        blob = json.loads(listed.stdout)
+        assert blob["carried"]["SRV-0001#2"]["state"] == "ATTEMPTS_CARRIED"
+        assert blob["carried"]["SRV-0001#2"]["carried"] == ["cyc-1"]
+        # The record that was taken over carries nothing: it is what was carried
+        # FROM, and it is not in this mapping at all.
+        assert "SRV-0001#1" not in blob["carried"]
