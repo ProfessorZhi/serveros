@@ -1053,6 +1053,18 @@ def _event_of(row: dict, *, at: str, names: dict | None = None,
     what_text = (f"{subject['text']} {said}" if said else definition["what"])
     return {
         "ref": row.get("key"),
+        # §29. WHICH appearance this event is, in the vocabulary the delivery
+        # ledger files receipts under — `alert_digest.episode_of`, called rather
+        # than reimplemented here. The sender is the reader: before it sends, it
+        # has to ask the ledger «may I change the message that already carries
+        # this», and the ledger's answer is keyed on that token. Recomputing it
+        # at the call site would be a second reading of one name, and the day
+        # the two drift is the day one incident gets two cards.
+        #
+        # It rides on the EVENT rather than on the card because the episode is
+        # a property of the finding: a card carries up to three events and the
+        # receipt names the one the card is about.
+        "episode": alert_digest.episode_of(row),
         "code": code,
         "event": row.get("kind"),
         "attention": attention or attention_of(code),
