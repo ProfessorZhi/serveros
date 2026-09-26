@@ -2,14 +2,21 @@
 Description=Resume a ServerOS checkpoint whose wait has ended, every minute
 
 [Timer]
-# EVERY MINUTE, at :20 seconds — deliberately off every other timer on this host,
-# and the offsets are a reading of the installed files rather than a taste:
+# EVERY MINUTE, at :20 seconds — deliberately off every other timer on this host.
+# The offsets below are the `OnCalendar=` lines as they are WRITTEN in each file,
+# read on 2026-09-26, each with the file it came from:
 #
-#   hwz-monitor.timer          *-*-* *:00:00    hourly
-#   tokyo-status-card.timer    *-*-* *:00:00    hourly
-#   botmux-watchdog.timer      *:02/5:00        five-minute stride
-#   tokyo-alert-digest.timer   *:03/5           five-minute stride
-#   serveros-alert-sync.timer  *:04/5:00        five-minute stride
+#   ~/.config/systemd/user/hwz-monitor.timer         *-*-* *:00:00   hourly
+#   ~/.config/systemd/user/tokyo-status-card.timer   *-*-* *:00:00   hourly
+#   ~/.config/systemd/user/botmux-watchdog.timer     *-*-* *:2/5:00  five-minute stride
+#   ~/.config/systemd/user/tokyo-alert-digest.timer  *-*-* *:03/5    five-minute stride
+#   ~/.config/systemd/user/serveros-daily.timer      *-*-* 08:17:00  daily
+#
+# `runtime/serveros-alert-sync.timer` carries `*-*-* *:4/5:00` and is a TEMPLATE
+# THIS NODE HAS NOT INSTALLED: `~/.config/systemd/user/` holds no such file and
+# the manager does not know the unit. Its phase is listed with the rest anyway,
+# because an offset chosen against the installed set alone would collide on the
+# day somebody installs it — and that day is what `release alert-worker` is for.
 #
 # :20 collides with none of them. The reason to care is not symmetry: this unit
 # SPAWNS a Parent, and a Parent started inside the monitor's sampling window puts
