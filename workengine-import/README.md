@@ -60,7 +60,14 @@ serverosctl --json item create --project serveros --prefix SRV --title "Converge
 serverosctl --json activity add SRV-0001 implement --kind develop
 serverosctl --json run begin SRV-0001 implement --worker codex --idempotency-key srv-0001-control-plane
 serverosctl --json board render --project serveros --output-dir /absolute/path/records/projects/serveros/board
+serverosctl --json federation local inventory --source /absolute/observed.jsonl --target /absolute/projection.jsonl --evidence-run RUN-0001
 ```
+
+`federation` takes a domain — `feishu`, `github` or `local` — and one of `inventory`,
+`check` or `proposal`. `inventory` reads observed rows from a jsonl file and writes the
+projection; `check` and `proposal` compare `--observed` against `--desired`. Every one of
+them names the Run that produced the observation, and publication goes through a journal
+and a receipt rather than replacing the target in place.
 
 Current coarse Item states include INBOX, AVAILABLE, READY, ACTIVE, DELIVERED and
 CLOSED. Waiting/delegation/human-attention conditions carry reasons and continuation
