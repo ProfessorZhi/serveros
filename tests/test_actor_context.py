@@ -988,12 +988,18 @@ def test_the_record_is_not_in_the_authority_namespace():
     assert "agent-control" not in ref and "state/serveros" not in ref
 
 
+@pytest.mark.reads_the_ingress_resolver
 def test_the_record_path_comes_from_the_root_contract(monkeypatch, tmp_path):
     """Resolved, not composed. An unbound node is told so, not guessed at.
 
     `{DATA_ROOT}/logs/...` is a plausible-looking path on a machine nobody
     identified, and a record written there would be found later by a reader who
     has no way to tell it was never this node's.
+
+    The marker exempts this test from `tests/conftest.py`'s redirect, because
+    the redirect replaces `ingress_record_path` and this test's whole subject IS
+    that function. It resolves and writes nothing, so the session-level check
+    that the node's real record did not move still holds.
     """
     paths = human_control._load("serveros_runtime_paths",
                                 human_control._REPO / "runtime" / "paths.py")
