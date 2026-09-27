@@ -109,7 +109,32 @@ version: "1.0.0"
 # file this node's installed payload carries and no build in this repository
 # produces, so it belongs to whatever wrote it, not to this composition. Named
 # so that it is a recorded leftover rather than a silent one.
-cachebuster: srvtest0001.20260927a
+#
+# Moved to `27b` on 2026-09-27, by the same instrument and for a defect the
+# previous move did not cover. `27a` was built against
+# `--ability-rev 368c1be63a0d6bf48ae83d91ce6008094ba048ef`; the pin has since
+# advanced to `da5f89b1b1313c942bee8c03e19ad51931746f66`, and a plugin is
+# recomputed against the pin as it stands, so the installed payload now differs
+# in exactly two paths. Both were reproduced byte by byte rather than inferred:
+#
+#   ARTIFACT.json   the installed record has no `recommended` key; the
+#                   generator writes one now (`[]` for this composition, which
+#                   declares nothing recommended). A key the generator added
+#                   after these bytes were written, so the installed record is
+#                   one revision behind its own producer.
+#   README.md       prints the pin it was read from, verbatim and on purpose
+#                   ("the pin below is the authority for what it was read
+#                   from"). `368c1be6…` against `da5f89b1b131…` is not a defect
+#                   in either revision; it is this payload being older than the
+#                   pin, which is a fact about the payload.
+#
+# The Skills themselves are byte-identical across the two pins, so the
+# substantive defect `27a` was moved to repair is NOT what is at stake here.
+# What is at stake is the other half of the same rule: keeping `27a` would leave
+# an installed cache that disagrees with canonical under a version string that
+# `claude plugin update` reads as "already current". The label moves because the
+# content did, once more, and not because a target was chosen first.
+cachebuster: srvtest0001.20260927b
 
 skills:
   - name: automated-testing
