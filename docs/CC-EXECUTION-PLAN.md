@@ -157,6 +157,12 @@ Focus接受→确保唯一logical Parent→完成当前授权步骤→等待chil
 
 **OpenViking**：目标共享Provider尚无本轮已验证部署。先核官方当前服务/认证/native CC与Codex集成版本，冻结license/revision/model成本与capture数据范围。将`memory/provider-contract.yaml`旧“不得有新服务/完全可由Layer B重建/没有全局Provider”假设和真实adapter/测试一起迁移；保住当前业务权威、daemon无Memory启动/tick依赖。
 
+> **已完成，2026-09-27。** 这段的每一项都落地了，逐条对账：部署了（OpenViking 0.4.21，独立 `openviking.service`，`127.0.0.1:1933`，本地 embedder，无远端调用）；认证与成本冻结了（
+> `auth_mode: api_key` 显式写死，凭据只在 vault，`cors_origins: []`）；license/revision 记在 R11；capture 数据范围**故意未开**——未配 VLM，所以 provider 可检索不自动采集。
+> 合同已迁到 v2：那三条假设换成 12 条采用条件，「保住」的两条按原样留在 v1 的位置上（daemon 独立＝条件 1、2；业务权威＝条件 3、4）。
+> adapter 与测试同改，`test_memory_provider.py` 的逐字断言把转写钉在合同上（一条条件的文本被改就会被咬住）。
+> **一处没有做的**：没有 consumer。所以「current records 覆盖 retrieved memory」现在是空真而不是被执行的规则，这条在 consumer 落地时必须重验。
+
 OpenViking单独私网服务与持久数据/一致性备份，设备及项目ACL隔离；Git只放获准记录/语义与安全metadata，不放索引/数据库/凭据。优先上游SDK/HTTP/MCP/hooks组合；若版本不支持精确capture过滤或关闭Skill catalog，则禁用该自动注入/捕获路径，采用有界显式输入，不能为“原生集成”默认上传全量聊天。一个用户namespace不等于跨项目任意可读。
 
 **验收**：一个真实ServerOS用途及允许协调的第二实际consumer访问同一Laya实例；OpenViking用获准非敏感小样在两次fresh native Session capture→recall，后继会话能找回经验但以当前Claim纠正为准；无权项目不返回，撤销立即挡当前读取；停Provider不阻断records/checkpoint，备份恢复有证据。跨Windows验证需对应私网/身份授权，缺少时标该层未验，不能伪造跨设备完成。
