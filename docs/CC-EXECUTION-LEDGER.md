@@ -7960,7 +7960,7 @@ Quay 多代共存（`DEFER`）、插件缓存孤儿（`RETAIN_TOOL_MANAGED`）�
 | B7 | 实现 | Skill | `skills/implementation-delivery` | — | 未重测 | — | 重叠旧入口未迁移 |
 | B8 | 报告发布 | Skill + 契约 | `skills/feishu-report` + `runtime/report-publication-contract.yaml` | `serverosctl report` | 未重测 | 发布走契约 | 四处移除仍 `PENDING_CONSUMER`；日报按 §13：无批准接收者时保持生成/发布/发件箱正常，`disabled with NO_RECEIVER_CONFIGURED` |
 | B9 | 文档维护 | Skill + 单一 canonical 契约 + 安装派生 | `skills/document-stewardship` | feishu-space-management + publisher | **§9.53.3**：19 项 B9 契约测试通过；两侧安装的四个文件（SKILL.md + 两份 references + maintain.py）与 canonical **逐字节相同**，唯一差异是 `__pycache__/*.pyc` 且其 PEP-552 头部与源一致（非陈旧） | 只读正确契约；no whole-body overwrite；no authority expansion | 位置/ACL 侧留在 B-空间 |
-| B10 | 人机控制 | Skill + 可信上下文链 | `skills/human-control`；`mcp/human_control.py --attach`；`serverosctl work delegate` / `work revoke` | `serverosctl card`/presentation；`runtime/wake.authority` | **生产侧本轮补齐并装机**（`a4ff07f`）；**正向链未跑通** | grant **只能**从可信上下文派生，绝不由 ServerOS 自签；revoke/expire 必须停授权 | 见下 |
+| B10 | 人机控制 | Skill + 可信上下文链 | `skills/human-control`；`mcp/human_control.py --attach`；`serverosctl work delegate` / `work revoke` | `serverosctl card`/presentation；`runtime/wake.authority` | **生产侧本轮补齐并装机**（`a4ff07f`）；**结局可读性已补齐**（`27i`，纯 `--attach` 即落盘，见 §9.53.11）；**正向链仍未闭合**，剩一条真人 turn | grant **只能**从可信上下文派生，绝不由 ServerOS 自签；revoke/expire 必须停授权 | 见下 |
 
 #### 唯一一条真正卡住的正向链：Human Control / Continuation
 
@@ -7984,6 +7984,151 @@ accept once → no duplicate child/effect`）在生产侧是**齐的**：
 > 请在飞书应用 1 再发任意一条消息用于最终 live 验收。
 
 （另一件同类的人为前提：Codex 侧需要点一次 hook 信任，才能补上 Journey G-1。）
+
+### 9.53.11 收尾轮：把「哪一条结局」变成可读的，以及一处我先前推断错了的地方
+
+本节记 2026-09-28 01:0x–01:2x 这一轮。它不改设计，只关两个口子。
+
+**一、`27h` 不够，因为钩子命令串会被会话缓存。** `27h` 把 ingress 记录做成了
+`--record` 这样的 **opt-in** 开关（§9.53.10 那句「生产侧已全部修完并装机」之后）。装机后实测发现：
+
+```text
+装机的 27h 上，`--attach --record`            能落盘  ✔
+装机的 27h 上，纯 `--attach`（旧命令串拼法）  不落盘  ✘
+```
+
+而 turn hook 的命令串是从 `~/.claude/settings.json` 读的，**读它的进程可能早于这个 flag 存在**。
+实测本节点那条飞书会话（`4ab56455…`，`creationSource: ordinary-feishu`，`wrapperCli` 指向
+`claude-yolo`）当时手上的就是纯 `--attach`。于是这一个缺口会让**唯一要紧的那一轮 turn 恰好
+是唯一不留痕的一轮**，「钩子没跑」与「钩子跑了但什么都没铸出」继续是同一个空文件。
+
+`27i` 把默认翻成 **on**，`--no-record` 作关闸。实测装机副本上纯 `--attach` 现在落盘：
+
+```text
+$ /usr/bin/python3 …/current/mcp/human_control.py --attach
+  "record": {"path": "/data/home/vince/logs/serveros/human-control/ingress.jsonl",
+             "recorded": true, "state": "BLOCKED"}
+  exit 1
+```
+
+关闭开关是为唯一一个**必须不能写**的调用者留的：测试套件以纯函数方式在**本节点、根已绑定**的
+进程里跑 `main(["--attach"])`，默认写会把它写进节点真实的记录里。`--record` 这个显式拼法继续
+被接受，否则一个仍在用旧串的挂载会从「沉默」变成「traceback」。
+
+记录本身实测干净，**不含身份**（317 字节那一行）：
+
+```json
+{"schema":"serveros/human-control-ingress.v1","at":"2026-09-28T01:18:51+08:00",
+ "provider":"provider:botmux-human-control","transport":"feishu","attached":false,
+ "state":"BLOCKED","actor_identified":false,"context_ref":null,
+ "detail":"BotMux reports status 'blocked' (current_actor_unverified)"}
+```
+
+**二、我先前那句「结构上永远不可能」是过度推断，这里收回。** §9.53.10 曾把原因写成
+「这一支缺 `managedTurnOrigin` / `worker` / `localProcessAttestation` 三字段，所以结构上永远
+返回 `current_actor_unverified`」。从 `botmux` 二进制里把判定函数读出来之后，这个推断站不住：
+
+```js
+let u = f.managedTurnOrigin?.callerOpenId, L = f.managedTurnOrigin?.capability;
+if (!u?.startsWith("ou_") || !L) return {ok:!1, error:"current_actor_unverified"};
+```
+
+`managedTurnOrigin` 是**内存**里的会话状态，**从不落盘**——所以「DB 行里没有这三个字段」是设计，
+不是缺陷，用它推出「永远不可能」是错的。它由 daemon 在 turn 派发时发布，并且 `callerOpenId` 是
+**有条件**写进去的：`...(b.turnId && A$e(H,b.turnId) ? {callerOpenId: A$e(H,b.turnId)} : {})`，
+即由 turnId 反查。而盘上**反查所需的材料是齐的**：`turnReplyContexts` 有 2 条，每条的
+`replyTargetSenderOpenId` 就是该 turn 的 caller；`replyTargets` 同理。
+
+结论改成：这是一个**turn 内、内存中**的判定，**turn 外无法合法评估**（伪造 `BOTMUX_*` 身份变量
+是被明令禁止的），也没有从盘上可得的材料能证明它会失败。**先前那句是不可证的强断言，撤回。**
+
+**三、一条更准的现场读数（同一件事的另一面）。** 用户 2026-09-28 那条飞书消息**确实到达了**
+本节点唯一的会话：`lastHumanMessageAt` 与 `lastMessageAt` 同为 `2026-09-27T16:56:44.237Z`
+（**北京时间 2026-09-28 00:56:44**），`ordinaryTurnRecovery.status = "completed"`、
+`continuationsStarted: 0`。也就是说 §9.53.10 那句「消息发出后 store 仍 `contexts: {}`」不是
+「消息没到」，而是「到了、这一轮没有铸出可信上下文」——两件事必须分开说。而 00:56 这一轮
+**早于 01:16 的装机**，所以它跑的还不是带记录的挂载，它在盘上什么都不会留，这不是失败，是时点。
+
+**四、用户配置的净变更为零。** 本轮为加 `--record` 曾改过 `~/.claude/settings.json` 一处
+（有备份 `artifacts/serveros/rollback/claude-settings.json.before-ingress-record-20260928`）。
+既然默认已成 on，那次改动就不再必要，已**按备份逐字节退回**；实测退回后纯 `--attach` 仍落盘。
+用户 Agent 配置这一轮**没有任何净改动**。
+
+**五、驱动器与身份现场（`27i`，装机后复核）。**
+
+```text
+serverosctl device agents
+  drift_sync             → NOT_REGISTERED  registered:false  registrations:1  program_present:true
+  human_control_ingress  → REGISTERED      registered:true   registrations:2  program_present:true  event:UserPromptSubmit
+```
+
+`drift_sync` 的 `NOT_REGISTERED` **不是悬空引用**，而是已声明的缺口：表面把它放在 `acknowledged`
+下，带 `declared_gap.state = UNWIRED_ON_THIS_HOST` 与
+`closing_action = NEEDS_HUMAN`（「写这条注册会改动用户的 Agent 配置」），并指明回滚落在
+`runtime/workbench_sources.py` 的 `DEPLOYMENT P2`。**已声明、已命名、有回滚的缺口**与「没人知道
+的悬空」是两回事，此处是前者。
+
+```text
+serverosctl status --json
+  → identity.agreement = AGREEMENT
+    artifact version    = 3.1.0+srv0005.20260927j
+    release revision    = serveros-identity-reason-27j-20260928
+    pid                 = 3723547   (restart 2026-09-28 01:22:48 CST)
+current  → revisions/serveros-identity-reason-27j-20260928
+previous → revisions/serveros-ingress-default-record-27i-20260928
+```
+
+（`27i` 的现场：pid 3674667、`current` → `serveros-ingress-default-record-27i-20260928`、
+`previous` → `serveros-ingress-record-27h-20260928`。它随后被 `27j` 取代，原因见第九条。）
+
+**六、`27h → 27i` 的载荷差，逐字节对账过。** 无成员增删；内容变的 6 个文件是
+`mcp/human_control.py`（唯一源成员）加 5 个承载版本串的派生件
+（`.claude-plugin/marketplace.json`、`.claude-plugin/plugin.json`、`.codex-plugin/plugin.json`、
+`ARTIFACT.json`、`README.md`）。描述符仍为 `./serveros-linux-work/current`（未被改写）。
+两侧插件安装均已刷到 `27i`：Claude 侧 `updated from 3.1.0+srv0005.20260927h to …
+20260927i`，Codex 侧 `codex plugin add` 后 `installedPath` 落在 `…/20260927i`，缓存目录里
+**只有** `20260927i`（单槽替换，`27g`/`27h` 无残留）。
+
+**七、`runtime_truth.py` 的唯一红是预期内的，且它正是合并要关掉的一项。**
+`SOURCE_RUNTIME_DRIFT`：`canonical source builds 3.1.0+srv0005.20260927g, disk has …27i`。
+原因不是缺陷，而是 **canonical 检出仍停在 `27g`**——本轮所有编辑都在 worktree 里，canonical
+`adc5eaec` = `origin/main` 未动。合并本分支后该项自然转绿；`node` 段本身是干净的：
+`state: PROMOTED`、`tree_hash_ok: true`、`running_a_superseded_revision: []`、
+`started_before_current_was_repointed: []`。
+
+**八、五个自动化循环的现场（同一时刻）。**
+
+```text
+serverosd.service                active running enabled
+serveros-continuation-wake.timer active waiting enabled   last 01:17:47  next 01:18:20
+tokyo-alert-digest.timer         active waiting enabled   last 01:13:25  next 01:18:00
+tokyo-status-card.timer          active waiting enabled   last 01:00:00  next 02:00:00
+serveros-daily.timer             active waiting enabled   last 09-27 08:17  next 08:17:00
+```
+
+wake 的最近一次结局仍是 `REFUSE NO_AUTHORIZING_GRANT`（`SRV-0011#1`，`item SRV-0011 epoch 1
+held by parent:probe-r1`），理由原句：`says nothing authorizes waking SRV-0011: the store records
+no grant that authorizes now`。**这是消费者在正确工作。**
+
+**九、`27i → 27j`：把第二件里那句错的声明从产物里拿掉。** 第二件撤回的是一个推断，但那个推断
+当时已被写进两个地方——`mcp/human_control.py` 的 `human.identity.verify` 理由与
+`docs/human-control.md` 的能力表。前者是**载荷成员**，所以「撤回」只写在台账里是不够的：
+装在机器上的 `27i` 会继续对每一个读它的 Agent 说「这条 session 不带闸门要读的东西，turn 内也
+不该指望它能验证」。那句话读自**会话行**，而闸门读的是**内存**；一句话的来源错了，结论就错了。
+
+`27j` 只改这一处措辞，**状态仍是 `UNKNOWN`**（没人看过的那一轮 turn 依然没人看过，判词不变），
+变的只是理由不再越界。两侧安装又各刷一次（Claude 侧 `…20260927i → …20260927j`，Codex 侧
+`codex plugin add` 落到 `…/20260927j`）。这是本轮第二次为「一句话」付一次 cachebuster——
+这不是铺张：cachebuster 是闸门，而它防的正是「已装缓存继续发一个已经被推翻的说法」。
+
+**十、这一轮被仓库自己的守卫抓到一次，如实记。** §9.53.11 第一稿里我把现场写成
+`serverosctl status` 换行接 `identity.agreement = …`，`tests/test_declared_commands.py`
+**当场判红**：它把续行拼起来，于是那两行读成一条以 `status` 为子命令、以 `identity` 为参数的
+虚构命令——一条本节点**没有**的命令。不是我把关把出来的，是它。改法是把块写成
+`serverosctl status --json` 后接 `→` 开头的字段行。（这段文字本身也让同一个守卫红了第二次：
+我把那条虚构命令原样抄进了引号里，而它不区分「引用」与「引用者」。第二次的改法就是这里——
+不再逐字复述它。）**这两次拦截的价值在于它们是真的，不是事后追认。**
+
 
 ### 9.54 最终全量的那一条红：一个漏掉的 v1 兄弟，和一场长期被吞掉的 skip
 

@@ -48,7 +48,11 @@ share is that a cloud service happens to hold both.
 
 ## The six capabilities, and the two words that matter
 
-`mcp/human_control.py:483-566`, measured on this device rather than assumed:
+`mcp/human_control.py`, `BotMuxHumanControlProvider.capabilities()`, measured on
+this device rather than assumed (cited by symbol rather than by line: this
+section was written against a file whose lines have moved since, and a range
+that no longer lands on the method is a citation that reads as verified while
+verifying nothing):
 
 ```text
 human.conversation.context     SUPPORTED    /api/sessions reports chatId, chatType, sessionId
@@ -62,7 +66,14 @@ human.notification.transport   UNKNOWN      an unaddressed POST /api/trigger is 
                                             is what would settle it
 human.identity.verify          UNKNOWN      `botmux actor current --json` verifies only
                                             inside a BotMux turn; from a non-turn process
-                                            it answers status=blocked, current_actor_unverified
+                                            it answers status=blocked, current_actor_unverified.
+                                            Re-read 2026-09-28 off the binary: the gate is an
+                                            in-memory, per-turn `managedTurnOrigin`
+                                            (`callerOpenId` + non-empty `capability`), which is
+                                            never written to the session row. So an out-of-turn
+                                            reader cannot evaluate it, and the absent row fields
+                                            are absent by design rather than evidence. See
+                                            §The ingress below
 human.transport.ingress        UNKNOWN      a pull surface exists (`botmux history --session-id`,
                                             `botmux quoted`); whether anything PUSHES inbound
                                             content is not established from here
@@ -108,7 +119,8 @@ This is the part that makes the table a fact rather than a description.
 `request_approval` does not return a soft value or a `None`:
 
 ```text
-mcp/human_control.py:460   raise HumanControlUnsupported(...)
+mcp/human_control.py  BotMuxHumanControlProvider.request_approval
+                      raise HumanControlUnsupported(...)
 ```
 
 A caller that tries to obtain an approval through this provider gets an
@@ -520,6 +532,79 @@ agent.console (serveros-agent MCP)             device, level, conversation_ref
 surface: every control action resolves an actor and is gated on admission, and
 this one changes nothing and claims no actor. A console that required an actor
 would be claiming to know who was looking, and §AA says that is `UNKNOWN`.
+
+## The ingress, and why it is now declared here
+
+Human Control's ingress is one command: `mcp/human_control.py --attach`, which
+asks the provider who is at the other end of the turn and presents that answer
+to serverosd. It is the only gate that can mint a trusted actor context, and it
+is minted from the process the provider was just asked about — `attach_context`
+takes no report parameter, and a test asserts the signature
+(`tests/test_actor_context.py`, `test_the_mint_path_has_no_parameter_for_evidence`).
+
+For a while that command had **no producer in this repository**. It ran from a
+`UserPromptSubmit` hook in `~/.claude/settings.json` — gated on `BOTMUX_TURN_ID`
+so it fires only inside a BotMux turn — and nothing in the tree mentioned it.
+Two failures followed from that, and both were real:
+
+```text
+the mount could not be checked   a hook's file is always present, so nothing
+                                 distinguished "wired" from "a file that exists"
+the outcome was thrown away      the mount ran `--attach >/dev/null 2>&1 || true`,
+                                 so a provider that identified nobody, a payload
+                                 serverosd refused, a daemon that was not there
+                                 and a minted context all arrived as: nothing
+```
+
+On 2026-09-28 a real human message **did** reach the session and the control
+store still read `contexts: {}`. The record of the attempt was not on disk, so
+which of those four had happened was unanswerable from here — the same shape
+this repository keeps finding, one level down: a mount that is there, read as a
+thing that works. (The arrival is measured, not inferred: that session's
+`lastHumanMessageAt` is `2026-09-27T16:56:44Z`, i.e. 00:56:44 Beijing, and
+`ordinaryTurnRecovery.status` is `completed`. It also predates the revision
+that records, so that turn had nothing on disk to leave — a timing fact worth
+keeping separate from a failure.)
+
+Both halves are fixed in the tree:
+
+- **The registration is declared.** `abilities/agent-runtime-contract.yaml`,
+  driver `human_control_ingress`, event `UserPromptSubmit`, marker
+  `human_control.py`, program under `runtime.serveros-distribution`. It is
+  measured by the same consumer as every other declared driver:
+  `serverosctl device agents` answers `REGISTERED` / `NOT_REGISTERED` /
+  `UNREADABLE` and, separately, whether the program behind the marker is on the
+  disk. The program lives under the distribution role and not under a root,
+  because it is in whatever this node installed from.
+- **The outcome is written down.** `--attach` appends one line to the ingress
+  record at `logs/human-control/ingress.jsonl`, resolved through
+  `runtime/paths.py` rather than composed. Under `logs/`, deliberately not under
+  `state/serveros/runtime/agent-control/`: the control store can be trusted as
+  the answer to "what does this node believe about actors" only because nothing
+  else claims to be, and a record inside that namespace would be a second thing
+  to read before answering it.
+
+**The record names no actor, and the omission is the design.** It carries
+`schema`, `at`, `provider`, `transport`, `attached`, `state`, `detail`,
+`context_ref`, and `actor_identified` — a boolean, never an actor id. A file an
+attachment can append to must not be a second place a name can be read from;
+`actor_id` is written nowhere, and the record is not evidence of anything. It
+answers one question, which is the question that was unanswerable: *which of the
+four outcomes was it.*
+
+Two consequences worth stating rather than discovering later. The mount still
+sends its own stdout to `/dev/null` and still ends in `|| true` — that is now
+deliberate rather than careless, because the outcome has somewhere else to go,
+and a hook that surfaced a line on every turn would be noise in a channel whose
+whole point is that a person reads it. And recording is **on by default**, with
+`--no-record` as the off switch. The default is load-bearing rather than a
+preference: the command string a turn hook runs is read off a settings file the
+running process may have read before the flag existed, and the session measured
+on 2026-09-28 was carrying a plain `--attach`. Off by default would therefore
+have left the one turn that matters as the one turn with no trace, making "the
+hook never ran" and "the hook ran and minted nothing" the same empty file. The
+off switch exists for the one caller that must not write: the test suite runs
+`main()` in-process, on this node, with this node's roots bound.
 
 ## What is not human control
 

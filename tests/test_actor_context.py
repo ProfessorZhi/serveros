@@ -800,3 +800,223 @@ def test_the_attach_verb_exits_nonzero_when_no_context_was_minted(serving_daemon
     attached = json.loads(capsys.readouterr().out)
     assert attached["attached"] is True
     assert attached["observed_by_pid"] == os.getpid()
+
+
+# ---------------------------------------------------------------------------
+# What the ingress produced, said out loud
+#
+# Until 2026-09-28 the mount that answers a Feishu turn ran `--attach` with its
+# stdout and stderr sent to /dev/null and `|| true` after it. Four different
+# outcomes — a provider that identified nobody, a payload the daemon refused, a
+# daemon that was not listening, and a minted context — produced the same
+# observable from outside: nothing. A real human message arrived that day, the
+# store still read `contexts: {}`, and this node could not say which of the
+# four had happened. These tests are about that silence, and about the one
+# thing the record must never become.
+# ---------------------------------------------------------------------------
+
+
+def _attempt(**overrides):
+    result = {
+        "provider": "botmux",
+        "transport": "feishu",
+        "attached": False,
+        "state": "BLOCKED",
+        "detail": "status=blocked error=current_actor_unverified",
+    }
+    result.update(overrides)
+    return result
+
+
+def _lines(path: Path) -> list[dict]:
+    return [json.loads(line) for line in
+            path.read_text(encoding="utf-8").splitlines() if line.strip()]
+
+
+def test_the_ingress_record_names_no_actor(tmp_path):
+    """The record says whether somebody was identified. It never says who.
+
+    A file that carried an actor id would be a second place identity can be
+    read from, and the first place is the one §5 built a daemon, a socket and a
+    kernel-attested pid around. The record is append-only and writable by a
+    hook, so an actor id here would be a name an attachment could write into a
+    file that looks like evidence.
+    """
+    written = human_control.record_attempt(
+        _attempt(attached=True, state="ATTACHED", actor_ref="actor:hwz-2026",
+                 actor_id="hwz-2026", context_ref="ctx:botmux/abc123"),
+        path=tmp_path / "ingress.jsonl")
+
+    assert written["recorded"] is True
+    (line,) = _lines(tmp_path / "ingress.jsonl")
+    assert line["actor_identified"] is True, (
+        "the boolean is the part a diagnosis needs and the part that is safe "
+        "to keep: it separates 'nobody was identified' from 'identified and "
+        "refused' without putting a name on disk")
+    assert "hwz-2026" not in json.dumps(line), (
+        "an actor id reached the record; attach_context takes no report for the "
+        "same reason, and a file is a report anybody can append to")
+
+
+def test_an_attempt_that_minted_nothing_is_still_written_down(tmp_path):
+    """The failing case is the whole point of the file existing.
+
+    A record that only held successes would be empty on exactly the turns
+    somebody is asking about, and empty would then be read as "no attempt was
+    made" — which is the reading §5 forbids and the one this node was actually
+    stuck on for a day.
+    """
+    written = human_control.record_attempt(
+        _attempt(), path=tmp_path / "human-control" / "ingress.jsonl")
+
+    assert written == {"recorded": True,
+                       "path": str(tmp_path / "human-control" / "ingress.jsonl"),
+                       "state": "BLOCKED"}
+    (line,) = _lines(tmp_path / "human-control" / "ingress.jsonl")
+    assert line["attached"] is False and line["state"] == "BLOCKED"
+    assert line["actor_identified"] is False
+    assert line["detail"], (
+        "a state with no detail is the same silence in a different file: "
+        "`BLOCKED` has to carry what the provider answered")
+
+
+def test_a_record_that_cannot_be_written_is_returned_not_raised(tmp_path):
+    """A logging problem must not become a failed turn.
+
+    The mount runs inside UserPromptSubmit, so raising here would turn "the
+    record is unwritable" into "this turn did not happen" — trading one silence
+    for a worse one. The caller gets `recorded: false` and says so.
+    """
+    blocked = tmp_path / "a-directory"
+    blocked.mkdir()
+
+    written = human_control.record_attempt(_attempt(), path=blocked)
+
+    assert written["recorded"] is False
+    assert written["detail"], "a non-write has to say why it did not write"
+
+
+def test_the_record_is_on_by_default_and_no_record_turns_it_off(serving_daemon,
+                                                                monkeypatch,
+                                                                capsys,
+                                                                tmp_path):
+    """`--attach` alone writes, and `--no-record` is what writes nothing.
+
+    The default is ON because the primary caller is a turn hook whose command
+    string was read off a settings file that may predate the flag: measured
+    2026-09-28, the session holding the Feishu conversation ran `--attach` with
+    no `--record`, so an off-by-default record would have been silent on
+    exactly the turn being asked about, and "the hook never ran" and "the hook
+    ran and minted nothing" would have been the same empty file.
+
+    The off switch is asserted rather than assumed for the opposite reason: the
+    suite calls `main(["--attach"])` as a plain function, in-process, on this
+    node, with this node's roots bound, so a caller with no off switch would
+    litter a real log root.
+    """
+    asked: list[str] = []
+
+    def counted(ref=human_control.INGRESS_RECORD_REF):
+        asked.append(ref)
+        raise AssertionError("the record was resolved without being asked for")
+
+    monkeypatch.setattr(human_control, "ingress_record_path", counted)
+    monkeypatch.setattr(human_control, "BotMuxHumanControlProvider",
+                        _blocked_provider)
+
+    assert human_control.main(["--attach", "--no-record"]) == 1
+    assert asked == []
+    assert "record" not in json.loads(capsys.readouterr().out)
+
+    written = tmp_path / "ingress.jsonl"
+    monkeypatch.setattr(human_control, "ingress_record_path",
+                        lambda ref=human_control.INGRESS_RECORD_REF: written)
+
+    assert human_control.main(["--attach"]) == 1
+    reported = json.loads(capsys.readouterr().out)
+    assert reported["record"]["recorded"] is True, (
+        "the default is the whole point: a hook command string that says only "
+        "`--attach` still has to leave a trace")
+    assert len(_lines(written)) == 1
+
+
+def test_the_attach_verb_records_a_blocked_attempt(serving_daemon,
+                                                   monkeypatch,
+                                                   capsys,
+                                                   tmp_path):
+    """The exit code and the record have to agree with each other.
+
+    Exit 1 already says no context was minted. The record exists so that the
+    same turn also says *why* — which of the four outcomes it was — without
+    anyone having to reproduce it. The explicit `--record` spelling is kept
+    working as well as the default, because the installed hook string carries
+    it and a flag that stopped being accepted would turn a mount into a
+    traceback.
+    """
+    record = tmp_path / "ingress.jsonl"
+    monkeypatch.setattr(human_control, "ingress_record_path",
+                        lambda ref=human_control.INGRESS_RECORD_REF: record)
+    monkeypatch.setattr(human_control, "BotMuxHumanControlProvider",
+                        _blocked_provider)
+
+    assert human_control.main(["--attach", "--record"]) == 1
+    reported = json.loads(capsys.readouterr().out)
+    assert reported["attached"] is False and reported["state"] == "BLOCKED"
+    assert reported["record"]["recorded"] is True
+
+    (line,) = _lines(record)
+    assert line["state"] == "BLOCKED"
+    assert line["actor_identified"] is False
+    assert line["schema"] == "serveros/human-control-ingress.v1", (
+        "an append-only file many processes write to needs its own schema, so a "
+        "reader can tell a line this product wrote from a line it did not")
+
+
+def test_the_record_is_not_in_the_authority_namespace():
+    """`logs/`, and never `state/serveros/runtime/agent-control/`.
+
+    The whole reason the control store can be trusted as the answer to "what
+    does this node believe about actors" is that nothing else claims to be. An
+    ingress record inside that namespace would be a second thing to read before
+    answering that, and a reader would have to know which of the two wins.
+    """
+    ref = human_control.INGRESS_RECORD_REF
+    assert ref.startswith("logs/"), (
+        "the ingress record moved out from under `logs/`; if it is meant to be "
+        "authority it needs a producer and a place in the root contract, and if "
+        "it is meant to be a log it stays here")
+    assert "agent-control" not in ref and "state/serveros" not in ref
+
+
+def test_the_record_path_comes_from_the_root_contract(monkeypatch, tmp_path):
+    """Resolved, not composed. An unbound node is told so, not guessed at.
+
+    `{DATA_ROOT}/logs/...` is a plausible-looking path on a machine nobody
+    identified, and a record written there would be found later by a reader who
+    has no way to tell it was never this node's.
+    """
+    paths = human_control._load("serveros_runtime_paths",
+                                human_control._REPO / "runtime" / "paths.py")
+
+    class Unbound:
+        bound = False
+        unconfigured = ("DATA_ROOT",)
+
+        def resolve(self, ref):
+            raise AssertionError("an unbound node resolved a path anyway")
+
+    monkeypatch.setattr(paths, "Paths", Unbound)
+    with pytest.raises(human_control.HumanControlError) as caught:
+        human_control.ingress_record_path()
+    assert "UNBOUND" in str(caught.value)
+
+    class Bound:
+        bound = True
+        unconfigured = ()
+
+        def resolve(self, ref):
+            assert ref == human_control.INGRESS_RECORD_REF
+            return {"ref": ref, "path": str(tmp_path / "ingress.jsonl")}
+
+    monkeypatch.setattr(paths, "Paths", Bound)
+    assert human_control.ingress_record_path() == tmp_path / "ingress.jsonl"

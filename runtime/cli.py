@@ -2264,7 +2264,7 @@ def _commands_under(node) -> list[str]:
 
 
 def _observe_drivers(contract: dict, paths) -> dict:
-    """What this node can measure about the declared session-start drivers.
+    """What this node can measure about the declared drivers.
 
     Read-only, and it reports no hook command. A registration is found by
     looking for the driver's marker among the `command` strings under the
