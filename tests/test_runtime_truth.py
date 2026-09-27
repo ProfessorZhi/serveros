@@ -13,6 +13,7 @@ version" failure this module exists to catch.
 """
 import argparse
 import importlib.util
+import io
 import json
 import os
 import shutil
@@ -49,6 +50,16 @@ LINK_MTIME = 1_500_000.0
 _spec = importlib.util.spec_from_file_location("runtime_truth", INSPECTOR)
 truth = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(truth)
+
+# Core's install-record key, DERIVED the way every reader in the inspector now
+# derives it. It used to be `truth.CLAUDE_PLUGIN_KEY`, a literal in the script;
+# the literal is gone because it named one composition instead of deriving the
+# one being measured — a node whose `--output` is a profile got core's record
+# back and reported it as the profile's state. A fixture that kept reaching for
+# the literal would put the same coupling back on the other side of the test.
+# Everything this fixture builds is core, so core is the name it derives.
+CORE_NAME = truth.BUNDLE_NAME
+CORE_PLUGIN_KEY = truth.plugin_key(CORE_NAME)
 
 _bspec = importlib.util.spec_from_file_location("serveros_build_rt", BUILDER)
 build = importlib.util.module_from_spec(_bspec)
@@ -241,7 +252,18 @@ class RuntimeTruthTests(unittest.TestCase):
         # file's plugin half, and "this machine has no node runtime" is a fact
         # the fixture states rather than a fact about the machine running the
         # suite. `install_node` turns all three on.
-        self.runtime_root = self.base / "runtime-assets"
+        #
+        # It is `dist/` rather than a second root, and that is the node's own
+        # arrangement rather than a convenience. `ROOT_SOURCES` derives the
+        # marketplace from `runtime_assets_root/hwz-server-os/.agents/...` and
+        # the runtime root from `runtime_assets_root/hwz-server-os`, so on every
+        # machine the marketplace root IS the runtime root and
+        # `<runtime-root>/<composition>/current` is inside it. Two roots here
+        # made this fixture a machine the product cannot describe: the derived
+        # `--output` escaped the marketplace root, `codex_marketplace` refused it
+        # by design, and every row that recomputes the artifact turned UNKNOWN
+        # for a reason nothing on a real node can reproduce.
+        self.runtime_root = self.base / "dist"
         self.unit_dir = self.base / "systemd" / "user"
         self.proc_dir = self.base / "proc"
         self.node_artifact = self.base / "dist" / "node"
@@ -287,7 +309,7 @@ class RuntimeTruthTests(unittest.TestCase):
         state this node was actually in when the plugin rows were found to be
         looking at the wrong one.
         """
-        key = key or truth.CLAUDE_PLUGIN_KEY
+        key = key or CORE_PLUGIN_KEY
         installed = json.loads(self.claude_json.read_text()) if self.claude_json.is_file() \
             else {"version": 2, "plugins": {}}
         if record:
@@ -653,6 +675,41 @@ class RuntimeTruthTests(unittest.TestCase):
         }
         self.assertEqual(truth.tree_drift(expected, root), [])
 
+    def test_a_record_without_the_source_key_is_the_same_record(self):
+        """§J09 — and this is the case the exclusion missed for one revision.
+
+        A payload built before `ARTIFACT.json` carried `source` is not an older
+        VERSION of the artifact; it is the same artifact with one fewer
+        attribution key, and the whole point of excluding that key is that its
+        presence is not a difference. Normalizing only the side that has it
+        compares a record in the checker's serialization against a record in
+        whatever serialization wrote it — so the `serveros-testing` plugin
+        installed on this node, whose content is identical to what canonical
+        builds, was reported as drifted in one path.
+
+        Both orderings are asserted, because the asymmetry had a direction and
+        a test that only wrote the newer side first would keep passing if the
+        early return came back on the other branch.
+        """
+        doc = {"schema": "serveros/artifact.v1", "composition": NODE_COMPOSITION,
+               "name": "hwz-server-os-fixture-node", "version": "1.0.0",
+               "members": ["ARTIFACT.json"]}
+        source = {"serveros": {"commit": "a" * 40, "ref": "main",
+                               "tree_clean": True, "worktree_changes": 0}}
+        for label, with_key, without_key in (
+                ("installed predates the key", {**doc, "source": source}, doc),
+                ("expected predates the key", doc, {**doc, "source": source})):
+            with self.subTest(label):
+                root = self.base / f"source-key-{abs(hash(label))}"
+                root.mkdir()
+                # Written in a serialization neither side would produce on its
+                # own, so agreement can only come from the normal form.
+                (root / "ARTIFACT.json").write_text(
+                    json.dumps(with_key, indent=4, sort_keys=False) + "\n")
+                expected = {Path("ARTIFACT.json"):
+                            json.dumps(without_key, indent=7).encode()}
+                self.assertEqual(truth.tree_drift(expected, root), [])
+
     def test_but_a_changed_field_of_that_same_record_is_still_drift(self):
         """The exclusion is one key wide, and this is the width.
 
@@ -748,7 +805,7 @@ class RuntimeTruthTests(unittest.TestCase):
         victim.write_text("# stale\n")
         report = truth.collect(self.args())
         self.assertEqual(report["verdict"], truth.SOURCE_RUNTIME_DRIFT)
-        built = rows_by(report)["hwz-server-os @ runtime-assets (built)"]
+        built = rows_by(report)[f"{CORE_NAME} @ runtime-assets (built)"]
         self.assertIn("context/resolver.py", built["detail"])
 
     def test_absent_file_is_named(self):
@@ -758,8 +815,66 @@ class RuntimeTruthTests(unittest.TestCase):
         (self.out / "README.md").unlink()
         report = truth.collect(self.args())
         self.assertEqual(report["verdict"], truth.SOURCE_RUNTIME_DRIFT)
+        # The row is looked up under `UNKNOWN`, and that is the assertion rather
+        # than a detail of it: README.md is the file that declares which
+        # composition the artifact is, so an artifact without one has no name
+        # to be reported under. The row previously carried core's name here
+        # whether or not core was what the artifact claimed — the label was
+        # written down instead of read, which is the same defect as reading
+        # core's install record for a profile's payload.
         self.assertIn("missing README.md",
-                      rows_by(report)["hwz-server-os @ runtime-assets (built)"]["detail"])
+                      rows_by(report)[f"{truth.UNKNOWN} @ runtime-assets (built)"]["detail"])
+
+    def test_the_distribution_rows_read_the_record_their_artifact_names(self):
+        """§J09 — a profile at `--output` is not core, and core's record is not its.
+
+        The distribution rows used to read core's install record no matter which
+        artifact sat at `--output`, because the key was a literal. On this node
+        `--output` is a `serveros-linux-work` revision and core is not installed
+        at all, so a single substitution produced both halves of one false
+        report: `bundle identity` compared the profile's built version against
+        an absent record and called it drift, and the Claude-cache hop said
+        MISSING for a payload that was present and correct under the profile's
+        own plugin name. Measured 2026-09-27.
+
+        The fixture installs BOTH records, at different versions. One record
+        would let a reader that asks for the wrong key still come back with
+        something, and "it found a record" is not the property being tested —
+        naming the subject is.
+        """
+        self.build_artifact()
+        self.build_node_artifact()
+        profile = truth.declared_composition(self.node_artifact)
+        self.assertEqual(profile, NODE_COMPOSITION)
+        profile_name = truth.composition_index(self.build)[profile]["name"]
+        self.assertNotEqual(profile_name, CORE_NAME)
+
+        # Core is installed, from a real payload, so that reading it by mistake
+        # yields a confident wrong answer rather than an obvious absence.
+        self.install_claude("0.0.1-core", self.out, key=CORE_PLUGIN_KEY)
+        version = json.loads(
+            (self.node_artifact / ".claude-plugin/plugin.json").read_text())["version"]
+        cache = self.base / "claude-cache" / profile_name
+        shutil.copytree(self.node_artifact, cache)
+        self.install_claude(version, cache, key=truth.plugin_key(profile_name))
+
+        rows = rows_by(truth.collect(self.args(output=self.node_artifact)))
+
+        # The subject is read, not written down: the row is named for the
+        # composition the artifact declares, and core's row does not exist.
+        self.assertNotIn(f"{CORE_NAME} (bundle identity)", rows)
+        identity = rows[f"{profile_name} (bundle identity)"]
+        self.assertEqual(identity["installed"], version)
+        self.assertEqual(identity["verdict"], truth.OK, identity["detail"])
+
+        # The hop that was MISSING. Not `OK` asserted, because whether the copy
+        # equals canonical is a different question and one this test does not
+        # set up; what it asserts is that the reader FOUND the payload instead
+        # of reporting a present directory as absent.
+        cached = rows[f"{profile_name} @ Claude plugin cache"]
+        self.assertNotEqual(cached["verdict"], truth.MISSING, cached["detail"])
+        self.assertNotIn("not present", cached["detail"])
+        self.assertTrue(cached["installed"].startswith("sha256="), cached["installed"])
 
     def test_a_missing_runtime_is_missing_not_ok(self):
         """Codex says enabled; the cache it names holds nothing.
@@ -788,6 +903,138 @@ class RuntimeTruthTests(unittest.TestCase):
         row = rows_by(report)["workengine (installed)"]
         self.assertEqual(row["verdict"], truth.SOURCE_RUNTIME_DRIFT)
         self.assertIn("added_later.py", row["detail"])
+
+    def test_an_undeclared_control_plane_is_not_a_missing_one(self):
+        """§J09 — the work-engine control plane is a separate distribution.
+
+        This row used to derive its path from the profile and report MISSING when
+        nothing was there, which put it in the chain and blocked
+        RELEASE_COMPLETE. On this node nothing has ever been at that path — it is
+        the Beijing layout — and nothing should be: `fleet/state-root-contract.yaml`
+        names two programs called `serverosctl` and marks the control plane's
+        `boards` namespace `required: false` / `absent_means: NO_BOARDS`, while
+        `ARCHITECTURE.md` says two repositories must not compete for the same
+        installed executable. Measured 2026-09-27: `envs/python/` held only
+        `serveros-test`, no `workengine` package existed anywhere, and the row was
+        the sole remaining blocker.
+
+        Undeclared must not be silently equivalent to absent, so the pair is
+        asserted: this case leaves the chain, and the next one stays in it.
+        """
+        # Clean, because `blocking == []` is the assertion and it would hold for
+        # the wrong reason on a fixture with other drift in it. The pair below
+        # then differs in exactly one thing — the declaration.
+        self.build_and_install()
+        report = truth.collect(self.args(engine_installed=None))
+        row = rows_by(report)["workengine (installed)"]
+        self.assertFalse(row["applies"])
+        self.assertNotIn(row["verdict"], (truth.OK, truth.MISSING))
+        self.assertIn("no control-plane installation is declared", row["detail"])
+        self.assertIn("workengine (installed)", report["release"]["not_applicable"])
+        # The whole point: an undeclared control plane is not a blocking absence.
+        self.assertEqual(report["release"]["blocking"], [])
+
+    def test_a_declared_but_absent_control_plane_still_blocks(self):
+        """The other half of the pair, and the reason `applies` is not a reading.
+
+        If applicability followed the directory rather than the declaration, this
+        row would go quiet exactly when it had something to say — declare the
+        control plane, lose it, and the chain would report nothing. Declared and
+        absent is the case worth catching, and it is the one that must stay in
+        the chain.
+        """
+        self.build_and_install()
+        report = truth.collect(self.args(engine_installed=self.base / "gone"))
+        row = rows_by(report)["workengine (installed)"]
+        self.assertTrue(row["applies"])
+        self.assertEqual(row["verdict"], truth.MISSING)
+        self.assertIn("declared but no installed package", row["detail"])
+        self.assertNotIn("workengine (installed)", report["release"]["not_applicable"])
+        self.assertEqual(report["release"]["blocking"], [truth.AXIS_CHAIN])
+        self.assertEqual(report["release"]["verdict"], truth.RELEASE_INCOMPLETE)
+
+    # ---- the defaults argv decides --------------------------------------
+
+    def main_argv(self) -> list[str]:
+        """This inspector's own command line, with `--output` left off.
+
+        Every other root is passed explicitly, because the subject of this test
+        is the one argument whose default is a RULE rather than a constant, and
+        a rule tested by writing its result out by hand tests the hand.
+        """
+        return [
+            "--json",
+            "--serveros-repo", str(self.serveros),
+            "--ability-repo", str(self.ability),
+            "--engine-repo", str(self.engine_repo),
+            "--marketplace-path", str(self.marketplace),
+            "--runtime-root", str(self.runtime_root),
+            "--composition", NODE_COMPOSITION,
+            "--canonical-ref", truth.DEFAULT_CANONICAL_REF,
+            "--claude-plugins-json", str(self.claude_json),
+            "--claude-settings-json", str(self.claude_settings),
+            "--codex-config", str(self.codex_config),
+            "--codex-cache", str(self.codex_cache),
+            "--claude-skills-root", str(self.claude_skills),
+            "--codex-skills-root", str(self.codex_skills),
+            "--unit-dir", str(self.unit_dir),
+            "--proc-root", str(self.proc_dir),
+        ]
+
+    def run_main(self) -> tuple[int, dict]:
+        """`main()` as a process would run it, with its report parsed back out.
+
+        `main` prints, so stdout is captured — and located rather than assumed,
+        because the builder prints its own progress into the same stream.
+        """
+        out = io.StringIO()
+        with mock.patch.object(sys, "argv", ["runtime_truth.py", *self.main_argv()]), \
+                mock.patch("sys.stdout", out):
+            rc = truth.main()
+        text = out.getvalue()
+        start = text.index('{\n  "schema": "serveros/runtime-truth.v3"')
+        return rc, json.loads(text[start:])
+
+    def test_the_output_default_is_the_nodes_own_composition(self):
+        """`--output` is where THIS node's composition lives, and argv says which.
+
+        Its default used to be `<runtime-root>/current` — core's position under
+        the single-composition layout this node left on 2026-09-23 — so the
+        "built" hop was measured against a directory that no release writes and
+        no marketplace names. On the real node that read as 64 drifted paths and
+        a version two releases old, reported as though the node were stale, while
+        the artifact it actually built, installed and ran was never looked at.
+
+        Exit code carries the assertion as well as the row does: with the old
+        default the derived subject is core, whose record this fixture does not
+        install, so the report drifts and `main` returns 1.
+        """
+        self.build_artifact()
+        self.build_and_install()
+        self.install_node()
+        node_name = truth.composition_index(self.build)[NODE_COMPOSITION]["name"]
+        self.assertNotEqual(node_name, CORE_NAME)
+        current = self.runtime_root / NODE_COMPOSITION / "current"
+        node_version = json.loads(
+            (self.node_artifact / ".claude-plugin/plugin.json").read_text())["version"]
+        self.install_claude(node_version, current, key=truth.plugin_key(node_name))
+        # A node that is installed and not running is not the state this test is
+        # about, and RELEASE_COMPLETE says so: the unit row is part of it. The
+        # process is synthetic for the same reason the unit file is — the
+        # fixture owns `/proc` rather than reading the host's.
+        self.run_process([str(current / "bin/serverosd")], started_at=2_000_000.0)
+
+        rc, report = self.run_main()
+
+        rows = rows_by(report)
+        self.assertEqual(
+            rc, 0, [(r["component"], r["verdict"], r["detail"])
+                    for r in report["rows"]
+                    if r["verdict"] != truth.OK and r.get("applies", True)])
+        self.assertIn(f"{node_name} @ runtime-assets (built)", rows)
+        self.assertNotIn(f"{CORE_NAME} @ runtime-assets (built)", rows)
+        self.assertEqual(rows[f"{node_name} (bundle identity)"]["verdict"], truth.OK)
+        self.assertEqual(report["release"]["verdict"], truth.RELEASE_COMPLETE)
 
     # ---- primitives -----------------------------------------------------
 
@@ -825,12 +1072,32 @@ class RuntimeTruthTests(unittest.TestCase):
 
     def test_claude_install_record_is_read(self):
         self.install_claude("9.9.9", self.out)
-        got = truth.read_claude_install(self.claude_json)
+        got = truth.read_claude_install(self.claude_json, CORE_NAME)
         self.assertEqual(got["version"], "9.9.9")
         self.assertEqual(got["installPath"], str(self.out))
 
     def test_missing_claude_record_is_empty_not_an_exception(self):
-        self.assertEqual(truth.read_claude_install(self.base / "nope.json"), {})
+        self.assertEqual(truth.read_claude_install(self.base / "nope.json", CORE_NAME), {})
+
+    def test_the_record_read_is_the_one_the_plugin_name_names(self):
+        """The reader's subject is its argument, and it has no default.
+
+        Two records, two compositions, and the answer has to be the asked-for
+        one — which is only checkable because the parameter exists. The absence
+        of a default is asserted too: a caller that never names a subject cannot
+        be given core's record and report it as somebody else's, because there
+        is no call that omits the name.
+        """
+        other = truth.plugin_key("hwz-server-os-linux-work")
+        self.install_claude("9.9.9", self.out, key=CORE_PLUGIN_KEY)
+        self.install_claude("1.1.1", self.base / "other", key=other)
+        self.assertEqual(
+            truth.read_claude_install(self.claude_json, CORE_NAME)["version"], "9.9.9")
+        self.assertEqual(
+            truth.read_claude_install(self.claude_json, "hwz-server-os-linux-work")["version"],
+            "1.1.1")
+        with self.assertRaises(TypeError):
+            truth.read_claude_install(self.claude_json)  # type: ignore[call-arg]
 
     def test_codex_config_activation_is_read(self):
         # `install_codex` mirrors a payload, and this test is about the config
@@ -896,7 +1163,7 @@ class RuntimeTruthTests(unittest.TestCase):
         version = self.build_and_install()
         self.install_claude(version, self.out, enabled=False)
         report = truth.collect(self.args())
-        label = f"{truth.CLAUDE_PLUGIN_KEY} (Claude plugin, disabled)"
+        label = f"{CORE_PLUGIN_KEY} (Claude plugin, disabled)"
         self.assertIn(label, rows_by(report))
 
     def test_the_composition_a_session_loads_is_recomputed_not_trusted(self):
@@ -904,22 +1171,22 @@ class RuntimeTruthTests(unittest.TestCase):
         version = self.build_and_install()
         self.install_claude(version, self.out)
         rows = rows_by(truth.collect(self.args()))
-        row = rows[f"{truth.CLAUDE_PLUGIN_KEY} (Claude plugin, enabled)"]
+        row = rows[f"{CORE_PLUGIN_KEY} (Claude plugin, enabled)"]
         self.assertEqual(row["verdict"], truth.OK)
 
         # A payload that has the right version and the wrong bytes. The version
         # string is untouched, so a row that read it would still say OK.
         (self.out / "skills/runtime-management/SKILL.md").write_text("tampered\n")
         rows = rows_by(truth.collect(self.args()))
-        row = rows[f"{truth.CLAUDE_PLUGIN_KEY} (Claude plugin, enabled)"]
+        row = rows[f"{CORE_PLUGIN_KEY} (Claude plugin, enabled)"]
         self.assertEqual(row["verdict"], truth.SOURCE_RUNTIME_DRIFT)
         self.assertIn("SKILL.md", row["detail"])
 
     def test_an_enabled_plugin_nobody_can_find_is_missing_not_quiet(self):
         self.claude_settings.write_text(json.dumps(
-            {"enabledPlugins": {truth.CLAUDE_PLUGIN_KEY: True}}))
+            {"enabledPlugins": {CORE_PLUGIN_KEY: True}}))
         rows = rows_by(truth.collect(self.args()))
-        row = rows[f"{truth.CLAUDE_PLUGIN_KEY} (Claude plugin, enabled)"]
+        row = rows[f"{CORE_PLUGIN_KEY} (Claude plugin, enabled)"]
         self.assertEqual(row["verdict"], truth.MISSING)
         self.assertIn("absent from the install record", row["detail"])
 
@@ -1248,7 +1515,7 @@ class RuntimeTruthTests(unittest.TestCase):
         # claim, so it has to be silenced too — otherwise the effective pin
         # comes from there and this tests nothing about a missing declaration.
         doc = json.loads(self.claude_json.read_text())
-        doc["plugins"][truth.CLAUDE_PLUGIN_KEY][0].pop("gitCommitSha", None)
+        doc["plugins"][CORE_PLUGIN_KEY][0].pop("gitCommitSha", None)
         self.claude_json.write_text(json.dumps(doc))
         report = truth.collect(self.args(ability_rev=""))
         pin = report["release"]["pin"]

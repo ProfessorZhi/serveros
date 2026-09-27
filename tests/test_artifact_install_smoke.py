@@ -244,10 +244,21 @@ class InstalledArtifactTests(unittest.TestCase):
         Files under `fixtures/` are loaded by path rather than imported —
         `memory/provider-contract.yaml` names one — so they are exercised the
         way the product exercises them.
+
+        A file nested BELOW a code directory is a script, and is probed with
+        that entry point's layout rather than a surface module's. There are two
+        of them in the payload, and the second is why this paragraph exists:
+        `memory/fixtures/openviking_double.py` is run as `python3 <path>
+        --selftest`, and `memory/openviking/backup.py` as `python3 <path>
+        <verb>`. Running a script puts ITS OWN directory on `sys.path` and
+        nothing else. Probing it with the code directory instead would ask an
+        import question the machine never asks, and would pass a script the
+        real invocation cannot start — the false green this file exists to
+        remove, reached from the other side.
         """
         dirs = self.code_dirs()
         self.assertTrue(dirs, "the artifact carries no code directory")
-        paths = [str(self.installed)] + [str(self.installed / d) for d in dirs]
+        roots = [str(self.installed)] + [str(self.installed / d) for d in dirs]
 
         checked = 0
         for d in dirs:
@@ -262,6 +273,8 @@ class InstalledArtifactTests(unittest.TestCase):
                             cwd=str(self.installed), env=clean_env(self.home),
                             capture_output=True, text=True, timeout=300)
                     else:
+                        paths = (roots if py.parent == self.installed / d
+                                 else [str(py.parent)])
                         script = PROBE % {"paths": paths, "module": py.stem}
                         proc = subprocess.run(
                             [sys.executable, "-c", script],
