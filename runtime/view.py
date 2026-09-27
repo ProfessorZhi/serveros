@@ -1387,8 +1387,11 @@ def environment_effective(*, state_dir=None, root=None, observed=None,
 
 # The classification inputs §16 reads, and which of them this layer can gather.
 # It is a literal rather than a comment because the answer is printed: a report
-# that could reach four of eight inputs and does not say so is read as one that
-# found nothing in the other four.
+# that consulted only some of these and did not say which is read as one that
+# found nothing in the rest. This said "four of eight" until 2026-09-27; the six
+# names below are the whole set `runtime_hygiene.classify` reads, so the printed
+# `inputs_not_gathered` can never name more than they hold, and the pair of
+# numbers described a set neither the module nor this layer has.
 HYGIENE_INPUTS = ("comparison", "protection", "activity", "owner_evidence",
                   "superseded_by", "traffic")
 
