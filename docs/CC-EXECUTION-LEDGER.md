@@ -112,6 +112,8 @@ source revision 一列给的是**指纹成立的那次 revision**，也就是 pa
 | G1 | 能力治理 | ability-management | `skills/ability-management` | Skill | f5e563b | registry/build/install 工具 | 原生 | `3.1.0+srv0003.20260915a` | DONE | DONE | ENABLED | — |
 | A1 | 接续 | agent-session-management | `skills/agent-session-management`、`skills/session-manager` | Skill ×2 | 早于本轮 | `serveros-agent` MCP | 原生 | srv0003.20260915a | DONE | DONE | ENABLED | — |
 | A2 | 记忆检索 | shared-memory | `skills/shared-memory` | Skill | 早于本轮 | memory 原生/records | **UNBOUND**（OpenViking 未绑） | srv0003.20260915a | DONE | DONE | PARTIAL | OpenViking provider 无处可绑 |
+
+> **订正 2026-09-27（§9.53.5–9.53.7）**：本行的 `UNBOUND` 与「无处可绑」**已不成立**。OpenViking provider 已由两个真实消费者绑上（Claude 侧 `openviking-memory` 0.6.4、Codex 侧 `codex-memory-plugin` 0.10.5），正向场景实测：Claude 跨会话回忆、current truth 覆盖、provider 停机回退、重启持久性、备份针对活动存储，逐条落到 `SRV-0011/RUN-0001/verification/journey-{E,F,G,H,I}-*`。**但 `peer_scope` 这条隔离判据实测 NOT HELD**（服务端接受并忽略该字段），所以本行不是全绿——剩余缺口以 §9.53.6 与 §9.53.10 为准，`UNBOUND` 一词按原句保留只为不抹掉当时的读数。
 | A3 | Workspace/Git | workspace-maintainer | `skills/workspace-maintainer`（运行时名仍 `workspace-management`） | Skill | 早于本轮 | 原生 git/gh | 原生 | srv0003.20260915a | DONE | DONE | ENABLED | — |
 | A4 | 运行环境/Fleet | runtime-management、test-management | `skills/runtime-management`、`skills/test-management` | Skill ×2 | 早于本轮 | `serverosd`、`serveros-node` MCP | 原生 | srv0003.20260915a | DONE | DONE | ENABLED | — |
 | A5 | Fleet 交接 | fleet-coordination | `skills/fleet-coordination` | Skill | 早于本轮 | 已授权 transport | **UNBOUND** | srv0003.20260915a | DONE | DONE | PARTIAL | 单设备路径，跨设备动词 absent |
@@ -7738,6 +7740,251 @@ PARTIAL：`put_grant` 只有测试调用它，没有 CLI 动词、没有 daemon 
 第 5 条改的是别人建的页，第 6 条改的是别人的工具或机器策略，第 7 条改的是一个**对外可达的地址**。
 三条都记在 §9.24.6 与 §9.24.4 里有实测出处，这里只做汇总与解除条件的分类，不重复理由。
 
+## §9.53 四个 seam 的收口：按需发现、Human Control ingress、OpenViking 消费、B9 一致性
+
+这一片**没有重新设计 ServerOS**。四件事都是同一种形状：链路上已经有一个正确的生产者，
+消费者也在，唯独中间那一段没有生产者，或者有生产者但它的输出被读成别的意思。修的是那一段。
+
+四个 seam 与它们的落点：
+
+| seam | 缺的是什么 | 落点 |
+| --- | --- | --- |
+| Ability on-demand | `installed: false` 被读成「不存在」 | `96a6405` |
+| Human Control ingress | `trusted context → grant` 这一段没有生产者 | `a4ff07f` |
+| OpenViking 消费 | 两个真实消费者没跑通 | 无源码改动，本片实测 |
+| B9 一致性 | 派生件与 canonical 不一致 + bootstrap 超预算 | `2ca77eb` + `e1d362a` |
+
+### 9.53.1 前三件的正文在别处，这里只补增量
+
+`96a6405`（on-demand 的第三个发现源）、`a4ff07f`（Human Control 的两条动词与那条 fail-open）、
+`2ca77eb`（bootstrap 撞 160 行预算并修回）这三件，本文件已经逐条写过——分别是 **§9.52.1**、
+**§9.51.1–9.51.2**、**§9.52.1–9.52.4**，细节比这里更全（`SO_PEERCRED`、`put_grant` 没有时钟、
+`declared_on_demand` 返回 `entries: null` 而不是 `[]`，都在那边）。**不在这里写第二份**：同一个
+结论在四处各说一遍，漂移的那一份是没人读的那一份。
+
+本节只记**本轮相对那三节新增**的事实，以及它们**上机之后**才成立的部分：
+
+**（一）on-demand 那一段本轮真的上弦了，并且被两个 fresh root 用了。** §9.52.4 当时记的是
+「实机还停在 `c473ea9`，今天实机上的 bootstrap 里根本没有 on-demand 那段话」。本轮 build →
+promote → restart 之后这句话不再成立：`current` 是 `serveros-ondemand-routing-27e-20260927`，
+Journey C/D 两个全新 Claude root 按那段话走通了，判词与逐字答案见 §9.53.5。
+
+**（二）它走通的判据不是「目录存在」。** C 答出 §1.6 / §4.5 / `expand_feishu_doc.py --refresh` /
+`content_sha256`，并**主动指出** SKILL 与 `raw/feishu/README.md` 的措辞分歧，且**拒绝自己裁决**；
+D 引出 work-management 的具体行号并交叉引用三份契约。一个只会「列目录」的实现给不出这些。
+
+**（三）Human Control 的代码半边本轮已装机，但正向链仍不闭合**，原因可读：`agent-control/store.json`
+的 `contexts: {}` 与 `grants: {}` 说明本节点**从未有过一个真实可信上下文**。wake 每分钟报
+`NO_AUTHORIZING_GRANT` 是**消费者在正确工作**，不是橡皮图章。细则与那一句人前提见 §9.53.10。
+
+**（四）cachebuster 从 `srv0005.20260927d` 移到 `…e`（`e1d362a`），两半都动了**，这两半各是
+什么、为什么行数没变而 diff 是真的、以及 builder 为什么看不见它，见该提交正文；本轮新增的是
+**结果**：`ARTIFACT.json` 记 `source.serveros.tree_clean: true` / `worktree_changes: 0`，
+即这一份是从**干净检出**构建的，因此它**有**内容身份而不只是 commit（§9.53.4 现场）。
+
+（编号跳过 `9.53.2`/`9.53.3`：那两个号本来要分给上面这两件，既然正文不在这里，号一并空着，
+不留给以后的人去猜是不是被删过。）
+
+### 9.53.4 一次 pack repin，与发布链的现场
+
+构建先被 pack 的 `PIN_MISMATCH` 挡住，报
+`['pack:autonomous-quality-loop=2cd8a1fb2f03', …] vs c623825ff05a`。
+
+祖先规则在这里**不成立**：`2cd8a1f..c623825` 之间 `abilities-manifest.yaml` 变了（+98/−10）。
+处置按规则走，不按方便走：先重验证（两修订都是 59 个能力，name 集合逐项相同），再在
+ability-management worktree 里 repin（5 处 `revision:`）+ 重生成派生件
+（`CAPABILITY-FAMILIES.md`、`capability-families.json`，各 5 处），提交 → PR → 合并，
+然后用新 tip 的 sha 作 `--ability-rev` 构建。
+
+发布链：build（到 marketplace 根下的点号暂存目录，**绝不写 `current`**）→ `release.py promote`
+（只做 `daemon-reload`，**不重启**）→ `systemctl --user restart serverosd.service`。
+构建必须带 `--bundle plugin/profiles/linux-work.yaml`（默认 bundle 会把活 marketplace 描述符
+改指到不存在的 composition），`--ability-rev` 必须是完整 sha。
+
+现场（`serverosctl status`，2026-09-27 北京时间）：
+
+```
+release     serveros-ondemand-routing-27e-20260927 · 3.1.0+srv0005.20260927e · tree cb47ee37cfc1
+source      93499386ba26 (main, clean) · ability-management@da5f89b1b131
+pointer     AGREEMENT · current → …/revisions/serveros-ondemand-routing-27e-20260927
+```
+
+`ARTIFACT.json` 的 `source.serveros.tree_clean: true` / `worktree_changes: 0`：这一份是从**干净
+检出**构建的，因此它**有**内容身份，不只是 commit。Codex 侧插件是版本键控的真实拷贝，promote
+不会带着它走，已用 `codex plugin add` 刷到 27e。
+
+活 marketplace 描述符 `…/.agents/plugins/marketplace.json` 在 build/promote 前后
+**sha256 未变**（`b7a16953d1824d0f…`）——这一轮没有碰到 Codex 的入口。
+
+### 9.53.5 OpenViking：两个真实消费者，与 A–I 的判词
+
+服务是本机已有那一份，**没有部署第二个**（`openviking.service`，user 单元，
+`127.0.0.1:1933`，OpenViking 0.4.21，`auth_mode=api_key`）。集成方式是 plugin（Hooks + MCP）：
+Claude 侧 `openviking-memory` 0.6.4，Codex 侧 `codex-memory-plugin` 0.10.5。
+
+| # | 判据 | 判 | 依据 |
+| --- | --- | --- | --- |
+| F | Claude 跨会话回忆 | **PASS** | 新会话答出 `OVPROBE-7F3A-91C2`，逐字落证据（`journey-F-…txt`） |
+| E | Codex 动态 specialist | **PASS** | Codex 从 `serveros` bootstrap 路由到 owner `work-management` 并逐字引用 |
+| H | current truth 覆盖旧记忆 | **PASS** | 按四路独立现场回答（进程表 / systemd / 内核 socket 表 / ServerOS MCP 的 `answered_by`），并主动区分单元级常驻与该 PID 的起始时刻 |
+| I | provider 停机回退 | **PASS** | 明确 `offline` 而**不是空记忆**；`reason=offline` 与「搜到但没有」的 `reason=ok + count=0` 是可区分的两个值，且落点被 `ov-memory-doctor.mjs` 消费 |
+| G-1 | Codex 侧 OV 回忆 | **BLOCKED** | 被 Codex hook 的信任记录挡住；**不许伪造**，见下 |
+| G-2 | scope denial | **NOT HELD** | 见 9.53.6 |
+| G-3 | 重启后仍在 | **PASS** | 见 9.53.7 |
+| G-4 | 备份针对活动存储、无常驻守护 | **PASS** | 见 9.53.7 |
+
+关于 I 值得单独写一句，因为它是本轮唯一一条「按**区分值**而不是按**有无**」判的项：
+`auto-recall.mjs` 的不可达分支**不注入任何 block**，并把 `reason: "offline"` 写进
+`last-recall.json`；「搜了没有」写的是 `reason: "ok"` + `count: 0`。两者在 state 里是不同的值，
+doctor 读 `reason === "offline"` 并明确报 *the hook could not reach the server at that time*。
+**「记忆结果是 unavailable」与「没有记忆」因此不会被读成同一件事**——这正是 §7 要的那一条。
+
+### 9.53.6 一条不成立的判据：`peer_scope` 在本机是装饰
+
+这一条我**没有**把它写成 PASS。
+
+按插件自己的消费路径跑正反对照（`artifacts/serveros/openviking/scope-denial-body.mjs`）：
+
+```
+arm peer_scope=all    -> POST /api/v1/search/search  200  content=1 chars=575
+arm peer_scope=actor  -> POST /api/v1/search/search  200  content=1 chars=575
+```
+
+两臂请求体的唯一差别就是 `"peer_scope":"actor"`，actor 头同为同一个**不存在的** peer，
+拿到的是**逐字节相同**的块。再把插件摘掉、直接问服务端，三臂对照：
+
+```
+A  peer_scope 缺席  + 陌生 actor 头      -> ok, entries=2, entries_sha256 1e77df3231785643
+B  peer_scope=actor + 陌生 actor 头      -> ok, entries=2, entries_sha256 1e77df3231785643
+C  peer_scope=actor + 另一个陌生 actor 头 -> ok, entries=2, entries_sha256 1e77df3231785643
+```
+
+结果集哈希相同 ⇒ **`peer_scope` 与 `X-OpenViking-Actor-Peer` 被服务端接受并忽略。**
+
+那么这份部署真正执行的边界是什么，也一并量了：
+
+* 伪造 api_key → `UNAUTHENTICATED: Invalid API Key`（F）
+* `root_api_key` → `PERMISSION_DENIED`：「ROOT API keys cannot access tenant-scoped data APIs
+  in api_key mode… or trusted mode for upstream identity assertion」（E）
+* 用户 key + 伪造 `X-OpenViking-Account`/`X-OpenViking-User` → 头**没有生效**（api_key 模式下
+  只在 trusted 模式被采信）。**调用方无法靠伪造身份头把范围挪走或放宽**（D）。
+
+命名空间也核了：`data/viking/default/user/default` 是**唯一**的 user 桶，`usage_audit` 的
+`account_id`/`user_id` 全部落在 `default`。这是一份**单租户**部署。
+
+结论：**该要求的真实执行轴是 api_key，不是 peer_scope。** 跨调用方隔离在这份部署上由 key
+承担；`peer_scope: actor` 是一句被收下但不执行的请求。ServerOS **不新建一个「自己的 peer
+过滤器」来假装它成立**——那会造出第二个权威，正是 §7 禁止的事。另外实测本机插件的有效配置是
+`recallPeerScope: all`（默认值），**没有任何在跑的消费者正依赖这条不成立的性质**。
+
+判：**NOT HELD**，且这是**服务端能力缺口**，不是 ServerOS 的接线缺陷。它必须以这个身份
+进入最终报告，不得被读成 PASS。
+
+### 9.53.7 重启持久性与备份：同一量具的前后对照
+
+`openviking.service` 重启：`MainPID 1136439 → 2009073`，`active/running`，`/health` ok。
+**同一 curl 请求（同 query、同 actor 头、同 body）前后各一次**：
+
+```
+重启前  status ok, entries=2, entries_sha256 1e77df3231785643
+重启后  status ok, entries=2, entries_sha256 1e77df3231785643
+```
+
+存储侧独立复核：探针记忆仍落在 `viking/default/user/default/memories/serveros-closure-probe.md`
+与 `vectordb/context/store/000021.ldb`；资源件仍在（202 字节）。判 **PASS**。
+
+备份：`ov.conf` 的 `storage.workspace` = `/data/home/vince/runtime-assets/openviking/data`，
+备份命令的 `-C` 与目标就是这**一个**路径——**没有第二个数据目录被误当成源**。复核不是只看
+tar 列表：解到 scratch 后文件数 102、探针令牌仍可搜到、资源件字节一致。
+
+**没有常驻备份守护**：`crontab -l` 无相关条目；`systemctl --user list-timers --all` 无相关
+timer；`list-units` 里只有 `openviking.service` 本身（它是被测的提供方，不是备份器）；
+`pgrep -af backup` 无常驻进程。备份是**一次性动作**，没有新增长命组件。
+
+两份 tar 不判为重复件：`21:29` 那份（gzip，3,112,808 字节解出）是重启**前**的快照，
+`22:08` 那份（POSIX tar，3,326,378 字节）是重启**后**的；差的是一个时间点。前一份是唯一的
+重启前副本，两份都留。
+
+### 9.53.8 §15 的退役与剩下的提案
+
+本轮按 `owner → consumer → reference → unique evidence → rollback → retire` 只动手两处：
+
+* `.staging-serveros-ondemand-routing-27e-20260927`（7.3 M）：已验证是已提升修订的**子集**，
+  无独有内容，owner 是构建器、consumer 已推进到 `current`，退役。
+* 六份 OV 临时集成测试产物：逐份验证均为插件缓存文件的**逐字节副本**，无独有内容，退役。
+
+保留三份回滚件（`settings.json.before-*` ×2、`codex-config.toml.before-*`、`marketplace.json.before-*`）。
+
+**只记提案、不动手**的仍然是：18 个历史 revisions、顶层真实目录 `current`、`.prev-*` /
+`.retired-*`、46 个 `archive/*` 标签、其他 actor 的 dirty worktree（`PRESERVE_WIP`）、
+Quay 多代共存（`DEFER`）、插件缓存孤儿（`RETAIN_TOOL_MANAGED`）。理由见 §12 与 §15 的分类，
+本节不重复。
+
+### 9.53.9 测试
+
+`tests/test_work_delegate.py` 21 passed；`test_daemon` 103 passed；
+`test_build` / `test_artifact_install_smoke` / `test_ability_resolver` 122 passed；
+`test_wake` / `test_delegation` / `test_continuation` / `test_admission` /
+`test_control_store_path` / `test_cross_device_handoff` / `test_core_freeze`
+**433 passed, 1 skipped**。全量 137 文件见 `verify-final-27e-20260927`。
+
+### 9.53.10 重做的验收表（G1 + A1–A10 + B1–B10）
+
+§3.1 那张表是上一轮的读数，且它的三列状态（`CODE`/`INTEGRATION`/`LIVE`）问的是「有没有」。
+这一张按本轮要求换一组列：**每一条能力的验收 = 责任 + 正确的实现形态 + 真实消费者 + 正向场景 +
+权力边界**，外加剩余缺口。**没有一行的判词是「它不是 Skill 所以 PARTIAL」**——`shape` 一列里
+出现 `MCP`/`Plugin`/`CLI`/`契约` 都是正当的落法，21 是语义职责数，不是 artifact 数（§3.2）。
+
+`本轮实测` 一列的纪律：只写**这一轮真的跑过**的场景，并给出落点；没重跑的写「未重测」并指到
+它上一次的读数，**不把旧绿灯搬过来当新证据**。
+
+| # | 责任 | realization type | implementation locator | consumer | 本轮实测的正向场景 | authority | 剩余缺口 |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| G1 | 能力治理 | Skill + CLI/MCP 工具 | `skills/ability-management`；`serverosctl ability resolve`；`runtime/daemon.py#declared_on_demand` | 路由中的 Agent；build/install 工具 | **§9.53.1**：全新 Claude root 下 `ability.search information-management` 得 `matched: 0`，按 `declared_by` 找到 composition → 解析到 owner → 装上 → **真的用它答题**（Journey C/D，答出 §1.6/§4.5/`expand_feishu_doc.py --refresh`/`content_sha256`） | ability-management 是 canonical；runtime 副本**永不反向写** | 无（本轮） |
+| A1 | 接续 | Skill ×2 | `skills/agent-session-management`、`skills/session-manager` | `serveros-agent` MCP | **未重测**。本轮只重测了它的下游：store 的 `contexts: {}` / `grants: {}` 说明本节点**从未有过真实可信上下文**，wake 每分钟 `NO_AUTHORIZING_GRANT` | 会话状态由 provider 持有；ServerOS 不做身份推断 | **正向链未闭合**，见下「Human Control 正向链」行 |
+| A2 | 记忆检索 | Skill + **Plugin(Hooks+MCP)** ×2 | `skills/shared-memory`；Claude 侧 `openviking-memory` 0.6.4；Codex 侧 `codex-memory-plugin` 0.10.5 | 两个真实 Agent 运行时 | **§9.53.5–9.53.7**：Claude 跨会话答出 `OVPROBE-7F3A-91C2`；current truth 按四路独立现场覆盖旧记忆；provider 停机时明确 `offline` 而非空记忆；重启后同量具前后面貌一致 | OpenViking **不得覆盖** current source revision / Claim / accepted Requirement / Work Item / grant / Ability identity | Codex 侧回忆被 hook 信任挡住；`peer_scope` 不成立（§9.53.6） |
+| A3 | Workspace/Git | Skill | `skills/workspace-maintainer`（运行时名仍 `workspace-management`） | 原生 git/gh | 未重测（本轮只用不走它的路径） | 工作只在 worktree；不碰 canonical | 无 |
+| A4 | 运行环境/Fleet | Skill ×2 | `skills/runtime-management`、`skills/test-management` | `serverosd`、`serveros-node` MCP | **未重测**（J 只复核了 serverosd 身份与 pointer，见 A6） | registry 是运行时的唯一 owner 来源；未知 owner = DEFER | 无 |
+| A5 | Fleet 交接 | Skill | `skills/fleet-coordination` | 已授权 transport | 未重测。**单设备路径** | 跨设备动词受授权约束 | 跨设备动词仍 absent |
+| A6 | 委派 | Skill | `skills/cc-quay-delegation` | 原生 Quay 0.11.0 | **§9.53.4**：单一 serverosd（PID 1786174）、`pointer AGREEMENT`、`release 3.1.0+srv0005.20260927e` | 委派不铸造权威 | 无 |
+| A7 | 自动化测试 | Skill + Plugin composition | `skills/automated-testing` + `plugin/profiles/testing.yaml` | 目标 CC 以正规 install 加载 | 未重测（本轮跑的是本仓全量，不是目标 CC 的加载） | 测试环境由 `test-management` 定义 | 无 |
+| A8 | 构建发布 | Skill | `skills/build-release` | 项目 builder/CI | **§9.53.4**：build → promote → **restart** 三步链，从**干净检出**构建（`tree_clean: true`） | builder 不写 `current`；cachebuster 是闸门 | 无 |
+| A9 | 生产观察 | Skill | `skills/production-observation` | 既有 API/CLI/跳板 | 未测 | — | 未装进任何 composition；**不预装，按需**（本轮 §8 口径） |
+| A10 | 生产变更 | Skill | `skills/production-change` | 调用 A9 + 真实 Runbook | 未测 | READY ≠ 切流授权 | 同 A9 |
+| B1 | 来源采集 | Skill | `skills/information-management` | `records/information/raw/*` | 未重测 | 采集规则的权威在 serveros | 无 |
+| B2 | 结构化认识 | 契约 + 读写两侧 | 读者 `intake/understanding_delta.py`；写者 `intake/understanding_patch.py` | affected people/project/topic | 未重测 | 写者只消费读者的区间；确认仍是人工输入 | 没有消费者读这份 patch |
+| B3 | 需求 | Skill | `skills/product-requirements-and-design` | — | 未重测 | accepted Requirement 不得被记忆覆盖 | 无 |
+| B4 | 工作管理 | Skill | `skills/work-management` | Work Engine MCP/CLI | **§9.53.5**：Codex 从 `serveros` bootstrap 路由到 owner `work-management` 并**逐字引用**具体行号（Journey E）；Claude 侧同路由（Journey D） | Work Item 的身份不被任何 provider 覆盖 | 无 |
+| B5 | 调研 | Skill | `skills/research-evidence` | Serper / 既有专业知识 | 未测 | — | 未装进任何 composition；**不预装，按需** |
+| B6 | 方案 | Skill ×3 | `skills/design-and-contract` + 两个专业 Skill | — | 未重测 | — | 旧入口分步迁移未做 |
+| B7 | 实现 | Skill | `skills/implementation-delivery` | — | 未重测 | — | 重叠旧入口未迁移 |
+| B8 | 报告发布 | Skill + 契约 | `skills/feishu-report` + `runtime/report-publication-contract.yaml` | `serverosctl report` | 未重测 | 发布走契约 | 四处移除仍 `PENDING_CONSUMER`；日报按 §13：无批准接收者时保持生成/发布/发件箱正常，`disabled with NO_RECEIVER_CONFIGURED` |
+| B9 | 文档维护 | Skill + 单一 canonical 契约 + 安装派生 | `skills/document-stewardship` | feishu-space-management + publisher | **§9.53.3**：19 项 B9 契约测试通过；两侧安装的四个文件（SKILL.md + 两份 references + maintain.py）与 canonical **逐字节相同**，唯一差异是 `__pycache__/*.pyc` 且其 PEP-552 头部与源一致（非陈旧） | 只读正确契约；no whole-body overwrite；no authority expansion | 位置/ACL 侧留在 B-空间 |
+| B10 | 人机控制 | Skill + 可信上下文链 | `skills/human-control`；`mcp/human_control.py --attach`；`serverosctl work delegate` / `work revoke` | `serverosctl card`/presentation；`runtime/wake.authority` | **生产侧本轮补齐并装机**（`a4ff07f`）；**正向链未跑通** | grant **只能**从可信上下文派生，绝不由 ServerOS 自签；revoke/expire 必须停授权 | 见下 |
+
+#### 唯一一条真正卡住的正向链：Human Control / Continuation
+
+§5 要求的那条链（`Feishu App1 → BotMux → HumanControlProvider → agent.context.attach →
+trusted context → bounded grant → wake → WOKEN → fresh Native Parent → same Work Item →
+accept once → no duplicate child/effect`）在生产侧是**齐的**：
+
+* `agent.context.attach` 已有生产者，且它要求报告被观测到的 pid 等于它自己 socket 另一端的 pid；
+* `serverosctl work delegate` 本轮补上（`a4ff07f`），且**没有** `--approve`、**没有**任何直接
+  提供 actor 的 flag；actor 每次由 `context/delegation.derivation` 读回来；
+* `wake.authority` 的 fail-open（撤销过的 grant 仍被认作 AUTHORIZED）本轮被咬出并修掉。
+
+**但正向链本身没有闭合**，而且原因是可读的、不是含糊的：`agent-control/store.json` 的
+`contexts: {}` 与 `grants: {}` 说明**本节点从未有过一个真实可信上下文**——那需要一条真实的
+飞书 conversation attribution。wake 每分钟报 `NO_AUTHORIZING_GRANT` 因此是**消费者在正确
+工作**，不是橡皮图章：没有可信来源时它拒绝签发，这正是 §3 要的性质。
+
+按 §18 的纪律，**不在修之前要求反复发消息**：生产侧已全部修完并装机，剩下的是**一条真人 turn**。
+本片结束时只问一句：
+
+> 请在飞书应用 1 再发任意一条消息用于最终 live 验收。
+
+（另一件同类的人为前提：Codex 侧需要点一次 hook 信任，才能补上 Journey G-1。）
+
 ## 12. 最终报告（计划 §16 要求的那一份）
 
 **读它之前先读这一句**：这一节不是「全系统 READY 证明」。它把**已完成的实现**、**已量到的
@@ -7761,6 +8008,8 @@ Binding 一列，记 `UNBOUND`——把它读进 DESIGN 会让「没绑定」看
 | G1 | 能力治理 | DONE | DONE | DONE | ENABLED | 一个 artifact 一条 plugin 记录，成员按 composition 精确取（§3.7） |
 | A1 | 接续 | DONE | DONE | DONE | ENABLED | 实时控制与历史归档是两个 artifact，一个职责（§3.2） |
 | A2 | 记忆检索 | DONE | DONE | DONE | PARTIAL | **UNBOUND**：OpenViking provider 在本机无处可绑 |
+
+> **订正 2026-09-27**：`UNBOUND` 已不成立，实测见 §9.53.5–9.53.7；**但 `peer_scope` 的隔离判据是 NOT HELD**，所以这一格不因绑定成功而转全绿，理由与逐条判词见 §9.53.6、§9.53.10。
 | A3 | Workspace/Git | DONE | DONE | DONE | ENABLED | 运行时名仍是 `workspace-management` |
 | A4 | 运行环境/Fleet | DONE | DONE | DONE | ENABLED | 环境定义**移出**测试，所以一个节点可以定义环境而从不跑 E2E（§3.8） |
 | A5 | Fleet 交接 | DONE | DONE | DONE | PARTIAL | **UNBOUND**：单设备路径可用，跨设备动词 absent |
