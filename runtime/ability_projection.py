@@ -142,14 +142,24 @@ def _matching_installations(revision: dict, device_ids: tuple[str, ...]) -> list
 def installed_abilities(manifest: dict, device_ids: tuple[str, ...]) -> list[dict]:
     """The abilities the authority records as installed on this device.
 
-    `device_ids` is a set rather than one id on purpose. The manifest's
-    `installations[].device_id` currently reads `linux-server`, which is this
-    device's HISTORICAL id — `fleet/registry.yaml` keeps it in `legacy_ids`
-    precisely so that earlier installation and revision evidence keeps
-    resolving after the rename. Matching only the canonical id would report
-    zero installed abilities with no error at all, which is exactly the
-    declared-but-absent shape this project keeps finding: a check that returns
-    the empty set rather than a failure.
+    `device_ids` is a set rather than one id on purpose, and the reason is a
+    property of the manifest rather than of any one device. The manifest records
+    each installation under the id that was in force when it happened, so a
+    device that has been renamed carries evidence under more than one id —
+    `fleet/registry.yaml` keeps the older ones in that device's `legacy_ids`
+    precisely so it keeps resolving after the rename. Matching only the canonical
+    id would report zero installed abilities with no error at all, which is
+    exactly the declared-but-absent shape this project keeps finding: a check
+    that returns the empty set rather than a failure.
+
+    The ids are the CALLER's to supply, and supplying another device's ids is
+    the failure this signature cannot catch. `linux-server` is the legacy id of
+    `device:server-beijing`, not of the node this runtime is installed on —
+    whose `legacy_ids` is empty — so passing it answers about Beijing and looks
+    exactly like answering about here. It did: this device's projection read 30
+    abilities through that id, every one of them from a machine that is not this
+    one. The CLI help for `--device-id` states the rule ("an id that means THIS
+    node"); this paragraph is the reason to believe it.
 
     Revisions are taken in manifest order and the LAST match wins, because the
     manifest appends a revision when it re-computes one. `revisions_installed`
