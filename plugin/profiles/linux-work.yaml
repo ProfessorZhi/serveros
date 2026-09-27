@@ -331,7 +331,52 @@ short_description: Agent Engineering Workbench for a Linux work node
 # The ability half does not move: its pin (`da5f89b1b131`) is unchanged, and the
 # payload delta `27f` → `27g` is those five files plus this one and the version
 # string that names them.
-cachebuster: srv0005.20260927g
+#
+# `27g` → `27h` is the ingress pair, and it is the same class of hazard one level
+# up: the payload gains `human_control.py --record` (the mount can finally say
+# what it produced) and a declared driver for that mount in
+# `abilities/agent-runtime-contract.yaml`. An installed cache left on `27g` would
+# go on running the mount whose outcome is discarded, would report
+# `human_control_ingress` as an undeclared driver, and would keep the node in the
+# state this round exists to leave: a Feishu turn arrives, the store still reads
+# `contexts: {}`, and nothing on disk says which of the four outcomes it was.
+# The ability pin is again unchanged (`da5f89b1b131`). Of the files this round
+# edits, four are payload members — `mcp/human_control.py`,
+# `abilities/agent-runtime-contract.yaml`, `abilities/runtime_parity.py` and
+# `runtime/cli.py` (checked against the promoted `27g` ARTIFACT.json member
+# list) — plus this file and the version string it feeds. The tests and
+# `docs/human-control.md` are not members: they are evidence and prose, and a
+# cachebuster that named them would be claiming a delta the artifact does not
+# carry.
+#
+# `27h` → `27i` moves one file, and it moves it because the previous bump was
+# not sufficient for the case it was made for. `27h` added `--record` as an
+# OPT-IN flag, which fixed the mount for any session that reads the settings
+# file after the flag landed — and that is not every session. A turn hook's
+# command string is read from `~/.claude/settings.json` by a process that may
+# have started before the flag existed, and the session holding this node's one
+# Feishu conversation was measured on 2026-09-28 still carrying a plain
+# `--attach`. So the very turn this round exists to make legible would have run
+# a command that writes nothing, and "the hook never ran" and "the hook ran and
+# minted nothing" would have stayed the same empty file. `27i` flips the default
+# to ON with `--no-record` as the off switch, which makes both spellings record.
+# One payload member changes — `mcp/human_control.py` — plus this file and the
+# version string that names them; the tests and `docs/human-control.md` are not
+# members. The ability pin is again unchanged (`da5f89b1b131`).
+#
+# `27i` → `27j` is a one-string correction in the same member, and it is worth a
+# bump for the same reason every other one is: an installed cache on `27i` would
+# go on shipping a claim that was read off the session record and is wrong.
+# `human.identity.verify`'s reason said the gate reads three fields which this
+# session lacks, so an in-turn attempt "is not expected to verify either". Read
+# off the binary instead, the gate is an in-memory per-turn `managedTurnOrigin`
+# that is never written to the session row — so the absent fields are absent by
+# design, and this session is not short of what the lookup needs
+# (`turnReplyContexts` carries a caller per turn). The status stays `UNKNOWN`:
+# what nobody has watched is still one turn, and that is unchanged. Only the
+# reason's overreach is removed. `mcp/human_control.py` is the sole payload
+# member here, plus this file and the version string.
+cachebuster: srv0005.20260927j
 
 skills:
   - name: runtime-management

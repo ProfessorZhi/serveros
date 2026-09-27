@@ -37,10 +37,10 @@ defect would actually hide:
      nothing compared those lists against the closed `ids` set.
   3. On this host, each declared surface is either present or reported absent.
      Read-only; nothing is created.
-  4. On this host, each declared session-start driver is either registered or
-     reported unregistered — a question the three above cannot be asked, and
-     the reason a third `*_surfaces` entry would not have been enough. A hook's
-     file is always present; what is missing when a driver is unwired is the
+  4. On this host, each declared driver is either registered or reported
+     unregistered — a question the three above cannot be asked, and the reason a
+     third `*_surfaces` entry would not have been enough. A hook's file is
+     always present; what is missing when a driver is unwired is the
      registration inside it.
 
 What the fourth check is for
@@ -309,8 +309,10 @@ def check_observed(observed: dict, contract: dict) -> list[dict]:
 
 
 def declared_drivers(contract: dict) -> list[dict]:
-    """The drivers that must fire at session start, as the contract declares
-    them.
+    """The drivers that must fire, as the contract declares them.
+
+    Most fire at session start and one fires at the start of a turn; the
+    question is the same for both, which is why they share a register.
 
     A list rather than the per-runtime map the two `*_surfaces` blocks are,
     because a driver belongs to the runtime that fires it and to nothing else.
@@ -389,7 +391,7 @@ def check_drivers(observed_drivers: dict, contract: dict) -> list[dict]:
             findings.append(_finding(
                 "DRIVER_NOT_OBSERVED",
                 f"driver {name} was not observed on this device, so whether it "
-                "fires at session start here is unknown",
+                "fires here is unknown",
                 driver=name, runtime=driver.get("runtime"), severity="UNKNOWN"))
             continue
         state = entry.get("state")
@@ -565,8 +567,8 @@ def report(contract: dict, registry: dict | None = None,
     else:
         unknowns.append(_finding(
             "DRIVERS_NOT_OBSERVED",
-            "no session-start drivers were observed on this device, so whether "
-            "anything runs at session start here was not checked"))
+            "no declared drivers were observed on this device, so whether "
+            "anything runs at session start or turn start here was not checked"))
 
     stale_gaps = [g for g in gaps
                   if _subject_was_observed(g, observed, observed_drivers)
@@ -605,7 +607,7 @@ def main(argv=None) -> int:
     parser.add_argument("--observed")
     parser.add_argument("--observed-drivers", dest="observed_drivers",
                         help="what a caller measured about the declared "
-                             "session-start drivers; a separate file from "
+                             "drivers; a separate file from "
                              "--observed because it answers a separate "
                              "question")
     args = parser.parse_args(argv)

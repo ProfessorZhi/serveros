@@ -187,6 +187,14 @@ capabilities:
   # have to declare an entry for the runtime that has no such driver, and the
   # only honest value for it would be a placeholder.
   #
+  # The list is not only session-START. `human_control_ingress` below fires on
+  # `UserPromptSubmit`, which is the start of a turn rather than of a session,
+  # and it belongs in the same list because the question asked of it is the
+  # same one: is this driver registered on this node's hook surface, and is the
+  # program behind it on the disk. Splitting the list per event would make two
+  # registers that answer one question, which is the shape this file just spent
+  # a paragraph refusing one level up.
+  #
   # Every field below was measured rather than written from the convention.
   # `~/.claude/settings.json` is the one file Claude Code reads hooks from on
   # this node: `botmux session-ready` is registered in it under `SessionStart`
@@ -225,6 +233,36 @@ capabilities:
         document followed. That reading cannot say whether the source is quiet
         or nothing runs the collector, and the two call for opposite actions:
         re-run the collector, or author the hook that runs it.
+    - name: human_control_ingress
+      runtime: claude-code
+      event: UserPromptSubmit
+      surface: {path_role: home, relative: ".claude/settings.json"}
+      marker: "human_control.py"
+      # The distribution role rather than a root: the program is not in the
+      # workspace and not in the data root, it is in whatever this node
+      # installed from, and `runtime.serveros-distribution` is the name that
+      # already moves when that does. The composition under it is the one
+      # `scripts/runtime_truth.py` pins for this node.
+      program: {path_role: runtime.serveros-distribution,
+                relative: "serveros-linux-work/current/mcp/human_control.py"}
+      because: >
+        Measured 2026-09-28: this node's `~/.claude/settings.json` carries the
+        registration under `UserPromptSubmit`, gated on `BOTMUX_TURN_ID`, and it
+        calls `mcp/human_control.py --attach` — the one gate that can mint a
+        trusted actor context, presented from the process the provider was just
+        asked about. Until today that mount existed ONLY in that settings file:
+        no file in this tree mentioned it, so nothing here could check it, and
+        losing the file would have lost Human Control's ingress with no record
+        of what it had been. It is declared for the same reason every other
+        driver is — the file is always there, so its presence answers nothing.
+        `UserPromptSubmit` and not `SessionStart`, because the proof being
+        presented is a turn's: `botmux actor current --json` verifies inside the
+        process tree of a BotMux turn and has no turn to read at session start,
+        which is why the naive wiring would fire, exit 1, and mint nothing
+        forever. The marker is `human_control.py` and not something broader
+        because the same event carries two other commands, one of them botmux's,
+        and a marker that matched them would report this driver registered on
+        the strength of somebody else's hook.
 
 # ---------------------------------------------------------------------------
 # What a runtime can be asked about, one question per axis.
