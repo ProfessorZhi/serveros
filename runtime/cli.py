@@ -7363,6 +7363,228 @@ def cmd_work_grants(args) -> int:
     return EXIT_OK
 
 
+def cmd_work_delegate(args) -> int:
+    """§12/§5 — record a standing delegation; the root is a trusted context or nothing.
+
+    `work grants` writes nothing and says why: "a delegation is a person's
+    decision, and a verb that could record one is a verb that could authorize
+    work on its own". This is the other half of that sentence. The one premise
+    that keeps it from being the verb `work grants` refuses to be is
+    `--context-ref`: it must name a trusted context this store ALREADY holds.
+
+    That ref has exactly one producer — `agent.context.attach` — and that
+    method requires the pid the report was observed by to be the pid on the
+    other end of its own socket (`SO_PEERCRED`, `runtime/daemon.py`). So the
+    flag cannot be satisfied except by a process that was inside a real turn,
+    and there is no flag that supplies an actor directly: a verb that could do
+    that could mint its own authority, which is the thing this one must not do.
+
+    The actor is not copied onto the record either. A grant names the context
+    it derives from (`delegated_by`), and `context/delegation.derivation` reads
+    the actor back out of that context on every judgement. A second copy here
+    would be a copy that can outlive or contradict its source, and «who
+    delegated this» is the one question that must not have two answers.
+
+    What it does not judge, and why that is not an omission: whether the
+    context is still fresh, and whether the scope suits a cycle. `put_grant`
+    declines both from the store's side — it holds no clock — and each is asked
+    by its owner at read time (`context/delegation.derivation` for freshness,
+    `intake/daily_cycle.grant_reason` for scope). A grant recorded against a
+    context that has since gone stale is therefore STORED and reported as not
+    authorizing: the record of what was delegated survives, and that is a
+    different answer from a refusal here.
+    """
+    store_mod, control = _control_store()
+
+    context_ref = str(getattr(args, "context_ref", "") or "").strip()
+    if not context_ref:
+        sys.stderr.write(
+            "serverosctl: --context-ref is required. A delegation is a scope on "
+            "a context somebody was verified in, and the only producer of one is "
+            "`agent.context.attach` running inside a real turn. There is "
+            "deliberately no flag that supplies an actor directly: a verb that "
+            "could do that could sign its own authority.\n")
+        return EXIT_FAULT
+    grant_ref = str(getattr(args, "grant_ref", "") or "").strip()
+    if not grant_ref:
+        sys.stderr.write(
+            "serverosctl: --grant-ref is required. It is the name a board row "
+            "carries to be admitted under and what `work revoke` is keyed by; a "
+            "grant nobody can name is one no row can be admitted by.\n")
+        return EXIT_FAULT
+
+    try:
+        contexts = control.contexts()
+    except store_mod.StoreError as exc:
+        sys.stderr.write(f"serverosctl: {exc}\n")
+        return EXIT_FAULT
+    if context_ref not in contexts:
+        # Named here rather than left to `put_grant`, which refuses this too and
+        # is the guard. The store's sentence is about what it holds; this one is
+        # about where the missing thing comes from, and a reader handed only the
+        # first would go and look at the store instead of at the producer.
+        sys.stderr.write(
+            f"serverosctl: no trusted context {context_ref!r} is held by "
+            f"{control.path}, so {grant_ref!r} has nothing to derive from. A "
+            f"standing delegation is a scope on a context somebody was verified "
+            f"in; minting one against a context this store has never held is "
+            f"authority with no root. `serverosctl work grants` prints how many "
+            f"contexts are held.\n")
+        return EXIT_FAULT
+
+    window: dict = {}
+    for field, flag in (("valid_from", "--valid-from"),
+                        ("expires_at", "--expires-at")):
+        raw = str(getattr(args, field, "") or "").strip()
+        if not raw:
+            sys.stderr.write(
+                f"serverosctl: {flag} is required. A delegation with no interval "
+                f"authorizes at every instant or at none, and neither is what was "
+                f"delegated; `_authorizing_grant` refuses an admission under one "
+                f"for the same reason.\n")
+            return EXIT_FAULT
+        window[field] = raw
+
+    budget = {}
+    for key in store_mod.BUDGET_KEYS:
+        value = getattr(args, key, None)
+        if value is None:
+            sys.stderr.write(
+                f"serverosctl: --{key.replace('_', '-')} is required. "
+                f"`runtime/wake.spending` reads {key} off this grant to bound "
+                f"what a wake may do, and a bound nobody declared is not a "
+                f"bound the routine may spend.\n")
+            return EXIT_FAULT
+        budget[key] = int(value)
+
+    items = sorted({str(v) for v in (getattr(args, "item", None) or [])
+                    if str(v).strip()})
+    if not items:
+        sys.stderr.write(
+            "serverosctl: --item is required (repeatable). `runtime/wake."
+            "authority` carries a wake only under a grant that NAMES the Item, "
+            "and a checkpoint records no project — so a grant that names none "
+            "is one that routine could only match by guessing.\n")
+        return EXIT_FAULT
+
+    record = {
+        "grant_ref": grant_ref,
+        "delegated_by": context_ref,
+        "valid_from": window["valid_from"],
+        "expires_at": window["expires_at"],
+        "items": items,
+        "projects": sorted({str(v) for v in (getattr(args, "project", None) or [])}),
+        "actions": sorted({str(v) for v in (getattr(args, "action", None) or [])}),
+        "budget": budget,
+    }
+    if getattr(args, "covers", None):
+        # `intake/understanding_semantic._delegation_covers` reads this to decide
+        # whether a standing delegation covers a claim's subject. Copied as
+        # written, not expanded: what it covers is what it says.
+        record["covers"] = sorted({str(v) for v in args.covers})
+
+    held = contexts[context_ref]
+    if getattr(args, "dry_run", False):
+        emit({"would_record": record, "store": str(control.path),
+              "context": {"context_ref": context_ref,
+                          "actor_ref": held.get("actor_ref"),
+                          "expires_at": held.get("expires_at")}},
+             as_json=args.json, lines=[
+                 f"store       {control.path}",
+                 f"context     {context_ref}",
+                 f"actor       {held.get('actor_ref') or '—'}",
+                 f"grant       {grant_ref}",
+                 f"items       {', '.join(items)}",
+                 f"window      {window['valid_from']} .. {window['expires_at']}",
+                 f"budget      {json.dumps(budget, sort_keys=True)}",
+                 "dry-run     nothing was written; drop --dry-run to record it"])
+        return EXIT_OK
+
+    try:
+        recorded = control.put_grant(record)
+    except store_mod.StoreError as exc:
+        sys.stderr.write(f"serverosctl: {exc}\n")
+        return EXIT_FAULT
+
+    emit({"grant": recorded, "store": str(control.path)},
+         as_json=args.json, lines=[
+             f"store       {control.path}",
+             f"grant       {grant_ref}",
+             f"delegated by {context_ref}",
+             f"actor       {held.get('actor_ref') or '—'}",
+             f"items       {', '.join(map(str, recorded.get('items') or []))}",
+             f"window      {recorded.get('valid_from')} .. {recorded.get('expires_at')}",
+             f"budget      {json.dumps(recorded.get('budget') or {}, sort_keys=True)}",
+             "recorded    write-once: extending this delegation is a new grant, "
+             "and ending it is `work revoke`"])
+    return EXIT_OK
+
+
+def cmd_work_revoke(args) -> int:
+    """§5 — end a standing delegation. Never a deletion, and never an extension.
+
+    `AgentControlStore.revoke_grant` keeps the FIRST retirement: a second
+    revoke does not move «when the authority ended» to «the last time somebody
+    mentioned it». This verb hands a person that call, which is what §3's
+    «revoke and expiry must stop authorizing» needs to be reachable at all.
+
+    It does NOT require a trusted context, and the asymmetry with `delegate` is
+    deliberate: revoking mints no authority, it only takes one away. Making it
+    harder to reach than granting would point the wrong way — an emergency stop
+    that needed a verified turn would be one an operator could not perform at
+    the moment it mattered. What it does require is a reason, because why a
+    delegation ended is the part a later reader cannot reconstruct from the
+    record itself.
+    """
+    store_mod, control = _control_store()
+    ref = str(getattr(args, "grant_ref", "") or "").strip()
+    if not ref:
+        sys.stderr.write(
+            "serverosctl: --grant-ref is required, and it must be a grant this "
+            "node recorded: ending a name nobody used would be this verb "
+            "inventing a record to retire.\n")
+        return EXIT_FAULT
+    reason = str(getattr(args, "reason", "") or "").strip()
+    if not reason:
+        sys.stderr.write(
+            "serverosctl: --reason is required. The record of WHY a delegation "
+            "ended is the part a later reader cannot reconstruct from the record "
+            "itself, and a revocation that says nothing leaves that reader with "
+            "«it stopped» and no way to tell a decision from an accident.\n")
+        return EXIT_FAULT
+
+    try:
+        existing = control.get_grant(ref)
+    except store_mod.StoreError as exc:
+        sys.stderr.write(f"serverosctl: {exc}\n")
+        return EXIT_FAULT
+    if existing is None:
+        sys.stderr.write(
+            f"serverosctl: {ref!r} is not a grant this node recorded, so there "
+            f"is nothing to end. `serverosctl work grants` lists what has been "
+            f"recorded.\n")
+        return EXIT_FAULT
+
+    at = str(getattr(args, "at", "") or "") or datetime.datetime.now(
+        datetime.timezone.utc).isoformat()
+    try:
+        ended = control.revoke_grant(ref, at=at, reason=reason)
+    except store_mod.StoreError as exc:
+        sys.stderr.write(f"serverosctl: {exc}\n")
+        return EXIT_FAULT
+
+    emit({"grant": ended, "store": str(control.path)},
+         as_json=args.json, lines=[
+             f"store       {control.path}",
+             f"grant       {ref}",
+             f"revoked     {ended.get('revoked')} at {ended.get('revoked_at')}",
+             f"reason      {ended.get('revoked_reason')}",
+             "ended       the record stays. `work grants` reports it as "
+             "MISSING_OR_REVOKED_GRANT and `runtime/wake` will not carry a wake "
+             "under it"])
+    return EXIT_OK
+
+
 def cmd_work_admit(args) -> int:
     """§12/P6 — admit one cycle: selection, reservation and intent in one write.
 
@@ -11496,6 +11718,66 @@ def build_parser() -> argparse.ArgumentParser:
                                 "neither does `context/delegation.py`, so this "
                                 "is the one place the question is answered")
     wk_grants.set_defaults(func=cmd_work_grants)
+
+    wk_delegate = work_sub.add_parser(
+        "delegate", help="§12/§5 — record a standing delegation. `--context-ref` "
+                         "must name a trusted context this store already holds, "
+                         "and that ref has exactly one producer: "
+                         "agent.context.attach, inside a real turn", **_COMMON)
+    wk_delegate.add_argument("--grant-ref", required=True, dest="grant_ref",
+                             help="the name a board row carries to be admitted "
+                                  "under, and what `work revoke` is keyed by")
+    wk_delegate.add_argument("--context-ref", default="", dest="context_ref",
+                             help="the trusted context this delegation derives "
+                                  "from, as `agent.context.attach` minted it. "
+                                  "Not a name you may choose: the store must "
+                                  "already hold it")
+    wk_delegate.add_argument("--item", action="append", default=[], dest="item",
+                             help="an Item this delegation covers (repeatable, at "
+                                  "least one). `runtime/wake.authority` carries a "
+                                  "wake only under a grant that names the Item")
+    wk_delegate.add_argument("--project", action="append", default=[],
+                             dest="project",
+                             help="a project this delegation covers (repeatable)")
+    wk_delegate.add_argument("--action", action="append", default=[],
+                             dest="action",
+                             help="an action this delegation covers (repeatable)")
+    wk_delegate.add_argument("--covers", action="append", default=[],
+                             dest="covers",
+                             help="a subject prefix this delegation covers for "
+                                  "local semantic inference (repeatable)")
+    wk_delegate.add_argument("--valid-from", default="", dest="valid_from",
+                             help="the instant this delegation begins (ISO-8601)")
+    wk_delegate.add_argument("--expires-at", default="", dest="expires_at",
+                             help="the instant it ends (ISO-8601). Required: a "
+                                  "delegation with no interval authorizes at "
+                                  "every instant or at none")
+    wk_delegate.add_argument("--wall-seconds", type=int, default=None,
+                             dest="wall_seconds",
+                             help="the longest one Parent may run under it")
+    wk_delegate.add_argument("--max-attempts", type=int, default=None,
+                             dest="max_attempts",
+                             help="the bound on wakes this grant permits")
+    wk_delegate.add_argument("--max-output-bytes", type=int, default=None,
+                             dest="max_output_bytes")
+    wk_delegate.add_argument("--dry-run", action="store_true", dest="dry_run",
+                             help="print the record that would be written, and "
+                                  "write nothing")
+    wk_delegate.set_defaults(func=cmd_work_delegate)
+
+    wk_revoke = work_sub.add_parser(
+        "revoke", help="§5 — end a standing delegation. Keeps the record, and "
+                       "keeps the FIRST instant it ended: a second revoke does "
+                       "not move it", **_COMMON)
+    wk_revoke.add_argument("--grant-ref", required=True, dest="grant_ref",
+                           help="a grant this node recorded")
+    wk_revoke.add_argument("--reason", default="",
+                           help="why it ended. Required: the record of that is "
+                                "what a later reader cannot reconstruct")
+    wk_revoke.add_argument("--at", default="",
+                           help="the instant the delegation ended (default: now). "
+                                "Ignored if it was already revoked")
+    wk_revoke.set_defaults(func=cmd_work_revoke)
 
     wk_admit = work_sub.add_parser(
         "admit", help="§12/P6 — admit one cycle: the focus selection, its budget "

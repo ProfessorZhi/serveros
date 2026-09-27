@@ -70,6 +70,7 @@ under it would be exactly the blind replay it refuses.
 """
 from __future__ import annotations
 
+import datetime
 import importlib.util
 import json
 import os
@@ -169,6 +170,36 @@ def _continuation():
 
 def _delegation():
     return _load("serveros_context_delegation", _ROOT / "context" / "delegation.py")
+
+
+def _cycle():
+    """`intake/daily_cycle.py`, under the ONE name its other loaders use.
+
+    `standing_reason` is CALLED here and never re-implemented. It is the tree's
+    single answer to «is this grant live, and is it in force at this instant» —
+    `runtime/cli.py`'s reading path calls it for the same two judgements — and a
+    second comparison of `revoked`/`valid_from`/`expires_at` would be a second
+    answer to whether a delegation is current, which is the failure this tree
+    names more often than any other.
+    """
+    return _load("serveros_intake_daily_cycle", _ROOT / "intake" / "daily_cycle.py")
+
+
+def _instant(raw: str):
+    """`raw` as an aware datetime, or None when it is not one.
+
+    Not a validation of the caller's clock — `now` is an argument everywhere in
+    this module. It is what keeps an unreadable instant from arriving as a
+    traceback: the comparison `standing_reason` makes needs an aware datetime on
+    both sides, and an instant nobody can read is not an instant at which
+    authority can be established. `None` is therefore reported as a grant that
+    does not stand, which is the direction that wakes nothing.
+    """
+    try:
+        parsed = datetime.datetime.fromisoformat(str(raw))
+    except (TypeError, ValueError):
+        return None
+    return parsed if parsed.tzinfo is not None else None
 
 
 def _invocation():
@@ -361,23 +392,54 @@ def authority(grants: dict, contexts: dict, *, item: str, now: str) -> dict:
     project, so a project-scoped grant is one this routine could only match by
     guessing.
 
-    The two groups are reported separately and never merged into «no grant» —
+    IT DOES JUDGE WHETHER THE GRANT IS IN FORCE, and that is not scope. The
+    distinction is the one `runtime/cli.py`'s reading path already draws when it
+    calls `intake/daily_cycle.standing_reason` beside this module's verdict:
+    «is there a live grant here, and is it in force now» is a question about the
+    record, not about the work, and `derivation` answers a third one — whether
+    the context at its root still authorizes. `derivation`'s own docstring
+    assigns the window and `revoked` elsewhere and this module used not to ask
+    anybody, so a grant a person had since REVOKED was reported AUTHORIZED,
+    entered the envelope map, and would have carried a wake. Reusing
+    `standing_reason` rather than comparing the fields here keeps one answer to
+    that question; the envelope is what is handed to it, because a stored grant
+    carries its ref under `grant_ref` and `standing_reason` reads `ref`.
+
+    The three groups are reported separately and never merged into «no grant» —
     `delegation`'s own module docstring makes that argument for its four states
     and it holds again one level down: «nothing was ever recorded», «what was
-    recorded does not authorize now» and «what authorizes does not name this
-    Item» are three different repairs.
+    recorded does not authorize now», «what authorizes is no longer in force»
+    and «what is in force does not name this Item» are four different repairs.
     """
-    report = _delegation().envelopes(grants, contexts, now=now)
+    delegation = _delegation()
+    report = delegation.envelopes(grants, contexts, now=now)
+    stands = _cycle().standing_reason
+    at = _instant(now)
+
     covers: list = []
     others: list = []
+    lapsed: list = []
     for row in report["rows"]:
         if row["state"] != "AUTHORIZED":
             continue
+        ref = row["grant_ref"]
+        # Present by construction: `envelopes` fills the map from the same
+        # branch that sets this row's state to AUTHORIZED, keyed by this ref.
+        envelope = report["envelopes"][ref]
+        because = ("CLOCK_UNREADABLE" if at is None
+                   else stands(envelope, now=at))
+        if because is not None:
+            # NOT «the delegation does not authorize»: the root may be perfectly
+            # good and the person's decision to end it is what this is. The
+            # reason is copied from `standing_reason` and not re-worded.
+            lapsed.append({"grant_ref": ref, "because": because})
+            continue
         if item in [str(entry) for entry in (row.get("items") or [])]:
-            covers.append(row["grant_ref"])
+            covers.append(ref)
         else:
-            others.append(row["grant_ref"])
+            others.append(ref)
     return {"authorizing": sorted(covers), "not_covering": sorted(others),
+            "not_standing": sorted(lapsed, key=lambda entry: entry["grant_ref"]),
             "envelopes": report["envelopes"], "rows": report["rows"],
             "summary": report["summary"]}
 
@@ -545,19 +607,33 @@ def plan(control, *, now: str, item: str | None = None, unit_dir=None,
         verdict = authority(grants, contexts, item=work_item, now=now)
         considered = (verdict["authorizing"] + verdict["not_covering"])
         if not verdict["authorizing"]:
-            seen = verdict["summary"]["states"] or {}
-            detail = ("the store records no grant that authorizes now"
-                      if not seen else
-                      "every grant this store records is outside the map: "
-                      + ", ".join(f"{state} {count}"
-                                  for state, count in sorted(seen.items())
-                                  if state != "AUTHORIZED"))
+            # One clause per distinct fact, because they are distinct repairs:
+            # a store with nothing in it, a grant whose delegation has gone, a
+            # grant that is recorded and no longer in force, and one that is in
+            # force and names other work. A single sentence for all four is what
+            # `authority`'s docstring refuses, and the counts are kept apart
+            # from the reasons for the same purpose.
+            outside = {state: count for state, count in
+                       (verdict["summary"]["states"] or {}).items()
+                       if state != "AUTHORIZED"}
+            clauses: list[str] = []
+            if outside:
+                clauses.append(f"{sum(outside.values())} recorded grant(s) are "
+                               "outside the map: "
+                               + ", ".join(f"{state} {count}"
+                                           for state, count in sorted(outside.items())))
+            if verdict["not_standing"]:
+                clauses.append(", ".join(
+                    f"{entry['grant_ref']} is recorded and {entry['because']}"
+                    for entry in verdict["not_standing"]))
             if verdict["not_covering"]:
-                detail += (f". {len(verdict['not_covering'])} grant(s) do "
-                           f"authorize now and name no Item "
-                           f"({', '.join(verdict['not_covering'])}), and a "
-                           f"checkpoint records no project for this routine to "
-                           f"match one against")
+                clauses.append(f"{len(verdict['not_covering'])} grant(s) do "
+                               f"authorize now and name no Item "
+                               f"({', '.join(verdict['not_covering'])}), and a "
+                               f"checkpoint records no project for this routine "
+                               f"to match one against")
+            detail = ("; ".join(clauses) if clauses
+                      else "the store records no grant that authorizes now")
             rows.append(_row(record, wait, "REFUSE", "NO_AUTHORIZING_GRANT",
                              f"nothing authorizes waking {work_item}: {detail}",
                              grants_considered=considered,

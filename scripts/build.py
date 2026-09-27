@@ -904,6 +904,16 @@ def artifact_manifest(bundle: dict, version: str, skills: list[str],
     derivation needs the repository, and the artifact is read precisely where
     the repository is not — the daemon that runs it holds no checkout and must
     never go looking for one.
+
+    `recommended` is the artifact saying what it does NOT carry but that this
+    composition declares resolvable, per node, on demand. Without it the two
+    questions "is this ability absent from the world" and "is this ability
+    absent from this bundle" have one answer, and a reader that has the
+    artifact and not the repository can only conclude the first. That is not
+    hypothetical: the linux-work composition ships 4 members and recommends 6,
+    and the plugin's own `provides` list is the union of both — so a consumer
+    that read only `skills` saw 10 declared and 5 present and had no artifact
+    fact to tell it which five were which.
     """
     return {
         "schema": "serveros/artifact.v1",
@@ -913,6 +923,15 @@ def artifact_manifest(bundle: dict, version: str, skills: list[str],
         "cachebuster": bundle["cachebuster"],
         "kinds": kinds,
         "skills": sorted(skills),
+        # Name and status, not just names: `available` and `missing` are a
+        # promise and a recorded gap, and collapsing them into membership would
+        # make a composition's own note about a hole look like the hole is not
+        # there. `missing` is carried rather than dropped for the same reason
+        # the README prints it.
+        "recommended": sorted(
+            ({"name": entry["name"], "status": entry["status"]}
+             for entry in bundle.get("recommended") or []),
+            key=lambda entry: entry["name"]),
         # Names, not the entries: the release-side check asks whether the MCP
         # manifests the payload carries declare the same SERVER NAMES as the
         # composition, and a record of the commands would be a second copy of
