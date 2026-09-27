@@ -118,6 +118,42 @@ ServerOS 只编排关系与交接，**不抢占以上 owner 的数据权威**。
 （`state/serveros/abilities/effective.*`），它可能过时，`registry_status` 会说。用它做 bootstrap，
 **不要**从它做安装决定。
 
+### 4.2 路由目标在本机没有装，怎么办
+
+上表和 §4.1 都会给出一个 owner 名字。**那个名字在本机不一定已经装好** —— 例如
+`information-management` 与 `work-management` 在 linux-work composition 里是
+`recommended`：声明为可按需解析，**不在发行件里**。于是有三种状态，回答里分得开：
+
+| `ability.search` 的读数 | 意思 | 该做什么 |
+|---|---|---|
+| `installed: true` | 本机观测到已装 | 直接用 |
+| `installed: false` + `placement: on-demand` | composition 声明可按需解析，本机**没有**安装观测 | 装它（见下），不要改成自己做这件事 |
+| 两个来源都没有 | 没搜到 | 不是「不存在」；去 `ability-management` 查，别猜 |
+
+`installed: false` 是**两个事实之一，不是两个都是**：它既不是「不存在」，也不是
+「能用」。整行都是 `recommended` 的意思 —— 声明它可解析的那个 composition 名字在
+`declared_by` 里。
+
+安装只有一条路，走 `ability-management`（owner），且**必须来自被 pin 的那个修订**：
+
+```text
+python <已装的 ability-management>/payload/control_plane.py \
+    install --profile <profile> --agent claude-code \
+    --registry <ability-management 检出> --rev <sha> --apply
+```
+
+- `--rev` 不是可选的礼貌：没有它，复制出去的是那个检出**此刻的样子**，而安装本身不报错。
+  守卫会拒 `HEAD != rev`，也会拒「要复制的文件在检出里是脏的」（按路径问，不是整棵树问）。
+- 它同时拒 `role` 没声明的成员 —— `UNDECLARED` 是「没有人决定过」，不是 `bundled`。
+- 这是 `ability-management` 的动词，**不是** `serverosctl` 的：`serverosctl ability` 只有
+  `list/status/tree/inspect/resolve/refresh`，全是只读，里面没有也不该有 `install`。
+- **不要**手写 `~/.claude/skills/<name>`、**不要**在别处再放一份技能源。按需解析要的是
+  「同一个来源、需要时才进来」，不是第二份拷贝。
+
+装完，`information-management` / `work-management` 仍然**不在**上下文里：Claude Code 的技能
+本来就只把 name + description 放进环境，正文在被用到时才读。§2 的渐进式披露要的正是这个 ——
+根 Skill **不需要**预加载这两个技能的全文，只需要知道该找谁、以及找它的那条命令。
+
 ## 5. 三层产品，别把它们混成一个
 
 ```text

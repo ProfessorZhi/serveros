@@ -130,6 +130,24 @@ def _read_identity_file(path: Path) -> dict:
     return {"present": True, "value": value}
 
 
+def _revision_root(here: Path | None = None) -> Path:
+    """The revision directory this process is running out of.
+
+    `here` is the directory the runtime modules live in (`<rev>/runtime`), and
+    `_HERE` is exactly that. A caller that passes the FILE instead would get a
+    root one level too deep — a silent, confident wrong answer of the kind the
+    callers of this share a reason to remove — so both spellings are accepted.
+
+    `.resolve()` is not tidiness: the root must be where the bytes ARE, and a
+    path left pointing through `current` would make every read of it agree with
+    the pointer by construction — the exact self-confirming answer that lets a
+    promote-without-restart go unnoticed. Non-existent paths resolve to
+    themselves, so this costs nothing in a test that builds a fake revision.
+    """
+    base = here or _HERE
+    return (base.parent if base.name == "daemon.py" else base).parent.resolve()
+
+
 def _installed_identity(here: Path | None = None) -> dict:
     """Who this process is, in the terms the installer wrote down.
 
@@ -150,17 +168,7 @@ def _installed_identity(here: Path | None = None) -> dict:
     a repository would report whichever one happened to be nearest instead of
     the one it was built from.
     """
-    # `here` is the directory the runtime modules live in (`<rev>/runtime`), and
-    # `_HERE` is exactly that. A caller that passes the FILE instead would get
-    # `absent` one level too deep — a silent, confident wrong answer of the kind
-    # this function exists to remove — so both spellings are accepted.
-    base = here or _HERE
-    # `.resolve()` is not tidiness: `root` must be where the bytes ARE, and a
-    # path left pointing through `current` would make the identity agree with
-    # the pointer by construction — the exact self-confirming answer that lets
-    # a promote-without-restart go unnoticed. Non-existent paths resolve to
-    # themselves, so this costs nothing in a test that builds a fake revision.
-    root = (base.parent if base.name == "daemon.py" else base).parent.resolve()
+    root = _revision_root(here)
     artifact = _read_identity_file(root / "ARTIFACT.json")
     release = _read_identity_file(root / "RELEASE.json")
 
@@ -243,6 +251,88 @@ def _installed_identity(here: Path | None = None) -> dict:
             "that nobody restarted becomes visible. `fields.source_tree_clean` "
             "is the only thing connecting a commit to these bytes: false or "
             "null means the commit names the checkout, not the content."
+        ),
+    }
+
+
+def declared_on_demand(here: Path | None = None) -> dict:
+    """What this revision declares it does NOT carry, but that this node can resolve.
+
+    This is the third source on the discovery surface, and it exists because the
+    first two answer different questions and neither substitutes for the other:
+
+      * the local capability projection (`_capability_view`) answers **what is
+        installed on this device**, and it is built from installations the
+        authority recorded. An ability this composition recommends but does not
+        ship is not in it, and its absence there is not evidence of absence;
+      * this function answers **what the artifact this process runs out of has
+        already declared resolvable**, read from `ARTIFACT.json` — the build's
+        own statement, written at assembly time, which is the one such statement
+        a node without a checkout can read. The daemon must not go looking for
+        an ability-management checkout to ask; §"the daemon holds no checkout"
+        is not a style rule.
+
+    The failure this removes, observed live: the linux-work composition ships 4
+    members and recommends 6 more, and the installed `serveros` skill routes
+    "that happened, record it" to `information-management`. A fresh Agent asked
+    `ability.search information-management`, got `matched: 0` against a
+    projection that had never heard of it, and had nothing anywhere telling it
+    that the ability is one `resolve` away. `0` from one source is not `0` from
+    the world.
+
+    `entries: None` when there is no ARTIFACT.json, and never `[]`. `[]` would
+    say "this artifact recommends nothing", which is a claim about a build
+    nobody read — the same distinction `_capability_view` draws between
+    `abilities: null` and `abilities: []`.
+    """
+    root = _revision_root(here)
+    path = root / "ARTIFACT.json"
+    record = _read_identity_file(path)
+    if not record["present"]:
+        return {
+            "root": str(root),
+            "source": str(path),
+            "present": False,
+            "why": record["why"],
+            "composition": None,
+            "artifact": None,
+            "entries": None,
+            "note": (
+                f"no ARTIFACT.json {record['why']} at {root}, so this process "
+                "cannot say what its own composition declared resolvable. "
+                "`entries: null` rather than an empty list: an unreadable "
+                "declaration is not a declaration that nothing is recommended."
+            ),
+        }
+    value = record["value"]
+    raw = value.get("recommended")
+    entries = None
+    if isinstance(raw, list):
+        entries = [
+            {"name": entry.get("name"), "status": entry.get("status")}
+            for entry in raw
+            if isinstance(entry, dict) and entry.get("name")
+        ]
+    return {
+        "root": str(root),
+        "source": str(path),
+        "present": True,
+        # Both carried, because `composition` is the canonical name of the
+        # thing that decided and `artifact` is the name a person installed. A
+        # finding that named only one of them would leave the reader guessing
+        # which release to go and look at.
+        "composition": value.get("composition"),
+        "artifact": value.get("name"),
+        "entries": entries,
+        "why": ("this artifact was built before `ARTIFACT.json` carried a "
+                "`recommended` list" if entries is None else None),
+        "note": (
+            "the build's own statement, read from the revision this process "
+            "was launched out of. `installed: false` on a row from here means "
+            "exactly that: the composition declares it resolvable and this "
+            "device has not recorded an installation of it. It does NOT mean "
+            "the ability is absent, and it does NOT mean it is present — "
+            "`serverosctl ability resolve` is what answers the second question."
         ),
     }
 
@@ -1513,12 +1603,38 @@ class Daemon:
         abilities = view.get("abilities") or []
         match = next((a for a in abilities
                       if isinstance(a, dict) and a.get("name") == name), None)
-        if match is None:
-            return {**view, "name": name, "installed": None,
-                    "note": f"{name!r} is not in the local projection. Absence "
-                            f"from a projection is not proof of absence on the "
-                            f"authority."}
-        return {**view, "name": name, "installed": True, "ability": match}
+        if match is not None:
+            return {**view, "name": name, "installed": True,
+                    "placement": "installed", "ability": match}
+        # Not in the projection. Before answering that, ask the second source:
+        # the two absences are different facts, and the caller cannot tell them
+        # apart from the projection alone. `information-management` is the live
+        # case — the installed `serveros` skill routes to it, and it is declared
+        # on demand rather than installed.
+        on_demand = declared_on_demand()
+        declared = next((entry for entry in (on_demand.get("entries") or [])
+                         if entry.get("name") == name), None)
+        if declared is not None:
+            return {**view, "on_demand": _on_demand_header(on_demand),
+                    "name": name, "installed": False,
+                    "placement": "on-demand", "declared": declared,
+                    "declared_by": on_demand.get("composition"),
+                    "note": (
+                        f"{name!r} is NOT observed installed on this device, "
+                        f"and the composition {on_demand.get('composition')!r} "
+                        "that this revision was built from declares it "
+                        "resolvable per node on demand. Those are two different "
+                        "facts and neither implies the other: this is not a "
+                        "claim that it will load here — `serverosctl ability "
+                        "resolve` is what answers that."
+                    )}
+        return {**view, "on_demand": _on_demand_header(on_demand),
+                "name": name, "installed": None, "placement": None,
+                "note": f"{name!r} is not in the local projection "
+                        f"({view.get('registry_status')}) and is not declared "
+                        f"on demand by this revision's composition. Absence "
+                        f"from both is still not proof of absence on the "
+                        f"authority."}
 
     # -- §4/§2 · the discovery tree, over the same projection ----------------
     #
@@ -1640,12 +1756,45 @@ class Daemon:
             }
         match = next((a for a in materials
                       if isinstance(a, dict) and a.get("name") == name), None)
+        if match is None:
+            # The second source, exactly as in `ability.status`: "not installed
+            # here" and "not declared anywhere" are different answers, and the
+            # caller that asked about a routing target needs the first one.
+            on_demand = declared_on_demand()
+            declared = next((entry for entry in (on_demand.get("entries") or [])
+                             if entry.get("name") == name), None)
+            if declared is not None:
+                return {
+                    **header, "on_demand": _on_demand_header(on_demand),
+                    "name": name, "installed": False,
+                    "placement": "on-demand", "ability": None,
+                    "declared": declared,
+                    "declared_by": on_demand.get("composition"),
+                    "tree": None,
+                    "source": "ARTIFACT.json of the running revision",
+                    "resolution": "not attempted",
+                    "resolved_by": "serverosctl ability resolve",
+                    "operations_declared": None,
+                    "operations_declared_by": (
+                        "serverosctl ability resolve --ability <id>#<verb>"),
+                    "note": (
+                        f"{name!r} is NOT observed installed on this device. "
+                        f"The composition {on_demand.get('composition')!r} this "
+                        "revision was built from declares it resolvable per "
+                        "node on demand, which is why it is not in the "
+                        "projection and is still reachable — `resolution: not "
+                        "attempted` because whether it loads HERE is "
+                        "`serverosctl ability resolve`'s answer and not this "
+                        "one's."
+                    ),
+                }
         tree = ability_projection_mod.domain_tree(
             ability_projection_mod.tree_rows(materials))
         placement = tree["placements"].get(name) if match is not None else None
         return {
             **header, "name": name,
             "installed": True if match is not None else None,
+            "placement": "installed" if match is not None else None,
             "ability": match,
             "tree": {
                 "placement": placement,
@@ -1662,8 +1811,9 @@ class Daemon:
             "operations_declared_by": (
                 "serverosctl ability resolve --ability <id>#<verb>"),
             "note": (
-                f"{name!r} is not in the local projection. Absence from a "
-                f"projection is not proof of absence on the authority."
+                f"{name!r} is not in the local projection and is not declared "
+                f"on demand by this revision's composition. Absence from both "
+                f"is still not proof of absence on the authority."
                 if match is None else
                 "this is what the node last OBSERVED as installed, plus where "
                 "the tree places it. It is not a statement that this device "
@@ -1685,15 +1835,28 @@ class Daemon:
         `matched` is reported beside them so a truncated list never reads as a
         complete one.
 
-        `matched` is None rather than 0 in the two cases where "no matches"
-        would be a claim about a set nobody searched: an empty query, and no
-        materialized projection. Everywhere else in this product `0` and
-        `unknown` are kept apart, and a search is where collapsing them is
-        easiest and most convincing.
+        `matched` is None rather than 0 in the cases where "no matches" would
+        be a claim about a set nobody searched: an empty query, and no readable
+        source at all. Everywhere else in this product `0` and `unknown` are
+        kept apart, and a search is where collapsing them is easiest and most
+        convincing.
 
-        It searches the LOCAL projection and says so in its header, exactly as
-        `ability.list` does: availability is a per-device observation, not a
-        product-global fact.
+        It searches TWO sources and labels every row with which one it came
+        from, because they answer different questions and one of them alone
+        was wrong in a way nobody could see:
+
+          * the local projection — what is **installed on this device**;
+          * this revision's own `ARTIFACT.json` — what the composition it was
+            built from declares **resolvable on demand**, which is a fact a
+            node with no checkout can read and the projection cannot carry.
+
+        A row from the second source says `installed: false` and names the
+        composition that declared it. Before this, `information-management` —
+        which the installed `serveros` skill routes to — returned `matched: 0`
+        on a node where it is one `ability.resolve` away, and `0` there read as
+        "this ability does not exist". `matched_installed` and
+        `matched_on_demand` are reported beside `matched` so the two are never
+        summed into one number the caller cannot take apart.
         """
         view = self._capability_view()
         header = self._projection_header(view)
@@ -1702,9 +1865,11 @@ class Daemon:
         limit = _bounded_int(params.get("limit"), DEFAULT_ABILITY_SEARCH_LIMIT,
                              MAX_ABILITY_SEARCH_LIMIT)
         materials = view.get("abilities")
+        on_demand = declared_on_demand()
         if not query:
             return {
-                **header, "query": raw_query, "limit": limit,
+                **header, "on_demand": _on_demand_header(on_demand),
+                "query": raw_query, "limit": limit,
                 "matched": None, "returned": None, "matches": None,
                 "truncated": None, "refused": "EMPTY_QUERY",
                 "catalogue_size": None if materials is None else len(materials),
@@ -1717,34 +1882,56 @@ class Daemon:
                     "whole projection is genuinely what is wanted."
                 ),
             }
-        if materials is None:
+        if materials is None and on_demand.get("entries") is None:
             return {
-                **header, "query": query, "limit": limit,
+                **header, "on_demand": _on_demand_header(on_demand),
+                "query": query, "limit": limit,
                 "matched": None, "returned": None, "matches": None,
                 "truncated": None, "catalogue_size": None,
                 "note": (
-                    "no local capability projection has been materialized, so "
-                    "there is nothing to search FROM. `matched` is null rather "
-                    "than 0: no projection is not an empty catalogue, and the "
-                    "two would render identically as an empty list."
+                    "neither source is readable: no local capability "
+                    "projection has been materialized AND this revision's "
+                    "ARTIFACT.json does not declare what it recommends. "
+                    "`matched` is null rather than 0: nothing readable is not "
+                    "an empty catalogue, and the two would render identically "
+                    "as an empty list."
                 ),
             }
         needle = query.lower()
-        hits = [row for row in materials
-                if isinstance(row, dict) and needle in _ability_searchable(row)]
+        hits = ([row for row in materials
+                 if isinstance(row, dict) and needle in _ability_searchable(row)]
+                if materials is not None else [])
         rows = [_ability_row_compact(row) for row in hits[:limit]]
+        declared = [entry for entry in (on_demand.get("entries") or [])
+                    if needle in _on_demand_searchable(entry)]
+        # Trimmed to the same ceiling as the projection rows: two sources must
+        # not add up to a result set twice the size the caller asked for, and a
+        # caller that wanted more than `limit` rows from either source can ask
+        # again with a larger one.
+        declared_rows = [dict(entry, installed=False, placement="on-demand",
+                              declared_by=on_demand.get("composition"))
+                         for entry in declared[:max(0, limit - len(rows))]]
         return {
-            **header, "query": query, "limit": limit,
-            "catalogue_size": len(materials),
-            "matched": len(hits), "returned": len(rows),
-            "truncated": len(hits) > len(rows),
-            "matches": rows,
+            **header, "on_demand": _on_demand_header(on_demand),
+            "query": query, "limit": limit,
+            "catalogue_size": None if materials is None else len(materials),
+            "matched": len(hits) + len(declared),
+            "matched_installed": len(hits),
+            "matched_on_demand": len(declared),
+            "returned": len(rows) + len(declared_rows),
+            "truncated": (len(hits) > len(rows)
+                          or len(declared) > len(declared_rows)),
+            "matches": rows + declared_rows,
             "note": (
                 "substring match, case-insensitive, over name / id / path / "
-                "type / version / domain / taxonomy refs / agents. It is not a "
-                "ranking and not a semantic search: there is no relevance "
-                "score to distrust because there is no score. `matched` is how "
-                "many rows matched; `returned` is how many are in `matches`."
+                "type / version / domain / taxonomy refs / agents (projection "
+                "rows) and name (declared rows). It is not a ranking and not a "
+                "semantic search: there is no relevance score to distrust "
+                "because there is no score. `matched` is the sum of "
+                "`matched_installed` and `matched_on_demand` — a row with "
+                "`installed: false` is declared resolvable by the composition "
+                "and is NOT observed installed here; that is a different fact "
+                "from absence and it is not a claim that it will resolve."
             ),
         }
 
@@ -3342,6 +3529,44 @@ def _ability_row_compact(row: dict) -> dict:
         "domain": domain.get("primary") if isinstance(domain, dict) else None,
         "taxonomy_refs": row.get("taxonomy_refs") or [],
         "agents": row.get("agents") or [],
+    }
+
+
+def _on_demand_searchable(entry: dict) -> str:
+    """What a query is matched against on a declared-on-demand row.
+
+    `name` only. A row from `ARTIFACT.json` carries a name and a status and
+    nothing else — there is no path, no type, no domain there, because the
+    build never read the ability record to write one. Matching against fields
+    that do not exist would make every declared row match the empty string, and
+    an empty needle is the one query this surface refuses, so the failure would
+    land as "your query matched something you cannot see the reason for".
+    """
+    return str(entry.get("name") or "").lower()
+
+
+def _on_demand_header(record: dict) -> dict:
+    """The declared-on-demand source, small enough to sit in every answer.
+
+    `count: null` when the declaration could not be read, for the same reason
+    `matched` is null there: `0` would say "this composition recommends
+    nothing", which is a claim about a build nobody read.
+    """
+    entries = record.get("entries")
+    return {
+        "source": record.get("source"),
+        "present": record.get("present"),
+        "why": record.get("why"),
+        "composition": record.get("composition"),
+        "artifact": record.get("artifact"),
+        "count": None if entries is None else len(entries),
+        "note": (
+            "this revision's own ARTIFACT.json: what its composition declared "
+            "resolvable per node rather than bundled. These are NOT installed "
+            "here — `installed: false` is the whole point of the field — and "
+            "they are not a promise: `serverosctl ability resolve` says whether "
+            "this node can act on one now."
+        ),
     }
 
 
