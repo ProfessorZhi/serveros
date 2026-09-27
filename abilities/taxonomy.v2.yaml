@@ -198,6 +198,31 @@ taxons:
     aliases: [docker, container, 容器, process, 进程]
     summary: Running, observing and attributing managed runtimes.
 
+  # The eighth v1 sibling. The catalogue has placed two abilities at this
+  # string since `ce6e103` (2026-09-22) — and this file declared only the other
+  # seven, which is precisely the condition `UNDECLARED_TAXON` is blocking for.
+  # It stayed invisible only because the check is skipped wherever the sibling
+  # `ability-management` checkout is absent, which is every run from a
+  # worktree: a skip reads as a pass in the summary line.
+  #
+  # The family is a judgement, recorded so a reader can disagree with it
+  # rather than having to trust it. `serveros.runtime` is "what is running on
+  # this machine, and what has to be true before anything is started, stopped
+  # or changed"; these two abilities are that sentence applied to the one
+  # production target — observation answers the first half, change the second.
+  # It is NOT `serveros.safety`, which is seeded empty on purpose and whose
+  # children are SURFACE_ONLY enforcement code rather than abilities an agent
+  # can invoke by name.
+  - id: serveros.operations.production
+    origin: v1
+    v1_parent: serveros.operations
+    aliases: [production, 生产]
+    summary: >
+      Observing what a running production system is actually doing, and
+      preparing a change to it for a human to execute. Read-only evidence on
+      one side; on the other a change package whose readiness is not an
+      authorization to cut over.
+
   # =========================================================================
   # 3 / 10  SAFETY & COMPLIANCE
   # =========================================================================
@@ -500,6 +525,7 @@ edges:
   - {from: serveros.agent, to: serveros.agent.embodiment, kind: contains}
 
   - {from: serveros.runtime, to: serveros.operations.runtime, kind: contains}
+  - {from: serveros.runtime, to: serveros.operations.production, kind: contains}
 
   - {from: serveros.safety, to: serveros.safety.network-conformance, kind: contains}
   - {from: serveros.safety, to: serveros.safety.resource-ownership, kind: contains}
@@ -545,6 +571,7 @@ edges:
   - {from: serveros.operations, to: serveros.operations.fleet, kind: relates}
   - {from: serveros.operations, to: serveros.operations.human-control, kind: relates}
   - {from: serveros.operations, to: serveros.operations.inventory-publishing, kind: relates}
+  - {from: serveros.operations, to: serveros.operations.production, kind: relates}
 
   - {from: serveros.operations.work, to: serveros.operations.workspace, kind: relates}
   - {from: serveros.operations.work, to: serveros.operations.test, kind: relates}

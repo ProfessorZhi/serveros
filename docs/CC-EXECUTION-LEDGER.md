@@ -7985,6 +7985,49 @@ accept once → no duplicate child/effect`）在生产侧是**齐的**：
 
 （另一件同类的人为前提：Codex 侧需要点一次 hook 信任，才能补上 Journey G-1。）
 
+### 9.54 最终全量的那一条红：一个漏掉的 v1 兄弟，和一场长期被吞掉的 skip
+
+`verify-final-27e-20260927` 是 136/137，唯一红是 `tests/test_taxonomy_v2.py` 里一条
+**blocking** 的 `UNDECLARED_TAXON`：catalogue 把 `production-observation` 与
+`production-change` 放在 `serveros.operations.production`，而声明文件没有这个字符串。
+
+**它不是本轮引入的，也不该由「改 catalogue 字符串」来修。** catalogue 侧那两行同属
+`ce6e103`（2026-09-22）；而声明侧留下的 v1 容器 `serveros.operations` 是一处**刻意的
+保留**——原话是「the catalogue still carries them verbatim」，七个兄弟字符串各有一个
+`origin: v1 / v1_parent: serveros.operations` 的节点，`production` 是唯一漏掉的第八个
+（catalogue 里 `domain.primary` 落在 `serveros.operations.*` 的能力共 13 条，分属 8 个
+字符串）。所以修法是**declare the node**：新增那个节点 + 一条
+`serveros.runtime → …production` 的 `contains` 边 + 一条 `serveros.operations → …` 的
+`relates` 边（+27 行，无删除）。族归 `serveros.runtime` 是一处判断，理由写在节点旁注里
+（该 seed 的原话就是「what has to be true before anything is started, stopped or
+changed」），并且**明确不是** `serveros.safety`——那一族是「seeded EMPTY ON PURPOSE」，
+子节点是 `SURFACE_ONLY` 的执行面代码。
+
+**它为什么这么久没被发现，比那条红本身更值得记。** `tests/test_taxonomy_v2.py` 的
+`ABILITY_REPO = REPO.parent / "ability-management"`，worktree 同级没有这个检出，于是
+**5 条**真目录用例全部走 `skipif`；pytest 的 summary 行里 skip 与 pass 同样不红，
+`verify.py` 的 outcomes 又是按文件记的。那几次 worktree 上的 137/137 因此**从来没执行
+过这 5 条**。这不是「worktree 跑得少一点」——是同一份报告在两处给出同一个数字、而含义
+不同。
+
+**前后对照（同一量具、同一 catalogue `da5f89b1b131`，只换声明）**：canonical 未改的声明
+4/5，未通过项逐字就是那条 `UNDECLARED_TAXON`；改后 5/5，`blocking=0`。`386` 的
+`43 → 45 placements` 正是新节点那两个成员（它们本来就在 catalogue 里）。声明侧
+`validate` 也独立复核过：`ok=True`、39 节点、64 边、10 seeds。
+
+**诚实边界**：新节点的判词是 `DECLARED_ONLY` 而不是 `OCCUPIED`——制品在
+ability-management 仓库（`skills/production-{change,observation}`），本修订的 `skills/`
+下没有它们，而 conformance 对此的措辞是「naming an ability in a catalogue is a statement
+about navigation, not evidence that anything exists」。本轮不为了让这个词变成 OCCUPIED
+去搬运制品（与 A9/A10「不预装、按需」同一条口径）。
+
+证据：`artifacts/work-items/serveros/SRV-0011/RUN-0001/verification/taxonomy-production-taxon-20260927.txt`。
+
+另记一处**未改**的既有漂移，作为提案：本文件所在仓的 `taxonomy.v2.yaml` 有两处注释写
+「eleven classified abilities」/「the eleven abilities under it」，而 catalogue 此刻是 13
+条。一个把会随**另一个仓库**变动的计数写死的声明文档，迟早再次对不上；本轮不动它，
+免得把一处会漂的数字换成另一处。
+
 ## 12. 最终报告（计划 §16 要求的那一份）
 
 **读它之前先读这一句**：这一节不是「全系统 READY 证明」。它把**已完成的实现**、**已量到的
