@@ -350,6 +350,89 @@ class TheDocument(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
+# A page carries two dates, and the second one is when the state was taken.
+# ---------------------------------------------------------------------------
+
+
+class TheStateHasAnAgeAndThePageSaysIt(unittest.TestCase):
+    """`board-contract.yaml` carries `generated_at` on each board document for
+    one stated reason: "a reader has to be able to tell a fresh board from one
+    generated before the change they are looking for." A composition that
+    prints only its own `generated_at` undoes that — it dates Item state the
+    control plane measured days ago to this second, on the page a person reads.
+    """
+
+    def test_the_boards_own_time_is_carried_and_not_replaced(self):
+        old = a_board("p", [an_item("A")])
+        old["generated_at"] = "2026-01-01T00:00:00+00:00"
+        document = board.compose([old])
+        self.assertEqual(document["source"]["board_generated_at"],
+                         {"p": "2026-01-01T00:00:00+00:00"})
+        # The composition's own time is a different fact, and it is still the
+        # composition's: both are present, neither stands in for the other.
+        self.assertNotEqual(document["generated_at"],
+                            document["source"]["board_generated_at"]["p"])
+
+    def test_every_project_is_dated_separately(self):
+        """One project's board can be fresh while another's is not, and a
+        single oldest-or-newest scalar would hide exactly that."""
+        fresh = a_board("fresh", [an_item("A")])
+        fresh["generated_at"] = "2026-09-27T00:00:00+00:00"
+        stale = a_board("stale", [an_item("B")])
+        stale["generated_at"] = "2026-09-10T00:00:00+00:00"
+        document = board.compose([fresh, stale])
+        self.assertEqual(document["source"]["board_generated_at"],
+                         {"fresh": "2026-09-27T00:00:00+00:00",
+                          "stale": "2026-09-10T00:00:00+00:00"})
+
+    def test_the_human_page_prints_when_the_state_was_taken(self):
+        old = a_board("p", [an_item("A")])
+        old["generated_at"] = "2026-01-01T00:00:00+00:00"
+        text = board.markdown(board.compose([old]))
+        self.assertIn("2026-01-01T00:00:00+00:00", text)
+        # And the age, so a person does not have to subtract dates: composed
+        # 2026-09-27, taken 2026-01-01.
+        self.assertIn("天前", text)
+
+    def test_a_board_with_no_time_still_composes_and_says_nothing_extra(self):
+        """An absent `generated_at` is a fact about that document. Inventing a
+        date for it — or refusing the whole composition over it — would both be
+        worse than saying only what this page can."""
+        undated = a_board("p", [an_item("A")])
+        del undated["generated_at"]
+        document = board.compose([undated])
+        self.assertEqual(document["source"]["board_generated_at"], {})
+        text = board.markdown(document)
+        self.assertNotIn("天前", text)
+        self.assertIn("item A", text)
+
+    def test_an_unreadable_time_is_not_turned_into_an_age(self):
+        """A timestamp this module cannot parse is one it will not subtract.
+
+        Guessing an age from a malformed value would print a measurement
+        nobody made, which is the failure the whole second date exists to
+        prevent.
+        """
+        self.assertIsNone(board._age_days("2026-09-27T00:00:00+00:00", "not a time"))
+        self.assertIsNone(board._age_days(None, "2026-01-01T00:00:00+00:00"))
+        # A naive timestamp is not a duration until someone says which zone it
+        # was written in.
+        self.assertIsNone(board._age_days("2026-09-27T00:00:00+00:00",
+                                          "2026-01-01T00:00:00"))
+        self.assertEqual(board._age_days("2026-09-27T00:00:00+00:00",
+                                         "2026-09-10T00:00:00+00:00"), 17)
+
+    def test_a_malformed_time_is_printed_but_not_dated(self):
+        """The text is copied verbatim — "it says this" is still true — while
+        the age, which would be this module's own claim, is left off."""
+        odd = a_board("p", [an_item("A")])
+        odd["generated_at"] = "whenever"
+        text = board.markdown(board.compose([odd]))
+        self.assertIn("whenever", text)
+        self.assertNotIn("天前", text)
+
+
+# ---------------------------------------------------------------------------
 # Writing. The board is regenerated, never edited.
 # ---------------------------------------------------------------------------
 

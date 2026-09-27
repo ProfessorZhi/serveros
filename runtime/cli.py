@@ -6469,6 +6469,19 @@ def cmd_requirement_board(args) -> int:
     lines = [
         f"board       {document['schema']}",
         f"generated   {document['generated_at']}",
+    ]
+    # Two dates, on adjacent lines, and the second one is not decoration.
+    # `generated` is when this composition ran; `board taken` is when the board
+    # documents it just read were taken from the authority. On a node where the
+    # control plane that writes them does not run, the second is the only place
+    # the age of every Item state on this page is visible — with only the first
+    # line printed, a two-week-old snapshot reads as today's state.
+    board_at = document["source"].get("board_generated_at") or {}
+    if board_at:
+        lines.append("board taken "
+                     + "; ".join(f"{p} {at}"
+                                 for p, at in sorted(board_at.items())))
+    lines += [
         f"projects    {', '.join(document['source']['projects']) or 'none'}",
         f"boards      {document['source']['boards']} read",
         f"revision    {document['source']['generation_source_revision'] or 'not recorded'}",

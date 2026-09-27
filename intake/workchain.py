@@ -988,8 +988,16 @@ def compose_board(*, contract: dict, projects: list[dict], records_root: Path,
         "today": merged_today,
         "sections": sections,
         "unplaced": unplaced,
+        # `taken` travels with each project because `at` above is when this
+        # board was composed, not when the state on it was measured. Every row
+        # in every section came from one of these documents, and on a node
+        # where the control plane that writes them does not run, this field is
+        # the only place that age is visible. Copied verbatim: this module says
+        # when the projection was taken, not whether that is recent.
         "projects": [{"project": p["project"], "state": p["state"],
-                      "why": p["why"], "path": p["path"]} for p in projects],
+                      "why": p["why"], "path": p["path"],
+                      "taken": (p.get("document") or {}).get("generated_at")}
+                     for p in projects],
         "counts": {
             "items": len(rows),
             "projects_read": sum(1 for p in projects if p["state"] == "READ"),

@@ -283,8 +283,9 @@ def doc_environment(when, ability_repo):
             + ("、".join(unplaced) if unplaced else "无")
             + "。",
             "",
-            "这一行是刻意留着的：一个「已归类 19/30」的读数如果不同时说出剩下 11 个是"
-            "谁，读起来就像那 11 个不存在。",
+            "这一行是刻意留着的：一个只说「已归类 N/M」的读数如果不同时点名剩下的是"
+            "谁，读起来就像那些能力不存在。这两个数都从同一份读数里取，所以它们"
+            "跟着投影走；写死在句子里的数字会在下一次分类时变成假话。",
         ]), 3))
     else:
         parts.append(section("能力树", failed("`ability tree`", code, err), 3))
@@ -452,6 +453,37 @@ def doc_understanding(when, projects):
     return "\n".join(parts)
 
 
+def board_taken_line(data):
+    """When the board documents behind a board page were taken from the
+    authority, or that nobody said.
+
+    Shared by the two board pages because they read the same three documents
+    and would otherwise grow two spellings of one sentence. They hand it two
+    shapes and that is not an accident: `requirement board` dates the
+    documents under `source.board_generated_at`, `work board` dates them per
+    project beside the read state of each. Either way the answer is a
+    verbatim copy of each document's own `generated_at` — this line reports
+    when the state was taken, not whether that is recent.
+
+    WHY IT IS ON THE PAGE AT ALL. The page's own render time is in the
+    `⟦snapshot⟧` header, and it is a different fact: it says when the page was
+    drawn, not when the state on it was measured. `state/boards/` is written by
+    the control plane, and on a node where that control plane does not run,
+    whatever it last left there is what every row below is made of. With only
+    the header, a two-week-old snapshot dates itself to this morning.
+    """
+    at = ((data.get("source") or {}).get("board_generated_at") or {})
+    if not at:
+        at = {p.get("project"): p.get("taken")
+              for p in (data.get("projects") or [])}
+    at = {str(k): v for k, v in at.items() if v}
+    if not at:
+        return ("看板状态取出时间：**未记录** —— 这一页读的 board 文档里没有 "
+                "`generated_at`，所以它说不出这些状态有多旧。")
+    return ("看板状态取出时间：" + "；".join(f"{p} `{v}`" for p, v in sorted(at.items()))
+            + "。**这不是本页的时刻** —— 它读的状态是这些文档里取出来的那一份。")
+
+
 def doc_board(when):
     code, data, err = run(["serverosctl", "requirement", "board", "--json"])
     parts = []
@@ -460,6 +492,7 @@ def doc_board(when):
         parts.append(section("跨项目需求看板", "\n".join([
             f"Item {c.get('items')} 个：活跃 {c.get('active')}，已完成 {c.get('completed')}，"
             f"没有卡的 {c.get('without_a_card')}。",
+            board_taken_line(data),
             f"优先级：`{(data.get('priority') or {}).get('state')}` —— "
             f"{(data.get('priority') or {}).get('because')}",
             "",
@@ -474,6 +507,7 @@ def doc_board(when):
     if data:
         parts.append(section("个人看板（§6 的分节与顺序）", "\n".join([
             f"读数时间 `{data.get('at')}`。",
+            board_taken_line(data),
             "",
             table(["section", "rows", "划线", "为什么在这一节"],
                   [[s.get("title"), len(s.get("rows") or []),

@@ -412,11 +412,63 @@ def test_an_unclassified_ability_is_reported_as_unplaced_not_defaulted():
     the part of the answer that says the tree is incomplete — so it is asserted
     rather than left to be inferred from a shortfall."""
     tree = projection.domain_tree(reference.ROWS)
-    assert len(tree["unplaced"]) == reference.TOTAL - reference.CLASSIFIED
+    assert len(tree["unplaced"]) == reference.DISTINCT_ABILITIES - reference.CLASSIFIED
     assert tree["unplaced"] == sorted(tree["unplaced"])
+    # ...and once each. Five abilities in this fixture ship in two forms and
+    # neither form is classified, so a tree that named records would report 38
+    # unplaced where the catalogue has 33 — a record count wearing an ability's
+    # name, which is the number a reader would quote.
+    assert len(tree["unplaced"]) == len(set(tree["unplaced"]))
     for name in ("feature-development", "design-and-contract", "archguard"):
         assert name in tree["unplaced"]
         assert name not in tree["placements"]
+
+
+def test_an_ability_that_ships_twice_is_placed_once_and_not_also_unplaced():
+    """The catalogue describes five abilities in two forms, and only one form
+    carries the classification. Read as abilities, the rows put the same one in
+    both answers — `mcps/meta-cc` places it and `plugins/meta-cc` reports it as
+    having no `domain.primary` — so the node says where the thing is and that
+    nobody has said where it is, in one reply.
+
+    The fixture above cannot catch this: there both forms are unclassified, so
+    the records collapse to the right answer by accident and only the count
+    moves. This case is the live shape.
+    """
+    rows = [
+        {"name": "meta-cc", "id": "ProfessorZhi/meta-cc",
+         "path": "mcps/meta-cc", "primary": "serveros.memory",
+         "refs": ["serveros.engineering"]},
+        {"name": "meta-cc", "id": "ProfessorZhi/meta-cc",
+         "path": "plugins/meta-cc", "primary": None, "refs": []},
+    ]
+    tree = projection.domain_tree(rows)
+    assert tree["placements"] == {"meta-cc": "serveros.memory"}
+    assert tree["unplaced"] == []
+    assert tree["nodes"] == ["serveros", "serveros.memory"]
+    # The reader paths are the ability's, not the classified form's: either
+    # form may be the one that declares them.
+    assert tree["cross_refs"] == {"meta-cc": ["serveros.engineering"]}
+
+
+def test_two_homes_for_one_ability_are_reported_rather_than_resolved():
+    """The refusal at the far end of the same rule.
+
+    If two forms of one ability name different homes, any single placement this
+    function emitted would be invented. It reports the conflict instead, and
+    loudly — a view that quietly picked one would put an ability somewhere the
+    catalogue never said.
+    """
+    rows = [
+        {"name": "meta-cc", "id": "ProfessorZhi/meta-cc",
+         "path": "mcps/meta-cc", "primary": "serveros.memory", "refs": []},
+        {"name": "meta-cc", "id": "ProfessorZhi/meta-cc",
+         "path": "plugins/meta-cc", "primary": "serveros.agent", "refs": []},
+    ]
+    with pytest.raises(ValueError) as caught:
+        projection.domain_tree(rows)
+    assert "different homes" in str(caught.value)
+    assert "serveros.agent" in str(caught.value)
 
 
 # --- positive controls -----------------------------------------------------

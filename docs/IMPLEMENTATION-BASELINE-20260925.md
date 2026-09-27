@@ -126,3 +126,70 @@ release回执tree hash为`e2fa01ece5c77fb5d5add7cf05bd74434f16ed5e44e4ff4e997bc0
 最终候选仅7份Markdown（5份修改、2份新增）；P0–P12共13阶段、G1/A1–A10/B1–B10共21职责映射完整。81处文件链接目标检查通过，其中16处按配套候选树核对跨仓目标；代码块闭合及`git diff --check`通过。这些不是HTTP可达性或全文语义正确性的自动证明。
 
 在隔离`/data`临时目录、禁止bytecode写入的条件下运行既有`test_core_freeze.py` 27项及`test_core_ability_boundary.py` 16项，全部通过；未改测试断言、安装环境或业务代码。它们只守既有Core边界，不能证明计划中尚未实施的五循环、实际云对象或终端安装已通过。
+
+## 8. 2026-09-27 实测复核
+
+本节的观察时间 **2026-09-27 14:13（北京时间）**。上面各节保留 2026-09-25 08:36–08:45 UTC 的
+原读数作为历史证据，**不回改**；两者不一致时以本节为准。§1 已写明历史 PID 不是停止目标，这一节
+同样不把 09-25 的 PID、容量或服务数量当作永恒事实。
+
+### 8.1 Git 与安装版本（对 §2）
+
+| 对象 | §2 观察 | 2026-09-27 实测 |
+|---|---|---|
+| serveros canonical | `ee851b7`（落后远端） | `main` = `b489e19`，clean，**等于** `origin/main` |
+| serveros main | `c5d118c` | `b489e19` |
+| serveros 架构候选 | `13f2819`（未合并） | 提交逐字未动，仍是 `refs/heads/docs/product-convergence-20260924` 的 tip；但 `merge-base --is-ancestor 13f2819 main` 退出 0 —— **它已是 main 的祖先**，`git cherry main` 一条 `+` 都没有 |
+| ability canonical | `8068d0b`（落后远端） | `main` = `368c1be`，clean，**等于** `origin/main` |
+| ability 架构候选 | `5c1963e`（未合并） | 同上：`refs/heads/docs/product-convergence-20260924` 的 tip 逐字未动，但 **`merge-base --is-ancestor 5c1963e main` 退出 0**，`git cherry` 无 `+` |
+| 当前 LinuxWork release | `alert-card-scope-20260924@8ce6fe7`，`3.1.0+srv0003.20260924c` | `serveros-memory-provider-20260927`，`3.1.0+srv0004.20260927b` |
+| 上一 LinuxWork release | `alert-card-scope-20260924@dbc9144` | `serveros-j09-identity-20260927@b8f7d21` |
+| records | `7368e298` | `50a50ea`，**等于** `origin/main`（本地 `main` 未配 upstream，两侧内容相同） |
+| ops | 本地 `a8272d4` / 远端 `1993042` | 本地 **等于** `origin/main` = `18553ed`，clean |
+| work-engine | 本地 `f6be338` / 远端 `a0f370f` | `a0f370f`，**等于** `origin/main`，clean |
+
+**§2 的「落后远端、禁止直接用它构建目标版本」这一条已不成立**：六个仓的 canonical 现在全部
+clean 且等于各自的远程 main。
+
+**同时更正一条沿用下来的说法**：§2 与 §1 写的「架构 PR #6 / #4 仍 draft/unmerged」**按当前实测
+不成立**。两个候选的提交逐字未变，但两个 tip 都已包含在各自 main 里：
+
+```text
+serveros:           merge-base --is-ancestor 13f2819 main   -> 退出 0
+ability-management: merge-base --is-ancestor 5c1963e main   -> 退出 0
+```
+
+serveros 远端 6 条 ref（`origin/HEAD` 之外）**全部**是 main 的祖先，包括
+`docs/product-convergence-20260924`、`docs/implementation-plan-20260925`、
+`serveros/fabric-integration-20260922`、`serveros/fabric-v1-20260922`、
+`serveros/issue-4-feishu-ux-v2`。所以那两份架构对象**不再是「待接受的设计对象」**：
+设计已经在 main 里，分支 ref 只是留下的指针。历史行不回改，但按 §2 继续把它们读成
+「未合并的依赖」会读错——**凡引用它们的地方，判据改用 `merge-base --is-ancestor`，而不是
+分支名或 PR 号**。
+
+### 8.2 服务、入口与目录（对 §3）
+
+| 检查对象 | §3 观察 | 2026-09-27 实测 |
+|---|---|---|
+| 容量 | `/` 50G，47G 已用，约 500M 可用 / 99% | **`/` 50G，35G 已用，13G 可用 / 73%**；`/data` 4.0T，596G 已用 / 15% |
+| serverosd | PID 3116505 | PID **2749105**，active/running，`NRestarts=0`，`MainPID` 的 cmdline 逐字是 `python3 …/serveros-linux-work/current/bin/serverosd` |
+| Node 路径 | `current` → `revisions/alert-card-scope-20260924@8ce6fe7` | `current` → `revisions/serveros-memory-provider-20260927`；`previous` → `revisions/serveros-j09-identity-20260927@b8f7d21` |
+
+系统盘从 99% 用到 73% 是**这一期间的实测变化**，本节只记录读数、不推断原因；§3 关于「先核系统盘
+安全与写入预算」的处置要求不变。
+
+### 8.3 §6 跨仓一致性（本次实测结论）
+
+- **quay**：serveros 侧**没有**硬编码 quay 可执行路径（`runtime/workbench.py` 的 `doc_quay()`
+  要 `--quay-bin` / `SERVEROS_QUAY_BIN`，缺失时如实印出并继续渲染账本与日志两节）。
+  `src/quay` 是**多用户共用**的活动检出，DEFER。
+- **marketops**：serveros 侧**没有任何** `marketops` 引用，没有可修集成点；本机也没有
+  `marketops-shared-laya` 检出。MarketOps 在本机的实际形态是 Laya（用户级服务，跑 canonical
+  `src/ability-management` 的 `providers/laya`），该目录在 `819651d` 与 `368c1be` 之间零改动。
+- **meta-cc**：`a8c57f5` == `origin/main` == 已装插件记的 `gitCommitSha`；插件 cache 里的
+  `bin/meta-cc-mcp` 与 marketplace 目录源 `plugin-src/bin/meta-cc-mcp` **逐字节相同**（19,186,842 B）。
+  它在 ServerOS 侧真正需要修的是**能力树里的归类**（同一能力被写成两条记录而推导按记录读），
+  本轮已修并钉住测试；meta-cc 自身只负责 session history / intelligence。
+- **Laya / MetaCC 资源（§8 的现状）**：`laya-shared.service` cgroup **2.0 GiB / max 3.0 GiB，
+  peak 3.0 GiB**（顶到上限），swap 499 MiB、peak 1.1 GiB，`NRestarts=3`；`meta-cc-mcp`（vince）
+  RSS 约 34 MiB，并非常驻服务。OpenViking 391 MiB，`serverosd` 232 MiB。

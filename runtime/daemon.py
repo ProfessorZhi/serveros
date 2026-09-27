@@ -1580,7 +1580,12 @@ class Daemon:
         return {
             **self._projection_header(view),
             **tree,
-            "ability_count": len(materials),
+            # Abilities, not records. The projection carries one row per form,
+            # and several abilities ship in two, so `len(materials)` would be a
+            # larger number under this name and would leave `classified_count`
+            # and `unplaced_count` not adding up to it — a reader checking the
+            # arithmetic would find a gap the catalogue does not have.
+            "ability_count": len(tree["placements"]) + len(unplaced),
             "classified_count": len(tree["placements"]),
             "unplaced_count": len(unplaced),
             "note": (
