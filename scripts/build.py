@@ -845,8 +845,18 @@ def source_identity(repo: Path, ability_repo: Path, ability_rev: str) -> dict:
     a reason rather than a commit that was never observed.
     """
     def _run(*args: str) -> str | None:
+        # `status --porcelain` is one of the subcommands below, and git is
+        # allowed to refresh the index while answering it — which would make a
+        # question about a checkout into a write to that checkout.
+        # `GIT_OPTIONAL_LOCKS=0` is what makes the "read-only git" claim in
+        # `runtime/actuator-contract.yaml` true for this call site, the same
+        # way it does for `architecture_check.py` and `map_projection.py`; the
+        # sibling `_git()` above needs no such guard because every subcommand
+        # it is given is a `rev-parse` or a `ls-tree`.
+        env = {**os.environ, "GIT_OPTIONAL_LOCKS": "0", "GIT_TERMINAL_PROMPT": "0"}
         proc = subprocess.run(["git", "-C", str(repo), *args],
-                              stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                              stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                              env=env)
         if proc.returncode != 0:
             return None
         return proc.stdout.decode(errors="replace").strip()

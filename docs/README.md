@@ -14,7 +14,7 @@
 
 根README的五条循环是当前产品入口：信息、工作、能力、知识、运行。它们共享Memory、权限和证据，但不是一个固定DAG。OpenViking的目标形态是一份Tokyo共享长期记忆Provider：Claude Code/Codex优先复用官方Memory Plugin的hooks+MCP；Windows等设备通过受认证私网访问同一服务。GitHub/private records保存当前可审计语义与跨系统互操作，不同步OpenViking内部索引；ChatGPT当前从GitHub/项目资料读取。详见 [Memory Fabric](memory-fabric.md) 与能力仓 [A2 Memory](https://github.com/ProfessorZhi/ability-management/blob/main/design/MEMORY-RETRIEVAL-ABILITY.md)。
 
-OpenViking目前仍未绑定，设计不等于LIVE；现有 `memory/provider-contract.yaml` 仍带早期candidate/defer规则，实际采用时要与adapter/Binding/认证/数据策略一起迁移并验fresh-agent recall/capture。
+OpenViking **已于 2026-09-27 在这台节点上绑定并运行**（独立 unit、`127.0.0.1:1933`、已认证数据面、数据盘持久 workspace、已演练的 backup/restore）；`memory/provider-contract.yaml` 已迁到 v2，旧的「不得有新服务 / 完全可由 Layer B 重建 / 没有全局 Provider」三条假设换成了已接受目标的 12 条采用条件，每条都带它被量到时的证据。**仍未做的两件**：一是**没有 consumer**——没有任何代码把检索结果喂进决策，所以「current records 覆盖 retrieved memory」目前是空真，consumer 落地时必须重验；二是**未配 VLM/capture**，即 provider 可检索但不自动采集，这是有意的（capture 的 scope 策略尚未写定，且会花用户的 Codex 额度）。逐条状态见 [Memory Fabric](memory-fabric.md) 的「What of this exists」一节。
 
 ## 信息、参考和知识
 

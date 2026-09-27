@@ -1,0 +1,87 @@
+# openviking — the node's Layer C memory provider, as its own service.
+#
+# WHY THIS IS NOT IN THE RELEASE ARTIFACT
+# ---------------------------------------
+# `memory/provider-contract.yaml` says a Layer C provider is a provider BEHIND
+# a contract, and that `serverosd` may not make one a startup dependency. A
+# unit shipped inside the ServerOS artifact would make the memory provider a
+# member of the node runtime's composition — the exact coupling the contract
+# refuses. So this file lives on the node, in the user's own systemd
+# configuration, and `release.py` neither renders nor installs it.
+#
+# That is also why `promote` can never bring it up: a node whose memory
+# provider is down still comes up and still answers, which is the property the
+# daemon boundary exists to keep.
+#
+# WHY THE VERSIONED COPY IS NAMED `.unit` AND NOT `.service`
+# ---------------------------------------------------------
+# `tests/test_core_freeze.py` asserts that the set of `*.service` and `*.timer`
+# files anywhere in this repository is EXACTLY the node runtime's unit surface.
+# A `.service` copy here would therefore leave two options: fail that test, or
+# register this provider's unit in the ServerOS unit surface — the coupling the
+# section above refuses, arrived at by a side door. The suffix is what keeps
+# the two statements from contradicting each other, and the versioned copy is
+# byte-identical to the installed one:
+#
+#   cmp memory/openviking/openviking.unit \
+#       ~/.config/systemd/user/openviking.service
+#
+# THE TWO THINGS THIS UNIT IS RESPONSIBLE FOR
+# -------------------------------------------
+# 1. INDEPENDENT SUPERVISION. `Restart=on-failure`, its own cgroup, its own
+#    journal identifier. Nothing about its liveness is a function of serverosd,
+#    and nothing about serverosd's is a function of it.
+# 2. PRIVATE, AUTHENTICATED ADDRESS. The bind address comes from `ov.conf`
+#    (`127.0.0.1`, measured below), not from the command line, so the unit and
+#    the config cannot disagree about it. The credential is NOT in this file
+#    and NOT in `ov.conf`: it is read from the vault through `EnvironmentFile`
+#    and expanded into the config by OpenViking's own `os.path.expandvars`.
+#    The config therefore holds the NAME of the variable, and the vault holds
+#    its value — one place a secret exists, and it is not in a Git tree.
+#
+#    Measured 2026-09-27: with `auth_mode: api_key` and a root key present the
+#    server reports `"auth_mode":"api_key"` from `/health`. With the key absent
+#    the config still resolves (the literal `${...}` is non-empty), which is why
+#    `auth_mode` is written EXPLICITLY in `ov.conf` rather than left to its
+#    auto-detect — auto-detect would call a missing vault "api_key mode" and
+#    the failure would look like a wrong key instead of an unread vault.
+#
+# THE LOCAL EMBEDDER IS THE DEFAULT ON PURPOSE
+# --------------------------------------------
+# `embedding.dense.provider: local` keeps a 47.9 MB GGUF on this disk and
+# stands in front of the model cache under `toolchains/`, so neither a remote
+# call nor a vendor credential is needed for the retrieval half. No VLM is
+# configured: `vlm` is what turns captured material into memory, and capture is
+# OFF by policy until its scope and its cost are decided, so a deployment that
+# configured one would be spending a quota nobody chose.
+#
+# THE WORKSPACE THIS SERVES, AND WHO BACKS IT UP
+# ---------------------------------------------
+# `runtime-assets/openviking/data` — a persistent directory on the data
+# volume, NOT in Git. `memory/openviking/backup.py` is its backup and restore:
+# a tar.gz carrying a manifest of every file's length and sha256, with `verify`
+# recomputing those hashes from the archive's own stream, and `restore`
+# refusing a target that is not empty. Nothing schedules it; a backup that runs
+# on a timer this repository does not own is a backup whose freshness nobody
+# can state.
+
+[Unit]
+Description=OpenViking memory provider (ServerOS Layer C) — independent of serverosd
+Documentation=file:%h/runtime-assets/openviking/ov.conf
+After=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/runtime-assets/openviking
+EnvironmentFile=%h/.secrets/vault/openviking.env
+ExecStart=%h/toolchains/openviking/venv/bin/openviking-server --config %h/runtime-assets/openviking/ov.conf
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=30
+NoNewPrivileges=yes
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=openviking
+
+[Install]
+WantedBy=default.target

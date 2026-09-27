@@ -199,34 +199,70 @@ class StatusRuleTests(unittest.TestCase):
 
     def test_the_first_failing_condition_names_the_blocker(self):
         """Ordered by the contract, because the blocker a reader is told about
-        is whichever fails first."""
+        is whichever fails first — and an unobserved condition is not a
+        failing one, so this measures the ORDER and not the count."""
         result = status.evaluate({
-            "no_large_dependency_set": True,
-            "no_service_not_already_running": False,
-            "no_network_in_the_tick_loop": False,
+            "no_dependency_in_the_runtime_artifact": True,
+            "provider_is_independently_supervised": False,
+            "private_authenticated_endpoint": False,
         })
         self.assertEqual(result["status"], "NEEDS_HUMAN")
-        self.assertIn("no_service_not_already_running", result["decided_by"])
-        self.assertIn("does not run", result["decided_by"])
+        self.assertIn("provider_is_independently_supervised", result["decided_by"])
+        self.assertIn("a function of serverosd", result["decided_by"])
+
+    def test_the_authority_conditions_are_asked_before_the_deployment_ones(self):
+        """The contract's order is load-bearing, and this is the assertion that
+        says WHICH order. Version 2 put the daemon boundary and the authority
+        relationship first: a node whose provider outranks its own current
+        records has a worse problem than one whose endpoint is not yet
+        authenticated, and a reader told the second when the first is true has
+        been told about the wrong thing."""
+        keys = [key for key, _, _ in status.CONDITIONS]
+        self.assertEqual(keys[:4], [
+            "no_dependency_in_the_runtime_artifact",
+            "no_network_call_in_the_tick_loop",
+            "not_the_ability_catalogue",
+            "current_records_outrank_retrieved_memory"])
+
+    def test_a_running_provider_is_available_and_not_ready_to_promote(self):
+        """The other half of the pair above. AVAILABLE and READY_TO_PROMOTE
+        differ in exactly one fact, and it is not a condition — which is why it
+        is a separate argument and why this test passes the same observations
+        twice with one argument changed."""
+        observations = {key: True for key, _, _ in status.CONDITIONS}
+        self.assertEqual(status.evaluate(observations)["status"],
+                         "READY_TO_PROMOTE")
+        running = status.evaluate(observations, deployed=True)
+        self.assertEqual(running["status"], "AVAILABLE")
+        self.assertNotIn("not_yet_running", running)
+
+    def test_a_failed_condition_outranks_a_running_provider(self):
+        """AVAILABLE is not 'something answered on the port'. A provider that
+        is up and violates the contract is NEEDS_HUMAN, and a decider that let
+        `deployed=True` override a failure would turn the whole condition list
+        into a formality."""
+        observations = {key: True for key, _, _ in status.CONDITIONS}
+        observations["current_records_outrank_retrieved_memory"] = False
+        result = status.evaluate(observations, deployed=True)
+        self.assertEqual(result["status"], "NEEDS_HUMAN")
+        self.assertIn("current_records_outrank_retrieved_memory",
+                      result["decided_by"])
 
     def test_an_unobserved_condition_is_not_a_failed_one(self):
         """`UNOBSERVED` and `FAILED` call for different actions — go and look,
         versus do not adopt — and collapsing them would make "we have not
         checked" read as "it is unsuitable"."""
         partial = {key: True for key, _, _ in status.CONDITIONS}
-        partial.pop("no_network_in_the_tick_loop")
+        partial.pop("no_network_call_in_the_tick_loop")
         result = status.evaluate(partial)
         states = {c["condition"]: c["state"] for c in result["conditions"]}
-        self.assertEqual(states["no_network_in_the_tick_loop"], "UNOBSERVED")
-        self.assertIn("no_network_in_the_tick_loop", result["decided_by"])
+        self.assertEqual(states["no_network_call_in_the_tick_loop"], "UNOBSERVED")
+        self.assertIn("no_network_call_in_the_tick_loop", result["decided_by"])
 
     def test_the_decision_comes_from_the_conditions_and_from_nothing_else(self):
         """The contract's status rule, asserted as behaviour: two runs with
         the same observations agree whatever the machine is like."""
-        observations = {"no_large_dependency_set": True,
-                        "no_service_not_already_running": True,
-                        "no_network_in_the_tick_loop": True,
-                        "index_rebuildable_from_layer_b": True}
+        observations = {key: True for key, _, _ in status.CONDITIONS}
         self.assertEqual(status.evaluate(observations),
                          status.evaluate(dict(observations)))
 

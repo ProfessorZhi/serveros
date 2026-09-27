@@ -534,6 +534,24 @@ through its GitHub connector; it does not require ServerOS to expose OpenViking 
 If a future authenticated ChatGPT/OpenViking connector has a real consumer, G1 can adopt it
 as another A2 realization without changing memory authority.
 
+### What of this exists, as of 2026-09-27
+
+The paragraph above is the target, and the gap between it and the deployment is now small
+enough that leaving it unstated would make the target unreadable as a status. On this node:
+
+| Target element | State |
+|---|---|
+| one shared OpenViking service, supervised as an outer Provider | **deployed** — `openviking.service`, its own unit, cgroup and restart policy; `serverosd` neither starts nor stops it and does not import it |
+| authenticated access, not public | **deployed** — `127.0.0.1:1933`; the data plane answers `UNAUTHENTICATED` without a key and 200 with one |
+| persistent workspace, protected by backup/recovery, not versioned in Git | **deployed** — `runtime-assets/openviking/data`, with `memory/openviking/backup.py` and an exercised restore; no DB or index in Git |
+| non-authoritative for current business meaning | **holds by construction** — no consumer reads the provider yet, so nothing can rank a hit above a current record. This is the one line here that a future consumer must re-earn rather than inherit |
+| ServerOS disables the OpenViking Skill catalogue | **deployed** — the provider contributes no ability; `ability-management` is untouched |
+| auto-recall/capture through lifecycle hooks | **not configured, deliberately** — capture presumes a VLM, and configuring one would both begin capturing material whose scope policy is not yet written and spend the user's Codex quota. The provider is retrieval-capable and capture-silent |
+| a Windows or other device reaching this service | **not deployed** — one node's provider, reachable from that node |
+
+The conditions this deployment was accepted against are in `memory/provider-contract.yaml`
+(v2) and each one carries the evidence it was measured with.
+
 ## Layer C, and OpenViking
 
 Layer C's selected provider direction is OpenViking, as a retrieval and

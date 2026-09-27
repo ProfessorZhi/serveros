@@ -77,7 +77,7 @@ release回执tree hash为`e2fa01ece5c77fb5d5add7cf05bd74434f16ed5e44e4ff4e997bc0
 | `scripts/build.py` / `plugin/*` | 双artifact kind、完整Ability SHA构建、MCP/模块装载闭包 | 复用；隔离candidate输出，勿写live current；新字节更新cache identity |
 | `scripts/release.py` | promote stage/verify/swap/unit/CLI；daemon-reload但没有自动restart | 安装验证明确区分链接、配置和运行进程；`--no-reload`不是dry-run |
 | `release.py:daily-task/alert-worker` | daily-task只装workbench render；alert-worker默认可能enable | 不以旧installer宣称全日循环，不与活动ops sender重复安装 |
-| `memory/provider-contract.yaml` | 仍要求纯Layer-B可重建索引、不得新增服务、无全局Provider | 随真实OpenViking采用修合同/adapter/测试；保daemon独立和业务authority |
+| `memory/provider-contract.yaml` | ~~仍要求纯Layer-B可重建索引、不得新增服务、无全局Provider~~ **已于 2026-09-27 迁到 v2**：那三条换成已接受目标的 12 条采用条件（独立监督、私网已认证、数据盘持久、backup/restore 已演练、默认不 auto-capture、scope 有 ACL、不进 Ability 目录、current records 覆盖 retrieved） | **已完成**；`provider_status.py` 与 `tests/test_memory_provider.py` 同改，daemon 独立与业务 authority 两条**未动** |
 | `runtime/cli.py`实际help | 顶层`work`下有board/focus/admit/confirm/semantic等，非旧顶层item/run命令 | 后续执行以实际help为准，不能照旧Skill构造不存在的CLI |
 | 已装机器policy和Skill源 | 对象全流程、无条件阅读/审批、旧设备事实 | canonical与渲染消费者一起迁；静态lint不代表真实选择/自治路径正确 |
 

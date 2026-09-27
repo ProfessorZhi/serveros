@@ -12,8 +12,30 @@
 # is to make the authority relationship explicit rather than assumed.
 #
 # Read `docs/memory-fabric.md` for the layering. This file is the interface.
+#
+# What moved at version 2, and why
+# -------------------------------
+# Version 1 was written while no deployment existed, and it said so in the form
+# of three assumptions that made deployment impossible to accept: that adopting
+# a provider must require no service the machine does not already run, that the
+# index must be rebuildable from Layer B alone, and that there must be no
+# product-wide provider at all. Those were not findings. They were the shape of
+# an absence, written down as if it were a requirement — and read as
+# requirements, they would have refused the very target the work was for.
+#
+# `docs/CC-EXECUTION-PLAN.md` named the migration before it happened: the old
+# assumptions move, and two things do NOT move — the current business authority
+# stays here, and the daemon keeps having no memory startup or tick dependency.
+# Those two are the contract's premise and they are conditions 1, 2, 3 and 4
+# below, in the first four places a reader looks.
+#
+# What replaced them is what the accepted target actually requires: independent
+# supervision, a private authenticated endpoint, persistent storage outside the
+# repository, a backup and restore path that has been run, no automatic capture
+# of sensitive material, a declared ACL per scope, and current records
+# overriding what is retrieved. Each is a condition, so each can fail.
 schema: serveros/memory-provider.v1
-version: 1
+version: 2
 
 # ---------------------------------------------------------------------------
 # The one rule everything else follows from.
@@ -23,13 +45,15 @@ rule: >
   a Layer C provider may not be the only place a fact exists. If deleting the
   index loses information, it was not an index.
 consequence:
-  - "`index` is idempotent and `search` returns records that also exist in
-     Layer B, by id. A provider that returns text not obtainable from B is
-     rejected at the contract level, not audited afterwards."
+  - "`search` returns records that also exist in Layer B, by id, wherever the
+     material came from Layer B. A provider that returns text not obtainable
+     from B is rejected at the contract level, not audited afterwards."
   - "Every returned record carries its Layer B id and revision. A result whose
      record cannot be cited is not a result."
-  - "Rebuild is the supported operation. If rebuild is expensive, that is a
-     performance finding, not a reason to promote the index."
+  - "The store is persistent and must be restorable, because a memory that
+     vanishes with its container is not a memory. Restore is the supported
+     operation; rebuild is not the only one, and version 1's demand that it be
+     the ONLY one is what made a real deployment unacceptable."
 
 # ---------------------------------------------------------------------------
 # The interface. Four operations, and the small number is deliberate: each one
@@ -52,7 +76,7 @@ operations:
     signature: "invalidate(record_ids) -> {removed: int}"
     must: "be correct when called for a record the index never held"
   health:
-    signature: "health() -> {status, detail}"
+    signature: "health() -> {liveness, detail}"
     must_not: "reach the network from inside `serverosd`'s tick"
 
 # ---------------------------------------------------------------------------
@@ -60,42 +84,66 @@ operations:
 # ---------------------------------------------------------------------------
 status:
   values: [AVAILABLE, DEGRADED, UNAVAILABLE, READY_TO_PROMOTE, NEEDS_HUMAN]
+  AVAILABLE: >
+    every condition holds AND the provider is running. The status says the
+    target is met; it does not say the provider is the authority for anything,
+    which is what `authority: false` above decides.
   READY_TO_PROMOTE: >
-    the contract, the adapter and the fixture all exist and pass; running the
-    provider for real is a deployment decision that has not been taken.
+    every condition holds and the provider is not running yet. Running it for
+    real is a deployment decision that has not been taken, and a record that
+    says READY_TO_PROMOTE while something is answering on the endpoint is
+    claiming a fact about evidence that the evidence contradicts.
   NEEDS_HUMAN: >
-    adopting the provider would pull in a large dependency set, require a
-    service this machine does not already run, or put a network call on the
-    path of the node runtime. The blocker is named, and the deliverable is the
-    finding rather than a deployment.
+    at least one condition failed, or none was observed. The blocker is named.
+    Version 1 listed as blockers things that are properties of the ACCEPTED
+    target — "require a service this machine does not already run" chief among
+    them — which made the honest answer for a good provider the same as the
+    answer for a bad one. A blocker is now a way the target is not met.
   because: >
     a contract with no deployment is worth more than a deployment with no
     contract. The contract is the part that required thinking; deploying is
-    the part that requires permission.
+    the part that requires permission. Both have now happened, which is why
+    AVAILABLE exists as a value this decider can actually return.
 
 # ---------------------------------------------------------------------------
 # The candidate: OpenViking.
 #
-# Recorded here as a candidate with its adoption conditions written down, so
-# that a future round does not have to re-derive whether it was considered.
+# Recorded here with the conditions under which it was adopted, so that a
+# future round does not have to re-derive whether it was considered — and can
+# tell a condition that was MET from one that was never asked.
 # ---------------------------------------------------------------------------
 candidates:
   - id: provider:openviking
-    kind: remote-service
+    kind: supervised-service
     provides: [search, embeddings, graph]
+    adopted: "2026-09-27, as this node's Layer C provider. `kind` was
+      `remote-service` at version 1, when it was a thing to be decided about;
+      it is `supervised-service` now because that is what was built — its own
+      unit, its own restart policy, its own cgroup, and no serverosd in the
+      path."
     adoption_conditions:
-      - "no large dependency set pulled into the runtime artifact"
-      - "no service that this machine does not already run"
+      - "the provider's dependencies live in its own environment, not in the node runtime artifact"
       - "no network call inside serverosd's tick loop"
-      - "the index is rebuildable from Layer B alone"
+      - "the provider is not an Ability catalogue; ability-management remains the authority for abilities"
+      - "current Source, Claim, Requirement and Grant records override anything retrieved from the provider"
+      - "the provider is supervised on its own, and serverosd neither starts nor stops it"
+      - "a provider that is down does not block current records, checkpoints or the node's own answers"
+      - "the endpoint is private and authenticated, and is not reachable from the public internet"
+      - "the provider's credential is read from the node's vault and appears in no Git tree"
+      - "the store is persistent and lives outside the repository"
+      - "backup and restore exist and have been exercised, not merely described"
+      - "secrets, credentials, production-sensitive and raw-private material are not captured automatically"
+      - "project and global memory scopes carry an explicit ACL"
     fixture: "a deterministic in-process double; see memory/fixtures/"
     status_rule: >
-      the status is decided by the conditions above and by nothing else. A
-      provider that satisfies them is READY_TO_PROMOTE; one that does not is
-      NEEDS_HUMAN naming the condition it failed.
+      the status is decided by the conditions above and by one observation
+      outside them — whether the provider is running — because AVAILABLE and
+      READY_TO_PROMOTE differ in exactly that and in nothing else. A provider
+      that fails a condition is NEEDS_HUMAN naming the condition it failed.
 
 # ---------------------------------------------------------------------------
-# The daemon boundary. This is the mechanical half of the authority rule.
+# The daemon boundary. This is the mechanical half of the authority rule, and
+# it is the part of version 1 that did not move.
 # ---------------------------------------------------------------------------
 daemon_boundary:
   serverosd_may: "ask a provider, over IPC, whether it is alive"
@@ -103,18 +151,27 @@ daemon_boundary:
     - "call `index` or `search`"
     - "hold a provider connection open across a tick"
     - "make a provider a startup dependency"
+    - "start, stop or restart the provider"
   because: >
     an embedding call inside the tick loop makes loop latency a function of a
     model and its availability. Worse, it makes a search index a startup
     dependency of a node whose whole design premise is that it comes up and
-    answers without one.
+    answers without one. The fourth prohibition is version 2's addition and it
+    is what makes the first three hold in practice: a daemon that supervises a
+    provider owns its availability, however carefully it never calls it.
   enforcement: "the daemon's imports are checked by test; a provider import in
      `runtime/daemon.py` fails the suite."
 
 rules:
-  - "A provider is chosen per device and per query. There is no product-wide
-     memory provider, for the same reason there is no product-wide availability."
+  - "A provider is chosen per device. On a node that has one, it answers that
+     node's queries — version 1 refused a product-wide provider, and version 2
+     keeps the refusal at the level it belongs: there is still no provider
+     shared across devices, because a device's memory is about that device."
   - "A hit without a Layer B id is discarded by the caller, not by the
      provider. The provider is the wrong place to enforce the product's rule."
   - "Scores are comparable within one provider and nowhere else. A ranking
      across two providers is a number that means nothing and sorts anyway."
+  - "Retrieved memory is input to a decision and never the decision. Where a
+     retrieved excerpt and a current Source, Claim, Requirement or Grant
+     disagree, the current record wins and the disagreement is a finding to
+     report rather than a tie to break."

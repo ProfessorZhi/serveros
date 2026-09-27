@@ -210,7 +210,32 @@ short_description: Agent Engineering Workbench for a Linux work node
 #
 # Core's label is stale for the fifth time for the same reason and is again NOT
 # touched here.
-cachebuster: srv0004.20260927a
+#
+# Moved to `b` on 2026-09-27, hours after `a`, because §5 changed the payload
+# again. `memory/provider-contract.yaml` moves to v2: the three assumptions that
+# made a real deployment unacceptable ("no service this machine does not already
+# run", "the index is rebuildable from Layer B alone", "no product-wide
+# provider") are replaced by the twelve conditions of the accepted target, and
+# `memory/provider_status.py` is changed with it because the module transcribes
+# the contract's condition list and a test asserts the transcription verbatim.
+# Two files are NEW members — `memory/openviking/backup.py`, whose verbs are the
+# backup and restore path the contract now requires be exercised rather than
+# described, and `memory/openviking/openviking.unit`, the node's unit kept
+# verbatim in the repository under a suffix that is deliberately not
+# `.service` (see its own header: `tests/test_core_freeze.py` asserts that the
+# set of `.service`/`.timer` files in this repository is exactly the node
+# runtime's unit surface, and this provider is not a member of it).
+# `scripts/build.py` and `runtime/actuator-contract.yaml` change together
+# because the mutation guard found an undeclared call site in the J09 work
+# above — `source_identity` shells out to `git status`, which is the one
+# subcommand in that file that can refresh an index, so the declaration and the
+# `GIT_OPTIONAL_LOCKS=0` that makes it true landed in the same change.
+#
+# The reason this is a bump and not a rebuild: every one of those is already on
+# the payload list or newly added to it, and a build of this profile now
+# produces a different artifact under a string `srv0004.20260927a` already
+# names. Core's label is still stale and is still NOT touched here.
+cachebuster: srv0004.20260927b
 
 skills:
   - name: runtime-management

@@ -127,6 +127,15 @@ actuators:
       - {file: runtime/daily_report.py, symbols: [_git]}
       - {file: runtime/workspace.py, symbols: [_git]}
       - {file: scripts/build.py, symbols: [_git]}
+      # J09: `source_identity._run` is the second reader in that same file, and
+      # it is the one that made `GIT_OPTIONAL_LOCKS=0` load-bearing rather than
+      # decorative. `_git` above is given only `rev-parse` and `ls-tree`, which
+      # cannot refresh anything; `_run` asks `status --porcelain`, which git may
+      # answer by writing a refreshed stat cache into `.git/index`. Same three
+      # questions, same read, and the flag is what makes it a read — so the
+      # declaration is honest about WHERE the flag is needed instead of
+      # claiming the whole file was already safe.
+      - {file: scripts/build.py, symbols: [source_identity._run]}
       # SYS-09: `revision_of` records WHICH revision a verification ran at.
       # `git rev-parse HEAD`, one argument, no repository write — and the
       # revision is recorded for a reader, never used to decide validity, so a
@@ -528,6 +537,16 @@ actuators:
       - {file: intake/understanding_brief.py, symbols: [write]}
       - {file: intake/document_publish.py, symbols: [write_receipt], verb: ".replace()"}
       - {file: runtime/report_delivery.py, symbols: [_write], verb: ".replace()"}
+      # §5 / Layer C: `memory/openviking/backup.py#backup` writes the archive to
+      # `<out>.part` and then replaces `<out>` with it, so a reader never sees a
+      # half-written archive. The destination is named by the CALLER and the
+      # temporary is derived from it by appending a suffix, which is the whole
+      # bound: the replace can only ever land on the one file this function was
+      # asked to produce. The script's own `verify` verb is what checks the
+      # bytes afterwards, which is why this is declared for the rename and not
+      # for a durability claim — an archive that replaced correctly can still be
+      # wrong, and that is the separate question `verify` answers.
+      - {file: memory/openviking/backup.py, symbols: [backup], verb: ".replace()"}
 
   - id: daemon-owns-its-socket
     kind: fs_mutation
@@ -571,6 +590,24 @@ actuators:
       mutations that frighten it would stop being a gate.
     sites:
       - {file: runtime/daemon.py, symbols: [Daemon._open_socket]}
+
+  - id: backup-restore-reapplies-the-recorded-mode
+    kind: fs_mutation
+    verb: os.chmod
+    why: >-
+      The restore's half of "a backup that loses a mode is not a backup of what
+      was there". `memory/openviking/backup.py` records each file's mode in its
+      manifest and re-applies it on the file it has JUST written, in the same
+      loop iteration that wrote it — so the path is one this function created
+      one statement earlier, and the mode is one the archive itself carries.
+      There is no path here that a caller names and no mode a caller chooses.
+
+      Separate from `daemon-socket-permissions` rather than a second site on it,
+      because that entry's subject is the socket `Daemon` bound and its id says
+      so; a provider's restore path filed under a daemon socket's name is the
+      name-that-describes-something-else this file keeps finding.
+    sites:
+      - {file: memory/openviking/backup.py, symbols: [verify]}
 
   - id: generated-artifact-is-regenerated
     kind: fs_mutation
