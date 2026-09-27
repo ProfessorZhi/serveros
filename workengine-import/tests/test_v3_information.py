@@ -144,14 +144,139 @@ class InformationV3Tests(unittest.TestCase):
                 self.assertEqual(conn.execute("SELECT count(*) FROM feedback").fetchone()[0], 1)
 
     def test_external_identity_is_unique_across_dedupe_keys(self):
+        """A second candidate for one requirement is refused, and the refusal
+        names the candidate that already has it.
+
+        This assertion used to accept `(ValueError, sqlite3.IntegrityError)`,
+        and the second of those is what it actually got: the insert was
+        `OR IGNORE`d, the `candidate_claims` insert that followed referenced the
+        row that had just been ignored, and the caller of a duplicate
+        requirement was told `FOREIGN KEY constraint failed`. `IntegrityError`
+        being in the tuple is what made a wrong reason look like a correct
+        refusal — the same shape as every other vacuous pass this round has
+        found, one repository over. The tuple is now one type, so the next
+        version that answers this with an unrelated integrity error goes red
+        here rather than silently passing.
+        """
         with tempfile.TemporaryDirectory() as td:
             s=ServerOSStore(Path(td)/"state"); s.register_project("demo","DEM")
             src=s.register_source("github","issue-1",revision="r1",locator="https://x")
             o=s.record_observation(src['source_id'],'o',semantic_type='bug',content_hash='a'*64)
             c=s.record_claim('c','/claim',[o['observation_id']])
             s.create_candidate('c1','demo','one','bug',dedupe_key='d1',claim_ids=['c'],external_id='issue-1',external_revision='r1',domain='github')
-            with self.assertRaises((ValueError,sqlite3.IntegrityError)):
+            with self.assertRaises(ValueError) as caught:
                 s.create_candidate('c2','demo','two','bug',dedupe_key='d2',claim_ids=['c'],external_id='issue-1',external_revision='r1',domain='github')
+            self.assertIn('c1', str(caught.exception))
+            self.assertIn('c2', str(caught.exception))
+            # The half that matched is the identity one. The stored row's key is
+            # 'd1' and this call's key is 'd2', so a refusal that mentions either
+            # is naming something that was not the reason — which is what the
+            # first version of this message did, interpolating the caller's key.
+            self.assertIn("requirement identity ('github', 'issue-1', 'r1')", str(caught.exception))
+            self.assertNotIn("'d1'", str(caught.exception))
+            self.assertNotIn("'d2'", str(caught.exception))
+            # And nothing was written for the refused call: no orphan row and no
+            # claim link pointing at a candidate that does not exist.
+            with s.connection() as conn:
+                self.assertEqual(conn.execute("SELECT count(*) FROM item_candidates").fetchone()[0], 1)
+                self.assertEqual(conn.execute("SELECT count(*) FROM candidate_claims WHERE candidate_id='c2'").fetchone()[0], 0)
+
+    def test_a_replayed_create_returns_the_stored_candidate(self):
+        """Same candidate id, same key: the retry is the same candidate.
+
+        `created_at` is asserted equal rather than merely present, because a
+        version that inserted a second row would satisfy every other assertion
+        here while giving one requirement two candidates and a `SELECT` that
+        returned whichever it found.
+        """
+        with tempfile.TemporaryDirectory() as td:
+            s=ServerOSStore(Path(td)/"state"); s.register_project("demo","DEM")
+            src=s.register_source("github","issue-1",revision="r1",locator="https://x")
+            o=s.record_observation(src['source_id'],'o',semantic_type='bug',content_hash='a'*64)
+            c=s.record_claim('c','/claim',[o['observation_id']])
+            first=s.create_candidate('c1','demo','one','bug',dedupe_key='d1',claim_ids=['c'],external_id='issue-1',external_revision='r1',domain='github')
+            again=s.create_candidate('c1','demo','one','bug',dedupe_key='d1',claim_ids=['c'],external_id='issue-1',external_revision='r1',domain='github')
+            self.assertEqual(first, again)
+            with s.connection() as conn:
+                self.assertEqual(conn.execute("SELECT count(*) FROM item_candidates").fetchone()[0], 1)
+
+    def test_new_evidence_does_not_revise_the_objective(self):
+        """A replay with a different title keeps the stored one.
+
+        `create_candidate` is the entry point a requirement is read through,
+        and the same requirement is read many times. What must not happen is
+        that the last reader silently wins: the title a person approved would
+        then change under a call whose whole purpose was to say the requirement
+        had been seen again.
+
+        The dedupe key is held to the same rule, and it is the half a reader is
+        more likely to expect to move: the identity here is the external triple,
+        so a caller could reasonably think a replay's key is at worst redundant.
+        It is not stored, and the returned row shows which key is in force — the
+        answer is the stored candidate, so a caller who passed something
+        different is told so by the answer rather than by a silence.
+        """
+        with tempfile.TemporaryDirectory() as td:
+            s=ServerOSStore(Path(td)/"state"); s.register_project("demo","DEM")
+            src=s.register_source("github","issue-1",revision="r1",locator="https://x")
+            o=s.record_observation(src['source_id'],'o',semantic_type='bug',content_hash='a'*64)
+            c=s.record_claim('c','/claim',[o['observation_id']])
+            s.create_candidate('c1','demo','approved wording','bug',dedupe_key='d1',claim_ids=['c'],external_id='issue-1',external_revision='r1',domain='github')
+            seen=s.create_candidate('c1','demo','rewritten wording','bug',dedupe_key='d9',claim_ids=['c'],external_id='issue-1',external_revision='r1',domain='github')
+            self.assertEqual(seen['title'],'approved wording')
+            self.assertEqual(seen['dedupe_key'],'d1')
+            self.assertEqual(seen['state'],'NEW')
+            # Nothing was created under 'd9' either, so the key is still free
+            # for whatever requirement it was actually meant for. Asserted as a
+            # success rather than as a refusal: a version that wrote 'd9' here
+            # would fail this line, and it would also be the version that
+            # silently spent the key of an unrelated requirement.
+            freed=s.create_candidate('c9','demo','nine','bug',dedupe_key='d9',claim_ids=['c'])
+            self.assertEqual(freed['candidate_id'],'c9')
+
+    def test_two_requirements_without_an_identity_are_two_candidates(self):
+        """The refusal agrees with the constraint, and this is the case that
+        separates them.
+
+        SQLite treats every NULL as distinct in a UNIQUE index, so
+        `UNIQUE(domain, external_id, external_revision)` does NOT collide when
+        any of the three is NULL — two candidates that both lack an external
+        identity are two requirements as far as the schema is concerned. A
+        lookup that compared NULLs (with `IS ?` and a NULL parameter, which
+        matches) would be stricter than the index and would refuse the second
+        one with a message naming `('', None, None)` as "the requirement" when
+        no requirement had been named. Write the predicate against the index,
+        not against the NULLs.
+
+        The first version of this test asserted the opposite — it claimed the
+        lookup's NULL-handling was what made an identity-less replay work — and
+        a mutation to `=` survived it, because the replay it used matched on
+        `dedupe_key` either way. It pinned nothing.
+        """
+        with tempfile.TemporaryDirectory() as td:
+            s=ServerOSStore(Path(td)/"state"); s.register_project("demo","DEM")
+            src=s.register_source("github","issue-1",revision="r1",locator="https://x")
+            o=s.record_observation(src['source_id'],'o',semantic_type='bug',content_hash='a'*64)
+            c=s.record_claim('c','/claim',[o['observation_id']])
+            first=s.create_candidate('c1','demo','one','bug',dedupe_key='d1',claim_ids=['c'])
+            self.assertIsNone(first['external_id'])
+            second=s.create_candidate('c2','demo','two','bug',dedupe_key='d2',claim_ids=['c'])
+            self.assertEqual(second['candidate_id'],'c2')
+            with s.connection() as conn:
+                self.assertEqual(conn.execute("SELECT count(*) FROM item_candidates").fetchone()[0], 2)
+            # The dedupe key is unique on its own and is NOT NULL, so it still
+            # refuses a second candidate under the first one's key. And that
+            # refusal names the key, not the identity: c1's identity is
+            # `('', None, None)`, so a message that reported the identity half
+            # would be naming three things that are not a requirement.
+            with self.assertRaises(ValueError) as caught:
+                s.create_candidate('c3','demo','three','bug',dedupe_key='d1',claim_ids=['c'])
+            self.assertIn("dedupe key 'd1'", str(caught.exception))
+            self.assertNotIn("requirement identity", str(caught.exception))
+            # An identity with a NULL in it behaves the same way: the index does
+            # not collide there either, and neither does this.
+            s.create_candidate('c4','demo','four','bug',dedupe_key='d4',claim_ids=['c'],domain='github',external_id='issue-1')
+            s.create_candidate('c5','demo','five','bug',dedupe_key='d5',claim_ids=['c'],domain='github',external_id='issue-1')
 
     def test_board_maps_candidate_only_to_promoted_item_and_uses_source_revision(self):
         with tempfile.TemporaryDirectory() as td:

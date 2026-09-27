@@ -262,10 +262,111 @@ class ServerOSStore:
             return dict(c.execute("SELECT * FROM claims WHERE claim_id=?",(claim_id,)).fetchone())
 
     def create_candidate(self, candidate_id, project, title, kind, *, dedupe_key, claim_ids=(), domain="", external_id=None, external_revision=None):
+        """One candidate per requirement identity, and a collision says so.
+
+        The two UNIQUE constraints on `item_candidates` ARE the idempotence of
+        this entry point, and `INSERT OR IGNORE` is how the insert respects
+        them. What `OR IGNORE` cannot do is tell apart the two reasons a row can
+        be absent afterwards, and until 2026-09-25 it did not have to: the
+        `candidate_claims` insert that follows ran anyway, referenced a
+        candidate that had just been ignored, and the caller of a duplicate
+        requirement was told `sqlite3.IntegrityError: FOREIGN KEY constraint
+        failed`. Measured, on a fresh store, both for a repeated identity and
+        for a repeated dedupe key.
+
+        That is a wrong answer rather than a missing one: it names a foreign key
+        as the problem when the problem is that this requirement already has a
+        candidate, and a caller reading it looks at the wrong table. The row is
+        therefore looked up FIRST and the two cases are answered separately:
+
+          * the same `candidate_id`, and neither key half held by another row —
+            a replay. The stored row is returned, which is what makes a retried
+            `candidate create` idempotent. Note what a replay does NOT do: a
+            different `title`, `kind` or `dedupe_key` in the second call is not
+            written. New evidence does not revise the objective, and this is
+            where that is enforced.
+          * a different `candidate_id` for one requirement — a collision, and a
+            refusal. Returning the other candidate's row would answer a question
+            nobody asked (it is a different identity than the caller named), and
+            inserting a second row is what the constraint exists to prevent.
+            This is `invoke_once`'s rule one file over: same key with different
+            input is refused, not reconciled.
+
+        Either refusal names the half of the key that actually matched, read off
+        the query that matched it, because a caller who is told the wrong half
+        goes and looks at the wrong row.
+        """
         if not claim_ids: raise ValueError("candidate requires claim provenance")
         with self.transaction(immediate=True) as c:
             if any(not c.execute("SELECT 1 FROM claims WHERE claim_id=?",(x,)).fetchone() for x in claim_ids): raise KeyError("unknown claim")
-            c.execute("INSERT OR IGNORE INTO item_candidates(candidate_id,project,title,kind,state,dedupe_key,domain,external_id,external_revision,approved_item_id,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)",(candidate_id,project,title,kind,"NEW",dedupe_key,domain,external_id,external_revision,None,now_iso()))
+            # The identity half mirrors the INDEX it reports on, and `=` is what
+            # mirrors it: SQLite treats every NULL as distinct in a UNIQUE
+            # index, and `col = NULL` is false for every row, so a triple with a
+            # NULL in it matches nothing here for the same reason it collides
+            # with nothing there. Two candidates that both lack an external
+            # identity are therefore two requirements, in the store and in this
+            # lookup alike.
+            #
+            # A guard — `if external_id is not None and external_revision is not
+            # None:` before adding the clause — was written here first, as the
+            # more obvious way to say that. It was removed because mutating it
+            # away changed no result: `=` already cannot match a NULL, so the
+            # guard was decoration, and decoration is what a later reader
+            # mistakes for the rule. `IS ?` is the form that WOULD be wrong —
+            # NULL-safe, and therefore stricter than the index — and
+            # `test_two_requirements_without_an_identity_are_two_candidates`
+            # fails if anyone writes it.
+            by_id = c.execute(
+                "SELECT * FROM item_candidates WHERE candidate_id = ?", (candidate_id,)
+            ).fetchone()
+            # One query per UNIQUE constraint, and each a transcription of that
+            # constraint. Which of them returns a row IS the reason the caller is
+            # about to be refused, so the reason is read off the query that found
+            # it rather than reconstructed by comparing the stored row back to
+            # this call's arguments. That reconstruction was written here first,
+            # as a single `OR`ed query followed by a message that interpolated
+            # the CALLER's key: a collision on the identity half was then
+            # reported as "already carries dedupe key 'd2'" when the stored row
+            # held 'd1', measured on a real store. A refusal is read as a
+            # statement of fact, and that one stated a fact that was not so.
+            by_dedupe = c.execute(
+                "SELECT * FROM item_candidates WHERE dedupe_key = ?", (dedupe_key,)
+            ).fetchone()
+            by_identity = c.execute(
+                "SELECT * FROM item_candidates"
+                " WHERE domain = ? AND external_id = ? AND external_revision = ?",
+                (domain, external_id, external_revision),
+            ).fetchone()
+            holders = {}
+            if by_dedupe is not None:
+                holders.setdefault(by_dedupe["candidate_id"], []).append(
+                    f"dedupe key {dedupe_key!r}")
+            if by_identity is not None:
+                holders.setdefault(by_identity["candidate_id"], []).append(
+                    f"requirement identity ({domain!r}, {external_id!r}, "
+                    f"{external_revision!r})")
+            # This call's own row is not a conflict with itself; what is left in
+            # `holders` is by construction carried by someone else.
+            holders.pop(candidate_id, None)
+            if holders:
+                naming = "; ".join(
+                    f"candidate {cid} already carries {' and '.join(facts)}"
+                    for cid, facts in holders.items())
+                if by_id is None:
+                    raise ValueError(
+                        f"{naming}; this call named {candidate_id}. One "
+                        f"requirement has one candidate, so reuse that id, or the "
+                        f"requirement is not the one this call claims it is.")
+                # Both halves are taken, and not by this call's row. Naming only
+                # one of them would send the caller to fix half of a conflict.
+                raise ValueError(
+                    f"candidate {candidate_id} already exists, and {naming}. Two "
+                    f"rows are being named for one requirement, and this call is "
+                    f"not a replay of either.")
+            if by_id is not None:
+                for x in claim_ids: c.execute("INSERT OR IGNORE INTO candidate_claims VALUES (?,?)",(candidate_id,x))
+                return dict(c.execute("SELECT * FROM item_candidates WHERE candidate_id=?",(candidate_id,)).fetchone())
+            c.execute("INSERT INTO item_candidates(candidate_id,project,title,kind,state,dedupe_key,domain,external_id,external_revision,approved_item_id,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)",(candidate_id,project,title,kind,"NEW",dedupe_key,domain,external_id,external_revision,None,now_iso()))
             for x in claim_ids: c.execute("INSERT OR IGNORE INTO candidate_claims VALUES (?,?)",(candidate_id,x))
             return dict(c.execute("SELECT * FROM item_candidates WHERE candidate_id=?",(candidate_id,)).fetchone())
 
