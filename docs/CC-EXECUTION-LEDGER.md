@@ -8191,6 +8191,107 @@ serverosd            → 唯一一个进程（3723547），从 current/bin/serve
 已装载荷无悬空         current/ 下 0 条 dangling symlink
 ```
 
+**十六、我在本轮造出的缺陷：那条记录被测试写脏了。**
+
+十五那一节之后我去读 ingress 记录，看到 **21 行**，全是**成对**的：先 `BLOCKED`，约
+33 毫秒后 `attached: true` 带同一个 `context_ref`。有一对的时间是 **01:41:06**，而那一
+刻正是我这一轮开头跑聚焦测试的时刻。于是没有猜，去量：
+
+```text
+$ pytest tests/test_actor_context.py      # 跑测试前 21 行
+  63 passed in 0.65s
+$ wc -l …/ingress.jsonl                   # 跑测试后 23 行  ⇒ 新增 2
+{"actor_identified": false, "at": "2026-09-28T01:44:08.989866+08:00", "attached": false, …}
+{"actor_identified": true,  "at": "2026-09-28T01:44:09.021569+08:00", "attached": true,
+ "context_ref": "human-context:provider%3Abotmux-human-control/b5a47cbd…", …}
+```
+
+来源是 `tests/test_actor_context.py` 里两条以**普通函数**方式驱动 CLI 的断言（第 791 行
+`main(["--attach"])`、第 798 行 `main(["--attach","--socket",…])`）——正是「一对」的成因，
+33 毫秒也解释了。**根因是我把 `--record` 默认翻成了 on**：这个默认对钩子是对的（item 一），
+但它同时让 `pytest` 能往一份**本来要用作真人 turn 证据**的文件里写 `attached: true`。
+
+**决定性反证不是推理，是同一时段 ServerOS 自己的账：**
+
+```text
+state/serveros/runtime/agent-control/store.json
+  contexts = 0      grants = 0
+  mtime    = 2026-09-27 00:16:59        ← 自前一天 00:16 起一个字节都没写过
+```
+
+而 `serverosctl work delegate --help` 自己写着：那个 `--context-ref` **「has exactly one
+producer: `agent.context.attach`, inside a real turn」**。所以那些 `context_ref` 在
+ServerOS 侧**不可解析**、从未存在过。**§17 第一条（HumanControlProvider→可信上下文真实闭合）
+仍然未满足**；这一轮只是把「为什么」量得更准了：不是「没试过」，是**试过的那九次全是测试**，
+真实 turn 一次都没进来过。
+
+处置：记录按字节保全为证据（`artifacts/serveros/ingress-record-defect-20260928/`，
+`sha256 eb2241dd…`，24 行 7505 字节，附 README 写明每行的来历），**生产记录已清空**——
+留着就是让这份文件对 turn 说谎。
+
+**十七、缺陷的修法：让测试套件够不到那个文件。**
+
+新增 `tests/conftest.py`，两道机制，因为一道会被忘记而另一道不会：
+
+* 每条测试把 `ingress_record_path` 重定向到自己的 `tmp_path`（按**已加载模块**打补丁，
+  而不是再 import 一次——两个模块对象对一个文件是 `runtime/wake.py` 记过的那种失败）；
+* 会话级记录真文件的 `(size, mtime_ns)` 指纹，**收尾时断言未变**。零字节写入只动
+  `mtime_ns`，所以两个都要；文件不存在时记 `("absent",)`，这样**创建**它也会被抓到。
+
+一条豁免：`test_the_record_path_comes_from_the_root_contract` 的主题**就是那个解析函数**，
+重定向会把被测对象换成 fixture。它用 `@pytest.mark.reads_the_ingress_resolver` 显式声明，
+且它只解析、不写，所以会话末那道断言对它仍然成立。
+
+**两半都测了，反向对照也是测出来的：**
+
+```text
+正向：pytest tests/test_actor_context.py + declared_commands + runtime_parity
+      111 passed，生产记录 0 → 0 字节（改动前同样三条会写 2 行）
+反向：一个故意绕过重定向的探针（打上豁免标记后直写真路径）
+      ERROR tests/conftest.py:181  AssertionError:
+      this test run wrote …/ingress.jsonl … Before: (7481, 1790531049020683125),
+      after: (7505, 1790531144077330822)
+      → 守卫因为正确的原因红了，并且点名了那个文件
+旁路：脱开 pytest，装机件上纯 `--attach`（旧拼写、默认路径）
+      → 317 字节、一行 BLOCKED、exit 1   ⇒ 产者没被修坏
+```
+
+反向对照第一次**没有红**，暴露了我自己守卫里的一个洞：基线用 `before is None` 早退，而
+「模块是否已被加载」取决于**哪些测试碰巧被收集**，所以单跑一个文件时基线是 `None`、
+检查被跳过。改成 `conftest` 自己按根契约解析路径后才真正红。**这条错误留在正文里**，
+因为它说明「守卫声称守住了」和「守卫真的守住了」是两件事。
+
+`tests/` **不是载荷成员**（261 个成员里 0 个），`docs/` 也不是，所以这次修复**不需要**
+重新构建、不需要动 cachebuster。
+
+**十八、一处必须认领的重合。** 我在 27i 给那条改写过的测试写下的 docstring 里，**已经
+点出了这个危险的原话**：「the suite calls `main(["--attach"])` as a plain function,
+in-process, on this node, with this node's roots bound, so a caller with no off switch
+would litter a real log root.」我写出了机制，然后**只给自己改写的那一条测试加了关闸**，
+漏掉了紧挨着的 791/798 两条。危险被写下来但没被围住，比没写下来更接近「知道却不做」；
+所以修法不是「下次记得」，而是 `conftest.py` 里那道谁也无法悄悄绕过的会话末断言。
+
+**十九、带着新 `conftest.py` 重跑的最终全量：137 / 137。**
+
+`conftest.py` 作用于**每一条**测试，所以十二那一轮的全绿不能搬过来当证据，必须重跑：
+
+```json
+{"schema":"serveros/verification-record.v1","record":"verify-final-27j-recount-20260928",
+ "written_to":"/data/home/vince/state/serveros/verification/verify-final-27j-recount-20260928.json",
+ "tests":137,"passed":137,"not_passed":[],"outcomes":{},"inputs_unmeasured":[]}
+```
+
+exit 0。**跑完之后生产记录仍是 317 字节**——那 317 字节是 item 十七旁路里那次**脱开
+pytest 的真调用**留下的一行 `BLOCKED`，它是真的，留着；整套测试没有往它上面加过一个字节。
+
+**二十、修完之后的一份诚实清点。** §17 的五条人前提（可信上下文闭合、bounded grant 产生、
+wake 真正 WOKEN 一次、successor Parent 恢复一次、无重复 child/effect）**一条都没满足**，
+而且现在有一条更硬的读数说明它们卡在同一处：`contexts = 0`、`grants = 0`、
+`checkpoints = {'SRV-0011#1'}`、`item_events` 最后一条停在 **2026-09-20**、`SRV-0011`
+状态仍是 `INBOX`。也就是说**从来没有任何一条真实 turn 走通过 ingress**，所以后面每一环
+都还没有输入。这一轮我能做完的是把它变成**下一次真实 turn 一定看得见**：记录默认开、
+测试碰不到它、产者经脱开 pytest 的旁路验过。剩下的一步只需要一条真人消息。
+
 
 ### 9.54 最终全量的那一条红：一个漏掉的 v1 兄弟，和一场长期被吞掉的 skip
 
