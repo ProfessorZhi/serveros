@@ -286,7 +286,25 @@ short_description: Agent Engineering Workbench for a Linux work node
 # the architecture, which the file's own tenth line says belongs in
 # `ARCHITECTURE.md`; the diff is real and the builder, which compares a profile
 # against its parent, cannot see either half of it.
-cachebuster: srv0005.20260927e
+# Moved to `27f` on 2026-09-27, and the reason is visible from outside this file:
+# `abilities/taxonomy.v2.yaml` is a shipped member, and it gained the eighth
+# retained v1 node. `scripts/runtime_truth.py` said so before anyone decided
+# anything — four rows went to SOURCE_RUNTIME_DRIFT naming that one path
+# (`… @ runtime-assets (built)`, the Claude plugin cache, the Codex plugin, and
+# the running node revision), which is exactly the reading a cachebuster exists
+# to keep honest.
+#
+# Its reader is installed-side: `abilities/taxonomy.py:108` resolves
+# `root / abilities/taxonomy.v2.yaml`, so `serverosctl taxonomy tree|show` reads
+# the copy in the artifact. An installed cache left on `27e` would render a tree
+# that omits the node the catalogue has been placing two abilities at since
+# `ce6e103` — a navigation view missing a family its own catalogue names.
+#
+# The serveros half moves alone this time: the ability half's pin
+# (`da5f89b1b131`) did not change, so the payload delta `27e` → `27f` is two
+# files — the taxonomy above and this one — plus the version string that names
+# them.
+cachebuster: srv0005.20260927f
 
 skills:
   - name: runtime-management
