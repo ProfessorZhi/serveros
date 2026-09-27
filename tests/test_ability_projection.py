@@ -49,9 +49,12 @@ projection = _load("serveros_ability_projection", "ability_projection.py")
 
 NOW = datetime(2026, 9, 12, 9, 0, tzinfo=timezone.utc)
 
-# The canonical id first, then the historical one — which is how the fleet
-# registry models this device: `device:server-beijing` with `linux-server` kept
-# in `legacy_ids`.
+# The canonical id first, then the historical one — the shape the fleet registry
+# gives ANY renamed device, here `device:server-beijing` with `linux-server` kept
+# in its `legacy_ids`. It is a fixture, not this node's ids: the node this
+# runtime is installed on has an empty `legacy_ids`, and passing Beijing's ids
+# as if they were its own is what produced a 30-ability reading from a machine
+# that is not this one.
 DEVICE_IDS = ("server-beijing", "linux-server")
 
 
@@ -144,11 +147,11 @@ def test_the_projection_records_only_abilities_installed_on_this_device(authorit
 def test_the_historical_device_id_still_resolves(authority, tmp_path):
     """The alias is the point, not a detail.
 
-    `installations[].device_id` in the authority currently says `linux-server`,
-    which is this device's HISTORICAL id — `fleet/registry.yaml` keeps it in
-    `legacy_ids` so earlier installation evidence keeps resolving after the
-    rename. A projection that matched only the canonical id would return an
-    empty abilities list with no error whatsoever, which is indistinguishable
+    The authority records an installation under the device id that was in force
+    when it happened, so a renamed device's evidence is split across its
+    canonical id and the historical ones `fleet/registry.yaml` keeps in
+    `legacy_ids`. A projection that matched only the canonical id would return
+    an empty abilities list with no error whatsoever, which is indistinguishable
     from "this node has no abilities installed" — the failure this project has
     hit repeatedly, where a check returns the empty set instead of failing.
     """

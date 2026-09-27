@@ -1072,7 +1072,7 @@ def cmd_information_captured(args) -> int:
     The materialized half of P1's "capture policy 与 materialized coverage 分开".
     `work coverage` already reports the feishu surfaces, but it counts the
     *authored* `sources.yaml` — what somebody declared they follow. This reads
-    the 66 manifests the collectors wrote under `records/information/raw/`, which
+    the 68 manifests the collectors wrote under `records/information/raw/`, which
     until now had no ServerOS-side reader at all.
 
     What it refuses to hand back as one number:
@@ -1169,7 +1169,7 @@ def cmd_information_captured(args) -> int:
 def cmd_information_watched(args) -> int:
     """§P2 — the follow list against the capture tree: the join neither side had.
 
-    `information captured` reads the 66 manifests the collectors wrote. This
+    `information captured` reads the 68 manifests the collectors wrote. This
     reads the list that says which documents are *supposed* to be re-checked —
     `records/information/raw/DRIFT_WATCHLIST.txt` — and asks of each entry
     whether the capture tree is actually keeping up. On 2026-09-22
@@ -12402,7 +12402,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     info_captured = information_sub.add_parser(
         "captured",
-        help="the 66 manifests under <records>/information/raw, read as capture "
+        help="the 68 manifests under <records>/information/raw, read as capture "
              "records. Reports per component and not per object; reads nothing, "
              "writes nothing", **_COMMON)
     info_captured.add_argument(
