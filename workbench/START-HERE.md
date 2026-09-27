@@ -1,11 +1,11 @@
-<!-- ⟦snapshot⟧ rendered 2026-09-20T14:06:52+00:00 by `runtime/workbench.py` from ~/workspace/worktrees/serveros/SRV-0011 · inputs: projects=serveros,litellm,multi-user-claw; project=litellm; item=LIT-0101; quay-run=~/artifacts/work-items/serveros/SRV-0011/RUN-0001/quay-run; quay-bin=~/workspace/worktrees/quay/foundation-skeleton/plugin/vendor/quay/dist/quay.js; ability-repo=~/workspace/worktrees/ability-management/SRV-0011; reports-dir=~/artifacts/work-items/serveros/SRV-0011/RUN-0001; release-root=~/artifacts/work-items/serveros/SRV-0011/RUN-0001/release/dist/serveros-linux-work -->
+<!-- ⟦snapshot⟧ rendered 2026-09-27T06:51:41+00:00 by `runtime/workbench.py` from ~/workspace/worktrees/serveros/serveros-completion-20260925 · inputs: projects=serveros,litellm,multi-user-claw; project=litellm; item=LIT-0101; quay-run=~/artifacts/work-items/serveros/SRV-0011/RUN-0001/quay-run; quay-bin=~/workspace/worktrees/quay/foundation-skeleton/plugin/vendor/quay/dist/quay.js; ability-repo=~/workspace/src/ability-management; reports-dir=~/artifacts/work-items/serveros/SRV-0011/RUN-0001; release-root=~/runtime-assets/hwz-server-os/serveros-linux-work -->
 
 # START-HERE
 
 > **主张** — 本页内容由命令的判定产生，重跑应当复现。状态矩阵是 23 条命令的判定，不是读数。渲染时会重跑它们并比对同一份判定块。`serverosctl workbench check` 会整页比对。
 
 <!-- ⟦answers⟧
-serverosctl status --json	2
+serverosctl status --json	0
 serverosctl device show --json	0
 serverosctl resource summary --json	0
 serverosctl process top --json	0
@@ -32,7 +32,7 @@ serverosctl workspace overview --json	0
 -->
 
 <!-- ⟦verdicts⟧
-runtime=FAILING
+runtime=OK
 device=OK
 resource=OK
 process=OK
@@ -87,11 +87,11 @@ workspace=OK
 | [RELEASE-MANIFEST](RELEASE-MANIFEST.md) | pin、摘要与可达性 | `git cat-file, git ls-remote, 隔离 root 自身的符号链接结构` |
 | [DEPLOYMENT](DEPLOYMENT.md) | 待部署清单（未执行） | `作者输入 runtime/workbench_sources.py` |
 
-### 状态矩阵（23 条 OK，1 条 FAILING）
+### 状态矩阵（24 条 OK，0 条 FAILING）
 
 | id | 主张 | 命令 | 实测 |  |
 |---|---|---|---|---|
-| runtime | serverosd 在跑，并且报告它最后一次看的时间 | `serverosctl status --json` | exit 2 | **FAILING** |
+| runtime | serverosd 在跑，并且报告它最后一次看的时间 | `serverosctl status --json` | exit 0 | OK |
 | device | 这台设备的 CPU/内存/load/GPU/磁盘事实 | `serverosctl device show --json` | exit 0 | OK |
 | resource | 按 role 分的资源压力（根盘 vs 数据盘） | `serverosctl resource summary --json` | exit 0 | OK |
 | process | 进程按 group/session/container/role 归属 | `serverosctl process top --json` | exit 0 | OK |
@@ -134,8 +134,8 @@ workspace=OK
 - `~/artifacts/skills/serveros/RUN-20260920-foundation-skeleton-f/quay/ws`（存在）— Quay Goal/AC/Task 记录与 GateEvent 账本（本轮真实执行）。`quay goal write` / `quay goal gate` / `quay task` 在隔离 workspace 里跑出来的
 - `~/artifacts/skills/serveros/RUN-20260920-foundation-skeleton-f/quay/probe-deeper/a/b/ws2`（存在）— 负控：同一份 config 放深两级的 workspace。复现 provider `path` 的深度依赖（`spawn node ENOENT`）
 - `~/artifacts/skills/serveros/RUN-20260920-foundation-skeleton-e/negative`（存在）— 工作包 E 的三个负控：陈旧 revision / 子任务缺席 / complete 事件被删。每个负控单独 exit 1 并给出具名原因；未做手脚的副本 exit 0
-- `~/workspace/worktrees/serveros/SRV-0011/runtime/card-scenarios.yaml`（存在）— 六类卡片场景（正常/部分未知/单异常/观测失败/混合/仅恢复）。测试与预览读同一份输入，所以审阅的卡片就是测试跑过的卡片
-- `~/workspace/worktrees/serveros/SRV-0011/runtime/workbench_sources.py`（存在）— 工作台里不是由命令产生的**那一半**：状态矩阵的主张、九条取舍、待部署清单、pin。这一页与它背后的文档由 `serverosctl workbench render` 生成；作者输入在这里，所以「这条主张是谁写的」有答案，而不是藏在生成器里。**本文件集自身不作为样例列出**，因为 `render` 第一次写它时它还不存在，把自己作为存在性样例会让首次 `render` 之后的 `check` 必红一次
+- `~/workspace/worktrees/serveros/serveros-completion-20260925/runtime/card-scenarios.yaml`（存在）— 六类卡片场景（正常/部分未知/单异常/观测失败/混合/仅恢复）。测试与预览读同一份输入，所以审阅的卡片就是测试跑过的卡片
+- `~/workspace/worktrees/serveros/serveros-completion-20260925/runtime/workbench_sources.py`（存在）— 工作台里不是由命令产生的**那一半**：状态矩阵的主张、九条取舍、待部署清单、pin。这一页与它背后的文档由 `serverosctl workbench render` 生成；作者输入在这里，所以「这条主张是谁写的」有答案，而不是藏在生成器里。**本文件集自身不作为样例列出**，因为 `render` 第一次写它时它还不存在，把自己作为存在性样例会让首次 `render` 之后的 `check` 必红一次
 
 ### live 未验证
 

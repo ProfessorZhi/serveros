@@ -1,8 +1,8 @@
-<!-- ⟦snapshot⟧ rendered 2026-09-20T14:06:52+00:00 by `runtime/workbench.py` from ~/workspace/worktrees/serveros/SRV-0011 · inputs: projects=serveros,litellm,multi-user-claw; project=litellm; item=LIT-0101; quay-run=~/artifacts/work-items/serveros/SRV-0011/RUN-0001/quay-run; quay-bin=~/workspace/worktrees/quay/foundation-skeleton/plugin/vendor/quay/dist/quay.js; ability-repo=~/workspace/worktrees/ability-management/SRV-0011; reports-dir=~/artifacts/work-items/serveros/SRV-0011/RUN-0001; release-root=~/artifacts/work-items/serveros/SRV-0011/RUN-0001/release/dist/serveros-linux-work -->
+<!-- ⟦snapshot⟧ rendered 2026-09-27T06:51:41+00:00 by `runtime/workbench.py` from ~/workspace/worktrees/serveros/serveros-completion-20260925 · inputs: projects=serveros,litellm,multi-user-claw; project=litellm; item=LIT-0101; quay-run=~/artifacts/work-items/serveros/SRV-0011/RUN-0001/quay-run; quay-bin=~/workspace/worktrees/quay/foundation-skeleton/plugin/vendor/quay/dist/quay.js; ability-repo=~/workspace/src/ability-management; reports-dir=~/artifacts/work-items/serveros/SRV-0011/RUN-0001; release-root=~/runtime-assets/hwz-server-os/serveros-linux-work -->
 
 # BOARD
 
-> **读数** — 本页内容是这台机器在一个时刻的测量值，重跑会得到**新的**读数，不应当相等。在飞条数与状态取自 work-engine 当前状态。`serverosctl workbench check` 因此只核对这些命令今天仍然回答、页面结构没有塌陷，不比对任何数字。
+> **读数** — 本页内容是这台机器在一个时刻的测量值，重跑会得到**新的**读数，不应当相等。在飞条数与状态取自各项目的 board 文档；该文档取出多旧，页面上就写多旧。`serverosctl workbench check` 因此只核对这些命令今天仍然回答、页面结构没有塌陷，不比对任何数字。
 
 <!-- ⟦answers⟧
 serverosctl requirement board --json	0
@@ -12,6 +12,7 @@ serverosctl work board --json	0
 ### 跨项目需求看板
 
 Item 17 个：活跃 10，已完成 7，没有卡的 8。
+看板状态取出时间：litellm `2026-09-10T07:03:23.887775+00:00`；multi-user-claw `2026-09-10T07:03:24.051538+00:00`；serveros `2026-09-10T07:28:49.215528+00:00`。**这不是本页的时刻** —— 它读的状态是这些文档里取出来的那一份。
 优先级：`UNPRODUCED` —— no priority, severity or P-level field exists anywhere in this fabric — not in work-engine's items_index, not in the item-card schema's required keys, and not in this repository. §S's levels are declared here and rendered empty rather than filled from a proxy: bucketing by kind or by state and calling the result P0-P4 would be inventing a taxonomy and presenting it in a column that means priority. Introducing the field is on the roadmap's list of things that have to be decided by a person
 
 | id | project | kind | outcome | priority | runs |
@@ -36,7 +37,8 @@ Item 17 个：活跃 10，已完成 7，没有卡的 8。
 
 ### 个人看板（§6 的分节与顺序）
 
-读数时间 `2026-09-20T22:06:53+08:00`。
+读数时间 `2026-09-27T14:53:13+08:00`。
+看板状态取出时间：litellm `2026-09-10T07:03:23.887775+00:00`；multi-user-claw `2026-09-10T07:03:24.051538+00:00`；serveros `2026-09-10T07:28:49.215528+00:00`。**这不是本页的时刻** —— 它读的状态是这些文档里取出来的那一份。
 
 | section | rows | 划线 | 为什么在这一节 |
 |---|---|---|---|

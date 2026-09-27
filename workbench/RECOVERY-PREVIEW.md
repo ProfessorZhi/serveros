@@ -1,4 +1,4 @@
-<!-- ⟦snapshot⟧ rendered 2026-09-20T14:06:52+00:00 by `runtime/workbench.py` from ~/workspace/worktrees/serveros/SRV-0011 · inputs: projects=serveros,litellm,multi-user-claw; project=litellm; item=LIT-0101; quay-run=~/artifacts/work-items/serveros/SRV-0011/RUN-0001/quay-run; quay-bin=~/workspace/worktrees/quay/foundation-skeleton/plugin/vendor/quay/dist/quay.js; ability-repo=~/workspace/worktrees/ability-management/SRV-0011; reports-dir=~/artifacts/work-items/serveros/SRV-0011/RUN-0001; release-root=~/artifacts/work-items/serveros/SRV-0011/RUN-0001/release/dist/serveros-linux-work -->
+<!-- ⟦snapshot⟧ rendered 2026-09-27T06:51:41+00:00 by `runtime/workbench.py` from ~/workspace/worktrees/serveros/serveros-completion-20260925 · inputs: projects=serveros,litellm,multi-user-claw; project=litellm; item=LIT-0101; quay-run=~/artifacts/work-items/serveros/SRV-0011/RUN-0001/quay-run; quay-bin=~/workspace/worktrees/quay/foundation-skeleton/plugin/vendor/quay/dist/quay.js; ability-repo=~/workspace/src/ability-management; reports-dir=~/artifacts/work-items/serveros/SRV-0011/RUN-0001; release-root=~/runtime-assets/hwz-server-os/serveros-linux-work -->
 
 # RECOVERY-PREVIEW
 
@@ -21,27 +21,27 @@ serverosctl card recovery	0
     "direction": "vertical",
     "elements": [
       {
-        "content": "\u2705 **\u6709\u4e00\u7ec4\u8fdb\u7a0b\u5c1a\u672a\u5f52\u5c5e\u5230\u4efb\u4f55\u53d7\u7ba1\u5de5\u4f5c**\n\u5bf9\u8c61\uff1a\u4f1a\u8bdd 11127 \u7684\u8fdb\u7a0b\u7ec4\uff08pid 1002018\uff09\n\u6062\u590d\u4f9d\u636e\uff1a\u7531\u63a2\u6d4b\u5668\u5728\u6709\u80af\u5b9a\u8bc1\u636e\u65f6\u5173\u95ed\uff0c\u4e0d\u662f\u89c2\u6d4b\u5931\u8054\uff08state RESOLVED\uff09\n\u51fa\u73b0\u4e8e 2026-09-20T08:42:40.145619+00:00 \u00b7 \u6062\u590d\u4e8e 2026-09-20T08:43:40.734348+00:00 \u00b7 \u6301\u7eed 1 \u5206",
+        "content": "\u2705 **\u8fdb\u7a0b\u7ec4\u5c1a\u672a\u5f52\u5c5e\u5230\u4efb\u4f55\u53d7\u7ba1\u5de5\u4f5c**\n**\u5bf9\u8c61** \u4f1a\u8bdd 15413\n**\u6062\u590d\u4f9d\u636e** \u7531\u63a2\u6d4b\u5668\u5728\u6709\u80af\u5b9a\u8bc1\u636e\u65f6\u5173\u95ed\uff0c\u4e0d\u662f\u89c2\u6d4b\u5931\u8054\uff08state RESOLVED\uff09\n**\u51fa\u73b0\u4e8e** 2026-09-20T11:24:54.754330+00:00 \u00b7 **\u6062\u590d\u4e8e** 2026-09-26T17:58:41.947330+00:00 \u00b7 **\u6301\u7eed** 6 \u5929 6 \u5c0f\u65f6",
         "tag": "markdown"
       },
       {
-        "content": "\u2705 **\u6709\u4e00\u7ec4\u8fdb\u7a0b\u5c1a\u672a\u5f52\u5c5e\u5230\u4efb\u4f55\u53d7\u7ba1\u5de5\u4f5c**\n\u5bf9\u8c61\uff1a\u4f1a\u8bdd 11127 \u7684\u8fdb\u7a0b\u7ec4\uff08pid 1685450\uff09\n\u6062\u590d\u4f9d\u636e\uff1a\u7531\u63a2\u6d4b\u5668\u5728\u6709\u80af\u5b9a\u8bc1\u636e\u65f6\u5173\u95ed\uff0c\u4e0d\u662f\u89c2\u6d4b\u5931\u8054\uff08state RESOLVED\uff09\n\u51fa\u73b0\u4e8e 2026-09-20T09:12:53.079957+00:00 \u00b7 \u6062\u590d\u4e8e 2026-09-20T09:13:53.578905+00:00 \u00b7 \u6301\u7eed 1 \u5206",
+        "content": "\u2705 **\u8fdb\u7a0b\u7ec4\u5c1a\u672a\u5f52\u5c5e\u5230\u4efb\u4f55\u53d7\u7ba1\u5de5\u4f5c**\n**\u5bf9\u8c61** \u4f1a\u8bdd 15413\n**\u6062\u590d\u4f9d\u636e** \u7531\u63a2\u6d4b\u5668\u5728\u6709\u80af\u5b9a\u8bc1\u636e\u65f6\u5173\u95ed\uff0c\u4e0d\u662f\u89c2\u6d4b\u5931\u8054\uff08state RESOLVED\uff09\n**\u51fa\u73b0\u4e8e** 2026-09-20T11:24:54.754330+00:00 \u00b7 **\u6062\u590d\u4e8e** 2026-09-26T17:58:41.947330+00:00 \u00b7 **\u6301\u7eed** 6 \u5929 6 \u5c0f\u65f6",
         "tag": "markdown"
       },
       {
-        "content": "\u2705 **\u6709\u4e00\u7ec4\u8fdb\u7a0b\u5c1a\u672a\u5f52\u5c5e\u5230\u4efb\u4f55\u53d7\u7ba1\u5de5\u4f5c**\n\u5bf9\u8c61\uff1a\u4f1a\u8bdd 15413 \u7684\u8fdb\u7a0b\u7ec4\n\u6062\u590d\u4f9d\u636e\uff1a\u7531\u63a2\u6d4b\u5668\u5728\u6709\u80af\u5b9a\u8bc1\u636e\u65f6\u5173\u95ed\uff0c\u4e0d\u662f\u89c2\u6d4b\u5931\u8054\uff08state RESOLVED\uff09\n\u51fa\u73b0\u4e8e 2026-09-20T09:15:53.750390+00:00 \u00b7 \u6062\u590d\u4e8e 2026-09-20T11:24:54.754330+00:00 \u00b7 \u6301\u7eed 2 \u5c0f\u65f6 09 \u5206",
+        "content": "\u2705 **\u8fdb\u7a0b\u7ec4\u5c1a\u672a\u5f52\u5c5e\u5230\u4efb\u4f55\u53d7\u7ba1\u5de5\u4f5c**\n**\u5bf9\u8c61** \u4f1a\u8bdd 15413\n**\u6062\u590d\u4f9d\u636e** \u7531\u63a2\u6d4b\u5668\u5728\u6709\u80af\u5b9a\u8bc1\u636e\u65f6\u5173\u95ed\uff0c\u4e0d\u662f\u89c2\u6d4b\u5931\u8054\uff08state RESOLVED\uff09\n**\u51fa\u73b0\u4e8e** 2026-09-20T11:24:54.754330+00:00 \u00b7 **\u6062\u590d\u4e8e** 2026-09-26T17:58:41.947330+00:00 \u00b7 **\u6301\u7eed** 6 \u5929 6 \u5c0f\u65f6",
         "tag": "markdown"
       },
       {
-        "content": "\u53e6\u6709 9 \u4ef6\u5df2\u544a\u77e5\u7684\u6062\u590d\u672a\u8fdb\u5361\u9762 \u00b7 1495 \u4ef6\u4ece\u672a\u544a\u77e5\u8fc7\uff0c\u4e0d\u8ba1\u5165\u6062\u590d\uff08\u4eba\u4e0d\u80fd\u88ab\u901a\u77e5\u4e00\u4e2a\u4ed6\u4ece\u6765\u6ca1\u6536\u5230\u8fc7\u7684\u574f\u6d88\u606f\uff09",
+        "content": "\u53e6\u6709 11 \u9879\u5df2\u544a\u77e5\u7684\u6062\u590d\u672a\u8fdb\u5361\u9762 \u00b7 7791 \u9879\u4ece\u672a\u544a\u77e5\uff0c\u4e0d\u8ba1\u5165\u6062\u590d",
         "tag": "markdown"
       },
       {
-        "content": "\u672c\u6279\u6062\u590d\u603b\u6570 1507 \u00b7 \u5176\u4e2d\u5df2\u544a\u77e5 12 \u00b7 \u91c7\u96c6 2026-09-20 22:06:57 CST",
+        "content": "\u672c\u6279\u6062\u590d\u603b\u6570 7805 \u00b7 \u5176\u4e2d\u5df2\u544a\u77e5 14 \u00b7 \u91c7\u96c6 09-27 14:53",
         "tag": "markdown"
       },
       {
-        "content": "\u672c\u5361\u53ea\u62a5\u544a ServerOS \u5df2\u7ecf\u8bb0\u5f55\u7684\u4e8b\u5b9e\u3002\u6ca1\u6709\u7ec8\u6b62\u3001\u6ca1\u6709\u91cd\u542f\u3001\u6ca1\u6709\u6e05\u7406 \u2014\u2014 \u9700\u8981\u52a8\u4f5c\u7684\u6761\u76ee\u5728 ServerOS \u91cc\u5e26\u5efa\u8bae\uff0c\u4e0d\u5728\u8fd9\u91cc\u3002",
+        "content": "\u53ea\u8bfb\u544a\u8b66 \u00b7 \u672a\u6267\u884c\u7ec8\u6b62\u3001\u91cd\u542f\u6216\u6e05\u7406\u64cd\u4f5c",
         "tag": "markdown"
       }
     ]
@@ -51,12 +51,12 @@ serverosctl card recovery	0
   },
   "header": {
     "subtitle": {
-      "content": "2026-09-20 22:06:57 CST \u66f4\u65b0",
+      "content": "09-27 14:53 \u66f4\u65b0",
       "tag": "plain_text"
     },
     "template": "green",
     "title": {
-      "content": "\u2705 \u5df2\u6062\u590d \u00b7 12 \u4ef6",
+      "content": "\u2705 \u5df2\u6062\u590d \u00b7 14 \u9879",
       "tag": "plain_text"
     }
   },
@@ -72,27 +72,27 @@ serverosctl card recovery	0
     "direction": "vertical",
     "elements": [
       {
-        "content": "✅ **有一组进程尚未归属到任何受管工作**\n对象：会话 11127 的进程组（pid 1002018）\n恢复依据：由探测器在有肯定证据时关闭，不是观测失联（state RESOLVED）\n出现于 2026-09-20T08:42:40.145619+00:00 · 恢复于 2026-09-20T08:43:40.734348+00:00 · 持续 1 分",
+        "content": "✅ **进程组尚未归属到任何受管工作**\n**对象** 会话 15413\n**恢复依据** 由探测器在有肯定证据时关闭，不是观测失联（state RESOLVED）\n**出现于** 2026-09-20T11:24:54.754330+00:00 · **恢复于** 2026-09-26T17:58:41.947330+00:00 · **持续** 6 天 6 小时",
         "tag": "markdown"
       },
       {
-        "content": "✅ **有一组进程尚未归属到任何受管工作**\n对象：会话 11127 的进程组（pid 1685450）\n恢复依据：由探测器在有肯定证据时关闭，不是观测失联（state RESOLVED）\n出现于 2026-09-20T09:12:53.079957+00:00 · 恢复于 2026-09-20T09:13:53.578905+00:00 · 持续 1 分",
+        "content": "✅ **进程组尚未归属到任何受管工作**\n**对象** 会话 15413\n**恢复依据** 由探测器在有肯定证据时关闭，不是观测失联（state RESOLVED）\n**出现于** 2026-09-20T11:24:54.754330+00:00 · **恢复于** 2026-09-26T17:58:41.947330+00:00 · **持续** 6 天 6 小时",
         "tag": "markdown"
       },
       {
-        "content": "✅ **有一组进程尚未归属到任何受管工作**\n对象：会话 15413 的进程组\n恢复依据：由探测器在有肯定证据时关闭，不是观测失联（state RESOLVED）\n出现于 2026-09-20T09:15:53.750390+00:00 · 恢复于 2026-09-20T11:24:54.754330+00:00 · 持续 2 小时 09 分",
+        "content": "✅ **进程组尚未归属到任何受管工作**\n**对象** 会话 15413\n**恢复依据** 由探测器在有肯定证据时关闭，不是观测失联（state RESOLVED）\n**出现于** 2026-09-20T11:24:54.754330+00:00 · **恢复于** 2026-09-26T17:58:41.947330+00:00 · **持续** 6 天 6 小时",
         "tag": "markdown"
       },
       {
-        "content": "另有 9 件已告知的恢复未进卡面 · 1495 件从未告知过，不计入恢复（人不能被通知一个他从来没收到过的坏消息）",
+        "content": "另有 11 项已告知的恢复未进卡面 · 7791 项从未告知，不计入恢复",
         "tag": "markdown"
       },
       {
-        "content": "本批恢复总数 1507 · 其中已告知 12 · 采集 2026-09-20 22:06:57 CST",
+        "content": "本批恢复总数 7805 · 其中已告知 14 · 采集 09-27 14:53",
         "tag": "markdown"
       },
       {
-        "content": "本卡只报告 ServerOS 已经记录的事实。没有终止、没有重启、没有清理 —— 需要动作的条目在 ServerOS 里带建议，不在这里。",
+        "content": "只读告警 · 未执行终止、重启或清理操作",
         "tag": "markdown"
       }
     ]
@@ -102,12 +102,12 @@ serverosctl card recovery	0
   },
   "header": {
     "subtitle": {
-      "content": "2026-09-20 22:06:57 CST 更新",
+      "content": "09-27 14:53 更新",
       "tag": "plain_text"
     },
     "template": "green",
     "title": {
-      "content": "✅ 已恢复 · 12 件",
+      "content": "✅ 已恢复 · 14 项",
       "tag": "plain_text"
     }
   },

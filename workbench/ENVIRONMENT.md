@@ -1,4 +1,4 @@
-<!-- ⟦snapshot⟧ rendered 2026-09-20T14:06:52+00:00 by `runtime/workbench.py` from ~/workspace/worktrees/serveros/SRV-0011 · inputs: projects=serveros,litellm,multi-user-claw; project=litellm; item=LIT-0101; quay-run=~/artifacts/work-items/serveros/SRV-0011/RUN-0001/quay-run; quay-bin=~/workspace/worktrees/quay/foundation-skeleton/plugin/vendor/quay/dist/quay.js; ability-repo=~/workspace/worktrees/ability-management/SRV-0011; reports-dir=~/artifacts/work-items/serveros/SRV-0011/RUN-0001; release-root=~/artifacts/work-items/serveros/SRV-0011/RUN-0001/release/dist/serveros-linux-work -->
+<!-- ⟦snapshot⟧ rendered 2026-09-27T06:51:41+00:00 by `runtime/workbench.py` from ~/workspace/worktrees/serveros/serveros-completion-20260925 · inputs: projects=serveros,litellm,multi-user-claw; project=litellm; item=LIT-0101; quay-run=~/artifacts/work-items/serveros/SRV-0011/RUN-0001/quay-run; quay-bin=~/workspace/worktrees/quay/foundation-skeleton/plugin/vendor/quay/dist/quay.js; ability-repo=~/workspace/src/ability-management; reports-dir=~/artifacts/work-items/serveros/SRV-0011/RUN-0001; release-root=~/runtime-assets/hwz-server-os/serveros-linux-work -->
 
 # ENVIRONMENT
 
@@ -13,7 +13,7 @@ serverosctl device show --json	0
 ### 能力树（本节点的投影）
 
 来源 `~/state/serveros/abilities/effective.json` @ `fa784d228eb54c10180e928e6a04f602140ab307`，权威是 `ability-management`，基数 `domain.primary`。
-能力 30 个，已归类 19 个；这个读数的年龄 277165 秒。
+能力 25 个，已归类 19 个；这个读数的年龄 855945 秒。
 
 **这份投影可能过期。** 它不自己去读权威；`serverosctl ability refresh` 才会。
 
@@ -32,13 +32,13 @@ serverosctl device show --json	0
 | serveros.operations.workspace | workspace-management |
 | serveros.runtime | dev-doctor |
 
-**没有归类的能力（11 个）**：archguard、better-know、browser-use、claude-plugins-official、codex-builtin、hwz-server-os、instructions、meta-cc、opencli、playwright-mcp、superpowers@cc-server-local。
+**没有归类的能力（6 个）**：better-know、claude-plugins-official、codex-builtin、hwz-server-os、instructions、superpowers@cc-server-local。
 
-这一行是刻意留着的：一个「已归类 19/30」的读数如果不同时说出剩下 11 个是谁，读起来就像那 11 个不存在。
+这一行是刻意留着的：一个只说「已归类 N/M」的读数如果不同时点名剩下的是谁，读起来就像那些能力不存在。这两个数都从同一份读数里取，所以它们跟着投影走；写死在句子里的数字会在下一次分类时变成假话。
 
 ### 声明的导航 DAG
 
-基数 `declared-taxonomy`；家族 10 个，容器 1 个，catalogue 55 项（READ）。
+基数 `declared-taxonomy`；家族 10 个，容器 1 个，catalogue 64 项（READ）。
 
 这棵树由**分类元数据**派生，不由文件位置派生 —— 所以它可以被重新组织而不需要移动任何文件。
 
@@ -57,7 +57,7 @@ serverosctl device show --json	0
 
 ### 两大家族视图
 
-渲染自 `~/workspace/worktrees/ability-management/SRV-0011` 的 `scripts/render_capability_families.py`。该渲染器有 `--check`，会因漂移而失败。
+渲染自 `~/workspace/src/ability-management` 的 `scripts/render_capability_families.py`。该渲染器有 `--check`，会因漂移而失败。
 
 ```
 <!-- GENERATED FILE - DO NOT EDIT BY HAND -->
@@ -70,7 +70,7 @@ serverosctl device show --json	0
 > Source of truth: `abilities-manifest.yaml` (identity, path, revision, packs) +
 > the membership table in `scripts/render_capability_families.py`.
 > Regenerate: `python3 scripts/render_capability_families.py --write` - Verify: `python3 scripts/render_capability_families.py --check`
-> Companion (machine-readable): `capability-families.json` - Metadata digest: `691f4bc13ae80c5c7ee9a5e48286c94afe8023fa8ff56d6165078a2db9514715`
+> Companion (machine-readable): `capability-families.json` - Metadata digest: `04b690eacdf1f0104be34753d48e870ce28cc0e75a411600ec645790531b98fe`
 
 Three things this view is not:
 
@@ -197,11 +197,12 @@ Three things this view is not:
 
 ### 文档与空间
 
-云对象元数据/维护责任 → 三空间地图/更新或归档提案。
+云对象元数据/维护责任 → 三空间地图/更新或归档提案；正文的局部 diff、readback 与 receipt 判在 document-stewardship，对象身份/位置/ACL 仍判在 feishu-space-management。
 
 | Ability | Identity | Status | domain.primary |
 | --- | --- | --- | --- |
 | `feishu-space-management` | `ProfessorZhi/feishu-space-management` | `PRESENT` | `serveros.corporate.feishu` |
+| `document-stewardship` | `ProfessorZhi/document-stewardship` | `PRESENT` | `serveros.information` |
 
 ### 汇报与交接
 
@@ -219,20 +220,21 @@ Three things this view is not:
 | 设计中的名字 | 现状 |
 | --- | --- |
 | `content-archiving` | 设计把内容归档列为 B 族的输入与归档职责；本仓库无此 Ability，本轮由 information-management 兼任。 |
-| `document-stewardship` | 设计把文档维护列为 B 族的文档与空间职责；render_ability_map.py 已把它列为 baseline slot 并渲染 MISSING，本视图沿用同一结论，不另立一份判断。 |
 | `resource-observation` | 设计把资源观测列为 A 族的运行与资源成员；实现上它是 serveros runtime 的代码（§40 resource observation），不是独立 Ability。要么建 Ability，要么在设计中改称它。 |
 
 ## 未被本视图归类（覆盖分母）
 
-manifest 共 51 个 name，本视图归类 19 个，未归类 32 个。名单在下面——一个只列出自己认识的部分的导航图，读起来像覆盖完整，实际不是。
+manifest 共 59 个 name，本视图归类 20 个，未归类 39 个。名单在下面——一个只列出自己认识的部分的导航图，读起来像覆盖完整，实际不是。
 
 | Ability |
 | --- |
 | `agent-plugins` |
 | `archguard` |
+| `automated-testing` |
 | `backend-solution-design` |
 | `better-know` |
 | `browser-use` |
+| `build-release` |
 | `claude-plugins-official` |
 | `codex-builtin` |
 | `codex-curated-remote` |
@@ -249,14 +251,19 @@ manifest 共 51 个 name，本视图归类 19 个，未归类 32 个。名单在
 | `good-pr` |
 | `hooks` |
 | `hwz-server-os` |
+| `hwz-server-os-linux-work` |
 | `information-management` |
 | `instructions` |
 | `meta-cc` |
 | `muc-playwright-e2e` |
 | `opencli` |
 | `playwright-mcp` |
+| `production-change` |
+| `production-observation` |
 | `project-semantics-discovery` |
+| `research-evidence` |
 | `serveros` |
+| `serveros-testing` |
 | `shared-memory` |
 | `superpowers@cc-server-local` |
 | `vision` |
@@ -267,11 +274,11 @@ Pack 是名字的集合，没有自己的 payload、path 或 version。`authorit
 
 | Pack | authority.revision | 成员 |
 | --- | --- | --- |
-| `pack:agent-orchestration` | `28f2cc76bb8c97c3714a3228482ed10f66a77e5c` | `agent-session-management` (required)<br>`fleet-coordination` (required)<br>`human-control` (required)<br>`runtime-management` (required)<br>`shared-memory` (required)<br>`work-management` (required) |
-| `pack:autonomous-quality-loop` | `28f2cc76bb8c97c3714a3228482ed10f66a77e5c` | `implementation-delivery` (required)<br>`quality-feedback-and-iteration` (required)<br>`runtime-management` (required)<br>`test-management` (required)<br>`work-management` (required) |
-| `pack:cross-device-collaboration` | `28f2cc76bb8c97c3714a3228482ed10f66a77e5c` | `fleet-coordination` (required)<br>`runtime-management` (required)<br>`shared-memory` (required)<br>`work-management` (required) |
-| `pack:litellm-development` | `28f2cc76bb8c97c3714a3228482ed10f66a77e5c` | `backend-solution-design` (required)<br>`implementation-delivery` (required)<br>`quality-feedback-and-iteration` (optional)<br>`technical-architecture-and-planning` (required)<br>`test-management` (required) |
-| `pack:quality-delivery` | `28f2cc76bb8c97c3714a3228482ed10f66a77e5c` | `feishu-report` (optional)<br>`quality-feedback-and-iteration` (required)<br>`test-management` (required) |
+| `pack:agent-orchestration` | `981c92bce21cf3de20065b8c8e3f452de40f596d` | `agent-session-management` (required)<br>`fleet-coordination` (required)<br>`human-control` (required)<br>`runtime-management` (required)<br>`shared-memory` (required)<br>`work-management` (required) |
+| `pack:autonomous-quality-loop` | `981c92bce21cf3de20065b8c8e3f452de40f596d` | `automated-testing` (required)<br>`implementation-delivery` (required)<br>`quality-feedback-and-iteration` (required)<br>`runtime-management` (required)<br>`test-management` (required)<br>`work-management` (required) |
+| `pack:cross-device-collaboration` | `981c92bce21cf3de20065b8c8e3f452de40f596d` | `fleet-coordination` (required)<br>`runtime-management` (required)<br>`shared-memory` (required)<br>`work-management` (required) |
+| `pack:litellm-development` | `981c92bce21cf3de20065b8c8e3f452de40f596d` | `automated-testing` (required)<br>`backend-solution-design` (required)<br>`build-release` (required)<br>`implementation-delivery` (required)<br>`quality-feedback-and-iteration` (optional)<br>`technical-architecture-and-planning` (required)<br>`test-management` (required) |
+| `pack:quality-delivery` | `981c92bce21cf3de20065b8c8e3f452de40f596d` | `automated-testing` (required)<br>`feishu-report` (optional)<br>`quality-feedback-and-iteration` (required)<br>`test-management` (required) |
 
 ### Pack 点到而 manifest 里没有的名字
 
@@ -299,36 +306,36 @@ _无：每个 pack 成员都在 manifest 里。_
       "state": "UNAVAILABLE"
     },
     "load": {
-      "load1": 14.4,
-      "load15": 26.25,
-      "load5": 27.67,
-      "runnable": "13/9239"
+      "load1": 10.43,
+      "load15": 11.05,
+      "load5": 9.65,
+      "runnable": "10/9905"
     },
     "memory": {
-      "available_bytes": 218973306880,
-      "cached_bytes": 174226837504,
-      "free_bytes": 32831836160,
+      "available_bytes": 214641762304,
+      "cached_bytes": 118079303680,
+      "free_bytes": 86392410112,
       "swap": {
-        "free_bytes": 17144336384,
+        "free_bytes": 11393814528,
         "total_bytes": 17179865088,
-        "used_bytes": 35528704,
-        "used_percent": 0.2
+        "used_bytes": 5786050560,
+        "used_percent": 33.7
       },
       "total_bytes": 265182715904,
-      "used_bytes": 46209409024
+      "used_bytes": 50540953600
     },
     "shm": {
       "mount": {
-        "free_bytes": 132591333376,
+        "free_bytes": 132591308800,
         "path": "/dev/shm",
         "total_bytes": 132591357952,
-        "used_bytes": 24576,
+        "used_bytes": 49152,
         "used_percent": 0.0
       },
-      "shmem_bytes": 210403328,
+      "shmem_bytes": 328597504,
       "state": "PRESENT"
     },
-    "uptime_seconds": 456978.98
+    "uptime_seconds": 1035758.97
   },
   "managed_resources": {
     "automatable": 0,
