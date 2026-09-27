@@ -2958,6 +2958,13 @@ refused     6
 - **正式 Requirement 到 canonical Work Item 的幂等对应**完全没做（ABSENT）。
 - **首次真实 grant 走可信用户控制**仍然 PARTIAL：`put_grant` 只有测试调用它，没有 CLI 动词、
   没有 daemon 方法、没有 MCP 工具。
+  **→ 2026-09-27 订正（见 §9.51）**：这句话的两个子句现在都过期了。CLI 侧的两个动词已经建起来
+  （`work delegate` 的唯一前提是 `--context-ref` 指向 store 已持有的可信上下文，`work revoke`
+  刻意只要求理由）；而建它的过程量出一条**在 §5 目标链上、往会动的那一侧漏的 fail-open**：
+  `runtime/wake.authority` 从不过问 `revoked` 与 grant 自己的窗口，一个**被人撤销**的 grant 仍被
+  报 `AUTHORIZED`、仍让 `wake.plan` 给出 `WAKE`——已修。**这一条现在降级为「生产者已存在且已装，
+  等一次真人回合」**：`botmux actor current` 在真 turn 内的 VERIFIED 输出至今没有被实测过，
+  所以 live 状态仍是 PARTIAL，理由不是「没有实现」。§9.27.7 记的是同一件事，不另立一条。
 - `work focus` 的 JSON 顶层键由 `decision` 变成 `continuation` + `proposal`。查过：
   `docs/`、`skills/`、`mcp/`、`fleet/`、`plugin/` 下**没有代码消费者**读它，只有测试读，
   所以这次改键没有把任何人打断。
@@ -3105,6 +3112,8 @@ SAMP-0007   ACTIVE     未评估    ·  SAMP-0101…0103         未评估
   （说清哪些状态不是「达成验收」），而契约里写明了这一点，免得下游把它当成一条会被执行的规则。
 - **正式 Requirement 到 canonical Work Item 的幂等对应仍然 ABSENT**；首次真实 grant 走可信用户
   控制仍然 PARTIAL。两条都还在 P6 的剩余部分里。
+  **→ 2026-09-27 更新**：后一条见 §9.51（生产者已建、wake 的 fail-open 已修，仍 PARTIAL，
+  缺的是一次真实人类回合）；前一条没有变化。
 
 ### 9.27 P6 切片 C：`worker_stopped` 有了生产者，acceptance D 从死代码变成活规则
 
@@ -3219,6 +3228,8 @@ status REFUSED / reason OUTPUT_ALREADY_EXISTS / worker_stopped False / direct_pr
   `blocked_by`** 仍是卡字段无人建。
 - **首次真实 grant 走可信用户控制仍然 PARTIAL**：`put_grant` 只被测试调用，没有 CLI 动词、没有
   daemon 方法、没有 MCP 工具。
+  **→ 2026-09-27 订正**：与 §9.25.5 是同一件事，订正写在那里（生产者已建、wake 的 fail-open
+  已修，仍 PARTIAL——缺的是一次真实人类回合，不是实现）。
 - **`work admit` 的准入记录里不存 liveness**，只在输出里加了一行；而那一行**今天不可达**，两个
   各自独立的原因都已在别处记过：**(a)** 没有一行 board 携带 `grant_ref`（`NOT_PRODUCED` 里那项
   「卡字段无人建」，§2 的 live 读数也是「named 0 row(s)」）；**(b)** 没有任何 CLI 动词能记录一条
@@ -3375,6 +3386,7 @@ M6 杀 6 条、M8 杀 8 条，就是「§9.28.5 那条严格化是承重的」�
   不因为它不可达就把改动省掉：它一旦可达，就是一句会被读的话。
 - `focus_disposition` / `parking_acknowledged` / `scope_digest` / `grant_ref` / `next_action` /
   `blocked_by` 仍是卡字段无人建（与 §9.27.7 同）；「首次真实 grant 走可信用户控制」仍 PARTIAL。
+  **→ 2026-09-27 更新**：后一条见 §9.51；卡字段那几条没有变化。
 
 ### 9.29 P7 切片 A：一个闸门问的两个问题被拆开，以及一次 live 跑出来的第二个死锁
 
@@ -7461,6 +7473,145 @@ promote 会盖掉它并再次漂移。
 这不是本片要处置的事，是**记录**：`serveros-completion-20260925` 此刻有两个写入者，而
 机器策略要求它在动手前先取新快照。本片只写 `docs/CC-EXECUTION-LEDGER.md` 一个文件，
 它没有被那 6 个文件里的任何一个碰过。
+
+## §9.51 Human Control 的两半：可信上下文能产出 grant，grant 能停，且 wake 真的问它
+
+§9.25.5 与 §9.27.7 都记着同一条 PARTIAL：「首次真实 grant 走可信用户控制」——
+`put_grant` 只被测试调用，**没有 CLI 动词、没有 daemon 方法、没有 MCP 工具**，而计划
+点名这一条不许用 fixture 绕过。本片补的是它在**代码侧**的两半，并在补的过程中被测试
+逼出了一个**在 §5 目标链上的真实缺口**。
+
+### 9.51.1 半边一：`work delegate` / `work revoke`
+
+`cmd_work_grants` 的 docstring 写着为什么这条动词不能长成 `--approve`：**「一个能记录
+授权的动词就是能自己授权工作的动词」**。所以新动词唯一的、不能绕过的前提是
+`--context-ref` 必须指向 store **已经持有**的可信上下文，而那个 ref 在本节点只有一个
+生产者——`agent.context.attach`，它要求报告被观测到的 pid 等于它自己 socket 另一端的
+pid（`SO_PEERCRED`，`runtime/daemon.py`）。**没有任何 flag 能直接提供 actor**，记录里
+也不写 actor：只写 `delegated_by`，actor 每次判定时由 `context/delegation.derivation`
+从那个上下文读回来（「谁授权的」不能有两个答案）。
+
+`work revoke` 的**不对称是刻意的**：撤销不铸造任何权威、只拿走一份，所以它不要求可信
+上下文（一个需要已核实回合的急停，正是操作者最需要它时按不下去的那个），但它要求理由。
+两条动词都不判窗口与新鲜度：`put_grant` 没有时钟，那是读的时候各自 owner 的问题，于是
+**一条对着已过期上下文记下的 grant 是「被记下并报为不授权」，不是「被拒」**。
+
+### 9.51.2 半边二：`wake` 从不问那两问，而被撤销的 grant 会拉起 Parent
+
+写正向测试时发现的，不是重读代码时想出来的：**`runtime/wake.authority` 只问
+`delegation.envelopes`，而 `derivation` 按自己的 docstring 故意不判 `revoked` 与 grant
+自己的窗口**（它把这两问分给 `grant_reason` / `standing_reason`）。树里其它每条路都
+补了这一问——`runtime/cli.py` 的读入路径调 `standing_reason`，
+`agent_control_store._authorizing_grant` 自己判——**只有 wake 这条路谁都没问**。
+
+后果是 fail-open 的：一个**被人撤销**的 grant 仍被报 `AUTHORIZED`、仍进入 envelope map、
+仍会让 `wake.plan` 给出 `WAKE`。这正是 §3「revoke/expire 必须停止授权」与 §5
+「continuation wake 真正 WOKEN」之间的那条缝，而且是**往会动的那一侧**漏。
+
+修法是**调用、不是重写**：`authority` 增第三组 `not_standing`，对每条 `derivation` 判为
+AUTHORIZED 的记录调 `intake/daily_cycle.standing_reason`（`envelope_of` 之后的形态，
+因为 store 的键是 `grant_ref` 而它读 `ref`）。`envelopes`/`derivation` 的判词**原样保留、
+不被覆盖**，`plan` 的拒绝句相应拆成逐条子句，让「从没记录过」「记录过但已撤销」
+「在效但不点名这个 Item」各有各的句子。未读得懂的 `now` 报 `CLOCK_UNREADABLE` 并归入
+`not_standing`——一个读不出来的瞬间不是能确立权威的瞬间。
+
+### 9.51.3 服务：BotMux turn 内铸上下文
+
+`~/.claude/settings.json` 的 `UserPromptSubmit` 增了一条 hook（**BotMux 自己那条未动**）：
+`sh -c '[ -n "$BOTMUX_TURN_ID" ] || exit 0; /usr/bin/python3 …/current/mcp/human_control.py
+--attach >/dev/null 2>&1 || true'`。闸门只能**跳过**、不能授权：标记缺席时不 spawn 任何
+进程（非 turn 会话实测 1ms），标记在场时也只走到 python，而实测仍是 `attached: false`
+——**标记本身不产生任何东西**。真机 revision 不带 `scripts/`，所以没有新增文件：hook 指向
+已安装、已版本化的 `mcp/human_control.py`，随 promote 一起更新。原文件备份在
+`artifacts/serveros/human-control/settings.json.before-20260927T211716`。
+
+### 9.51.4 live 状态：仍未闭合，且缺的东西是精确的
+
+**本片没有发任何飞书消息。** 缺的不再是生产者、也不再是安装，而是**一次真实人类 turn**：
+`botmux actor current` 在 turn 内的 VERIFIED 输出**至今没有被实测过**（模块里那次
+2026-09-15 的实测是 `blocked`，schema 的 `user`/`chatId`/`messageId` 是按设计写的、
+不是按实测写的）。所以本片的 live 状态是 PARTIAL，理由是「生产者已存在且已装，等待一次
+真人回合」，**不是**「没有实现」。
+
+### 9.51.5 测试
+
+`tests/test_work_delegate.py` 21 passed：无 ref / ref 不在 store / **store 层自己那道守卫**
+（绕过 CLI 直接 `put_grant`）/ 记录写出 `delegated_by` 且不带第二份 actor / 该动词没有
+任何能提供 actor 的 flag（问的是 parser，不是行为）/ dry-run 不落盘 / 窗口与 budget
+逐项必需 / write-once 幂等与加宽被拒 / revoke 保留**第一次**撤销时刻 / 以及两条端到端：
+CLI 写下的 grant 被 `wake.authority` 认作 authorizing 且 `wake.plan` 给出 `WAKE`，
+经同一 CLI 撤销后转 `REFUSE NO_AUTHORIZING_GRANT` 且句子里出现 `MISSING_OR_REVOKED_GRANT`。
+
+回归：`test_wake` / `test_delegation` / `test_continuation` / `test_admission` /
+`test_control_store_path` / `test_cross_device_handoff` / `test_core_freeze`
+**433 passed, 1 skipped**。
+
+## §9.52 我自己那一片撞了 §25 的棘轮：bootstrap 长了，而长进去的是一段属于 owner 的过程
+
+§25 的第一道闸在上一轮全量回归里是**唯一的红**：`tests/test_bootstrap_skill_scope.py` 的
+`test_the_bootstrap_stays_small_enough_to_read_before_acting`，`193 not less than or equal to
+160`。量的对象是 `skills/serveros/SKILL.md`，逐修订的行数是可以直接取的：
+
+| revision | 行数 | §25 第四道闸 |
+| --- | --- | --- |
+| `c473ea9`（= 当时的实机载荷） | 157 | 绿，余量 3 行 |
+| `96a6405`（本片上一片） | 193 | **红，超 33 行** |
+| 本片修完 | 157 | 绿 |
+
+### 9.52.1 长进去的是什么：一段被围栏类型放行的领域过程
+
+`96a6405` 给 bootstrap 加了一节 `### 4.2 路由目标在本机没有装，怎么办`，36 行。把它按 §25
+自己的判据读一遍，结论是**它不该在这里**，而且它躲开第一道闸的方式是围栏类型：
+
+- §25 规则 1 只检查 `bash|sh|shell|console` 围栏里的命令是否以控制面开头。这段 install 配方
+  被写成 ` ```text `，里面那条 `python <已装的 ability-management>/payload/control_plane.py
+  install …` 因此**没有被规则 1 读到**。但规则 1 的判词写得很直：*"A shell example for anything
+  else is a domain procedure that belongs in a specialist — and a rule written only in a Skill
+  is a rule no other consumer honours."* 换个围栏名字不改变它是谁的动词。
+- 这条动词本来也不是「没别的消费者」的：`--rev` 的守卫**关在代码里**（`control_plane.py` 会拒
+  `HEAD != rev`、拒「要复制的文件是脏的」），`--help` 自带解释。bootstrap 那段是复述。
+
+### 9.52.2 但它带进来的那条路由事实是对的，所以要留
+
+同一节里有一件 §25 明确划在 bootstrap 职责内的事——"load specialist"：`installed: false` 是
+**两个事实之一，不是两个**，它既不是「不存在」也不是「能用」；配 `placement: on-demand` 时它
+的意思是「去装上」，而装它只有一条路，走 owner。**这条留下，压成 §4.1 的散文**（不加小节、
+不加表格）：bootstrap 不需要预加载 specialist 的全文，但需要知道该找谁、以及找它的那条命令——
+后者恰好是用户 §2 点名要的那一句。
+
+**同时删掉 §5 的架构复述。** 这个文件第 10 行自己写着「完整定义只有一份：仓库根的
+`ARCHITECTURE.md`；本 skill 不复述架构」，而 §5 那段 ASCII 分层图＋三条 bullet 正是在复述
+`ARCHITECTURE.md` §0/§21。**这是文件与自己写下的规矩的矛盾，不是我这里才有的**，只是它一直
+没被行数撞出来。压成三行指向 §0/§21，只留一条真的会改变 Agent 行为的操作后果：
+`serverosd` 默认 observe-only，`--enable-reconcile` 才允许动资源，而单元文件里没有那个 flag
+——**重启机器不会把写入打开**。
+
+### 9.52.3 没有做的那半件事，以及为什么
+
+那 36 行里的 `--rev` 细节本来该落到 owner 的 `skills/ability-management/payload/SKILL.md`。
+**本片没有写**，理由是代价不对称：改那个 payload 会给 `ProfessorZhi/ability-management` 铸一个
+新 Revision，而 Revision 一动，**本机所有它的 runtime 安装当场变成陈旧安装**。§15 这一轮的
+任务是**退役**陈旧安装与悬空的按需实例化，不是现造一批。而收益侧，那条守卫已经在代码里
+（见 9.52.1），bootstrap 留下的那句是「怎么找到它」而不是「规则靠它成立」。所以此处按
+`owner → consumer → reference → unique evidence → rollback → retire` 记一条**待办而不是动作**：
+owner 侧的 SKILL.md 文档化属于下一次 ability-management 修订，与那次修订自己的安装刷新一起做。
+
+### 9.52.4 实机状态：这个红修的是源码，实机还停在 `c473ea9`
+
+`current/skills/serveros/SKILL.md` 与 `c473ea9` **逐字节相同**（157 行，diff 空）。所以
+`96a6405`、`a4ff07f` 和本片**三片源码都还没上弦**。这有一个直接的后果：**今天实机上的
+bootstrap 里根本没有 on-demand 那段话**——`installed: false` 对今天一个全新 Claude root 是没有
+解释的。它要等 build → promote → restart 之后才成立，而这正是 §14 的 C/D 两项要走的现场。
+
+### 9.52.5 测试
+
+`tests/test_bootstrap_skill_scope.py` 6 passed（含那条 160 行预算）。全量回归 137 文件
+136 → 137 见本轮记录。
+
+**同片还做了台账内部的对齐**：§9.25.5 与 §9.27.7 上那句「首次真实 grant 走可信用户控制仍然
+PARTIAL：`put_grant` 只有测试调用它，没有 CLI 动词、没有 daemon 方法、没有 MCP 工具」，其两个
+子句都已被 §9.51 推翻。按本文件惯例**保留原句、就地追加带日期的订正**，并在 §9.26.7 与
+§9.28.7 里那两处复述上各加一行指针，避免同一个结论在四个地方各说一遍而互不一致。
 
 ## 10. 后续每包更新哪几行
 
