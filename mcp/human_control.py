@@ -64,6 +64,7 @@ import os
 import subprocess
 import sys
 from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Protocol
 from urllib.error import HTTPError, URLError
@@ -246,6 +247,82 @@ def attach_context(provider: HumanControlProvider, *, daemon=None,
 
     return {"provider": report.provider_id, "transport": report.transport,
             "attached": True, **result}
+
+
+# ---------------------------------------------------------------------------
+# What the ingress produced, written down
+# ---------------------------------------------------------------------------
+
+# The name of the record, resolved through `runtime/paths.py` rather than
+# written as a path. Under `logs/` and not under `state/serveros/`: this is an
+# append-only account of attempts, it is nobody's authority, and the whole
+# reason `agent-control/` can be trusted as the authority for contexts is that
+# nothing else claims to be. A record that sat inside that namespace would be a
+# second thing to read before answering "what does this node believe about
+# actors", which is the shape §22 rules out.
+INGRESS_RECORD_REF = "logs/human-control/ingress.jsonl"
+
+
+def ingress_record_path(ref: str = INGRESS_RECORD_REF) -> Path:
+    """Where this node's ingress record goes, or an error saying why not.
+
+    Resolved through the root contract, so the same reference answers with the
+    same path from any working directory and no caller has to know that this
+    node keeps its logs under `DATA_ROOT`. An unbound node raises: a record
+    written to `{DATA_ROOT}/logs/...` is a plausible-looking path on a machine
+    nobody identified, which is the value this contract refuses to produce.
+    """
+    paths = _load("serveros_runtime_paths", _REPO / "runtime" / "paths.py")
+    resolved = paths.Paths()
+    if not resolved.bound:
+        raise HumanControlError(
+            "this node's roots are UNBOUND "
+            f"({', '.join(resolved.unconfigured)}), so there is no declared "
+            "place for the ingress record and none is invented")
+    return Path(resolved.resolve(ref)["path"])
+
+
+def record_attempt(result: dict, *, path: Path) -> dict:
+    """Append one line saying what an attach attempt produced. Never who.
+
+    This exists because the outcome was being thrown away. The mount that
+    answers a Feishu turn ran `--attach` with its output redirected to
+    `/dev/null` and `|| true` after it, so every failure mode — a provider that
+    identified nobody, a payload serverosd refused, a daemon that was not
+    there — arrived as the same observable: nothing at all. On 2026-09-28 a
+    real human message did arrive at the botmux session, the store still read
+    `contexts: {}`, and there was no way to tell from this node which of the
+    four outcomes it had been. That is the failure this function removes.
+
+    **It records no identity, and the omission is the design.** The record is
+    not evidence and must never become a way to read back who spoke: a file an
+    attachment could be forged into would be a second identity door, and §5
+    allows exactly one. So `actor_id` is never written — what is written is
+    whether one was established (`actor_identified`), which is the part a
+    diagnosis needs.
+
+    Failure to write is returned, not raised. An ingress whose record could not
+    be appended has still done whatever it did, and a hook that turned a
+    logging problem into a failed turn would trade one silence for another.
+    """
+    line = {
+        "schema": "serveros/human-control-ingress.v1",
+        "at": datetime.now().astimezone().isoformat(),
+        "provider": result.get("provider"),
+        "transport": result.get("transport"),
+        "attached": bool(result.get("attached")),
+        "state": result.get("state", "ATTACHED" if result.get("attached") else None),
+        "actor_identified": bool(result.get("actor_ref")),
+        "detail": result.get("detail"),
+        "context_ref": result.get("context_ref"),
+    }
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(line, sort_keys=True) + "\n")
+    except OSError as exc:
+        return {"recorded": False, "path": str(path), "detail": str(exc)}
+    return {"recorded": True, "path": str(path), "state": line["state"]}
 
 
 def _node_mcp():
@@ -607,7 +684,22 @@ class BotMuxHumanControlProvider:
                     "documented and callable, and verifies only inside the process tree "
                     "of a BotMux turn. Measured from a non-turn process on this device it "
                     "answers status=blocked, error=current_actor_unverified. Whether it "
-                    "verifies inside a turn is unverified from here, so it is not claimed."),
+                    "verifies inside a turn is unverified from here, so it is not claimed. "
+                    "Re-read 2026-09-28 against the binary rather than the record, and it "
+                    "says less than a first pass made it say: the gate is "
+                    "`managedTurnOrigin.callerOpenId` starting `ou_` plus a non-empty "
+                    "`managedTurnOrigin.capability`, and `managedTurnOrigin` is in-memory "
+                    "session state the daemon publishes per turn. It is never written to "
+                    "the session row, so the three fields a record-reader looks for are "
+                    "absent there BY DESIGN, and their absence is not evidence about a "
+                    "turn. Nor is this session short of what the lookup needs: its "
+                    "`turnReplyContexts` carries a caller per turn. So the honest reading "
+                    "is narrower than 'it cannot verify here' — this is an in-turn, "
+                    "in-memory check that no out-of-turn process can evaluate, and this "
+                    "process is out of turn. It stays UNKNOWN rather than UNSUPPORTED for "
+                    "the same reason it always did: the surface exists and is callable, "
+                    "and what nobody has watched is one turn. See docs/human-control.md "
+                    "§the ingress."),
                 "human.conversation.context": support(
                     "SUPPORTED",
                     "BotMux /api/sessions reports chatId, chatType and sessionId per session"),
@@ -706,6 +798,30 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--socket", default=None,
                         help="serverosd socket to attach on; defaults to this "
                              "node's")
+    # ON by default, and that default is load-bearing rather than a matter of
+    # taste. This verb's primary caller is a turn hook, and a hook's command
+    # string is read off a settings file that the process running it may have
+    # read before this flag existed: measured 2026-09-28, the session then
+    # holding the Feishu conversation carried `--attach` with no `--record`,
+    # because that was the string when it started. Defaulting to OFF would
+    # therefore have made the one turn that matters the one turn that left no
+    # trace — and "the hook never ran" and "the hook ran and minted nothing"
+    # would have been the same empty file. Defaulting to ON means both the old
+    # and the new spelling record, and a caller that genuinely must not write
+    # (the unit tests are the one such caller, because they run this as a pure
+    # function and a default that wrote would litter a real log root) says so
+    # with `--no-record`.
+    parser.add_argument("--record", action=argparse.BooleanOptionalAction,
+                        default=True,
+                        help="append this attempt's outcome to the ingress "
+                             "record before exiting, whatever the outcome was. "
+                             "On by default; --no-record suppresses it. "
+                             "A mount that answers a turn has no other way to "
+                             "say what happened on a turn whose context was "
+                             "not minted")
+    parser.add_argument("--record-ref", default=INGRESS_RECORD_REF,
+                        help="which declared path reference the record is "
+                             "appended to; defaults to this product's")
     parser.add_argument("--device", default="device:server-beijing")
     args = parser.parse_args(argv)
 
@@ -719,6 +835,18 @@ def main(argv: list[str] | None = None) -> int:
         if args.socket:
             client = _node_mcp().DaemonClient(Path(args.socket))
         result = attach_context(provider, daemon=client)
+        # Recorded BEFORE the exit code is decided, and for every outcome
+        # including the ones that minted nothing. A record that only held
+        # successes would be silent on exactly the turns somebody is asking
+        # about — and it would answer "the store is empty" with the one
+        # reading §5 forbids: "so nothing was tried".
+        if args.record:
+            try:
+                result["record"] = record_attempt(
+                    result, path=ingress_record_path(args.record_ref))
+            except HumanControlError as exc:
+                result["record"] = {"recorded": False,
+                                    "detail": str(exc)}
         json.dump(result, sys.stdout, indent=2, sort_keys=True)
         sys.stdout.write("\n")
         # The verb is `attach`, so the exit code reports whether a context was
