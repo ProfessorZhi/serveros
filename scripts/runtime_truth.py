@@ -174,7 +174,6 @@ EXCLUDED_DIRS = {"__pycache__", ".git"}
 EXCLUDED_SUFFIXES = {".pyc", ".pyo"}
 
 BUNDLE_NAME = "hwz-server-os"
-CLAUDE_PLUGIN_KEY = "hwz-server-os@hwz-server-os"
 
 # The branch a build pin must be reachable from. Named here rather than
 # inlined so the fixture can point it at its own synthetic repository.
@@ -386,6 +385,18 @@ def _content_bytes(rel: Path, raw: bytes) -> bytes:
 
     Both sides go through this, so the two are compared in one normal form
     rather than in their own serializations.
+
+    Normalizing a record that HAS the key while passing one that does NOT
+    through untouched is the same normal form only when both sides carry it,
+    which is the one case the recompute does not produce. `expected_artifact`
+    always writes `source` now, so a payload built before that block existed —
+    the `serveros-testing` plugin cache on this node was, by exactly one
+    revision — is compared raw against a normalized recomputation, and the only
+    difference between them is the key this function exists to ignore. Measured
+    2026-09-27: the two files are equal as documents, the checker called it
+    `content ARTIFACT.json`, and the fix is to stop asking whether the key is
+    there. `ATTRIBUTION_ONLY` decides what to REMOVE, not whether to normalize;
+    a record without it loses nothing and gains the same serialization.
     """
     if rel != Path(ARTIFACT_MANIFEST):
         return raw
@@ -393,7 +404,7 @@ def _content_bytes(rel: Path, raw: bytes) -> bytes:
         doc = json.loads(raw)
     except ValueError:
         return raw
-    if not isinstance(doc, dict) or not (ATTRIBUTION_ONLY & doc.keys()):
+    if not isinstance(doc, dict):
         return raw
     return (json.dumps({k: v for k, v in doc.items() if k not in ATTRIBUTION_ONLY},
                        indent=2, sort_keys=True) + "\n").encode()
@@ -439,9 +450,22 @@ def tree_drift(expected: dict[Path, bytes], root: Path,
 # the chain
 # --------------------------------------------------------------------------
 
-def read_claude_install(plugins_json: Path) -> dict:
-    """Claude's own record of what is installed and where it was installed from."""
-    return read_claude_plugins(plugins_json).get(CLAUDE_PLUGIN_KEY) or {}
+def read_claude_install(plugins_json: Path, plugin_name: str) -> dict:
+    """Claude's record of ONE composition's plugin, keyed by that plugin's name.
+
+    The subject is a PARAMETER and no longer a constant, for the reason
+    `read_codex_install` states at length: this reader used to answer a question
+    about CORE and have its answer reported as the state of whatever artifact
+    sat at `--output`. On this node the two are different compositions, so on
+    2026-09-27 it produced both halves of the same false report — a MISSING row
+    for the payload every session loads, and no row at all for the composition
+    it was actually describing.
+
+    There is deliberately no default. A default would be the removed literal
+    under a longer name: it would let a caller who never named a subject get
+    core's record back and publish it as the answer.
+    """
+    return read_claude_plugins(plugins_json).get(plugin_key(plugin_name)) or {}
 
 
 def read_claude_plugins(plugins_json: Path) -> dict[str, dict]:
@@ -499,6 +523,10 @@ def plugin_key(composition_name: str) -> str:
     plugin no session loads and no row at all for the one every session loads —
     a checker measuring a subject the product had moved away from, which is the
     finding this whole file exists to produce one level down.
+
+    The literal is gone rather than corrected, and every caller now names its
+    subject. `read_claude_install` takes the plugin name and refuses to supply
+    one; the rows that read a record take theirs from the declaring artifact.
     """
     return f"{composition_name}@{composition_name}"
 
@@ -1322,11 +1350,43 @@ def collect(args) -> dict:
     row("work-engine (canonical)", engine_head[:12], "", "", e_verdict, e_detail)
 
     # --- 3. installed workengine vs canonical workengine ----------------
+    #
+    # The work-engine CONTROL PLANE is a second distribution, and whether this
+    # node has it is a declaration rather than an observation. `--engine-installed`
+    # carries that declaration, and there is no built-in default: the path this
+    # file used to derive from the profile — `envs/python/serveros-control-plane`
+    # — is the Beijing layout, and on this node nothing has ever been there.
+    #
+    # The distinction is load-bearing, so it is spelled out. `applies` follows the
+    # DECLARATION, never the directory: a row that applied only when the install
+    # was present would go quiet exactly when it had something to say, which is
+    # the gate that can never fail. Declared and absent is `MISSING` and blocks,
+    # which is the case worth catching; undeclared is not_applicable, which is a
+    # statement about the node rather than a blind spot.
+    #
+    # Undeclared is the honest description here, and the contract says so twice.
+    # `fleet/state-root-contract.yaml` names the two programs called `serverosctl`
+    # — this repo's node CLI, which "has no `board`, and never had one", and the
+    # control plane's — and marks the `boards` namespace the control plane
+    # produces `required: false`, `absent_means: NO_BOARDS`. `ARCHITECTURE.md`
+    # adds that "two repositories must not compete for the same installed
+    # executable". So a node that has not declared the control plane is not a
+    # node missing a piece of itself, and reporting it as MISSING in the chain
+    # said otherwise for as long as this row has existed.
     installed_engine = args.engine_installed
     engine_verdict, engine_detail = UNKNOWN, ""
-    if not installed_engine.is_dir():
+    if installed_engine is None:
+        engine_verdict = UNKNOWN
+        engine_detail = (
+            "no control-plane installation is declared on this node "
+            "(no --engine-installed, no SERVEROS_ENGINE_INSTALLED). The work-engine "
+            "control plane is a separate distribution: fleet/state-root-contract.yaml "
+            "declares the `boards` namespace it produces as required: false / "
+            "absent_means: NO_BOARDS, and this node's `serverosctl` is the node "
+            "runtime's own, which has no `board` subcommand")
+    elif not installed_engine.is_dir():
         engine_verdict = MISSING
-        engine_detail = f"no installed package at {installed_engine}"
+        engine_detail = f"declared but no installed package at {installed_engine}"
     else:
         inst_hash = tree_hash(installed_engine)
         canon_hash = tree_hash(args.engine_repo / "workengine")
@@ -1346,17 +1406,42 @@ def collect(args) -> dict:
             engine_detail = (f"installed != canonical ({len(named)} missing path(s)"
                              f"{'; e.g. ' + ', '.join(named[:3]) if named else ''})")
     row("workengine (installed)", engine_head[:12], "",
-        f"{installed_engine}  sha256={tree_hash(installed_engine) or 'NONE'}",
-        engine_verdict, engine_detail)
+        (f"{installed_engine}  sha256={tree_hash(installed_engine) or 'NONE'}"
+         if installed_engine is not None else "no declared control-plane installation"),
+        engine_verdict, engine_detail, applies=installed_engine is not None)
 
     # --- 4/5/6. the artifact, at each hop of the chain -------------------
-    claude = read_claude_install(args.claude_plugins_json)
-    # Per composition, and read before `compositions` exists because the
-    # pin every other read depends on comes out of `claude`. The block below
-    # asks each declared composition for its own answer rather than asking
-    # once for core's names and reporting it under the name `codex`.
+    #
+    # The subject of this whole block is the artifact at `--output`, so the
+    # install record it consults has to be THAT composition's. The composition
+    # is therefore read from the artifact's own README — the same source
+    # `expected_artifact` takes it from, and the same source the per-plugin rows
+    # further down take it from, which is what makes the two agree by
+    # construction rather than by luck.
+    #
+    # It used to be core's key, written as a literal. On this node `--output` is
+    # a `serveros-linux-work` revision, so the record consulted belonged to a
+    # composition nothing loads: measured 2026-09-27, `bundle identity` compared
+    # the built profile against core's absent record and reported drift, and the
+    # Claude-cache hop reported MISSING for a payload that was present and
+    # correct under a name the reader never asked for.
+    compositions = composition_index(build)
+    distribution = declared_composition(args.output)
+    distribution_name = (compositions.get(distribution) or {}).get("name", "")
+    claude = (read_claude_install(args.claude_plugins_json, distribution_name)
+              if distribution_name else {})
+    # Named for the rows and the diagnostics below. `UNKNOWN` rather than
+    # core's name when the artifact declares no composition: an artifact whose
+    # README does not say what it is has no name to report, and borrowing
+    # another composition's would be the same substitution this block removes.
+    subject = distribution_name or UNKNOWN
+
+    # Per composition, and read before the pin is resolved because the pin every
+    # other read depends on comes out of `claude`. The block below asks each
+    # declared composition for its own answer rather than asking once for core's
+    # names and reporting it under the name `codex`.
     codex = {composition: read_codex_install(args.codex_config, entry["name"])
-             for composition, entry in composition_index(build).items()}
+             for composition, entry in compositions.items()}
 
     recorded_pin = claude.get("gitCommitSha") or ""
     declared = declared_pin(args.output)
@@ -1418,10 +1503,11 @@ def collect(args) -> dict:
             built_ver = UNKNOWN
     installed_ver = claude.get("version", UNKNOWN)
 
-    row(f"{BUNDLE_NAME} (bundle identity)", "", built_ver, installed_ver,
+    row(f"{subject} (bundle identity)", "", built_ver, installed_ver,
         OK if built_ver == installed_ver and built_ver != UNKNOWN else SOURCE_RUNTIME_DRIFT,
         "" if built_ver == installed_ver else
-        f"runtime-assets built {built_ver} but Claude has {installed_ver} installed")
+        f"{args.output} is {built_ver}, but Claude's record for the `{subject}` "
+        f"payload says {installed_ver}")
 
     # --- 7. does the installed payload equal what canonical builds? ------
     expected = None
@@ -1430,7 +1516,7 @@ def collect(args) -> dict:
                                 args.marketplace_path)
         if got:
             expected, recomputed_version = got
-            row(f"{BUNDLE_NAME} (payload reproducibility)", recomputed_version, "",
+            row(f"{subject} (payload reproducibility)", recomputed_version, "",
                 installed_ver, OK if recomputed_version == built_ver else SOURCE_RUNTIME_DRIFT,
                 "" if recomputed_version == built_ver else
                 f"canonical source builds {recomputed_version}, disk has {built_ver} "
@@ -1441,19 +1527,40 @@ def collect(args) -> dict:
     # <cache>/<marketplace>/<plugin>/<version>/. Both levels were gotten wrong
     # once here — first a false MISSING, then a false drift — which is the
     # argument for resolving the Codex leaf by listing rather than by pattern.
-    targets = [("runtime-assets (built)", args.output),
-               ("Claude plugin cache",
-                Path(claude.get("installPath", "")) if claude.get("installPath") else None)]
-    for label, root in targets:
+    #
+    # The Claude leaf is absent, not wrong, when this artifact's composition has
+    # no record at all — which is a different statement and now gets its own
+    # detail. Reporting both as "not present: None" is how a missing record for
+    # ONE composition read as a missing payload.
+    claude_leaf = claude.get("installPath")
+    targets = [("runtime-assets (built)", args.output,
+                None),
+               ("Claude plugin cache", Path(claude_leaf) if claude_leaf else None,
+                f"Claude records no install for `{subject}`"
+                if not distribution_name else "")]
+    for label, root, absent_why in targets:
         if root is None or not Path(root).is_dir():
-            row(f"{BUNDLE_NAME} @ {label}", "", "", MISSING, MISSING, f"not present: {root}")
+            row(f"{subject} @ {label}", "", "", MISSING, MISSING,
+                absent_why or f"not present: {root}")
             continue
         root = Path(root)
         if expected is None:
-            row(f"{BUNDLE_NAME} @ {label}", "", "", f"sha256={tree_hash(root) or 'NONE'}",
+            row(f"{subject} @ {label}", "", "", f"sha256={tree_hash(root) or 'NONE'}",
                 UNKNOWN, "cannot verify: " + recompute_blocker(build, args.output))
             continue
-        drift = tree_drift(expected, root)
+        # `RELEASE.json` is the node-runtime face of the payload, written by
+        # `release.py` when a revision is staged; `expected_artifact` recomputes
+        # the composition's CONTENT, which does not include it. Every other
+        # comparison in this file already excludes it for the same reason —
+        # notably the per-plugin rows, which are the same bytes at the other end
+        # of this chain.
+        #
+        # Before `--output` was corrected this never came up, because the
+        # directory being compared was a build output with no staging manifest
+        # in it. Now that the row measures the promoted revision it does, and
+        # the honest reading is the one above: a staged revision is not thereby
+        # different content.
+        drift = tree_drift(expected, root, ignore=(Path(TREE_MANIFEST),))
         # Core modules are named separately because they are the specific thing
         # this checkpoint exists to land — but only as a NOTE. Whether the
         # absence is a defect depends on whether canonical has them at all, and
@@ -1463,22 +1570,26 @@ def collect(args) -> dict:
         note = f"core module(s) absent: {', '.join(absent)}" if absent else ""
         verdict = OK if not drift else SOURCE_RUNTIME_DRIFT
         detail = f"{len(drift)} drifted path(s); e.g. {', '.join(drift[:3])}" if drift else ""
-        row(f"{BUNDLE_NAME} @ {label}", "", "", f"sha256={tree_hash(root) or 'NONE'}",
+        row(f"{subject} @ {label}", "", "", f"sha256={tree_hash(root) or 'NONE'}",
             verdict, detail, note)
 
-    # --- the plugin the Agent actually LOADS ------------------------------
+    # --- every plugin the Agent actually LOADS ----------------------------
     #
-    # The rows above measure the DISTRIBUTION this repository builds and are
-    # named `BUNDLE_NAME` because that is the distribution's own name. Which
-    # plugin a session on this node loads is a different fact, and it is a
-    # per-composition one: a node's default entry is a profile composition.
-    #
-    # This section exists because the two came apart on 2026-09-23. This node
+    # The rows above measure ONE composition: the one the artifact at `--output`
+    # declares it is. That is a different question from which plugins a session
+    # on this node loads, and the two came apart on 2026-09-23. This node
     # migrated its default entry from `hwz-server-os` to
     # `hwz-server-os-linux-work`, disabling the former; the rows above went on
     # reporting the disabled composition as though it were the node's, and the
     # composition every session now loads had no row at all. The subject of a
     # measurement is part of the measurement.
+    #
+    # Two things were wrong and only one of them was the label. The rows above
+    # also READ the disabled composition's install record, so their answer for
+    # the node's own payload came from a record that belongs to another
+    # composition — that is repaired where `claude` is bound. What remains here
+    # is the enumeration: a node may load more than one of this repository's
+    # compositions, and a row per loaded plugin is the only shape that says so.
     #
     # The subject is derived, not listed: `enabledPlugins` says which plugins a
     # session loads, and a plugin is this checker's business exactly when its
@@ -1488,7 +1599,6 @@ def collect(args) -> dict:
     enabled = read_enabled_plugins(args.claude_settings_json)
     installed = read_claude_plugins(args.claude_plugins_json)
     codex_enabled = read_codex_plugins(args.codex_config)
-    compositions = composition_index(build)
     plugin_names = {entry["name"] for entry in compositions.values()}
     by_plugin = {entry["name"]: composition for composition, entry in compositions.items()}
 
@@ -2002,17 +2112,27 @@ DEFAULT_HOST_PROFILE = Path("~/.config/serveros/host-profile.yaml")
 #: own path — and are the same on every node that runs this distribution. The
 #: part that differs per machine is the three roots, and those come from the
 #: profile.
+#:
+#: `--output` and `--engine-installed` are deliberately NOT in this table, and
+#: neither is a root the machine declares.
+#:
+#: `--output` is a POSITION under `runtime_root`, and which position depends on
+#: `--composition`. A constant suffix here could only ever name one composition's
+#: position, and the one it named was core's. See `main()`.
+#:
+#: `--engine-installed` is the work-engine control plane, a SEPARATE distribution.
+#: The suffix this table used to carry — `envs/python/serveros-control-plane/…` —
+#: was the Beijing layout, and a derived default is the wrong shape for it: it
+#: made "is the control plane installed here" answerable by this file rather than
+#: by the node, so a node that had never declared one was reported as missing a
+#: piece of itself. It is a declaration, and it has no default. See `collect()`.
 ROOT_SOURCES = {
     "serveros_repo": ("SERVEROS_REPO", ("workspace_src",), ("serveros",)),
     "ability_repo": ("SERVEROS_ABILITY_REPO", ("workspace_src",), ("ability-management",)),
     "engine_repo": ("SERVEROS_ENGINE_REPO", ("workspace_src",), ("work-engine",)),
-    "output": ("SERVEROS_OUTPUT", ("runtime_assets_root",), (BUNDLE_NAME, "current")),
     "marketplace_path": ("SERVEROS_MARKETPLACE", ("runtime_assets_root",),
                          (BUNDLE_NAME, ".agents", "plugins", "marketplace.json")),
     "runtime_root": ("SERVEROS_RUNTIME_ROOT", ("runtime_assets_root",), (BUNDLE_NAME,)),
-    "engine_installed": ("SERVEROS_ENGINE_INSTALLED", ("envs_root",),
-                         ("python", "serveros-control-plane", "lib", "python3.12",
-                          "site-packages", "workengine")),
 }
 
 
@@ -2073,13 +2193,26 @@ def main() -> int:
     ap.add_argument("--ability-rev", default="",
                     help="build pin; default = the revision Claude's install record carries")
     ap.add_argument("--output", type=Path,
-                    default=default_root("output"))
+                    default=(Path(os.environ["SERVEROS_OUTPUT"])
+                             if os.environ.get("SERVEROS_OUTPUT") else None),
+                    help="the payload this node BUILT for its own composition: "
+                         "where the marketplace source points and what the plugin "
+                         "install record describes. Default = "
+                         "<runtime-root>/<composition>/current, filled in below "
+                         "because it depends on --composition")
     ap.add_argument("--marketplace-path", type=Path,
                     default=default_root("marketplace_path"))
     ap.add_argument("--engine-repo", type=Path,
                     default=default_root("engine_repo"))
     ap.add_argument("--engine-installed", type=Path,
-                    default=default_root("engine_installed"))
+                    default=(Path(os.environ["SERVEROS_ENGINE_INSTALLED"])
+                             if os.environ.get("SERVEROS_ENGINE_INSTALLED") else None),
+                    help="the work-engine control plane's installed package, IF "
+                         "this node declares one. It is a separate distribution "
+                         "and has no derived default: undeclared is reported as "
+                         "not-applicable rather than as MISSING, because a "
+                         "derived path cannot tell 'this node does not have the "
+                         "control plane' from 'this node lost it'")
     ap.add_argument("--claude-plugins-json", type=Path,
                     default=Path(os.environ.get("SERVEROS_CLAUDE_PLUGINS_JSON")
                                  or home / ".claude/plugins/installed_plugins.json"))
@@ -2106,10 +2239,15 @@ def main() -> int:
                                  or home / ".codex/skills"))
     # --- the node, which is not the distribution -------------------------
     # `--output` above is where the PLUGIN payload is built and installed from;
-    # this is where the NODE runs from. They are different paths, different
-    # compositions and different names, and the file conflated them for as long
-    # as it existed because only one of the two was ever on the machine when it
-    # was written.
+    # this is where the NODE runs from, and the two are not the same fact even
+    # when they are the same path. Under this node's layout they happen to be:
+    # one build per composition, promoted to `revisions/<label>` with `current`
+    # pointing at it, serving at once as the marketplace source, the payload the
+    # plugin cache was installed from and the revision the daemon runs. The
+    # arguments stay separate because the LAYOUT is the product's and the node
+    # is not obliged to keep them together — and because the file conflated them
+    # for as long as it existed, which is how a default left over from the
+    # single-composition days went on answering for the node.
     ap.add_argument("--runtime-root", type=Path,
                     default=default_root("runtime_root"),
                     help="distribution root holding one directory per composition, "
@@ -2129,6 +2267,27 @@ def main() -> int:
                          "fixture can supply a synthetic one rather than describe "
                          "whatever happens to be running when the suite runs")
     args = ap.parse_args()
+
+    # `--output` is filled here rather than by a constant default, because it is
+    # not an independent root: it is where THIS node's composition sits under
+    # `--runtime-root`, which is exactly what `release.py promote` maintains and
+    # what this node's marketplace source points at. Both halves come from
+    # arguments, so the join has to happen after they are parsed.
+    #
+    # The default it replaced was `<runtime-root>/current` — core's position
+    # under the single-composition layout this node left on 2026-09-23. Nobody
+    # wrote that path down again, so it went on naming a directory that no
+    # release writes, no marketplace declares and no session loads, and the
+    # "built" hop of the chain was measured against it: 64 drifted paths and a
+    # version two releases old, reported as though the node were stale, while
+    # the artifact the node actually built and ran was never looked at.
+    #
+    # Left as None when `runtime_root` is unresolvable. That is not a silent
+    # default: `runtime_root` is in `ROOT_SOURCES`, so the refusal below names
+    # it and returns 2 before `collect()` can report on a directory that does
+    # not exist.
+    if args.output is None and args.runtime_root is not None:
+        args.output = args.runtime_root / args.composition / "current"
 
     # Refused, not guessed — and refused before `collect()`, so an unanswerable
     # root can never be reported as a RELEASE_* verdict about a directory that
