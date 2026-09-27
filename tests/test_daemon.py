@@ -1769,7 +1769,15 @@ def test_a_search_with_no_projection_is_null_and_not_an_empty_catalogue(
         daemon_factory, tmp_path, monkeypatch):
     """The reasoning `ability.tree` and `ability.list` already carry, applied
     where it is easiest to lose: a search with nothing to search FROM would
-    otherwise return the same `[]` as a real search that found nothing."""
+    otherwise return the same `[]` as a real search that found nothing.
+
+    "Nothing to search from" is now BOTH sources being unreadable — a missing
+    projection AND a revision whose ARTIFACT.json declares no recommendation.
+    One of them alone is enough to answer from, and the case where the
+    declaration IS readable while the projection is not is the next test: it is
+    the state a node is in before its first `ability refresh`, which is exactly
+    when a caller is most likely to be asking.
+    """
     empty = tmp_path / "state"
     empty.mkdir()
 
@@ -1783,8 +1791,170 @@ def test_a_search_with_no_projection_is_null_and_not_an_empty_catalogue(
         {"method": "ability.search", "params": {"query": "anything"}})["result"]
     assert result["matched"] is None and result["matches"] is None
     assert result["catalogue_size"] is None
-    assert "no projection is not an empty catalogue" in result["note"]
+    assert "nothing readable is not an empty catalogue" in result["note"]
     assert result["registry_status"] == "NOT_MATERIALIZED"
+    # The second source is named even when it is the reason for the null: a
+    # caller told only "no projection" would go and refresh one and expect to
+    # find the ability it is looking for.
+    assert result["on_demand"]["present"] is False
+    assert result["on_demand"]["count"] is None
+    assert result["on_demand"]["why"]
+
+
+def _revision_declaring(tmp_path, monkeypatch, entries, *, composition="serveros-linux-work"):
+    """A revision directory whose ARTIFACT.json declares these recommendations.
+
+    Built as a real directory rather than by patching `declared_on_demand`,
+    because what is being asserted is that the declaration is READ FROM THE
+    RUNNING REVISION'S OWN FILE — patching the reader would test the patch.
+    """
+    root = tmp_path / "revision"
+    (root / "runtime").mkdir(parents=True)
+    (root / "ARTIFACT.json").write_text(json.dumps({
+        "schema": "serveros/artifact.v1",
+        "composition": composition,
+        "name": "hwz-server-os-linux-work",
+        "recommended": entries,
+    }))
+    monkeypatch.setattr(daemon_mod, "_revision_root", lambda here=None: root)
+    return root
+
+
+def test_a_search_finds_what_this_revision_declares_on_demand(
+        daemon_factory, tmp_path, monkeypatch):
+    """The live defect, as a test.
+
+    The linux-work composition ships 4 members and recommends 6, and the
+    installed `serveros` skill routes "that happened, record it" to
+    `information-management`. Against the projection alone that ability returns
+    `matched: 0` — which reads as "this ability does not exist" — while it is
+    one `ability.resolve` away. So a declared row is returned, and it is
+    returned saying which of the two facts it is.
+    """
+    _state_root(tmp_path, monkeypatch, [
+        {"name": "test-management", "id": "x", "path": "skills/test-management"},
+    ])
+    _revision_declaring(tmp_path, monkeypatch, [
+        {"name": "information-management", "status": "available"},
+        {"name": "work-management", "status": "available"},
+        {"name": "retired-thing", "status": "missing"},
+    ])
+    result = daemon_factory(a_resource("thing-one")).handle(
+        {"method": "ability.search", "params": {"query": "information-management"}})["result"]
+
+    assert result["matched"] == 1, "the projection has never heard of it"
+    assert result["matched_installed"] == 0
+    assert result["matched_on_demand"] == 1
+    row = result["matches"][0]
+    assert row["name"] == "information-management"
+    # The whole point of the field: this is NOT an installation, and a caller
+    # that read `matched: 1` as "it is here" would install nothing and then
+    # fail to load it.
+    assert row["installed"] is False
+    assert row["placement"] == "on-demand"
+    assert row["declared_by"] == "serveros-linux-work"
+    assert result["on_demand"]["count"] == 3
+    assert result["on_demand"]["composition"] == "serveros-linux-work"
+
+
+def test_a_status_and_an_inspect_of_a_declared_ability_do_not_say_installed(
+        daemon_factory, tmp_path, monkeypatch):
+    """Both readers of one ability answer the second source too.
+
+    `ability.status` returning `installed: None` for a name the composition
+    declares is the same defect one layer down: the caller asked about its own
+    routing target and got "nobody knows" when the node did know one half.
+    """
+    _state_root(tmp_path, monkeypatch, [])
+    _revision_declaring(tmp_path, monkeypatch, [
+        {"name": "work-management", "status": "available"},
+    ])
+    daemon = daemon_factory(a_resource("thing-one"))
+    status = daemon.handle(
+        {"method": "ability.status", "params": {"name": "work-management"}})["result"]
+    assert status["installed"] is False
+    assert status["placement"] == "on-demand"
+    assert status["declared_by"] == "serveros-linux-work"
+    assert status["declared"] == {"name": "work-management", "status": "available"}
+
+    inspect = daemon.handle(
+        {"method": "ability.inspect", "params": {"name": "work-management"}})["result"]
+    assert inspect["installed"] is False
+    assert inspect["placement"] == "on-demand"
+    assert inspect["ability"] is None
+    # §10's field still holds the same value it does everywhere else, including
+    # on a row that came from the declaration rather than the projection.
+    assert inspect["operations_declared"] is None
+    assert not isinstance(inspect["operations_declared"], bool)
+
+
+def test_a_name_in_neither_source_is_still_not_a_claim_of_absence(
+        daemon_factory, tmp_path, monkeypatch):
+    """The distinction survives the new source: `installed: None` for a name
+    nobody declared is not the same answer as `installed: False` for one that
+    is declared, and the note has to say which question was answered."""
+    _state_root(tmp_path, monkeypatch, [])
+    _revision_declaring(tmp_path, monkeypatch, [
+        {"name": "work-management", "status": "available"},
+    ])
+    result = daemon_factory(a_resource("thing-one")).handle(
+        {"method": "ability.status", "params": {"name": "nobody-declared-this"}})["result"]
+    assert result["installed"] is None
+    assert result["placement"] is None
+    assert "not proof of absence" in result["note"]
+
+
+def test_an_artifact_built_before_the_field_says_so_rather_than_nothing(
+        daemon_factory, tmp_path, monkeypatch):
+    """`recommended` is newer than the artifacts already installed, so the
+    common case on a node that has not been rebuilt is an ARTIFACT.json without
+    it. `count: null` plus a reason — never `0`, which would say the composition
+    recommends nothing."""
+    _state_root(tmp_path, monkeypatch, [
+        {"name": "test-management", "id": "x", "path": "skills/test-management"},
+    ])
+    root = tmp_path / "revision"
+    (root / "runtime").mkdir(parents=True)
+    (root / "ARTIFACT.json").write_text(json.dumps({
+        "schema": "serveros/artifact.v1", "composition": "serveros-core",
+        "name": "hwz-server-os", "skills": ["serveros"],
+    }))
+    monkeypatch.setattr(daemon_mod, "_revision_root", lambda here=None: root)
+    result = daemon_factory(a_resource("thing-one")).handle(
+        {"method": "ability.search", "params": {"query": "management"}})["result"]
+    assert result["on_demand"]["present"] is True
+    assert result["on_demand"]["count"] is None
+    assert result["on_demand"]["why"]
+    # And the projection half still answers, so an unreadable declaration does
+    # not take the search down with it.
+    assert result["matched"] == 1
+    assert result["matched_installed"] == 1
+    assert result["matched_on_demand"] == 0
+
+
+def test_a_limit_is_not_doubled_by_the_second_source(
+        daemon_factory, tmp_path, monkeypatch):
+    """Two sources, one ceiling. `limit` is the caller's cost budget, and a
+    search that returned `limit` rows from each would have doubled it without
+    saying so."""
+    _state_root(tmp_path, monkeypatch, [
+        {"name": "alpha-management", "id": "a", "path": "skills/a"},
+        {"name": "beta-management", "id": "b", "path": "skills/b"},
+        {"name": "gamma-management", "id": "c", "path": "skills/c"},
+    ])
+    _revision_declaring(tmp_path, monkeypatch, [
+        {"name": "delta-management", "status": "available"},
+        {"name": "epsilon-management", "status": "available"},
+        {"name": "zeta-management", "status": "available"},
+    ])
+    result = daemon_factory(a_resource("thing-one")).handle(
+        {"method": "ability.search", "params": {"query": "management", "limit": 4}})["result"]
+    assert result["limit"] == 4
+    assert result["matched"] == 6
+    assert result["matched_installed"] == 3
+    assert result["matched_on_demand"] == 3
+    assert result["returned"] == 4
+    assert result["truncated"] is True
 
 
 def test_a_search_limit_is_clamped_and_the_value_used_is_reported(
