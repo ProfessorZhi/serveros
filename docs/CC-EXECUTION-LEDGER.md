@@ -8129,6 +8129,68 @@ no grant that authorizes now`。**这是消费者在正确工作。**
 我把那条虚构命令原样抄进了引号里，而它不区分「引用」与「引用者」。第二次的改法就是这里——
 不再逐字复述它。）**这两次拦截的价值在于它们是真的，不是事后追认。**
 
+**十一、最终全量回归：137 / 137，全绿。**
+
+```json
+{"schema":"serveros/verification-record.v1","record":"verify-final-27j-20260928",
+ "written_to":"/data/home/vince/state/serveros/verification/verify-final-27j-20260928.json",
+ "tests":137,"passed":137,"not_passed":[],"outcomes":{},"inputs_unmeasured":[]}
+```
+
+钉在最终提交 `ed72673` 上。上一轮（`verify-final-27e-20260927`）是 136/137，唯一的红是
+`tests/test_taxonomy_v2.py` 里那条——**这一轮它绿了**，所以 §9.53.10 那句「唯一红」不再成立。
+
+**十二、合并与 canonical。** 分支 `fix/ability-resolve-input-count-20260927` 已推送，
+PR **#16** 已开并合并，merge commit `8489b43ff6f1e8e781cee771307cd185e06f2f10`
+（2026-09-28 01:24:02 CST）。canonical 检出 `/data/home/vince/workspace/src/serveros`
+用 `fetch` + `merge --ff-only origin/main` 快进到 `8489b43`，工作树干净。
+
+**十三、合并的因果验证（不是「应该好了」，是重跑同一个量具转绿）。** 合并前
+`runtime_truth.py` 是 `SOURCE_RUNTIME_DRIFT`，理由原句：`canonical source builds
+3.1.0+srv0005.20260927g, disk has …27i`。合并后同一个命令、同一个量具：
+
+```text
+verdict: OK
+  OK       serveros (bundle source)
+  OK       hwz-server-os-linux-work (payload reproducibility)   ← 合并前是 SOURCE_RUNTIME_DRIFT
+  OK       hwz-server-os-linux-work @ runtime-assets (built)
+  OK       hwz-server-os-linux-work @ Claude plugin cache
+  OK       …@hwz-server-os-linux-work (Claude plugin, enabled)
+  OK       …@hwz-server-os-linux-work-local (Codex plugin, enabled)
+  OK       serverosd.service (running unit)
+  OK       serveros-linux-work (node revision)
+  UNKNOWN  workengine (installed)
+```
+
+唯一的 `UNKNOWN` 是 `workengine (installed)`，且 `applies: false`：本节点**未声明**控制面安装，
+所以它报「不适用」而不是 `MISSING`——这正是那一行设计上要防的混淆。
+
+**十四、§15 退役候选的独有内容核对（只列提案，不动手）。** 四个暂存目录逐对核过载荷：
+261 个成员**逐字节相同**（digest 一致），唯一差异是 revision 多一个 `RELEASE.json`
+（promote 记录）。所以暂存目录**无独有内容**，它们的消费者已推进到 `current`/`previous`。
+
+| 暂存目录 | 对应 revision | 载荷 digest | 独有内容 |
+| --- | --- | --- | --- |
+| `.staging-serveros-cachebuster-27g-20260927` | `serveros-cachebuster-27g-20260927` | `310063aaf16b1b97` | 无 |
+| `.staging-serveros-cachebuster-27h-20260928` | `serveros-ingress-record-27h-20260928` | `744ecfcade566fac` | 无 |
+| `.staging-serveros-cachebuster-27i-20260928` | `serveros-ingress-default-record-27i-20260928` | `389cd22dfe8fc6a3` | 无 |
+| `.staging-serveros-cachebuster-27j-20260928` | `serveros-identity-reason-27j-20260928` | `9a1c4265f139fb56` | 无 |
+
+**提案（等批准，未执行）**：退役前三个；`27j` 是当前构建的暂存，留给下一次构建复用判断。
+candidate 的分类是 `CLEANUP_CANDIDATE`，回滚代价为零——每个成员都能从它对应的
+`revisions/` 目录逐字节取回。Codex 插件缓存已核：**只有** `20260927j` 一个目录，无孤儿。
+
+**十五、`27j` 之后两侧安装与循环的最终现场。**
+
+```text
+claude plugin update → 3.1.0+srv0005.20260927i → 3.1.0+srv0005.20260927j
+codex plugin add     → installedPath …/hwz-server-os-linux-work/3.1.0+srv0005.20260927j
+serverosctl status   → identity.agreement = AGREEMENT, pid 3723547
+serverosd            → 唯一一个进程（3723547），从 current/bin/serverosd 起来
+技能根无悬空           ~/.claude/skills 与 ~/.codex/skills 均 0 条 dangling symlink
+已装载荷无悬空         current/ 下 0 条 dangling symlink
+```
+
 
 ### 9.54 最终全量的那一条红：一个漏掉的 v1 兄弟，和一场长期被吞掉的 skip
 
