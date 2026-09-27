@@ -301,6 +301,19 @@ def compose(boards: list[dict], *, cards: dict[str, dict] | None = None,
                      "kind": "completed", "items": completed})
     revisions = [d.get("generation_source_revision") for d in boards
                  if d.get("generation_source_revision")]
+    # Each board document carries `generated_at`, and `board-contract.yaml`
+    # says what it is for: "a reader has to be able to tell a fresh board from
+    # one generated before the change they are looking for." Composing reads
+    # those documents, so their time has to travel with them. Without this the
+    # composition's own `generated_at` — the moment it composed — is the only
+    # date on the page, and it dates Item state the control plane measured
+    # days ago to this second. That is not a rare case here: the contract names
+    # the control plane as the writer of `state/boards/`, and on a node where
+    # that control plane does not run the snapshot is all this read will ever
+    # see. So the times are copied verbatim, per project, uninterpreted — this
+    # module reports when the projection was taken, not whether it is recent.
+    board_at = {str(d.get("project") or ""): d.get("generated_at")
+                for d in boards if d.get("generated_at")}
     return {
         "schema": SCHEMA,
         "generated_at": datetime.now(timezone.utc).isoformat(),
@@ -308,6 +321,7 @@ def compose(boards: list[dict], *, cards: dict[str, dict] | None = None,
             "projects": projects,
             "boards": len(boards),
             "generation_source_revision": max(revisions) if revisions else None,
+            "board_generated_at": board_at,
         },
         "priority": {
             "producer": None,
@@ -351,6 +365,26 @@ def render(document: dict, output_dir: Path | str) -> dict:
             "items": document["counts"]["items"]}
 
 
+def _age_days(now_iso, then_iso) -> int | None:
+    """Whole days between two ISO timestamps, or None when that cannot be said.
+
+    Exists for one line of `markdown`, and `None` is one of its answers rather
+    than an error: a timestamp this module cannot parse is one it will not turn
+    into an age, because an age is a claim about the past and a guessed one
+    would be read as a measurement. Naive timestamps are refused for the same
+    reason — the difference between two of them is not a duration until someone
+    says which zone each was written in.
+    """
+    try:
+        now = datetime.fromisoformat(str(now_iso))
+        then = datetime.fromisoformat(str(then_iso))
+    except (TypeError, ValueError):
+        return None
+    if now.tzinfo is None or then.tzinfo is None:
+        return None
+    return max(0, (now - then).days)
+
+
 def markdown(document: dict) -> str:
     """The board a person reads.
 
@@ -361,8 +395,24 @@ def markdown(document: dict) -> str:
     tildes are not written.
     """
     lines = ["# 需求总看板", "",
-             f"Generated: `{document['generated_at']}`",
-             f"Projects: {', '.join(document['source']['projects']) or 'none'}", ""]
+             f"Generated: `{document['generated_at']}`"]
+    # The composition's own time says when this page was drawn. It does NOT
+    # say when the Item state on it was measured — that came from the board
+    # documents, and `board-contract.yaml` carries their `generated_at` so a
+    # reader can tell a fresh board from one taken before the change they are
+    # looking for. Printing only the first date is what makes a two-week-old
+    # snapshot read as today's state, so both dates are printed, on adjacent
+    # lines, in that order.
+    board_at = ((document.get("source") or {}).get("board_generated_at") or {})
+    if board_at:
+        stated = []
+        for project, at in sorted(board_at.items()):
+            age = _age_days(document["generated_at"], at)
+            stated.append(f"{project} `{at}`"
+                          + (f"（{age} 天前）" if age is not None else ""))
+        lines.append(f"看板状态取出时间: {'；'.join(stated)}")
+    lines.append(f"Projects: {', '.join(document['source']['projects']) or 'none'}")
+    lines.append("")
     priority = document["priority"]
     lines += [f"> priority: **{priority['state']}** — {priority['because']}", ""]
     for section in document["sections"]:

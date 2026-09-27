@@ -250,14 +250,26 @@ def domain_tree(rows) -> dict:
 
     3. **An ability with no `domain.primary` is listed as unplaced, not
        defaulted into a node.** A large fraction of the catalogue is in that
-       state — 33 of 55, measured on `ability-management@origin/main`
-       2026-09-15 — and the number moves every time an ability is classified,
-       so it is recorded with the ref it was read at rather than as a fact
-       about the catalogue. A default would put them somewhere plausible and
-       wrong. §4 is
+       state — 33 of 50 abilities, which are 55 records, measured on
+       `ability-management@origin/main` 2026-09-15 — and the number moves every
+       time an ability is classified, so it is recorded with the ref it was
+       read at rather than as a fact about the catalogue. A default would put
+       them somewhere plausible and wrong. §4 is
        explicit that the tree is generated from the real catalogue: an
        unclassified ability has no place because nobody has said where it goes,
        which is a fact about the catalogue and not a hole in this function.
+
+    4. **A record is not an ability.** Several abilities in this catalogue ship
+       in two forms — an `mcps/` record and a `plugins/` record — sharing one
+       canonical id and one name, so the 55 rows above describe 50 abilities.
+       The danger is not arithmetic. Read as abilities, one form carries the
+       classification while the other carries none, and the same ability is
+       then placed *and* reported unplaced in a single answer: it says where
+       the thing is and that nobody has said where it is. So rows are grouped
+       by ability before either list is built, and an ability whose records
+       declare different homes raises rather than being resolved — one home
+       picked out of two would be invented, which is the same refusal as
+       point 3's, one step further in.
 
     Returns nodes, placements, unplaced and cross_refs. It does not render, and
     it carries no display order: how a tree is drawn is the authority's
@@ -268,24 +280,47 @@ def domain_tree(rows) -> dict:
     unplaced: list[str] = []
     cross_refs: dict[str, list[str]] = {}
 
+    # Rows are per-record; the tree is per-ability, and point 4 above is why
+    # those are different counts. Grouping first is what keeps one ability out
+    # of both answers at once.
+    by_name: dict[str, list[dict]] = {}
     for row in rows or ():
-        primary = row.get("primary")
-        name = str(row.get("name"))
-        if not primary:
+        by_name.setdefault(str(row.get("name")), []).append(row)
+
+    for name, records in by_name.items():
+        declared = sorted({str(r["primary"]) for r in records if r.get("primary")})
+        if len(declared) > 1:
+            # Reported, not resolved. These records are one ability by the
+            # authority's own identity field, and any single home chosen from
+            # them would be this view's invention rather than the catalogue's
+            # statement — the failure point 3 refuses for an absent primary.
+            raise ValueError(
+                f"{name!r} is one ability whose records declare different "
+                f"homes: {declared}. This view reports a tree; it does not "
+                f"resolve a catalogue conflict.")
+        if not declared:
             unplaced.append(name)
             continue
-        segments = str(primary).split(".")
+        primary = declared[0]
+        segments = primary.split(".")
         # Every prefix is a node, including the single-segment root: the
         # authority's own renderer prints that root, and a tree whose top level
         # vanished would put every ability one level too high.
         for depth in range(1, len(segments) + 1):
             nodes.add(".".join(segments[:depth]))
-        placements[name] = str(primary)
+        placements[name] = primary
 
         # A reference to an ability's own node is not a cross-reference; it is
-        # the placement, repeated. Only classified rows can carry one: an
-        # unplaced ability has no home for a second path to be an alternative to.
-        extra = [str(ref) for ref in (row.get("refs") or ()) if ref != primary]
+        # the placement, repeated. Only classified abilities can carry one: an
+        # unplaced ability has no home for a second path to be an alternative
+        # to. Gathered across the ability's records, since either form may be
+        # the one that declares the reader paths.
+        extra: list[str] = []
+        for record in records:
+            for ref in (record.get("refs") or ()):
+                ref = str(ref)
+                if ref != primary and ref not in extra:
+                    extra.append(ref)
         if extra:
             cross_refs[name] = sorted(extra)
 

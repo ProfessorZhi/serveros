@@ -152,4 +152,11 @@ EXPECTED_CROSS_REFS = {
 # fixture fails instead of agreeing with an empty tree.
 TOTAL = 55
 CLASSIFIED = 17
+# ...and the denominator the tree actually answers in. `ROWS` is a per-record
+# projection, and five abilities here ship in two forms — an `mcps/` record and
+# a `plugins/` record, one canonical id and one name between them — so 55
+# records describe 50 abilities. `TOTAL - CLASSIFIED` is 38, which is a record
+# count: five of those abilities are in it twice. An unplaced ability is named
+# once, so the count that may be compared against `unplaced` is this one.
+DISTINCT_ABILITIES = 50
 

@@ -262,3 +262,63 @@ A2/Laya等外部Provider独立部署/切换；其健康/认证/质量和数据�
 - 回退验证及剩余必需项。仍有required项未满足则报告PARTIAL，不用“只差部署/只差consumer”当完成。
 
 **启动委托不是本页自动执行**：本轮仅在GitHub交付计划。实施、安装、迁移和启用由后续明确委托触发；无认证/预算/权限的效果不得从本页推导授权。整个计划未改变生产人执行、共享WIP和秘密边界。
+
+## 4. 2026-09-27 实测复核：§1 各对象的现况
+
+§1 那张表是 **2026-09-25 计划时**的读数，本节的对应行是 **2026-09-27 14:13（北京时间）** 的实测。
+两者不一致时以本节为准；**§1 的历史行不回改**，因为「当时读到什么」本身是这份计划的证据之一。
+
+| 对象 | §1 计划时 | 2026-09-27 实测 |
+|---|---|---|
+| serveros 远端 main | `c5d118c`（本机 canonical 落后） | `b489e19`；本机 canonical `main` **等于** `origin/main`，clean，0/0 |
+| ServerOS 架构 PR #6 | `13f2819` | 未动，仍是 `refs/heads/docs/product-convergence-20260924` 的 tip |
+| 实施计划分支 | —— | `refs/heads/docs/implementation-plan-20260925` = `9560e9d`（2026-09-25 16:55） |
+| ability-management | canonical `8068d0b` / main `d057b6a` | canonical `main` = `368c1be` **等于** `origin/main`，clean，0/0 |
+| Ability 架构 PR #4 | `5c1963e` | 未动，仍是 `refs/heads/docs/product-convergence-20260924` 的 tip |
+| 已安装 Linux Work | `alert-card-scope-20260924@8ce6fe7`，`3.1.0+srv0003.20260924c` | `serveros-memory-provider-20260927`，`3.1.0+srv0004.20260927b`；`previous` = `serveros-j09-identity-20260927@b8f7d21` |
+| records | `7368e298` | `50a50ea` **等于** `origin/main`（本地 `main` 未配 upstream，两侧内容相同，0/0） |
+| ops | 本地 `a8272d4` / 远端 `1993042` | 本地 **等于** `origin/main` = `18553ed`，clean |
+| work-engine | 本地 `f6be338` / 远端 `a0f370f` | `a0f370f` **等于** `origin/main`，clean，0/0 |
+| meta-cc | 未列入本表 | `a8c57f5` **等于** `origin/main`，且等于已装插件记的 `gitCommitSha` |
+
+**读法**：计划时「本机 canonical 落后于远端、不能作为默认包 pin」这一条已经不再成立——六个仓的
+canonical 现在全部 clean 且等于各自的远程 main，本机默认入口也已从 core 迁到
+`serveros-linux-work`，已装载荷是 `serveros-memory-provider-20260927`。
+
+**上面表格里「未动，仍是 … 的 tip」是对的，但 §1 对它们的定性已经过期**：两个架构对象的提交
+逐字未变，然而 `merge-base --is-ancestor 13f2819 main` 与 `merge-base --is-ancestor 5c1963e main`
+（各自仓）**都退出 0** —— 它们已经是各自 main 的祖先，`git cherry main` 一条 `+` 都没有。
+所以 §1 表格里「PR 未合并前不能称 main 含目标设计」这句前提**已经不再成立**：main 现在就含
+那份设计。这不改 §1 的历史行，但它改**引用方式**：
+
+```text
+判一个提交在不在 main 里 —— 用 merge-base --is-ancestor / git cherry 的 + 列
+不要用 —— 分支名、PR 号、分支是否还在
+```
+
+serveros 远端 6 条 ref（`origin/HEAD` 之外）**全部**是 main 的祖先，因此「远端还有 6 条分支」
+不等于「还有 6 份未合并的工作」。同一判据也已用在 ability-management 侧（`5c1963e` 同样在
+main 里）。
+
+**§6 跨仓一致性（本次实测的结论，不另开章节）**：
+
+- **serveros ↔ quay**：本仓**没有**硬编码 quay 可执行路径。`runtime/workbench.py` 的
+  `doc_quay()` 刻意不猜——它要 `--quay-bin` 或 `SERVEROS_QUAY_BIN`，缺失时印出
+  「这一页问的是 Provider 的 store，而 Provider 的构建产物在哪是这一台机器的事」并继续渲染
+  账本与日志两节。`src/quay` 是**三个用户共用的活动检出**（yale/zhengji/tom 都有进程在跑），
+  按政策 DEFER，不动。
+- **serveros ↔ marketops**：本仓**没有任何** `marketops` 引用，因此没有可修的集成点。
+  MarketOps 侧在本机的实际形态是 Laya：一个用户级服务，`WorkingDirectory` 就是 canonical
+  `src/ability-management`，即它跑的是 canonical 工作树的 `providers/laya`。该目录在
+  `819651d`（laya 分支 tip）与 `368c1be`（canonical main）之间**零改动**，而 `819651d` 是
+  `368c1be` 的祖先 —— 这条分支不是分叉，是已合入的旧落点，没有漂移。
+- **serveros ↔ meta-cc**：真正需要修的一处是**能力树里 meta-cc 的归类**。它此前同时出现在
+  「已归类」与「未归类」两个答案里（详见 `runtime/ability_projection.py` 的 `domain_tree()`
+  第 4 条与本轮 R9 的续记），原因是目录把同一个能力写成两条记录（`mcps/meta-cc` 与
+  `plugins/meta-cc`，同一 `Canonical ID`、同一 `Family`，只有 `Type` 不同），而推导按**记录**
+  读。已修并在测试里钉住。meta-cc 自身只负责 session history / intelligence，其自述元数据
+  就是这么写的，与 §8 的确认一致。
+- **Laya / MetaCC 资源实测（§8）**：`laya-shared.service` cgroup 用量 **2.0 GiB / max 3.0 GiB，
+  peak 已到 3.0 GiB**，swap 499 MiB（peak 1.1 GiB），`NRestarts=3` —— peak 顶到上限是**当前**
+  的漂移，不是过去某次验收的结论，已记入 §8 待办所需的现状。`meta-cc-mcp`（vince）RSS 约
+  **34 MiB**，不是常驻服务、无 cgroup 上限；它与已装 cache 的同一个二进制**逐字节相同**。

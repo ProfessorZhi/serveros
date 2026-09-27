@@ -1543,6 +1543,40 @@ def test_the_tree_is_derived_from_the_projection_and_carries_its_provenance(
             result["unplaced_count"]) == (3, 2, 1)
 
 
+def test_the_tree_counts_abilities_and_not_the_catalogue_rows_they_come_from(
+        daemon_factory, tmp_path, monkeypatch):
+    """Four rows, three abilities, and the two counts are not interchangeable.
+
+    The projection carries one row per form an ability ships in, so an ability
+    described twice is four rows and three abilities. `ability_count` is the
+    second number, because it is the one `classified_count` and `unplaced_count`
+    add up to — and because a reader who checks that arithmetic on the first
+    number finds a gap the catalogue does not have.
+    """
+    _state_root(tmp_path, monkeypatch, [
+        {"name": "shared-memory", "id": "ProfessorZhi/shared-memory",
+         "path": "skills/shared-memory", "domain": {"primary": "serveros.memory"},
+         "taxonomy_refs": ["serveros.memory"]},
+        {"name": "meta-cc", "id": "ProfessorZhi/meta-cc",
+         "path": "mcps/meta-cc", "domain": {"primary": "serveros.memory"},
+         "taxonomy_refs": []},
+        {"name": "meta-cc", "id": "ProfessorZhi/meta-cc",
+         "path": "plugins/meta-cc", "taxonomy_refs": []},
+        {"name": "design-and-contract", "id": "ProfessorZhi/design-and-contract",
+         "path": "skills/design-and-contract"},
+    ])
+    result = daemon_factory(a_resource("thing-one")).handle(
+        {"method": "ability.tree"})["result"]
+
+    assert result["placements"] == {"shared-memory": "serveros.memory",
+                                    "meta-cc": "serveros.memory"}
+    # The plugin form carries no `domain.primary`, and it is the same ability as
+    # the MCP form that does. It is not a second, unplaced ability.
+    assert result["unplaced"] == ["design-and-contract"]
+    assert (result["ability_count"], result["classified_count"],
+            result["unplaced_count"]) == (3, 2, 1)
+
+
 def test_the_tree_is_null_and_not_empty_when_nothing_was_materialized(
         daemon_factory, tmp_path, monkeypatch):
     """The distinction this whole surface turns on, applied one level up.

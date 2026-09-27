@@ -235,7 +235,17 @@ short_description: Agent Engineering Workbench for a Linux work node
 # the payload list or newly added to it, and a build of this profile now
 # produces a different artifact under a string `srv0004.20260927a` already
 # names. Core's label is still stale and is still NOT touched here.
-cachebuster: srv0004.20260927b
+#
+# Bumped again for the same reason, one release later. `runtime/ability_projection.py`,
+# `runtime/daemon.py`, `runtime/cli.py`, `runtime/workbench.py`,
+# `runtime/workbench_sources.py`, `intake/global_board.py` and
+# `intake/workchain.py` all change, and every one of them is on the payload
+# list. The two readings they fix were both about a number that read as current
+# without being current — an ability counted once per catalogue row, and Item
+# state dated to the composition instead of to when the projection was taken —
+# so an installed plugin cache left on the old string would serve the old
+# answers to a reader who had just been told they were fixed.
+cachebuster: srv0005.20260927c
 
 skills:
   - name: runtime-management
