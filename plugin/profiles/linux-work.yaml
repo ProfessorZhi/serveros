@@ -267,7 +267,26 @@ short_description: Agent Engineering Workbench for a Linux work node
 # same defect as the one `27c` was bumped for: a reading that claims a currency
 # it does not have. The builder cannot see this; it compares a profile against
 # its parent, not against what has already been released.
-cachebuster: srv0005.20260927d
+#
+# Moved to `27e` on 2026-09-27 for the same reason one more time, and both halves
+# moved again. The ability half moves `1f2339b` → `c623825`: the `provides` block
+# gained its second axis (bundled / recommended / unavailable), B9 converged onto
+# one contract, one Skill source and scripts that say what the Skill says, and
+# the registry ledger caught up with the canonical it describes. Those files are
+# shipped into this artifact, so an installed cache left on `27d` serves the old
+# `abilities-manifest.yaml` while claiming to be current.
+#
+# The serveros half moves because `skills/serveros/SKILL.md` changed in the one
+# place its reader looks: the bootstrap now says that a routing target which is
+# not installed here is neither "absent" nor "usable", and names the verb that
+# installs it. `27d` carries no such paragraph at all — the promoted file is
+# byte-identical to `c473ea9`, so three revisions of source, including the one
+# that introduced the routing fact, have never been on this machine. The line
+# count is unchanged (157) because the same commit removed §5's restatement of
+# the architecture, which the file's own tenth line says belongs in
+# `ARCHITECTURE.md`; the diff is real and the builder, which compares a profile
+# against its parent, cannot see either half of it.
+cachebuster: srv0005.20260927e
 
 skills:
   - name: runtime-management
