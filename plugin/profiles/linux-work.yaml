@@ -304,7 +304,34 @@ short_description: Agent Engineering Workbench for a Linux work node
 # (`da5f89b1b131`) did not change, so the payload delta `27e` → `27f` is two
 # files — the taxonomy above and this one — plus the version string that names
 # them.
-cachebuster: srv0005.20260927f
+#
+# Moved to `27g` on 2026-09-27 for the same reason, and this payload change is a
+# COUNT. Five members carried the sentence that `ability.resolve` supplies
+# "three of the eight" inputs the resolver consults — `fleet/mcp-contract.yaml`
+# (the contract), `mcp/node_mcp.py` (the tool description a fresh Agent reads
+# before it routes), `runtime/daemon.py` (whose returned `note` repeats it at run
+# time), `abilities/requests/resolve-example.json` ("names none of the other
+# five") and `runtime/view.py` ("four of eight", about §16's hygiene inputs).
+#
+# The kernel prints the two lists itself, and against the running node they read
+# `inputs_seen: []` with `inputs_missing` naming all eight. The three scalars
+# this surface supplies are the request's REQUIRED FIELDS, and the eight are
+# documents — a pinned catalogue, a device's capabilities, a policy — so none of
+# the three is among them. The CLI reaches `inputs_seen: ["ability"]` only
+# because it can be handed a catalogue to read; the daemon holds no pin and
+# supplies none.
+#
+# A reader of this plugin is the reader of that description, so an installed
+# cache left on `27f` would go on telling a fresh Agent that three inputs were
+# evaluated while the answer in its own hand says none were — and this is the one
+# number in the product that exists to say how much was actually looked at. The
+# builder cannot see this; it compares a profile against its parent, not against
+# what has already been released.
+#
+# The ability half does not move: its pin (`da5f89b1b131`) is unchanged, and the
+# payload delta `27f` → `27g` is those five files plus this one and the version
+# string that names them.
+cachebuster: srv0005.20260927g
 
 skills:
   - name: runtime-management

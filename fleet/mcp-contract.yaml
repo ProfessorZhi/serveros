@@ -90,12 +90,20 @@ surfaces:
       # both cases "no matches" would be a claim about a set nobody searched.
       #
       # `ability.resolve` runs `abilities/resolver.py` — the same pure kernel
-      # `serverosctl ability resolve` runs — with the three of its eight
-      # inputs this process can supply, and passes `inputs_seen` /
-      # `inputs_missing` through UNCHANGED so the caller can see how much of
-      # the intersection was actually evaluated. It supplies the inputs; it
-      # does not compute a status of its own, and it does not register as a
-      # second resolution authority.
+      # `serverosctl ability resolve` runs — with the three SCALARS a request
+      # requires: an ability reference, this node's device identity, and the
+      # runtime the caller names. This paragraph read "the three of its eight
+      # inputs this process can supply" until 2026-09-27, and that was false in
+      # the kernel's own vocabulary: the eight are DOCUMENTS (a pinned
+      # catalogue, a device's capabilities, a policy), and no one of the three
+      # scalars is among them. Measured against the running node, the answer is
+      # `inputs_seen: []` with `inputs_missing` naming all eight; the CLI
+      # reaches `["ability"]` only because it can be handed a catalogue to read
+      # (`--ability-repo`/`--ability-rev`), which this process holds no pin
+      # for. It passes `inputs_seen` / `inputs_missing` through UNCHANGED so the
+      # caller can see how much of the intersection was actually evaluated. It
+      # supplies the inputs; it does not compute a status of its own, and it
+      # does not register as a second resolution authority.
       - ability.search
       - ability.resolve
       # From §3/§5/§6/§10/§14 of the runtime-attribution brief. Every one is

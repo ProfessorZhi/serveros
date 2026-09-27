@@ -8049,7 +8049,8 @@ serveros-linux-work (node revision)                      SOURCE_RUNTIME_DRIFT
 ```
 
 即 `abilities/taxonomy.v2.yaml` **在载荷里**。它的安装侧读者是 `abilities/taxonomy.py:108`
-的 `root / "abilities/taxonomy.v2.yaml"`，所以 `serverosctl taxonomy tree|show` 读的是
+的 `root / "abilities/taxonomy.v2.yaml"`，所以 `serverosctl taxonomy tree` 与
+`serverosctl taxonomy show` 读的是
 **制品里**那一份；PR #11 改的不只是仓库里的一个声明，而是已装制品的字节。处置是升
 linux-work 的 cachebuster `27e → 27f`（PR #12）→ build → `release.py promote
 --kind node-runtime` → `systemctl --user restart serverosd.service`（`promote` 只
