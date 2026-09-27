@@ -8,7 +8,7 @@ and the coverage it achieved are two facts, and a reader that merges them into
 one `status` field cannot tell a chat that was asked for 40 messages and got 40
 from one that was asked for everything and stopped at page one.
 
-`records/information/raw/` holds 66 manifests written by five collectors, and on
+`records/information/raw/` holds 68 manifests written by five collectors, and on
 2026-09-22 `grep -rn "pagination_complete\\|msg_count" --include=*.py` over the
 fabric tree returned **nothing**: the collectors wrote a coverage record that no
 ServerOS-side reader has ever opened. `intake/workchain.py` does report a feishu
