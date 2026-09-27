@@ -2042,14 +2042,20 @@ def test_ability_resolve_refuses_to_invent_the_runtime_it_is_asked_about(
     assert "missing required parameter 'ability'" in empty["error"]["message"]
 
 
-def test_ability_resolve_supplies_three_inputs_and_names_the_other_five(
+def test_ability_resolve_supplies_three_scalars_and_names_all_eight(
         daemon_factory):
     """The whole point of putting this on the node surface is that it answers
     WITHOUT the rest — and says which ones it did not have. `inputs_seen` is
     empty, and that is not a defect: the eight are documents (a catalogue, a
     device's capabilities, a policy), and the three required scalars are not
-    among them. So the honest answer is UNKNOWN naming five questions, which is
-    still useful: it says what to go and find."""
+    among them. So the honest answer is UNKNOWN naming all eight questions,
+    which is still useful: it says what to go and find.
+
+    This test was named `…_and_names_the_other_five` until 2026-09-27 while the
+    assertion below it listed eight names — the count in the name was never
+    compared against the list it was counting, and the same arithmetic had been
+    copied into `fleet/mcp-contract.yaml`, the `ability.resolve` tool
+    description and the `note` the daemon returns."""
     daemon = daemon_factory(a_resource("thing-one"))
     result = daemon.handle({"method": "ability.resolve",
                             "params": {"ability": "runtime-management",

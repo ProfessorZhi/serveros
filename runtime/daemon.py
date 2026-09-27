@@ -1942,17 +1942,25 @@ class Daemon:
         written, and it takes a request DOCUMENT: a caller who has not read
         `resolver.py` cannot ask the question, and the resolver had no caller
         outside its own tests until the CLI verb was added. The node surface
-        can ask it, because two of the three required inputs are about the
-        caller and the node rather than about a second repository.
+        can ask it, because the three SCALARS a request requires — the ability
+        reference, the device, the runtime — are about the caller and this node
+        rather than about a second repository.
 
-        What it deliberately does NOT do is fill in the other five. Each is a
-        device fact whose producer this process does not hold, and a daemon
-        that guessed at them would return a confident AVAILABLE computed from
-        inputs nobody supplied — the exact failure `resolver.py` was written to
-        prevent, reintroduced at the layer above it. `inputs_seen` and
-        `inputs_missing` are passed through UNCHANGED, so an UNKNOWN naming
-        five inputs is the honest answer and is still a useful one: it says
-        which question to go and answer.
+        What it deliberately does NOT do is fill in ANY of the eight. Those are
+        documents — a pinned catalogue, a device's capabilities, a policy — and
+        the three scalars above are not among them, so `inputs_seen` here is
+        EMPTY and `inputs_missing` names all eight. That is what the running
+        node answers (measured 2026-09-27), and it is worth stating because the
+        prose around this method said the opposite: `fleet/mcp-contract.yaml`,
+        the `ability.resolve` tool description in `mcp/node_mcp.py` and the
+        `note` this method returns all claimed three of the eight were
+        supplied, and no one had compared that count against the kernel's own
+        two lists. A daemon that guessed at any of them would return a
+        confident AVAILABLE computed from inputs nobody supplied — the exact
+        failure `resolver.py` was written to prevent, reintroduced at the layer
+        above it. `inputs_seen` and `inputs_missing` are passed through
+        UNCHANGED, so an UNKNOWN naming eight inputs is the honest answer and
+        is still a useful one: it says which question to go and answer.
 
         `runtime` is required and has no default ON PURPOSE. It is tempting to
         default it to the Agent runtime installed here, and this node cannot:
@@ -1985,7 +1993,7 @@ class Daemon:
         device_from = "caller" if params.get("device") else ANSWERED_BY
         return {
             **record,
-            # Provenance for the three inputs, kept OUT of the kernel's two
+            # Provenance for the three scalars, kept OUT of the kernel's two
             # lists: `inputs_seen` is about the eight the intersection consults,
             # and adding a fourth kind of thing to it is how a field whose job
             # is to say how much was evaluated stops meaning that.
@@ -1999,10 +2007,14 @@ class Daemon:
                 "the kernel's `inputs_seen` / `inputs_missing` are reported "
                 "unchanged. Read `inputs_missing` before the status: a status "
                 "computed from whichever inputs happened to be readable is what "
-                "`resolver.py` exists to refuse, and this method supplies three "
-                "of the eight. To supply the rest, run `serverosctl ability "
-                "resolve --request <file>` with a catalogue named by "
-                "--ability-repo/--ability-rev."
+                "`resolver.py` exists to refuse. `inputs_seen` is empty here on "
+                "purpose: the three scalars this surface supplies are the "
+                "request's required fields, and none of them is one of the "
+                "eight, which are documents. To supply the first of the eight, "
+                "run `serverosctl ability resolve --request <file>` with a "
+                "catalogue named by --ability-repo/--ability-rev — that is the "
+                "only way input 1 is ever supplied, and why the CLI's own "
+                "answer reports one input seen where this one reports none."
             ),
         }
 
