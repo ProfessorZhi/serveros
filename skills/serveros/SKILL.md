@@ -118,21 +118,21 @@ ServerOS 只编排关系与交接，**不抢占以上 owner 的数据权威**。
 （`state/serveros/abilities/effective.*`），它可能过时，`registry_status` 会说。用它做 bootstrap，
 **不要**从它做安装决定。
 
+**路由目标在本机没有装是常态，不是错误。** `installed: false` **不是「不存在」，也不是「能用」**：
+配 `placement: on-demand` 时它说的是「composition 声明可按需解析，去装上」——声明它的那个
+composition 名字在 `declared_by` 里；两个来源都搜不到才是「没搜到」，那时去 `ability-management`
+查，**不要**猜。装它的动词也在 owner 那里（`control_plane.py install --profile … --rev <sha>
+--apply`）；`--rev` 不是可选的礼貌——没有它，复制出去的是那个检出**此刻的样子**，而安装本身不
+报错。**不要**手写 `~/.claude/skills/<name>`、**不要**在别处再放一份技能源：要的是「同一个来源、
+需要时才进来」，不是第二份拷贝。装完它仍然**不在**上下文里——Claude Code 只把 name + description
+放进环境，正文被用到时才读，根 Skill 不需要预加载全文。
+
 ## 5. 三层产品，别把它们混成一个
 
-```text
-serverosd           常驻 user-space semantic controller —— 观察、探针、落盘、检测漂移
-  ↑ Unix socket
-serveros-node-mcp   薄 adapter —— 不含状态、不改任何东西，只转发
-  ↑ plugin
-Skill + Plugin      操作语义与发行入口
-```
-
-- **MCP 不是 daemon**：Claude / Codex 重启不应该让控制层下线。
-- **Plugin 不是 state authority**：它只负责把上面这些送进 runtime。
-- **Skill 不做 primitive**：规则只写在 Skill 里的，就是没有别人会遵守的规则。
-- `serverosd` **默认 observe-only**，`--enable-reconcile` 才允许动资源，且需要 budget 允许。
-  单元文件里没有这个 flag，所以重启机器不会把写入打开。
+常驻的只有一个：`serverosd`；MCP 是薄转发、Plugin 只是发行入口、Skill 不写 primitive——规则只
+写在 Skill 里的，就是没有别人会遵守的规则。`serverosd` **默认 observe-only**，`--enable-reconcile`
+才允许动资源，而单元文件里没有这个 flag——**重启机器不会把写入打开**。完整形状在
+`ARCHITECTURE.md` §0/§21。
 
 ## 6. 最小纪律
 
