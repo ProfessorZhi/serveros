@@ -245,7 +245,29 @@ short_description: Agent Engineering Workbench for a Linux work node
 # state dated to the composition instead of to when the projection was taken —
 # so an installed plugin cache left on the old string would serve the old
 # answers to a reader who had just been told they were fixed.
-cachebuster: srv0005.20260927c
+#
+# Bumped a third time on the same day, and this time the payload is nearly
+# byte-identical — 259 of 261 members are unchanged across the two revisions.
+# The two that move are `ARTIFACT.json` and `README.md`, and between them they
+# carry the answer to "what am I running": the artifact's `source` block and the
+# README line that names the catalogue revision the Skills were read from.
+#
+# They move because the pins moved. The five packs pinned `981c92b`, whose
+# `abilities-manifest.yaml` stopped being byte-identical to main's once the two
+# registry commits landed on top of it, so `scripts/build.py` refused to build
+# at all. The repin put them on `2cd8a1f`; this build reads from `1f2339b`.
+# Separately the serveros half of the same block moved off a branch ref
+# (`serveros-completion-20260925@3a4fd5f`) and onto `main@1db8730`, which is
+# what "INSTALLED is built from main" is supposed to mean.
+#
+# So the payload a reader would be served differs from the previous revision in
+# exactly the place that reader looks to find out where the payload came from.
+# An installed cache left on `27c` would answer `368c1be`/`3a4fd5f` — two
+# revisions that are no longer what either repository's main says — which is the
+# same defect as the one `27c` was bumped for: a reading that claims a currency
+# it does not have. The builder cannot see this; it compares a profile against
+# its parent, not against what has already been released.
+cachebuster: srv0005.20260927d
 
 skills:
   - name: runtime-management
