@@ -1,4 +1,4 @@
-<!-- ⟦snapshot⟧ rendered 2026-09-20T14:06:52+00:00 by `runtime/workbench.py` from ~/workspace/worktrees/serveros/SRV-0011 · inputs: projects=serveros,litellm,multi-user-claw; project=litellm; item=LIT-0101; quay-run=~/artifacts/work-items/serveros/SRV-0011/RUN-0001/quay-run; quay-bin=~/workspace/worktrees/quay/foundation-skeleton/plugin/vendor/quay/dist/quay.js; ability-repo=~/workspace/worktrees/ability-management/SRV-0011; reports-dir=~/artifacts/work-items/serveros/SRV-0011/RUN-0001; release-root=~/artifacts/work-items/serveros/SRV-0011/RUN-0001/release/dist/serveros-linux-work -->
+<!-- ⟦snapshot⟧ rendered 2026-09-27T06:51:41+00:00 by `runtime/workbench.py` from ~/workspace/worktrees/serveros/serveros-completion-20260925 · inputs: projects=serveros,litellm,multi-user-claw; project=litellm; item=LIT-0101; quay-run=~/artifacts/work-items/serveros/SRV-0011/RUN-0001/quay-run; quay-bin=~/workspace/worktrees/quay/foundation-skeleton/plugin/vendor/quay/dist/quay.js; ability-repo=~/workspace/src/ability-management; reports-dir=~/artifacts/work-items/serveros/SRV-0011/RUN-0001; release-root=~/runtime-assets/hwz-server-os/serveros-linux-work -->
 
 # ITEM-CHAIN
 
@@ -22,6 +22,14 @@ serverosctl work skeleton report --json	0
     "resolution_why": "the locator is absolute and absent on this node; its tail resolves to ~/workspace/records/projects/litellm/items/LIT-0101/card.yaml. The locator was written where the workspace root was '/opt/applications/data/home-hwz', and that declaration outlived the machine it described",
     "state": "PRESENT",
     "why": ""
+  },
+  "completion": {
+    "assessed": false,
+    "missing_documents": [],
+    "missing_fields": [],
+    "state": "NOT_ASSESSED",
+    "unreported_documents": [],
+    "why": "the contract tests completion at ['CLOSED', 'DELIVERED'], and this Item is in ACTIVE"
   },
   "deliverables": 1,
   "documents": [

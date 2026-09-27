@@ -1,4 +1,4 @@
-<!-- ⟦snapshot⟧ rendered 2026-09-20T14:06:52+00:00 by `runtime/workbench.py` from ~/workspace/worktrees/serveros/SRV-0011 · inputs: projects=serveros,litellm,multi-user-claw; project=litellm; item=LIT-0101; quay-run=~/artifacts/work-items/serveros/SRV-0011/RUN-0001/quay-run; quay-bin=~/workspace/worktrees/quay/foundation-skeleton/plugin/vendor/quay/dist/quay.js; ability-repo=~/workspace/worktrees/ability-management/SRV-0011; reports-dir=~/artifacts/work-items/serveros/SRV-0011/RUN-0001; release-root=~/artifacts/work-items/serveros/SRV-0011/RUN-0001/release/dist/serveros-linux-work -->
+<!-- ⟦snapshot⟧ rendered 2026-09-27T06:51:41+00:00 by `runtime/workbench.py` from ~/workspace/worktrees/serveros/serveros-completion-20260925 · inputs: projects=serveros,litellm,multi-user-claw; project=litellm; item=LIT-0101; quay-run=~/artifacts/work-items/serveros/SRV-0011/RUN-0001/quay-run; quay-bin=~/workspace/worktrees/quay/foundation-skeleton/plugin/vendor/quay/dist/quay.js; ability-repo=~/workspace/src/ability-management; reports-dir=~/artifacts/work-items/serveros/SRV-0011/RUN-0001; release-root=~/runtime-assets/hwz-server-os/serveros-linux-work -->
 
 # RELEASE-MANIFEST
 
@@ -16,15 +16,15 @@
 
 | 名字 | repo | revision | 本地对象 | revision_remote_reachable | designated_release_ref |
 |---|---|---|---|---|---|
-| serveros | ~/workspace/worktrees/serveros/SRV-0011 | `60da36f3` | 存在 | 可达 | `serveros/system-v1-20260920` ⊇ pin |
-| ability-management | ~/workspace/worktrees/ability-management/SRV-0011 | `fbd0b1a7` | 存在 | 可达 | `serveros/system-v1-20260920` ⊇ pin |
-| work-engine | ~/workspace/worktrees/work-engine/SRV-0011 | `65e9b56c` | 存在 | 可达 | `serveros/system-v1-20260920` ⊇ pin |
-| hwz-ops | ~/workspace/worktrees/hwz-ops/SRV-0011 | `790bca27` | 存在 | 可达 | `serveros/system-v1-20260920` ⊇ pin |
-| Claude/Codex adapter | ~/workspace/worktrees/serveros/SRV-0011 | `60da36f3` | 存在 | 可达 | `serveros/system-v1-20260920` ⊇ pin |
+| serveros | ~/workspace/worktrees/serveros/serveros-completion-20260925 | `60da36f3` | 存在 | 可达 | `serveros/system-v1-20260920` **未发布** |
+| ability-management | ~/workspace/worktrees/ability-management/SRV-0011 | `fbd0b1a7` | 存在 | 可达 | `serveros/system-v1-20260920` **未发布** |
+| work-engine | ~/workspace/worktrees/work-engine/SRV-0011 | `65e9b56c` | 存在 | 可达 | `serveros/system-v1-20260920` **未发布** |
+| hwz-ops | ~/workspace/worktrees/hwz-ops/SRV-0011 | `790bca27` | 存在 | 可达 | `serveros/system-v1-20260920` **未发布** |
+| Claude/Codex adapter | ~/workspace/worktrees/serveros/serveros-completion-20260925 | `60da36f3` | 存在 | 可达 | `serveros/system-v1-20260920` **未发布** |
 | quay（工作包 E 固定的版本） | ~/workspace/worktrees/quay/foundation-skeleton | `ddc4fb40f` | 存在 | 可达 | —（本节点持有，不声称发布） |
 | quay（本轮 Goal 闭环用的版本） | ~/workspace/worktrees/quay/foundation-skeleton | `8bb184ef3` | 存在 | 可达 | —（本节点持有，不声称发布） |
-| design package（本轮固定版本） | ~/workspace/worktrees/serveros/SRV-0011 | `c01d2a0d` | 存在 | 可达 | `docs/final-architecture-20260920` ⊇ pin |
-| design package（本轮从它继续） | ~/workspace/worktrees/serveros/SRV-0011 | `e1f7de4d5` | 存在 | 可达 | `docs/foundation-skeleton-20260920` ⊇ pin |
+| design package（本轮固定版本） | ~/workspace/worktrees/serveros/serveros-completion-20260925 | `c01d2a0d` | 存在 | **不可达** —— 远端答了，本地持有的 6 个 ref 没有一个包含它；另 7 个 ref 的对象本地没有，这一次没判 | `docs/final-architecture-20260920` **未发布** |
+| design package（本轮从它继续） | ~/workspace/worktrees/serveros/serveros-completion-20260925 | `e1f7de4d5` | 存在 | **不可达** —— 远端答了，本地持有的 6 个 ref 没有一个包含它；另 7 个 ref 的对象本地没有，这一次没判 | `docs/foundation-skeleton-20260920` **未发布** |
 
 **左边一列问「这个 revision 从远端取不取得到」** —— 注意它问的是revision，不是分支名。它把远端 advertise 的**全部 ref** 取回来（`git ls-remote --heads --tags`），先用 `git cat-file --batch-check` 留下本地**真的持有**的那些，再用一次 `git rev-list <pin> --not <所有能判定的 ref>` 定案：空输出就是可达。**它不读任何手写字段**，也不打印 ref 名 —— 这一页是整页比对的，而「包含某个 revision 的 ref 集合」会随别人建分支而增长，ref 名写进格子里会让这一页因为一件与 release 无关的事变红。ref 的归属是右边那一列的事。
 
@@ -66,24 +66,28 @@
 | attribution-contract.yaml | serveros/attribution.v1 |
 | card-definitions.yaml | serveros/card-definitions.v1 |
 | card-scenarios.yaml | serveros/card-scenarios.v1 |
+| environment-contract.yaml | serveros/environment.v1 |
 | managed-mutation-contract.yaml | serveros/managed-mutation.v1 |
 | managed-runtime-contract.yaml | serveros/managed-runtime.v1 |
 | network-contract.yaml | serveros/network.v1 |
 | notification-contract.yaml | serveros/notification.v1 |
 | ownership-contract.yaml | serveros.ownership.v1 |
+| periodic-report-contract.yaml | serveros/periodic-report-contract.v1 |
 | plugin/bundle.yaml | **不在这个产物里** —— `plugin/` 是与 runtime 分开的另一次构建，不随本产物发行 |
 | plugin/profiles/linux-work.yaml | **不在这个产物里** —— `plugin/` 是与 runtime 分开的另一次构建，不随本产物发行 |
+| recipe-contract.yaml | serveros/recipe-contract.v1 |
+| report-publication-contract.yaml | serveros/report-publication-contract.v1 |
 | resource-governance-contract.yaml | serveros/resource-governance-contract.v1 |
 
 从 shipped tree 里**读出来**的，不是在这里重复一遍的：每个 `runtime/*.yaml` 抬头声明的 `schema:`，加上 plugin composition 声明的 bundle schema。一份手抄的 schema 清单会在有人改 schema 的那一天开始说旧话，而那一天不会有任何东西变红。
 
 ### 隔离安装（本轮的 promote 目标）
 
-runtime root：`~/artifacts/work-items/serveros/SRV-0011/RUN-0001/release/dist/serveros-linux-work`
+runtime root：`~/runtime-assets/hwz-server-os/serveros-linux-work`
 
 ```
-current       srv-01f5480-abil-fbd0b1a
-previous      srv-60da36f3-abil-fbd0b1a
+current       serveros-reading-honesty-20260927
+previous      serveros-memory-provider-20260927
 ```
 
 这两行就是 AC-003 断言的那一条：`previous` 不是一句承诺，而是一个**真的还能启动**的 revision。本页读的是这个隔离 root **自己的结构**，没有去调构建工作树里的 `release.py` —— 那个脚本不进产物，shipped renderer 依赖它，会让这一页在源码目录里好看、在任何已安装节点上抛错。

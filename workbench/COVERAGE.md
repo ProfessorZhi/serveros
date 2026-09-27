@@ -1,4 +1,4 @@
-<!-- ⟦snapshot⟧ rendered 2026-09-20T14:06:52+00:00 by `runtime/workbench.py` from ~/workspace/worktrees/serveros/SRV-0011 · inputs: projects=serveros,litellm,multi-user-claw; project=litellm; item=LIT-0101; quay-run=~/artifacts/work-items/serveros/SRV-0011/RUN-0001/quay-run; quay-bin=~/workspace/worktrees/quay/foundation-skeleton/plugin/vendor/quay/dist/quay.js; ability-repo=~/workspace/worktrees/ability-management/SRV-0011; reports-dir=~/artifacts/work-items/serveros/SRV-0011/RUN-0001; release-root=~/artifacts/work-items/serveros/SRV-0011/RUN-0001/release/dist/serveros-linux-work -->
+<!-- ⟦snapshot⟧ rendered 2026-09-27T06:51:41+00:00 by `runtime/workbench.py` from ~/workspace/worktrees/serveros/serveros-completion-20260925 · inputs: projects=serveros,litellm,multi-user-claw; project=litellm; item=LIT-0101; quay-run=~/artifacts/work-items/serveros/SRV-0011/RUN-0001/quay-run; quay-bin=~/workspace/worktrees/quay/foundation-skeleton/plugin/vendor/quay/dist/quay.js; ability-repo=~/workspace/src/ability-management; reports-dir=~/artifacts/work-items/serveros/SRV-0011/RUN-0001; release-root=~/runtime-assets/hwz-server-os/serveros-linux-work -->
 
 # COVERAGE
 
@@ -53,9 +53,9 @@ serverosctl work coverage --project multi-user-claw --json	0
 
 | scope | documents | 带 Sources | state |
 |---|---|---|---|
-| projects | 2 | 2 | PRESENT |
+| projects | 3 | 3 | PRESENT |
 | topics | 5 | 5 | PRESENT |
-| people | 4 | 0 | PRESENT |
+| people | 6 | 0 | PRESENT |
 | responsibilities | 1 | 0 | PRESENT |
 
 ### litellm
@@ -98,9 +98,9 @@ serverosctl work coverage --project multi-user-claw --json	0
 
 | scope | documents | 带 Sources | state |
 |---|---|---|---|
-| projects | 2 | 2 | PRESENT |
+| projects | 3 | 3 | PRESENT |
 | topics | 5 | 5 | PRESENT |
-| people | 4 | 0 | PRESENT |
+| people | 6 | 0 | PRESENT |
 | responsibilities | 1 | 0 | PRESENT |
 
 ### multi-user-claw
@@ -143,9 +143,9 @@ serverosctl work coverage --project multi-user-claw --json	0
 
 | scope | documents | 带 Sources | state |
 |---|---|---|---|
-| projects | 2 | 2 | PRESENT |
+| projects | 3 | 3 | PRESENT |
 | topics | 5 | 5 | PRESENT |
-| people | 4 | 0 | PRESENT |
+| people | 6 | 0 | PRESENT |
 | responsibilities | 1 | 0 | PRESENT |
 
 ### 覆盖页读出来的一个事实
