@@ -8028,6 +8028,128 @@ about navigation, not evidence that anything exists」。本轮不为了让这�
 条。一个把会随**另一个仓库**变动的计数写死的声明文档，迟早再次对不上；本轮不动它，
 免得把一处会漂的数字换成另一处。
 
+### 9.55 运行时身份走到 AGREEMENT：四行、两个成因、两次 cachebuster 移动
+
+本轮最后一件事是 `runtime_truth` 的 `CHAIN_CONSISTENT`。它问的不是「服务在不在」，
+而是「运行着的代码是不是我们写的那份」。它红了三轮，每轮红的是**不同的四行**，
+两个成因也不同——这一点本身值得记下来，因为「同一句 `SOURCE_RUNTIME_DRIFT`」
+在读的人眼里只是同一个红。
+
+**第一轮：taxonomy 是载荷成员。** canonical 从 `9349938` 快进到 `f28ba4a`（PR #10、#11）
+之后，四行同时红，且逐字点名同一个文件：
+
+```
+hwz-server-os-linux-work @ runtime-assets (built)        SOURCE_RUNTIME_DRIFT
+  !! 1 drifted path(s); e.g. content abilities/taxonomy.v2.yaml
+hwz-server-os-linux-work @ Claude plugin cache           SOURCE_RUNTIME_DRIFT
+hwz-server-os-linux-work@…-local (Codex plugin, enabled) SOURCE_RUNTIME_DRIFT
+serveros-linux-work (node revision)                      SOURCE_RUNTIME_DRIFT
+  !! canonical source builds 3.1.0+srv0005.20260927e, and the running revision
+     differs in 1 path(s); e.g. content abilities/taxonomy.v2.yaml
+```
+
+即 `abilities/taxonomy.v2.yaml` **在载荷里**。它的安装侧读者是 `abilities/taxonomy.py:108`
+的 `root / "abilities/taxonomy.v2.yaml"`，所以 `serverosctl taxonomy tree|show` 读的是
+**制品里**那一份；PR #11 改的不只是仓库里的一个声明，而是已装制品的字节。处置是升
+linux-work 的 cachebuster `27e → 27f`（PR #12）→ build → `release.py promote
+--kind node-runtime` → `systemctl --user restart serverosd.service`（`promote` 只
+`daemon-reload`，**不重启**）。
+
+**第二轮：四行又红，但换成了另外四行，成因也不是 taxonomy。**
+
+```
+hwz-server-os-linux-work @ Claude plugin cache   12 drifted path(s)   version 27d
+hwz-server-os-linux-work@… (Claude plugin, enabled)   version=27d  对 built 27f
+serveros-testing@serveros-testing (Claude plugin, enabled)  differs in 2 path(s)
+hwz-server-os-linux-work@…-local (Codex plugin, enabled)    version=27e  对 built 27f
+```
+
+前两行与第四行是**同一个成因**：插件缓存是**按版本串键控的真实拷贝**，`promote` 不会
+带着它走。所以「已装的是什么」这句话有两个不同的载体——`revisions/` 里的那一份，和
+两个 Agent 各自缓存里的那一份——而后者只有它自己的动词能刷新：
+
+* Claude：`claude plugin marketplace update <marketplace>` 然后
+  `claude plugin update <plugin>@<marketplace>`。结果 `27d → 27f`。
+* Codex：`codex plugin add hwz-server-os-linux-work@hwz-server-os-linux-work-local`。
+  结果 `27e → 27f`，且**是替换不是并存**——目录里只有 `…20260927f` 一个版本目录，
+  与本模块「Codex is single-slot」那句一致。
+
+第三行是**另一种**成因，与缓存无关：`serveros-testing` 真的落后于它自己的生产者。
+「differs in 2 path(s)」是个计数不是诊断，所以用这条判据**自己的**两个函数
+（`expected_artifact` + `tree_drift`，不是另写一份比较器）把那两条逐字打出来：
+
+```
+ARTIFACT.json  装的那份没有 `recommended` 键，生成器现在会写一个（本 composition 是 []）
+README.md      `ability-management@368c1be6…` 对 `da5f89b1b131…`
+```
+
+第一条是**装的记录落后于它的生成器**；第二条**不是缺陷**——README 逐字印它读到的
+那条 pin 是设计（「the pin below is the authority for what it was read from」），
+两条 pin 之间 Skills 逐字节相同。真正要做的是让这份载荷追上 pin。处置与前一轮同构：
+cachebuster `srvtest0001.20260927a → 27b`（PR #13）→ build（canonical 干净检出
+`779191d`）→ `release.py promote --kind plugin` → Claude 侧 update。
+
+**第三轮：全绿。**
+
+```
+VERDICT: OK
+  CHAIN_CONSISTENT       PASS  source, built, installed and running agree at every hop
+  CANONICAL_PROVENANCE   PASS  pin is exactly refs/remotes/origin/main
+  MATERIALIZATION_UNIQUE PASS  5 member(s) across 2 composition(s) …
+  NODE                   PROMOTED serveros-linux-work@serveros-cachebuster-27f-20260927
+RELEASE: RELEASE_COMPLETE
+```
+
+**顺带被复核的一条设计。** `build.py` 的 `_is_transient()` 让「构建到点号暂存目录」
+时把描述符写成**稳定名** `<composition>/current`，而不是那个一次性目录——它自己的
+注释记着这个缺陷在这台机器上被量到过（`./.staging-c233946`）。本轮两次构建（linux-work
+`27f`、testing `27b`）前后，两份 Codex 描述符的 `sha256` **一个字节都没变**
+（`b7a16953…` / `54f104a1…`），这是那条注释的现场复核。
+
+**§15 的退役，四份，全部走完 `owner → consumer → reference → unique evidence →
+rollback → retire`。** 明细与四份哈希清单在
+`artifacts/work-items/serveros/SRV-0011/RUN-0001/verification/retire-20260927/`。要点：
+两份 staging 与 `.candidate-074a…` 各自与已 promote 的修订**逐字节同**（`diff -r` 的唯一
+输出是 `Only in …: RELEASE.json`）；`.verify-tmp-20260927/artifact` 与 `512f886` 那一版
+只差 `ARTIFACT.json` 的 `source` 块——正是 `runtime_truth._content_bytes` 逐字点名要去掉的
+那一块（「a fact about the machine that assembled these bytes, not about the bytes」）。
+四条回滚链全部落在 `revisions/`，退役前后各复核一次；退役后重跑 `runtime_truth` 仍是
+`VERDICT: OK`，这一点本身就是「它们没有消费者」的量具。顶层七份
+`.prev-*` / `.retired-*`（2026-09-16 迁移期）**不本轮动手**：owner 不属本轮，按规则
+第一步就 `DEFER`，留作提案。
+
+**诚实边界两处。**
+
+1. `serveros-linux-work (node revision)` 那行仍写 `built from aaace96f590a`，而 canonical
+   已是 `779191d`。这**不是**漏刷：两者之间只动过 `plugin/profiles/testing.yaml`，而它
+   **不是** linux-work composition 的成员，所以重算逐字节相同——`OK` 说的就是这个。
+2. `serveros-testing/.agents/plugins/marketplace.json` 与顶层那份内容相同，但它的
+   `source.path`（`./serveros-testing/current`）只有从 `hwz-server-os` 根解析才成立。
+   没有任何消费者读它（`codex plugin marketplace list` 里没有 `serveros-testing-local`），
+   本轮**不改**，作为提案。
+
+**为什么这四份不套用 §7.1 的「不确定就不动」。** §7.1 对三份更早的 `.staging-*` 判的是
+**留在原地**，理由是「任何一个都存在不确定性」；那条判词与它标的三个目录今天都已不在盘上，
+而本轮这四份与那三份的差别是可证的、不是程度上的：
+
+* **owner 可证**：两份 staging 是本轮自己几分钟前的构建（命令、`mtime`、
+  `ARTIFACT.json.source.commit` 三者互相对得上），不是别人的在制品；
+* **无独有内容，且这一条是逐字节证的**：两份 staging 与 `.candidate-074a…` 各自是某个已
+  promote 修订的**子集**（`diff -r` 的唯一输出是 `Only in …: RELEASE.json`）。这一条对
+  §7.1 那个「误删要重新构建」的顾虑是决定性的——**连 `ARTIFACT.json` 的 `source` 块都在
+  `revisions/` 那一份里原样活着**（`27f` 那份记的仍是 `aaace96f590a`），所以删掉暂存目录
+  拿不回任何字节，重新构建反而**不是**逐字节可逆的（源检出已经前进到 `779191d`）；
+* **无引用、无占用**：`command grep -rIl` 在六个面上只命中散文记录，`lsof +D` 两份 staging
+  无输出，`ps` 无进程；
+* **§15 本轮点名**的就是这几类。
+
+退役后重跑 `runtime_truth` 仍 `VERDICT: OK`——这条判据不读这些目录，所以它同时是
+「它们没有消费者」的又一次量测。
+
+另记两处**已失效的台账正文**，保留原文不动，只在此处标注它对不上今天的事实：§8 的卫生表
+记 `…/.candidate-074a…-lw`（5.5 MB）在盘上并「不删」，该目录现在已不存在；§7.1 记的三份
+`.staging-*`（`c233946` / `a4758a0` / `978a0f9`）同样已不在盘上。
+
 ## 12. 最终报告（计划 §16 要求的那一份）
 
 **读它之前先读这一句**：这一节不是「全系统 READY 证明」。它把**已完成的实现**、**已量到的
