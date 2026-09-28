@@ -227,13 +227,14 @@ def doc_start_here(when):
                     "**样例**：由固定输入产生的产物 —— 见下方清单。样例通过说明离线路径"
                     "通过，**不说明任何连接可用**。",
                     "",
-                    "**live 未验证**：代码在，但从未在真实链路上走过。这一栏是这一轮最该被"
-                    "盯着看的地方。",
+                    "**live 未验证（作者记录）**：写下这一栏的那一轮判断这些是「代码在，但"
+                    "从未在真实链路上走过」。它是那一轮的记录，不是这台机器的读数——哪一条"
+                    "后来真的在真实链路上走通了，问 `serverosctl status`，这一页不跟踪。",
                     "",
                     "**待部署**：需要单独批准的动作，见 [DEPLOYMENT.md](DEPLOYMENT.md)。",
                 ]), 3),
         section("样例", "\n".join(_samples()), 3),
-        section("live 未验证", "\n".join(
+        section("live 未验证（作者记录，非本机读数）", "\n".join(
             f"- **{s['what']}** — {s['why']}" for s in SRC.LIVE_UNVERIFIED), 3),
         section("未完成", "\n".join(
             f"- **{s['what']}** — {s['why']}" for s in SRC.NOT_DELIVERED) or
@@ -896,7 +897,7 @@ def doc_manifest(when, release_root, pins):
             "bundle schema。一份手抄的 schema 清单会在有人改 schema 的那一天"
             "开始说旧话，而那一天不会有任何东西变红。",
         ]), 3),
-        section("隔离安装（本轮的 promote 目标）", "\n".join([
+        section("安装与 revision", "\n".join([
             f"runtime root：`{release_root}`",
             "",
             code_block(_release_status(release_root)),
@@ -1300,7 +1301,8 @@ def _release_status(release_root):
 
 def doc_deployment(when):
     parts = [
-        "§8 的最小变更清单。**本页没有任何一条已执行**，措辞上也不允许把待部署写成已上线。", ""]
+        "§8 的最小变更清单，**照作者原文列出**：它是提案，不是状态板——哪一条执行了、"
+        "哪一条没有，这一页不回答，问 `serverosctl status`。", ""]
     for d in SRC.DEPLOYMENT:
         parts.append(section(f"{d['id']} · {d['target']}", "\n".join([
             f"**影响**：{d['effect']}",
@@ -1311,12 +1313,15 @@ def doc_deployment(when):
             "",
             f"**回退**：{d['rollback']}",
         ]), 3))
-    parts.append(section("这一轮做了什么、没做什么", "\n".join([
-        "- **做了**：在隔离 runtime root 上跑通了 promote / status / rollback（见 "
+    parts.append(section("这一轮做了什么、没做什么（作者记录，非本机读数）", "\n".join([
+        "- 这一栏记的是**写下这份清单的那一轮**划给自己的界线，不是这台机器现在的状态。",
+        "- 那一轮记的**做了**：在隔离 runtime root 上跑通 promote / status / rollback（见 "
         "[RELEASE-MANIFEST.md](RELEASE-MANIFEST.md)），入口从 `/tmp` 走通。",
-        "- **没做**：线上 promote/restart、插件/Hook 覆盖、timer 切换、真实发卡、"
+        "- 那一轮记的**没做**：线上 promote/restart、插件/Hook 覆盖、timer 切换、真实发卡、"
         "启用定时任务、云端写、网络/隧道/容器变更、秘密变更。",
-        "- 这条界线由 §8 划定，不由本页自行放宽。",
+        "- 这里保留原文，**不逐条改写成后来的执行结果**：一份随产物发行的渲染器一旦把"
+        "「已执行」写进正文，就会在被装到任何一台机器上的那一刻开始说旧话，而说旧话的地方"
+        "不会有任何东西变红。现状问 `serverosctl status` 与 ledger。",
     ]), 3))
     return "\n".join(parts)
 
