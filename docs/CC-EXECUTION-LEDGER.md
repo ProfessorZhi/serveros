@@ -9273,3 +9273,51 @@ no-op，而为一个纯 provenance 字段去升 cachebuster 会违反那个文�
 **本轮新增的两个暂存目录按现行政策保留、不删除**，与既有 `.staging-*` 一起留在 P4
 那张提案清单里：`.staging-serveros-28a-20260928`（构建目标）、
 `.staging-serveros-28a-verify-20260928`（用于上面那次逐字节比对的重建）。
+
+### 12.20 §12.19 的判据立不住：要守的是 payload 相等，不是 sha 相等（2026-09-28）
+
+§12.19 把「安装的 release 来自 clean main」落成了一条判据：`serverosctl status` 的
+`source` 应当等于 `git rev-parse main`。**这条判据在该节自己合并的那一刻就失效了**——
+PR #23 的 merge commit 本身就是一次 docs-only 前进，main 从 `7167e10` 走到 `4f84450`，
+而安装的还是 `7167e10`。照那条判据，每次 docs 合并之后都得重新 promote 一次，
+而每次重新 promote 又会写一节 docs，于是再前进一次：**一个由判据自己驱动的无穷回退。**
+
+**错在把 provenance 字段当成了「必须等于 HEAD」的断言。** `source.commit` 的含义是
+**构建跑在哪一个提交上**（产物里写着 `"basis": "read from the checkout this build ran in"`），
+它本来就不声称等于 HEAD，而 HEAD 会动。可以成立的判据只有一条，就是 payload 相等：
+
+```bash
+MC=/data/home/vince/runtime-assets/hwz-server-os
+python scripts/build.py --write --bundle plugin/profiles/linux-work.yaml \
+  --ability-repo ../ability-management --ability-rev da5f89b1b1313c942bee8c03e19ad51931746f66 \
+  --output $MC/.staging-check --marketplace-path $MC/.agents/plugins/marketplace.json
+diff -rq $MC/.staging-check $MC/serveros-linux-work/current -x ARTIFACT.json
+```
+
+这条命令在 `7167e10` → `4f84450` 上跑过，输出是 `Only in …/current: RELEASE.json`，
+且 `ARTIFACT.json` 里唯一不同的字段是 `source.commit`——**即：安装的 payload 与 main 尖端
+所构建的 payload 逐字节相同**。「安装的 release 来自 clean main」这句话的**实际内容**
+就是这个，而不是两个 sha 相等。
+
+**因此这条回退就此停在这里，不再重新 promote。** 本节合并之后 main 会再前进一格，
+`source.commit` 会再度落在 main 后面——这是这套机制的**终态而非缺陷**：docs 不进 payload，
+所以每一次 docs 合并都会让那个字段落后一格，而 payload 相等这条不变量一直是成立的。
+上文那条命令就是读者要复跑的检查；一个会随每次文档提交失效的 sha 等式不是检查。
+
+**最终状态（本节写作时）：**
+
+```text
+origin/main / canonical HEAD  4f84450376191d5ef88910d0368bf9eff9fa3ee5   (clean, 三者同源)
+installed release             serveros-cleanmain-28a-20260928@7167e10 · 3.1.0+srv0005.20260928a · tree 2a90aa3dff26
+installed source              7167e1094c34 (main, clean) · ability-management@da5f89b1b131
+pointer                       AGREEMENT
+device agents                 verdict CONFORMANT · stale gap 零行 · 唯一 known 是等人注册的 drift_sync
+```
+
+**`$MC/.staging-check` 是上面那条命令每次跑都会写出的目录**，与 §12.19 列的两个并列留在 P4 的提案清单里，不删。
+
+**这一轮我在同一天里写下了三条随后被事实追上的陈述**（§12.18 的「两侧同 sha」、
+§12.19 的 sha 判据、以及本条要更正的正是 §12.19）。三条都不是凭空写的，三条都有当时的
+读数。**共同的原因是同一条：我把「此刻为真」写成了「恒为真」。** 这正是 §12.16 那条被
+撤掉的 gap entry 的形状——`the file does not exist` 在 2026-09-13 是真的。区别只在于那条
+活在契约里，这三条活在散文里，而散文没有 `unobserved_declared_gaps` 来把它标出来。
