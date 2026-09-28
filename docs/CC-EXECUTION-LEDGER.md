@@ -9577,3 +9577,100 @@ pointer     AGREEMENT · current → revisions/serveros-cleanmain-28b-20260928@4
 清除它归 P4，与其它清理项一起待批。顺带记一句同类的对比：**渲染器自己是有这条意识的**
 （它拒绝把文档写进 revision，要求 `--out` 指到产物之外），把 `.pyc` 写进去的是我的调用
 方式，不是它的。
+
+### 9.56 收口第一刀：把「停在那」从一句日志变成一个状态
+
+产品词汇里工作离开 Focus 有四条路——`Completed / Safely Parked / Cancelled + reconciled /
+Superseded + transferred`——三条有表示，**park 一条没有**。不是「字段没加」，是**三个位置都空**：
+`work checkpoint` 没有旗标，`supersede_checkpoint` 要求一个真实存在的后继（那是「谁接手」，
+不是「没人接手」），`live_checkpoints()` 只认 `superseded_by`。所以一个查清之后不再需要被续的
+记录，在产品里**无法被表达为已处置**。
+
+代价不是日志多，**是信号被吃掉**：`SRV-0011#1`（R1 留下的探针，窗口 09-26 16:19:59Z 就过了）
+每分钟被评估一次，如实打印 `REFUSE NO_AUTHORIZING_GRANT`——而这句话正是「一个真实 Item 卡在
+授权上」会产生的句子。一条真的卡住的记录混在里面，看起来和它一模一样。
+
+**形态。** 记录上三个字段 `parked_at` / `parked_by` / `parked_reason`，读法
+`is_parked(record) = bool(parked_at) and not unparked_at`。`work unpark` 写另外三个并**保留**
+前三个——抬起不是撤回，「曾经停过」仍可读。动词：
+
+```text
+serverosctl work park <checkpoint> --reason <why> [--by <who>] [--at <when>]
+```
+
+`--reason` 在**动词处**必填：一次不说理由的停车就是「带公文的删除」。`--by` 缺省读登录名。
+两者都以 `parent_owner` 的同一种身份成立——**说话的人，不是被验证的身份**——且刻意**不是**
+`context_ref`：停车不产生也不撤销任何授权，这正是 `revoke_grant` / `work revoke` 赖以成立的那个
+不对称。有一条测试钉住这一点（抬起后的记录里没有 grant、没有 context、没有 author 键）。
+
+**两条不变量，都是量出来的。**
+
+1. `live_checkpoints()` 排除 parked，`parked_checkpoints()` 读回它们——但后者**不是**前者的
+   补集。一个停过的记录可能被**更后面的 epoch** 走过，于是两个集合都含它，而读者要打印的
+   **唯一**理由是 `SUPERSEDED`（「有人接手了」）。所以每个只印一个理由的读者都先查
+   supersession。这条是我先写错了测试（断言两集合互斥），再反过来修测试、并把非互补性写进
+   `parked_checkpoints` 的 docstring 与 CLI 的注释里。
+2. `continuation.py` **不 import 任何其它层**，所以 `continuation_state` 字面读这两个字段名：
+   **字段名就是契约**，有 pin 测试钉住它与 store 的判据一致。
+
+**`put_checkpoint` 少了一个分支。** 它原本会把 parked 的记录叫作「holds a live checkpoint」，
+对着一个手里拿着**另一份**记录的写入者说。现在那个分支说出它实际是什么：谁在什么时候为了
+什么理由停的，以及两条出路。同时六个 park/lift 字段必须进 `CHECKPOINT_STORE_FIELDS`，
+否则一个**在 park 之前**已被接受的写入重试会被当成「第二个写入者」拒绝，而不是回
+`replayed: True`——有测试专门钉这一条。
+
+**第二刀是「用起来」才发现的，而且是同一类错句往后挪了一步。** park 落地、部署、对着活体
+读 `work continuations`，停了的记录是这样收尾的：
+
+```text
+SRV-0011#1  PARKED  wait WAIT_OVER  attempts ATTEMPT_NONE
+  ...
+  checkpoint parked at … Nothing wakes it and nothing should …
+  wait          the window ended at …, so the wait is over and a new Parent can resume this Item
+```
+
+wait 那句话是真的，而且它是**最后一行**——两行之上那句 park 的直接反面。`work wake` 早就把
+这两者排对了次序（在它自己的行里先答 park 再答 wait），`work continuations` 没有。修法不是
+把 wait 删掉（那会把一个真事实藏起来），而是**把次序说出来**：wait 保留自己的读数，多一句
+指明两者中哪一个是现行的。两个方向都有测试：停了的记录不再以邀请收尾，没停的**仍然**以它
+收尾。一次移除那三行的变异让前者红、后者绿——这是「这条判据是活的」的量具。
+
+**发布链与读数。**
+
+```text
+release     serveros-cleanmain-28e-park-20260928@86dc396 · 3.1.0+srv0005.20260928e · tree 142b0e3df33a
+source      86dc3961 (分支 serveros/release-28e-checkpoint-park-20260928) · ability-management@da5f89b1b131
+pointer     AGREEMENT · current → revisions/serveros-cleanmain-28e-park-20260928@86dc396
+```
+
+cachebuster `srv0005.20260928d → 28e`，**四个成员变了**，全部量过：
+
+```text
+runtime/agent_control_store.py  e8652456 → cdfd29ad
+runtime/cli.py                  76a92895 → 41d1abd8
+runtime/continuation.py         9d6995e9 → cc047138
+runtime/wake.py                 97fc9d6c → 693ac444
+```
+
+不升的后果不是「滞后一点」：`runtime/wake.py` 是那台 timer 每分钟打印的那一行，而装着的那份
+读不懂 park；`runtime/cli.py` 是操作者要敲 `work park` 的那个面，`28d` 上这个动词不存在——
+**同一个载荷里的文档已经在说 `work unpark` 是回去的路，而节点表达不了这个状态。**
+
+**生产 timer 的现场读数**（`serveros-continuation-wake.timer`，每分 :20），停车之后：
+
+```text
+reasons       PARKED 1
+SRV-0011#1  REFUSE  PARKED
+```
+
+`work continuations`：`checkpoints 0 live of 1 recorded, 1 parked` / `waits … nothing held to
+wait on` / `SRV-0011#1  PARKED`。记录一个字段都没少，`work unpark` 是回去的路。
+
+**`SRV-0011#1` 已通过新动词正式停车**，理由写在记录上（它是 R1 探针、不是真实待续责任；它
+留下的那个洞——真实 Native Parent launcher 从未被实测——已经被记为**独立、小范围**的
+integration coverage gap，将用无外部 effect、权限受限、一次性 disposable Work Item 验证，
+**不复用这个探针**）。
+
+**测试。** `tests/test_continuation.py` + `tests/test_wake.py` 227 passed。全量在冻结字节上：
+`4 failed, 6353 passed, 20 skipped, 4008 subtests passed`——4 条仍是
+`tests/test_relations.py::RealRecordsTest` 那组已知基线，逐条同名，**无新增失败**。
