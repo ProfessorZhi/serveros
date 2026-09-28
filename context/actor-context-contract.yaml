@@ -31,6 +31,19 @@ version: 1
 identity:
   context_ref: "human-context:<urlencoded-provider-id>/<digest>"
   actor_ref: "human:<actor-id>"
+  actor_ref_namespaced: "feishu:<kind>:<union_id>"
+  actor_ref_because: >-
+    the namespace names WHERE the id came from and the kind names WHICH of that
+    system's id spaces the value belongs to, so that two ids issued by different
+    systems cannot be read as the same person by a reader holding only the
+    string. Every segment is encoded independently, so a value containing the
+    separator cannot forge a segment boundary. `human` is the original form and
+    is not migrated: contexts already minted carry it and approvals are matched
+    on the ref verbatim. `feishu:union:` is what a BotMux daemon reporting
+    `botmux.current-actor.v3` produces, preferred over the enterprise email the
+    v2 document carried because a union id is developer-scoped — the same value
+    in every app of the tenant — and readable without the field-level permission
+    that gates an email, which an app may simply not hold.
   digest_because: >-
     the digest is computed by ServerOS over the provider's own evidence
     identity — it is not chosen by the caller and not derived from anything the
@@ -48,7 +61,15 @@ fields:
   actor_ref:
     required: true
     producer: human-control-provider
-    means: "a typed human ref; never an open_id, an email, a chat id or a pane"
+    means: >-
+      a typed actor ref — `<namespace>:<id>` or `<namespace>:<kind>:<id>` — and
+      never a bare value of any kind: not an unnamespaced open_id, an email, a
+      chat id or a pane. The namespace and the kind are load-bearing rather than
+      decorative: they are what let a reader tell a developer-scoped id from an
+      app-scoped one, and what keep two systems' ids from colliding into one
+      person. A `feishu:open:` ref is well-formed and is still the weaker claim,
+      because an open id identifies its holder only to the app that observed
+      it; a `feishu:union:` ref is the one that travels between apps.
   human_control_provider:
     required: true
     producer: serverosd
