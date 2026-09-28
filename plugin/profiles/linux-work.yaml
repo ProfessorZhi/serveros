@@ -376,7 +376,38 @@ short_description: Agent Engineering Workbench for a Linux work node
 # what nobody has watched is still one turn, and that is unchanged. Only the
 # reason's overreach is removed. `mcp/human_control.py` is the sole payload
 # member here, plus this file and the version string.
-cachebuster: srv0005.20260927j
+# `27j` → `28a` withdraws a record that had become false on the node this
+# deployment serves, which is the one thing a gap entry may not be. The contract
+# recorded `codex workspace AGENTS.md` as `ABSENT_ON_THIS_HOST`. The file is on
+# the disk — 2683 bytes, written 2026-09-18 10:15, the same day as its Claude
+# half and five days after the entry was authored — and `serverosctl device
+# agents` has been printing `stale gap codex workspace AGENTS.md` ever since:
+# "recorded but not observed; either it was fixed or the record is wrong", which
+# is precisely the question the entry existed to spare a reader, and one only a
+# person could answer.
+#
+# What removing it does NOT do is worth stating, because the mechanism is easy to
+# read backwards. An unrecorded missing surface is a FINDING
+# (`SURFACE_MISSING_ON_DEVICE`); `acknowledged` is the silencing path, and the
+# entry was on it. So on a node where `workspace/AGENTS.md` really is absent,
+# this makes the report louder rather than quieter. Nothing is papered over; a
+# claim that had stopped being true here is withdrawn.
+#
+# Four payload members change, and most of the delta is prose — a cachebuster
+# claiming a delta the artifact does not carry is the defect this list keeps
+# warning about. Two are the real ones:
+# `abilities/agent-runtime-contract.yaml` (the entry retired; the comment above
+# `instruction_surfaces` corrected, since it still stated the Codex half absent
+# in the present tense) and `abilities/runtime_parity.py` (the
+# `_matches_a_declared_gap` comment, whose worked example was that entry). The
+# other two carry three more claims corrected in the same class:
+# `runtime/workbench.py` — the manifest panel said "this is not the live runtime
+# root; the live pointer has not moved", which it printed for whatever root
+# `--release-root` was handed — and `runtime/workbench_sources.py`, whose
+# DEPLOYMENT header said nothing on its list had been executed, on a node whose
+# live pointer has since moved and whose serverosd has been restarted with it.
+# The ability pin is unchanged (`da5f89b1b131`).
+cachebuster: srv0005.20260928a
 
 skills:
   - name: runtime-management

@@ -9088,3 +9088,94 @@ wake `REFUSE / NO_AUTHORIZING_GRANT`。** 这条链的每一跳都有上面某�
 路由块，含一个真实 `ou_`；另一次在取 BotMux dashboard 记录时。教训是同一条，写在这里：
 **任何 claude 进程的 cmdline 都不要整段打印——键名可以，值不可以。** 前两次我记的是
 「字段名与结构可以核，值不该印」，这一条是它的加强版：cmdline 是一整段值。
+
+### 12.16 一条在盘上已经变假的记录：`codex workspace AGENTS.md`（2026-09-28）
+
+**这一节起于一条 live 读数，不起于计划项。** `serverosctl device agents` 的最后一行是：
+
+```text
+stale gap codex workspace AGENTS.md: recorded but not observed; either it was fixed or the record is wrong
+```
+
+**先回答它问的那个问题：是「被修了」，不是「记录错了」。** 契约那条 `known_gaps` 写于
+`ad06b11`（2026-09-13 16:43），`because` 说 "the file does not exist"。文件
+`/data/home/vince/workspace/AGENTS.md` 的 mtime 是 **2026-09-18 10:15**，2683 字节，
+与 `workspace/CLAUDE.md`（2643 字节）**同一分钟**落盘——那是东京结构收敛写的，
+正是让这条记录变假的那件事。写的时候是真的，五天后不再是真的。
+
+**处置：撤掉那条 entry，改正它上面的注释。**
+
+**为什么这不是 §9.20 的「留给人」。** §9.20 那时写的是「本轮不改契约那一行……把北京那台的
+观测改成东京的观测是另一种错，记在这里，留给人」。这一轮做的是**另一件事**：不是把北京的
+读数改写成东京的，而是**撤掉一条在本机已为假的记录**。而且按机制本身，撤掉它**不可能掩盖
+任何东西**——没有被记为 gap 的缺失面走 `findings`（`SURFACE_MISSING_ON_DEVICE`），更响；
+`acknowledged` 才是那条消音路径，而那条 entry 正走在它上面。所以在 `workspace/AGENTS.md`
+真的不在的节点上，这次改动让报告**变响**而不是变轻。这一点得写下来，因为机制很容易反着读。
+
+**这一轮真正改的四件事，三件是文案。** 同类：一句曾经为真的话，在它下面的事实变了之后
+还留着。
+
+| 位置 | 原来那句 | 现在 |
+|---|---|---|
+| `abilities/agent-runtime-contract.yaml` | `known_gaps` 里 `codex workspace AGENTS.md` = `ABSENT_ON_THIS_HOST`；上方注释说 Codex 那半边 "does not" | entry 撤掉；注释改成两半都在盘上，并写下日期与尺寸 |
+| `abilities/runtime_parity.py` | `_matches_a_declared_gap` 的注释拿那条 entry 当例子 | 格式说明留着，写明那条 entry 已于 2026-09-28 退役 |
+| `runtime/workbench.py` | 隔离安装那节：「**这不是线上 runtime root。**……线上指针没有动过」——无条件 | 改成「这一页回答的是上面那个 root 的结构，不是『线上的是哪一条』」，并在原处写下它当初为什么为真、现在为什么不成立（`--release-root` 收任何 root）；`DOC_INDEX` 的「待部署清单（未执行）」→「（作者原文，非状态）」；导语「**没有任何一条已执行。**」→「**它是提案，不是状态板**」 |
+| `runtime/workbench_sources.py` | DEPLOYMENT 抬头："NOTHING here has been executed" | 改成 "as AUTHORED"，并写下 P1 已执行、P2 的 hook 半边已注册，以及为什么逐行标注反而会毁掉「被批准的是哪一份提案」 |
+
+**后两条是现场发现的，不是计划项。** 触发它们的是同一件事：这一轮还要再做一次
+promote + restart，而那两个文件正准备在产物里说「什么都没执行过」「线上指针没有动过」。
+
+**测试跟着改了，改的是输入而不是判据。** `DeclaredGapTests` 原先把 `contract()`（真契约）
+当输入，而那条 gap 就在真契约里。撤掉 entry 之后，这个类改成把 gap **注入**一份契约副本
+（`_contract_with_the_gap_recorded()`），并保留契约自己声明的 subject 原文
+`codex workspace AGENTS.md`——`_matches_a_declared_gap` 按 path_role + relative 匹配，
+编一个 subject 会把测试变成 matcher 自己的 fixture，而不是输入的 fixture。四条判据
+（acknowledged 不等于删除、只有记过的 gap 才被承认、stale 要求主语被量过）一条没动。
+读数：`test_runtime_parity.py` 36 passed；含 `test_workbench.py` 在内的九个相关套件
+386 passed / 97 subtests。
+
+**cachebuster 升到 `srv0005.20260928a`。** 这次 payload 真的变了（四个成员：
+`abilities/agent-runtime-contract.yaml`、`abilities/runtime_parity.py`、
+`runtime/workbench.py`、`runtime/workbench_sources.py`；`plugin/profiles/linux-work.yaml`
+不是成员）。最要紧的一条理由是：装着 `27j` 的缓存会继续发行一份把 `workspace/AGENTS.md`
+记成缺席的契约，于是那台机器上的 `device agents` 继续报 stale——正是本节开头那条读数。
+
+**没有做的，记为发现而不是没看见。** `workbench.py` 里那一句改了，但**同一页其余「本轮」
+口径的文案没有系统清理**（`RELEASE-MANIFEST` 那节标题仍写着「隔离安装（本轮的 promote
+目标）」）。要系统清理得先回答一个设计问题：**一份随产物发行的渲染器，怎么知道它被指向的
+root 是不是线上 root。** 本轮没造这个机制——它是新机制，不是改正，而这一轮的任务是收口。
+
+### 12.17 最终 release 从 clean main 重建，以及「重装」这半边的实测
+
+**重建。** 从 canonical 检出（`main`、干净、HEAD `eae2986`）用
+`--bundle plugin/profiles/linux-work.yaml` + 全 sha 的 `--ability-rev` 构建到 marketplace
+根下的点号暂存目录；canonical 全程只读（HEAD、dirty、index mtime、index sha256 均未变）。
+第一次构建的 payload 与已装的 `27j` **逐字节相同**（260 个非 manifest 文件全同，只有
+`ARTIFACT.json` 的 `source` 块不同），归一化（剥掉 `source`）后的两份相等——**那一次按
+`build.py` 的规则故意没有升 cachebuster**。§12.16 的改动之后 payload 真的变了，
+按同一条规则升到 `srv0005.20260928a` 并重建。
+
+**最终 promote 的读数记在 §12.18**，不在这一节：这一节写的是构建与「重装」两件事的实测，
+而节内不写还没量到的数与没跑完的步骤——一份把自己计划的读数先写进去的记录，正是本节
+通篇在讲的那类东西。
+
+**「重装」这半边，三个面逐个量过。**
+
+- **运行根 `current`：干净。** 实测所有跑着的 ServerOS MCP 进程的 argv 都指向
+  `…/serveros-linux-work/current/mcp/bin/serveros-{node,agent}-mcp`（本会话 pid 683729/683730，
+  以及本机其他会话的 2201236、4037818 等），**没有任何一个从插件缓存拷贝加载**。
+  这一条把「插件缓存是不是运行时那一份」这个问题关掉了：不是。
+- **Codex 缓存拷贝：`codex plugin add` 是**无条件拷贝**。** 重跑一次即从 `current` 重拷；
+  实测 `ARTIFACT.json` 从 `6a1b082d…` 变为 `0980087b…`，与 `current/ARTIFACT.json`
+  **逐字节相同**，其中 `commit eae2986e4e30 / ref main / tree_clean true /
+  worktree_changes 0`。`~/.codex/config.toml` 未动（`881c9f19…` 前后一致）。
+- **Claude 缓存拷贝：`install` 与 `update` 都是版本键。** 实测
+  `✔ … is already at the latest version` / `✔ … is already installed`，缓存一个字节未动。
+  所以这一面上的刷新**只能**靠 cachebuster 变化——而 §12.16 的升版正好给了它一次。
+  **这条不对称值得记下来**：Codex 的 `add` 无条件拷贝、Claude 的 `install/update` 版本键，
+  于是「cachebuster 不变」在 Claude 侧等于缓存**永远刷不动**。这不是缺陷，是那条规则的
+  一个可预期推论，但它决定了「重装」在两侧不是同一个动作。
+
+**由此更正上一轮终报里的一处措辞。** 上一轮把「两个消费端拷贝仍嵌着旧脏来源」写成一个
+未结线头。量过之后它是两回事：那批字节**确实**先在那个脏 worktree 里被组装过，
+所以那份 `source` 记的是真话，只是「现在在跑什么」不是它——运行的那一份读 `current`。
