@@ -9231,3 +9231,45 @@ verdict     CONFORMANT
 已经在内存里的 MCP 进程跑的是它启动时加载的那份代码，新会话拿新的。这是 cachebuster
 那条规则要防的东西（§12.17），所以这里说的是事实而不是待办——这台机器上不存在
 「重启后生效」的欠账，只有「下次开会话时生效」这个正常语义。
+
+### 12.19 安装的 revision 换成记 main 尖端的那一份，以及它的后果（2026-09-28）
+
+§12.18 那次 promote 上的是 `@431660c`，而之后 main 又前进了一次（PR #22，docs-only）。
+于是 `serverosctl status` 的 `source` 会比 `git rev-parse main` 差一格——**虽然 payload
+逐字节相同**。这一条是量过的，不是推的：从 `7167e10` 重建，排除 `ARTIFACT.json` 后
+整仓 `diff -rq` 唯一的差是 `RELEASE.json`（`promote` 写进 revision 的，不是 payload 成员），
+`ARTIFACT.json` 里唯一不同的字段是 `source.commit`。
+
+**处置：把那一次重建 promote 上去，而不是留一句注释。** 因为「安装的 release 来自
+clean main」这句话要能被一个人用 `status` 与 `git` 两条命令当场对出来，才对得上 §17 那个
+完成边界；一句「其实 payload 一样」是读的人得自己重算的东西。新读数：
+
+```text
+release     serveros-cleanmain-28a-20260928@7167e10 · 3.1.0+srv0005.20260928a · tree 2a90aa3dff26
+source      7167e1094c34 (main, clean) · ability-management@da5f89b1b131
+pointer     AGREEMENT · current → revisions/serveros-cleanmain-28a-20260928@7167e10
+```
+
+canonical `7167e10` = `origin/main` = 安装的 `source.commit`，三者同一。新 revision 上
+`serverosctl device agents` 仍是 `stale gap` 零行、`verdict CONFORMANT`，唯一 `known`
+还是那条等人注册的 `drift_sync`。
+
+**这次的后果得写清楚，因为它正是本节通篇在讲的那类东西。** cachebuster 没变（payload
+没变，按 `build.py` 的规则不该变），于是：
+
+| 侧 | 刷新动作 | 与 `current` 的关系 |
+|---|---|---|
+| Codex | `codex plugin add` 重拷一次 | `7653b3e9…`，与 `current/ARTIFACT.json` **同一 sha** |
+| Claude | `plugin update` 回答不必动 | 停在 `7130e824…`，与 `current` 只差 `ARTIFACT.json` 的 `source.commit` 一个字段 |
+
+**§12.18 里那句「两侧都是 `7130e824…`」因此已经过期**，而且是在写完几分钟内过期的——
+不是写错了，是它下面的东西动了（我把安装的 revision 换成了记 main 尖端的那一份）。按本节
+的规矩它不重写，在这里被更正。Claude 侧那一格**只能**这样：版本键没变，`update` 就是
+no-op，而为一个纯 provenance 字段去升 cachebuster 会违反那个文件自己写的规则（只在新的
+生成 payload 必须让已装缓存失效时才升）。两侧缓存里都没有任何进程在跑（§12.17），
+所以这一格在「日常可用」上是零影响；写下来是因为一个读者若去比那两份 `ARTIFACT.json`，
+会看到差异，而他应该看到解释。
+
+**本轮新增的两个暂存目录按现行政策保留、不删除**，与既有 `.staging-*` 一起留在 P4
+那张提案清单里：`.staging-serveros-28a-20260928`（构建目标）、
+`.staging-serveros-28a-verify-20260928`（用于上面那次逐字节比对的重建）。
