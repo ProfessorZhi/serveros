@@ -363,18 +363,54 @@ class ObservationProbes(unittest.TestCase):
 
 
 class DeclaredGapTests(unittest.TestCase):
-    """`capabilities.known_gaps` records the Codex workspace entry as absent.
+    """A declared gap, injected, and the traps on the way to acknowledging it.
 
-    It is a real gap — a Codex session under the workspace root gets no
-    ServerOS workspace entry, and a Claude session does — and it cannot be
-    closed from here, because closing it means writing into the user's Agent
-    configuration.
+    The gap exercised here used to be one the contract shipped: the Codex half
+    of the workspace instruction pair, `workspace/AGENTS.md`, absent — so a
+    Codex session started under the workspace root got no ServerOS workspace
+    entry while a Claude session did. It could not be closed from inside this
+    repository (closing it means writing into the user's Agent configuration),
+    so it was recorded as `ABSENT_ON_THIS_HOST` instead.
+
+    The file was created on 2026-09-18, and the entry was retired on
+    2026-09-28. `serverosctl device agents` reported it as an
+    `unobserved_declared_gap` a moment before that — which is the check doing
+    the job it was written for, rather than a person noticing, and is why the
+    entry had to go: a gap whose subject no longer exists is a line every
+    reader has to re-derive.
+
+    So the gap is now INJECTED into a copy of the contract rather than read out
+    of it. The injection keeps the contract's own declared surface text as its
+    subject, because `_matches_a_declared_gap` matches on the role and the
+    relative path — a made-up subject would be a fixture of the matcher rather
+    than of the input, and the matcher is one of the things under test.
 
     A check that is red the day it is written gets turned off, so a defect the
     contract already records moves to `acknowledged` instead. These tests are
     about the ways that could go wrong: acknowledgement becoming deletion, and
     the matcher never firing at all.
     """
+
+    #: The subject, spelled the way the contract spells it. Injected, not read:
+    #: see the class docstring for why this is a fixture now.
+    RECORDED_GAP = {
+        "surface": "codex workspace AGENTS.md",
+        "state": "ABSENT_ON_THIS_HOST",
+        "because": "injected — in this scenario the file is absent.",
+        "closing_action": "NEEDS_HUMAN — injected for the mechanism tests.",
+    }
+
+    def _contract_with_the_gap_recorded(self) -> dict:
+        """The shipped contract, plus one declared gap.
+
+        Copied and mutated rather than written out, for the reason
+        `DriverTests._without_the_recorded_gap` exists: a scenario contract
+        that has drifted from the shipped one tests the scenario.
+        """
+        with_the_gap = copy.deepcopy(contract())
+        with_the_gap["capabilities"]["known_gaps"].append(
+            copy.deepcopy(self.RECORDED_GAP))
+        return with_the_gap
 
     OBSERVED_WITH_THE_GAP = {
         "codex": {"instruction_surfaces": [
@@ -391,7 +427,8 @@ class DeclaredGapTests(unittest.TestCase):
     }
 
     def test_the_recorded_gap_is_acknowledged_rather_than_reported(self):
-        result = parity.report(contract(), observed=self.OBSERVED_WITH_THE_GAP)
+        result = parity.report(self._contract_with_the_gap_recorded(),
+                               observed=self.OBSERVED_WITH_THE_GAP)
         self.assertEqual(result["findings"], [])
         self.assertEqual(len(result["acknowledged"]), 1)
         self.assertEqual(result["acknowledged"][0]["declared_gap"]["state"],
@@ -401,7 +438,8 @@ class DeclaredGapTests(unittest.TestCase):
         """The failure this design invites. Moving a defect out of `findings`
         must not remove it from the record, or the acknowledgement has become
         the thing it was meant to avoid."""
-        result = parity.report(contract(), observed=self.OBSERVED_WITH_THE_GAP)
+        result = parity.report(self._contract_with_the_gap_recorded(),
+                               observed=self.OBSERVED_WITH_THE_GAP)
         rendered = json.dumps(result)
         self.assertIn("/opt/applications/data/home-hwz/workspace/AGENTS.md",
                       rendered)
@@ -414,7 +452,8 @@ class DeclaredGapTests(unittest.TestCase):
         unrecorded = copy.deepcopy(self.OBSERVED_WITH_THE_GAP)
         unrecorded["claude-code"]["mcp_surfaces"] = [
             {"path": "/home/hwz/.claude.json", "present": False}]
-        result = parity.report(contract(), observed=unrecorded)
+        result = parity.report(self._contract_with_the_gap_recorded(),
+                               observed=unrecorded)
         self.assertEqual(len(result["acknowledged"]), 1)
         self.assertEqual([f["runtime"] for f in result["findings"]], ["claude-code"])
 
@@ -424,7 +463,7 @@ class DeclaredGapTests(unittest.TestCase):
         slash and so never matched anything — making the acknowledgement
         silently dead while the outcome still looked correct, since the gap
         was a finding either way."""
-        gap = {"surface": "codex workspace AGENTS.md"}
+        gap = {"surface": self.RECORDED_GAP["surface"]}
         finding = {"runtime": "codex", "code": "SURFACE_MISSING_ON_DEVICE",
                    "path": "/opt/applications/data/home-hwz/workspace/AGENTS.md"}
         self.assertIsNotNone(parity._matches_a_declared_gap(finding, [gap]))
@@ -459,7 +498,8 @@ class DeclaredGapTests(unittest.TestCase):
         """The other direction, which keeps the list honest: a gap written
         down and never seen again is either fixed or noise, and both want a
         look."""
-        result = parity.report(contract(), observed=self._all_present())
+        result = parity.report(self._contract_with_the_gap_recorded(),
+                               observed=self._all_present())
         self.assertEqual(result["unobserved_declared_gaps"],
                          ["codex workspace AGENTS.md"])
 
@@ -473,7 +513,8 @@ class DeclaredGapTests(unittest.TestCase):
         collapse as everywhere else here: an absence of measurement, rendered as
         a measurement of absence.
         """
-        result = parity.report(contract(), observed={"codex": {}})
+        result = parity.report(self._contract_with_the_gap_recorded(),
+                               observed={"codex": {}})
         self.assertEqual(result["unobserved_declared_gaps"], [])
         self.assertIn("SURFACE_UNOBSERVED",
                       {u["code"] for u in result["unknowns"]})

@@ -119,14 +119,17 @@ capabilities:
   #                         invariant and the middle one is an importer; both
   #                         are surfaces, because deleting either changes what
   #                         the session reads.
-  #   the workspace pair  — `workspace/CLAUDE.md` exists (2330 bytes).
-  #                         `workspace/AGENTS.md` does not, so a Codex session
-  #                         started under the workspace root does not receive
-  #                         the ServerOS workspace entry that a Claude session
-  #                         does. That is an asymmetry between the two runtimes
-  #                         and it is recorded here rather than corrected:
-  #                         creating it means writing into the user's Agent
-  #                         configuration, which this contract may not do.
+  #   the workspace pair  — both halves are on the disk: `workspace/CLAUDE.md`
+  #                         (2643 bytes) and `workspace/AGENTS.md` (2683 bytes),
+  #                         both written 2026-09-18 10:15 — sizes as measured
+  #                         2026-09-28, and the dates are the part that matters,
+  #                         because they are what says this entry is describing
+  #                         a state and not a convention. This line used to read
+  #                         the other way: the Codex half absent, so a Codex
+  #                         session started under the workspace root received no
+  #                         ServerOS workspace entry while a Claude session did.
+  #                         That asymmetry is gone and the gap entry below was
+  #                         retired on the strength of it.
   instruction_surfaces:
     claude-code: [{path_role: workspace, relative: "CLAUDE.md"},
                   {path_role: home, relative: ".claude/CLAUDE.md"},
@@ -135,14 +138,20 @@ capabilities:
             {path_role: home, relative: "AGENTS.md"}]
   # What the runtime parity check cannot see. Kept beside the data it is about,
   # because a known gap recorded away from its subject is a gap nobody reads.
+  #
+  # A `codex workspace AGENTS.md` entry sat here as `ABSENT_ON_THIS_HOST`. It
+  # was true when written (2026-09-13) and false five days later, when the file
+  # was created (2026-09-18 10:15). With both halves of the workspace pair on
+  # the disk, the asymmetry it recorded is gone, so the entry is retired and
+  # not kept as an acknowledgement: an acknowledgement whose subject no longer
+  # exists is a line a reader has to re-derive before they can use it.
+  #
+  # It was `unobserved_declared_gaps` that said so — the entry went stale on
+  # its own, on `serverosctl device agents`, which is the check doing the job
+  # it was written for rather than a person noticing. That is also why the
+  # retirement is a deletion and not a `state: CLOSED`: this block is a list of
+  # things the parity check cannot see, and a closed thing is one it can.
   known_gaps:
-    - surface: "codex workspace AGENTS.md"
-      state: ABSENT_ON_THIS_HOST
-      because: >
-        the file does not exist. Codex sessions under the workspace root get no
-        ServerOS workspace entry; Claude sessions do.
-      closing_action: NEEDS_HUMAN — writing it modifies the user's Agent
-        configuration, which §42 places outside this round's authority.
     - driver: drift_sync
       state: UNWIRED_ON_THIS_HOST
       # Which finding this entry records. A surface gap does not have to say —

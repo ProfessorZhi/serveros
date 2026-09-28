@@ -472,12 +472,15 @@ def _matches_a_declared_gap(finding: dict, gaps: list[dict]) -> dict | None:
         surface = gap.get("surface") or ""
         if not path or not surface:
             continue
-        # The declaration is written `<runtime> <path_role> <relative>`, as in
-        # `codex workspace AGENTS.md`; the observation is an absolute path. The
-        # match is on the role and the relative part joined by a slash — the
-        # first version compared the tail as prose and so never matched a path
-        # at all, which made the acknowledgement silently dead while every
-        # test of `_matches_a_declared_gap` in isolation would have passed.
+        # The declaration is written `<runtime> <path_role> <relative>`. The
+        # one that used to sit in the contract read `codex workspace AGENTS.md`
+        # and was retired 2026-09-28; the format is unchanged, so that is still
+        # the shape to write and the shape these tests inject. The observation
+        # is an absolute path. The match is on the role and the relative part
+        # joined by a slash — the first version compared the tail as prose and
+        # so never matched a path at all, which made the acknowledgement
+        # silently dead while every test of `_matches_a_declared_gap` in
+        # isolation would have passed.
         runtime, _, rest = surface.partition(" ")
         relative = "/".join(rest.split()) if rest else ""
         if finding.get("runtime") == runtime and relative and path.endswith(relative):
