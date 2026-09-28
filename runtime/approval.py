@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import importlib.util
 import json
 import sys
 from datetime import datetime, timedelta, timezone
@@ -32,6 +33,12 @@ except ImportError:  # pragma: no cover - environment guarantee
 
 _HERE = Path(__file__).resolve().parent
 CONTRACT = _HERE / "approval-contract.yaml"
+
+# `context/actor.py` owns the actor-ref grammar, including how each of its
+# segments is encoded. This module does not restate that grammar and does not
+# assemble a ref itself — see `_actor_module` at the CLI below for why the
+# one place that takes a ref from a human is the one place that has to.
+_ACTOR_PATH = _HERE.parent / "context" / "actor.py"
 
 APPROVAL_PREFIX = "approval:"
 
@@ -293,12 +300,30 @@ def consume(approval: dict, *, consumed_by: str, now: str) -> dict:
             "consumed_at": now}
 
 
+def _actor_module():
+    """`context/actor.py`, under the name the rest of ServerOS loads it as.
+
+    The same name on purpose: it owns the ref grammar, and a second copy would
+    raise its own `Rejected` — caught by name below, and therefore slipping
+    through as its parent. The grammar itself would be identical; the failure
+    would be silent.
+    """
+    if "_serveros_context_actor" not in sys.modules:
+        spec = importlib.util.spec_from_file_location(
+            "_serveros_context_actor", _ACTOR_PATH)
+        module = importlib.util.module_from_spec(spec)
+        sys.modules["_serveros_context_actor"] = module
+        spec.loader.exec_module(module)
+    return sys.modules["_serveros_context_actor"]
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--action")
     parser.add_argument("--target", help="JSON object")
     parser.add_argument("--params", help="JSON object")
-    parser.add_argument("--actor")
+    parser.add_argument("--actor", help="a bare id, or a full typed actor ref "
+                                       "(e.g. feishu:union:<id>)")
     parser.add_argument("--context-ref")
     parser.add_argument("--now")
     parser.add_argument("--window", type=int, default=DEFAULT_WINDOW_SECONDS)
@@ -314,11 +339,23 @@ def main(argv: list[str] | None = None) -> int:
     now = args.now or datetime.now(timezone.utc).isoformat()
     if not (args.action and args.actor and args.context_ref):
         parser.error("--action, --actor and --context-ref are required")
+    # `--actor` is the one place this plane takes an actor ref from a person,
+    # and it goes through the module that owns the grammar rather than into the
+    # record verbatim. The ref is not decoration: `approval_ref` hashes it, and
+    # `Store.for_actor_action` matches on it exactly, so a bare id that should
+    # have carried a namespace — or a mistyped one — binds the approval to an
+    # actor that will never be able to consume it, and the approval looks
+    # ISSUED the whole time.
+    actor_module = _actor_module()
+    try:
+        actor_ref_value = actor_module.normalize_actor_ref(args.actor)
+    except actor_module.Rejected as exc:
+        parser.error(str(exc))
     target = json.loads(args.target) if args.target else {}
     params = json.loads(args.params) if args.params else {}
     record = issue(
         action=args.action, target=target, params=params,
-        context={"context_ref": args.context_ref, "actor_ref": args.actor,
+        context={"context_ref": args.context_ref, "actor_ref": actor_ref_value,
                  "observed_at": now},
         now=now, window_seconds=args.window)
     json.dump(record, sys.stdout, indent=2, sort_keys=True)

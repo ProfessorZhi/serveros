@@ -52,7 +52,38 @@ _HERE = Path(__file__).resolve().parent
 CONTRACT = _HERE / "actor-context-contract.yaml"
 
 CONTEXT_PREFIX = "human-context:"
-ACTOR_PREFIX = "human:"
+
+# `ACTOR_PREFIX = "human:"` used to live here, and its removal is not tidying.
+# Its two readers were the two functions below that now build a ref from
+# `ACTOR_NAMESPACES`, and a constant spelling the old shape invites exactly the
+# mistake this change exists to fix: a ref assembled by prefixing looks correct
+# while it silently cannot say where its own segment boundaries are. A named
+# constant is more inviting than an f-string, not less.
+
+# The namespaces an actor ref may carry. The namespace is not decoration: it
+# names WHERE the id came from, so two ids issued by different systems cannot
+# be read as the same person by a reader that only saw the string.
+#
+#   human    the original form. The id is opaque and the namespace says only
+#            that a human was identified — not by what, and not which of that
+#            system's id spaces the value belongs to.
+#   feishu   a Lark id, with the kind naming the id space. `feishu:union:<id>`
+#            is a `union_id`: developer-scoped, the same value in every app of
+#            the tenant, and readable without the field-level permission that
+#            gates an email.
+#
+# `human` is NOT migrated to the new spelling. Contexts already minted carry
+# it, `runtime/agent_control_store.py#for_actor_action` matches approvals on the
+# ref verbatim, and a grammar change that made live records unreadable would be
+# a rename wearing a security change's clothes.
+ACTOR_NAMESPACES = ("human", "feishu")
+
+# The id spaces a namespace may name, closed. `open` is spelled here so that the
+# kind can be judged rather than guessed at, but it is the kind a reader must
+# be most careful with: an `ou_` open id is app-scoped, so a context carrying
+# one identifies a different person to every app that reads it. A provider that
+# reports one is reporting evidence about ITS view, and the ref says so.
+ACTOR_ID_KINDS = ("union", "open", "email")
 
 # The fields a REQUEST is forbidden to carry. Not "ignored if present": refused
 # by name, because a silently dropped field teaches its author that the field
@@ -112,21 +143,95 @@ def parse_context_ref(ref: str) -> tuple[str, str]:
     return unquote(parts[0]), unquote(parts[1])
 
 
-def actor_ref(actor_id: str) -> str:
+def _typed_prefixes() -> tuple[str, ...]:
+    return tuple(f"{name}:" for name in ACTOR_NAMESPACES)
+
+
+def actor_ref(actor_id: str, *, namespace: str = "human",
+              kind: str | None = None) -> str:
+    """A typed actor ref: `<namespace>:<id>`, or `<namespace>:<kind>:<id>`.
+
+    **Every segment is encoded on its own**, and that is the whole reason this
+    is a function instead of an f-string. A ref built by interpolation cannot
+    distinguish an id of `union:a` from a kind `union` with an id `a`, so a
+    value the provider read out of a document would be free to move the
+    boundaries of the very string a reader parses to find out what kind of id
+    it is holding. Here the separator is written by this function and nowhere
+    else: a `:` inside a value is quoted into its own segment and can never
+    become a boundary.
+
+    `kind` is None rather than defaulted. A namespace that names a system
+    without naming which of its id spaces the value came from is the original
+    `human:` shape, and inventing a kind for it would put a claim into the ref
+    that no provider made.
+    """
     if not str(actor_id).strip():
         raise Rejected("an actor_ref needs a non-empty actor id")
-    if str(actor_id).startswith(ACTOR_PREFIX):
+    if namespace not in ACTOR_NAMESPACES:
+        raise Rejected(f"{namespace!r} is not an actor ref namespace; known: "
+                       + ", ".join(ACTOR_NAMESPACES))
+    if kind is not None and kind not in ACTOR_ID_KINDS:
+        raise Rejected(f"{kind!r} is not an actor id kind; known: "
+                       + ", ".join(ACTOR_ID_KINDS))
+    if str(actor_id).startswith(_typed_prefixes()):
         raise Rejected(f"{actor_id!r} is already a typed actor ref")
-    return ACTOR_PREFIX + _segment(actor_id)
+    segments = [namespace] + ([kind] if kind is not None else []) + [str(actor_id)]
+    return ":".join(_segment(segment) for segment in segments)
 
 
-def parse_actor_ref(ref: str) -> str:
-    if not str(ref).startswith(ACTOR_PREFIX):
+def parse_actor_ref(ref: str) -> tuple[str, str | None, str]:
+    """(namespace, kind, actor_id) from a typed actor ref. Raises when the
+    value is not one.
+
+    Two shapes, and no third: `<namespace>:<id>` and
+    `<namespace>:<kind>:<id>`. A segment count outside those two is refused
+    rather than read left-to-right, because a ref with a hand-written `:` in it
+    has two readings and a parser that picks one of them is choosing an actor
+    for a caller that wrote something ambiguous.
+
+    A namespace with a kind must name a known kind. `human:opaque:x` is
+    therefore refused rather than read as an id of `opaque:x`: the word after
+    `human:` would otherwise be an unvalidated claim about which id space the
+    value came from.
+    """
+    text = str(ref)
+    namespace = next((name for name in ACTOR_NAMESPACES
+                      if text.startswith(f"{name}:")), None)
+    if namespace is None:
         raise Rejected(f"{ref!r} is not a typed actor ref")
-    actor_id = unquote(str(ref)[len(ACTOR_PREFIX):])
+    parts = text[len(namespace) + 1:].split(":")
+    if len(parts) == 1:
+        kind, id_segment = None, parts[0]
+    elif len(parts) == 2:
+        kind, id_segment = parts[0], parts[1]
+        if kind not in ACTOR_ID_KINDS:
+            raise Rejected(f"{ref!r} names actor id kind {kind!r}; known: "
+                           + ", ".join(ACTOR_ID_KINDS))
+    else:
+        raise Rejected(f"malformed actor ref: {ref!r}")
+    actor_id = unquote(id_segment)
     if not actor_id:
         raise Rejected(f"malformed actor ref: {ref!r}")
-    return actor_id
+    return namespace, kind, actor_id
+
+
+def normalize_actor_ref(value: str) -> str:
+    """A well-formed typed actor ref, from either an id or a ref already typed.
+
+    For a CLI that takes `--actor` from a person, where both "the id" and "the
+    whole ref" are reasonable things to type and only one of them should reach
+    a record.
+
+    A value carrying a known namespace MUST parse. Wrapping an unparseable one
+    as `human:<value>` would turn `feishu:` into an id called "feishu:" and
+    record a different actor than the caller named — which is why the branch
+    below is on "does this look typed", not on "did parsing happen to fail".
+    """
+    text = str(value)
+    if text.startswith(_typed_prefixes()):
+        namespace, kind, actor_id = parse_actor_ref(text)
+        return actor_ref(actor_id, namespace=namespace, kind=kind)
+    return actor_ref(text)
 
 
 # ---------------------------------------------------------------------------
@@ -222,7 +327,10 @@ def build(report: dict, *, now: str, nonce: str | None = None) -> dict:
             f"provider_status {status!r} claims no verification, so it cannot "
             "carry provenance FACT")
 
-    actor_id = parse_actor_ref(report["actor_ref"])
+    # Parsed into its three parts and rebuilt from them, rather than copied
+    # through: the rebuild is what re-encodes each segment, so a report carrying
+    # a hand-written ref cannot put a separator into the record.
+    namespace, kind, actor_id = parse_actor_ref(report["actor_ref"])
     digest = digest_of(report)
     observed_at = report["observed_at"]
     window = int(contract()["freshness"]["window_seconds"])
@@ -230,7 +338,7 @@ def build(report: dict, *, now: str, nonce: str | None = None) -> dict:
     record = {
         "schema": contract()["schema"],
         "context_ref": context_ref(report["human_control_provider"], digest),
-        "actor_ref": actor_ref(actor_id),
+        "actor_ref": actor_ref(actor_id, namespace=namespace, kind=kind),
         "human_control_provider": report["human_control_provider"],
         "transport": report["transport"],
         "transport_identity": report["transport_identity"],
@@ -412,7 +520,7 @@ def main(argv: list[str] | None = None) -> int:
         parser.error("--provider, --actor and --conversation are required")
     record = build({
         "human_control_provider": args.provider,
-        "actor_ref": actor_ref(args.actor),
+        "actor_ref": normalize_actor_ref(args.actor),
         "transport": args.transport or "feishu",
         "transport_identity": args.transport_identity or "unstated",
         "conversation_ref": args.conversation,

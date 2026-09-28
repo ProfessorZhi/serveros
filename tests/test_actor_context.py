@@ -101,6 +101,84 @@ def test_actor_ref_refuses_to_wrap_an_already_typed_ref():
         actor.actor_ref("human:hwz")
 
 
+def test_a_ref_names_the_system_and_the_id_space_it_came_from():
+    # The namespace is not decoration and the kind is not either: together they
+    # are what let a reader holding only the string tell a developer-scoped id
+    # from an app-scoped one, and what keep two systems' ids from reading as one
+    # person.
+    assert actor.actor_ref("on_alpha", namespace="feishu", kind="union") == \
+        "feishu:union:on_alpha"
+
+
+def test_the_original_human_ref_is_still_produced_byte_for_byte():
+    # `human:` is not migrated to the new spelling. Contexts already minted carry
+    # it, and `Store.for_actor_action` matches approvals on the ref verbatim, so
+    # a grammar change here would make live records unreadable — a rename wearing
+    # a security change's clothes.
+    assert actor.actor_ref("hwz") == "human:hwz"
+
+
+def test_a_separator_inside_a_value_cannot_become_a_segment_boundary():
+    # Why the constructor exists instead of an f-string. An id of `a:b` under
+    # kind `union`, and an id of `b` under a kind called `union:a`, would produce
+    # the same string if the value were interpolated — and a reader parsing that
+    # string would then be choosing an actor for a caller that wrote something
+    # ambiguous. Here the separator is written by the constructor and nowhere
+    # else.
+    ref = actor.actor_ref("a:b", namespace="feishu", kind="union")
+    assert ref == "feishu:union:a%3Ab"
+    assert actor.parse_actor_ref(ref) == ("feishu", "union", "a:b")
+
+
+def test_parse_actor_ref_returns_the_namespace_the_kind_and_the_id():
+    assert actor.parse_actor_ref("human:hwz") == ("human", None, "hwz")
+    assert actor.parse_actor_ref("feishu:union:on_alpha") == \
+        ("feishu", "union", "on_alpha")
+
+
+@pytest.mark.parametrize("wrong", [
+    "on_alpha",                 # a bare id carrying no namespace at all
+    "device:server-beijing",    # a ref namespace, but not an actor one
+    "feishu:union:",            # a namespace and a kind with nobody in them
+    "feishu:union:a:b",         # a hand-written separator: two readings
+    "feishu:nickname:linear",   # a kind this grammar does not know
+    "human:opaque:x",           # `human:` has no kinds; this is one long id
+    "",
+])
+def test_parse_actor_ref_refuses_everything_else(wrong):
+    with pytest.raises(Rejected):
+        actor.parse_actor_ref(wrong)
+
+
+def test_actor_ref_refuses_a_namespace_or_a_kind_it_does_not_know():
+    with pytest.raises(Rejected):
+        actor.actor_ref("hwz", namespace="teams")
+    with pytest.raises(Rejected):
+        actor.actor_ref("hwz", namespace="feishu", kind="nickname")
+
+
+def test_normalize_actor_ref_takes_either_an_id_or_a_whole_ref():
+    assert actor.normalize_actor_ref("hwz") == "human:hwz"
+    assert actor.normalize_actor_ref("feishu:union:on_alpha") == \
+        "feishu:union:on_alpha"
+
+
+@pytest.mark.parametrize("wrong", ["feishu:", "feishu:union:", "human:"])
+def test_normalize_actor_ref_refuses_a_typed_prefix_that_does_not_parse(wrong):
+    # It must NOT wrap these as `human:<value>`. That would record an actor
+    # named "feishu:" and report success, which is the one outcome a normalizer
+    # standing between a person and a record must not produce.
+    with pytest.raises(Rejected):
+        actor.normalize_actor_ref(wrong)
+
+
+def test_build_keeps_the_namespace_and_kind_of_a_namespaced_ref():
+    record = actor.build({**VERIFIED_REPORT, "actor_ref": "feishu:union:on_alpha"},
+                         now=NOW)
+    assert record["actor_ref"] == "feishu:union:on_alpha"
+    actor.validate(record)
+
+
 # ---------------------------------------------------------------------------
 # Forgery refusal — mechanism 2, the one the request itself trips
 # ---------------------------------------------------------------------------
@@ -284,13 +362,21 @@ def test_a_changed_actor_schema_is_refused_rather_than_read():
     # would be a security failure: reading `user` out of a document that no
     # longer has one yields None, and None at the call site looks exactly like
     # "no user" rather than "this is not the document I think it is".
+    #
+    # The schema here is one no daemon has ever answered with. v3 is accepted
+    # now, so it can no longer carry this test — a fixture that used it would
+    # have been testing the version check with a version that passes it.
     provider = BotMuxHumanControlProvider(
-        runner=lambda: {"schema": "botmux.current-actor.v3", "user": "hwz"},
+        runner=lambda: {"schema": "botmux.current-actor.v9", "user": "hwz"},
         clock=lambda: NOW)
     report = provider.identify()
     assert report.status == "BLOCKED"
     assert "schema" in report.detail
     assert report.actor_id is None
+    # The accepted set is named in the refusal, so an operator reading it knows
+    # whether the daemon is newer than this reader or older.
+    assert "botmux.current-actor.v3" in report.detail
+    assert "botmux.current-actor.v2" in report.detail
 
 
 def test_verified_without_an_actor_is_blocked_not_a_private_turn():
@@ -335,6 +421,182 @@ def test_a_verified_answer_produces_the_full_report_and_a_context():
     record = actor.build(report.as_report(), now=NOW)
     assert record["actor_ref"] == "human:hwz"
     assert record["conversation_ref"] == "oc_x"
+
+
+# ---------------------------------------------------------------------------
+# The v3 document — the identity moved off the email
+#
+# The v2 tests above are not superseded by these. ServerOS deploys BEFORE the
+# BotMux change that publishes v3, so for the length of that window the only
+# document a live daemon answers with is the v2 one, and a reader that had
+# dropped it would refuse every turn in the window it was deployed to protect.
+# ---------------------------------------------------------------------------
+
+def v3_document(*, actor_payload: dict | None = None, **top) -> dict:
+    """The shape the patched daemon answers with, any part overridable."""
+    document = {
+        "schema": "botmux.current-actor.v3",
+        "status": "verified",
+        "actor": {
+            "canonical": {"kind": "union_id", "value": "on_alpha"},
+            "appLocal": {"larkAppId": "cli_alpha", "openId": "open-alpha"},
+        },
+        "chatId": "chat-alpha",
+        "turnId": "turn-alpha",
+    }
+    if actor_payload is not None:
+        document["actor"] = actor_payload
+    document.update(top)
+    return document
+
+
+def test_a_v3_document_identifies_the_actor_and_both_locators():
+    provider = BotMuxHumanControlProvider(runner=v3_document, clock=lambda: NOW)
+    report = provider.identify()
+    assert report.status == "VERIFIED"
+    assert report.actor_id == "on_alpha"
+    record = actor.build(report.as_report(), now=NOW)
+    # The ref names the system and the id space, and the two locators the
+    # trusted-context contract has always required now have a producer.
+    assert record["actor_ref"] == "feishu:union:on_alpha"
+    assert record["conversation_ref"] == "chat-alpha"
+    assert record["message_ref"] == "turn-alpha"
+    actor.validate(record)
+
+
+def test_the_app_local_pair_is_evidence_and_never_the_identity():
+    # The canonical id is what the ref is built from. A reader that used the
+    # open id instead would mint a ref that names a different person to every
+    # app that read it — which is the property the canonical id was introduced
+    # to remove, and the reason the pair travels beside it rather than in it.
+    provider = BotMuxHumanControlProvider(
+        runner=lambda: v3_document(actor_payload={
+            "canonical": {"kind": "union_id", "value": "on_alpha"},
+            "appLocal": {"larkAppId": "cli_alpha", "openId": "open-beta"},
+        }), clock=lambda: NOW)
+    record = actor.build(provider.identify().as_report(), now=NOW)
+    assert record["actor_ref"] == "feishu:union:on_alpha"
+    assert "open-beta" not in json.dumps(record), (
+        "the app-local id must not reach the record at all: it is evidence "
+        "about this app's view, and it is not what the context is about")
+
+
+def test_a_v3_document_with_no_canonical_id_does_not_fall_back_to_the_email():
+    # The one fallback this reader must not have. The document below carries a
+    # perfectly well-formed email; reading it would mint a context naming
+    # whoever that email belonged to, out of a document that said it was
+    # identifying somebody by a different id — and the whole point of the
+    # change is that the email is not evidence.
+    provider = BotMuxHumanControlProvider(
+        runner=lambda: v3_document(actor_payload={
+            "appLocal": {"larkAppId": "cli_alpha", "openId": "open-alpha"},
+            "email": "alpha@example.com",
+        }), clock=lambda: NOW)
+    report = provider.identify()
+    assert report.status == "BLOCKED"
+    assert report.actor_id is None
+    assert "actor.canonical" in report.detail
+
+
+@pytest.mark.parametrize("canonical, because", [
+    ({"kind": "open_id", "value": "open-alpha"}, "kind"),
+    ({"kind": "union_id", "value": "open-alpha"}, "union_id"),
+    ({"kind": "union_id", "value": "on_"}, "union_id"),
+    ({"kind": "union_id", "value": "on_ alpha"}, "union_id"),
+    ({"kind": "union_id"}, "union_id"),
+    ({"value": "on_alpha"}, "kind"),
+    ("on_alpha", "actor.canonical"),
+])
+def test_a_v3_canonical_id_that_is_not_one_is_refused(canonical, because):
+    # The daemon refuses the same values before it publishes them. The check is
+    # made again here because the two sides do not share a trust domain: a
+    # document that reached this process by some other road gets no credit for a
+    # check it did not run.
+    provider = BotMuxHumanControlProvider(
+        runner=lambda: v3_document(actor_payload={
+            "canonical": canonical,
+            "appLocal": {"larkAppId": "cli_alpha", "openId": "open-alpha"},
+        }), clock=lambda: NOW)
+    report = provider.identify()
+    assert report.status == "BLOCKED"
+    assert report.actor_id is None
+    assert because in report.detail
+
+
+def test_a_v3_document_without_the_app_local_evidence_is_refused():
+    provider = BotMuxHumanControlProvider(
+        runner=lambda: v3_document(actor_payload={
+            "canonical": {"kind": "union_id", "value": "on_alpha"},
+        }), clock=lambda: NOW)
+    report = provider.identify()
+    assert report.status == "BLOCKED"
+    assert "appLocal" in report.detail
+
+
+def test_a_v2_document_is_still_read_and_still_typed_as_a_human_ref():
+    provider = BotMuxHumanControlProvider(
+        runner=lambda: {"schema": "botmux.current-actor.v2", "status": "verified",
+                        "actor": {"email": "hwz"}},
+        clock=lambda: NOW)
+    report = provider.identify()
+    assert report.status == "VERIFIED"
+    assert report.actor_namespace == "human" and report.actor_kind is None
+    assert report.as_report()["actor_ref"] == "human:hwz"
+    # And it still CANNOT become a context, which is not a regression this
+    # change introduced — it is the whole reason the change exists. A v2
+    # document publishes no locator, `build` requires both, and the refusal
+    # names them. The v2 window is therefore a NO-CONTEXT window rather than a
+    # fail-open one, which is the distinction that makes deploying ServerOS
+    # first survivable.
+    with pytest.raises(Rejected) as caught:
+        actor.build(report.as_report(), now=NOW)
+    assert "conversation_ref" in str(caught.value)
+    assert "message_ref" in str(caught.value)
+
+
+def test_a_v2_document_mints_once_a_locator_is_supplied_from_outside():
+    # The shape that worked before v3 and still works: a caller asking about a
+    # conversation it already holds passes one. This is what the provider's own
+    # `--identify` mode is for, and it is why the v2 reader is a real reader
+    # rather than a tombstone.
+    provider = BotMuxHumanControlProvider(
+        runner=lambda: {"schema": "botmux.current-actor.v2", "status": "verified",
+                        "actor": {"email": "hwz"}},
+        clock=lambda: NOW)
+    report = provider.identify(conversation_ref="chat-alpha",
+                               message_ref="turn-alpha")
+    record = actor.build(report.as_report(), now=NOW)
+    assert record["actor_ref"] == "human:hwz"
+    assert record["conversation_ref"] == "chat-alpha"
+
+
+def test_the_message_locator_is_read_under_both_names_it_has_had():
+    # `turnId` is what v3 publishes; `messageId` is the name this reader asked
+    # BotMux for before the daemon had either. One value under two names, and
+    # the order is fixed rather than a preference, so a document that somehow
+    # carried both is not a choice this reader gets to make.
+    for field in ("turnId", "messageId"):
+        document = v3_document()
+        document.pop("turnId")
+        document[field] = "turn-alpha"
+        provider = BotMuxHumanControlProvider(runner=lambda d=document: d,
+                                              clock=lambda: NOW)
+        assert provider.identify().message_ref == "turn-alpha"
+
+
+def test_the_v2_and_v3_readers_produce_different_refs_for_the_same_person():
+    # Not a curiosity: the ref is what an approval is matched on, so the two
+    # documents are two actors as far as the store is concerned, and the change
+    # from one to the other is a change of actor rather than a rename. Stated as
+    # a test because somebody will otherwise read the pair as a bug.
+    v2 = BotMuxHumanControlProvider(
+        runner=lambda: {"schema": "botmux.current-actor.v2", "status": "verified",
+                        "actor": {"email": "alpha@example.com"}},
+        clock=lambda: NOW).identify()
+    v3 = BotMuxHumanControlProvider(runner=v3_document, clock=lambda: NOW).identify()
+    assert v2.as_report()["actor_ref"] == "human:alpha@example.com"
+    assert v3.as_report()["actor_ref"] == "feishu:union:on_alpha"
+    assert v2.as_report()["actor_ref"] != v3.as_report()["actor_ref"]
 
 
 def test_a_refusal_reason_is_carried_through_into_the_detail():

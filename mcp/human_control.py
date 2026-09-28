@@ -61,11 +61,37 @@ and the locations from `chatId`/`messageId` — every one of them a field the da
 layer never produced, which is the failure this module's own docstring names
 two paragraphs up. The consequence was not cosmetic: the report was missing
 required evidence, so `build` refused and no context could ever be minted, on
-any turn, verified or not. The reader now consumes the measured shape and
-refuses by field name; what remains is a BotMux change, requested as item 3 of
-`artifacts/srv-botmux-gate-20260928/UPSTREAM-PROPOSAL.md`, because no client-side
-substitute is trustworthy — the environment is writable by whoever spawns the
-probe.
+any turn, verified or not. Item 3 of
+`artifacts/srv-botmux-gate-20260928/UPSTREAM-PROPOSAL.md` asked BotMux to publish
+the locators it verified, because no client-side substitute is trustworthy — the
+environment is writable by whoever spawns the probe.
+
+**That request was answered on 2026-09-28, and this paragraph is the record of
+it rather than a prediction.** The daemon now answers
+
+    {"schema":"botmux.current-actor.v3","status":"verified",
+     "actor":{"canonical":{"kind":"union_id","value":…},
+              "appLocal":{"larkAppId":…,"openId":…},
+              "displayName":…,"email":…},
+     "chatId":…,"turnId":…}
+
+— the two locators are published, and the identity moved off the email. It moved
+because requiring the email was this reader's own second bug, and a quieter one
+than the first: the `contact:user.email:readonly` scope is a **field-level**
+permission, the tenant grants 0 of the 233 scopes containing `email` to the app
+this device runs, and the Contact API answers `union_id` and no `email` at all.
+So the gate was blocked on every turn for a reason nothing in Feishu showed, and
+an app that simply does not hold that permission could never pass it. The
+canonical identity is now the `union_id`: developer-scoped, the same value in
+every app of the tenant, and readable without the permission the email needs.
+The app-local pair travels beside it as evidence about this app's view and is
+**not** read as identity.
+
+Both documents are read, v3 preferred, and the preference is by declared schema
+rather than by which field looks present — see `ACTOR_SCHEMAS` and `_read_actor`.
+Two are live at once on purpose: ServerOS deploys before the BotMux change, and
+a reader that accepted only the new document would refuse every turn in the
+window between the two deploys.
 
 `attach_context` is the other half of that sentence, and the producer §5 was
 missing. It carries a VERIFIED report to serverosd over the socket and comes
@@ -155,10 +181,47 @@ class ActorReport:
     observed_at: str | None = None
     detail: str | None = None
     raw: dict = field(default_factory=dict)
+    # Which system identified the person, and which of its id spaces the value
+    # came from. Defaulted to the original `human:` form, so a construction that
+    # does not state them keeps producing exactly the ref it always did.
+    actor_namespace: str = "human"
+    actor_kind: str | None = None
 
     @property
     def provenance(self) -> str:
         return "FACT" if self.status == "VERIFIED" else "UNKNOWN"
+
+    @property
+    def actor_ref_value(self) -> str | None:
+        """The typed ref for this actor, or None when nobody was identified.
+
+        Built by `context/actor.py` rather than by an f-string, and the
+        difference is not style. A ref assembled by interpolation cannot say
+        where its own segment boundaries are, so an id containing the separator
+        reaches `build` as a different actor than the one this provider read —
+        and the ref is precisely what a reader parses to find out what kind of
+        id it is holding. A namespaced value goes through the module that owns
+        the grammar so there is exactly one encoder.
+
+        The one exception is the original `human:` form, and it is a hash
+        constraint rather than an oversight. **This string is hashed into the
+        context ref** (`context/actor.py#digest_of` covers `actor_ref`), so
+        changing so much as its encoding would make a re-reported v2 event mint
+        a SECOND context instead of resolving to the one it already has —
+        idempotency is the property that makes replaying a report safe rather
+        than multiplicative, and it is not worth spending on a cosmetic
+        encoding. Nothing is left unguarded by keeping it: the human namespace
+        carries no kind, so there is no segment boundary here to forge, and
+        `build` re-encodes the value through `actor_ref` on the way into the
+        record — the record's ref has always been the encoded one.
+        """
+        if not self.actor_id:
+            return None
+        if self.actor_namespace == "human" and self.actor_kind is None:
+            return f"human:{self.actor_id}"
+        return _actor_module().actor_ref(self.actor_id,
+                                         namespace=self.actor_namespace,
+                                         kind=self.actor_kind)
 
     def as_report(self) -> dict:
         """The provider-report shape `context/actor.py` consumes.
@@ -179,8 +242,109 @@ class ActorReport:
             "observed_at": self.observed_at,
             "provider_status": self.status,
             "provenance": self.provenance,
-            "actor_ref": f"human:{self.actor_id}" if self.actor_id else None,
+            "actor_ref": self.actor_ref_value,
         }
+
+
+@dataclass(frozen=True)
+class _ActorIdentity:
+    """The identity a verified document carried, or the reason it carried none.
+
+    Exactly one of the two is set, and they are mutually exclusive by
+    construction rather than by a check at the call site: a value that failed
+    the shape test has no id left to leak into a ref, so there is no branch in
+    which a refused document is also a reportable actor.
+    """
+
+    namespace: str | None = None
+    kind: str | None = None
+    actor_id: str | None = None
+    refusal: str | None = None
+
+    @property
+    def identified(self) -> bool:
+        return self.actor_id is not None
+
+
+def _is_union_id(value: str) -> bool:
+    """Shaped like a Lark union id, as the daemon checks before publishing one.
+
+    The prefix is not decoration: it is what makes the value recognisable as an
+    id from that id space rather than a name, an email or a truncated string.
+    """
+    return (value.startswith(UNION_ID_PREFIX)
+            and len(value) > len(UNION_ID_PREFIX)
+            and not any(character.isspace() for character in value))
+
+
+def _read_actor(schema: str, actor: dict) -> _ActorIdentity:
+    """The identity in a verified document, read by the schema it DECLARED.
+
+    Not by "whichever field is present", and that is the whole reason this
+    function is keyed on the schema. A reader that tried `canonical` and fell
+    back to `email` would take a v3 document whose canonical id had been
+    stripped — by a bug, by a proxy, by a client that edited the JSON — and mint
+    a context naming whoever the email belonged to. The schema is the daemon's
+    own statement about which of these it published, so it decides; a document
+    that says v3 and carries no canonical id is a contradiction, and the answer
+    to a contradiction is to refuse rather than to pick the reading that
+    resolves it.
+    """
+    if schema == ACTOR_SCHEMA_V3:
+        canonical = actor.get("canonical")
+        if not isinstance(canonical, dict):
+            return _ActorIdentity(refusal=(
+                "BotMux reported 'verified' with no actor.canonical. The v3 "
+                "document identifies the person there, and this reader does not "
+                "fall back to the email or to actor.appLocal: both are weaker "
+                "claims, and an app-local id names a different person to every "
+                "app that reads it"))
+        reported_kind = str(canonical.get("kind") or "").strip()
+        if reported_kind != ACTOR_V3_CANONICAL_KIND:
+            return _ActorIdentity(refusal=(
+                f"BotMux reported actor.canonical.kind "
+                f"{reported_kind or 'none'!r}, not "
+                f"{ACTOR_V3_CANONICAL_KIND!r}; refusing to read an identity out "
+                "of a document whose canonical id is not the one this reader "
+                "knows how to type"))
+        value = str(canonical.get("value") or "").strip()
+        if not _is_union_id(value):
+            return _ActorIdentity(refusal=(
+                "BotMux reported a canonical union_id that is not shaped like "
+                "one. The daemon refuses the same value before it publishes it, "
+                "so a document carrying this one did not come from the daemon "
+                "unmodified"))
+        # The app-local pair travels with it and is required to be there, not
+        # read for identity. A v3 document without it is not the shape its own
+        # schema declares, and the `larkAppId` is what makes the pair evidence
+        # about an APP rather than two loose values.
+        app_local = actor.get("appLocal")
+        if not isinstance(app_local, dict) or not str(
+                app_local.get("larkAppId") or "").strip():
+            return _ActorIdentity(refusal=(
+                "BotMux reported a canonical identity with no actor.appLocal "
+                "naming the app that observed it; the app-local evidence is "
+                "part of the v3 shape, and its absence means this is not the "
+                "document the daemon emits"))
+        return _ActorIdentity(namespace="feishu", kind="union", actor_id=value)
+
+    if schema == ACTOR_SCHEMA_V2:
+        # An enterprise email, and the only identity v2 ever published. Read as
+        # an email because that is what it is — not as a substitute for a v3
+        # canonical id, which is a document this branch cannot be reached from.
+        value = str(actor.get(ACTOR_V2_IDENTITY_FIELD) or "").strip()
+        if not value:
+            return _ActorIdentity(refusal=(
+                f"BotMux reported 'verified' with no "
+                f"actor.{ACTOR_V2_IDENTITY_FIELD}"))
+        return _ActorIdentity(namespace="human", kind=None, actor_id=value)
+
+    # Unreachable: `identify` refuses an unknown schema before calling this. A
+    # second refusal here rather than an `assert`, because reaching this line is
+    # the case where the accepted set and this reader disagree, and the failure
+    # to have is one that produces a report with no identity in it.
+    return _ActorIdentity(refusal=(
+        f"no reader for actor document schema {schema!r}"))
 
 
 def attach_context(provider: HumanControlProvider, *, daemon=None,
@@ -384,7 +548,22 @@ class HumanControlProvider(Protocol):
 # ---------------------------------------------------------------------------
 
 DEFAULT_BASE_URL = "http://127.0.0.1:7891"
-ACTOR_SCHEMA = "botmux.current-actor.v2"
+
+# Every actor document this reader accepts, NEWEST FIRST. The order is the
+# preference; the table is ordered rather than keyed because a document is read
+# by the shape it DECLARES, and a shape that is not here is refused by name
+# rather than read for whatever identity it happens to carry.
+#
+# Two are live at once, and that is the deployment order rather than an
+# oversight: ServerOS ships before the BotMux change that publishes v3, so the
+# reader must be able to read the v2 document a 3.23.1 daemon answers with for
+# as long as one is running. A reader that accepted only the new document would
+# refuse every turn in the window between the two deploys — a fail-closed window
+# that the ordering exists to avoid, and one that would look exactly like "the
+# gate is broken" from Feishu.
+ACTOR_SCHEMA_V3 = "botmux.current-actor.v3"
+ACTOR_SCHEMA_V2 = "botmux.current-actor.v2"
+ACTOR_SCHEMAS = (ACTOR_SCHEMA_V3, ACTOR_SCHEMA_V2)
 
 # The one word BotMux uses to say it verified this turn's sender — MEASURED off
 # the shipped artifact, not assumed. The daemon builds the success document as
@@ -399,12 +578,35 @@ ACTOR_SCHEMA = "botmux.current-actor.v2"
 # the data layer never produced.
 ACTOR_VERIFIED_STATUS = "verified"
 
-# Where the daemon puts the actor it resolved. What crosses this boundary is an
-# enterprise email, not the `ou_` open id: open ids are app-scoped, so the
-# daemon reduces the caller's open id to the identity every app agrees on and
-# publishes only that. Reading a name out of some other field would be reading
-# an identity this surface never published.
-ACTOR_IDENTITY_FIELD = "email"
+# Where each document puts the actor it resolved, and WHAT THE VALUE IS — the
+# two are one decision, because the second is what makes a ref built from it
+# mean the same thing to every reader.
+#
+# v3 publishes `actor.canonical` = {kind: "union_id", value}: a *developer*-
+# scoped id, identical in every app of the tenant, readable without the
+# field-level permission an email needs. Beside it, `actor.appLocal` =
+# {larkAppId, openId} is the evidence about THIS app's view of the same person —
+# and is deliberately not read as identity. An open id is app-scoped: a ref
+# built from one names a different person to every app that reads it, which is
+# the property the canonical id was introduced to remove.
+#
+# v2 published `actor.email` and nothing else. Requiring that field was the
+# second bug this reader had, and the quieter one: the scope that unlocks it is
+# a field-level permission, and an app that does not hold it can never pass this
+# reader on any turn, for a reason nothing in Feishu shows. v2 stays readable
+# for a daemon that is still v2 — read AS an email, because that is what it is —
+# and it is not a fallback for a v3 document whose canonical id was missing or
+# malformed. There is no path from a broken v3 document to an email.
+ACTOR_V3_CANONICAL_KIND = "union_id"
+ACTOR_V2_IDENTITY_FIELD = "email"
+
+# A Lark union id, as the daemon checks it before publishing one. Checked again
+# here for the same reason the schema is: this is the boundary the daemon's
+# answer crosses, and a document that reached this process by some other road —
+# a proxy, a wrapper on PATH, a client that edited the JSON — gets no credit for
+# the check it did not run. The same rule on both sides is not duplication when
+# the two sides do not share a trust domain.
+UNION_ID_PREFIX = "on_"
 
 # BotMux answers a refused turn with `status: 'blocked'` plus an `error`. The
 # upstream proposal at artifacts/srv-botmux-gate-20260928/UPSTREAM-PROPOSAL.md
@@ -452,6 +654,39 @@ def _document_locator(raw: dict, field: str) -> str | None:
     if not isinstance(value, str):
         return None
     return value.strip() or None
+
+
+# What the document calls the single event this context is about, in the order
+# they are read. `turnId` is what v3 publishes and `messageId` is the name this
+# reader asked BotMux for — in the upstream proposal, before the daemon had
+# either — so a daemon that answers with the older spelling is answering about
+# the same thing and is read rather than refused.
+#
+# They are one value under two names, never two locators to choose between: the
+# lookup returns the first field that carries something and does not merge,
+# rank or cross-check them. Two locators both present would mean two candidate
+# turns, and picking either would be this reader choosing which turn a person's
+# act came from.
+MESSAGE_LOCATOR_FIELDS = ("turnId", "messageId")
+
+
+def _first_document_locator(raw: dict, fields: tuple[str, ...]) -> str | None:
+    for field in fields:
+        value = _document_locator(raw, field)
+        if value:
+            return value
+    return None
+
+
+def _actor_module():
+    """`context/actor.py`, under the name the rest of ServerOS loads it as.
+
+    The same name on purpose. It is the module that owns the ref grammar, and a
+    second copy would give this reader a different `Rejected` — caught by name
+    in the callers below, and therefore slipping through as its parent. The
+    grammar itself would be identical; the failure would be silent.
+    """
+    return _load("_serveros_context_actor", _REPO / "context" / "actor.py")
 
 
 @dataclass(frozen=True)
@@ -600,14 +835,18 @@ class BotMuxHumanControlProvider:
                 detail=str(raw.get("error") or "the actor surface is unavailable"),
                 raw=raw)
 
-        if schema != ACTOR_SCHEMA:
+        if schema not in ACTOR_SCHEMAS:
             return ActorReport(
                 provider_id=self.provider_id, transport=self.transport,
                 status="BLOCKED", observed_at=observed_at,
                 conversation_ref=conversation_ref, message_ref=message_ref,
-                detail=(f"botmux actor current answered schema {schema!r}, not "
-                        f"{ACTOR_SCHEMA!r}; refusing to read identity out of a "
-                        "document whose shape has changed"),
+                detail=(f"botmux actor current answered schema {schema!r}, and "
+                        f"this reader knows {', '.join(ACTOR_SCHEMAS)}; refusing "
+                        "to read identity out of a document whose shape has "
+                        "changed. The accepted set is a list rather than a "
+                        "single value because two daemon versions are live "
+                        "during a deploy, and a reader that knew only one of "
+                        "them would refuse every turn on the other"),
                 raw=raw)
 
         if status != ACTOR_VERIFIED_STATUS:
@@ -626,40 +865,38 @@ class BotMuxHumanControlProvider:
         # contradiction, and resolving it in favour of "no actor" here would
         # make a broken provider look like a private turn.
         actor = raw.get("actor")
-        actor_id = ""
-        if isinstance(actor, dict):
-            actor_id = str(actor.get(ACTOR_IDENTITY_FIELD) or "").strip()
-        if not actor_id:
+        identity = _read_actor(schema, actor if isinstance(actor, dict) else {})
+        if not identity.identified:
             return ActorReport(
                 provider_id=self.provider_id, transport=self.transport,
                 status="BLOCKED", observed_at=observed_at,
                 conversation_ref=conversation_ref, message_ref=message_ref,
-                detail=(f"BotMux reported {ACTOR_VERIFIED_STATUS!r} with no "
-                        f"actor.{ACTOR_IDENTITY_FIELD}"),
+                detail=identity.refusal,
                 raw=raw)
 
-        # The document answers about a sender, and today it carries no locator
-        # — `chatId` / `messageId` are the names BotMux already uses for these
-        # two things on its other documented surface (`/api/sessions`), so they
-        # are the names requested in item 3 of the upstream proposal and the
-        # names read here. Reading them from the document and not from the
-        # environment is the whole point: the document reaches a client only
-        # through the daemon's own turn gate, so its contents are the daemon's
-        # statement, while `$BOTMUX_CHAT_ID` is writable by whoever spawned the
-        # process (see the note above the constants).
+        # Reading the locators from the document and not from the environment is
+        # the whole point: the document reaches a client only through the
+        # daemon's own turn gate, so its contents are the daemon's statement,
+        # while `$BOTMUX_CHAT_ID` is writable by whoever spawned the process
+        # (see the note above the constants). A caller-supplied `conversation_ref`
+        # or `message_ref` is preferred when one was passed in, because a caller
+        # asking about a conversation it already holds is a different question
+        # from "which turn was this".
         #
-        # Until BotMux publishes them the lookup finds nothing, and that is the
-        # honest end state rather than a gap: a report with no locator is
-        # refused by `build` **by field name**, instead of the mint inventing a
-        # location or being handed one by the caller it is about to authorize.
+        # A document that publishes neither still produces a report with no
+        # locator, and `build` refuses it by field name — rather than the mint
+        # inventing a location or being handed one by the caller it is about to
+        # authorize. That is the honest end state for a daemon that predates v3,
+        # and it is why the reader does not fall back to the environment.
         return ActorReport(
             provider_id=self.provider_id, transport=self.transport,
-            status="VERIFIED", actor_id=actor_id,
+            status="VERIFIED", actor_id=identity.actor_id,
+            actor_namespace=identity.namespace, actor_kind=identity.kind,
             transport_identity="botmux-verified-enterprise-user",
             conversation_ref=(conversation_ref
                               or _document_locator(raw, "chatId")),
             message_ref=(message_ref
-                         or _document_locator(raw, "messageId")),
+                         or _first_document_locator(raw, MESSAGE_LOCATOR_FIELDS)),
             observed_at=observed_at, raw=raw)
 
     # -- transport ingress -------------------------------------------------
@@ -795,26 +1032,30 @@ class BotMuxHumanControlProvider:
             "capabilities": {
                 "human.identity.verify": support(
                     "UNKNOWN",
-                    "`botmux actor current --json` (schema botmux.current-actor.v2) is "
-                    "documented and callable, and verifies only inside the process tree "
-                    "of a BotMux turn. Measured from a non-turn process on this device it "
-                    "answers status=blocked, error=current_actor_unverified. Whether it "
-                    "verifies inside a turn is unverified from here, so it is not claimed. "
-                    "Re-read 2026-09-28 against the binary rather than the record, and it "
-                    "says less than a first pass made it say: the gate is "
-                    "`managedTurnOrigin.callerOpenId` starting `ou_` plus a non-empty "
-                    "`managedTurnOrigin.capability`, and `managedTurnOrigin` is in-memory "
-                    "session state the daemon publishes per turn. It is never written to "
-                    "the session row, so the three fields a record-reader looks for are "
-                    "absent there BY DESIGN, and their absence is not evidence about a "
-                    "turn. Nor is this session short of what the lookup needs: its "
-                    "`turnReplyContexts` carries a caller per turn. So the honest reading "
-                    "is narrower than 'it cannot verify here' — this is an in-turn, "
-                    "in-memory check that no out-of-turn process can evaluate, and this "
-                    "process is out of turn. It stays UNKNOWN rather than UNSUPPORTED for "
-                    "the same reason it always did: the surface exists and is callable, "
-                    "and what nobody has watched is one turn. See docs/human-control.md "
-                    "§the ingress."),
+                    "`botmux actor current --json` is documented and callable, and "
+                    "verifies only inside the process tree of a BotMux turn. Two "
+                    "schemas are accepted, newest first: `botmux.current-actor.v3` "
+                    "(a union_id plus the app-local pair plus both locators) and "
+                    "`botmux.current-actor.v2` (an enterprise email and nothing "
+                    "else). Both are live at once because a 3.23.1 daemon answers "
+                    "with v2 and the patched one answers with v3. Measured from a "
+                    "non-turn process on this device both answer "
+                    "status=blocked, error=current_actor_unverified. Whether it "
+                    "verifies inside a turn is unverified from here, so it is not "
+                    "claimed. Re-read 2026-09-28 against the binary rather than the "
+                    "record, and it says less than a first pass made it say: the gate "
+                    "is `managedTurnOrigin.callerOpenId` plus a non-empty "
+                    "`managedTurnOrigin.capability`, and `managedTurnOrigin` is "
+                    "in-memory session state the daemon publishes per turn. It is "
+                    "never written to the session row, so the fields a "
+                    "record-reader looks for are absent there BY DESIGN, and their "
+                    "absence is not evidence about a turn. So the honest reading is "
+                    "narrower than 'it cannot verify here' — this is an in-turn, "
+                    "in-memory check that no out-of-turn process can evaluate, and "
+                    "this process is out of turn. It stays UNKNOWN rather than "
+                    "UNSUPPORTED for the same reason it always did: the surface "
+                    "exists and is callable, and what nobody has watched is one "
+                    "turn. See docs/human-control.md §the ingress."),
                 "human.conversation.context": support(
                     "SUPPORTED",
                     "BotMux /api/sessions reports chatId, chatType and sessionId per session"),
