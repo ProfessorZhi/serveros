@@ -9179,3 +9179,55 @@ root 是不是线上 root。** 本轮没造这个机制——它是新机制，�
 **由此更正上一轮终报里的一处措辞。** 上一轮把「两个消费端拷贝仍嵌着旧脏来源」写成一个
 未结线头。量过之后它是两回事：那批字节**确实**先在那个脏 worktree 里被组装过，
 所以那份 `source` 记的是真话，只是「现在在跑什么」不是它——运行的那一份读 `current`。
+
+### 12.18 最终 promote 与两侧消费者的刷新（2026-09-28）
+
+**`serverosctl status` 最终读数：**
+
+```text
+release     serveros-cleanmain-28a-20260928@431660c · 3.1.0+srv0005.20260928a · tree a7d1f86d2031
+source      431660c91709 (main, clean) · ability-management@da5f89b1b131
+pointer     AGREEMENT · current → revisions/serveros-cleanmain-28a-20260928@431660c
+```
+
+链路照 §9.53.4 的三步走：`build.py --write --bundle plugin/profiles/linux-work.yaml
+--output <marketplace root>/.staging-serveros-28a-20260928` → `release.py promote
+--composition serveros-linux-work --kind node-runtime` → `systemctl --user restart
+serverosd.service`。**构建跑在 canonical 检出里**（全程只读：HEAD `431660c`、dirty 0，
+构建前后均未变），所以产物里的 `source.commit` 记的是那个 merge commit，而不是某个
+worktree 的 HEAD —— 这正是「从 clean main 构建」这句话的实际含义。
+
+**payload 相对已装的 `27j` 的差集，就是 §12.16 点名的那四个成员**，加上三个带版本串的
+manifest 文件（`.claude-plugin/plugin.json`、`.claude-plugin/marketplace.json`、
+`.codex-plugin/plugin.json`、`README.md`）。`RELEASE.json` 只出现在 promote 后的
+revision 里——那是 `promote` 写的，不是 payload 成员。
+
+**§12.16 的判据在这次 promote 上被节点自己计量了一遍。** 新 revision 上的
+`serverosctl device agents`：
+
+```text
+codex        instruction_surfaces present  /data/home/vince/workspace/AGENTS.md
+driver drift_sync   claude-code  SessionStart NOT WIRED  /data/home/vince/.claude/settings.json
+verdict     CONFORMANT
+  known     DRIVER_NOT_REGISTERED: drift_sync must fire on SessionStart for claude-code …
+```
+
+`stale gap` 一行**不再出现**（`grep -c` = 0），而且节点量到的正是那条 entry 声称缺席的
+那个面。「撤掉它不可能掩盖任何东西」这句不是我的推断，是节点自己印出来的读数。
+
+**两侧消费者都刷新到了同一个字节。** 版本串变了，所以这次两侧都真的动了，而两侧的机制
+恰好把 §12.17 那条不对称验了一遍：
+
+| 侧 | 动作 | 结果 |
+|---|---|---|
+| Claude | `claude plugin marketplace update` + `plugin update` | `updated from 3.1.0+srv0005.20260927j to 3.1.0+srv0005.20260928a` —— 不再是 `already at the latest version` |
+| Codex | `codex plugin add` | 无条件拷贝；缓存目录下只剩 `3.1.0+srv0005.20260928a`，`27j` 那个不见了 |
+
+两侧的 `ARTIFACT.json` 都是 `7130e824…`，与 `current/ARTIFACT.json` **同一个 sha**；
+排除 `ARTIFACT.json` 的整仓 `diff -rq` 两条都为 0（exit 0）。`~/.codex/config.toml`
+未动（`881c9f19…` 前后一致）。
+
+**没有重启任何人的会话，也没有欠账。** Claude 侧工具自己说了 `Restart to apply changes`：
+已经在内存里的 MCP 进程跑的是它启动时加载的那份代码，新会话拿新的。这是 cachebuster
+那条规则要防的东西（§12.17），所以这里说的是事实而不是待办——这台机器上不存在
+「重启后生效」的欠账，只有「下次开会话时生效」这个正常语义。
