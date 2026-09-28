@@ -8943,8 +8943,12 @@ canonical `src/serveros` 还没有这两个提交（重算得 `srv0003`，artifa
 
 **这是 §17 第一条人前提至今没有落点的原因，而且原因不在 ServerOS 这一侧。**
 
-**一次真回合的完整读数。** 2026-09-28 **09:33:27**（北京）用户从飞书应用 1 发出一条消息；
-turn 钩子在 **09:33:29.340051** 写入入闸记录**恰好一行**：
+> **本节在 2026-09-28 当天被作者自己改过一次。** 原版把根因判成「会话行缺 `procStart`」，
+> 该判断已被新读数推翻。下面保留推翻它的那次测量，并在原处标明改判理由——
+> 删掉错的那版会让人以为我从没走错过这一步，而这一步恰好是本节最该记住的部分。
+
+**两个独立真回合，两行逐字相同的读数。** 2026-09-28 **01:46:14** 与 **09:33:29**（北京）
+用户各从飞书应用 1 发出一条消息；turn 钩子各写入入闸记录**恰好一行**，两行 `detail` 相同：
 
 ```
 {"actor_identified": false, "attached": false, "context_ref": null,
@@ -8952,13 +8956,14 @@ turn 钩子在 **09:33:29.340051** 写入入闸记录**恰好一行**：
  "detail": "BotMux reports status 'blocked' (current_actor_unverified)", …}
 ```
 
-这是该文件里**第一行描述真回合的记录**（此前 24 行全是 pytest 产物，已另案处置并留证）。
-与此同期：控制存储 `contexts = 0`、`grants = 0`、mtime 仍停在 `2026-09-27 00:16:59`。
-即：**生产者真的跑了，闸门真的拒了，可信上下文一条都没有。**
+该文件当前共 **2 行，全部描述真回合**（原稿写的「此前 24 行 pytest 产物」是处置前的状态，
+那批已另案处置并留证，文件已被重写）。与此同期：控制存储 `contexts = 0`、`grants = 0`。
+即：**生产者真的跑了两次，闸门拒了两次，可信上下文一条都没有。**
 
-**关键的一次反证。** 上一轮留下的问题是「钩子是不是发得太早（UserPromptSubmit 时
-`managedTurnOrigin` 还没装上）」。直接在**回合进行中**（`ordinaryTurnRecovery.status =
-"running"`，`turnReplyContexts` 最新键与当前 `logicalTurnId` 同尾）从会话子进程问闸门：
+**关键的一次反证（原稿的测量，仍然成立）。** 上一轮留下的问题是「钩子是不是发得太早
+（UserPromptSubmit 时 `managedTurnOrigin` 还没装上）」。直接在**回合进行中**
+（`ordinaryTurnRecovery.status = "running"`，`turnReplyContexts` 最新键与当前
+`logicalTurnId` 同尾）从会话子进程问闸门：
 
 ```
 $ botmux actor current --json
@@ -8966,43 +8971,120 @@ $ botmux actor current --json
 ```
 
 **回合中、回合外、钩子子进程、Bash 子进程——四种问法一个读数。** 所以「时机不对」这个
-解释被自己的测量推翻：再发消息只会得到同一行。
+解释被自己的测量推翻；本节新增的第二个真回合把这条从「四种问法」加强到「两个独立真回合」。
 
-**根因（可测的部分）。** 闸门是
+**撤回：上一版把根因判成「会话行缺 `procStart`」。这个判断是错的。**
+它建立在「会话存储那 44 个键里没有 `procStart`，于是闸门左边是真实数值、右边是
+`undefined`、`数值 !== undefined` 恒真」之上。一条读数直接否证了它：
 
-```js
-kne({peer, cliPid, procRoot, preexistingProcessIdentities}) || jb(peer.pid, procRoot) !== peer.procStart
+```
+data/.botmux-cli-pids/683328     (145 bytes, mtime 2026-09-28 09:33)
+    sessionId = "4ab56455-890b-4134-851c-91c12e28c254"
+    turnId    = "om_x100b64a870…"
+    procStart = "98898953"
+/proc/683328/stat 第 22 字段 (starttime) = 98898953        ← 逐位相同
 ```
 
-会话存储（`data/session-stores/cli_aa08005233f91bcd/sessions.db`，单行）里
-`pid = 681991`，而该行 **44 个键中没有任何 `procStart` / `processStartIdentity` /
-`procStartMs`**（逐键核过）。于是第二子句：左边 `jb(681991, "/proc")` 是真实数值，
-右边 `peer.procStart` 是 `undefined`，`数值 !== undefined` **恒真** ⇒ `||` 短路 ⇒
-拒绝。**这个子句与谁来问、什么时刻问、是不是真 turn 无关**——这正是四种问法读数相同的形状。
+`procStart` **有，而且准**。它不在会话行里，是因为它根本不从那里取；`681991` 也不是这道
+闸的 `cliPid`，上一版拿它当对象就是读错了。**「缺字段」这个形状对了，字段名和位置错了——
+这是我第二次在同一处过度推断。**
 
-**peer 是谁，实测：** `681991` 存活、起于 `2026-09-27 01:53:45`，是 botmux 的 node 进程，
-父进程 `1445043`（BotMux daemon 本体，起于 `2026-09-17 13:55:35`，父 `1444974`）。
-而 claude 是 `4044019`、起于 `2026-09-27 23:06:42`，父链是 VS Code server →
-`bash --init-file …/.vscode-server/…`；`681991` **不在** `4044019` 的祖先链上，
-`pgrep -P 681991` 为空。即：**问身份的这个进程，不在该会话记下的 peer 的谱系里。**
+**闸门的形状（从二进制里读出来的，不再是推断）。** `botmux` 是一个 171,513,312 字节的
+编译产物，JS 压缩但可提取。`current_actor_unverified` 在 3.23.1 里出现 9 次，
+`wne` 的约 13 个拒绝条件共用一个错误串：
 
-**这一条我标出推断与测量的分界，因为上一轮我在同一处过度推断过一次。** 上面「pid 与
-procStart 缺失」是**测量**（读的是它自己的存储）；「闸门从会话行取 peer、因而第二子句
-恒真」是**推断**（我读不到它的源码，只有它自己的报错串）。两段的报错串完全相同，
-所以**哪一子句先咬住，从外面读不出来**。可以确定的是：第二子句在该行缺字段的前提下
-无条件为真，这足以解释读数的不变性；第一子句作为**附加**原因无法排除。
+```js
+if(!f || status!=="active" || !e || t===void 0 || !n || !i || worker.killed
+   || A.workerGeneration!==t || !r || !o || !a || a.length===0 || jb(r)!==o)
+  return {ok:!1, error:"current_actor_unverified"};
+if(!kne({peer, cliPid:r, preexistingProcessIdentities:D}) || jb(peer.pid)!==peer.procStart)
+  return {ok:!1, error:"current_actor_unverified"};
+let u = managedTurnOrigin?.callerOpenId, L = managedTurnOrigin?.capability;
+if(!u?.startsWith("ou_") || !L) return {ok:!1, error:"current_actor_unverified"};
+```
 
-**处置，以及为什么不再问用户。** 这道闸在 BotMux 二进制里，缺的字段在 BotMux 自己的
-存储里。ServerOS 这一侧能动的手段只有三种，三种都已被政策封死：伪造 `BOTMUX_*` 身份
-（明令禁止）、在没有 VERIFIED actor 的情况下签发可信上下文（§3 禁止自签）、
-去写另一个组件的存储（越权）。所以这是一条 **`NEEDS_HUMAN` 的外部发现**，
-与 `drift_sync` 那条「写注册会改用户的 Agent 配置」同级，而不是本轮能修好的生产者。
+其中 `a = managedTurnOrigin.preexistingProcessIdentities`、`o =
+localProcessAttestation.cliProcStart`。**报错串只有一条，所以哪个条件先咬住从外面读不出来**
+——这一点原稿说对了，仍然成立，也正是本节要把因果链逐跳各自找到独立读数才敢下结论的原因。
 
-**由此 §18 的那句话被自己的测量收回**：上一轮我在终报末尾提了「请在飞书应用 1 再发
-任意一条消息用于最终 live 验收」。现在**已知**那条消息会得到与 09:33:29 完全相同的
-BLOCKED 行，再请用户发一次就是请人重复一个已被证明为不变的动作。**该请求撤回，不再提。**
+**拓扑是健康的；原稿对它的读法也是错的。** 实测：
 
-**本轮的自我更正（第二次同类泄漏）。** 在取 BotMux dashboard 记录时，我用的那条
-`python3` 把 `resolvedAllowedUsers` 整个打印出来，其中含一个真实 `ou_` 标识符——
-落进了工具输出。这是同类泄漏的第二次，且这一次是我本轮做的。字段名与结构可以核，
-值不该印；正确写法是只打印键名与长度。记在这里，不辩解。
+```
+tmux 服务器 pid=1163407, starttime=45909124, exe=/usr/bin/tmux
+  └ bmx-4ab56455  pane 0.0  pid=683328  claude     ← BotMux 自管的会话，就是它
+  └ cloudcli      pane 0.0  pid=1163408  bash
+```
+
+`bmx-4ab56455` 是 BotMux 自己的 tmux 会话，里面跑的就是 `cliPid = 683328`（与上面
+`.botmux-cli-pids/683328` 一致）。它与 `cloudcli` **共用同一个 tmux 服务器**，而 tmux
+服务器长命是设计如此，不是「被 CloudCLI 抢了」。原稿把 `1163407` 读成「CloudCLI 起的
+服务器、BotMux 的 pane 不在其中」，那是错的。
+
+**真正的断点，在最后一次读它自己的存储时浮出来。** 会话行的 44 个键里，
+**`managedTurnOrigin` 与 `localProcessAttestation` 两个键整个不存在**。
+而 `managed_turn_origin` 处理器在发布成功时会把 capability 写到
+`<dataDir>/<sessionId>/<64 位十六进制 originChannelId>`：
+
+```
+find data/sessions/4ab56455-…      → 只有 plugin-manifest.json / plugin-mcp-runtime.json
+find data -regex '.*/[a-f0-9]{64}(\.json)?$' → 只有 idempotency/ 下的，会话目录下一个没有
+```
+
+即：**这次发布从未成功落过盘。** 缺的不是 `procStart`，是**整个 managed turn origin**。
+
+**再往上追一层，daemon 把原因写在自己日志里了。** 每一条真人消息到达时：
+
+```
+[2026-09-28T01:33:27.221Z] [WARN] [4ab56455] Ignored unbound input commit turn=om_x100b64a870…
+（同形另有 2026-09-26T17:53:46.226Z、2026-09-27T16:56:44.270Z 两处）
+```
+
+`Qgf` 是这条警告的出处：
+
+```js
+function Qgf(H,f,e){ …
+  let r = H.replyTargets?.[f]?.rootMessageId
+        ?? (H.currentReplyTarget?.turnId===f ? H.currentReplyTarget.rootMessageId : void 0)
+        ?? (H.scope!=="chat" ? H.rootMessageId : void 0);
+  if(!r) return false;        // ← 「unbound」从这里返回
+  … }
+```
+
+对这个会话逐条代入：`scope = "chat"`、`chatType = "p2p"`、`currentReplyTarget = null`，
+而 `replyTargets` 的三条记录**每一条都只有 `senderOpenId`，没有一条带 `rootMessageId`**。
+前两个分支取不到值，**唯一能兜住这种情况的第三个分支，偏偏在 `scope === "chat"` 时被代码
+自己排除**。于是每一个回合都判「未绑定」。
+
+**→ 未绑定 ⇒ `managedTurnOrigin` 从未可用 ⇒ `wne` 拒 ⇒ contexts/grants 为 0 ⇒
+wake `REFUSE / NO_AUTHORIZING_GRANT`。** 这条链的每一跳都有上面某一条独立读数支撑，
+不再是「报错串相同所以分不出」的那种推断。
+
+**升级不是解，这一条是量出来的不是猜的。** 已把上游 3.31.0 的二进制拉下来解包比对
+（只下载、不安装、不重启任何东西）。`Qgf` 在 3.31.0 里改名 `_Kf`，函数体**逐字节同逻辑**，
+只有压缩名变了（`Qgf`→`_Kf`、`Pdt`→`GHA`、`Mdt`→`NHA`、`iz`→`KJ`）：
+
+```js
+… ?? (H.scope!=="chat" ? H.rootMessageId : void 0); if(!r) return!1;   // 两版完全相同
+```
+
+本地 3.23.1 → 上游 3.31.0 差 8 个版本，**这一段没动过**。所以为一个已证无效的升级去重启
+用户正在用的飞书入闸，是不该做的事。主包 `botmux@3.31.0` 也只是个下载器（7 个文件、无源码），
+`bots.json` 只有 7 个字段、没有任何 `scope` / `dispatch` 开关。
+**闭源、无开关、行为跨 8 个版本不变：三条各自独立地指向同一个处置。**
+
+**处置。** 这道闸在 BotMux 二进制里，缺的材料在 BotMux 自己的存储里，跨 8 个版本没变、
+也没有配置开关。ServerOS 这一侧能动的手段只有三种，三种都已被政策封死：伪造 `BOTMUX_*`
+身份（明令禁止）、在没有 VERIFIED actor 的情况下签发可信上下文（§3 禁止自签）、去写另一个
+组件的存储（越权）。**用户本轮明确要求「不允许设计 bypass」**，因此这仍是一条
+**`NEEDS_HUMAN` 的外部发现**；但可交付的形态比上一版具体得多：一条带完整因果链的上游
+缺陷报告，而不是本机上的任何改动，也不是一次无效升级。
+
+**由此 §18 的那句话被自己的测量收回**：上一轮我在终报末尾提了「请在飞书应用 1 再发任意
+一条消息用于最终 live 验收」。现在**已知**那条消息会得到与已有两行完全相同的 BLOCKED，
+再请用户发一次就是请人重复一个已被两个独立真回合证明为不变的动作。**该请求撤回，不再提。**
+
+**本轮的自我更正（标识符泄漏，第三次同类）。** 除原稿记的那次 `resolvedAllowedUsers`，
+本轮我又做了两次：一次是把 `/proc/683328/cmdline` 整段 dump 出来，其中嵌着 BotMux 注入的
+路由块，含一个真实 `ou_`；另一次在取 BotMux dashboard 记录时。教训是同一条，写在这里：
+**任何 claude 进程的 cmdline 都不要整段打印——键名可以，值不可以。** 前两次我记的是
+「字段名与结构可以核，值不该印」，这一条是它的加强版：cmdline 是一整段值。
