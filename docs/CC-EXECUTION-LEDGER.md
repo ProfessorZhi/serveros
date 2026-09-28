@@ -8010,6 +8010,104 @@ slice2-disposable-20260928  AUTHORIZED  (in the envelope)
 （harness 目录、receipt、它写的 park 记录都是他的证据，一律不碰）；没有推任何分支；没有清理
 `runtime-assets/hwz-server-os/` 下的任何残留（§9.50.7 的 proposal 仍然只是 proposal）。
 
+### 9.51.8 2026-09-29 00:42 产品 launcher 本体第一次起 Parent；而它买到的文件围栏，在生产路径上宽到几乎不存在
+
+#### 一、这一轮也不是我跑的（与 §9.51.7 同一情形）
+
+harness 是并发会话 `eb00aeba…` 在 00:42:36 建的（`slice3-production-chain-20260929/`），
+真人回合 **00:42:27** 到达的是**本会话**。授权根因此又是发给本会话的那一条 `1`：
+context `8d328043d94ede23a7068174704d1639`，observed 00:42:27 → wake 起子进程 00:42:48.84，
+**约 21 秒**。这是「授权可以从一轮借到另一轮」（§9.51.7 第三节）的**第二个独立样本**，
+发生在同一台机器上、相隔六小时。生产定时器照旧先停后恢复，恢复后它自己那一跳读数
+`reasons PARKED 3`。
+
+#### 二、读数
+
+| 项 | 值 |
+| --- | --- |
+| receipt | `continuation-wake-SRV-9902-e1-a1` · `WOKEN  EXITED  exit 0` |
+| 起止 | 16:42:48.844656Z → 16:42:55.721574Z，**6.877 秒** |
+| receipt 自称 | `effect UNVERIFIED` / `descendants_verified false` / `worker_stopped false` |
+| Parent 自己报的工具面 | `SRV-9902 epoch 1 — tools: Bash, Edit, Glob, Grep, Read, Write`（64 B，一行） |
+| 立刻第二次 | `REFUSE ATTEMPTS_EXHAUSTED`，零第二个子进程 |
+| effect 面 | `cwd/WHAT-THIS-IS.txt` 一件，没有别的写入 |
+
+时间对照：探针 13.7 毫秒 → 18:26 替身 1.826 秒 → 这次 **6.877 秒**。三者用的是同一条决策、
+同一套 `invoke_once`、同一份 receipt 形状，差别就是「真的起了一个 agent」。
+
+#### 三、这一片真的换了东西：一处结构拒绝，三处同一身份
+
+- **安装件 == canonical == git HEAD**：`~/.local/bin/serveros-wake-parent`、
+  `workspace/ops/scripts/serveros/serveros-wake-parent` 与 `ops` 的 HEAD 三者同 sha256
+  `8b8d5360…`；旧件存为 `BEFORE-20260929`（`49a8356e…`，mtime 09-27 00:15:19）留作前后对照。
+- **我自己重放承重那一格**：`claude --restricted --permission-mode bypassPermissions` →
+  **exit 1**，stderr `Error: bypassPermissions not supported in restricted mode`。
+  对照条件成立：`~/.claude/settings.json` 此刻仍写 `permissions.defaultMode = "bypassPermissions"`，
+  而产品 Parent 照常起来 —— `--restricted` 确实**不读用户设置**。
+- `src/serveros` 里 `bypassPermissions|permission-mode` **零命中**；systemd 单元文件未改
+  （mtime 仍是 09-27 00:15:25）。
+- 这条 launcher 是**节点本地、不进发布链的**产物：`release.py continuation-wake` 只校验它是一个
+  绝对、无空白、可执行的路径，不生成它。所以「改了什么」只有 `ops` 的那一个提交记得住
+  （`6b2d0b3`）。
+
+#### 四、围栏：机制为真，但**生产路径上的宽度不是被测量的那个宽度**
+
+peer 的 H 探针把机制测掉了，verbatim：
+
+```text
+BLOCKED /data/home/vince/artifacts/work-items/serveros/SRV-9902/p0-launcher-posture-20260928/outside-cwd.txt
+is outside /data/home/vince/artifacts/work-items/serveros/SRV-9902/p0-launcher-posture-20260928/cwd;
+--restricted confines the file tools to the working directory.
+```
+
+所以**围栏宽度 = Parent 的 cwd**。而每一个测到它的调用都给了一个**窄** cwd：18:26 的替身
+自己 `cd` 进 oneshot 目录；§9.51.7 那次与这次 slice 3 都传 `--cwd "$R/cwd"`。
+
+生产路径**不给**：
+
+- 单元 `ExecStart` 里没有 `--cwd`（§9.51 起未变），`WorkingDirectory=%h`；
+- `wk_wake.add_argument("--cwd", default="")`（`cli.py:12174`），空则
+  `cwd = Path(args.cwd) if args.cwd else Path.home()`（`cli.py:8813`）；
+- `wake()` 自己的原话：「`cwd` IS THE CALLER'S AND NOT THIS MODULE'S … the working directory a
+  Parent starts in is a decision the install makes (`--cwd`, or the unit's `WorkingDirectory=`)」；
+- 新 launcher **自己不 `cd`**（第 103 行是裸 `exec`，与 18:26 那个替身不同——替身有 `cd`）。
+
+于是生产路径上的 cwd 是 `/data/home/vince`，围栏圈住的是**整个数据根**：`workspace/`、
+`artifacts/`、`state/`、`.secrets/vault/` 全在里面。合起来：
+
+> `--restricted` 买到的是一个 **cwd 无关的结构性拒绝**（`bypassPermissions` 那条，exit 1），
+> 加上一个 **在真实路径上几乎不圈东西的文件围栏**。
+
+判词不是「谁测错了」，而是**被测的宽度 ≠ 生产的宽度**——与 §9.50.4 同一族。这一条与
+「`Bash` 是特意点名要回来的、可越过围栏」是**两个独立**的削弱，且在真实路径上叠加。
+
+#### 五、`work grants` 的第三个独立样本
+
+同一时刻 verbatim：
+
+```text
+slice3-production-20260929  AUTHORIZED  (in the envelope)
+  revoked       True at 2026-09-28T16:43:13.153481+00:00
+```
+
+与 §9.51.6 第四节、§9.51.7 第六节同一根因：`derivation` 只判上下文时钟，`cmd_work_grants`
+是三个 `envelopes()` 消费者里唯一不另问 `standing_reason` 的那个。peer 独立得出同一判词，
+逐字写进了它 `SRV-9902#2` 的 park reason（「Enforcement correct, label wrong; reported as a
+finding, not fixed.」）。三个样本、两个观测者、判词不变：**报告缝，不是 fail-open**；
+修法不变：加一次调用；仍未做（本轮授权是**测试**，不是**发布**）。
+
+#### 六、这一片没有做的事
+
+没有重跑 harness；没有改任何源码；没有 build / promote / install；没有动 peer 的证据目录；
+没有推任何分支——`ops` 的 `6b2d0b3` 是 `main...origin/main [ahead 1]`（**未推**），
+本 worktree 的四个提交同样未推；没有清理 `runtime-assets/hwz-server-os/` 下的任何残留。
+
+#### 七、订正
+
+§9.51.7 第五节末句「**产品 launcher 那一步本身**……它仍然只是『形状』」与记忆里同一句，
+自本节起作废：产品 launcher 本体在 2026-09-29 00:42（北京）真的起过 Parent，
+`exit 0` / 6.877 秒。被这一节**换掉**的是那句结论，不是那一节的其它读数。
+
 ## §9.52 我自己那一片撞了 §25 的棘轮：bootstrap 长了，而长进去的是一段属于 owner 的过程
 
 §25 的第一道闸在上一轮全量回归里是**唯一的红**：`tests/test_bootstrap_skill_scope.py` 的
