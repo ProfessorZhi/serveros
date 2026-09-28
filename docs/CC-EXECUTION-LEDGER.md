@@ -7493,7 +7493,9 @@ promote 会盖掉它并再次漂移。
 
 | 载荷 | 装在机上？ | 读到的文件 | 违规 |
 | --- | --- | --- | --- |
-| `hwz-server-os-linux-work/3.1.0-srv0005.20260927g` | **是，ENABLED** | 26 | **0** |
+| `hwz-server-os-linux-work/3.1.0-srv0005.20260927g` | **是，ENABLED**（09-27 23:09 装） | 26 | **0** |
+| `hwz-server-os-linux-work/3.1.0-srv0005.20260928c` | **是，ENABLED**（09-28 12:33 装；当天在它之前已又换过一次） | 26 | **0** |
+| `serveros-linux-work/current` → `…cleanmain-28d-union-actor-20260928@7f75503` | 是，09-28 15:42 的 promote 落点 | 26 | **0** |
 | `serveros-testing/1.0.0-srvtest0001.20260927b` | **是，ENABLED** | 2 | **0** |
 | `hwz-server-os-linux-work/3.1.0-srv0003.20260927a`（上一版） | 否，已被取代 | 26 | **0** |
 | `hwz-server-os-linux-work/3.1.0-srv0003.20260923d`（修前） | 否，已被取代 | 26 | **13** |
@@ -7545,10 +7547,39 @@ promote 会盖掉它并再次漂移。
 `3.1.0+srv0003.20260923c` 的两份拷贝」**。没有消费者的结论不变（两处都查了），处置仍是
 proposal，不是动作。
 
-**顺带只读复核了 9.50 之外的几条**：`/tmp/sys24`（84 MB）与那三个泄漏 daemon 的日志已不在盘上；
-`runtime-assets/hwz-server-os/` 下的 `.prev-*` / `.retired-*` / `.staging-*` / `.candidate-*`
-已全部清掉，该目录现在只剩 `current` 与两个 composition 目录。这几条不是本片做的，只是本片
-量的时候它们已经不在了。
+**9.50.7 自己也说错过一句，就地更正——因为错法比错本身更值得记。**
+
+它原来写的是「`runtime-assets/hwz-server-os/` 下的 `.prev-*` / `.retired-*` / `.staging-*` /
+`.candidate-*` 已全部清掉，该目录现在只剩 `current` 与两个 composition 目录」。**那是错的。**
+那句结论来自 `ls -1 $R`，而 **`ls -1` 默认不列点开头的条目**：20 个 `.prev-*` / `.retired-*` /
+`.staging-*` 一个都没有进输出，「**没显示**」被读成了「**不在了**」。带 `-a` 再看：
+
+```text
+$ ls -1a runtime-assets/hwz-server-os/
+.  ..  .agents  current
+.prev-3.1.0-srv0003.20260910f  .prev-3.1.0-srv0003.20260911a  .prev-3.1.0-srv0003.20260911b
+.prev-3.1.0-srv0003.20260914a  .prev-3.1.0-srv0003.20260915a
+.retired-3.1.0-srv0003.20260915a  .retired-3.1.0-srv0003.20260923a
+.staging-check  .staging-final-check
+.staging-serveros-28a-20260928  .staging-serveros-28a-verify-20260928
+.staging-serveros-28b-20260928  .staging-serveros-28c-20260928
+.staging-serveros-cachebuster-27g-20260927  .staging-serveros-cachebuster-27h-20260928
+.staging-serveros-cachebuster-27i-20260928  .staging-serveros-cachebuster-27j-20260928
+serveros-linux-work  serveros-testing
+```
+
+**残留不但没被清掉，比 09-27 那次列的还多**：`.staging-*` 从 4 个长到 9 个（`28a` /
+`28a-verify` / `28b` / `28c` 四个是 09-28 10:47–12:32 新建的），`.prev-*` 仍是 5 个、
+`.retired-*` 仍是 2 个。**清理在本项目是 proposal-only，所以这不是本片要处置的事**；它的意义是
+09-27 那张清单**还开着、而且在长**。
+
+`/tmp/sys24` 那半句是对的，而且用两种查法各验了一遍：`ls -ld` 报 `No such file or directory`，
+`[ -e ]` 报不存在——那是「没有」，不是「没显示」。
+
+**教训一句话**：`ls -1` 与 `ls -1a` 对同一棵树给出的「有什么」不一样，而**只有一种否定可下**
+——带 `-a` 的列表，或者 `[ -e ]`。拿不带 `-a` 的输出去断言「已经清掉」，拿到的是一个看起来
+像测量结果的默认行为。这条与内存里那条「`grep` 说没有不等于没有」同族：**量具的默认参数会
+替你说一句你没说过的话。**
 
 ## §9.51 Human Control 的两半：可信上下文能产出 grant，grant 能停，且 wake 真的问它
 
