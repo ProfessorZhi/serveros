@@ -8938,3 +8938,71 @@ canonical `src/serveros` 还没有这两个提交（重算得 `srv0003`，artifa
 **一处并发事实**：本文件在 **02:14:12** 被另一个 actor 追加了 8 行（评论本片的
 §9.50.4 限定与 cachebuster 移动）。不是我的写入，位于同一 worktree，按政策**不碰、
 不丢、不代为提交**，仅此记明。
+
+### 12.15 入闸链的真实终点：真回合也拒，且拒法不随回合变（2026-09-28）
+
+**这是 §17 第一条人前提至今没有落点的原因，而且原因不在 ServerOS 这一侧。**
+
+**一次真回合的完整读数。** 2026-09-28 **09:33:27**（北京）用户从飞书应用 1 发出一条消息；
+turn 钩子在 **09:33:29.340051** 写入入闸记录**恰好一行**：
+
+```
+{"actor_identified": false, "attached": false, "context_ref": null,
+ "state": "BLOCKED",
+ "detail": "BotMux reports status 'blocked' (current_actor_unverified)", …}
+```
+
+这是该文件里**第一行描述真回合的记录**（此前 24 行全是 pytest 产物，已另案处置并留证）。
+与此同期：控制存储 `contexts = 0`、`grants = 0`、mtime 仍停在 `2026-09-27 00:16:59`。
+即：**生产者真的跑了，闸门真的拒了，可信上下文一条都没有。**
+
+**关键的一次反证。** 上一轮留下的问题是「钩子是不是发得太早（UserPromptSubmit 时
+`managedTurnOrigin` 还没装上）」。直接在**回合进行中**（`ordinaryTurnRecovery.status =
+"running"`，`turnReplyContexts` 最新键与当前 `logicalTurnId` 同尾）从会话子进程问闸门：
+
+```
+$ botmux actor current --json
+{"schema":"botmux.current-actor.v2","status":"blocked","error":"current_actor_unverified"}   exit=0
+```
+
+**回合中、回合外、钩子子进程、Bash 子进程——四种问法一个读数。** 所以「时机不对」这个
+解释被自己的测量推翻：再发消息只会得到同一行。
+
+**根因（可测的部分）。** 闸门是
+
+```js
+kne({peer, cliPid, procRoot, preexistingProcessIdentities}) || jb(peer.pid, procRoot) !== peer.procStart
+```
+
+会话存储（`data/session-stores/cli_aa08005233f91bcd/sessions.db`，单行）里
+`pid = 681991`，而该行 **44 个键中没有任何 `procStart` / `processStartIdentity` /
+`procStartMs`**（逐键核过）。于是第二子句：左边 `jb(681991, "/proc")` 是真实数值，
+右边 `peer.procStart` 是 `undefined`，`数值 !== undefined` **恒真** ⇒ `||` 短路 ⇒
+拒绝。**这个子句与谁来问、什么时刻问、是不是真 turn 无关**——这正是四种问法读数相同的形状。
+
+**peer 是谁，实测：** `681991` 存活、起于 `2026-09-27 01:53:45`，是 botmux 的 node 进程，
+父进程 `1445043`（BotMux daemon 本体，起于 `2026-09-17 13:55:35`，父 `1444974`）。
+而 claude 是 `4044019`、起于 `2026-09-27 23:06:42`，父链是 VS Code server →
+`bash --init-file …/.vscode-server/…`；`681991` **不在** `4044019` 的祖先链上，
+`pgrep -P 681991` 为空。即：**问身份的这个进程，不在该会话记下的 peer 的谱系里。**
+
+**这一条我标出推断与测量的分界，因为上一轮我在同一处过度推断过一次。** 上面「pid 与
+procStart 缺失」是**测量**（读的是它自己的存储）；「闸门从会话行取 peer、因而第二子句
+恒真」是**推断**（我读不到它的源码，只有它自己的报错串）。两段的报错串完全相同，
+所以**哪一子句先咬住，从外面读不出来**。可以确定的是：第二子句在该行缺字段的前提下
+无条件为真，这足以解释读数的不变性；第一子句作为**附加**原因无法排除。
+
+**处置，以及为什么不再问用户。** 这道闸在 BotMux 二进制里，缺的字段在 BotMux 自己的
+存储里。ServerOS 这一侧能动的手段只有三种，三种都已被政策封死：伪造 `BOTMUX_*` 身份
+（明令禁止）、在没有 VERIFIED actor 的情况下签发可信上下文（§3 禁止自签）、
+去写另一个组件的存储（越权）。所以这是一条 **`NEEDS_HUMAN` 的外部发现**，
+与 `drift_sync` 那条「写注册会改用户的 Agent 配置」同级，而不是本轮能修好的生产者。
+
+**由此 §18 的那句话被自己的测量收回**：上一轮我在终报末尾提了「请在飞书应用 1 再发
+任意一条消息用于最终 live 验收」。现在**已知**那条消息会得到与 09:33:29 完全相同的
+BLOCKED 行，再请用户发一次就是请人重复一个已被证明为不变的动作。**该请求撤回，不再提。**
+
+**本轮的自我更正（第二次同类泄漏）。** 在取 BotMux dashboard 记录时，我用的那条
+`python3` 把 `resolvedAllowedUsers` 整个打印出来，其中含一个真实 `ou_` 标识符——
+落进了工具输出。这是同类泄漏的第二次，且这一次是我本轮做的。字段名与结构可以核，
+值不该印；正确写法是只打印键名与长度。记在这里，不辩解。
