@@ -9778,3 +9778,131 @@ to a person is a message and not a record.」——9.56 落地的那句话，第
 Parent 手里。这一刀和上一刀在同一份字节里合上了。
 
 **代码改动：无。** 这一刀是一格测量加两份证据，不需要动运行时；28e 上要合的就是 9.56 那一刀。
+
+### 9.58 收口：把唤醒 Parent 的姿态写成安装的决定，而不是继承来的设置
+
+9.57 证明了**受限形态的 Parent 能被安全跑通**。它没有证明的是——**生产定时器真正会调用的那个
+launcher，是不是受限形态**。它不是。9.57 用的是我为测量写的 wrapper；生产那个是：
+
+```bash
+# /data/home/vince/.local/bin/serveros-wake-parent
+exec /data/home/vince/.local/bin/claude -p "${briefing}"
+```
+
+姿态继承自 `~/.claude/settings.json` 的 `permissions.defaultMode = "bypassPermissions"`，
+脚本自己还带着一句理由：「不传 `--permission-mode`，因为本机 settings 已经是 bypassPermissions」。
+那句推理把「同一条决定只写一处」当成了美德，代价是这一处**不在这台机器的清单里**。
+
+三件事让这句推理站不住：
+
+1. **那个设置文件被 BotMux 舰队每次启动时重写**（见 `botmux-rewrites-claude-settings-hooks-on-start`）。
+   姿态不是"继承的"，是"第三方可以在两次唤醒之间改掉的"。
+2. **一次唤醒没有人可以问**——这是**拒绝**的理由，不是**绕过**的理由。绕开是唯一一个
+   让这套系统里其余每一条边界都变成"仅供参考"的答案。
+3. **产品侧一个字都没说**：`bypassPermissions` / `permission-mode` 在整个仓库（除本台账）
+   零命中。这条链路的安全性从来没有契约，也没有测试——它是一格**没有读者的控制**。
+
+更根本的一层：`release.py continuation-wake --parent` **只校验**那个路径是绝对路径、无空白无 `@`、
+存在且可执行，它**不生成**那个文件。所以它是个**无版本的节点本地孤本**，改它不出现在任何 diff 里。
+
+#### 实测：可选的杆有哪些（claude 2.1.272，2026-09-29）
+
+| 姿态 | 读数 | 结论 |
+|---|---|---|
+| `claude -p`（旧形状） | 跑了 `id -un` → `vince` | 无限制 |
+| `--restricted` | 无任何 shell 工具 → BLOCKED | 会跑代码的工具被移除 |
+| `--restricted --tools "…Bash…"` | Bash 被点名后可用 | 工具面可显式成文 |
+| `--restricted --permission-mode bypassPermissions` | `Error: bypassPermissions not supported in restricted mode`，**exit 1** | **结构性拒绝** |
+| `--restricted`，且设置文件仍写 bypass | 正常运行 | **不读用户设置** |
+| `--settings` 的 `defaultMode=plan` | 仍跑了 Bash | 模式旋钮在 `--print` 下**不是可靠的杆** |
+| `--settings '{"permissions":{"deny":["Bash"]}}'` | Bash 被摘除 → BLOCKED | **deny 规则是真的** |
+| `--restricted`，读 cwd 之外的文件 | 被拒："confines the file tools to the working directory" | **文件围栏是真边界** |
+
+最后两行要一起读：**围栏真的存在于文件工具上，而 Bash 不受它约束**。两句话都成立，
+少说哪一句都会把这一刀读成它不是的东西。
+
+#### A/B：同一份 briefing、同一条 `bounded_invocation.invoke_once`
+
+`invoke_once` 就是 `work wake` 自己起 Parent 的那一条调用；cwd 与 stdin 形状相同。两份 receipt
+在 `artifacts/work-items/serveros/SRV-9902/p0-launcher-posture-20260928/receipts/`。
+
+| | 旧 launcher | 新 launcher |
+|---|---|---|
+| 能跑 shell | `vince` | `vince` |
+| 工具面 | Bash, Read, Write, Edit, Glob, Grep, **WebFetch, WebSearch, Task/Agent, NotebookEdit, TodoWrite, Skill, Workflow, ScheduleWakeup/Cron**，外加 **5 个 MCP 服务**（serveros-agent、serveros-node、quay、meta-cc、openviking、playwright） | Bash, Edit, Glob, Grep, Read, Write |
+| 读 scope 外文件 | **读到了** | **被拒** |
+
+旧的被唤醒 Parent 能发网络请求、能起子代理、**能自己排定时唤醒**、还能驱动 ServerOS 自己的
+MCP 控制面——一个由某份授权拉起来、本该只在那份授权范围内的 Parent。新的不能。
+
+#### 全链生产路径：`SRV-9902`，2026-09-29 00:42:48（北京）
+
+一次性 Item，`max_attempts 1` / `wall_seconds 150`，全程不传 `--now`，测量期间停生产定时器，
+测完恢复。
+
+| | 读数 |
+|---|---|
+| context | 真人回合 00:42:27 铸出，`age 8.9s`，距 300 秒失效还有 291.1 秒 |
+| receipt | `continuation-wake-SRV-9902-e1-a1  WOKEN  EXITED  exit 0`；6.9 秒 |
+| launcher | receipt 自己写着 `/data/home/vince/.local/bin/serveros-wake-parent`，sha256 `8b8d5360…` |
+| **Parent 自己的回话** | 「SRV-9902 epoch 1 — tools: Bash, Edit, Glob, Grep, Read, Write」 |
+
+最后一行是这一刀最好的证据：**这条生产链把自己带回了一份姿态读数**，而且读到的正是 launcher
+里写下来的那张清单——没有 MCP 服务、没有 `WebFetch`/`WebSearch`、没有子代理工具、
+没有排程工具。不是我去读配置得出的，是**被拉起来的那个 Parent 自己报的**。
+
+| | 读数 |
+|---|---|
+| effect 面 | cwd 里只有我自己在跑之前写的 `WHAT-THIS-IS.txt`（mtime 00:39:17）；00:42 之后被动过的只有 RUN 目录本身和 `run.log`（我的脚本写的）；两个检出零文件被碰；没有遗留 Parent 进程 |
+| 第二次 | `REFUSE ATTEMPTS_EXHAUSTED`，没有第二个子进程 |
+| 收尾 | `work park SRV-9902#1`，授权 `slice3-production-20260929` 撤销（带理由） |
+| 恢复后定时器第一跳 | `reasons PARKED 3` |
+
+#### 照实说：这一刀**没**买到什么
+
+**`Bash` 是特意点名要回来的，所以文件围栏可被 shell 越过。这是「与授权显式同权」，不是沙箱。**
+要 Bash 的理由不是懒：briefing 自己要求 Parent 用 `serverosctl work continuations` / `work accept` /
+`work park` 对账——一个没有 shell 的 Parent 不是更严的 Parent，是一个**做不到它所收到的那份
+文件要求它做的事**的 Parent。
+
+以及：**"act only inside the write scope" 仍然只是 briefing 里的一句话。** 接收方不强制，
+launcher 也强制不了——`invoke_once` 只给它 stdin 上的一份 briefing，没有它能把 write scope
+变成边界的形式。两条能真正闭合的路（接收方交出机器可读的 scope，或唤醒单元上的 OS 级沙箱
+`ReadWritePaths=` / `ProtectHome=` / `PrivateNetwork=`，后者是**唯一能约束 `Bash` 的一层**）
+记成提案，不在这一刀里。
+
+#### 顺带量出来的一条：`work grants` 会把已撤销的授权标成 AUTHORIZED
+
+`work revoke` 的输出承诺「`work grants` reports it as `MISSING_OR_REVOKED_GRANT`」。撤完之后
+`work grants` 是这么印的：
+
+```
+slice3-production-20260929  AUTHORIZED  (in the envelope)
+  revoked       True at 2026-09-28T16:43:13.153481+00:00
+  because       …authorizes now (observed inside the fresh window)…
+```
+
+**同一块里，标签说 AUTHORIZED，下一行的字段说 revoked True。** 机制是标签只判**根上下文**
+（那份上下文此时距观测 46 秒，还在 900 秒的展示窗内），而其余四条行因为根已过期才落到
+`DELEGATION_DOES_NOT_AUTHORIZE`——也就是说，**一个已撤销的授权，只要它的根还在展示窗内，
+就会被标成已授权**。
+
+**执法面是对的，错的只是标签。** 用一次性 `SRV-9902#2` 干跑问过接收方：它读同一份授权时说的是
+`slice3-production-20260929 is recorded and MISSING_OR_REVOKED_GRANT`，并据以 `REFUSE
+NO_AUTHORIZING_GRANT`。所以这与 9.56 那条「正确的事实配了错误的收尾」是**同一族**：
+**记录是对的，标签在说反面的话**，而人审计授权时读的正是标签。
+
+**按裁决这一条只上报，不开第三刀。** 它不是这一刀跑出来的新安全/正确性 bug（执法正确），
+是一个显示层的错句；修它要有自己的量具与测试。
+
+#### 落地
+
+- 源进了版本控制：`workspace/ops/scripts/serveros/serveros-wake-parent` + `README.md`，
+  提交 `6b2d0b3`。此前它只是一个 `~/.local/bin/` 里的孤本。
+- 装到 `/data/home/vince/.local/bin/serveros-wake-parent`；旧副本留档，sha256
+  `49a8356e…` → `8b8d5360…`。
+- **唤醒单元本身没动**：`WorkingDirectory=%h` 保持原样，这一刀只换姿态。收窄工作目录
+  （让文件围栏对 `~/.secrets`、`~/.config` 真的生效）在选项里，没有选。
+
+**这一刀没有改 serveros 仓库的代码。** 它改的是一个节点本地、由产品**指到**而非**生成**的
+可执行件；那句话本身也是这一刀的发现之一。
