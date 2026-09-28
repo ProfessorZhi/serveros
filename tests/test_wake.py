@@ -473,6 +473,44 @@ class TestItRefusesMoreThanItWakes:
         assert by_ref["SRV-0001#2"]["action"] == "WAKE"
         assert plan["would_wake"] == ["SRV-0001#2"]
 
+    def test_a_parked_record_is_refused_in_the_park_s_own_words(self, tmp_path):
+        """The record is otherwise READY — grant in force, attempts unspent, and
+        nothing else in this store — and it is still not woken.
+
+        That is what separates this refusal from every other one in this class: a
+        park is not a missing authority, and the row says so in the words the
+        person used, pointing at the verb that undoes it. `work wake` used to
+        evaluate exactly this record once a minute and print «no authorizing
+        grant», which is the sentence a genuinely blocked Item produces.
+        """
+        store = ready_store(tmp_path)
+        store.park_checkpoint("SRV-0001#1", at=NOW, by="vince",
+                              reason="the probe is answered; nobody waits on it")
+        plan = wake.plan(store, now=NOW)
+        row = plan["rows"][0]
+        assert row["action"] == "REFUSE"
+        assert row["reason"] == "PARKED"
+        assert "the probe is answered" in row["says"]
+        assert "vince" in row["says"]
+        assert "work unpark" in row["says"]
+        assert plan["would_wake"] == []
+        assert plan["counts"] == {"PARKED": 1}
+
+    def test_the_park_is_answered_before_the_wait_it_was_filed_with(
+            self, tmp_path):
+        """A park is a statement about the work and not a wait that ran out.
+
+        The record below is filed with a window that is still OPEN, so a routine
+        that asked the wait first would report `HOLD WAIT_OPEN` — «held, not yet
+        due» about work a person has already set down, which is the reading that
+        sends somebody back to wait for a timer that is never coming.
+        """
+        store = a_store(tmp_path)
+        a_checkpoint(store, waiting_on={"kind": "window", "until": TOMORROW})
+        store.park_checkpoint("SRV-0001#1", at=NOW, by="vince", reason="set down")
+        row = wake.plan(store, now=NOW)["rows"][0]
+        assert row["reason"] == "PARKED"
+
     def test_a_ready_checkpoint_is_one_row_away_from_a_wake(self, tmp_path):
         """The positive case, and everything the row has to carry to act on it."""
         plan = wake.plan(ready_store(tmp_path), now=NOW)
