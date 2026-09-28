@@ -7873,6 +7873,143 @@ delegated_by human-context:provider%3Abotmux-human-control/ed3eb47df9770123706f7
 `runtime-assets/hwz-server-os/` 下的任何残留（§9.50.7 的 proposal 仍然只是 proposal）；
 没有跑全量回归（本工作树同时有第二个写入者，§9.50.6 的告诫仍然有效）。
 
+### 9.51.7 2026-09-28 18:26 真 Native Parent 第一次被 wake 起来，而它的授权根出自**另一轮**
+
+用户消息 `测试 Slice 2`（18:25:57）。这一节记它量到了什么，也记这次跑**是谁跑的**——
+因为答案不是本会话，而这件事直接决定了读数该怎么读。
+
+#### 一、这一次跑不是本会话做的
+
+harness 在 `artifacts/work-items/serveros/SRV-9901/slice2-native-parent-20260928/`，
+mtime 落在 18:05–18:26。跑它的是另一个并发会话：`eb00aeba-d062-485a-8455-e01f82d6d991`
+（pid 4044019，cwd `/data/home/vince`），它的 transcript 18:26:06 有那次
+`Bash run-slice2.sh`，18:26:21 拿到 tool_result，18:27:02 写下「Slice 2 通了」。
+
+它 18:05 就造好了 harness、**并停掉了 `serveros-continuation-wake.timer`**（`run.log` 第 0 步
+`timer inactive`，为的是不让产品定时器和它这次手跑的 wake 抢同一个 checkpoint），然后等一个
+真人回合。18:26:02 它收到一句「发了」，18:26:06 起跑，18:26:49 把定时器恢复
+（现在 `is-active`、`is-enabled` 都是 active/enabled）。
+
+本会话这一轮**只做读数**：没重跑、没改任何东西、没动他的产物。
+
+#### 二、授权根是发给我这一轮的那条消息（量出来的，不是推的）
+
+```json
+{"actor_identified": true, "at": "2026-09-28T18:26:00.704651+08:00", "attached": true,
+ "context_ref": "human-context:provider%3Abotmux-human-control/a337d9f30a6faa1e22e42d7ccfd416f5",
+ "detail": null, "provider": "provider:botmux-human-control",
+ "schema": "serveros/human-control-ingress.v1", "state": "ATTACHED", "transport": "feishu"}
+```
+
+它 `message_ref` 是 `om_x100b64904591c8a4b49169511de79a8`。按 message id 逐 transcript 数：
+
+| transcript | 该 message id 出现 | 该消息（`测试 Slice 2`）出现 |
+|---|---|---|
+| `4ab56455…`（本会话） | 4 | 19 |
+| `eb00aeba…`（跑 harness 的那个） | **0** | 1 |
+| `1ae3aff7…` | 0 | 0 |
+| `e5debb56…` | 0 | 0 |
+
+本会话 `10:25:59.766Z` 那条 user 就是这条消息。而 harness 的第 1 步是「**从 store 里取最新的
+FRESH 可信上下文**」——它没有自己铸一个。时间账：
+
+```text
+10:25:59.766Z  这一轮开始（botmux 把这条消息交给我）
+10:26:00.630Z  上下文 observed（0.86 s 后，hook 在回合内铸的）
+10:26:18.960Z  wake 真起子进程
+= 19.2 s，远在 300 s 的授权窗内
+```
+
+所以：**你发给我这一条消息，就是那次唤醒的授权来源**；跑它的会话只是把这个 ref 从 store 里
+读出来用掉。这不是事故——看它 18:26:02 的 think（「The user says they sent it. Run the script
+NOW.」）和时间线，这是**用户自己安排的**：把真人回合送到这一轮，让另一轮在 300 秒内消费。
+
+意义有两面，都要记：
+
+- 好的一面：§9.51.6 第一节闭合的那半边的**第一个真实消费者**出现了。一天前「只有 wake 这条路
+  谁都没问」的那条链，现在被一个不是它自己造的场景真的用掉了一次，而且**用的是一次真实人类
+  turn 铸出来的上下文**，不是 `--now` 蒙过去的。
+- 要记的一面：这与 §9.51.6 第五节那条**同一个边界**——闸门要的是「store 已经持有这个 ref」，
+  于是**授权可以从一轮借到另一轮**。记录里 `delegated_by` 记的是上下文，不是消费它的那一轮；
+  「这一轮」和「用掉它的那一轮」不是同一个会话，**从记录里看不出来**。本机此刻有 **6 个**
+  进程仍活着的 Claude 会话锁（含本会话），这条边界的现实面比昨天更宽。
+
+#### 三、读数
+
+| 项 | 值 |
+|---|---|
+| wake 判词 | `SRV-9901#1  WAKE  READY`；`authority slice2-disposable-20260928`；`attempt 1 of 1` |
+| action key | `continuation-wake-SRV-9901-e1-a1` |
+| 起子进程 | `WOKEN  EXITED  exit 0`，`10:26:18.959992Z` → `10:26:20.786398Z`（1.826 s） |
+| receipt | `process_exit_code 0` / `status EXITED` / `executed_now true` |
+| receipt 没夸大的三格 | `effect UNVERIFIED`、`descendants_verified false`、`worker_stopped false` |
+| Parent stdout（132 B，verbatim） | `SRV-9901 (epoch 1): next safe action is to read the stdin briefing and reply with one line and nothing else — which is this line.` |
+| cwd 影响面 | 只有 `WHAT-THIS-IS.txt`（18:05:16，harness 自己放的）；Parent 一个字节没写 |
+| 立刻第二次 | `REFUSE  ATTEMPTS_EXHAUSTED`，没有第二个子进程 |
+| 收尾 | grant `revoked True at 10:26:46.081275Z`；checkpoint `parked 10:26:45.770794Z`（带理由）；timer 18:26:49 恢复 |
+
+launcher 侧自证落盘了（`briefing-as-read.txt` / `briefing-read-proof.txt`），记的是
+2937 B / 49 行 / `sha256 50d0ceca…`。Parent 的 stderr 有一条
+`[claude-code:unrecognized_model] {"model":"v4.1flash-anthropic[1m]","query_source":"sdk"}`——
+受限子进程继承了本会话注入的模型名，SDK 那条路不认它，它仍然答了。这是「launcher 继承环境」
+的一条读数，不是失败。
+
+#### 四、一处对不上的字节，以及它为什么不是两份东西
+
+receipt 的 `.stdin` 是 **2938 B**，自证说 **2937 B**。差额是尾部换行：launcher 的
+`briefing="$(cat)"` 剥掉了它，`printf '%s'` 又不会再补。复算：
+
+```text
+$ printf '%s' "$(cat continuation-wake-SRV-9901-e1-a1.stdin)" | sha256sum
+50d0cecaa75f08a4108a9aa948845465d0eb8432393e21e48254c20bf5d9a4f6  -
+```
+
+与自证的 `sha256` 逐位相同 → **对得上，不是 Parent 读了两份东西**。但这条量具的射程要写下来：
+那份自证里的 `sha256` 证的是一份**被剥掉尾换行的文本**，不是 receipt 记的那 2938 字节。拿它去比
+receipt 会读出「Parent 读的不是这一份」的**假结论**——一个看起来像证据对不上的东西，其实是两个
+量具的口径差。
+
+#### 五、没测到的：产品那条 launcher 本体
+
+harness 自己声明了三处刻意差别（证据、权限、拒绝面）：它用受限替身
+（`--restricted`、`--strict-mcp-config` 空 MCP、先落盘自证再 exec），产品那条是
+`~/.local/bin/serveros-wake-parent` 走 `claude -p`，而本机 `~/.claude/settings.json` 带
+`permissions.defaultMode = "bypassPermissions"`。所以这一片的判词要分两半：
+
+- **测到了**：一个真实的 Native Parent 进程能被 `work wake` 起来、briefing 从 stdin 进得去、
+  它的退出码原样进 receipt、同一个 key 的第二次唤醒被具名拒绝且不起第二个子进程。
+- **没测到**：产品 launcher 那一步本身。它仍然只是「形状」。
+
+记忆 `human-control-wake-chain-is-measured` 里那句「真 Parent（`claude -p`）仍未启动过」现在
+要改成：真 Parent 起过了，**但经的是替身 launcher**——产品那一条仍未启动过。
+
+#### 六、`work grants` 的第二个独立样本（与 §9.51.6 第四节同一个缺陷）
+
+同一时刻（`now 2026-09-28T10:29:30.243401+00:00`）的 `work grants`，verbatim：
+
+```text
+slice2-disposable-20260928  AUTHORIZED  (in the envelope)
+  delegated by  human-context:provider%3Abotmux-human-control/a337d9f30a6faa1e22e42d7ccfd416f5
+  revoked       True at 2026-09-28T10:26:46.081275+00:00
+  window        2026-09-28T10:26:07.168885+00:00
+  until         2026-09-28T10:30:07.179807+00:00
+  items         SRV-9901
+```
+
+**一条已经撤销的 grant，在 `grants` 里是 `AUTHORIZED`。** 与 §9.51.6 第四节同一根因：
+`derivation` 只判上下文，`cmd_work_grants` 是三个 `envelopes()` 消费者里唯一不另问
+`standing_reason` 的那个。store 里此刻三条撤销的 grant，另两条落在
+`DELEGATION_DOES_NOT_AUTHORIZE`——但那是因为**根上下文过期了**，不是撤销被看见了；只有这一条
+的根上下文仍新鲜，于是**撤销在那一条上真的没被看见**。判词不变：**报告缝，不是 fail-open**
+（准入由 `select_focus` 逐行把关）；修法不变：加一次调用，仍未做（本轮授权是**测试**，不是
+**发布**）。
+
+#### 七、这一片没有做的事
+
+没有重跑 harness；没有改任何源码；没有 build / promote / install；没有动跑它那一轮的产物
+（harness 目录、receipt、它写的 park 记录都是他的证据，一律不碰）；没有推任何分支；没有清理
+`runtime-assets/hwz-server-os/` 下的任何残留（§9.50.7 的 proposal 仍然只是 proposal）。
+
 ## §9.52 我自己那一片撞了 §25 的棘轮：bootstrap 长了，而长进去的是一段属于 owner 的过程
 
 §25 的第一道闸在上一轮全量回归里是**唯一的红**：`tests/test_bootstrap_skill_scope.py` 的
