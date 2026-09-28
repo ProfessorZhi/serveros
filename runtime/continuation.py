@@ -398,7 +398,7 @@ def continuation_state(record: dict, *, receivers_seen=None, now: str | None = N
     that passes `receivers_seen` is reporting what the fabric has installed, and
     the only caller in this release passes `receivers()`.
 
-    Three answers, and the third is not a failure:
+    Four answers, and the last two are not failures:
 
       `AWAITING_CONTINUATION` — no receiver is installed. The checkpoint is saved,
         the state is durable, and nothing will wake it. The product's sentence is
@@ -411,11 +411,28 @@ def continuation_state(record: dict, *, receivers_seen=None, now: str | None = N
         ahead of the receiver question because «who is carrying this» is answered
         before «what would wake it», and a superseded record's answer to the
         second is about a Parent that is no longer the owner.
+      `PARKED` — a person set this record down on purpose
+        (`agent_control_store.park_checkpoint`). Reported after `SUPERSEDED` and
+        before the receiver question, for the same reason that one is: whether
+        anything would wake a record nothing is supposed to wake is not a question
+        about this record. A park is not a wait — the wait the record was filed
+        with may well be over — and it is emphatically not `AWAITING_CONTINUATION`:
+        «checkpoint 已保存，待续» promises that a continuation is outstanding, and a
+        park is the statement that none is.
 
-    `says` is present on every answer, including the two where it is not the
+    `says` is present on every answer, including the three where it is not the
     product's literal. A reader that had to compose the sentence for itself would
     compose a different one per caller, and the first one to differ would be the
     one that reports a background run.
+
+    THE TWO DISPOSITION BRANCHES READ THE RECORD'S OWN FIELDS LITERALLY, and that
+    is deliberate rather than an oversight: `runtime/agent_control_store.py` is the
+    writer and the authority for both fields, this module imports no other layer of
+    this tree (`tests/test_continuation.py` asserts that), and the field names are
+    therefore the contract between the two. A rule in two copies is a rule that
+    drifts, so the copies are not trusted to agree: the same test file pins that
+    this reader and the store's `live_checkpoints` give one answer about every
+    record.
     """
     if record.get("superseded_by"):
         return {"state": "SUPERSEDED", "receivers": [],
@@ -424,6 +441,19 @@ def continuation_state(record: dict, *, receivers_seen=None, now: str | None = N
                 "says": (f"checkpoint superseded at {record.get('superseded_at')} by "
                          f"{record.get('superseded_by')} — a later epoch of "
                          f"{record.get('work_item')} carries it now")}
+    if record.get("parked_at") and not record.get("unparked_at"):
+        return {"state": "PARKED", "receivers": [],
+                "parked_at": record.get("parked_at"),
+                "parked_by": record.get("parked_by"),
+                "parked_reason": record.get("parked_reason"),
+                "says": (f"checkpoint parked at {record.get('parked_at')} by "
+                         f"{record.get('parked_by')} — "
+                         f"{record.get('parked_reason')}. Nothing wakes it and "
+                         f"nothing should: this is the record of an Item that was "
+                         f"set down on purpose, not a continuation waiting for a "
+                         f"Parent. Lifting it is `work unpark`, which puts the "
+                         f"record back in the set a wake reads and changes no "
+                         f"authority")}
     installed = list(receivers() if receivers_seen is None else receivers_seen)
     if not installed:
         return {"state": "AWAITING_CONTINUATION", "receivers": [],

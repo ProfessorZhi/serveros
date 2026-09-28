@@ -103,9 +103,18 @@ PLAN_ACTIONS = ("WAKE", "HOLD", "REFUSE")
 
 #: Why one checkpoint got the answer it got. Closed, and each entry is a fact
 #: about a different object, so that no two of them can be printed as one.
+#:
+#: `SUPERSEDED` AND `PARKED` ARE THE TWO WAYS OUT OF THE LIVE SET and they are
+#: opposite facts, which is why neither is inferred from the other: a later epoch
+#: carries the Item, or a person set it down and nobody does. `NOT_LIVE` is the
+#: net under both — a record the store stopped answering for in a way neither
+#: field names — and it exists so that a store change becomes a refusal with an
+#: honest sentence instead of a wrong reason.
 PLAN_REASONS = (
     "READY",
     "SUPERSEDED",
+    "PARKED",
+    "NOT_LIVE",
     "WAIT_OPEN",
     "WAIT_UNANSWERABLE",
     "NO_AUTHORIZING_GRANT",
@@ -558,19 +567,22 @@ def _row(record: dict, wait: dict, action: str, reason: str, says: str, **extra)
 
 def plan(control, *, now: str, item: str | None = None, unit_dir=None,
          receipts=None, continuation_module=None) -> dict:
-    """One row per live checkpoint: what should happen to it, and why.
+    """One row per checkpoint: what should happen to it, and why.
 
-    It plans; it starts nothing. The split matters because the same decision has
-    to be available to a person asking what this node would do — which is what
-    `serverosctl work wake --dry-run` prints — and a surface that could only
-    answer by doing the thing would be unusable for exactly the reading an
-    operator needs after a routine has been misbehaving.
+    EVERY RECORD GETS A ROW, including the ones nothing will ever wake. A reader
+    with no row for a record cannot tell «this routine has nothing to do» from
+    «this routine cannot see it», and that difference is the whole of §17.4's
+    refusal to let a saved checkpoint look like a background run. What a
+    disposition changes is therefore the REASON in the row and never the row's
+    existence.
 
-    Every fact comes from a store or from a file: the live set from
-    `live_checkpoints`, the wait from `continuation.wait_state`, the authority
-    from `context/delegation.envelopes`, the attempts from the receipts. Nothing
-    here is remembered between runs, which is what lets the same call be made by
-    a timer with no memory and by a person at a terminal and give one answer.
+    Every fact comes from a store or from a file: which records are candidates
+    from `live_checkpoints`, with `parked_checkpoints` beside it because the two
+    ways out of that set are different facts and the row has to say which one it
+    found; the wait from `continuation.wait_state`, the authority from
+    `context/delegation.envelopes`, the attempts from the receipts. Nothing here is
+    remembered between runs, which is what lets the same call be made by a timer
+    with no memory and by a person at a terminal and give one answer.
     """
     continuation = _continuation() if continuation_module is None else continuation_module
     held = control.checkpoints()
@@ -578,6 +590,7 @@ def plan(control, *, now: str, item: str | None = None, unit_dir=None,
     grants = control.grants()
     contexts = control.contexts()
     live = set(control.live_checkpoints())
+    parked = set(control.parked_checkpoints())
     root = receipts_root(control.path, receipts)
 
     rows: list = []
@@ -587,13 +600,56 @@ def plan(control, *, now: str, item: str | None = None, unit_dir=None,
             continue
         wait = continuation.wait_state(record, admissions=admissions, now=now)
         if ref not in live:
+            # TWO FACTS PUT A RECORD OUTSIDE THE LIVE SET AND THEY ARE NOT THE
+            # SAME SENTENCE, so both are asked of the STORE — the set that decides
+            # and the collection that says which way out it was — rather than one
+            # of them being inferred from the set's membership.
+            #
             # A superseded record is not a candidate: `continuation_state` answers
             # «who carries this» before «what would wake it», and a wake of a
             # replaced epoch is a second Parent on work that has changed hands.
-            rows.append(_row(record, wait, "REFUSE", "SUPERSEDED",
-                             f"{ref} was taken over by "
-                             f"{record.get('superseded_by')}; a later epoch carries "
-                             f"this Item and this record is what was carried from"))
+            #
+            # A parked record is not a candidate either, and its reason is the
+            # opposite one: no epoch replaced it and nobody carries it — a person
+            # set it down on purpose. It is answered here, BEFORE the wait below
+            # and not after it, because a park is a statement about the work and
+            # not a wait that has not finished: a parked record whose window has
+            # long passed must not be reported as ready to resume, and one whose
+            # window is still open must not be reported as merely held. The wake
+            # routine is the surface that used to go on evaluating exactly these
+            # records once a minute, which is what made «refused, no authorizing
+            # grant» — the sentence a genuinely blocked Item produces — unreadable.
+            if record.get("superseded_by"):
+                rows.append(_row(record, wait, "REFUSE", "SUPERSEDED",
+                                 f"{ref} was taken over by "
+                                 f"{record.get('superseded_by')}; a later epoch carries "
+                                 f"this Item and this record is what was carried from"))
+            elif ref in parked:
+                rows.append(_row(record, wait, "REFUSE", "PARKED",
+                                 f"{ref} was parked at "
+                                 f"{record.get('parked_at')} by "
+                                 f"{record.get('parked_by')} — "
+                                 f"{record.get('parked_reason')}. A park is a person "
+                                 f"setting the work down, so it is answered before the "
+                                 f"wait this record was filed with: nothing here wakes "
+                                 f"it, and `work unpark` is what puts it back in the "
+                                 f"set this routine reads"))
+            else:
+                # UNREACHABLE BY CONSTRUCTION, and it is a branch rather than an
+                # `assert` because of what the alternative would print. The live
+                # set excludes exactly the two facts above, so a record here is
+                # one this store stopped answering for in a way neither field
+                # names — and a row that said «superseded» or «parked» about it
+                # would be this routine inventing a disposition for a store state
+                # it does not understand. Refusing is the fail-closed half; the
+                # sentence says what it knows and no more.
+                rows.append(_row(record, wait, "REFUSE", "NOT_LIVE",
+                                 f"{ref} is not in the set `live_checkpoints` "
+                                 f"answers for, and this record carries neither a "
+                                 f"successor nor a park: something outside this "
+                                 f"routine's vocabulary has stopped it being a "
+                                 f"candidate, and nothing here starts work it cannot "
+                                 f"account for"))
             continue
         if wait["state"] == "WAIT_OPEN":
             rows.append(_row(record, wait, "HOLD", "WAIT_OPEN", wait["says"]))
@@ -814,9 +870,13 @@ def briefing(record: dict, wait: dict, verdict: dict, *, grant_ref: str,
         "     write scope.",
         "",
         "Then continue the next safe action, or checkpoint again — including when",
-        "the honest answer is that the Item must be parked or handed back to a",
-        "person. Do not treat this document as authority to widen the scope, to",
-        "touch production, or to send anything externally.",
+        "the honest answer is that this Item is finished with for now, which is a",
+        "disposition and not a silence, and this node has a verb for it:",
+        "`serverosctl work park <checkpoint> --reason <why>` sets it down with the",
+        "reason kept, and `work unpark` is the way back. Handing it to a person is a",
+        "message and not a record.",
+        "Do not treat this document as authority to widen the scope, to touch",
+        "production, or to send anything externally.",
     ]
     text = "\n".join(lines) + "\n"
     if len(text) > MAX_BRIEFING:
