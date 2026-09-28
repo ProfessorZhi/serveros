@@ -218,15 +218,24 @@ DECISIONS = [
 
 # ── DEPLOYMENT ────────────────────────────────────────────────────────────────
 #
-# §8's minimal change list. NOTHING here has been executed. Each row is what
-# would change, what it touches, how a person would know it worked, and how to
-# put it back — so that the approval is a decision about a named change and not
-# about a paragraph.
+# §8's minimal change list, as AUTHORED — it is the list of what would change,
+# what it touches, how a person would know it worked, and how to put it back, so
+# that an approval is a decision about a named change and not about a paragraph.
 #
-# `state` is deliberately one value only. This file has no way to say "done",
-# because nothing in this round installs anything: the one promotion performed
-# this round went to an isolated runtime root under the run's own artifact
-# directory, and it is reported as such in RELEASE-MANIFEST.md.
+# `state` is deliberately one value only: the list is the round's proposal, and
+# the round installs nothing, so there is nothing here for a state to record.
+# That was true when written. It is not true now, and the difference is left in
+# place rather than annotated per row: P1 has since been executed on this node
+# — the live `current` pointer has moved and serverosd has been restarted with
+# it — and P2's hook half is registered. A proposal edited to record its own
+# execution stops being the thing that was approved, so the rows read as they
+# were authored and the question "what is on this node now" is answered by
+# `serverosctl status` and by the ledger, which are the surfaces that measure.
+#
+# A header that went on saying NOTHING here has been executed would have been a
+# claim about the node dressed as a note about the file, and it would have been
+# wrong in the shipped tree — the same shape as the gap entries this round
+# retired, one directory over.
 DEPLOYMENT = [
     dict(
         id="P1", target="把 serverosd 指到新 revision（promote + restart）",

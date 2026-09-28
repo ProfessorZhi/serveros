@@ -211,7 +211,8 @@ def doc_start_here(when):
         "",
         section("怎么读", "\n".join([
             "1. 先看下面的状态矩阵 —— 它是这一轮「已实现」这个词的实际含义。",
-            "2. 再看 [DEPLOYMENT.md](DEPLOYMENT.md) —— §8 的最小变更清单。**没有任何一条已执行。**",
+            "2. 再看 [DEPLOYMENT.md](DEPLOYMENT.md) —— §8 的最小变更清单。**它是提案，"
+            "不是状态板**：哪一条执行了、哪一条没有，这一页不回答，问 `serverosctl status`。",
             "3. 然后按需展开其余文档。每份文档顶部都写了它是哪条命令渲染的。",
         ]), 3),
         section("入口清单", table(
@@ -905,8 +906,11 @@ def doc_manifest(when, release_root, pins):
             "`release.py` —— 那个脚本不进产物，shipped renderer 依赖它，会让这一页在源码目录里"
             "好看、在任何已安装节点上抛错。",
             "",
-            "**这不是线上 runtime root。** 这一轮的 promote 落在运行产物目录下的隔离 root，"
-            "线上指针没有动过。线上切换是 [DEPLOYMENT.md](DEPLOYMENT.md) 的 P1。",
+            "**这一页回答的是上面那个 root 的结构，不是「线上的是哪一条」这个问题。**"
+            "它读的就是传进来的那个 root，不判断它在不在线上——线上归属由 "
+            "`serverosctl status` 回答，线上切换是 [DEPLOYMENT.md](DEPLOYMENT.md) 的 P1。"
+            "本页最初写的是「这不是线上 root，线上指针没有动过」，那在当时是真的，"
+            "而它是一句无条件断言：`--release-root` 收任何 root，把线上 root 传进来同样会印出这句话。",
         ]), 3),
         section("恢复信息", "\n".join([
             "回滚**恢复的是 revision 指针，不是状态**。这两件事必须分开写下来，"
@@ -1332,7 +1336,7 @@ DOC_INDEX = [
     ("REPORTS", "日报与 Decision Packet", "运行产物目录里的日报文件"),
     ("QUAY-RESULTS", "Quay Goal/Task 对应与执行结果", "quay goal list, task list, GateEvent 账本"),
     ("RELEASE-MANIFEST", "pin、摘要与可达性", "git cat-file, git ls-remote, 隔离 root 自身的符号链接结构"),
-    ("DEPLOYMENT", "待部署清单（未执行）", "作者输入 runtime/workbench_sources.py"),
+    ("DEPLOYMENT", "待部署清单（作者原文，非状态）", "作者输入 runtime/workbench_sources.py"),
 ]
 
 DOCS = {
