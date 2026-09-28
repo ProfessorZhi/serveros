@@ -407,7 +407,33 @@ short_description: Agent Engineering Workbench for a Linux work node
 # DEPLOYMENT header said nothing on its list had been executed, on a node whose
 # live pointer has since moved and whose serverosd has been restarted with it.
 # The ability pin is unchanged (`da5f89b1b131`).
-cachebuster: srv0005.20260928a
+#
+# ── 28a → 28b (2026-09-28, later the same day) ────────────────────────────────
+#
+# Rendering the documents from the installed revision is what found the rest of
+# them. The page `DEPLOYMENT.md` was printing "**本页没有任何一条已执行**" — on a
+# node where P1 has been executed — and the same page's closing section still
+# listed 线上 promote/restart under 没做. `START-HERE.md`'s live-未验证 section
+# carried two bare state claims in the same class: "本轮没有动过任何会话实际
+# 加载的东西" and "线上指针未动". None of these were visible by reading the
+# sources; they became visible by reading the rendered page, which is the
+# argument for rendering it before shipping it.
+#
+# So this bump carries what the previous one only half did. Two more payload
+# members change: `runtime/workbench.py` (that sentence, the section title
+# `隔离安装（本轮的 promote 目标）`, the 做了什么/没做什么 section retitled as the
+# author's record, and the live-未验证 heading scoped the same way) and
+# `runtime/workbench_sources.py` (the two bare claims in LIVE_UNVERIFIED, one of
+# which now says out loud that the thing it recorded as undone was later done,
+# and that the current revision is answered by `serverosctl status` rather than
+# by an author's record).
+#
+# The rule the previous entry stated still governs: the rows stay as authored.
+# What changed is only the sentences that assert something about the NODE rather
+# than about the list. A shipped renderer that writes execution state into its
+# body starts saying old things the moment it is installed anywhere, and nothing
+# goes red where it does. That is one cachebuster, because it is one class.
+cachebuster: srv0005.20260928b
 
 skills:
   - name: runtime-management
