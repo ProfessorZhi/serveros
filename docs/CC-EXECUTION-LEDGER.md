@@ -118,7 +118,7 @@ source revision 一列给的是**指纹成立的那次 revision**，也就是 pa
 | A4 | 运行环境/Fleet | runtime-management、test-management | `skills/runtime-management`、`skills/test-management` | Skill ×2 | 早于本轮 | `serverosd`、`serveros-node` MCP | 原生 | srv0003.20260915a | DONE | DONE | ENABLED | — |
 | A5 | Fleet 交接 | fleet-coordination | `skills/fleet-coordination` | Skill | 早于本轮 | 已授权 transport | **UNBOUND** | srv0003.20260915a | DONE | DONE | PARTIAL | 单设备路径，跨设备动词 absent |
 | A6 | 委派 | cc-quay-delegation | `skills/cc-quay-delegation` | Skill | 早于本轮 | 原生 Quay 0.11.0 | 原生（quay@quay 已装） | srv0003.20260915a | DONE | DONE | ENABLED | — |
-| A7 | 自动化测试 | automated-testing | `skills/automated-testing` + `plugin/profiles/testing.yaml` | Skill + Plugin composition `serveros-testing` | ce6e103（Skill）/ f5e563b（profile） | 目标 CC 以正规 install 加载 | 原生 | `1.0.0+srvtest0001.20260927a` | DONE | DONE | **ENABLED** | 见 §3.3、§9.50 |
+| A7 | 自动化测试 | automated-testing | `skills/automated-testing` + `plugin/profiles/testing.yaml` | Skill + Plugin composition `serveros-testing` | ce6e103（Skill）/ f5e563b（profile） | 目标 CC 以正规 install 加载 | 原生 | `1.0.0+srvtest0001.20260927b` | DONE | DONE | **ENABLED** | 见 §3.3、§9.50、§9.50.7 |
 | A8 | 构建发布 | build-release | `skills/build-release` | Skill | **ce6e103** | 项目 builder/CI | 原生 | 随 `srv0003.20260922a` | DONE | DONE | ENABLED | 已加进 `pack:litellm-development`（§7 第 5 条） |
 | A9 | 生产观察 | production-observation | `skills/production-observation` | Skill | **ce6e103** | 既有 API/CLI/跳板 | **UNBOUND** | 无 | DONE | NOT_MEASURED | NOT_ENABLED | 未装进任何 composition |
 | A10 | 生产变更 | production-change | `skills/production-change` | Skill | **ce6e103** | 调用 A9 + 真实 Runbook | **UNBOUND** | 无 | DONE | NOT_MEASURED | NOT_ENABLED | 同 A8；且 READY≠切流授权 |
@@ -811,7 +811,7 @@ MarketOps、没有两处 LiteLLM、没有 `records/` 脏资产。它正是内存
 `records/information/understanding/{people,projects,topics}/*.md` | **两侧都已接线**：读 `serverosctl work understanding`（`intake/understanding_delta.py`）、写 `serverosctl work understanding-patch`（`intake/understanding_patch.py`） | — | **两半都补上了**：读的一侧见 §9.7（14 份卡逐份对账到源，`BEHIND 3 · UNMEASURABLE 7 · UNTRACEABLE 4`）；写的一侧见 §9.9（15 条提议全 `AWAITING`，`--write`+`--verify` ok）。设计要的「最小 incremental writer」不再缺口。**仍未 LIVE**：没有任何消费者读这份 patch |
 | P3 | Minutes / MeetingBundle | 无 Python 类。`space/meeting-policy.schema.yaml:30` 声明结构；内核 `space/meeting_relevance.py:69`；**生产者 `space/meeting_bundle.py`（§9.15）** + 契约 `space/meeting-bundle-contract.yaml` | ~~`python3 space/meeting_relevance.py --request`（**未接 serverosctl**）~~ **已接线**：`serverosctl space meeting`（`--request` 与 `--sidecars` 两条入口） | — | 内核 working，**接线已补**（§9.5）；**生产者也补上了**（§9.15）：会议自己声明的 sidecar 现在能组装成内核收得下的 bundle，`COMPLETE` 才把问题递给内核，`INCOMPLETE`/`MIXED_SCOPE` 只给读数不给问题。**仍未 LIVE**：本机没有任何真实会议 manifest 可测，四个探针声明是合成的（`RUN-20260922-raw-coverage/meeting-bundle/*.json`） |
 | P3 | 记忆账本/投影/scope | `memory/{record,projection,scope,handoff}.py` | `serverosctl memory {audit,project,status,subject}` (`cli.py:6479`) | — | working；`docs/memory-fabric.md` 逐条点名这些模块 |
-| P12 | **活着的**技能面落后于 canonical | canonical：本仓 `skills/serveros/SKILL.md`（157 行，`21281cfc3c0b`）。装到机上的：插件缓存 `~/.claude/plugins/cache/hwz-server-os-linux-work/hwz-server-os-linux-work/3.1.0-srv0003.20260923d/skills/serveros/SKILL.md`（157 行，`fbfbefbc5870`）；另有 `runtime-assets/hwz-server-os/current/skills/serveros/SKILL.md` 同样落后 | — | — | **P12 待做**（不属 HUMAN_EXECUTED：装 vince 用户级 runtime/插件在本轮授权内）。**实测**：两份**逐字节只差第 143 行**，而差的那一行是**北京搬迁留下的错话** —— 活的那份还在说「`/` 是系统盘，`/opt/applications` 是数据盘」，而本机 `ls -ld /opt/applications` → **No such file or directory**；canonical 已改成与节点无关的「数据盘（机器策略里的 `DATA_ROOT`）」。同一处陈旧还落在 `skills/serveros/scripts/architecture_check.py`：两份只差一段**注释折行**，canonical 那份带着 `# node-path-ok: 考古记录` 标记而装的那份没有。**判据不是「两份文件不一样」，而是「Agent 现在照着读的那句话是不是真的」—— 它现在不是。**处置走 build→promote→restart（不手改派生安装：手改会在下次 promote 时被盖掉并再次漂移）。**2026-09-27 更新（§9.50）**：那条处置**已被执行，而且第一次是量出来的**。两个 composition 的 cachebuster 各自移到 `27a`（`50a86fa` / `512f886`），promote 与 install 都真的落了盘（`installed_plugins.json`：`…linux-work` `3.1.0+srv0003.20260927a` `lastUpdated 2026-09-26T16:11:47Z`；`serveros-testing` `1.0.0+srvtest0001.20260927a` `16:33:29Z`）。把本仓这条规则指向**已装载荷**的 `skills/`（不是指向仓库）：`27a` 两个各 **0** 条，被取代的 `23d` **13** 条、`22b` **1** 条，而两版 `skills/` 文件清单逐条相同（26 文件 / 5 条 Skill），所以这是同一套文件上的比较。**第一个落点关闭。** 第二个落点 `runtime-assets/hwz-server-os/current`（`3.1.0+srv0003.20260923c`）**仍逐字节只差第 143 行**，但它**没有消费者**：`enabledPlugins` 与 `extraKnownMarketplaces` 里都没有 `hwz-server-os`，四棵配置面 `command grep` 这棵树 **0 命中**，`ps` 无一条引用它，`skillUsage["hwz-server-os:serveros"]` 最后读于 **2026-09-20 01:30**。「那句错话躺在一个载体里」与「有 Agent 正在被这句话教」是两句不同的话：**前者成立，后者不成立**。这一格的处置因此从「待做」变成**一条 proposal**——重建这个基座 composition，或退役这个被取代的载体；理由与读数见 §9.50.4 |
+| P12 | **活着的**技能面落后于 canonical | canonical：本仓 `skills/serveros/SKILL.md`（157 行，`21281cfc3c0b`）。装到机上的：插件缓存 `~/.claude/plugins/cache/hwz-server-os-linux-work/hwz-server-os-linux-work/3.1.0-srv0003.20260923d/skills/serveros/SKILL.md`（157 行，`fbfbefbc5870`）；另有 `runtime-assets/hwz-server-os/current/skills/serveros/SKILL.md` 同样落后 | — | — | **P12 待做**（不属 HUMAN_EXECUTED：装 vince 用户级 runtime/插件在本轮授权内）。**实测**：两份**逐字节只差第 143 行**，而差的那一行是**北京搬迁留下的错话** —— 活的那份还在说「`/` 是系统盘，`/opt/applications` 是数据盘」，而本机 `ls -ld /opt/applications` → **No such file or directory**；canonical 已改成与节点无关的「数据盘（机器策略里的 `DATA_ROOT`）」。同一处陈旧还落在 `skills/serveros/scripts/architecture_check.py`：两份只差一段**注释折行**，canonical 那份带着 `# node-path-ok: 考古记录` 标记而装的那份没有。**判据不是「两份文件不一样」，而是「Agent 现在照着读的那句话是不是真的」—— 它现在不是。**处置走 build→promote→restart（不手改派生安装：手改会在下次 promote 时被盖掉并再次漂移）。**2026-09-27 更新（§9.50）**：那条处置**已被执行，而且第一次是量出来的**。两个 composition 的 cachebuster 各自移到 `27a`（`50a86fa` / `512f886`），promote 与 install 都真的落了盘（`installed_plugins.json`：`…linux-work` `3.1.0+srv0003.20260927a` `lastUpdated 2026-09-26T16:11:47Z`；`serveros-testing` `1.0.0+srvtest0001.20260927a` `16:33:29Z`）。把本仓这条规则指向**已装载荷**的 `skills/`（不是指向仓库）：`27a` 两个各 **0** 条，被取代的 `23d` **13** 条、`22b` **1** 条，而两版 `skills/` 文件清单逐条相同（26 文件 / 5 条 Skill），所以这是同一套文件上的比较。**第一个落点关闭。** 第二个落点 `runtime-assets/hwz-server-os/current`（`3.1.0+srv0003.20260923c`）**仍逐字节只差第 143 行**，但它**没有消费者**：`enabledPlugins` 与 `extraKnownMarketplaces` 里都没有 `hwz-server-os`，四棵配置面 `command grep` 这棵树 **0 命中**，`ps` 无一条引用它，`skillUsage["hwz-server-os:serveros"]` 最后读于 **2026-09-20 01:30**。「那句错话躺在一个载体里」与「有 Agent 正在被这句话教」是两句不同的话：**前者成立，后者不成立**。这一格的处置因此从「待做」变成**一条 proposal**——重建这个基座 composition，或退役这个被取代的载体；理由与读数见 §9.50.4。**2026-09-28 复测（§9.50.7）**：第一个落点在**今天实际在机的** `3.1.0+srv0005.20260927g` 与 `1.0.0+srvtest0001.20260927b` 上复量为 **0 / 0**；对照组 `27a` 仍 0、`23d` 仍 13（分母同为 26），所以这不是量具漂移——**从 `27a` 走到 `27g`，那 13 条一条也没有回来**。同时量出第二个落点其实是**同一份 `3.1.0+srv0003.20260923c` 的两份拷贝**（`runtime-assets/hwz-server-os/current` 与孤儿缓存 `~/.claude/plugins/cache/hwz-server-os/hwz-server-os/3.1.0-srv0003.20260923c`：两份 `ARTIFACT.json` sha256 同为 `3a3f168e…`，两棵 `skills/` `diff -rq` 无差异），各量到 **2** 条且是同两行。另记一条**射程**：这条正则要求根之后还有 `/段`，所以第 143 行那句话**不在** 13 → 0 的射程里，它靠逐字节 diff 验——「载体量到 0」不等于「整份文件与 canonical 一致」 |
 | P4 | 文档关系边 | `relations/project.py:61`（`serveros/relations.v1`），`relations/schema.yaml:29` | `python3 project.py --records ROOT --write relations/current.jsonl` | — | **partial**（比上一版进了一步）：8 个谓词里 3 个有生产者（`belongs_to`、`derived_from`、`attached_to`），其余 5 个 `declared_only`。本机实测 239 行 / 19 条报出，见 §9.8；另 5 个谓词逐条查过，**本机没有载体**，不是差功夫 |
 | P4 | Feishu 空间适配 / 共享 publisher | `skills/feishu-space-management/`：**只有 SKILL.md 文本，本仓没有代码**。`skills/document-stewardship/`：本仓同样只有文本，但**外仓有代码**——`~/.claude/skills/document-stewardship/scripts/maintain.py`，且 `plugin/profiles/linux-work.yaml:119-123` 声明它 `available` | — | — | partial。**上一版这一格把两者合成了一句「只有 SKILL.md 文本，没有代码」，那是错的**：`document-stewardship` 在外仓有实现，且 ability-management 注册表（HEAD `8d98aff`）**不持有**它——与那 8 条跨仓红同族。**§9.23 再纠一次**：那个实现里**没有 publisher 循环**。文件只有 `refresh` 与 `audit` 两个动词，它自己的 docstring 写着「**它从不写文档正文，也从不写 profile**」。原来那句「取 revision N → 定位 → 校验 → 候选 patch → …」描述的是**契约要求**，被读成了**已有实现**——恰好是这一格本来要防的那种误读。真正的 publisher 是本轮新写的 `intake/document_publish.py` + `runtime/document_transport.py` |
 | P5 | 员工 KB 生产者 | `src/litellm-support/scripts/build_agent_kb.py`，输出 `dist/employee-kb/`（`dist/` 被 gitignore） | `python3 scripts/build_agent_kb.py` | — | working，但**在 ServerOS 之外** |
@@ -7475,6 +7475,80 @@ promote 会盖掉它并再次漂移。
 这不是本片要处置的事，是**记录**：`serveros-completion-20260925` 此刻有两个写入者，而
 机器策略要求它在动手前先取新快照。本片只写 `docs/CC-EXECUTION-LEDGER.md` 一个文件，
 它没有被那 6 个文件里的任何一个碰过。
+
+#### 9.50.7 2026-09-28 复测：那个 0 不再只在一个被取代的版本上成立，以及这把量具的射程
+
+9.50.5 末尾那条限定的话是：「`27a` 这一版按规则量到 0」成立，「这台机器上的载体现在是干净的」
+只在下一次 `build→promote→install` 之前成立。**下一次已经发生过了，而且不止一次。** cachebuster
+从 `27a` 一路走到 `27g`（`27d` / `27e` / `27f` / `27g` 几次移动记在 §15 与 §9.55 里），
+今天在机的两版是：
+
+| composition | 版本 | `lastUpdated`（UTC） | 北京 |
+| --- | --- | --- | --- |
+| `hwz-server-os-linux-work` | `3.1.0+srv0005.20260927g` | `2026-09-27T15:09:41Z` | 09-27 23:09 |
+| `serveros-testing` | `1.0.0+srvtest0001.20260927b` | `2026-09-27T14:42:23Z` | 09-27 22:42 |
+
+把 9.50.2 那把量具（同一份正则、同一份后缀表、同一份 `node-path-ok` 豁免，只换根）指向**今天
+真正在机的两版**，并把 9.50.3 的两行对照一起重量：
+
+| 载荷 | 装在机上？ | 读到的文件 | 违规 |
+| --- | --- | --- | --- |
+| `hwz-server-os-linux-work/3.1.0-srv0005.20260927g` | **是，ENABLED** | 26 | **0** |
+| `serveros-testing/1.0.0-srvtest0001.20260927b` | **是，ENABLED** | 2 | **0** |
+| `hwz-server-os-linux-work/3.1.0-srv0003.20260927a`（上一版） | 否，已被取代 | 26 | **0** |
+| `hwz-server-os-linux-work/3.1.0-srv0003.20260923d`（修前） | 否，已被取代 | 26 | **13** |
+
+对照组逐条与 9.50.3 相同（`27a` 仍 0、`23d` 仍 13，分母都是 26），所以这**不是量具漂了**，
+是同一把尺子在同一套文件上又量了一次。于是那句话可以换成一句更强的：
+
+- **旧读法**：`27a` 那一刻干净。
+- **新读法**：从 `27a` 到 `27g`，**那 13 条一条也没有回来**。第一个落点关闭的不是一个版本，
+  是一条流水线。
+
+这一条不是自证的：`23d` 的 13 条是**修前**的同一套文件量出来的，而 `23d` 与 `27g` 的
+`skills/` 文件清单相同（26 文件 / 5 条 Skill）。改的是那几行文字，不是让扫描够不着它们。
+
+**但量具有射程，这里必须说清楚，否则这个 0 会被读成它没有量到的东西。**
+
+`NODE_PATH` 要求根之后**还有 `/` 加一段**。所以 P12 被引述得最多的那一句——`skills/serveros/SKILL.md`
+第 143 行的「`/opt/applications` 是数据盘」——**根本不在上面那个 13 → 0 里**：那后面跟的是
+反引号和句读，不是 `/<段>`。它一直是靠**逐字节 diff** 验的，不是靠这条规则验的。两件事都做了，
+但它们是两把尺子：
+
+| 查什么 | 量具 | `27g` 的读数 |
+| --- | --- | --- |
+| 13 条形如 `/根/段` 的行 | 本仓 `tests/test_no_node_absolute_paths.py` 指向载荷的 `skills/` | **0** |
+| 第 143 行那一句 | 与 canonical `skills/serveros/SKILL.md` 逐字节 diff | 逐字节相同（`diff` 空） |
+
+于是「载体量到 0」与「那句错话不在了」仍是两句不同的话：前者只覆盖正则形状的那些行，后者要
+另一次 diff。**把 0 读成「整份文件与 canonical 一致」是这一步最容易犯的错**，因为这个 0 看起来
+正是那个意思。
+
+**第三个载体，这次才量到。** 9.50.4 点出 `hwz-server-os` 孤儿缓存有三代（`15a` / `23a` /
+`23c`），但**没有量过它们的技能面**。同一把尺子：
+
+| 载荷 | 读到的文件 | 违规 |
+| --- | --- | --- |
+| `~/.claude/plugins/cache/hwz-server-os/hwz-server-os/3.1.0-srv0003.20260923c` | 20 | **2** |
+| `runtime-assets/hwz-server-os/current`（同题） | 20 | **2** |
+
+两条都是 `ability-management/control_plane.py:3499`（`/home/hwz`）与
+`serveros/scripts/architecture_check.py:1763`（`/opt/applications/data`）。分母 **20** 而不是 26
+是有原因的，不是扫描被截断：这个 composition 只有 3 条 Skill（它的 `ARTIFACT.json` 的 `skills`
+字段写着 `ability-management` / `runtime-management` / `serveros`），所以 `workspace-management`
+那 8 条与 `test-management` 那 1 条本来就不在它里面。
+
+**这两处是同一份东西的两个副本，这是量出来的**：两份 `ARTIFACT.json` 的 sha256 相同
+（`3a3f168e0fb43cfb0e4a46ee77cd2498e65d0d8fff90c282d7dac6eca063a323`），`diff -rq` 两棵
+`skills/` 无差异，两侧 `find -type f | sort | md5sum` 都是 `8b4bb92a55254239d103885fb4377b9b`。
+所以 §9.50.4 那句「那句错话还躺在一个载体里」应改成**「躺在两个载体里，而那是同一份
+`3.1.0+srv0003.20260923c` 的两份拷贝」**。没有消费者的结论不变（两处都查了），处置仍是
+proposal，不是动作。
+
+**顺带只读复核了 9.50 之外的几条**：`/tmp/sys24`（84 MB）与那三个泄漏 daemon 的日志已不在盘上；
+`runtime-assets/hwz-server-os/` 下的 `.prev-*` / `.retired-*` / `.staging-*` / `.candidate-*`
+已全部清掉，该目录现在只剩 `current` 与两个 composition 目录。这几条不是本片做的，只是本片
+量的时候它们已经不在了。
 
 ## §9.51 Human Control 的两半：可信上下文能产出 grant，grant 能停，且 wake 真的问它
 
