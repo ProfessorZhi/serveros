@@ -2780,6 +2780,46 @@ class TestTheVerbsDriveTheStore:
         assert f"parked        {LATER} by vince" in listed.stdout
         assert "nothing held to wait on" in listed.stdout
 
+    def test_a_parked_record_does_not_let_the_wait_have_the_last_word(self, env):
+        """THE WAIT SENTENCE IS AN INVITATION, AND THE PARK WITHDRAWS IT.
+
+        «a new Parent can resume this Item» is true of the wait and false of the
+        Item once somebody has set it down. Printed unqualified it is the last
+        line of the block, two lines under the park that contradicts it — and a
+        reader who stops at the last line stops at the wrong one. `work wake`
+        answers the park before the wait for exactly this reason; this is the
+        same order on the operator's surface, asserted on the wait being OVER so
+        that «it did not print the invitation at all» cannot pass for it.
+        """
+        assert cli("work", "checkpoint", "SRV-0001", "--epoch", "1",
+                   "--parent", "parent-a", "--next-action", "carry on",
+                   "--waiting-on-window", LATER, "--at", NOW,
+                   env_extra=env).returncode == 0
+        assert self.park(env).returncode == 0
+        listed = cli("work", "continuations", "--now", LATER, env_extra=env)
+        assert listed.returncode == 0, listed.stderr
+        assert "SRV-0001#1  PARKED  wait WAIT_OVER" in listed.stdout
+        assert "a new Parent can resume this Item — and none of that resumes it" \
+               in listed.stdout
+        assert listed.stdout.count("a new Parent can resume this Item") == 1
+
+    def test_the_wait_keeps_its_own_last_word_when_nothing_was_parked(self, env):
+        """The qualifier is the park's and not the wait's.
+
+        Without this the assertion above would pass on a reader that appended
+        the sentence to every wait, which would be a second wrong reading put in
+        place of the first.
+        """
+        assert cli("work", "checkpoint", "SRV-0001", "--epoch", "1",
+                   "--parent", "parent-a", "--next-action", "carry on",
+                   "--waiting-on-window", LATER, "--at", NOW,
+                   env_extra=env).returncode == 0
+        listed = cli("work", "continuations", "--now", LATER, env_extra=env)
+        assert listed.returncode == 0, listed.stderr
+        assert "SRV-0001#1  AWAITING_CONTINUATION  wait WAIT_OVER" in listed.stdout
+        assert "a new Parent can resume this Item" in listed.stdout
+        assert "none of that resumes it" not in listed.stdout
+
     def test_the_park_verb_refuses_without_a_reason_and_writes_nothing(self, env):
         """Refused at the verb, before the store is reached: a park that says
         nothing is a deletion with paperwork."""

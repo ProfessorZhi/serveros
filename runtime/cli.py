@@ -9160,7 +9160,20 @@ def cmd_work_continuations(args) -> int:
         for effect in record.get("unresolved_effects") or []:
             lines.append(f"  unresolved    {effect}")
         lines.append(f"  {state['says']}")
-        lines.append(f"  wait          {wait['says']}")
+        # A PARK IS ANSWERED BEFORE THE WAIT, on this surface too. The wait is a
+        # fact about the record and the park is a fact about the Item, and the
+        # wait's own sentence is written as an invitation — «a new Parent can
+        # resume this Item». Printed unqualified under a parked record it ends
+        # that record's block by contradicting the sentence two lines above it,
+        # and a reader who takes the last line takes the wrong one. `work wake`
+        # orders these two the same way, and for the same reason: the park is
+        # the later and stronger fact.
+        wait_says = wait["says"]
+        if store_mod.is_parked(record):
+            wait_says += (" — and none of that resumes it while it is parked: "
+                          "the park is answered first, and `work unpark` is what "
+                          "puts the record back in the set `work wake` reads")
+        lines.append(f"  wait          {wait_says}")
         lines.append(f"  attempts say  {made_here['says']}")
     emit({"checkpoints": held, "states": states, "waits": waits,
           "attempts": attempts, "carried": carried, "receivers": list(installed),
