@@ -433,7 +433,37 @@ short_description: Agent Engineering Workbench for a Linux work node
 # than about the list. A shipped renderer that writes execution state into its
 # body starts saying old things the moment it is installed anywhere, and nothing
 # goes red where it does. That is one cachebuster, because it is one class.
-cachebuster: srv0005.20260928b
+#
+# ── 28b → 28c (2026-09-28, later the same day) ────────────────────────────────
+#
+# `28b` shipped the Human Control probe, and the probe could not read the surface
+# it was written against. `mcp/human_control.py` required `status == "ok"`, took
+# the identity from `user`/`username`, and read `chatId`/`messageId`. The actor
+# document BotMux actually returns carries none of those: it says
+# `"status": "verified"` and puts the identity at `actor.email`. So the installed
+# provider recorded `BLOCKED` on turns whose attestation had arrived intact, and
+# the failure read as "BotMux cannot attest this actor" when what had happened was
+# this adapter discarding the answer. That conflated two different facts about the
+# node, and only one of them was true. Fixed in `7bdc7f9` (PR #27).
+#
+# The other half of the same change is what makes the fix legible rather than
+# merely correct. The contract requires `conversation_ref` and `message_ref` of
+# the provider, and BotMux publishes neither: the only channel that reaches a
+# client through the daemon's own turn gate is the actor document, and that
+# document carries no locator. Neither can be filled in from outside. The
+# environment is writable by whoever spawns the process — which is why BotMux's
+# own gate refuses to read one — and the per-turn variable a client can see is
+# frozen at exec time on this platform, so every turn after the first would carry
+# the first turn's reference, one message authorising many actions. So a verified
+# turn now produces a report `build` refuses BY FIELD NAME. A probe reporting
+# `BLOCKED` for a reason it never measured and a probe reporting `REFUSED` while
+# naming the two fields BotMux does not publish are different statements, and the
+# second is the one this node can support. The upstream request is item 3 of the
+# BotMux actor-document proposal, alongside PR #27.
+#
+# One member changes, `mcp/human_control.py`; its tests are not part of this
+# composition. The ability pin is unchanged (`da5f89b1b131`).
+cachebuster: srv0005.20260928c
 
 skills:
   - name: runtime-management
