@@ -7622,6 +7622,14 @@ AUTHORIZED 的记录调 `intake/daily_cycle.standing_reason`（`envelope_of` 之
 「在效但不点名这个 Item」各有各的句子。未读得懂的 `now` 报 `CLOCK_UNREADABLE` 并归入
 `not_standing`——一个读不出来的瞬间不是能确立权威的瞬间。
 
+**2026-09-28 订正（§9.51.6）**：上面那句「树里其它每条路都补了这一问……**只有 wake 这条路谁
+都没问**」不完整。`runtime/cli.py` 的**读入路径**确实调 `standing_reason`（`:6761`），
+`agent_control_store._authorizing_grant` 也自己判——但 `envelopes()` 的第三个消费者
+`cmd_work_grants`（`:7321`）**同样谁都没问**，而它恰恰是那个把答案印成人能读的一行
+（`authorizing N of M`）的动词。它不漏权威（准入前的 `select_focus` 已按行挡掉），
+所以它不是 §9.51.2 那条 fail-open 的第二个实例，而是同一族里**报词**的那一个。
+读数与射程见 §9.51.6。
+
 ### 9.51.3 服务：BotMux turn 内铸上下文
 
 `~/.claude/settings.json` 的 `UserPromptSubmit` 增了一条 hook（**BotMux 自己那条未动**）：
@@ -7640,6 +7648,21 @@ AUTHORIZED 的记录调 `intake/daily_cycle.standing_reason`（`envelope_of` 之
 不是按实测写的）。所以本片的 live 状态是 PARTIAL，理由是「生产者已存在且已装，等待一次
 真人回合」，**不是**「没有实现」。
 
+**2026-09-28 订正（§9.51.6）**：**那一次真人回合发生了**，就在这一节被写下的第二天。
+上面那句「`botmux actor current` 在 turn 内的 VERIFIED 输出至今没有被实测过」也就地订正：
+本轮（用户消息 `测试 Human Control`）的 ingress 第一次写出 `ATTACHED`，store 第一次持有
+一条 `provider_status: VERIFIED` / `provenance: FACT` 的上下文。**本片的 PARTIAL 因此闭合**，
+而闭合它的不是一次实现，是 §9.51.3 那条 hook 在真的回合里被真的跑到了一次。
+同一天更早的两条 ingress 是 `BLOCKED` / `current_actor_unverified`。**把这条变化归给哪一项，
+本轮量不出来**：hook 那一行与装着的 `mcp/human_control.py` 我都只量了**当下**这一份，
+没有量过它们在两次 `BLOCKED` 之间没变过——所以「变的是 BotMux 自己」是一句**推断，
+不是读数**（能确定的是 BotMux 在 09-28 重启过两次：15:18 v3.23.1、15:46
+v3.31.0-2-g3153891d）。要把它变成读数，得先有一份当时的载荷哈希。
+
+（另：这两行与用户回合并**不**一一对应，别把这份 jsonl 的行数读成回合数——§9.51.6 有一张
+对齐表。）
+读数与前后对照见 §9.51.6。
+
 ### 9.51.5 测试
 
 `tests/test_work_delegate.py` 21 passed：无 ref / ref 不在 store / **store 层自己那道守卫**
@@ -7652,6 +7675,203 @@ CLI 写下的 grant 被 `wake.authority` 认作 authorizing 且 `wake.plan` 给�
 回归：`test_wake` / `test_delegation` / `test_continuation` / `test_admission` /
 `test_control_store_path` / `test_cross_device_handoff` / `test_core_freeze`
 **433 passed, 1 skipped**。
+
+### 9.51.6 2026-09-28 真人回合实测：生产者那一半闭合了，另一个读者说了相反的话
+
+用户消息 `测试 Human Control` 是本节点**第一次真实人类 turn 铸出可信上下文**。这一节记它的
+读数，也记同一次测试里被量出来的**第三个读者**。
+
+#### 一、§9.51.4 缺的那一件，现在有了
+
+`/data/home/vince/logs/serveros/human-control/ingress.jsonl` 第三条——也是第一条 `ATTACHED`：
+
+```json
+{"actor_identified": true, "at": "2026-09-28T16:14:20.015315+08:00", "attached": true,
+ "context_ref": "human-context:provider%3Abotmux-human-control/ed3eb47df9770123706f7a57ba7a3826",
+ "detail": null, "provider": "provider:botmux-human-control",
+ "schema": "serveros/human-control-ingress.v1", "state": "ATTACHED", "transport": "feishu"}
+```
+
+另两条是 `BLOCKED` / `current_actor_unverified`。**但「ingress 一行 = 一个回合」不成立**，
+这一点得先记下来，否则这份 jsonl 的行数会被读成回合数。本群最近 40 条消息与这 3 行对齐
+（北京时间）：
+
+| 用户消息 | 同一秒的 ingress 行 |
+|---|---|
+| 09-28 `00:56:43` `1` | **无** |
+| 09-28 `09:33:26` `1` | `09:33:29` BLOCKED |
+| 09-28 `15:58:13` `1` | **无** |
+| 09-28 `16:14:17` `测试 Human Control` | `16:14:20` **ATTACHED** |
+| ——本群无对应消息—— | `09-28 01:46:14` BLOCKED |
+
+**四个用户回合里，两个一行都没留下；而 3 行 ingress 里另有 1 行在本群找不到对应消息。**
+三个可能的成因本轮**都没量**：hook 的闸门是
+`[ -n "$BOTMUX_TURN_ID" ] || exit 0`，标记缺席就静默跳过、**不写行**，所以「没写分行」是
+**预期行为之一**；而 `01:46:14` 那一行可能是**另一个会话**的——ingress 是节点级的，但 BLOCKED
+行按设计**不带 `conversation_ref`**（那时还没铸出上下文），所以「这一行属于哪个会话」在记录里
+**不可判**，本轮没有去别的会话里找它。**结论**：这份 jsonl 记的是「attach 被尝试过几次、
+各自什么结果」，**不是**「有几个回合」；本轮要的那一行在，而它的分母不是 4。
+
+**「为什么这一次成了」本轮答不了**：hook 那一行与装着的 `mcp/human_control.py` 我量的都是
+**当下**这一份，没有量过它们在两次 `BLOCKED` 之间变过没有；能确定的是 BotMux 在 09-28 重启过
+两次（15:18 v3.23.1、15:46 v3.31.0-2-g3153891d）。所以这一句到此为止：**不是我改对了什么，
+是这一次它成了**——原因未测。store 里那条上下文记录（六项，`observed_at` / `expires_at` 相隔
+**900s**）：
+
+```text
+actor_ref        feishu:union:on_8f1e3d2af3f27d44fc12f469dbdc1649
+context_ref      human-context:provider%3Abotmux-human-control/ed3eb47df9770123706f7a57ba7a3826
+conversation_ref oc_8c089347a4e7980563c66952b8dca191
+transport        feishu        transport_identity  botmux-verified-enterprise-user
+observed_at      2026-09-28T08:14:19.943316+00:00
+expires_at       2026-09-28T08:29:19.943316+00:00
+provider_status  VERIFIED      provenance          FACT      schema  serveros/trusted-actor-context.v1
+```
+
+§9.51.4 里那句「`botmux actor current` 在 turn 内的 VERIFIED 输出至今没有被实测过」就地处
+订正为：本轮实测的是**它的产物**（上面这条 store 记录），不是它的 stdout——`botmux actor
+current` 本身在本机要求 `--json`，本轮没有重跑它。**本片的 PARTIAL 闭合。**
+
+#### 二、半边一：能产出 grant
+
+| # | 命令 | 读数 |
+|---|---|---|
+| N1 | `work delegate` **不带** `--context-ref` | 拒，退出码 1：「There is deliberately no flag that supplies an actor directly: a verb that could do that could sign its own authority.」 |
+| N2 | `… --context-ref human-context:i-made-this-up` | 拒，退出码 1：「no trusted context 'human-context:i-made-this-up' is held by …/store.json, so 'hc-negctl-n2' has nothing to derive from. … minting one against a context this store has never held is authority with no root.」 |
+| N3 | 同上、再点名一个不存在的 ref | 拒，退出码 1，同一句话 |
+| P | `work delegate --grant-ref hc-smoke-20260928 --item SRV-0011 --action human-control-smoke --valid-from 2026-09-28T08:14:00Z --expires-at 2026-09-28T08:40:00Z --wall-seconds 60 --max-attempts 1 --max-output-bytes 4096` | 落盘，`grants: 1` |
+
+（三条负对照的退出码是**单独跑**量的——上面第一次量它们时我把 `serverosctl` 接进了管道，
+那时读到的 `rc=0` 是管道末端 `tail` 的，不是动词的。同一类坑见 §9.50.7 的量具射程。）
+
+#### 三、半边二：grant 能停，而且 wake 真的问它
+
+§9.51.2 那处修改在本轮**第一次走真路径**（此前只有测试）：
+
+| 时刻 | 命令 | 读数 |
+|---|---|---|
+| 撤销前 | `work wake --item SRV-0011 --dry-run` | `SRV-0011#1  WAKE  READY`，`authority  hc-smoke-20260928` |
+| — | `work revoke --grant-ref hc-smoke-20260928 --reason '…用完即撤'` | `revoked True at 2026-09-28T08:15:17.311972+00:00` |
+| 撤销后 | 同一条 `work wake --item SRV-0011` | `REFUSE  NO_AUTHORIZING_GRANT` |
+
+**具名拒绝，不是伪装成一次唤醒**——正是 §9.51.2 要的那句。没有启动任何东西（`--dry-run`
+只判不动），没有清理任何残留。
+
+#### 四、但同一分钟里，第三个读者说了相反的话
+
+时间 **16:18:10 CST（08:18:10Z）**，同一次读、同一个 store、同样这两条记录：
+
+```text
+$ serverosctl work grants
+recorded    2
+authorizing 2 of 2 (the rest are excluded, each with its reason below)
+states      AUTHORIZED 2
+
+e2e-hc-20260928  AUTHORIZED  (in the envelope)
+  revoked       False
+  window        2026-09-28T16:19:00+08:00      ← 此刻是 16:18:10，还没到
+  until         2026-09-28T16:29:00+08:00
+hc-smoke-20260928  AUTHORIZED  (in the envelope)
+  revoked       True at 2026-09-28T08:15:17.311972+00:00   ← 撤销了
+```
+
+```text
+$ serverosctl work wake --item SRV-0011
+reasons       NO_AUTHORIZING_GRANT 1
+SRV-0011#1  REFUSE  NO_AUTHORIZING_GRANT
+  says  nothing authorizes waking SRV-0011: e2e-hc-20260928 is recorded and
+        GRANT_NOT_CURRENT, hc-smoke-20260928 is recorded and MISSING_OR_REVOKED_GRANT
+```
+
+**`grants` 说 2 of 2 授权，`wake` 说 0 of 2**；而 `grants` 自己那一行下面紧跟着
+`revoked True` 与一个还没到的时间窗——**同一个输出里有两句互相矛盾的话，而印在最上面、
+最像结论的那句是错的那句**。这个动词的 docstring 写着它存在的理由：
+「can be run before a cycle to see whether one may start at all」——它回答的正是这个问题，
+而它答反了。
+
+**不是时钟问题，是这个问题它压根没问。** 把 `--now` 钉在撤销前后来回试：
+
+| `--now` | 上下文 age | grants 的判词 |
+|---|---|---|
+| `08:16:00Z` | 100s | `AUTHORIZED 1` |
+| `08:20:00Z` | 340s | `DELEGATION_DOES_NOT_AUTHORIZE 1` |
+| `08:35:00Z` | 1240s | `DELEGATION_DOES_NOT_AUTHORIZE 1` |
+
+也就是说 **`grants` 的状态只跟着上下文的新鲜度走**；`revoked` 与 grant 自己的窗口从不参与。
+直接对模块读同一条记录，两句并排：
+
+```text
+delegation.derivation -> AUTHORIZED
+standing_reason       -> MISSING_OR_REVOKED_GRANT
+```
+
+**顺带量出一条容易读错的量**：`authorizes`（`context/actor.py:348`）要的是 **FRESH**，
+不是「没过 `expires_at`」。契约 `freshness` 是 `stale_after_seconds: 300` /
+`window_seconds: 900` 两个不同的数——上下文在 **300s 就停止授权**，而它到 **900s 才**
+被叫作 EXPIRED。所以 `expires_at` 那个字段读起来像闸门，它后面还有一条 5 分钟的线。
+
+**根因：`envelopes()` 有三个消费者，其中一个少调了一次。** `derivation` 按自己的 docstring
+只判「有没有一份**仍然新鲜**的委派」，`revoked` 与 grant 自己的窗口按设计分给
+`standing_reason` / `grant_reason`；那么 `envelopes()` 的 docstring——「Only `AUTHORIZED`
+grants enter the map」以及那个 map 是「the map a cycle may be admitted under」——在
+**被撤销的**与**窗口未到的**两格上就不成立：map 里确实进了不再授权的记录。
+
+| 消费者 | 是否另问那两问 | 后果 |
+|---|---|---|
+| `work focus` 路径（`cli.py:7053`） | 是——`select_focus`（`intake/daily_cycle.py:547`）逐行调 `classify`（`:594`），由它调 `grant_reason`（`:270`） | 撤销/未到期的 grant 进不了 `selected` |
+| `runtime/wake.py:415` | 是（§9.51.2 的修法，`:416`） | 具名拒绝，两句话都点名 |
+| **`cmd_work_grants`（`cli.py:7321`）** | **否** | **`AUTHORIZED` / `authorizing N of M` / `(in the envelope)`** |
+
+`cmd_work_grants` 的 docstring 里那句「The two verbs share `context/delegation.py`, so
+**a grant cannot authorize in one and not the other**」**实测为假**——差别恰恰是 `wake` 多调的
+那一次 `standing_reason`。
+
+**它漏得动吗：目前漏不动，但说错话的地方就是它存在的理由。** 准入面上 `admission()` 的
+`GRANT_NOT_RECORDED` 读的正是这个 map，可 `select_focus` 已经先按行挡掉了，撤销的 grant
+到不了那一步。**这一条只量到 CLI 的三个读者**：work-engine 的原子准入门本轮没有量，
+不写成结论（要做，先把它自己的 `envelopes()` 调用点找出来，而不是推断它一定用了同一个 map）。
+
+**处置（proposal，不在本轮做）**：与 §9.51.2 同形的修法——`cmd_work_grants` 在打印前，对每条
+`in_envelope: True` 的记录调一次 `standing_reason`（`envelope_of` 之后的形态，因为 store 的
+键是 `grant_ref` 而它读 `ref`），让 `authorizing N of M` 与行后缀 `(in the envelope)` 建立在
+**两问都过**的记录上；`revoked` / `window` 那几行原样保留，由它们自己说明为什么。
+`derivation` / `envelopes` 的判词一个字不改——**调用，不重写**，与 §9.51.2 同一条纪律。
+**不在本轮做的理由**：它改的是 `runtime/cli.py`，改完要么停在源码（§3.1 那一行就成了又一个
+「源码有、实机没有」），要么走完整条 build → cachebuster → promote → install——那是一条
+**全节点生效**的链。本轮拿到的授权是**测试**，不是**发布**。
+
+#### 五、这次测试里出现了一个我控制不了的写入者（DEFER）
+
+**16:17:12 CST**，store 里多出第二条 grant，`store.json` 的 mtime 就是这一刻：
+
+```text
+e2e-hc-20260928   revoked: False   items: ['SRV-0011']   actions: []
+valid_from 2026-09-28T16:19:00+08:00   expires_at 2026-09-28T16:29:00+08:00
+delegated_by human-context:provider%3Abotmux-human-control/ed3eb47df9770123706f7a57ba7a3826
+```
+
+**不是我写的。** 本轮我只写过一条 `hc-smoke-20260928`；三条负对照全部被拒（退出码 1）且
+不落盘。而且 **ingress 仍然只有 3 行——没有第二个真人回合铸过上下文**，它用的是 store 里
+**已经持有的那条 ref**。它后来的读数正好成了上面第四节的第二个独立样本。
+
+三点如实记下：
+
+- **「谁写的」在本机不可判**，而且这是**设计**：记录里没有指向写入者的字段，`delegated_by`
+  记的是**上下文**，不是写下它的人。按机器策略，未知 owner = **DEFER**；本轮**没有碰**这条
+  grant——它现在是一条**活的、未撤销的**授权（窗口 16:19–16:29），不是我该动的东西。
+- 它顺带量出闸门**强度的边界**：判据是「store 已经持有这个 ref」，不是「这个 ref 出自这一
+  回合」。docstring 说的正是前者（「must name a trusted context this store ALREADY holds」），
+  所以**不是实现与声明不符**；但把一个 0600 store 里的 ref 读出来再呈上去，与「回合内铸出来
+  的」在记录上不可区分。记下来，不下判词。
+- **这一刻没有并发进程在写**（`ps` 里没有 `serverosctl` / `human_control`），mtime 停在
+  16:17:12 没再动。上面所有读数都是在这一刻之后、记录不再变化时取的。
+
+#### 六、这一片没有做的事
+
+没有推任何分支；没有为了让读数好看去动 store（那条撤销的 grant 现在仍写着
+`revoked: True`，`grants` 的四张表都指着它）；没有跑 build / promote / install；没有清理
+`runtime-assets/hwz-server-os/` 下的任何残留（§9.50.7 的 proposal 仍然只是 proposal）；
+没有跑全量回归（本工作树同时有第二个写入者，§9.50.6 的告诫仍然有效）。
 
 ## §9.52 我自己那一片撞了 §25 的棘轮：bootstrap 长了，而长进去的是一段属于 owner 的过程
 
