@@ -9089,6 +9089,212 @@ wake `REFUSE / NO_AUTHORIZING_GRANT`。** 这条链的每一跳都有上面某�
 **任何 claude 进程的 cmdline 都不要整段打印——键名可以，值不可以。** 前两次我记的是
 「字段名与结构可以核，值不该印」，这一条是它的加强版：cmdline 是一整段值。
 
+#### 12.15b 第二次更正：本节的两条承重结论都不成立（2026-09-28 当天）
+
+上一版把自己改过一次（根因从「缺 `procStart`」改成「缺整个 managed turn origin」）。**这次
+更正推翻的是改完之后剩下的两条结论**：因果链，以及「升级不是解」。
+
+**（一）「未绑定 ⇒ `managedTurnOrigin` 从未可用」不成立——`managedTurnOrigin` 不经 dispatch 回执。**
+
+`managed_turn_origin` 是 **worker 通过私有 IPC 发出来的**（`worker.ts:2939`）：
+
+```ts
+send({ type: 'managed_turn_origin', sessionId, capability, policyCapability,
+       ...(originChannelId ? { originChannelId } : {}),
+       ...(capability.turnId ? { turnId: capability.turnId } : {}),
+       ...(dispatchAttempt !== undefined ? { dispatchAttempt } : {}) });
+```
+
+daemon 侧的 handler 在 `worker-pool.ts:13747`，守卫只有三条：worker 代际（`ds.worker !== worker`）、
+`msg.sessionId !== ds.session.sessionId`、以及 `originChannelId` 的格式与落盘。**全程不读
+`dispatchInputReceipts`。** 本节上一版引的 `Qgf`（`… ?? (H.scope!=="chat" ? H.rootMessageId : void 0);
+if(!r) return!1;`）住在 **dispatch 回执**那条链上，产出的是 `Ignored unbound input commit` 那条
+警告——那是**另一条链**。上一版把两条独立的链焊成了一条因果链，这一步不是源码可导的。
+
+**（二）「升级不是解」的论据指向了另一个函数。**
+
+那条比对（`Qgf` 在 3.31.0 里改名 `_Kf`、函数体逐字节同逻辑）证明的是**dispatch 回执那一段**
+跨 8 个版本没动，**不能用来说明闸门没动**。而闸门动了，两处，都在上游 master（本轮取到
+`ebf119a5`，2026-09-28）：
+
+- `src/cli/current-actor.ts` 的祖先走查加了 `if (isTmuxServerProcess(pid, procRoot)) break;`
+  （#1354，2026-09-12，标题就是「兼容共享 tmux 的陈旧祖先环境」），并把原来的「多个 BOTMUX
+  祖先必须一致，否则 throw」改成「取最近的那个完整会话」，注释写：
+  *"A daemon restarted from another managed session can legitimately retain that outer session
+  id above the current worker."*
+- `core/current-actor-attestation.ts` 给闸门加了 `enginePid`/`engineProcStart` 第二信任根
+  （#1466，2026-09-22），注释写：*"RPC tools can start before the viewer CLI exists, so the
+  engine is an independent root rather than a fallback identity claim."*
+
+所以「升级不是解」作为**结论**既未被证实也未被证否；它的**论据**无效。而 #1466 的存在本身，
+就是维护者对「pre-#1466 的闸门会拒绝合法调用者」的书面承认。
+
+**（三）但升级也不是已证的解——而且现在能说清为什么从外面判不出来。**
+
+本轮用只读方式实测了两条假设，**两条都被证伪**：
+
+- **假设 A**「祖先走查在 tmux server 处因 `environ` 读不到而 throw」。实测链条是
+  `683328 claude (BOTMUX=1)` → `1163407 tmux: server` → init；两级的 `/proc/<pid>/environ`
+  **都可读**，带 `BOTMUX=1` 的祖先恰好 **1** 个、无分歧 ⇒ 3.23.1 的祖先走查**会成功**。
+  （附带自查：我第一版探针把「可读但没有 `BOTMUX`」误记成「不可读」，给出过一次假读数；
+  该探针已更正，更正后的判据一并落盘。）
+- **假设 B**（即本节上一版的因果链）。见（一）。
+
+而**闸门内部哪一条前置条件不过，外部不可判定**，原因在 master 上逐处可验：
+
+1. `cli.ts:15938` 是 `} catch {` —— 无绑定，异常被丢弃。**而原因在 11 个抛出点已经算好**
+   （`cli/current-actor.ts:120/127/148/156/188/191/210/218/221`，分别是祖先走查不支持 / 祖先
+   走查失败 / daemon 端口不可用 / session 不可用 / daemon 不可达（含具体 cause）/ 应答不可解析 /
+   daemon 拒绝验明），全部只描述**调用者自己的进程树**与**它自己那次失败的调用**。
+2. `dashboard-ipc-server.ts:1139` 与 `:1152` —— body 读取失败（413/400）、`!sessionId || !peer.ok`
+   （403）、闸门不过（403）三种情形返回**同一份 body**。
+3. `core/current-actor-attestation.ts:213–251` —— `attestCurrentTurnLoopbackPeer` 对 **13 条**
+   前置条件（session 活跃 / lark transport / turnId / workerGeneration / worker 存活 /
+   attestation 代际 / cliPid 与 cliProcStart 的成对性 / processIdentities 非空 / callerOpenId
+   以 `ou_` 开头 / capability / cli 与 engine 的 procStart 复核 / `peerBelongsToCurrentTurn`
+   / peer 的 procStart 复核）**每一条都 `return null`**，外层再统一换成 `current_actor_unverified`。
+
+这不是「再猜一次」的问题：**这个面今天不提供可归因的拒绝**。
+
+**（四）一条会让人读错代码的新事实：canonical 检出比运行版本旧。**
+
+- 运行中的是 npm 安装的 **3.23.1**（npm 发布 `2026-09-16T08:26Z`；二进制
+  `~/.local/lib/node_modules/botmux/node_modules/botmux-linux-x64/botmux`，171 MB，
+  本机落盘 `2026-09-17 13:53`）。直接查该二进制的字面量：含 `callerOpenId`、`senderOpenId`、
+  `preexistingProcessIdentities`、`"tmux: server"`；**不含** `enginePid`、`engineProcStart`、
+  `expectedScheduledTurnId` ⇒ **post-#1354、pre-#1466**。
+- 而 `workspace/src/botmux` 的 canonical 检出 HEAD 是 `8d2986c7`，PR **#1255**，**早于 #1354**。
+  本节上一版逐行读的，就是这份。
+
+**结论：读 `workspace/src/botmux` 推不出正在跑的 daemon 的行为。** 要判运行版本，只能查那个
+二进制的字面量，或取**同一版本号**的 tag；该检出只适用于「上游这个函数的形状大概是什么」。
+
+**（五）处置（取代本节上一版的处置）。**
+
+- **撤回**：上一版的「一条带完整因果链的上游缺陷报告」——那条链不成立，不能发。
+- **保留但换理由**：§18「请用户在飞书再发一条消息」**仍然撤回**，但**不是**因为「结果已知不变」
+  （那个理由建立在被推翻的链上），而是因为**在 `reason` 落地之前，再发一条只会得到逐字节相同
+  的第三行 BLOCKED**，观测上不可区分。
+- **新处置**：可交付物从「缺陷报告」改成「**让这个面可归因的最小上游补丁**」，已按 master
+  `ebf119a5` 落成并 `git apply --check` 通过（`patch/botmux-actor-legibility.patch`）：
+  `cli.ts` 的 `catch` 不再丢弃、`CurrentActorError` 带一个封闭失败词表、`reason` 作为**新增键**
+  （向后兼容，`status:'verified'` 文档不变，构造函数第二参数可选带默认值）。daemon 侧是否披露
+  「哪一组前置条件不过」作为**需维护者裁决**的选项一并提出，trade-off 明写：好处是 stage 只回到
+  发起调用的那个进程（`peer.ok` 已证明它是本机活进程），代价是给猜 `sessionId` 的人一个小预言机。
+- **升级 3.23.1 → 3.31.0**（8 个版本、12 天，`npm latest` 即 3.31.0）是**最便宜、信息量最大**的
+  下一步，且 #1466 正是 actor 信任根的加宽。但**它重启的是本机所有 bot 共用的 daemon**，是需要
+  裁决的动作，不在无人批准时做；而且它是**赌注不是解**——若 `callerOpenId` 缺失源于「worker 的
+  `turnId` 打不中 daemon 的 per-turn `replyTargets`」，这个 bug 在 3.31.0 同样在。
+- **ServerOS 适配器侧无需改动。** `mcp/human_control.py` 已经记录到它可观测的最细粒度
+  （schema 不符 / 非 JSON / 无输出 / status≠ok 各自分档），ingress 那两行落在「schema 正确、
+  `status: blocked`」这一档，是**忠实**的。为它加一个「从别处推断哪一层失败」的分支，就是用户
+  明令禁止的 bypass。
+
+**本轮新增一条可复现探针**（只读）：从一个活跃 BotMux 会话的 claude pid 出发，逐级读
+`/proc/<pid>/stat` 与 `/proc/<pid>/environ`，只报「是否带 `BOTMUX=1`」「是否有多个祖先且 session
+不一致」「`environ` 是否可读」三个布尔，**不打印任何标识符值**（session id 仅以 sha256 前 6 位
+做相等比较）。 
+
+#### 12.15c 第三次收口：P0 的失败点钉在第 3 层，并暴露一条 ServerOS 侧真缺陷
+
+§12.15b 把「哪一层不可判定」讲清了。这一节把**哪一层**钉死，方法是从**运行中的进程**取证。
+
+**（一）hook 路径是好的——`$BOTMUX_TURN_ID` 在。**
+
+`/data/home/vince/.claude/settings.json:54` 的 `UserPromptSubmit` 钩子先过一道门
+`[ -n "$BOTMUX_TURN_ID" ] || exit 0`，再跑 `mcp/human_control.py --attach`。读运行中
+BotMux 会话（`/api/sessions` 只有一条，`backendType: tmux`，`cliId: claude-code`，
+`sessionId` 与 `~/.claude/projects/…/4ab56455-…jsonl` 一致）的进程环境：
+
+```
+pid 681991 (workerPid)  57 vars  BOTMUX* 里 无 TURN_ID
+pid 683328 (claude CLI) 88 vars  **BOTMUX_TURN_ID len=35 sha6=630e69**
+                                 另带 CHAT_ID / OWNER_OPEN_ID / ROOT_MESSAGE_ID
+```
+
+所以 `mcp/human_control.py` 模块 docstring 那句「correctly, because **this process is
+not inside a BotMux turn**」说的是它自己那次**直连探针**，被误当成了生产 hook 路径的
+原因。hook 跑在轮次里，变量在，门是过的。
+
+**（二）由此 P0 的失败点只能是第 3 层：daemon 应答了，并拒绝验明这一轮。**
+
+CLI → daemon 这一段成立，剩下的只能是 `attestCurrentTurnLoopbackPeer` 的 13 条前置条件
+之一，而**具体哪一条不可从外部判定**（§12.15b 的三处压平）。daemon 侧也没有留下任何
+可读痕迹：`~/.botmux/logs/daemon-0-err.log` 全文 **0 次** `actor|attest|unverified`。
+
+**（三）一条可查的嫌疑，与一条我这轮查不动的边界。**
+
+闸门第 2 条是 `ds.session.status !== 'active'`，而该会话经**文档化**的 `/api/sessions`
+报的是 `status: idle`。若 `idle` 在一个 turn 进行中仍然成立，这道门对 claude-code 会话
+**永远不过**。这是**嫌疑不是结论**：要判定它，需要在**一个 turn 进行中**再采样一次同一
+接口，而本机没有可供我安全触发 turn 的通道（`/api/trigger` 不带 `target.chatId` 会落到
+`http_async_…` 合成会话，第 3 条前置条件 `larkTransportEnabled` 必然不过，因而**天然
+不可用于判定**——这条推论本身也是有价值的排除）。所以记为 OPEN，不进结论。
+
+**（四）`contexts = 0`、`grants = 0`，且那 10 条 ATTACHED 是测试污染。**
+
+- 权威存储：`/data/home/vince/state/serveros/runtime/agent-control/store.json`，
+  `contexts: {}`、`grants: {}`，mtime **2026-09-27 00:16** —— ServerOS 从未持有过可信上下文。
+- `artifacts/serveros/ingress-record-defect-20260928/` 那份 22 行快照里的 ATTACHED 是
+  `tests/test_actor_context.py` 的产物（其 README 已写明：成对出现、相隔约 33 ms），
+  那些 `context_ref` 在真实 store 里不可解析。该缺陷已由 `tests/conftest.py` 修掉，
+  生产记录已清空重开。
+- 全机只有一个 `logs/serveros/human-control/ingress.jsonl`，**2 行**，都是 BLOCKED，
+  且**都不是 hook 写的**：第 1 行是直连探针（README 记明），第 2 行同形。也就是说，
+  **至今没有任何一次真人 turn 在这份记录里留下过一行。**
+
+**（五）ServerOS 侧一条真缺陷：那道门不是 per-turn 证据。**
+
+`record_attempt` 之所以是判断「真人 turn 有没有发生」的唯一凭据，是因为它只在 hook 里跑；
+而 hook 的门读 `$BOTMUX_TURN_ID`。**但 Linux 下进程环境在 exec 时冻结、不可被外部改写**，
+`/proc/<pid>/environ` 就是 exec 那一刻的值。因此 hook 看到的 `BOTMUX_TURN_ID` 是**该 CLI
+进程 exec 时**的值，**不可能随 turn 变化**：要么恒真、要么恒假。
+
+后果有两条，都是 ServerOS 侧、都可修：
+
+1. 这道门不能区分「daemon 派发的 turn」与「人在 pane 里直接敲的一行」——它不是它看起来
+   的那个证据。真正的 per-turn 证据只存在于 daemon 的内存里（`managedTurnOrigin` /
+   `turnReplyContexts`），**任何出树进程都读不到**，这是设计而非缺失。
+2. `record_attempt` 记不下「这次是 hook 还是操作员探针」。它刻意不记身份（`actor_id` 永不落盘），
+   但「是否在一个 turn 里」是**布尔、不是标识符**，正是诊断缺的那一位。
+
+**（六）处置。** 与 §12.15b 一致，不新增：可交付物仍是那个 `reason` 字段的最小上游补丁
+（已对 master `ebf119a5` `git apply --check` 通过）。**不推动升级 daemon**：master 的闸门
+同样要求 `managedTurnOrigin.turnId`，而 #1466 的第二信任根 `enginePid` 是 **Codex 专用**
+的，对 claude-code 的 `UserPromptSubmit` 钩子没有增量——升级的期望收益因此是**低**的，
+低于它重启本机所有 bot 共用 daemon 的代价。
+
+#### 12.15d 第四次更正：§12.15c 里「没有任何一次真人 turn 留下过一行」被推翻（2026-09-28 当天）
+
+§12.15c（四）末尾那句是错的，且它错得**朝向不利的方向**：它把证据读成了「这条链上还没有真人
+试过」，而实际上真人试过、hook 也确实跑了。三条互不依赖的读数同时指向另一次归因：
+
+1. **transcript**：BotMux 会话 `4ab56455` 在 `09:33:28`（北京）收到一条 **string 内容**的 user
+   消息。字符串消息是真人键入的特征（daemon 派发的合成轮不是这个形状）。
+2. **ingress 记录**：第 2 行 BLOCKED 写于 `09:33:29.340`，即那条人类消息之后 **1.3 秒**。
+3. **该会话的第一个 `tool_use` 出现在 `09:33:38`**，比 ingress 行**晚 9 秒**。全历史 253 处提及
+   `human_control` 的 `tool_use` 中，09-28 09:33 前后一处都没有（那些全部属于我自己的 session）。
+
+即：BLOCKED 行写于该模型产出任何工具调用**之前**，因而不可能是「操作员手工探针」——
+手工探针要由某个方发起，而当时那个会话里唯一的发起者是人类。§12.15c 里「两行同形故都非 hook」
+的推论，把「形状相同」当成了「来源相同」；第 1 行确实是直连探针（其 README 记明），第 2 行不是。
+
+**同时更正 §12.15c（五）的一个论断**：那里说 `$BOTMUX_TURN_ID` 恒真或恒假、故这道门「不是它
+看起来的那个证据」。前半句成立（env 在 exec 冻结，本机那台 CLI 已存活 32 小时仍带着启动轮的
+turn id），但由此不能推出 hook 没跑——hook 的门只判非空，长活进程下它恒真，**因此每轮都跑**。
+真正的问题是它**恒真**，判别力为零；这与「从未触发」是两件相反的事。
+
+**对结论的影响**：链上的断点由「ServerOS 侧从未被真人触发过」改为「已被真人触发，且断在
+daemon 侧且不可归因」——即 §12.15b/§12.15c 的其余部分站得住，只有「第 2 行不是 hook 写的」
+这一条作废。上游请求因此从「先证明这条链有人用过」升级为 §7 的两项（失败可归因 + 成功文档
+补位置），后者是本次新测出的第二断点。
+
+**同一轮里测出的 ServerOS 侧真缺陷**：`mcp/human_control.py` 读的是另一份文档——要求
+`status == "ok"`、从 `user` 取身份、从 `chatId`/`messageId` 取位置，三个字段 BotMux 从未产出。
+后果是 `build` 判「缺必填证据」而拒绝，**任何回合都铸不出 trusted context**，与闸门是否放行
+无关；也就是说这一条链上原本有两个各自独立、互相掩盖的断点。前三个字段的读法已删除（PR #27，
+已并入 main `7bdc7f9`）；后两个位置字段无客户端可信来源，改由上游提案 §7 请求。
+
 ### 12.16 一条在盘上已经变假的记录：`codex workspace AGENTS.md`（2026-09-28）
 
 **这一节起于一条 live 读数，不起于计划项。** `serverosctl device agents` 的最后一行是：
