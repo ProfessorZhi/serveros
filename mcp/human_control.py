@@ -46,6 +46,27 @@ does not claim it. A provider status of BLOCKED produces no actor and no
 context — see `Report.as_report()` below, which has no field in which to put an
 actor it did not get.
 
+The SUCCESS document was measured later, and it is narrower than this module
+originally assumed. Read off upstream master and confirmed against the 3.23.1
+binary running on this device, the verified answer is exactly
+
+    {"schema":"botmux.current-actor.v2","status":"verified","actor":{"email":…}}
+
+— three fields. It carries no `chatId`, no `messageId` and no `user`, so the two
+locators the trusted-context contract requires of a provider (`conversation_ref`
+and `message_ref`, both `required: true` in `context/actor-context-contract.yaml`)
+have no producer on this surface at all. That is stated here because the earlier
+version of this module read `status == "ok"` and pulled the identity from `user`
+and the locations from `chatId`/`messageId` — every one of them a field the data
+layer never produced, which is the failure this module's own docstring names
+two paragraphs up. The consequence was not cosmetic: the report was missing
+required evidence, so `build` refused and no context could ever be minted, on
+any turn, verified or not. The reader now consumes the measured shape and
+refuses by field name; what remains is a BotMux change, requested as item 3 of
+`artifacts/srv-botmux-gate-20260928/UPSTREAM-PROPOSAL.md`, because no client-side
+substitute is trustworthy — the environment is writable by whoever spawns the
+probe.
+
 `attach_context` is the other half of that sentence, and the producer §5 was
 missing. It carries a VERIFIED report to serverosd over the socket and comes
 back with the `context_ref` the control plane resolves the actor from. It
@@ -186,10 +207,15 @@ def attach_context(provider: HumanControlProvider, *, daemon=None,
       right for a caller asking a question about a conversation it already has.
       It is wrong here: the record says which turn this identity was observed
       in, and a caller able to write that field can steer an audit trail. So the
-      mint passes nothing and the transport's own `chatId` / `messageId` land in
-      the record. A probe that names no conversation produces a report missing a
-      required field, which `build` refuses — no context, rather than a context
-      with a plausible-looking location.
+      mint passes nothing. There is no non-forgeable replacement for it either:
+      the actor document carries no locator, an environment-derived one would be
+      the caller's own choice, and the only per-turn-looking variable a client
+      can read is frozen at process exec. So a probe that names no conversation
+      produces a report missing a required field, which `build` refuses — no
+      context, rather than a context with a plausible-looking location. This is
+      item 3 of the upstream proposal: the daemon already verified a turn, so it
+      should publish the locators it verified rather than leave every client to
+      guess at them.
 
     * **The pid is this process, because this process ran the probe.** `identify`
       runs `botmux actor current --json` as a child of the calling process, so
@@ -360,6 +386,73 @@ class HumanControlProvider(Protocol):
 DEFAULT_BASE_URL = "http://127.0.0.1:7891"
 ACTOR_SCHEMA = "botmux.current-actor.v2"
 
+# The one word BotMux uses to say it verified this turn's sender — MEASURED off
+# the shipped artifact, not assumed. The daemon builds the success document as
+#     { ok: true, document: { schema, status: 'verified', actor: { email } } }
+# and `src/cli.ts` writes that document verbatim. This is the shape in upstream
+# master AND in the 3.23.1 binary running on this device; the previous reader
+# required `status == 'ok'`, a literal this surface has never produced (the
+# `status:"ok"` strings in the binary all belong to other subsystems — host
+# executor, cost analysis, contact profile — and none is an actor document).
+# A reader demanding `'ok'` refuses every genuine verification, which is the
+# failure this module's own docstring names: a declaration layer reading a field
+# the data layer never produced.
+ACTOR_VERIFIED_STATUS = "verified"
+
+# Where the daemon puts the actor it resolved. What crosses this boundary is an
+# enterprise email, not the `ou_` open id: open ids are app-scoped, so the
+# daemon reduces the caller's open id to the identity every app agrees on and
+# publishes only that. Reading a name out of some other field would be reading
+# an identity this surface never published.
+ACTOR_IDENTITY_FIELD = "email"
+
+# BotMux answers a refused turn with `status: 'blocked'` plus an `error`. The
+# upstream proposal at artifacts/srv-botmux-gate-20260928/UPSTREAM-PROPOSAL.md
+# adds a `reason` beside them (which of the three refusal layers answered). It is
+# optional and absent today; when present it is copied into `detail` so the
+# attribution reaches the person reading the ingress record instead of stopping
+# at the machine-readable document. Bounded, because it is read for display.
+ACTOR_REASON_MAX = 64
+
+# Neither locator is read from the environment, and the reason is BotMux's own
+# security model rather than a preference. BotMux does export `BOTMUX_CHAT_ID`
+# and `BOTMUX_TURN_ID` into the CLI it spawns, but its actor gate never reads a
+# peer's environment: it resolves the caller from the TCP socket inode and walks
+# the process ancestry. That is deliberate, because an environment is writable
+# by whoever spawns the process, so a value taken from it is a claim by the
+# caller rather than evidence about the caller. ServerOS adopting
+# `$BOTMUX_CHAT_ID` as `conversation_ref` would invert that model: any process
+# in the turn — including the model itself, which can run this probe with any
+# environment it likes — could then choose which conversation an audit record
+# names, and could mint a fresh context per event by varying the field.
+#
+# The per-turn variable is worse still, and this half is measured rather than
+# argued. On Linux `/proc/<pid>/environ` is the environment as of exec, so a
+# long-lived CLI cannot have it updated: the claude CLI serving a BotMux session
+# on this device had been up 32 hours and still carried the turn id it was
+# spawned with. Substituting `BOTMUX_TURN_ID` for `message_ref` would give every
+# turn after the first the SAME message reference — one message authorising many
+# actions, which is the single thing `message_ref` exists to prevent.
+#
+# So both locators stay unsourced, and `build` refuses by name. That refusal is
+# not a gap left open: it is the honest report of a BotMux surface that verifies
+# a turn and publishes nothing that identifies it. See item 3 of
+# artifacts/srv-botmux-gate-20260928/UPSTREAM-PROPOSAL.md.
+
+
+def _document_locator(raw: dict, field: str) -> str | None:
+    """A locator the daemon published in the actor document, or None.
+
+    None is not a fallback value here — it is the answer "this surface does not
+    publish that", which is what the mint then refuses by name. Returning an
+    empty string would be indistinguishable from a locator and would reach
+    `build` as a present-but-blank field.
+    """
+    value = raw.get(field)
+    if not isinstance(value, str):
+        return None
+    return value.strip() or None
+
 
 @dataclass(frozen=True)
 class BotMuxHumanControlConfig:
@@ -517,34 +610,56 @@ class BotMuxHumanControlProvider:
                         "document whose shape has changed"),
                 raw=raw)
 
-        if status != "ok":
+        if status != ACTOR_VERIFIED_STATUS:
+            reason = str(raw.get("reason") or "").strip()[:ACTOR_REASON_MAX]
             return ActorReport(
                 provider_id=self.provider_id, transport=self.transport,
                 status="BLOCKED", observed_at=observed_at,
                 conversation_ref=conversation_ref, message_ref=message_ref,
                 detail=(f"BotMux reports status {status or 'unknown'!r}"
-                        + (f" ({raw.get('error')})" if raw.get("error") else "")),
+                        + (f" ({raw.get('error')})" if raw.get("error") else "")
+                        + (f" [{reason}]" if reason else "")),
                 raw=raw)
 
-        # Only reached when BotMux itself said `ok`. The username is required
-        # at this point: `ok` without a name is a contradiction, and resolving
-        # it in favour of "no actor" here would make a broken provider look
-        # like a private turn.
-        actor_id = str(raw.get("user") or raw.get("username") or "").strip()
+        # Only reached when BotMux itself said it verified this turn. The actor
+        # is required at this point: a verification carrying no identity is a
+        # contradiction, and resolving it in favour of "no actor" here would
+        # make a broken provider look like a private turn.
+        actor = raw.get("actor")
+        actor_id = ""
+        if isinstance(actor, dict):
+            actor_id = str(actor.get(ACTOR_IDENTITY_FIELD) or "").strip()
         if not actor_id:
             return ActorReport(
                 provider_id=self.provider_id, transport=self.transport,
                 status="BLOCKED", observed_at=observed_at,
                 conversation_ref=conversation_ref, message_ref=message_ref,
-                detail="BotMux reported ok with no verified user name",
+                detail=(f"BotMux reported {ACTOR_VERIFIED_STATUS!r} with no "
+                        f"actor.{ACTOR_IDENTITY_FIELD}"),
                 raw=raw)
 
+        # The document answers about a sender, and today it carries no locator
+        # — `chatId` / `messageId` are the names BotMux already uses for these
+        # two things on its other documented surface (`/api/sessions`), so they
+        # are the names requested in item 3 of the upstream proposal and the
+        # names read here. Reading them from the document and not from the
+        # environment is the whole point: the document reaches a client only
+        # through the daemon's own turn gate, so its contents are the daemon's
+        # statement, while `$BOTMUX_CHAT_ID` is writable by whoever spawned the
+        # process (see the note above the constants).
+        #
+        # Until BotMux publishes them the lookup finds nothing, and that is the
+        # honest end state rather than a gap: a report with no locator is
+        # refused by `build` **by field name**, instead of the mint inventing a
+        # location or being handed one by the caller it is about to authorize.
         return ActorReport(
             provider_id=self.provider_id, transport=self.transport,
             status="VERIFIED", actor_id=actor_id,
             transport_identity="botmux-verified-enterprise-user",
-            conversation_ref=conversation_ref or raw.get("chatId"),
-            message_ref=message_ref or raw.get("messageId"),
+            conversation_ref=(conversation_ref
+                              or _document_locator(raw, "chatId")),
+            message_ref=(message_ref
+                         or _document_locator(raw, "messageId")),
             observed_at=observed_at, raw=raw)
 
     # -- transport ingress -------------------------------------------------
