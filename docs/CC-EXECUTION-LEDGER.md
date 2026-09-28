@@ -9577,3 +9577,204 @@ pointer     AGREEMENT · current → revisions/serveros-cleanmain-28b-20260928@4
 清除它归 P4，与其它清理项一起待批。顺带记一句同类的对比：**渲染器自己是有这条意识的**
 （它拒绝把文档写进 revision，要求 `--out` 指到产物之外），把 `.pyc` 写进去的是我的调用
 方式，不是它的。
+
+### 9.56 收口第一刀：把「停在那」从一句日志变成一个状态
+
+产品词汇里工作离开 Focus 有四条路——`Completed / Safely Parked / Cancelled + reconciled /
+Superseded + transferred`——三条有表示，**park 一条没有**。不是「字段没加」，是**三个位置都空**：
+`work checkpoint` 没有旗标，`supersede_checkpoint` 要求一个真实存在的后继（那是「谁接手」，
+不是「没人接手」），`live_checkpoints()` 只认 `superseded_by`。所以一个查清之后不再需要被续的
+记录，在产品里**无法被表达为已处置**。
+
+代价不是日志多，**是信号被吃掉**：`SRV-0011#1`（R1 留下的探针，窗口 09-26 16:19:59Z 就过了）
+每分钟被评估一次，如实打印 `REFUSE NO_AUTHORIZING_GRANT`——而这句话正是「一个真实 Item 卡在
+授权上」会产生的句子。一条真的卡住的记录混在里面，看起来和它一模一样。
+
+**形态。** 记录上三个字段 `parked_at` / `parked_by` / `parked_reason`，读法
+`is_parked(record) = bool(parked_at) and not unparked_at`。`work unpark` 写另外三个并**保留**
+前三个——抬起不是撤回，「曾经停过」仍可读。动词：
+
+```text
+serverosctl work park <checkpoint> --reason <why> [--by <who>] [--at <when>]
+```
+
+`--reason` 在**动词处**必填：一次不说理由的停车就是「带公文的删除」。`--by` 缺省读登录名。
+两者都以 `parent_owner` 的同一种身份成立——**说话的人，不是被验证的身份**——且刻意**不是**
+`context_ref`：停车不产生也不撤销任何授权，这正是 `revoke_grant` / `work revoke` 赖以成立的那个
+不对称。有一条测试钉住这一点（抬起后的记录里没有 grant、没有 context、没有 author 键）。
+
+**两条不变量，都是量出来的。**
+
+1. `live_checkpoints()` 排除 parked，`parked_checkpoints()` 读回它们——但后者**不是**前者的
+   补集。一个停过的记录可能被**更后面的 epoch** 走过，于是两个集合都含它，而读者要打印的
+   **唯一**理由是 `SUPERSEDED`（「有人接手了」）。所以每个只印一个理由的读者都先查
+   supersession。这条是我先写错了测试（断言两集合互斥），再反过来修测试、并把非互补性写进
+   `parked_checkpoints` 的 docstring 与 CLI 的注释里。
+2. `continuation.py` **不 import 任何其它层**，所以 `continuation_state` 字面读这两个字段名：
+   **字段名就是契约**，有 pin 测试钉住它与 store 的判据一致。
+
+**`put_checkpoint` 少了一个分支。** 它原本会把 parked 的记录叫作「holds a live checkpoint」，
+对着一个手里拿着**另一份**记录的写入者说。现在那个分支说出它实际是什么：谁在什么时候为了
+什么理由停的，以及两条出路。同时六个 park/lift 字段必须进 `CHECKPOINT_STORE_FIELDS`，
+否则一个**在 park 之前**已被接受的写入重试会被当成「第二个写入者」拒绝，而不是回
+`replayed: True`——有测试专门钉这一条。
+
+**第二刀是「用起来」才发现的，而且是同一类错句往后挪了一步。** park 落地、部署、对着活体
+读 `work continuations`，停了的记录是这样收尾的：
+
+```text
+SRV-0011#1  PARKED  wait WAIT_OVER  attempts ATTEMPT_NONE
+  ...
+  checkpoint parked at … Nothing wakes it and nothing should …
+  wait          the window ended at …, so the wait is over and a new Parent can resume this Item
+```
+
+wait 那句话是真的，而且它是**最后一行**——两行之上那句 park 的直接反面。`work wake` 早就把
+这两者排对了次序（在它自己的行里先答 park 再答 wait），`work continuations` 没有。修法不是
+把 wait 删掉（那会把一个真事实藏起来），而是**把次序说出来**：wait 保留自己的读数，多一句
+指明两者中哪一个是现行的。两个方向都有测试：停了的记录不再以邀请收尾，没停的**仍然**以它
+收尾。一次移除那三行的变异让前者红、后者绿——这是「这条判据是活的」的量具。
+
+**发布链与读数。**
+
+```text
+release     serveros-cleanmain-28e-park-20260928@86dc396 · 3.1.0+srv0005.20260928e · tree 142b0e3df33a
+source      86dc3961 (分支 serveros/release-28e-checkpoint-park-20260928) · ability-management@da5f89b1b131
+pointer     AGREEMENT · current → revisions/serveros-cleanmain-28e-park-20260928@86dc396
+```
+
+cachebuster `srv0005.20260928d → 28e`，**四个成员变了**，全部量过：
+
+```text
+runtime/agent_control_store.py  e8652456 → cdfd29ad
+runtime/cli.py                  76a92895 → 41d1abd8
+runtime/continuation.py         9d6995e9 → cc047138
+runtime/wake.py                 97fc9d6c → 693ac444
+```
+
+不升的后果不是「滞后一点」：`runtime/wake.py` 是那台 timer 每分钟打印的那一行，而装着的那份
+读不懂 park；`runtime/cli.py` 是操作者要敲 `work park` 的那个面，`28d` 上这个动词不存在——
+**同一个载荷里的文档已经在说 `work unpark` 是回去的路，而节点表达不了这个状态。**
+
+**生产 timer 的现场读数**（`serveros-continuation-wake.timer`，每分 :20），停车之后：
+
+```text
+reasons       PARKED 1
+SRV-0011#1  REFUSE  PARKED
+```
+
+`work continuations`：`checkpoints 0 live of 1 recorded, 1 parked` / `waits … nothing held to
+wait on` / `SRV-0011#1  PARKED`。记录一个字段都没少，`work unpark` 是回去的路。
+
+**`SRV-0011#1` 已通过新动词正式停车**，理由写在记录上（它是 R1 探针、不是真实待续责任；它
+留下的那个洞——真实 Native Parent launcher 从未被实测——已经被记为**独立、小范围**的
+integration coverage gap，将用无外部 effect、权限受限、一次性 disposable Work Item 验证，
+**不复用这个探针**）。
+
+**测试。** `tests/test_continuation.py` + `tests/test_wake.py` 227 passed。全量在冻结字节上：
+`4 failed, 6353 passed, 20 skipped, 4008 subtests passed`——4 条仍是
+`tests/test_relations.py::RealRecordsTest` 那组已知基线，逐条同名，**无新增失败**。
+
+### 9.57 收口第二刀：真实的 Parent 被拉起来过一次
+
+这是那条独立 coverage gap 的闭合，**不是新功能**。缺的从来不是代码，是一格**没被测过**的东西：
+2026-09-28 16:18:27 那一跑证明了「可信上下文 → 有界授权 → 决策 → 启动 → 无重复子进程」，
+但 launcher 槽里放的是我写的探针（读走 stdin 就 exit 0），产品的最后一步
+`~/.local/bin/serveros-wake-parent → exec claude -p "${briefing}"` **只被代码读过，没被跑过**。
+receipt 自己很克制：`effect=UNVERIFIED`、`descendants_verified=false`——它没有冒认，我们也不替它冒认。
+
+**为什么不能随手补。** 要闭合它，三个条件必须同时成立：checkpoint 的等待已结束、有一份在 force
+且具名该 Item 的授权、根上下文 FRESH（真人回合后 300 秒内）。而一旦成立，被拉起来的那个 Parent
+是**带 `bypassPermissions` 的活体会话**——本机 `~/.claude/settings.json` 里就写着
+`permissions.defaultMode`。**用「具名的过去时刻」把新鲜度闸蒙过去再启动它，是改钟过闸，不是测量。**
+
+**这一刀的形状（一次性的，不是探针的翻版）。** 一个**全新的** disposable Work Item
+`SRV-9901`（不复用 `SRV-0011`），证据落在 `artifacts/work-items/serveros/SRV-9901/` 下。
+launcher 是一个受限 wrapper，它测的是产品那一步 `exec` 的**形状**——绝对路径、briefing 从 stdin
+进、交到一个真实 agent 手里、那个 agent 的退出码进 receipt——三处刻意的差别是被测对象之外的
+三样东西：
+
+| | 产品 launcher | 这一刀的 wrapper | 为什么 |
+|---|---|---|---|
+| 证据 | 不留证 | **先落盘再交人**：字节数、行数、sha256、pid、cwd | 「Parent 侧留下我读到了哪份 briefing 的自证」 |
+| 权限 | `claude -p`，本机 settings 带 `bypassPermissions` | `--restricted --strict-mcp-config`（空 mcp config） | 不起不受限的活体会话 |
+| 拒绝面 | 空 briefing → exit 2 | 同一个形状 | 收到空简报就起 agent 会把「没东西可续」变成一次消耗 |
+
+`--restricted` 在这个 claude 上是实测过的语义：去掉一切跑命令/跑代码的内建工具与 WebFetch、
+**忽略**用户/项目/本地 settings（那个 `bypassPermissions` 因此不生效）、明确**拒绝**
+`bypassPermissions`、文件工具锁在 working dir 内。
+
+**它动了一处生产面，先说清。** 产品的唤醒定时器每分钟 `:20` 跑
+`work wake --parent …/serveros-wake-parent --budget 900`，而那个 launcher 就是 `exec claude -p`。
+**一旦 `SRV-9901` 的授权存在，这一跳会抢在前面把那个不受限会话拉起来。** 所以测量期间把这个
+timer `stop` 了（`is-enabled` 始终是 enabled，`start` 就回来）。停着不损失什么：当时唯一的
+live checkpoint 是 `SRV-0011#1`，它已经 PARKED，本来就不会被唤醒。测完立刻恢复，见下面的读数。
+
+**实测（北京时间）。**
+
+| 时刻 | 事实 |
+|---|---|
+| 18:26:00.630 | 真人在飞书发出一个回合，铸出上下文 `…/a337d9f3…`，`FACT`/`VERIFIED` |
+| 18:26:06 | 跑这一趟。**全程不传 `--now`**，读的是实时时钟 |
+| 18:26:07.142 | `work checkpoint SRV-9901 --epoch 1` 落盘，窗口 18:26:18.864 |
+| 18:26:07.169 | `work delegate --grant-ref slice2-disposable-20260928 --item SRV-9901`，`max_attempts 1`、`wall_seconds 150`、`max_output_bytes 8192`，窗口 18:26:07 … 18:30:07 |
+| 18:26:18.934 | `work wake --item SRV-9901`：`SRV-9901#1  WAKE  READY`，`reasons READY 1`，authority 具名 |
+| 18:26:18.960 | **Parent 被启动**（启动时上下文 18.3 秒新） |
+| 18:26:20.786 | **Parent 退出 0**，`status=EXITED`、`executed_now=true`、`direct_process_exited=true`，历时 **1.826 秒** |
+| 18:26:21.100 | 立刻第二次：`REFUSE ATTEMPTS_EXHAUSTED`，**没有第二个子进程、没有第二份 receipt** |
+| 18:26:45.771 | `work park SRV-9901#1 --reason …` ——**用这一刀刚落地的那把动词收它自己** |
+| 18:26:46.081 / .372 | 撤销 `slice2-disposable-20260928`，顺带收掉 E2E 那份还挂着的 `e2e-hc-live-20260928` |
+| 18:26:49 | 定时器恢复后第一跳：`reasons PARKED 2`，两条都是 `REFUSE PARKED`，**没有 `NO_AUTHORIZING_GRANT`** |
+
+16:18 那次探针是 **13.7 毫秒**，这次是 **1.826 秒**——差的就是「真的起了一个 agent」这件事。
+
+**四条判据，逐条对答案。**
+
+1. **receipt 出现 `WOKEN` + 真实 Parent 的退出码**：`continuation-wake-SRV-9901-e1-a1  WOKEN
+   EXITED  exit 0`，receipt 里 `process_exit_code=0`。
+2. **Parent 侧留下「我读到了哪份 briefing」的自证**：wrapper 落盘 `bytes 2937 / lines 49 /
+   sha256 50d0ceca…`，以及 agent 自己的回话（132 字节）：
+   「SRV-9901 (epoch 1): next safe action is to read the stdin briefing and reply with one line
+   and nothing else — which is this line.」
+3. **这个 Item 的 effect 面为空**：见下面的对账。
+4. **第二次必须是 `REFUSED` 或 `REPLAYED`**：`REFUSE ATTEMPTS_EXHAUSTED`，产品自己的句子——
+   「1 of the 1 attempt(s) slice2-disposable-20260928 allows have been recorded … so this routine
+   will not wake it again」。
+
+**三份载体，一份 briefing。** 这是这一刀唯一一处需要算盘的地方，算清了：
+
+```text
+launcher 自证           2937 字节   sha256 50d0cecaa75f08a4108a9aa948845465d0eb8432393e21e48254c20bf5d9a4f6
+launcher 落盘的原文      2937 字节   sha256 50d0cecaa75f08a4108a9aa948845465d0eb8432393e21e48254c20bf5d9a4f6   ← 同一份
+receipt 留存的 stdin     2938 字节   sha256 e354ec1be5c34e70322d3af8b9bf8b84153677b24262374e4085b6af42242aa8
+  head -c -1 receipt.stdin | cmp - launcher 落盘的原文   →  IDENTICAL
+```
+
+那 1 个字节是 `$(cat)` 收掉的收尾换行，不是内容差。**「Parent 读到的」与「节点送出的」是同一份**，
+这一条是这一刀的主结论，其余都是它的旁证。
+
+**effect 面，实测为空。** 声明面是 `--write-scope <一次性目录>`；量下来：
+
+- 那个一次性目录里，除我预置的文件外，**agent 一个字节都没写**；
+- 运行面上，18:16 之后被动过的只有：store（18:26:07，我自己的 checkpoint+授权，**在唤醒之前**）、
+  和这一次 wake 自己的四份 receipt 记账（`.lock`/`.stdin`/`.stdout`/`.stderr`/`.json`）；
+- 仓库面：`src/serveros` 与 28e 工作树，18:16 之后 **0 个文件**被动过；
+- 这一趟没有连带启动任何别的 systemd 单元（`--since 18:26:00` 除本单元外无条目）。
+
+agent 那条路是**结构上**到不了外部的：`--strict-mcp-config` + 空 mcp config 一个 MCP server 都没起，
+`--restricted` 去掉了 WebFetch 与一切跑命令的工具，文件工具锁在一次性目录内。**没有发任何飞书消息。**
+
+**没有把 receipt 的话往上抬。** `effect=UNVERIFIED`、`descendants_verified=false` 是它自己写的，
+这一条不改成 `EMPTY`：上面那一段是**我的**读数与**结构**论证，不是 receipt 的字段。两者并列，
+读者自己判。
+
+**它没有跑出新的安全/正确性 bug，所以第三刀、第四刀不开。** 唯一两条噪音都记在这、都不构成缺陷：
+Parent 的 stderr 上有一行 `[claude-code:unrecognized_model]`（本机 SDK 模型名的告警，90 字节，
+退出码仍是 0）；`work continuations --json` 不带计划行（计划在人读的那份输出里，是我自己的查询写错了）。
+
+**顺带一条收口。** 这一次给 Parent 的那份 briefing（2937 字节）**末尾已经带着停车动词**：
+「`serverosctl work park <checkpoint> --reason <why>` … `work unpark` is the way back. Handing it
+to a person is a message and not a record.」——9.56 落地的那句话，第一次真的到了一个被拉起来的
+Parent 手里。这一刀和上一刀在同一份字节里合上了。
+
+**代码改动：无。** 这一刀是一格测量加两份证据，不需要动运行时；28e 上要合的就是 9.56 那一刀。

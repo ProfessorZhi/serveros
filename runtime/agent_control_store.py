@@ -304,8 +304,9 @@ BUDGET_KEYS = ("wall_seconds", "max_attempts", "max_output_bytes")
 LEASE_INTENT_FIELDS = ("resource", "scope", "holder")
 
 # The fields the STORE adds to a stored checkpoint, and therefore not part of what
-# a caller wrote: the clock `put_checkpoint` was handed, and the two fields a later
-# epoch's write leaves behind on the record it takes over.
+# a caller wrote: the clock `put_checkpoint` was handed, the two fields a later
+# epoch's write leaves behind on the record it takes over, and the six that a park
+# and a lift write on the record they set down and take back up.
 #
 # `put_checkpoint` compares a caller's record against the stored one to decide
 # whether a second call is a retry, and these are excluded from that comparison.
@@ -313,7 +314,41 @@ LEASE_INTENT_FIELDS = ("resource", "scope", "holder")
 # that created it. Comparing them would make every replay of a superseded write a
 # refusal — the caller would be told its own accepted write is not there, which is
 # the one thing a replay must never say.
-CHECKPOINT_STORE_FIELDS = ("written_at", "superseded_by", "superseded_at")
+#
+# THE PARK FIELDS ARE HERE FOR THAT SAME REASON AND ARRIVED LATER THAN THE OTHER
+# THREE, which is why they are named rather than folded into a rule about «fields
+# the writer did not write». A Parent that wrote a checkpoint and retried it after
+# somebody had parked that record is retrying an ACCEPTED write, and a comparison
+# that included `parked_at` would answer it with «this ref already holds a live
+# checkpoint and it cannot be replaced» — a sentence about a second writer, sent
+# to the writer whose record is the one being held.
+CHECKPOINT_STORE_FIELDS = ("written_at", "superseded_by", "superseded_at",
+                           "parked_at", "parked_by", "parked_reason",
+                           "unparked_at", "unparked_by", "unparked_reason")
+
+
+def is_parked(record: dict) -> bool:
+    """Whether a checkpoint was set down by a person and not taken back up.
+
+    TWO FIELDS AND ONE RULE. `parked_at` is on a record somebody set down;
+    `unparked_at` is on one they lifted again. A record is parked exactly when the
+    first is there and the second is not — which is why lifting a park WRITES a
+    field instead of removing one. A store that deleted `parked_at` would leave a
+    record indistinguishable from one nobody ever set down, and «why was this set
+    down» is the part a later reader cannot reconstruct from the record's present
+    state; both fields stay and the disposition is the reading of the pair.
+
+    IT IS READ IN TWO MODULES AND THE FIELD NAMES ARE THE CONTRACT. This module
+    reads it through this function — `live_checkpoints` to answer «who may be
+    woken», `runtime/wake.plan` to say WHY a record is not a candidate. And
+    `runtime/continuation.continuation_state` reads the same two names literally,
+    because that module imports no other layer of this tree and
+    `tests/test_continuation.py` asserts it. A rule in two copies is a rule that
+    drifts, so the copies are not trusted to agree: the field names are the
+    contract, and that same test file pins that the store's live set and the
+    reader's answer agree for every record.
+    """
+    return bool(record.get("parked_at")) and not record.get("unparked_at")
 
 # The phases a CALLER may confirm. `INTENT_RECORDED` is not among them: it is
 # the phase `admit` itself writes, so a caller confirming it would be reporting
@@ -851,6 +886,13 @@ class AgentControlStore:
             `runtime/continuation.build_checkpoint`, and a record that arrived
             without one did not come through it.
 
+        A WRITE THAT MEETS A PARKED RECORD IS THE FIRST OF THOSE, WORDED AS WHAT IT
+        IS. It refuses, as it always did, and the sentence names the park instead of
+        calling the record live: it is not live — `live_checkpoints` stopped
+        answering for it the moment somebody set it down — and what the writer needs
+        is the reason its replacement is refused. The two repairs it names are the
+        two that exist: `unpark_checkpoint`, or the epoch that supersedes it.
+
         AND ONE THING THIS DOES THAT IS NOT A REFUSAL. A write at a HIGHER epoch
         than the live record for the same Item supersedes that record in the same
         transaction. The scope is the Item; the epoch is only how it changes hands,
@@ -904,6 +946,20 @@ class AgentControlStore:
                         f"one would be the replaced owner writing over what "
                         f"replaced it — which is the «旧结果晚到覆盖新epoch» failure "
                         f"stated as a store rule instead of as prose")
+                if is_parked(existing):
+                    # NOT «holds a live checkpoint»: a person set this one down,
+                    # and the sentence a writer needs is the one that says so —
+                    # they may be looking at exactly this record wondering why it
+                    # was not resumed.
+                    raise StoreError(
+                        f"{ref} was parked at {existing.get('parked_at')} by "
+                        f"{existing.get('parked_by')} for "
+                        f"{existing.get('parked_reason')!r}, and a different record "
+                        f"cannot be written over it. The park is why the work was set "
+                        f"down, and replacing this record would remove the only copy "
+                        f"of it — `unpark_checkpoint` puts this record back in the "
+                        f"set a wake reads and keeps both halves, and a write at a "
+                        f"higher epoch supersedes it and keeps it readable")
                 raise StoreError(
                     f"{ref} already holds a live checkpoint and it cannot be "
                     f"replaced. The scope is this Item at this epoch, one "
@@ -964,16 +1020,240 @@ class AgentControlStore:
         return dict(self._read()["checkpoints"])
 
     def live_checkpoints(self) -> dict:
-        """Every checkpoint no later epoch has taken over.
+        """Every checkpoint that is still a candidate to be woken.
 
-        A filter rather than a separate collection: superseding is a field on the
-        record it supersedes, so there is one list of checkpoints and this is the
-        reading of it that answers «who owns what now». A second list would be a
-        second thing to keep consistent after a restart, and the store's own
-        contract already refuses a second store for exactly this reason.
+        A filter rather than a separate collection: both ways out are a field on
+        the record they apply to — a later epoch's takeover, a person's park — so
+        there is one list of checkpoints and this is the reading of it that answers
+        «who owns what now». A second list would be a second thing to keep
+        consistent after a restart, and the store's own contract already refuses a
+        second store for exactly this reason.
+
+        TWO WAYS OUT OF THIS SET, AND THEY ARE NOT THE SAME FACT. A superseded
+        record's Item is carried by a later epoch: somebody has it. A parked
+        record's Item is carried by nobody: it was set down on purpose and no later
+        epoch exists. Both stop a wake, and a reader that could only see the set
+        would have to guess which of the two it was looking at — which is why every
+        caller that prints a reason asks the record (or `parked_checkpoints`)
+        instead of reporting «taken over» for both.
         """
         return {ref: record for ref, record in self._read()["checkpoints"].items()
-                if not record.get("superseded_by")}
+                if not record.get("superseded_by") and not is_parked(record)}
+
+    def parked_checkpoints(self) -> dict:
+        """Every checkpoint that was set down and not taken back up.
+
+        Its callers are the ones that must not be handed a park as «taken over»:
+        `runtime/wake.plan` asks it to say why a record is not a candidate, and
+        `work continuations` counts the parked ones apart from the live ones. A
+        park that made a record invisible instead would be a deletion with a
+        reason attached, and the reason is the part somebody needs later.
+
+        NOT THE COMPLEMENT OF `live_checkpoints`, AND THE DIFFERENCE HAS A CASE. A
+        parked record can be walked over afterwards by a later epoch — the Item is
+        carried again, which is the later and stronger fact — and then it is in
+        this set AND out of the live one for a different reason. Nothing lifted
+        that park, so it belongs here. Every reader that must print ONE reason
+        therefore checks supersession first: `wake.plan` and
+        `continuation_state` both do, and `tests/test_continuation.py` pins that
+        the gate and the answer agree about every record.
+        """
+        return {ref: record for ref, record in self._read()["checkpoints"].items()
+                if is_parked(record)}
+
+    def park_checkpoint(self, ref: str, *, at: str, by: str, reason: str) -> dict:
+        """Set a checkpoint down on purpose: keep the record and the reason, and
+        stop everything that would wake it.
+
+        THE PRODUCT NAMES FOUR WAYS WORK LEAVES FOCUS AND THIS IS THE ONE THAT HAD
+        NO IMPLEMENTATION: «Completed / Safely Parked / Cancelled + reconciled /
+        Superseded + transferred». Completion is a board state, superseding is
+        `supersede_checkpoint` — which requires a real successor, so it says
+        «somebody else has this» — and cancelling is the board's reconciliation.
+        «Nobody is waiting for this, and that is a decision rather than an
+        accident» had no field, no verb and no reader: a checkpoint that had been
+        looked into and deliberately set down was, to every surface in this tree,
+        still a live continuation waiting for a Parent, and the wake routine
+        evaluated it once a minute for the rest of the node's life. That is not
+        noise because it is verbose; it is noise because «refused, no authorizing
+        grant» reads exactly like an Item blocked on authority.
+
+        NOT A DELETION AND NOT A SUPERSESSION. The record stays, keeps every field
+        it had, and gains three — who set it down, when, and why. Nothing is
+        removed and no successor is required: the whole point of this disposition
+        is that there IS no successor, so both repairs the other dispositions offer
+        («write the record that takes it over», «ask the person who owns it») would
+        be wrong here.
+
+        WHY THE REASON IS REQUIRED AND A TRUSTED CONTEXT IS NOT. A park mints no
+        authority — it takes a wake away — so demanding a verified turn for it
+        would make the easier act the harder one to reach, the asymmetry
+        `revoke_grant` is built on. The reason is required for a reason of the
+        opposite kind to `revoke_grant`'s: «it stopped» and «somebody decided it
+        should stop» are the two readings a later audit has to tell apart, and the
+        sentence that tells them apart is the one this call is handed. The
+        signature is required for the same purpose at a smaller scale — a park
+        nobody signed is a park nobody can be asked about.
+
+        `by` IS WHO IS SPEAKING AND NOT A VERIFIED IDENTITY, which is the same
+        standing `parent_owner` has on the record this one is about: the writer of
+        a record is the authority for who wrote it, nothing here checks the name,
+        and nothing needs to. It is deliberately NOT a `context_ref`: a park is not
+        an authority act, so there is no verified turn for it to be resolved from,
+        and a field that looked like one would invite a reader to treat a typed
+        login as provenance. What cannot lie here is the reason and the pair of
+        instants, and those are the parts an audit reads.
+
+        ONCE PER RECORD, LIKE EVERY OTHER STATEMENT THIS STORE TAKES. A second park
+        with the SAME reason is a retry and answers with the record; one with a
+        DIFFERENT reason is refused rather than absorbed, because the record would
+        then say it was set down for a reason other than the one it was set down
+        for. Parking again after a lift is refused the same way and for a sharper
+        reason: `parked_at` is when this record was set down, it holds one instant,
+        and a second park would overwrite why it was set down the first time. An
+        Item that has to be set down twice was carried on in between, and the
+        repair is the one every refusal here names — carry it under a new epoch,
+        which supersedes this record and keeps it readable.
+        """
+        target = str(ref or "").strip()
+        if not target:
+            raise StoreError(
+                "parking a checkpoint needs the ref of the one being set down")
+        who = str(by or "").strip()
+        if not who:
+            raise StoreError(
+                f"parking {target} needs who is setting it down. A park nobody "
+                f"signed is one nobody can be asked about later, and the record "
+                f"would say the work stopped without saying who decided it should")
+        why = str(reason or "").strip()
+        if not why:
+            raise StoreError(
+                f"parking {target} needs a reason. The record of WHY is the part a "
+                f"later reader cannot reconstruct from the record itself, and it is "
+                f"what tells «the work stopped» apart from «somebody decided the "
+                f"work should stop» — a park that says nothing is a deletion with "
+                f"paperwork")
+        with self._mutation():
+            existing = self._data["checkpoints"].get(target)
+            if existing is None:
+                raise StoreError(
+                    f"{target} has no checkpoint to park; this store holds nothing "
+                    f"under that ref. Parking a record nobody wrote would make "
+                    f"«this was set down» indistinguishable from «this never "
+                    f"existed», and `work continuations` lists what is here")
+            if is_parked(existing):
+                if str(existing.get("parked_reason") or "") == why:
+                    return existing
+                raise StoreError(
+                    f"{target} was parked at {existing.get('parked_at')} by "
+                    f"{existing.get('parked_by')} for "
+                    f"{existing.get('parked_reason')!r}, and this parks it for "
+                    f"{why!r}. Why a record was set down is what a person reads "
+                    f"when deciding whether to lift the park, and a second park "
+                    f"would leave the record saying one of the two")
+            if existing.get("unparked_at"):
+                raise StoreError(
+                    f"{target} was parked at {existing.get('parked_at')} and taken "
+                    f"back up at {existing.get('unparked_at')}. A park is a "
+                    f"statement about ONE setting-down and this record has already "
+                    f"had its own; a second one would overwrite why it was first "
+                    f"set down. An Item that has to be set down again is an Item "
+                    f"carried on in between — write the checkpoint that carries it "
+                    f"under a new epoch, which supersedes this record and keeps it "
+                    f"readable")
+            if existing.get("superseded_by"):
+                raise StoreError(
+                    f"{target} was taken over at {existing.get('superseded_at')} by "
+                    f"{existing.get('superseded_by')}, so it is already not a "
+                    f"candidate to be woken and parking it would say it was left "
+                    f"waiting when in fact the Item changed hands. Park the record "
+                    f"that carries the Item now, or leave this one: a later epoch "
+                    f"owns it and `live_checkpoints` has already stopped answering "
+                    f"for it")
+            updated = dict(existing)
+            updated["parked_at"] = str(at)
+            updated["parked_by"] = who
+            updated["parked_reason"] = why
+            self._data["checkpoints"][target] = updated
+            self._flush()
+            return updated
+
+    def unpark_checkpoint(self, ref: str, *, at: str, by: str, reason: str) -> dict:
+        """Lift a park: the record is a candidate to be woken again, and says it
+        was set down and taken back up rather than never touched.
+
+        LIFTING IS NOT RETRACTING. Nothing is removed from the record and the
+        park's own three fields stay exactly as the park wrote them, so what a
+        later reader gets is the whole sentence — set down at X by Y because Z,
+        taken back up at A by B because C — and a store that dropped the park
+        fields on the way back up would leave the second half of it with nothing
+        to refer to.
+
+        WHAT THIS DOES NOT DO IS AUTHORIZE ANYTHING. Lifting a park puts the record
+        back in `live_checkpoints`, which makes it a candidate again; whether
+        anything can wake it is still decided by a grant that names the Item and a
+        context that is fresh, and neither of those is reachable from here. So this
+        is not a way to work around a missing authority — it is how a person says
+        «the Item I set down is one we are carrying again», and the wake half still
+        refuses it until it has an authority of its own.
+
+        ONCE, AND BY THE SAME RULES AS THE PARK ABOVE: a second lift with the same
+        reason is a retry and answers with the record, one with a different reason
+        is refused rather than absorbed, and a record that was never parked cannot
+        be lifted at all — putting a record back in the wake set on the strength of
+        a call that never took it out would be this verb inventing the park it is
+        undoing.
+        """
+        target = str(ref or "").strip()
+        if not target:
+            raise StoreError(
+                "lifting a park needs the ref of the checkpoint to take back up")
+        who = str(by or "").strip()
+        if not who:
+            raise StoreError(
+                f"lifting the park on {target} needs who is lifting it. The record "
+                f"keeps both signatures — who set the work down and who took it "
+                f"back up — and the second one is what a reader has when asking why "
+                f"an Item that was parked is being carried again")
+        why = str(reason or "").strip()
+        if not why:
+            raise StoreError(
+                f"lifting the park on {target} needs a reason. «It is being carried "
+                f"again» and «somebody decided it should be» are the two readings a "
+                f"later audit has to tell apart, and the record already carries the "
+                f"reason it was set down, so this call is the other half of that "
+                f"sentence")
+        with self._mutation():
+            existing = self._data["checkpoints"].get(target)
+            if existing is None:
+                raise StoreError(
+                    f"{target} has no checkpoint to take back up; this store holds "
+                    f"nothing under that ref")
+            if not is_parked(existing):
+                if existing.get("unparked_at"):
+                    if str(existing.get("unparked_reason") or "") == why:
+                        return existing
+                    raise StoreError(
+                        f"{target} was taken back up at "
+                        f"{existing.get('unparked_at')} by "
+                        f"{existing.get('unparked_by')} for "
+                        f"{existing.get('unparked_reason')!r}, and this lifts it "
+                        f"for {why!r}. When a park was lifted is written once: the "
+                        f"record says whether this Item is being carried again, and "
+                        f"accepting this would move that answer to whenever somebody "
+                        f"last mentioned it")
+                raise StoreError(
+                    f"{target} is not parked, so there is nothing to take back up. "
+                    f"Lifting a park nobody made would put this record back in the "
+                    f"set a wake reads on the strength of a call that never took it "
+                    f"out of it")
+            updated = dict(existing)
+            updated["unparked_at"] = str(at)
+            updated["unparked_by"] = who
+            updated["unparked_reason"] = why
+            self._data["checkpoints"][target] = updated
+            self._flush()
+            return updated
 
     def supersede_checkpoint(self, ref: str, *, at: str, by: str) -> dict:
         """Hand a scope to a later epoch. Idempotent, and the record stays.

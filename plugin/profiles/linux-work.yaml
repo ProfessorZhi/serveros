@@ -509,7 +509,50 @@ short_description: Agent Engineering Workbench for a Linux work node
 #
 # Tests are not members of this composition. The ability pin is unchanged
 # (`da5f89b1b131`).
-cachebuster: srv0005.20260928d
+#
+# ── 28d → 28e (2026-09-28, later the same day) ────────────────────────────────
+#
+# Work leaves Focus four ways — completed, safely parked, cancelled and
+# reconciled, superseded and transferred — and three of them had a
+# representation. Park had none: no field, no verb, no reader. So a record
+# nobody was going to pick up again could only be written over by a second
+# record, which is a lie about who holds it, or left in the set a wake reads.
+# This node has been doing the second with `SRV-0011#1` every minute since it
+# was filed, on a window that expired two days ago, printing
+# `NO_AUTHORIZING_GRANT` — a reason about authority for a record whose real
+# state was that a person had set it down.
+#
+# MEASURED, the way `24d`, `27a` and `28d` were. Four members of this
+# composition differ from the promoted payload under the version string
+# `3.1.0+srv0005.20260928d`:
+#
+#   runtime/agent_control_store.py  e8652456 → cdfd29ad
+#   runtime/cli.py                  76a92895 → 40e2e8b6
+#   runtime/continuation.py         9d6995e9 → cc047138
+#   runtime/wake.py                 97fc9d6c → 693ac444
+#
+# All four are members of the 261-member payload. What a stale copy would keep
+# doing is the reason the label has to move: `runtime/wake.py` is the row the
+# timer prints every minute, and the installed revision's is the one that reads
+# a parked record as wakeable. `runtime/cli.py` is the surface the operator
+# would type `work park` into, and under `28d` that verb does not exist — so an
+# unchanged label would leave the node unable to express the disposition this
+# change is for, while every document in the payload already says `work unpark`
+# is the way back. That is not a cosmetic lag.
+#
+# The other two are the mechanism rather than the surface.
+# `runtime/agent_control_store.py` is where the three park fields and
+# `is_parked` live, and where `CHECKPOINT_STORE_FIELDS` now carries the six so
+# that a Parent retrying an accepted write after a park still gets
+# `replayed: True` instead of a refusal naming it as a second writer.
+# `runtime/continuation.py` is the reader, and it imports no other layer: it
+# reads the two field names literally, so its old copy would answer
+# `AWAITING_CONTINUATION` for a record this store now excludes from
+# `live_checkpoints`.
+#
+# Tests are not members of this composition. The ability pin is unchanged
+# (`da5f89b1b131`).
+cachebuster: srv0005.20260928e
 
 skills:
   - name: runtime-management
