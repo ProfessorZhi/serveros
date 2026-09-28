@@ -850,6 +850,381 @@ class TestSupercedingDirectly:
 
 
 # ---------------------------------------------------------------------------
+# 2b. A record can be set down on purpose — not deleted, not handed over.
+# ---------------------------------------------------------------------------
+
+
+class TestAParkedRecordIsSetDownAndNotRemoved:
+    """The fourth way work leaves Focus, and the only one with no field behind it.
+
+    `docs/daily-work-cycle.md` gives work four ways out: «Completed / Safely
+    Parked / Cancelled + reconciled / Superseded + transferred». Three of them
+    were already statements this store could take — completion and cancellation
+    are board states, and superseding is `supersede_checkpoint`, which requires a
+    REAL successor and therefore can only ever say «somebody else has this». The
+    second had no field, no verb and no reader: a checkpoint that had been looked
+    into and deliberately set down was, to every surface in this tree, still a live
+    continuation waiting for a Parent. `work wake` printed a row for it every
+    minute for the rest of the node's life, and that residue is not noise because
+    it is verbose — it is noise because «refused, no authorizing grant» on a record
+    nobody intends to resume reads exactly like an Item genuinely blocked on
+    authority.
+    """
+
+    def test_the_signature_and_the_reason_are_required_and_nothing_is_written(
+            self, tmp_path):
+        """A park says the work stopped AND that somebody decided it should.
+
+        The second half is only in the record if this call is handed it, so both
+        an unsigned park and a reasonless one are refused before the store is
+        touched. What is asserted after the refusals is the STATE and not the
+        exception: a park that half-landed would have taken the wake away while
+        saying it had not, which is the failure the whole slice exists to avoid.
+        """
+        store = a_store(tmp_path)
+        store.put_checkpoint(a_checkpoint(store))
+        for over in ({"by": "", "reason": "the probe is answered"},
+                     {"by": "vince", "reason": "   "}):
+            with pytest.raises(StoreError):
+                store.park_checkpoint("SRV-0001#1", at=NOW, **over)
+        assert "parked_at" not in store.get_checkpoint("SRV-0001#1")
+        assert store.live_checkpoints().keys() == {"SRV-0001#1"}
+
+    def test_an_empty_ref_is_refused_before_a_store_is_even_looked_at(self, tmp_path):
+        """«Park nothing» is not a ref this store might be holding."""
+        with pytest.raises(StoreError, match="needs the ref of the one"):
+            a_store(tmp_path).park_checkpoint("", at=NOW, by="vince", reason="why")
+
+    def test_a_ref_this_store_does_not_hold_is_refused(self, tmp_path):
+        """Parking a record nobody wrote would make «this was set down» and
+        «this never existed» the same answer."""
+        with pytest.raises(StoreError, match="no checkpoint to park"):
+            a_store(tmp_path).park_checkpoint("SRV-0001#1", at=NOW, by="vince",
+                                              reason="nothing here")
+
+    def test_the_record_stays_and_gains_three_fields(self, tmp_path):
+        """NOT A DELETION: everything the record already said, plus who, when and
+        why. The last assertion is the one that makes it a store write rather than
+        a returned mapping."""
+        store = a_store(tmp_path)
+        store.put_checkpoint(a_checkpoint(store))
+        before = store.get_checkpoint("SRV-0001#1")
+        after = store.park_checkpoint("SRV-0001#1", at=LATER, by="vince",
+                                      reason="the probe is answered; nobody waits on it")
+        for field, value in before.items():
+            assert after[field] == value, field
+        assert after["parked_at"] == LATER
+        assert after["parked_by"] == "vince"
+        assert "nobody waits on it" in after["parked_reason"]
+        assert store.get_checkpoint("SRV-0001#1")["parked_reason"] == \
+            after["parked_reason"]
+
+    def test_the_signature_is_a_name_and_not_a_verified_identity(self, tmp_path):
+        """`parked_by` has the standing `parent_owner` has: whoever writes a record
+        is the authority for who wrote it, and nothing verifies the name.
+
+        The safety property is a SHAPE — a park has nowhere to record a verified
+        turn — so a reader can never be shown a typed login dressed as provenance,
+        and no caller can reach an authority by parking. What is checkable is the
+        reason and the two instants, and those are what an audit reads.
+        """
+        store = a_store(tmp_path)
+        store.put_checkpoint(a_checkpoint(store))
+        parked = store.park_checkpoint("SRV-0001#1", at=LATER, by="vince",
+                                       reason="set down")
+        assert parked["parked_by"] == "vince"
+        assert not [k for k in parked
+                    if "provenance" in k or "context" in k or "verified" in k]
+
+    def test_a_parked_record_is_no_longer_a_candidate_to_be_woken(self, tmp_path):
+        """The point of the slice. The record has to stay READABLE, which is what
+        separates a park from the deletion it would otherwise be."""
+        store = a_store(tmp_path)
+        store.put_checkpoint(a_checkpoint(store))
+        store.park_checkpoint("SRV-0001#1", at=LATER, by="vince", reason="set down")
+        assert store.live_checkpoints() == {}
+        assert store.parked_checkpoints().keys() == {"SRV-0001#1"}
+        assert store.get_checkpoint("SRV-0001#1") is not None
+
+    def test_no_record_falls_out_of_every_reading(self, tmp_path):
+        """Live, parked and superseded account for every record, and nothing
+        parked is a live one.
+
+        Stated over the whole store rather than as three examples, because the
+        failure this guards is a record that falls out of ALL of them: a reader
+        that answered «nobody owns it» and «nothing wakes it» about the same
+        record would let a wake skip it and an audit never mention it again.
+
+        THE THREE ARE NOT DISJOINT AND MUST NOT BE ASSERTED AS IF THEY WERE. A park
+        that a later epoch walked over is here as both: the park was never lifted,
+        so it is still on the record, while the supersession is a fact about the
+        Item. `parked_checkpoints` answers the first question and
+        `continuation_state` reports the stronger reason — pinned to agree in
+        `test_the_reader_and_the_store_answer_together_for_every_record`.
+        """
+        store = a_store(tmp_path)
+        store.put_checkpoint(a_checkpoint(store))
+        store.park_checkpoint("SRV-0001#1", at=LATER, by="vince", reason="set down")
+        store.put_checkpoint(a_second_parent(store))          # takes #1 over
+        store.put_checkpoint(a_checkpoint(store, epoch=1, work_item="SRV-0002",
+                                          parent_owner="parent-a",
+                                          waiting_on={"kind": "window",
+                                                      "until": TOMORROW}))
+        held = store.checkpoints()
+        live = set(store.live_checkpoints())
+        parked = set(store.parked_checkpoints())
+        superseded = {ref for ref, record in held.items()
+                      if record.get("superseded_by")}
+        assert live | parked | superseded == set(held)
+        assert live & parked == set()
+        assert live & superseded == set()
+        # The park a later epoch walked over is out of the wake set for the
+        # stronger reason, and the record still shows it was set down.
+        assert "SRV-0001#1" not in live and "SRV-0001#1" in superseded
+        assert "SRV-0001#1" in parked
+        assert "SRV-0002#1" in live
+
+    def test_a_retry_with_the_same_reason_is_the_same_park(self, tmp_path):
+        """Idempotent on the instant the park holds, the same rule
+        `supersede_checkpoint` and `retire_admission` keep: a second call that
+        moved `parked_at` would move it to whenever somebody last mentioned it."""
+        store = a_store(tmp_path)
+        store.put_checkpoint(a_checkpoint(store))
+        first = store.park_checkpoint("SRV-0001#1", at=LATER, by="vince",
+                                     reason="set down")
+        again = store.park_checkpoint("SRV-0001#1", at=TOMORROW, by="someone-else",
+                                      reason="set down")
+        assert again["parked_at"] == first["parked_at"] == LATER
+        assert again["parked_by"] == "vince"
+        assert again["parked_at"] != TOMORROW
+
+    def test_a_second_park_for_another_reason_is_refused_and_names_the_first(
+            self, tmp_path):
+        """Why a record was set down is what a person reads when deciding whether
+        to lift the park, and accepting a second reason would leave the record
+        saying one of the two."""
+        store = a_store(tmp_path)
+        store.put_checkpoint(a_checkpoint(store))
+        store.park_checkpoint("SRV-0001#1", at=LATER, by="vince",
+                              reason="the probe is answered")
+        with pytest.raises(StoreError) as refusal:
+            store.park_checkpoint("SRV-0001#1", at=TOMORROW, by="vince",
+                                  reason="we may come back to it")
+        assert "the probe is answered" in str(refusal.value)
+        assert "we may come back to it" in str(refusal.value)
+        assert store.get_checkpoint("SRV-0001#1")["parked_reason"] == \
+            "the probe is answered"
+
+    def test_a_write_that_meets_a_parked_record_is_told_it_was_parked(self, tmp_path):
+        """`put_checkpoint` still refuses, and no longer calls the record live.
+
+        The old sentence — «already holds a live checkpoint» — would have been a
+        lie about a record a person had set down, and the writer holding a
+        different record for that epoch is exactly the caller who needs to know
+        that a park is what stands in its way.
+        """
+        store = a_store(tmp_path)
+        store.put_checkpoint(a_checkpoint(store))
+        store.park_checkpoint("SRV-0001#1", at=LATER, by="vince",
+                              reason="set down while we decide")
+        with pytest.raises(StoreError) as refusal:
+            store.put_checkpoint(a_checkpoint(store,
+                                              next_safe_action="carry it on instead"))
+        assert "set down while we decide" in str(refusal.value)
+        assert "unpark_checkpoint" in str(refusal.value)
+        assert store.get_checkpoint("SRV-0001#1")["next_safe_action"] == \
+            "accept the child result and continue"
+
+    def test_a_retry_of_the_write_that_created_a_parked_record_still_replays(
+            self, tmp_path):
+        """THE MUTATION-SENSITIVE ONE, and the reason the park fields are in
+        `CHECKPOINT_STORE_FIELDS`.
+
+        A Parent that wrote a checkpoint and retried that write after somebody
+        had parked the record is retrying an ACCEPTED write. Compare the park
+        fields and the retry stops being a replay: the store answers «this ref
+        already holds a live checkpoint» — a sentence about a second writer, sent
+        to the writer whose record is the one being held.
+        """
+        store = a_store(tmp_path)
+        record = a_checkpoint(store)
+        assert store.put_checkpoint(record)["replayed"] is False
+        store.park_checkpoint("SRV-0001#1", at=LATER, by="vince", reason="set down")
+        again = store.put_checkpoint(record)
+        assert again["replayed"] is True
+        assert again["parked_by"] == "vince"
+
+    def test_lifting_puts_the_record_back_and_keeps_both_halves(self, tmp_path):
+        """LIFTING IS NOT RETRACTING: nothing is removed, and the record ends up
+        carrying the whole sentence — set down at X by Y because Z, taken back up
+        at A by B because C."""
+        store = a_store(tmp_path)
+        store.put_checkpoint(a_checkpoint(store))
+        store.park_checkpoint("SRV-0001#1", at=LATER, by="vince", reason="set down")
+        lifted = store.unpark_checkpoint("SRV-0001#1", at=TOMORROW, by="vince",
+                                         reason="the requirement moved back into scope")
+        assert lifted["parked_at"] == LATER and lifted["parked_by"] == "vince"
+        assert lifted["parked_reason"] == "set down"
+        assert lifted["unparked_at"] == TOMORROW
+        assert store_mod.is_parked(lifted) is False
+        assert store.live_checkpoints().keys() == {"SRV-0001#1"}
+        assert store.parked_checkpoints() == {}
+
+    def test_a_lift_authorizes_nothing_by_itself(self, tmp_path):
+        """What a lift does NOT do: put an authority behind the record.
+
+        `live_checkpoints` is the set a wake READS, not a permission, so a lifted
+        record is a candidate again and nothing more — two calls and a signature
+        later there is still nowhere in the record to write an authority, and the
+        fabric's answer about it is unchanged. A park or a lift that could move
+        that answer would be the asymmetry `revoke_grant` is built on, run
+        backwards.
+        """
+        store = a_store(tmp_path)
+        store.put_checkpoint(a_checkpoint(store))
+        store.park_checkpoint("SRV-0001#1", at=LATER, by="vince", reason="set down")
+        store.unpark_checkpoint("SRV-0001#1", at=TOMORROW, by="vince",
+                                reason="carried again")
+        record = store.get_checkpoint("SRV-0001#1")
+        assert not [k for k in record
+                    if "grant" in k or "context" in k or "author" in k]
+        assert continuation.continuation_state(record)["state"] == \
+            "AWAITING_CONTINUATION"
+
+    def test_a_record_that_was_never_parked_cannot_be_lifted(self, tmp_path):
+        """Putting a record back in the set a wake reads on the strength of a call
+        that never took it out would be this verb inventing the park it undoes."""
+        store = a_store(tmp_path)
+        store.put_checkpoint(a_checkpoint(store))
+        with pytest.raises(StoreError, match="is not parked"):
+            store.unpark_checkpoint("SRV-0001#1", at=LATER, by="vince",
+                                    reason="carried again")
+        assert store.live_checkpoints().keys() == {"SRV-0001#1"}
+
+    def test_a_second_lift_for_another_reason_is_refused(self, tmp_path):
+        """When a park was lifted is written once; accepting this would move the
+        answer to whenever somebody last mentioned it."""
+        store = a_store(tmp_path)
+        store.put_checkpoint(a_checkpoint(store))
+        store.park_checkpoint("SRV-0001#1", at=LATER, by="vince", reason="set down")
+        store.unpark_checkpoint("SRV-0001#1", at=TOMORROW, by="vince",
+                                reason="carried again")
+        again = store.unpark_checkpoint("SRV-0001#1", at=DAY_AFTER, by="vince",
+                                        reason="carried again")
+        assert again["unparked_at"] == TOMORROW
+        with pytest.raises(StoreError) as refusal:
+            store.unpark_checkpoint("SRV-0001#1", at=DAY_AFTER, by="vince",
+                                    reason="someone asked about it")
+        assert "carried again" in str(refusal.value)
+
+    def test_parking_again_after_a_lift_names_the_new_epoch_repair(self, tmp_path):
+        """`parked_at` holds ONE instant and a second park would overwrite why the
+        record was first set down. An Item that has to be set down twice was
+        carried on in between, and the repair is the store's own."""
+        store = a_store(tmp_path)
+        store.put_checkpoint(a_checkpoint(store))
+        store.park_checkpoint("SRV-0001#1", at=LATER, by="vince", reason="set down")
+        store.unpark_checkpoint("SRV-0001#1", at=TOMORROW, by="vince",
+                                reason="carried again")
+        with pytest.raises(StoreError) as refusal:
+            store.park_checkpoint("SRV-0001#1", at=DAY_AFTER, by="vince",
+                                  reason="set down again")
+        assert "new epoch" in str(refusal.value)
+        assert store.get_checkpoint("SRV-0001#1")["parked_reason"] == "set down"
+
+    def test_a_superseded_record_is_not_parked(self, tmp_path):
+        """It is already not a candidate, and parking it would say it was left
+        waiting when in fact the Item changed hands."""
+        store = a_store(tmp_path)
+        store.put_checkpoint(a_checkpoint(store))
+        store.put_checkpoint(a_second_parent(store))
+        with pytest.raises(StoreError, match="taken over"):
+            store.park_checkpoint("SRV-0001#1", at=LATER, by="vince", reason="why")
+        assert store.get_checkpoint("SRV-0001#1").get("parked_at") is None
+
+    def test_a_later_epoch_walks_over_a_park_and_the_record_says_which(
+            self, tmp_path):
+        """A parked record is still beatable by the one thing that outranks it.
+
+        If a Parent carries the Item on under a new epoch, the older record is
+        taken over — the park says «nobody is waiting», and the write says somebody
+        is, which is the later and stronger fact. The record keeps both, and the
+        reader answers `SUPERSEDED`: reporting the park first would hide that the
+        Item is being carried again.
+        """
+        store = a_store(tmp_path)
+        store.put_checkpoint(a_checkpoint(store))
+        store.park_checkpoint("SRV-0001#1", at=LATER, by="vince", reason="set down")
+        store.put_checkpoint(a_second_parent(store))
+        record = store.get_checkpoint("SRV-0001#1")
+        assert record["superseded_by"] == "SRV-0001#2"
+        assert record["parked_reason"] == "set down"
+        state = continuation.continuation_state(record)
+        assert state["state"] == "SUPERSEDED"
+        assert state["superseded_by"] == "SRV-0001#2"
+
+    def test_the_reader_and_the_store_answer_together_for_every_record(
+            self, tmp_path):
+        """THE PIN, and the reason the two copies of this rule are allowed to exist.
+
+        `runtime/continuation.continuation_state` reads `parked_at`/`unparked_at`
+        literally off the record because that module imports no other layer of this
+        tree, and the store owns the same rule in `is_parked`. A rule in two copies
+        drifts, so the copies are not trusted to agree: this asserts that they do,
+        for one store holding every shape at once. A record one of them called
+        parked and the other did not would be a record invisible to a wake and
+        live-looking to the person reading it.
+
+        THE INVARIANT IS ABOUT THE GATE, NOT ABOUT THE WORD. What has to agree
+        exactly is which records a wake may read — `ref in live_checkpoints()` —
+        and whether the reader names a disposition that stops one. `PARKED` is the
+        answer only where the park is the operative reason: a park a later epoch
+        walked over is reported as `SUPERSEDED`, and that record is still in
+        `parked_checkpoints` because nothing lifted it.
+        """
+        store = a_store(tmp_path)
+        store.put_checkpoint(a_checkpoint(store))                 # superseded
+        store.put_checkpoint(a_second_parent(store))              # live
+        store.put_checkpoint(a_checkpoint(store, epoch=1, work_item="SRV-0002",
+                                          parent_owner="parent-a",
+                                          waiting_on={"kind": "window",
+                                                      "until": TOMORROW}))
+        store.park_checkpoint("SRV-0002#1", at=LATER, by="vince", reason="set down")
+        store.put_checkpoint(a_checkpoint(store, epoch=1, work_item="SRV-0003",
+                                          parent_owner="parent-a",
+                                          waiting_on={"kind": "window",
+                                                      "until": TOMORROW}))
+        store.park_checkpoint("SRV-0003#1", at=LATER, by="vince", reason="set down")
+        store.unpark_checkpoint("SRV-0003#1", at=TOMORROW, by="vince",
+                                reason="carried again")
+        store.put_checkpoint(a_checkpoint(store, epoch=1, work_item="SRV-0004",
+                                          parent_owner="parent-a",
+                                          waiting_on={"kind": "window",
+                                                      "until": TOMORROW}))
+        store.park_checkpoint("SRV-0004#1", at=LATER, by="vince", reason="set down")
+        store.put_checkpoint(a_second_parent(store, work_item="SRV-0004"))
+        live = set(store.live_checkpoints())
+        for ref, record in store.checkpoints().items():
+            state = continuation.continuation_state(record, receivers_seen=[])
+            assert (ref in live) == (state["state"] in ("AWAITING_CONTINUATION",
+                                                        "RECEIVER_INSTALLED")), ref
+            if store_mod.is_parked(record) and not record.get("superseded_by"):
+                assert state["state"] == "PARKED", ref
+                assert state["parked_reason"] == record.get("parked_reason")
+                assert state["parked_by"] == record.get("parked_by")
+                assert state["parked_at"] == record.get("parked_at")
+                assert "Nothing wakes it" in state["says"]
+        # Each shape is present, so the loop above is about a real set and not
+        # about an empty one: superseded, live, parked, parked-then-lifted, and
+        # parked-then-walked-over.
+        assert live == {"SRV-0001#2", "SRV-0003#1", "SRV-0004#2"}
+        assert set(store.parked_checkpoints()) == {"SRV-0002#1", "SRV-0004#1"}
+        assert continuation.continuation_state(
+            store.get_checkpoint("SRV-0004#1"), receivers_seen=[])["state"] == \
+            "SUPERSEDED"
+
+
+# ---------------------------------------------------------------------------
 # 3. «No receiver» is true of the fabric, not a missing field.
 # ---------------------------------------------------------------------------
 
@@ -2377,3 +2752,108 @@ class TestTheVerbsDriveTheStore:
         # The record that was taken over carries nothing: it is what was carried
         # FROM, and it is not in this mapping at all.
         assert "SRV-0001#1" not in blob["carried"]
+
+    def park(self, env, *extra):
+        return cli("work", "park", "SRV-0001#1",
+                   "--reason", "the probe is answered; nobody waits on it",
+                   "--by", "vince", "--at", LATER, *extra, env_extra=env)
+
+    def test_the_park_verb_sets_the_record_down_and_the_reader_says_so(self, env):
+        """The path a person takes, asserted on the READING and not only on the
+        park's own output.
+
+        `work continuations` is where the difference shows: this record used to be
+        printed exactly like one waiting for a Parent, and the header counted it as
+        one of the live checkpoints.
+        """
+        assert self.checkpoint(env).returncode == 0
+        parked = self.park(env)
+        assert parked.returncode == 0, parked.stderr
+        assert f"parked at     {LATER} by vince" in parked.stdout
+        assert "the probe is answered; nobody waits on it" in parked.stdout
+        assert "REFUSE PARKED" in parked.stdout
+
+        listed = cli("work", "continuations", "--now", LATER, env_extra=env)
+        assert listed.returncode == 0, listed.stderr
+        assert "checkpoints   0 live of 1 recorded, 1 parked" in listed.stdout
+        assert "SRV-0001#1  PARKED" in listed.stdout
+        assert f"parked        {LATER} by vince" in listed.stdout
+        assert "nothing held to wait on" in listed.stdout
+
+    def test_the_park_verb_refuses_without_a_reason_and_writes_nothing(self, env):
+        """Refused at the verb, before the store is reached: a park that says
+        nothing is a deletion with paperwork."""
+        assert self.checkpoint(env).returncode == 0
+        refused = cli("work", "park", "SRV-0001#1", "--by", "vince", "--at", LATER,
+                      env_extra=env)
+        assert refused.returncode != 0
+        assert "--reason is required" in refused.stderr
+        listed = cli("work", "continuations", "--now", LATER, env_extra=env)
+        assert "SRV-0001#1  AWAITING_CONTINUATION" in listed.stdout
+
+    def test_the_signature_is_read_from_the_login_this_process_runs_as(self, env):
+        """`--by` has a default that is READ rather than guessed.
+
+        A park nobody signed is one nobody can be asked about later, and a default
+        like «operator» would put a word in the record that names no one.
+        """
+        import getpass
+        assert self.checkpoint(env).returncode == 0
+        parked = cli("work", "park", "SRV-0001#1", "--reason", "set down",
+                     "--at", LATER, env_extra=env)
+        assert parked.returncode == 0, parked.stderr
+        assert f"by {getpass.getuser()}" in parked.stdout
+
+    def test_the_unpark_verb_puts_it_back_and_the_reader_prints_both_halves(
+            self, env):
+        """LIFTING IS NOT RETRACTING, on the screen a person reads: the record
+        says when it was set down and why, and when it was taken back up."""
+        assert self.checkpoint(env).returncode == 0
+        assert self.park(env).returncode == 0
+        lifted = cli("work", "unpark", "SRV-0001#1", "--by", "vince",
+                     "--reason", "the requirement moved back into scope",
+                     "--at", TOMORROW, env_extra=env)
+        assert lifted.returncode == 0, lifted.stderr
+        assert f"set down      {LATER} by vince" in lifted.stdout
+        assert f"taken up      {TOMORROW} by vince" in lifted.stdout
+
+        listed = cli("work", "continuations", "--now", LATER, env_extra=env)
+        assert listed.returncode == 0, listed.stderr
+        assert "checkpoints   1 live of 1 recorded" in listed.stdout
+        assert "SRV-0001#1  AWAITING_CONTINUATION" in listed.stdout
+        assert f"set down {LATER} by vince" in listed.stdout
+        assert f"taken back up {TOMORROW} by vince" in listed.stdout
+
+    def test_unparking_a_record_that_was_never_parked_is_refused_by_the_verb(
+            self, env):
+        """The sentence is the store's, and it says what the verb would otherwise
+        have invented: there was no park here to lift."""
+        assert self.checkpoint(env).returncode == 0
+        refused = cli("work", "unpark", "SRV-0001#1", "--by", "vince",
+                      "--reason", "carried again", "--at", TOMORROW, env_extra=env)
+        assert refused.returncode != 0
+        assert "is not parked" in refused.stderr
+
+    def test_the_json_round_trip_carries_the_park_and_the_lift(self, env):
+        assert self.checkpoint(env).returncode == 0
+        parked = self.park(env, "--json")
+        assert parked.returncode == 0, parked.stderr
+        blob = json.loads(parked.stdout)
+        assert blob["checkpoint"]["parked_by"] == "vince"
+        assert blob["checkpoint"]["parked_reason"] == \
+            "the probe is answered; nobody waits on it"
+        lifted = cli("work", "unpark", "SRV-0001#1", "--by", "vince",
+                     "--reason", "carried again", "--at", TOMORROW,
+                     "--json", env_extra=env)
+        assert lifted.returncode == 0, lifted.stderr
+        blob = json.loads(lifted.stdout)["checkpoint"]
+        assert blob["unparked_at"] == TOMORROW
+        # Both halves survive the round trip, which is what makes the record
+        # auditable rather than merely current.
+        assert blob["parked_reason"] == \
+            "the probe is answered; nobody waits on it"
+        listed = cli("work", "continuations", "--json", "--now", LATER,
+                     env_extra=env)
+        blob = json.loads(listed.stdout)
+        assert blob["states"]["SRV-0001#1"]["state"] == "AWAITING_CONTINUATION"
+        assert blob["checkpoints"]["SRV-0001#1"]["parked_by"] == "vince"

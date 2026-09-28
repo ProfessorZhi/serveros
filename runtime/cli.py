@@ -44,6 +44,7 @@ from __future__ import annotations
 
 import argparse
 import datetime
+import getpass
 import importlib.util
 import json
 import os
@@ -8989,8 +8990,18 @@ def cmd_work_continuations(args) -> int:
     # to «who owns what now» and this is its first caller: «one continuation owner
     # per scope» is a rule `put_checkpoint` enforces, so the set is the store's to
     # state. The two agree by construction — a record carries `superseded_by`
-    # exactly when `continuation_state` answers `SUPERSEDED`.
+    # exactly when `continuation_state` answers `SUPERSEDED`, and the store's
+    # `is_parked` answers exactly when it answers `PARKED`.
+    #
+    # THE PARKED ONES ARE COUNTED APART AND NOT LEFT OUT. A park takes a record out
+    # of this set, and a header that said «0 live of 1 recorded» about a record
+    # somebody deliberately set down would read as a node with nothing in flight
+    # and one unexplained record. The count is what tells those two apart, and the
+    # per-record block below prints the park itself — who set it down, when and why
+    # — because that is the part the next reader needs.
     live = sorted(ref for ref in held if ref in control.live_checkpoints())
+    parked_refs = sorted(ref for ref in held
+                         if ref not in live and store_mod.is_parked(held[ref]))
     installed = continuation.receivers()
     equipment = _wake_module().equipment()
     states = {ref: continuation.continuation_state(record, receivers_seen=installed)
@@ -9018,6 +9029,7 @@ def cmd_work_continuations(args) -> int:
     carried_refs = sorted({ref for ref in live for ref in carried[ref]["carried"]})
     lines = [f"store         {control.path}",
              f"checkpoints   {len(live)} live of {len(held)} recorded"
+             + (f", {len(parked_refs)} parked" if parked_refs else "")
              + ("" if held else " — no Parent has checkpointed on this node"),
              f"receivers     "
              + (", ".join(str(r) for r in installed) if installed
@@ -9070,6 +9082,28 @@ def cmd_work_continuations(args) -> int:
         lines.append(f"  write scope   "
                      + (", ".join(record.get("write_scope") or []) or "— unnamed"))
         lines.append(f"  written at    {record.get('written_at')}")
+        # The disposition, printed on the record it applies to. A parked record is
+        # one somebody set down on purpose and it is the reason `work wake` will
+        # not consider it — so a reader of this surface has to be able to see it
+        # here, on the same screen as the wait and the attempts, rather than only
+        # in the wake routine's row. Both halves are printed when both happened:
+        # «set down, then taken back up» is a different record from «never
+        # touched», and a reader deciding whether to lift a park needs to know that
+        # it has been lifted before. A park a later epoch has since walked over is
+        # printed here too: the heading above names the operative reason
+        # (`SUPERSEDED`), and this line is the record of what happened to the park
+        # itself — nothing lifted it.
+        if store_mod.is_parked(record):
+            lines.append(f"  parked        {record.get('parked_at')} by "
+                         f"{record.get('parked_by')} — "
+                         f"{record.get('parked_reason')}")
+        elif record.get("unparked_at"):
+            lines.append(f"  parked        set down {record.get('parked_at')} by "
+                         f"{record.get('parked_by')} "
+                         f"({record.get('parked_reason')}), taken back up "
+                         f"{record.get('unparked_at')} by "
+                         f"{record.get('unparked_by')} "
+                         f"({record.get('unparked_reason')})")
         lines.append(f"  requirement   "
                      + (record.get("requirement_revision")
                         or "— this record does not name a revision"))
@@ -9132,6 +9166,125 @@ def cmd_work_continuations(args) -> int:
           "attempts": attempts, "carried": carried, "receivers": list(installed),
           "read_at": read_at, "store": str(control.path)},
          as_json=args.json, lines=lines)
+    return EXIT_OK
+
+
+def cmd_work_park(args) -> int:
+    """§12/P7 — set a checkpoint down on purpose, and stop waking it.
+
+    THE DISPOSITION THE DESIGN NAMES AND THIS TREE DID NOT HAVE. «Work leaves
+    Focus only via Completed / Safely Parked / Cancelled + reconciled /
+    Superseded + transferred», and this is the third of those. It had no field, no
+    verb and no reader: `work checkpoint` had no flag for it, `supersede` demands a
+    successor so it can only say «somebody else has this», and a checkpoint
+    somebody had looked into and deliberately set down went on being evaluated by
+    `work wake` once a minute for the rest of the node's life. What that costs is
+    not verbosity: `REFUSE NO_AUTHORIZING_GRANT` is the sentence a genuinely
+    blocked Item produces, so a parked Item producing it is the signal being eaten.
+
+    IT DOES NOT REQUIRE A TRUSTED CONTEXT, and the asymmetry with `work delegate`
+    is the one `work revoke` is built on: parking mints no authority, it takes a
+    wake away, and a stop that is harder to reach than a start points the wrong
+    way. What it does require is a reason and a signature, because «the work
+    stopped» and «somebody decided the work should stop» are the two readings a
+    later audit has to tell apart.
+
+    `--by` defaults to the login this process runs as — read, not guessed — the
+    same way `cmd_work_revoke`'s `--at` defaults to the clock this process reads.
+    """
+    store_mod, control = _control_store()
+    ref = str(getattr(args, "checkpoint_ref", "") or "").strip()
+    if not ref:
+        sys.stderr.write(
+            "serverosctl: a checkpoint ref is required, and it must be one this "
+            "node recorded: setting down a name nobody wrote would be this verb "
+            "inventing a record to park.\n")
+        return EXIT_FAULT
+    reason = str(getattr(args, "reason", "") or "").strip()
+    if not reason:
+        sys.stderr.write(
+            "serverosctl: --reason is required. The record of WHY a checkpoint "
+            "was set down is the part a later reader cannot reconstruct from the "
+            "record itself, and a park that says nothing leaves that reader "
+            "unable to tell a decision from an accident.\n")
+        return EXIT_FAULT
+    by = str(getattr(args, "by", "") or "").strip() or getpass.getuser()
+    at = str(getattr(args, "at", "") or "") or datetime.datetime.now(
+        datetime.timezone.utc).isoformat()
+    try:
+        parked = control.park_checkpoint(ref, at=at, by=by, reason=reason)
+    except store_mod.StoreError as exc:
+        sys.stderr.write(f"serverosctl: {exc}\n")
+        return EXIT_FAULT
+
+    emit({"checkpoint": parked, "store": str(control.path)},
+         as_json=args.json, lines=[
+             f"store         {control.path}",
+             f"checkpoint    {ref}",
+             f"parked at     {parked.get('parked_at')} by "
+             f"{parked.get('parked_by')}",
+             f"reason        {parked.get('parked_reason')}",
+             "stopped       the record stays and keeps every field it had. "
+             "`work wake` no longer considers it — it prints it as REFUSE PARKED "
+             "rather than as a wake candidate — and `work continuations` reports "
+             "it as PARKED. `work unpark` is the way back"])
+    return EXIT_OK
+
+
+def cmd_work_unpark(args) -> int:
+    """§12/P7 — take a park back up, and change nothing else.
+
+    THE RESTORE HALF, AND THE REASON IT IS A VERB RATHER THAN A STORE EDIT. «This
+    was set down, and is now being carried again» is a statement with a date, a
+    signature and a reason on BOTH halves, and the record keeps all six: the park's
+    own three fields stay exactly as they were written, so a later reader gets the
+    whole sentence instead of a record that looks as if nobody had ever touched it.
+
+    IT LIFTS A PARK AND NOTHING ELSE. The record goes back into the set
+    `live_checkpoints` answers for, which makes it a candidate again — and whether
+    anything can wake it is still a grant in force that names the Item plus a
+    context that is fresh, neither of which is reachable from here. So this is not
+    a way around a missing authority; it is how a person says the Item is one they
+    are carrying, and the wake half goes on refusing it until it has an authority
+    of its own.
+    """
+    store_mod, control = _control_store()
+    ref = str(getattr(args, "checkpoint_ref", "") or "").strip()
+    if not ref:
+        sys.stderr.write(
+            "serverosctl: a checkpoint ref is required, and it must be one this "
+            "node recorded: lifting a park nobody made would put a record back in "
+            "the set a wake reads on the strength of a call that never took it "
+            "out.\n")
+        return EXIT_FAULT
+    reason = str(getattr(args, "reason", "") or "").strip()
+    if not reason:
+        sys.stderr.write(
+            "serverosctl: --reason is required. «It is being carried again» and "
+            "«somebody decided it should be» are the two readings a later audit "
+            "has to tell apart, and the record already carries the reason it was "
+            "set down — this call is the other half of that sentence.\n")
+        return EXIT_FAULT
+    by = str(getattr(args, "by", "") or "").strip() or getpass.getuser()
+    at = str(getattr(args, "at", "") or "") or datetime.datetime.now(
+        datetime.timezone.utc).isoformat()
+    try:
+        lifted = control.unpark_checkpoint(ref, at=at, by=by, reason=reason)
+    except store_mod.StoreError as exc:
+        sys.stderr.write(f"serverosctl: {exc}\n")
+        return EXIT_FAULT
+
+    emit({"checkpoint": lifted, "store": str(control.path)},
+         as_json=args.json, lines=[
+             f"store         {control.path}",
+             f"checkpoint    {ref}",
+             f"set down      {lifted.get('parked_at')} by "
+             f"{lifted.get('parked_by')} — {lifted.get('parked_reason')}",
+             f"taken up      {lifted.get('unparked_at')} by "
+             f"{lifted.get('unparked_by')} — {lifted.get('unparked_reason')}",
+             "candidate     the record is in the set `work wake` reads again. A "
+             "wake still needs a grant in force that names this Item and a context "
+             "that is fresh, and this verb created neither"])
     return EXIT_OK
 
 
@@ -11950,6 +12103,40 @@ def build_parser() -> argparse.ArgumentParser:
                                        "equipped (default: the user's systemd "
                                        "unit directory)")
     wk_continuations.set_defaults(func=cmd_work_continuations)
+
+    wk_park = work_sub.add_parser(
+        "park", help="§12/P7 — set a checkpoint down on purpose: keep the record "
+                     "and the reason, and stop everything that would wake it. "
+                     "Records; deletes nothing, and supersedes nothing", **_COMMON)
+    wk_park.add_argument("checkpoint_ref",
+                         help="a checkpoint this node recorded, e.g. SRV-0001#1")
+    wk_park.add_argument("--reason", default="",
+                         help="why it is being set down. Required: the record of "
+                              "that is the part a later reader cannot reconstruct, "
+                              "and it is what tells a decision apart from an "
+                              "accident")
+    wk_park.add_argument("--by", default="",
+                         help="who is setting it down (default: the login this "
+                              "process runs as, which is read rather than guessed)")
+    wk_park.add_argument("--at", default="",
+                         help="the instant it was set down (default: now)")
+    wk_park.set_defaults(func=cmd_work_park)
+
+    wk_unpark = work_sub.add_parser(
+        "unpark", help="§12/P7 — take a park back up: the record becomes a "
+                       "candidate to be woken again, and still says it was set "
+                       "down and lifted. Changes no authority", **_COMMON)
+    wk_unpark.add_argument("checkpoint_ref",
+                           help="a checkpoint this node recorded, e.g. SRV-0001#1")
+    wk_unpark.add_argument("--reason", default="",
+                           help="why it is being carried again. Required, for the "
+                                "same reason the park needs one")
+    wk_unpark.add_argument("--by", default="",
+                           help="who is taking it back up (default: the login this "
+                                "process runs as)")
+    wk_unpark.add_argument("--at", default="",
+                           help="the instant it was taken back up (default: now)")
+    wk_unpark.set_defaults(func=cmd_work_unpark)
 
     wk_wake = work_sub.add_parser(
         "wake", help="§17.4/P7 — resume a checkpoint whose wait has ended, by "
