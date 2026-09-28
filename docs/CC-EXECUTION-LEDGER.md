@@ -9321,3 +9321,53 @@ device agents                 verdict CONFORMANT · stale gap 零行 · 唯一 k
 读数。**共同的原因是同一条：我把「此刻为真」写成了「恒为真」。** 这正是 §12.16 那条被
 撤掉的 gap entry 的形状——`the file does not exist` 在 2026-09-13 是真的。区别只在于那条
 活在契约里，这三条活在散文里，而散文没有 `unobserved_declared_gaps` 来把它标出来。
+
+### 12.21 剩下的同类陈述是「渲染出来」才看见的（2026-09-28）
+
+**方法变了，发现的东西也变了。** §12.16–12.17 是读源码找的；这一节是把 `workbench
+render` 指向**已安装的 revision**、读它印出来的 15 份文档找到的。同类陈述里有四条是这样
+冒出来的，而在源码里它们都不显眼：
+
+| 印出来的那句 | 为什么当时为真、现在为假 |
+|---|---|
+| `DEPLOYMENT.md` 导语：`**本页没有任何一条已执行**` | P1 已在这台机器上执行 |
+| `DEPLOYMENT.md` 末节：「**没做**：线上 promote/restart……」 | 同上 |
+| `START-HERE.md` live 未验证：「本轮没有动过任何会话实际加载的东西」 | 线上 promote + restart 动的正是会话加载的东西 |
+| `START-HERE.md` live 未验证：「线上指针未动」 | 线上指针已动 |
+
+**处置的粒度，比上一轮说得更细。** §12.16 说「DEPLOYMENT 的行按作者原文保留」——
+这条规则真正的边界是：**列表是作者的记录，逐条断言节点状态的是句子。** 所以这一轮：
+行一条不动；两处做裸节点断言的 `why` 改成记那一轮，并指向 `serverosctl status`；
+小标题写明是谁的记录（`隔离安装（本轮的 promote 目标）` → `安装与 revision`，
+`这一轮做了什么、没做什么` → 加「（作者记录，非本机读数）」，
+`live 未验证` → 同样加后缀）；而那条**后来真的被做了**的记录，在它自己那一行里说出了
+这一点，而不是被悄悄删掉。
+
+**cachebuster 升到 `srv0005.20260928b`，payload 两个成员变了**
+（`runtime/workbench.py`、`runtime/workbench_sources.py`）。理由与前一次同一个：
+一份随产物发行的渲染器一旦把执行状态写进正文，它被装到任何一台机器上的那一刻就开始说
+旧话，而说旧话的地方不会有任何东西变红。升版会顺带让 Claude 侧那次 `update` 不再是 no-op。
+
+**第二次发布链走完。** 读数：
+
+```text
+release     serveros-cleanmain-28b-20260928@4cef111 · 3.1.0+srv0005.20260928b · tree cc182f343078
+source      4cef111854cf (main, clean) · ability-management@da5f89b1b131
+pointer     AGREEMENT · current → revisions/serveros-cleanmain-28b-20260928@4cef111
+```
+
+`device agents`：`stale gap` 零行、`verdict CONFORMANT`、唯一 `known` 仍是那条等人注册的
+`drift_sync`。两侧消费者这次都真的动了：Claude 报 `updated from 3.1.0+srv0005.20260928a to
+3.1.0+srv0005.20260928b`，Codex 无条件拷贝把 `28a` 那个目录换成 `28b`。两侧的
+`ARTIFACT.json` 与 `current` 同为 `6d9d0c63…`，排除它之后的整仓 `diff -rq` 两侧都是 0。
+`~/.codex/config.toml` 未动（`881c9f19…`）。
+
+**一条新的、但既存的发现（提案，不执行）。** 已安装的 revision 里有 `runtime/__pycache__`，
+是我用解释器直接跑 shipped `cli.py` 写进去的——**但它不是新的**：`main@dfc47b8`（09-19）、
+`main@a4758a0`（09-22）、`final-closure-20260923@0a0d11e`（09-24）、
+`alert-card-scope-20260924@8ce6fe7`（09-26）、`serveros-reading-honesty-20260927`（09-27）
+各代都有。它不影响 `status`（`tree` 与 `AGREEMENT` 都没变），所以这里只做两件事：记下来，
+并改自己的做法——**对着已安装的 revision 跑解释器，一律带 `PYTHONDONTWRITEBYTECODE=1`**。
+清除它归 P4，与其它清理项一起待批。顺带记一句同类的对比：**渲染器自己是有这条意识的**
+（它拒绝把文档写进 revision，要求 `--out` 指到产物之外），把 `.pyc` 写进去的是我的调用
+方式，不是它的。
