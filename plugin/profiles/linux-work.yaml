@@ -463,7 +463,53 @@ short_description: Agent Engineering Workbench for a Linux work node
 #
 # One member changes, `mcp/human_control.py`; its tests are not part of this
 # composition. The ability pin is unchanged (`da5f89b1b131`).
-cachebuster: srv0005.20260928c
+#
+# ── 28c → 28d (2026-09-28, later the same day) ────────────────────────────────
+#
+# `28c` made the probe read the actor document BotMux actually publishes, and
+# that document carries an enterprise email and nothing else. Requiring the
+# email was the other half of the same defect, and the quieter half: the email
+# needs the field-level scope `contact:user.email:readonly`, the tenant grants
+# 0 of the 233 scopes containing `email` to the app this device runs, and the
+# Contact API answers a `union_id` and no email at all. So the gate was blocked
+# on every turn, correctly, with nothing visible on the Feishu side to say why.
+#
+# The daemon's v3 document answers the question it can answer, with a
+# `union_id`: developer-scoped, the same value in every app of the tenant, and
+# readable without the permission the email needs. `18787e5` reads both
+# documents — this composition ships before the daemon that publishes v3, so a
+# reader that only understood v3 would refuse every turn until BotMux is
+# upgraded — and prefers v3 by its DECLARED schema. It is not a fallback: a v3
+# document whose canonical id is missing or malformed is refused, never read
+# from the email or the app-local pair beside it. A reader that settled for the
+# email would mint a context naming whoever the email belonged to.
+#
+# MEASURED, the way `24d` and `27a` were. Four members of this composition
+# differ from the promoted payload under the version string
+# `3.1.0+srv0005.20260928c`:
+#
+#   context/actor.py                     aaab857b → 9ad62cb9
+#   context/actor-context-contract.yaml  b5a410ca → c574ea67
+#   mcp/human_control.py                 e7270b6a → 2945b498
+#   runtime/approval.py                  c0e7875c → b6e728a1
+#
+# All four are members of the 261-member payload. Leaving the label at `28c`
+# would hand an installed cache a different identity path under a version
+# string that already names the promoted revision — and the difference here is
+# the gate itself, so the stale copy is not a cosmetic lag: it is the version
+# whose every turn is BLOCKED. That is the failure this field exists to
+# prevent, and `24b`/`24c` are both the story of it happening anyway.
+#
+# `runtime/approval.py` is the fourth member and is not incidental. `--actor`
+# now goes through the ref grammar rather than into the record verbatim,
+# because `approval_ref` hashes the ref and `agent_control_store` matches it
+# exactly: a bare id that should have carried a namespace binds the approval to
+# an actor that can never consume it while the approval reads ISSUED the whole
+# time. A member whose whole job is that hash cannot be left at the old gate.
+#
+# Tests are not members of this composition. The ability pin is unchanged
+# (`da5f89b1b131`).
+cachebuster: srv0005.20260928d
 
 skills:
   - name: runtime-management
