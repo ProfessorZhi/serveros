@@ -293,25 +293,62 @@ def test_a_changed_actor_schema_is_refused_rather_than_read():
     assert report.actor_id is None
 
 
-def test_ok_without_a_user_is_blocked_not_a_private_turn():
+def test_verified_without_an_actor_is_blocked_not_a_private_turn():
+    # A verification with no identity is a contradiction in the provider's own
+    # document. Resolving it as "no actor" would turn a broken provider into
+    # something that looks like an ordinary unauthenticated turn.
     provider = BotMuxHumanControlProvider(
-        runner=lambda: {"schema": "botmux.current-actor.v2", "status": "ok"},
+        runner=lambda: {"schema": "botmux.current-actor.v2",
+                        "status": "verified"},
         clock=lambda: NOW)
     report = provider.identify()
     assert report.status == "BLOCKED"
-    assert "no verified user name" in report.detail
+    assert "no actor.email" in report.detail
 
 
-def test_a_verified_answer_produces_the_full_report_and_a_context():
+def test_the_status_this_cli_never_emits_is_refused_by_name():
+    # The `declared-but-absent` pathology again, at the field that decides
+    # everything: `"ok"` is what the binary's OTHER subsystems answer with, and
+    # it is not a word the actor document uses. A reader that accepted it would
+    # be reading a different document than the one being served, and would do
+    # so silently — the failure mode is a green light, not an exception.
     provider = BotMuxHumanControlProvider(
         runner=lambda: {"schema": "botmux.current-actor.v2", "status": "ok",
                         "user": "hwz"},
+        clock=lambda: NOW)
+    report = provider.identify()
+    assert report.status == "BLOCKED"
+    assert "'ok'" in report.detail
+    assert report.actor_id is None
+
+
+def test_a_verified_answer_produces_the_full_report_and_a_context():
+    # The measured success document, verbatim in shape: the literal is
+    # `verified`, and the identity is an email under `actor`.
+    provider = BotMuxHumanControlProvider(
+        runner=lambda: {"schema": "botmux.current-actor.v2",
+                        "status": "verified",
+                        "actor": {"email": "hwz"}},
         clock=lambda: NOW)
     report = provider.identify(conversation_ref="oc_x", message_ref="om_y")
     assert report.status == "VERIFIED" and report.actor_id == "hwz"
     record = actor.build(report.as_report(), now=NOW)
     assert record["actor_ref"] == "human:hwz"
     assert record["conversation_ref"] == "oc_x"
+
+
+def test_a_refusal_reason_is_carried_through_into_the_detail():
+    # BotMux's own word for why it refused is the only thing that can send an
+    # operator to the right place. Dropping it leaves "BLOCKED" pointing at
+    # nothing, which is what made the live gate unattributable from outside.
+    provider = BotMuxHumanControlProvider(
+        runner=lambda: {"schema": "botmux.current-actor.v2",
+                        "status": "blocked", "reason": "peer_not_in_turn"},
+        clock=lambda: NOW)
+    report = provider.identify()
+    assert report.status == "BLOCKED"
+    assert "peer_not_in_turn" in report.detail
+    assert report.actor_id is None
 
 
 def test_a_missing_actor_surface_is_unsupported_not_blocked():
@@ -659,10 +696,31 @@ def serving_daemon(daemon):
 
 
 def _verified_provider():
+    """A provider whose probe answers the way the live surface really answers.
+
+    The document is the measured shape: `status: "verified"` and the identity at
+    `actor.email`. It carries no conversation or message locator, because the
+    live one carries none — that absence is the subject of several tests below,
+    so this fixture must not paper over it.
+    """
     return BotMuxHumanControlProvider(
-        runner=lambda: {"schema": "botmux.current-actor.v2", "status": "ok",
-                        "user": "hwz", "chatId": "oc_conversation",
-                        "messageId": "om_message"},
+        runner=lambda: {"schema": "botmux.current-actor.v2",
+                        "status": "verified", "actor": {"email": "hwz"}},
+        clock=lambda: NOW)
+
+
+def _verified_provider_with_locators():
+    """The same verification, plus the locators a future BotMux should publish.
+
+    Stands in for item 3 of the upstream proposal so that what is BELOW the
+    provider — the attach path, the store, the exit code — stays tested. It is
+    deliberately a different fixture from `_verified_provider`, so that a change
+    making the live one mint successfully cannot happen by editing a fixture.
+    """
+    return BotMuxHumanControlProvider(
+        runner=lambda: {"schema": "botmux.current-actor.v2",
+                        "status": "verified", "actor": {"email": "hwz"},
+                        "chatId": "oc_conversation", "messageId": "om_message"},
         clock=lambda: NOW)
 
 
@@ -680,9 +738,14 @@ def test_a_verified_turn_mints_a_context_over_a_real_socket(serving_daemon):
     probe result, this process's pid, a real connection, the kernel's
     `SO_PEERCRED`, and the daemon's store. Nothing is passed in that a caller
     could not supply.
+
+    The probe document here carries the two locators BotMux does not publish
+    yet, because that is the only way this far end is reachable at all — see
+    `test_a_verified_turn_without_locators_mints_nothing` for what today's
+    surface produces, which is the honest state and not a test artefact.
     """
     serving_daemon.serve(1)
-    result = human_control.attach_context(_verified_provider(),
+    result = human_control.attach_context(_verified_provider_with_locators(),
                                           daemon=serving_daemon.client())
 
     assert result["attached"] is True, result
@@ -738,24 +801,29 @@ def test_a_blocked_provider_mints_nothing_and_never_knocks(serving_daemon):
     assert minted["store"]["contexts"] == 0
 
 
-def test_a_probe_that_names_no_turn_mints_nothing(serving_daemon):
-    """The consequence of not letting the caller supply the conversation.
+def test_a_verified_turn_without_locators_mints_nothing(serving_daemon):
+    """Today's live surface, end to end: the human is verified and nothing mints.
 
-    A verified name with no conversation attached is not a context with an
-    empty location — it is a report missing one of the fields that make it
-    evidence, and it is refused as such. The cheap repair would be to default
-    the field to something plausible, and that is what would put a fabricated
-    location into an audit record.
+    This is the state a BotMux deployment is actually in. The gate can verify
+    the sender, and the document it publishes names neither the conversation nor
+    the event, so there is nothing to bind the context to. The refusal names
+    both fields rather than failing later with a sentence about something else,
+    and — the load-bearing half — the store is still empty, so "attached: false"
+    is not a flag over a context that got written anyway.
+
+    The cheap repair would be to default the locations to something plausible,
+    or to read them from the process environment; the first puts a fabrication
+    into an audit record and the second lets the caller choose which
+    conversation it is recorded against.
     """
-    nameless = BotMuxHumanControlProvider(
-        runner=lambda: {"schema": "botmux.current-actor.v2", "status": "ok",
-                        "user": "hwz"},
-        clock=lambda: NOW)
     serving_daemon.serve(1)
-    result = human_control.attach_context(nameless, daemon=serving_daemon.client())
+    result = human_control.attach_context(_verified_provider(),
+                                          daemon=serving_daemon.client())
 
     assert result["attached"] is False and result["state"] == "REFUSED"
     assert "conversation_ref" in result["detail"]
+    assert "message_ref" in result["detail"]
+    assert result["observed_by_pid"] == os.getpid()
     assert _call(serving_daemon.daemon,
                  "agent.control.status", {})["result"]["store"]["contexts"] == 0
 
@@ -794,7 +862,7 @@ def test_the_attach_verb_exits_nonzero_when_no_context_was_minted(serving_daemon
 
     serving_daemon.serve(1)
     monkeypatch.setattr(human_control, "BotMuxHumanControlProvider",
-                        _verified_provider)
+                        _verified_provider_with_locators)
     assert human_control.main(["--attach",
                                "--socket", str(serving_daemon.daemon.socket_path)]) == 0
     attached = json.loads(capsys.readouterr().out)
