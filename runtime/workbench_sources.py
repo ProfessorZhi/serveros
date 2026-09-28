@@ -497,9 +497,11 @@ LIVE_UNVERIFIED = [
     dict(what="飞书客户端回读",
          why="没有发送就没有回读。布局验证目前只到「同一份 payload 的离线渲染」。"),
     dict(what="CC 插件 / Hook 在真实会话中加载",
-         why="覆盖现用插件是 §8 的 P2，需要单独批准；本轮没有动过任何会话实际加载的东西。"),
+         why="覆盖现用插件是 §8 的 P2，需要单独批准；那一轮没有动过任何会话当时加载的东西。"),
     dict(what="serverosd 指向新 revision（线上 promote/restart）",
-         why="本轮只在隔离 runtime root 上跑通了 promote/rollback。线上指针未动，见 P1。"),
+         why="那一轮只在隔离 runtime root 上跑通了 promote/rollback，线上切换留给 P1。"
+             "**这一条后来真的做了**：本机现在跑的是哪一个 revision，由 `serverosctl status` 回答，"
+             "不由这份作者记录回答。"),
     dict(what="三个飞书空间的 live 抓取",
          why="覆盖页读的是离线契约与本地测量；没有任何适配器声称支持 live 抓取。"),
 ]
