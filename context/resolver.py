@@ -173,6 +173,22 @@ class Roots:
         return self.workspace_root / "ops/workspace/serveros/projects.yaml"
 
     @property
+    def testing_dir(self) -> Path:
+        """Project Testing Contract 与全局测试政策所在。与 projects.yaml 同源。
+
+        projects.yaml 是项目的**身份**（它叫什么、仓库在哪），契约是项目的
+        **测试语义**（它该怎么被测）。两者都是控制面的受 schema 约束的文档，
+        所以它们放一起，而不是一个在控制面、一个在代码里。
+        """
+        return self.workspace_root / "ops/workspace/serveros/testing"
+
+    @property
+    def schema_dir(self) -> Path:
+        """控制面自己声明的 schema。契约文档的合法取值（mutability、criticality、
+        violation code）从那里读，不在 runtime 里另抄一份词表。"""
+        return self.workspace_root / "ops/workspace/serveros/schemas"
+
+    @property
     def records(self) -> Path:
         return self.workspace_root / "records/projects"
 
