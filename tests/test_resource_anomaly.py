@@ -267,6 +267,79 @@ def test_a_host_summary_without_totals_is_not_a_host_with_no_pressure():
     assert "SWAP_PRESSURE" not in out["codes_graded"]
 
 
+def test_a_swap_watermark_reaches_the_card_with_the_pressure_beside_it():
+    """The reading, not the policy. `ADMISSION_LEVELS` is asserted unchanged.
+
+    SWAP_PRESSURE was graded on the watermark alone, and `ADMISSION_LEVELS`
+    puts it at `refuse` — so the number that reached the register, and the
+    card, and any future creation path, was the one this host measured as
+    NOT pressure: 99.2% of swap with memory PSI at 0.00 across every window
+    and `pswpout` unmoved over forty minutes (2026-09-15). `_swap_note` has
+    separated the two on the advisory path since it was written; the signal
+    did not carry the second reading at all, because the host document handed
+    to `detect()` had no place to put it.
+
+    What this asserts is that the delivery now happens. Moving a code between
+    `refuse` and `advisory` is a policy decision and is deliberately not this
+    test's business — the last line is here so that a later round cannot make
+    it one by accident while "fixing" this.
+    """
+    out = ra.detect(host={
+        "memory": {"total_bytes": 33285996544, "used_bytes": 20000000000,
+                   "available_bytes": 9000000000,
+                   "swap": {"total_bytes": 17179865088,
+                            "used_bytes": 17040000000}},
+        "pressure": {
+            "provider": "PRESENT",
+            "memory": {"state": "PRESENT",
+                       "some": {"avg10": 0.0, "avg60": 0.0, "avg300": 0.0,
+                                "total": 12345},
+                       "full": {"avg10": 0.0, "avg60": 0.0, "avg300": 0.0,
+                                "total": 0}},
+        },
+    })
+    signal = [s for s in out["signals"] if s["code"] == "SWAP_PRESSURE"][0]
+    measured = signal["measured"]
+    assert measured["used_percent"] == 99.2
+    assert measured["memory_pressure"]["state"] == "PRESENT"
+    assert measured["memory_pressure"]["some"]["avg60"] == 0.0
+    assert measured["psi_memory_some_avg60_percent_high"] == 1.0
+    assert measured["psi_memory_full_avg60_percent_high"] == 0.5
+    assert ra.ADMISSION_LEVELS["SWAP_PRESSURE"] == "refuse"
+
+
+def test_an_unreadable_psi_travels_as_unavailable_and_never_as_zero():
+    """`pressure_stall` refuses to report "no stall" for "cannot tell", and the
+    signal must not undo that on the way to the card by dropping the field."""
+    out = ra.detect(host={
+        "memory": {"total_bytes": 33285996544, "used_bytes": 20000000000,
+                   "swap": {"total_bytes": 17179865088,
+                            "used_bytes": 17040000000}},
+        "pressure": {"provider": "UNAVAILABLE",
+                     "memory": {"state": "UNAVAILABLE",
+                                "reason": "/proc/pressure/memory is not readable"}},
+    })
+    measured = [s for s in out["signals"]
+                if s["code"] == "SWAP_PRESSURE"][0]["measured"]
+    assert measured["memory_pressure"]["state"] == "UNAVAILABLE"
+    assert "not readable" in measured["memory_pressure"]["reason"]
+    assert "some" not in measured["memory_pressure"]
+
+
+def test_a_host_document_with_no_pressure_field_is_not_a_host_with_no_stall():
+    """A caller that built its own summary — every stub in the suite — leaves
+    the key out. The key is then present and null on the signal, which reads as
+    "this code has no such measurement" rather than as a clean bill."""
+    out = ra.detect(host={
+        "memory": {"total_bytes": 33285996544, "used_bytes": 20000000000,
+                   "swap": {"total_bytes": 17179865088,
+                            "used_bytes": 17040000000}}})
+    measured = [s for s in out["signals"]
+                if s["code"] == "SWAP_PRESSURE"][0]["measured"]
+    assert "memory_pressure" in measured
+    assert measured["memory_pressure"] is None
+
+
 def test_a_comparison_that_compared_nothing_is_not_graded_clean():
     """§27, through `desired.py` — the last branch of it this round found.
 

@@ -193,6 +193,40 @@ def _percent(value) -> str:
         return "未读到"
 
 
+def _value(value, *, empty: str = "未读到") -> str:
+    """A scalar as it should appear, or the absence of one.
+
+    `_bytes` and `_percent` were the only two readers that had this rule, so
+    every field that is neither a size nor a ratio went into the line through
+    a bare f-string and printed the word `None` in the middle of a Chinese
+    sentence a person reads. That is not a rendering bug about one field: the
+    card states unread as a fact and `None` is a Python value that escaped,
+    and a reader cannot tell the two apart once they are the same three
+    letters on the face.
+
+    Not a truthiness test on purpose. `0` is a reading and `False` is a
+    reading — a user manager that does not linger, a process count of zero —
+    and only `None` and the empty string are the absence of one.
+    """
+    if value is None or value == "":
+        return empty
+    return str(value)
+
+
+def _cpu_share(share: dict) -> str:
+    """The core figures behind one host-wide CPU percentage.
+
+    A ratio whose denominator was not read is not half a reading. Printed as
+    two independent fields it came out "未读到 核等效 / 共 未读到 核", which is
+    a sentence a reader has to decode before they can tell that one measurement
+    is missing rather than two — and the two halves here are one measurement.
+    """
+    cores, logical = share.get("cpu_cores"), share.get("logical_cpus")
+    if cores is None or logical is None:
+        return "核数未读到，因此占整机的比例没有分母"
+    return f"{cores} 核等效 / 共 {logical} 核"
+
+
 def _thresholds(summary: dict) -> dict:
     """The limits, from the payload that publishes them.
 
@@ -263,16 +297,21 @@ def _host_section(summary: dict | None, gaps: list[dict]) -> dict:
     cpu = host.get("cpu") or {}
     limits = _thresholds(summary)
     lines = [
-        f"CPU {cpu.get('logical_cpus') or '?'} 逻辑核"
+        f"CPU {_value(cpu.get('logical_cpus'))} 逻辑核"
         + (f" · 型号 {cpu.get('model')}" if cpu.get("model") else ""),
-        f"负载 {load.get('load1')} / {load.get('load5')} / {load.get('load15')}"
-        f" · 可运行 {load.get('runnable') or '未读到'}",
+        f"负载 {_value(load.get('load1'))} / {_value(load.get('load5'))}"
+        f" / {_value(load.get('load15'))}"
+        f" · 可运行 {_value(load.get('runnable'))}",
         f"内存 已用 {_bytes(memory.get('used_bytes'))} / {_bytes(memory.get('total_bytes'))}"
         f" · 可用 {_bytes(memory.get('available_bytes'))}"
         f"（缓存 {_bytes(memory.get('cached_bytes'))}）",
         f"交换区 已用 {_percent(swap.get('used_percent'))}"
         f"（{_bytes(swap.get('used_bytes'))} / {_bytes(swap.get('total_bytes'))}）"
-        f" · 阈值 {limits.get('swap_percent_high')}%",
+        # The unit is dropped with the number rather than left standing beside
+        # "未读到": a threshold that was not read is not "未读到 percent of it",
+        # and half a unit is how a reader learns to skim this line.
+        + (f" · 阈值 {limits['swap_percent_high']}%"
+           if limits.get("swap_percent_high") is not None else ""),
     ]
     for role in _filesystems(summary):
         lines.append(
@@ -283,10 +322,12 @@ def _host_section(summary: dict | None, gaps: list[dict]) -> dict:
             f" · 可用 {_bytes(role.get('free_bytes'))}")
     docker = summary.get("docker") or {}
     if docker:
-        lines.append(f"Docker {docker.get('ServerVersion')} · 容器 "
-                     f"运行 {docker.get('ContainersRunning')} / "
-                     f"停止 {docker.get('ContainersStopped')} / "
-                     f"共 {docker.get('Containers')} · 镜像 {docker.get('Images')}")
+        lines.append(
+            f"Docker {_value(docker.get('ServerVersion'))} · 容器 "
+            f"运行 {_value(docker.get('ContainersRunning'))} / "
+            f"停止 {_value(docker.get('ContainersStopped'))} / "
+            f"共 {_value(docker.get('Containers'))} · "
+            f"镜像 {_value(docker.get('Images'))}")
     for note in (summary.get("advisory") or {}).get("notes") or []:
         lines.append(f"提醒 {note}")
 
@@ -332,9 +373,9 @@ def _mine_section(summary: dict | None, user_services: dict | None,
         # identity it was computed for, and a card forwarded to a colleague
         # otherwise reads as theirs.
         f"账户 uid {os.getuid()}"
-        + (f" · 进程数 {share.get('process_count')}" if share else ""),
+        + (f" · 进程数 {_value(share.get('process_count'))}" if share else ""),
         f"CPU 占整机 {_percent(share.get('cpu_percent_of_host'))}"
-        f"（{share.get('cpu_cores')} 核等效 / 共 {share.get('logical_cpus')} 核）",
+        f"（{_cpu_share(share)}）",
         f"内存 {_bytes(share.get('memory_rss_bytes'))}"
         f" · 占整机 {_percent(share.get('memory_percent_of_host'))}",
     ]
@@ -353,8 +394,8 @@ def _mine_section(summary: dict | None, user_services: dict | None,
                   if str(u.get("active") or u.get("state") or "").startswith("active")]
         lines.append(f"本账户 systemd 用户单元 {len(units)} 个"
                      f"（其中 active {len(active)}）"
-                     f" · linger {user_services.get('linger')}"
-                     f" · supervisor {user_services.get('supervisor')}")
+                     f" · linger {_value(user_services.get('linger'))}"
+                     f" · supervisor {_value(user_services.get('supervisor'))}")
         # Active first. The list arrives alphabetically and the alphabet has no
         # opinion about what is running: on this node the first six units are
         # dbus, dirmngr, gpg-agent, keyboxd — all inactive — so a person reading

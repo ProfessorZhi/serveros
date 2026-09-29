@@ -804,6 +804,40 @@ def _measurement_line(alert: dict, measured: dict) -> str:
             threshold = measured.get("threshold_percent")
             parts.append(f"{measured[key]}%"
                          + (f" (threshold {threshold}%)" if threshold is not None else ""))
+    psi = measured.get("memory_pressure")
+    if isinstance(psi, dict) and psi:
+        # §SWAP. A watermark is not a pressure, and this is the line that stops
+        # one being read as the other. The three outcomes are printed
+        # separately because they call for different things from whoever reads
+        # them — the same three `inventory._swap_note` separates on the
+        # advisory path, in the shorter form a card has room for.
+        #
+        # Nothing here decides whether the stall figure is a problem; it prints
+        # the reading beside the threshold it would be compared against, which
+        # is what this function does for every other code. The verdict stays in
+        # one place, and that place is not the renderer.
+        some = ((psi.get("some") or {}) if isinstance(psi.get("some"), dict) else {})
+        full = ((psi.get("full") or {}) if isinstance(psi.get("full"), dict) else {})
+        some_at = measured.get("psi_memory_some_avg60_percent_high")
+        full_at = measured.get("psi_memory_full_avg60_percent_high")
+        if some.get("avg60") is None or full.get("avg60") is None:
+            # "Cannot tell" is not "fine". `/proc/pressure` is absent on a
+            # pre-4.20 kernel and under `psi=0`, and a note that reads an
+            # unreadable pressure as no pressure is the conflation this whole
+            # pair of fields exists to prevent — it would not become true by
+            # being made in a sentence instead of a field.
+            parts.append(
+                "memory stall was NOT established: "
+                + (psi.get("reason")
+                   or "memory pressure-stall information was not readable")
+                + " — the swap figure above is a watermark, and a watermark is "
+                  "not a measurement of pressure")
+        else:
+            parts.append(
+                f"memory stall some avg60={some['avg60']}%"
+                + (f" (threshold {some_at}%)" if some_at is not None else "")
+                + f", full avg60={full['avg60']}%"
+                + (f" (threshold {full_at}%)" if full_at is not None else ""))
     for key in ("size_bytes", "log_bytes", "size_rw_bytes"):
         if measured.get(key) is not None:
             threshold = measured.get("threshold_bytes")

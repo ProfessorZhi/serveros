@@ -552,7 +552,68 @@ short_description: Agent Engineering Workbench for a Linux work node
 #
 # Tests are not members of this composition. The ability pin is unchanged
 # (`da5f89b1b131`).
-cachebuster: srv0005.20260928e
+#
+# ── 28e → 29a (2026-09-29) ────────────────────────────────────────────────────
+#
+# The letter restarts because the date moved, not because the payload went
+# backwards. What moved is the card, on both counts a person had a way of
+# seeing: the two cards this node sends had a defect you could read off the
+# face.
+#
+# `runtime/alert_digest.py` + `runtime/presentation.py`: the numbers stopped
+# being dropped in the row projection. `alerting._measurement_line` renders
+# `92.0% (threshold 90%)` and had been falling through to the detector's prose
+# because the row it is handed carried `caveat` and the comparison fields and
+# nothing numeric — measured on this node the same day: the register held 10,844
+# rows all carrying `measured`, and the digest carried **0 of 9,273 rows** with
+# any numeric measurement key. So both the card and the notification said a
+# threshold had been crossed while never printing the number or the threshold.
+#
+# `runtime/inventory.py` + `runtime/resource_anomaly.py` + `runtime/alerting.py`:
+# SWAP_PRESSURE now reports the pressure beside the watermark. `host_summary()`
+# carries `pressure`, `_memory_signals` puts it in `measured`, and the renderer
+# prints `memory stall some avg60=… (threshold …), full avg60=…`. Measured
+# 2026-09-15: 99.2% swap with PSI at 0.00 in every window and `pswpout` unmoved
+# over forty minutes — a machine that was not paging, reported as pressure with
+# no way for a reader to tell. `ADMISSION_LEVELS` still puts SWAP_PRESSURE at
+# `refuse`: this moves the READING, not the policy.
+#
+# `runtime/presentation.py` + `runtime/cards.py`: an unbound gateway is no longer
+# rewritten to UNKNOWN, so it no longer greys the whole status card over a
+# question that had been answered; the verdict is OK and names the section.
+# `runtime/card_source.py`: a field nobody read prints 未读到 instead of the word
+# `None`. `runtime/card-scenarios.yaml`: the scenario that renders this shape is
+# named `unbound_gateway` rather than `partial_unknown` — the old name described
+# the defect, and the preview is the artifact a person approves.
+#
+# MEASURED, the way `24d`, `27a` and `28d` were. Eight members of this
+# composition differ from the promoted payload under the version string
+# `3.1.0+srv0005.20260928e`:
+#
+#   runtime/alert_digest.py        8d1012a2 → c0b11ad8
+#   runtime/alerting.py            83a18733 → 1fae18a9
+#   runtime/card-scenarios.yaml    30f16c44 → 4cb9aeaa
+#   runtime/card_source.py         4e96d6af → 7c564def
+#   runtime/cards.py               dd8b9db9 → b87a7f98
+#   runtime/inventory.py           811de059 → c4de6a8e
+#   runtime/presentation.py        a30e5c1f → 6ffe1e2a
+#   runtime/resource_anomaly.py    cd9d1ee5 → a80cc89e
+#
+# All eight are members of the 265-file payload. What a stale copy would keep
+# doing is why the label has to move: `runtime/card_source.py`,
+# `runtime/cards.py` and `runtime/presentation.py` are the three the status card
+# is rendered from, and the installed revision's copies print `None` where a
+# reading is missing, grey the card over an unbound gateway, and say 未读到 in a
+# heading over a body that says 未绑定. `runtime/alerting.py` and
+# `runtime/alert_digest.py` are the alert card's rendering and its row
+# projection, and `runtime/resource_anomaly.py` is the detector that only now
+# puts the PSI reading into the signal at all — so the old copies answer the
+# SWAP question with the watermark alone, which is the reading that cannot tell
+# a full swap file from a machine under pressure.
+#
+# Tests are not members of this composition. The ability pin is unchanged
+# (`da5f89b1b131`).
+cachebuster: srv0005.20260929a
 
 skills:
   - name: runtime-management

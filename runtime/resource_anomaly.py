@@ -25,7 +25,7 @@ read as "no problem here", is the exact failure §27 forbids one layer down.
     DISK_WARNING / DISK_CRITICAL   filesystem used_percent, two declared tiers
     INODE_CRITICAL                 inode used_percent on the same filesystems
     MEMORY_PRESSURE                host memory used against total
-    SWAP_PRESSURE                  swap used against total
+    SWAP_PRESSURE                  swap used against total, with memory PSI
     DOCKER_STORAGE_HIGH            the Docker data root's own filesystem, or
                                    `docker system df`'s total store size
     RUNTIME_UNOWNED                `hygiene.py`'s UNKNOWN_OWNER rows
@@ -146,6 +146,12 @@ THRESHOLD_KEYS = (
     "inode_percent_high",
     "memory_percent_high",
     "swap_percent_high",
+    # The pair that says whether the swap watermark above is pressure now or a
+    # high-water mark from some earlier moment. Listed here so a caller that
+    # supplies its own `thresholds` gets them filled in and the card can print
+    # what the stall figure was compared against.
+    "psi_memory_some_avg60_percent_high",
+    "psi_memory_full_avg60_percent_high",
     "docker_storage_percent_high",
     "docker_build_cache_bytes_high",
     "container_writable_layer_bytes_high",
@@ -419,24 +425,29 @@ def _memory_signals(host: dict, thresholds: dict, *, observed_at) -> tuple[list,
                      "§25 forbids acting on this: the permitted response is to "
                      "refuse a NEW allocation, never to stop one that exists"),
             ))
-    # A KNOWN SECOND PRODUCER OF A CLAIM `inventory.pressure()` NO LONGER
-    # MAKES, recorded rather than silently aligned. This grades SWAP_PRESSURE
-    # from the watermark alone, and `ADMISSION_LEVELS` puts SWAP_PRESSURE at
-    # `refuse` — so an unbacked reading can, on the day `admission()` is wired
-    # into a creation path, refuse work on a machine that is not under any
-    # pressure. Measured on this host 2026-09-15: 99.2% swap with PSI at
-    # 0.00 across every window and `pswpout` unmoved over forty minutes.
+    # SWAP_PRESSURE IS GRADED ON THE WATERMARK AND REPORTED WITH THE PRESSURE,
+    # and the two are now on the card together. The watermark alone is a
+    # high-water mark: pages are written to swap when memory was short and read
+    # back only when touched again, so a swap file that filled once stays full
+    # while nothing is paging. Measured on this host 2026-09-15: 99.2% of swap
+    # in use, memory PSI at 0.00 across every window, `pswpout` unmoved over
+    # forty minutes — a machine that was not paging, reported as pressure.
+    # `inventory._swap_note` has separated those two since it was written, but
+    # only on the advisory path; this signal reached the register and the card
+    # carrying the watermark alone.
     #
-    # Not repaired here, and the reason is scope rather than doubt. This
-    # module cannot consult PSI at all — it has no reference to
-    # `inventory.pressure_stall` or to `/proc/pressure` anywhere, and the
-    # `host` dict it is handed does not carry the reading, so the fix is to
-    # thread a new field from the observation producer through to here and
-    # then decide what an admission gate should do with it. Moving a code
-    # between `refuse` and `advisory` is a POLICY change and needs a decision
-    # that is not this round's to make. `admission()`'s own contract entry
-    # records `wired_into_a_creation_path: false`, so nothing acts on this
-    # today; the hazard is that it would start to.
+    # What is repaired here is the READING, not the policy. `ADMISSION_LEVELS`
+    # still puts SWAP_PRESSURE at `refuse` and `admission()` still records
+    # `wired_into_a_creation_path: false`; moving a code between `refuse` and
+    # `advisory` is a decision this round does not make. A reader of the card
+    # can now tell the 99.2%-and-idle machine from the 99.2%-and-stalling one,
+    # which is the difference the single number could not express.
+    #
+    # The reading travels in the provider's own shape (`inventory.
+    # pressure_stall()`'s per-resource dict, `UNAVAILABLE` included) rather
+    # than pre-decided into a verdict: whether a stall figure is a problem is
+    # the same question `_swap_note` asks of these bytes, and answering it
+    # twice in two places is how the two answers start to disagree.
     swap = memory.get("swap") or {}
     swap_total, swap_used = swap.get("total_bytes"), swap.get("used_bytes")
     swap_at = thresholds["swap_percent_high"]
@@ -447,7 +458,15 @@ def _memory_signals(host: dict, thresholds: dict, *, observed_at) -> tuple[list,
             signals.append(_signal(
                 "SWAP_PRESSURE", "host:swap",
                 {"used_percent": percent, "threshold_percent": swap_at,
-                 "used_bytes": swap_used, "total_bytes": swap_total},
+                 "used_bytes": swap_used, "total_bytes": swap_total,
+                 # Absent from a summary the caller built itself, in which case
+                 # the card says the pressure was not established rather than
+                 # implying the watermark settled it.
+                 "memory_pressure": (host.get("pressure") or {}).get("memory"),
+                 "psi_memory_some_avg60_percent_high":
+                     thresholds.get("psi_memory_some_avg60_percent_high"),
+                 "psi_memory_full_avg60_percent_high":
+                     thresholds.get("psi_memory_full_avg60_percent_high")},
                 window="point in time", source="host-memory",
                 observed_at=observed_at,
                 why=("swap in use is at or above the declared threshold. Above "
@@ -862,7 +881,8 @@ _INPUTS = {
     "DISK_CRITICAL": "disk_status() roles and others",
     "INODE_CRITICAL": "inode usage on the same filesystems",
     "MEMORY_PRESSURE": "host_summary()['memory']",
-    "SWAP_PRESSURE": "host_summary()['memory']['swap']",
+    "SWAP_PRESSURE": ("host_summary()['memory']['swap'] and "
+                      "host_summary()['pressure']['memory']"),
     "DOCKER_STORAGE_HIGH": "docker_space() plus the data root's filesystem size",
     "RUNTIME_UNOWNED": "hygiene report container classifications",
     "RUNTIME_ORPHANED": "hygiene report container classifications",

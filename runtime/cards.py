@@ -684,6 +684,15 @@ _SECTION_TITLES = {
     "gateway": "共享 AI 网关 · 与个人 container0 分开",
 }
 
+#: The word a section with no lines opens with, when it is not the usual one.
+#: Almost always "未读到" — the reading did not happen. An UNBOUND gateway is
+#: the exception and needs its own word: this block used to be headed "未读到"
+#: over a body that said "这一栏报为未绑定", so the face and the sentence under
+#: it named two different problems and only one of them existed. A reader who
+#: believes the heading goes and re-runs a probe that already returned the only
+#: answer there was.
+_EMPTY_LEAD = {presentation.GATEWAY_UNBOUND: "未声明绑定"}
+
 
 def status_card(model: dict) -> dict:
     """The three fixed blocks, each collapsible, under the one-line verdict.
@@ -732,7 +741,8 @@ def status_card(model: dict) -> dict:
         # The first line stays outside the fold — §6's "三板块首行可辨".
         els.append(md(f"**{_SECTION_TITLES.get(name, name)}**\n"
                       + (lines[0] if lines
-                         else f"未读到：{section.get('why') or '未采集'}")))
+                         else f"{_EMPTY_LEAD.get(section.get('state'), '未读到')}："
+                              f"{section.get('why') or '未采集'}")))
         # A panel only when there is something to put in it. The first draft
         # opened one whenever the section had a `why`, which for an unbound
         # gateway is the same sentence already printed above it — so the card
@@ -746,7 +756,10 @@ def status_card(model: dict) -> dict:
     els.append(md(f"采集时间 {_stamp(model)} · 观测范围 "
                   f"{'、'.join(health.get('sections_read') or []) or '无'}"
                   + (f" · 未读到 {'、'.join(health.get('sections_unread') or [])}"
-                     if health.get("sections_unread") else "")))
+                     if health.get("sections_unread") else "")
+                  + (f" · 未声明绑定 "
+                     f"{'、'.join(health.get('sections_unbound') or [])}"
+                     if health.get("sections_unbound") else "")))
     els.append(md((model.get("coverage") or {}).get("note") or ""))
     els.extend(_footnote(model))
     return _card(template, title, els, model)

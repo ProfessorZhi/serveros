@@ -107,7 +107,7 @@ class ScenarioRenderTests(unittest.TestCase):
         """
         self.assertEqual(
             [i["scenario"] for i in self.items],
-            ["normal", "partial_unknown", "one_critical", "observer_failure",
+            ["normal", "unbound_gateway", "one_critical", "observer_failure",
              "mixed", "recovery_only",
              # AC18–AC21.
              "pressure_boundary", "expected_service_down", "observability_loss",
@@ -607,8 +607,37 @@ class ColourTests(unittest.TestCase):
     def test_an_unread_environment_is_grey_and_not_green(self):
         by_name = {i["scenario"]: i["card"] for i in scenarios.rendered()}
         self.assertEqual(by_name["observer_failure"]["header"]["template"], "grey")
-        self.assertEqual(by_name["partial_unknown"]["header"]["template"], "grey")
         self.assertEqual(by_name["normal"]["header"]["template"], "green")
+
+    def test_an_unbound_gateway_does_not_grey_the_dashboard(self):
+        """§6 is about readings nobody took, and this is not one of them.
+
+        `unbound_gateway` (renamed from `partial_unknown`, which described the
+        defect rather than the scenario) renders the shape this node really
+        produces: the shared gateway has no service binding, the other two
+        sections were read. It used to come out grey with "有项目尚未读到：
+        gateway" over a body whose own text said 这一栏报为未绑定 — a heading and
+        a sentence naming two different problems, one of which did not exist.
+
+        Grey is still what an unread section gets; `observer_failure` above is
+        the control for that, and without it this fix and "nothing is ever grey"
+        would look the same from here.
+        """
+        item = {i["scenario"]: i for i in scenarios.rendered()}["unbound_gateway"]
+        self.assertEqual(item["card"]["header"]["template"], "green")
+        self.assertEqual(item["model"]["env_health"]["verdict"], "OK")
+        # Green, and honest: the clause names the one section that has nothing
+        # declared for it. "三项均已读到" would be false and §6 bans the false
+        # green on the words as much as on the icon.
+        self.assertIn("gateway", item["model"]["env_health"]["verdict_text"])
+        # The payload, not the page. The page carries the scenario's own
+        # provenance caption, which quotes the wording this scenario used to
+        # produce in order to say what changed — so a scan of the page reports
+        # a defect the card stopped making. `json` is the thing that would be
+        # sent, and it is the only place the claim "the card does not say a
+        # section went unread" can be checked without the caption answering
+        # for it.
+        self.assertNotIn("未读到", item["json"])
 
     def test_no_scenario_renders_red_or_orange_without_a_fault_in_it(self):
         """The colour has to come from the model, not from the card's mood."""
@@ -827,6 +856,80 @@ class StatusSourceTests(unittest.TestCase):
                                at="2026-09-20 12:00:00 JST",
                                node_label="device:stub")
 
+    def _snapshot_from(self, reads: dict) -> dict:
+        """The same path `_snapshot` takes, over a stub the caller edited."""
+        def run(argv):
+            return reads.get(" ".join(argv)), None
+        return source.snapshot(source.gather(run=run),
+                               at="2026-09-29 10:00:00 JST",
+                               node_label="device:stub")
+
+    # -- a reading nobody took is never the word `None` -----------------------
+    #
+    # `None` is what a producer emits for a key it has and a figure it does not.
+    # That is the shape this card was measured against on 2026-09-29: the live
+    # mine block rendered "进程数 None" and "（None 核等效 / 共 None 核）" on a
+    # face a person reads, where every other line on the same block already knew
+    # how to say 未读到.
+
+    def test_an_unread_mine_figure_is_not_the_word_none(self):
+        reads = self._reads()
+        reads["resource summary"]["user"]["summary"] = {
+            "process_count": None, "cpu_percent_of_host": None,
+            "cpu_cores": None, "logical_cpus": None,
+            "memory_rss_bytes": None, "memory_percent_of_host": None}
+        reads["resource user-services"]["linger"] = None
+        reads["resource user-services"]["supervisor"] = None
+        lines = "\n".join(self._snapshot_from(reads)["mine"]["lines"])
+        self.assertNotIn("None", lines)
+        self.assertIn("未读到", lines)
+
+    def test_a_missing_core_count_is_one_absence_and_not_two(self):
+        """The percentage above it has no denominator when either is missing.
+
+        Printed as two independent fields this came out "未读到 核等效 / 共
+        未读到 核" — a sentence to decode before a reader can tell that one
+        measurement is gone rather than two, when the two halves are one.
+        """
+        reads = self._reads()
+        reads["resource summary"]["user"]["summary"]["cpu_cores"] = None
+        cpu_line = [line for line
+                    in self._snapshot_from(reads)["mine"]["lines"]
+                    if line.startswith("CPU 占整机")][0]
+        self.assertNotIn("None", cpu_line)
+        self.assertIn("分母", cpu_line)
+
+    def test_a_zero_is_a_reading_and_survives_the_same_path(self):
+        """The guard this replaced was a truthiness test waiting to happen.
+
+        Zero processes and a user manager that does not linger are readings,
+        and a "missing" rule written as `or '未读到'` would have eaten them.
+        """
+        reads = self._reads()
+        reads["resource summary"]["user"]["summary"]["process_count"] = 0
+        reads["resource user-services"]["linger"] = "no"
+        lines = "\n".join(self._snapshot_from(reads)["mine"]["lines"])
+        self.assertIn("进程数 0", lines)
+        self.assertIn("linger no", lines)
+
+    def test_an_unread_host_figure_is_not_the_word_none(self):
+        reads = self._reads()
+        host = reads["resource summary"]["host"]
+        host["load"] = {"load1": None, "load5": None, "load15": None,
+                        "runnable": None}
+        reads["resource summary"]["advisory"]["thresholds"] = {}
+        reads["resource summary"]["docker"] = {"ServerVersion": None,
+                                               "ContainersRunning": None,
+                                               "ContainersStopped": None,
+                                               "Containers": None,
+                                               "Images": None}
+        lines = "\n".join(self._snapshot_from(reads)["host"]["lines"])
+        self.assertNotIn("None", lines)
+        # The unit is dropped with the number. "阈值 未读到%" is half a unit, and
+        # half a unit is how a reader learns to skim this line.
+        self.assertNotIn("未读到%", lines)
+        self.assertIn("未读到", lines)
+
     # -- the reads
 
     def test_all_four_reads_are_attempted_and_named(self):
@@ -901,13 +1004,29 @@ class StatusSourceTests(unittest.TestCase):
     # -- the gateway
 
     def test_an_unbound_gateway_is_absent_rather_than_guessed(self):
+        """Named, and not guessed at. §3's answer, and the card says which.
+
+        The last two assertions used to be `state == UNKNOWN` and `verdict !=
+        OK`, and they pinned a defect rather than a rule: UNBOUND is what this
+        section reports when no binding names the gateway, which is a reading
+        that succeeded. Rewritten to UNKNOWN on the way to the card it read as
+        a reading that failed, and the whole dashboard went grey over it —
+        while the block's own text said 这一栏报为未绑定.
+
+        §6's rule is untouched and is asserted by the test below: a gateway
+        that IS bound and cannot be probed is still UNKNOWN and still never OK.
+        """
         snap = self._snapshot()
-        self.assertNotIn("gateway", snap)
+        self.assertNotIn("gateway", snap,
+                         "a snapshot with no binding must not carry a gateway "
+                         "block for the card to fill in from somewhere")
         model = presentation.status_model(snap, at=snap["at"], binding=None)
         self.assertEqual(model["sections"]["gateway"]["state"],
-                         presentation.UNKNOWN)
+                         presentation.GATEWAY_UNBOUND)
         self.assertTrue(model["sections"]["gateway"]["why"])
-        self.assertNotEqual(model["env_health"]["verdict"], presentation.OK)
+        self.assertEqual(model["env_health"]["verdict"], presentation.OK)
+        self.assertEqual(model["env_health"]["sections_unbound"], ["gateway"])
+        self.assertEqual(model["env_health"]["sections_unread"], [])
 
     def test_a_binding_puts_the_gateway_in_the_snapshot(self):
         binding = {"service_ref": "service:x",
