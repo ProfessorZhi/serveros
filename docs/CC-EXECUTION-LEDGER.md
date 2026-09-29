@@ -7719,9 +7719,9 @@ CLI 写下的 grant 被 `wake.authority` 认作 authorizing 且 `wake.plan` 给�
 **900s**）：
 
 ```text
-actor_ref        feishu:union:on_8f1e3d2af3f27d44fc12f469dbdc1649
+actor_ref        feishu:union:<redacted-union-id>
 context_ref      human-context:provider%3Abotmux-human-control/ed3eb47df9770123706f7a57ba7a3826
-conversation_ref oc_8c089347a4e7980563c66952b8dca191
+conversation_ref <redacted-chat-id>
 transport        feishu        transport_identity  botmux-verified-enterprise-user
 observed_at      2026-09-28T08:14:19.943316+00:00
 expires_at       2026-09-28T08:29:19.943316+00:00
@@ -7901,7 +7901,7 @@ mtime 落在 18:05–18:26。跑它的是另一个并发会话：`eb00aeba-d062-
  "schema": "serveros/human-control-ingress.v1", "state": "ATTACHED", "transport": "feishu"}
 ```
 
-它 `message_ref` 是 `om_x100b64904591c8a4b49169511de79a8`。按 message id 逐 transcript 数：
+它 `message_ref` 是 `<redacted-message-id>`。按 message id 逐 transcript 数：
 
 | transcript | 该 message id 出现 | 该消息（`测试 Slice 2`）出现 |
 |---|---|---|
