@@ -85,6 +85,16 @@ view_mod = _load("serveros_runtime_view", "view.py")
 # the socket must be answered by one module, not two objects that agree today.
 environment_mod = _load("serveros_runtime_environment", "environment.py")
 lease_store_mod = _load("serveros_runtime_lease_store", "lease_store.py")
+# Project Testing Contract: 「这个项目需要怎样的测试形态」。它读的是控制面里的
+# 声明文档，不建环境、不跑场景 —— 那两件事各有其主（test-management /
+# automated-testing），这里只回答「值是什么、从哪来、谁有权改」。
+#
+# 文件名曾经是 `test_contract.py`，那**不是一个名字问题**：`runtime/` 里以
+# `test_` 起头的模块命中 pytest 默认的 `python_files`，整个模块会被当作测试
+# 收集，而它有一个正常的公开 API 叫 `testing_dir(roots)` —— 于是裸 `pytest`
+# 在整棵树上的第一个条目是一个 error：`fixture 'roots' not found`。
+# 见 pytest.ini 与 `tests/test_collection_scope.py`。
+test_contract_mod = _load("serveros_runtime_testing_contract", "testing_contract.py")
 
 EXIT_OK = 0
 EXIT_FAULT = 1
@@ -11536,6 +11546,275 @@ def cmd_architecture_project(args) -> int:
     return _cmd_architecture(args, "project")
 
 
+# ---------------------------------------------------------------------------
+# test — the Project Testing Contract
+# ---------------------------------------------------------------------------
+
+# 「怎么测这个项目」是 ServerOS 对一个项目的结构化理解之一，不是某个 Skill、
+# 某份 compose 或某个 Agent 的经验。所以它有一个动词，产出的是**可解释的值**：
+# 每个数字都带来源，每个能被改的东西都带着「谁有权改」和「降了要不要说」。
+#
+# 这一组动词**不写任何东西**，也**不建任何环境**。它读控制面里的声明文档，
+# 并且把声明与既有环境定义（compose / test-envs）之间的不一致报成漂移 ——
+# 报出来，而不是把声明改成观测值。见 runtime/testing_contract.py 的 drift()。
+
+
+def _test_roots(args):
+    """控制面根。与 `context current` 同一条解析路径，不另起一个。
+
+    刻意走 `from_env()` 而不是加一个 `--workspace-root`：`WORKSPACE_ROOT` 已经
+    是这个仓库里「这套动词读哪个工作区」的**既有点名方式**，再开一个同义的旗标
+    只会让两个说法在同一个问题上各自成立。测试要指向 fixture 就设那个变量。
+    """
+    resolver = _load_module_from(REPO_ROOT / "context/resolver.py", "serveros_context_resolver")
+    return resolver.Roots.from_env()
+
+
+def _test_scalar(text: str):
+    """命令行上的值按它看上去的样子解析。
+
+    `true`/`false`/整数/整数带单位，其余按字符串。一个旋钮的默认值是 `2`
+    而 override 收成字符串 `"2"`，会让「低于下界」这条检查拿字符串去比整数。
+    """
+    lowered = text.strip().lower()
+    if lowered in ("true", "yes", "on"):
+        return True
+    if lowered in ("false", "no", "off"):
+        return False
+    try:
+        return int(text.strip(), 10)
+    except ValueError:
+        return text.strip()
+
+
+def _test_parse_override(item: str) -> tuple[str, object]:
+    if "=" not in item:
+        raise ValueError(f"{item!r} 不是 KNOB=VALUE 的形状")
+    knob, _, value = item.partition("=")
+    return knob.strip(), _test_scalar(value)
+
+
+def _test_overrides(pairs: list[str], reason: str | None) -> tuple[dict, list[str]]:
+    """命令行上的 override 列表 → 映射。收不了的那几条原样报回去。
+
+    一个收不下的 `--item-override` 不能就这么算了：调用方以为自己改了什么，
+    而实际什么都没发生，是这一组动词最不该有的失败形态。
+    """
+    out: dict = {}
+    errors: list[str] = []
+    for pair in pairs:
+        try:
+            knob, value = _test_parse_override(pair)
+        except ValueError as exc:
+            errors.append(str(exc))
+            continue
+        entry: dict = {"value": value}
+        if reason:
+            entry["reason"] = reason
+        out[knob] = entry
+    return out, errors
+
+
+def _test_load(args, project: str):
+    """(contract, policy, profiles)，各自的 Loaded。读不到时由调用方报告。"""
+    roots = _test_roots(args)
+    return (roots,
+            test_contract_mod.load_contract(roots, project),
+            test_contract_mod.load_policy(roots),
+            test_contract_mod.load_profiles(roots))
+
+
+def cmd_test_projects(args) -> int:
+    """控制面里有哪几条项目测试契约，各自是什么版本。
+
+    版本是内容算出来的 sha256，所以它只在内容真的变了的时候才变 ——
+    这正是 TestRun 把 `testing_contract_revision` 记下来之后还能解释得通的前提。
+    """
+    roots = _test_roots(args)
+    names = test_contract_mod.discover_projects(roots)
+    policy = test_contract_mod.load_policy(roots)
+    rows = []
+    for name in names:
+        loaded = test_contract_mod.load_contract(roots, name)
+        rows.append({
+            "project": name,
+            "revision": loaded.revision,
+            "loaded": loaded.ok,
+            "reason": loaded.reason,
+            "path": str(loaded.path),
+        })
+    payload = {
+        "testing_dir": str(test_contract_mod.testing_dir(roots)),
+        "policy": policy.as_dict(),
+        "projects": rows,
+    }
+    lines = [f"测试契约目录 {test_contract_mod.testing_dir(roots)}"]
+    if policy.ok:
+        lines.append(f"  全局政策 {policy.revision}"
+                     f"（{len(policy.declaration.get('invariants') or [])} 条硬不变量）")
+    else:
+        lines.append(f"  全局政策 读不出来：{policy.reason}")
+    lines.append("")
+    if not rows:
+        lines.append("没有任何项目测试契约。")
+    for row in rows:
+        if row["loaded"]:
+            lines.append(f"  {row['project']:<20} {row['revision']}")
+        else:
+            lines.append(f"  {row['project']:<20} 读不出来：{row['reason']}")
+    emit(payload, as_json=args.json, lines=lines)
+    return EXIT_OK
+
+
+def cmd_test_project(args) -> int:
+    """一个项目该怎么被测：可调整的、不可降低的、硬上限，以及有没有漂移。
+
+    阅读默认不失败。`--strict` 让漂移变成非零退出 —— 闸门要的是退出码，
+    而读者要的是一屏能读的东西，两件事不该共用一个默认值。
+    """
+    roots, contract, policy, profiles = _test_load(args, args.project)
+    if not contract.ok:
+        payload = {"project": args.project, "loaded": False, "reason": contract.reason,
+                   "path": str(contract.path)}
+        emit(payload, as_json=args.json,
+             lines=[f"项目 {args.project} 的测试契约读不出来：{contract.reason}",
+                    f"  位置：{contract.path}"])
+        return EXIT_COULD_NOT_ANSWER
+
+    observed = test_contract_mod.observe(roots, contract.declaration, args.project)
+    # 两份对照：契约 vs 磁盘上的环境定义，契约 vs L1 档位表自己声称的形状。
+    # 后者是静态可查的，所以它不该等到某一次运行才暴露 ——
+    # 契约把 redis 定成 fixed、档位说「不需要 redis」这种组合，两份文件都在场。
+    schema = test_contract_mod.load_schema_contract(roots)
+    findings = test_contract_mod.drift(contract.declaration, observed)
+    findings += test_contract_mod.profile_drift(
+        contract.declaration, profiles.declaration,
+        test_contract_mod.vocabulary(schema) if schema.ok else None)
+    # 每一项输入先自证「我读到了」，再让上面那两条判据去比。
+    # 少了这一段，档位表不在盘上时 `profile_drift(None)` 返回 `[]`，
+    # `--strict` 于是对着一个从没读过的档位表给出 rc=0 —— 闸门坏了，
+    # 而它坏掉的样子与「核对通过」是同一个样子。
+    findings += test_contract_mod.unreadable_inputs(
+        ("L1 档位表", profiles), ("schema 契约", schema), ("全局政策", policy))
+    findings += test_contract_mod.unjudged_input(observed)
+    lines = test_contract_mod.render_contract(contract, policy, findings)
+    payload = {
+        "contract": contract.declaration,
+        "testing_contract_revision": contract.revision,
+        "path": str(contract.path),
+        "policy": policy.as_dict(),
+        "policy_revision": policy.revision,
+        "environment_profiles": profiles.as_dict(),
+        "drift": findings,
+        "observed": observed,
+    }
+    emit(payload, as_json=args.json, lines=lines)
+    if findings and args.strict:
+        return EXIT_FAULT
+    return EXIT_OK
+
+
+def cmd_test_resolve(args) -> int:
+    """这一次到底用哪些值，以及每一个值的来源。
+
+    越界的请求不是一个「带着跑的」配置：有违规时退出非零，且不给出有效环境。
+    这一条是这一组动词存在的理由 —— 否则 override 会在某处静默生效。
+    """
+    roots, contract, policy, profiles = _test_load(args, args.project)
+    if not contract.ok:
+        emit({"project": args.project, "loaded": False, "reason": contract.reason},
+             as_json=args.json,
+             lines=[f"项目 {args.project} 的测试契约读不出来：{contract.reason}",
+                    f"  位置：{contract.path}"])
+        return EXIT_COULD_NOT_ANSWER
+
+    item_overrides, item_errors = _test_overrides(args.item_override, args.item_reason)
+    run_overrides, run_errors = _test_overrides(args.run_override, args.run_reason)
+    malformed = item_errors + run_errors
+
+    known_knobs = set((contract.declaration.get("knobs") or {}))
+    unknown = sorted((set(item_overrides) | set(run_overrides)) - known_knobs)
+
+    # 合法取值从 schema 声明里读。读不到就如实说「没被告知」，而不是退回一份
+    # 写在 Python 里的词表 —— 那样两个定义会在没人注意的时候各自成立。
+    schema = test_contract_mod.load_schema_contract(roots)
+    vocab = test_contract_mod.vocabulary(schema) if schema.ok else None
+
+    result = test_contract_mod.resolve(
+        contract.declaration,
+        policy.declaration if policy.ok else None,
+        profiles.declaration if profiles.ok else None,
+        project=args.project,
+        item=args.item,
+        run_id=args.run,
+        profile_name=args.profile,
+        item_overrides=item_overrides,
+        run_overrides=run_overrides,
+        vocab=vocab,
+        tier=args.evidence_tier,
+        change_class=args.change_class,
+        surfaces=args.surface,
+        chosen_because=args.chosen_because,
+        verification=args.verification,
+    )
+    # 契约里没有的旋钮不补默认值，但**必须报出来**：一个被静默忽略的
+    # override 会让调用方以为自己改了什么，而实际什么都没发生。
+    for name in unknown:
+        result["violations"].append({
+            "code": "INVALID_OVERRIDE",
+            "knob": name,
+            "message": f"{name} 不在这个契约的旋钮表里，override 无从生效",
+        })
+        result["resolved"] = False
+    for message in malformed:
+        result["violations"].append({"code": "INVALID_OVERRIDE", "message": message})
+        result["resolved"] = False
+
+    result["testing_contract_revision"] = contract.revision
+    result["environment_profile_revision"] = profiles.revision
+    result["policy_revision"] = policy.revision
+    # `profiles_source`, not `profile_source`: `resolve()` already uses the
+    # latter for "was this profile named by the caller or taken from the
+    # contract's default", which is a different question about a different
+    # thing. Two answers to one key would leave the second reading as the one
+    # anybody sees, and the first one unreachable.
+    result["profiles_source"] = "L1" if profiles.ok else f"读不出来（{profiles.reason}）"
+    result["answered_from"] = {
+        "contract": str(contract.path),
+        "policy": str(policy.path),
+        "profiles": str(profiles.path),
+        "vocabulary": str(schema.path) if schema.ok else f"读不出来（{schema.reason}）",
+    }
+    emit(result, as_json=args.json, lines=test_contract_mod.render_resolution(result))
+    return EXIT_OK if result["resolved"] else EXIT_FAULT
+
+
+def cmd_test_contract(args) -> int:
+    """原始声明文档，原样给出。给人核对，给别的工具取字段。"""
+    roots, contract, policy, profiles = _test_load(args, args.project)
+    payload = {
+        "contract": contract.declaration,
+        "testing_contract_revision": contract.revision,
+        "loaded": contract.ok,
+        "reason": contract.reason,
+        "path": str(contract.path),
+        "policy": policy.as_dict(),
+        "profiles": profiles.as_dict(),
+        "vocabulary": test_contract_mod.vocabulary(
+            test_contract_mod.load_schema_contract(roots)),
+    }
+    lines = [
+        f"{contract.path}",
+        f"  testing_contract_revision  {contract.revision or '-'}",
+        f"  loaded                     {contract.ok}" + (f"  ({contract.reason})" if contract.reason else ""),
+        f"  policy                     {policy.revision or '-'}",
+        f"  L1 profiles                {profiles.revision or '-'}"
+        + (f"  ({profiles.reason})" if profiles.reason else ""),
+    ]
+    emit(payload, as_json=args.json, lines=lines)
+    return EXIT_OK if contract.ok else EXIT_COULD_NOT_ANSWER
+
+
 def build_parser() -> argparse.ArgumentParser:
     # There used to be a second `ArgumentParser(prog="serverosctl", ...)` right
     # here, immediately overwritten by the one below. Its `description` was the
@@ -11751,6 +12030,99 @@ def build_parser() -> argparse.ArgumentParser:
              "`docker system df`, measured at ~22s, so it is opt-in rather "
              "than part of every call")
     r_anomaly.set_defaults(func=cmd_resource_anomaly)
+
+    test = sub.add_parser(
+        "test",
+        help="how a project must be tested: the contract, its knobs and their "
+             "provenance",
+        **_COMMON)
+    test_sub = test.add_subparsers(dest="subcommand", required=True)
+
+    def _test_parser(name: str, help_text: str):
+        """The four verbs share one shape: read the control plane, change nothing.
+
+        Which work area is read is `WORKSPACE_ROOT`, the same name every other
+        verb in this file uses. A second flag meaning the same thing is how two
+        answers to one question start.
+        """
+        parser_ = test_sub.add_parser(name, help=help_text, parents=[common])
+        return parser_
+
+    t_projects = _test_parser(
+        "projects", "which project contracts exist, and at which revision")
+    t_projects.set_defaults(func=cmd_test_projects)
+
+    t_project = _test_parser(
+        "project",
+        "one project: what may be adjusted, what may not be lowered, and "
+        "any drift")
+    t_project.add_argument("project")
+    # Reading is not a gate. Whether drift should fail a caller is the caller's
+    # question, so it is a flag rather than the default — the same split the
+    # two architecture checkers make with `--strict`.
+    t_project.add_argument(
+        "--strict", action="store_true",
+        help="exit non-zero when the declared contract and the environment "
+             "definitions on disk disagree. Without it, drift is reported and "
+             "the exit code stays 0")
+    t_project.set_defaults(func=cmd_test_project)
+
+    t_resolve = _test_parser(
+        "resolve",
+        "the values this run would use, each with its source and why")
+    t_resolve.add_argument("--project", required=True)
+    t_resolve.add_argument("--item", help="a Work Item ref (SRV-0000 / LIT-0000)")
+    t_resolve.add_argument("--run", help="a Run id, recorded as the value's decider")
+    t_resolve.add_argument(
+        "--profile", help="an L1 profile name, naming the environment explicitly "
+                          "instead of letting capability matching pick one. A "
+                          "profile that does not meet the containerized floor can "
+                          "only be used this way, with --chosen-because")
+    # 这两个旗标刻意不带 `choices`：级别名与类别名的权威是 schema 与契约，
+    # 在这里抄一份就会先漂移，而漂移后的那一份恰好是解析器信任的那一份。
+    t_resolve.add_argument(
+        "--evidence-tier",
+        help="what automated-testing decided this run must prove (E0-E4). The "
+             "project contract turns that level into required environment "
+             "capabilities; the environment profile is then matched, not named")
+    t_resolve.add_argument(
+        "--change-class",
+        help="what kind of change this is (bugfix / feature / ui / unit). The "
+             "contract's default_tiers gives the floor for it; without either "
+             "this or --evidence-tier the bugfix floor applies")
+    t_resolve.add_argument(
+        "--surface", action="append", default=[],
+        help="a test surface this change touches (repeatable). Its required "
+             "capabilities are added to the tier's")
+    t_resolve.add_argument(
+        "--verification",
+        help="the automated-testing verification profile this run came from. "
+             "Recorded, not interpreted: that vocabulary belongs to that ability")
+    t_resolve.add_argument(
+        "--chosen-because",
+        help="why this run uses a profile that does not meet the containerized "
+             "floor. Required for that use, and recorded as a waiver")
+    for layer, help_text in (
+            ("item-override", "KNOB=VALUE, repeatable. A knob this item needs "
+                              "to differ on, with its reason in --item-reason"),
+            ("run-override", "KNOB=VALUE, repeatable. A knob only this one run "
+                             "changes")):
+        t_resolve.add_argument(f"--{layer}", action="append", default=[],
+                               metavar="KNOB=VALUE", dest=layer.replace("-", "_"),
+                               help=help_text)
+    t_resolve.add_argument(
+        "--item-reason",
+        help="why this item departs from the default. Required when a knob is "
+             "lowered below its default and carries lowering_requires_reason; "
+             "without it the answer is MISSING_REASON, not a value")
+    t_resolve.add_argument("--run-reason", help="the same, for a run override")
+    t_resolve.set_defaults(func=cmd_test_resolve)
+
+    t_contract = _test_parser(
+        "contract",
+        "the declared document itself, with its content-addressed revision")
+    t_contract.add_argument("project")
+    t_contract.set_defaults(func=cmd_test_contract)
 
     runtime = sub.add_parser("runtime", help="managed runtimes (§16)", **_COMMON)
     runtime_sub = runtime.add_subparsers(dest="subcommand", required=True)
