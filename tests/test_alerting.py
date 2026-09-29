@@ -860,6 +860,84 @@ class TheGroupIsNotTheFinding(unittest.TestCase):
         self.assertNotIn("{", text)
 
 
+class ASwapWatermarkIsNotAPressure(AlertCase):
+    """SWAP_PRESSURE reaches the card resting on both of its readings.
+
+    Graded on the watermark alone it reported a full swap file as pressure.
+    Measured on this host 2026-09-15: 99.2% of swap in use, memory PSI at 0.00
+    across every window, and `pswpout` unmoved across two readings forty
+    minutes apart — nothing was paging. `inventory._swap_note` has separated a
+    watermark from a pressure since it was written; this is the same separation
+    on the face a person reads.
+    """
+
+    WATERMARK = {"used_percent": 99.2, "threshold_percent": 90.0,
+                 "used_bytes": 17040000000, "total_bytes": 17179865088}
+
+    @staticmethod
+    def _psi(state: str, some=0.0, full=0.0) -> dict:
+        if state == "UNAVAILABLE":
+            return {"state": "UNAVAILABLE",
+                    "reason": "/proc/pressure/memory is not readable"}
+        return {"state": "PRESENT",
+                "some": {"avg10": some, "avg60": some, "avg300": some},
+                "full": {"avg10": full, "avg60": full, "avg300": full}}
+
+    def _rendered(self, **measured) -> str:
+        base = dict(self.WATERMARK)
+        base.update(measured)
+        return alerting._measurement_line(
+            {"code": "SWAP_PRESSURE", "measured": base}, base)
+
+    def test_the_stall_figures_are_printed_beside_the_thresholds(self):
+        line = self._rendered(memory_pressure=self._psi("PRESENT"),
+                              psi_memory_some_avg60_percent_high=1.0,
+                              psi_memory_full_avg60_percent_high=0.5)
+        self.assertIn("99.2% (threshold 90.0%)", line)
+        self.assertIn("some avg60=0.0% (threshold 1.0%)", line)
+        self.assertIn("full avg60=0.0% (threshold 0.5%)", line)
+
+    def test_a_stalling_host_still_prints_both_and_decides_neither(self):
+        """The other side of the same branch. The renderer prints the reading
+        and the threshold; it does not declare a verdict, here or anywhere."""
+        line = self._rendered(memory_pressure=self._psi("PRESENT", some=4.5,
+                                                        full=2.5),
+                              psi_memory_some_avg60_percent_high=1.0,
+                              psi_memory_full_avg60_percent_high=0.5)
+        self.assertIn("some avg60=4.5% (threshold 1.0%)", line)
+        self.assertIn("full avg60=2.5% (threshold 0.5%)", line)
+
+    def test_an_unreadable_psi_is_not_reported_as_no_pressure(self):
+        """"Cannot tell" is not "fine", and the same conflation that
+        `pressure_stall` refuses to make in a field must not reappear in a
+        sentence."""
+        line = self._rendered(memory_pressure=self._psi("UNAVAILABLE"),
+                              psi_memory_some_avg60_percent_high=1.0,
+                              psi_memory_full_avg60_percent_high=0.5)
+        self.assertIn("NOT established", line)
+        self.assertIn("not readable", line)
+        self.assertIn("watermark", line)
+        self.assertNotIn("some avg60=0.0%", line)
+
+    def test_a_row_from_before_the_psi_was_threaded_gains_no_clause(self):
+        """A digest row written before this change has no `memory_pressure`,
+        and the card must not invent a stall reading for it — nor lose the
+        watermark it does have."""
+        line = self._rendered()
+        self.assertIn("99.2% (threshold 90.0%)", line)
+        self.assertNotIn("memory stall", line)
+        self.assertNotIn("NOT established", line)
+
+    def test_a_psi_that_arrived_without_a_window_is_not_read_as_zero(self):
+        """`some` and `full` are read separately: a `some` line the kernel did
+        not print is a measurement that did not happen, not a reading of 0.0."""
+        line = self._rendered(memory_pressure={"state": "PRESENT", "full": {}},
+                              psi_memory_some_avg60_percent_high=1.0,
+                              psi_memory_full_avg60_percent_high=0.5)
+        self.assertIn("NOT established", line)
+        self.assertNotIn("avg60=0.0%", line)
+
+
 # ---------------------------------------------------------------------------
 # §15 nothing acts
 # ---------------------------------------------------------------------------

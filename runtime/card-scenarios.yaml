@@ -113,11 +113,14 @@ scenarios:
           - text: 声明的 provider 1
           - text: 声明的 provider 2
 
-  - name: partial_unknown
+  - name: unbound_gateway
     card: status
-    title: 部分未知 / 过期
+    title: 共享网关未声明绑定 · 其余两项已读到
     source: measured — 形状取自本节点 2026-09-20 14:20 的真实卡片：共享网关没有
       binding，因此该栏为 UNBOUND；其余两项已读到。
+      这张卡此前渲染成灰色 ❔ 并说「有项目尚未读到：gateway」，因为 UNBOUND 被
+      改写成了 UNKNOWN —— 一个已经取得的答案被报成一次没做成的读数。改名的原因
+      是原名（部分未知）描述的是那个缺陷，而不是这个场景。
     snapshot:
       node_label: device:tokyo-shared-dev-01
       gaps: []

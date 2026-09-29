@@ -1123,8 +1123,15 @@ def _event_of(row: dict, *, at: str, names: dict | None = None,
 #: holds whatever the producing detector put there, and handing that to
 #: `detail_for` would make the evidence block depend on arbitrary per-code
 #: payload rather than on a named set of fields.
+#:
+#: The numeric half is `alert_digest.MEASUREMENT_FIELDS` itself and not a second
+#: list written out here. Two lists of the same keys is one list that will
+#: drift, and the drift would be silent in the direction that matters: a key
+#: carried by the row and dropped here renders exactly like a reading the
+#: detector never took. State which side of that seam whichever way you like --
+#: the point is that there is one list.
 _DETAIL_MEASURED = ("desired_state", "actual_state", "actual_derived_state",
-                    "actual_raw", "caveat")
+                    "actual_raw", "caveat") + tuple(alert_digest.MEASUREMENT_FIELDS)
 
 
 def _for_detail(row: dict, *, at: str) -> dict:
@@ -1323,13 +1330,26 @@ def env_health(sections: dict, *, at: str, gaps: list | None = None) -> dict:
     makes the verdict `UNCONFIRMED`, not `OK` — the absence of a fault signal
     is not the presence of a good one, and this is the same rule
     `graph.freshness_of` applies to a single timestamp, applied to a summary.
+
+    **UNBOUND is neither.** A third outcome, added because the other two both
+    said something false about it. `GATEWAY_UNBOUND` is what
+    `gateway_section` reports when no service binding names this node's shared
+    gateway — an established absence, arrived at by looking, not a reading
+    that did not happen. Filed as `unread` it turned the whole card grey and
+    told a reader to go and get a reading that already existed; filed as
+    `faulted` — which this function listed it as, in a branch it could never
+    reach, because `_gateway_state` rewrote the value before it got here — it
+    would report a declaration gap in this monitor as a fault in the
+    environment. Both send somebody to repair the wrong thing, so it is
+    carried as its own state and the verdict names it.
     """
     gaps = list(gaps or [])
     states = {name: (sections.get(name) or {}).get("state") for name in SECTIONS}
     unread = sorted(n for n, s in states.items() if s in (None, UNKNOWN))
+    unbound = sorted(n for n, s in states.items() if s == GATEWAY_UNBOUND)
     faulted = sorted(n for n, s in states.items()
                      if s in ("DEGRADED", "NOT_READY", "DOWN", "CRITICAL",
-                              "ATTENTION", GATEWAY_UNBOUND))
+                              "ATTENTION"))
 
     if faulted and unread:
         verdict, word = UNCONFIRMED, "有项目需处理，且有项目未读到"
@@ -1340,6 +1360,13 @@ def env_health(sections: dict, *, at: str, gaps: list | None = None) -> dict:
         # hunting through three blocks for which one, and the card already
         # knows.
         verdict, word = UNCONFIRMED, "有项目尚未读到：" + "、".join(unread)
+    elif unbound:
+        # Green, and green is right: everything that could be read was read and
+        # none of it is a fault. The clause after the semicolon is what keeps
+        # the green honest — "三项均已读到" would be false, and §6's ban on
+        # false green is not limited to the icon.
+        verdict, word = OK, ("已读到的项目均无异常；" + "、".join(unbound)
+                             + " 一项没有任何绑定声明它")
     else:
         verdict, word = OK, "三项均已读到且无异常"
 
@@ -1350,9 +1377,15 @@ def env_health(sections: dict, *, at: str, gaps: list | None = None) -> dict:
         "observation": observation,
         "observation_text": (
             f"有 {len(gaps)} 项采集缺口" if gaps else
-            ("有项目未读到" if unread else "三项均已读到")),
-        "sections_read": sorted(n for n, s in states.items() if s not in (None, UNKNOWN)),
+            ("有项目未读到" if unread else
+             ("已读到的项目无缺口" if unbound else "三项均已读到"))),
+        # Read, not merely present. An unbound section is neither — it is a
+        # declared absence — and counting it here would print "已读到 gateway"
+        # about the one block the card says nothing was read for.
+        "sections_read": sorted(n for n, s in states.items()
+                                if s not in (None, UNKNOWN, GATEWAY_UNBOUND)),
         "sections_unread": unread,
+        "sections_unbound": unbound,
         "gaps": gaps,
         "at": at,
     }
@@ -1537,7 +1570,19 @@ def _gateway_probe_line(probe: dict) -> str | None:
 
 def _gateway_state(section: dict) -> dict:
     if section["state"] == GATEWAY_UNBOUND:
-        return {"name": "gateway", "state": UNKNOWN, "lines": [],
+        # UNBOUND is an ANSWER, and it is carried as itself for that reason.
+        # It used to be rewritten to UNKNOWN on this line, which made
+        # `env_health` file it under `unread` and turn the whole card grey over
+        # a question nobody had failed to answer — the section had established
+        # exactly what there was to establish, that no service binding names
+        # this node's shared gateway.
+        #
+        # §6's rule is that UNKNOWN is never green. Reading an established
+        # absence as UNKNOWN is the same mistake with the sign flipped: a
+        # reader is told to go and get a reading that already exists, while the
+        # card's own body says a reading is not what is missing. The two states
+        # have different repairs and only one of them is a repair.
+        return {"name": "gateway", "state": GATEWAY_UNBOUND, "lines": [],
                 "why": section["why"], "detail": section}
     gateway = section
     probe = gateway.get("probe") or {}

@@ -553,6 +553,67 @@ class EnvHealthTests(unittest.TestCase):
         self.assertIn("需处理", health["verdict_text"])
         self.assertIn("未读到", health["verdict_text"])
 
+    # -- UNBOUND is neither faulted nor unread --------------------------------
+    #
+    # The card that shipped this defect, rendered 2026-09-29: title "❔ 本机 ·
+    # 资源播报" in grey over a body whose gateway block said "这一栏报为未绑定".
+    # The heading and the sentence under it named two different problems and
+    # only one of them existed.
+
+    def test_an_unbound_gateway_is_an_answer_and_the_verdict_is_ok(self):
+        """UNBOUND was established by looking. UNKNOWN is a reading nobody took."""
+        health = presentation.env_health(
+            self._sections(gateway=presentation.GATEWAY_UNBOUND), at="now")
+        self.assertEqual(health["verdict"], "OK")
+        self.assertEqual(health["sections_unread"], [])
+        self.assertEqual(health["sections_unbound"], ["gateway"])
+
+    def test_the_ok_above_an_unbound_gateway_names_it(self):
+        """Green is right; "三项均已读到" would be false, and §6 bans the
+        false green on the words as much as on the icon."""
+        health = presentation.env_health(
+            self._sections(gateway=presentation.GATEWAY_UNBOUND), at="now")
+        self.assertIn("gateway", health["verdict_text"])
+
+    def test_an_unbound_gateway_is_not_counted_as_read_either(self):
+        """"Read" and "unbound" are two buckets, and the footer prints both.
+
+        `cards.status_card` renders `观测范围 <sections_read>`; letting the
+        unbound section in there would print "已读到 gateway" about the one
+        block the card says nothing was read for.
+        """
+        health = presentation.env_health(
+            self._sections(gateway=presentation.GATEWAY_UNBOUND), at="now")
+        self.assertNotIn("gateway", health["sections_read"])
+        self.assertNotIn("gateway", health["sections_unread"])
+
+    def test_a_gateway_with_no_reading_is_still_never_green(self):
+        """The positive control for the three tests above.
+
+        §6's rule has to survive the fix: this is the case that must NOT have
+        been made green, and without it "the card went grey for no reason" and
+        "the card goes green for anything" are indistinguishable from here.
+        """
+        health = presentation.env_health(
+            self._sections(gateway=presentation.UNKNOWN), at="now")
+        self.assertEqual(health["verdict"], "UNCONFIRMED")
+        self.assertIn("gateway", health["sections_unread"])
+        self.assertEqual(health["sections_unbound"], [])
+
+    def test_unbound_is_not_faulted_either(self):
+        """It was in the `faulted` tuple, in a branch nothing could reach.
+
+        `_gateway_state` rewrote the value to UNKNOWN before it arrived, so the
+        entry never matched. Letting UNBOUND through unchanged without removing
+        it would have turned a declaration gap in this monitor into "有项目需
+        处理" — a fault in the environment, which is a different repair and
+        somebody else's to make.
+        """
+        health = presentation.env_health(
+            self._sections(gateway=presentation.GATEWAY_UNBOUND), at="now")
+        self.assertNotEqual(health["verdict"], presentation.ATTENTION)
+        self.assertNotIn("需处理", health["verdict_text"])
+
 
 class GatewayBindingTests(unittest.TestCase):
     """§2: the shared gateway is chosen by binding, and by nothing else."""
@@ -581,6 +642,20 @@ class GatewayBindingTests(unittest.TestCase):
             binding={"service_ref": "service:x", "source": "declared"})
         self.assertEqual(answer["state"], presentation.GATEWAY_BOUND)
         self.assertEqual(answer["service_ref"], "service:x")
+
+    def test_the_unbound_word_survives_into_the_card_row(self):
+        """`_gateway_state` rewrote UNBOUND to UNKNOWN on the way to the card.
+
+        Pinned at this level rather than only through `env_health`, because the
+        rewrite happened here: a future change that reintroduces it would still
+        leave `env_health` correct and the card grey, and the grey card is the
+        thing a person sees.
+        """
+        row = presentation._gateway_state(
+            presentation.gateway_section({"gateway": {}}, binding=None))
+        self.assertEqual(row["state"], presentation.GATEWAY_UNBOUND)
+        self.assertEqual(row["lines"], [])
+        self.assertIn("未绑定", row["why"])
 
     def test_the_maintainer_is_a_display_field_and_not_an_authority(self):
         answer = presentation.gateway_section(
@@ -781,6 +856,120 @@ class GatewayBindingTests(unittest.TestCase):
         self.assertFalse(any("成功" in line for line in lines),
                          "a family with no traffic was reported with a success "
                          "count")
+
+
+# ---------------------------------------------------------------------------
+# §18 · the measurement, from the register through the row to the face
+# ---------------------------------------------------------------------------
+
+class TheNumbersReachTheCardThroughTheDigestRow(unittest.TestCase):
+    """The register carried the measurement all along. Two projections dropped
+    it, and both are asserted here — fixing one and not the other still leaves
+    the card printing prose in the position the contract asks for a number.
+
+    Measured on this node 2026-09-29: `state.json` held 10,844 rows and every
+    one carried a `measured` block — `SWAP_PRESSURE` at `used_percent 92.0`
+    against `threshold_percent 90.0`, `ROOT_FS_PRESSURE` at 87.6 against 85.0
+    — while `serverosctl alert digest --json` returned 9,273 rows and **not one
+    of them carried a numeric measurement key**. So `alerting._measurement_line`
+    fell through to its own fallback, and `notification-contract.yaml`'s
+    `text.detail_shape` — "the measurement, with the threshold it was compared
+    against" — was answered with something else.
+
+    This is the inverse of the rule §18 states in the other direction. That
+    rule forbids claiming a threshold was crossed without a measurement; this
+    was a measurement that the pipeline lost before anybody could claim
+    anything with it.
+    """
+
+    MEASURED = {
+        "used_percent": 92.0, "threshold_percent": 90.0,
+        "used_bytes": 15813074944, "total_bytes": 17179865088,
+        "memory_pressure": {
+            "state": "PRESENT",
+            "some": {"avg10": 0.0, "avg60": 0.0, "avg300": 0.0},
+            "full": {"avg10": 0.0, "avg60": 0.0, "avg300": 0.0}},
+        "psi_memory_some_avg60_percent_high": 1.0,
+        "psi_memory_full_avg60_percent_high": 0.5,
+    }
+
+    AT = "2026-09-29T02:05:00+08:00"
+
+    def _row(self) -> dict:
+        """A register record through `alert_digest._row_of`, with the real
+        severity table and word list rather than stubs — the projection this
+        asserts is the one the digest actually runs."""
+        entry = {
+            "alert_ref": "alert:stub", "code": "SWAP_PRESSURE",
+            "severity": "high", "device_ref": "device:stub",
+            "subject_ref": "host:swap", "resource_ref": "host:swap",
+            "state": "OPEN", "first_seen": "2026-09-29T01:00:00+08:00",
+            "occurrence_count": 3, "detector": "measurement-anomaly",
+            "window": "point in time",
+            "why": "swap in use is at or above the declared threshold.",
+            "measured": dict(self.MEASURED),
+            "provenance": {"observed_at": "2026-09-29T02:00:00+08:00",
+                           "freshness": "FRESH", "source": "host-memory"},
+        }
+        return presentation.alert_digest._row_of(
+            entry, at=self.AT,
+            ranks=presentation.alert_digest.severity_ranks(),
+            words=presentation.alerting.severity_words())
+
+    def test_the_row_carries_the_reading_and_the_threshold(self):
+        row = self._row()
+        self.assertEqual(row["used_percent"], 92.0)
+        self.assertEqual(row["threshold_percent"], 90.0)
+        self.assertEqual(row["used_bytes"], 15813074944)
+        self.assertEqual(row["memory_pressure"]["some"]["avg60"], 0.0)
+        self.assertEqual(row["psi_memory_some_avg60_percent_high"], 1.0)
+
+    def test_the_face_prints_the_number_and_not_a_sentence_about_it(self):
+        row = self._row()
+        block = presentation._for_detail(row, at=self.AT)
+        line = presentation.alerting._measurement_line(block, block["measured"])
+        self.assertIn("92.0% (threshold 90.0%)", line)
+        self.assertIn("some avg60=0.0% (threshold 1.0%)", line)
+        self.assertNotIn("swap in use is at or above", line)
+
+    def test_every_field_the_renderer_reads_survives_the_projection(self):
+        """`_DETAIL_MEASURED` is *derived* from `MEASUREMENT_FIELDS`, not a
+        second copy of the same names. Two lists drift, and the direction they
+        drift in is the harmful one: the renderer keeps a branch for a key the
+        projection stopped forwarding and the card silently loses a line — the
+        exact shape of the defect this class is about.
+
+        Every name is planted on the row rather than read off one code's real
+        payload, because the claim is about the two lists and not about
+        SWAP_PRESSURE: a code whose `measured` legitimately lacks a key is not
+        this test's subject, and asserting over one fixture would let a name
+        that no detector emits sit in both lists unnoticed.
+        """
+        row = self._row()
+        for field in presentation.alert_digest.MEASUREMENT_FIELDS:
+            row[field] = f"planted:{field}"
+        block = presentation._for_detail(row, at=self.AT)
+        dropped = [f for f in presentation.alert_digest.MEASUREMENT_FIELDS
+                   if block["measured"].get(f) != f"planted:{f}"]
+        self.assertEqual(
+            dropped, [],
+            "the projection dropped a key the renderer still has a branch for")
+
+    def test_a_row_with_no_number_says_so_rather_than_printing_the_why(self):
+        """What the fallback actually is on this path, and it is worth pinning.
+
+        `_for_detail` builds the block and carries no `why`, so a digest row
+        with no measurement renders "no measurement — this code is a
+        declaration" rather than the detector's prose. That makes the loss
+        harder to notice than it sounds: what a reader got instead of the
+        number was not even the useful half of the fallback.
+        """
+        row = self._row()
+        for field in presentation.alert_digest.MEASUREMENT_FIELDS:
+            row[field] = None
+        block = presentation._for_detail(row, at=self.AT)
+        line = presentation.alerting._measurement_line(block, block["measured"])
+        self.assertIn("no measurement", line)
 
 
 # ---------------------------------------------------------------------------

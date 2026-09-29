@@ -528,6 +528,16 @@ class Inventory:
             # memory, because a container that dies on a full /dev/shm dies
             # for a reason the RAM numbers do not show.
             "shm": self._shm(),
+            # The half of the memory reading a watermark cannot supply. Every
+            # field above answers "how full is it"; this one answers "how much
+            # work stalled waiting", and `_swap_note` already treats the second
+            # as the thing that decides whether the first is a problem. It is
+            # carried here so that a consumer which was handed the summary does
+            # not have to reach back into the inventory for it — `detect()` is
+            # handed documents and holds no inventory, which is why
+            # `resource_anomaly` could not grade SWAP_PRESSURE on anything but
+            # the watermark.
+            "pressure": self.pressure_stall(),
             "load": self._load(),
             "uptime_seconds": self._uptime(),
             "gpu": self._gpu(),

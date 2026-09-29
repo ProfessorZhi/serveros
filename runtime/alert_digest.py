@@ -540,6 +540,51 @@ def _owner_of(alert: dict) -> dict | None:
 COMPARISON_FIELDS = ("desired_state", "actual_state",
                      "actual_derived_state", "actual_raw")
 
+#: The numeric readings a detector put in `measured`, and the threshold each was
+#: compared against. Carried onto the digest row because `alerting.detail_for`
+#: is the block that turns them into `92.0% (threshold 90%)`, and the row is the
+#: only thing it is ever handed.
+#:
+#: Dropping them was not neutral, and it was measured rather than argued: on
+#: 2026-09-29 this node's register held 10,844 rows and every one carried
+#: `measured` -- `SWAP_PRESSURE` at `used_percent 92.0` against
+#: `threshold_percent 90.0`, `ROOT_FS_PRESSURE` at 87.6 against 85.0,
+#: `HIGH_MEMORY_SUSTAINED` with `memory_rss_bytes` and `threshold_bytes` -- while
+#: the digest carried **0 of 9,273 rows** with any numeric measurement key at
+#: all. So `_measurement_line` fell through to its own fallback and printed the
+#: alert's `why`, which is a sentence the detector wrote about the finding, in
+#: the position where the contract (`notification-contract.yaml`, `text.
+#: detail_shape`) asks for "the measurement, with the threshold it was compared
+#: against". The card and the notification both said a threshold had been
+#: crossed without ever printing the number or the threshold.
+#:
+#: Listed by name rather than copied whole. `measured` holds whatever the
+#: producing detector chose to put there, and handing it through entire would
+#: make the evidence block depend on arbitrary per-code payload -- a detector
+#: adding a key would thereby add a line to a person's card. These are the keys
+#: `_measurement_line` already knows how to render; a new one is added here on
+#: purpose, beside the branch that will print it.
+#:
+#: Two members are structures rather than scalars, and both are here because a
+#: renderer reads them: `top_contributor`, which §14's line expands, and
+#: `memory_pressure`, which is the SWAP_PRESSURE pair below in full.
+#:
+#: `memory_pressure` is the reading that keeps a swap watermark from being read
+#: as pressure. It is carried whole rather than flattened into a verdict
+#: because the two renderers that consult it — the card and
+#: `inventory._swap_note` — ask the same question of the same bytes, and a
+#: pre-decided boolean would be a third answer to it. Its two thresholds travel
+#: by their policy names for the same reason `_swap_note`'s note does: they are
+#: the keys a reader would change in the contract, so a card that names them
+#: can be argued with.
+MEASUREMENT_FIELDS = ("used_percent", "inode_percent", "threshold_percent",
+                      "used_bytes", "total_bytes", "size_bytes", "log_bytes",
+                      "size_rw_bytes", "threshold_bytes", "cpu_percent",
+                      "process_count", "memory_rss_bytes", "top_contributor",
+                      "memory_pressure",
+                      "psi_memory_some_avg60_percent_high",
+                      "psi_memory_full_avg60_percent_high")
+
 
 def _row_of(alert: dict, *, at: str, ranks: dict, words: dict) -> dict:
     duration = _seconds_between(alert.get("first_seen"), at)
@@ -583,6 +628,12 @@ def _row_of(alert: dict, *, at: str, ranks: dict, words: dict) -> dict:
         # missing key and a null key read differently, and only one of them
         # says "this code has no such measurement".
         **{field: measured.get(field) for field in COMPARISON_FIELDS},
+        # The numbers, for the same reason and by the same shape rule: a key is
+        # present and null when the alert has no such measurement, so "this code
+        # was not measured on this axis" stays distinguishable from "this
+        # projection forgot to carry it" -- which is exactly the confusion the
+        # omission produced. See `MEASUREMENT_FIELDS`.
+        **{field: measured.get(field) for field in MEASUREMENT_FIELDS},
     }
 
 
