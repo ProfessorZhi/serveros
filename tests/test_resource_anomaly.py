@@ -46,6 +46,7 @@ def _load(name: str, filename: str):
 ra = _load("serveros_runtime_resource_anomaly", "resource_anomaly.py")
 anomaly = _load("serveros_runtime_anomaly", "anomaly.py")
 graph = _load("serveros_runtime_graph", "graph.py")
+alert_digest = _load("serveros_runtime_alert_digest", "alert_digest.py")
 
 CONTRACT_DOC = yaml.safe_load(
     (RUNTIME / "attribution-contract.yaml").read_text())
@@ -56,7 +57,7 @@ def contract_codes() -> dict:
 
 
 # ---------------------------------------------------------------------------
-# A synthetic observation that fires all fifteen
+# A synthetic observation that fires all sixteen
 # ---------------------------------------------------------------------------
 
 OBSERVED_AT = "2026-09-14T12:00:00+08:00"
@@ -79,7 +80,18 @@ def full_observation() -> dict:
         observed_at=OBSERVED_AT,
         host={"memory": {"total_bytes": 100, "used_bytes": 95,
                          "available_bytes": 5,
-                         "swap": {"total_bytes": 100, "used_bytes": 97}}},
+                         "swap": {"total_bytes": 100, "used_bytes": 97}},
+              # The pressure axis, and why MEMORY_PRESSURE_ACTIVE is a code of
+              # its own: `some avg60` crosses its own 1.0 threshold here, and
+              # any one of these three can cross without the other two. An
+              # observation that has to fire every declared code must carry
+              # input for the axis that is not a watermark.
+              "pressure": {"provider": "PRESENT",
+                           "memory": {"state": "PRESENT",
+                                      "some": {"avg10": 4.0, "avg60": 3.0,
+                                               "avg300": 2.0, "total": 900000},
+                                      "full": {"avg10": 3.0, "avg60": 2.0,
+                                               "avg300": 1.0, "total": 800000}}}},
         disk={"roles": [
             {"role": "ROOT_FS", "path": "/", "state": "PRESENT",
              "mount_point": "/", "used_percent": 93.4, "free_bytes": 10,
@@ -121,7 +133,7 @@ def full_observation() -> dict:
 # 1 · the vocabulary agrees with itself
 # ---------------------------------------------------------------------------
 
-def test_the_contract_declares_exactly_the_fifteen_codes():
+def test_the_contract_declares_exactly_the_sixteen_codes():
     assert list(contract_codes()) == list(ra.CODES)
 
 
@@ -205,6 +217,37 @@ def test_every_signal_carries_its_threshold_its_source_and_its_time():
             row["code"], row["freshness"])
 
 
+def test_the_memory_group_carries_no_field_the_card_could_never_receive():
+    """A key outside `MEASUREMENT_FIELDS` is dropped by the digest projection,
+    so the detector writing it is the detector writing to nobody — the number
+    exists in the register and in no sentence a person reads.
+
+    This is not hypothetical. `swap_used_percent` was added to
+    MEMORY_PRESSURE_ACTIVE's `measured` by the watermark/pressure split, and the
+    whitelist was not told, so the one reading that shows why the split exists —
+    the stall fired while the swap watermark had NOT — was structurally
+    unreachable from the card. Nothing failed; the field simply went nowhere.
+
+    Scoped to the three codes whose `measured` this round touched. The other
+    thirteen write 27 keys the whitelist does not carry, and deciding one at a
+    time whether each is context no card needs or a reading with no reader is a
+    real question — but it is a different question, about codes this change does
+    not alter, and answering it by writing 27 exclusions here would bury the
+    three that matter under a list nobody would re-derive.
+    """
+    out = ra.detect(**full_observation())
+    codes = ("MEMORY_PRESSURE", "SWAP_PRESSURE", "MEMORY_PRESSURE_ACTIVE")
+    carried = set(alert_digest.MEASUREMENT_FIELDS)
+    unreachable = {
+        row["code"]: sorted(set(row["measured"]) - carried)
+        for row in out["signals"] if row["code"] in codes
+        and set(row["measured"]) - carried
+    }
+    assert unreachable == {}, (
+        f"these readings reach the register and no card, because "
+        f"alert_digest.MEASUREMENT_FIELDS does not carry them: {unreachable}")
+
+
 def test_a_low_severity_code_never_outranks_a_high_one():
     out = ra.detect(**full_observation())
     order = [r["severity"] for r in out["signals"]]
@@ -279,10 +322,12 @@ def test_a_swap_watermark_reaches_the_card_with_the_pressure_beside_it():
     did not carry the second reading at all, because the host document handed
     to `detect()` had no place to put it.
 
-    What this asserts is that the delivery now happens. Moving a code between
-    `refuse` and `advisory` is a policy decision and is deliberately not this
-    test's business — the last line is here so that a later round cannot make
-    it one by accident while "fixing" this.
+    What this asserts is that the delivery now happens. The policy moved in the
+    round that made the delivery matter, and it was moved deliberately: a
+    watermark that only rises is not grounds for refusing a creation, so
+    `SWAP_PRESSURE` is `advisory` and the pressure half of this host was given
+    `MEMORY_PRESSURE_ACTIVE` to refuse on instead. The last line is here so
+    that the next move of this kind also has to be made on purpose.
     """
     out = ra.detect(host={
         "memory": {"total_bytes": 33285996544, "used_bytes": 20000000000,
@@ -305,7 +350,191 @@ def test_a_swap_watermark_reaches_the_card_with_the_pressure_beside_it():
     assert measured["memory_pressure"]["some"]["avg60"] == 0.0
     assert measured["psi_memory_some_avg60_percent_high"] == 1.0
     assert measured["psi_memory_full_avg60_percent_high"] == 0.5
-    assert ra.ADMISSION_LEVELS["SWAP_PRESSURE"] == "refuse"
+    assert ra.ADMISSION_LEVELS["SWAP_PRESSURE"] == "advisory"
+
+
+# ---------------------------------------------------------------------------
+# The two axes, told apart on the machines that were actually measured
+# ---------------------------------------------------------------------------
+
+
+def test_active_pressure_is_reported_on_a_machine_neither_watermark_covers():
+    """The 2026-09-29 machine, which the old pair of codes reported as green.
+
+    Swap below its 90% line and memory available, so neither watermark fires,
+    while memory PSI some avg60 sits at 6.8 against a threshold of 1.0 and the
+    host is writing 53,238 pages a second to swap. Both old codes were silent
+    on this machine, and that is the finding this code exists to make: the
+    number that would have caught it was never read, not merely read and
+    compared wrongly.
+    """
+    out = ra.detect(host={
+        "memory": {"total_bytes": 1000, "used_bytes": 200,
+                   "available_bytes": 800,
+                   "swap": {"total_bytes": 1000, "used_bytes": 805}},
+        "pressure": {"provider": "PRESENT",
+                     "memory": {"state": "PRESENT",
+                                "some": {"avg10": 7.0, "avg60": 6.8,
+                                         "avg300": 3.0, "total": 9000000},
+                                "full": {"avg10": 6.9, "avg60": 6.7,
+                                         "avg300": 2.9, "total": 8900000}}},
+        "paging": {"state": "PRESENT", "sample_seconds": 1.0,
+                   "pswpin_per_second": 12.0, "pswpout_per_second": 53238.0,
+                   "pgmajfault_per_second": 40.0,
+                   "pgscan_direct_per_second": 5.0,
+                   "pgsteal_direct_per_second": 3.0},
+    })
+    rows = [s for s in out["signals"] if s["code"] == "MEMORY_PRESSURE_ACTIVE"]
+    assert len(rows) == 1, out["codes_emitted"]
+    measured = rows[0]["measured"]
+    # The provider's own shape, not a verdict derived from it.
+    assert measured["memory_pressure"]["some"]["avg60"] == 6.8
+    assert measured["psi_memory_some_avg60_percent_high"] == 1.0
+    assert measured["psi_memory_full_avg60_percent_high"] == 0.5
+    # The other two axes travel beside it, because a stall reading on its own
+    # is the counter-intuitive half — 80% of memory was available.
+    assert measured["available_percent"] == 80.0
+    assert measured["swap_used_percent"] == 80.5
+    assert measured["paging"]["pswpout_per_second"] == 53238.0
+    assert rows[0]["subject"] == "host:memory-pressure"
+    # And the two watermarks are below their lines, so this signal is the only
+    # thing standing between the machine and a green board.
+    assert "SWAP_PRESSURE" not in out["codes_emitted"]
+    assert "MEMORY_PRESSURE" not in out["codes_emitted"]
+
+
+def test_a_full_and_quiet_swap_file_does_not_become_a_pressure_finding():
+    """The 2026-09-15 machine, and the reason the two codes are not one.
+
+    Swap at 99.2% with memory PSI at 0.00 across every window and `pswpout`
+    unmoved over forty minutes: a watermark at its highest, and no work
+    stalling at all. The watermark is reported — it is a true reading and
+    whoever is about to create a resource should see it — and the pressure
+    code stays silent, because there is no pressure to report. One code could
+    not say both, and the one that carried the name `SWAP_PRESSURE` said the
+    half the name claims and the register did not.
+    """
+    out = ra.detect(host={
+        "memory": {"total_bytes": 1000, "used_bytes": 200,
+                   "available_bytes": 800,
+                   "swap": {"total_bytes": 1000, "used_bytes": 992}},
+        "pressure": {"provider": "PRESENT",
+                     "memory": {"state": "PRESENT",
+                                "some": {"avg10": 0.0, "avg60": 0.0,
+                                         "avg300": 0.0, "total": 12345},
+                                "full": {"avg10": 0.0, "avg60": 0.0,
+                                         "avg300": 0.0, "total": 0}}},
+        "paging": {"state": "PRESENT", "sample_seconds": 1.0,
+                   "pswpin_per_second": 0.0, "pswpout_per_second": 0.0,
+                   "pgmajfault_per_second": 0.0,
+                   "pgscan_direct_per_second": 0.0,
+                   "pgsteal_direct_per_second": 0.0},
+    })
+    assert "SWAP_PRESSURE" in out["codes_emitted"]
+    assert "MEMORY_PRESSURE_ACTIVE" not in out["codes_emitted"]
+    measured = [s for s in out["signals"]
+                if s["code"] == "SWAP_PRESSURE"][0]["measured"]
+    # The reading that keeps the watermark from being read as pressure, and the
+    # activity figure that says the machine was not moving pages at all.
+    assert measured["memory_pressure"]["some"]["avg60"] == 0.0
+    assert measured["paging"]["pswpout_per_second"] == 0.0
+
+
+def test_the_watermark_and_the_pressure_are_two_findings_and_not_one():
+    """Both over their lines at once, and neither stands in for the other.
+
+    A full machine that is also stalling produces two alerts with two
+    subjects, and calling that a duplicate would be the mistake this whole
+    round is about: they are separate measurements of the same host, and a
+    reader who merged them would lose which half was true.
+    """
+    out = ra.detect(host={
+        "memory": {"total_bytes": 1000, "used_bytes": 950,
+                   "available_bytes": 50,
+                   "swap": {"total_bytes": 1000, "used_bytes": 970}},
+        "pressure": {"provider": "PRESENT",
+                     "memory": {"state": "PRESENT",
+                                "some": {"avg10": 9.0, "avg60": 8.0,
+                                         "avg300": 5.0, "total": 1000000},
+                                "full": {"avg10": 8.0, "avg60": 7.0,
+                                         "avg300": 4.0, "total": 900000}}},
+    })
+    emitted = set(out["codes_emitted"])
+    assert {"MEMORY_PRESSURE", "SWAP_PRESSURE",
+            "MEMORY_PRESSURE_ACTIVE"} <= emitted, sorted(emitted)
+    subjects = {s["subject"] for s in out["signals"]
+                if s["code"] in ("MEMORY_PRESSURE", "SWAP_PRESSURE",
+                                 "MEMORY_PRESSURE_ACTIVE")}
+    assert subjects == {"host:memory", "host:swap", "host:memory-pressure"}
+    # Distinct subjects is what makes these three rows three alerts rather than
+    # one: `alert_ref` is derived from code, device and subject, so nothing
+    # here can collide with anything else here.
+    assert len(subjects) == 3
+
+
+def test_an_unreadable_pressure_axis_does_not_unmeasure_the_watermarks():
+    """The gap is per code, and this is the test that keeps it that way.
+
+    A single gap string for the whole memory group — the shape this branch
+    returned before — would report a host whose `/proc/pressure` could not be
+    read as a host whose swap watermark nobody had looked at either. Those are
+    two different sentences and the second one is false: the watermarks are
+    read from `/proc/meminfo`, they were read this tick, and they are below
+    their lines.
+    """
+    out = ra.detect(host={
+        "memory": {"total_bytes": 1000, "used_bytes": 200,
+                   "available_bytes": 800,
+                   "swap": {"total_bytes": 1000, "used_bytes": 300}},
+        "pressure": {"provider": "UNAVAILABLE",
+                     "memory": {"state": "UNAVAILABLE",
+                                "reason": "/proc/pressure/memory is not readable"}},
+    })
+    reasons = {row["code"]: row["why"] for row in out["codes_not_evaluated"]}
+    assert "MEMORY_PRESSURE_ACTIVE" in reasons
+    assert "MEMORY_PRESSURE" not in reasons
+    assert "SWAP_PRESSURE" not in reasons
+    assert "not readable" in reasons["MEMORY_PRESSURE_ACTIVE"]
+    # §27 in the direction this code exists for: a host nobody measured for
+    # stalls is not a host with none, and saying so here is the whole point of
+    # putting it in a gap rather than defaulting it to a value.
+    assert "not a machine with none" in reasons["MEMORY_PRESSURE_ACTIVE"]
+    assert "MEMORY_PRESSURE" in out["codes_graded"]
+    assert "SWAP_PRESSURE" in out["codes_graded"]
+
+
+def test_the_admission_tiers_were_regraded_on_what_each_code_measures():
+    """§25's permission follows the measurement, not the code's history.
+
+    `SWAP_PRESSURE` was `refuse` while it meant whatever it meant, and the
+    round that narrowed it to the watermark alone had to re-answer the
+    admission question rather than inherit the answer — a code that no longer
+    measures pressure is not a code that should keep closing the host to new
+    work. `MEMORY_PRESSURE` keeps its gate because its measurement is
+    MemAvailable, and it is the stall code, not the swap one, that refuses now.
+    """
+    assert ra.ADMISSION_LEVELS["MEMORY_PRESSURE"] == "refuse"
+    assert ra.ADMISSION_LEVELS["MEMORY_PRESSURE_ACTIVE"] == "refuse"
+    assert ra.ADMISSION_LEVELS["SWAP_PRESSURE"] == "advisory"
+    # And the refusal is still bounded to creation. §25's two forbidden
+    # responses are asserted against the contract elsewhere; the point of
+    # asking here is that the code moved INTO the refusing set arrives with no
+    # wider permission than the one that left it.
+    answer = ra.admission(ra.detect(host={
+        "memory": {"total_bytes": 1000, "used_bytes": 950,
+                   "available_bytes": 50,
+                   "swap": {"total_bytes": 1000, "used_bytes": 970}},
+        "pressure": {"provider": "PRESENT",
+                     "memory": {"state": "PRESENT",
+                                "some": {"avg10": 9.0, "avg60": 8.0,
+                                         "avg300": 5.0, "total": 1000000},
+                                "full": {"avg10": 8.0, "avg60": 7.0,
+                                         "avg300": 4.0, "total": 900000}}},
+    }))
+    assert answer["decision"] == ra.REFUSE
+    assert answer["acts_on_existing_resources"] is False
+    assert sorted(row["code"] for row in answer["blocking"]) == [
+        "MEMORY_PRESSURE", "MEMORY_PRESSURE_ACTIVE"]
 
 
 def test_an_unreadable_psi_travels_as_unavailable_and_never_as_zero():
@@ -717,17 +946,24 @@ def test_the_two_forbidden_responses_are_the_contracts_own_words():
     assert document["acts_on_existing_resources"] is False
 
 
-def test_four_codes_refuse_and_three_advise():
-    """The split is the whole of §25's permission, so the count is asserted.
+def test_four_codes_refuse_and_four_advise():
+    """The split is the whole of §25's permission, so the membership is asserted.
 
-    Not as trivia: a fifth code promoted to `refuse` by an edit would close the
-    host to new work, and a code demoted would open it under pressure. Either
-    one should have to change this number on purpose.
+    Not as trivia: a code promoted to `refuse` by an edit would close the host
+    to new work, and a code demoted would open it under pressure. Either one
+    should have to change this list on purpose.
+
+    `SWAP_PRESSURE` crossed this line in the Semantics V2 round and
+    `MEMORY_PRESSURE_ACTIVE` was added on the other side of it, so the two
+    counts moved by one each and the total did not change. The pair is
+    asserted together rather than as two numbers because the point is the
+    trade: the code that measures pressure refuses, and the code that measures
+    a watermark no longer does.
     """
     assert ra.REFUSING_CODES == ("DISK_CRITICAL", "INODE_CRITICAL",
-                                 "MEMORY_PRESSURE", "SWAP_PRESSURE")
+                                 "MEMORY_PRESSURE", "MEMORY_PRESSURE_ACTIVE")
     assert ra.ADVISORY_CODES == ("BUILD_CACHE_HIGH", "DISK_WARNING",
-                                 "DOCKER_STORAGE_HIGH")
+                                 "DOCKER_STORAGE_HIGH", "SWAP_PRESSURE")
 
 
 def test_a_fired_refusing_code_refuses_a_new_creation():
@@ -763,10 +999,12 @@ def test_a_gate_that_was_never_graded_is_not_a_gate_that_passed():
     assert answer["decision"] == ra.NOT_ASSESSED
     assert [row["code"] for row in answer["not_assessed"]] == ["DISK_CRITICAL"]
     assert "the filesystem roles were not supplied" in answer["not_assessed"][0]["why"]
-    # `clear` means graded and did not fire — the three gates this detection
-    # reports as covered, and NOT the one that was never looked at.
+    # `clear` means graded and did not fire — the gates this detection reports
+    # as covered, and NOT the one that was never looked at. `SWAP_PRESSURE` is
+    # absent from this list now because it is no longer a gate at all, which is
+    # a different absence from `DISK_CRITICAL`'s.
     assert sorted(answer["clear"]) == ["INODE_CRITICAL", "MEMORY_PRESSURE",
-                                       "SWAP_PRESSURE"]
+                                       "MEMORY_PRESSURE_ACTIVE"]
 
 
 def test_a_detection_with_no_coverage_report_is_not_assessed():
@@ -780,7 +1018,7 @@ def test_a_detection_with_no_coverage_report_is_not_assessed():
 def test_a_fired_gate_outranks_an_ungraded_one():
     """A refusal does not become a question because another input is missing."""
     answer = ra.admission(_detection(
-        codes=["SWAP_PRESSURE"],
+        codes=["MEMORY_PRESSURE_ACTIVE"],
         ungraded=[{"code": "DISK_CRITICAL", "why": "not measured"}]))
     assert answer["decision"] == ra.REFUSE
     assert [row["code"] for row in answer["not_assessed"]] == ["DISK_CRITICAL"]

@@ -16,7 +16,7 @@ events:
   #
   # `alert.opened` and `alert.resolved` were added in W8 and the reason is not
   # that the vocabulary wanted to grow. A resource anomaly is a real thing this
-  # node detects fifteen kinds of, and none of the nine could carry it: not one
+  # node detects sixteen kinds of, and none of the nine could carry it: not one
   # of them is about a disk filling up, a swap file, a Docker store or a
   # tunnel, and mapping DISK_CRITICAL onto `provider.degraded` would deliver a
   # sentence about a provider that does not exist. An event vocabulary that
@@ -630,6 +630,12 @@ alerts:
         INODE_CRITICAL: REVIEW
         MEMORY_PRESSURE: REVIEW
         SWAP_PRESSURE: REVIEW
+        # The pressure half of the same host, and levelled with the two
+        # watermarks rather than below them. It is the code that fires while
+        # the watermarks are quiet, so a lower bucket here would mean the one
+        # measurement that catches the 2026-09-29 machine is the one that
+        # interrupts somebody least.
+        MEMORY_PRESSURE_ACTIVE: REVIEW
         # The §17 spellings of the same two facts: `ROOT_FS_PRESSURE` is the
         # root filesystem and `DATA_FS_PRESSURE` is any non-`/` mount, and both
         # are graded against the same `filesystem_percent_high` that

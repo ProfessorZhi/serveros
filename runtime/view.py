@@ -1585,7 +1585,13 @@ def resource_anomaly(*, inventory=None, host=None, disk=None, docker=None,
                      thresholds=None, space: bool = False, now=None,
                      registry_doc=None, probes_host=None,
                      answered_by: str = DEFAULT_MEASURER) -> dict:
-    """§18/§19 — the fifteen resource codes, graded, plus the ones ungraded.
+    """§18/§19 — the sixteen resource codes, graded, plus the ones ungraded.
+
+    Sixteen and not §18's fifteen: `resource_anomaly` grades one code §18 does
+    not name, for the reason its module docstring gives. The count is corrected
+    here rather than left as "fifteen" because this line is the first thing a
+    reader of this function sees, and a count that the return value contradicts
+    is how a reader stops trusting the rest of the paragraph.
 
     This function measures NOTHING. Every document below is read from the
     producer that already owns that fact — `inventory.py` for the host, the

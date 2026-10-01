@@ -847,6 +847,23 @@ thresholds:
   memory_percent_recovery_margin: 5.0
   swap_percent_recovery_margin: 5.0
   docker_storage_percent_recovery_margin: 3.0
+  # PSI's own recovery margin, and the first entry here whose opening threshold
+  # is not a share of a capacity. `psi_memory_some_avg60_percent_high` is 1.0 and
+  # its unit is percent of wall-clock time — memory tasks were stalled for 1% of
+  # the last minute — so half of it, 0.5, is the same shape `memory_percent_*`
+  # and `swap_percent_*` take three lines above.
+  #
+  # Measured on this host 2026-09-29 to sit in open space on both sides: a quiet
+  # stretch reads 0.16 and the episode that produced this code read 3.16-10.53,
+  # so nothing oscillates across the line.
+  #
+  # Derived-but-undeclared is a permanently open alert — `margin_key()` turns a
+  # `*_high` into a `*_recovery_margin`, and the alert layer holds with "there
+  # is no distance to come back to" when the key is missing, which reads as an
+  # open problem nobody is dealing with, forever, because a number was absent.
+  # Pointing `_THRESHOLDS` at a PSI name DERIVES this key, so it is declared in
+  # the same change as the code that derives it.
+  psi_memory_some_avg60_percent_recovery_margin: 0.5
 
   # The process layer's two continuous measurements. `cpu_percent_high` is the
   # case §5's acceptance run produced: a runtime group sitting at 279% of one
@@ -880,8 +897,11 @@ thresholds:
   error_repeats_recovery_margin: 2
 
 # ---------------------------------------------------------------------------
-# Resource anomaly codes (§18). Fifteen, and a SECOND vocabulary beside the
-# process-layer `anomalies:` list above.
+# Resource anomaly codes (§18). Sixteen, and a SECOND vocabulary beside the
+# process-layer `anomalies:` list above. §18 names fifteen; this layer grades
+# those fifteen plus `MEMORY_PRESSURE_ACTIVE`, added for the reason given at its
+# entry — fifteen cannot express the difference between a full machine and a
+# stalled one.
 #
 # Why a second list rather than fifteen more entries above: the list above is
 # the PROCESS layer — a runtime group, a pid tree, a task. This one is the
@@ -943,17 +963,51 @@ resource_anomalies:
     note: >
       the HOST is out of memory, as opposed to one runtime being large.
       HIGH_MEMORY_SUSTAINED above is about a process's own RSS; this is about
-      the machine. Only this one may gate admission, and it may gate creation
-      only.
+      the machine. A WATERMARK and not a pressure: it is graded on
+      `used_bytes`, which is total minus MemAvailable, and MemAvailable is the
+      kernel's own estimate with reclaimable cache already subtracted. A low
+      figure is therefore memory the machine genuinely cannot get back, which
+      is why this one keeps the admission gate it has always had while the
+      swap watermark below does not.
   - code: SWAP_PRESSURE
     severity: medium
     implies_stale: false
     emitted_by: resource_anomaly._memory_signals
     threshold: swap_percent_high
+    distinct_from: MEMORY_PRESSURE_ACTIVE
     note: >
-      above this the machine is not merely busy, it is out of the memory it
-      would need to absorb one more persistent process. An admission
-      question, not a cleanup one.
+      a swap WATERMARK. Pages are written to swap when memory was short and
+      read back only when something touches them again, so a swap file that
+      filled once stays full while nothing is paging: measured on this host
+      2026-09-15 at 99.2% in use, memory PSI flat at 0.00 across every window,
+      `pswpout` unmoved over forty minutes. It is `advisory` and not `refuse`
+      for exactly that asymmetry — a high-water mark is worth reporting to
+      whoever is about to create something, and it is not grounds for
+      refusing them. The PSI reading travels in `measured` beside the
+      watermark so a reader can tell that machine from a thrashing one.
+  - code: MEMORY_PRESSURE_ACTIVE
+    severity: medium
+    implies_stale: false
+    emitted_by: resource_anomaly._memory_signals
+    threshold: psi_memory_some_avg60_percent_high
+    distinct_from: SWAP_PRESSURE
+    permitted_consequence: >
+      refuse the CREATION of a new persistent resource while tasks on this
+      host are stalling on memory. Never stop, restart or remove an existing
+      one — §25 states the boundary and §24 states the verbs that do not
+      exist.
+    note: >
+      PRESSURE, where the two entries above are watermarks: how much work
+      stalled, read from `/proc/pressure/memory`. §18 does not name this code
+      and it exists because the fifteen it does name cannot express the
+      difference between a machine that is full and a machine that is
+      stalled. Measured on this host 2026-09-29: swap at 80.5%, below its own
+      90% threshold so SWAP_PRESSURE was silent, while memory PSI some avg60
+      ran 6.80-10.53 against a threshold of 1.0 and `pswpout` reached 53,238
+      pages/second — and the monitoring was green throughout. Graded on `some`
+      rather than `full`: on a shared host one tenant's runtime stalling is
+      the fact worth knowing about, and `full` would report that machine as
+      quiet.
   - code: DOCKER_STORAGE_HIGH
     severity: medium
     implies_stale: false
@@ -1198,12 +1252,25 @@ resource_admission:
       level: refuse
       why: >
         at or above the declared threshold the machine has no headroom it
-        would need to absorb one more process.
-    SWAP_PRESSURE:
+        would need to absorb one more process. Graded on MemAvailable, the
+        kernel's estimate with reclaimable cache already subtracted, so a low
+        figure is memory the machine genuinely cannot get back.
+    MEMORY_PRESSURE_ACTIVE:
       level: refuse
       why: >
-        a host already swapping has spent the slack that a new allocation
-        would consume. §25's forbidden response is the tempting one here.
+        work on this host is stalling on memory now. A machine in that state
+        should not be handed another persistent process, and refusing one is
+        the only consequence §25 permits.
+    SWAP_PRESSURE:
+      level: advisory
+      why: >
+        a swap high-water mark only rises. Pages are written to swap when
+        memory was short and read back only when something touches them
+        again, so a swap file that filled once stays full while nothing is
+        paging — this host measured 99.2% in use with PSI flat at 0.00 across
+        every window. Worth reporting to whoever is about to create
+        something, and not grounds for refusing them. The pressure half of
+        the same machine is MEMORY_PRESSURE_ACTIVE above, which does refuse.
     DISK_WARNING:
       level: advisory
       why: >
@@ -1222,9 +1289,13 @@ resource_admission:
         the next build cheap, so refusing on this signal alone would trade a
         slow build for a fast one.
   note: >
-    Four of the fifteen §18 codes refuse and three advise; the remaining eight
-    are statements about things that already exist and are not admission
-    questions at all. Nothing in this block authorises an action on a resource
-    that exists, and a code with no entry here cannot refuse anything — the
-    list is closed, so a code added later is advisory by default rather than
-    accidentally gating.
+    Three of the fifteen §18 codes refuse — DISK_CRITICAL, INODE_CRITICAL and
+    MEMORY_PRESSURE — and four advise, SWAP_PRESSURE having moved from refuse to
+    advisory when its semantics were narrowed to the watermark it actually
+    grades. The remaining eight are statements about things that already exist
+    and are not admission questions at all. Counting the code this layer adds,
+    four refuse and four advise, and the addition is not a fourth §18 refusal:
+    MEMORY_PRESSURE_ACTIVE is nowhere in §18's list. Nothing in this block
+    authorises an action on a resource that exists, and a code with no entry
+    here cannot refuse anything — the list is closed, so a code added later is
+    advisory by default rather than accidentally gating.
