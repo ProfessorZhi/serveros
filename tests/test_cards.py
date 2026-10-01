@@ -96,7 +96,7 @@ class ScenarioRenderTests(unittest.TestCase):
         cls.items = scenarios.rendered()
 
     def test_they_are_the_ones_the_design_and_the_criteria_name(self):
-        """§6's six, then AC18–AC21's four, then the eleventh on neither list.
+        """§6's six, then AC18–AC21's four, then two on neither list.
 
         The order is asserted, not just the set, because the three groups come
         from three different places and a scenario that migrated between them
@@ -114,7 +114,12 @@ class ScenarioRenderTests(unittest.TestCase):
              "historical_backlog",
              # Not named by any criterion: the only scenario that renders red.
              # See the scenario's own comment for why it has to exist.
-             "critical_service_failed"])
+             "critical_service_failed",
+             # Also on neither list, and a different kind of addition: the
+             # eleventh is one card's colour, this one is two measurements that
+             # used to arrive as one row. Kept last so the three groups above
+             # stay contiguous.
+             "watermark_beside_stall"])
 
     def test_every_scenario_renders_both_outputs(self):
         for item in self.items:
