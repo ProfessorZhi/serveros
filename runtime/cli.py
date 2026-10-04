@@ -7973,6 +7973,114 @@ def _refuse_a_replayed_receipt(admission: dict, receipts_root: str) -> bool:
     return True
 
 
+def _refuse_a_grant_that_no_longer_stands(admission: dict, control,
+                                          store_mod) -> bool:
+    """Refuse, having written why, a dispatch whose delegation has since ended.
+
+    True means the refusal is written and the caller must run nothing.
+
+    This is a RE-check, and saying what it is a re-check of is most of what this
+    function is. `agent_control_store.admit` already resolved the record against
+    its grant inside its own transaction — recorded, not revoked, in force at
+    `admitted_at`, naming the selected items, declaring the reserved bounds —
+    and every one of those is a fact about the instant the admission names.
+    `_authorizing_grant` cannot cover this by construction: it is asked under
+    the lock `admit` holds, and the command this verb spawns runs later, in
+    another process, under no lock at all.
+
+    What can have changed in the gap is exactly what `put_grant`'s write-once
+    rule leaves open. Nothing rewrites a grant — `revoke_grant` is the only
+    mutation and it writes `revoked`/`revoked_at`/`revoked_reason` — and the
+    clock moves past `expires_at`. Those two ARE the two answers
+    `intake/daily_cycle.standing_reason` gives, so the judgement is asked of
+    that function and not re-implemented: a second comparison of
+    `valid_from`/`expires_at` here would be a second answer to "is this grant in
+    force", and this tree already paid for one of those once: `work grants`
+    prints a revoked delegation as AUTHORIZED, because its label comes from the
+    root context's display window rather than from this judgement. The enforcing
+    side is the one that has to be right, and this is the enforcing side.
+
+    The clock is the real one and there is no `--at` on this verb, because the
+    process it starts runs now: "is this authority still standing" is a question
+    about the instant the command would run at, and an instant a caller names
+    would be a caller choosing the answer.
+
+    THE OTHER TWO FIELDS THE PREREQUISITE NAMES HAVE NOTHING TO RE-CHECK HERE,
+    and that is said rather than left to look like an omission:
+
+      * EPOCH is not a dispatch-path concept. It belongs to a checkpoint, and
+        no admission, grant or receipt on this path carries one.
+      * BUDGET has no consumer to consult. The reservation's bounds are copied
+        onto the admission at `admit`, under the lock, where `declared ==
+        reserved` is checked and the record is write-once; `invoke_once` then
+        enforces the numbers it was handed. This tree has no grant-level
+        counter that a run decrements, so a re-check here would have to invent
+        the ledger it reads.
+
+    A record that names no grant is refused by name rather than passed through:
+    that is a question this function cannot ask, and "cannot ask" is not "fine".
+    """
+    ref = admission.get("grant_ref")
+    if not ref:
+        sys.stderr.write(
+            f"serverosctl: admission {admission.get('cycle_ref')!r} names no "
+            f"`grant_ref`, so there is no delegation to re-check before running "
+            f"it. `admit` records the grant its record is admitted under, and a "
+            f"record that names none is not one whose authority can be "
+            f"resolved. Nothing was run\n")
+        return True
+    cycle = _load_module_from(REPO_ROOT / "intake" / "daily_cycle.py",
+                              "serveros_intake_daily_cycle")
+    try:
+        recorded = control.grants()
+    except store_mod.StoreError as exc:
+        sys.stderr.write(
+            f"serverosctl: {exc}. The grant this admission names could not be "
+            f"read back, and an authority that cannot be re-checked is not one "
+            f"to run under. Nothing was run\n")
+        return True
+    grant = recorded.get(str(ref))
+    if not isinstance(grant, dict):
+        # Deliberately not folded into `standing_reason`'s
+        # MISSING_OR_REVOKED_GRANT: "the store was never told about it" and "it
+        # was recorded and then revoked" are two different facts that send a
+        # person to two different places, and `standing_reason`'s own docstring
+        # says why it is willing to collapse them for a caller that has no way
+        # to tell them apart. This caller does.
+        sys.stderr.write(
+            f"serverosctl: {ref!r} is the delegation admission "
+            f"{admission.get('cycle_ref')!r} was admitted under, and this store "
+            f"holds no grant by that ref. It was admitted under one — `admit` "
+            f"resolves the grant inside its own transaction — so either the "
+            f"store said nothing and this is a delegation nobody recorded, or "
+            f"the record is not readable as a grant. Either way there is no "
+            f"authority here to run a command under. Nothing was run\n")
+        return True
+    # The ENVELOPE is what is judged, for `_delegation_from_grant`'s reason: a
+    # stored grant carries its ref under `grant_ref` and `standing_reason` reads
+    # `ref`, so handing the record itself over would report every grant as
+    # MISSING_OR_REVOKED_GRANT. `context/delegation.envelope_of` is the one
+    # place in this tree that unifies the two names.
+    delegation_mod = _load_module_from(REPO_ROOT / "context" / "delegation.py",
+                                       "serveros_context_delegation")
+    envelope = delegation_mod.envelope_of(grant, str(ref))
+    standing = cycle.standing_reason(
+        envelope, now=datetime.datetime.now(datetime.timezone.utc))
+    if standing is None:
+        return False
+    sys.stderr.write(
+        f"serverosctl: {ref!r} is the delegation admission "
+        f"{admission.get('cycle_ref')!r} was admitted under, and it is "
+        f"{standing} now. It stood when the admission was recorded "
+        f"({admission.get('admitted_at')}) — that is not in question — but this "
+        f"verb runs a command at THIS instant, and a command run under a "
+        f"delegation that has since ended is an effect nothing currently "
+        f"authorizes. `serverosctl work grants` shows the record; extending a "
+        f"delegation is a new grant and this verb does not mint one. Nothing "
+        f"was run\n")
+    return True
+
+
 def _dispatch_answer(admission: dict, receipts_root: str) -> dict:
     """What the receipts directory says about this admission's action key.
 
@@ -8242,22 +8350,31 @@ def cmd_work_dispatch(args) -> int:
     same one `work confirm --phase DISPATCHED` performs, through the same
     reader, off the same file.
 
-    SIX CHECKS COME BEFORE ANYTHING IS SPAWNED, and each is ordered by what it
+    SEVEN CHECKS COME BEFORE ANYTHING IS SPAWNED, and each is ordered by what it
     would cost to check it afterwards:
 
       1. a retired admission cannot advance — the store refuses this too, and
          the point of checking it here is that the store's refusal would
          otherwise land after the command had run;
-      2. a phase of DISPATCHED is a replay and runs nothing;
-      3. a phase of INTENT_RECORDED cannot skip to DISPATCHED — again refused
+      2. THE GRANT THE ADMISSION NAMES IS STILL STANDING (added 2026-10-05,
+         security prerequisite 4). `admit` resolved it inside its own
+         transaction and that answer is about the admission instant; this
+         verb runs a command at a different instant, and `_authorizing_grant`
+         cannot span the gap because it is asked under the lock `admit` holds.
+         Only revocation and the clock crossing `expires_at` can have changed
+         in between — `put_grant` is write-once — and those are
+         `standing_reason`'s two answers, so it is asked rather than
+         re-implemented. The clock is the real one; this verb has no `--at`;
+      3. a phase of DISPATCHED is a replay and runs nothing;
+      4. a phase of INTENT_RECORDED cannot skip to DISPATCHED — again refused
          by the store, again refused here first, and this is the case where the
          difference is starkest: the command would have run, with effects, and
          the phase would have been refused afterwards;
-      4. the LEASE STORE IS READ, not the phase. `agent_control_store`'s own
+      5. the LEASE STORE IS READ, not the phase. `agent_control_store`'s own
          note says a phase is not a permission — "the reader that wants to act
          on that reads the lease store itself" — and this verb acts. A lease
          released since the phase was confirmed is caught here;
-      5. THE RECEIPTS DIRECTORY IS ASKED WHOSE DISPATCH ITS FILE IS (added
+      6. THE RECEIPTS DIRECTORY IS ASKED WHOSE DISPATCH ITS FILE IS (added
          2026-09-26, slice E). This cycle may be holding an action key an
          earlier, since-retired cycle held, and `invoke_once` replays that
          cycle's receipt instead of running anything — so the phase would
@@ -8268,7 +8385,7 @@ def cmd_work_dispatch(args) -> int:
          receipt reader because `invoke_once` would not have started anything
          either — it replays — and «Nothing was run» is the stronger sentence
          only this side of the call can say;
-      6. the command is required to be a nonempty argv after `--`.
+      7. the command is required to be a nonempty argv after `--`.
 
     The bounds are the admission's, not this command line's. `wall_seconds` and
     `max_output_bytes` come out of the reservation the cycle was admitted under,
@@ -8289,6 +8406,14 @@ def cmd_work_dispatch(args) -> int:
             f"would run work no cycle is holding anything for, and its receipt "
             f"would be evidence about a cycle already accounted for. Nothing "
             f"was run\n")
+        return EXIT_FAULT
+
+    # Check 2, and it is here — ahead of the phase checks — because the grant is
+    # what the whole admission stands on. A record at the wrong phase is a
+    # caller who can fix it by reporting the lease; a record under a delegation
+    # that has ended is work nobody currently authorizes, and that is the
+    # sentence an operator needs first.
+    if _refuse_a_grant_that_no_longer_stands(admission, control, store_mod):
         return EXIT_FAULT
 
     phase = admission.get("phase")
