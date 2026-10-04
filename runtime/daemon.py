@@ -1463,7 +1463,28 @@ class Daemon:
         reads it (`agent.context.attach`), and that method's whole job is to
         bind an observation to the process that made it.
         """
+        # These two readings happen BEFORE the `try` below, so a request whose
+        # shape this method did not anticipate would not be an error response —
+        # it would be an exception leaving `handle` entirely. A body that is
+        # valid JSON but not an object (`[1, 2, 3]`, `123`, `"GET /"`) raised
+        # `AttributeError: 'list' object has no attribute 'get'` out of
+        # `_serve_connection`, out of `serve_forever`, and out of the process;
+        # the observation daemon died and the node spent its restart interval
+        # blind. A malformed request is a fact about one caller, and the cost
+        # of saying so must not be the daemon. Named here rather than left to
+        # the `except Exception` below, because "a request must be an object"
+        # is the sentence the caller needs and `AttributeError` is not.
+        if not isinstance(request, dict):
+            return _error(
+                None, "BAD_REQUEST",
+                f"a request must be a JSON object; this one is a "
+                f"{type(request).__name__}")
         method = request.get("method")
+        if not isinstance(method, str):
+            return _error(
+                None, "BAD_REQUEST",
+                f"a request's `method` must be a string; this one is a "
+                f"{type(method).__name__}")
         params = request.get("params") or {}
         handler = self.handler_map().get(method)
 
@@ -3455,6 +3476,19 @@ class Daemon:
                     continue
                 try:
                     self._serve_connection(connection)
+                except Exception as exc:  # noqa: BLE001 - the loop survives
+                    # The same reason the tick above is wrapped, and the same
+                    # sentence: one connection's failure is a fact about that
+                    # caller, not a reason for the observation daemon to stop
+                    # observing. Without this, an exception anywhere in the
+                    # path between `accept` and the close leaves `serve_forever`
+                    # entirely — closing the server and releasing the socket
+                    # on the way out — and the node spends its whole restart
+                    # interval blind. `handle` names the malformed requests it
+                    # can name; this is the guarantee that no shape it did not
+                    # anticipate can do worse than that.
+                    self._log("serverosd dropped a connection: "
+                              f"{type(exc).__name__}: {exc}")
                 finally:
                     connection.close()
         finally:

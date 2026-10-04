@@ -2475,6 +2475,101 @@ def test_malformed_input_gets_a_named_error_not_a_dropped_connection(daemon_fact
     assert response["error"]["code"] == "BAD_REQUEST"
 
 
+@pytest.mark.parametrize("body", ["[1, 2, 3]", "123", '"GET / HTTP/1.0"', "null", "true"])
+def test_a_body_that_parses_but_is_not_an_object_is_refused_not_fatal(
+        daemon_factory, body):
+    """Measured live on 2026-10-05: `[1, 2, 3]` killed the daemon.
+
+    Every shape here is valid JSON, so the bad-bytes guard above does not cover
+    it, and the reading of `request` happened *before* `handle`'s own error
+    boundary. The exception left `handle`, left `_serve_connection`, left
+    `serve_forever` — closing the server and releasing the socket on the way
+    out — and the process exited 1. The traceback named it exactly:
+
+        daemon.py, in handle: method = request.get("method")
+        AttributeError: 'list' object has no attribute 'get'
+
+    `_serve_connection` must therefore RETURN here, not raise, and the caller
+    must be told which of the two things it got wrong.
+    """
+    daemon = daemon_factory(a_resource("thing-one"))
+    left, right = socket.socketpair(socket.AF_UNIX, socket.SOCK_STREAM)
+    try:
+        right.sendall(body.encode() + b"\n")
+        daemon._serve_connection(left)  # returns; a raise here is the defect
+        response = json.loads(right.recv(65536).decode())
+    finally:
+        left.close()
+        right.close()
+    assert response["error"]["code"] == "BAD_REQUEST"
+    assert "object" in response["error"]["message"]
+
+
+@pytest.mark.parametrize("method", ["[1, 2, 3]", "7", "null"])
+def test_a_request_whose_method_is_not_a_string_is_refused(daemon_factory, method):
+    """The second reading that used to happen outside the error boundary.
+
+    `handler_map().get([1, 2, 3])` is a `TypeError` — a list is not hashable —
+    raised from the same place as the `AttributeError` above, with the same
+    consequence for the process.
+    """
+    daemon = daemon_factory(a_resource("thing-one"))
+    left, right = socket.socketpair(socket.AF_UNIX, socket.SOCK_STREAM)
+    try:
+        right.sendall(f'{{"method": {method}}}'.encode() + b"\n")
+        daemon._serve_connection(left)
+        response = json.loads(right.recv(65536).decode())
+    finally:
+        left.close()
+        right.close()
+    assert response["error"]["code"] == "BAD_REQUEST"
+    assert "string" in response["error"]["message"]
+
+
+def test_one_bad_connection_cannot_stop_serve_forever(daemon_factory):
+    """The guarantee behind the two named refusals above.
+
+    Those refuse the shapes that were measured. This is the other half: a
+    shape nobody anticipated must still cost one connection and not the
+    daemon. Leaving `serve_forever` closes the server and releases the socket,
+    so the node would be unreachable for its whole restart interval — and
+    `Restart=on-failure` would make that look like a working service.
+    """
+    import threading
+
+    daemon = daemon_factory()
+    real = daemon._serve_connection
+    seen = []
+
+    def explode_once(connection):
+        seen.append(1)
+        if len(seen) == 1:
+            raise RuntimeError("a shape nobody anticipated")
+        return real(connection)
+
+    daemon._serve_connection = explode_once
+
+    thread = threading.Thread(
+        target=daemon.serve_forever, kwargs={"interval": 0.05, "stop_after": 60},
+        daemon=True,
+    )
+    thread.start()
+    try:
+        _wait_for(lambda: daemon.socket_path.exists())
+
+        # The first connection gets no answer at all — the injected failure.
+        with pytest.raises(Exception):
+            _round_trip(daemon.socket_path)
+        assert seen, "the injected failure never ran; this test proves nothing"
+
+        assert thread.is_alive(), (
+            "the daemon left `serve_forever` because one connection raised; "
+            "the node is unreachable until systemd restarts it")
+        assert _round_trip(daemon.socket_path)["ok"] is True
+    finally:
+        thread.join(timeout=10)
+
+
 # ---------------------------------------------------------------------------
 # §17 · the daemon does not grow into things that are not its job
 # ---------------------------------------------------------------------------
