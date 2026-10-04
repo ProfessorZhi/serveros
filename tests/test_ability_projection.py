@@ -319,7 +319,13 @@ def test_a_failed_write_leaves_the_previous_projection_intact(authority, tmp_pat
         projection.write_atomic(state / "abilities" / "effective.json", {"abilities": []})
 
     assert read(state / "abilities" / "effective.json") == before
-    residue = [p.name for p in (state / "abilities").iterdir() if p.name != "effective.json"]
+    # A refresh writes two artifacts, and BOTH must survive a failed write —
+    # the catalogue is not a scratch file. Naming them rather than meaning
+    # "everything except effective.json" keeps this a test about temp-file
+    # residue when a third artifact is added later.
+    assert (state / "abilities" / projection.CATALOGUE_NAME).exists()
+    residue = [p.name for p in (state / "abilities").iterdir()
+               if p.name not in {"effective.json", projection.CATALOGUE_NAME}]
     assert residue == [], f"temporary files left behind: {residue}"
 
 
@@ -356,6 +362,138 @@ def test_a_manifest_that_is_not_a_mapping_is_unreachable_rather_than_empty(autho
 # `test_daemon.py`, where the hermetic daemon fixture already lives. Building a
 # second one here would mean either duplicating that fixture or constructing a
 # Daemon against the live host, and a test that reads this machine is not a test.
+
+
+# ---------------------------------------------------------------------------
+# §35 · the catalogue is a second artifact, and it names no device
+# ---------------------------------------------------------------------------
+# The projection answers "what is installed HERE"; the catalogue answers "what
+# the authority lists at all". §35 keeps the first local on purpose, so the
+# wider answer is a separate file rather than a widened one. What these tests
+# hold is the separation itself: a catalogue that quietly grew an installation
+# field would make the two indistinguishable, and a reader could no longer tell
+# "absent from this device" from "absent from the world" — which is the single
+# distinction the pair exists to draw.
+
+
+def test_a_fresh_catalogue_carries_the_whole_manifest_not_just_this_device(
+        authority, tmp_path):
+    """The fact the projection cannot state, and the reason there are two files.
+
+    Three abilities, installed on three machines. The projection records the one
+    installed here; the catalogue records all three, because "which device has
+    it" is not a question it answers.
+    """
+    sha = authority.write(manifest(
+        ability("installed-here"),
+        ability("installed-elsewhere", device_id="windows-corporate"),
+        ability("installed-nowhere-at-all", device_id="some-third-machine"),
+    ))
+    projection.refresh(authority.repo, sha, DEVICE_IDS, tmp_path / "state", now=NOW)
+
+    local = read(tmp_path / "state" / "abilities" / "effective.json")
+    catalogue = read(tmp_path / "state" / "abilities" / "catalogue.json")
+
+    assert [a["name"] for a in local["abilities"]] == ["installed-here"]
+    assert [e["name"] for e in catalogue["entries"]] == [
+        "installed-elsewhere", "installed-here", "installed-nowhere-at-all"]
+
+    # One read, one revision: the two can never be two readings of two
+    # revisions, and a reader that sees them drift apart is looking at a
+    # half-completed write rather than at a difference of opinion.
+    assert catalogue["source_revision"] == local["source_revision"] == sha
+    assert catalogue["generated_at"] == local["generated_at"]
+    assert catalogue["registry_status"] == "FRESH"
+    assert catalogue["authority"] == "ability-management"
+    assert catalogue["schema"] == "serveros/ability-catalogue.v1"
+
+    # No device in it, at any depth. Asserted over the serialized bytes so a
+    # field that arrived by a path other than the copy loop is caught too.
+    raw = json.dumps(catalogue)
+    for leak in ("windows-corporate", "some-third-machine", "device_id",
+                 "installations", "revisions", "fingerprint", "version"):
+        assert leak not in raw, f"the catalogue carries installation data: {leak}"
+
+
+def test_a_catalogue_entry_carries_only_classification_metadata(authority, tmp_path):
+    """`ABILITY_FIELDS` as a set equality, not a subset check.
+
+    A field added to the copy would still satisfy "every field is allowed" if
+    the assertion were one-directional, and the allow-list is the whole reason
+    the copy is written field by field.
+    """
+    sha = authority.write(manifest(ability("session-manager")))
+    projection.refresh(authority.repo, sha, DEVICE_IDS, tmp_path / "state", now=NOW)
+
+    entries = read(tmp_path / "state" / "abilities" / "catalogue.json")["entries"]
+    assert len(entries) == 1
+    assert set(entries[0]) == set(projection.ABILITY_FIELDS)
+
+
+def test_no_key_material_reaches_the_catalogue(authority, tmp_path):
+    """§30, over the bytes. The catalogue is the WIDER file, so it is the one
+    most likely to be handed to something that will render it."""
+    document = manifest(ability("session-manager"))
+    document["authors"] = [{
+        "id": "ProfessorZhi",
+        "auth": {"scheme": "ed25519", "public_key": "ed25519:AAAAsecretmaterial",
+                 "fingerprint": "SHA256:deadbeef", "status": "verified"},
+    }]
+    sha = authority.write(document)
+    projection.refresh(authority.repo, sha, DEVICE_IDS, tmp_path / "state", now=NOW)
+
+    raw = (tmp_path / "state" / "abilities" / "catalogue.json").read_text()
+    assert "secretmaterial" not in raw
+    assert "deadbeef" not in raw
+    assert "public_key" not in raw
+    # The per-ability `author` the manifest also writes. Quoted, because
+    # `"authority"` is a legitimate key of this document and a bare substring
+    # test would flag it.
+    assert '"author"' not in raw
+
+
+def test_an_unreachable_authority_does_not_empty_the_catalogue(authority, tmp_path):
+    """`a failure never erases`, one file over — and the stakes are higher here.
+
+    An empty projection says "this device has nothing", which is at least
+    scoped to a device. An empty catalogue is a positive claim that the
+    authority lists no abilities at all, manufactured by a failed read.
+    """
+    state = tmp_path / "state"
+    sha = authority.write(manifest(ability("session-manager"), ability("shared-memory")))
+    projection.refresh(authority.repo, sha, DEVICE_IDS, state, now=NOW)
+    before = read(state / "abilities" / "catalogue.json")
+
+    document = projection.refresh(authority.repo, "does-not-exist", DEVICE_IDS, state,
+                                  now=NOW + timedelta(hours=3))
+    after = read(state / "abilities" / "catalogue.json")
+
+    assert after["registry_status"] == "STALE"
+    assert after["entries"] == before["entries"]
+    assert [e["name"] for e in after["entries"]] == ["session-manager", "shared-memory"]
+    # `generated_at` is when the authority was last READ, not when this file was
+    # written; advancing it would make a stale catalogue look current.
+    assert after["generated_at"] == before["generated_at"]
+    assert after["last_attempt_at"] != before["generated_at"]
+    # And the projection degraded in the SAME call, so the pair never disagrees
+    # about which read produced them.
+    assert document["registry_status"] == "STALE"
+
+
+def test_a_first_run_against_an_unreachable_authority_still_writes_a_readable_catalogue(
+        tmp_path):
+    """No previous catalogue to carry: the file must still be a document the
+    reader can open, saying `entries: []` with `registry_status: STALE` — not
+    absent, which the reader would report as NOT_MATERIALIZED, or unparseable,
+    which it would report as UNREADABLE."""
+    state = tmp_path / "state"
+    projection.refresh(tmp_path / "absent-repo", "HEAD", DEVICE_IDS, state, now=NOW)
+    catalogue = read(state / "abilities" / "catalogue.json")
+
+    assert catalogue["registry_status"] == "STALE"
+    assert catalogue["entries"] == []
+    assert catalogue["generated_at"] is None
+    assert catalogue["unreachable_reason"]
 
 
 # ---------------------------------------------------------------------------
