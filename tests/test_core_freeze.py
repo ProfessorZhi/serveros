@@ -413,7 +413,15 @@ class TheAbilityAuthorityIsNotADaemon(unittest.TestCase):
     # The names the daemon is allowed to touch on that module. Each is a pure
     # function of materials the CLI already handed it, or a constant. Every one
     # of them is device-free and authority-free.
-    ALLOWED_NAMES = {"TREE_SCHEMA", "domain_tree", "tree_rows", "ABILITY_FIELDS"}
+    #
+    # `CATALOGUE_NAME` is a filename, and it is admitted rather than hardcoded
+    # on purpose: the daemon reads the catalogue artifact the producer writes,
+    # so the two must agree on what it is called, and importing the one
+    # constant is how that agreement is enforced instead of duplicated. Reading
+    # a file the producer wrote is not reaching the authority — that is
+    # `refresh`, which stays in AUTHORITY_NAMES below.
+    ALLOWED_NAMES = {"TREE_SCHEMA", "domain_tree", "tree_rows", "ABILITY_FIELDS",
+                     "CATALOGUE_NAME"}
 
     # The names that reach the authority. Reaching these from the daemon would
     # make `git show` — in another repository, on another filesystem — part of

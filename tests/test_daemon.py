@@ -1904,6 +1904,155 @@ def test_a_name_in_neither_source_is_still_not_a_claim_of_absence(
     assert "not proof of absence" in result["note"]
 
 
+def _catalogue(tmp_path, monkeypatch, entries, *, revision="deadbeef",
+               status="FRESH"):
+    """A materialized catalogue beside the projection `_state_root` wrote.
+
+    Written as a real file rather than by patching `declared_catalogue`, for the
+    same reason `_revision_declaring` writes a real ARTIFACT.json: what is being
+    asserted is that the reader reads the artifact the producer writes, and
+    patching the reader would test the patch.
+    """
+    directory = tmp_path / "state" / "abilities"
+    directory.mkdir(parents=True, exist_ok=True)
+    (directory / "catalogue.json").write_text(json.dumps({
+        "schema": "serveros/ability-catalogue.v1",
+        "authority": "ability-management",
+        "this_is": "the authority's catalogue at a pinned revision, not an "
+                   "installation record",
+        "registry_status": status,
+        "generated_at": "2027-01-15T07:00:00+00:00",
+        "source_revision": revision,
+        "entries": entries,
+    }))
+    return directory / "catalogue.json"
+
+
+def test_a_search_finds_what_the_catalogue_lists_and_says_which_absence_it_is(
+        daemon_factory, tmp_path, monkeypatch):
+    """The measured gap, as a test.
+
+    Of the 21 responsibilities the product tree names, 13 are reachable from
+    neither the projection nor the composition's own recommendations — and
+    `ability-management`, shipped in the composition this node runs, is one of
+    them. Every one of the 13 IS in the authority's catalogue. Before this
+    source all 13 returned `matched: 0`, which reads as "this ability does not
+    exist"; what the surface could not say is that they are absent HERE rather
+    than absent.
+    """
+    _state_root(tmp_path, monkeypatch, [
+        {"name": "muc-playwright-e2e", "id": "x", "path": "skills/muc-playwright-e2e"},
+    ])
+    _catalogue(tmp_path, monkeypatch, [
+        {"name": "ability-management", "id": "ProfessorZhi/ability-management",
+         "type": "skill", "path": "skills/ability-management",
+         "domain": {"primary": "serveros.governance"}, "taxonomy_refs": []},
+    ])
+    result = daemon_factory(a_resource("thing-one")).handle(
+        {"method": "ability.search", "params": {"query": "ability-management"}})["result"]
+
+    assert result["matched"] == 1, "the projection has never heard of it"
+    assert result["matched_installed"] == 0
+    assert result["matched_on_demand"] == 0
+    assert result["matched_in_catalogue"] == 1
+    row = result["matches"][0]
+    assert row["name"] == "ability-management"
+    assert row["installed"] is False
+    assert row["placement"] == "catalogue"
+    assert row["registered_here"] is False
+    # A catalogue row knows classification and nothing about installations, so
+    # it carries no `agents` key at all: `[]` there would read as "no agent has
+    # this", a claim this source never made.
+    assert "agents" not in row
+    assert result["catalogue"]["count"] == 1
+    assert result["catalogue"]["source_revision"] == "deadbeef"
+    assert result["catalogue"]["present"] is True
+
+
+def test_the_catalogue_does_not_re_count_a_name_a_stronger_source_has(
+        daemon_factory, tmp_path, monkeypatch):
+    """The three sources are summed, so they must not overlap.
+
+    A name installed here is of course also in the catalogue. If the third
+    source counted it again, `matched` would exceed `returned` with
+    `truncated: false` — an answer no caller can take apart — and the number
+    actually worth reporting, "what the other sources did not have", would be
+    buried.
+    """
+    _state_root(tmp_path, monkeypatch, [
+        {"name": "test-management", "id": "x", "path": "skills/test-management"},
+    ])
+    _catalogue(tmp_path, monkeypatch, [
+        {"name": "test-management", "id": "x", "type": "skill",
+         "path": "skills/test-management", "domain": None, "taxonomy_refs": []},
+    ])
+    result = daemon_factory(a_resource("thing-one")).handle(
+        {"method": "ability.search", "params": {"query": "test-management"}})["result"]
+
+    assert result["matched_installed"] == 1
+    assert result["matched_in_catalogue"] == 0, "not counted a second time"
+    assert result["matched"] == 1
+    assert result["returned"] == 1
+    assert result["truncated"] is False
+    # The projection row is the installed one by NOT being marked as either of
+    # the weaker placements; those sources say `installed: false` and name
+    # where they are instead.
+    assert "placement" not in result["matches"][0]
+
+
+def test_a_status_of_a_catalogue_only_ability_is_not_a_claim_of_absence(
+        daemon_factory, tmp_path, monkeypatch):
+    """`installed: None` and `installed: False` are different answers, and the
+    catalogue is what makes the second available for a name the projection has
+    never heard of — which is the whole shape of this node's 13 unreachable
+    responsibilities."""
+    _state_root(tmp_path, monkeypatch, [])
+    _revision_declaring(tmp_path, monkeypatch, [])
+    _catalogue(tmp_path, monkeypatch, [
+        {"name": "human-control", "id": "ProfessorZhi/human-control",
+         "type": "skill", "path": "skills/human-control",
+         "domain": {"primary": "serveros.governance"}, "taxonomy_refs": []},
+    ])
+    daemon = daemon_factory(a_resource("thing-one"))
+
+    found = daemon.handle(
+        {"method": "ability.status", "params": {"name": "human-control"}})["result"]
+    assert found["installed"] is False
+    assert found["placement"] == "catalogue"
+    assert found["ability"]["path"] == "skills/human-control"
+    assert found["catalogue"]["source_revision"] == "deadbeef"
+
+    missing = daemon.handle(
+        {"method": "ability.status", "params": {"name": "nowhere-at-all"}})["result"]
+    assert missing["installed"] is None
+    # The catalogue WAS readable and does not list it, so the sentence may say
+    # so — which is a stronger thing to be able to say than "absent from all".
+    assert "does not list it" in missing["note"]
+
+
+def test_a_node_that_never_materialized_a_catalogue_says_so_rather_than_zero(
+        daemon_factory, tmp_path, monkeypatch):
+    """`count: null` and `present: false`, never `0` and `[]`.
+
+    This is the state of every node before its first `refresh` that carried the
+    catalogue, which is every node today — so it is the COMMON case and not an
+    edge one, and `0` here would claim the authority's catalogue is empty.
+    """
+    _state_root(tmp_path, monkeypatch, [
+        {"name": "shared-memory", "id": "x", "path": "skills/shared-memory"},
+    ])
+    result = daemon_factory(a_resource("thing-one")).handle(
+        {"method": "ability.search", "params": {"query": "shared-memory"}})["result"]
+
+    assert result["catalogue"]["present"] is False
+    assert result["catalogue"]["count"] is None
+    assert result["catalogue"]["why"]
+    # And it is not a reason to refuse the search: the projection answered.
+    assert result["matched"] == 1
+    assert result["matched_in_catalogue"] == 0
+    assert "placement" not in result["matches"][0]
+
+
 def test_an_artifact_built_before_the_field_says_so_rather_than_nothing(
         daemon_factory, tmp_path, monkeypatch):
     """`recommended` is newer than the artifacts already installed, so the

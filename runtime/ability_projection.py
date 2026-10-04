@@ -30,6 +30,22 @@ implementation gets it wrong:
    abilities survive verbatim and `registry_status` becomes STALE. Writing an
    empty list instead would turn "I could not ask" into "there is nothing",
    which is the same conflation the reader goes out of its way to avoid.
+
+It writes TWO files from ONE read, and §35 is why they are two files rather
+than two keys of one:
+
+  * `effective.json` — the local projection: what the authority records as
+    **installed on this device**.
+  * `catalogue.json` — the authority's catalogue at the same pinned revision:
+    every ability it lists, as bounded metadata, with no device in it at all.
+
+A node whose only local answer is the projection cannot tell an ability the
+catalogue has never heard of from one it has merely not recorded here, and
+those two demand opposite responses. Both are facts a discovery surface needs,
+and a surface that reads only the first reports the second as `matched: 0` —
+which is how `ability-management`, installed in the composition this node
+runs, came back as "does not exist". §35 keeps the projection local on
+purpose, so the wider answer is a second artifact and not a widened first one.
 """
 from __future__ import annotations
 
@@ -52,6 +68,11 @@ SCHEMA = "serveros/ability-projection.v1"
 AUTHORITY = "ability-management"
 THIS_IS = "a local observed projection, not the authority"
 PROJECTION_NAME = "effective.json"
+
+CATALOGUE_SCHEMA = "serveros/ability-catalogue.v1"
+CATALOGUE_NAME = "catalogue.json"
+CATALOGUE_THIS_IS = ("the authority's catalogue at a pinned revision, not an "
+                     "installation record")
 
 # The manifest keys this projection is allowed to read. An allow-list rather
 # than a deny-list: the manifest also carries `authors[]`, which holds public
@@ -359,6 +380,72 @@ def project(manifest: dict, device_ids: tuple[str, ...], *, resolved_sha: str,
     }
 
 
+def catalogue(manifest: dict, *, resolved_sha: str, now: datetime) -> dict:
+    """The whole catalogue's bounded metadata, one entry per manifest record.
+
+    `ABILITY_FIELDS` and nothing else, for exactly the reason the allow-list
+    exists one function up: the manifest also carries `authors[]`, and a
+    node-local file that names people is a directory of people. An entry here
+    is a classification OF an ability — what it is and where it sits — never an
+    installation and never a fact about a person.
+
+    One entry per record, not per name. The manifest lists an ability once per
+    source (`mcps/X` and `plugins/X`), and collapsing the two would drop a path
+    a caller may be searching for. `installed_abilities` keeps the same shape
+    for the same reason, so a reader of both files sees one convention.
+
+    **This is not a projection and does not stand in for one.** It says what
+    the authority's catalogue contains; it says nothing whatever about this
+    device. An ability present here and absent from `effective.json` is not a
+    defect in either file — it is the single fact the two files exist to tell
+    apart, and it is the fact the discovery surface was missing.
+    """
+    entries = []
+    for entry in manifest.get("abilities") or []:
+        if not isinstance(entry, dict) or not entry.get("name"):
+            continue
+        entries.append({field: entry.get(field) for field in ABILITY_FIELDS})
+    entries.sort(key=lambda row: (str(row.get("name")), str(row.get("id"))))
+    return {
+        "schema": CATALOGUE_SCHEMA,
+        "authority": AUTHORITY,
+        "this_is": CATALOGUE_THIS_IS,
+        "registry_status": "FRESH",
+        "generated_at": _iso(now),
+        "source_revision": resolved_sha,
+        "entries": entries,
+    }
+
+
+def catalogue_stale(previous: dict | None, *, reason: str, now: datetime) -> dict:
+    """Carried through on the same terms as the projection, for the same reason.
+
+    The catalogue in hand did not change because a later read failed. Writing
+    `entries: []` here would turn "I could not ask" into "the catalogue is
+    empty" — the conflation this module refuses one file over, and a worse one,
+    because an empty catalogue is a positive claim that nothing exists.
+    """
+    carried = previous or {}
+    return {
+        "schema": CATALOGUE_SCHEMA,
+        "authority": AUTHORITY,
+        "this_is": CATALOGUE_THIS_IS,
+        "registry_status": "STALE",
+        "generated_at": carried.get("generated_at"),
+        "source_revision": carried.get("source_revision"),
+        "entries": carried.get("entries") or [],
+        "last_attempt_at": _iso(now),
+        "unreachable_reason": reason,
+        "note": (
+            "the authority could not be read. The entries below are the last "
+            "known ones and are carried through unchanged; `generated_at` is "
+            "when they were last SUCCESSFULLY read, not when this file was "
+            "written. This is the catalogue, not an installation record: it "
+            "names no device, and do not install from it (§28)."
+        ),
+    }
+
+
 def _iso(moment: datetime) -> str:
     if moment.tzinfo is None:
         moment = moment.replace(tzinfo=timezone.utc)
@@ -434,17 +521,34 @@ def stale(previous: dict | None, device_ids: tuple[str, ...], *, reason: str,
 
 def refresh(repo: Path, rev: str, device_ids: tuple[str, ...], state_root: Path,
             *, now: datetime | None = None) -> dict:
-    """Read the authority and write the projection. Returns what was written."""
+    """Read the authority and write BOTH artifacts. Returns the projection.
+
+    One read, one pinned revision, two files. They share `source_revision` and
+    `generated_at` whenever both are FRESH, so a reader can notice the two
+    drifting apart — which is what a half-completed write would look like, and
+    is worth being visible rather than silent.
+
+    The projection is returned because every caller so far wants it and the
+    catalogue is additive. That is a convenience, not a ranking: neither file
+    is derived from the other.
+    """
     moment = now or datetime.now(timezone.utc)
-    path = state_root / "abilities" / PROJECTION_NAME
+    directory = state_root / "abilities"
+    path = directory / PROJECTION_NAME
+    catalogue_path = directory / CATALOGUE_NAME
     try:
         manifest, resolved = read_manifest(repo, rev)
     except AuthorityUnreachable as exc:
         document = stale(read_existing(path), device_ids, reason=str(exc), now=moment)
         write_atomic(path, document)
+        write_atomic(catalogue_path,
+                     catalogue_stale(read_existing(catalogue_path),
+                                     reason=str(exc), now=moment))
         return document
     document = project(manifest, device_ids, resolved_sha=resolved, now=moment)
     write_atomic(path, document)
+    write_atomic(catalogue_path,
+                 catalogue(manifest, resolved_sha=resolved, now=moment))
     return document
 
 
@@ -477,6 +581,14 @@ def main(argv: list[str] | None = None) -> int:
         print(f"{document['registry_status']}: "
               f"{len(document['abilities'])} abilities installed on this device "
               f"({document.get('source_revision') or 'no revision'})")
+        # Named separately, never summed with the line above. "N installed"
+        # and "M in the catalogue" are different facts, and their difference is
+        # the answer to "why can I not find the ability I know exists".
+        written = read_existing(state_root / "abilities" / CATALOGUE_NAME) or {}
+        entries = written.get("entries")
+        print(f"catalogue: {written.get('registry_status') or 'MISSING'} · "
+              f"{'unreadable' if entries is None else len(entries)} entries · "
+              f"{written.get('source_revision') or 'no revision'}")
     return 0
 
 
