@@ -19,11 +19,14 @@ Hermetic: no docker, no systemd, no socket on the real machine, no network.
 from __future__ import annotations
 
 import datetime
+import errno
 import importlib.util
 import json
+import os
 import socket
 import subprocess
 import sys
+import types
 from pathlib import Path
 
 import pytest
@@ -2567,7 +2570,217 @@ def test_one_bad_connection_cannot_stop_serve_forever(daemon_factory):
             "the node is unreachable until systemd restarts it")
         assert _round_trip(daemon.socket_path)["ok"] is True
     finally:
+        # See the note in the test above: the loop reads `stop_after` between
+        # connections, so the thread is told it is done rather than waited out.
+        daemon.ticks = 60
         thread.join(timeout=10)
+
+
+# ---------------------------------------------------------------------------
+# §20/§21 · one endpoint, one daemon, for the whole life of the instance
+# ---------------------------------------------------------------------------
+
+
+def test_a_second_daemon_on_one_socket_refuses_and_leaves_the_first_alone(
+        daemon_factory):
+    """MEASURED 2026-10-05, in isolation, before this was written: two daemons
+    started on one socket path both came up. In fifteen seconds the socket
+    file's inode changed seven times, both processes stayed alive, and both
+    logged `re-bound` — 46 times and 45 times. A client connecting to that
+    path reached whichever daemon won the last race, and neither could tell
+    it had lost.
+
+    The refusal has to come before `_open_socket`, because `_open_socket`
+    begins by unlinking whatever is at the path. A daemon that says "you
+    already have one of me" *after* deleting the incumbent's socket has
+    produced exactly the outage it was refusing to produce — so the socket
+    file is checked by inode, after the refusal, not merely by existence.
+    """
+    import threading
+
+    first = daemon_factory()
+    thread = threading.Thread(
+        target=first.serve_forever,
+        kwargs={"interval": 0.05, "stop_after": 60},
+        daemon=True,
+    )
+    thread.start()
+    try:
+        _wait_for(lambda: first.socket_path.exists())
+        inode = first.socket_path.stat().st_ino
+
+        second = daemon_factory()
+        refusal: list[BaseException] = []
+
+        def try_to_serve():
+            try:
+                second.serve_forever(interval=0.05)
+            except BaseException as exc:  # noqa: BLE001 - asserted just below
+                refusal.append(exc)
+
+        # Run on its own thread so that the defect this test is about — a
+        # second daemon that serves the same endpoint instead of refusing —
+        # fails the suite in twenty seconds rather than hanging it. A test
+        # that hangs when the guard is removed cannot be used to show the
+        # guard fires.
+        contender = threading.Thread(target=try_to_serve, daemon=True)
+        contender.start()
+        contender.join(timeout=20)
+        assert not contender.is_alive(), (
+            "the second daemon was still serving after 20s: it did not refuse, "
+            "so both daemons are answering on one endpoint")
+        assert len(refusal) == 1, (
+            f"the second daemon returned without refusing: {refusal}")
+        assert isinstance(refusal[0], daemon_mod.DaemonAlreadyRunning)
+
+        message = str(refusal[0])
+        assert str(first.socket_path) in message
+        assert str(second._lock_path()) in message
+        # The holder is named. `first` and `second` live in this process, so
+        # the pid the incumbent wrote into the lock file is this one.
+        assert f"pid {os.getpid()}" in message, message
+
+        assert first.socket_path.exists(), "the refusal removed the socket"
+        assert first.socket_path.stat().st_ino == inode, (
+            "the second daemon unlinked and rebound the first one's endpoint "
+            "on its way to refusing; a client connecting now lands on neither")
+        assert _round_trip(first.socket_path)["ok"] is True
+    finally:
+        # `serve_forever` has no stop flag, and the loop only reads
+        # `stop_after` between accepted connections — so the thread is told
+        # it has done its sixty ticks rather than being waited out. The one
+        # extra tick this costs is a fake host and a fake inventory.
+        first.ticks = 60
+        thread.join(timeout=10)
+
+
+def test_a_lock_a_daemon_died_holding_does_not_block_the_next_one(
+        daemon_factory):
+    """`flock(2)` is released by the kernel when the holder exits, however it
+    exits. That is what makes the file left on disk safe to ignore: its
+    contents say nothing, the lock says everything.
+
+    The failure this prevents is a node that cannot come back. `Restart=
+    on-failure` is the supervisor here, so if the lock outlived the crash the
+    first crash would be permanent. The child below exits with `os._exit`, so
+    Python closes nothing it holds — only the kernel's own cleanup runs, which
+    is the crash exactly.
+    """
+    daemon = daemon_factory()
+    daemon.socket_path.parent.mkdir(parents=True, exist_ok=True)
+    lock = daemon._lock_path()
+    # A file, and a pid that is not running. Neither is read as a reason to
+    # refuse.
+    lock.write_text("999999")
+
+    child = subprocess.run(
+        [sys.executable, "-c",
+         "import fcntl, os, sys\n"
+         "fd = os.open(sys.argv[1], os.O_CREAT | os.O_RDWR, 0o600)\n"
+         "fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)\n"
+         "os._exit(0)\n",
+         str(lock)],
+        capture_output=True, timeout=30)
+    assert child.returncode == 0, child.stderr.decode()
+
+    daemon._hold_singleton()  # a raise here is the defect
+    assert daemon._singleton_fd is not None
+    daemon._release_singleton()
+
+
+def test_the_endpoint_goes_back_when_the_holder_releases_it(daemon_factory):
+    """The other half of the same lock, and the ordinary restart case.
+
+    Two `Daemon` objects in one process contend for it for real: `flock` treats
+    each `open` as a distinct holder even within a single process, so this is
+    the same exclusion a second process meets.
+    """
+    first = daemon_factory()
+    second = daemon_factory()
+
+    first._hold_singleton()
+    with pytest.raises(daemon_mod.DaemonAlreadyRunning):
+        second._hold_singleton()
+
+    first._release_singleton()
+    second._hold_singleton()
+    second._release_singleton()
+
+
+def test_a_lock_that_cannot_be_taken_at_all_is_not_called_a_second_daemon(
+        daemon_factory, monkeypatch):
+    """`flock` can fail for a reason that is not contention — a filesystem that
+    does not support it, for one. Reporting that as "another serverosd already
+    holds this" would be the wrong-but-confident answer this method exists to
+    replace, and it would send somebody looking for a daemon that is not
+    there. Only the contention errnos get the contention message.
+    """
+    daemon = daemon_factory()
+    real = daemon_mod.fcntl
+
+    def unsupported(fd, operation):
+        raise OSError(errno.ENOTSUP, "flock not supported here")
+
+    monkeypatch.setattr(daemon_mod, "fcntl", types.SimpleNamespace(
+        flock=unsupported, LOCK_EX=real.LOCK_EX, LOCK_NB=real.LOCK_NB))
+
+    with pytest.raises(daemon_mod.DaemonError) as caught:
+        daemon._hold_singleton()
+    assert not isinstance(caught.value, daemon_mod.DaemonAlreadyRunning), (
+        "a lock that could not be taken at all was reported as an incumbent "
+        "daemon")
+    assert str(daemon._lock_path()) in str(caught.value)
+    assert "another serverosd" not in str(caught.value)
+
+
+def test_main_exits_with_a_code_of_its_own_when_the_endpoint_is_held(
+        daemon_factory, tmp_path):
+    """The exit code is the only part of this a unit file can see.
+
+    Folded into a general failure code, `Restart=on-failure` would retry a
+    condition that clears only when somebody else stops — and would be right
+    to, which is why it must not be told to. The daemon that refuses is real
+    here, built by `main` from its own arguments; nothing ticks, because the
+    refusal happens before the loop.
+    """
+    import threading
+
+    holder = daemon_factory()
+    holder._hold_singleton()
+    try:
+        registry_path = tmp_path / "registry.json"
+        registry_path.write_text(json.dumps({
+            "schema": "serveros/managed-runtime-registry.v1",
+            "device_ref": "device:server-beijing",
+            "resources": [],
+        }))
+
+        codes: list[int] = []
+        worker = threading.Thread(
+            target=lambda: codes.append(daemon_mod.main([
+                "--registry", str(registry_path),
+                "--state-dir", str(tmp_path / "state"),
+                "--socket", str(holder.socket_path),
+                "--interval", "3600",
+            ])),
+            daemon=True,
+        )
+        # On a thread, so that removing the guard makes this fail rather than
+        # hang: without it `main` enters the serve loop and never returns, and
+        # the exit code this test is about is never produced.
+        worker.start()
+        worker.join(timeout=20)
+        assert not worker.is_alive(), (
+            "`main` was still serving after 20s: it did not refuse the "
+            "endpoint another daemon holds")
+        assert codes == [3]
+
+        # And the refusal changed nothing: the endpoint is still held.
+        refuses_again = daemon_factory()
+        with pytest.raises(daemon_mod.DaemonAlreadyRunning):
+            refuses_again._hold_singleton()
+    finally:
+        holder._release_singleton()
 
 
 # ---------------------------------------------------------------------------
