@@ -140,6 +140,43 @@ def a_record(**over) -> dict:
     return record
 
 
+def a_window_around_now(**over) -> dict:
+    """`WINDOW` moved so that it contains the real clock.
+
+    Two fixtures in this file, and they answer different questions. `WINDOW` is
+    FROZEN and stays frozen: `admit` judges the grant at the instant the RECORD
+    names, so a file whose records are dated `T0` needs a window around `T0`,
+    and `test_an_instant_outside_the_window_is_refused` turns on a window that
+    does NOT contain every real instant. This one is for the other question —
+    whether the delegation is still standing at the instant a command would
+    RUN at, which is what `work dispatch` re-checks before it spawns anything
+    (security prerequisite 4). A test that only needs the admission to still be
+    live uses this; a test ABOUT the ordering of two instants uses
+    `TestTheDispatchVerb.admitted_at_the_real_clock`.
+
+    One hour behind and one day ahead, which is that helper's own asymmetry:
+    the instant that matters is the one the test runs at, so the window has to
+    contain it with room for a slow machine on either side. Derived from the
+    clock rather than written down, so it cannot go stale the way a literal
+    would.
+    """
+    now = datetime.datetime.now(datetime.timezone.utc)
+    window = {"valid_from": (now - datetime.timedelta(hours=1)).isoformat(),
+              "expires_at": (now + datetime.timedelta(days=1)).isoformat()}
+    window.update(over)
+    return window
+
+
+def an_instant_now() -> str:
+    """The real clock, as an `admitted_at` inside `a_window_around_now()`.
+
+    A separate function so that the instant and the window are read from the
+    same clock at nearly the same moment; one call site spelling both would be
+    two clocks that agree by luck.
+    """
+    return datetime.datetime.now(datetime.timezone.utc).isoformat()
+
+
 def a_store(tmp_path: Path) -> AgentControlStore:
     """A store holding the one delegation `a_record()` names, and nothing else.
 
@@ -1766,13 +1803,23 @@ class TestTheDispatchVerb:
 
     @staticmethod
     def held(env: dict) -> None:
-        """The lease phase, confirmed the way the CLI confirms it."""
+        """The lease phase, confirmed the way the CLI confirms it.
+
+        It names no `--at`. The admissions this class seeds are made at the
+        real clock (`admitted_at_the_real_clock`), so a lease phase stamped
+        `2026-01-01` would be a confirmation that predates the admission it
+        advances — two instants in one fixture that disagree, which is the
+        shape this file's own measurements have already had to be corrected
+        for once. `declare_and_hold` below is the same verb without the
+        hard-coded cycle, and it is what the two tests that need another cycle
+        call.
+        """
         declared = cli("lease", "declare", "browser:chromium", "--scope",
                        "session", "--holder", "cyc-1", "--sharing", "shared",
                        env_extra=env)
         assert declared.returncode == 0, declared.stderr
         confirmed = cli("work", "confirm", "cyc-1", "--phase", "LEASE_HELD",
-                        "--at", T1, env_extra=env)
+                        env_extra=env)
         assert confirmed.returncode == 0, confirmed.stderr
 
     @staticmethod
@@ -1806,7 +1853,7 @@ class TestTheDispatchVerb:
 
     def test_the_phase_records_the_receipt_the_command_wrote(self, tmp_path):
         env = a_data_root(tmp_path)
-        seeded(env)
+        self.admitted_at_the_real_clock(env)
         self.held(env)
 
         done = self.dispatch(env, "/bin/sh", "-c", "echo ran-here; "
@@ -1833,7 +1880,7 @@ class TestTheDispatchVerb:
 
     def test_a_dispatch_before_the_lease_phase_runs_nothing(self, tmp_path):
         env = a_data_root(tmp_path)
-        seeded(env)
+        self.admitted_at_the_real_clock(env)
         before = store_path(env).read_bytes()
 
         done = self.dispatch(env, "/bin/sh", "-c", "touch SHOULD-NOT-EXIST")
@@ -1846,6 +1893,76 @@ class TestTheDispatchVerb:
         assert not self.receipts(env).exists()
         assert store_path(env).read_bytes() == before
 
+    def test_a_revoked_grant_stops_the_dispatch(self, tmp_path):
+        """The delegation ended between the admission and the command.
+
+        `admit` resolved this grant inside its own transaction — recorded, not
+        revoked, in force at `admitted_at`, naming the selected items, declaring
+        the reserved bounds — and every one of those is a fact about the instant
+        the ADMISSION names. This verb runs a command at a different instant, and
+        the reason that gap cannot be closed at admission time is structural
+        rather than a matter of care: `_authorizing_grant` is asked under the
+        lock `admit` holds, and this command runs later, in another process,
+        under no lock at all.
+
+        `put_grant` is write-once, so what can have happened in the gap is short
+        and exactly enumerable, and this is one of the two: `revoke_grant` ran.
+        Security prerequisite 4 asks for the re-check by name, and the answer is
+        the store's own — this test asserts the store's word (`MISSING_OR_
+        REVOKED_GRANT`) rather than a paraphrase of it.
+
+        Three assertions past the refusal, and the last two are the ones that
+        make it a refusal rather than a report: the command did not run, and the
+        phase did not move, so nothing downstream reads a dispatch under
+        authority that had ended.
+        """
+        env = a_data_root(tmp_path)
+        store = self.admitted_at_the_real_clock(env)
+        self.held(env)
+        store.revoke_grant(GRANT, at=an_instant_now(), reason="withdrawn")
+        before = store_path(env).read_bytes()
+
+        done = self.dispatch(env, "/bin/sh", "-c", "touch SHOULD-NOT-EXIST")
+
+        assert done.returncode != 0, done.stdout
+        assert "MISSING_OR_REVOKED_GRANT" in done.stderr
+        assert "Nothing was run" in done.stderr
+        assert not self.receipts(env).exists()
+        assert store_path(env).read_bytes() == before
+
+    def test_a_grant_that_lapsed_after_the_admission_stops_the_dispatch(self, tmp_path):
+        """The admission was legitimate and the authority ended in the gap.
+
+        The other half of what the re-check is for, and not the same case as a
+        revocation: nobody withdrew anything, no action was taken — the clock
+        simply moved past `expires_at` between the instant the record names and
+        the instant the command would run. No admission-time check can reach it,
+        because at admission time the window had not closed.
+
+        The window here straddles the two instants deliberately: it opens an
+        hour ago, the record is admitted thirty minutes ago (inside it), and the
+        window closed a minute ago. Nothing sleeps, and that is the point — a
+        test that waits for an expiry is a test whose own runtime is the
+        threshold it is testing.
+        """
+        env = a_data_root(tmp_path)
+        now = datetime.datetime.now(datetime.timezone.utc)
+        store = AgentControlStore(store_path(env))
+        store.put_context({"context_ref": CONTEXT})
+        store.put_grant(a_grant(
+            valid_from=(now - datetime.timedelta(hours=1)).isoformat(),
+            expires_at=(now - datetime.timedelta(minutes=1)).isoformat()))
+        store.admit(a_record(
+            admitted_at=(now - datetime.timedelta(minutes=30)).isoformat()))
+        self.held(env)
+
+        done = self.dispatch(env, "/bin/sh", "-c", "touch SHOULD-NOT-EXIST")
+
+        assert done.returncode != 0, done.stdout
+        assert "GRANT_NOT_CURRENT" in done.stderr
+        assert "Nothing was run" in done.stderr
+        assert not self.receipts(env).exists()
+
     def test_a_lease_released_since_the_phase_still_stops_the_dispatch(self, tmp_path):
         """The phase says LEASE_HELD and the lease store says otherwise.
 
@@ -1855,7 +1972,7 @@ class TestTheDispatchVerb:
         ("this holder never declared it") is the wrong one.
         """
         env = a_data_root(tmp_path)
-        seeded(env)
+        self.admitted_at_the_real_clock(env)
         self.held(env)
         released = cli("lease", "release", "browser:chromium", "--scope",
                        "session", "--holder", "cyc-1", env_extra=env)
@@ -1870,7 +1987,7 @@ class TestTheDispatchVerb:
 
     def test_a_second_trigger_is_not_a_second_dispatch(self, tmp_path):
         env = a_data_root(tmp_path)
-        seeded(env)
+        self.admitted_at_the_real_clock(env)
         self.held(env)
         first = self.dispatch(env, "/bin/sh", "-c", "echo first")
         assert first.returncode == 0, first.stderr
@@ -1895,7 +2012,7 @@ class TestTheDispatchVerb:
         refused here — the alternative is running `--cwdx`.
         """
         env = a_data_root(tmp_path)
-        seeded(env)
+        self.admitted_at_the_real_clock(env)
         self.held(env)
 
         for extra in ((), ("--cwdx", "/w")):
@@ -1918,9 +2035,11 @@ class TestTheDispatchVerb:
         env = a_data_root(tmp_path)
         seed = AgentControlStore(store_path(env))
         seed.put_context({"context_ref": CONTEXT})
-        seed.put_grant(a_grant(budget={"wall_seconds": 1, "max_attempts": 2,
+        seed.put_grant(a_grant(**a_window_around_now(),
+                               budget={"wall_seconds": 1, "max_attempts": 2,
                                        "max_output_bytes": 200000}))
-        seed.admit(a_record(reservation={"wall_seconds": 1, "max_attempts": 2,
+        seed.admit(a_record(admitted_at=an_instant_now(),
+                            reservation={"wall_seconds": 1, "max_attempts": 2,
                                          "max_output_bytes": 200000}))
         self.held(env)
         options = set(re.findall(r"(?m)^\s{2,}(--[a-z-]+)",
@@ -1948,7 +2067,7 @@ class TestTheDispatchVerb:
         with nothing saying so.
         """
         env = a_data_root(tmp_path)
-        seeded(env)
+        self.admitted_at_the_real_clock(env)
         self.held(env)
         retired = cli("work", "retire", "cyc-1", "--at", T2, env_extra=env)
         assert retired.returncode == 0, retired.stderr
@@ -1970,7 +2089,7 @@ class TestTheDispatchVerb:
         the one thing that did not happen.
         """
         env = a_data_root(tmp_path)
-        seeded(env)
+        self.admitted_at_the_real_clock(env)
         self.held(env)
 
         done = self.dispatch(env, "/nonexistent/nothing-here")
@@ -1990,7 +2109,7 @@ class TestTheDispatchVerb:
         say so — asserted, because "nothing was started" is a claim.
         """
         env = a_data_root(tmp_path)
-        seeded(env)
+        self.admitted_at_the_real_clock(env)
         self.held(env)
         receipts = self.receipts(env)
         receipts.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -2011,19 +2130,28 @@ class TestTheDispatchVerb:
         """One cycle admitted NOW, under a window built around now.
 
         Built on the real clock rather than on this file's `T0`/`T1`/`T2`
-        constants, and that is forced by what the tests below are about: the
-        ordering of two instants. `seeded()` admits at `2026-01-01`, before
-        every real instant, so a receipt written now would read as younger than
-        its own admission and the comparison under test could never fire — the
-        fixture would make the criterion look satisfied without exercising it.
+        constants, and that is forced by TWO things this class is about, which
+        is why most of it uses this and not the module-level `seeded()`:
+
+          * the ordering of two instants — the module-level `seeded()` admits
+            at `2026-01-01`, before every real instant, so a receipt written now
+            would read as younger than its own admission and that comparison
+            could never fire;
+          * whether the DELEGATION is still standing when the command would run.
+            `cmd_work_dispatch` re-checks the grant at the real clock before it
+            spawns anything (security prerequisite 4), and a fixture admitted
+            under the frozen `WINDOW` — which closed on 2026-01-02 — would make
+            every test here a test of `GRANT_NOT_CURRENT` instead of the thing
+            it was written about.
+
+        The window itself is `a_window_around_now()`'s, which is this file's one
+        statement of what "in force now" means; a second construction here would
+        be a second answer to that.
         """
-        now = datetime.datetime.now(datetime.timezone.utc)
         store = AgentControlStore(store_path(env))
         store.put_context({"context_ref": CONTEXT})
-        store.put_grant(a_grant(
-            valid_from=(now - datetime.timedelta(hours=1)).isoformat(),
-            expires_at=(now + datetime.timedelta(days=1)).isoformat()))
-        store.admit(a_record(admitted_at=now.isoformat()))
+        store.put_grant(a_grant(**a_window_around_now()))
+        store.admit(a_record(admitted_at=an_instant_now()))
         return store
 
     def declare_and_hold(self, env: dict, cycle_ref: str) -> None:
@@ -2178,7 +2306,7 @@ class TestTheDispatchVerb:
         assert "same action key with different input" in done.stderr
         assert "predates the cycle" not in done.stderr
 
-    def test_one_scope_waiting_does_not_freeze_another(self, tmp_path):
+    def test_a_second_dispatch_does_not_wait_on_the_first(self, tmp_path):
         """J07's fifth criterion, on the one path in this fabric that had it.
 
         `invoke_once` holds this action key's receipt lock across the whole life
@@ -2190,13 +2318,32 @@ class TestTheDispatchVerb:
         verb cannot park this test for the 900 the shared budget names; the
         answer it eventually got for the wait is the one the receipt's own
         input-digest check gives immediately, so the wait bought nothing and
-        cost another scope's clock.
+        cost the caller's clock.
 
-        The key is shared only because the first cycle was RETIRED — `admit`
-        refuses a second open admission under a key an open one holds. Reuse
-        after retirement is what a person produces by closing one cycle and
-        admitting the next under the same readable key, and it is the only
-        shape in which two scopes can collide here at all.
+        THE SECOND DISPATCH IS THE SAME CYCLE, and that is now the only shape in
+        which this path is reachable through this verb. It used to be a second
+        cycle admitted under the key the first had retired — `admit` refuses a
+        second open admission under a key an open one holds, so retirement was
+        the only way to get two cycles onto one key. Slice E then closed that
+        route earlier and more sharply: `_receipt_predates_the_admission`
+        answers a reusing cycle with «the receipt predates the cycle» before
+        `invoke_once` is ever called, so nothing is spawned and nothing waits at
+        all. That is a stronger answer to the criterion, not a weaker one, and
+        `test_a_reused_key_is_refused_a_receipt_written_before_this_cycle` is
+        where it is asserted. What remains reachable here is a cycle's own
+        second trigger arriving while its first is still running: the phase is
+        still LEASE_HELD, because a phase is written after the command returns,
+        and so the second call does reach the lock. The sequential version of
+        the same pair is `test_a_cycle_reads_its_own_receipt_without_being_
+        refused` above.
+
+        THIS TEST'S FIXTURE USED TO BE INCOHERENT AND THIS IS THE SECOND THING
+        THE REAL-CLOCK SEED FIXED. It admitted the second cycle at `T0`, nine
+        months before the receipt it was contending with — a state nothing can
+        produce, since the key cannot be re-admitted until it is released — and
+        that back-dating is the only reason the comparison above did not catch
+        it. With the admission at the real clock the incoherence is visible,
+        which is what put this test on the same-cycle shape.
 
         `holder.is_alive()` is the assertion a wait cannot satisfy, and it is a
         fact rather than a threshold: the holder is gated on a file that does
@@ -2204,10 +2351,11 @@ class TestTheDispatchVerb:
         """
         env = a_data_root(tmp_path)
         small = {"wall_seconds": 20, "max_attempts": 2, "max_output_bytes": 200000}
-        seed = AgentControlStore(store_path(env))
-        seed.put_context({"context_ref": CONTEXT})
-        seed.put_grant(a_grant(budget=dict(small)))
-        seed.admit(a_record(reservation=dict(small)))
+        store = AgentControlStore(store_path(env))
+        store.put_context({"context_ref": CONTEXT})
+        store.put_grant(a_grant(**a_window_around_now(), budget=dict(small)))
+        store.admit(a_record(admitted_at=an_instant_now(),
+                             reservation=dict(small)))
         self.held(env)
         marker = Path(env["DATA_ROOT"]) / "first-scope-still-running"
         command = ["/bin/sh", "-c",
@@ -2216,21 +2364,8 @@ class TestTheDispatchVerb:
         holder.start()
         try:
             self.await_receipt(env, "act-1")
-            retired = cli("work", "retire", "cyc-1", "--at", T2, env_extra=env)
-            assert retired.returncode == 0, retired.stderr
-            seed.admit(a_record(cycle_ref="cyc-2", action_key="act-1",
-                                reservation=dict(small),
-                                lease={"resource": "browser:chromium",
-                                       "scope": "session", "holder": "cyc-2"}))
-            declared = cli("lease", "declare", "browser:chromium", "--scope",
-                           "session", "--holder", "cyc-2", "--sharing", "shared",
-                           env_extra=env)
-            assert declared.returncode == 0, declared.stderr
-            confirmed = cli("work", "confirm", "cyc-2", "--phase", "LEASE_HELD",
-                            "--at", T1, env_extra=env)
-            assert confirmed.returncode == 0, confirmed.stderr
 
-            second = self.dispatch(env, *command, cycle="cyc-2")
+            second = self.dispatch(env, *command)
 
             assert second.returncode != 0, second.stdout
             assert "act-1.lock" in second.stderr
