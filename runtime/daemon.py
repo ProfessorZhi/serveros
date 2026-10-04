@@ -337,6 +337,80 @@ def declared_on_demand(here: Path | None = None) -> dict:
     }
 
 
+def declared_catalogue(here: Path | None = None) -> dict:
+    """The authority's catalogue as this node last materialized it — the WIDER view.
+
+    The other two sources each answer a different question and neither can
+    answer this one:
+
+      * the local projection says what is **installed on this device**;
+      * `ARTIFACT.json` says what **this composition declared resolvable**;
+      * this says **what the authority's catalogue contains at all**, read from
+        `state/serveros/abilities/catalogue.json` — written by
+        `ability_projection.refresh` from the same manifest read that produces
+        the projection, so the two are never two readings of two revisions.
+
+    Why it must exist, measured rather than argued: of the 21 responsibilities
+    the product tree names, 8 are reachable through the projection and the
+    composition's own recommendations, and 13 are not — `ability-management`,
+    `runtime-management`, `workspace-management` and `test-management` among
+    them, all four shipped in the composition this node runs. Every one of the
+    13 IS in the catalogue. What the surface could not say is that "absent from
+    this device" and "absent from the world" are different sentences; this is
+    the only source that can say it.
+
+    §35 keeps the projection local on purpose, so the wider answer arrives as a
+    second artifact rather than as a widened first one. The daemon still holds
+    no checkout and does not go looking for one: this reads a file the producer
+    wrote, and if the producer has never run, the honest answer is that nobody
+    has asked — `entries: None`, never `[]`, the same distinction every source
+    on this surface draws.
+    """
+    state = paths_mod.Paths().root("state") / "abilities"
+    path = state / ability_projection_mod.CATALOGUE_NAME
+    record = _read_identity_file(path)
+    if not record["present"]:
+        return {
+            "source": str(path),
+            "present": False,
+            "why": record["why"],
+            "registry_status": None,
+            "generated_at": None,
+            "source_revision": None,
+            "entries": None,
+            "note": (
+                f"no catalogue {record['why']} at {path}, so this node cannot "
+                "say what the authority's catalogue contains. `entries: null` "
+                "rather than an empty list: nobody has asked is not the same "
+                "as the catalogue is empty, and only one of them is a claim "
+                "about ability-management."
+            ),
+        }
+    value = record["value"]
+    raw = value.get("entries")
+    entries = None
+    if isinstance(raw, list):
+        entries = [entry for entry in raw
+                   if isinstance(entry, dict) and entry.get("name")]
+    return {
+        "source": str(path),
+        "present": True,
+        "why": ("this catalogue carries no `entries` list" if entries is None
+                else None),
+        "registry_status": value.get("registry_status"),
+        "generated_at": value.get("generated_at"),
+        "source_revision": value.get("source_revision"),
+        "entries": entries,
+        "note": (
+            "the authority's catalogue at a pinned revision, materialized by "
+            "`serverosctl ability refresh`. It names NO device: an entry here "
+            "says the ability exists, never that this node has it. Read beside "
+            "the local projection — present here and absent there is the whole "
+            "distinction, and it is not a defect in either file."
+        ),
+    }
+
+
 def _load(name: str, filename: str):
     if name in sys.modules:
         return sys.modules[name]
@@ -1628,13 +1702,43 @@ class Daemon:
                         "claim that it will load here — `serverosctl ability "
                         "resolve` is what answers that."
                     )}
+        # Not in the projection and not declared on demand. Before answering
+        # that, ask the WIDER source: "absent from this device" and "absent from
+        # the catalogue" are different facts, and a surface that can only say
+        # the first reports the second by accident. `ability-management` is the
+        # live case — shipped in the composition this node runs, never recorded
+        # as an installation here, and therefore invisible to both sources above.
+        catalogue = declared_catalogue()
+        listed = next((entry for entry in (catalogue.get("entries") or [])
+                       if entry.get("name") == name), None)
+        if listed is not None:
+            return {**view, "on_demand": _on_demand_header(on_demand),
+                    "catalogue": _catalogue_header(catalogue),
+                    "name": name, "installed": False,
+                    "placement": "catalogue", "ability": listed,
+                    "note": (
+                        f"{name!r} is NOT observed installed on this device and "
+                        "is not declared on demand by this revision's "
+                        "composition — but the authority's catalogue lists it, "
+                        "so it is absent HERE rather than absent. Those are "
+                        "different facts: this is not a claim that it will load "
+                        "here — `serverosctl ability resolve` answers that."
+                    )}
+        # Nothing in any source. What that means depends on whether the widest
+        # source was readable at all, so the sentence is built from that rather
+        # than asserting a catalogue nobody read was empty.
+        beyond = ("the materialized catalogue is present and does not list it"
+                  if catalogue.get("entries") is not None else
+                  "the catalogue was not readable, so nothing here is a claim "
+                  "about what the authority holds")
         return {**view, "on_demand": _on_demand_header(on_demand),
+                "catalogue": _catalogue_header(catalogue),
                 "name": name, "installed": None, "placement": None,
-                "note": f"{name!r} is not in the local projection "
-                        f"({view.get('registry_status')}) and is not declared "
-                        f"on demand by this revision's composition. Absence "
-                        f"from both is still not proof of absence on the "
-                        f"authority."}
+                "note": f"{name!r} is in no source this node can read: not the "
+                        f"local projection ({view.get('registry_status')}), not "
+                        f"this revision's declared recommendations, and {beyond}. "
+                        f"Absence from all of them is still not proof of "
+                        f"absence on the authority."}
 
     # -- §4/§2 · the discovery tree, over the same projection ----------------
     #
@@ -1841,22 +1945,33 @@ class Daemon:
         kept apart, and a search is where collapsing them is easiest and most
         convincing.
 
-        It searches TWO sources and labels every row with which one it came
-        from, because they answer different questions and one of them alone
+        It searches THREE sources and labels every row with which one it came
+        from, because they answer different questions and any one of them alone
         was wrong in a way nobody could see:
 
           * the local projection — what is **installed on this device**;
           * this revision's own `ARTIFACT.json` — what the composition it was
             built from declares **resolvable on demand**, which is a fact a
-            node with no checkout can read and the projection cannot carry.
+            node with no checkout can read and the projection cannot carry;
+          * the materialized **catalogue** — what the authority lists at all,
+            which is the only source that can tell "absent from this device"
+            from "absent from the world".
 
         A row from the second source says `installed: false` and names the
-        composition that declared it. Before this, `information-management` —
-        which the installed `serveros` skill routes to — returned `matched: 0`
-        on a node where it is one `ability.resolve` away, and `0` there read as
-        "this ability does not exist". `matched_installed` and
-        `matched_on_demand` are reported beside `matched` so the two are never
-        summed into one number the caller cannot take apart.
+        composition that declared it; a row from the third says `installed:
+        false` too and carries no composition, because no build put it there.
+        Before the second source existed, `information-management` — which the
+        installed `serveros` skill routes to — returned `matched: 0` on a node
+        where it is one `ability.resolve` away, and `0` there read as "this
+        ability does not exist". Before the third, `ability-management` did the
+        same, and it is installed in the very composition this node runs. The
+        three counts are reported beside `matched` so they are never summed into
+        one number the caller cannot take apart.
+
+        A note on names: `catalogue_size` below predates this third source and
+        is the size of the LOCAL PROJECTION, not of the catalogue. It is left
+        as it was rather than renamed under a reader that already consumes it;
+        the real catalogue's size is `catalogue.count`.
         """
         view = self._capability_view()
         header = self._projection_header(view)
@@ -1866,35 +1981,39 @@ class Daemon:
                              MAX_ABILITY_SEARCH_LIMIT)
         materials = view.get("abilities")
         on_demand = declared_on_demand()
+        catalogue = declared_catalogue()
         if not query:
             return {
                 **header, "on_demand": _on_demand_header(on_demand),
+                "catalogue": _catalogue_header(catalogue),
                 "query": raw_query, "limit": limit,
                 "matched": None, "returned": None, "matches": None,
                 "truncated": None, "refused": "EMPTY_QUERY",
                 "catalogue_size": None if materials is None else len(materials),
                 "note": (
                     "an empty query is not a search. This surface does not "
-                    "serve the catalogue: returning every row would cost the "
-                    "caller the context the search exists to save, and the "
-                    "caller would have no way to tell that it had asked for "
-                    "nothing. Ask a question, or use `ability.list` if the "
-                    "whole projection is genuinely what is wanted."
+                    "serve any of its three sources whole: returning every row "
+                    "would cost the caller the context the search exists to "
+                    "save, and the caller would have no way to tell that it had "
+                    "asked for nothing. Ask a question, or use `ability.list` "
+                    "if the whole projection is genuinely what is wanted."
                 ),
             }
-        if materials is None and on_demand.get("entries") is None:
+        if (materials is None and on_demand.get("entries") is None
+                and catalogue.get("entries") is None):
             return {
                 **header, "on_demand": _on_demand_header(on_demand),
+                "catalogue": _catalogue_header(catalogue),
                 "query": query, "limit": limit,
                 "matched": None, "returned": None, "matches": None,
                 "truncated": None, "catalogue_size": None,
                 "note": (
-                    "neither source is readable: no local capability "
-                    "projection has been materialized AND this revision's "
-                    "ARTIFACT.json does not declare what it recommends. "
-                    "`matched` is null rather than 0: nothing readable is not "
-                    "an empty catalogue, and the two would render identically "
-                    "as an empty list."
+                    "no source is readable: no local capability projection has "
+                    "been materialized, this revision's ARTIFACT.json does not "
+                    "declare what it recommends, and no catalogue has been "
+                    "materialized either. `matched` is null rather than 0: "
+                    "nothing readable is not an empty catalogue, and the two "
+                    "would render identically as an empty list."
                 ),
             }
         needle = query.lower()
@@ -1911,27 +2030,54 @@ class Daemon:
         declared_rows = [dict(entry, installed=False, placement="on-demand",
                               declared_by=on_demand.get("composition"))
                          for entry in declared[:max(0, limit - len(rows))]]
+        # Disjoint from the two stronger sources by construction. A name they
+        # already matched is not counted again: two sources reporting one
+        # ability would make `matched` exceed `returned` with `truncated:
+        # false`, an answer no caller can take apart. What is worth reporting
+        # here is exactly "the other sources did not have this", and a
+        # duplicate row would bury it.
+        already_matched = ({row.get("name") for row in hits}
+                           | {entry.get("name") for entry in declared})
+        listed = [entry for entry in (catalogue.get("entries") or [])
+                  if entry.get("name") not in already_matched
+                  and needle in _catalogue_searchable(entry)]
+        # Last, and given only what the two stronger sources left over. The
+        # order is a precedence, not a ranking: a name that is installed here
+        # is a better answer than the same name merely existing, so the weakest
+        # source never crowds out a stronger one. It is still bounded by the
+        # same `limit` — three sources must not add up to three times the rows
+        # the caller asked for.
+        listed_rows = [dict(_catalogue_row_compact(entry), installed=False,
+                            placement="catalogue", registered_here=False)
+                       for entry in listed[:max(0, limit - len(rows)
+                                                - len(declared_rows))]]
         return {
             **header, "on_demand": _on_demand_header(on_demand),
+            "catalogue": _catalogue_header(catalogue),
             "query": query, "limit": limit,
             "catalogue_size": None if materials is None else len(materials),
-            "matched": len(hits) + len(declared),
+            "matched": len(hits) + len(declared) + len(listed),
             "matched_installed": len(hits),
             "matched_on_demand": len(declared),
-            "returned": len(rows) + len(declared_rows),
+            "matched_in_catalogue": len(listed),
+            "returned": len(rows) + len(declared_rows) + len(listed_rows),
             "truncated": (len(hits) > len(rows)
-                          or len(declared) > len(declared_rows)),
-            "matches": rows + declared_rows,
+                          or len(declared) > len(declared_rows)
+                          or len(listed) > len(listed_rows)),
+            "matches": rows + declared_rows + listed_rows,
             "note": (
                 "substring match, case-insensitive, over name / id / path / "
                 "type / version / domain / taxonomy refs / agents (projection "
-                "rows) and name (declared rows). It is not a ranking and not a "
-                "semantic search: there is no relevance score to distrust "
-                "because there is no score. `matched` is the sum of "
-                "`matched_installed` and `matched_on_demand` — a row with "
-                "`installed: false` is declared resolvable by the composition "
-                "and is NOT observed installed here; that is a different fact "
-                "from absence and it is not a claim that it will resolve."
+                "rows), name (declared rows), and name / id / path / type / "
+                "domain / taxonomy refs (catalogue rows). It is not a ranking "
+                "and not a semantic search: there is no relevance score to "
+                "distrust because there is no score. `matched` is the sum of "
+                "`matched_installed`, `matched_on_demand` and "
+                "`matched_in_catalogue`. A row with `installed: false` is NOT "
+                "observed installed here: `placement: on-demand` means the "
+                "composition declares it resolvable, and `placement: catalogue` "
+                "means only that the authority lists it — neither is a claim "
+                "that this node has it or that it will resolve."
             ),
         }
 
@@ -3578,6 +3724,74 @@ def _on_demand_header(record: dict) -> dict:
             "here — `installed: false` is the whole point of the field — and "
             "they are not a promise: `serverosctl ability resolve` says whether "
             "this node can act on one now."
+        ),
+    }
+
+
+def _catalogue_searchable(entry: dict) -> str:
+    """What a query is matched against on a catalogue row.
+
+    The same classification fields `_ability_searchable` uses, minus `version`
+    and `agents`, which a catalogue entry does not carry — it is the manifest's
+    own classification metadata and nothing else. Kept a separate function
+    rather than folded into the other one so the two row shapes can diverge
+    only deliberately: a catalogue row that silently began matching a field it
+    does not have would be a match whose reason is invisible in the result.
+    """
+    parts = [entry.get("name"), entry.get("id"), entry.get("path"),
+             entry.get("type")]
+    domain = entry.get("domain")
+    if isinstance(domain, dict):
+        parts.append(domain.get("primary"))
+    refs = entry.get("taxonomy_refs")
+    if isinstance(refs, list):
+        parts.extend(v for v in refs if isinstance(v, str))
+    return " ".join(str(p) for p in parts if p).lower()
+
+
+def _catalogue_row_compact(entry: dict) -> dict:
+    """One catalogue hit. The classification fields, and no device in it.
+
+    Deliberately NOT `_ability_row_compact`: that one emits `agents: []` for a
+    row that does not carry agents, and an empty list there would read as "no
+    agent has this" — a claim about installations this source never made. The
+    catalogue knows where an ability sits and what it is; it does not know who
+    has it, and the row says so by not carrying the field at all.
+    """
+    domain = entry.get("domain")
+    return {
+        "name": entry.get("name"),
+        "id": entry.get("id"),
+        "type": entry.get("type"),
+        "path": entry.get("path"),
+        "domain": domain.get("primary") if isinstance(domain, dict) else None,
+        "taxonomy_refs": entry.get("taxonomy_refs") or [],
+    }
+
+
+def _catalogue_header(record: dict) -> dict:
+    """The wider-catalogue source, small enough to sit in every answer.
+
+    `count: null` when the catalogue could not be read, for the reason every
+    count on this surface is null when its source is unread: `0` would say "the
+    authority's catalogue is empty", which is a claim about a document nobody
+    read and the most confident available way to be wrong.
+    """
+    entries = record.get("entries")
+    return {
+        "source": record.get("source"),
+        "present": record.get("present"),
+        "why": record.get("why"),
+        "registry_status": record.get("registry_status"),
+        "source_revision": record.get("source_revision"),
+        "count": None if entries is None else len(entries),
+        "note": (
+            "the authority's catalogue at a pinned revision, as this node last "
+            "materialized it. An entry here is NOT installed and NOT "
+            "recommended by this composition — it is the authority's own "
+            "statement that the ability exists, which is the one thing neither "
+            "of the other two sources can say. `serverosctl ability resolve` "
+            "still decides whether this node can act on one now."
         ),
     }
 

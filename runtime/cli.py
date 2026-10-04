@@ -1833,6 +1833,13 @@ def cmd_ability_status(args) -> int:
     lines = [f"ability     {payload.get('name')}",
              f"projection  {payload.get('registry_status')}",
              f"installed   {installed}"]
+    # `installed: false` alone reads the same whether the name is declared by
+    # this composition or merely listed by the authority, and those are
+    # different facts a shell may want to act on differently. Printed only when
+    # the answer carries one: `installed: true` has no placement to add, and a
+    # name in no source has `null` rather than a fourth string to print.
+    if installed is False and payload.get("placement"):
+        lines.append(f"placement   {payload['placement']}")
     if installed:
         # The projection's own field names, not a guess at them. Rendering
         # `revision`/`state` columns for a row that carries `version`/
