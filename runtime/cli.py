@@ -8778,6 +8778,18 @@ def cmd_work_wake(args) -> int:
     node handled it. So without `--parent` this verb decides, prints what it
     decided, and says out loud that nothing could be started.
 
+    AND IT WILL NOT TAKE AN INSTANT IT IS ABOUT TO ACT IN. `--now` is the moment
+    the four decisions above are judged at — has the wait ended, does the
+    delegation still authorize, how many attempts has this epoch spent — and the
+    Parent that follows is spawned at the real clock and runs against it. Handing
+    both a past instant is the same forgery from a third side: a wait that ended
+    hours ago reads as READY, and a real Parent is really started on the strength
+    of a moment this node is not in. So a real wake refuses `--now` outright and
+    in either direction — no instant a caller could name is one this node has any
+    way to check. `--dry-run` keeps it, because reproducing a past decision is
+    exactly what an operator reaches for after a timer has misbehaved, and that
+    path starts nothing.
+
     THE RECEIVER IT REPORTS IS MEASURED, NOT DECLARED. `wake.equipment` reads the
     unit directory and the rendered `ExecStart=`, because a timer with no Parent
     is not a receiver and neither is a Parent with no timer. `fill_registry`
@@ -8815,6 +8827,30 @@ def cmd_work_wake(args) -> int:
             f"serverosctl: --budget {args.budget} is negative. The bound on a "
             f"Parent is a number of seconds it may run, and there is no negative "
             f"one. Nothing was started\n")
+        return EXIT_FAULT
+
+    # A WAKE THAT STARTS SOMETHING HAPPENS WHEN IT HAPPENS, AND THAT IS NOT A
+    # PARAMETER. `--now` moves the instant the PLAN is judged at — whether the
+    # wait has ended, whether the delegation still authorizes, how many attempts
+    # this epoch has spent — while the Parent it then starts is spawned at the
+    # real clock and runs against the real one. Handing that pair a past instant
+    # is the specific forgery: a checkpoint whose window closed hours ago reads
+    # as READY, and the node really does start a Parent on the strength of a
+    # moment that is not this one. It is refused in BOTH directions rather than
+    # only for the past, because there is no instant a caller could name that
+    # this node has any way to check — the argument's only honest use is asking
+    # what WOULD happen, and that is `--dry-run`, which still takes it.
+    if parent and not args.dry_run and args.now:
+        sys.stderr.write(
+            f"serverosctl: --now {args.now!r} was given for a wake that would "
+            f"really start a Parent. A wake happens at the instant it happens; "
+            f"the Parent is spawned at the real clock and runs against it, so a "
+            f"decision taken against a different instant is a decision about a "
+            f"moment this node is not in — and a past one lets a wait that "
+            f"ended long ago read as ready now. `--dry-run` keeps `--now`: "
+            f"reading what this node WOULD do at a named instant is how an "
+            f"operator reproduces a decision, and it starts nothing. Nothing "
+            f"was started\n")
         return EXIT_FAULT
 
     try:
@@ -12181,7 +12217,10 @@ def build_parser() -> argparse.ArgumentParser:
     wk_wake.add_argument("--item", default="",
                          help="only this Work Item's checkpoints")
     wk_wake.add_argument("--now", default="",
-                         help="the instant to read a window against (default: now)")
+                         help="the instant to read a window against (default: "
+                              "now). Refused together with a real --parent: a "
+                              "wake happens when it happens. Kept for --dry-run, "
+                              "where it is how an operator reproduces a decision")
     wk_wake.add_argument("--dry-run", action="store_true",
                          help="decide and print, and start nothing")
     wk_wake.add_argument("--parent", default="",
