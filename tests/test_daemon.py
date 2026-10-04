@@ -2576,6 +2576,213 @@ def test_one_bad_connection_cannot_stop_serve_forever(daemon_factory):
         thread.join(timeout=10)
 
 
+def test_a_request_that_trickles_forever_is_refused_by_name(daemon_factory):
+    """A slow request has a TOTAL deadline, not a per-recv one.
+
+    `connection.settimeout(10.0)` is reset by every byte that arrives, so on
+    its own it bounds nothing about a request. Measured on this host on
+    2026-10-05: a 41-byte request delivered one byte per 3 seconds held the
+    daemon for 21.0 seconds, and because `serve_forever` calls this method
+    inline, no tick happened in between — the observation daemon was blind for
+    as long as the peer felt like it.
+
+    The per-recv timeout is kept, because it answers a different question
+    ("did this peer stop sending entirely"), and this test holds it far out of
+    reach: the trickle arrives every 0.05s, so what stops it can only be the
+    total deadline.
+
+    The deadline is deliberately not a multiple of the trickle's cadence. When
+    it is — 0.6 against 0.05, say — the last wait the deadline clips is exactly
+    the gap to the next byte, and which of the two ends the read is a photo
+    finish rather than a fact. At 0.53 the clipped wait is always strictly
+    shorter than the gap, so the deadline is *decided* to be what stopped it.
+    """
+    import threading
+    import time
+
+    daemon = daemon_factory(a_resource("thing-one"))
+    daemon.PER_READ_SECONDS = 10.0     # deliberately out of reach
+    daemon.REQUEST_READ_SECONDS = 0.53
+
+    left, right = socket.socketpair(socket.AF_UNIX, socket.SOCK_STREAM)
+
+    def trickle():
+        # Never ten seconds apart, so the per-recv timeout cannot be what stops
+        # this. Bounded in wall-clock terms on purpose: with the deadline
+        # removed the correct failure of this test is a red assertion, not a
+        # test run that never ends.
+        for _ in range(60):                # 60 × 0.05s = 3.0s
+            try:
+                right.sendall(b"x")
+            except OSError:
+                return
+            time.sleep(0.05)
+
+    sender = threading.Thread(target=trickle, daemon=True)
+    sender.start()
+    started = time.monotonic()
+    try:
+        daemon._serve_connection(left)      # must return; hanging is the defect
+        elapsed = time.monotonic() - started
+        right.settimeout(5)
+        response = json.loads(right.recv(65536).decode())
+    finally:
+        sender.join(timeout=5)
+        left.close()
+        right.close()
+
+    assert response["error"]["code"] == "REQUEST_TIMEOUT"
+    assert "one line" in response["error"]["message"]
+    assert elapsed < daemon.PER_READ_SECONDS, (
+        f"the read ran for {elapsed:.2f}s; if the peer's own pacing were the "
+        f"only bound it would have run for as long as the peer chose")
+
+
+def test_the_deadline_holds_even_when_the_next_byte_would_land_after_it(
+        daemon_factory):
+    """The total is a total: each wait is clipped to what the deadline leaves.
+
+    Without that clipping the bound is not `REQUEST_READ_SECONDS`; it is
+    `REQUEST_READ_SECONDS + PER_READ_SECONDS`, because a byte landing just
+    under the per-recv timeout buys the peer another full wait. Here the
+    second byte is due four seconds in with a ten-second per-recv timeout, and
+    the deadline is one second: a peer that is told at one second was told by
+    the deadline, and one told at four was told by the byte.
+    """
+    import threading
+    import time
+
+    daemon = daemon_factory(a_resource("thing-one"))
+    daemon.PER_READ_SECONDS = 10.0
+    daemon.REQUEST_READ_SECONDS = 1.0
+
+    left, right = socket.socketpair(socket.AF_UNIX, socket.SOCK_STREAM)
+
+    def dribble():
+        right.sendall(b"{")
+        time.sleep(4.0)
+        try:
+            right.sendall(b"}\n")
+        except OSError:
+            pass
+
+    sender = threading.Thread(target=dribble, daemon=True)
+    sender.start()
+    started = time.monotonic()
+    try:
+        daemon._serve_connection(left)
+        elapsed = time.monotonic() - started
+        right.settimeout(5)
+        response = json.loads(right.recv(65536).decode())
+    finally:
+        sender.join(timeout=5)
+        left.close()
+        right.close()
+
+    assert response["error"]["code"] == "REQUEST_TIMEOUT"
+    assert elapsed < 2.0, (
+        f"the read ended at {elapsed:.2f}s. The next byte was due at 4.0s, so "
+        f"anything over 2.0s means the wait ran on past the deadline this "
+        f"daemon declares — the peer's pacing, not the deadline, was the bound")
+
+
+def test_a_peer_that_stops_sending_trips_the_per_recv_timeout(
+        daemon_factory):
+    """The other bound, kept apart so neither is read as the other.
+
+    A peer that stops sending entirely is the case the ten-second per-recv
+    timeout was written for, and it must still be what answers — by silence,
+    because a dead connection and a slow request get different treatment on
+    purpose. The total deadline is held out of reach here, so reaching it
+    would mean the two bounds had collapsed into one.
+    """
+    import time
+
+    daemon = daemon_factory(a_resource("thing-one"))
+    daemon.PER_READ_SECONDS = 0.3
+    daemon.REQUEST_READ_SECONDS = 30.0
+
+    left, right = socket.socketpair(socket.AF_UNIX, socket.SOCK_STREAM)
+    try:
+        started = time.monotonic()
+        daemon._serve_connection(left)      # nothing is ever sent
+        elapsed = time.monotonic() - started
+        right.settimeout(0.2)
+        with pytest.raises(socket.timeout):
+            right.recv(65536)
+    finally:
+        left.close()
+        right.close()
+
+    assert elapsed >= daemon.PER_READ_SECONDS * 0.9
+    assert elapsed < daemon.REQUEST_READ_SECONDS, (
+        "a peer that sent nothing was held for the whole request deadline; "
+        "the per-recv bound is supposed to answer this one")
+
+
+def test_two_callers_do_not_answer_for_each_other(daemon_factory):
+    """The caller's peer is a property of the call, not of the daemon.
+
+    It lived on the instance under a comment saying that was safe, and only
+    safe, because this loop serves one connection at a time on one thread.
+    That was true, and being true was the problem: `agent.context.attach`
+    decides who a trusted context is about by comparing the pid on the other
+    end of *this* connection, so a thread pool added later for a slow probe
+    would have made one caller's identity answer for another's without anyone
+    touching the check. Carried per call, the guarantee no longer depends on
+    the schedule.
+
+    The parked call reads through the production reader — the real attach
+    handler, whose refusal names the pid it resolved — so this tests what the
+    daemon actually reads rather than a proxy for it.
+    """
+    import threading
+
+    daemon = daemon_factory(a_resource("thing-one"))
+    attach = daemon.handler_map()["agent.context.attach"]
+    entered, release = threading.Event(), threading.Event()
+    order, seen = [], {}
+
+    def parked(params):
+        if order:
+            order.append("second")
+            return {"second": True}
+        order.append("first")
+        # Hold this call open inside its handler, then resolve its own caller
+        # once another call has come and gone.
+        entered.set()
+        release.wait(timeout=10)
+        try:
+            attach({"report": {"provider_pid": 1111}})
+            seen["a"] = "accepted"
+        except Exception as exc:  # noqa: BLE001 - the message is the evidence
+            seen["a"] = str(exc)
+        return {"parked": True}
+
+    daemon._r_runtime_list = parked
+
+    first = threading.Thread(
+        target=lambda: daemon.handle(
+            {"method": "runtime.list", "params": {}}, peer={"pid": 2222}),
+        daemon=True)
+    first.start()
+    assert entered.wait(timeout=10), "the parked call never reached its handler"
+
+    daemon.handle({"method": "runtime.list", "params": {}}, peer={"pid": 3333})
+    release.set()
+    first.join(timeout=10)
+
+    assert order == ["first", "second"], (
+        f"the two calls never overlapped ({order!r}), so nothing was actually "
+        f"concurrent and the assertion below would prove nothing")
+
+    assert "arrived from pid 2222" in seen.get("a", ""), (
+        f"the parked caller resolved {seen.get('a')!r} as its own peer after "
+        f"another call finished. On the instance, the second call's cleanup "
+        f"would have left it None — or holding 3333 — which is one caller's "
+        f"identity answering for another's")
+
+
 # ---------------------------------------------------------------------------
 # §20/§21 · one endpoint, one daemon, for the whole life of the instance
 # ---------------------------------------------------------------------------

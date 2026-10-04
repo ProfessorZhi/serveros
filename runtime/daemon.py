@@ -48,6 +48,7 @@ how the original incident stayed invisible for 54 minutes.
 """
 from __future__ import annotations
 
+import contextvars
 import errno
 import fcntl
 import importlib.util
@@ -61,6 +62,21 @@ import time
 from pathlib import Path
 
 _HERE = Path(__file__).resolve().parent
+
+# Whose connection the request being handled arrived on.
+#
+# `handle` gives a handler its params and nothing else, and `agent.context.attach`
+# needs the peer of *its own* caller — the pid on the other end of this
+# connection is the whole reason a trusted context binds to a process rather
+# than to a claim. This used to live on the instance, under a comment saying it
+# was safe, and only safe, because the daemon serves one connection at a time
+# on one thread. That sentence was true, and being true was the problem: an
+# identity check rested on a scheduling property that nothing declared and any
+# later edit — a thread pool for a slow probe, a handler that re-enters
+# `handle` — could quietly withdraw. Carried per call instead, so the
+# correctness does not depend on how the loop happens to be scheduled.
+_CALLER_PEER: contextvars.ContextVar[dict | None] = contextvars.ContextVar(
+    "serveros_caller_peer", default=None)
 
 
 def _pointer_state(root: Path) -> dict:
@@ -927,9 +943,6 @@ class Daemon:
         # the alert delta window.
         self._card_ledger: object | None = None
         self.last_alert_pass: dict | None = None
-        # Whose connection the request in flight arrived on. Cleared by
-        # `handle`; read only by `agent.context.attach`.
-        self._peer: dict | None = None
 
     # A status answer older than this many tick intervals is labelled stale.
     # Three, not one: a single missed deadline is a slow machine, and calling
@@ -1514,17 +1527,16 @@ class Daemon:
                 method, "UNKNOWN_METHOD",
                 f"{method!r} is not served. Known: {sorted(self._methods())}",
             )
-        # Set for the duration of the call and cleared after. Safe, and only
-        # safe, because this daemon serves one connection at a time on one
-        # thread: a thread pool here would turn this into a race and make the
-        # sentence above a lie.
-        self._peer = peer
+        # Set for the duration of the call and reset after, carried per call
+        # rather than on the instance: see `_CALLER_PEER` for why the safety of
+        # an identity check must not rest on this loop being single-threaded.
+        token = _CALLER_PEER.set(peer)
         try:
             return {"ok": True, "method": method, "result": handler(params)}
         except Exception as exc:  # noqa: BLE001 - the caller needs the reason
             return _error(method, type(exc).__name__, str(exc))
         finally:
-            self._peer = None
+            _CALLER_PEER.reset(token)
 
     def _methods(self) -> tuple[str, ...]:
         return ("device.show", "context.current", "path.resolve", "path.admit",
@@ -2805,7 +2817,7 @@ class Daemon:
                                      "from a HumanControlProvider")
 
         observed_by = report.get("provider_pid")
-        peer = self._peer or {}
+        peer = _CALLER_PEER.get() or {}
         peer_pid = peer.get("pid")
         if observed_by is None:
             raise actor_mod.Rejected(
@@ -3455,6 +3467,14 @@ class Daemon:
         depend on scheduling. Requests are served between ticks, on the same
         thread, so an IPC answer can never be computed against a half-updated
         observation set.
+
+        Because it is one thread, the time spent inside one connection is time
+        the next tick does not happen — measured on this host: a peer that
+        delivered a request one byte per 3 seconds stopped the tick for 21.0
+        seconds. That is what `REQUEST_READ_SECONDS` bounds, and it bounds it
+        for the peer rather than for the daemon: reading is the part of a
+        request a caller controls, and `_serve_connection` gives it a total
+        that does not restart on every byte.
         """
         # Before `_open_socket`, not after, and the order is the whole point:
         # `_open_socket` begins by unlinking whatever is at the socket path,
@@ -3532,12 +3552,82 @@ class Daemon:
             self._release_socket()
             self._release_singleton()
 
+    # Two bounds on the same read, deliberately different numbers because they
+    # answer different questions.
+    #
+    # `PER_READ_SECONDS` is a *per-recv* timeout: it is reset by every byte that
+    # arrives, so on its own it bounds nothing about a whole request. A peer
+    # that sent one byte every few seconds held this connection — and, because
+    # `serve_forever` calls `_serve_connection` inline, the accept loop and the
+    # tick with it — for as long as it chose. Measured on this host: a 41-byte
+    # request delivered one byte per 3 seconds held the daemon for 21.0 seconds
+    # and no tick happened in between.
+    #
+    # `REQUEST_READ_SECONDS` is that missing bound: one request line, from when
+    # this side starts reading it, no matter how the bytes are paced. A peer
+    # that stops sending entirely still trips the per-recv bound at ten
+    # seconds; a peer that trickles forever now trips this one at thirty and
+    # gets told why by name.
+    #
+    # It bounds the READ, which is the part a peer controls. It deliberately
+    # does not bound `handle`: that is this daemon's own work, some of it slow
+    # on purpose (a probe that shells out can take tens of seconds), and a
+    # deadline there would need a watchdog thread and could tear a half-written
+    # observation. That is a different decision from this one, and this one is
+    # not enlarged to cover it.
+    PER_READ_SECONDS = 10.0
+    REQUEST_READ_SECONDS = 30.0
+
+    def _refuse_a_slow_request(self, connection: socket.socket) -> None:
+        """Tell a peer that ran out of time which bound it ran out of.
+
+        A silent drop would be cheaper to write and would tell the caller
+        nothing it can act on; the two ways a read ends here are different
+        facts about the caller, and this one is not the one the peer can
+        diagnose by itself.
+        """
+        try:
+            connection.settimeout(self.PER_READ_SECONDS)
+            connection.sendall(json.dumps(_error(
+                None, "REQUEST_TIMEOUT",
+                f"a request must arrive as one line, and this one was still "
+                f"arriving after {self.REQUEST_READ_SECONDS:g} seconds. "
+                f"A request is one line, written once",
+            )).encode() + b"\n")
+        except OSError:
+            pass
+
     def _serve_connection(self, connection: socket.socket) -> None:
-        connection.settimeout(10.0)
+        connection.settimeout(self.PER_READ_SECONDS)
         buffer = b""
+        deadline = time.monotonic() + self.REQUEST_READ_SECONDS
         try:
             while b"\n" not in buffer:
-                chunk = connection.recv(65536)
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    # A request that is still arriving when its deadline passes.
+                    # Not normally reached by falling round the loop — the wait
+                    # below is clipped to `remaining`, so a wait that expires
+                    # lands in the handler below — but a guard is what keeps
+                    # `settimeout` from being handed a value <= 0, which would
+                    # make this loop spin instead of refusing.
+                    self._refuse_a_slow_request(connection)
+                    return
+                wait = min(self.PER_READ_SECONDS, remaining)
+                connection.settimeout(wait)
+                try:
+                    chunk = connection.recv(65536)
+                except socket.timeout:
+                    # Which bound ran out is decided by which wait was shorter,
+                    # not by comparing clocks against the deadline — so this is
+                    # not a race between two timers. A clipped wait expiring is
+                    # the deadline; the full per-recv wait expiring is a peer
+                    # that went quiet, and that one is still dropped in silence.
+                    if wait < self.PER_READ_SECONDS:
+                        self._refuse_a_slow_request(connection)
+                    return
+                except OSError:
+                    return
                 if not chunk:
                     return
                 buffer += chunk
@@ -3546,7 +3636,7 @@ class Daemon:
                         _error(None, "REQUEST_TOO_LARGE", "request exceeded 1 MiB")
                     ).encode() + b"\n")
                     return
-        except (socket.timeout, OSError):
+        except OSError:
             return
         line, _, _ = buffer.partition(b"\n")
         try:
