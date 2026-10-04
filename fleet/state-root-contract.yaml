@@ -82,7 +82,27 @@ namespaces:
     absent_means: CONTEXT_UNRESOLVED
   abilities:
     class: projection
-    holds: the last-observed LOCAL capability projection
+    # TWO artifacts, one producer, one read. Declaring only the first would
+    # leave the second undeclared in a declared namespace, which is the shape
+    # of failure this contract exists to name rather than to permit:
+    #   * `effective.json` — the last-observed LOCAL capability projection;
+    #   * `catalogue.json` — the authority's catalogue at the same pinned
+    #     revision, as bounded classification metadata and with no device in it.
+    #
+    # The second is NOT a wider version of the first, and reading it as one is
+    # the mistake its own `this_is` field exists to prevent. The projection
+    # answers "what is installed on this device"; the catalogue answers "what
+    # the authority lists at all". §35 keeps the projection local on purpose,
+    # so the wider answer arrives as a second file rather than as a widened
+    # first one — "installed" and "exists" must never be the same sentence.
+    #
+    # Both are classed as a projection above in this contract's own sense
+    # (derived, regenerable by `serverosctl ability refresh`, no authority) and
+    # both are `authority: false` below: a copy of the authority's catalogue is
+    # not the authority, and nothing may read it to decide what is true.
+    holds: >
+      the last-observed LOCAL capability projection (effective.json) and the
+      authority's catalogue as this node last read it (catalogue.json)
     # The producer used to be prose — "ability-management (writes), this node
     # (observes)" — and neither half was true of any program in this tree:
     # ability-management never wrote here, and `runtime/ability_projection.py`

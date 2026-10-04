@@ -2197,6 +2197,21 @@ def cmd_ability_refresh(args) -> int:
              f"matched     {', '.join(document.get('device_ids_matched') or [])}",
              f"generated   {document.get('generated_at') or 'never'}",
              f"abilities   {len(abilities)}"]
+    # This command writes TWO artifacts from one read, and reporting one of
+    # them leaves the operator unable to tell a catalogue failed to write from
+    # a catalogue nobody asked for. Read back rather than taken from the
+    # return value, for the same reason it is worth printing at all: what is
+    # being reported is what LANDED, not what was intended. Named separately
+    # and never summed with the line above — "N installed here" and "M in the
+    # catalogue" are different facts, and their difference is the answer to
+    # "why can I not find the ability I know exists".
+    written = projection_mod.read_existing(state_root / "abilities"
+                                          / projection_mod.CATALOGUE_NAME) or {}
+    entries = written.get("entries")
+    lines.append(
+        f"catalogue   {written.get('registry_status') or 'MISSING'}"
+        f" · {'unreadable' if entries is None else len(entries)} entries"
+        f" · {written.get('source_revision') or 'no revision'}")
     if status == "STALE":
         lines.append(f"unreachable {document.get('unreachable_reason')}")
         lines.append(document.get("note", ""))
