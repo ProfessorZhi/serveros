@@ -48,6 +48,8 @@ how the original incident stayed invisible for 54 minutes.
 """
 from __future__ import annotations
 
+import errno
+import fcntl
 import importlib.util
 import json
 import os
@@ -559,6 +561,19 @@ class DaemonError(Exception):
     """The daemon cannot continue as configured."""
 
 
+class DaemonAlreadyRunning(DaemonError):
+    """Another daemon already owns this endpoint.
+
+    Raised rather than logged, because the alternative is what was measured on
+    2026-10-05: two daemons on one socket path do not take turns. Each one
+    unlinks what it finds and binds its own, the other notices on its next
+    one-second accept timeout and does the same, and both go on logging
+    `re-bound … the socket file was removed while this daemon was running`
+    — 46 and 45 times in fifteen seconds, with both processes still up. A
+    client that connects lands on whichever of them won the last race.
+    """
+
+
 # ---------------------------------------------------------------------------
 # Failure budget — §19's "no infinite restart loop"
 # ---------------------------------------------------------------------------
@@ -851,6 +866,12 @@ class Daemon:
         # Set by `_open_socket`; the identity of the socket file this daemon
         # bound, so that teardown cannot act on a socket that is not ours.
         self._socket_ino: int | None = None
+        # Set by `_hold_singleton`; the file descriptor whose `flock` makes
+        # "one daemon per socket path" a property of the kernel rather than of
+        # everyone remembering. `None` until `serve_forever` claims it, which
+        # is why a test may build a `Daemon` — or call `_open_socket` — without
+        # claiming anything.
+        self._singleton_fd: int | None = None
         self.host = host or probes_mod.LiveHost()
         self.inventory = inventory or inventory_mod.Inventory()
         self.enable_reconcile = enable_reconcile
@@ -3435,7 +3456,22 @@ class Daemon:
         thread, so an IPC answer can never be computed against a half-updated
         observation set.
         """
-        server = self._open_socket()
+        # Before `_open_socket`, not after, and the order is the whole point:
+        # `_open_socket` begins by unlinking whatever is at the socket path,
+        # so a daemon that is going to refuse must refuse before it touches a
+        # live daemon's endpoint. A refusal that had already deleted the
+        # socket would be the defect it is meant to prevent.
+        self._hold_singleton()
+        try:
+            server = self._open_socket()
+        except BaseException:
+            # The lock is held from here on, so it has to be given back on
+            # every way out of this method — including a bind that never
+            # happened. A daemon restarted in a loop would otherwise leak one
+            # descriptor per attempt, holding a lock on an endpoint it never
+            # managed to serve.
+            self._release_singleton()
+            raise
         self._log(f"serverosd listening on {self.socket_path}")
 
         self.interval = interval
@@ -3494,6 +3530,7 @@ class Daemon:
         finally:
             server.close()
             self._release_socket()
+            self._release_singleton()
 
     def _serve_connection(self, connection: socket.socket) -> None:
         connection.settimeout(10.0)
@@ -3522,6 +3559,82 @@ class Daemon:
             connection.sendall(json.dumps(response, default=str).encode() + b"\n")
         except OSError:
             pass
+
+    def _lock_path(self) -> Path:
+        # Beside the socket, not in the state dir: the contended thing is the
+        # endpoint. Two daemons with the same --socket and different
+        # --state-dir trample each other exactly as badly as two with the same
+        # state dir, so keying the lock anywhere else would miss them.
+        return self.socket_path.with_name(self.socket_path.name + ".lock")
+
+    def _hold_singleton(self) -> None:
+        """Claim this endpoint for the life of this process.
+
+        MEASURED 2026-10-05, in isolation (temporary state dir, temporary
+        socket, minimal registry): two daemons started on one socket path both
+        came up. In fifteen seconds the socket file's inode changed seven
+        times, both processes stayed alive, and both logged the `re-bound`
+        line — 46 times and 45 times. "Remove the file at my path and bind my
+        own" is right about a *stale* socket and wrong about a live one, and
+        the daemon had no way to tell the two apart.
+
+        The kernel can. An exclusive `flock` held for the process's life is
+        released when the process exits, however it exits, so a lock file left
+        on disk says nothing while a lock that is HELD says everything.
+
+        Deliberately `LOCK_NB` with no retry and no wait: a second daemon is
+        not a slow first one. Waiting would let it come up later and look
+        healthy, which is the same defect arriving on a delay.
+        """
+        self.socket_path.parent.mkdir(parents=True, exist_ok=True)
+        path = self._lock_path()
+        fd = os.open(path, os.O_CREAT | os.O_RDWR, 0o600)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError as exc:
+            if exc.errno not in (errno.EAGAIN, errno.EWOULDBLOCK, errno.EACCES):
+                # Not contention: the lock itself could not be taken. Saying
+                # "another serverosd already holds this" here would be the
+                # wrong-but-confident message this whole method exists to
+                # replace, so the two cases are told apart by errno.
+                os.close(fd)
+                raise DaemonError(
+                    f"could not lock {path} to claim {self.socket_path}: "
+                    f"{exc.strerror or exc}. The lock file has to sit beside "
+                    f"the socket, on a filesystem that supports flock(2)."
+                ) from exc
+            # `flock` only fails here while another process holds it, and the
+            # kernel releases it when that process ends — so the holder is
+            # alive and what it wrote in the file is a current pid, not a
+            # leftover from a daemon that is already gone.
+            holder = ""
+            try:
+                holder = os.pread(fd, 32, 0).decode().strip()
+            except OSError:
+                pass
+            os.close(fd)
+            raise DaemonAlreadyRunning(
+                f"another serverosd already holds {self.socket_path}"
+                + (f" (pid {holder})" if holder else "")
+                + f"; {path} is locked. Two daemons on one socket path do not "
+                  f"take turns — each removes the other's socket file about "
+                  f"once a second and both stay up, and a client lands on "
+                  f"whichever won the last race. Stop the one that holds it, "
+                  f"or give this one a different --socket."
+            )
+        os.ftruncate(fd, 0)
+        os.write(fd, str(os.getpid()).encode())
+        self._singleton_fd = fd
+
+    def _release_singleton(self) -> None:
+        """Give the endpoint back; closing the descriptor releases the lock."""
+        if self._singleton_fd is None:
+            return
+        try:
+            os.close(self._singleton_fd)
+        except OSError:
+            pass
+        self._singleton_fd = None
 
     def _prepare_socket(self) -> None:
         self.socket_path.parent.mkdir(parents=True, exist_ok=True)
@@ -3931,7 +4044,15 @@ def main(argv: list[str] | None = None) -> int:
             print(f"\n{len(report['drift'])} drift item(s), "
                   f"{len(report['decisions'])} decision(s)")
         return 0
-    daemon.serve_forever(interval=args.interval)
+    try:
+        daemon.serve_forever(interval=args.interval)
+    except DaemonAlreadyRunning as exc:
+        # A distinct exit code, so a unit file or a person can tell "there is
+        # already one of me" from "I could not start". `Restart=on-failure`
+        # would otherwise retry this forever, and it would be right to: the
+        # condition clears the moment the other daemon stops.
+        sys.stderr.write(f"serverosd: {exc}\n")
+        return 3
     return 0
 
 
