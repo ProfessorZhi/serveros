@@ -1351,6 +1351,7 @@ class Daemon:
             # transport (§2/§18). `alert.pass` exists because a caller testing
             # what the register would say should not have to wait for a tick.
             "alert.list": self._r_alert_list,
+            "alert.current": self._r_alert_current,
             "alert.inspect": self._r_alert_inspect,
             "alert.ack": self._r_alert_ack,
             "alert.snooze": self._r_alert_snooze,
@@ -1365,6 +1366,13 @@ class Daemon:
             "alert.digest": self._r_alert_digest,
             "alert.digest-baseline": self._r_alert_digest_baseline,
             "alert.digest-record": self._r_alert_digest_record,
+            # The OTHER half of one pass, and the reason the ledger moves at
+            # all on a tick when nothing was sent. `digest-record` says what a
+            # transport did with what it carried; this says what the pass
+            # declined to carry and why. Without it the cursor only advances on
+            # DELIVERED, so every declined row is re-derived as NEW forever —
+            # measured 2026-10-04, 827 rows.
+            "alert.digest-account": self._r_alert_digest_account,
             # §3. The OTHER rhythm over the same facts. A status broadcast is
             # produced by a clock and a digest by a delta, so the two keep
             # separate ledgers: one ledger would let an hourly status card
@@ -1464,12 +1472,25 @@ class Daemon:
                 # to match a comment and breaks the CLI.
                 "alert.list", "alert.inspect", "alert.ack", "alert.snooze",
                 "alert.pending", "alert.record-delivery", "alert.pass",
+                # §3.4's block, and a READ of the register for the reason
+                # `card.incident` is a read of the ledger: the status card's
+                # 当前问题 must be the register's answer and not a second
+                # computation of it, and the register has one writer. It adds a
+                # lookup to the socket and no verb, so nothing here is reachable
+                # from a chat message — the node MCP still declares `alert.list`
+                # and `alert.inspect` and nothing else.
+                "alert.current",
                 # §Q2. The batch hop, and it is on this socket for the same
                 # reason the seven above are: `serverosctl alert digest` is a
                 # local command that reaches the ledger through it. What is
                 # absent is again the point — the node MCP still declares
                 # `alert.list` and `alert.inspect` and nothing else.
                 "alert.digest", "alert.digest-baseline", "alert.digest-record",
+                # And its other half. It is a WRITE, on the same ledger, for
+                # the same reason — the daemon owns that document, and the
+                # surface that decides whether the hour is worth a card is the
+                # caller's.
+                "alert.digest-account",
                 # §3. The card receipt. On this socket for the same reason the
                 # three above are: `serverosctl card record-delivery` is a local
                 # command and the ledger it appends to lives beside the register
@@ -2353,6 +2374,19 @@ class Daemon:
                     "transport, and the surface that does is named by "
                     "`agent.control.status`.")}
 
+    def _r_alert_current(self, params) -> dict:
+        """§3.4. What is wrong NOW — the register, not the delta.
+
+        Asked here rather than opened by the caller for the reason
+        `card.incident` is: this daemon is the register's only writer, and a
+        second reader that opened the file would be a second answer to «what
+        does this node hold», which is the one thing a store's owner exists to
+        prevent. It reads, it grades and it returns; nothing here announces,
+        acknowledges or resolves anything.
+        """
+        at = _iso(self._now())
+        return digest_mod.current(self.alert_store(), at=at)
+
     def _r_alert_inspect(self, params) -> dict:
         """One alert in full, with the sentence a person would have been sent."""
         ref = _required(params, "alert_ref")
@@ -2472,6 +2506,55 @@ class Daemon:
             generation=int(generation), state=str(state), shown=shown,
             reason=params.get("reason"), frozen=frozen)
 
+    def _r_alert_digest_account(self, params) -> dict:
+        """§Q2. What this pass declined to carry, and the sentence saying why.
+
+        The companion of `alert.digest-record`, and the reason the ledger is
+        maintained on a tick where nothing was sent. A digest that is composed
+        and declined leaves the register unchanged and the cursor advancing,
+        and both halves of that sentence are needed: the register stays the
+        truth about the machine, and the cursor stops re-deriving the same rows
+        as new on the next tick.
+
+        `owed` is required and has no default, exactly as it has none in
+        `alert_digest.account`. The caller is the only party that knows which
+        rows are still owed to somebody — an empty list when the decision was
+        not to send, the shown keys when a card went out or a send failed and
+        will be retried. A default here would be this daemon guessing at the
+        caller's own message lifecycle.
+        """
+        at = _iso(self._now())
+        digest = params.get("digest")
+        if not isinstance(digest, dict) or not isinstance(digest.get("rows"), list):
+            raise DaemonError(
+                f"`digest` must be the composed document whose `rows` are being "
+                f"accounted for, not {type(digest).__name__}: the rows to "
+                f"account for are listed by the document that composed them, "
+                f"and a caller supplying its own list would be describing a "
+                f"pass this node never ran")
+        owed = params.get("owed")
+        if owed is None:
+            raise DaemonError(
+                "`owed` is required and has no default. It names the keys this "
+                "pass is still owed to somebody — the rows the card carried, or "
+                "would have carried and will be retried. Pass an empty list "
+                "when the decision was not to send at all; omitting it would "
+                "make this call account for rows that are still pending their "
+                "first send")
+        if not isinstance(owed, list):
+            raise DaemonError(
+                f"`owed` must be a list of alert keys or digest rows, not "
+                f"{type(owed).__name__}")
+        why = str(params.get("why") or "").strip()
+        if not why:
+            raise DaemonError(
+                "`why` is required. Accounting for a row without saying why "
+                "nobody was told is the silent drop this call exists to make "
+                "impossible: the ledger would record that a finding was dealt "
+                "with and lose the only sentence that explained it")
+        return digest_mod.account(
+            self.delivery_cursor(), at=at, digest=digest, why=why, owed=owed)
+
     def card_ledger(self):
         """The card receipt ledger, beside the register and the digest cursor."""
         if self._card_ledger is None:
@@ -2542,11 +2625,21 @@ class Daemon:
             "recent": list(reversed(rows))[:max(0, limit)],
             "last": ledger.last(kind),
             "last_delivered": ledger.last_delivered(kind),
+            # §7①'s finding, for EVERY kind rather than only the one this call
+            # filtered to: «the card did not reach the chat» is the one answer a
+            # reader must not have to ask a second question to get, and a
+            # payload that carried it only under `--kind status` would make the
+            # default dump the view in which a delivery failure is invisible.
+            # Four small dictionaries, computed from the rows already read.
+            "findings": {name: ledger.delivery_finding(name)
+                         for name in card_delivery_mod.KINDS},
             "note": ("A receipt list, not a historian. `last_delivered` is the "
                      "answer to 'what did the last one that arrived carry'; a "
                      "FAILED entry keeps its version because that is what was "
                      "attempted, and an attempt nobody composed a card for "
-                     "would have no version at all."),
+                     "would have no version at all. `findings` is the other "
+                     "question — what happened to the NEWEST attempt — which "
+                     "`last_delivered` cannot answer after a failed patch."),
         }
 
     def _r_card_incident(self, params) -> dict:

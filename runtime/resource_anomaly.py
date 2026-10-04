@@ -334,12 +334,20 @@ def _filesystem_rows(disk: dict) -> list[dict]:
     return list(rows.values())
 
 
-def _disk_signals(disk: dict, thresholds: dict, *, observed_at) -> tuple[list, list, str | None]:
+def _disk_signals(disk: dict, thresholds: dict, *, observed_at,
+                  subjects: set[str] | None = None) -> tuple[list, list, str | None]:
     """DISK_WARNING, DISK_CRITICAL, INODE_CRITICAL.
 
     Returns `(signals, levels, note)`. `levels` is what every graded filesystem
     is AT, reported whether or not it crossed a tier — see `_level()` for why
     the below-threshold reading is not the same thing as no reading.
+
+    `subjects` collects the filesystem subjects this pass ENUMERATED, whether
+    or not their figures were readable — including the ones that land in
+    `ungraded` below. See `anomaly.levels()` for why the inventory has to carry
+    the unreadable ones too: a mount that was read and gave nothing must keep
+    holding its alert, while a mount that is no longer in the observation is a
+    different fact and may close it.
     """
     warnings, critical, levels = [], [], []
     warning_at = thresholds["filesystem_percent_high"]
@@ -347,6 +355,8 @@ def _disk_signals(disk: dict, thresholds: dict, *, observed_at) -> tuple[list, l
     inode_at = thresholds["inode_percent_high"]
     ungraded = 0
     for row in _filesystem_rows(disk):
+        if subjects is not None:
+            subjects.add(row["subject"])
         used, inodes = row["used_percent"], row["inode_percent"]
         if used is None and inodes is None:
             ungraded += 1
@@ -402,10 +412,21 @@ def _disk_signals(disk: dict, thresholds: dict, *, observed_at) -> tuple[list, l
     return critical + warnings, levels, note
 
 
-def _memory_signals(host: dict, thresholds: dict, *, observed_at) -> tuple[list, list, str | None]:
-    """MEMORY_PRESSURE, SWAP_PRESSURE."""
+def _memory_signals(host: dict, thresholds: dict, *, observed_at,
+                    subjects: set[str] | None = None) -> tuple[list, list, str | None]:
+    """MEMORY_PRESSURE, SWAP_PRESSURE.
+
+    `subjects` collects the two host-level subjects this pass ENUMERATED. Both
+    are registered unconditionally, because both exist by construction: the
+    host summary either carried a memory section or the caller would not have
+    reached this function at all. A host subject is therefore never `gone`, and
+    a memory alert closes on its floor and not on disappearance — which is the
+    correct answer for the only subject family whose subject cannot vanish.
+    """
     signals: list[dict] = []
     levels: list[dict] = []
+    if subjects is not None:
+        subjects.update(("host:memory", "host:swap"))
     memory = host.get("memory") or {}
     total = memory.get("total_bytes")
     used = memory.get("used_bytes")
@@ -480,13 +501,22 @@ def _memory_signals(host: dict, thresholds: dict, *, observed_at) -> tuple[list,
     return signals, levels, not_evaluated
 
 
-def _docker_signals(docker: dict, thresholds: dict, *, observed_at) -> tuple[list, list, dict]:
+def _docker_signals(docker: dict, thresholds: dict, *, observed_at,
+                    subjects: set[str] | None = None) -> tuple[list, list, dict]:
     """DOCKER_STORAGE_HIGH, BUILD_CACHE_HIGH, the two container-size codes.
 
     Returns `(signals, levels, not_evaluated)` where the last element maps a
     code to the reason it could not be graded. Only the codes measured as a
     reading are levelled; the two that report their own `size_bytes` are too,
     with no margin key — see `margin_key()` for what that absence means.
+
+    `subjects` collects the container subjects this pass ENUMERATED, including
+    the ones whose log size came back unreadable. That inclusion is the point:
+    a container that is still running with an unreadable log file must keep
+    holding its alert, while a container that is no longer listed is gone.
+    The two Docker-internal subjects are NOT registered when their section was
+    unavailable, because then the code is in `gaps` and never reaches the
+    inventory question at all.
     """
     signals: list[dict] = []
     levels: list[dict] = []
@@ -508,6 +538,8 @@ def _docker_signals(docker: dict, thresholds: dict, *, observed_at) -> tuple[lis
             f"reported {reason or 'nothing'}")
     else:
         sections = (space or {}).get("sections") or {}
+        if subjects is not None:
+            subjects.update(("docker:store", "docker:build-cache"))
         total = sum((v.get("size_bytes") or 0) for v in sections.values()
                     if isinstance(v, dict))
         if total:
@@ -554,6 +586,8 @@ def _docker_signals(docker: dict, thresholds: dict, *, observed_at) -> tuple[lis
             "`docker ps -a --size` was not collected")
     else:
         for row in (sizes or {}).get("containers") or []:
+            if subjects is not None:
+                subjects.add(f"container:{row.get('name')}")
             layer = row.get("size_rw_bytes")
             if layer is not None:
                 levels.append(_level("CONTAINER_WRITABLE_LAYER_LARGE",
@@ -580,6 +614,8 @@ def _docker_signals(docker: dict, thresholds: dict, *, observed_at) -> tuple[lis
     else:
         graded = 0
         for row in (logs or {}).get("containers") or []:
+            if subjects is not None:
+                subjects.add(f"container:{row.get('name')}")
             size = row.get("log_bytes")
             if size is None:
                 continue
@@ -955,9 +991,19 @@ def detect(*, host=None, disk=None, docker=None, hygiene=None, desired=None,
     levels: list[dict] = []
     notes: list[str] = []
     gaps: dict[str, str] = {}
+    # Which subjects this pass ENUMERATED, as opposed to which ones it managed
+    # to measure. The two are different questions and the alert layer needs
+    # both: `levels` answers "what is it now", this answers "is it still there".
+    # See `anomaly.levels()` for the 2026-10-04 measurement that made the
+    # difference load-bearing. One set, shared by the builders below, so a
+    # builder added later cannot forget to register what it looked at without
+    # also failing to add its rows.
+    subjects: set[str] = set()
 
     if gathered.take("disk", disk, why="the filesystem observation"):
-        found, found_levels, note = _disk_signals(disk, thresholds, observed_at=observed_at)
+        found, found_levels, note = _disk_signals(disk, thresholds,
+                                                  observed_at=observed_at,
+                                                  subjects=subjects)
         signals += found
         levels += found_levels
         if note:
@@ -982,7 +1028,9 @@ def detect(*, host=None, disk=None, docker=None, hygiene=None, desired=None,
             gaps.setdefault(code, gathered.missing["disk"])
 
     if gathered.take("host", host, why="the host summary"):
-        found, found_levels, gap = _memory_signals(host, thresholds, observed_at=observed_at)
+        found, found_levels, gap = _memory_signals(host, thresholds,
+                                                   observed_at=observed_at,
+                                                   subjects=subjects)
         signals += found
         levels += found_levels
         if gap:
@@ -994,7 +1042,8 @@ def detect(*, host=None, disk=None, docker=None, hygiene=None, desired=None,
 
     if docker:
         found, found_levels, docker_gaps = _docker_signals(docker, thresholds,
-                                                           observed_at=observed_at)
+                                                           observed_at=observed_at,
+                                                           subjects=subjects)
         signals += found
         levels += found_levels
         gaps.update(docker_gaps)
@@ -1073,6 +1122,16 @@ def detect(*, host=None, disk=None, docker=None, hygiene=None, desired=None,
         "observed_at": observed_at,
         "signals": signals,
         "levels": by_level,
+        # §21, the negative half of `levels`. `levels` says what every graded
+        # subject IS; this says which subjects were there to be graded at all.
+        # Without it a reader cannot tell a subject that came back unreadable —
+        # which must keep holding its alert, because no reading is not recovery
+        # — from a subject that is no longer in the observation, whose alert is
+        # about something that has ended. Both are an absence from `levels`, and
+        # on 2026-10-04 all 1,088 alerts frozen OPEN by that ambiguity were the
+        # second kind. Empty when nothing was enumerated, which the alert layer
+        # reads as "no inventory was taken" rather than "everything is gone".
+        "subjects": sorted(subjects),
         "by_code": {code: sum(1 for r in signals if r["code"] == code)
                     for code in emitted},
         "codes_emitted": emitted,

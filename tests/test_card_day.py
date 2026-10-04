@@ -60,6 +60,10 @@ card_delivery = _load("serveros_runtime_card_delivery",
                       ROOT / "runtime" / "card_delivery.py")
 presentation = _load("serveros_runtime_presentation",
                      ROOT / "runtime" / "presentation.py")
+#: Loaded under the name `runtime/cli.py` loads it as. It is here so that the
+#: vocabulary this module prints can be COMPARED against the renderer's rather
+#: than each being read on its own — see `TheFoldSpeaksTheCardsVocabulary`.
+cards = _load("serveros_runtime_cards", ROOT / "runtime" / "cards.py")
 source = _load("serveros_runtime_card_source", ROOT / "runtime" / "card_source.py")
 cli = _load("serveros_runtime_cli_for_cards", ROOT / "runtime" / "cli.py")
 #: The same name `runtime/card_day.py` loads it under, so one test below can
@@ -249,19 +253,194 @@ class TheRowKeepsWhatTheCardSaidAndNothingElse(unittest.TestCase):
         self.assertIn("tick", str(caught.exception))
 
     def test_one_history_line_reads_left_to_right(self):
+        """The folded history line, in the words the card's own face uses.
+
+        THIS ASSERTED `mine=OK` AND `gateway=UNKNOWN` UNTIL THE MODEL'S OWN
+        NAMES WERE TAKEN OFF THE LINE. `mine` / `gateway` are `SECTIONS`' keys
+        and `OK` / `UNKNOWN` are the enumerations behind them — a fold that
+        prints either is showing a reader the schema the face already refuses
+        to show, which §2 names among the things that must not reach a person
+        and CARDS-STYLE §M4 names again as 「去scope英文key」. The defect was
+        not that the words were English; it is that they were the model's, so
+        the card and its own fold could come out as two vocabularies for one
+        block. Order is what this test is for — hour, verdict, each block, the
+        gap count — so the assertions below keep the order and swap the words.
+
+        THE NEGATIVES ARE THE POINT OF THE REWRITE. Without them this test
+        would go on passing if a future change put `mine` back beside 「我的
+        资源」 in the same string, which is exactly the shape that got here.
+        """
         row_ = card_day.row(model(verdict="UNCONFIRMED", gaps=["x"],
                                   states={"gateway": None}),
                             schedule=schedule(at(PLAIN_WORKDAY, 10)))
         says = card_day.row_says(row_)
-        self.assertTrue(says.startswith("10:00 UNCONFIRMED"), says)
-        self.assertIn("mine=OK", says)
-        self.assertIn("gateway=UNKNOWN", says)
+        self.assertTrue(says.startswith("10:00 无法确认"), says)
+        self.assertIn("我的资源=正常", says)
+        self.assertIn("AI Gateway=无法确认", says)
         self.assertIn("采集缺口 1", says)
+        self.assertLess(says.index("我的资源"), says.index("整机"), says)
+        self.assertLess(says.index("整机"), says.index("AI Gateway"), says)
+        for stored in ("mine=", "host=", "gateway=", "UNKNOWN", "UNCONFIRMED"):
+            self.assertNotIn(stored, says)
 
 
 def row_of(sched: dict, **over) -> dict:
     """One valid row for a test to bend, built the way the module builds it."""
     return card_day.row(model(**over), schedule=sched)
+
+
+class TheFoldSpeaksTheCardsVocabulary(unittest.TestCase):
+    """§M4's 「去scope英文key」, asserted rather than promised.
+
+    Two tables that are supposed to say the same thing and live in two files
+    agree only until somebody edits one. The failure is the quiet kind: a fold
+    reading 「整机=正常」 beside a face reading 「整机=建议查看」 raises nothing
+    and breaks nothing — it is one card contradicting itself, and the reader
+    has no way to tell which half is the reading.
+
+    THE COMPARISON IS NOT DICT EQUALITY, and that is deliberate. `card_day`
+    carries states `cards` has no word for: `DEGRADED` / `NOT_READY` / `DOWN`
+    reach a row as a block's own value, while the face would have met them
+    through `env_health`'s faulted list and printed them with the section's
+    lead instead. Requiring the dicts to be equal would force one of the two
+    to carry words it can never print. What is required is that they never
+    disagree WHERE BOTH CAN SPEAK — so the loop runs over this module's map and
+    asks the renderer for the same state.
+    """
+
+    def test_every_state_the_face_names_is_worded_the_same_in_the_fold(self):
+        for state, word in cards.FACE_WORDS.items():
+            with self.subTest(state=state):
+                self.assertIn(state, card_day.STATE_WORDS)
+                self.assertEqual(card_day.STATE_WORDS[state], word,
+                                 f"{state} is two different words on one card")
+
+    def test_the_states_only_the_fold_names_are_the_four_that_are_not_verdicts(self):
+        """The extras are named here, because each one needs a reason.
+
+        `UNKNOWN` is the absence of a reading and the face has a word for it
+        too (`NEUTRAL_WORD`) — just not a key in `FACE_WORDS`, since a face is
+        rendered from a verdict and not from a missing one. The other three are
+        the states a BLOCK takes, which the face meets through
+        `env_health`'s faulted list rather than as its own verdict. Pinned
+        exactly so that a fifth state arriving in this map is a decision
+        somebody makes here and not a word that quietly joins the fold.
+        """
+        self.assertEqual(set(card_day.STATE_WORDS) - set(cards.FACE_WORDS),
+                         {"UNKNOWN", "DEGRADED", "NOT_READY", "DOWN"})
+
+    def test_the_absence_of_a_reading_is_worded_the_way_the_face_words_it(self):
+        """A block nobody read is 无法确认 on both, and never a green word.
+
+        This is the one state the two maps could agree on being wrong about:
+        `UNKNOWN` and `UNCONFIRMED` both map to the neutral word here, and
+        `cards.NEUTRAL_WORD` is where that word is defined for the face.
+        """
+        self.assertEqual(card_day.STATE_WORDS["UNKNOWN"], cards.NEUTRAL_WORD)
+        self.assertEqual(card_day.STATE_WORDS["UNCONFIRMED"], cards.NEUTRAL_WORD)
+
+    def test_the_three_blocks_are_named_the_same_on_the_face_and_in_the_fold(self):
+        """`mine` / `host` / `gateway` have one set of names, not two.
+
+        The fold used to print the keys themselves, so this map is the fix and
+        this assertion is what keeps it a fix: a block added to the model
+        without a name here shows up as a bare `mine` on a line a person reads.
+        """
+        self.assertEqual(card_day.BLOCK_NAMES, cards._SCOPE_NAMES)
+
+    def test_the_gateways_words_are_the_renderers_words_for_the_same_two_states(self):
+        """`UNBOUND` on the fold is the same phrase the face leads that block with.
+
+        `BOUND` has no counterpart to compare — a bound gateway is rendered as
+        its readings and never as a word of its own — so it is asserted here as
+        the only claim this test can make about it: that it is not the same
+        word as the other one, which is what an accidental copy-paste would
+        produce.
+        """
+        self.assertEqual(card_day.GATEWAY_WORDS["UNBOUND"],
+                         cards._EMPTY_LEAD_UNBOUND)
+        self.assertNotEqual(card_day.GATEWAY_WORDS["BOUND"],
+                            card_day.GATEWAY_WORDS["UNBOUND"])
+
+
+class TheTimelineComparesAxesAndNotItsOwnSchema(unittest.TestCase):
+    """What `changes_between` returns, and what it refuses to say twice.
+
+    It feeds two faces and not one: the 「变化 …」 clause of a folded hour, and
+    the first line of `presentation._delta`, which is the top of the status
+    card. A defect here is therefore not a fold nobody opened — it is the first
+    sentence of the card, on every hour the day moved.
+    """
+
+    def setUp(self):
+        self.before = card_day.row(model(verdict="OK"),
+                                   schedule=schedule(at(PLAIN_WORKDAY, 9)))
+        self.after = card_day.row(
+            model(verdict="ATTENTION", observation="部分新鲜",
+                  states={"host": "ATTENTION"}),
+            schedule=schedule(at(PLAIN_WORKDAY, 10)))
+
+    def test_one_block_moving_is_one_change_and_it_names_the_block(self):
+        """`specific` first, so the line says WHICH of the three moved.
+
+        With three blocks that is the difference between a sentence a reader
+        acts on and one that sends them hunting through the card.
+        """
+        self.assertEqual(card_day.changes_between(self.before, self.after),
+                         ["整机 正常→建议查看"])
+
+    def test_the_roll_up_is_not_reported_again_beside_the_block_that_moved(self):
+        """`verdict` moved because `host` moved, and that is one fact.
+
+        Both lines are functions of the block states and the gap count and of
+        nothing else (`presentation.env_health`), so printing them beside the
+        block that moved gives 「整体状态 正常→建议查看；整机 正常→建议查看」 —
+        a reader counting two changes for a machine that has one.
+        """
+        says = "；".join(card_day.changes_between(self.before, self.after))
+        self.assertNotIn("整体状态", says)
+        self.assertNotIn("观测", says)
+
+    def test_the_change_is_never_the_models_own_spelling(self):
+        """§2's 「原始 schema」 and §M4's 「去scope英文key」, on the first line.
+
+        This returned `verdict OK→ATTENTION` / `mine OK→ATTENTION`: the model's
+        column names and the enumerations behind them, in the string a person
+        reads first.
+        """
+        says = "；".join(card_day.changes_between(self.before, self.after))
+        for stored in ("mine", "host", "gateway", "verdict", "observation",
+                       "OK", "ATTENTION", "UNKNOWN"):
+            self.assertNotIn(stored, says)
+
+    def test_the_hours_first_row_is_not_a_transition(self):
+        """No previous row is the day opening, not a machine changing.
+
+        `None → 正常` would print a transition into the picture the day started
+        with, which is the opposite of what the timeline is for.
+        """
+        self.assertEqual(card_day.changes_between(None, self.after), [])
+
+    def test_the_roll_up_still_reaches_a_reader_when_it_is_all_there_is(self):
+        """The derived axes are the fallback, and the fallback prints them in
+        the same words the specific branch uses.
+
+        HONESTLY ABOUT THE INPUT: `card_day.row` cannot produce this pair. The
+        verdict and the observation are functions of the block states and the
+        gap count, so when those agree the derived two agree with them — a row
+        where they disagree with their own blocks is a row that contradicts
+        itself, and `check_row` cannot admit one. The pair below is written out
+        by hand because the function's contract is over two dicts and not over
+        two rows: a caller comparing across a version boundary can hand it a
+        previous without the block states, and the branch is what keeps that
+        from being reported as «no change» on an hour that changed. What is
+        being held here is the vocabulary, not the reachability.
+        """
+        rolled = card_day.row(
+            model(verdict="ATTENTION", observation="部分新鲜"),
+            schedule=schedule(at(PLAIN_WORKDAY, 10)))
+        self.assertEqual(card_day.changes_between(self.before, rolled),
+                         ["整体状态 正常→建议查看", "观测 新鲜→部分新鲜"])
 
 
 # ---------------------------------------------------------------------------
@@ -964,8 +1143,19 @@ class TheDaysMemoryIsOneDocumentBesideTheDeliveryLedger(unittest.TestCase):
             store.advance(schedule=schedule(at(PLAIN_WORKDAY, hour)),
                           at=at(PLAIN_WORKDAY, hour), model=model())
         day = store.summary()
-        self.assertEqual(len(day["lines"]), 1)
-        self.assertEqual(card_day.row_says(day["history"][0]), day["lines"][0])
+        # What the panel renders is the day as intervals, and each entry says
+        # exactly what the row it stands for says, plus what the interval is:
+        # the first entry opened the card, the second one compared equal to it.
+        # The entries are built from `row_says`, so a panel and a row cannot
+        # describe the same hour in two ways.
+        entries = day["timeline"]
+        self.assertEqual([e["kind"] for e in entries], ["open", "steady"])
+        self.assertEqual(entries[0]["says"],
+                         card_day.row_says(day["history"][0]) + " · 建卡")
+        self.assertEqual(entries[1]["says"],
+                         card_day.row_says(day["latest"]) + " · 与上一时点相同")
+        self.assertEqual(day["transitions"], 0)
+        self.assertEqual(day["unobserved"], 0)
         self.assertIn(f"CN-Mainland/{PLAIN_WORKDAY}", day["says"])
         self.assertIn("2/13", day["says"])
         # The identity travels as the summary's own field too — it is what a
@@ -1443,6 +1633,17 @@ class TheTwoCommandsReadAndWriteDifferentThings(unittest.TestCase):
         walk(card)
         return found
 
+    @classmethod
+    def lines(cls, card: dict) -> list[str]:
+        """Every LINE the card carries, at any depth.
+
+        Line-wise as well as deep, because §M4 moved the day line and the
+        schedule sentence into the 技术诊断 fold and that fold is one markdown
+        element holding several sentences separated by newlines. A search over
+        whole strings finds the fold and misses every sentence inside it.
+        """
+        return [line for text in cls.texts(card) for line in text.split("\n")]
+
     def day(self, at_, *, json_=True, store=None):
         argv = ["card", "day", "--business-calendar", str(self.calendar),
                 "--day-store", str(store or self.store), "--at", at_]
@@ -1514,8 +1715,8 @@ class TheTwoCommandsReadAndWriteDifferentThings(unittest.TestCase):
         self.assertFalse(self.store.exists())
 
     def test_the_day_line_reaches_the_status_card(self):
-        """The consumers `cards.status_card` renders: a line for today, and a
-        panel of the hours already folded."""
+        """The consumers `cards.status_card` renders: a line for today, and the
+        day's intervals as a panel."""
         for hour in (9, 10):
             self.advance(at(PLAIN_WORKDAY, hour))
         code, card = self.run_cli(
@@ -1523,14 +1724,32 @@ class TheTwoCommandsReadAndWriteDifferentThings(unittest.TestCase):
             "--business-calendar", str(self.calendar),
             "--day-store", str(self.store))
         self.assertEqual(code, 0)
-        texts = self.texts(card)
-        self.assertTrue(any(t.startswith(f"**当天卡** CN-Mainland/{PLAIN_WORKDAY}")
+        texts = self.lines(card)
+        # The day line and the interval list are BOTH inside the 技术诊断 fold
+        # now — §1's screenshot counts the day reference among the lines a
+        # reader has to get past, and §M4 puts it in 详情. What this test is
+        # about is that they reach the card at all and agree with each other;
+        # where a reader meets them is asserted in `test_card_cli`.
+        self.assertTrue(any(t.startswith(f"当天卡 CN-Mainland/{PLAIN_WORKDAY}")
                             for t in texts), texts)
-        self.assertTrue(any(t.startswith("**今日历史（1 小时）**") for t in texts), texts)
-        self.assertTrue(any(t.startswith("09:00 ") and "mine=OK" in t
+        self.assertTrue(any(t.startswith("**当天 · 变化时间线（") for t in texts), texts)
+        # AND THE TITLE CARRIES NO CARET. It used to begin with `▸`, and the
+        # `collapsible_panel` it goes into declares one (`panel`'s
+        # `down-small-ccm_outlined` icon, in `texts` right beside this string),
+        # so every fold said «there is more behind this» twice — and said it on
+        # the blocks that do NOT open, since `_face_prefix` is shared. Asserted
+        # as a negative so a reintroduced caret fails whatever it is spelled.
+        for caret in ("▸", "▶", "▼", "▾", "►"):
+            self.assertFalse(any(f"**{caret}" in t for t in texts), texts)
+        # The words changed with `changes_between` and `_states_says`: the line
+        # in the fold used to carry `mine=OK`, the model's own key and
+        # enumeration, and now carries what the card's face says for the same
+        # block. This is the third place the day's row reaches a reader, so it
+        # is the third place the same vocabulary has to hold.
+        self.assertTrue(any(t.startswith("09:00 ") and "我的资源=正常" in t
                             for t in texts), texts)
         # …and the line does not read 「当天卡 当天卡 …» in front of a person.
-        self.assertFalse(any("**当天卡** 当天卡" in t for t in texts), texts)
+        self.assertFalse(any("当天卡 当天卡" in t for t in texts), texts)
 
     def test_an_absent_store_tells_the_card_today_has_no_card_yet(self):
         """A reading that says ABSENT is an answer, and this is what it says.
@@ -1544,8 +1763,8 @@ class TheTwoCommandsReadAndWriteDifferentThings(unittest.TestCase):
             "--business-calendar", str(self.calendar),
             "--day-store", str(self.dir / "nothing-here.json"))
         self.assertEqual(code, 0)
-        texts = self.texts(card)
-        self.assertTrue(any(t == "**当天卡** 今天还没有当天的卡" for t in texts), texts)
+        texts = self.lines(card)
+        self.assertTrue(any(t == "当天卡 今天还没有当天的卡" for t in texts), texts)
         self.assertFalse(any("今日历史" in t for t in texts), texts)
 
     def test_an_unreadable_store_tells_the_card_and_does_not_erase_it(self):
@@ -1558,12 +1777,26 @@ class TheTwoCommandsReadAndWriteDifferentThings(unittest.TestCase):
             "--day-store", str(self.store))
         self.assertEqual(code, 0)
         texts = self.texts(card)
-        self.assertTrue(any(t.startswith("**采集缺口** card_day_store")
-                            for t in texts), texts)
+        # The reading is named on the face and the KEY is named in the fold,
+        # and §2 draws that line: `card_day_store` is a schema key, and a schema
+        # key on a first screen is what §2 forbids. The face says which reading
+        # is missing, in the words a person knows it by; the account of how the
+        # reading was taken — the key, the path, the parse error — is one tap
+        # down in 技术诊断 and reaches a reader who is looking for it. Both
+        # halves are asserted, because either alone passes on the wrong card.
+        face = [e["content"] for e in card["body"]["elements"]
+                if isinstance(e.get("content"), str)]
+        self.assertIn("**采集缺口** 当天卡 未读到", face)
+        self.assertFalse([t for t in face if "card_day_store" in t],
+                         "the schema key is back on the first screen")
+        self.assertTrue(any("· card_day_store" in t for t in texts), texts)
         # No day BLOCK, because there is no reading to render one from — and the
         # gap that replaces it does say 「当天卡状态文件读不到», which is the
-        # whole point of naming the read rather than the number.
-        self.assertFalse(any(t.startswith("**当天卡**") for t in texts), texts)
+        # whole point of naming the read rather than the number. The `_says`
+        # line the fold composes for a day is `当天卡 {says}` with a space, so
+        # the gap's own sentence about the file does not read as one.
+        self.assertFalse(any(t.startswith("当天卡 ") for t in self.lines(card)),
+                         texts)
         self.assertEqual(self.store.read_text(encoding="utf-8"), "{ not json")
 
     def test_a_snapshot_handed_no_reading_claims_nothing_about_the_day(self):

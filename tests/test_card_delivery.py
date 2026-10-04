@@ -223,6 +223,58 @@ class WhatWasSentIsRecorded(Fixture):
         self.assertEqual(len(self.ledger.entries()), card_delivery.KEEP)
         self.assertEqual(self.ledger.last()["at"], f"{AT}#{card_delivery.KEEP + 4}")
 
+    def test_a_chatty_kind_cannot_evict_another_kinds_receipt(self):
+        """The day's status receipt is what the next patch aims at.
+
+        `notice` adds thirteen rows a workday. Bounded over the whole document,
+        that is thirteen rows of room taken from the receipts that carry
+        `remote_id` — and the failure is not a missing receipt but a SECOND
+        card: `binding_verdict` finds nothing to patch, and a new message is
+        then the only option left. A bound on the shared list is a bound one
+        kind can spend on another kind's behalf.
+        """
+        self.record(remote_id="om_the_days_card")
+        for index in range(card_delivery.KEEP + 5):
+            self.record(kind="notice", at=f"{AT}#{index}")
+        self.assertEqual(len(self.ledger.entries("notice")), card_delivery.KEEP)
+        self.assertEqual(self.ledger.last_delivered("status")["remote_id"],
+                         "om_the_days_card")
+
+    def test_the_bound_is_per_kind_rather_than_over_the_document(self):
+        for index in range(card_delivery.KEEP + 5):
+            self.record(at=f"{AT}#{index}")
+            self.record(kind="notice", at=f"{AT}#{index}")
+        self.assertEqual(len(self.ledger.entries()), 2 * card_delivery.KEEP)
+
+    def test_the_trim_keeps_the_newest_and_leaves_the_order_alone(self):
+        # The list's order IS the order — nothing re-sorts by `at` — so a trim
+        # that reversed it would make `last` answer with the oldest row. Spelled
+        # as an exact sequence rather than as `sorted(...)`: these `at` values
+        # are strings, and `"#10" < "#2"` lexically, so a `sorted` here would be
+        # comparing a different order than the one the file is in.
+        for index in range(card_delivery.KEEP + 5):
+            self.record(kind="notice", at=f"{AT}#{index}")
+        ats = [row["at"] for row in self.ledger.entries("notice")]
+        self.assertEqual(ats, [f"{AT}#{index}" for index in range(5, card_delivery.KEEP + 5)])
+        self.assertEqual(self.ledger.last("notice")["at"],
+                         f"{AT}#{card_delivery.KEEP + 4}")
+
+    def test_a_notice_receipt_must_not_name_an_episode(self):
+        """A notice is about the CARD, and the version field already says which.
+
+        An episode here would make `carries` answer «the incident's card» with a
+        notice's receipt, and the next incident patch would aim at the notice.
+        """
+        with self.assertRaises(card_delivery.CardDeliveryError):
+            self.record(kind="notice", episode="ep_hand_one")
+
+    def test_a_notice_records_like_any_other_kind(self):
+        out = self.record(kind="notice", remote_id="om_the_notice")
+        self.assertTrue(out["recorded"])
+        self.assertEqual(out["entry"]["kind"], "notice")
+        self.assertEqual(self.ledger.last_delivered("notice")["remote_id"],
+                         "om_the_notice")
+
     def test_an_unreadable_ledger_is_refused_rather_than_emptied(self):
         self.record()
         self.path.write_text("{ not json", encoding="utf-8")
@@ -249,9 +301,125 @@ class WhatWasSentIsRecorded(Fixture):
 
 
 # ---------------------------------------------------------------------------
-# the id the receipt keeps is a message id or it is nothing
+# §7① — was the reader told, on the most recent attempt
 # ---------------------------------------------------------------------------
 
+
+class TheDeliveryFinding(Fixture):
+    """The question `last_delivered` cannot answer.
+
+    Every test here is written against a ledger that really has the two rows in
+    it rather than against a stubbed answer, because the defect this exists to
+    prevent is a reader that finds the WRONG ROW and is answered correctly about
+    it.
+    """
+
+    def test_a_kind_nobody_has_attempted_is_not_a_failure(self):
+        """«Nobody asked» and «the transport did not do it» are different.
+
+        The finding names the first one too, because a reader that had only
+        `None` for it could not tell an hour before its first send from an hour
+        whose send arrived.
+        """
+        found = self.ledger.delivery_finding("status")
+        self.assertEqual(found["finding"], card_delivery.DELIVERY_NOT_ATTEMPTED)
+        self.assertFalse(found["fault"])
+        self.assertIsNone(found["state"])
+        self.assertIn(found["finding"], card_delivery.SAYS)
+
+    def test_a_delivered_card_produces_no_finding_at_all(self):
+        self.record()
+        found = self.ledger.delivery_finding("status")
+        self.assertIsNone(found["finding"])
+        self.assertFalse(found["fault"])
+        self.assertIsNone(found["says"])
+        self.assertEqual(found["state"], card_delivery.DELIVERED)
+
+    def test_each_non_arrival_has_its_own_word_and_its_own_sentence(self):
+        """One per outcome, and the set is derived from `OUTCOMES`.
+
+        This is the test that fails when somebody adds a fifth outcome to that
+        tuple: the finding word is derived and so appears by itself, and the
+        SENTENCE does not — which is the case where the vocabulary can describe
+        a state and nothing can tell a person about it.
+        """
+        self.assertEqual(set(card_delivery.FAULTS),
+                         {f"DELIVERY_{state}" for state in card_delivery.OUTCOMES
+                          if state != card_delivery.DELIVERED})
+        self.assertEqual(set(card_delivery.FINDINGS),
+                         set(card_delivery.FAULTS)
+                         | {card_delivery.DELIVERY_NOT_ATTEMPTED})
+        self.assertEqual(set(card_delivery.SAYS), set(card_delivery.FINDINGS))
+        for state in card_delivery.OUTCOMES:
+            if state == card_delivery.DELIVERED:
+                continue
+            with self.subTest(state=state):
+                self.record(state=state)
+                found = self.ledger.delivery_finding("status")
+                self.assertEqual(found["finding"], f"DELIVERY_{state}")
+                self.assertTrue(found["fault"])
+                self.assertTrue(found["says"])
+                self.ledger = card_delivery.CardLedger(self.path)
+
+    def test_a_failed_patch_is_not_read_as_having_arrived(self):
+        """The kill shot, and the shape of the real failure.
+
+        A card that did not change is re-patched with the SAME version, so an
+        older DELIVERED row and the newer FAILED row carry the same version —
+        `last_delivered` finds the older one and reports that something arrived.
+        The finding has to read the NEWEST row, and the only way to tell the two
+        answers apart is a row whose `at` is the failed one's.
+        """
+        self.record(at="2026-09-22T14:40:00+08:00")
+        self.ledger = card_delivery.CardLedger(self.path)
+        self.record(state="FAILED", at="2026-09-22T15:40:00+08:00",
+                    reason="transport answered 500")
+        older, newest = self.ledger.entries("status")
+        # The two rows really do name the same version: without this the test
+        # would pass for the wrong reason, on a ledger where the versions differ
+        # and any reader could tell the rows apart.
+        self.assertEqual(older["version"], newest["version"])
+        self.assertEqual(self.ledger.last_delivered("status"), older)
+        found = self.ledger.delivery_finding("status")
+        self.assertEqual(found["finding"], "DELIVERY_FAILED")
+        self.assertEqual(found["at"], newest["at"])
+        self.assertEqual(found["version"], newest["version"])
+
+    def test_the_finding_is_about_one_kind(self):
+        """A day's card arriving says nothing about this hour's notice.
+
+        Kinds are separate on purpose — `KEEP` is per kind for the same reason —
+        and a finding that read the newest row of whatever kind happened to be
+        last would let a delivered notice vouch for a status card that failed.
+        """
+        self.record(kind="notice")
+        self.record(kind="status", state="FAILED")
+        self.assertIsNone(self.ledger.delivery_finding("notice")["finding"])
+        self.assertEqual(self.ledger.delivery_finding("status")["finding"],
+                         "DELIVERY_FAILED")
+
+    def test_a_state_this_module_cannot_read_is_refused(self):
+        """A hand-edited row is a document problem and not a transport one.
+
+        Reported as «not DELIVERED» it would file an unreadable ledger as a
+        failed send, and the repair for those two is not the same repair.
+        """
+        self.record()
+        data = json.loads(self.path.read_text(encoding="utf-8"))
+        data["entries"][-1]["state"] = "PARTLY"
+        self.path.write_text(json.dumps(data), encoding="utf-8")
+        with self.assertRaises(card_delivery.CardDeliveryError) as caught:
+            card_delivery.CardLedger(self.path).delivery_finding("status")
+        self.assertIn("PARTLY", str(caught.exception))
+
+    def test_a_kind_that_is_not_a_kind_is_refused(self):
+        with self.assertRaises(card_delivery.CardDeliveryError):
+            self.ledger.delivery_finding("daily-card")
+
+
+# ---------------------------------------------------------------------------
+# the id the receipt keeps is a message id or it is nothing
+# ---------------------------------------------------------------------------
 
 class WhatCountsAsAMessageId(unittest.TestCase):
     """The receipt is the only place the send's message id is kept, so it is
@@ -460,8 +628,16 @@ class ThisIsALedgerAndNotATransport(unittest.TestCase):
                              f"a receipt ledger that can reach a transport is "
                              f"one that will eventually send: {banned}")
 
-    def test_the_kinds_are_the_three_the_design_names(self):
-        self.assertEqual(card_delivery.KINDS, ("status", "alert", "recovery"))
+    def test_the_kinds_are_the_ones_the_design_names(self):
+        # Five, and `fault` is the one that is not a card: it is the message a
+        # FAILED patch gets INSTEAD of a notice, which §7① requires and which
+        # has no card version to be filed under — the version not arriving is
+        # what it is about. Its own kind rather than riding on `notice`, because
+        # `KEEP` is per kind and a receipt filed under a name that does not
+        # describe it is one the next reader finds while looking for something
+        # else.
+        self.assertEqual(card_delivery.KINDS,
+                         ("status", "alert", "recovery", "notice", "fault"))
 
     def test_the_diagnostic_reads_one_ledger(self):
         with tempfile.TemporaryDirectory() as tmp:
