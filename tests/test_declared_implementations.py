@@ -520,25 +520,58 @@ def declared_producer_entries() -> dict[str, dict]:
             for event, entry in block.items()}
 
 
+def _defines_locally(tree: ast.AST, name: str) -> bool:
+    """Whether this module DEFINES `name` for itself.
+
+    A module that defines `identity` and calls `identity(...)` is calling its
+    own function, whatever another file happens to have named the same thing.
+    Counting that call as a caller of `runtime/alerting.py#identity` is the
+    dangerous direction of wrong: it reports a dead producer as live, which is
+    the one thing this scan exists to prevent.
+
+    Function and class definitions are what is checked, and not assignments: an
+    alias (`later = identity`) is a way of reaching another file's function and
+    counting it as local would be the opposite mistake. A definition cannot be
+    that — the name is bound to a body written in this file.
+    """
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef,
+                             ast.ClassDef)) and node.name == name:
+            return True
+    return False
+
+
 def _callers_of(relative: str, function: str) -> list[str]:
     """Non-test modules that CALL `function` — not modules that mention it.
 
     The distinction is the whole value of this check, so the rule is narrow on
     purpose: a caller is a `Call` whose target is the bare name
-    (`notify_for(...)`) or the attribute (`alerting.notify_for(...)`). An
-    import alone is not a call, and a mention is not an import.
+    (`notify_for(...)`) or the attribute (`alerting.notify_for(...)`), in a
+    module that does not define that name for itself. An import alone is not a
+    call, and a mention is not an import.
 
-    The first version accepted any `ast.Name` with a matching id, and the
-    positive control caught it immediately: `runtime/protection.py` has a
-    PARAMETER named `identity`, so `alerting.identity` — a helper nothing
-    outside its own file calls — was reported as reached. A scan that counts a
-    parameter name as a caller is the same class of false positive as a text
-    search that counts a sentence in a docstring, and it fails in the direction
-    that matters here: it reports a dead producer as live.
+    Two generations of false positive have been caught here by the positive
+    control, and both were the same mistake in different clothes — a name
+    matched where a binding was meant:
+
+      * the first accepted any `ast.Name` with a matching id, and
+        `runtime/protection.py` has a PARAMETER named `identity`, so
+        `alerting.identity` — a helper nothing outside its own file calls — was
+        reported as reached;
+      * the second accepted any `ast.Call` to that name, so a module with its
+        OWN `identity` function calling it was reported as a caller of
+        `alerting.identity` — see `_defines_locally`.
+
+    A scan that counts a parameter name, or an unrelated same-named function,
+    as a caller is the same class of false positive as a text search that
+    counts a sentence in a docstring, and it fails in the direction that
+    matters here: it reports a dead producer as live.
     """
     callers: list[str] = []
     for rel, tree in _sources():
         if rel == relative:
+            continue
+        if _defines_locally(tree, function):
             continue
         for node in ast.walk(tree):
             if not isinstance(node, ast.Call):

@@ -1,0 +1,675 @@
+{
+  "schema": "serveros/card-scenario-reads.v1",
+  "note": "本节点真实读数，逐字节取自 `serverosctl <command> --json` 的输出。不是转写、不是重建：status 场景的 mine/host 两块由 card_source.snapshot() 从这些文档派生，所以预览里的句子就是生产写的那一句。",
+  "sets": {
+    "measured-20260930": {
+      "kind": "measured",
+      "device_ref": "device:tokyo-shared-dev-01",
+      "note": "2026-09-30 下午的四个读数，同一分钟内依次采集；四项都到达。",
+      "reads": {
+        "summary": {
+          "command": [
+            "resource",
+            "summary"
+          ],
+          "captured_at": "2026-09-30T15:56:10+08:00",
+          "payload": {
+            "advisory": {
+              "advisory_only": true,
+              "notes": [],
+              "thresholds": {
+                "filesystem_percent_high": 85.0,
+                "inode_percent_high": 85.0,
+                "load1_per_cpu_high": 1.0,
+                "psi_memory_full_avg60_percent_high": 0.5,
+                "psi_memory_some_avg60_percent_high": 1.0,
+                "swap_percent_high": 90.0
+              }
+            },
+            "cpu_usage": {
+              "busy_jiffies": 277,
+              "counters": {
+                "guest": 0,
+                "guest_nice": 0,
+                "idle": 1640,
+                "iowait": 2,
+                "irq": 0,
+                "nice": 3,
+                "softirq": 0,
+                "steal": 0,
+                "system": 58,
+                "user": 216
+              },
+              "sample_seconds": 0.15,
+              "state": "PRESENT",
+              "total_jiffies": 1919,
+              "used_percent": 14.4
+            },
+            "disk": {
+              "others": [],
+              "roles": [
+                {
+                  "free_bytes": 13456678912,
+                  "fstype": "ext4",
+                  "inodes": {
+                    "free": 2759611,
+                    "total": 3276800,
+                    "used": 517189,
+                    "used_percent": 15.8
+                  },
+                  "mount_point": "/",
+                  "note": "HOME (/data/home/vince) is on this filesystem",
+                  "path": "/",
+                  "resolved_from": "declared path",
+                  "role": "ROOT_FS",
+                  "source": "/dev/vda2",
+                  "state": "PRESENT",
+                  "total_bytes": 52721041408,
+                  "used_bytes": 36993015808,
+                  "used_percent": 70.2
+                },
+                {
+                  "path": "/opt/applications",
+                  "resolved_from": "declared path",
+                  "role": "DATA_FS",
+                  "state": "ABSENT"
+                },
+                {
+                  "free_bytes": 3669046812672,
+                  "fstype": "xfs",
+                  "inodes": {
+                    "free": 414683321,
+                    "total": 429496704,
+                    "used": 14813383,
+                    "used_percent": 3.4
+                  },
+                  "mount_point": "/data",
+                  "path": "/data/docker",
+                  "resolved_from": "docker info {{.DockerRootDir}}",
+                  "role": "DOCKER_FS",
+                  "shares_filesystem_with": [
+                    "ARTIFACTS_FS",
+                    "STATE_FS"
+                  ],
+                  "source": "/dev/vdb",
+                  "state": "PRESENT",
+                  "total_bytes": 4395909496832,
+                  "used_bytes": 726862684160,
+                  "used_percent": 16.5
+                },
+                {
+                  "free_bytes": 3669046812672,
+                  "fstype": "xfs",
+                  "inodes": {
+                    "free": 414683321,
+                    "total": 429496704,
+                    "used": 14813383,
+                    "used_percent": 3.4
+                  },
+                  "mount_point": "/data",
+                  "path": "/data/home/vince/state/serveros",
+                  "resolved_from": "paths.Paths().root('state')",
+                  "role": "STATE_FS",
+                  "shares_filesystem_with": [
+                    "ARTIFACTS_FS",
+                    "DOCKER_FS"
+                  ],
+                  "source": "/dev/vdb",
+                  "state": "PRESENT",
+                  "total_bytes": 4395909496832,
+                  "used_bytes": 726862684160,
+                  "used_percent": 16.5
+                },
+                {
+                  "free_bytes": 3669046812672,
+                  "fstype": "xfs",
+                  "inodes": {
+                    "free": 414683321,
+                    "total": 429496704,
+                    "used": 14813383,
+                    "used_percent": 3.4
+                  },
+                  "mount_point": "/data",
+                  "path": "/data/home/vince/artifacts",
+                  "resolved_from": "paths.Paths().root('artifacts')",
+                  "role": "ARTIFACTS_FS",
+                  "shares_filesystem_with": [
+                    "DOCKER_FS",
+                    "STATE_FS"
+                  ],
+                  "source": "/dev/vdb",
+                  "state": "PRESENT",
+                  "total_bytes": 4395909496832,
+                  "used_bytes": 726862684160,
+                  "used_percent": 16.5
+                }
+              ]
+            },
+            "docker": {
+              "CgroupVersion": "2",
+              "Containers": 42,
+              "ContainersPaused": 0,
+              "ContainersRunning": 23,
+              "ContainersStopped": 19,
+              "DockerRootDir": "/data/docker",
+              "Driver": "overlayfs",
+              "Images": 33,
+              "KernelVersion": "6.8.0-124-generic",
+              "LiveRestoreEnabled": true,
+              "MemTotal": 265182715904,
+              "NCPU": 128,
+              "OperatingSystem": "Ubuntu 24.04.4 LTS",
+              "ServerVersion": "29.8.0",
+              "_note": "counts only. `docker system df` is deliberately NOT run: it was measured on this host at over 120s, and a hygiene command that can hang is worse than one that reports less."
+            },
+            "host": {
+              "cpu": {
+                "cores_per_socket": 64,
+                "logical_cpus": 128,
+                "model": "AMD EPYC 9K65 192-Core Processor",
+                "siblings_per_socket": 128,
+                "threads_per_core": 2
+              },
+              "gpu": {
+                "compute_capable": false,
+                "display_controllers": [
+                  "Cirrus Logic GD 5446"
+                ],
+                "reason": "no compute driver reachable (nvidia-smi did not run). This host may still have a virtual display adapter, which is not a GPU in the resource sense.",
+                "state": "UNAVAILABLE"
+              },
+              "load": {
+                "load1": 12.44,
+                "load15": 27.32,
+                "load5": 20.1,
+                "runnable": "9/13945"
+              },
+              "memory": {
+                "available_bytes": 193539813376,
+                "cached_bytes": 130448392192,
+                "free_bytes": 45741137920,
+                "swap": {
+                  "free_bytes": 6259945472,
+                  "total_bytes": 17179865088,
+                  "used_bytes": 10919919616,
+                  "used_percent": 63.6
+                },
+                "total_bytes": 265182715904,
+                "used_bytes": 71642902528
+              },
+              "pressure": {
+                "cpu": {
+                  "full": {
+                    "avg10": 0.0,
+                    "avg300": 0.0,
+                    "avg60": 0.0,
+                    "total": 0.0
+                  },
+                  "some": {
+                    "avg10": 0.06,
+                    "avg300": 0.84,
+                    "avg60": 0.13,
+                    "total": 11475049428.0
+                  },
+                  "state": "PRESENT"
+                },
+                "io": {
+                  "full": {
+                    "avg10": 0.0,
+                    "avg300": 0.1,
+                    "avg60": 0.0,
+                    "total": 7877157676.0
+                  },
+                  "some": {
+                    "avg10": 0.0,
+                    "avg300": 0.13,
+                    "avg60": 0.0,
+                    "total": 8936424573.0
+                  },
+                  "state": "PRESENT"
+                },
+                "memory": {
+                  "full": {
+                    "avg10": 0.0,
+                    "avg300": 0.0,
+                    "avg60": 0.0,
+                    "total": 6400392960.0
+                  },
+                  "some": {
+                    "avg10": 0.0,
+                    "avg300": 0.0,
+                    "avg60": 0.0,
+                    "total": 6820392841.0
+                  },
+                  "state": "PRESENT"
+                },
+                "provider": "PRESENT"
+              },
+              "shm": {
+                "mount": {
+                  "free_bytes": 132591308800,
+                  "path": "/dev/shm",
+                  "total_bytes": 132591357952,
+                  "used_bytes": 49152,
+                  "used_percent": 0.0
+                },
+                "shmem_bytes": 1449738240,
+                "state": "PRESENT"
+              },
+              "uptime_seconds": 1298732.06
+            },
+            "user": {
+              "quota": {
+                "filesystem": "/dev/vdb",
+                "limit_bytes": 536870912000,
+                "mount": "/data",
+                "provenance": "xfs_quota -c 'quota -u vince' /data; the blocks column is in 1024-byte units",
+                "soft_limit_bytes": 483183820800,
+                "state": "PRESENT",
+                "used_bytes": 210685227008,
+                "used_percent": 39.2
+              },
+              "summary": {
+                "counters": {
+                  "clock_ticks": 100,
+                  "cpu_jiffies": 201
+                },
+                "cpu_cores": 2.01,
+                "cpu_percent_of_host": 1.6,
+                "logical_cpus": 128,
+                "memory_percent_of_host": 5.4,
+                "memory_rss_bytes": 14431285248,
+                "memory_total_bytes": 265182715904,
+                "process_count": 187,
+                "provenance": "sum of RSS over this uid's processes, sampled twice; an estimate of resident memory, not kernel per-uid accounting",
+                "sample_seconds": 1.0,
+                "state": "PRESENT",
+                "uid": 1002
+              }
+            }
+          }
+        },
+        "top": {
+          "command": [
+            "resource",
+            "top"
+          ],
+          "captured_at": "2026-09-30T15:55:31+08:00",
+          "payload": {
+            "rows": [
+              {
+                "command": "ps",
+                "cpu_percent": 400.0,
+                "elapsed_seconds": 0,
+                "mem_percent": 0.0,
+                "pid": 3464177,
+                "rss_bytes": 7434240,
+                "user": "vince"
+              },
+              {
+                "command": "cc1plus",
+                "cpu_percent": 142.0,
+                "elapsed_seconds": 0,
+                "mem_percent": 0.0,
+                "pid": 3464128,
+                "rss_bytes": 59797504,
+                "user": "kai"
+              },
+              {
+                "command": "node",
+                "cpu_percent": 105.0,
+                "elapsed_seconds": 6,
+                "mem_percent": 0.0,
+                "pid": 3461913,
+                "rss_bytes": 131072000,
+                "user": "kai"
+              },
+              {
+                "command": "node",
+                "cpu_percent": 105.0,
+                "elapsed_seconds": 287,
+                "mem_percent": 0.0,
+                "pid": 2958991,
+                "rss_bytes": 160784384,
+                "user": "kai"
+              },
+              {
+                "command": "python",
+                "cpu_percent": 102.0,
+                "elapsed_seconds": 1,
+                "mem_percent": 0.0,
+                "pid": 3463673,
+                "rss_bytes": 114995200,
+                "user": "zhengji"
+              },
+              {
+                "command": "MainThread",
+                "cpu_percent": 99.9,
+                "elapsed_seconds": 91400,
+                "mem_percent": 0.0,
+                "pid": 4014353,
+                "rss_bytes": 90828800,
+                "user": "yale"
+              },
+              {
+                "command": "MainThread",
+                "cpu_percent": 99.9,
+                "elapsed_seconds": 91384,
+                "mem_percent": 0.0,
+                "pid": 4023216,
+                "rss_bytes": 90484736,
+                "user": "yale"
+              },
+              {
+                "command": "python",
+                "cpu_percent": 90.0,
+                "elapsed_seconds": 0,
+                "mem_percent": 0.0,
+                "pid": 3464020,
+                "rss_bytes": 47480832,
+                "user": "vince"
+              },
+              {
+                "command": "MainThread",
+                "cpu_percent": 75.5,
+                "elapsed_seconds": 3,
+                "mem_percent": 0.1,
+                "pid": 3463246,
+                "rss_bytes": 429879296,
+                "user": "yale"
+              },
+              {
+                "command": "containerd",
+                "cpu_percent": 37.4,
+                "elapsed_seconds": 1298688,
+                "mem_percent": 0.0,
+                "pid": 4653,
+                "rss_bytes": 86970368,
+                "user": "root"
+              }
+            ],
+            "scope_note": "long-running and other users' processes appear here. Seeing a process is not owning it; only registered resources are managed.",
+            "sorted_by": "cpu"
+          }
+        },
+        "user_services": {
+          "command": [
+            "resource",
+            "user-services"
+          ],
+          "captured_at": "2026-09-30T15:55:31+08:00",
+          "payload": {
+            "enabled_unit_files": [
+              "botmux-hook-reconcile.service",
+              "botmux.service",
+              "desktop-commander-remote.service",
+              "laya-shared.service",
+              "openviking.service",
+              "serverosd.service",
+              "session-migration.service",
+              "tailscaled.service",
+              "dirmngr.socket",
+              "gpg-agent-browser.socket",
+              "gpg-agent-extra.socket",
+              "gpg-agent-ssh.socket",
+              "gpg-agent.socket",
+              "keyboxd.socket",
+              "pk-debconf-helper.socket",
+              "botmux-watchdog.timer",
+              "launchpadlib-cache-clean.timer",
+              "ocr-report.timer",
+              "serveros-continuation-wake.timer",
+              "serveros-daily.timer",
+              "tokyo-alert-digest.timer",
+              "tokyo-status-card.timer"
+            ],
+            "linger": "yes",
+            "supervisor": "systemd --user",
+            "units": [
+              {
+                "active": "active",
+                "description": "Accessibility services bus",
+                "load": "loaded",
+                "sub": "running",
+                "unit": "at-spi-dbus-bus.service"
+              },
+              {
+                "active": "active",
+                "description": "/data/home/vince/work/gwy-material-ops/bin/start-chrome.sh",
+                "load": "loaded",
+                "sub": "running",
+                "unit": "baidu-chrome.service"
+              },
+              {
+                "active": "inactive",
+                "description": "botmux 启动后 reconcile HumanControl 入口钩子（幂等）",
+                "load": "loaded",
+                "sub": "dead",
+                "unit": "botmux-hook-reconcile.service"
+              },
+              {
+                "active": "inactive",
+                "description": "botmux watchdog（检查 fleet 是否真活着，不在就重启一次）",
+                "load": "loaded",
+                "sub": "dead",
+                "unit": "botmux-watchdog.service"
+              },
+              {
+                "active": "active",
+                "description": "botmux daemon (IM <-> AI coding CLI bridge)",
+                "load": "loaded",
+                "sub": "exited",
+                "unit": "botmux.service"
+              },
+              {
+                "active": "active",
+                "description": "D-Bus User Message Bus",
+                "load": "loaded",
+                "sub": "running",
+                "unit": "dbus.service"
+              },
+              {
+                "active": "active",
+                "description": "Desktop Commander Remote Agent",
+                "load": "loaded",
+                "sub": "running",
+                "unit": "desktop-commander-remote.service"
+              },
+              {
+                "active": "inactive",
+                "description": "GnuPG network certificate management daemon",
+                "load": "loaded",
+                "sub": "dead",
+                "unit": "dirmngr.service"
+              },
+              {
+                "active": "inactive",
+                "description": "docker.service",
+                "load": "not-found",
+                "sub": "dead",
+                "unit": "docker.service"
+              },
+              {
+                "active": "inactive",
+                "description": "GnuPG cryptographic agent and passphrase cache",
+                "load": "loaded",
+                "sub": "dead",
+                "unit": "gpg-agent.service"
+              },
+              {
+                "active": "active",
+                "description": "/bin/bash /data/home/vince/work/gwy-material-ops/tmp/run-full-rest.sh",
+                "load": "loaded",
+                "sub": "running",
+                "unit": "gwyvid-rest.service"
+              },
+              {
+                "active": "inactive",
+                "description": "GnuPG public key management service",
+                "load": "loaded",
+                "sub": "dead",
+                "unit": "keyboxd.service"
+              },
+              {
+                "active": "inactive",
+                "description": "Clean up old files in the Launchpadlib cache",
+                "load": "loaded",
+                "sub": "dead",
+                "unit": "launchpadlib-cache-clean.service"
+              },
+              {
+                "active": "active",
+                "description": "Shared Laya decision service () — one instance, one inference slot",
+                "load": "loaded",
+                "sub": "running",
+                "unit": "laya-shared.service"
+              },
+              {
+                "active": "inactive",
+                "description": "OCR 跑批飞书播报（由 ocr-report.timer 每 10 分钟触发）",
+                "load": "loaded",
+                "sub": "dead",
+                "unit": "ocr-report.service"
+              },
+              {
+                "active": "active",
+                "description": "OpenViking memory provider (ServerOS Layer C) — independent of serverosd",
+                "load": "loaded",
+                "sub": "running",
+                "unit": "openviking.service"
+              },
+              {
+                "active": "inactive",
+                "description": "debconf communication service",
+                "load": "loaded",
+                "sub": "dead",
+                "unit": "pk-debconf-helper.service"
+              },
+              {
+                "active": "inactive",
+                "description": "ServerOS continuation wake — resume a checkpoint whose wait has ended, once per attempt",
+                "load": "loaded",
+                "sub": "dead",
+                "unit": "serveros-continuation-wake.service"
+              },
+              {
+                "active": "inactive",
+                "description": "ServerOS daily workbench render — leave a current START-HERE set where a person will find it",
+                "load": "loaded",
+                "sub": "dead",
+                "unit": "serveros-daily.service"
+              },
+              {
+                "active": "active",
+                "description": "ServerOS node runtime (semantic controller)",
+                "load": "loaded",
+                "sub": "running",
+                "unit": "serverosd.service"
+              },
+              {
+                "active": "inactive",
+                "description": "snapd user session agent",
+                "load": "loaded",
+                "sub": "dead",
+                "unit": "snapd.session-agent.service"
+              },
+              {
+                "active": "inactive",
+                "description": "systemd-remount-fs.service",
+                "load": "not-found",
+                "sub": "dead",
+                "unit": "systemd-remount-fs.service"
+              },
+              {
+                "active": "active",
+                "description": "Tailscale userspace daemon (tokyo-vince, socket=ts.sock)",
+                "load": "loaded",
+                "sub": "running",
+                "unit": "tailscaled.service"
+              },
+              {
+                "active": "inactive",
+                "description": "东京告警摘要卡（ServerOS delta → 飞书应用1）",
+                "load": "loaded",
+                "sub": "dead",
+                "unit": "tokyo-alert-digest.service"
+              },
+              {
+                "active": "inactive",
+                "description": "东京监控主卡（ServerOS 真值 → 飞书应用1）",
+                "load": "loaded",
+                "sub": "dead",
+                "unit": "tokyo-status-card.service"
+              }
+            ]
+          }
+        },
+        "runtime_list": {
+          "command": [
+            "runtime",
+            "list"
+          ],
+          "captured_at": "2026-09-30T15:55:32+08:00",
+          "payload": {
+            "count": 4,
+            "resources": [
+              {
+                "automatable": false,
+                "desired": "running",
+                "id": "container0-litellm",
+                "kind": "container",
+                "lifecycle": "persistent",
+                "owner": "project:litellm",
+                "protection": "protected",
+                "why_not": [
+                  "protection=protected",
+                  "reconcile.mode=observe (no automatic recovery is enabled for this resource; §11 puts that decision on the resource, not on a daemon flag)"
+                ]
+              },
+              {
+                "automatable": false,
+                "desired": "running",
+                "id": "container0-postgres",
+                "kind": "container",
+                "lifecycle": "persistent",
+                "owner": "project:litellm",
+                "protection": "protected",
+                "why_not": [
+                  "protection=protected",
+                  "reconcile.mode=observe (no automatic recovery is enabled for this resource; §11 puts that decision on the resource, not on a daemon flag)"
+                ]
+              },
+              {
+                "automatable": false,
+                "desired": "running",
+                "id": "serveros-control-plane",
+                "kind": "systemd-user-service",
+                "lifecycle": "persistent",
+                "owner": "device:tokyo-shared-dev-01",
+                "protection": "protected",
+                "why_not": [
+                  "protection=protected",
+                  "reconcile.mode=observe (no automatic recovery is enabled for this resource; §11 puts that decision on the resource, not on a daemon flag)",
+                  "no functional probe (a restart that cannot be verified afterwards is not recovery)"
+                ]
+              },
+              {
+                "automatable": false,
+                "desired": "running",
+                "id": "browser-stack",
+                "kind": "container",
+                "lifecycle": "persistent",
+                "owner": "project:litellm",
+                "protection": "protected",
+                "why_not": [
+                  "protection=protected",
+                  "reconcile.mode=observe (no automatic recovery is enabled for this resource; §11 puts that decision on the resource, not on a daemon flag)"
+                ]
+              }
+            ]
+          }
+        }
+      }
+    }
+  }
+}

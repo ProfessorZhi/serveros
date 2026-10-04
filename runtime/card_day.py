@@ -636,13 +636,309 @@ def row_says(row_: dict) -> str:
     are the three words the card's own blocks use — a second vocabulary for the
     same three facts would make the folded view look like another product.
     """
+    return _states_says(row_, head=str(row_.get("hhmm")))
+
+
+def _states_says(row_: dict, *, head: str) -> str:
+    """The states of one row, under a caller-chosen leading label.
+
+    Split out of `row_says` so a steady RUN can print the same body under an
+    hour RANGE instead of a single hour — one composition of these words, so an
+    interval and an hour cannot describe the same state in two vocabularies.
+
+    The observation word is not printed. It said `（新鲜）` after `无采集缺口`
+    and `（部分新鲜）` after `采集缺口 2` — the same fact twice in one line, on
+    every line of a day's history. §1's screenshot names that kind of repeat
+    (重复说明) and §M4's 「去scope英文key» is the same instruction one level
+    down: the line carries the reading and not the name of the reading.
+    """
     sections = row_.get("sections") or {}
-    states = " · ".join(f"{name}={sections.get(name) or 'UNKNOWN'}"
+    states = " · ".join(f"{BLOCK_NAMES.get(name, name)}"
+                        f"={_state_word(sections.get(name))}"
                         for name in ROW_SECTIONS)
     gaps = row_.get("gaps") or 0
     tail = f" · 采集缺口 {gaps}" if gaps else " · 无采集缺口"
-    gaps_tail = f"（{row_.get('observation')}）" if row_.get("observation") else ""
-    return f"{row_.get('hhmm')} {row_.get('verdict') or 'UNKNOWN'} · {states}{tail}{gaps_tail}"
+    return f"{head} {_state_word(row_.get('verdict'))} · {states}{tail}"
+
+
+# ---------------------------------------------------------------------------
+# the timeline: the day as intervals, with what did not get observed kept in
+# ---------------------------------------------------------------------------
+
+#: The axes two hours are compared on. Named here so that a row that grows a
+#: field becomes a decision about this list rather than a change in what the
+#: timeline quietly compares.
+COMPARED = ("verdict", "observation", "gaps")
+
+#: The words this module prints, spelled out rather than imported. It is loaded
+#: by path before the renderer exists (`_load`), and a copy taken at import time
+#: would be a copy either way — so `tests/test_card_day.py` asserts these three
+#: maps agree with `cards`' rather than a comment promising they do.
+#:
+#: The four summary states are `cards.FACE_WORDS`; `UNKNOWN` is the fifth
+#: because a block that was not read has no verdict and this module still has to
+#: name it — as 无法确认 and never as a green word, for the reason
+#: `cards.NEUTRAL_WORD` gives. The three faulted block states are
+#: `presentation.env_health`'s own list rather than a guess at one.
+STATE_WORDS = {
+    "OK": "正常",
+    "ATTENTION": "建议查看",
+    "CRITICAL": "需要处理",
+    "UNCONFIRMED": "无法确认",
+    "UNKNOWN": "无法确认",
+    "DEGRADED": "降级",
+    "NOT_READY": "未就绪",
+    "DOWN": "不可用",
+}
+
+#: The gateway's two words for the case where it has no reading to give at all.
+#: `presentation.GATEWAY_UNBOUND` is an established absence and
+#: `cards._EMPTY_LEAD_UNBOUND` names it in full; this map is the same name.
+GATEWAY_WORDS = {"UNBOUND": "未配置监控绑定", "BOUND": "已绑定"}
+
+#: The blocks and the axes, under the names a person reads. `mine` / `host` /
+#: `gateway` are the model's keys and `verdict` / `observation` / `gaps` are its
+#: column names; a line printing either is the card showing a reader its schema.
+BLOCK_NAMES = {"mine": "我的资源", "host": "整机", "gateway": "AI Gateway"}
+AXIS_NAMES = {"verdict": "整体状态", "observation": "观测", "gaps": "采集缺口"}
+
+
+def _state_word(value) -> str:
+    """One state, in the vocabulary a person reads.
+
+    A state this map has not been taught is printed as itself rather than
+    guessed at or dropped: an unrecognised reading is not a good reading, and it
+    is not a reason to print nothing either.
+    """
+    if value is None:
+        return STATE_WORDS["UNKNOWN"]
+    text = str(value)
+    return STATE_WORDS.get(text) or GATEWAY_WORDS.get(text) or text
+
+
+def changes_between(previous: dict | None, row_: dict) -> list[str]:
+    """What moved between two hours, in the vocabulary a person reads.
+
+    Returns the axes that differ, each as `<block or axis> <before>→<after>`,
+    and an empty list when nothing moved. The three section words are compared
+    one by one rather than as a block, so a card can say WHICH block changed
+    instead of «something did» — with three blocks that is the difference
+    between a line a reader acts on and a line that sends them hunting.
+
+    THE ROLL-UP IS NOT A SECOND CHANGE. `verdict` is a function of the block
+    states and the gap count (`presentation.env_health` builds it from exactly
+    those and nothing else), and `observation` is a function of the same two.
+    Printing them beside the block that moved reports one fact twice —
+    «整体状态 正常→建议查看；整机 正常→建议查看» — and a reader counting two
+    changes would be counting one. So the specific axes are collected first and
+    the derived ones are reached only when nothing specific moved, which is why
+    the two loops below are an if/else and not one pass in `COMPARED` order.
+
+    THE WORDS ARE THE CARD'S, NOT THE MODEL'S. This returned
+    `verdict OK→ATTENTION` / `mine OK→ATTENTION` — the model's column names and
+    the enumerations behind them — and a card that prints either is showing a
+    reader its own schema, which §2 names among the things that must not reach
+    the first screen and CARDS-STYLE §M4 names again as 「去scope英文key».
+    `row_says` had the same defect one line down and is fixed with it, so the
+    face and the fold cannot come out as two vocabularies for one block.
+
+    An axis absent from `previous` is not a change. That is the first hour of a
+    day, and reporting `None → OK` would print a transition into the picture the
+    day opened with.
+    """
+    named = named_changes(previous, row_)
+    return named if named else derived_changes(previous, row_)
+
+
+def named_changes(previous: dict | None, row_: dict) -> list[str]:
+    """The changes that name a block, or the gap count, and nothing else.
+
+    WHY THIS IS SEPARATE FROM `derived_changes`
+    -------------------------------------------
+    The status card's first screen prints its delta as one clause, and §2 caps
+    that screen at ten to twelve lines. A block that moved is a change a reader
+    acts on; `整体状态 正常→建议查看` is the same fact restated one level up, and
+    it is what `changes_between` already refuses to print beside the block that
+    moved. When nothing specific moved, the derived spelling is the ONLY one
+    available and it is still worth a line — that is `derived_changes`, and it
+    is what the card falls back to. The two are separate functions so the card
+    can decline the fallback on its face without a second implementation of
+    «which axes moved» existing anywhere.
+    """
+    if previous is None:
+        return []
+    specific: list[str] = []
+    before_sections = previous.get("sections") or {}
+    after_sections = row_.get("sections") or {}
+    for name in ROW_SECTIONS:
+        before, after = before_sections.get(name), after_sections.get(name)
+        if before != after:
+            specific.append(f"{BLOCK_NAMES.get(name, name)} "
+                            f"{_state_word(before)}→{_state_word(after)}")
+    if previous.get("gaps") != row_.get("gaps"):
+        specific.append(f"{AXIS_NAMES['gaps']} "
+                        f"{previous.get('gaps') or 0}→{row_.get('gaps') or 0} 项")
+    return specific
+
+
+def derived_changes(previous: dict | None, row_: dict) -> list[str]:
+    """The roll-up axes that moved, reached only when no block did.
+
+    Every one of these is a function of the block states and the gap count, so
+    printing one beside the block it is derived from reports a single fact
+    twice. They exist for the case where nothing more specific moved — the
+    verdict can move because the freshness did — and a caller that shows them
+    is saying «something moved and it was not a block».
+    """
+    if previous is None:
+        return []
+    moved: list[str] = []
+    for axis in COMPARED:
+        before, after = previous.get(axis), row_.get(axis)
+        if before == after:
+            continue
+        name = AXIS_NAMES.get(axis, axis)
+        if axis == "gaps":
+            moved.append(f"{name} {before or 0}→{after or 0} 项")
+        else:
+            moved.append(f"{name} {_state_word(before)}→{_state_word(after)}")
+    return moved
+
+
+def timeline(rows: list[dict]) -> list[dict]:
+    """The day as a series of intervals, oldest first.
+
+    WHY THE GAPS ARE ENTRIES AND NOT A COUNT
+    ----------------------------------------
+    A fold that printed one line per recorded hour and a running count of
+    missing ones would compress the two things a reader must tell apart. «The
+    state held steady from 16:00 to 17:00» and «16:00 to 17:00 was never looked
+    at» produce the same single row in a list of observations, and they are
+    opposite claims: one says the machine was fine and the other says nobody
+    knows. So a stretch with no reading is its own entry, and it is an INTERVAL
+    — it runs between the hour before it and the hour after it, which is why it
+    sits between them in the list rather than in a summary line at the bottom.
+
+    A transition is a boundary for the same reason read the other way: two
+    adjacent hours that disagree end one interval and begin the next. So the
+    list is a sequence of runs — each entry says from which hour to which hour
+    one picture held, and says what ended it.
+
+    `rows` is oldest-first, and the current hour is its last element or absent.
+    An empty list is an empty day and returns an empty list; this function
+    invents no opening entry for a day that has not been opened.
+
+    STEADY HOURS ARE ONE ENTRY AND NOT N
+    ------------------------------------
+    This is what makes the list a list of RUNS rather than a list of hours, and
+    it was the gap between this docstring and its code. Eleven hours that did not
+    move were printed as eleven lines reading «与上一时点相同», which is eleven
+    statements of one fact and the shape the previous card's history had. §6's
+    acceptance is that the day is read at a glance; a reader cannot see the shape
+    of a day through a column of identical rows, and the fold's own title — «12
+   个时点 · 0 处变化» — was already answering the question the eleven lines were
+    asking eleven more times.
+    """
+    entries: list[dict] = []
+    previous: dict | None = None
+    #: The hours since the last thing that cut a segment. Emitted as one entry
+    #: when something cuts it — a transition, a gap, or the end of the day.
+    run: list[dict] = []
+
+    def cut() -> None:
+        """Close the open steady run, if there is one."""
+        if not run:
+            return
+        first, last = run[0], run[-1]
+        entries.append({
+            "kind": "steady",
+            "ticks": len(run),
+            "from_hhmm": first.get("hhmm"),
+            "to_hhmm": last.get("hhmm"),
+            "hhmm": last.get("hhmm"),
+            "verdict": last.get("verdict"),
+            "observation": last.get("observation"),
+            "sections": last.get("sections"),
+            "gaps": last.get("gaps"),
+            "changes": [],
+            "says": _steady_says(first, last, len(run)),
+        })
+        run.clear()
+
+    for index, row_ in enumerate(rows):
+        # The stretch nobody observed, emitted BEFORE the hour that follows it,
+        # so the list reads in the order it happened. It is a boundary like any
+        # other: the hours before it are one run and the hours after it are
+        # another, and merging across it would be the compression this function
+        # exists to refuse.
+        if previous is not None:
+            missing = row_["tick"] - previous["tick"] - 1
+            if missing > 0:
+                cut()
+                entries.append({
+                    "kind": "gap",
+                    "ticks": missing,
+                    "from_hhmm": previous.get("hhmm"),
+                    "to_hhmm": row_.get("hhmm"),
+                    "says": (f"{previous.get('hhmm')}–{row_.get('hhmm')} "
+                             f"未有观测：{missing} 个时点没有读数"
+                             f"（不是「无变化」，是没人看过）"),
+                })
+        moved = changes_between(previous, row_)
+        if index == 0 or moved:
+            # The day's first hour is not a transition — `changes_between`
+            # returns nothing against `None` for exactly that reason — so it is
+            # its own kind and it opens the list.
+            cut()
+            entries.append({
+                "kind": "open" if index == 0 else "transition",
+                "tick": row_["tick"],
+                "hhmm": row_.get("hhmm"),
+                "verdict": row_.get("verdict"),
+                "observation": row_.get("observation"),
+                "sections": row_.get("sections"),
+                "gaps": row_.get("gaps"),
+                "changes": moved,
+                "says": _timeline_says(row_, moved, open_=index == 0),
+            })
+        else:
+            run.append(row_)
+        previous = row_
+    cut()
+    return entries
+
+
+def _steady_says(first: dict, last: dict, count: int) -> str:
+    """One interval of hours that did not move, as the line a person reads.
+
+    `count == 1` keeps the single-hour wording, because there the interval IS
+    one hour and a range reading «14:00–14:00» would be a worse way to say
+    «14:00». Above that the hour becomes a range and the tail says how many
+    readings held it — the two facts a reader cannot get from a single body.
+    """
+    if count == 1:
+        return f"{row_says(last)} · 与上一时点相同"
+    head = f"{first.get('hhmm')}–{last.get('hhmm')}"
+    return f"{_states_says(last, head=head)} · {count} 个时点无变化"
+
+
+def _timeline_says(row_: dict, moved: list[str], *, open_: bool) -> str:
+    """One timeline entry, as the line a person reads.
+
+    `row_says` and this share the hour-first shape on purpose — the fold used to
+    be a list of hours and is now a list of runs, and a reader who knew the old
+    one should not have to learn a second reading order for the same day. What
+    is added is the `→` clause, and it is present exactly when something moved.
+    """
+    base = row_says(row_)
+    if open_:
+        return f"{base} · 建卡"
+    if not moved:
+        # «无变化» is a claim about two hours that were both read. It never
+        # stands where a gap does, and the gap entry above says so in its own
+        # words — that separation is the point of the kind field.
+        return f"{base} · 与上一时点相同"
+    return f"{base} · 变化 " + "；".join(moved)
 
 
 # ---------------------------------------------------------------------------
@@ -759,12 +1055,20 @@ def summary(document: dict | None) -> dict:
     open_day = document.get("open")
     if not isinstance(open_day, dict):
         return {"schema": SCHEMA, "day_ref": None, "updates": 0, "latest": None,
-                "history": [], "lines": [], "missed_ticks": 0, "message": None,
+                "history": [], "timeline": [], "transitions": 0, "unobserved": 0,
+                "missed_ticks": 0, "message": None,
                 "previous": document.get("previous"),
                 "says": "今天还没有当天的卡"}
     history = [check_row(r) for r in (open_day.get("history") or [])]
     latest = open_day.get("latest")
     updates = len(history) + (1 if latest else 0)
+    # The whole day, current hour included, and the current hour is IN the list
+    # rather than only on the card's face. The gap that matters most is the one
+    # immediately before now — a fold that stopped at the last folded hour would
+    # draw the timeline up to the moment the reading stopped and leave a reader
+    # believing the day continues unbroken into it.
+    rows = history + ([latest] if latest else [])
+    entries = timeline(rows)
     return {
         "schema": SCHEMA,
         "day_ref": open_day.get("day_ref"),
@@ -781,10 +1085,17 @@ def summary(document: dict | None) -> dict:
         # difference between «the next update patches the message that is
         # already there» and «the next update can only be a second card».
         "message": open_day.get("message"),
-        # The folded panel's lines. They travel in the model rather than being
-        # formatted by the renderer, because a renderer that knew how to read a
-        # row would be a second reader of the row schema.
-        "lines": [row_says(r) for r in history],
+        # The day as intervals — transitions, steady stretches and the ones
+        # nobody observed, in the order they happened. Built here rather than by
+        # the renderer, because a renderer that knew how to read a row would be a
+        # second reader of the row schema, and a renderer that knew how to
+        # compare two rows would be a second author of «what counts as a change».
+        "timeline": entries,
+        # Transitions only. The panel's title counts them, and counting them
+        # here keeps the number and the list from drifting apart — a count taken
+        # by the renderer would be a second read of the same list.
+        "transitions": sum(1 for e in entries if e["kind"] == "transition"),
+        "unobserved": sum(1 for e in entries if e["kind"] == "gap"),
         "previous": document.get("previous"),
         # The subject is not repeated here: both consumers label this line
         # 「当天卡» / «**当天卡**», and a sentence that carried it too would read
