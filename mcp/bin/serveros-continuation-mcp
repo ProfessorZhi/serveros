@@ -1,0 +1,18 @@
+#!/usr/bin/env python3
+"""Entry point for the per-wake continuation control surface.
+
+The same three lines as `mcp/bin/serveros-node-mcp`, for the same reason: the
+artifact is not a set of packages, so `mcp/` goes on `sys.path` and the module
+is imported by its bare name. Nothing here sets the envelope — the wake launcher
+does that, and a fallback in this file would be a way for the surface to be
+served by a wake that never filed one.
+"""
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+import continuation_mcp
+
+if __name__ == "__main__":
+    sys.exit(continuation_mcp.main())

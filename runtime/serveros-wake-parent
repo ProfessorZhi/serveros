@@ -1,0 +1,182 @@
+#!/bin/bash
+# ServerOS continuation wake — the ONE executable a wake starts (§17.4).
+#
+# A TEMPLATE. `scripts/release.py continuation-wake` renders `@SERVEROS_RUNTIME@`
+# to the promoted revision and installs the result at `<bin-dir>/serveros-wake-parent`
+# (default `~/.local/bin/serveros-wake-parent`), mode 0755. Nothing in this tree
+# runs it with the placeholder still in it, and the install refuses to produce a
+# launcher whose runtime does not exist.
+#
+# WHY IT LIVES HERE AND NOT IN AN OPERATOR'S `~/.local/bin`
+# --------------------------------------------------------
+# It did live only there until 2026-10-06 — a hand-written file outside every
+# repository, carrying the woken Parent's whole permission posture. Two things
+# are wrong with that, and the second is the reason this file moved:
+#
+#   * §16's rule is that a release is a clean tree promoted to `current`, and a
+#     posture that only exists on one node's disk is not part of any release.
+#   * The posture is a PRODUCT decision — what a woken Parent may do — and the
+#     tests that hold it in place cannot read a file nobody ships. It is now
+#     `tests/test_wake_parent.py`, and it fails if `Bash` comes back.
+#
+# ---------------------------------------------------------------------------
+# WHAT ARRIVES, AND WHAT THIS STARTS
+#
+# `runtime/wake.py` spawns this through `invocation.invoke_once`, which hands it
+# the checkpoint's BRIEFING on STDIN and, in the environment, the path to the
+# CAPABILITY ENVELOPE. So the first thing this does is read stdin to the end, and
+# only then starts anything.
+#
+# What it starts is a NATIVE PARENT — a new session, not a revived one.
+#
+# ---------------------------------------------------------------------------
+# THE POSTURE IS DECLARED HERE, AND THAT IS THE POINT
+#
+# Until 2026-09-29 this file's ancestor ended in a bare `exec claude -p
+# "${briefing}"` and a comment saying that naming a permission mode here would be
+# "a second place to change it" — the first place being `~/.claude/settings.json`,
+# which carries `permissions.defaultMode = "bypassPermissions"`. That reasoning
+# was backwards twice over:
+#
+#   * A woken Parent is started by a grant and is answerable to that grant. Its
+#     authority should be the install's written decision, not whatever a user
+#     settings file happens to say — and that settings file is REWRITTEN BY THE
+#     BOTMUX FLEET ON EVERY START, so the posture was not merely inherited, it
+#     was mutable by a third party between two wakes.
+#   * "A wake that needs to ask a person something has nobody to ask" is an
+#     argument for DENYING, not for bypassing. Bypass is the one answer that
+#     makes every other bound in this system advisory.
+#
+# What was measured on this node, claude 2.1.272 (2026-09-29):
+#
+#   claude -p                     -> ran `id -un`. Unrestricted.
+#   --restricted                  -> no shell tool of any kind; file tools
+#                                    confined: reading a path outside the
+#                                    working directory is refused with
+#                                    "--restricted confines the file tools to
+#                                    the working directory". A REAL boundary.
+#   --restricted --permission-mode bypassPermissions
+#                                 -> "Error: bypassPermissions not supported in
+#                                    restricted mode", exit 1. Structural.
+#   --restricted (settings file still says bypass)
+#                                 -> ran normally, i.e. `--restricted` IGNORES
+#                                    user settings; the posture below no longer
+#                                    depends on ~/.claude/settings.json.
+#   --settings defaultMode=plan   -> did NOT restrict. The mode dial is not a
+#                                    reliable lever in --print mode; explicit
+#                                    tool lists and deny rules are.
+#
+# ---------------------------------------------------------------------------
+# WHY `Bash` IS GONE, AND WHAT REPLACED IT — 2026-10-06
+#
+# Until today the tool list named `Bash` back on purpose, and the reason given
+# was that the briefing's contract required it: the Parent was told to reconcile
+# through `serverosctl work continuations`, to receive a child's result with
+# `work accept`, and to set the record down with `work park`. A Parent with no
+# shell could not discharge the document it was started to act on.
+#
+# That reason is gone, because the route is gone. `serverosctl` is the whole
+# ServerOS mutation surface — every Item on the node, not this wake's — and a
+# Parent holding a shell holds all of it. §2 of the convergence mandate forbids
+# exactly that, and forbids «relaxing Bash» as a way to claim the continuation
+# path is closed. So the Parent is now given the CONTINUATION ADAPTER instead:
+# a per-wake stdio MCP surface, started here, that dies with this Parent, and
+# whose every mutating call re-checks this wake's own grant, epoch, Item,
+# operation and child ownership against the store before anything happens.
+# `runtime/continuation_control.py` is that check; `mcp/continuation_mcp.py` is
+# its wire; the briefing now names its operations instead of `serverosctl`.
+#
+# WHAT THIS BUYS, MEASURED RATHER THAN ASSERTED:
+#   * There is no longer a route from the Parent to `serverosctl`. The shell is
+#     gone, and the adapter's argv is built by `mcp/continuation_mcp.py`, not by
+#     the model.
+#   * `--strict-mcp-config` keeps the node's whole plugin fleet — including the
+#     BotMux control plane — out of a continuation session.
+#   * The MCP surface is exactly six operations, and the sixth (`work.complete`)
+#     is declared and refused: the engine answers `OPERATION_NAMED_UNSUPPORTED`
+#     rather than leaving a caller to guess whether it was forgotten.
+#
+# WHAT THIS STILL DOES NOT BUY — READ THIS BEFORE TIGHTENING IT
+#   * `--restricted` confines the FILE tools to the working directory, and the
+#     working directory is the receiver's `--cwd` (or the unit's
+#     `WorkingDirectory=`). The production unit declares no `--cwd`, so on this
+#     node the fence is the operator's whole home directory. That is a REAL
+#     width and it is not fixed here: narrowing it needs an OS-level boundary
+#     (a dedicated account, a mount namespace, or a sandbox unit), which is a
+#     product decision with a migration plan and is filed as one. This launcher
+#     does not claim otherwise.
+#   * The Parent can still read and write anything inside that fence, and the
+#     adapter cannot see file effects at all. The envelope's `allowed_write_scope`
+#     is a DECLARED scope and is reported by the adapter; it is not enforced
+#     against the filesystem, and `runtime/wake.py:capability_envelope` says so
+#     in its own docstring rather than in this comment.
+#
+# ---------------------------------------------------------------------------
+set -u
+
+briefing="$(cat)"
+
+if [ -z "${briefing}" ]; then
+  # An empty briefing is not a quiet morning; it means the receiver spawned this
+  # with nothing to say. Exit non-zero so the receipt records a failure rather
+  # than a Parent that ran and decided nothing.
+  echo "serveros-wake-parent: empty briefing on stdin; nothing to resume" >&2
+  exit 2
+fi
+
+# THE ENVELOPE IS REQUIRED, AND ITS ABSENCE IS A REFUSAL. The adapter refuses to
+# serve without it — `mcp/continuation_mcp.py:main` exits 2 naming the variable —
+# so a launcher that started anyway would produce a Parent whose entire
+# continuation surface is a server that failed to load, and which would then do
+# whatever a model does when its tools are missing. Checked here so the refusal
+# is in the receipt's stderr rather than in a session that never mentions it.
+envelope="${SERVEROS_CONTINUATION_ENVELOPE:-}"
+if [ -z "${envelope}" ]; then
+  echo "serveros-wake-parent: SERVEROS_CONTINUATION_ENVELOPE is not set in the" >&2
+  echo "  environment. This launcher is started by 'serverosctl work wake', which" >&2
+  echo "  files that envelope before it spawns and would have refused to spawn" >&2
+  echo "  without it. Nothing is started." >&2
+  exit 2
+fi
+if [ ! -f "${envelope}" ]; then
+  echo "serveros-wake-parent: the envelope ${envelope} does not exist. A Parent" >&2
+  echo "  started without one would run with no capability to check against." >&2
+  exit 2
+fi
+
+# The adapter ships INSIDE the revision, so a promoted revision brings its own.
+# Checked rather than assumed: with `--strict-mcp-config` a missing server is a
+# failed server, and the session still starts.
+adapter="@SERVEROS_RUNTIME@/mcp/bin/serveros-continuation-mcp"
+if [ ! -x "${adapter}" ]; then
+  echo "serveros-wake-parent: ${adapter} is missing or not executable. The" >&2
+  echo "  continuation adapter is part of the promoted revision; a revision that" >&2
+  echo "  does not carry it cannot start a Parent that is allowed to do anything." >&2
+  exit 2
+fi
+
+# `claude` is not on a user unit's PATH. Resolved in one place so that the day it
+# moves, it moves here.
+claude_bin="${SERVEROS_WAKE_CLAUDE:-${HOME:-/data/home/vince}/.local/bin/claude}"
+if [ ! -x "${claude_bin}" ]; then
+  echo "serveros-wake-parent: ${claude_bin} is missing or not executable." >&2
+  echo "  Set SERVEROS_WAKE_CLAUDE to the runtime this node should wake, or fix" >&2
+  echo "  the path above. Nothing is started." >&2
+  exit 2
+fi
+
+# The envelope path is interpolated into the MCP config rather than left to be
+# inherited. It IS inherited — `invoke_once` puts it in this process's
+# environment and Claude Code passes its environment to stdio servers — but
+# "inherited" is a property of a client this file does not control, and the one
+# thing that must not happen is a woken Parent whose adapter resolved a
+# DIFFERENT wake's envelope. Stated in the config, it cannot.
+mcp_config=$(printf '{"mcpServers":{"continuation":{"command":"%s","env":{"SERVEROS_CONTINUATION_ENVELOPE":"%s"}}}}' \
+  "${adapter}" "${envelope}")
+
+exec "${claude_bin}" \
+  --restricted \
+  --strict-mcp-config --mcp-config "${mcp_config}" \
+  --tools "Read,Edit,Write,Glob,Grep" \
+  --allowedTools "mcp__continuation" \
+  -p "${briefing}"

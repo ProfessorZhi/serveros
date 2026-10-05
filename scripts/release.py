@@ -109,6 +109,23 @@ WAKE_SERVICE_NAME = "serveros-continuation-wake.service"
 WAKE_TIMER_NAME = "serveros-continuation-wake.timer"
 TREE_MANIFEST = "RELEASE.json"
 
+# The Parent launcher, and why it is shipped rather than supplied.
+#
+# `--parent` was required until 2026-10-06, on the argument that what a woken
+# Parent IS is a fact about this node's agents rather than about a build. The
+# argument was right and the conclusion did not follow: the posture it names — no
+# shell, one Item's worth of adapter, `--strict-mcp-config` — is a SERVEROS
+# decision about continuation, and it was living in a hand-written file under
+# `~/.local/bin` on the one node that had got around to it. A posture that no
+# release carries is a posture no test can hold and no other node can inherit.
+#
+# So the revision renders this template, installs it beside the operator's other
+# binaries, and the unit points at THAT. `--parent` still exists for a node whose
+# Parent is something else; when it is given, the template is not installed and
+# the given path is used verbatim.
+WAKE_PARENT_TEMPLATE = "runtime/serveros-wake-parent"
+WAKE_PARENT_NAME = "serveros-wake-parent"
+
 # Bytecode the interpreter writes into a directory it has RUN from. Excluded from
 # `fingerprint` unconditionally, and the reason is not tidiness.
 #
@@ -1193,18 +1210,27 @@ def cmd_continuation_wake(args) -> int:
 
     IT IS NOT PART OF `promote`, for the same reason `alert-worker` is not: a
     promotion places a revision and points the node at it, and that must keep
-    working on a node whose operator has not decided what a Parent is here. The
-    Parent command line is not a fact about a build — it is a fact about this
-    node's agents — so it is supplied at install time and its absence fails the
-    install rather than producing a waker that fires and wakes nothing.
+    working on a node whose operator has not decided whether this node wakes
+    anything at all. Arming a routine that starts agent processes is a separate
+    act.
 
-    ONE EXECUTABLE AND NOT A COMMAND LINE. `--parent` is a path, validated as an
+    A LAUNCHER IS INSTALLED, AND IT COMES FROM THE REVISION. `--parent` used to
+    be required, on the argument that what a woken Parent is is a fact about this
+    node's agents rather than about a build. That argument was right about a
+    node's AGENT RUNTIME and wrong about everything else: the posture — no shell,
+    this wake's adapter and nothing else, `--strict-mcp-config` — is a decision
+    this product makes, and leaving it to be hand-written per node is how it ends
+    up hand-written differently, or not at all. So the revision ships
+    `runtime/serveros-wake-parent`, this command renders it and installs it to
+    `--bin-dir`, and the unit points at that. `--parent` still names a different
+    Parent for a node that has one, and is then used verbatim.
+
+    ONE EXECUTABLE AND NOT A COMMAND LINE. Either path is validated as an
     absolute executable with no whitespace and no `@`. Two readers have to agree
     about it — systemd splits `ExecStart=` into argv, and `runtime/wake.py` reads
     the rendered unit back to decide whether a receiver is `wired` — and anything
     that has to survive both correctly is anything that will one day be read
-    differently by one of them. An install that needs arguments writes a wrapper
-    and points `--parent` at it.
+    differently by one of them.
 
     TWO BOUNDS, AND THEY ARE THE SAME TWO `runtime/wake.py` APPLIES. `--budget`
     is the longest one Parent may run as far as this node is concerned. The
@@ -1238,21 +1264,48 @@ def cmd_continuation_wake(args) -> int:
                   "install one.", file=sys.stderr)
             return 1
 
-    parent = str(args.parent)
+    # THE LAUNCHER, WHEN ONE WAS NOT SUPPLIED. Rendered from the revision and
+    # installed to `--bin-dir`, so that the posture a woken Parent runs under is
+    # the one this release ships rather than one a node's disk remembers. Read
+    # the constant's comment for why this is not `--parent` with a default
+    # written into the argument parser: it is a file that has to be placed,
+    # marked executable and pointed at, and pretending otherwise would put a
+    # path in the unit that nothing ever wrote.
+    launcher_text = None
+    if args.parent is None:
+        launcher_template = rev_dir / WAKE_PARENT_TEMPLATE
+        if not launcher_template.is_file():
+            print(f"REFUSED {launcher_template} is missing from revision "
+                  f"{current}.", file=sys.stderr)
+            print("        A revision built before the Parent launcher shipped "
+                  "cannot install one, and installing the timer without a "
+                  "launcher is the failure this command exists to refuse. Pass "
+                  "--parent to name this node's own Parent.", file=sys.stderr)
+            return 1
+        launcher_text = render_unit(launcher_template.read_text(), root / "current",
+                                    args.state_dir)
+        parent_path = args.bin_dir / WAKE_PARENT_NAME
+    else:
+        parent_path = args.parent
+
+    parent = str(parent_path)
     problem = None
     if not Path(parent).is_absolute():
-        problem = ("--parent is not an absolute path. The unit runs it from a "
+        problem = ("the Parent path is not absolute. The unit runs it from a "
                    "user manager whose PATH is whatever the machine happens to "
                    "have, and a Parent found by luck is a receiver that works "
                    "until the day it does not")
     elif any(c.isspace() for c in parent) or "@" in parent:
-        problem = ("--parent carries whitespace or `@`. Two readers have to agree "
-                   "about this value — systemd splitting `ExecStart=` and "
-                   "`runtime/wake.py` reading the unit back — so it is one path "
-                   "and the arguments belong in a wrapper")
-    elif not Path(parent).is_file():
+        problem = ("the Parent path carries whitespace or `@`. Two readers have "
+                   "to agree about this value — systemd splitting `ExecStart=` "
+                   "and `runtime/wake.py` reading the unit back — so it is one "
+                   "path and the arguments belong in a wrapper")
+    elif args.parent is not None and not Path(parent).is_file():
+        # Only for a path the operator named. The rendered launcher does not
+        # exist yet on the first install, which is the whole point: this run is
+        # what writes it.
         problem = "--parent is not a file that exists"
-    elif not os.access(parent, os.X_OK):
+    elif args.parent is not None and not os.access(parent, os.X_OK):
         problem = "--parent is not executable"
     if problem:
         print(f"REFUSED {problem}.", file=sys.stderr)
@@ -1284,6 +1337,8 @@ def cmd_continuation_wake(args) -> int:
     timer_text = render_unit(timer_template.read_text(), root / "current", args.state_dir)
 
     if args.dry_run:
+        if launcher_text is not None:
+            print(f"would install  {args.bin_dir / WAKE_PARENT_NAME}")
         print(f"would install  {args.unit_dir / WAKE_SERVICE_NAME}")
         print(f"would install  {args.unit_dir / WAKE_TIMER_NAME}")
         print(f"  revision     {current}")
@@ -1296,6 +1351,21 @@ def cmd_continuation_wake(args) -> int:
         print("  NOT enabled  (arm it yourself; nothing wakes a checkpoint until "
               "the timer is in the wanted set)")
         return 0
+
+    if launcher_text is not None:
+        # Written to a sibling and renamed, for the reason the store's own writer
+        # does it: this file is EXECUTED BY A TIMER THAT IS ALREADY FIRING on a
+        # node that has installed the routine before, and a Parent started
+        # against a half-written launcher is a shell reading its own tail as
+        # commands. `os.replace` is atomic within one filesystem, and the
+        # temporary lives in the destination directory so it is the same one.
+        args.bin_dir.mkdir(parents=True, exist_ok=True)
+        target = args.bin_dir / WAKE_PARENT_NAME
+        temporary = target.with_name(target.name + ".new")
+        temporary.write_text(launcher_text)
+        temporary.chmod(0o755)
+        os.replace(temporary, target)
+        print(f"installed      {target}")
 
     args.unit_dir.mkdir(parents=True, exist_ok=True)
     (args.unit_dir / WAKE_SERVICE_NAME).write_text(service_text)
@@ -1418,12 +1488,18 @@ def main() -> int:
              "timer), DISABLED. Separate from promote because the Parent command "
              "line is a fact about this node and not about a build")
     common(p)
-    p.add_argument("--parent", type=Path, required=True,
+    p.add_argument("--parent", type=Path, default=None,
                    help="the executable a wake starts, as ONE absolute path. "
-                        "Required and not defaulted: a waker with no Parent "
-                        "fires on its timer, wakes nothing and exits 0, which "
-                        "reads exactly like a node with nothing to resume. "
-                        "Arguments belong in a wrapper script, not here")
+                        "Omit it and the revision's own `runtime/"
+                        "serveros-wake-parent` is rendered and installed to "
+                        "--bin-dir and used, which is the continuation posture "
+                        "this product ships — no shell, this wake's adapter as "
+                        "the only ServerOS surface. Pass a path only when this "
+                        "node's Parent is something else. Either way the value "
+                        "has to be ONE path: a waker with a Parent that cannot "
+                        "be started fires on its timer, wakes nothing and exits "
+                        "0, which reads exactly like a node with nothing to "
+                        "resume. Arguments belong in a wrapper script")
     p.add_argument("--budget", type=int, required=True,
                    help="the longest one Parent may run, in seconds. Required: "
                         "the receiver clamps each attempt to the smaller of this "
