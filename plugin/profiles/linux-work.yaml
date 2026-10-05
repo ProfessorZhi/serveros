@@ -846,7 +846,53 @@ short_description: Agent Engineering Workbench for a Linux work node
 #   runtime/card-scenarios.yaml          56f087a4 → 56a985d2
 #   runtime/card_scenarios.py            81f4f4a7 → 6e0f779c
 #   runtime/cards.py                     85e56bde → 717c8417
-cachebuster: srv0005.20261005b
+#
+# ---- srv0005.20261005c -------------------------------------------------
+#
+# A WRITER THAT ERASED ITS OWN SUBJECT AND CALLED IT SUCCESS. `ability
+# refresh` on a device id that matches no installation wrote `registry_status:
+# FRESH` with `abilities: []` and exited 0, so "the id you typed names nothing"
+# was recorded as "this node has no abilities". On 2026-10-05 it did exactly
+# that to this node: the live projection went from 18 abilities in 17262 bytes
+# to an empty 381, and the command reported success. The docstring of
+# `cmd_ability_refresh` had called that shape *a real and dangerous answer* all
+# along, but it printed the warning AFTER the write, and a warning that arrives
+# after the damage is not a warning.
+#
+# THE SPELLING MOST LIKELY TO BE PASTED WAS THE ONE THAT FOUND NOTHING. Every
+# ServerOS surface prints the device as a ref — `device:tokyo-shared-dev-01`,
+# on the identity line and in every `device` argument — while the manifest
+# stores the bare id; measured across `abilities-manifest.yaml`, all three ids
+# in use (`linux-server`, `tokyo-shared-dev-01`, `dell-work`) are bare, none
+# carries the prefix. The command compared the input verbatim against the bare
+# form, so the copy-pasteable spelling matched zero rows.
+#
+# Both halves are fixed at the writer and not at the caller: a zero match now
+# raises before any `write_atomic`, so neither product is written (writing only
+# the catalogue would MANUFACTURE the drift the one-read-two-products design
+# exists to make visible), `--allow-empty` is how a caller states that an empty
+# projection was the question, and the two spellings are one device with the
+# normalisation PRINTED rather than performed silently. A silent normalisation
+# is the same class of silence as the bug it replaces.
+#
+# WHY THIS MOVES THE LABEL EVEN THOUGH THE DAEMON IS NOT TOUCHED. The daemon
+# never calls `refresh()` — it says so in its own source — so nothing the
+# daemon does changes here, and that is precisely why the bump is the author's
+# to make: the builder compares a profile against its parent, never against
+# what is already released. `tokyo-status-card.service` and every operator
+# typing `ability refresh` reach this payload's `bin/serverosctl`, and an
+# installed cache keyed on 05b would keep serving the writer that erases the
+# projection under a version string that no longer describes it. The refusal
+# also adds a fourth exit code to the CLI surface, which an installed consumer
+# that only knows 0/1/2 would read as a fault.
+#
+# Two members changed since 05b, measured against the installed 05b payload by
+# the same instrument that measured the 04b delta; `tests/` is not a member of
+# this composition.
+#
+#   runtime/ability_projection.py        c46817ff → 601ca452
+#   runtime/cli.py                       5039124d → dc63cd85
+cachebuster: srv0005.20261005c
 
 skills:
   - name: runtime-management
