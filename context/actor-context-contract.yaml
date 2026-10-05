@@ -131,7 +131,13 @@ freshness:
     FRESH authorizes. STALE may be shown to a human and may not authorize a
     mutation. EXPIRED is refused by name. The two thresholds are separate
     because "ask the person again" and "this evidence is dead" are different
-    instructions.
+    instructions. An observation dated AFTER the clock reading it is EXPIRED
+    and not FRESH: a negative age means this clock cannot age the record in
+    the direction it claims, and the bucket that authorizes nothing is the
+    one that can be wrong safely. `build` refuses such a report outright
+    rather than storing one, because `expires_at` is derived from
+    `observed_at` — a window computed from a future stamp opens after the
+    event it describes and stays open after it.
   never_stored_because: >-
     freshness is a function of the clock, and the clock is not a field. Writing
     it down produces a record that says FRESH forever.
