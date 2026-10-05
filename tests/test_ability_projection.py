@@ -430,6 +430,54 @@ def test_a_catalogue_entry_carries_only_classification_metadata(authority, tmp_p
     assert set(entries[0]) == set(projection.ABILITY_FIELDS)
 
 
+def test_the_thin_ability_link_reaches_the_catalogue(authority, tmp_path):
+    """The Thin Link is carried — and the ability that declares NONE says so.
+
+    Widening the allow-list is half of this change; the other half is that a
+    reader can now tell "this ability declares no product role" from "this
+    projection does not carry product roles at all". Before 2026-10-06 the
+    write loop could only say the second, which is why
+    `abilities/resolver.py` had no `semantic_owner` to report: the declaration
+    existed in the manifest and stopped one field short of the reader.
+
+    The two abilities below are the two answers, so the assertion cannot pass
+    by the field merely existing: 62 of the 65 manifest records carry no Thin
+    Link at all, and `None` is what says so. `{}` would say they declare an
+    empty one, and a resolver that understood that as "declared, and owns
+    nothing" would dress the absence of a declaration as a declaration.
+    """
+    declared = ability("grill-me")
+    declared["product_role"] = {"primary": "B6", "subroles": ["plan-stress-test"],
+                                "realization_role": "specialist",
+                                "cross_refs": ["B3", "B5"]}
+    declared["routing"] = {"placement": ["design-session"],
+                           "trigger_hints": [], "avoid_hints": []}
+    declared["authority"] = {"owns": [], "may_propose": ["design-decision"],
+                             "human_required": ["alignment-confirmation"]}
+    # No `handoff` on this one, so the four fields are not four spellings of one
+    # presence check: a reader sees three populated and one null on the same row.
+    silent = ability("session-manager")
+
+    sha = authority.write(manifest(declared, silent))
+    projection.refresh(authority.repo, sha, DEVICE_IDS, tmp_path / "state", now=NOW)
+
+    entries = {e["name"]: e for e in
+               read(tmp_path / "state" / "abilities" / "catalogue.json")["entries"]}
+    assert entries["grill-me"]["product_role"]["primary"] == "B6"
+    assert entries["grill-me"]["product_role"]["cross_refs"] == ["B3", "B5"]
+    assert entries["grill-me"]["authority"]["human_required"] == ["alignment-confirmation"]
+    assert entries["grill-me"]["handoff"] is None
+    assert entries["session-manager"]["product_role"] is None
+    assert entries["session-manager"]["authority"] is None
+
+    # The same four fields, through the OTHER copy loop. `installed_abilities`
+    # and `catalogue` build their records in two places, and the node's own
+    # ability view is the first of them.
+    local = read(tmp_path / "state" / "abilities" / "effective.json")
+    local_entries = {e["name"]: e for e in local["abilities"]}
+    assert local_entries["grill-me"]["product_role"]["subroles"] == ["plan-stress-test"]
+
+
 def test_no_key_material_reaches_the_catalogue(authority, tmp_path):
     """§30, over the bytes. The catalogue is the WIDER file, so it is the one
     most likely to be handed to something that will render it."""

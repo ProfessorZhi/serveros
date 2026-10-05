@@ -112,6 +112,44 @@ REASONS = (
 # states can be asserted as a closed set rather than compared as strings.
 OPERATION_STATES = ("SUPPORTED", "UNSUPPORTED", "UNKNOWN")
 
+# The Thin Ability Link (§14). These are the four manifest blocks this module
+# reads out of an input-1 catalogue entry. Spelled here rather than imported
+# because this module's import list is closed — `argparse`, `json`, `sys`,
+# `pathlib`, and a test enforces it — and `runtime/ability_projection.py` owns
+# the same four names as its manifest allow-list. Two modules that cannot
+# import each other need one test that says the two lists are equal;
+# `tests/test_ability_resolver.py` has it, and without it a field added to one
+# would be silently dropped by the other.
+THIN_LINK_FIELDS = ("product_role", "routing", "handoff", "authority")
+
+# How much the catalogue could say about an ability's product placement, and
+# four values rather than the two a reader expects. §12's rule is that no
+# ability may be a silent orphan; a rule against silence needs a word for
+# "nobody asked", or the resolver reports every ability it was never told about
+# as an orphan. The fourth is §6 read back: one identity, several distribution
+# forms — `microsoft/playwright-mcp` is a record of type `mcp` and a record of
+# type `plugin` under one id, and if those two disagree about their owner, the
+# honest answer is neither of them.
+PRODUCT_ROLE_STATES = ("DECLARED", "UNDECLARED", "AMBIGUOUS", "UNKNOWN")
+
+# The fields the Thin Link adds to the RECORD, which is a different set from the
+# four blocks the CATALOGUE carries. `routing` and `handoff` are declared, read,
+# and deliberately not copied through: `routing` feeds `why_candidate` and
+# `handoff` describes a work transition that no capability resolution is asking
+# about, and a record field nothing consumes is the shape this change spent its
+# whole length removing — an ability projection that carried a declaration to a
+# reader that never read it. Named as a set so the contract, the record and the
+# §18 negative control can all point at one list instead of three.
+THIN_LINK_RECORD_FIELDS = (
+    "product_role_state",
+    "semantic_owner",
+    "realization_role",
+    "cross_refs",
+    "subroles",
+    "subrole",
+    "human_boundary",
+)
+
 # The reference separator. `ability:<kebab-id>#<verb>`; the bare form stays
 # legal and means the ability without naming an operation.
 OPERATION_SEPARATOR = "#"
@@ -249,6 +287,122 @@ def _operation_state(provider: dict, operation: str) -> tuple[str, str]:
                 f"{operation} is not among the {len(declared)} operations this "
                 "provider declares")
     return "SUPPORTED", f"the provider declares {operation}"
+
+
+def _string_list(value) -> list[str] | None:
+    """`value` as a list of strings, or None when it is not one.
+
+    A list holding anything else is NOT a string list, and it reads as "not
+    declared" rather than as the strings with the other items dropped. The
+    difference matters at the one place these values are used — a subrole that
+    matched — and a coercion that quietly changed `["a", 7]` into `["a"]` would
+    report a declaration the authority did not make.
+    """
+    if not isinstance(value, list) or not all(isinstance(i, str) for i in value):
+        return None
+    return list(value)
+
+
+def _one_declaration(entry: dict, field: str) -> dict | None:
+    """The single declaration in one Thin Link slot, or None.
+
+    The catalogue carries each slot as a LIST of the distinct declarations made
+    by the records that name this ability (`runtime/cli.py#_distinct_declarations`).
+    Exactly one element is the only shape that answers a question about what
+    the ability IS; zero is "declared nothing" and two or more is two records
+    that disagree, and neither of those may be read as a value by picking one.
+    """
+    declared = entry.get(field)
+    if not isinstance(declared, list) or len(declared) != 1:
+        return None
+    return declared[0] if isinstance(declared[0], dict) else None
+
+
+def _thin_link(request: dict, ability: str, operation: str | None) -> dict:
+    """The Thin Ability Link (§14), as the catalogue carries it.
+
+    §14 asks a resolution to answer with the ability's product placement beside
+    its device verdict. This function is the whole of that. It reads what the
+    authority declared and reports it; it decides NOTHING, and that is the
+    clause rather than a simplification. §18 says a Thin Link grants no
+    permission, and the symmetric half — which the mandate states as 「Thin Link
+    不授予权限」 and never spells the other way round — is that it must not DENY
+    anything either. So no value here reaches `status`, refuses an input, or
+    moves a candidate's standing. An ability whose records disagree about their
+    owner still resolves as an ability, and the disagreement is reported as
+    `AMBIGUOUS` and settles nothing.
+
+    `subrole` is the ONE place a name is decided rather than copied, and it is
+    a membership test against a declared closed list — the same shape as input
+    1's catalogue lookup and `_operation_state`'s table lookup, and deliberately
+    not a similarity match. A caller names a verb on the reference; that verb is
+    a subrole of this ability only if the ability says so. It does NOT make the
+    operation supported: a subrole is a responsibility, an operation is
+    something a provider implements, and letting the first answer for the second
+    would transfer an ability's declaration into a provider's capability, which
+    is exactly the transfer §18 forbids.
+    """
+    catalogue = request.get("abilities") or {}
+    entry = catalogue.get(ability)
+    # A missing entry and an entry that is not a mapping are the same reading
+    # here — neither can answer — so both collapse to an empty one before any
+    # question is asked of it. The alternative was a `None.get`, which is how
+    # the first draft of this function answered a request that supplied no
+    # catalogue at all.
+    entry = entry if isinstance(entry, dict) else {}
+    if "product_role" not in entry:
+        # Not asked. Either no catalogue was supplied, or the one supplied names
+        # abilities and declares nothing about them — `--catalogue` reads a file
+        # of keys. UNDECLARED would be the wrong word for both, and it is the
+        # word that manufactures an orphan (§12) out of a question that was
+        # never put. This is the distinction `inputs_seen` keeps, one field over.
+        state = "UNKNOWN"
+    else:
+        declared = entry.get("product_role")
+        if not isinstance(declared, list) or not declared:
+            state = "UNDECLARED"
+        elif len(declared) == 1 and isinstance(declared[0], dict):
+            state = "DECLARED"
+        else:
+            state = "AMBIGUOUS"
+    role = _one_declaration(entry, "product_role") or {}
+    authority = _one_declaration(entry, "authority") or {}
+    subroles = _string_list(role.get("subroles"))
+    return {
+        "product_role_state": state,
+        "semantic_owner": role.get("primary"),
+        "realization_role": role.get("realization_role"),
+        "cross_refs": _string_list(role.get("cross_refs")),
+        "subroles": subroles,
+        "subrole": (operation if operation and subroles and operation in subroles
+                    else None),
+        "human_boundary": _string_list(authority.get("human_required")),
+    }
+
+
+def _why_candidate(ability: str, provider: dict, operation: str | None,
+                   subroles) -> str:
+    """Why this provider is in the candidate set. A restatement, not a verdict.
+
+    Every candidate is here because it declares `ability` — that is the filter,
+    applied once at the top of `resolve()` and never said again anywhere on the
+    record. What this adds is the part that differs BETWEEN the candidates of
+    one ability when a verb was named: whether that verb is something the
+    ABILITY declares it fills, and whether the PROVIDER declares it implements.
+    Two different questions with two different owners, and a reader shown only
+    one of them would take a provider's silence for the ability's.
+
+    Deterministic and complete: two declared tables and the caller's own word
+    go in. Nothing here ranks, matches or guesses, which is the line §14 draws
+    where it refuses to make the resolver an LLM planner.
+    """
+    parts = [f"it declares {ability}"]
+    if operation is not None:
+        if subroles and operation in subroles:
+            parts.append(f"{ability} declares {operation} as a subrole it fills")
+        if _operation_state(provider, operation)[0] == "SUPPORTED":
+            parts.append(f"this provider declares {operation}")
+    return "; ".join(parts)
 
 
 def _path_role_bound(profile: dict | None, role: str) -> bool:
@@ -663,6 +817,15 @@ def resolve(request: dict) -> dict:
         "inputs_missing": [],
     }
 
+    # §14 — the Thin Ability Link, on the record before anything can return.
+    # It goes in here rather than at each of the five exits for the same reason
+    # `inputs_seen` does: a field attached at the exits is a field the sixth
+    # exit will not have, and the record is spread and returned from five
+    # places. Read from input 1 and from nowhere else, because the declaration
+    # belongs to the ability and the catalogue is where the ability is.
+    link = _thin_link(request, ability, operation)
+    record.update(link)
+
     # Which of the eight were readable at all. Recorded whether or not they
     # decided anything, because a confident answer computed from the inputs
     # that happened to be readable is the failure this field exists to expose.
@@ -750,6 +913,7 @@ def resolve(request: dict) -> dict:
                 "candidates": []}
 
     candidates = []
+    instances = request.get("instances")
     for provider in sorted(providers, key=lambda p: (p.get("preference", 100), p["id"])):
         outcome = _evaluate_one(request, ability, provider, operation)
         candidates.append({
@@ -761,6 +925,18 @@ def resolve(request: dict) -> dict:
             "unevaluated": outcome.get("unevaluated", []),
             "finding": outcome.get("finding"),
             "preference": outcome.get("preference", provider.get("preference", 100)),
+            # §14. The positive half of the device_binding input, which until
+            # now was only ever reported when it said NO: an instance that WAS
+            # found left no trace on the record beyond a null `refused_by`, so
+            # "this provider is registered here" and "nobody looked" wore the
+            # same face. Three values for the same reason the eighth entry of
+            # `inputs_seen` needs three — and `None`, not `False`, when the
+            # instance list was never supplied.
+            "installed": (None if instances is None else
+                          _instance_for(instances, provider["id"],
+                                        request.get("device_ref")) is not None),
+            "why_candidate": _why_candidate(ability, provider, operation,
+                                            link["subroles"]),
             # Per candidate, and absent when no operation was named — which is
             # the whole rule: a bare `ability:x` never consults the table, so it
             # has no state to report and must not be given a fabricated one.
