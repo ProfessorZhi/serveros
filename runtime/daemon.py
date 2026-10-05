@@ -48,6 +48,9 @@ how the original incident stayed invisible for 54 minutes.
 """
 from __future__ import annotations
 
+import contextvars
+import errno
+import fcntl
 import importlib.util
 import json
 import os
@@ -59,6 +62,21 @@ import time
 from pathlib import Path
 
 _HERE = Path(__file__).resolve().parent
+
+# Whose connection the request being handled arrived on.
+#
+# `handle` gives a handler its params and nothing else, and `agent.context.attach`
+# needs the peer of *its own* caller — the pid on the other end of this
+# connection is the whole reason a trusted context binds to a process rather
+# than to a claim. This used to live on the instance, under a comment saying it
+# was safe, and only safe, because the daemon serves one connection at a time
+# on one thread. That sentence was true, and being true was the problem: an
+# identity check rested on a scheduling property that nothing declared and any
+# later edit — a thread pool for a slow probe, a handler that re-enters
+# `handle` — could quietly withdraw. Carried per call instead, so the
+# correctness does not depend on how the loop happens to be scheduled.
+_CALLER_PEER: contextvars.ContextVar[dict | None] = contextvars.ContextVar(
+    "serveros_caller_peer", default=None)
 
 
 def _pointer_state(root: Path) -> dict:
@@ -559,6 +577,19 @@ class DaemonError(Exception):
     """The daemon cannot continue as configured."""
 
 
+class DaemonAlreadyRunning(DaemonError):
+    """Another daemon already owns this endpoint.
+
+    Raised rather than logged, because the alternative is what was measured on
+    2026-10-05: two daemons on one socket path do not take turns. Each one
+    unlinks what it finds and binds its own, the other notices on its next
+    one-second accept timeout and does the same, and both go on logging
+    `re-bound … the socket file was removed while this daemon was running`
+    — 46 and 45 times in fifteen seconds, with both processes still up. A
+    client that connects lands on whichever of them won the last race.
+    """
+
+
 # ---------------------------------------------------------------------------
 # Failure budget — §19's "no infinite restart loop"
 # ---------------------------------------------------------------------------
@@ -851,6 +882,12 @@ class Daemon:
         # Set by `_open_socket`; the identity of the socket file this daemon
         # bound, so that teardown cannot act on a socket that is not ours.
         self._socket_ino: int | None = None
+        # Set by `_hold_singleton`; the file descriptor whose `flock` makes
+        # "one daemon per socket path" a property of the kernel rather than of
+        # everyone remembering. `None` until `serve_forever` claims it, which
+        # is why a test may build a `Daemon` — or call `_open_socket` — without
+        # claiming anything.
+        self._singleton_fd: int | None = None
         self.host = host or probes_mod.LiveHost()
         self.inventory = inventory or inventory_mod.Inventory()
         self.enable_reconcile = enable_reconcile
@@ -906,9 +943,6 @@ class Daemon:
         # the alert delta window.
         self._card_ledger: object | None = None
         self.last_alert_pass: dict | None = None
-        # Whose connection the request in flight arrived on. Cleared by
-        # `handle`; read only by `agent.context.attach`.
-        self._peer: dict | None = None
 
     # A status answer older than this many tick intervals is labelled stale.
     # Three, not one: a single missed deadline is a slow machine, and calling
@@ -1463,7 +1497,28 @@ class Daemon:
         reads it (`agent.context.attach`), and that method's whole job is to
         bind an observation to the process that made it.
         """
+        # These two readings happen BEFORE the `try` below, so a request whose
+        # shape this method did not anticipate would not be an error response —
+        # it would be an exception leaving `handle` entirely. A body that is
+        # valid JSON but not an object (`[1, 2, 3]`, `123`, `"GET /"`) raised
+        # `AttributeError: 'list' object has no attribute 'get'` out of
+        # `_serve_connection`, out of `serve_forever`, and out of the process;
+        # the observation daemon died and the node spent its restart interval
+        # blind. A malformed request is a fact about one caller, and the cost
+        # of saying so must not be the daemon. Named here rather than left to
+        # the `except Exception` below, because "a request must be an object"
+        # is the sentence the caller needs and `AttributeError` is not.
+        if not isinstance(request, dict):
+            return _error(
+                None, "BAD_REQUEST",
+                f"a request must be a JSON object; this one is a "
+                f"{type(request).__name__}")
         method = request.get("method")
+        if not isinstance(method, str):
+            return _error(
+                None, "BAD_REQUEST",
+                f"a request's `method` must be a string; this one is a "
+                f"{type(method).__name__}")
         params = request.get("params") or {}
         handler = self.handler_map().get(method)
 
@@ -1472,17 +1527,16 @@ class Daemon:
                 method, "UNKNOWN_METHOD",
                 f"{method!r} is not served. Known: {sorted(self._methods())}",
             )
-        # Set for the duration of the call and cleared after. Safe, and only
-        # safe, because this daemon serves one connection at a time on one
-        # thread: a thread pool here would turn this into a race and make the
-        # sentence above a lie.
-        self._peer = peer
+        # Set for the duration of the call and reset after, carried per call
+        # rather than on the instance: see `_CALLER_PEER` for why the safety of
+        # an identity check must not rest on this loop being single-threaded.
+        token = _CALLER_PEER.set(peer)
         try:
             return {"ok": True, "method": method, "result": handler(params)}
         except Exception as exc:  # noqa: BLE001 - the caller needs the reason
             return _error(method, type(exc).__name__, str(exc))
         finally:
-            self._peer = None
+            _CALLER_PEER.reset(token)
 
     def _methods(self) -> tuple[str, ...]:
         return ("device.show", "context.current", "path.resolve", "path.admit",
@@ -2763,7 +2817,7 @@ class Daemon:
                                      "from a HumanControlProvider")
 
         observed_by = report.get("provider_pid")
-        peer = self._peer or {}
+        peer = _CALLER_PEER.get() or {}
         peer_pid = peer.get("pid")
         if observed_by is None:
             raise actor_mod.Rejected(
@@ -3413,8 +3467,31 @@ class Daemon:
         depend on scheduling. Requests are served between ticks, on the same
         thread, so an IPC answer can never be computed against a half-updated
         observation set.
+
+        Because it is one thread, the time spent inside one connection is time
+        the next tick does not happen — measured on this host: a peer that
+        delivered a request one byte per 3 seconds stopped the tick for 21.0
+        seconds. That is what `REQUEST_READ_SECONDS` bounds, and it bounds it
+        for the peer rather than for the daemon: reading is the part of a
+        request a caller controls, and `_serve_connection` gives it a total
+        that does not restart on every byte.
         """
-        server = self._open_socket()
+        # Before `_open_socket`, not after, and the order is the whole point:
+        # `_open_socket` begins by unlinking whatever is at the socket path,
+        # so a daemon that is going to refuse must refuse before it touches a
+        # live daemon's endpoint. A refusal that had already deleted the
+        # socket would be the defect it is meant to prevent.
+        self._hold_singleton()
+        try:
+            server = self._open_socket()
+        except BaseException:
+            # The lock is held from here on, so it has to be given back on
+            # every way out of this method — including a bind that never
+            # happened. A daemon restarted in a loop would otherwise leak one
+            # descriptor per attempt, holding a lock on an endpoint it never
+            # managed to serve.
+            self._release_singleton()
+            raise
         self._log(f"serverosd listening on {self.socket_path}")
 
         self.interval = interval
@@ -3455,18 +3532,102 @@ class Daemon:
                     continue
                 try:
                     self._serve_connection(connection)
+                except Exception as exc:  # noqa: BLE001 - the loop survives
+                    # The same reason the tick above is wrapped, and the same
+                    # sentence: one connection's failure is a fact about that
+                    # caller, not a reason for the observation daemon to stop
+                    # observing. Without this, an exception anywhere in the
+                    # path between `accept` and the close leaves `serve_forever`
+                    # entirely — closing the server and releasing the socket
+                    # on the way out — and the node spends its whole restart
+                    # interval blind. `handle` names the malformed requests it
+                    # can name; this is the guarantee that no shape it did not
+                    # anticipate can do worse than that.
+                    self._log("serverosd dropped a connection: "
+                              f"{type(exc).__name__}: {exc}")
                 finally:
                     connection.close()
         finally:
             server.close()
             self._release_socket()
+            self._release_singleton()
+
+    # Two bounds on the same read, deliberately different numbers because they
+    # answer different questions.
+    #
+    # `PER_READ_SECONDS` is a *per-recv* timeout: it is reset by every byte that
+    # arrives, so on its own it bounds nothing about a whole request. A peer
+    # that sent one byte every few seconds held this connection — and, because
+    # `serve_forever` calls `_serve_connection` inline, the accept loop and the
+    # tick with it — for as long as it chose. Measured on this host: a 41-byte
+    # request delivered one byte per 3 seconds held the daemon for 21.0 seconds
+    # and no tick happened in between.
+    #
+    # `REQUEST_READ_SECONDS` is that missing bound: one request line, from when
+    # this side starts reading it, no matter how the bytes are paced. A peer
+    # that stops sending entirely still trips the per-recv bound at ten
+    # seconds; a peer that trickles forever now trips this one at thirty and
+    # gets told why by name.
+    #
+    # It bounds the READ, which is the part a peer controls. It deliberately
+    # does not bound `handle`: that is this daemon's own work, some of it slow
+    # on purpose (a probe that shells out can take tens of seconds), and a
+    # deadline there would need a watchdog thread and could tear a half-written
+    # observation. That is a different decision from this one, and this one is
+    # not enlarged to cover it.
+    PER_READ_SECONDS = 10.0
+    REQUEST_READ_SECONDS = 30.0
+
+    def _refuse_a_slow_request(self, connection: socket.socket) -> None:
+        """Tell a peer that ran out of time which bound it ran out of.
+
+        A silent drop would be cheaper to write and would tell the caller
+        nothing it can act on; the two ways a read ends here are different
+        facts about the caller, and this one is not the one the peer can
+        diagnose by itself.
+        """
+        try:
+            connection.settimeout(self.PER_READ_SECONDS)
+            connection.sendall(json.dumps(_error(
+                None, "REQUEST_TIMEOUT",
+                f"a request must arrive as one line, and this one was still "
+                f"arriving after {self.REQUEST_READ_SECONDS:g} seconds. "
+                f"A request is one line, written once",
+            )).encode() + b"\n")
+        except OSError:
+            pass
 
     def _serve_connection(self, connection: socket.socket) -> None:
-        connection.settimeout(10.0)
+        connection.settimeout(self.PER_READ_SECONDS)
         buffer = b""
+        deadline = time.monotonic() + self.REQUEST_READ_SECONDS
         try:
             while b"\n" not in buffer:
-                chunk = connection.recv(65536)
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    # A request that is still arriving when its deadline passes.
+                    # Not normally reached by falling round the loop — the wait
+                    # below is clipped to `remaining`, so a wait that expires
+                    # lands in the handler below — but a guard is what keeps
+                    # `settimeout` from being handed a value <= 0, which would
+                    # make this loop spin instead of refusing.
+                    self._refuse_a_slow_request(connection)
+                    return
+                wait = min(self.PER_READ_SECONDS, remaining)
+                connection.settimeout(wait)
+                try:
+                    chunk = connection.recv(65536)
+                except socket.timeout:
+                    # Which bound ran out is decided by which wait was shorter,
+                    # not by comparing clocks against the deadline — so this is
+                    # not a race between two timers. A clipped wait expiring is
+                    # the deadline; the full per-recv wait expiring is a peer
+                    # that went quiet, and that one is still dropped in silence.
+                    if wait < self.PER_READ_SECONDS:
+                        self._refuse_a_slow_request(connection)
+                    return
+                except OSError:
+                    return
                 if not chunk:
                     return
                 buffer += chunk
@@ -3475,7 +3636,7 @@ class Daemon:
                         _error(None, "REQUEST_TOO_LARGE", "request exceeded 1 MiB")
                     ).encode() + b"\n")
                     return
-        except (socket.timeout, OSError):
+        except OSError:
             return
         line, _, _ = buffer.partition(b"\n")
         try:
@@ -3488,6 +3649,82 @@ class Daemon:
             connection.sendall(json.dumps(response, default=str).encode() + b"\n")
         except OSError:
             pass
+
+    def _lock_path(self) -> Path:
+        # Beside the socket, not in the state dir: the contended thing is the
+        # endpoint. Two daemons with the same --socket and different
+        # --state-dir trample each other exactly as badly as two with the same
+        # state dir, so keying the lock anywhere else would miss them.
+        return self.socket_path.with_name(self.socket_path.name + ".lock")
+
+    def _hold_singleton(self) -> None:
+        """Claim this endpoint for the life of this process.
+
+        MEASURED 2026-10-05, in isolation (temporary state dir, temporary
+        socket, minimal registry): two daemons started on one socket path both
+        came up. In fifteen seconds the socket file's inode changed seven
+        times, both processes stayed alive, and both logged the `re-bound`
+        line — 46 times and 45 times. "Remove the file at my path and bind my
+        own" is right about a *stale* socket and wrong about a live one, and
+        the daemon had no way to tell the two apart.
+
+        The kernel can. An exclusive `flock` held for the process's life is
+        released when the process exits, however it exits, so a lock file left
+        on disk says nothing while a lock that is HELD says everything.
+
+        Deliberately `LOCK_NB` with no retry and no wait: a second daemon is
+        not a slow first one. Waiting would let it come up later and look
+        healthy, which is the same defect arriving on a delay.
+        """
+        self.socket_path.parent.mkdir(parents=True, exist_ok=True)
+        path = self._lock_path()
+        fd = os.open(path, os.O_CREAT | os.O_RDWR, 0o600)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError as exc:
+            if exc.errno not in (errno.EAGAIN, errno.EWOULDBLOCK, errno.EACCES):
+                # Not contention: the lock itself could not be taken. Saying
+                # "another serverosd already holds this" here would be the
+                # wrong-but-confident message this whole method exists to
+                # replace, so the two cases are told apart by errno.
+                os.close(fd)
+                raise DaemonError(
+                    f"could not lock {path} to claim {self.socket_path}: "
+                    f"{exc.strerror or exc}. The lock file has to sit beside "
+                    f"the socket, on a filesystem that supports flock(2)."
+                ) from exc
+            # `flock` only fails here while another process holds it, and the
+            # kernel releases it when that process ends — so the holder is
+            # alive and what it wrote in the file is a current pid, not a
+            # leftover from a daemon that is already gone.
+            holder = ""
+            try:
+                holder = os.pread(fd, 32, 0).decode().strip()
+            except OSError:
+                pass
+            os.close(fd)
+            raise DaemonAlreadyRunning(
+                f"another serverosd already holds {self.socket_path}"
+                + (f" (pid {holder})" if holder else "")
+                + f"; {path} is locked. Two daemons on one socket path do not "
+                  f"take turns — each removes the other's socket file about "
+                  f"once a second and both stay up, and a client lands on "
+                  f"whichever won the last race. Stop the one that holds it, "
+                  f"or give this one a different --socket."
+            )
+        os.ftruncate(fd, 0)
+        os.write(fd, str(os.getpid()).encode())
+        self._singleton_fd = fd
+
+    def _release_singleton(self) -> None:
+        """Give the endpoint back; closing the descriptor releases the lock."""
+        if self._singleton_fd is None:
+            return
+        try:
+            os.close(self._singleton_fd)
+        except OSError:
+            pass
+        self._singleton_fd = None
 
     def _prepare_socket(self) -> None:
         self.socket_path.parent.mkdir(parents=True, exist_ok=True)
@@ -3897,7 +4134,15 @@ def main(argv: list[str] | None = None) -> int:
             print(f"\n{len(report['drift'])} drift item(s), "
                   f"{len(report['decisions'])} decision(s)")
         return 0
-    daemon.serve_forever(interval=args.interval)
+    try:
+        daemon.serve_forever(interval=args.interval)
+    except DaemonAlreadyRunning as exc:
+        # A distinct exit code, so a unit file or a person can tell "there is
+        # already one of me" from "I could not start". `Restart=on-failure`
+        # would otherwise retry this forever, and it would be right to: the
+        # condition clears the moment the other daemon stops.
+        sys.stderr.write(f"serverosd: {exc}\n")
+        return 3
     return 0
 
 
