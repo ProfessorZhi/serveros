@@ -206,6 +206,107 @@ def _code(*, decision: str, code, reason: str, codes: list) -> dict:
     return {"decision": decision, "code": code, "codes": codes, "reason": reason}
 
 
+def _answered_without_a_host(*, subject, context):
+    """The part of the verdict that is a function of the request alone.
+
+    Three rules live here and none of them can be improved by asking a host
+    anything: the subject has to be a subject at all, somebody has to be
+    asking, and the kind has to have a decisive owner source somewhere on this
+    node. Returns `(entry, extra)` ready for `decide`'s `verdict`, or `None`
+    when the subject still has to be looked up.
+
+    They are split out of `decide` for one reason, and it is not tidiness.
+    `evaluate` resolves the subject before it calls `decide`, and `resolve`
+    reaches the host — for a container, all the way to the Docker daemon. So a
+    refusal that follows from the request alone was, until this function
+    existed, only reachable while that daemon happened to be answering. A
+    question that names nobody to ask about was answered `EXIT_UNASKABLE` — the
+    question could not be put — when the honest answer is `EXIT_DENY`, and the
+    refusal named a daemon it had no reason to mention. Measured 2026-10-06
+    with `DOCKER_HOST` pointed at a dead socket: both shapes of
+    `test_a_destructive_action_with_no_tier_is_never_admitted` returned 2
+    instead of 10.
+
+    What this does not do is make the verb answerable without a daemon, and it
+    should not: a question that names somebody, about a kind whose decisive
+    source is the host, still has to be resolved, and `EXIT_UNASKABLE` is the
+    honest answer when the daemon cannot be asked. That dependence is kept on
+    purpose. The one removed is the dependence of a refusal that has no reason
+    to mention a daemon at all.
+
+    Asking the same three questions here rather than writing a second copy of
+    them is what keeps there being one authority for the verdict: `decide`
+    calls this first and returns what it hands back, unchanged.
+    """
+    # -- the subject has to be a subject before anything else is asked ------
+    kind = (subject or {}).get("kind")
+    if not kind or kind not in resource_kinds():
+        return _code(
+            decision="DENY", code="SUBJECT_MALFORMED", codes=["SUBJECT_MALFORMED"],
+            reason=(
+                f"the subject names kind {kind!r}, which is not one of "
+                f"{sorted(resource_kinds())}. A subject that cannot be "
+                "classified cannot be refused for a nameable reason either"
+            ),
+        ), {}
+
+    # -- and somebody has to be asking --------------------------------------
+    #
+    # `network-contract.yaml` documents `candidate.owner_ref` as "who is
+    # asking, resolved from the trusted context; never a name", and
+    # `approval.py` refuses on the same rule. A mutation with no context has
+    # no requester, so there is nobody to attribute the act to and nobody for
+    # an approval to belong to.
+    ctx = context or {}
+    if not (ctx.get("context_ref") and ctx.get("actor_ref")):
+        return _code(
+            decision="DENY", code="NO_TRUSTED_CONTEXT",
+            codes=["NO_TRUSTED_CONTEXT"],
+            reason=(
+                "no trusted context was presented, so the requester cannot be "
+                "named. `owner_ref` is resolved from the trusted context and "
+                "never from an argument"
+            ),
+        ), {}
+
+    # -- can this kind of thing have an owner at all -------------------------
+    source = kind_decisive_source(kind)
+    if source == "ABSENT":
+        return _code(
+            decision="DENY", code="NO_DECISIVE_SOURCE",
+            codes=["NO_DECISIVE_SOURCE"],
+            reason=(
+                f"no decisive owner source exists for a subject of kind {kind!r} "
+                "on this node, so every subject of this kind is UNKNOWN. Not "
+                "unread — unanswerable with what exists"
+            ),
+        ), {"kind_decisive_source": source}
+
+    return None
+
+
+#: What `resolved` holds when the verdict followed from the request alone.
+#:
+#: A record rather than `None`, and a record that says it did not look rather
+#: than one that says it looked and found nothing. That distinction is the one
+#: this repository draws everywhere a host is involved — `DockerUnavailable` is
+#: "the daemon could not be asked" and never "there are no containers", and
+#: `build_registry_index` exists so that an absent registry and an unread
+#: registry do not render the same way. A reader of the verdict reaches this
+#: through `ownership["resolved"]["why"]`.
+_NOT_LOOKED = {
+    "found": None,
+    "why": ("not looked: this verdict follows from the request alone, so the "
+            "subject was never resolved and no host was asked"),
+    "owner": {"class": "UNKNOWN", "confidence": "unknown",
+              "because": "no evidence was gathered, because none was needed",
+              "decided_by": None},
+    "protection": None,
+    "classification": None,
+    "evidence": [],
+}
+
+
 def decide(*, subject, action, context, owner, protection,
            classification=None, evidence=None, registry_present=True) -> dict:
     """The verdict, from facts that were already established.
@@ -255,49 +356,16 @@ def decide(*, subject, action, context, owner, protection,
         out.update(extra)
         return out
 
-    # -- the subject has to be a subject before anything else is asked ------
-    kind = (subject or {}).get("kind")
-    if not kind or kind not in resource_kinds():
-        return verdict(_code(
-            decision="DENY", code="SUBJECT_MALFORMED", codes=["SUBJECT_MALFORMED"],
-            reason=(
-                f"the subject names kind {kind!r}, which is not one of "
-                f"{sorted(resource_kinds())}. A subject that cannot be "
-                "classified cannot be refused for a nameable reason either"
-            ),
-        ))
-
-    # -- and somebody has to be asking --------------------------------------
+    # -- the three rules that need nothing but the question -----------------
     #
-    # `network-contract.yaml` documents `candidate.owner_ref` as "who is
-    # asking, resolved from the trusted context; never a name", and
-    # `approval.py` refuses on the same rule. A mutation with no context has
-    # no requester, so there is nobody to attribute the act to and nobody for
-    # an approval to belong to.
-    ctx = context or {}
-    if not (ctx.get("context_ref") and ctx.get("actor_ref")):
-        return verdict(_code(
-            decision="DENY", code="NO_TRUSTED_CONTEXT",
-            codes=["NO_TRUSTED_CONTEXT"],
-            reason=(
-                "no trusted context was presented, so the requester cannot be "
-                "named. `owner_ref` is resolved from the trusted context and "
-                "never from an argument"
-            ),
-        ))
-
-    # -- can this kind of thing have an owner at all -------------------------
-    source = kind_decisive_source(kind)
-    if source == "ABSENT":
-        return verdict(_code(
-            decision="DENY", code="NO_DECISIVE_SOURCE",
-            codes=["NO_DECISIVE_SOURCE"],
-            reason=(
-                f"no decisive owner source exists for a subject of kind {kind!r} "
-                "on this node, so every subject of this kind is UNKNOWN. Not "
-                "unread — unanswerable with what exists"
-            ),
-        ), kind_decisive_source=source)
+    # In order, and the order is the verdict: a subject that is not a subject,
+    # then nobody asking, then a kind with nowhere to look. `evaluate` asks the
+    # same function before it reaches a host, and this call is what keeps one
+    # authority for the answer — the entry goes to `verdict` unchanged.
+    answered = _answered_without_a_host(subject=subject, context=context)
+    if answered is not None:
+        entry, extra = answered
+        return verdict(entry, **extra)
 
     # -- evidence, if any was offered, before the conclusion it supports -----
     strength = None
@@ -727,10 +795,19 @@ def evaluate(*, subject, action, context=None, host=None, registry=None,
     the action's own policy, and `hygiene.admission` IS that policy for every
     tier in `RISK_TIERS`. Reimplementing its table here would be the second
     answer to one question that this whole module is written against.
+
+    A caller that hands in `resolved` is taken at its word and this function
+    looks at nothing else. A caller that does not gets one of two things: the
+    subject resolved, or `_NOT_LOOKED`, when the verdict follows from the
+    request alone. The second is not an optimisation — it is what keeps a
+    refusal that never mentions a host from depending on one.
     """
-    resolved = resolved if resolved is not None else resolve(
-        subject=subject, host=host, registry=registry, roots=roots,
-        hygiene=hygiene, inspected=inspected)
+    resolved = resolved if resolved is not None else (
+        _NOT_LOOKED
+        if _answered_without_a_host(subject=subject, context=context) is not None
+        else resolve(subject=subject, host=host, registry=registry,
+                     roots=roots, hygiene=hygiene, inspected=inspected)
+    )
 
     ownership = decide(
         subject=subject, action=action, context=context,
