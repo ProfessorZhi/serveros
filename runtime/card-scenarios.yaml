@@ -1,15 +1,15 @@
-# The sixteen situations a card has to survive, as input documents.
+# The seventeen situations a card has to survive, as input documents.
 #
 # WHY THIS IS DATA AND NOT A TEST HELPER
 #
-# The same sixteen documents have two consumers and they must not drift: the
+# The same seventeen documents have two consumers and they must not drift: the
 # tests that assert the cards behave, and the previews a person is asked to look
 # at before approving any of this. If the previews were generated from one set
 # of inputs and the tests asserted against another, a reviewer would be
 # approving a card the suite never ran — and the difference would be invisible,
 # because both would look like cards.
 #
-# The count is sixteen and the number is worth keeping exact. It has been wrong
+# The count is seventeen and the number is worth keeping exact. It has been wrong
 # twice already: the header said "six" while the file held ten, and the figure
 # is the only thing that tells a reviewer whether a whole class of card is
 # missing from the set they are approving. It is written down in seven places —
@@ -344,6 +344,78 @@ _day_with_hole: &day_with_hole
       sections: {mine: OK, host: OK, gateway: OK}
       gaps: 0
 
+# 同一天的第三种形状，存在的理由只有一条：状态面上的「已恢复」。上面两份的
+# 每一拍都是 OK，证明不了「⚠️ 回到 🙂」在卡上长得什么样，而那一格是 2026-09-30
+# 验收点名的五个状态之一。这一份只改一处 —— 第 6 拍（13:00）的 host 段是
+# ATTENTION，第 7 拍（14:00）回到 OK。
+#
+# 它和下面场景清单里的两张卡成对：`host_attention` 是「本刻越线、上一小时没越」，
+# 这一份配 `host_recovered` 是「上一小时越线、本刻回到线内」。两个方向都印在
+# 卡首那一行上，方向错了就会被看见。
+#
+# 行里的 `verdict` 跟着那一拍的 sections 一起动，不是各写各的：`card_day.row`
+# 的判定与段状态同源，一处不一致这一份存储就会被拒收，而这里写下的六个字是
+# 人可以直接对着 `card_day.ROW_FIELDS` 核对的字面量。
+_day_recovered: &day_recovered
+  schema: serveros/card-day.v1
+  open:
+    day_ref: CN-Mainland/2026-09-20
+    kind: WORKDAY
+    opened_at: "2026-09-20T08:00:16+08:00"
+    updated_at: "2026-09-20T14:00:13+08:00"
+    missed_ticks: 0
+    history:
+      - tick: 1
+        hhmm: "08:00"
+        local: "2026-09-20T08:00:16+08:00"
+        verdict: OK
+        observation: 新鲜
+        sections: {mine: OK, host: OK, gateway: OK}
+        gaps: 0
+      - tick: 2
+        hhmm: "09:00"
+        local: "2026-09-20T09:00:11+08:00"
+        verdict: OK
+        observation: 新鲜
+        sections: {mine: OK, host: OK, gateway: OK}
+        gaps: 0
+      - tick: 3
+        hhmm: "10:00"
+        local: "2026-09-20T10:00:13+08:00"
+        verdict: OK
+        observation: 新鲜
+        sections: {mine: OK, host: OK, gateway: OK}
+        gaps: 0
+      - tick: 4
+        hhmm: "11:00"
+        local: "2026-09-20T11:00:10+08:00"
+        verdict: OK
+        observation: 新鲜
+        sections: {mine: OK, host: OK, gateway: OK}
+        gaps: 0
+      - tick: 5
+        hhmm: "12:00"
+        local: "2026-09-20T12:00:14+08:00"
+        verdict: OK
+        observation: 新鲜
+        sections: {mine: OK, host: OK, gateway: OK}
+        gaps: 0
+      - tick: 6
+        hhmm: "13:00"
+        local: "2026-09-20T13:00:12+08:00"
+        verdict: ATTENTION
+        observation: 新鲜
+        sections: {mine: OK, host: ATTENTION, gateway: OK}
+        gaps: 0
+    latest:
+      tick: 7
+      hhmm: "14:00"
+      local: "2026-09-20T14:00:13+08:00"
+      verdict: OK
+      observation: 新鲜
+      sections: {mine: OK, host: OK, gateway: OK}
+      gaps: 0
+
 # 本节点此刻没有共享网关的 binding（§2：没有声明就没有 gateway 段），所以下面
 # 三张需要网关已读到/未读到的卡都借用这一份示例 binding。它是构造的，卡片自己
 # 会把这一层说出来：gateway 段的 `maintainer` 那句写着「由 service binding
@@ -402,7 +474,10 @@ scenarios:
   # -- twelfth is the watermark/pressure split's own subject and says so where it
   # -- stands; the thirteenth through sixteenth are the four the acceptance round
   # -- of 2026-09-30 named after both lists were already written, and each says so
-  # -- in its own comment. Six + four + one + one + four = sixteen. --
+  # -- in its own comment. Six + four + one + one + four = sixteen. The
+  # -- seventeenth is on neither list either, and it stands at the end of the file
+  # -- for the reason its own comment gives: it is the one cell the sixteen above
+  # -- leave empty. Six + four + one + one + four + one = seventeen. --
 
   - name: normal
     card: status
@@ -411,8 +486,9 @@ scenarios:
       产物（见 runtime/card-scenario-reads.json 的 measured-20260930），没有一处
       数字是抄进来的：命令是谁跑的、什么时候、输出是什么，都在那个文件里。
       共享网关那一段是构造的（本节点还没有 binding），当天卡也是构造的：
-      08:00–14:00 七个时点都读到、都无异常，因此卡首比出来的是「与 14:00 相同」，
-      折叠里一天没有断口。
+      08:00–14:00 七个时点都读到、都无异常，因此卡首比出来的是「与 13:00 相同」
+      —— 渲染时刻 14:20 是第 7 个时点，而存储里最新的也是第 7 拍，于是比较落在
+      它的上一拍，也就是 13:00；折叠里一天没有断口。
     reads: measured-20260930
     binding: *binding_ok
     # 三张 status 卡共同的那一天，见文件头的 `_day_clean`。
@@ -1067,9 +1143,11 @@ scenarios:
     at: "2026-09-29T15:00:00+08:00"
     source: constructed — 交换区那一行是真的一条：数值、阈值、首次观测逐字取自
       本节点登记表里 SWAP_PRESSURE 的那一行（2026-09-29 14:46:27 北京，92.0%，
-      阈值 90.0）。登记表里它现已 RESOLVED，开了 61 秒；预览画的是它刚开火的
-      样子，所以下面的时长是示例瞬时与真实首次观测之差，不是那次 episode 的
-      长度。压力那一行不是记录：MEMORY_PRESSURE_ACTIVE 是本轮新增的 code，在
+      阈值 90.0）。那次 episode 在 61 秒后 RESOLVED；预览画的是它刚开火的样子，
+      所以下面的时长是示例瞬时与真实首次观测之差，不是那次 episode 的长度。
+      同一条记录 2026-10-05 实测又开着（occurrence_count 968），而 `alert_ref`
+      由 code、device、subject 三者派生，所以重开的是同一条记录而非另一条——这不
+      影响本卡：本卡的数是 09-29 那一刻的读数。压力那一行不是记录：MEMORY_PRESSURE_ACTIVE 是本轮新增的 code，在
       本节点从未开火过，无法从登记表取。它的 PSI 与 paging 读数是本轮改造前的
       探查读数，而那次记录把本机内存总量写成了 256 GiB（实测 247.0 GiB），所以
       这几个数只作示意，不作为某一秒的测量保留；available 的百分数已按实测
@@ -1090,6 +1168,21 @@ scenarios:
           subject_ref: "host:swap"
           resource_ref: null
           first_seen: "2026-09-29T06:46:27.898360+00:00"
+          # `last_seen` 是活行带着、这份 fixture 先前漏掉的字段：卡面
+          # 「最新观测」那一行读的就是它。本机登记表里 OPEN 的行实测都带它
+          # （2026-10-05 那条 SWAP_PRESSURE 行带着当天的 last_seen），所以
+          # 缺了它这张卡就不是活卡的样子。
+          #
+          # 这里是照这一行自己的数补全，不是另取一个时刻：它画的是刚开火
+          # 那一刻，而 occurrence_count: 1 —— 唯一一次评级就是开火那一次，
+          # 于是 last_seen 与 first_seen 相同。
+          #
+          # 这张卡同时是全套预览里**唯一**一张把「仍在发生」和带时间的
+          # 「最新观测」并排展示的。其余 OPEN 行都没有 last_seen，而那是
+          # 刻意的（见 mixed 那条 row 的注释）。代价是：若不在这里补上，
+          # 「仍在发生 + 一个读数时刻」这一支——活卡最常见的那一支——
+          # 在十七张预览里一次都不会出现，审阅者只会看到「未记录」那一句。
+          last_seen: "2026-09-29T06:46:27.898360+00:00"
           resolved_at: null
           occurrence_count: 1
           state: OPEN
@@ -1132,6 +1225,10 @@ scenarios:
           subject_ref: "host:memory-pressure"
           resource_ref: null
           first_seen: "2026-09-29T06:46:27.898360+00:00"
+          # 同上：这一行也是刚开火的样子（occurrence_count: 1），所以最后
+          # 一次评级就是开火那次。两行的 last_seen 相同不是巧合——它们共用
+          # 同一瞬时，这张卡要展示的就是同一个瞬间上的两根独立轴。
+          last_seen: "2026-09-29T06:46:27.898360+00:00"
           resolved_at: null
           occurrence_count: 1
           state: OPEN
@@ -1164,7 +1261,7 @@ scenarios:
   # -- 这一轮的验收点名要看、而前面十二张都没有覆盖的两个状态：⚠️ 建议查看，
   # -- 以及一台正常机器上有一段没人看的时点。放在那三组之后是为了不搅乱上面
   # -- 「六个 + 四个 + 一个」那段来历 —— 它们是在那两份名单写完之后才被点名的；
-  # -- 这一轮点名的另外两张排在它们后面，文件以第十六张收尾。 --
+  # -- 这一轮点名的另外两张排在它们后面。 --
 
   - name: host_attention
     card: status
@@ -1172,8 +1269,9 @@ scenarios:
     source: constructed 读数 / measured 数值 — 本机这两周的交换区水位都在 64% 上下，
       没有越线的时候，所以这一张把 2026-09-30 15:55 那份采集里的交换区三个数换成
       本机库里真的记过的另一组读数：92.0% / 15813074944 字节，来自
-      runtime/alerts/state.json 里那条 RESOLVED 的 SWAP_PRESSURE 的 measured
-      （阈值 90.0，总数 17179865088 与今天的采集一模一样）。三个 `before` 是采集里
+      runtime/alerts/state.json 里那条 SWAP_PRESSURE 在 RESOLVED 那一刻的
+      measured（阈值 90.0，总数 17179865088 与今天的采集一模一样；同一条记录
+      2026-10-05 实测又开着）。三个 `before` 是采集里
       的原值，对不上就会直接失败。其余读数、当天卡与 binding 都与 normal 相同。
       值得看的是状态词不是这里写上去的：host 块之所以是 ATTENTION，只是因为
       card_source._host_section 拿到 92.0% 与阈值 90.0 之后得出了这个结论 ——
@@ -1275,7 +1373,7 @@ scenarios:
               axis: liveness
               unit: serverosd.service
 
-  # -- 第十六张，也是最后加的一张：§3.4/§13 的第四块「当前问题」在**非空**时的
+  # -- 第十六张：§3.4/§13 的第四块「当前问题」在**非空**时的
   # -- 样子。前面十五张里没有一张让这一块离开绿色，所以这一块此前只在
   # -- `test_cards.py` 的构造模型里出现过，没有一张图给人看过。 --
 
@@ -1378,6 +1476,38 @@ scenarios:
         first_seen: "2026-09-19T11:00:00+00:00"
         last_seen: "2026-09-20T06:15:00+00:00"
         occurrence_count: 5
+
+  # -- 第十七张，也是本文件最后一张。它不属于上面任何一份名单，站在最后是为了
+  # -- 不去搅乱前面那段来历；它存在的理由只有一条：2026-09-30 那次验收要看的
+  # -- 是一张「两张面 × 五个状态」的矩阵，而前面十六张把其中一格留空了 —— 往回
+  # -- 走的那一格。在 incident 面上那一格是 recovery_only；在 status 面上前面
+  # -- 没有一张填得上，因为一张「每一拍都正常」的卡说不出「什么时候回到过正常」，
+  # -- 而一张「此刻还不好」的卡说的是相反的方向。这不是一条新语义，是把矩阵补全
+  # -- 的那一格：⚠️ 回到 🙂 在卡上长得什么样。
+  #
+  # -- 它和 host_attention 必须成对读，两张卡说的是同一件事的两个方向：那一张
+  # -- 是「本刻越线、上一小时没越」，这一张是「上一小时越线、本刻回到线内」。
+  # -- 所以本刻的读数一个数都没改（就是采集里的 63.6%），⚠️ 只落在当天卡的
+  # -- 13:00 那一拍上（见文件头的 `_day_recovered`）。方向不是写上去的：
+  # -- card_day.changes_between 拿本刻的段状态与 13:00 那一拍比，比出了那 1 处
+  # -- 变化，卡首那句话才是「较 13:00 有 1 处变化」而不是「与 13:00 相同」。 --
+  - name: host_recovered
+    card: status
+    title: 交换区水位回落 · 已恢复
+    source: measured 读数 / constructed 当天卡 — 读数就是本节点 2026-09-30 15:55
+      那份采集的直接产物，一个数都没替换（交换区 63.6%），所以此刻的 host 段和
+      卡首都是真的绿。差别全在当天卡上那一拍：13:00 那一拍的 host 段记着
+      ATTENTION —— 行里只有段状态，水位读数本身不落进行内。
+      本机近两周的水位都在 64% 上下，没有越线也没有回落，所以「上一小时越线」
+      这一端借用了 host_attention 那张卡用的同一条真实记录（来自
+      runtime/alerts/state.json 里那条 SWAP_PRESSURE 在 RESOLVED 那一刻的
+      measured：92.0% / 15813074944 字节）—— 它对应的就是 13:00 那一拍；
+      14:00 那一拍用的是采集里
+      的原值。这一张要证明的是恢复会被看见：卡首不说「与 13:00 相同」，是因为
+      13:00 那一拍真的不一样；展开的一天里，13:00 那行仍然写着「建议查看」。
+    reads: measured-20260930
+    binding: *binding_ok
+    day_store: *day_recovered
 
 # What the rendered previews are, in one sentence, for whoever opens them.
 preview_note: 下列预览由同一 renderer 从上面这些文档生成，用于检查布局；它们不是
