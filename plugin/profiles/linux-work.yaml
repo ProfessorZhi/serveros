@@ -800,7 +800,53 @@ short_description: Agent Engineering Workbench for a Linux work node
 #   runtime/notification-contract.yaml    3c614ce3 → 86d8f259
 #   runtime/resource_anomaly.py           6433ae18 → 3a210e23
 #   runtime/view.py                       b4a861c2 → fae23a89
-cachebuster: srv0005.20261005a
+#
+# ---- srv0005.20261005b -------------------------------------------------
+#
+# ONE READING THAT WAS BEING READ AS TWO THINGS, and the label moved with it.
+# `**现在** 无法确认 · 最后读数 09-18 14:15（2 天前）` sat directly above
+# `**测量** 92.0%（≥ 阈值 90.0%）`, and nothing in either sentence said whether
+# the threshold was crossed NOW or was crossed at a reading named two words
+# earlier — one row said the condition holds, the other said nobody can say
+# whether it does. The clock is a fact about the READING; the state word is a
+# fact about NOW; they go stale separately and a reader acts on them separately.
+# So `_now_line` keeps only the state word under `当前确认状态` and the new
+# `_observed_line` carries the clock under `最新观测`, in §4's order, with
+# `_integrity_now` and the recovery block taking the same label for the same
+# question — one question, one word, on every block that answers it.
+#
+# Measured with `presentation.display_cells`, which is why this is a split and
+# not a reflow: `**当前确认状态** 无法确认` is 25 cells and
+# `**最新观测** 09-18 14:15（2 天前）` is 34, so each fits the 46-cell body on
+# its own; the one-row form they replace is 62 and wraps.
+#
+# THE SEVENTEENTH SCENARIO FILLS THE LAST CELL OF THE ACCEPTANCE GRID. The
+# 390px matrix is two faces by five states, and the sixteen scenarios left
+# exactly one cell empty — something that went BACK. On the status face that
+# cell cannot be written: a card whose every tick was fine cannot say when it
+# returned to normal, and a card whose bad tick is still the current tick says
+# the opposite direction. `host_recovered` differs from its neighbours by one
+# stored tick and nothing else, and the direction on its face is computed from
+# that tick by `card_day.changes_between` rather than written into the fixture.
+#
+# THE WATERMARK CARD GAINS THE FIELD IT WAS MISSING. `watermark_beside_stall`
+# carried an OPEN row with no `last_seen`, so 仍在发生 had no reading time
+# anywhere in the set — and that is the branch a live card usually takes. Both
+# of its rows are completed from their own values (`last_seen` = `first_seen` =
+# the instant the card draws, with `occurrence_count: 1`), not from a second
+# timestamp. The rows that still omit it deliberately are `mixed`'s ORPHAN row
+# — no register row corresponds to that reading, and a time for it would be
+# signing for a reading nobody made — and the four acceptance fixtures whose
+# omission this round leaves alone.
+#
+# Three members changed since 05a, measured against the installed 05a payload
+# by the same instrument that measured the 04b delta; `tests/` is not a member
+# of this composition.
+#
+#   runtime/card-scenarios.yaml          56f087a4 → 56a985d2
+#   runtime/card_scenarios.py            81f4f4a7 → 6e0f779c
+#   runtime/cards.py                     85e56bde → 717c8417
+cachebuster: srv0005.20261005b
 
 skills:
   - name: runtime-management

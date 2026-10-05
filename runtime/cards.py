@@ -121,6 +121,30 @@ def face_word(verdict: str | None) -> str:
     return FACE_WORDS.get(str(verdict or ""), NEUTRAL_WORD)
 
 
+#: THE TWO AXES A STATE WORD AND A READING WERE SHARING ONE LABEL FOR.
+#:
+#: 「现在」 used to head a row that carried both answers at once —
+#: `**现在** 无法确认 · 最后读数 09-18 14:15（2 天前）` — and the row next to it
+#: carried a figure with a threshold it had crossed (`测量 92.0%（≥ 阈值
+#: 90.0%）`). A reader had no way to tell whether the threshold was crossed NOW
+#: or was crossed at the reading named two words earlier, and the two sentences
+#: pulled in opposite directions: one said the condition holds, the other said
+#: nobody can say whether it does.
+#:
+#: They are two facts and they get two names, so that neither can borrow the
+#: other's weight. 最新观测 is what was read and when it was read; it is true
+#: regardless of anything that happened after. 当前确认状态 is what may be
+#: asserted about now, given those readings — and it is the one that goes quiet
+#: when nobody has looked.
+#:
+#: ONE SPELLING, EVERYWHERE. `_integrity_now` is the block one card over and
+#: carries the same word for the same answer, which is what its own docstring
+#: asks for: a reader who has learned what this label means must not find it
+#: meaning something else on the next block.
+CONFIRM_LABEL = "当前确认状态"
+OBSERVED_LABEL = "最新观测"
+
+
 def panel(title: str, blocks: list[str], *, expanded: bool = False) -> dict:
     """The collapsible panel, matching the shape the live cards send.
 
@@ -456,38 +480,76 @@ def _now_line(event: dict) -> str:
     monitoring system that stopped looking. On this node the second is not
     hypothetical — it is 1,091 rows.
 
-    The observation time rides here rather than on 首次观测 because it is the
-    same fact as this line: 首次观测 says when it STARTED, this says when it was
-    last SEEN, and a card that gave only the first let a thirteen-day-old
-    reading read as a current one. The age is printed beside it, because the
-    absolute time alone still needs arithmetic from the reader and the
-    arithmetic is the whole point of the line — said in one unit
-    (`presentation.age_says`) rather than exactly, because the pair measured
-    422.9px in a 360px row and « 0 小时» was a third of what the row had to give
-    up. The absolute stamp beside it is what keeps that a rounding and not a
-    loss.
+    NO CLOCK ON THIS LINE, AND THAT IS THE REPAIR. The observation time used to
+    ride here — `无法确认 · 最后读数 09-18 14:15（2 天前）` — and the row beneath
+    it carried a figure against a threshold it had crossed
+    (`**测量** 92.0%（≥ 阈值 90.0%）`). Two sentences, adjacent, pulling opposite
+    ways, and nothing in either of them told a reader whether the threshold was
+    crossed NOW or was crossed at a reading named two words earlier. The clock is
+    a fact about the READING and this line is a fact about NOW; `_observed_line`
+    carries the clock now, and 首次观测 still says when it STARTED, which is the
+    third instant and a third question.
+
+    THE LABEL IS `CONFIRM_LABEL` AND NOT 现在. 现在 named a row that held two
+    answers at once, and the name went with the row: what a reader learned from
+    it was «the clock lives here», which is no longer true. What this line
+    answers is narrower and it says so — what may be asserted about now, given
+    what was read. `_integrity_now` answers the same question on the incident
+    card's own face and uses the same word, which is what its docstring asks
+    for.
     """
     existence = event.get("existence") or {}
     state = str(existence.get("state") or "")
-    when = _local(existence.get("observed_at"))
-    seconds = existence.get("silent_seconds")
-    # The age is suppressed at exactly zero and nowhere else. Zero is not a
-    # threshold this renderer chose — it is the reading having been taken as
-    # this sentence was being written, and `age_says(0)` spells that "刚刚",
-    # which is arithmetic nobody needs. Everywhere else it is printed,
-    # including for a reading a minute old, because the whole point of the line
-    # is that a card can carry a current reading and a stale one and they must
-    # not read alike.
-    age = "" if not seconds else f"（{presentation.age_says(seconds)}）"
     if state == presentation.RECOVERED:
-        return f"**现在** 已恢复" + (f" · {when}" if when else "")
+        return f"**{CONFIRM_LABEL}** 已恢复"
     if state == presentation.UNCONFIRMED:
-        if not when:
-            return "**现在** 无法确认 · 未记录最后读数"
-        return f"**现在** 无法确认 · 最后读数 {when}{age}"
+        return f"**{CONFIRM_LABEL}** 无法确认"
     if state == presentation.STILL:
-        return "**现在** 仍在发生" + (f" · 最近观测 {when}{age}" if when else "")
-    return "**现在** 状态未知"
+        return f"**{CONFIRM_LABEL}** 仍在发生"
+    return f"**{CONFIRM_LABEL}** 状态未知"
+
+
+def _observed_line(event: dict) -> str:
+    """§4's reading under its own name: when this row was last measured.
+
+    ITS OWN ROW AND NOT A CLAUSE OF `_now_line`, which is the repair this pair
+    of functions exists for. The clock used to ride on the state row —
+    `**现在** 无法确认 · 最后读数 09-18 14:15（2 天前）` — and the row directly
+    beneath it carried a figure against a threshold it had crossed
+    (`**测量** 92.0%（≥ 阈值 90.0%）`). Two sentences, adjacent, pulling opposite
+    ways, and nothing in either told a reader whether the threshold was crossed
+    NOW or was crossed at a reading named two words earlier. The clock is a fact
+    about the READING; `_now_line` is a fact about NOW. They go stale
+    separately, a reader acts on them separately, and so they get two names.
+
+    THE AGE IS PRINTED BESIDE THE STAMP because the stamp alone still needs
+    arithmetic from the reader, and the arithmetic is the whole point. Said in
+    one unit (`presentation.age_says`) rather than exactly, because the pair
+    measured 422.9px in a 360px row and « 0 小时» was a third of what the row had
+    to give up; the absolute stamp beside it is what keeps that a rounding and
+    not a loss.
+
+    The age is suppressed at exactly zero and nowhere else. Zero is not a
+    threshold this renderer chose — it is the reading having been taken as this
+    sentence was being written, and `age_says(0)` spells that "刚刚", which is
+    arithmetic nobody needs. Everywhere else it is printed, including for a
+    reading a minute old, because the whole point of the row is that a card can
+    carry a current reading and a stale one and they must not read alike.
+
+    `未记录` AND NOT AN ABSENT ROW. A register entry with no `observed_at` has an
+    answer on this axis and it is not «nothing to say»: the condition is real
+    and nobody recorded when it was last read. Dropping the row would leave
+    `无法确认` standing alone above the measurement, which reads as a monitoring
+    problem with no shape — and the clause this row replaced said exactly this,
+    as `未记录最后读数`, on the same branch of the same function.
+    """
+    existence = event.get("existence") or {}
+    when = _local(existence.get("observed_at"))
+    if not when:
+        return f"**{OBSERVED_LABEL}** 未记录"
+    seconds = existence.get("silent_seconds")
+    age = "" if not seconds else f"（{presentation.age_says(seconds)}）"
+    return f"**{OBSERVED_LABEL}** {when}{age}"
 
 
 def _event_face(event: dict) -> str:
@@ -499,15 +561,29 @@ def _event_face(event: dict) -> str:
     Nothing is removed — it is ordered.
 
     THE ORDER IS THE QUESTIONS', and it is the order §4 names them in: 发生了
-    什么 (the title and 状态) / 现在还存在吗 (`_now_line`) / 当前测量与阈值 (测量)
-    / 影响 / 建议 / 从何时起·持续多久 (首次观测). The measurement sits between the
-    state and the clock because it is the only one of the seven that is
-    evidence: what is wrong is a sentence somebody wrote, what was read is the
-    thing that made the sentence true, and whether it is still true is a fact
-    about a reading. Its line is absent on a code that measures nothing — a
-    declaration mismatch, a lifecycle event — because a field printed with no
-    reading in it is a field a reader learns to skip, and it would sit exactly
-    where the real figures need to be noticed.
+    什么 (the title and 状态) / 现在还存在吗 (`_now_line`, labelled
+    `当前确认状态`) / 最近一次读到什么 (`_observed_line`, labelled `最新观测`) /
+    当前测量与阈值 (测量) / 影响 / 建议 / 从何时起·持续多久 (首次观测). The
+    measurement sits between the state and the reading because it is the only one
+    of the seven that is evidence: what is wrong is a sentence somebody wrote,
+    what was read is the thing that made the sentence true, and whether it is
+    still true is a fact about a reading. Its line is absent on a code that
+    measures nothing — a declaration mismatch, a lifecycle event — because a
+    field printed with no reading in it is a field a reader learns to skip, and
+    it would sit exactly where the real figures need to be noticed.
+
+    EIGHT LINES FOR SEVEN QUESTIONS, and the eighth is not a new question. §4's
+    second question used to be answered by one row carrying two answers —
+    `**现在** 无法确认 · 最后读数 09-18 14:15（2 天前）` — directly above the 测量
+    row and its crossed threshold, and the two said opposite things without
+    either of them saying which fact the threshold belonged to. The reading and
+    the state are two rows under two names now, which is why `_now_line` prints
+    no clock and `_observed_line` exists. Measured with
+    `presentation.display_cells`: `**当前确认状态** 无法确认` is 25 cells and
+    `**最新观测** 09-18 14:15（2 天前）` is 34, so each fits the 46-cell body
+    budget on its own; the one-row form this split replaces —
+    `**当前确认状态** 无法确认 · **最新观测** 09-18 14:15（2 天前）` — is 62 and
+    wraps.
 
     Line one is `_event_title`'s, because the subject is what makes the other
     six actionable. On a container finding it is the name the registration gave
@@ -534,14 +610,15 @@ def _event_face(event: dict) -> str:
         f"**{_event_title(event)}**",
         f"**状态** {what['text'] or what['code']}",
         _now_line(event),
+        _observed_line(event),
     ]
-    # The number and the tier it crossed, directly under the state and above the
-    # cost. §4 always required the measurement; it required it inside the fold,
-    # and the fold is where a reader who has not yet decided to care will not
-    # go. A finding whose whole content is «this reading passed this threshold»
-    # is the one case where the face without the figure answers nothing — a
-    # reader told only «建议查看» and «影响：磁盘可能写满» cannot tell whether to
-    # get up now or at the next hour.
+    # The number and the tier it crossed, directly under the reading it came
+    # from and above the cost. §4 always required the measurement; it required
+    # it inside the fold, and the fold is where a reader who has not yet decided
+    # to care will not go. A finding whose whole content is «this reading passed
+    # this threshold» is the one case where the face without the figure answers
+    # nothing — a reader told only «建议查看» and «影响：磁盘可能写满» cannot tell
+    # whether to get up now or at the next hour.
     #
     # It is a LABELLED line and not a clause of 状态, because the two are
     # different kinds: 状态 is what the machine is doing, 测量 is what was read
@@ -819,12 +896,24 @@ def _integrity_now(current: dict) -> str:
     line had to be argued back into. It first carried the start as well —
     `无法确认 · 自 09-20 06:10（8 小时前）` — which answered §4's second and
     seventh questions in one row and was still wrong, because the incident
-    block one card over answers them with `**现在**` and `**首次观测**` and a
-    reader who has learned what those two labels mean would find the clock
-    moved inside the first one on this block alone. There is no last reading to
-    put here the way `_now_line` does: nobody looked, and that IS the finding.
+    block one card over answers them with a state word and `**首次观测**` and a
+    reader who has learned what those labels mean would find the clock moved
+    inside the first one on this block alone.
+
+    THE STATE WORD IS `_now_line`'S WORD, TO THE LETTER. The incident block
+    renamed that row to `当前确认状态` so it could stop carrying a clock, and
+    `_observed_line` carries the clock there now. This block carries no clock
+    either and for a stronger reason, so it takes the same label — a reader who
+    has learned that `当前确认状态` answers «what may be asserted about now, given
+    what was read» must not find it answering something narrower one card over.
+
+    NO `最新观测` ROW HERE, and the omission IS the finding. The incident block
+    can date its reading; these rows were never read at all, so the observation
+    axis would print `未记录` on every card this face ever renders. A field whose
+    value is constant is not a reading — §2 is what happens to it: the reader
+    learns to skip the row, and skips the state word with it.
     """
-    return "**现在** 无法确认"
+    return f"**{CONFIRM_LABEL}** 无法确认"
 
 
 def _integrity_first_seen(current: dict) -> str:
@@ -1018,7 +1107,10 @@ def recovery_card(model: dict) -> dict:
     # THE FIFTH LINE IS THE CURRENT STATE AND NOT THE START TIME. It read
     # `**出现于** 09-19 10:17` — the instant the register first saw the row —
     # which answers §4's «从何时起» and not its «现在还存在吗»; §10's recovery
-    # shape closes on `现在 ✅ Ready` and leaves the start off entirely. Nothing
+    # shape closes on `现在 ✅ Ready` and leaves the start off entirely. The row
+    # is labelled `当前确认状态` and not `现在`: it is §4's «现在还存在吗» and it is
+    # the same question the incident and integrity blocks answer, so it takes the
+    # same word — one question, one label, wherever it is printed. Nothing
     # is lost: the start is `恢复` minus `本次持续`, the two lines above it, and
     # the reader who wants it subtracts. What was lost by printing the start
     # instead is the one question a person asks a card that says ✅ — is it
@@ -1049,7 +1141,7 @@ def recovery_card(model: dict) -> dict:
             f"**恢复** {_local(item['times']['resolved_at']) or '未记录'}\n"
             f"**本次持续** {item['times']['open_for_text']}\n"
             f"**恢复前** {what['what'] or what['code']}\n"
-            f"**现在** {face_word('OK')}"))
+            f"**{CONFIRM_LABEL}** {face_word('OK')}"))
 
     omitted = model.get("omitted") or {}
     # `announced_beyond_limit` is a capacity note and keeps a line of its own when
