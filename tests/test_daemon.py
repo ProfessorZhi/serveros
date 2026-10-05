@@ -3131,7 +3131,16 @@ class DeadHost:
     returns `{"state": "UNAVAILABLE", "reason": ...}` and the guard expects
     exactly that. §27 is about what the real producer does when the provider is
     down, so the real producer is what this drives.
+
+    `sleep` is here and is not an omission repaired late: it is part of the
+    `Host` protocol every sampler answers to, and the paging sampler added it to
+    the `host_summary()` path. A double that fails every READ but has no gap
+    between two reads is a host that cannot exist, so the `AttributeError` it
+    produced was the double's defect before it was the sampler's.
     """
+
+    def __init__(self):
+        self.slept: list[float] = []
 
     def read(self, args, timeout):
         return -1, "", f"`{' '.join(args[:2])}` is not reachable in this test"
@@ -3144,6 +3153,13 @@ class DeadHost:
 
     def exists(self, path):
         return False
+
+    def sleep(self, seconds):
+        # Recorded, not slept: every read here fails, so the second sample is
+        # as unreadable as the first and the wait would buy nothing. Kept as a
+        # record so that a sampler which forgot to ask for a real gap is
+        # distinguishable from one that asked.
+        self.slept.append(seconds)
 
 
 def _dead_inventory():
@@ -3177,7 +3193,10 @@ def test_an_unmeasured_node_does_not_answer_that_it_has_no_resource_anomalies(
     assert result["coverage"]["graded"] == 0, result["codes_graded"]
     assert result["codes_graded"] == []
     assert result["codes_emitted"] == []
-    assert len(result["codes_not_evaluated"]) == result["coverage"]["of"] == 15
+    # 16 is the size of the fleet this round, and it moved from 15 because
+    # `MEMORY_PRESSURE_ACTIVE` joined `CODES`. Written out rather than read off
+    # the module so that adding a code is a deliberate edit here too.
+    assert len(result["codes_not_evaluated"]) == result["coverage"]["of"] == 16
     # Every ungraded code names why, and the reasons are about a provider, not
     # about a threshold: an empty `why` would be the declaration-layer shape of
     # "we did not look" reported as "we looked and found nothing".

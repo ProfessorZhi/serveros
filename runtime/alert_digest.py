@@ -609,7 +609,8 @@ MEASUREMENT_FIELDS = ("used_percent", "inode_percent", "threshold_percent",
                       "used_bytes", "total_bytes", "size_bytes", "log_bytes",
                       "size_rw_bytes", "threshold_bytes", "cpu_percent",
                       "process_count", "memory_rss_bytes", "top_contributor",
-                      "memory_pressure",
+                      "memory_pressure", "available_percent", "available_bytes",
+                      "swap_used_percent", "paging",
                       "psi_memory_some_avg60_percent_high",
                       "psi_memory_full_avg60_percent_high")
 

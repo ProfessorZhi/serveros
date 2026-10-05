@@ -152,10 +152,13 @@ def _face(card: dict) -> list[str]:
     person taps. That distinction is the whole of this function.
 
     It exists because a rule with no instrument is a preference. The block that
-    renders §3.4's 当前问题 was reviewed by eye against fifteen previews and its
-    register sentence looked like context in all of them; the same sentence is
-    «登记表里还有 1360 项…» against the live register, and the only thing that
-    can tell those two apart is an extractor that knows where the fold starts.
+    renders §3.4's 当前问题 was reviewed by eye against the fifteen previews the
+    tree then had, and its register sentence looked like context in every one of
+    them that carried it; the same sentence is «登记表里还有 1360 项…» against
+    the live register, and the only thing that can tell those two apart is an
+    extractor that knows where the fold starts. (Sixteen previews now: the
+    watermark/pressure split added an alert card, and an alert card carries no
+    such block — the reviewed set is unchanged.)
     """
     found: list[str] = []
 
@@ -203,8 +206,8 @@ class ScenarioRenderTests(unittest.TestCase):
         cls.items = scenarios.rendered()
 
     def test_they_are_the_ones_the_design_and_the_criteria_name(self):
-        """§6's six, then AC18–AC21's four, then the one on neither list, then
-        the two the acceptance round of 2026-09-30 added.
+        """§6's six, then AC18–AC21's four, then two on neither list, then the
+        four the acceptance round of 2026-09-30 added.
 
         The order is asserted, not just the set, because the four groups come
         from four different places and a scenario that migrated between them
@@ -214,18 +217,21 @@ class ScenarioRenderTests(unittest.TestCase):
         justify is a fixture that quietly stops matching the criteria.
 
         The last group is the four states that round asks to be photographed.
-        Two of them had no preview: ⚠️ ATTENTION, because no scenario before it
-        was anything but green, red or unread; and a machine that is fine on a
-        day with a hole in it, because the only gap anyone had drawn sat inside
-        an unread machine. §6 and AC18–AC21 name the outcomes, not the states a
-        screenshot set has to cover, which is why these are on neither list.
+        Two of them had no preview: ⚠️ ATTENTION, because no STATUS scenario
+        before it was anything but green, red or unread; and a machine that is
+        fine on a day with a hole in it, because the only gap anyone had drawn
+        sat inside an unread machine. §6 and AC18–AC21 name the outcomes, not
+        the states a screenshot set has to cover, which is why these are on
+        neither list. (The alert-card fixtures that now sit before ⚠️ ATTENTION
+        in this list are a different face and carry no `env_health` at all, so
+        they neither make that state reachable nor stand in its way.)
 
-        The fifteenth is the newest and is on no list either. §3.4's fourth block
-        is fixed on the status card's first screen, and with fourteen scenarios
+        The sixteenth is the newest and is on no list either. §3.4's fourth block
+        is fixed on the status card's first screen, and with fifteen scenarios
         every one of them left it green or unread — so the state a reader
         actually has to act on («there ARE current problems») had no preview at
         all. The two ends of the block are covered by `observer_failure` (no
-        register read) and by the document-level reading the other thirteen
+        register read) and by the document-level reading the other fourteen
         share (read, nothing on the face); this one is the middle.
         """
         self.assertEqual(
@@ -238,6 +244,11 @@ class ScenarioRenderTests(unittest.TestCase):
              # Not named by any criterion: the only scenario that renders red.
              # See the scenario's own comment for why it has to exist.
              "critical_service_failed",
+             # Also on neither list, and a different kind of addition: the
+             # eleventh is one card's colour, this one is two measurements that
+             # used to arrive as one row. Kept together with the one above so
+             # the two groups on either side of them stay contiguous.
+             "watermark_beside_stall",
              # The states the 2026-09-30 acceptance round photographs.
              "host_attention", "day_gap",
              # The alert face's own fourth answer. The group above covers the
@@ -481,7 +492,7 @@ class ScenarioRenderTests(unittest.TestCase):
 
         The sample mark is skipped. Every preview carries one, so a check
         against `[0]` compared the header against 「🧪 示例 / 尚未发送」 and
-        passed on all thirteen scenarios without ever looking at a face — the
+        passed on all sixteen scenarios without ever looking at a face — the
         kind of check that reports coverage it does not have.
         """
         for item in self.items:
@@ -922,9 +933,11 @@ class TheMeasurementIsAFieldOnTheFirstScreenTests(unittest.TestCase):
                     self.assertEqual(digits(measurement["face"]),
                                      digits(measurement["says"]))
                     checked += 1
-        # Three codes in the fixtures carry a reading, and a guard that silently
-        # stopped running would read as one that passed.
-        self.assertEqual(checked, 3)
+        # Five codes in the fixtures carry a reading, across four scenarios: the
+        # watermark/pressure split puts two of the five on one card, which is
+        # that scenario's whole point. A guard that silently stopped running
+        # would read as one that passed.
+        self.assertEqual(checked, 5)
 
     def test_the_evidence_block_still_prints_the_numbers_it_always_did(self):
         """The lift did not move anything out of the fold: the face gained a
@@ -2684,9 +2697,10 @@ class WhatIsWrongNowIsNotTheRegister(unittest.TestCase):
     """§3.4's 当前问题 answers «现在有问题吗», and the register is bigger than
     that question. This class pins the line between the two.
 
-    It exists because nothing did. The block was built, rendered into fifteen
-    previews and reviewed by eye, and every one of those previews showed a
-    two-row block — a headline and a sentence about the whole register. On this
+    It exists because nothing did. The block was built, rendered into the fifteen
+    previews the tree then had and reviewed by eye, and in every one of them that
+    carried it before `problems_on_the_face` was added it showed two rows — a
+    headline and a sentence about the whole register. On this
     machine that sentence reads «登记表里还有 1360 项…» (measured 2026-10-04
     against `/data/home/vince/state/serveros/runtime/alerts/state.json`), which
     is the shape §13 forbids in the one place it forbids it: «旧账/恢复清单不塞

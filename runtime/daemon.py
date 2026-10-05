@@ -1413,7 +1413,7 @@ class Daemon:
             # and adds no new measurement.
             "resource.docker": self._r_docker_observation,
             "tunnel.list": self._r_tunnel_observation,
-            # §18/§19. The fifteen resource anomaly codes. A forward to
+            # §18/§19. The sixteen resource anomaly codes. A forward to
             # `view.resource_anomaly`, which gathers from the four producers
             # that already own these facts; the daemon contributes the one
             # thing only it has — its own last tick's observations, so the

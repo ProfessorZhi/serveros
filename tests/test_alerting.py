@@ -66,6 +66,13 @@ alerting = _load("serveros_runtime_alerting", ROOT / "runtime" / "alerting.py")
 notifications = _load("serveros_runtime_notifications",
                       ROOT / "runtime" / "notifications.py")
 anomaly = _load("serveros_runtime_anomaly", ROOT / "runtime" / "anomaly.py")
+# The detector's own code-to-threshold table, which is where "which key does
+# this code close against" actually lives. Loaded under the name
+# `test_resource_anomaly.py` loads it with so the two files share one module
+# object; the failure that would follow from two copies is the one the comment
+# above names.
+resource_anomaly = _load("serveros_runtime_resource_anomaly",
+                         ROOT / "runtime" / "resource_anomaly.py")
 graph = _load("serveros_runtime_graph", ROOT / "runtime" / "graph.py")
 store_io = _load("serveros_runtime_agent_control_store",
                  ROOT / "runtime" / "agent_control_store.py")
@@ -81,6 +88,14 @@ RSS_MARGIN = 268435456.0
 COOLDOWN_HIGH = 900
 COOLDOWN_MEDIUM = 3600
 COOLDOWN_LOW = 21600
+
+# The pressure axis. `anomaly.margin_key` turns the `_high` suffix into a
+# `_recovery_margin`, and whether the contract declares that derived key is
+# the difference between a stall alert that closes and one that never can.
+PSI_HIGH = 1.0
+PSI_MARGIN = 0.5
+PSI_FLOOR = 0.5            # PSI_HIGH - PSI_MARGIN
+PSI_SUBJECT = "host:memory-pressure"
 
 # The two detectors, by the names a row stores — which is the label, not the
 # module path. Written here as literals for the same reason the numbers above
@@ -175,6 +190,62 @@ def cpu_signal(*, cpu=279.5, processes=5, top=None, severity="high",
 def cpu_level(cpu, *, subject=GROUP) -> dict:
     return level("HIGH_CPU_SUSTAINED", subject, cpu, CPU_HIGH,
                  "cpu_percent_recovery_margin")
+
+
+def psi_signal(*, some=6.8, severity="medium", subject=PSI_SUBJECT) -> dict:
+    """MEMORY_PRESSURE_ACTIVE, in the shape `_memory_signals` emits.
+
+    The readings are this host's own, from the 2026-09-29 window the split was
+    made for: swap at 80.5%, below its 90% threshold, so the watermark code
+    stayed silent — while memory PSI some avg60 ran 6.80 → 10.53 against a
+    threshold of 1.0, with 53,238 pages/second leaving the machine. The
+    watermark and the pressure are deliberately carried on each other's
+    signals, because neither number means what it looks like alone.
+    """
+    return {"code": "MEMORY_PRESSURE_ACTIVE", "subject": subject,
+            "severity": severity,
+            "measured": {
+                "memory_pressure": {
+                    "state": "PRESENT",
+                    "some": {"avg10": 9.4, "avg60": some, "avg300": 5.1},
+                    "full": {"avg10": 9.3, "avg60": round(some - 0.06, 2),
+                             "avg300": 5.0}},
+                "psi_memory_some_avg60_percent_high": PSI_HIGH,
+                "psi_memory_full_avg60_percent_high": 0.5,
+                "available_bytes": 201863462912,
+                "available_percent": 77.8,
+                "swap_used_percent": 80.5,
+                "paging": {"state": "PRESENT", "window_seconds": 1.02,
+                           "pswpin_per_second": 0.0,
+                           "pswpout_per_second": 53238.0},
+            },
+            "why": f"tasks on this host are stalling on memory ({some}%)"}
+
+
+def psi_level(some, *, subject=PSI_SUBJECT) -> dict:
+    return level("MEMORY_PRESSURE_ACTIVE", subject, some, PSI_HIGH,
+                 "psi_memory_some_avg60_percent_recovery_margin")
+
+
+def psi_state(some, *, severity="medium", subject=PSI_SUBJECT,
+              reported=True):
+    """(signals, levels) for one stall reading, from ONE number.
+
+    Paired for the reason `disk_state` is: the detector emits a level row for
+    every code it grades, so a signal without its row describes an alert state
+    production cannot reach — here, one holding `unmeasured` against a machine
+    once again stalling 6.8%.
+
+    `severity=None` is how the caller says the code did NOT fire: a level row is
+    emitted whatever the value, a signal only above the threshold. Both halves
+    matter, and getting the second wrong is the quieter mistake — a fixture that
+    kept signalling at 0.4% would be asserting that an alert closes while the
+    thing it is about is still happening.
+    """
+    signals = ([] if severity is None else
+               [psi_signal(some=some, severity=severity, subject=subject)])
+    levels = psi_level(some, subject=subject) if reported else {}
+    return signals, levels
 
 
 class RecordingProvider:
@@ -1220,6 +1291,112 @@ class ASwapWatermarkIsNotAPressure(AlertCase):
         self.assertNotIn("avg60=0.0%", line)
 
 
+class ThePressureClosesOnItsOwnMargin(AlertCase):
+    """MEMORY_PRESSURE_ACTIVE: does it stop, and does it stop for a reason.
+
+    A code added to `refuse` is a code that will interrupt somebody, so the
+    question worth asking about it is not whether it fires. It is whether the
+    number that lets it close EXISTS. The margin is derived rather than
+    written: `_THRESHOLDS` points the code at `psi_memory_some_avg60_percent_high`,
+    `anomaly.margin_key` turns that into
+    `psi_memory_some_avg60_percent_recovery_margin`, and a contract that never
+    declares the derived key leaves the alert holding `margin_undeclared` for
+    good. Nothing else in the tree would notice — no import fails, no file
+    changes, and the register simply carries one more open row, which is
+    indistinguishable from a register of real problems.
+    """
+
+    def tick(self, some, *, seconds=0.0, reported=True):
+        """One pass, with the signal present exactly when the code fires."""
+        severity = "medium" if some >= PSI_HIGH else None
+        signals, levels = psi_state(some, severity=severity, reported=reported)
+        return self.run_pass(seconds=seconds, signals=signals, levels=levels)
+
+    def test_a_stall_that_comes_back_down_closes_the_alert(self):
+        self.tick(6.8)
+        self.assertEqual(self.only()["state"], "OPEN")
+        self.assertEqual(self.only()["margin_key"],
+                         "psi_memory_some_avg60_percent_recovery_margin")
+        self.tick(0.4, seconds=60)
+        self.assertEqual(self.only()["state"], "RESOLVED")
+        self.assertEqual(self.only()["resolved_at"], at(60))
+
+    def test_the_floor_is_the_threshold_minus_the_declared_margin(self):
+        """0.5 is the line, and the line is arithmetic rather than a mood: at
+        0.6 the machine is still stalling and the alert holds, at 0.5 it
+        closes. A margin of zero would make it chatter across its own
+        threshold, which is why the number is declared rather than inferred."""
+        self.tick(6.8)
+        self.tick(0.6, seconds=60)
+        self.assertEqual(self.only()["state"], "OPEN")
+        self.assertEqual(self.only()["hold_kind"], "above_floor")
+        self.assertIn("0.5", self.only()["hold_reason"])
+        self.tick(PSI_FLOOR, seconds=120)
+        self.assertEqual(self.only()["state"], "RESOLVED")
+        self.assertEqual(self.only()["resolved_at"], at(120))
+
+    def test_a_margin_that_was_never_declared_is_the_failure_this_guards(self):
+        """The positive control for the contract entry.
+
+        Deleting `psi_memory_some_avg60_percent_recovery_margin` from
+        `attribution-contract.yaml` breaks nothing that anything else checks.
+        The alert does not crash and does not fire late: it holds, for the rest
+        of the decade, with a sentence about there being no distance to come
+        back — a stall that has plainly ended, reported as still open. So both
+        halves are asserted: the declared key closes the alert, and the same
+        alert with that one key withheld does not.
+        """
+        declared = alerting._thresholds()
+        self.assertIn("psi_memory_some_avg60_percent_recovery_margin", declared)
+        alert = {"code": "MEMORY_PRESSURE_ACTIVE", "subject_ref": PSI_SUBJECT,
+                 "margin_key": "psi_memory_some_avg60_percent_recovery_margin"}
+        levels = psi_level(PSI_FLOOR)
+
+        verdict, _, kind = alerting._graded_measurement(
+            alert, levels=levels, ungraded={})
+        self.assertEqual((verdict, kind), ("RESOLVED", "below_floor"))
+
+        without = {k: v for k, v in declared.items()
+                   if k != "psi_memory_some_avg60_percent_recovery_margin"}
+        with mock.patch.object(alerting, "_thresholds", return_value=without):
+            verdict, why, kind = alerting._graded_measurement(
+                alert, levels=levels, ungraded={})
+        self.assertEqual((verdict, kind), ("HELD", "margin_undeclared"))
+        self.assertIn("no distance to come back", why)
+
+    def test_the_watermark_still_closes_after_it_stopped_refusing_things(self):
+        """`SWAP_PRESSURE` moved from `refuse` to `advisory`. Admission is a
+        permission and recovery is arithmetic, and the two are not the same
+        axis: a code that is no longer grounds for refusing the creation of
+        anything is still a code that has to be able to say the watermark came
+        back down. Nothing about the regrade touches this path — which is the
+        reason to assert it rather than to leave it to be inferred from a diff.
+        """
+        declared = alerting._thresholds()
+        margin = "swap_percent_recovery_margin"
+        alert = {"code": "SWAP_PRESSURE", "subject_ref": "host:swap",
+                 "margin_key": margin}
+        floor = declared["swap_percent_high"] - declared[margin]
+        verdict, _, kind = alerting._graded_measurement(
+            alert, levels=level("SWAP_PRESSURE", "host:swap", floor,
+                                declared["swap_percent_high"], margin),
+            ungraded={})
+        self.assertEqual((verdict, kind), ("RESOLVED", "below_floor"))
+
+    def test_an_unreadable_stall_figure_holds_rather_than_closes(self):
+        """"Nobody looked" is not "it recovered", asserted at the alert layer
+        rather than only at the detector's, because the two are different
+        claims and only one of them can close an alert."""
+        self.tick(6.8)
+        self.run_pass(seconds=60, ungraded=[
+            {"code": "MEMORY_PRESSURE_ACTIVE",
+             "input": "host_summary()['pressure']['memory']",
+             "state": "UNAVAILABLE",
+             "why": "the memory pressure-stall figures were not readable"}])
+        self.assertEqual(self.only()["state"], "OPEN")
+        self.assertEqual(self.only()["hold_kind"], "not_evaluated")
+
+
 class TheFaceIsOneOfThePartsAndNotASecondReading(AlertCase):
     """One producer, two registers — asserted as a relationship.
 
@@ -1438,16 +1615,19 @@ class TheContractOwnsTheNumbers(unittest.TestCase):
         "there is no distance to come back" forever, which reads as an open
         problem nobody is dealing with. That failure already happened once — the
         three byte-valued aggregates named their code but never their margin — so
-        it is asserted rather than trusted."""
+        it is asserted rather than trusted.
+
+        The set is DERIVED, and that is the repair. It used to be a hand-written
+        list of the resource layer's keys, which is a list a person has to
+        remember to extend, and the memory-pressure split walked straight into
+        it: `psi_memory_some_avg60_percent_high` became a code's threshold, its
+        margin key became derivable, and the list that exists to notice exactly
+        that did not mention it. Reading the two code-to-key tables is the same
+        assertion without the memory requirement.
+        """
         declared = alerting._thresholds()
         graded = set(anomaly.THRESHOLD_KEYS.values()) | {
-            # The resource layer's graded measurements, which carry their margin
-            # key on the level row rather than through THRESHOLD_KEYS.
-            "filesystem_percent_critical", "inode_percent_high",
-            "memory_percent_high", "swap_percent_high",
-            "docker_storage_percent_high", "container_log_bytes_high",
-            "container_writable_layer_bytes_high",
-            "docker_build_cache_bytes_high",
+            key for key in resource_anomaly._THRESHOLDS.values() if key
         }
         for key in sorted(graded):
             with self.subTest(threshold=key):

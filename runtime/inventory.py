@@ -538,6 +538,13 @@ class Inventory:
             # `resource_anomaly` could not grade SWAP_PRESSURE on anything but
             # the watermark.
             "pressure": self.pressure_stall(),
+            # The third axis, carried beside the second because the two are
+            # read together and answer different questions. A watermark says
+            # how full; PSI says how much work stalled; neither says whether
+            # pages are moving. `resource_anomaly` grades the watermark and
+            # the stall on separate codes, and a reader of either needs the
+            # activity to tell "full and quiet" from "full and thrashing".
+            "paging": self.paging_activity(),
             "load": self._load(),
             "uptime_seconds": self._uptime(),
             "gpu": self._gpu(),
@@ -1038,6 +1045,79 @@ class Inventory:
             except (ValueError, IndexError):
                 continue
         return {"at": self._monotonic(), "devices": out}
+
+    # -- paging activity ---------------------------------------------------
+    #
+    # The third axis, and the one neither of the other two stands in for.
+    # `/proc/meminfo` says how full swap is; `/proc/pressure/memory` says how
+    # much work is stalling; neither says whether pages are moving at all.
+    # Pages are written to swap when memory was short and read back only when
+    # something touches them again, so a machine can sit at a high watermark
+    # with its paging counters flat — measured on this host 2026-09-29,
+    # `pswpout` held exactly zero across 59 consecutive one-second samples
+    # while swap sat at 67% and memory PSI decayed from 3.16 to 0.16.
+    #
+    # Counters, so this is a delta between two reads. The window is the same
+    # second `user_summary` uses and for the same reason: a window that
+    # catches no events is indistinguishable from a machine that is genuinely
+    # not paging, and "the sample failed" and "nothing paged" must never
+    # print the same thing.
+    PAGING_KEYS = ("pswpin", "pswpout", "pgmajfault",
+                   "pgscan_direct", "pgsteal_direct")
+
+    def paging_activity(self, interval: float | None = None) -> dict:
+        """Pages per second in and out, where `/proc/vmstat` is readable.
+
+        Pages, not bytes. `pswpout` counts pages, and multiplying by a page
+        size here would write an assumption about this kernel into a figure a
+        reader is meant to compare against another host's.
+        """
+        window = self.USER_SAMPLE_SECONDS if interval is None else interval
+        first = self._vmstat()
+        # The gap is REAL, for the reason `disk_io` gives: two reads taken back
+        # to back produce a delta over some microseconds, and a rate computed
+        # from it is a number about nothing.
+        self.host.sleep(window)
+        second = self._vmstat()
+        if first is None or second is None:
+            return _unavailable("/proc/vmstat is not readable")
+        elapsed = self._elapsed(first, second, window)
+        if elapsed is None:
+            return _unavailable("the two /proc/vmstat reads share no clock")
+        return {
+            "state": "PRESENT",
+            "sample_seconds": round(elapsed, 4),
+            **{f"{key}_per_second":
+               round((second["counters"].get(key, 0)
+                      - first["counters"].get(key, 0)) / elapsed, 2)
+               for key in self.PAGING_KEYS},
+            "note": ("rates, not totals: every counter in /proc/vmstat is "
+                     "cumulative since boot. A machine that filled its swap "
+                     "once and stopped touching those pages reads as zero "
+                     "here and as a high figure in /proc/meminfo"),
+        }
+
+    def _vmstat(self) -> dict | None:
+        """The paging counters, with the clock they were read at.
+
+        The clock is carried beside the counters rather than with each one,
+        for the reason `_diskstats` gives: every value in one read was read at
+        the same instant, and a per-key copy invites a reader to subtract two
+        figures that came from different reads.
+        """
+        text = self.host.read_text("/proc/vmstat")
+        if text is None:
+            return None
+        out: dict[str, int] = {}
+        for line in text.splitlines():
+            key, _, value = line.partition(" ")
+            if key not in self.PAGING_KEYS:
+                continue
+            try:
+                out[key] = int(value)
+            except ValueError:
+                continue
+        return {"at": self._monotonic(), "counters": out}
 
     def _monotonic(self) -> float | None:
         """Seconds since boot, read through `self.host`.

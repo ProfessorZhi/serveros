@@ -109,6 +109,14 @@ DEFAULT_THRESHOLDS = {
     "inode_percent_recovery_margin": 3.0,
     "memory_percent_recovery_margin": 5.0,
     "swap_percent_recovery_margin": 5.0,
+    # The stall axis's margin, and it is not a convenience: `MEMORY_PRESSURE_ACTIVE`
+    # is graded on `psi_memory_some_avg60_percent_high`, so `margin_key` derives
+    # this name, and a derived key the contract does not declare leaves the alert
+    # at `margin_undeclared` — open, and with no distance it could ever come back
+    # by. Half the threshold, in the same proportion as the two watermarks above.
+    # The measurement is a stall percentage and the quiet reading is 0.00, so
+    # neither 1.0 nor 0.5 is a line a resting machine drifts across.
+    "psi_memory_some_avg60_percent_recovery_margin": 0.5,
     "docker_storage_percent_recovery_margin": 3.0,
     # The process layer's own margins, and the three byte-valued aggregates
     # whose margins were derivable but undeclared — see the contract for why
