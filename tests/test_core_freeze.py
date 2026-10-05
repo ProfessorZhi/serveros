@@ -61,7 +61,15 @@ ENTRY_POINTS = {
     "bin/serverosd",
     "mcp/bin/serveros-node-mcp",
     "mcp/bin/serveros-agent-mcp",
+    "mcp/bin/serveros-continuation-mcp",
     "runtime/cli.py",  # not an entry point — see the module docstring
+    # Not an entry point either, and for a reason worth writing down: it is the
+    # Parent launcher `scripts/release.py continuation-wake` RENDERS and installs
+    # to the operator's own bin directory. It ships executable because it is
+    # installed executable, and it is a template rather than a program until that
+    # render happens — `tests/test_wake_parent.py` is what reads it, and it fails
+    # if the placeholder survived into somewhere it could be started.
+    "runtime/serveros-wake-parent",
 }
 
 # The daemon itself. `scripts/release.py` refuses an artifact without this file,
