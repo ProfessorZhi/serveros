@@ -99,7 +99,20 @@ DEVICE_REF_PREFIX = "device:"
 # people and every downstream reader inherits that. `tests/test_ability_projection.py`
 # asserts this over serialized bytes rather than over the list, so a field that
 # reached the output by another path is caught too.
-ABILITY_FIELDS = ("name", "id", "type", "path", "domain", "taxonomy_refs")
+#
+# `product_role` / `routing` / `handoff` / `authority` are the THIN ABILITY LINK,
+# and they pass the rule above: they name which RESPONSIBILITY an artifact
+# realizes (`product_role.primary` — the L2 that owns it), what it is shaped
+# like and what it hands on, and what it may and may not do — all strings, none
+# of them a person, a path or a key. They were absent until 2026-10-06 and the
+# absence was load-bearing: `abilities/resolver.py` could not answer
+# `semantic_owner` or `human_boundary` because nothing had ever carried the
+# declaration to it, so a third-party ability was resolvable as a device fact
+# and invisible as a responsibility. A projection that cannot say WHO an ability
+# belongs to answers half of §4.
+THIN_LINK_FIELDS = ("product_role", "routing", "handoff", "authority")
+ABILITY_FIELDS = ("name", "id", "type", "path", "domain", "taxonomy_refs",
+                  *THIN_LINK_FIELDS)
 
 
 class AuthorityUnreachable(Exception):
