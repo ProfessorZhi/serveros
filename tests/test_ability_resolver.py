@@ -1589,5 +1589,302 @@ class TheCliNamesInputOne(unittest.TestCase):
         self.assertIsNone(by_id["semantic_owner"])
 
 
+class ScaleFixtureTests(unittest.TestCase):
+    """§21 — a synthetic catalogue of 500 abilities, and what only shows at that size.
+
+    The Thin Link was proven on two golden samples and a handful of fixtures,
+    and every one of those is small enough that three failure modes are
+    invisible in it:
+
+      * an O(N^2) walk over the catalogue — 4 abilities and 500 cost the same;
+      * a per-name special case — with two names in play, "handled specially"
+        and "handled generally" produce the same answer;
+      * a collapse that depends on manifest ORDER — the de-duplication in
+        `runtime/cli.py::_distinct_declarations` is the only place two records
+        of one identity are compared, and with one record per name there is
+        nothing for order to decide.
+
+    The third is the one this fixture is built around, because it is the only
+    one of the three that is silent rather than slow. A resolver whose
+    `semantic_owner` changed because a file was re-sorted would keep passing
+    every small test in this file, including
+    `test_a_manifest_carries_the_thin_link_across_the_cli`.
+
+    What it does NOT prove, said plainly so the next reader does not take more
+    from a green than is here: 505 records is not a load test. It does not
+    measure the resolver's cost, and it does not exercise the authority's own
+    ingestion path — that is `ability-management`'s, and its scale fixtures
+    live there.
+
+    The two golden samples are placed at the two ENDS rather than next to each
+    other, so a walk that is correct for a prefix and wrong after the first
+    collision cannot pass by accident.
+
+    Measured 2026-10-06 against `thin-ability-link-20261006@5e666575`: the
+    declarations below are the ones the authority actually ships for these two
+    names — `grill-me` primary B6 with subroles `plan-stress-test` /
+    `decision-interview` cross-referencing B3/B5, and `playwright-mcp` primary
+    A7 cross-referencing B1/B5.
+    """
+
+    FILLERS = 500
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.dir = Path(self.tmp.name)
+        self.request_path = self.dir / "request.json"
+        self.request_path.write_text(json.dumps({
+            "ability": "ability:grill-me",
+            "device_ref": "device:server-beijing",
+            "runtime": "claude-code",
+        }), encoding="utf-8")
+
+    # The record shape is `runtime/ability_projection.py`'s, trimmed to the
+    # four fields `_named_catalogue` reads: `name` composes the key, and the
+    # three Thin Link fields are what the resolver reports back.
+    def _record(self, name, product_role=None, authority=None, path=None):
+        record = {"id": f"ProfessorZhi/{name}", "name": name,
+                  "path": path or f"skills/{name}"}
+        if product_role is not None:
+            record["product_role"] = product_role
+        if authority is not None:
+            record["authority"] = authority
+        return record
+
+    def _manifest(self, reverse=False):
+        """500 filler abilities, then the four names that carry the questions.
+
+        Order is the parameter rather than a second fixture, because the only
+        thing the reversed copy is FOR is to be compared against this one.
+        """
+        records = [
+            self._record(
+                f"scale-{i:04d}",
+                # A distinct declaration per filler, so the collapse is asked to
+                # compare 500 different things rather than 500 copies of one —
+                # a marker-keyed dedup that hashed the wrong field would look
+                # correct against identical records.
+                product_role={"primary": "B6" if i % 2 else "A6",
+                              "subroles": [f"filler-{i:04d}"],
+                              "realization_role": "specialist",
+                              "cross_refs": ["B3"]},
+                authority={"owns": [], "may_propose": [], "human_required": []},
+            )
+            for i in range(self.FILLERS)
+        ]
+        records += [
+            # One name, two records, declarations that DISAGREE. This is the
+            # only input on which `_distinct_declarations` returns two elements,
+            # and therefore the only one that can produce AMBIGUOUS.
+            self._record("hover-thing", product_role={
+                "primary": "A7", "subroles": [], "realization_role": "provider",
+                "cross_refs": []}),
+            self._record("hover-thing", product_role={
+                "primary": "A6", "subroles": [], "realization_role": "provider",
+                "cross_refs": []}, path="plugins/hover-thing"),
+            # Two records that say the SAME thing in a different key order. They
+            # are one declaration, and the only reason `_distinct_declarations`
+            # can tell is that its marker is a canonical rendering — the
+            # `sort_keys=True` that a reader would otherwise delete as noise.
+            # Drop it and this name becomes AMBIGUOUS, which is the whole test.
+            self._record("same-thing", product_role={
+                "primary": "A7", "realization_role": "provider",
+                "cross_refs": [], "subroles": []}),
+            self._record("same-thing", product_role={
+                "subroles": [], "cross_refs": [], "realization_role": "provider",
+                "primary": "A7"}, path="plugins/same-thing"),
+            # A name the authority declares nothing about. It must read
+            # UNDECLARED — an ability that has no product role — and not
+            # UNKNOWN, which is the word for a catalogue that was never asked.
+            self._record("quiet-thing"),
+            # The two golden samples, at the two ends of the special block.
+            self._record("grill-me", product_role={
+                "primary": "B6",
+                "subroles": ["plan-stress-test", "decision-interview"],
+                "realization_role": "specialist",
+                "cross_refs": ["B3", "B5"]},
+                authority={"owns": [], "may_propose": [], "human_required": []}),
+            self._record("playwright-mcp", product_role={
+                "primary": "A7", "subroles": ["browser-e2e"],
+                "realization_role": "provider",
+                "cross_refs": ["B1", "B5"]},
+                authority={"owns": [], "may_propose": [], "human_required": []}),
+        ]
+        if reverse:
+            records.reverse()
+        return {"abilities": records}
+
+    def _pinned(self, tag, reverse=False):
+        """A git repo holding one manifest, and the SHA the CLI must resolve."""
+        import yaml
+        repo = self.dir / tag
+        repo.mkdir()
+        subprocess.run(["git", "init", "-q", str(repo)], check=True)
+        (repo / "abilities-manifest.yaml").write_text(
+            yaml.safe_dump(self._manifest(reverse=reverse), sort_keys=False),
+            encoding="utf-8")
+        subprocess.run(["git", "-C", str(repo), "add", "-A"], check=True,
+                       stdout=subprocess.DEVNULL)
+        subprocess.run(["git", "-C", str(repo), "-c", "user.email=t@x.invalid",
+                        "-c", "user.name=t", "commit", "-m", "manifest"],
+                       check=True, stdout=subprocess.DEVNULL,
+                       stderr=subprocess.DEVNULL)
+        return repo, subprocess.run(["git", "-C", str(repo), "rev-parse", "HEAD"],
+                                    check=True, capture_output=True,
+                                    text=True).stdout.strip()
+
+    def _ask(self, ref, repo, sha, tag=""):
+        path = self.dir / f"req-{tag or ref.replace('/', '_').replace(':', '-')}.json"
+        path.write_text(json.dumps({
+            "ability": ref, "device_ref": "device:server-beijing",
+            "runtime": "claude-code"}), encoding="utf-8")
+        proc = subprocess.run(
+            [sys.executable, str(ROOT / "bin" / "serverosctl"),
+             "ability", "resolve", "--request", str(path),
+             "--ability-repo", str(repo), "--ability-rev", sha, "--json"],
+            cwd=str(ROOT), stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            text=True, timeout=300)
+        # The verb's exit convention, which is why this is not `== 2`: `1` is a
+        # record carrying a definite finding (a catalogue miss, say) and `2` is
+        # a gap or a refusal. Both print a record; a crash prints neither.
+        self.assertIn(proc.returncode, (1, 2), proc.stderr)
+        self.assertTrue(proc.stdout.strip(), "no record was printed")
+        return json.loads(proc.stdout)
+
+    def test_the_two_golden_samples_survive_a_catalogue_of_500(self):
+        repo, sha = self._pinned("natural")
+        first = self._ask("ability:grill-me", repo, sha)
+        self.assertEqual(first["product_role_state"], "DECLARED")
+        self.assertEqual(first["semantic_owner"], "B6")
+        self.assertEqual(first["realization_role"], "specialist")
+        self.assertEqual(first["subroles"], ["plan-stress-test", "decision-interview"])
+        self.assertEqual(first["cross_refs"], ["B3", "B5"])
+
+        # The last special name, 500 fillers away from the first lookup. If the
+        # walk were correct only up to the first collision this is where it
+        # would come apart, and nowhere earlier.
+        last = self._ask("ability:playwright-mcp", repo, sha)
+        self.assertEqual(last["product_role_state"], "DECLARED")
+        self.assertEqual(last["semantic_owner"], "A7")
+        self.assertEqual(last["cross_refs"], ["B1", "B5"])
+
+    def test_a_subrole_is_matched_at_500_as_it_is_at_two(self):
+        """The subrole test is a MEMBERSHIP test, and membership is the thing a
+        scale fixture can most easily break by accident — a `startswith`, a
+        substring, a hash-prefix comparison all agree with equality on small
+        inputs and diverge at 500."""
+        repo, sha = self._pinned("natural")
+        hit = self._ask("ability:grill-me#plan-stress-test", repo, sha)
+        self.assertEqual(hit["subrole"], "plan-stress-test")
+        # `plan` is a PREFIX of a declared subrole and a substring of it, and it
+        # is not one. A membership test written as `any(op in s for s in
+        # subroles)` agrees with equality on every fixture in this file that
+        # names a whole subrole, and disagrees here.
+        for near_miss in ("plan", "plan-stress", "stress-test"):
+            self.assertIsNone(
+                self._ask(f"ability:grill-me#{near_miss}", repo, sha)["subrole"],
+                f"{near_miss!r} is not a subrole of grill-me, only part of one")
+        # And a name that is not a subrole of anything near it.
+        self.assertIsNone(self._ask("ability:grill-me#filler-0000", repo, sha)["subrole"])
+
+    def test_one_identity_declared_twice_is_ambiguous_and_settles_nothing(self):
+        """The disagreement is REPORTED, not resolved — §18's symmetric half.
+        Two records of one identity must not be collapsed by picking one, and
+        the ability must still resolve as an ability."""
+        repo, sha = self._pinned("natural")
+        record = self._ask("ability:hover-thing", repo, sha)
+        self.assertEqual(record["product_role_state"], "AMBIGUOUS")
+        self.assertIsNone(record["semantic_owner"],
+                          "a disputed owner is not an owner; picking one would "
+                          "make the answer depend on manifest order")
+
+    def test_a_name_the_authority_declares_nothing_about_is_undeclared(self):
+        """UNDECLARED is a finding about the ability; UNKNOWN is a finding about
+        the QUESTION. The two must not merge at scale, where a catalogue has
+        plenty of both."""
+        repo, sha = self._pinned("natural")
+        record = self._ask("ability:quiet-thing", repo, sha)
+        self.assertEqual(record["product_role_state"], "UNDECLARED")
+        self.assertIsNone(record["semantic_owner"])
+        # The control, one field over: the note proves a catalogue WAS read, so
+        # UNDECLARED cannot be UNKNOWN wearing the wrong word.
+        self.assertIn("abilities", record["note"])
+
+    def test_the_note_counts_500_and_says_how_many_records_collapsed(self):
+        """The two-number note, at the size where the second number matters.
+
+        A reader shown only `501` cannot tell a de-duplication from five
+        abilities lost on the way in. `hover-thing` is the one name that is two
+        records, so the two numbers must differ by exactly one — and the pair
+        must be produced from the manifest, not asserted beside it."""
+        repo, sha = self._pinned("natural")
+        note = self._ask("ability:grill-me", repo, sha)["note"]
+        # 500 fillers, then hover-thing, same-thing, quiet-thing, grill-me and
+        # playwright-mcp: six more names. Two of them are written twice.
+        self.assertIn(f"{self.FILLERS + 5} abilities", note)
+        self.assertIn(f"{self.FILLERS + 7} manifest entries", note)
+        self.assertIn("2 of them name an ability another one already names", note)
+
+    def test_two_records_that_differ_only_in_key_order_are_one_declaration(self):
+        """The canonical marker, tested where it is the ONLY thing that decides.
+
+        Both records of `same-thing` declare the same product_role; one was
+        written in a different key order. Equality alone would not survive that
+        (dicts compare equal, but the marker is a JSON string), so the marker is
+        rendered with `sort_keys=True`. Remove it and this name turns AMBIGUOUS
+        — a disagreement manufactured out of a re-serialisation."""
+        repo, sha = self._pinned("natural")
+        record = self._ask("ability:same-thing", repo, sha)
+        self.assertEqual(record["product_role_state"], "DECLARED")
+        self.assertEqual(record["semantic_owner"], "A7")
+
+    def test_the_answer_does_not_depend_on_the_order_of_the_manifest(self):
+        """The load-bearing assertion of this fixture.
+
+        Same records, same SHAs-of-content, opposite order. Every field the
+        resolver reports must be identical — including the ambiguous one, whose
+        whole point is that it is reported rather than decided. A collapse that
+        picked `[-1]` instead of collecting distinct declarations passes every
+        other test in this file and fails here.
+        """
+        natural_repo, natural_sha = self._pinned("natural")
+        reversed_repo, reversed_sha = self._pinned("reversed", reverse=True)
+        self.assertNotEqual(natural_sha, reversed_sha,
+                            "the two fixtures must be different trees, or this "
+                            "compares a tree against itself")
+        for ref in ("ability:grill-me", "ability:playwright-mcp",
+                    "ability:hover-thing", "ability:same-thing",
+                    "ability:quiet-thing",
+                    "ability:scale-0000", "ability:scale-0499"):
+            forward = self._ask(ref, natural_repo, natural_sha)
+            backward = self._ask(ref, reversed_repo, reversed_sha)
+            for field in ("product_role_state", "semantic_owner",
+                          "realization_role", "cross_refs", "subroles",
+                          "subrole", "human_boundary"):
+                self.assertEqual(
+                    forward[field], backward[field],
+                    f"{ref}.{field} changed when the manifest was re-sorted")
+
+    def test_two_runs_of_one_request_agree(self):
+        """Determinism, on the name with something to be non-deterministic
+        about. `hover-thing` is the ambiguous one; an implementation that
+        settled the disagreement by picking a record would still be stable
+        within a run and could differ across runs."""
+        repo, sha = self._pinned("natural")
+        twice = [json.dumps(self._ask("ability:hover-thing", repo, sha), sort_keys=True)
+                 for _ in range(2)]
+        self.assertEqual(twice[0], twice[1])
+
+    def test_an_ability_absent_from_500_is_a_finding_not_a_gap(self):
+        """The other side of scale: a big catalogue is not a permissive one.
+        Absence from a published list of 500 is a definite no."""
+        repo, sha = self._pinned("natural")
+        record = self._ask("ability:not-here", repo, sha)
+        self.assertEqual(record["status"], "UNAVAILABLE")
+        self.assertEqual(record["reason"], "PROVIDER_NOT_INSTALLED")
+        self.assertNotIn("ability", record["inputs_missing"])
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -2875,7 +2875,8 @@ def _named_catalogue(args) -> tuple[dict | None, str | None, str | None]:
         if not key.startswith("ability:"):
             return None, None, (
                 f"{key!r} in {where} is not an ability reference. Catalogue keys "
-                f"are written `ability:<id>`; `{key}` written bare is a "
+                f"are written `ability:<name>` — the manifest's `name`, not its "
+                f"`id`, which is `author/name`; `{key}` written bare is a "
                 f"different key and would miss every entry in a catalogue keyed "
                 f"by reference.")
     distinct = sorted(set(keys))
