@@ -558,6 +558,21 @@ actuators:
       # wrong, and that is the separate question `verify` answers.
       - {file: memory/openviking/backup.py, symbols: [backup], verb: ".replace()"}
 
+      # §9.48: `scripts/release.py#cmd_continuation_wake` writes the wake-parent
+      # launcher to a sibling `<name>.new` and renames it over the destination.
+      # The reason is exclusion rather than durability, and it is sharper than
+      # the ones above: this file is EXECUTED BY A TIMER THAT MAY ALREADY BE
+      # FIRING on a node that has installed the routine before, so a Parent
+      # started against a half-written launcher is a shell reading its own tail
+      # as commands. The temporary is `target.with_name(target.name + ".new")` —
+      # the destination's own directory, so the rename stays inside one
+      # filesystem — and the only path it can ever land on is the launcher that
+      # `args.bin_dir` names, a directory this command creates itself rather than
+      # one it is handed. This is the second declaration for this symbol: the
+      # other is under the systemd actuator above, for the single
+      # `daemon-reload` the same command runs, and neither covers the other.
+      - {file: scripts/release.py, symbols: [cmd_continuation_wake]}
+
   - id: daemon-owns-its-socket
     kind: fs_mutation
     verb: .unlink()

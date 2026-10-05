@@ -466,8 +466,9 @@ surfaces:
     note: >-
       This surface exists because the alternative was a shell. Until it landed,
       the only way a woken Parent could set down its own record was
-      `serverosctl work park|checkpoint|accept`, and those four verbs open the
-      control store directly and take no trusted context and no admission —
+      `serverosctl work park`, `serverosctl work checkpoint` or
+      `serverosctl work accept`, and those three verbs open the control store
+      directly and take no trusted context and no admission —
       measured. So a Parent with Bash could set down another Item's epoch,
       accept a cycle its own checkpoint never named, and checkpoint a sibling;
       the write scope in its launcher was a sentence in prose and nothing
