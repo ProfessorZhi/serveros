@@ -228,11 +228,15 @@ TOOLS: tuple[dict, ...] = (
     {
         "name": "work.checkpoint",
         "description": (
-            "Save where this Parent got to, then stop. The Item and epoch are "
-            "this wake's own — there is no argument for either, so a checkpoint "
-            "cannot be written for a different Item or a different epoch. "
-            "Executed by `serverosctl work checkpoint`, once, under a durable "
-            "receipt."
+            "Save where this Parent got to, then stop. The Item is this wake's "
+            "own and there is no argument for it, so a checkpoint cannot be "
+            "written for another Item. It files this Item's NEXT epoch — the "
+            "successor record that takes the scope over from the one this "
+            "Parent was woken from, which the store supersedes in the same "
+            "transaction. The epoch is derived for the same reason and is not "
+            "an argument either, so it cannot be aimed at another Parent's "
+            "record. Executed by `serverosctl work checkpoint`, once, under a "
+            "durable receipt."
         ),
         "inputSchema": {
             "type": "object",
@@ -543,15 +547,49 @@ class ContinuationServer:
         if name == "work.checkpoint":
             item_id = str(self.envelope.get("work_item_ref") or "")
             epoch = self.envelope.get("epoch")
+            # WHICH EPOCH THIS WRITES, AND WHY IT IS THE NEXT ONE. The
+            # envelope's epoch is the record this Parent was woken FROM — the
+            # one its predecessor wrote and then exited, which `runtime/wake.py`
+            # hands it in the briefing as «a Parent that exited». A checkpoint
+            # at THAT epoch is the one write the store refuses by design:
+            # `AgentControlStore.put_checkpoint` will not replace a live record
+            # under its own key, and the record a wake carries is live by
+            # definition — the engine refuses the mutation otherwise. The key is
+            # (Item, epoch), so overwriting it would make two Parents' states
+            # one record (`runtime/continuation.py`, `checkpoint_key`).
+            #
+            # The store's refusal names the repair — «Carry the Item on under a
+            # new epoch, which takes the scope over and keeps this record
+            # readable» — and the design says the same in prose: a Parent that
+            # replaces another writes the successor record, and a write at a
+            # higher epoch supersedes the record it replaced in the same
+            # transaction. So the woken Parent's checkpoint is its successor's
+            # epoch. Derived here, and still NOT a parameter: there is no
+            # argument for it, so it cannot be aimed at another Parent's record
+            # either.
+            #
+            # MEASURED, because the argv is where the defect was: against one
+            # store, `--epoch <the envelope's>` is refused with that sentence
+            # and nothing written, and `--epoch <the envelope's + 1>` is
+            # accepted and supersedes the record the wake carried. Every test of
+            # this operation drives a stand-in verb and so never reaches
+            # `put_checkpoint` at all; the acceptance run in a redirected state
+            # root is what found it.
+            if not isinstance(epoch, int) or isinstance(epoch, bool) or epoch < 1:
+                raise WiringFault(
+                    f"this wake's envelope carries epoch {epoch!r}, which is not "
+                    f"the positive integer a checkpoint's key is derived from, so "
+                    f"the successor epoch cannot be derived from it. Guessing one "
+                    f"would write a record under a key nobody chose")
+            successor = epoch + 1
             parent = str(arguments.get("parent")
                          or self.envelope.get("parent_owner") or "")
-            # The Item and the epoch are the envelope's, NOT the caller's. They
-            # are put into `arguments` here so that the engine's own target rule
-            # sees exactly what will be dispatched and can refuse a mismatch —
-            # rather than this function quietly substituting and the rule then
-            # checking a value nobody asked for.
+            # The Item and the parent are put into `arguments` here so that the
+            # engine's own target rule sees exactly what will be dispatched and
+            # can refuse a mismatch — rather than this function quietly
+            # substituting and the rule then checking a value nobody asked for.
             merged = {**arguments, "item": item_id, "parent": parent}
-            tail = ["checkpoint", item_id, "--epoch", str(epoch),
+            tail = ["checkpoint", item_id, "--epoch", str(successor),
                     "--parent", parent,
                     "--next-action", str(arguments.get("next_action") or "")]
             for flag, field in (("--requirement", "requirement"),
