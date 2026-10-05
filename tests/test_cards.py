@@ -156,9 +156,10 @@ def _face(card: dict) -> list[str]:
     tree then had, and its register sentence looked like context in every one of
     them that carried it; the same sentence is «登记表里还有 1360 项…» against
     the live register, and the only thing that can tell those two apart is an
-    extractor that knows where the fold starts. (Sixteen previews now: the
-    watermark/pressure split added an alert card, and an alert card carries no
-    such block — the reviewed set is unchanged.)
+    extractor that knows where the fold starts. (Seventeen previews now, and
+    the reviewed set is still unchanged: the watermark/pressure split added an
+    alert card, the screenshot matrix added a status card, and neither kind of
+    addition touches this block.)
     """
     found: list[str] = []
 
@@ -233,6 +234,17 @@ class ScenarioRenderTests(unittest.TestCase):
         all. The two ends of the block are covered by `observer_failure` (no
         register read) and by the document-level reading the other fourteen
         share (read, nothing on the face); this one is the middle.
+
+        The seventeenth stands last and is on no list either. The screenshot
+        matrix this round asks for is a grid — two faces by five states — and
+        the sixteen above leave exactly one cell empty: something that went
+        BACK. On the incident face that cell is `recovery_only`. On the status
+        face nothing could fill it, and the reason is worth keeping: a card
+        whose every tick was fine cannot say when it returned to normal, and a
+        card whose bad tick is still the current tick says the opposite
+        direction. So this fixture differs from its neighbours by one stored
+        tick and nothing else, and the direction on its face is computed from
+        that tick rather than written into it.
         """
         self.assertEqual(
             [i["scenario"] for i in self.items],
@@ -261,11 +273,14 @@ class ScenarioRenderTests(unittest.TestCase):
              "unconfirmed_open",
              # §3.4's fourth block with something on it. See this class's
              # docstring for why it is on neither list.
-             "problems_on_the_face"])
+             "problems_on_the_face",
+             # The matrix's last cell: the status face with something that went
+             # BACK. See this class's docstring.
+             "host_recovered"])
 
-    def test_the_four_states_that_acceptance_photographs_are_all_reachable(self):
-        """normal / attention / unknown / gap — each reached by a rule, not by
-        an author writing the word down.
+    def test_the_states_that_acceptance_photographs_are_all_reachable(self):
+        """normal / attention / unknown / gap / recovery — each reached by a
+        rule, not by an author writing the word down.
 
         Asserted by scenario name rather than by "some scenario has verdict X",
         which would pass on a fixture that reached the word by accident and tell
@@ -296,6 +311,28 @@ class ScenarioRenderTests(unittest.TestCase):
             [(2, "10:00", "13:00"), (1, "14:00", "16:20")],
             [e["kind"] for e in by_name["day_gap"]["day"]["timeline"]])
         self.assertTrue(all("未有观测" in g["says"] for g in gaps))
+
+        # The fifth cell is NOT a fourth verdict, and calling it one would be
+        # the mistake this fixture exists to avoid. The status card has no
+        # «已恢复» verdict and should not grow one: a machine that is OK is a
+        # machine that is OK, and a word for «it used to be worse» on the
+        # verdict axis would make two different machines print two different
+        # verdicts while both are fine. What the matrix asks of this face is
+        # the DIRECTION back, and on the status card the direction is the delta
+        # line. So the assertion is the sentence a reader sees — both halves of
+        # it, because the headline names the hour and the detail names which
+        # section moved and which way.
+        recovered = by_name["host_recovered"]
+        self.assertEqual(ok("host_recovered"), "OK")
+        self.assertEqual(recovered["delta"]["headline"], "较 13:00 有 1 处变化")
+        self.assertIn("整机 建议查看→正常", recovered["delta"]["detail"])
+        # And the same direction survives into the timeline, where it is a row
+        # rather than a clause: the bad hour is still on the record and still
+        # reads 建议查看, which is what makes the 14:20 row's 正常 a return
+        # rather than a card that never saw the bad hour at all.
+        says = {e["hhmm"]: e.get("says") or "" for e in recovered["day"]["timeline"]}
+        self.assertIn("13:00 建议查看", says["13:00"])
+        self.assertIn("整机 建议查看→正常", says["14:20"])
 
     def test_the_two_counts_of_unread_hours_are_not_two_of_the_same_word(self):
         """§6 and §2, on the card that shows both at once.
@@ -359,13 +396,50 @@ class ScenarioRenderTests(unittest.TestCase):
         # 无法确认 rather than 仍在发生.
         items = {i["scenario"]: i for i in self.items}
         body = items["unconfirmed_open"]["json"]
-        # The words are 最后读数 and not 最后一次读数 (§2's line budget: measured
-        # at 390px, the longer form made this line 422.9px of the 360px body and
-        # it broke, which left the time on a line of its own). What the pair test
-        # above pins — 无法确认 against 仍在发生 — is unchanged, and so is the
-        # time of the last reading, which is what an age is read against.
-        self.assertIn("无法确认 · 最后读数 09-18 14:15", body)
+        # THE TWO ANSWERS ARE ON TWO ROWS NOW, under two names. The state word
+        # and the clock used to share one row — `无法确认 · 最后读数 09-18 14:15`
+        # — directly above `**测量**`, and the two sentences contradicted without
+        # saying which fact the threshold belonged to. What the pair test above
+        # pins — 无法确认 against 仍在发生 — is unchanged; what moved is the
+        # clock, which is what an age is read against and which now has a row a
+        # reader cannot mistake for a claim about now.
+        self.assertIn("**当前确认状态** 无法确认", body)
+        self.assertIn("**最新观测** 09-18 14:15（2 天前）", body)
         self.assertNotIn("仍在发生", body)
+
+    def test_the_observed_line_is_photographed_both_ways(self):
+        """「最新观测」 has two spellings and a reviewer has to see both.
+
+        A stamp and 「未记录」 are not two wordings of one thing: the first says
+        when the last reading was, the second says there is no reading time on
+        record. Every OPEN row in the fixture set except one carries no
+        `last_seen`, and that is deliberate where it happens — `mixed`'s
+        ORPHAN_PROCESS_TREE row explains why attaching a reading time to a row
+        whose registry row is RESOLVED would be signing for a reading nobody
+        took. The cost of doing that everywhere is a preview set in which the
+        branch a live card takes every hour appears nowhere, so a reviewer
+        would approve 未记录 and never see the sentence that actually goes out.
+
+        Asserted over the MODEL rather than the rendered json: the sentence is
+        built by `cards._observed_line` out of `existence`, and what is being
+        pinned is that both inputs reach a preview, not how they are spelled.
+        """
+        by_state = {"stamped": [], "silent": []}
+        for item in self.items:
+            for event in item["model"].get("events") or []:
+                existence = event.get("existence") or {}
+                if existence.get("state") != presentation.STILL:
+                    continue
+                key = "stamped" if existence.get("observed_at") else "silent"
+                by_state[key].append(item["scenario"])
+        self.assertTrue(
+            by_state["stamped"],
+            "no preview shows 仍在发生 together with a reading time — the "
+            "branch a live card usually takes is unphotographed")
+        self.assertTrue(
+            by_state["silent"],
+            "no preview shows 仍在发生 with no reading time — the 未记录 "
+            "sentence is unphotographed")
 
     def test_a_status_fixture_cannot_state_a_verdict_the_rules_do_not_reach(self):
         """The state word on a status preview is produced, not declared.
@@ -492,8 +566,8 @@ class ScenarioRenderTests(unittest.TestCase):
 
         The sample mark is skipped. Every preview carries one, so a check
         against `[0]` compared the header against 「🧪 示例 / 尚未发送」 and
-        passed on all sixteen scenarios without ever looking at a face — the
-        kind of check that reports coverage it does not have.
+        passed on every scenario without ever looking at a face — the kind of
+        check that reports coverage it does not have.
         """
         for item in self.items:
             with self.subTest(scenario=item["scenario"]):
@@ -549,7 +623,7 @@ class ScenarioRenderTests(unittest.TestCase):
 class IntegrityFaceTests(unittest.TestCase):
     """§4's second and seventh questions, on the block that answers neither.
 
-    The event blocks beside it carry `**现在**` and `**首次观测**`; this block
+    The event blocks beside it carry `**当前确认状态**` and `**首次观测**`; this block
     carried 状态 / 影响 / 建议 and stopped, so on the one finding whose whole
     content is «nobody looked» a reader could not tell whether anyone had
     looked since, or whether it began an hour or a fortnight ago. Both lines
@@ -576,7 +650,8 @@ class IntegrityFaceTests(unittest.TestCase):
         face = self._face([self._held("DESIRED_ACTUAL_MISMATCH",
                                       "2026-09-19T02:00:00+00:00")])
         self.assertEqual([line.split("**")[1] for line in face],
-                         ["监控完整性", "状态", "现在", "影响", "建议", "首次观测"])
+                         ["监控完整性", "状态", "当前确认状态", "影响", "建议",
+                          "首次观测"])
 
     def test_now_is_unconfirmed_and_never_still_happening(self):
         """Every row behind this finding is OPEN and held because no grading
@@ -586,7 +661,11 @@ class IntegrityFaceTests(unittest.TestCase):
         question it has just said it cannot answer."""
         face = "\n".join(self._face([self._held("DESIRED_ACTUAL_MISMATCH",
                                                "2026-09-19T02:00:00+00:00")]))
-        self.assertIn("**现在** 无法确认", face)
+        self.assertIn("**当前确认状态** 无法确认", face)
+        # The observation axis is answered by omission here, not by a row: every
+        # row behind this finding was never read, so `**最新观测**` would print
+        # 未记录 on every card this face renders. See `cards._integrity_now`.
+        self.assertNotIn("**最新观测**", face)
         self.assertNotIn("仍在发生", face)
         self.assertNotIn("已恢复", face)
 
@@ -604,11 +683,11 @@ class IntegrityFaceTests(unittest.TestCase):
 
     def test_the_start_is_dropped_rather_than_placed_when_unrecorded(self):
         """A labelled line holding only 未知 is the field a reader learns to
-        skip, and the 现在 line has already said the reading is not current.
-        The row is still counted — only its instant is missing."""
+        skip, and the 当前确认状态 line has already said the reading is not
+        current. The row is still counted — only its instant is missing."""
         face = self._face([self._held("DESIRED_ACTUAL_MISMATCH", "")])
         self.assertEqual([line for line in face if line.startswith("**首次观测**")], [])
-        self.assertIn("**现在** 无法确认", "\n".join(face))
+        self.assertIn("**当前确认状态** 无法确认", "\n".join(face))
         self.assertIn("1 个", "\n".join(face))
 
 
@@ -1012,32 +1091,45 @@ class TheCardSaysWhetherItIsStillTrueTests(unittest.TestCase):
         return presentation._event_of(base, at=TheCardSaysWhetherItIsStillTrueTests.AT)
 
     def test_a_row_nobody_has_graded_says_so_and_says_when_it_stopped(self):
-        line = cards._now_line(self._event(
-            state="OPEN", hold_kind="unmeasured",
-            last_seen="2026-09-18T06:15:57.175939+00:00"))
-        self.assertIn("**现在** 无法确认", line)
-        self.assertIn("最后读数 09-18 14:15", line)
+        event = self._event(state="OPEN", hold_kind="unmeasured",
+                            last_seen="2026-09-18T06:15:57.175939+00:00")
+        line = cards._now_line(event)
+        self.assertIn("**当前确认状态** 无法确认", line)
+        # THE CLOCK IS NOT ON THIS LINE ANY MORE. It is the fact about the
+        # READING and this line is the fact about NOW; they sat on one row and
+        # the row beneath them carried a crossed threshold, so nothing told a
+        # reader which of the two the threshold belonged to. See
+        # `cards._observed_line`.
+        self.assertNotIn("09-18 14:15", line)
+        observed = cards._observed_line(event)
+        self.assertIn("**最新观测** 09-18 14:15", observed)
         # One unit, and the unit is chosen by `presentation.age_says`. The
         # seconds themselves are still on the event (`existence.silent_seconds`)
         # and still spelled exactly by `human_duration` in the fold; what
         # changed is the FACE, where 「距今 16 天 0 小时」 cost 422.9px of a
-        # 360px body and wrapped. See `cards._now_line`.
-        self.assertIn("（16 天前）", line)
+        # 360px body and wrapped. See `cards._observed_line`.
+        self.assertIn("（16 天前）", observed)
         # The sentence that must never be printed about this row.
         self.assertNotIn("仍在发生", line)
 
     def test_a_row_still_being_graded_says_it_is_still_happening(self):
-        line = cards._now_line(self._event(
-            state="OPEN", last_seen="2026-10-04T08:20:43+00:00"))
-        self.assertIn("**现在** 仍在发生", line)
-        self.assertIn("最近观测 10-04 16:20", line)
+        event = self._event(state="OPEN", last_seen="2026-10-04T08:20:43+00:00")
+        line = cards._now_line(event)
+        self.assertIn("**当前确认状态** 仍在发生", line)
+        # The grading that found it above its floor is the observation, and it
+        # is dated on its own row: 首次观测 says when this STARTED, 最新观测 says
+        # when it was last SEEN, and the state word says neither.
+        self.assertIn("**最新观测** 10-04 16:20", cards._observed_line(event))
         self.assertNotIn("无法确认", line)
 
     def test_a_row_the_register_closed_says_recovered(self):
-        line = cards._now_line(self._event(
-            state="RESOLVED", resolved_at="2026-09-26T09:58:41+00:00",
-            last_seen="2026-09-26T09:57:41+00:00"))
-        self.assertEqual(line, "**现在** 已恢复 · 09-26 17:58")
+        event = self._event(state="RESOLVED",
+                            resolved_at="2026-09-26T09:58:41+00:00",
+                            last_seen="2026-09-26T09:57:41+00:00")
+        self.assertEqual(cards._now_line(event), "**当前确认状态** 已恢复")
+        # For a closed row the reading `resolved_at` names is the closing, and
+        # it dates 最新观测 rather than riding on the state word.
+        self.assertEqual(cards._observed_line(event), "**最新观测** 09-26 17:58")
 
     def test_a_row_the_register_did_not_describe_is_unconfirmed_not_still(self):
         """`state` missing is the register not having said, and the card must
@@ -1046,7 +1138,11 @@ class TheCardSaysWhetherItIsStillTrueTests(unittest.TestCase):
         what separates them is `basis`, in the fold."""
         event = self._event()
         line = cards._now_line(event)
-        self.assertEqual(line, "**现在** 无法确认 · 未记录最后读数")
+        self.assertEqual(line, "**当前确认状态** 无法确认")
+        # And the observation row says what it has to say rather than leaving a
+        # reader to guess: nobody recorded a reading, which is a fact about this
+        # axis and not a missing value.
+        self.assertEqual(cards._observed_line(event), "**最新观测** 未记录")
         self.assertEqual(event["existence"]["state"], presentation.UNCONFIRMED)
         self.assertEqual(event["existence"]["basis"],
                          "the register row carried no state")
@@ -1058,12 +1154,19 @@ class TheCardSaysWhetherItIsStillTrueTests(unittest.TestCase):
         attaches it), so this is the defensive line for a caller that hands the
         renderer a bare event: it says it does not know rather than picking one
         of the three answers the register did not give."""
-        self.assertEqual(cards._now_line({}), "**现在** 状态未知")
-        self.assertEqual(cards._now_line({"existence": None}), "**现在** 状态未知")
+        self.assertEqual(cards._now_line({}), "**当前确认状态** 状态未知")
+        self.assertEqual(cards._now_line({"existence": None}),
+                         "**当前确认状态** 状态未知")
+        # The observation axis answers the same way and for the same reason: a
+        # bare event is not a reading of nothing, it is no reading at all.
+        self.assertEqual(cards._observed_line({}), "**最新观测** 未记录")
+        self.assertEqual(cards._observed_line({"existence": None}),
+                         "**最新观测** 未记录")
 
     def test_a_row_with_no_recorded_reading_claims_no_time(self):
-        line = cards._now_line(self._event(state="OPEN", hold_kind="unmeasured"))
-        self.assertEqual(line, "**现在** 无法确认 · 未记录最后读数")
+        event = self._event(state="OPEN", hold_kind="unmeasured")
+        self.assertEqual(cards._now_line(event), "**当前确认状态** 无法确认")
+        self.assertEqual(cards._observed_line(event), "**最新观测** 未记录")
 
     def test_the_render_instant_is_never_offered_as_an_observation(self):
         """The defect itself, as an assertion. `_event_of` used to set
@@ -1853,13 +1956,14 @@ class TheRecoveryFaceTests(unittest.TestCase):
         self.assertEqual(len(first), 5)
         self.assertTrue(first[0].startswith("✅ **"), first[0])
         self.assertIn("已恢复", first[0])
-        # 现在 and not 出现于. §10's recovery shape closes on the current state
-        # and leaves the start off, and the start is `恢复` minus `本次持续` —
-        # the two lines above it — so nothing left the card. What the line
-        # answers is the question a card that says ✅ is asked: is it still
-        # clear.
+        # 当前确认状态 and not 出现于. §10's recovery shape closes on the current
+        # state and leaves the start off, and the start is `恢复` minus
+        # `本次持续` — the two lines above it — so nothing left the card. What
+        # the line answers is the question a card that says ✅ is asked: is it
+        # still clear. It is labelled with the same word the incident and
+        # integrity blocks answer that question with.
         self.assertEqual([line.split("**")[1] for line in first[1:]],
-                         ["恢复", "本次持续", "恢复前", "现在"])
+                         ["恢复", "本次持续", "恢复前", "当前确认状态"])
 
     def test_the_recovery_time_is_a_clock_the_reader_is_in(self):
         """§10: 14:20, not `2026-09-19T02:18:52+00:00`.

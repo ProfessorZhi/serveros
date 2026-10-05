@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""The sixteen situations, loaded and turned into models — one source for both the
+"""The seventeen situations, loaded and turned into models — one source for both the
 tests and the previews a person reviews.
 
 Why one source and not two
@@ -381,7 +381,7 @@ def write(out_dir, *, sample: bool = True) -> list[Path]:
         written += [path_html, path_json]
     index = target / "README.txt"
     index.write_text(
-        "这十六个文件由同一个 renderer 从 runtime/card-scenarios.yaml 生成。\n"
+        "这十七个文件由同一个 renderer 从 runtime/card-scenarios.yaml 生成。\n"
         "每个场景一对：.html 是人看的预览（含 390px 窄屏与桌面两帧），\n"
         ".json 是同一张卡实际会发出去的 payload。\n\n"
         "它们全部带「示例」标识，且均未发送。预览证明 renderer 产出什么，\n"
@@ -395,7 +395,7 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover - hand check
     import argparse
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--out", required=True,
-                        help="directory to write the sixteen previews into")
+                        help="directory to write the seventeen previews into")
     parser.add_argument("--unsampled", action="store_true",
                         help="omit the SAMPLE mark. For looking at layout "
                              "only; never for a file somebody reviews")
