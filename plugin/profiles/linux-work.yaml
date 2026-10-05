@@ -770,11 +770,37 @@ short_description: Agent Engineering Workbench for a Linux work node
 # half of the same finding: a card state that cannot be worded is an enum on
 # somebody's phone.
 #
-# One member changed since 04a, measured against the installed 04a payload;
-# `tests/` is not a member of this composition.
+# Seventeen members changed since 04b, measured against the installed 04b
+# payload; `tests/` is not a member of this composition.
 #
-#   runtime/presentation.py             acc33e66 → d353dc99
-cachebuster: srv0005.20261004b
+# THE LIST IS A MEASUREMENT AND NOT A SUMMARY OF THIS ROUND. 04b was built from
+# 74ba012, and main has moved past that tree by four merged pull requests, so a
+# cachebuster naming only this round's own files would be claiming a delta the
+# artifact does not have. Which four, by the commit each landed as:
+#
+#   #35  2af5a09             the watermark/pressure split itself
+#   #36  b2433e7             ability discovery gains its wide-directory source
+#   #37  8f82a10             `ability refresh` reports both of its products
+#   #39  8c34e05 … 9479afe   five daemon/context security prerequisites
+#
+#   context/actor-context-contract.yaml   c574ea67 → 1d4ca9cb
+#   context/actor.py                      9ad62cb9 → debbdef0
+#   fleet/state-root-contract.yaml        c4079360 → c646f8c1
+#   runtime/ability_projection.py         9130091f → c46817ff
+#   runtime/alert_digest.py               4074e5a5 → e0a21322
+#   runtime/alerting.py                   e458214f → b3e2ed56
+#   runtime/anomaly.py                    2d2dd2c7 → 40d98178
+#   runtime/attribution-contract.yaml     6f998ff8 → 7a6637e4
+#   runtime/card-definitions.yaml         cacb76ba → 90dd0315
+#   runtime/card-scenarios.yaml           bf9fabb6 → 56f087a4
+#   runtime/card_scenarios.py             9732134b → 81f4f4a7
+#   runtime/cli.py                        1cab5747 → 5039124d
+#   runtime/daemon.py                     0186f3d0 → ef4ce663
+#   runtime/inventory.py                  c4de6a8e → 6680d616
+#   runtime/notification-contract.yaml    3c614ce3 → 86d8f259
+#   runtime/resource_anomaly.py           6433ae18 → 3a210e23
+#   runtime/view.py                       b4a861c2 → fae23a89
+cachebuster: srv0005.20261005a
 
 skills:
   - name: runtime-management
