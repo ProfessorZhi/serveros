@@ -235,7 +235,10 @@ TOOLS: tuple[dict, ...] = (
             "Parent was woken from, which the store supersedes in the same "
             "transaction. The epoch is derived for the same reason and is not "
             "an argument either, so it cannot be aimed at another Parent's "
-            "record. Executed by `serverosctl work checkpoint`, once, under a "
+            "record. Name exactly one way of waiting — `waiting_on_child` or "
+            "`waiting_on_window` — because a checkpoint records where the wait "
+            "ends and a record naming neither, or both, is refused by the "
+            "verb. Executed by `serverosctl work checkpoint`, once, under a "
             "durable receipt."
         ),
         "inputSchema": {
@@ -255,9 +258,9 @@ TOOLS: tuple[dict, ...] = (
                 "unresolved_effect": {"type": "array", "items": {"type": "string"},
                                       "description": "an effect left unknown; repeatable"},
                 "waiting_on_child": {"type": "array", "items": {"type": "string"},
-                                     "description": "a delegated cycle this store holds an admission for; repeatable"},
+                                     "description": "a delegated cycle this store holds an admission for; repeatable. Exactly one of this and waiting_on_window, and one of the two is required"},
                 "waiting_on_window": {"type": "string",
-                                      "description": "an ISO instant that ends the wait"},
+                                      "description": "an ISO instant that ends the wait. Exactly one of this and waiting_on_child, and one of the two is required"},
                 "write_scope": {"type": "array", "items": {"type": "string"},
                                 "description": "a write scope this Parent holds; each must stay inside the envelope's allowed_write_scope"},
             },
