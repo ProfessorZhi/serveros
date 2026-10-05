@@ -613,7 +613,168 @@ short_description: Agent Engineering Workbench for a Linux work node
 #
 # Tests are not members of this composition. The ability pin is unchanged
 # (`da5f89b1b131`).
-cachebuster: srv0005.20260929a
+#
+# ── 29a → 04a (2026-10-04) ────────────────────────────────────────────────────
+#
+# The date moved, so the letter starts over at `a`; the 29th never got past its
+# first letter. Two faces moved this time and they are not the same kind of
+# thing. One is what a person reads: the two cards this node sends, relaid out
+# end to end. The other is what the machine was doing to itself while nobody was
+# looking — three defects that all landed on the same slack in the daemon's
+# minute, and the notification chain that was supposed to report the result.
+#
+# `runtime/cards.py` + `runtime/presentation.py` are the whole of Card V2. Both
+# cards' first screens are now ordered by the questions a reader actually asks
+# (what happened / is it still happening / the current measurement / the
+# threshold / the effect / what to do / since when and for how long), and the
+# heading language is closed to four verdicts (✅已恢复 / ⚠️建议查看 / 🚨需要处理 / ❔无法确认).
+# The machine's own classification moved into 技术详情. Measured across the eleven
+# scenarios the two revisions share: first-screen lines **208 → 110**, wrapped
+# lines **42 → 0**. `runtime/card-definitions.yaml` is the label and the `what`
+# for every code and every section on those two cards;
+# `runtime/card-scenarios.yaml` is the fifteen scenarios themselves, which is the
+# artifact a person approves; `runtime/card_scenarios.py` renders them, and
+# `runtime/card-scenario-reads.json` is new so that the numbers on the scenarios
+# are collected rather than transcribed by hand.
+#
+# `mcp/node_mcp.py`, `runtime/agent_control_store.py`, and `runtime/view.py` +
+# `runtime/anomaly.py` + `runtime/alerting.py` are three faces of one fault, and
+# changing any one of them without the other two leaves the gap open.
+# `socket.timeout` is `TimeoutError` is an `OSError`, so a tick that ran long and
+# a daemon that was not there printed the same `did not answer` — which a reader
+# takes as no reading at all. `DaemonBusy` is now its own branch, written ahead
+# of the `OSError` clause. The ledger's `_atomic_write` handed a text handle to
+# `json.dump`, which split one dump into **2,522,746** writes of a 27,597,335 B
+# ledger the daemon dumps twice a minute; serialising first and writing once took
+# a measured **0.579 s → 0.315 s** with the bytes identical. And
+# `anomaly.levels()` returned one `dict` where the reader needed two different
+# things: what was measured, and what there was to measure. A runtime-group ref
+# carries a pid, so the ref is a lifetime — with only `levels` a reader cannot
+# tell "could not read it again" from "it is gone", and those two get opposite
+# treatment. Measured 2026-10-04: the pass that graded the held rows classifies
+# **1,088** of them `absent-and-gone` against **270** that are present and should
+# stay held, with `dangerous` empty.
+#
+# `runtime/alerting.py`: NEW is produced only by a first OPEN transition, an
+# unchanged OPEN stays put, a material change is UPDATED/ESCALATED, RESOLVED is
+# RECOVERED and a re-open is REOPENED; announced and delivery state are separate
+# from lifecycle state. Routine ticks no longer write the cold book at all (inode
+# and mtime_ns unchanged), and the median routine tick went **0.7529 → 0.2433
+# s**. `runtime/daemon.py` gains two socket verbs that are each the other half of
+# something: `alert.current` reads the register instead of recomputing it, and
+# `alert.digest-account` says what a pass declined to carry and why — without it
+# the cursor only advanced on DELIVERED, and every refused row was re-derived as
+# NEW on every tick (**827 rows** on 2026-10-04). `runtime/alert_digest.py`,
+# `runtime/card_delivery.py`, `runtime/card_day.py`, `runtime/cli.py` and
+# `runtime/monitoring_policy.py` + `runtime/monitoring-policy.yaml` carry the
+# status-notice chain: one card per day, one PATCH per hour, and one lightweight
+# message citing that card version, sent only after a successful PATCH. A PATCH
+# that FAILED or came back UNKNOWN does not send 状态已更新; it becomes a delivery
+# incident. Routine notices do not use `urgent_app`.
+# `runtime/notification-contract.yaml` is the closed mapping from code to
+# attention bucket, and `runtime/actuator-contract.yaml` records every call face
+# that has an external effect.
+#
+# MEASURED, the way `24d`, `27a`, `28d` and `29a` were. Nineteen members of this
+# composition differ from the promoted payload under the version string
+# `3.1.0+srv0005.20260929a`, and four are new to it:
+#
+#   mcp/node_mcp.py                     7473b3ce → c07f32e9
+#   runtime/actuator-contract.yaml      f3d8c2b5 → a725d8b5
+#   runtime/agent_control_store.py      cdfd29ad → 684ac3c3
+#   runtime/alert_digest.py             c0b11ad8 → 4074e5a5
+#   runtime/alerting.py                 1fae18a9 → e458214f
+#   runtime/anomaly.py                  e8d5d4d5 → 2d2dd2c7
+#   runtime/card-definitions.yaml       2b188d9b → cacb76ba
+#   runtime/card-scenarios.yaml         4cb9aeaa → bf9fabb6
+#   runtime/card_day.py                 8eb19540 → 5694ea36
+#   runtime/card_delivery.py            371adc19 → f6e4a5f9
+#   runtime/card_scenarios.py           89beca34 → 9732134b
+#   runtime/card_source.py              7c564def → 4234e4ad
+#   runtime/cards.py                    b87a7f98 → 85e56bde
+#   runtime/cli.py                      41d1abd8 → 1cab5747
+#   runtime/daemon.py                   5e1a7fd5 → 0186f3d0
+#   runtime/notification-contract.yaml  c2872e22 → 3c614ce3
+#   runtime/presentation.py             6ffe1e2a → acc33e66
+#   runtime/resource_anomaly.py         a80cc89e → 6433ae18
+#   runtime/view.py                     bcbaf14d → b4a861c2
+#   runtime/card-scenario-reads.json       (new) → 3a904f1d
+#   runtime/card_shots.py                  (new) → c04cf25c
+#   runtime/monitoring-policy.yaml         (new) → 7aec8b51
+#   runtime/monitoring_policy.py           (new) → 9d69d2bf
+#
+# All twenty-three are members of the 265-file payload. What a stale copy keeps
+# doing is why the label has to move, and the two production card units make it
+# concrete. `tokyo-status-card.service` runs the status card down
+# `current/bin/serverosctl`, and every member that card is rendered from is in
+# the list above: the installed revision's copies are the baseline this round
+# measured — `uid`, the CPU model and the raw schema on the first screen, 208
+# lines where the new ones take 110, and no notice chain at all, so no hourly
+# PATCH and no message citing the card version. The alert unit's face comes from
+# `runtime/alerting.py` and `runtime/alert_digest.py`, whose old row projection
+# is the one that carried no numeric measurement. `runtime/cli.py` and
+# `runtime/daemon.py` are the two ends of `alert.current` and
+# `alert.digest-account`, which is why this release is three steps and not two:
+# promote swaps the file the CLI runs from, and the running daemon keeps its old
+# dispatch until `serverosd.service` is restarted. `mcp/node_mcp.py` is one layer
+# further out, on the surface an agent reads.
+#
+# Tests are not members of this composition. The ability pin is unchanged
+# (`da5f89b1b131`).
+#
+# ── 04a → 04b (2026-10-04) ────────────────────────────────────────────────────
+# One member, `runtime/presentation.py`, and it is not prose: this is a defect
+# found on the live production renderer AFTER 04a was promoted, by reading the
+# card the units actually publish.
+#
+# WHAT WAS WRONG. The shared gateway's own accounting could not be read, so
+# `monitoring_model` returned `state: UNAVAILABLE`, and the binding that
+# `monitor_card.py` hands to `serverosctl card status` carried it verbatim
+# beside `probe: {state: OK}` — two axes, reported honestly, collapsed into one
+# bad answer. `_gateway_state` passed the word through; `env_health` files it
+# under neither `faulted` nor `unread`; so it reached the else branch and the
+# card said 「三项均已读到且无异常」, in GREEN, over a reading that was never
+# made. The block's own lead said 就绪 on top of it, and the first-screen change
+# line printed `AI Gateway 正常→UNAVAILABLE` — an internal enum on the first
+# screen, which §2 forbids.
+#
+# TWO HALVES WITH TWO AGES, and the distinction lives in the evidence rather
+# than in this comment. `ab-before-bound.json` and `ab-after-bound.json` are the
+# baseline worktree's renderer and this one, both run against the SAME real
+# binding: the baseline already answered 「三项均已读到且无异常」, so the false
+# green is older than this round. The raw enum on the first screen is not —
+# `card_day.named_changes` and `card_day._state_word` are new, and the baseline
+# had no code that could print it. `e2e-13e-preview-card.json` is the third
+# column: what 04a shipped, where both were visible at once.
+#
+# THE FIX IS ONE CLAMP, because one place produces the word. `SECTION_FAULTED`
+# and `SECTION_READINGS` are extracted so that `env_health` and the clamp read
+# one tuple, and `_gateway_state` admits an accounting word only if it is in
+# that tuple, answering UNKNOWN otherwise. Both halves go away from that single
+# change: `env_health` files UNKNOWN as unread — verdict UNCONFIRMED, block lead
+# 无法确认 — and `card_day._state_word` prints it as 无法确认 instead of itself.
+#
+# IT IS A WHITELIST AND NOT A TRANSLATION OF TODAY'S WORDS. The shape of the
+# defect is «a word this card was never taught», so the fix has to be a gate
+# rather than a dictionary of the words that happen to exist now:
+# `RECENT_SUCCESS` is declared for this very block in `runtime/card-definitions
+# .yaml` and is still not a state of it, because that catalogue words PROVIDER
+# ROWS. A word a producer adds later lands on the neutral side by default.
+#
+# WHY THE LABEL HAS TO MOVE AND A PROMPT DOES NOT. `tokyo-status-card.service`
+# runs the status card down `current/bin/serverosctl`, so the copy printing the
+# false green is this one, and it keeps printing it until the revision behind
+# that symlink changes. `tests/test_presentation.py` pins both ends of the clamp
+# — three invented words are not green, `OK` and `ATTENTION` still are — and
+# pins `SECTION_READINGS` to the states `card_day` can word, which is the other
+# half of the same finding: a card state that cannot be worded is an enum on
+# somebody's phone.
+#
+# One member changed since 04a, measured against the installed 04a payload;
+# `tests/` is not a member of this composition.
+#
+#   runtime/presentation.py             acc33e66 → d353dc99
+cachebuster: srv0005.20261004b
 
 skills:
   - name: runtime-management

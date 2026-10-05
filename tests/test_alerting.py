@@ -110,11 +110,23 @@ def level(code: str, subject: str, value, threshold, margin_key: str) -> dict:
                                   "margin_key": margin_key}}
 
 
-def detection(*, signals=(), levels=None, ungraded=(),
+def detection(*, signals=(), levels=None, ungraded=(), subjects=None,
               answered_by=MEASUREMENT, measured_at=T0) -> dict:
-    return {"signals": list(signals), "levels": levels or {},
-            "codes_not_evaluated": list(ungraded),
-            "answered_by": answered_by, "measured_at": measured_at}
+    """One detection document. `subjects` is the pass's inventory of what it
+    enumerated, and `None` OMITS the key rather than sending an empty list —
+    the two are different documents. A document without the key was written
+    before the inventory existed (or by a hand-built caller) and is evaluated
+    exactly as it was before; a document with `subjects=[]` says the pass
+    enumerated nothing, which the alert layer refuses to read as "everything
+    is gone". Both are tested below, and a helper that conflated them would
+    make one of those tests unwriteable.
+    """
+    document = {"signals": list(signals), "levels": levels or {},
+                "codes_not_evaluated": list(ungraded),
+                "answered_by": answered_by, "measured_at": measured_at}
+    if subjects is not None:
+        document["subjects"] = list(subjects)
+    return document
 
 
 def disk_signal(*, used=93.0, severity="high", subject=FS) -> dict:
@@ -483,6 +495,108 @@ class RecoveryIsMeasuredNotAssumed(AlertCase):
         self.assertTrue(any("not reported this tick" in entry["why"]
                             for entry in held["held"]), held["held"])
 
+    def test_a_subject_the_pass_did_not_enumerate_is_gone_and_closes(self):
+        """The other half of the test above, and the half that was missing.
+
+        A runtime group's ref embeds a pid, so the ref is a LIFETIME: when the
+        group ends, its ref never comes back. Held as `unmeasured` such an
+        alert said "a subject that stopped being measured has not recovered"
+        forever. Measured on this node 2026-10-04, 1,088 alerts were frozen
+        OPEN saying exactly that, and every one of the 1,088 subjects no longer
+        existed — checked against the live process table, not against the
+        inventory that made the decision.
+
+        The distinction the two tests draw between them is the whole change: a
+        subject that was LOOKED AT and gave nothing keeps holding, and a subject
+        that was not there to look at has ended. Both are an absence from
+        `levels`, and until now they were one answer.
+
+        Nothing was announced here — this fixture never delivers — and the
+        closure therefore owes no message. `pending` is a claim about what will
+        be SAID, and a recovery message takes back an announcement; the digest
+        side has read this same ending as a `silent_resolution` since before the
+        register agreed with it. The assertion below is the agreement.
+        """
+        self.disk(used=93.0, subjects=[FS])
+        self.disk(seconds=60, severity=None, reported=False,
+                  subjects=["filesystem:/somewhere-else"])
+        row = self.only()
+        self.assertEqual(row["state"], "RESOLVED")
+        self.assertEqual(row["resolved_at"], at(60))
+        self.assertIsNone(row["hold_kind"])
+        self.assertIsNone(row["pending"])
+        self.assertIsNone(row["last_notified_at"])
+
+    def test_the_gone_verdict_is_named_rather_than_read_from_the_sentence(self):
+        """`subject_gone` is a fourth `kind`, and it is asserted here because a
+        RESOLVED verdict does not store one on the alert — so nothing else in
+        the suite would notice if this word changed. It is the machine-readable
+        half: a consumer that had to recognise this case by matching prose would
+        change meaning the day somebody fixed a typo in the reason."""
+        verdict, _why, kind = alerting._graded_measurement(
+            {"code": "DATA_FS_PRESSURE", "subject_ref": FS,
+             "margin_key": "filesystem_percent_recovery_margin"},
+            levels={}, ungraded={}, subjects={"filesystem:/somewhere-else"})
+        self.assertEqual(verdict, "RESOLVED")
+        self.assertEqual(kind, "subject_gone")
+
+    def test_a_subject_that_came_back_unreadable_still_holds(self):
+        """The regression guard for the change. An inventory that CONTAINS the
+        subject with no level row behind it is the unreadable case — a mount
+        that was enumerated and whose `statvfs` gave nothing — and it must keep
+        holding, because no reading is not a reading of zero. Without this test
+        the new branch could be widened to "absent from `levels`" and the suite
+        would stay green while every unreadable disk closed its own alert."""
+        self.disk(used=93.0, subjects=[FS])
+        result = self.disk(seconds=60, severity=None, reported=False,
+                           subjects=[FS])
+        row = self.only()
+        self.assertEqual(row["state"], "OPEN")
+        self.assertEqual(row["hold_kind"], "unmeasured")
+        self.assertTrue(any("not reported this tick" in entry["why"]
+                            for entry in result["held"]), result["held"])
+
+    def test_an_empty_inventory_is_not_an_inventory_of_nothing(self):
+        """A pass that enumerated no subjects has not established that every
+        subject is gone. `evaluate` reads an empty list as "no inventory was
+        taken" precisely so that a document carrying none cannot mass-resolve
+        the register — the failure mode this whole branch has to avoid."""
+        self.disk(used=93.0, subjects=[FS])
+        self.disk(seconds=60, severity=None, reported=False, subjects=[])
+        self.assertEqual(self.only()["state"], "OPEN")
+        self.assertEqual(self.only()["hold_kind"], "unmeasured")
+
+    def test_a_document_without_an_inventory_behaves_exactly_as_before(self):
+        """Every caller that predates the key — hand-built documents, tests,
+        older producers — must be unaffected. This is the same assertion as the
+        unreadable case above, reached by omitting the key rather than by
+        putting the subject in it, and it is what makes the change additive."""
+        self.disk(used=93.0)
+        self.disk(seconds=60, severity=None, reported=False)
+        self.assertEqual(self.only()["state"], "OPEN")
+        self.assertEqual(self.only()["hold_kind"], "unmeasured")
+
+    def test_a_degraded_pass_holds_before_the_inventory_is_consulted(self):
+        """The safety property, as an ordering rather than an intention.
+
+        When the process table fails to answer, the group codes are reported as
+        not evaluated — and they are ALSO absent from that pass's inventory,
+        because nothing enumerated the groups. If the inventory were consulted
+        first, a failed `/proc` read would close every group alert on the node
+        at once. The `not_evaluated` branch runs first for exactly this reason,
+        and this test fails if somebody moves it.
+        """
+        self.run_pass(signals=[cpu_signal()], levels=cpu_level(279.5),
+                      subjects=[GROUP])
+        self.assertEqual(self.only()["state"], "OPEN")
+        result = self.run_pass(seconds=60, subjects=[],
+                               ungraded=[{"code": "HIGH_CPU_SUSTAINED",
+                                          "why": "no runtime groups were supplied"}])
+        self.assertEqual(self.only()["state"], "OPEN")
+        self.assertEqual(self.only()["hold_kind"], "not_evaluated")
+        self.assertTrue(any(entry["why"] and "not evaluated" in entry["why"]
+                            for entry in result["held"]), result["held"])
+
     def test_a_declaration_closes_when_it_stops_being_reported(self):
         """No margin key means not a measurement — the code says a thing is true,
         and there is no distance for it to come back. This is the one shape where
@@ -518,7 +632,13 @@ class RecoveryIsMeasuredNotAssumed(AlertCase):
 
 class RecoverySpeaksExactlyOnce(AlertCase):
     def test_a_recovery_sends_one_message_and_then_stops(self):
+        # The opening message ARRIVES first, and that is not scene-setting: a
+        # recovery is a reply to it, and the rule that decides whether one is
+        # owed reads the record of the reply's subject. Without this line the
+        # fixture was asking for a recovery message about an episode nobody had
+        # been told about — the shape 11,077 rows on this node were in.
         self.disk(used=93.0)
+        self.deliver()
         self.disk(seconds=60, used=50.0, severity=None)
         self.assertEqual(
             [item["kind"] for item in
@@ -532,12 +652,129 @@ class RecoverySpeaksExactlyOnce(AlertCase):
         """§10 does not say "unless somebody pressed a button". An ACK records
         attention; it does not make the ending uninteresting."""
         self.disk(used=93.0)
+        self.deliver()
         alerting.acknowledge(self.store, self.only()["alert_ref"], at=at(60))
         self.disk(seconds=60, used=50.0, severity=None)
         self.assertEqual(self.only()["state"], "RESOLVED")
         self.assertEqual(
             [item["kind"] for item in
              alerting.pending_for(self.store, at=at(60))], ["resolved"])
+
+
+# ---------------------------------------------------------------------------
+# `pending` is a claim about what will be SAID, and §2 decides what may be
+# ---------------------------------------------------------------------------
+
+
+class WhatMayBeSaidIsTheContractsQuestion(AlertCase):
+    """`pending` governed by `alerts.attention.on_the_face`.
+
+    Measured on this node 2026-10-04, which is why this class exists: 13,207
+    rows carried a `pending` and 1,204 had ever been announced, and 1,193 of
+    those announcements were for codes the contract has never put on a card.
+    The register was keeping a ledger of messages it had no surface to send.
+    """
+
+    def watch_alert(self, *, cpu=279.5, seconds=0.0):
+        """One WATCH-code alert: `HIGH_CPU_SUSTAINED` is not on the face."""
+        return self.run_pass(seconds=seconds, signals=[cpu_signal(cpu=cpu)],
+                             levels=cpu_level(cpu))
+
+    def test_the_face_is_read_from_the_contract_and_not_from_here(self):
+        """The guard against a second attention table. `alerting` must agree
+        with `presentation` about which codes a card may carry; if this set were
+        written out in `alerting.py` the two would part company the first time
+        somebody moved a code between buckets."""
+        presentation = alerting._presentation()
+        face = tuple(presentation.attention_policy().get("on_the_face") or ())
+        expected = {code for code, entry
+                    in presentation.code_expectations().items()
+                    if str(entry.get("level") or "") in face}
+        self.assertEqual(alerting._sayable_codes(), frozenset(expected))
+        self.assertIn("DATA_FS_PRESSURE", expected)
+        self.assertNotIn("HIGH_CPU_SUSTAINED", expected)
+
+    def test_a_code_off_the_face_opens_without_an_intent_and_says_why(self):
+        """Both halves. An intent that cannot be delivered is not owed, and a
+        finding that is not going to be spoken about is still accounted for —
+        `held` is the list that answers "why was I not told about this", and for
+        a code off the face the answer is a fact about the contract."""
+        result = self.watch_alert()
+        self.assertEqual(self.only()["state"], "OPEN")
+        self.assertIsNone(self.only()["pending"])
+        self.assertEqual(alerting.pending_for(self.store, at=T0), [])
+        self.assertTrue([entry for entry in result["held"]
+                         if entry["stage"] == "notification"
+                         and "HIGH_CPU_SUSTAINED" in entry["why"]
+                         and "not on a card's face" in entry["why"]],
+                        result["held"])
+
+    def test_a_code_on_the_face_still_opens_owing_a_message(self):
+        """The positive control for the test above, and the reason it is not a
+        test that passes because nothing is ever queued."""
+        self.disk(used=93.0)
+        self.assertEqual(self.only()["pending"]["kind"], "opened")
+        self.assertEqual(
+            [item["kind"] for item in
+             alerting.pending_for(self.store, at=T0)], ["opened"])
+
+    def test_a_row_from_before_the_rule_is_brought_into_line_by_a_pass(self):
+        """The migration is the pass, not a separate run over the store. A rule
+        that governed only new rows would leave 13,207 claims on the books and
+        the Status Card printing the number."""
+        self.watch_alert()
+        stale = self.store.alerts()
+        ref = self.only()["alert_ref"]
+        # Exactly the shape the old code wrote: an OPEN row owing an `opened`.
+        stale[ref]["pending"] = {"kind": "opened", "not_before": T0}
+        self.store.commit(stale)
+        self.assertEqual(len(alerting.pending_for(self.store, at=T0)), 1)
+
+        result = self.watch_alert(seconds=60)
+        self.assertIsNone(self.only()["pending"])
+        self.assertEqual(alerting.pending_for(self.store, at=at(60)), [])
+        self.assertTrue([entry for entry in result["held"]
+                         if "withdrawn" in entry["why"]], result["held"])
+        # The finding itself is untouched: still open, still graded, still the
+        # same episode. Only the claim about saying it went away.
+        self.assertEqual(self.only()["state"], "OPEN")
+        self.assertEqual(self.only()["occurrence_count"], 2)
+
+    def test_a_pass_that_closes_a_thousand_never_announced_alerts_owes_none(self):
+        """The case the rules exist for. This node will close the 1,024 frozen
+        `HIGH_MEMORY_SUSTAINED` rows in one pass when the subject inventory
+        reaches the live daemon, and the shape of that pass must not be 1,024
+        recovery messages about episodes nobody was ever told about."""
+        subjects = [f"runtime-group:batch:{index}" for index in range(1000)]
+        self.run_pass(signals=[cpu_signal(subject=subject) for subject in subjects],
+                      levels={key: row
+                              for subject in subjects
+                              for key, row in cpu_level(279.5,
+                                                        subject=subject).items()},
+                      subjects=subjects)
+        self.assertEqual(len(self.rows()), 1000)
+        # Every one of them is gone from the next pass's inventory, and they are
+        # all WATCH codes: the closure says nothing, and no row claims otherwise.
+        self.run_pass(seconds=60, subjects=["runtime-group:batch:0"])
+        resolved = [row for row in self.rows().values()
+                    if row["state"] == "RESOLVED"]
+        self.assertEqual(len(resolved), 999)
+        self.assertEqual(alerting.pending_for(self.store, at=at(60)), [])
+        self.assertTrue(all(row["pending"] is None for row in resolved))
+
+    def test_one_detectors_rows_are_not_reconciled_by_the_other(self):
+        """Reconciliation is per detector for the same reason closing is: this
+        pass never saw that document, and it has no standing to rule on it."""
+        self.run_pass(signals=[cpu_signal()], levels=cpu_level(279.5),
+                      detector=DECLARATION)
+        rows = self.store.alerts()
+        ref = self.only()["alert_ref"]
+        rows[ref]["pending"] = {"kind": "opened", "not_before": T0}
+        self.store.commit(rows)
+
+        self.watch_alert(seconds=60)          # the MEASUREMENT detector's pass
+        self.assertEqual(len(alerting.pending_for(self.store, at=at(60))), 1)
+        self.assertEqual(self.only()["detector"], DECLARATION)
 
 
 # ---------------------------------------------------------------------------
@@ -893,9 +1130,13 @@ class ASwapWatermarkIsNotAPressure(AlertCase):
         line = self._rendered(memory_pressure=self._psi("PRESENT"),
                               psi_memory_some_avg60_percent_high=1.0,
                               psi_memory_full_avg60_percent_high=0.5)
-        self.assertIn("99.2% (threshold 90.0%)", line)
+        self.assertIn("99.2% (≥ threshold 90.0%)", line)
         self.assertIn("some avg60=0.0% (threshold 1.0%)", line)
         self.assertIn("full avg60=0.0% (threshold 0.5%)", line)
+        # The watermark is above its line and says so; the two stall figures
+        # are below theirs and therefore claim nothing. The operator is a
+        # comparison, and a comparison is only printed when it holds.
+        self.assertNotIn("avg60=0.0% (≥", line)
 
     def test_a_stalling_host_still_prints_both_and_decides_neither(self):
         """The other side of the same branch. The renderer prints the reading
@@ -904,8 +1145,8 @@ class ASwapWatermarkIsNotAPressure(AlertCase):
                                                         full=2.5),
                               psi_memory_some_avg60_percent_high=1.0,
                               psi_memory_full_avg60_percent_high=0.5)
-        self.assertIn("some avg60=4.5% (threshold 1.0%)", line)
-        self.assertIn("full avg60=2.5% (threshold 0.5%)", line)
+        self.assertIn("some avg60=4.5% (≥ threshold 1.0%)", line)
+        self.assertIn("full avg60=2.5% (≥ threshold 0.5%)", line)
 
     def test_an_unreadable_psi_is_not_reported_as_no_pressure(self):
         """"Cannot tell" is not "fine", and the same conflation that
@@ -924,9 +1165,50 @@ class ASwapWatermarkIsNotAPressure(AlertCase):
         and the card must not invent a stall reading for it — nor lose the
         watermark it does have."""
         line = self._rendered()
-        self.assertIn("99.2% (threshold 90.0%)", line)
+        self.assertIn("99.2% (≥ threshold 90.0%)", line)
         self.assertNotIn("memory stall", line)
         self.assertNotIn("NOT established", line)
+
+    def test_a_reading_below_its_line_prints_the_line_and_claims_nothing(self):
+        """§4 wants value, operator and threshold together — and the operator
+        is a claim. `80.0%（≥ 90.0%）` would be this renderer asserting an
+        inequality its own two numbers contradict, which is the same failure as
+        omitting the operator, reached from the other side. Both halves are
+        asserted here because either one alone passes on the wrong code."""
+        below = self._rendered(used_percent=80.0)
+        self.assertIn("80.0% (threshold 90.0%)", below)
+        self.assertNotIn("80.0% (≥", below)
+
+        above = self._rendered(used_percent=92.0)
+        self.assertIn("92.0% (≥ threshold 90.0%)", above)
+
+    def test_an_operator_comes_from_the_declared_key_and_never_from_a_guess(self):
+        """`direction()` reads a suffix, and a key of neither shape gets no
+        operator rather than a default. `cpu_sustained_seconds` is a window,
+        not a line to cross: there is no comparison to print, and inventing one
+        would put a claim on the face that no detector ever made."""
+        def line_for(code, key, value=95.0):
+            measured = {"used_percent": value, "threshold_percent": 90.0}
+            with mock.patch.object(alerting, "_THRESHOLD_KEY_CACHE",
+                                   {code: key}):
+                return alerting._measurement_line(
+                    {"code": code, "measured": measured}, measured)
+
+        self.assertEqual(line_for("DISK_WARNING", "filesystem_percent_high"),
+                         "95.0% (≥ threshold 90.0%)")
+        self.assertEqual(line_for("DISK_CRITICAL", "filesystem_percent_critical"),
+                         "95.0% (≥ threshold 90.0%)")
+        self.assertEqual(line_for("SOMETHING_WINDOWED", "cpu_sustained_seconds"),
+                         "95.0% (threshold 90.0%)")
+        self.assertEqual(line_for("A_CODE_NOBODY_GRADES", None),
+                         "95.0% (threshold 90.0%)")
+        # A lower bound is read when the contract grows one, without this
+        # function having to change to read it correctly — and it is read the
+        # same way round, off the key's own spelling.
+        self.assertEqual(line_for("SOMETHING_LOW", "free_percent_low", 85.0),
+                         "85.0% (≤ threshold 90.0%)")
+        self.assertEqual(line_for("SOMETHING_LOW", "free_percent_low", 95.0),
+                         "95.0% (threshold 90.0%)")
 
     def test_a_psi_that_arrived_without_a_window_is_not_read_as_zero(self):
         """`some` and `full` are read separately: a `some` line the kernel did
@@ -936,6 +1218,107 @@ class ASwapWatermarkIsNotAPressure(AlertCase):
                               psi_memory_full_avg60_percent_high=0.5)
         self.assertIn("NOT established", line)
         self.assertNotIn("avg60=0.0%", line)
+
+
+class TheFaceIsOneOfThePartsAndNotASecondReading(AlertCase):
+    """One producer, two registers — asserted as a relationship.
+
+    Incident Card V2 puts the leading reading on the first screen, and the way
+    that goes wrong is a renderer that reaches into the register row a second
+    time to get it. Two readers of one payload agree today and drift on the day
+    somebody changes the wording in one of them, and the drift shows up as a
+    face and a fold beneath it printing two figures for one finding.
+
+    So the face is not re-derived: `measurement_face` returns one of the parts
+    `measurement_parts` already produced, and `_measurement_line` is the join of
+    the same list. The class above pins the STRINGS this produces; these cases
+    pin the SHAPE that keeps them from becoming two sources, which is the part
+    a rendering test cannot see.
+    """
+
+    #: A percentage against its tier: the ordinary case.
+    DISK = {"used_percent": 92.9, "threshold_percent": 92.0}
+    #: Two readings at once, so "which one is on the face" is a real question.
+    SWAP = {"used_percent": 99.2, "threshold_percent": 90.0,
+            "memory_pressure": {"state": "PRESENT",
+                                "some": {"avg10": 4.5, "avg60": 4.5,
+                                         "avg300": 4.5},
+                                "full": {"avg10": 2.5, "avg60": 2.5,
+                                         "avg300": 2.5}},
+            "psi_memory_some_avg60_percent_high": 1.0,
+            "psi_memory_full_avg60_percent_high": 0.5}
+    #: A comparison whose own threshold is the declaration on one side.
+    DECLARATION = {"desired_state": "running",
+                   "actual_derived_state": "NOT_RUNNING",
+                   "actual_raw": "exited"}
+
+    def test_the_face_is_a_part_this_function_already_produced(self):
+        for code, measured in (("DISK_CRITICAL", self.DISK),
+                               ("SWAP_PRESSURE", self.SWAP),
+                               ("DESIRED_ACTUAL_MISMATCH", self.DECLARATION)):
+            with self.subTest(code=code):
+                alert = {"code": code, "measured": measured}
+                self.assertIn(alerting.measurement_face(alert, measured),
+                              alerting.measurement_parts(alert, measured))
+
+    def test_the_face_is_the_leading_reading_and_the_watermark_leads(self):
+        """The order is the contract, not a preference: the percentage against
+        its tier comes before the stall measured behind it, because the second
+        is context for the first and a face that led with context would be
+        answering the question one step early."""
+        alert = {"code": "SWAP_PRESSURE", "measured": self.SWAP}
+        readings = [p["axis"] for p in alerting.measurement_parts(alert, self.SWAP)
+                    if p["measured"] and p["face"]]
+        self.assertGreater(len(readings), 1, "one reading makes the order untested")
+        self.assertEqual(alerting.measurement_face(alert, self.SWAP)["axis"],
+                         readings[0])
+
+    def test_the_folds_sentence_is_the_join_of_the_parts_own_words(self):
+        """`_measurement_line` was the whole of this function once. It is the
+        same sentence now, and it has to stay the same sentence: the fold is
+        what the contract's readers check the face against.
+
+        Every case here is one where the parts list holds something the face
+        does not print — the declaration row is all non-readings, the caveated
+        one carries a part the face skips. A join that had quietly started
+        keeping only the measured parts would still pass on three readings.
+        """
+        caveated = dict(self.DECLARATION, caveat="behind a boundary")
+        for code, measured in (("DISK_CRITICAL", self.DISK),
+                               ("SWAP_PRESSURE", self.SWAP),
+                               ("DESIRED_ACTUAL_MISMATCH", self.DECLARATION),
+                               ("DESIRED_ACTUAL_MISMATCH", caveated),
+                               ("FUNCTIONAL_PROBE_FAILED", {})):
+            with self.subTest(code=code, caveat=bool(measured.get("caveat"))):
+                alert = {"code": code, "measured": measured, "why": ""}
+                parts = alerting.measurement_parts(alert, measured)
+                self.assertEqual(
+                    alerting._measurement_line(alert, measured),
+                    ", ".join(p["says"] for p in parts))
+                if not any(p["measured"] for p in parts):
+                    self.assertTrue(parts, "a code with no parts prints nothing")
+
+    def test_a_declaration_has_no_face_and_still_has_its_sentence(self):
+        """Both halves. A code that measures nothing must not take the face —
+        a card printing 「本代码是一个声明」 where the other cards print a number
+        is answering a question nobody asked, in the place the answer to a real
+        one goes — and the fold must still say why there is no number, or the
+        reader is left with a blank."""
+        alert = {"code": "FUNCTIONAL_PROBE_FAILED", "measured": {}, "why": ""}
+        self.assertIsNone(alerting.measurement_face(alert, {}))
+        self.assertIn("no measurement", alerting._measurement_line(alert, {}))
+
+    def test_a_caveat_never_takes_the_number_off_the_face(self):
+        """§15's qualifier is a sentence ABOUT a reading, not a reading. If it
+        could take the face, the card would print the hedge where the figure
+        goes — and the figure it hedges would be nowhere on the first screen."""
+        measured = dict(self.DECLARATION)
+        measured["caveat"] = ("the process may be running behind a boundary "
+                              "this uid cannot cross")
+        alert = {"code": "DESIRED_ACTUAL_MISMATCH", "measured": measured}
+        self.assertEqual(alerting.measurement_face(alert, measured)["axis"],
+                         "desired_state")
+        self.assertIn("caveat:", alerting._measurement_line(alert, measured))
 
 
 # ---------------------------------------------------------------------------
@@ -1132,9 +1515,126 @@ class TheStoreRefusesToStartEmpty(AlertCase):
         self.assertEqual(listing["by_state"]["OPEN"], 1)
         self.assertEqual(listing["by_state"]["RESOLVED"], 1)
         self.assertEqual(listing["count"], 2)
-        # The state reached the file, not only the object in memory.
+        # The state reached the FILES, not only the object in memory — and
+        # since 2026-10-04 that is two files, split by role. Asserting the
+        # union alone would pass while every row sat in the hot file, which is
+        # the whole cost this split exists to remove, so each file is checked
+        # for the rows it is supposed to hold and the union for completeness.
         on_disk = json.loads(self.store.path.read_text(encoding="utf-8"))
-        self.assertEqual(len(on_disk["alerts"]), 2)
+        ledger = json.loads(self.store.ledger_path.read_text(encoding="utf-8"))
+        self.assertEqual([row["state"] for row in on_disk["alerts"].values()],
+                         ["OPEN"])
+        self.assertEqual([row["state"] for row in ledger["alerts"].values()],
+                         ["RESOLVED"])
+        self.assertEqual(sorted(ledger["alerts"]) + sorted(on_disk["alerts"]),
+                         sorted(row["alert_ref"] for row in listing["alerts"]))
+
+
+class TheRegisterIsSplitByRoleAndNotByAge(AlertCase):
+    """The hot file carries what a pass may still act on; the ledger carries
+    every episode that has resolved. Nothing is dropped for being old, so this
+    class has to show the split is about ROLE: the saving is a file that was
+    not written, and the equivalence is a query that answers the same."""
+
+    def hot(self) -> dict:
+        return json.loads(self.store.path.read_text(encoding="utf-8"))["alerts"]
+
+    def cold(self) -> dict:
+        return json.loads(self.store.ledger_path.read_text(encoding="utf-8"))["alerts"]
+
+    def resolve(self):
+        """One open alert, then the tick that closes it. Returns its ref."""
+        self.disk(used=93.0)
+        ref = self.only()["alert_ref"]
+        self.disk(seconds=60, used=50.0, severity=None)
+        self.assertEqual(self.only()["state"], "RESOLVED")
+        return ref
+
+    def test_a_routine_pass_does_not_touch_the_ledger(self):
+        """The whole of the saving, stated as a file that was not written.
+        Inode and `st_mtime_ns` together: a rewrite landing inside one
+        filesystem timestamp tick would otherwise read as "untouched"."""
+        self.resolve()
+        before = self.store.ledger_path.stat()
+        self.disk(seconds=120, used=94.0)
+        after = self.store.ledger_path.stat()
+        self.assertEqual((before.st_ino, before.st_mtime_ns),
+                         (after.st_ino, after.st_mtime_ns))
+        self.assertEqual(self.only()["state"], "OPEN")
+
+    def test_the_ledger_keeps_the_episode_after_the_identity_reopens(self):
+        """The ledger only ever gains. A row that re-opens is still a row that
+        resolved; deleting it would make the ledger a second opinion about the
+        present rather than the record of what is over."""
+        ref = self.resolve()
+        self.disk(seconds=120, used=94.0)
+        self.assertEqual(self.hot()[ref]["state"], "OPEN")
+        self.assertEqual(self.cold()[ref]["state"], "RESOLVED")
+
+    def test_a_recovery_announcement_reaches_the_ledger_copy(self):
+        """`record_delivery` stamps `last_notified_at` on whichever ref it was
+        given, and for a recovery that ref is RESOLVED. The stamp has to land
+        in the ledger, because that is the copy a later query reads."""
+        self.disk(used=93.0)
+        self.deliver(seconds=30)
+        self.disk(seconds=60, used=50.0, severity=None)
+        self.deliver(seconds=90, kind="resolved")
+        self.assertEqual(self.cold()[self.only()["alert_ref"]]["last_notified_at"],
+                         at(90))
+
+    def test_a_register_written_before_the_split_loads_to_the_same_rows(self):
+        """Migration equivalence by construction rather than by a migration
+        step: an old single-file register is read as the union, so a caller
+        sees the rows it saw before, and the split happens on the first
+        ordinary commit with no window in which a row is in neither file."""
+        # Two identities, so that each file has a row to be wrong about: one
+        # that stays open and one that closes.
+        self.disk(severity="low")
+        self.disk(seconds=60, used=94.0, subject=FS_DATA, severity="high")
+        self.disk(seconds=120, used=50.0, severity=None)
+        whole = self.store.alerts()
+        self.assertEqual(sorted(r["state"] for r in whole.values()),
+                         ["OPEN", "RESOLVED"])
+        self.store.ledger_path.unlink()
+        self.store.path.write_text(
+            json.dumps({"schema": alerting.SCHEMA, "alerts": whole}),
+            encoding="utf-8")
+
+        reopened = alerting.AlertStore(self.store.path)
+        self.assertEqual(reopened.alerts(), whole)
+        reopened.commit(reopened.alerts())
+        self.assertEqual(reopened.alerts(), whole)
+        self.assertEqual([r["state"] for r in self.hot().values()], ["OPEN"])
+        self.assertEqual([r["state"] for r in self.cold().values()], ["RESOLVED"])
+        self.assertEqual({**self.cold(), **self.hot()}, whole)
+
+    def test_a_row_left_in_both_files_resolves_to_the_live_one(self):
+        """The crash residue. The ledger is written first, so an interruption
+        before the hot write leaves a resolved row in the ledger under a hot
+        copy that still says OPEN. The hot copy wins: reading it the other way
+        would show a row as RESOLVED while it is still firing, which is a
+        person not being told, and the next pass resolves it again anyway."""
+        ref = self.resolve()
+        ledger = self.cold()
+        self.store.path.write_text(json.dumps({
+            "schema": alerting.SCHEMA,
+            "alerts": {ref: {**ledger[ref], "state": "OPEN", "resolved_at": None}},
+        }), encoding="utf-8")
+        fresh = alerting.AlertStore(self.store.path)
+        self.assertEqual(fresh.alerts()[ref]["state"], "OPEN")
+
+    def test_a_query_against_two_files_answers_what_one_file_answered(self):
+        """`listing` reads `alerts()` and nothing else, so this is the claim
+        that the union — not the hot file — is what every reader meets."""
+        self.resolve()
+        fresh = alerting.AlertStore(self.store.path)
+        listing = alerting.listing(fresh, at=at(60))
+        self.assertEqual([row["state"] for row in listing["alerts"]],
+                         ["RESOLVED"])
+        self.assertEqual(listing["by_state"]["RESOLVED"], 1)
+        summary = fresh.summary()
+        self.assertEqual(summary["total"], 1)
+        self.assertEqual(summary["ledger_rows"], 1)
 
 
 # ---------------------------------------------------------------------------

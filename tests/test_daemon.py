@@ -57,6 +57,12 @@ card_delivery_mod = _load("serveros_runtime_card_delivery", "card_delivery.py")
 # over a host whose reads all fail, rather than a fake that models the failure
 # shapes — and therefore tests the fake.
 inventory_mod = _load("serveros_runtime_inventory", "inventory.py")
+# The delta kinds, loaded so that a test asserting the digest's counts asserts
+# the DECLARED set rather than a copy of it. It had a copy: when `UPDATED` was
+# added as the fifth kind the literal here still listed four, and this suite
+# passed only because an empty register reports zero for everything it is
+# asked about — so the count that was wrong was the one nobody was reading.
+digest_mod = _load("serveros_runtime_alert_digest", "alert_digest.py")
 
 # `release.py` is the one module under test that lives outside `runtime/`, so it
 # does not fit `_load`. It is loaded here because the unit-rendering it owns is
@@ -3265,8 +3271,7 @@ def test_the_digest_handlers_answer_through_the_real_dispatch(daemon_factory):
 
     document = daemon.handle({"method": "alert.digest", "params": {}})["result"]
     assert document["baseline_at"] == taken["baseline_at"]
-    assert document["counts"] == {"NEW": 0, "ESCALATED": 0,
-                                  "RECOVERED": 0, "REOPENED": 0}
+    assert document["counts"] == {kind: 0 for kind in digest_mod.KINDS}
     assert document["decision"]["send"] is False
 
     recorded = daemon.handle(

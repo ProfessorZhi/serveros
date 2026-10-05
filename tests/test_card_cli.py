@@ -126,10 +126,41 @@ class CardStatusTests(unittest.TestCase):
         return json.loads(out.getvalue())
 
     @staticmethod
-    def line(card: dict) -> str:
-        found = [e["content"] for e in card["body"]["elements"]
-                 if isinstance(e.get("content"), str)
-                 and e["content"].startswith("**播报日程**")]
+    def _strings(node) -> list[str]:
+        """Every string the card carries, at any depth.
+
+        Depth because the schedule sentence moved: it was a top-level element
+        and §1's screenshot lists a workday rule among the lines a reader has to
+        get past before reaching a reading, so §M4 puts it in 详情. The
+        assertions below are about what the card SAYS and survive the move;
+        `test_the_schedule_sentence_is_not_on_the_first_screen` holds the other
+        half, which is where a reader meets it.
+        """
+        if isinstance(node, dict):
+            found = ([node["content"]] if isinstance(node.get("content"), str)
+                     else [])
+            for value in node.values():
+                found.extend(CardStatusTests._strings(value))
+            return found
+        if isinstance(node, list):
+            found = []
+            for item in node:
+                found.extend(CardStatusTests._strings(item))
+            return found
+        return []
+
+    @classmethod
+    def line(cls, card: dict) -> str:
+        """The schedule sentence, wherever the card keeps it.
+
+        Line-wise as well as deep: §M4 moved the sentence into the 技术诊断
+        fold, and that fold is ONE markdown element carrying several sentences
+        separated by newlines. A search over whole elements therefore finds the
+        fold and misses every sentence in it — which is how this helper came to
+        report the schedule sentence as absent from a card that was printing it.
+        """
+        found = [line for text in cls._strings(card)
+                 for line in text.splitlines() if line.startswith("播报日程 ")]
         assert len(found) == 1, f"the schedule line is not on the card: {found}"
         return found[0]
 
@@ -164,13 +195,48 @@ class CardStatusTests(unittest.TestCase):
         self.assertIn("10/13", self.line(evening))
         self.assertIn("2031-06-10", self.line(evening))
 
+    def test_the_schedule_sentence_is_not_on_the_first_screen(self):
+        """§1's screenshot and §M4: which workday this is and how the broadcast
+        window was decided are accounts of the card, not readings from the
+        machine, and they belong behind the fold that carries the rest of them.
+
+        Both halves are asserted, because either alone passes on the wrong card:
+        a card with no schedule sentence at all would satisfy "not on the face",
+        and the old card satisfied "on the card" while putting it first.
+        """
+        card = self.card("--at", AT, "--business-calendar", str(self.calendar))
+        on_face = [e["content"] for e in card["body"]["elements"]
+                   if isinstance(e.get("content"), str)]
+        self.assertFalse([text for text in on_face if "播报日程" in text], on_face)
+        self.assertIn("2031-06-10 是工作日", self.line(card))
+
     def test_an_absent_calendar_becomes_a_named_gap_on_the_card(self):
+        """Named to the reader on the face, and to the engineer in the fold.
+
+        The gap is still NAMED — that has not changed and is the point of the
+        test — but it is named twice, in the two vocabularies §2 and §R15
+        separate. On the face the reading is 工作日历，named the way a person
+        knows it; `business_calendar` is a schema key, and §2 forbids schema on
+        a first screen. The key is not dropped: one tap down, 技术诊断 carries
+        it beside the path and the reason, which is where an account of how the
+        reading was taken belongs. Both halves are asserted, because either
+        alone passes on the wrong card — a card that lost the key would satisfy
+        "not on the face", and the old card satisfied "on the card" while
+        putting the key exactly where the reading should be.
+        """
         card = self.card("--at", AT, "--business-calendar",
                          str(self.dir / "nothing-here.yaml"))
-        text = " ".join(e.get("content", "") for e in card["body"]["elements"]
-                        if isinstance(e.get("content"), str))
-        self.assertIn("采集缺口", text)
-        self.assertIn("business_calendar", text)
+        on_face = [e["content"] for e in card["body"]["elements"]
+                   if isinstance(e.get("content"), str)]
+        self.assertIn("**采集缺口** 工作日历 未读到", on_face)
+        self.assertFalse([text for text in on_face if "business_calendar" in text],
+                         "the schema key is back on the first screen")
+        # `_strings`, not `line`: `line` is the schedule sentence's own reader
+        # and asserts it found exactly one, so it is the wrong instrument here.
+        in_fold = [line for text in self._strings(card)
+                   for line in text.splitlines()
+                   if line.startswith("· business_calendar")]
+        self.assertEqual(len(in_fold), 1, self._strings(card))
 
 
 if __name__ == "__main__":

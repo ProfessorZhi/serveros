@@ -1,18 +1,23 @@
-# The eleven situations a card has to survive, as input documents.
+# The fifteen situations a card has to survive, as input documents.
 #
 # WHY THIS IS DATA AND NOT A TEST HELPER
 #
-# The same eleven documents have two consumers and they must not drift: the
+# The same fifteen documents have two consumers and they must not drift: the
 # tests that assert the cards behave, and the previews a person is asked to look
 # at before approving any of this. If the previews were generated from one set
 # of inputs and the tests asserted against another, a reviewer would be
 # approving a card the suite never ran — and the difference would be invisible,
 # because both would look like cards.
 #
-# The count is eleven and the number is worth keeping exact. It has been wrong
+# The count is fifteen and the number is worth keeping exact. It has been wrong
 # twice already: the header said "six" while the file held ten, and the figure
 # is the only thing that tells a reviewer whether a whole class of card is
-# missing from the set they are approving. Every addition edits this line.
+# missing from the set they are approving. It is written down in seven places —
+# four in this file (the first line, the paragraph above, this paragraph, and
+# the scenario-list comment) and three in `card_scenarios.py` (the module
+# docstring, the README text `write()` emits, and the `--out` help). Every
+# addition edits all seven, and that is the price of writing a count down at
+# all: the number is a thing to go looking for, not a thing to remember.
 #
 # WHAT SAMPLE MEANS HERE
 #
@@ -55,89 +60,369 @@ schema: serveros/card-scenarios.v1
 at: "2026-09-20T14:20:00+08:00"
 device_ref: device:tokyo-shared-dev-01
 
+# The instance's business calendar, copied value-for-value from this node's own
+# `~/.serveros/business-calendar.yaml` (imported and checked 2026-09-26 22:52);
+# this is that file without its commentary, which lives there and is not
+# repeated here.
+#
+# WHY IT IS DOCUMENT-LEVEL
+# ------------------------
+# A calendar is not a scenario's variable. It is one fact about this machine,
+# and the status cards below are three pictures of the same instance on the same
+# day. Written per scenario it would be the same forty lines three times, and
+# the second copy is the one that goes stale.
+#
+# It is a DECLARATION and not a schedule. The sentence the card prints — «which
+# day, which window, which tick» — is computed from it by
+# `business_calendar.routine_window()`, the same function the live path calls. A
+# fixture that wrote that sentence by hand would be readable prose asserting
+# what its author believed the producer says, which is the one thing a fixture
+# may not do.
+#
+# One value is worth naming: 2026-09-20 is a Sunday, and it is a declared
+# WORKDAY here — an official 调休 shift. The document-level `at` lands on it, so
+# the «workday» on these previews is derived from a declared make-up day rather
+# than from «Monday to Friday». It is also why this file no longer needs a
+# per-scenario instant to avoid printing a routine card for a day that cannot
+# have one.
+calendar:
+  schema: serveros/business-calendar.v1
+  jurisdiction: CN-Mainland
+  timezone: Asia/Shanghai
+  source:
+    document_id: 国办发明电〔2025〕7号
+    published_at: "2025-11-04"
+  years:
+    2026:
+      # 官方调休上班日（六个）。
+      workdays:
+        - "2026-01-04"
+        - "2026-02-14"
+        - "2026-02-28"
+        - "2026-05-09"
+        - "2026-09-20"
+        - "2026-10-10"
+      # 官方声明的休息日（33 天）。段内的周六周日属于这份声明的一部分，所以
+      # 它们在这里；段外没有被声明的周六周日不在这里，由 weekday 推导。
+      non_working_days:
+        - "2026-01-01"
+        - "2026-01-02"
+        - "2026-01-03"
+        - "2026-02-15"
+        - "2026-02-16"
+        - "2026-02-17"
+        - "2026-02-18"
+        - "2026-02-19"
+        - "2026-02-20"
+        - "2026-02-21"
+        - "2026-02-22"
+        - "2026-02-23"
+        - "2026-04-04"
+        - "2026-04-05"
+        - "2026-04-06"
+        - "2026-05-01"
+        - "2026-05-02"
+        - "2026-05-03"
+        - "2026-05-04"
+        - "2026-05-05"
+        - "2026-06-19"
+        - "2026-06-20"
+        - "2026-06-21"
+        - "2026-09-25"
+        - "2026-09-26"
+        - "2026-09-27"
+        - "2026-10-01"
+        - "2026-10-02"
+        - "2026-10-03"
+        - "2026-10-04"
+        - "2026-10-05"
+        - "2026-10-06"
+        - "2026-10-07"
+  imported_at: "2026-09-26T22:52:00+08:00"
+  verified_at: "2026-09-26T22:52:00+08:00"
+
+# §3.4 / §13 第四块「当前问题」的登记表读数 —— 注意这里是**行**，不是计数。
+# 块首那句「N 项需要处理」和折叠前那句「登记表里还有 N 项」全部由
+# `alert_digest.current` 从下面这些行算出来，与当天卡同一条规矩：fixture 不许
+# 自己写下一句判据的结论，否则预览就成了作者相信契约会说的话。
+#
+# 为什么这一块在文档层：本节点此刻有什么问题，和日历一样是**这一台机器的一个
+# 事实**，不是某一张卡片的性质。某一幕要看非空的卡面，就在那一幕自己带一份。
+#
+# 下面四行取自本节点 2026-10-04 09:31Z 那一刻的真实登记表。那天 13,209 行的
+# 登记表里有 1,357 条 state 为 OPEN：1,101 条 WATCH（HIGH_MEMORY_SUSTAINED
+# 1,035 + HIGH_CPU_SUSTAINED 65 + DISK_WARNING 1）、256 条 INFORMATIONAL
+# （AGE_WITHOUT_ACTIVITY 122 + EXTERNAL_SYSTEM_PROCESS_TREE 48 + 其余四类），
+# 而**没有一条的 code 在注意力表上**。所以这一块在本机今天真实的样子，就是
+# 这张 fixture 渲染出来的样子：绿色的「没有需要处理的问题」，加一句说明登记表
+# 里还有多少条在下面那一档。它不是「一切正常」，是「按契约算得上当前问题的一
+# 条也没有」——这两句在登记表非空时不是同一件事，§3.4 那一整段就是为它写的。
+#
+# **计数是缩减的，判据不是。** 这份 fixture 每个 code 只抄了一条真实行，所以
+# 预览印的是「还有 4 项」而不是 1,357。缩减的是行数；哪一档算当前问题、哪些
+# code 上卡面、哪些不上，全部由 `alert_digest.current` 按
+# `alerts.attention.on_the_face` 算出来，这里一个字都没写死。
+#
+# 日期是这些行**真实的** first_seen / last_seen。它们晚于本文件的 `at`（09-20）
+# 而这不是错：`at` 是**渲染时刻**，决定当天时间线的时区与时刻；登记表读数是它
+# 自己那一次采集。与 `reads:` 同例 —— 那一份资源读数是 2026-09-30 15:55 的。
+# 这四行都在卡面之下，所以它们的时刻不会被印成任何一句时长；唯一会读它的是
+# 计数。
+problems:
+  # WATCH 那一档里最多的那一类，也是本机 09-21 起那批「没人再看过的 held 行」
+  # 的真身：hold_kind 为 unmeasured，last_seen 停在开火那一刻。
+  - alert_ref: alert:07fc4bb3e1124642
+    code: HIGH_MEMORY_SUSTAINED
+    subject_ref: "runtime-group:process-tree:system.slice:docker:edyl7bsgsw8qhqppj7iqviuhw"
+    severity: medium
+    state: OPEN
+    hold_kind: unmeasured
+    first_seen: "2026-09-16T08:58:24.628701+00:00"
+    last_seen: "2026-09-16T08:58:24.628701+00:00"
+    occurrence_count: 1
+  - alert_ref: alert:0104944f629de1c3
+    code: HIGH_CPU_SUSTAINED
+    subject_ref: "runtime-group:process-tree:session-43217"
+    severity: medium
+    state: OPEN
+    hold_kind: unmeasured
+    first_seen: "2026-10-01T18:51:34.368091+00:00"
+    last_seen: "2026-10-01T18:51:34.368091+00:00"
+    occurrence_count: 1
+  # 唯一一条 DISK_WARNING，真实行。它在这一档里而不是在卡面上，正是这一块要
+  # 说的话：85% 的告警线越了，而 92% 的危险线没有。
+  - alert_ref: alert:77271cf5f893ee06
+    code: DISK_WARNING
+    subject_ref: "filesystem:/mnt/lit0217-ab"
+    severity: medium
+    state: OPEN
+    hold_kind: unmeasured
+    first_seen: "2026-09-29T09:05:26.058530+00:00"
+    last_seen: "2026-09-29T09:06:26.263332+00:00"
+    occurrence_count: 2
+  # INFORMATIONAL 那一档的一条，而且这一条还在被正常观测（没有 hold_kind），
+  # 所以它与上面三条不是同一种「没在看」。
+  - alert_ref: alert:0249fd2e6e5f03c5
+    code: AGE_WITHOUT_ACTIVITY
+    subject_ref: "runtime-group:process-tree:getty@tty1.service"
+    severity: low
+    state: OPEN
+    first_seen: "2026-09-16T07:11:40.856515+00:00"
+    last_seen: "2026-10-04T09:31:19.328059+00:00"
+    occurrence_count: 25795
+
+# 三张 status 卡共同的那一天，写一次、按名引用。它们都要一个「到 14:00 为止
+# 一切正常」的当天卡，彼此的差别只在这一刻的读数上：一张与最后一行一致，一张
+# 刚失去网关绑定，一张的主机块刚越过交换区阈值。把同样的七行抄三遍，就是三处
+# 要在行 schema 变动时同时改的地方 —— 而没人改的那一份，是 fixture 开始描述
+# 一个产品写不出来的存储的起点。
+#
+# 这里用的是 YAML 锚点而不是生成器：每一个值都是人可以直接对着
+# `card_day.ROW_FIELDS`（tick / hhmm / local / verdict / observation /
+# sections / gaps）核对的字面量，装载器在任何人看到它之前就把锚点展开，所以
+# `scenario["day_store"]` 与抄三遍得到的是同一份文档。行里多一个字段、少一个
+# 字段，存储层都会拒收 —— fixture 不许有 `says` 这类为渲染方便而写的键。
+_day_clean: &day_clean
+  schema: serveros/card-day.v1
+  open:
+    day_ref: CN-Mainland/2026-09-20
+    kind: WORKDAY
+    opened_at: "2026-09-20T08:00:11+08:00"
+    updated_at: "2026-09-20T14:00:09+08:00"
+    missed_ticks: 0
+    history:
+      - tick: 1
+        hhmm: "08:00"
+        local: "2026-09-20T08:00:11+08:00"
+        verdict: OK
+        observation: 新鲜
+        sections: {mine: OK, host: OK, gateway: OK}
+        gaps: 0
+      - tick: 2
+        hhmm: "09:00"
+        local: "2026-09-20T09:00:08+08:00"
+        verdict: OK
+        observation: 新鲜
+        sections: {mine: OK, host: OK, gateway: OK}
+        gaps: 0
+      - tick: 3
+        hhmm: "10:00"
+        local: "2026-09-20T10:00:10+08:00"
+        verdict: OK
+        observation: 新鲜
+        sections: {mine: OK, host: OK, gateway: OK}
+        gaps: 0
+      - tick: 4
+        hhmm: "11:00"
+        local: "2026-09-20T11:00:07+08:00"
+        verdict: OK
+        observation: 新鲜
+        sections: {mine: OK, host: OK, gateway: OK}
+        gaps: 0
+      - tick: 5
+        hhmm: "12:00"
+        local: "2026-09-20T12:00:12+08:00"
+        verdict: OK
+        observation: 新鲜
+        sections: {mine: OK, host: OK, gateway: OK}
+        gaps: 0
+      - tick: 6
+        hhmm: "13:00"
+        local: "2026-09-20T13:00:09+08:00"
+        verdict: OK
+        observation: 新鲜
+        sections: {mine: OK, host: OK, gateway: OK}
+        gaps: 0
+    latest:
+      tick: 7
+      hhmm: "14:00"
+      local: "2026-09-20T14:00:09+08:00"
+      verdict: OK
+      observation: 新鲜
+      sections: {mine: OK, host: OK, gateway: OK}
+      gaps: 0
+
+# 同一天的第二种形状：11:00 和 12:00 没有人看（`history` 从第 3 个时点跳到
+# 第 6 个），其余时点都正常读到。它存在的理由只有一条 —— §11 要求「没有人看过」
+# 与「没有变化」在卡上长得不一样，而上面那七天全是「看过且没变」，证明不了这件事。
+# 行本身不携带那个洞：行只说自己那一拍读到什么，洞是 `card_day.timeline()` 在
+# 相邻两行之间算出来的区间条目。所以这一份的 `gaps` 全是 0，而折叠的标题会带上
+# 「⚠️ 1 段无观测」——两个数说的是两件事，不是矛盾。
+_day_with_hole: &day_with_hole
+  schema: serveros/card-day.v1
+  open:
+    day_ref: CN-Mainland/2026-09-20
+    kind: WORKDAY
+    opened_at: "2026-09-20T08:00:14+08:00"
+    updated_at: "2026-09-20T14:00:11+08:00"
+    missed_ticks: 0
+    history:
+      - tick: 1
+        hhmm: "08:00"
+        local: "2026-09-20T08:00:14+08:00"
+        verdict: OK
+        observation: 新鲜
+        sections: {mine: OK, host: OK, gateway: OK}
+        gaps: 0
+      - tick: 2
+        hhmm: "09:00"
+        local: "2026-09-20T09:00:09+08:00"
+        verdict: OK
+        observation: 新鲜
+        sections: {mine: OK, host: OK, gateway: OK}
+        gaps: 0
+      - tick: 3
+        hhmm: "10:00"
+        local: "2026-09-20T10:00:12+08:00"
+        verdict: OK
+        observation: 新鲜
+        sections: {mine: OK, host: OK, gateway: OK}
+        gaps: 0
+      - tick: 6
+        hhmm: "13:00"
+        local: "2026-09-20T13:00:10+08:00"
+        verdict: OK
+        observation: 新鲜
+        sections: {mine: OK, host: OK, gateway: OK}
+        gaps: 0
+    latest:
+      tick: 7
+      hhmm: "14:00"
+      local: "2026-09-20T14:00:11+08:00"
+      verdict: OK
+      observation: 新鲜
+      sections: {mine: OK, host: OK, gateway: OK}
+      gaps: 0
+
+# 本节点此刻没有共享网关的 binding（§2：没有声明就没有 gateway 段），所以下面
+# 三张需要网关已读到/未读到的卡都借用这一份示例 binding。它是构造的，卡片自己
+# 会把这一层说出来：gateway 段的 `maintainer` 那句写着「由 service binding
+# 声明，不是授权」。
+#
+# `gateway.state` 用的是 env_health 认得的词（OK / ATTENTION / UNKNOWN），
+# 不是「有没有绑定」的那个 BOUND —— 后者是 binding 块回答的问题，
+# `presentation.gateway_section` 自己从 binding 的有无算出 BOUND/UNBOUND。
+# 这两个词分别写错一次，卡首就会比出一条「gateway OK→BOUND」：一句看起来像
+# 变化、实际上只是同一个事实被写了两遍的话。生产也是这个形状：snapshot 的
+# gateway 块逐字就是 binding 文件里的 gateway 块。
+_binding_ok: &binding_ok
+  service_ref: service:tokyo-shared-ai-gateway
+  source: 本节为示例 binding；真实文件尚未写入 ~/.serveros/
+  gateway:
+    state: OK
+    maintainer: （由 service binding 声明，不是授权）
+    endpoint: http://127.0.0.1:<port>
+    # `state` 是**声明覆盖得到的**词，而不是这份文件拼的句子 ——
+    # `card-definitions.yaml` 的 `gateway.probes` 有三个键，OK 那个渲染成
+    # 「功能探针：全部路径就绪」。这份 fixture 原来写的是 `state: PASSED` 外加
+    # 一句预先拼好的 `text`，两个都不在声明里，于是 `_gateway_probe_line` 走它
+    # 那条「未声明的词原样返回」的兜底分支，把英文状态词、裸 ISO 时刻和 JST
+    # 一起印在 gateway 栏的第一行上。那条兜底是刻意的（一个读不懂的词仍然是
+    # 个读数，抹掉它等于说探针什么都没说），所以该改的是这份 fixture：它此前
+    # 展示的是一张任何已声明的 binding 都产不出来的卡。
+    probe:
+      state: OK
+      observed_at: "2026-09-20T14:19:41+08:00"
+    providers:
+      - text: 声明的 provider 1
+      - text: 声明的 provider 2
+
+# 下面每个 status 场景的 `mine` / `host` 两块都不是写在这份文件里的，而是由
+# `card_source.snapshot()` 从 `runtime/card-scenario-reads.json` 里那份**真实采集**
+# 派生出来的 —— 命令是谁跑的、什么时候跑的、逐字节是什么，都在那个文件里。
+#
+# 为什么不让 fixture 自己写这两块：写下来的那一刻，它就是作者相信生产者会说的话。
+# 这份文件里已经错过两次，而且都错在没人会去找的地方 —— host 块少了「交换区」
+# 那一行（生产者每次都写），两块都没有 `metrics`（于是每张预览都是没有两列指标的
+# 脸，而线上那张有三行格子）。状态词更严重：手写的 fixture 可以声称 ATTENTION
+# 而树里没有任何一条规则同意。派生之后，`host_attention` 之所以是 ⚠️，只是因为
+# `card_source._host_section` 拿到那份读数之后得出了这个结论。
+#
+# `reads:` 指名用哪一份采集；`mutations:` 是「把这份采集里的某个读数换成另一个
+# 读数」，形状与 Semantics V2 的证据一致（`before` / `after` / `why`）。`before`
+# 会被核对：换成错的路径或采集漂移了都会在这里直接失败，而不是悄悄什么都不做。
+# 采集里没有的场景才用它 —— 本机这两周没有越线的交换区水位，而库里记着 92.0%。
 scenarios:
 
   # -- §6's six, in the order the design lists them. The four below them are
   # -- the acceptance criteria AC18–AC21, which are NOT §6's list and are kept
   # -- separate for that reason: if the two lists are merged, a reviewer cannot
   # -- tell a design example from a criterion's fixture. The last one is on
-  # -- neither list and says so where it stands. Six + four + one = eleven. --
+  # -- neither list and says so where it stands. Six + four + one = eleven. The
+  # -- twelfth and thirteenth are later still and say so in their own comments;
+  # -- the fourteenth and fifteenth close the file, each where it stands. --
 
   - name: normal
     card: status
     title: 正常
-    source: constructed — 三项均已读到且无异常。本节点此刻的真实卡片不是这一张
-      （共享网关尚未有 binding），这一张用来说明三项都读到时长什么样。
-    snapshot:
-      node_label: device:tokyo-shared-dev-01
-      gaps: []
-      mine:
-        state: OK
-        lines:
-          - 账户 uid 1002 · 进程数 71
-          - CPU 占整机 0.1%（0.09 核等效 / 共 128 核）
-          - 内存 7.6 GiB · 占整机 3.1%
-          - 配额 /data（/dev/vdb） 已用 52.9 GiB / 软限 450.0 GiB（10.6%）
-          - 本账户 systemd 用户单元 13 个（其中 active 3） · linger yes
-      host:
-        state: OK
-        lines:
-          - CPU 128 逻辑核 · 型号 AMD EPYC 9K65 192-Core Processor
-          - 负载 3.43 / 3.36 / 3.04 · 可运行 2/7599
-          - 内存 已用 35.9 GiB / 247.0 GiB · 可用 211.1 GiB
-          - 文件系统 /（ROOT_FS） 已用 48.3% · inode 5.8%
-          - 文件系统 /data（DOCKER_FS / STATE_FS / ARTIFACTS_FS） 已用 5.9%
-      gateway:
-        state: BOUND
-        maintainer: （由 service binding 声明，不是授权）
-        endpoint: http://127.0.0.1:<port>（按 binding 解析；此处为示例端口）
-        probe:
-          text: 探针 PASSED · 观测于 2026-09-20 14:19:41 JST
-          state: PASSED
-          observed_at: "2026-09-20 14:19:41 JST"
-        providers:
-          - text: 声明的 provider 1（名字来自 gateway 自身报告，本文件不猜）
-          - text: 声明的 provider 2
-    binding:
-      service_ref: service:tokyo-shared-ai-gateway
-      source: 本节为示例 binding；真实文件尚未写入 ~/.serveros/
-      gateway:
-        state: BOUND
-        maintainer: （由 service binding 声明，不是授权）
-        endpoint: http://127.0.0.1:<port>
-        probe:
-          text: 探针 PASSED · 观测于 2026-09-20 14:19:41 JST
-          state: PASSED
-          observed_at: "2026-09-20 14:19:41 JST"
-        providers:
-          - text: 声明的 provider 1
-          - text: 声明的 provider 2
+    source: measured — mine / host 两块是本节点 2026-09-30 15:55 那四个读数的直接
+      产物（见 runtime/card-scenario-reads.json 的 measured-20260930），没有一处
+      数字是抄进来的：命令是谁跑的、什么时候、输出是什么，都在那个文件里。
+      共享网关那一段是构造的（本节点还没有 binding），当天卡也是构造的：
+      08:00–14:00 七个时点都读到、都无异常，因此卡首比出来的是「与 14:00 相同」，
+      折叠里一天没有断口。
+    reads: measured-20260930
+    binding: *binding_ok
+    # 三张 status 卡共同的那一天，见文件头的 `_day_clean`。
+    day_store: *day_clean
 
   - name: unbound_gateway
     card: status
     title: 共享网关未声明绑定 · 其余两项已读到
-    source: measured — 形状取自本节点 2026-09-20 14:20 的真实卡片：共享网关没有
-      binding，因此该栏为 UNBOUND；其余两项已读到。
+    source: measured — 共享网关没有 binding，因此该栏为 UNBOUND；其余两项已读到，
+      读数同样是 2026-09-30 15:55 那一份采集。
       这张卡此前渲染成灰色 ❔ 并说「有项目尚未读到：gateway」，因为 UNBOUND 被
       改写成了 UNKNOWN —— 一个已经取得的答案被报成一次没做成的读数。改名的原因
       是原名（部分未知）描述的是那个缺陷，而不是这个场景。
-    snapshot:
-      node_label: device:tokyo-shared-dev-01
-      gaps: []
-      mine:
-        state: OK
-        lines:
-          - 账户 uid 1002 · 进程数 71
-          - CPU 占整机 0.1%（0.09 核等效 / 共 128 核）
-          - 内存 7.6 GiB · 占整机 3.1%
-          - 配额 /data（/dev/vdb） 已用 52.9 GiB / 软限 450.0 GiB（10.6%）
-      host:
-        state: OK
-        lines:
-          - CPU 128 逻辑核 · 型号 AMD EPYC 9K65 192-Core Processor
-          - 内存 已用 35.9 GiB / 247.0 GiB · 可用 211.1 GiB
-          - 文件系统 /（ROOT_FS） 已用 48.3% · inode 5.8%
+      当天卡那一部分是构造的，而且是刻意这样写的：到 14:00 为止的七个时点都还有
+      绑定，14:20 这一次没有 —— 所以卡首那一行会真的比出一处变化
+      （gateway OK→UNBOUND），而折叠里的当天没有变化。这两句话不矛盾，它们
+      回答的是两个不同的问题：「自上一个记录时点以来变了什么」和「今天这一天
+      是由哪些区间构成的」。变的是绑定声明，不是那一栏的读数。
+    reads: measured-20260930
     binding: null
+    # 三张 status 卡共同的那一天，见文件头的 `_day_clean`。
+    day_store: *day_clean
 
   - name: one_critical
     card: alert
@@ -147,6 +432,10 @@ scenarios:
       它渲染成橙色而不是红色，这是刻意的：severity 是 CRITICAL，但没有任何
       登记表声明 /data 这个文件系统应该处于什么状态，所以注意力是「需确认」
       而不是「需处理」。红色需要一条声明，见 critical_service_failed。
+      测量不是编的：used_percent 92.9 与 threshold_percent 92.0 取自本机登记表
+      里那条 DISK_CRITICAL 的 measured（ROOT_FS，形态与这一条一致）。这张要
+      证明的正是那件事 —— 卡面第二行说得出越线的是哪个读数、对着哪条线，而
+      读者不必展开 技术详情 才知道该不该起身。
     digest:
       counts: {new: 1, escalated: 0, reopened: 0}
       severity_counts: {high: 1}
@@ -165,6 +454,9 @@ scenarios:
           resolved_at: null
           occurrence_count: 3
           state: OPEN
+          # 本机登记表里那条 DISK_CRITICAL 的 measured，键与值都是它的。
+          used_percent: 92.9
+          threshold_percent: 92.0
           # No owner: `_owner_of` reads `measured.ownership`, which the
           # detector that raises this code does not write. Live register:
           # 0 of this code's rows carry one.
@@ -179,16 +471,71 @@ scenarios:
     title: 观测器失败
     source: constructed — 本节点今天没有出现过采集全失败。这一张说明读到的东西
       比读不到的东西少时卡会怎么说：三项都未读到，且缺口逐条点名。
-    snapshot:
-      node_label: device:tokyo-shared-dev-01
-      gaps:
-        - summary（resource summary）未读到：exit 2
-        - top（resource top）未读到：exit 2
-        - user_services（resource user-services）未读到：exit 2
-        - runtime_list（runtime list）未读到：exit 2
-      mine: null
-      host: null
+      它同时是唯一一张「观测有洞」的卡，而且这个洞出现在两个地方：当天卡在
+      10:00–13:00 之间丢了两个时点（折叠里因此有一条独立的区间条目，不是一句
+      「无变化」），而 13:00 之后连一行都没有 —— 所以这一拍是第 8 个时点，
+      当天卡最新的行停在第 6 个，卡首那一行必须把中间那一拍说出来，否则
+      「与 13:00 相同」会把一个没人看过的小时读成一段平静。
+      这一张的时刻因此比文档级的 `at` 晚一拍，行与缺口才对得上。
+      第四块「当前问题」在这里也是**读不到**，而不是空的，而且这不是补上去的
+      一致性：登记表读数走的是同一个 `serverosctl`，采集全失败时它一起失败。
+      §3.4 那一整段说的就是这件事 —— 一张卡不能在一个没人打开的登记表上写
+      「没有需要处理的问题」。所以这一张同时是那个形状的唯一一张预览。
+    at: "2026-09-20T15:20:00+08:00"
+    # 四个读数一个都没到，所以这里没有 `reads:`。缺口由 `read` 与 `why` 说出，
+    # 命令名从 DEFAULT_READS 取 —— 与 `gather()` 在真实失败时写下的形状一致，
+    # 于是「summary（resource summary）未读到：exit 2」这句是生产写的那一句，
+    # 不是这里抄的一句。
+    gaps:
+      - {read: summary, why: "exit 2"}
+      - {read: top, why: "exit 2"}
+      - {read: user_services, why: "exit 2"}
+      - {read: runtime_list, why: "exit 2"}
+    # 字符串形态 = 「没有读数」，与文档层那个「读到了、没有 on-face 行」是两句
+    # 不同的话。这里写的是**原始读失败文本**，也就是 `_default_run` 在真实失败
+    # 时留下的那一行（它取子进程 stderr 的末行，所以可能是一段进程错误文本）；
+    # 命令名与「未读到」由渲染层补，因为那一句是卡的话、不是工具的话。与上面
+    # 四条缺口同因，所以同一个 `exit 2`。
+    problems: "exit 2"
     binding: null
+    day_store:
+      schema: serveros/card-day.v1
+      open:
+        day_ref: CN-Mainland/2026-09-20
+        kind: WORKDAY
+        opened_at: "2026-09-20T08:00:12+08:00"
+        updated_at: "2026-09-20T13:00:09+08:00"
+        missed_ticks: 0
+        history:
+          - tick: 1
+            hhmm: "08:00"
+            local: "2026-09-20T08:00:12+08:00"
+            verdict: OK
+            observation: 新鲜
+            sections: {mine: OK, host: OK, gateway: UNBOUND}
+            gaps: 0
+          - tick: 2
+            hhmm: "09:00"
+            local: "2026-09-20T09:00:08+08:00"
+            verdict: OK
+            observation: 新鲜
+            sections: {mine: OK, host: OK, gateway: UNBOUND}
+            gaps: 0
+          - tick: 3
+            hhmm: "10:00"
+            local: "2026-09-20T10:00:10+08:00"
+            verdict: OK
+            observation: 新鲜
+            sections: {mine: OK, host: OK, gateway: UNBOUND}
+            gaps: 0
+        latest:
+          tick: 6
+          hhmm: "13:00"
+          local: "2026-09-20T13:00:09+08:00"
+          verdict: UNCONFIRMED
+          observation: 部分新鲜
+          sections: {mine: UNKNOWN, host: UNKNOWN, gateway: UNBOUND}
+          gaps: 4
 
   - name: mixed
     card: alert
@@ -220,6 +567,9 @@ scenarios:
           resource_ref: "runtime-group:process-tree:docker:08e734361c06f5fa9aa2b0151cb715bd60b09868a4897f1903ba8d01aa0c416d"
           first_seen: "2026-09-18T06:15:57.175939+00:00"
           resolved_at: null
+          # 登记表里这一行自己的读数时间与持有状态，逐字取自本机 `alerts/state.json`。缺了这两行，卡面的「现在」只能猜。
+          last_seen: "2026-09-18T06:15:57.175939+00:00"
+          hold_kind: unmeasured
           occurrence_count: 1
           state: OPEN
           # 无 owner：`_owner_of` 读的是 `measured.ownership`，这个 code 的
@@ -239,6 +589,9 @@ scenarios:
           resource_ref: "runtime-group:process-tree:docker:491d41804a0eb141b265e6a1b81eaafb7efe5c983955d79a1cc451d242df8e8d"
           first_seen: "2026-09-18T06:35:10.798465+00:00"
           resolved_at: null
+          # 登记表里这一行自己的读数时间与持有状态，逐字取自本机 `alerts/state.json`。缺了这两行，卡面的「现在」只能猜。
+          last_seen: "2026-09-18T06:41:15.062938+00:00"
+          hold_kind: unmeasured
           occurrence_count: 7
           state: OPEN
           # 无 owner：`_owner_of` 读的是 `measured.ownership`，这个 code 的
@@ -258,6 +611,9 @@ scenarios:
           resource_ref: "runtime-group:process-tree:docker:b1e7988a3409982fd9b2b7dc1fb355358103431197a591475e60074753a1b306"
           first_seen: "2026-09-18T06:43:16.462862+00:00"
           resolved_at: null
+          # 登记表里这一行自己的读数时间与持有状态，逐字取自本机 `alerts/state.json`。缺了这两行，卡面的「现在」只能猜。
+          last_seen: "2026-09-21T04:09:26.738167+00:00"
+          hold_kind: unmeasured
           occurrence_count: 4128
           state: OPEN
           # 无 owner：`_owner_of` 读的是 `measured.ownership`，这个 code 的
@@ -277,6 +633,13 @@ scenarios:
           resource_ref: "runtime-group:process-tree:session-15413:pid1300360"
           first_seen: "2026-09-20T11:24:54.754330+00:00"
           resolved_at: null
+          # 不注入 `last_seen`：登记表里这个 alert_ref 的七行全部是 RESOLVED
+          # （最后一行 2026-09-26T17:57:41Z 有 `resolved_at`），而这张 fixture
+          # 写的是 `state: OPEN`。把那条 RESOLVED 行的读数时间搬到一条自称
+          # OPEN 的行上，就是替一条没有对应登记的读数签字——此处两行都留 null，
+          # 卡面于是说「仍在发生」而不报时间，这正是「没有记录」该有的样子。
+          last_seen: null
+          hold_kind: null
           occurrence_count: 1888
           state: OPEN
           # 这一条是全套预览里 owner 行的唯一例子，而且是真的一条：投影出的
@@ -387,6 +750,8 @@ scenarios:
       说明「一个测量越过为它自己写的阈值」在卡上的样子：它必须能打断人，且
       不必读代码、不必展开任何东西就知道越线的是哪个对象。与 one_critical 用
       不同的 code，是为了让两张预览各自证明一件不同的事，而不是同一张卡印两遍。
+      四个数字取自本机登记表里那条 MEMORY_PRESSURE 的 measured，不是编的：
+      97.3%（阈值 90.0%，可用 6.64 GiB / 总量 247.0 GiB）。
     digest:
       counts: {new: 1, escalated: 0, reopened: 0}
       severity_counts: {high: 1}
@@ -405,6 +770,14 @@ scenarios:
           resolved_at: null
           occurrence_count: 4
           state: OPEN
+          # 本机登记表里那条 MEMORY_PRESSURE 的 measured，值都是它的。键只留
+          # 生产者投影里真的有的那几个：登记表还有 available_bytes，而
+          # `_row_of` 不搬运它，写在这里就是让 fixture 声明一件卡片读不到的
+          # 事 —— 上面那条测试会当场挡下（它就是这么发现这一行的）。
+          used_percent: 97.3
+          threshold_percent: 90.0
+          total_bytes: 265182715904
+          used_bytes: 258050740224
           # No owner: `_owner_of` reads `measured.ownership`, which the
           # detector that raises this code does not write. Live register:
           # 0 of this code's rows carry one.
@@ -637,6 +1010,224 @@ scenarios:
               kind: socket-connect
               axis: transport
               path: /run/user/1002/serveros/serveros.sock
+
+  # -- 下面两张不在 §6 的六条里，也不在 AC18–AC21 的四条里。它们是 2026-09-30
+  # -- 这一轮的验收点名要看、而前面十一张都没有覆盖的两个状态：⚠️ 建议查看，
+  # -- 以及一台正常机器上有一段没人看的时点。放在最后是为了不搅乱上面
+  # -- 「六个 + 四个 + 一个」那段来历 —— 它们是在那两份名单写完之后才被点名的。 --
+
+  - name: host_attention
+    card: status
+    title: 交换区水位越过阈值 · 建议查看
+    source: constructed 读数 / measured 数值 — 本机这两周的交换区水位都在 64% 上下，
+      没有越线的时候，所以这一张把 2026-09-30 15:55 那份采集里的交换区三个数换成
+      本机库里真的记过的另一组读数：92.0% / 15813074944 字节，来自
+      runtime/alerts/state.json 里那条 RESOLVED 的 SWAP_PRESSURE 的 measured
+      （阈值 90.0，总数 17179865088 与今天的采集一模一样）。三个 `before` 是采集里
+      的原值，对不上就会直接失败。其余读数、当天卡与 binding 都与 normal 相同。
+      值得看的是状态词不是这里写上去的：host 块之所以是 ATTENTION，只是因为
+      card_source._host_section 拿到 92.0% 与阈值 90.0 之后得出了这个结论 ——
+      换一份读数，它就不这么说了。
+    reads: measured-20260930
+    mutations:
+      - path: summary.host.memory.swap.used_percent
+        before: 63.6
+        after: 92.0
+        why: 本机登记表记过的水位数，不是这里编的
+      - path: summary.host.memory.swap.used_bytes
+        before: 10919919616
+        after: 15813074944
+        why: 同一条记录里的字节数（17179865088 的 92.0%）
+      - path: summary.host.memory.swap.free_bytes
+        before: 6259945472
+        after: 1366790144
+        why: 总数减去上面那个已用值，三个数保持自洽
+    binding: *binding_ok
+    day_store: *day_clean
+
+  - name: day_gap
+    card: status
+    title: 机器正常，但今天有一段没人看
+    source: measured 读数 / constructed 当天卡 — mine / host / 网关 / 日程都是
+      2026-09-30 15:55 那份真实采集的产物，今天这一天是构造的：11:00 与 12:00
+      两个时点没有人看，13:00 起又恢复。
+      这一张要证明的是那件事不会被压掉，而且它出现在两个地方：折叠的标题写着
+      「⚠️ 1 段无观测」（不展开就看得见），展开后是一条独立的区间条目
+      「10:00–13:00 未有观测：2 个时点没有读数（不是「无变化」，是没人看过）」；
+      而卡首那一行说出最后一个记录时点（14:00）到这一刻之间还有 1 个时点没有读数
+      —— 否则「与 14:00 相同」会把一个没人看过的小时读成一段平静。
+      这一张的时刻因此是 16:20（第 9 个时点），而不是文档级的 14:20。
+    at: "2026-09-20T16:20:00+08:00"
+    reads: measured-20260930
+    binding: *binding_ok
+    day_store: *day_with_hole
+
+  - name: unconfirmed_open
+    card: alert
+    title: 上一次读数之后没有人再看过的开放条目
+    source: constructed 主体 / measured 形状与时刻 — 本节点的登记表里有 1,094 条
+      state 为 OPEN 且带 hold_kind 的条目，它们最后一次被定级都在开火那一刻
+      （1,027 条 HIGH_MEMORY_SUSTAINED 从 2026-09-21 04:09 起就没有再被看过）。
+      但这 1,094 条的 code 全是 consumption 级，按注意力表不上卡面——所以这条
+      路径在今天的登记表里**没有**活的实例，这一张是构造的，用来把它渲染出来。
+      判据取自真实登记表：first_seen 与 last_seen 是同一个时刻（开火当刻就是
+      最后一次读数），hold_kind 为 not_evaluated 说的是「这一轮没有人看」。
+      这一张要证明的是 §4 的第二个问题有第四个答案：它在卡面上与
+      「仍在发生」必须一眼可辨——前者是机器还在这个状态里，后者是监控停了。
+      两者的 state 都是 OPEN，只有 hold_kind 能把它们分开。
+      卡首是红的（🚨 需要处理）而正文说「无法确认」，这两句都对且不矛盾：
+      notification-contract.yaml 的 escalation 读的是**被违反的那条声明**有多
+      重要（expectation declared 且主体登记为 critical），不是这一次有没有看。
+      它自己的注释写着 escalation 问的是「the declaration is being violated 有
+      多重要」。所以卡首回答「要花多少力气」，正文回答「现在知道多少」，两根
+      轴，各自如实。
+    digest:
+      counts: {new: 1, escalated: 0, reopened: 0}
+      severity_counts: {high: 1}
+      more: 0
+      backlog: 0
+      silent_resolutions: 0
+      rows:
+        - key: alert:fixture0000001401
+          kind: NEW
+          code: FUNCTIONAL_PROBE_FAILED
+          severity: high
+          severity_word: CRITICAL
+          subject_ref: "serveros-control-plane"
+          resource_ref: null
+          first_seen: "2026-09-18T06:15:57+00:00"
+          resolved_at: null
+          # The same instant as first_seen, and that is the finding rather than
+          # a gap in the fixture: this row has not been observed again since the
+          # pass that opened it. A fixture that gave it a fresher reading would
+          # be exercising the STILL branch while claiming to exercise this one.
+          last_seen: "2026-09-18T06:15:57+00:00"
+          hold_kind: not_evaluated
+          occurrence_count: 1
+          state: OPEN
+          owner: null
+          provenance:
+            freshness: UNKNOWN
+            source: serverosd
+            observed_at: "2026-09-18T06:15:57Z"
+    registry:
+      schema: serveros/managed-runtime-registry.v1
+      device_ref: device:tokyo-shared-dev-01
+      resources:
+        - id: serveros-control-plane
+          kind: systemd-user-service
+          desired:
+            state: running
+          criticality: critical
+          probes:
+            - id: serverosd-unit-state
+              kind: systemd-unit-state
+              axis: liveness
+              unit: serverosd.service
+
+  # -- 第十五张，也是最后加的一张：§3.4/§13 的第四块「当前问题」在**非空**时的
+  # -- 样子。前面十四张里没有一张让这一块离开绿色，所以这一块此前只在
+  # -- `test_cards.py` 的构造模型里出现过，没有一张图给人看过。 --
+
+  - name: problems_on_the_face
+    card: status
+    title: 当前问题 · 卡面上有三条
+    source: constructed 主体 / measured 形状与时刻 — 本节点今天的登记表**没有**活的
+      on-face 行（1,357 条 OPEN 全在「值得留意」「供参考」那一档，见文档层级的
+      `problems:`），所以这一张像 unconfirmed_open 一样是构造的，用来把三条规则
+      渲染出来，而不是在描述此刻的机器。三条规则都印在卡面上可以逐句核对：
+        ① 第一条是「无法确认」而不是「仍在发生」：state 同样是 OPEN，但它带着
+           hold_kind（这一轮没有人再定级），last_seen 因此停在开火那一刻 —— 与
+           文档层 HIGH_MEMORY_SUSTAINED 那四条是同一个形态。
+        ② 同一个 code 的两条只列一条，另一条折成「同类共 2 项」。
+        ③ 没有逐条列出的那些必须自己有一句话（§5）。
+      subject_ref 与 severity 取自本节点真实登记表的拼法：FUNCTIONAL_PROBE_FAILED
+      的 subject_ref 是裸资源名（serveros-control-plane 在 `alert list` 里就是这
+      样，见 critical_service_failed 的注释）；DISK_CRITICAL 与 ROOT_FS_PRESSURE
+      的主体是 filesystem:/；SWAP_PRESSURE 的主体是 host:swap。first_seen 与
+      last_seen 是这两个 code 真实行的时刻形状（开火当刻即最后一次读数的那一条，
+      取自 unconfirmed_open；仍在被观测的那一条，取一个开火后还在读的窗口）。
+      卡首按注意力表给 ⚠️（REVIEW 那一档，没有 ACTION_REQUIRED），环境判定随之
+      从绿转为「有一项待确认」—— 这两句话不矛盾：卡首说「有多少件」，判定说
+      「按最差的那一档算，这台机器还需要人看一眼」。
+    reads: measured-20260930
+    binding: *binding_ok
+    day_store: *day_clean
+    problems:
+      # ① 无法确认：OPEN 且带着 hold_kind，所以最后一行读数就是开火那一刻。
+      - alert_ref: alert:fixture0000001501
+        code: FUNCTIONAL_PROBE_FAILED
+        subject_ref: "serveros-control-plane"
+        severity: high
+        state: OPEN
+        hold_kind: not_evaluated
+        first_seen: "2026-09-18T06:15:57+00:00"
+        last_seen: "2026-09-18T06:15:57+00:00"
+        occurrence_count: 1
+      # ② 仍在发生，而且同 code 两条：下面这条列出来，另一条折成计数。
+      - alert_ref: alert:fixture0000001502
+        code: MCP_PROCESS_ALIVE_BUT_UNAVAILABLE
+        subject_ref: "runtime:container0-litellm"
+        severity: high
+        state: OPEN
+        first_seen: "2026-09-20T02:10:00+00:00"
+        last_seen: "2026-09-20T06:15:00+00:00"
+        occurrence_count: 9
+      - alert_ref: alert:fixture0000001503
+        code: MCP_PROCESS_ALIVE_BUT_UNAVAILABLE
+        subject_ref: "container:lit-0218-litellm-after"
+        severity: high
+        state: OPEN
+        first_seen: "2026-09-20T02:44:00+00:00"
+        last_seen: "2026-09-20T06:15:00+00:00"
+        occurrence_count: 4
+      - alert_ref: alert:fixture0000001504
+        code: DISK_CRITICAL
+        subject_ref: "filesystem:/"
+        severity: high
+        state: OPEN
+        first_seen: "2026-09-20T05:30:00+00:00"
+        last_seen: "2026-09-20T06:15:00+00:00"
+        occurrence_count: 3
+      # ③ 第四条 code，被块自己的上限挡在外面 —— 它存在的意义就是让那句
+      #    「另有 1 项未逐条列出（共 4 类问题）」有东西可说。
+      - alert_ref: alert:fixture0000001505
+        code: SWAP_PRESSURE
+        subject_ref: "host:swap"
+        severity: medium
+        state: OPEN
+        first_seen: "2026-09-20T06:05:00+00:00"
+        last_seen: "2026-09-20T06:15:00+00:00"
+        occurrence_count: 2
+      # 下面两条在卡面之下，只出现在「登记表里还有 N 项」那一句里。第一条与
+      # 文档层那四条同形（held），第二条还在被正常观测（没有 hold_kind）。
+      - alert_ref: alert:fixture0000001506
+        code: HIGH_MEMORY_SUSTAINED
+        subject_ref: "runtime-group:process-tree:session-43217"
+        severity: medium
+        state: OPEN
+        hold_kind: unmeasured
+        first_seen: "2026-09-16T08:58:24+00:00"
+        last_seen: "2026-09-16T08:58:24+00:00"
+        occurrence_count: 1
+      - alert_ref: alert:fixture0000001507
+        code: AGE_WITHOUT_ACTIVITY
+        subject_ref: "runtime-group:process-tree:getty@tty1.service"
+        severity: low
+        state: OPEN
+        first_seen: "2026-09-16T07:11:40+00:00"
+        last_seen: "2026-09-20T06:15:00+00:00"
+        occurrence_count: 412
+      # 已确认的一条，用来把那句「已确认 N 项，不再列在这里」印出来 —— 一个
+      # 人认领过的条目不该在下一张卡上再次被列为当前问题。
+      - alert_ref: alert:fixture0000001508
+        code: ROOT_FS_PRESSURE
+        subject_ref: "filesystem:/"
+        severity: high
+        state: ACKNOWLEDGED
+        first_seen: "2026-09-19T11:00:00+00:00"
+        last_seen: "2026-09-20T06:15:00+00:00"
+        occurrence_count: 5
 
 # What the rendered previews are, in one sentence, for whoever opens them.
 preview_note: 下列预览由同一 renderer 从上面这些文档生成，用于检查布局；它们不是

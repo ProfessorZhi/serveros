@@ -857,6 +857,84 @@ class GatewayBindingTests(unittest.TestCase):
                          "a family with no traffic was reported with a success "
                          "count")
 
+    # -- the clamp: a word this card was never taught ------------------------
+
+    def test_an_accounting_word_the_card_was_never_taught_is_not_green(self):
+        """The positive control for the clamp in `_gateway_state`.
+
+        MEASURED, 2026-10-04, on the production renderer: `monitoring_model`
+        emits `UNAVAILABLE` when the shared gateway's own accounting cannot be
+        read, and the binding handed to `serverosctl card status` that day
+        carried it verbatim — `state: UNAVAILABLE` beside `probe: {state: OK}`.
+        `env_health` files neither word, so the block reached the else branch
+        and the card read 「三项均已读到且无异常」, in GREEN, over a reading
+        that was never made; the block's own lead said 就绪 over it.
+
+        The invented words are the point, not the measured one. `UNAVAILABLE`
+        is one word and the defect is a shape — any state an upstream producer
+        adds later lands in the same place. `RECENT_SUCCESS` is included
+        because it looks the most legitimate of the three: it IS declared for
+        this block in `card-definitions.yaml`, as a PROVIDER ROW's word, and it
+        is still not a state of the block.
+        """
+        for invented in ("UNAVAILABLE", "STALE", "RECENT_SUCCESS"):
+            with self.subTest(word=invented):
+                model = presentation.status_model(
+                    self._bound(state=invented), at="now",
+                    binding={"service_ref": "service:x"})
+                self.assertEqual(
+                    model["sections"]["gateway"]["state"], presentation.UNKNOWN,
+                    f"{invented} reached the card verbatim")
+                self.assertEqual(model["env_health"]["verdict"],
+                                 presentation.UNCONFIRMED)
+                self.assertIn("gateway", model["env_health"]["sections_unread"])
+
+    def test_the_clamp_keeps_the_words_this_card_does_know(self):
+        """The negative control, and it is the more dangerous half.
+
+        A clamp that swallowed `OK` would be worse than the defect it fixes:
+        every gateway with a readable accounting would report as unknown, so
+        «nobody looked» would be the answer on a card where somebody did, and
+        §6's rule about not faking green has a mirror — do not fake grey either.
+        Both ends are asserted, green and faulted.
+
+        The verdict is asserted only on the faulted end. On the green one it
+        cannot be: this fixture hands `status_model` no register, and §3.4 makes
+        a card whose register was never read `UNCONFIRMED` even when every block
+        is `OK` — so `OK` here means the BLOCK survived the clamp and is not
+        filed as unread, which is the whole claim.
+        """
+        for known in (presentation.OK, "ATTENTION"):
+            with self.subTest(word=known):
+                model = presentation.status_model(
+                    self._bound(state=known), at="now",
+                    binding={"service_ref": "service:x"})
+                self.assertEqual(model["sections"]["gateway"]["state"], known)
+                self.assertNotIn("gateway",
+                                 model["env_health"]["sections_unread"])
+        faulted = presentation.status_model(
+            self._bound(state="ATTENTION"), at="now",
+            binding={"service_ref": "service:x"})
+        self.assertEqual(faulted["env_health"]["verdict"],
+                         presentation.ATTENTION,
+                         "a measured fault stopped reaching the verdict")
+
+    def test_the_clamp_admits_only_words_the_card_can_print(self):
+        """`SECTION_READINGS` ⊆ what `card_day` is able to word.
+
+        A state let through that `card_day.STATE_WORDS` cannot word is printed
+        as itself on the FIRST SCREEN, which is the other half of the
+        2026-10-04 finding and the half §2 forbids: the change line read
+        `AI Gateway 正常→UNAVAILABLE`. One card, two vocabularies — so the set
+        the clamp admits is pinned to the set the renderer can speak, and a
+        future state added to one and not the other fails here rather than on
+        somebody's phone.
+        """
+        card_day = _load("serveros_runtime_card_day", "card_day.py")
+        printable = set(card_day.STATE_WORDS) | set(card_day.GATEWAY_WORDS)
+        self.assertEqual(set(presentation.SECTION_READINGS) - printable, set(),
+                         "the clamp admits states the card cannot word")
+
 
 # ---------------------------------------------------------------------------
 # §18 · the measurement, from the register through the row to the face
@@ -928,9 +1006,13 @@ class TheNumbersReachTheCardThroughTheDigestRow(unittest.TestCase):
         row = self._row()
         block = presentation._for_detail(row, at=self.AT)
         line = presentation.alerting._measurement_line(block, block["measured"])
-        self.assertIn("92.0% (threshold 90.0%)", line)
+        self.assertIn("92.0% (≥ threshold 90.0%)", line)
         self.assertIn("some avg60=0.0% (threshold 1.0%)", line)
         self.assertNotIn("swap in use is at or above", line)
+        # The three readings on this one line, in this one row: the watermark
+        # is above its line and carries the operator, the stall is at zero and
+        # does not. §4's rule and the honesty it needs, on the same row.
+        self.assertNotIn("avg60=0.0% (≥", line)
 
     def test_every_field_the_renderer_reads_survives_the_projection(self):
         """`_DETAIL_MEASURED` is *derived* from `MEASUREMENT_FIELDS`, not a
