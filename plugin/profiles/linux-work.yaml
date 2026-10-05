@@ -892,7 +892,160 @@ short_description: Agent Engineering Workbench for a Linux work node
 #
 #   runtime/ability_projection.py        c46817ff → 601ca452
 #   runtime/cli.py                       5039124d → dc63cd85
-cachebuster: srv0005.20261005c
+#
+# ---- srv0005.20261006a -------------------------------------------------
+#
+# A BOUND THAT IS ENFORCED SOMEWHERE ELSE IS NOT A BOUND. Four merged pull
+# requests, and each one is that sentence in a different place — which is why
+# they are one label and not four.
+#
+# THE PARENT STOPPED GETTING A SHELL. The woken Parent was started by a
+# hand-written launcher that lived outside every repository, and its posture was
+# not written down there at all: it was inherited from `~/.claude/settings.json`,
+# whose `permissions.defaultMode` is `bypassPermissions` — a file the BotMux
+# fleet rewrites on every start. So the authority of a woken Parent was neither
+# part of any release nor stable between two wakes. The briefing then told it to
+# reconcile through `serverosctl`, which is the whole ServerOS mutation surface —
+# every Item on the node, not this wake's. The launcher has moved into the
+# revision (`runtime/serveros-wake-parent`, rendered from `@SERVEROS_RUNTIME@` by
+# `release.py continuation-wake`), the shell is gone, and what the Parent gets
+# instead is a per-wake stdio MCP that dies with it: five operations
+# (`continuation.inspect`, `child-result.inspect`, `work.checkpoint`,
+# `work.park`, `work.accept`) plus a sixth declared and refused rather than left
+# out, so a Parent looking for a way to declare itself finished is told the
+# engine has no such operation (`OPERATION_NAMED_UNSUPPORTED`) instead of being
+# left to guess whether it was forgotten. Every mutating call re-checks this
+# wake's own grant, epoch, Item, operation and child ownership against the store
+# (`runtime/continuation_control.py`); the document it checks against is written
+# beside the receipt under the same key and handed over in the environment
+# (`runtime/wake.py:capability_envelope`), so a Parent cannot be given a
+# different envelope than the one filed under its own key, and a second reader
+# finds the same document without being trusted to have been handed it.
+# `--strict-mcp-config` keeps this node's whole plugin fleet — including the
+# BotMux control plane — out of a continuation session.
+#
+# TWO THINGS THIS DOES NOT BUY, AND SAYS SO RATHER THAN IMPLYING OTHERWISE.
+# `--restricted` confines the FILE tools to the working directory, and the
+# production unit declares no `--cwd`, so on this node the fence is the operator's
+# entire home directory. Narrowing it needs an OS-level boundary — a dedicated
+# account, a mount namespace or a sandbox unit — which is a decision with a
+# migration plan and is filed as one. And the envelope's `allowed_write_scope` is
+# REPORTED, not enforced against the filesystem: it is a scope a person declared,
+# the adapter refuses a mutation whose own declared path falls outside it, and the
+# docstring that says so is `capability_envelope`'s rather than a comment here.
+#
+# A REJECTION DEPENDED ON A DAEMON IT NEVER MENTIONED. `ownership_gate.evaluate`
+# resolved before it decided, and resolving a container walks to Docker. Three
+# rules that the REQUEST ALONE decides — the subject must be a subject, somebody
+# must be asking, this kind must have a decisive source on this node — were
+# therefore reachable only when the daemon answered. A "nobody was named to be
+# asked" question came back `EXIT_UNASKABLE` (2, the question cannot be asked)
+# where the honest answer is `EXIT_DENY` (10) `NO_TRUSTED_CONTEXT`; and a
+# refusal's validity turned on whether Docker happened to answer, with the reason
+# never naming Docker. Measured by pointing `DOCKER_HOST` at a socket that does
+# not exist: `2 != 10`, reproducibly. The same revision's full suite passed 6781
+# with 0 failed on a re-run, which is why the MECHANISM is the finding and not the
+# flake. The three rules moved into `_answered_without_a_host()` and `verdict()`
+# remains the single authority over a refusal, so there is still one implementation
+# and not two. `resolved` now records `_NOT_LOOKED` — "I did not look" — instead of
+# `None`, which is the line this repository already draws between
+# `DockerUnavailable` and "there are no containers". The dependency that is real is
+# kept: a question WITH a context whose decisive source is on the host still
+# resolves, and `EXIT_UNASKABLE` is still the right answer when the daemon cannot
+# be asked at all.
+#
+# THE SUITE'S FIRST ITEM WAS AN ERROR, AND `-q` DREW IT AS A TEST. `runtime/
+# test_contract.py` matched pytest's default `python_files = test_*.py`, so an
+# entire RUNTIME module was collected as tests, and its public API
+# `testing_dir(roots)` matched `python_functions = test*`. The first entry of the
+# full suite was `ERROR runtime/test_contract.py::testing_dir  E fixture 'roots'
+# not found` — and a collection error and a test that really ran and failed are the
+# same shape in `-q`. The progress bar advanced, the next few thousand entries
+# stayed green, and "the suite is green" was missing one module's entire content.
+# The root cause is two instruments answering one question: `scripts/verify.py`'s
+# census enumerates `tests/test_*.py` while bare `pytest` searches the whole tree
+# by `python_files`, and nothing said where the two disagree. Both are fixed — the
+# file renamed to `runtime/testing_contract.py` (it was never a test, and the other
+# sixty modules under `runtime/` are named by their subject), and `pytest.ini`
+# gains `testpaths = tests` — and `tests/test_collection_scope.py` holds both, with
+# a positive control that asks the criterion about the path that really was on
+# disk, so it cannot go green by scanning an emptied `python_files`.
+#
+# A DECLARATION THAT EXISTED, WAS CORRECT, AND WAS DROPPED THREE TIMES ON ITS WAY
+# TO THE RESOLVER. A third-party ability's Thin Link — the role it stands on, the
+# identity it takes, what it reads and produces, who must confirm — was complete in
+# the tree and lost at three separate places, any one of which was enough on its
+# own: `runtime/ability_projection.py`'s `ABILITY_FIELDS` allow-list did not carry
+# the four blocks, so the projection never emitted them; `runtime/cli.py`'s
+# `_named_catalogue` wrote `{}` for every key, so the CLI read the declaration and
+# threw it away; `abilities/resolver.py`'s `_input_ability` only asked whether the
+# id was present and never read a value. All three are connected, each with a
+# mutation that has to kill its own test. The Thin Link grants nothing and refuses
+# nothing: it rides on the record, reaches all five return points of `resolve()`,
+# and never enters `status` or `reason`, never refuses an input and never reorders
+# candidates — `UNDECLARED` is a finding and `AMBIGUOUS` is a finding, and the
+# resolver's job is to report which question is still open rather than to close it
+# by picking a record. `abilities/capability-contract.yaml` had no reader at all
+# before this round — four tables and seven invariants, all prose — and the first
+# reader turned it red on the spot: four fields the resolver had always returned
+# were undeclared, as was every one of the twelve fields of a candidate row. The
+# same shape ("declared with no reader, present with no caller") also removed
+# `runtime/cli.py::_catalogue_from_names`, which had zero call sites in the tree.
+#
+# WHY THE LABEL MOVES, AND THE ONE PLACE PROMOTE DOES NOT REACH. Two production
+# surfaces run this payload's `bin/serverosctl` — `tokyo-status-card.service` and
+# the wake routine's receiver — and so does every operator who types a `serverosctl`
+# verb; an installed cache keyed on 05c would keep serving the old writer under a
+# version string that no longer describes it. But `release.py promote` places the
+# revision, swaps `current`, and writes the CLI shim and the unit file. It does NOT
+# render `runtime/serveros-wake-parent`: that is `release.py continuation-wake`,
+# deliberately outside promote for the same reason `alert-worker` is, and promote's
+# own reference to that template is a placeholder check rather than an install.
+# Until this round there was nothing to install, because the launcher lived only on
+# this node's disk. So this is the first label under which promote alone does not
+# move the Parent's posture — and `release.py status` does not report that gap
+# either, since its agreement check reads the unit and the shim, which promote does
+# write. A promotion that stops after `promote && restart` leaves a receiver on the
+# new revision and a Parent still started under the old one.
+#
+# THE LIST IS A MEASUREMENT AND NOT A SUMMARY OF THIS ROUND. 05c was built from
+# 0f67c40, and main has moved past that tree by four merged pull requests:
+#
+#   #44  6534e64             ownership preconditions answered without a host
+#   #45  264620b             the testing contract, and pytest's collection scope
+#   #46  088ff5d … f0af39c   the continuation adapter, four commits
+#   #47  7d82816 … 43ce73a   the Thin Link reaches the resolver; the 500-name
+#                            fixture rides along and is not a payload member
+#
+# Eighteen members changed since 05c, measured against the installed 05c payload by
+# the same instrument that produced the 05c list; six of them are new to this
+# composition, so no installed cache has ever held them under any label. `tests/`
+# is not a member of this composition, and neither are the five surfaces the build
+# regenerates from the label itself — `.claude-plugin/plugin.json`, `.claude-plugin/
+# marketplace.json`, `.codex-plugin/plugin.json`, `ARTIFACT.json` and `README.md` —
+# which move under every cachebuster and are therefore excluded from the count
+# rather than listed in it.
+#
+#   abilities/capability-contract.yaml           7d1013cf → 2fc814f6
+#   abilities/resolver.py                        a3928c62 → d5900fdc
+#   context/resolver.py                          bcbec664 → 8e35e786
+#   fleet/mcp-contract.yaml                      80b18496 → d42cd436
+#   runtime/ability_projection.py                601ca452 → d300909d
+#   runtime/actuator-contract.yaml               a725d8b5 → f0ad0253
+#   runtime/bounded_invocation.py                c324f0db → 4bf0f762
+#   runtime/cli.py                               dc63cd85 → 2faff5b7
+#   runtime/ownership_gate.py                    0914925b → d6904b48
+#   runtime/wake.py                              693ac444 → a0583213
+#   skills/ability-management/control_plane.py   3c13d7ab → 9d4f1bca
+#   skills/test-management/SKILL.md              b13b3c80 → 0c59f8b0
+#
+#   mcp/bin/serveros-continuation-mcp            (absent) → 26047fcc
+#   mcp/continuation_mcp.py                      (absent) → fdab8600
+#   runtime/continuation_control.py              (absent) → 168b67a7
+#   runtime/serveros-wake-parent                 (absent) → 29c6d68e
+#   runtime/testing_contract.py                  (absent) → ad87c011
+#   skills/test-management/profiles.yaml         (absent) → 28abf727
+cachebuster: srv0005.20261006a
 
 skills:
   - name: runtime-management
