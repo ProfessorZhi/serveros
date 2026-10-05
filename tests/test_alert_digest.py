@@ -108,13 +108,19 @@ LATER = lambda s: iso(s)  # noqa: E731 - a fixture, and the name is the doc
 
 
 def alert(ref: str, *, code=CODE, severity="high", state="OPEN", subject=FS,
-          first_seen=T0, resolved_at=None, occurrence=1, device=DEVICE):
+          first_seen=T0, resolved_at=None, occurrence=1, device=DEVICE,
+          hold_kind=None):
     return {
         "alert_ref": ref, "code": code, "severity": severity,
         "device_ref": device, "subject_ref": subject, "resource_ref": subject,
         "state": state, "first_seen": first_seen, "last_seen": first_seen,
         "resolved_at": resolved_at, "occurrence_count": occurrence,
         "detector": "measurement-anomaly",
+        # Null on a firing alert and a string on one the pass is holding,
+        # which is exactly what `alerting.evaluate` writes: it clears the field
+        # at the top of every firing row and sets it in the not-fired loop. The
+        # UPDATED section at the end of this file is the only reader.
+        "hold_kind": hold_kind,
     }
 
 
@@ -420,6 +426,68 @@ class WhenItIsWorthAMessage(Fixture):
         self.assertFalse(verdict["send"])
         self.assertIn("changed", verdict["why"])
 
+    def test_a_held_backlog_is_named_in_the_decline(self):
+        """§八-B. `held` was read by neither door, so a register with a
+        backlog declined a card with the sentence "nothing in the register
+        changed". Measured on this node 2026-10-04: 1,090 rows held and the
+        sentence said nothing was. The decline still declines — a held row has
+        not changed — but it now NAMES what it declined over."""
+        for index in range(6):
+            self.put(alert(ref_of(CODE, f"filesystem:/mnt/h{index}"),
+                           subject=f"filesystem:/mnt/h{index}",
+                           hold_kind="unmeasured", first_seen=iso(-3600)))
+        self.baseline()
+        verdict = digest.decision(self.compose(at=LATER(60)), self.cursor,
+                                  at=LATER(60))
+        self.assertFalse(verdict["send"])
+        self.assertEqual(verdict["held"]["total"], 6)
+        self.assertEqual(verdict["held"]["by_kind"], {"unmeasured": 6})
+        self.assertIn("6 条主体处于持有状态", verdict["why"])
+        self.assertIn("不等于「登记表没有变化」", verdict["why"])
+
+    def test_a_quiet_register_still_says_only_that_nothing_changed(self):
+        """The other half of the same rule. With nothing held the sentence is
+        the one it always was — the attribution is added, not substituted."""
+        self.baseline()
+        verdict = digest.decision(self.compose(at=LATER(60)), self.cursor,
+                                  at=LATER(60))
+        self.assertEqual(verdict["held"]["total"], 0)
+        self.assertNotIn("持有状态", verdict["why"])
+
+    def test_a_declared_subject_losing_observation_can_cause_a_card(self):
+        """§八-B, the door that was missing. A subject the node DECLARED should
+        exist and can no longer be observed is a finding in `held`, not a delta
+        in `rows`, so neither door could see it and no card could ever be sent
+        for it. It takes the interval door: it is worth saying on its own terms
+        and it carries no severity for the immediate door's cooldown table."""
+        self.put(alert(ref_of("DESIRED_ACTUAL_MISMATCH", "runtime:thing"),
+                       code="DESIRED_ACTUAL_MISMATCH", subject="runtime:thing",
+                       hold_kind="unmeasured", first_seen=iso(-3600)))
+        self.baseline()
+        verdict = digest.decision(self.compose(at=LATER(7200)), self.cursor,
+                                  at=LATER(7200))
+        self.assertTrue(verdict["send"])
+        self.assertTrue(verdict["held"]["integrity_on_the_face"])
+        self.assertIn("monitoring-integrity", verdict["why"])
+        self.assertIn("REVIEW", verdict["why"])
+
+    def test_an_integrity_finding_off_the_face_says_why_it_is_not_on_it(self):
+        """`consumption` codes are held in bulk on this node and the contract
+        puts them at WATCH — off the face. They must not cause a card, and the
+        decline must state that rather than leave it to be inferred."""
+        for index in range(4):
+            self.put(alert(ref_of("HIGH_MEMORY_SUSTAINED", f"runtime-group:{index}"),
+                           code="HIGH_MEMORY_SUSTAINED",
+                           subject=f"runtime-group:{index}",
+                           hold_kind="unmeasured", first_seen=iso(-3600)))
+        self.baseline()
+        verdict = digest.decision(self.compose(at=LATER(7200)), self.cursor,
+                                  at=LATER(7200))
+        self.assertFalse(verdict["send"])
+        self.assertEqual(verdict["held"]["total"], 4)
+        self.assertIsNone(verdict["held"]["integrity_finding"])
+        self.assertFalse(verdict["held"]["integrity_on_the_face"])
+
     def test_a_critical_does_not_wait_for_the_interval(self):
         self.baseline()
         self.put(alert(ref_of(CODE, FS), severity="high", first_seen=LATER(60)))
@@ -513,6 +581,63 @@ class WhenItIsWorthAMessage(Fixture):
         verdict = digest.decision(self.compose(at=at), self.cursor, at=at)
         self.assertFalse(verdict["send"])
         self.assertIn("may occupy a line", verdict["why"])
+
+    # -- §八-B: a hole in the catalogue is not a decision ----------------
+
+    def test_an_undecided_code_refuses_rather_than_declining(self):
+        """«We never decided» and «we decided it is off the face» are different
+        sentences, and only the first is a defect in this node's own
+        declaration.
+
+        `may_interrupt` answers False for both. Without this, a detector that
+        shipped a code nobody added to `alerts.attention.codes` had its
+        findings dropped from every card behind a decline that named them and
+        said «none of them may occupy a line» — a policy decision nobody made,
+        stated as fact. The contract's rule for the catalogue is the opposite:
+        a code that appears in none is a code nobody decided about, and it is
+        reported rather than quietly levelled. Measured on this node
+        2026-10-04, the register holds 13,242 rows and 0 undecided codes, so
+        this fires on a defect and never on data that is merely old.
+        """
+        self.put(alert(ref_of(CPU_CODE, GROUP), code=CPU_CODE, severity="high",
+                       subject=GROUP))
+        self.baseline()
+        self.put(alert(ref_of("NOBODY_DECIDED_THIS", MEM), code="NOBODY_DECIDED_THIS",
+                       severity="high", subject=MEM, first_seen=LATER(60)))
+        at = LATER(120 + INTERVAL + 1)
+        document = self.compose(at=at)
+        with self.assertRaises(digest.DigestError) as got:
+            digest.decision(document, self.cursor, at=at)
+        self.assertIn("NOBODY_DECIDED_THIS", str(got.exception))
+        # And the decided row beside it is NOT what raised: the message names
+        # the hole and not the code that was merely put off the face.
+        self.assertNotIn(CPU_CODE, str(got.exception))
+
+    def test_a_held_row_on_an_undecided_code_is_a_hole_too(self):
+        """The integrity path carries codes as well, and a code it cannot level
+        is the same hole on the other half of the document."""
+        self.baseline()
+        self.put(alert(ref_of("NOBODY_DECIDED_THIS", MEM), code="NOBODY_DECIDED_THIS",
+                       severity="medium", subject=MEM, first_seen=T0,
+                       hold_kind="unmeasured"))
+        holes = digest.undecided_codes(self.compose(at=LATER(60))["held"])
+        self.assertEqual(holes, ["NOBODY_DECIDED_THIS"])
+        with self.assertRaises(digest.DigestError):
+            digest.decision(self.compose(at=LATER(60)), self.cursor, at=LATER(60))
+
+    def test_the_catalogue_has_no_hole_on_the_codes_the_detectors_emit(self):
+        """The same rule `test_attention.py` enforces, read from here so that a
+        reader of THIS file learns that the table is closed. Not a duplicate:
+        that test reads the detectors' own tables, this one reads the one
+        helper `decision` uses and asserts it is built from them."""
+        import importlib.util as _u
+        spec = _u.spec_from_file_location("serveros_runtime_resource_anomaly",
+                                          ROOT / "runtime" / "resource_anomaly.py")
+        ra = _u.module_from_spec(spec)
+        sys.modules["serveros_runtime_resource_anomaly"] = ra
+        spec.loader.exec_module(ra)
+        rows = [{"code": code} for code in ra.CODES]
+        self.assertEqual(digest.undecided_codes(rows), [])
 
     def test_the_face_is_read_once_and_not_once_per_row(self):
         """The rule whose breach cost this node its control plane for 25 s.
@@ -972,6 +1097,303 @@ class TheReceiptNamesTheVersionThatWasSent(Fixture):
         with self.assertRaises(digest.DigestError) as caught:
             self.deliver(document, generation=7)
         self.assertIn("generation", str(caught.exception))
+
+
+# ---------------------------------------------------------------------------
+# the pass that declined — the ledger is maintained on a tick nobody was told
+# ---------------------------------------------------------------------------
+
+
+#: A code whose alerts are MEDIUM, and it matters that it is not HIGH. The
+#: `immediate` severities are the ones a row may interrupt somebody for, and
+#: `account` refuses those. Everything in this section about a row being
+#: accounted for has to be about a row that is not immediate, or it is
+#: measuring the refusal instead of the accounting.
+QUIET_CODE = "HIGH_MEMORY_SUSTAINED"
+
+
+class TheLedgerMovesWhenNothingWasSent(Fixture):
+    """`NEW` means the tick an identity first opened, and it has to keep meaning it.
+
+    WHAT WENT WRONG, MEASURED. The classification in `deltas` was never the
+    defect: `record is None` really does mean "not in the ledger", and that
+    really is what a first sighting looks like. The defect was that the ledger
+    was only ever written on DELIVERED, so a pass that declined to send wrote
+    nothing and the next pass found the same absence and called it new again.
+    On this node that had run since a baseline delivery at 2026-10-03T15:39:57Z,
+    leaving 827 OPEN rows re-derived as NEW every tick against a register that
+    had not changed.
+
+    So these tests are about the WRITER and not about the classification, and
+    the one that matters is the first: a declined pass, then a second compose,
+    and no delta at all.
+    """
+
+    def decline(self, document, *, at, why="nobody was told", owed=()):
+        return digest.account(self.cursor, at=at, digest=document, why=why,
+                              owed=owed)
+
+    def quiet(self, ref, *, first_seen, severity="medium", **kw):
+        """A post-baseline OPEN alert at a severity that may not interrupt.
+
+        `medium` by default and it matters: `immediate` is reached at severity
+        alone, so a row of this severity is one `account` will actually account
+        for rather than refuse.
+        """
+        return alert(ref, code=QUIET_CODE, severity=severity,
+                     subject=GROUP, first_seen=first_seen, **kw)
+
+    def test_a_declined_pass_advances_the_ledger_and_the_row_stops_being_new(self):
+        ref = ref_of(QUIET_CODE, GROUP)
+        self.baseline()
+        self.put(self.quiet(ref, first_seen=LATER(60)))
+        first = self.compose(at=LATER(120))
+        self.assertEqual(first["counts"]["NEW"], 1)
+        self.assertEqual([r["key"] for r in first["rows"]], [ref])
+
+        out = self.decline(first, at=LATER(120), why="the interval has not elapsed")
+        self.assertEqual(out["accounted_keys"], 1)
+        self.assertEqual(out["accounted"], [ref])
+        self.assertEqual(out["unaccounted_immediate"], [])
+
+        second = self.compose(at=LATER(180))
+        self.assertEqual(second["rows"], [],
+                         "an unchanged open alert is not news on the tick after "
+                         "the tick that already dealt with it")
+        self.assertEqual(second["counts"]["NEW"], 0)
+
+    def test_the_same_row_is_new_once_and_not_once_per_pass(self):
+        ref = ref_of(QUIET_CODE, GROUP)
+        self.baseline()
+        self.put(self.quiet(ref, first_seen=LATER(60)))
+        seen = []
+        for tick in (120, 180, 240, 300):
+            document = self.compose(at=LATER(tick))
+            seen.append(document["counts"]["NEW"])
+            self.decline(document, at=LATER(tick))
+        self.assertEqual(seen, [1, 0, 0, 0])
+
+    def test_accounting_is_not_announcing(self):
+        """The two axes. `announced` is unchanged by this and stays the answer
+        to the narrower question, "was a person told"."""
+        ref = ref_of(QUIET_CODE, GROUP)
+        self.baseline()
+        self.put(self.quiet(ref, first_seen=LATER(60)))
+        document = self.compose(at=LATER(120))
+        self.decline(document, at=LATER(120), why="nothing worth a card this hour")
+
+        entry = self.cursor.known(ref)
+        self.assertFalse(entry["announced"])
+        self.assertFalse(self.cursor.announced(ref))
+        self.assertEqual(entry["accounted_why"], "nothing worth a card this hour")
+        self.assertEqual(entry["accounted_at"], LATER(120))
+        self.assertEqual(entry["kind"], "NEW")
+        self.assertEqual(entry["state"], "OPEN")
+
+    def test_accounting_does_not_move_the_delivery_clocks(self):
+        """A declined send is not an attempt and is not an arrival. A function
+        that stamped either would make the interval door believe a card had
+        gone out.
+
+        The ledger DOES gain the key — that is the entire repair — and it gains
+        no announcement, which is the distinction the two axes exist for.
+        """
+        ref = ref_of(QUIET_CODE, GROUP)
+        self.baseline()
+        self.put(self.quiet(ref, first_seen=LATER(60)))
+        before = self.cursor.summary()
+        self.decline(self.compose(at=LATER(120)), at=LATER(120))
+        after = self.cursor.summary()
+        self.assertIsNone(after["last_digest_at"])
+        self.assertIsNone(after["last_attempt_at"])
+        self.assertEqual(after["generation"], before["generation"])
+        self.assertEqual(after["last_delivery"], before["last_delivery"])
+        self.assertEqual(after["announced_keys"], 0)
+        self.assertEqual(after["known_keys"], before["known_keys"] + 1)
+        self.assertIn(ref, self.cursor.keys())
+
+    def test_a_send_that_failed_leaves_the_shown_rows_owed(self):
+        """`owed` is what the caller is still going to say. A card that went out
+        and did not arrive has told nobody, so its rows stay deltas."""
+        ref = ref_of(QUIET_CODE, GROUP)
+        self.baseline()
+        self.put(self.quiet(ref, first_seen=LATER(60)))
+        document = self.compose(at=LATER(120))
+        out = self.decline(document, at=LATER(120), why="the transport timed out",
+                           owed=document["shown_keys"])
+        self.assertEqual(out["accounted_keys"], 0)
+        self.assertEqual(out["owed"], [ref])
+        self.assertEqual(self.compose(at=LATER(180))["counts"]["NEW"], 1)
+
+    def test_a_row_that_was_never_a_delta_is_not_accounted(self):
+        ref = ref_of(CODE, FS)
+        self.put(alert(ref, first_seen=iso(-86400)))
+        self.baseline()
+        document = self.compose(at=LATER(60))
+        self.assertEqual(document["rows"], [])
+        out = self.decline(document, at=LATER(60))
+        self.assertEqual(out["accounted_keys"], 0)
+        self.assertIsNone(self.cursor.known(ref).get("accounted_at"))
+        self.assertNotIn("accounted_why", self.cursor.known(ref))
+
+    def test_an_immediate_row_is_refused_rather_than_accounted(self):
+        """A row at an immediate severity has been declared worth interrupting
+        somebody for. Accounting it would mark a finding that should have been
+        said as dealt with, and that is the silent drop the admission contract
+        forbids — so it is refused and reported instead."""
+        ref = ref_of(CODE, FS)
+        self.baseline()
+        self.put(alert(ref, first_seen=LATER(60)))  # DISK_CRITICAL, HIGH
+        document = self.compose(at=LATER(120))
+        self.assertTrue(document["rows"][0]["immediate"])
+        out = self.decline(document, at=LATER(120))
+        self.assertEqual(out["accounted_keys"], 0)
+        self.assertEqual([r["key"] for r in out["unaccounted_immediate"]], [ref])
+        self.assertIn("dealt with", out["unaccounted_immediate"][0]["why"])
+        self.assertEqual(self.compose(at=LATER(180))["counts"]["NEW"], 1,
+                         "a refused row is left un-accounted so the next pass "
+                         "re-derives it rather than losing it")
+
+    def test_a_severity_that_rose_after_a_decline_is_still_escalated(self):
+        ref = ref_of(QUIET_CODE, GROUP)
+        self.baseline()
+        self.put(self.quiet(ref, first_seen=LATER(60)))
+        self.decline(self.compose(at=LATER(120)), at=LATER(120))
+        self.put(self.quiet(ref, first_seen=LATER(60), severity="high"))
+        document = self.compose(at=LATER(180))
+        self.assertEqual(document["counts"]["ESCALATED"], 1)
+        self.assertEqual(document["counts"]["NEW"], 0)
+
+    def test_a_row_that_resolved_after_a_decline_is_still_recovered(self):
+        ref = ref_of(QUIET_CODE, GROUP)
+        self.baseline()
+        self.put(self.quiet(ref, first_seen=LATER(60)))
+        self.decline(self.compose(at=LATER(120)), at=LATER(120))
+        self.put(self.quiet(ref, first_seen=LATER(60), state="RESOLVED",
+                            resolved_at=LATER(200)))
+        document = self.compose(at=LATER(240))
+        self.assertEqual(document["counts"]["RECOVERED"], 1)
+        self.assertEqual(document["silent_resolutions"], 0)
+
+    def test_a_row_that_reopened_after_a_decline_is_still_reopened(self):
+        ref = ref_of(QUIET_CODE, GROUP)
+        self.baseline()
+        self.put(self.quiet(ref, first_seen=LATER(60)))
+        self.decline(self.compose(at=LATER(120)), at=LATER(120))
+        self.put(self.quiet(ref, first_seen=LATER(60), state="RESOLVED",
+                            resolved_at=LATER(200)))
+        self.decline(self.compose(at=LATER(240)), at=LATER(240))
+        self.put(self.quiet(ref, first_seen=LATER(300)))
+        document = self.compose(at=LATER(360))
+        self.assertEqual(document["counts"]["REOPENED"], 1)
+        self.assertEqual(document["counts"]["NEW"], 0)
+
+    def test_the_generation_a_delivery_was_recorded_at_survives_accounting(self):
+        """An accounting entry keeps the delivery axis it found. Writing zero
+        here would un-supersede a late ACK that is older than what the ledger
+        already knows, and the row it describes would be announced a second
+        time.
+
+        The delta accounted for here is a RECOVERY and not an escalation, and
+        that is not incidental: `immediate` is reached at severity alone, so an
+        ESCALATED row at a high severity is refused by `account` and never
+        reaches the code this test is about.
+        """
+        ref = ref_of(QUIET_CODE, GROUP)
+        self.baseline()
+        self.put(self.quiet(ref, first_seen=LATER(60)))
+        carried = self.compose(at=LATER(120))
+        digest.record(self.cursor, self.store, at=LATER(120), generation=1,
+                      state="DELIVERED", shown=carried["shown"],
+                      frozen=carried["frozen"])
+        self.assertEqual(self.cursor.known(ref)["generation"], 1)
+        self.assertTrue(self.cursor.announced(ref))
+
+        self.put(self.quiet(ref, first_seen=LATER(60), state="RESOLVED",
+                            resolved_at=LATER(160)))
+        document = self.compose(at=LATER(180))
+        self.assertEqual(document["counts"]["RECOVERED"], 1)
+        out = self.decline(document, at=LATER(180), why="no card this hour")
+        self.assertEqual(out["accounted_keys"], 1)
+        entry = self.cursor.known(ref)
+        self.assertEqual(entry["generation"], 1)
+        self.assertTrue(entry["announced"],
+                        "an accounted row that was announced before is still "
+                        "one somebody heard about")
+
+
+# ---------------------------------------------------------------------------
+# UPDATED — the one change to an open alert that is not a severity
+# ---------------------------------------------------------------------------
+
+
+class AChangeOfKindIsANewFact(Fixture):
+    """Severity and state the same; whether this alert IS a measurement changed.
+
+    An alert held at `above_floor` says "we looked, the value is still up". The
+    same identity held at `unmeasured` says "nobody got a reading". Those are
+    the same code, the same subject, the same severity and the same state, and
+    opposite facts — one is a result and one is a loss of observation, and the
+    contract builds monitoring-integrity findings out of the second and not the
+    first. A ledger that could not see the change between them would let an
+    alert stop being measured without anybody being told.
+    """
+
+    def decline(self, document, *, at, why="nobody was told", owed=()):
+        return digest.account(self.cursor, at=at, digest=document, why=why,
+                              owed=owed)
+
+    def held(self, ref, kind, *, first_seen=LATER(60), severity="medium"):
+        return alert(ref, code=QUIET_CODE, severity=severity, subject=GROUP,
+                     first_seen=first_seen, hold_kind=kind)
+
+    def test_a_hold_kind_that_changed_is_updated(self):
+        ref = ref_of(QUIET_CODE, GROUP)
+        self.baseline()
+        self.put(self.held(ref, "above_floor"))
+        self.decline(self.compose(at=LATER(120)), at=LATER(120))
+        self.put(self.held(ref, "unmeasured"))
+        document = self.compose(at=LATER(180))
+        self.assertEqual(document["counts"]["UPDATED"], 1)
+        self.assertEqual(document["counts"]["NEW"], 0)
+        self.assertEqual([r["key"] for r in document["rows"]], [ref])
+
+    def test_a_first_classification_is_not_a_change(self):
+        """Null to stated is not a transition between two facts; it is a row
+        that had no classification being classified. Calling that UPDATED would
+        make every held row emit one the first time it was held."""
+        ref = ref_of(QUIET_CODE, GROUP)
+        self.baseline()
+        self.put(self.held(ref, None))
+        self.decline(self.compose(at=LATER(120)), at=LATER(120))
+        self.put(self.held(ref, "above_floor"))
+        document = self.compose(at=LATER(180))
+        self.assertEqual(document["counts"]["UPDATED"], 0)
+
+    def test_a_kind_that_did_not_change_is_not_a_delta(self):
+        ref = ref_of(QUIET_CODE, GROUP)
+        self.baseline()
+        self.put(self.held(ref, "above_floor"))
+        self.decline(self.compose(at=LATER(120)), at=LATER(120))
+        document = self.compose(at=LATER(180))
+        self.assertEqual(document["rows"], [])
+        self.assertEqual(document["counts"]["UPDATED"], 0)
+
+    def test_an_updated_row_can_be_printed_and_cannot_cause_a_card(self):
+        ref = ref_of(QUIET_CODE, GROUP)
+        self.baseline()
+        self.put(self.held(ref, "above_floor"))
+        self.decline(self.compose(at=LATER(120)), at=LATER(120))
+        self.put(self.held(ref, "unmeasured"))
+        document = self.compose(at=LATER(180))
+        row = document["rows"][0]
+        self.assertFalse(row["immediate"],
+                         "an UPDATED row may occupy a line on a card that "
+                         "exists for another reason; it may not be the reason")
+        self.assertNotIn(digest.UPDATED, digest._PROACTIVE_KINDS)
+        self.assertIn(digest.UPDATED, digest.KINDS)
+        self.assertEqual(set(digest._KIND_ORDER), set(digest.KINDS),
+                         "every kind a card may read is in the order table")
 
 
 # ---------------------------------------------------------------------------

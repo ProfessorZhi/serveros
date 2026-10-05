@@ -120,8 +120,57 @@ def daemon_socket_path() -> Path:
     return Path(runtime) / "serveros/serveros.sock"
 
 
+class DaemonUnavailable(RuntimeError):
+    """The node runtime could not answer. Not a fault — a missing measurement."""
+
+
+#: How long one `ask_daemon` waits before it calls the runtime unavailable.
+#:
+#: NOT A TUNING KNOB AND NOT A GUESS. The daemon serves requests on the same
+#: thread that runs its once-a-minute tick — `daemon.serve_forever` is, in its
+#: own words, "deliberately single-threaded and deadline-driven", and "requests
+#: are served between ticks, on the same thread". So a request that arrives
+#: mid-tick is not refused: the listen backlog (8) accepts it immediately —
+#: measured over 1,624 probes on 2026-10-04, `connect` was 0.000 s every single
+#: time and never once errored — and the request is answered when the tick ends.
+#:
+#: The wait is therefore the tick's remaining duration, and that duration is a
+#: number the daemon publishes about itself. `observed/current.json` recorded
+#: `duration_seconds: 4.964` that day, against a budget of 5.0 s. The daemon was
+#: answering. The client gave up first, raised `DaemonUnavailable` — whose own
+#: docstring reads "not a fault, a missing measurement" — and every caller
+#: downstream recorded a missing measurement for a measurement that existed.
+#: That is the shape of a false negative, and it is why this is not 5.0 any
+#: more.
+#:
+#: The number is two ticks: one to finish, one for the settle window around it,
+#: so that a request arriving at the worst possible instant still lands in the
+#: first inter-tick gap rather than the second. It is sized from the tick the
+#: daemon reports, not from how patient a caller feels — if the tick grows, this
+#: constant is what has to be re-derived, and `DaemonBusy` below is what says so
+#: out loud instead of leaving a silent absence behind.
+DEFAULT_TIMEOUT = 12.0
+
+
+class DaemonBusy(DaemonUnavailable):
+    """The runtime is there and was reached, and did not get to this request.
+
+    A DIFFERENT FACT FROM `DaemonUnavailable`, and the difference is the whole
+    point of the class. `DaemonUnavailable` means there was nothing to ask —
+    no socket, a closed connection, a refusal — so a reading genuinely does not
+    exist. This means the question reached a daemon that is alive and working,
+    and the answer exists; the caller simply stopped listening for it. A caller
+    that renders both as "no reading" is the false negative this class exists to
+    make impossible to write by accident — it separates "retry this" from
+    "record a gap" without either being the default a caller falls into.
+
+    Nothing here retries yet. What is fixed is the reading: from `DEFAULT_TIMEOUT`
+    up, and under a name that does not claim the daemon was absent.
+    """
+
+
 def ask_daemon(method: str, params: dict | None = None,
-               *, timeout: float = 5.0) -> dict:
+               *, timeout: float = DEFAULT_TIMEOUT) -> dict:
     """One request to the running node runtime.
 
     Every other command in this file computes its answer in-process from
@@ -133,7 +182,9 @@ def ask_daemon(method: str, params: dict | None = None,
 
     Raises `DaemonUnavailable` rather than falling back to a local
     computation, because a status command that quietly answers from somewhere
-    else is worse than one that says it cannot answer.
+    else is worse than one that says it cannot answer. A timeout is raised as
+    `DaemonBusy`, which is a subclass, so every existing caller keeps working
+    and the ones that can tell the difference now can.
     """
     path = daemon_socket_path()
     if not path.exists():
@@ -154,6 +205,18 @@ def ask_daemon(method: str, params: dict | None = None,
             if not chunk:
                 break
             buffer += chunk
+    except socket.timeout as exc:
+        # `socket.timeout` is an `OSError`, so this has to be caught before the
+        # clause below or it becomes an undifferentiated absence — which is
+        # exactly the reading this branch exists to stop.
+        raise DaemonBusy(
+            f"the node runtime did not answer `{method}` within {timeout:.0f}s. "
+            f"It is running its tick — `serverosd` serves on the same single "
+            f"thread that runs the tick, so a request that arrives mid-tick "
+            f"waits for it. This is not a missing measurement: the runtime is "
+            f"up and this request is still queued on it. Retry, or read "
+            f"`observation.get` for the tick's own recorded duration."
+        ) from exc
     except OSError as exc:
         raise DaemonUnavailable(f"{path}: {exc}") from exc
     finally:
@@ -168,10 +231,6 @@ def ask_daemon(method: str, params: dict | None = None,
             f"serverosd refused {method}: {error.get('code')}: "
             f"{error.get('message')}")
     return reply["result"]
-
-
-class DaemonUnavailable(RuntimeError):
-    """The node runtime could not answer. Not a fault — a missing measurement."""
 
 
 def emit(payload: dict, *, as_json: bool, lines: list[str] | None = None) -> None:
@@ -4879,6 +4938,63 @@ def cmd_alert_list(args) -> int:
     return EXIT_OK
 
 
+def cmd_alert_current(args) -> int:
+    """§3.4. What is wrong right now, most in need of attention first.
+
+    NOT `alert list` WITH A FILTER. The two commands answer different questions
+    and the difference is the one §3.4 is about: `list` is every row this node
+    holds, in state order, for a person scanning a register; this is the subset
+    the contract says may occupy a line on a person's card, which is what the
+    status card's 当前问题 block asks for. Both read the same register through
+    the same socket, so the two cannot disagree about what the node holds — one
+    of them just stops before the codes nobody is interrupted for.
+    """
+    payload, code = _alert_answer("alert.current", {})
+    if code != EXIT_OK:
+        return code
+    counts = payload.get("counts") or {}
+    lines = [
+        f"现在需要处理  {counts.get('ACTION_REQUIRED', 0)}",
+        f"现在建议查看  {counts.get('REVIEW', 0)}",
+        f"合计          {counts.get('open_on_face', 0)}"
+        f"（{counts.get('codes', 0)} 类）",
+    ]
+    # The two states that are live and are not listed. A reader who has
+    # acknowledged something should be able to see that the register still
+    # holds it, without having it handed back as a fresh problem.
+    for state, key in (("已确认", "acknowledged"), ("已静默", "snoozed")):
+        if counts.get(key):
+            lines.append(f"{state}        {counts[key]}")
+    lines.append("")
+    if not payload.get("shown"):
+        lines.append("当前没有可以陈列在卡面上的问题。")
+    for row in payload.get("shown") or []:
+        lines.append(f"{row.get('attention_word') or ''} · "
+                     f"{row.get('code')} · {row.get('subject_ref')}"
+                     + (f" ×{row['of_code']}" if (row.get("of_code") or 0) > 1
+                        else ""))
+    omitted = counts.get("open_on_face", 0) - sum(
+        1 for _r in (payload.get("shown") or []))
+    if omitted > 0:
+        lines.append(f"其余 {omitted} 项未被陈列；完整清单见 `alert list`。")
+    watch = payload.get("watch") or {}
+    if watch.get("count"):
+        # §5. A short answer is only honest with its omissions beside it: these
+        # are open findings the contract carries below the face, and a reader
+        # who is told "none" without this sentence would be told something
+        # false about the register.
+        lines.append(f"另有 {watch['count']} 项在 face 之下（值得留意/供参考），"
+                     f"不改变当前判断。")
+    if (payload.get("undecided") or {}).get("count"):
+        lines.append(f"另有 {payload['undecided']['count']} 项的 code 没有被"
+                     f"attention 表决定过："
+                     + " · ".join(payload["undecided"].get("codes") or []))
+    lines.append("")
+    lines.append(payload.get("note") or "")
+    emit(payload, as_json=args.json, lines=lines)
+    return EXIT_OK
+
+
 def cmd_alert_inspect(args) -> int:
     """One alert: the register's row and the sentence a person would be sent."""
     payload, code = _alert_answer("alert.inspect", {"alert_ref": args.alert_ref})
@@ -5132,6 +5248,71 @@ def cmd_alert_digest(args) -> int:
     return EXIT_OK
 
 
+def cmd_alert_digest_account(args) -> int:
+    """§Q2. The deltas this pass declined to put in front of anybody.
+
+    The companion of `alert digest-record`, and the reason the delivery ledger
+    is maintained on a tick where nothing was sent. `record` says what the
+    transport did with the rows a card carried; this says what the pass looked
+    at and deliberately left off, with the sentence that explains it. Without
+    it the cursor only ever moves on DELIVERED, so `deltas` re-derives the same
+    rows as NEW on every pass — the classification was never wrong, and the
+    document it reads was never maintained.
+
+    `--still-owed` is required and has no default. Only the caller knows
+    whether the rows the card would have carried are still owed to somebody:
+    `none` for a pass that decided not to send at all, `shown` for one whose
+    card went out or whose send failed and will be retried. A default here
+    would be this command guessing at a message lifecycle it does not own.
+    """
+    try:
+        document = json.loads(Path(args.digest_file).read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        sys.stderr.write(f"serverosctl: --digest-file could not be read "
+                         f"({type(exc).__name__}: {exc})\n")
+        return EXIT_FAULT
+    if not isinstance(document, dict) or not isinstance(document.get("rows"), list):
+        sys.stderr.write(
+            "serverosctl: --digest-file is not a digest document — it has no "
+            "`rows`. Nothing was accounted for: the rows to account for are "
+            "the ones the document that composed them listed, and a list "
+            "supplied any other way describes a pass this node never ran.\n")
+        return EXIT_FAULT
+    if args.still_owed == "shown":
+        owed = document.get("shown_keys")
+        if not isinstance(owed, list):
+            sys.stderr.write(
+                "serverosctl: --still-owed shown was asked for and the document "
+                "carries no `shown_keys` list, so which rows are still owed "
+                "cannot be read from it. Nothing was accounted for.\n")
+            return EXIT_FAULT
+    else:
+        owed = []
+    params = {"digest": document, "owed": owed, "why": args.why}
+    payload, code = _digest_answer("alert.digest-account", params)
+    if code != EXIT_OK:
+        return code
+    lines = [f"本次组成    {len(document.get('rows') or [])} 条 delta",
+             f"仍在欠账    {len(owed)} 条（本批不记账，留给下一次）",
+             f"已落账      {payload.get('accounted_keys')} 条",
+             f"理由        {args.why}"]
+    immediate = payload.get("unaccounted_immediate") or []
+    if immediate:
+        lines.append("")
+        lines.append(f"未落账      {len(immediate)} 条 —— 它们被声明为值得打断"
+                     f"某人，而卡面没有承载它们。把这类行记账，等于把一条"
+                     f"本该说出口的发现标成已处理，所以拒绝并在此报出：")
+        for row in immediate[:10]:
+            lines.append(f"  {row.get('kind'):<9} {row.get('severity'):<8} "
+                         f"`{row.get('code')}`")
+        lines.append("            这是 admission 契约把一条它自己判定为"
+                     "可执行的行漏出了卡面，不是常态")
+    lines.append("")
+    lines.append(payload.get("note") or "")
+    emit(payload, as_json=args.json, lines=lines)
+    return EXIT_OK
+
+
 def cmd_alert_digest_record(args) -> int:
     """§Q2. What the transport did with the digest it was handed.
 
@@ -5263,14 +5444,23 @@ def _card_common(args) -> tuple[dict, str, str]:
             node_label=getattr(args, "device_ref", "") or None, binding=binding,
             calendar=source.load_calendar(
                 getattr(args, "business_calendar", "") or None),
-            day=source.load_day_store(getattr(args, "day_store", "") or None))
+            day=source.load_day_store(getattr(args, "day_store", "") or None),
+            # §3.4's fourth block, read the same way the other three are: the
+            # command is asked (`serverosctl alert current`) and its answer is
+            # handed to the model. It is a fourth read on this path, and the one
+            # this block exists for — without it the block renders 无法确认 on
+            # every card and the whole dashboard goes grey over a register that
+            # was there all along. A read that fails comes back as a reading
+            # that says so (`load_problems`), never as an empty one.
+            problems=source.load_problems(at=at))
         model = presentation.status_model(snapshot, at=at, binding=binding,
                                           sample=bool(args.sample))
-        caption = ("status card — three blocks and the line above them. "
+        caption = ("status card — four blocks and the line above them. "
                    "The gateway block is UNBOUND unless a service binding names it; "
                    "the schedule line is calendar=UNKNOWN until a business "
                    "calendar is imported; the day line names today's card and "
-                   "folds the hours it has already reported")
+                   "folds the hours it has already reported; the problems block "
+                   "reads the register and is 无法确认 when it cannot be read")
     else:
         document = _read_card_document(args)
         if isinstance(document, tuple):
@@ -5411,6 +5601,90 @@ def _card_delivery():
                              "serveros_runtime_card_delivery")
 
 
+def _monitoring_policy():
+    """The interaction policy, loaded the way the card modules are.
+
+    Not folded into `_card_modules`: that triple is what a RENDERER needs, and
+    the policy is what the SENDER needs. They are separate authorities — one
+    decides what a card looks like, this one decides whether a second message
+    about it is due — and a tuple holding both would invite a renderer to read
+    the cadence.
+    """
+    return _load_module_from(REPO_ROOT / "runtime" / "monitoring_policy.py",
+                             "serveros_runtime_monitoring_policy")
+
+
+def _notice_status_receipt() -> tuple[dict | None, dict, int]:
+    """What the ledger says became of the newest Status Card.
+
+    §7's precondition, read rather than assumed. A notice may be composed only
+    after the patch it follows has been DELIVERED, and the one document that
+    records what happened to a card is the delivery ledger.
+
+    `last` is the row to read — the newest `status` receipt, whatever state it
+    is in — because the question is «what did THIS tick's send do». A reader
+    that skipped to the newest DELIVERED row would be answering «did a status
+    card ever arrive» instead, and it would find the previous hour's card, call
+    it this hour's, and let a message about a patch that FAILED go out on the
+    strength of an older one. That is the whole shape of the defect §7 names,
+    so the two readers are deliberately different: `_notice_already_delivered`
+    takes the newest DELIVERED row of its own kind, and this takes the newest
+    row of ANY state.
+
+    An empty ledger returns `None` rather than a verdict, and the decision
+    module refuses on it: «nobody can say this card arrived» is not «this card
+    arrived». On a node whose ledger holds no `status` rows at all there is
+    nothing to check the notice's words against, and that is reported as the
+    refusal it is rather than as the silence it would look like.
+
+    The finding comes back from the same round trip and is not asked for again.
+    It is a second reading of the SAME row — `card_delivery.delivery_finding`
+    answers «was the reader told» where the receipt answers «what does the row
+    say» — and two calls would let a send land between them, so a refusal would
+    be justified by a row that no longer exists. One question, one answer.
+    """
+    payload, code = _card_answer("card.deliveries",
+                                 {"kind": _card_delivery().STATUS, "limit": 1})
+    if code != EXIT_OK:
+        return None, {}, code
+    row = payload.get("last") or {}
+    item = (payload.get("findings") or {}).get(_card_delivery().STATUS) or {}
+    return ((dict(row) if row else None),
+            (dict(item) if isinstance(item, dict) else {}), EXIT_OK)
+
+
+def _notice_already_delivered(key: str | None) -> tuple[bool, int]:
+    """Whether this tick's notice is already in the delivery ledger.
+
+    Asked rather than assumed, because per-tick idempotency cannot be left to
+    the far side: a timer that fires twice at 14:00 must produce one chat
+    message, and a node that only HOPES the service collapses two identical
+    sends has a duplicate waiting for the day the service changes. The ledger is
+    the one document that records what actually went out.
+
+    `last_delivered` is the right reader rather than «any receipt with this
+    key»: it is the most recent send that ARRIVED, and for a keyed hour that is
+    this hour's receipt whenever there is one. It skips FAILED rows, which is
+    the correct half to skip — a send that did not arrive is not a notice that
+    was given.
+
+    A ledger that cannot be READ returns the daemon's exit code rather than
+    `False`. «No notice went out» and «nobody can say» are different answers,
+    and returning the second as the first is how a duplicate is sent by the
+    command whose whole purpose is not to be one.
+    """
+    if not key:
+        # No tick to name — a non-workday, or a calendar that has not decided.
+        # There is nothing to dedupe, and `notice` says so in its own words.
+        return False, EXIT_OK
+    payload, code = _card_answer("card.deliveries",
+                                 {"kind": _card_delivery().NOTICE, "limit": 1})
+    if code != EXIT_OK:
+        return False, code
+    row = payload.get("last_delivered") or {}
+    return str(row.get("idempotency_key") or "") == key, EXIT_OK
+
+
 def _card_answer(method: str, params: dict) -> tuple[dict, int]:
     """One daemon call for the card receipt hop. Same reading as `_alert_answer`.
 
@@ -5493,6 +5767,21 @@ def cmd_card_deliveries(args) -> int:
                      + (f"  ·  {episode}" if episode else ""))
     if not rows:
         lines.append("  （没有记录：这个节点还没有投递过这种卡）")
+    # §7①. The receipt list above is the history; this is the one line a reader
+    # needs without reading the history — «was the reader told, on the most
+    # recent attempt». Printed for every kind that has a fault, and NOT printed
+    # for the kinds that have none: a row per kind saying «已送达» would be
+    # thirteen lines of green an hour, and the eye that skips them is the eye
+    # that skips the red one too.
+    findings = payload.get("findings") or {}
+    faults = [item for item in findings.values()
+              if isinstance(item, dict) and item.get("fault")]
+    if faults:
+        lines.append("投递发现")
+        for item in faults:
+            lines.append(f"  {item.get('kind'):<11} {item.get('finding')}  ·  "
+                         f"{item.get('state')}  ·  {item.get('version')}")
+            lines.append(f"    {item.get('says')}")
     emit(payload, as_json=args.json, lines=lines)
     return EXIT_OK
 
@@ -5687,6 +5976,337 @@ def cmd_card_day_announce(args) -> int:
                 "本命令只记下「哪条消息承载当天的卡」，不发送、不改动任何消息："
                 "从下一拍起，`card day` 的判决会变成 PATCH_MESSAGE，"
                 "而 patch 这个动作仍然由持有 transport 的那一侧执行。"])
+    return EXIT_OK
+
+
+def _day_created_at(day: dict, tick) -> bool:
+    """Whether the card today holds was BUILT at this tick.
+
+    Not `card_day.decide`'s answer, and the difference is the whole reason this
+    function exists. `decide` answers «what does this instant do to the card»,
+    and it is asked BEFORE the write — `card day-advance` asks it and then
+    writes. `card notice` runs after that write, so the same call would read the
+    day as already created, answer PATCH, and make the first hour of every
+    workday the one hour with two messages about it: the card arrives new and a
+    notice about it arrives beside it.
+
+    Asked of the document instead, where the answer does not depend on when the
+    question is asked: the card was built at this tick exactly when the hour it
+    holds is this tick's AND there is nothing folded under it. A card opened at
+    an earlier tick has folded hours, and one opened at this tick has none.
+
+    `tick` that is not an integer is `False` rather than a comparison: a
+    calendar that has not decided what day it is leaves no tick, and `None ==
+    None` on two absences would read «no card, no tick» as «the card was built
+    now».
+    """
+    if not isinstance(tick, int) or isinstance(tick, bool):
+        return False
+    return (not (day.get("history") or [])
+            and (day.get("latest") or {}).get("tick") == tick)
+
+
+def cmd_card_notice(args) -> int:
+    """§Q2. Whether this tick gets a Status Update Notice, and the words for it.
+
+    It exists because of one measured fact: A PATCHED MESSAGE RAISES NO
+    NOTIFICATION. Through 2026-09-30 the day's card was patched on the hour,
+    every patch was delivered, and the phone stayed silent the whole time — from
+    the phone, an updated card and a monitor that died at 08:00 are the same
+    thing. So a day gets one CARD and as many light messages as its hours need,
+    which is the distinction the old rule did not have.
+
+    The notice is NOT a second status card, and two things keep it from becoming
+    one: it names the version of the card it is about, and it QUOTES that card's
+    own row field for field instead of deciding anything. Both are structural —
+    `monitoring_policy.notice` refuses a notice that cannot name a version, and
+    the row it carries is the one `card day-advance` folded, read back from the
+    store rather than rendered a second time.
+
+    NOTHING HERE SENDS, and the order that must not be got wrong — `PATCH
+    DELIVERED`, and only then this notice — is READ rather than restated: this
+    asks the delivery ledger what became of the newest status card and hands the
+    answer to `monitoring_policy.notice`, which refuses to answer «due» for a
+    card that did not arrive or arrived as a different version. So the order is
+    enforced where the decision is made and not in a docstring here, and a
+    caller that reads the answer cannot get a `due: true` out of a failed patch.
+
+    What is left over is the caller that never asks. Nothing here can stop a
+    sender that ignores this command, and that residue is stated rather than
+    papered over: the enforcement is that no message can be composed through
+    this path for a card that did not arrive. A patch that FAILED or is UNKNOWN
+    produces a delivery incident instead — never a message telling a person the
+    update succeeded.
+    """
+    policy = _monitoring_policy()
+    module = _card_day_module()
+    source, _presentation, cards = _card_modules()
+    at = getattr(args, "at", "") or _card_clock()
+    device_ref = getattr(args, "device_ref", "") or ""
+    try:
+        store = _day_store(module, args)
+        schedule = source.business_calendar.routine_window(
+            at, reading=source.load_calendar(
+                getattr(args, "business_calendar", "") or None))
+    except module.CardDayError as exc:
+        sys.stderr.write(f"serverosctl: {exc}\n")
+        return EXIT_FAULT
+    day = store.summary()
+    history = day.get("history") or []
+    try:
+        document = policy.load(getattr(args, "policy", "") or None)
+        # Composed here rather than inside `notice` because the ledger has to be
+        # asked about it BEFORE the decision is made: `notice` is told what has
+        # already gone out, and it cannot be told by a key it has not produced
+        # yet. `tick_key` is that one composition, shared by both.
+        key = policy.tick_key(device_ref, schedule)
+    except policy.MonitoringPolicyError as exc:
+        sys.stderr.write(f"serverosctl: {exc}\n")
+        return EXIT_FAULT
+    # The card first, the notice second, which is the order the two things
+    # happen in. Both are ledger reads and neither is affected by the other, so
+    # the ordering is about what a failure says: a ledger nobody can read
+    # refuses at the earlier question instead of after composing a key for a
+    # message that could not have been allowed anyway.
+    receipt, delivery, code = _notice_status_receipt()
+    if code != EXIT_OK:
+        return code
+    already, code = _notice_already_delivered(key)
+    if code != EXIT_OK:
+        return code
+    try:
+        decision = policy.notice(
+            policy=document, schedule=schedule, latest=day.get("latest"),
+            previous=history[-1] if history else None,
+            card_version=args.card_version, device_ref=device_ref, at=at,
+            created=_day_created_at(day, schedule.get("tick")),
+            already_delivered=already, status_receipt=receipt)
+    except policy.MonitoringPolicyError as exc:
+        sys.stderr.write(f"serverosctl: {exc}\n")
+        return EXIT_FAULT
+    latest = day.get("latest")
+    if decision["due"] and (day.get("day_ref") != schedule.get("day_ref")
+                            or (latest or {}).get("tick") != schedule.get("tick")):
+        # The notice points at a version and quotes the row of an hour. If the
+        # hour it names is not the hour the card holds, it would quote one hour
+        # while stamping itself with another — a message whose two halves came
+        # from two different ticks. Refused rather than sent with the mismatch
+        # smoothed over, and the fix is named because there is exactly one.
+        #
+        # The DAY is checked as well as the tick, and it is not a formality: a
+        # tick ordinal is the same number on every workday, so a store left over
+        # from yesterday would pass a tick-only test and have its 16:00 quoted
+        # as today's 16:00 — the same defect one day wide.
+        sys.stderr.write(
+            "serverosctl: 这一拍该提醒，但当天卡里没有这一小时的读数——"
+            f"卡上是 {day.get('day_ref') or '（没有日期）'} 的第 "
+            f"{(latest or {}).get('tick')} 个时点，这一拍是 "
+            f"{schedule.get('day_ref') or '（没有日期）'} 的第 "
+            f"{schedule.get('tick')} 个。提醒讲的就是卡上那一行：没有那一行，"
+            "它就只能拿别的小时（或别的日子）冒充这一小时。先让 `card "
+            "day-advance` 把这一小时写进当天的卡。\n")
+        return EXIT_FAULT
+    text = (cards.notice_text(decision,
+                              node_label=policy.short_device(device_ref))
+            if decision["due"] else "")
+    # Both halves are read from the SCHEDULE and not from the decision's own
+    # `hhmm`, which is the hour of the row the card holds. The two agree on
+    # every tick that got this far, and the one place they did not — the
+    # mismatch refused above — read as 「17:00 · 第 9/13 小时」, a coherent
+    # sentence about an hour that does not exist. A question about this tick is
+    # answered from this tick's calendar, and the card's own hour is printed
+    # beside it as what it is.
+    tick, total = decision.get("tick"), decision.get("ticks_per_workday")
+    row_hhmm = (latest or {}).get("hhmm")
+    lines = [f"决定        {'发' if decision['due'] else '不发'}"
+             f"/{decision['reason']}",
+             f"那一拍      {decision.get('day_ref') or '（没有可命名的工作日）'}"
+             f" · {module.hhmm_of(schedule) or '（不在窗口内）'}"
+             + (f" · 第 {tick}/{total} 小时"
+                if isinstance(tick, int) and isinstance(total, int) else ""),
+             "卡上那一行  " + (
+                 " · ".join(part for part in (
+                     row_hhmm, str(latest.get("verdict") or "").strip(),
+                     str(latest.get("observation") or "").strip()) if part)
+                 if latest else "（当天卡里还没有读数）"),
+             f"所引卡片    {decision.get('card_version') or '（没有）'}",
+             # What the notice's claim was checked against. Printed on every
+             # answer and not only on the refusals: a message that was allowed
+             # to go out is a message somebody may later have to justify, and
+             # the pair it was cleared by is the justification.
+             "卡的回执    " + (
+                 f"{receipt.get('state') or '（没有状态）'} · "
+                 f"{receipt.get('version') or '（没有版本）'}"
+                 if receipt else "（台账里没有 status 回执）"),
+             # §7①'s finding, on the line under the receipt it was read from,
+             # and only when it is a FAULT. A `DELIVERY_NOT_ATTEMPTED` here is
+             # the ordinary shape of an hour whose card has not been sent yet,
+             # and saying so every hour would make this line noise; what it must
+             # never do is be silent when a send was attempted and did not
+             # arrive, because that is the case a person has to act on.
+             *(["投递发现    " + f"{delivery['finding']}  ·  {delivery['says']}"]
+               if delivery.get("fault") else []),
+             f"去重身份    {decision.get('idempotency_key') or '（没有：这一拍没有可命名的时点）'}",
+             f"桶 / 提醒   {(decision.get('bucket') or '—'):<14} / "
+             f"{decision.get('prompt') or 'none'}",
+             "",
+             decision["says"]]
+    if decision["due"]:
+        lines += ["", text]
+    lines += ["",
+              "本命令不写任何东西，也不发送任何东西：它回答的是这一拍要不要发一条"
+              "轻量提醒，以及发出去会是什么字。发送与回执由持有 transport 的那"
+              "一侧负责。顺序 PATCH DELIVERED → 这条提醒不是靠这句话维持的："
+              "本命令先读投递台账里最新一条 status 回执，卡片没有到达（或到达的"
+              "不是这一版）时给不出「发」，理由就是 "
+              # Interpolated rather than typed out: a paragraph that spelled the
+              # two reason names by hand would be a third copy of a closed set,
+              # and the copy that drifts is the one nobody re-reads.
+              f"{policy.CARD_NOT_DELIVERED} / {policy.CARD_VERSION_NOT_DELIVERED}；"
+              "那两种情况下要处理的是投递失败，而不是发一条提醒。"]
+    payload = {"schema": policy.SCHEMA, "at": at, "store": str(store.path),
+               "schedule": schedule, "day": day, "card_version": args.card_version,
+               "status_receipt": receipt, "delivery_finding": delivery,
+               "already_delivered": already, "decision": decision, "text": text}
+    if getattr(args, "with_frozen", False):
+        # The same envelope every other kind sends, and the same rule about the
+        # default: absent unless asked for, because the JSON a sender already
+        # consumes is the decision itself. Reusing `{card, frozen}` rather than
+        # inventing `{notice, frozen}` is what lets `card record-delivery
+        # --kind notice` work without a second envelope reader — one transport,
+        # one receipt shape, one refuser.
+        #
+        # `text` is folded INTO the hashed payload rather than left beside it:
+        # what goes to a chat is the words, so the version a receipt names has
+        # to cover the words and not merely the decision behind them.
+        notice = _card_delivery()
+        if not decision["due"]:
+            sys.stderr.write(
+                f"serverosctl: 这一拍不提醒（{decision['reason']}："
+                f"{decision['says']}），因此没有可冻结的提醒——一个不会发出去的"
+                f"东西的版本是空版本，而按它记下的回执会让下一拍读成「已经提醒"
+                f"过了」。\n")
+            return EXIT_FAULT
+        payload = {"card": dict(decision, text=text),
+                   "frozen": notice.freeze_card(
+                       notice.NOTICE, dict(decision, text=text), at=at,
+                       idempotency_key=decision.get("idempotency_key") or None)}
+        lines.append(f"版本        {payload['frozen']['version']} "
+                     f"({payload['frozen']['payload_bytes']} 字节)")
+    emit(payload, as_json=getattr(args, "json", False), lines=lines)
+    return EXIT_OK
+
+
+def cmd_card_fault(args) -> int:
+    """§7①. What the reader is told when the card did not arrive.
+
+    THE REFUSAL AND THE MESSAGE ARE ONE DECISION
+
+    `card notice` refuses to compose «当天卡已更新» for a patch that FAILED, and
+    that refusal is correct and incomplete: it leaves the reader with no message
+    at all, which is the state the notice was invented to end. What §7① asks for
+    is the other half — the failure should become something a person is told —
+    and this is the only thing that composes it.
+
+    THE FINDING IS READ, NOT RE-DERIVED
+
+    The state, the version and the instant all come out of
+    `card_delivery.delivery_finding`, which is a reading of the ledger's newest
+    status receipt. Nothing here re-decides whether the send failed: a second
+    opinion about that would be a second answer to «was the reader told», and
+    the one a person can check against the ledger is the one that should win.
+
+    WHAT IT ASKS OF THE TRANSPORT, AND WHY THAT IS «nothing»
+
+    The bucket is ACTION_REQUIRED — a card that did not arrive stays not-arrived
+    until somebody looks — and the prompt is `none`. Neither word is written
+    here: `monitoring_policy.fault_notice` reads the pair out of the policy
+    document, which is the only place a bucket or a prompt is spelled, and this
+    command used to spell both. The prompt is `none` and not `urgent_app`
+    because `urgent_app` rides the SAME transport whose last status send is what
+    the finding reports as failed: a buzz the transport cannot carry reaches
+    nobody, and a buzz it can carry means the first message would have arrived.
+    So the one escalation that could help is not available here, and asking for
+    it would only make the policy look braver than the path is. `prompt_for` is
+    deliberately not used — it answers per bucket for a NOTICE, and this path's
+    request is a fact about the transport rather than about the reader.
+
+    NOTHING HERE SENDS, and nothing here writes. The send and the receipt are
+    the transport's, and the receipt exists so that a re-run of the SAME failed
+    attempt is a duplicate rather than a second alarm.
+    """
+    policy = _monitoring_policy()
+    _source, _presentation, cards = _card_modules()
+    at = getattr(args, "at", "") or _card_clock()
+    device_ref = getattr(args, "device_ref", "") or ""
+    receipt, finding, code = _notice_status_receipt()
+    if code != EXIT_OK:
+        return code
+    due = bool(finding.get("fault"))
+    text = ""
+    key = ""
+    # The bucket, the prompt and the dedupe key all come out of the policy
+    # document, read the same way `card notice` reads it. `None` is the answer
+    # for a tick that sends nothing: a bucket word about a message that will
+    # not exist is a field filled with something plausible, which reads exactly
+    # like a decision somebody made.
+    fault = {"bucket": None, "prompt": None}
+    if due:
+        try:
+            document = policy.load(getattr(args, "policy", "") or None)
+            key = policy.fault_key(device_ref, finding.get("at"))
+            text = cards.fault_text(finding,
+                                    node_label=policy.short_device(device_ref))
+            fault = policy.fault_notice(document)
+        except (policy.MonitoringPolicyError,
+                _presentation.PresentationError) as exc:
+            sys.stderr.write(f"serverosctl: {exc}\n")
+            return EXIT_FAULT
+    decision = {"due": due,
+                "reason": finding.get("finding") or "NO_RECEIPT",
+                "says": finding.get("says"),
+                "bucket": fault["bucket"],
+                "prompt": fault["prompt"],
+                "idempotency_key": key or None,
+                "card_version": finding.get("version")}
+    lines = [f"决定        {'发' if due else '不发'}/{decision['reason']}",
+             "卡的回执    " + (
+                 f"{receipt.get('state') or '（没有状态）'} · "
+                 f"{receipt.get('version') or '（没有版本）'}"
+                 if receipt else "（台账里没有 status 回执）"),
+             f"去重身份    {key or '（没有：这一拍没有可命名的失败）'}",
+             (f"桶 / 提醒   {decision['bucket']:<14} / {decision['prompt']}"
+              if due else
+              "桶 / 提醒   （不发：没有消息，也就没有要问 transport 的东西）"),
+             "",
+             decision["says"] or "（没有可说的话）"]
+    if due:
+        lines += ["", text]
+    lines += ["",
+              "本命令不写任何东西，也不发送任何东西：它回答的是「卡没送到时对人"
+              "说什么」。发送与回执由持有 transport 的那一侧负责，用 "
+              "`card record-delivery --kind fault` 记回执。",
+              "它不引用任何读数：读者缺的正是那一版卡，把数字再抄一遍就是把"
+              "一张没有到达的卡另写一份。"]
+    payload = {"schema": policy.SCHEMA, "at": at, "device_ref": device_ref,
+               "status_receipt": receipt, "delivery_finding": finding,
+               "decision": decision, "text": text}
+    if getattr(args, "with_frozen", False):
+        delivery = _card_delivery()
+        if not due:
+            sys.stderr.write(
+                f"serverosctl: 这一拍没有投递失败（{decision['reason']}："
+                f"{decision['says']}），因此没有可冻结的东西——一个不会发出去的"
+                f"东西的版本是空版本，而按它记下的回执会让下一拍读成「已经说过"
+                f"了」。\n")
+            return EXIT_FAULT
+        payload = {"card": dict(decision, text=text),
+                   "frozen": delivery.freeze_card(
+                       delivery.FAULT, dict(decision, text=text), at=at,
+                       idempotency_key=key or None)}
+        lines.append(f"版本        {payload['frozen']['version']} "
+                     f"({payload['frozen']['payload_bytes']} 字节)")
+    emit(payload, as_json=getattr(args, "json", False), lines=lines)
     return EXIT_OK
 
 
@@ -11818,6 +12438,74 @@ def build_parser() -> argparse.ArgumentParser:
              "measured from this value")
     card_ann.set_defaults(func=cmd_card_day_announce)
 
+    # §Q2's other half. Separate from `card day` for the reason that command's
+    # split already states — a reader that could also send is a reader whose
+    # reading is an act nobody recorded — and separate from `record-delivery`
+    # because it happens BEFORE the send: it decides whether there is one.
+    card_notice = card_sub.add_parser(
+        "notice",
+        help="这一拍要不要发一条 Status Update Notice（轻量新消息），以及"
+             "发出去会是什么字。它引用卡片的 version 并逐字引用那一小时的读数，"
+             "自己什么都不决定。只读；不发送、不落盘",
+        **_COMMON)
+    card_notice.add_argument(
+        "--card-version", required=True, metavar="VERSION",
+        help="刚刚 PATCH 出去的那一版卡片（`card status --with-frozen` 的 "
+             "`version`）。必填而不是可省：一条不指名版本的提醒就是第二张状态卡——"
+             "它说的话没有任何东西可以核对")
+    card_notice.add_argument(
+        "--device-ref", required=True, metavar="REF",
+        help="这一拍是哪台设备的，例如 device:tokyo-shared-dev-01。必填，因为"
+             "去重身份里含设备名：没有设备名的身份会让两台机器的同一小时撞成"
+             "同一条")
+    card_notice.add_argument(
+        "--policy", default="", metavar="PATH",
+        help="监控交互政策（默认 runtime/monitoring-policy.yaml）。它回答"
+             "「每次更新是否提醒」与提醒的分级，而不是写在发送脚本里的一个分支")
+    card_notice.add_argument(
+        "--business-calendar", default="", metavar="PATH",
+        help="工作日历，与 `card day` 同一份（默认 "
+             "~/.serveros/business-calendar.yaml）：这一拍在不在窗口内由它回答")
+    card_notice.add_argument(
+        "--day-store", default="", metavar="PATH",
+        help="当天卡与它折叠过的小时（默认 state root 的 "
+             "`runtime/cards/day.json`）。提醒引用的是卡上那一行，所以它读的是"
+             "这份文档，而不是重新渲染一次")
+    card_notice.add_argument("--at", default="", help="override the instant")
+    card_notice.add_argument(
+        "--with-frozen", action="store_true",
+        help="emit {card, frozen} instead of the decision, where `frozen` names "
+             "the version of these words. Pair it with `card record-delivery "
+             "--kind notice` after the send, which is what makes the next "
+             "firing of the same hour find «already announced» instead of "
+             "sending a second one")
+    card_notice.set_defaults(func=cmd_card_notice)
+
+    # §7①'s OTHER half. The notice answers «may I say the update succeeded» and
+    # the answer for a failed patch is no; this answers the question that
+    # refusal leaves open, which is «then what does the reader get». Nothing
+    # else composes it, because a fault message assembled in the sender would be
+    # a second place the vocabulary of «did it arrive» lives.
+    card_fault = card_sub.add_parser(
+        "fault",
+        help="一张卡没有送达时，要对人说什么 —— 从投递台账里最新一条 status 回执"
+             "读出投递 finding，组成一条消息（三行，不引用任何读数）。只读；"
+             "不发送、不落盘",
+        **_COMMON)
+    card_fault.add_argument(
+        "--device-ref", required=True, metavar="REF",
+        help="哪台设备的，例如 device:tokyo-shared-dev-01。必填：去重身份里含"
+             "设备名，没有设备名的身份会让两台机器的同一次失败撞成一条")
+    card_fault.add_argument(
+        "--at", default="", help="override the instant")
+    card_fault.add_argument(
+        "--with-frozen", action="store_true",
+        help="emit {card, frozen} instead of the decision, where `frozen` names "
+             "the version of these words. Pair it with `card record-delivery "
+             "--kind fault` after the send, so a re-run of the same failed "
+             "attempt finds «already said» instead of saying it twice")
+    card_fault.set_defaults(func=cmd_card_fault)
+
     registration = sub.add_parser(
         "registration", help="the loop from 'something is running' to a "
                              "registration a person authorized. Nothing here "
@@ -11896,6 +12584,12 @@ def build_parser() -> argparse.ArgumentParser:
                      "repeat yet, not a closed one", **_COMMON)
     al_list.set_defaults(func=cmd_alert_list)
 
+    al_current = alert_sub.add_parser(
+        "current", help="§3.4 · what is wrong NOW, graded by the contract's "
+                        "attention axis: the register itself, and not the "
+                        "changes since a person was last told", **_COMMON)
+    al_current.set_defaults(func=cmd_alert_current)
+
     al_inspect = alert_sub.add_parser(
         "inspect", help="one alert, plus the sentence a person would have "
                         "been sent", **_COMMON)
@@ -11957,6 +12651,28 @@ def build_parser() -> argparse.ArgumentParser:
                                     "its `shown` rows are what the card carried")
     al_digest_rec.add_argument("--reason")
     al_digest_rec.set_defaults(func=cmd_alert_digest_record)
+
+    al_digest_acc = alert_sub.add_parser(
+        "digest-account",
+        help="§Q2 · record the deltas this pass declined to carry, and why. "
+             "The other half of `digest-record`: without it a declined row is "
+             "re-derived as NEW on every pass forever", **_COMMON)
+    al_digest_acc.add_argument(
+        "--digest-file", required=True,
+        help="the document `alert digest --json` printed. Its `rows` are what "
+             "this pass composed and its `shown_keys` are the ones that fit")
+    al_digest_acc.add_argument(
+        "--still-owed", required=True, choices=["shown", "none"],
+        help="which keys this pass is still OWED to somebody. `none` when the "
+             "decision was not to send at all; `shown` when a card went out, or "
+             "a send failed and will be retried. Required with no default: only "
+             "the caller knows its own message lifecycle")
+    al_digest_acc.add_argument(
+        "--why", required=True,
+        help="why nobody was told. Required, and it is stored on every key this "
+             "accounts for — a row accounted for without a sentence is the "
+             "silent drop this verb exists to make impossible")
+    al_digest_acc.set_defaults(func=cmd_alert_digest_account)
 
     requirement = sub.add_parser(
         "requirement",

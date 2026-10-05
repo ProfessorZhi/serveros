@@ -1,0 +1,142 @@
+# How often ServerOS says something, and how loudly.
+#
+# §10 splits the two halves of telling somebody: ServerOS decides what happened,
+# the transport decides how it arrives. This file is the third thing that split
+# needs and neither half owns — **whether saying it is due at all**. Before this
+# document the answer lived in the sender: `ops/scripts/tokyo-monitor/
+# monitor_card.py` decided when to call `send`, and a decision made inside a
+# script is a decision no other consumer can be held to and no reader can look
+# up. A CLI preview and the live Feishu card agreed only because they happened
+# to run the same file.
+#
+# What this document changed, and it is a product constraint rather than a
+# wording fix: **one card per day is not one message per day.**
+#
+# The old rule was «当天只维护一张 Status Card，之后每小时只 PATCH，不新增聊天
+# 记录», and it was written as an invariant because a second card would be a
+# second answer to «现在怎么样». That part is right and stays. What it got wrong
+# is what a PATCH costs the reader: **a patched message does not raise a new
+# notification.** Seven updates between 08:00 and 14:00 on 2026-09-30 arrived in
+# the chat exactly as silently as no updates at all, which is the one failure a
+# monitoring card cannot have — the card was correct the whole time and nobody
+# was told. So the day's card stays one message that is patched, and the telling
+# becomes its own object with its own identity, its own cadence and no state of
+# its own.
+#
+#   Status Card          one per workday, patched hourly, the authoritative
+#                        human view of the state
+#   Status Update Notice a short NEW message after a PATCH has been DELIVERED,
+#                        which points at a card version and carries none of it
+#
+# The notice is not a second status card because it cannot be read as one: it
+# has no state, and `card notice` refuses to compose one that does not name the
+# card version it is about. A notice that owns a fact is a card; a card whose
+# cadence is hourly is the thing this file exists to keep singular.
+#
+# «after a PATCH has been DELIVERED» is enforced and not merely written here.
+# `card notice` reads the newest `status` receipt out of the delivery ledger and
+# hands it to `monitoring_policy.notice`, which refuses to answer `due` unless
+# that receipt is DELIVERED and carries the version the notice names — the
+# notice's own line is «当天卡已更新 · <version>», and a notice that says so
+# about a card that never arrived is a false statement about the reader's chat.
+# A patch that FAILED or is UNKNOWN therefore produces a refusal here, and what
+# belongs in the chat for it is a delivery incident, not a notice.
+schema: serveros/monitoring-policy/v1
+module: runtime/monitoring_policy.py
+
+status_card:
+  # 每小时一次，窗口 08:00–20:00 含两端. The number is NOT repeated here —
+  # `business_calendar.ROUTINE_UPDATES_PER_WORKDAY` computes it from the window
+  # and this word is checked against that one, because a cadence written down in
+  # two places disagrees with itself the first time the window moves.
+  cadence: hourly
+  # The invariant that survives unchanged, and the reason the notice can exist
+  # at all: the notice is safe precisely because this half did not move.
+  persistent_card: one-per-workday
+
+notification:
+  # What happens at the two moments a Status Card changes.
+  #
+  # CREATE is the day's first tick. The card message itself arrives as a new
+  # message, so it already raised the notification a notice would only repeat:
+  # 08:00 needs no notice and sending one would make the first hour the one hour
+  # with two messages about it.
+  on_create: card-message
+  # Every tick after it. This is the whole point of the document.
+  on_patch: lightweight-notice
+
+  # When a notice is due after a delivered patch.
+  #
+  #   always          every delivered patch gets a notice
+  #   changes-only    only when this tick's state differs from the previous
+  #                   tick's — the reading, not the numbers
+  #   attention-only  only when this tick has something a person should look at
+  #
+  # `always` is the default and the choice is deliberate rather than lazy. The
+  # other two are quieter by exactly the amount that makes them fail silently:
+  # on 2026-09-30 nothing changed and nothing needed attention for seven hours,
+  # and under either of them the reader would have received nothing — which is
+  # indistinguishable, from the phone, from a monitor that had died. A heartbeat
+  # whose absence is ambiguous is not a heartbeat. The quieter modes remain
+  # available for a node whose reader has asked for quiet; they are not the
+  # default and the reason is written here rather than in a sender.
+  mode: always
+  # Closed, for the same reason every vocabulary in this tree is: a caller that
+  # can pass a fourth spelling of "quieter" is a caller whose setting silently
+  # does nothing.
+  modes:
+    - always
+    - changes-only
+    - attention-only
+
+  # What the notice may ASK of the transport, per attention bucket.
+  #
+  # Feishu has `urgent_app`, which buzzes the phone. The honest use of it is
+  # rare and this mapping is the whole policy: a routine hourly heartbeat must
+  # never buzz. Thirteen buzzes a workday — before anything is actually wrong —
+  # trains the reader to silence the thing that exists to reach them, and every
+  # later ACTION_REQUIRED pays for it. So ROUTINE and ATTENTION ride as ordinary
+  # messages (ATTENTION merely carries the ⚠ that says which block to open),
+  # and only ACTION_REQUIRED — something is stopped and will stay stopped until
+  # a person acts — may escalate.
+  #
+  # This axis is `prompt`, and it is NOT severity: severity is a property of the
+  # finding and lives in the alert layer. A finding can be severe and routine
+  # (a watermark nobody needs to act on) and a routine-looking one can stop a
+  # service. Keeping them apart here is what makes «should this buzz» answerable
+  # by the policy instead of by whoever wrote the sender.
+  prompt:
+    ROUTINE: none
+    ATTENTION: none
+    ACTION_REQUIRED: urgent_app
+
+  # The one message that is not about what the card SAYS: the card did not
+  # arrive. Its bucket and its prompt are declared here for the same reason
+  # every other one is — a decision spelled inside a sender is a decision no
+  # other consumer can be held to and no reader can look up. `card fault` wrote
+  # both words itself until this block existed, which meant everything above
+  # could be read, edited and validated without the one path that actually
+  # escalates ever being consulted.
+  #
+  # IT ASKS FOR `none`, AND THAT IS NOT A QUIET UNDER-ESCALATION.
+  # `urgent_app` rides the same transport that carries the notice, and the
+  # finding that reaches this path says that transport's last status send did
+  # not arrive. Whether a buzz would get through is not a question this path
+  # can answer, so it does not ask: the bucket stays ACTION_REQUIRED, because
+  # «nobody is being told» stands until a person acts, and the prompt stays
+  # `none`, because the louder request is the one known to be in doubt. That
+  # is why this is a declaration of its own and not `prompt.ACTION_REQUIRED`
+  # read a second time — the two answer about different messages, and the
+  # difference is the transport's state rather than the reader's importance.
+  fault:
+    bucket: ACTION_REQUIRED
+    prompt: none
+
+incident:
+  # The incident half, which already behaved this way and is written down here
+  # so the two halves can be read side by side: an episode is announced when it
+  # opens, when it changes and when it recovers, and NOT per tick. One episode,
+  # one card, patched — `card incident` answers which message that is.
+  on_open: notify
+  on_change: notify
+  on_recovery: notify

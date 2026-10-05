@@ -52,6 +52,27 @@ class DaemonUnavailable(Exception):
     """The control plane did not answer. Refused, not approximated."""
 
 
+class DaemonBusy(DaemonUnavailable):
+    """The control plane was reached and is working, and did not get to this.
+
+    A DIFFERENT FACT FROM `DaemonUnavailable`, in the same way `DaemonRefused`
+    below is. `serverosd` serves requests on the same single thread that runs its
+    once-a-minute tick (`daemon.serve_forever`: "deliberately single-threaded and
+    deadline-driven… requests are served between ticks, on the same thread"), and
+    on 2026-10-04 that tick took 4.964 s as the daemon itself records it. A
+    request arriving mid-tick is ACCEPTED — measured over 1,624 probes that day,
+    `connect` never once took above 0.000 s and never errored — and answered when
+    the tick ends.
+
+    So a timeout here does not mean "no reading". It means there is a reading,
+    the runtime is up, and this caller stopped listening for it. Collapsing the
+    two into one word is how a busy daemon becomes a missing measurement, and a
+    missing measurement is what a status card renders as a gap. This class lets a
+    caller tell them apart; it does not itself retry, and nothing below catching
+    it differently yet.
+    """
+
+
 class DaemonRefused(DaemonUnavailable):
     """The control plane answered, and the answer was no.
 
@@ -685,7 +706,22 @@ class DaemonClient:
                 if not chunk:
                     break
                 buffer += chunk
-        except (OSError, socket.timeout) as exc:
+        except socket.timeout as exc:
+            # Caught BEFORE the `OSError` clause, because `socket.timeout` is one
+            # (`TimeoutError` since 3.10). Written the other way round — as this
+            # was — a tick that ran long and a daemon that was not there produce
+            # the same sentence, and the sentence says "did not answer", which a
+            # reader takes as absence.
+            raise DaemonBusy(
+                f"serverosd did not answer {method!r} on {self.socket_path} "
+                f"within {self.timeout:.0f}s. It is running its tick — "
+                f"`serverosd` serves on the same single thread that runs the "
+                f"tick, so a request arriving mid-tick waits for it — and this "
+                f"request is still queued on it. This is not a missing "
+                f"measurement. Retry, or read `observation.get` for the tick's "
+                f"own recorded duration."
+            ) from exc
+        except OSError as exc:
             raise DaemonUnavailable(
                 f"serverosd did not answer {method!r} on {self.socket_path}: "
                 f"{type(exc).__name__}: {exc}"
