@@ -89,6 +89,14 @@ lease_store_mod = _load("serveros_runtime_lease_store", "lease_store.py")
 EXIT_OK = 0
 EXIT_FAULT = 1
 EXIT_COULD_NOT_ANSWER = 2
+# A fourth outcome, and separate on purpose. A REFUSAL is not a fault: nothing
+# is wrong with the machine, the command understood the request and declined to
+# carry it out because carrying it out would have destroyed something. Folding
+# it into `EXIT_FAULT` would make "I refused to write" and "the authority is
+# unreachable" one exit status, which is the conflation every other distinction
+# on this surface exists to prevent — and the only command that returns it is
+# `ability refresh`, whose whole point is that it writes nothing in that case.
+EXIT_REFUSED = 3
 
 FAULT_STATES = frozenset(
     {"FUNCTIONALLY_FAILED", "NOT_RUNNING", "DEGRADED", "NOT_READY"}
@@ -2230,7 +2238,17 @@ def cmd_ability_refresh(args) -> int:
       * `abilities: []` with `registry_status: FRESH` is a real and dangerous
         answer — it means the manifest was read and this node matched nothing
         in it. That is what a missing `legacy_ids` entry looks like. It is
-        called out below rather than printed as an empty table.
+        therefore never written by accident: a zero match REFUSES, writes
+        nothing, and exits non-zero unless `--allow-empty` states that the
+        empty answer was the question. Until 2026-10-05 this command wrote it
+        unasked, which is how a mistyped `--device-id` erased eighteen
+        abilities and reported success.
+
+      * The ids are matched in the vocabulary the authority speaks. ServerOS
+        spells a device `device:<id>` and the manifest records the bare id, so
+        a leading `device:` is stripped before matching — and the stripping is
+        printed rather than done silently, because a normalization nobody can
+        see is the same class of silence this command was just repaired for.
     """
     projection_mod = _load_module_from(REPO_ROOT / "runtime" / "ability_projection.py",
                                        "serveros_ability_projection")
@@ -2242,7 +2260,30 @@ def cmd_ability_refresh(args) -> int:
     state_root = paths_mod.Paths().root("state")
     try:
         document = projection_mod.refresh(
-            args.ability_repo, args.ability_rev, tuple(args.device_id), state_root)
+            args.ability_repo, args.ability_rev, tuple(args.device_id), state_root,
+            allow_empty=args.allow_empty)
+    except projection_mod.NoInstallationMatched as exc:
+        # REFUSED, and NOTHING was written — the projection and the catalogue
+        # are both exactly as they were. Two things are printed and they answer
+        # two different questions: which ids the manifest actually names, so a
+        # typo is visible rather than guessed at, and why a zero match is not
+        # written down as an answer.
+        sys.stderr.write(
+            "REFUSED     no installation in the manifest names this device\n"
+            f"asked       {', '.join(exc.asked) or '(nothing)'}\n")
+        if exc.normalized != exc.asked:
+            sys.stderr.write(f"normalized  {', '.join(exc.normalized)}\n")
+        sys.stderr.write(
+            f"manifest    {', '.join(exc.manifest_device_ids) or 'nothing'}"
+            f"   ({exc.records} records, none on this device)\n")
+        sys.stderr.write(textwrap.fill(
+            "Nothing was written: the projection and the catalogue are exactly "
+            "as they were. A projection that answers FRESH with no abilities "
+            "claims this node has none, and a zero match does not support that "
+            "claim — it is equally what a mistyped id looks like. If an empty "
+            "projection is what you intend, say so with --allow-empty.",
+            74, initial_indent="            ", subsequent_indent="            ") + "\n")
+        return EXIT_REFUSED
     except OSError as exc:
         sys.stderr.write(f"serverosctl: cannot write the projection: {exc}\n")
         return EXIT_COULD_NOT_ANSWER
@@ -2275,14 +2316,16 @@ def cmd_ability_refresh(args) -> int:
         lines.append(f"unreachable {document.get('unreachable_reason')}")
         lines.append(document.get("note", ""))
     elif not abilities:
-        # FRESH and empty is not "nothing is installed" in general — it is
-        # "nothing in the manifest is installed on the ids I matched", and the
-        # usual cause is one this command can name.
+        # Reachable only under `--allow-empty`: every other zero match was
+        # refused above and wrote nothing. So this is not a warning about a
+        # probable mistake — the operator has already said the empty answer was
+        # the question — it is a note on what an empty answer does and does not
+        # mean. FRESH and empty is not "nothing is installed" in general; it is
+        # "nothing in the manifest is installed on the ids I matched".
         lines.append(
-            "            the manifest was read and none of its installations "
-            "name this device. Check `--device-id`: a renamed device keeps its "
-            "historical id in the registry's `legacy_ids`, and matching only "
-            "the canonical one finds nothing and reports no error.")
+            "            an empty projection was asked for and written. It "
+            "means the manifest was read and none of its installations name "
+            "this device; it does not mean the abilities do not exist.")
     emit(document, as_json=args.json, lines=lines)
     # STALE is a fault the shell must be able to see without parsing text: the
     # command answered, and what it answered is that the authority is
@@ -11924,10 +11967,20 @@ def build_parser() -> argparse.ArgumentParser:
     ab_refresh.add_argument(
         "--device-id", action="append", required=True,
         help="an id that means THIS node — canonical first, then the registry's "
-             "`legacy_ids` for it. Repeatable, and repeat it: a renamed device "
-             "whose historical id is omitted matches nothing and reports no "
-             "error, because the manifest records installations under the id "
-             "in force when they happened")
+             "`legacy_ids` for it. Either spelling of each: the bare id the "
+             "manifest records (`x`) and the device ref ServerOS uses "
+             "(`device:x`) name one device, and a leading `device:` is "
+             "stripped before matching. Repeatable, and repeat it: a renamed "
+             "device whose historical id is omitted matches nothing, because "
+             "the manifest records installations under the id in force when "
+             "they happened")
+    ab_refresh.add_argument(
+        "--allow-empty", action="store_true",
+        help="write an empty projection when no installation names this device. "
+             "Off by default: a zero match is equally what a mistyped "
+             "`--device-id` looks like, and writing it would assert that this "
+             "node has no abilities. Pass it on a node that genuinely has none "
+             "— a node bootstrapping before its first installation")
     ab_refresh.set_defaults(func=cmd_ability_refresh)
 
     pack = sub.add_parser(

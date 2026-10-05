@@ -700,3 +700,136 @@ def test_the_row_shape_the_tree_consumes_carries_no_field_about_a_person():
         row = projection.tree_rows([{"name": "x", "id": "x", "domain": empty}])[0]
         assert row["primary"] is None
         assert row["refs"] == []
+
+
+# ---------------------------------------------------------------------------
+# §28 · a refresh that would speak for nobody is refused, not written
+# ---------------------------------------------------------------------------
+#
+# The failure these cover was destructive and it reported success. On
+# 2026-10-05 `serverosctl ability refresh --device-id
+# device:tokyo-shared-dev-01` matched nothing, wrote
+# `{"abilities": [], "registry_status": "FRESH"}` over a projection holding 18
+# abilities, and exited 0. Both halves of that are here: the id was spelled
+# with a prefix the manifest does not use, AND a zero match was written as an
+# answer rather than refused.
+#
+# The tests below are the two guards, and each has a control beside it — the
+# spelling test carries the raw comparison that produced the wipe, and the
+# refusal tests carry `allow_empty`, which is the old behaviour made explicit.
+
+
+def test_a_device_id_that_names_nothing_is_refused_instead_of_written(authority, tmp_path):
+    """"Found nothing" is not an answer about a device; it is a bad question.
+
+    A projection that says FRESH/[] is a claim that the authority was read and
+    this node has no abilities. A zero match cannot support that claim — it is
+    equally consistent with the authority having been read and the id having
+    named some other machine, and the second is what actually happened.
+    """
+    sha = authority.write(manifest(ability("session-manager", device_id="linux-server")))
+    state = tmp_path / "state"
+
+    with pytest.raises(projection.NoInstallationMatched) as raised:
+        projection.refresh(authority.repo, sha, ("tokyo-shared-dev-02",), state, now=NOW)
+
+    assert not (state / "abilities" / "effective.json").exists()
+    assert "tokyo-shared-dev-02" in str(raised.value)
+
+
+def test_a_refused_refresh_leaves_every_existing_artifact_byte_identical(authority, tmp_path):
+    """Both files, not just the projection.
+
+    The catalogue is written from the same read and shares `generated_at` and
+    `source_revision` with the projection, so that a half-completed write shows
+    up as the two drifting apart. Writing the catalogue alone would be exactly
+    that drift, produced on purpose, in the file whose comment says it exists to
+    make drift visible.
+    """
+    sha = authority.write(manifest(ability("session-manager", device_id="linux-server")))
+    state = tmp_path / "state"
+    projection.refresh(authority.repo, sha, DEVICE_IDS, state, now=NOW)
+    before = {p.name: p.read_bytes() for p in sorted((state / "abilities").iterdir())}
+    assert sorted(before) == ["catalogue.json", "effective.json"]
+
+    with pytest.raises(projection.NoInstallationMatched):
+        projection.refresh(authority.repo, sha, ("tokyo-shared-dev-02",), state,
+                           now=NOW + timedelta(days=1))
+
+    after = {p.name: p.read_bytes() for p in sorted((state / "abilities").iterdir())}
+    assert after == before
+
+
+def test_allow_empty_writes_the_empty_projection_it_was_asked_for(authority, tmp_path):
+    """The control for the refusal: the destructive shape is now opt-in.
+
+    A brand-new node genuinely has no installations yet, and a refusal with no
+    way past it would make bootstrap impossible. So the old behaviour survives
+    as a flag, which is the difference between a floor and a wall.
+    """
+    sha = authority.write(manifest(ability("session-manager", device_id="linux-server")))
+    state = tmp_path / "state"
+
+    document = projection.refresh(authority.repo, sha, ("tokyo-shared-dev-02",), state,
+                                  allow_empty=True, now=NOW)
+
+    assert document["registry_status"] == "FRESH"
+    assert document["abilities"] == []
+    assert read(state / "abilities" / "effective.json") == document
+
+
+def test_the_device_ref_spelling_names_the_same_device_as_the_bare_id(authority, tmp_path):
+    """`device:x` and `x` are one id in two vocabularies, and this node uses both.
+
+    ServerOS names a device to its own surfaces as `device:<id>` — that is the
+    spelling in the node's own identity line and in every `device` argument —
+    while the authority records an installation under the bare id. A command
+    that accepts only one of them is a command whose most natural input is the
+    one that finds nothing.
+    """
+    authority.write(manifest(ability("session-manager", device_id="tokyo-shared-dev-01")))
+    state = tmp_path / "state"
+
+    document = projection.refresh(authority.repo, "HEAD", ("device:tokyo-shared-dev-01",),
+                                  state, now=NOW)
+
+    assert [a["name"] for a in document["abilities"]] == ["session-manager"]
+    # Recorded in the vocabulary the authority speaks, not the one it was typed
+    # in: what is written down is what was matched.
+    assert document["device_ids_matched"] == ["tokyo-shared-dev-01"]
+    # Both spellings of one id at once is one id, not two rows.
+    both = projection.refresh(authority.repo, "HEAD",
+                              ("device:tokyo-shared-dev-01", "tokyo-shared-dev-01"),
+                              tmp_path / "state2", now=NOW)
+    assert both["device_ids_matched"] == ["tokyo-shared-dev-01"]
+    assert [a["name"] for a in both["abilities"]] == ["session-manager"]
+
+    # The negative control, and it is the live failure: matching the prefixed
+    # spelling without normalizing finds nothing at all. This is what the
+    # command did on 2026-10-05, and why the projection came back empty.
+    raw = projection.read_manifest(authority.repo, "HEAD")[0]
+    assert projection.installed_abilities(raw, ("device:tokyo-shared-dev-01",)) == []
+
+
+def test_the_refusal_names_the_ids_the_manifest_actually_uses(authority, tmp_path):
+    """A refusal an operator cannot act on is a wall, not an answer.
+
+    The whole cost of this bug was that the operator had to guess. So the
+    refusal carries the ids as typed and the ids the manifest names, which is
+    the difference between "check your spelling" and a typo the reader can see.
+    """
+    authority.write(manifest(
+        ability("here", device_id="tokyo-shared-dev-01"),
+        ability("elsewhere", device_id="dell-work"),
+    ))
+
+    with pytest.raises(projection.NoInstallationMatched) as raised:
+        projection.refresh(authority.repo, "HEAD", ("tokyo-shared-dev-0l",),
+                           tmp_path / "state", now=NOW)
+
+    exc = raised.value
+    assert exc.asked == ("tokyo-shared-dev-0l",)
+    assert exc.manifest_device_ids == ("dell-work", "tokyo-shared-dev-01")
+    assert exc.records == 2
+    assert "tokyo-shared-dev-0l" in str(exc)
+    assert "dell-work" in str(exc) and "tokyo-shared-dev-01" in str(exc)
