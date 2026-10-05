@@ -31,6 +31,14 @@ implementation gets it wrong:
    empty list instead would turn "I could not ask" into "there is nothing",
    which is the same conflation the reader goes out of its way to avoid.
 
+4. A question that names nobody is refused, not answered. Reading the authority
+   and matching nothing in it are two different facts, and the second cannot be
+   written down as a projection: `FRESH` with `abilities: []` is a claim that
+   this node has none, which a zero match does not support. So a zero match
+   raises and writes nothing, and `allow_empty` is how a caller says the empty
+   answer was the question. Until 2026-10-05 this module wrote it unasked, and
+   a mistyped `--device-id` erased eighteen abilities and reported success.
+
 It writes TWO files from ONE read, and §35 is why they are two files rather
 than two keys of one:
 
@@ -74,6 +82,8 @@ CATALOGUE_NAME = "catalogue.json"
 CATALOGUE_THIS_IS = ("the authority's catalogue at a pinned revision, not an "
                      "installation record")
 
+DEVICE_REF_PREFIX = "device:"
+
 # The manifest keys this projection is allowed to read. An allow-list rather
 # than a deny-list: the manifest also carries `authors[]`, which holds public
 # keys and fingerprints. A key is not an ability, and a projection is an ability
@@ -94,6 +104,88 @@ ABILITY_FIELDS = ("name", "id", "type", "path", "domain", "taxonomy_refs")
 
 class AuthorityUnreachable(Exception):
     """The authority could not be read. Never a reason to invent a projection."""
+
+
+class NoInstallationMatched(Exception):
+    """The authority was read and none of the ids given name an installation.
+
+    Raised INSTEAD of writing, and that is the entire design. A zero match is
+    consistent with two opposite facts — "this node has no abilities" and "these
+    ids name some other machine or are misspelled" — and a projection can only
+    state the first. Writing it turns a question that was answered about nobody
+    into an answer about this node, which is the shape this project keeps
+    finding: a check that returns the empty set instead of failing.
+
+    It carries the inputs as typed and the ids the manifest actually names,
+    because the cost of the failure it replaces was that the operator had to
+    guess which of the two they were looking at.
+    """
+
+    def __init__(self, asked: tuple[str, ...], normalized: tuple[str, ...],
+                 manifest_device_ids: tuple[str, ...], records: int) -> None:
+        self.asked = asked
+        self.normalized = normalized
+        self.manifest_device_ids = manifest_device_ids
+        self.records = records
+        named = ", ".join(manifest_device_ids) or "no installation at all"
+        spelled = ("" if normalized == asked
+                   else f" (normalized: {', '.join(normalized)})")
+        super().__init__(
+            f"no installation in the manifest names this device; asked for "
+            f"{', '.join(asked) or '(nothing)'}{spelled}, and the manifest's "
+            f"{records} record(s) name {named}. Nothing was written: an empty "
+            f"projection would claim this node has no abilities, which a zero "
+            f"match does not establish. Pass `--allow-empty` if an empty "
+            f"projection is what you intend."
+        )
+
+
+def bare_device_ids(device_ids: tuple[str, ...]) -> tuple[str, ...]:
+    """The ids with ServerOS's `device:` ref prefix removed, deduplicated.
+
+    Two vocabularies name one device and this node uses both. ServerOS names a
+    device to its own surfaces as `device:<id>` — the node's identity line and
+    every `device` argument are spelled that way — while the authority records
+    an installation under the bare id. Accepting only one of them makes the
+    spelling an operator is most likely to copy and paste the one that finds
+    nothing and reports no error, which is precisely what happened: on
+    2026-10-05 `--device-id device:tokyo-shared-dev-01` matched no
+    installation, and the empty result was written over a projection holding
+    eighteen abilities.
+
+    Stripping is done here, in one place, so that the ids compared against the
+    manifest and the ids recorded in the projection are the same ones. An empty
+    id is dropped rather than carried: it can never name a device, and a caller
+    that passes one gets the refusal above rather than a silent match on `""`.
+    """
+    names: list[str] = []
+    for raw in device_ids:
+        name = str(raw)
+        if name.startswith(DEVICE_REF_PREFIX):
+            name = name[len(DEVICE_REF_PREFIX):]
+        if name and name not in names:
+            names.append(name)
+    return tuple(names)
+
+
+def manifest_device_ids(manifest: dict) -> tuple[str, ...]:
+    """Every device id the manifest names, sorted — the vocabulary to compare against.
+
+    Reported by the zero-match refusal rather than kept private, because the
+    one thing the operator cannot see from their own command line is which
+    spelling the authority uses.
+    """
+    names = set()
+    for entry in manifest.get("abilities") or []:
+        if not isinstance(entry, dict):
+            continue
+        for revision in entry.get("revisions") or []:
+            if not isinstance(revision, dict):
+                continue
+            for installation in revision.get("installations") or []:
+                if isinstance(installation, dict) and installation.get("device_id"):
+                    names.add(str(installation["device_id"]))
+    return tuple(sorted(names))
 
 
 def _git(repo: Path, *args: str) -> bytes:
@@ -520,7 +612,7 @@ def stale(previous: dict | None, device_ids: tuple[str, ...], *, reason: str,
 
 
 def refresh(repo: Path, rev: str, device_ids: tuple[str, ...], state_root: Path,
-            *, now: datetime | None = None) -> dict:
+            *, allow_empty: bool = False, now: datetime | None = None) -> dict:
     """Read the authority and write BOTH artifacts. Returns the projection.
 
     One read, one pinned revision, two files. They share `source_revision` and
@@ -531,21 +623,44 @@ def refresh(repo: Path, rev: str, device_ids: tuple[str, ...], state_root: Path,
     The projection is returned because every caller so far wants it and the
     catalogue is additive. That is a convenience, not a ranking: neither file
     is derived from the other.
+
+    Two ways to end without writing, and they are not the same way:
+
+      * `AuthorityUnreachable` — the authority could not be READ. The previous
+        abilities are carried through under `STALE`, which is writing a
+        different thing rather than failing to write.
+      * `NoInstallationMatched` — the authority was read and none of
+        `device_ids` names an installation in it. Nothing is written at all,
+        including the catalogue: the two files are written from one read so
+        that a half-completed write shows up as the two drifting apart, and a
+        fresh catalogue beside an untouched projection would be that drift.
+        `allow_empty` is how a caller states that the empty answer was the
+        question being asked.
+
+    The ids are matched in the vocabulary the authority speaks, so a leading
+    `device:` is stripped first and recorded in its stripped form.
     """
     moment = now or datetime.now(timezone.utc)
+    asked = tuple(str(i) for i in device_ids)
+    ids = bare_device_ids(asked)
     directory = state_root / "abilities"
     path = directory / PROJECTION_NAME
     catalogue_path = directory / CATALOGUE_NAME
     try:
         manifest, resolved = read_manifest(repo, rev)
     except AuthorityUnreachable as exc:
-        document = stale(read_existing(path), device_ids, reason=str(exc), now=moment)
+        document = stale(read_existing(path), ids, reason=str(exc), now=moment)
         write_atomic(path, document)
         write_atomic(catalogue_path,
                      catalogue_stale(read_existing(catalogue_path),
                                      reason=str(exc), now=moment))
         return document
-    document = project(manifest, device_ids, resolved_sha=resolved, now=moment)
+    document = project(manifest, ids, resolved_sha=resolved, now=moment)
+    if not document["abilities"] and not allow_empty:
+        raise NoInstallationMatched(
+            asked=asked, normalized=ids,
+            manifest_device_ids=manifest_device_ids(manifest),
+            records=len(manifest.get("abilities") or []))
     write_atomic(path, document)
     write_atomic(catalogue_path,
                  catalogue(manifest, resolved_sha=resolved, now=moment))
@@ -560,7 +675,12 @@ def main(argv: list[str] | None = None) -> int:
                     help="pinned revision the manifest is read at")
     ap.add_argument("--device-id", action="append", required=True,
                     help="an id that means THIS node (canonical first, then "
-                         "legacy aliases); repeatable")
+                         "legacy aliases; either spelling, `x` or `device:x`); "
+                         "repeatable")
+    ap.add_argument("--allow-empty", action="store_true",
+                    help="write an empty projection when no installation names "
+                         "this device; off by default, because a zero match is "
+                         "equally what a mistyped id looks like")
     ap.add_argument("--state-root", type=Path,
                     help="defaults to the contract's state root, not to cwd")
     ap.add_argument("--json", action="store_true")
@@ -573,8 +693,15 @@ def main(argv: list[str] | None = None) -> int:
 
         state_root = paths_mod.Paths().root("state")
 
-    document = refresh(args.ability_repo, args.ability_rev, tuple(args.device_id),
-                       state_root)
+    try:
+        document = refresh(args.ability_repo, args.ability_rev, tuple(args.device_id),
+                           state_root, allow_empty=args.allow_empty)
+    except NoInstallationMatched as exc:
+        # REFUSED, and nothing was written. `serverosctl ability refresh` turns
+        # this into its own exit code; this entry point is a debugging one, so
+        # the message is the whole of the answer.
+        sys.stderr.write(f"REFUSED: {exc}\n")
+        return 3
     if args.json:
         print(json.dumps(document, ensure_ascii=False, indent=2))
     else:
