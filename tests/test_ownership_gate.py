@@ -884,6 +884,91 @@ class TheVerbRefuses(unittest.TestCase):
                 self.assertEqual(code, 10)
                 self.assertIn(answering, text)
 
+    def test_a_refusal_that_names_nobody_is_reached_without_asking_a_host(self):
+        """The ordering, and the ordering is the whole of this test.
+
+        `evaluate` resolves the subject before `decide` applies any rule, and
+        resolving a container reaches Docker. So a question that names nobody
+        to ask about was answerable only while the daemon happened to be up:
+        with the daemon down the verb returned 2 — `EXIT_UNASKABLE`, the
+        question could not be put — where the honest answer is 10, `EXIT_DENY`
+        `NO_TRUSTED_CONTEXT`. A refusal that names the wrong reason is bad
+        enough; this one also made the refusal depend on a daemon it never
+        mentioned, which is not a property a gate may have.
+
+        The daemon is made to RAISE rather than merely to be absent, and that
+        is the assertion: this is a statement that the call did not happen, not
+        that it happened to succeed.
+        """
+        from unittest import mock
+
+        asked = []
+
+        def the_daemon_cannot_be_asked(**kwargs):
+            asked.append(kwargs)
+            raise gate.containers.DockerUnavailable("no daemon at this instant")
+
+        base = ["check", "--kind", "container", "--name", "x",
+                "--action", "destructive", "--registry", str(self.registry)]
+        with mock.patch.object(gate, "resolve", the_daemon_cannot_be_asked):
+            code, text = self._run(base)
+        self.assertEqual(code, gate.EXIT_DENY)
+        self.assertIn("NO_TRUSTED_CONTEXT", text)
+        self.assertEqual(
+            asked, [],
+            "the host was asked about a question it cannot affect, so the "
+            "answer can still change with the daemon's mood")
+
+    def test_a_question_that_names_somebody_still_reaches_the_host(self):
+        """The positive control for the rule above: it fires on a missing
+        context and on nothing else.
+
+        Without this, the precondition could be widened until it answered every
+        question, and the test above would go on passing — a gate that refuses
+        everything looks exactly like one that refuses correctly to a test that
+        only ever asks it the refused question.
+        """
+        from unittest import mock
+
+        context = self.tmp / "ctx.json"
+        context.write_text(json.dumps({"context_ref": "ctx:c2",
+                                       "actor_ref": "actor:c2"}),
+                           encoding="utf-8")
+        asked = []
+
+        def the_host_answers_once(**kwargs):
+            asked.append(kwargs)
+            return {"found": False, "why": "fixture: nothing by that name",
+                    "owner": {"class": "UNKNOWN", "confidence": "unknown",
+                              "because": "fixture", "decided_by": None},
+                    "protection": None, "classification": None}
+
+        with mock.patch.object(gate, "resolve", the_host_answers_once):
+            code, text = self._run(["check", "--kind", "container", "--name", "x",
+                                    "--action", "destructive",
+                                    "--registry", str(self.registry),
+                                    "--context", str(context)])
+        self.assertEqual(len(asked), 1)
+        self.assertEqual(code, gate.EXIT_DENY)
+        self.assertIn("OWNER_UNKNOWN", text)
+
+    def test_the_verdict_says_it_did_not_look_rather_than_that_it_found_nothing(self):
+        """`resolved` is three-valued here for the same reason it is everywhere
+        else in this module: not-looked and looked-and-found-nothing are
+        different answers, and a record that renders them the same way is one a
+        reader cannot use to tell a daemon that was down from a subject that is
+        not there.
+        """
+        verdict = gate.evaluate(subject={"kind": "container", "name": "x"},
+                                action={"kind": "additive"})
+        self.assertEqual(verdict["code"], "NO_TRUSTED_CONTEXT")
+        # `None` and not `False`: `False` is the record a lookup that ran and
+        # found nothing produces, and `_NOT_LOOKED` must not reach it.
+        self.assertIsNone(verdict["resolved"]["found"])
+        self.assertIn("not looked", verdict["resolved"]["why"])
+        self.assertIsNone(verdict["resolved"]["classification"])
+        self.assertIsNone(verdict["resolved"]["management"])
+
     def test_a_kind_nobody_can_weigh_is_refused_before_a_verdict_is_invented(self):
         """`--kind` is a closed set and it is read from the contract, so a kind
         the gate has no evidence for cannot be asked about at all. argparse
