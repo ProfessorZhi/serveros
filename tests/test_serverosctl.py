@@ -10,6 +10,7 @@ answer is the failure mode, not the goal.
 from __future__ import annotations
 
 import importlib.util
+import json
 import sys
 from pathlib import Path
 
@@ -1712,3 +1713,75 @@ def test_the_cli_module_contains_no_mutating_call():
         "the scan found nothing in a file that stops a container, so it would "
         "have found nothing in one that did"
     )
+
+
+# ---------------------------------------------------------------------------
+# §28 · `ability refresh` refuses a zero match, and the shell can see that
+# ---------------------------------------------------------------------------
+
+
+class _OneRoot:
+    """`Paths` reduced to the single root this command reads.
+
+    The command asks the CONTRACT for the state root and never cwd, which is
+    the property that keeps a run from writing a second, invisible projection
+    wherever it happened to start. A hermetic test therefore has to supply the
+    contract, not change directory.
+    """
+
+    def __init__(self, state):
+        self._state = state
+
+    def root(self, name):
+        assert name == "state", name
+        return self._state
+
+
+def _one_installation_manifest():
+    return {"schema_version": 3, "abilities": [{
+        "type": "skill", "id": "ProfessorZhi/session-manager", "name": "session-manager",
+        "path": "skills/session-manager",
+        "revisions": [{"version": "1.0.0", "fingerprint": "sha256:" + "0" * 64,
+                       "installations": [{"device_id": "tokyo-shared-dev-01",
+                                          "os": "linux", "agent": "claude-code"}]}],
+    }]}
+
+
+def test_ability_refresh_refuses_a_zero_match_and_the_shell_can_see_it(
+        monkeypatch, tmp_path, capsys):
+    """Refusing silently would be the same bug with a smaller blast radius.
+
+    What made 2026-10-05 expensive was not only that the projection was emptied
+    — it is that the command said nothing was wrong. So the refusal has three
+    parts and all three are asserted: nothing is written, the exit status is not
+    success, and the id that did not match is printed back.
+    """
+    projection = _load("serveros_ability_projection", "ability_projection.py")
+    monkeypatch.setattr(
+        projection, "read_manifest",
+        lambda repo, rev, path="abilities-manifest.yaml":
+            (_one_installation_manifest(), "a" * 40))
+    state = tmp_path / "state"
+    monkeypatch.setattr(cli_mod.paths_mod, "Paths", lambda *a, **k: _OneRoot(state))
+    command = ["ability", "refresh", "--ability-repo", str(tmp_path),
+               "--ability-rev", "HEAD", "--device-id", "device:someone-elses-node"]
+
+    code = cli_mod.main(command)
+
+    assert code == cli_mod.EXIT_REFUSED
+    assert code not in (cli_mod.EXIT_OK, cli_mod.EXIT_FAULT, cli_mod.EXIT_COULD_NOT_ANSWER)
+    refusal = capsys.readouterr().err
+    assert "REFUSED" in refusal
+    assert "device:someone-elses-node" in refusal
+    # Normalized, printed: the operator can see which id was actually compared.
+    assert "someone-elses-node" in refusal
+    # And the vocabulary to compare it against, which is the part they cannot
+    # see from their own command line.
+    assert "tokyo-shared-dev-01" in refusal
+    assert not (state / "abilities").exists()
+
+    # The control: the same input, with the operator saying they meant it. This
+    # is the exact write the command used to perform unasked.
+    code = cli_mod.main(command + ["--allow-empty"])
+    assert code == cli_mod.EXIT_OK
+    assert json.loads((state / "abilities" / "effective.json").read_text())["abilities"] == []
