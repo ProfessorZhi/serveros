@@ -1347,12 +1347,22 @@ def measurement_parts(alert: dict, measured: dict) -> list[dict]:
             # unreadable pressure as no pressure is the conflation this whole
             # pair of fields exists to prevent — it would not become true by
             # being made in a sentence instead of a field.
+            #
+            # The clause after the reason is chosen by CODE, because the two
+            # codes carry this reading in different ROLES: for SWAP_PRESSURE it
+            # is the correction to the watermark printed above it, and for
+            # MEMORY_PRESSURE_ACTIVE it is the finding itself. One sentence for
+            # both would print the swap sentence on a card that has no swap
+            # figure above it to point at.
             add("memory_pressure",
                 "memory stall was NOT established: "
                 + (psi.get("reason")
                    or "memory pressure-stall information was not readable")
-                + " — the swap figure above is a watermark, and a watermark is "
-                  "not a measurement of pressure",
+                + (" — the swap figure above is a watermark, and a watermark "
+                   "is not a measurement of pressure"
+                   if alert.get("code") == "SWAP_PRESSURE" else
+                   " — what this host is doing to memory could not be "
+                   "measured, and unmeasured is not the same as fine"),
                 # The face does not carry the reason, which is a sentence from
                 # the provider: what a person needs from the first screen is
                 # that this reading is missing, and the fold below has the why.
@@ -1373,6 +1383,43 @@ def measurement_parts(alert: dict, measured: dict) -> list[dict]:
                 + f", full avg60={full['avg60']}%" + full_says,
                 f"内存停顿 some avg60={some['avg60']}%" + some_face
                 + f" · full avg60={full['avg60']}%" + full_face)
+    # The other half of a stall reading, and the half that makes it
+    # counter-intuitive: this host stalled while holding 188 GiB available
+    # (2026-09-29). A reader handed only the stall figure has to supply the
+    # rest from a host summary they are not holding, so the availability
+    # travels beside it — not as a second verdict, but as the rest of one
+    # reading. Absent when the producing summary did not carry it.
+    if measured.get("available_percent") is not None:
+        add("available_percent",
+            f"{measured['available_percent']}% of memory available",
+            f"可用内存 {measured['available_percent']}%")
+    # The watermark, carried to the card that was raised WITHOUT it. The split
+    # between the two axes is only legible if a reader can see that the pressure
+    # fired while the watermark had not: the whole finding on 2026-09-29 was a
+    # machine stalling at 80.5% of swap, below the 90% the other code grades on,
+    # and a stall figure printed alone cannot distinguish that machine from one
+    # thrashing its way past the line. Spelled `swap` and not left as a bare
+    # percentage, because this line already prints one memory percentage and two
+    # numbers that are not obviously different numbers is how a reader supplies
+    # the wrong one.
+    if measured.get("swap_used_percent") is not None:
+        add("swap_used_percent",
+            f"swap {measured['swap_used_percent']}% used",
+            f"交换区已用 {measured['swap_used_percent']}%")
+    # The third axis, and the only place it reaches a person. A watermark says
+    # how full; a stall figure says how much work waited; neither says whether
+    # pages are moving at all, and "full and quiet" and "full and thrashing"
+    # report identical figures on the first two. Pages per second and never
+    # bytes — `pswpout` counts pages, and multiplying by a page size here would
+    # write an assumption about one kernel into a figure a reader is meant to
+    # compare against another host's.
+    paging = measured.get("paging")
+    if isinstance(paging, dict) and paging.get("state") == "PRESENT":
+        add("paging",
+            f"paging {paging.get('pswpout_per_second')} pages/s out, "
+            f"{paging.get('pswpin_per_second')} pages/s in",
+            f"换页 {paging.get('pswpout_per_second')} 页/秒出 · "
+            f"{paging.get('pswpin_per_second')} 页/秒入")
     for key in ("size_bytes", "log_bytes", "size_rw_bytes"):
         if measured.get(key) is not None:
             threshold = measured.get("threshold_bytes")

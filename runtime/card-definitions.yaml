@@ -123,8 +123,11 @@ codes:
     label: 整机内存压力
     what: 整机内存使用达到告警阈值
   SWAP_PRESSURE:
-    label: 交换区压力
+    label: 交换区水位偏高
     what: 交换区使用达到告警阈值
+  MEMORY_PRESSURE_ACTIVE:
+    label: 整机内存停顿
+    what: 整机有任务等待内存的时间占比达到告警阈值
   DISK_WARNING:
     label: 使用率告警档
     what: 该文件系统使用率进入告警档

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""§18 · Resource anomalies — the fifteen codes the brief names.
+"""§18 · Resource anomalies — the sixteen codes this layer grades.
 
 Where this sits
 ---------------
@@ -16,16 +16,23 @@ from there. It is a second producer over the same model, not a second model.
 Every code, and what would have to be measured to emit it
 --------------------------------------------------------
 §18 names fifteen codes and requires the system to be able to REPRESENT them.
-Representing is not the same as emitting, and this module keeps the two apart
-in the payload: `codes_emitted` and `codes_not_evaluated`. A code whose input
-was not supplied, or was supplied as `UNAVAILABLE`, appears in the second list
-with the missing input named — because the alternative, an absent code being
-read as "no problem here", is the exact failure §27 forbids one layer down.
+This module grades those fifteen plus one more, `MEMORY_PRESSURE_ACTIVE`, which
+§18 does not name and which exists because the fifteen it does name cannot
+express the difference between a full machine and a stalled one — see the note
+above `_memory_signals`. Representing is not the same as emitting, and this
+module keeps the two apart in the payload: `codes_emitted` and
+`codes_not_evaluated`. A code whose input was not supplied, or was supplied as
+`UNAVAILABLE`, appears in the second list with the missing input named —
+because the alternative, an absent code being read as "no problem here", is the
+exact failure §27 forbids one layer down.
 
     DISK_WARNING / DISK_CRITICAL   filesystem used_percent, two declared tiers
     INODE_CRITICAL                 inode used_percent on the same filesystems
-    MEMORY_PRESSURE                host memory used against total
-    SWAP_PRESSURE                  swap used against total, with memory PSI
+    MEMORY_PRESSURE                host memory used against total — a WATERMARK
+    SWAP_PRESSURE                  swap used against total — a WATERMARK, with
+                                   the memory PSI and the paging rate beside it
+    MEMORY_PRESSURE_ACTIVE         memory PSI: how much work stalled. The
+                                   PRESSURE half of the two above
     DOCKER_STORAGE_HIGH            the Docker data root's own filesystem, or
                                    `docker system df`'s total store size
     RUNTIME_UNOWNED                `hygiene.py`'s UNKNOWN_OWNER rows
@@ -83,16 +90,18 @@ UNKNOWN = anomaly.UNKNOWN
 
 CONTRACT = _HERE / "attribution-contract.yaml"
 
-# The fifteen, in the order §18 lists them. A test asserts the contract's
-# `resource_anomalies:` block names exactly this set: a code that exists in
-# code and not in the contract is a severity nobody reviews, and a code in the
-# contract and not in code is the declared-but-absent pattern.
+# The sixteen, §18's fifteen in §18's order followed by the one this layer
+# added. A test asserts the contract's `resource_anomalies:` block names exactly
+# this set: a code that exists in code and not in the contract is a severity
+# nobody reviews, and a code in the contract and not in code is the
+# declared-but-absent pattern.
 CODES = (
     "DISK_WARNING",
     "DISK_CRITICAL",
     "INODE_CRITICAL",
     "MEMORY_PRESSURE",
     "SWAP_PRESSURE",
+    "MEMORY_PRESSURE_ACTIVE",
     "DOCKER_STORAGE_HIGH",
     "RUNTIME_UNOWNED",
     "RUNTIME_ORPHANED",
@@ -118,6 +127,11 @@ SEVERITY = {
     "INODE_CRITICAL": "high",
     "MEMORY_PRESSURE": "medium",
     "SWAP_PRESSURE": "medium",
+    # Medium like the two watermarks above, and not higher. Severity here is
+    # about how fast a person should look, and `refuse` already carries the one
+    # consequence this system is permitted to take; a second axis saying the
+    # same thing louder is how the two start to disagree.
+    "MEMORY_PRESSURE_ACTIVE": "medium",
     "DOCKER_STORAGE_HIGH": "medium",
     # Low, and deliberately: on a shared host most containers are unowned and
     # that is a statement about declarations, not about the containers. A
@@ -413,20 +427,50 @@ def _disk_signals(disk: dict, thresholds: dict, *, observed_at,
 
 
 def _memory_signals(host: dict, thresholds: dict, *, observed_at,
-                    subjects: set[str] | None = None) -> tuple[list, list, str | None]:
-    """MEMORY_PRESSURE, SWAP_PRESSURE.
+                    subjects: set[str] | None = None) -> tuple[list, list, dict]:
+    """MEMORY_PRESSURE, SWAP_PRESSURE, MEMORY_PRESSURE_ACTIVE.
 
-    `subjects` collects the two host-level subjects this pass ENUMERATED. Both
-    are registered unconditionally, because both exist by construction: the
-    host summary either carried a memory section or the caller would not have
-    reached this function at all. A host subject is therefore never `gone`, and
-    a memory alert closes on its floor and not on disappearance — which is the
-    correct answer for the only subject family whose subject cannot vanish.
+    Three codes over two axes, and the split between them is the point. A
+    WATERMARK answers "how full is it". PRESSURE answers "how much work is
+    stalling". Both are real measurements, neither answers the other's
+    question, and this host has been both machines:
+
+      * 2026-09-15 — 99.2% of swap in use, memory PSI 0.00 across every
+        window, `pswpout` unmoved over forty minutes. Full, and idle.
+      * 2026-09-29 — swap at 80.5%, BELOW its 90% threshold so the watermark
+        code stayed silent, while memory PSI some avg60 ran 6.80 → 10.53
+        against a threshold of 1.0 and `pswpout` reached 53,238 pages/second.
+        Room to spare, and stalling — and the monitoring was green throughout.
+
+    The second machine is why this was not a renaming. Grading a watermark and
+    reporting it under a name that claims pressure does not only mislabel the
+    first machine; it leaves the second one unreported, because the measurement
+    that would have caught it was never read at all.
+
+    Returns `(signals, levels, gaps)`, with `gaps` keyed BY CODE — the shape
+    `_docker_signals` returns. One string for the whole group would mean a host
+    whose PSI could not be read reported the two watermarks as unmeasured as
+    well, and "nobody looked at your swap watermark" is a different sentence
+    from "nobody looked at the stall figures". §27, one level down.
+
+    `subjects` collects the host-level subjects this pass ENUMERATED, and all
+    three are registered unconditionally: the host summary either carried a
+    memory section or the caller would not have reached this function at all.
+    A host subject is therefore never `gone`, and a memory alert closes on its
+    floor and not on disappearance — which is the correct answer for the only
+    subject family whose subject cannot vanish.
+
+    `host:memory-pressure` is in that list for the same reason as the other
+    two rather than by symmetry with them. It is the subject the third code is
+    emitted under, and a subject this pass GRADED but did not ENUMERATE is
+    closed as `subject_gone` on the tick after it fired — the pressure code
+    would have been the one code here that could never stay open.
     """
     signals: list[dict] = []
     levels: list[dict] = []
+    gaps: dict[str, str] = {}
     if subjects is not None:
-        subjects.update(("host:memory", "host:swap"))
+        subjects.update(("host:memory", "host:swap", "host:memory-pressure"))
     memory = host.get("memory") or {}
     total = memory.get("total_bytes")
     used = memory.get("used_bytes")
@@ -446,23 +490,26 @@ def _memory_signals(host: dict, thresholds: dict, *, observed_at,
                      "§25 forbids acting on this: the permitted response is to "
                      "refuse a NEW allocation, never to stop one that exists"),
             ))
-    # SWAP_PRESSURE IS GRADED ON THE WATERMARK AND REPORTED WITH THE PRESSURE,
-    # and the two are now on the card together. The watermark alone is a
-    # high-water mark: pages are written to swap when memory was short and read
-    # back only when touched again, so a swap file that filled once stays full
-    # while nothing is paging. Measured on this host 2026-09-15: 99.2% of swap
-    # in use, memory PSI at 0.00 across every window, `pswpout` unmoved over
-    # forty minutes — a machine that was not paging, reported as pressure.
-    # `inventory._swap_note` has separated those two since it was written, but
-    # only on the advisory path; this signal reached the register and the card
-    # carrying the watermark alone.
+    # SWAP_PRESSURE IS A WATERMARK, AND IS NOW NAMED AND GRADED AS ONE.
     #
-    # What is repaired here is the READING, not the policy. `ADMISSION_LEVELS`
-    # still puts SWAP_PRESSURE at `refuse` and `admission()` still records
-    # `wired_into_a_creation_path: false`; moving a code between `refuse` and
-    # `advisory` is a decision this round does not make. A reader of the card
-    # can now tell the 99.2%-and-idle machine from the 99.2%-and-stalling one,
-    # which is the difference the single number could not express.
+    # It was called pressure while being graded on the watermark alone, and the
+    # watermark was the only reading it had: this module is handed documents
+    # and holds no inventory, and the summary it was handed carried no PSI.
+    # The READING was repaired last round — `memory_pressure` and the two
+    # thresholds travel with the signal and the card prints the stall figures
+    # beside the watermark. What is repaired here is the CLAIM, which a better
+    # reading on its own could not fix.
+    #
+    # So: same measurement, same threshold, same identity, narrower name, and
+    # `advisory` instead of `refuse`. That last one is graded on what the code
+    # MEASURES rather than inherited from what its predecessor measured, which
+    # is why `MEMORY_PRESSURE` keeps `refuse` while this does not: MemAvailable
+    # is the kernel's own estimate with reclaimable cache already subtracted, a
+    # low figure is memory the machine genuinely cannot get back, whereas a
+    # swap high-water mark only rises. Pages are written to swap when memory
+    # was short and read back only when something touches them again, so the
+    # 99.2%-and-idle machine above and a thrashing one report the same
+    # watermark — and only one of them is short of memory.
     #
     # The reading travels in the provider's own shape (`inventory.
     # pressure_stall()`'s per-resource dict, `UNAVAILABLE` included) rather
@@ -472,33 +519,113 @@ def _memory_signals(host: dict, thresholds: dict, *, observed_at,
     swap = memory.get("swap") or {}
     swap_total, swap_used = swap.get("total_bytes"), swap.get("used_bytes")
     swap_at = thresholds["swap_percent_high"]
+    swap_percent = None
     if swap_total and swap_used is not None:
-        percent = round(100.0 * swap_used / swap_total, 1)
-        levels.append(_level("SWAP_PRESSURE", "host:swap", percent, swap_at))
-        if percent >= swap_at:
+        swap_percent = round(100.0 * swap_used / swap_total, 1)
+        levels.append(_level("SWAP_PRESSURE", "host:swap", swap_percent, swap_at))
+        if swap_percent >= swap_at:
             signals.append(_signal(
                 "SWAP_PRESSURE", "host:swap",
-                {"used_percent": percent, "threshold_percent": swap_at,
+                {"used_percent": swap_percent, "threshold_percent": swap_at,
                  "used_bytes": swap_used, "total_bytes": swap_total,
                  # Absent from a summary the caller built itself, in which case
                  # the card says the pressure was not established rather than
                  # implying the watermark settled it.
                  "memory_pressure": (host.get("pressure") or {}).get("memory"),
+                 # The third axis, and the one that decides what a high
+                 # watermark MEANS. `_swap_note` on the advisory path has
+                 # separated "full and quiet" from "full and thrashing" since it
+                 # was written, but it reads the live inventory; this signal
+                 # reaches the register and the card, and a watermark there
+                 # without an activity figure beside it is the single number
+                 # that cannot answer its own question. `None` when the caller
+                 # built its own summary rather than asking the inventory.
+                 "paging": host.get("paging"),
                  "psi_memory_some_avg60_percent_high":
                      thresholds.get("psi_memory_some_avg60_percent_high"),
                  "psi_memory_full_avg60_percent_high":
                      thresholds.get("psi_memory_full_avg60_percent_high")},
                 window="point in time", source="host-memory",
                 observed_at=observed_at,
-                why=("swap in use is at or above the declared threshold. Above "
-                     "it the machine is not merely busy, it is out of the "
-                     "memory it would need to absorb one more persistent "
-                     "process — an admission question, not a cleanup one"),
+                why=("swap in use is at or above the declared threshold. This "
+                     "is a watermark and not a measurement of pressure: pages "
+                     "are written to swap when memory was short and read back "
+                     "only when something touches them again, so a swap file "
+                     "that filled once stays full while nothing is paging. It "
+                     "is reported beside the stall figures below for that "
+                     "reason, and it is advisory — a watermark is not grounds "
+                     "for refusing the creation of anything"),
             ))
-    not_evaluated = None
+    # MEMORY_PRESSURE_ACTIVE — the pressure half, and the one measurement that
+    # made the split necessary.
+    #
+    # Graded on `some` rather than `full`, and deliberately. `some` is "at least
+    # one task was stalled"; `full` is "every non-idle task was". This is a
+    # shared multi-tenant host, where one account's runtime stalling while
+    # every other account is fine is exactly the thing worth knowing about, and
+    # `full` would report that machine as quiet. The two coinciding (3.16 and
+    # 3.15 on this host, 2026-09-29) is a whole-machine stall, which `some`
+    # catches too — the choice only changes the answer on the machine where the
+    # stall is partial, and there it is the difference between noticing and
+    # not. `full` is carried in `measured` beside it so a reader can see both.
+    #
+    # §4 binds `why`: this says what was measured and not what produced it.
+    # The 2026-09-29 reading is the reason — 188 GiB available and a 7.8% full
+    # stall at the same moment is a combination nobody has explained, and a
+    # sentence naming a cause would have been a guess wearing a measurement's
+    # clothes.
+    pressure = (host.get("pressure") or {}).get("memory")
+    paging = host.get("paging")
+    psi_at = thresholds["psi_memory_some_avg60_percent_high"]
+    some = pressure.get("some") if isinstance(pressure, dict) else None
+    some_avg60 = some.get("avg60") if isinstance(some, dict) else None
+    if _unavailable(pressure) or some_avg60 is None:
+        # "Cannot tell" is not "fine". `/proc/pressure` is absent on a pre-4.20
+        # kernel and under `psi=0`, and an unreadable stall figure read as no
+        # stall is the conflation this code exists to prevent — it would not
+        # become true by being made in a gap instead of a field.
+        gaps["MEMORY_PRESSURE_ACTIVE"] = (
+            "the memory pressure-stall figures were not readable"
+            + (f": {pressure.get('reason')}"
+               if isinstance(pressure, dict) and pressure.get("reason") else "")
+            + "; a machine nobody measured for stalls is not a machine with none")
+    else:
+        available = memory.get("available_bytes")
+        levels.append(_level("MEMORY_PRESSURE_ACTIVE", "host:memory-pressure",
+                             some_avg60, psi_at))
+        if some_avg60 >= psi_at:
+            signals.append(_signal(
+                "MEMORY_PRESSURE_ACTIVE", "host:memory-pressure",
+                {"memory_pressure": pressure,
+                 "psi_memory_some_avg60_percent_high": psi_at,
+                 "psi_memory_full_avg60_percent_high":
+                     thresholds.get("psi_memory_full_avg60_percent_high"),
+                 # The watermark beside the pressure, for the same reason the
+                 # watermark carries the pressure: neither number means what it
+                 # looks like without the other. A reader can see that the
+                 # machine was stalling AND that it had memory to spare, which
+                 # is a fact about the stall and not about the memory.
+                 "available_bytes": available,
+                 "available_percent": (round(100.0 * available / total, 1)
+                                       if total and available is not None else None),
+                 "swap_used_percent": swap_percent,
+                 # Activity, not a verdict, and `None` when the caller built
+                 # its own summary rather than asking the inventory.
+                 "paging": paging},
+                window="point in time", source="host-memory",
+                observed_at=observed_at,
+                why=("tasks on this host are stalling on memory: they are "
+                     "waiting on reclaim or on swap while work they could be "
+                     "doing is held up. This is a measurement of how much work "
+                     "waited, which is a different fact from how full the "
+                     "machine is — the figures beside it say both, and §25 "
+                     "permits one response to it, refusing a NEW allocation"),
+            ))
+    if total is None:
+        gaps["MEMORY_PRESSURE"] = "the host memory summary carried no usable totals"
     if total is None or (swap_total is not None and swap_used is None):
-        not_evaluated = "the host memory summary carried no usable totals"
-    return signals, levels, not_evaluated
+        gaps["SWAP_PRESSURE"] = "the host memory summary carried no usable totals"
+    return signals, levels, gaps
 
 
 def _docker_signals(docker: dict, thresholds: dict, *, observed_at,
@@ -901,9 +1028,9 @@ def _tunnel_signals(tunnel: dict, *, observed_at) -> tuple[list, dict]:
 def inputs_needed() -> list[dict]:
     """Every code, with the input this module would need to grade it.
 
-    The static half of `codes_not_evaluated`: it says what the fifteen codes
-    REQUIRE, so a caller can tell "this host could not be measured" from "this
-    code needs a fact this build never collects".
+    The static half of `codes_not_evaluated`: it says what every code this
+    module grades REQUIRES, so a caller can tell "this host could not be
+    measured" from "this code needs a fact this build never collects".
     """
     return [
         {"code": code, "needs": _INPUTS[code], "threshold": _threshold_for(code),
@@ -919,6 +1046,7 @@ _INPUTS = {
     "MEMORY_PRESSURE": "host_summary()['memory']",
     "SWAP_PRESSURE": ("host_summary()['memory']['swap'] and "
                       "host_summary()['pressure']['memory']"),
+    "MEMORY_PRESSURE_ACTIVE": "host_summary()['pressure']['memory']",
     "DOCKER_STORAGE_HIGH": "docker_space() plus the data root's filesystem size",
     "RUNTIME_UNOWNED": "hygiene report container classifications",
     "RUNTIME_ORPHANED": "hygiene report container classifications",
@@ -937,6 +1065,7 @@ _THRESHOLDS = {
     "INODE_CRITICAL": "inode_percent_high",
     "MEMORY_PRESSURE": "memory_percent_high",
     "SWAP_PRESSURE": "swap_percent_high",
+    "MEMORY_PRESSURE_ACTIVE": "psi_memory_some_avg60_percent_high",
     "DOCKER_STORAGE_HIGH": "docker_storage_percent_high",
     "RUNTIME_UNOWNED": None,
     "RUNTIME_ORPHANED": None,
@@ -1028,16 +1157,17 @@ def detect(*, host=None, disk=None, docker=None, hygiene=None, desired=None,
             gaps.setdefault(code, gathered.missing["disk"])
 
     if gathered.take("host", host, why="the host summary"):
-        found, found_levels, gap = _memory_signals(host, thresholds,
-                                                   observed_at=observed_at,
-                                                   subjects=subjects)
+        found, found_levels, memory_gaps = _memory_signals(host, thresholds,
+                                                           observed_at=observed_at,
+                                                           subjects=subjects)
         signals += found
         levels += found_levels
-        if gap:
-            gaps.setdefault("MEMORY_PRESSURE", gap)
-            gaps.setdefault("SWAP_PRESSURE", gap)
+        # Per code, not one string for the group: an unreadable PSI says nothing
+        # about the two watermarks, and reporting them as unmeasured would be
+        # §27's failure wearing a gap instead of a zero.
+        gaps.update(memory_gaps)
     else:
-        for code in ("MEMORY_PRESSURE", "SWAP_PRESSURE"):
+        for code in ("MEMORY_PRESSURE", "SWAP_PRESSURE", "MEMORY_PRESSURE_ACTIVE"):
             gaps.setdefault(code, gathered.missing["host"])
 
     if docker:
@@ -1175,11 +1305,34 @@ FORBIDDEN_RESPONSES = ("high CPU => kill", "high memory => kill")
 # module, and so the two can be compared by a test instead of by a reviewer.
 # The levels are exactly two, and `refuse` is the only one that changes an
 # answer; everything not in this table is not an admission question at all.
+#
+# Graded on WHAT THE CODE MEASURES, not inherited from what its predecessor
+# measured. A full machine is a reason to refuse the next persistent process;
+# a full SWAP FILE is not, which is why `SWAP_PRESSURE` moved to `advisory`
+# when its name was narrowed to what it had always graded. What the codes mean
+# respectively, and why the two watermarks do not get the same answer:
+#
+#   MEMORY_PRESSURE         `used_bytes` is total minus MemAvailable, and
+#                           MemAvailable is the kernel's own estimate with
+#                           reclaimable cache already subtracted — a low figure
+#                           is memory the machine genuinely cannot get back.
+#   SWAP_PRESSURE           a high-water mark that only rises. Pages are
+#                           written to swap when memory was short and read back
+#                           only when touched again, so a swap file that filled
+#                           once stays full while nothing is paging. Measured
+#                           on this host 2026-09-15: 99.2% of swap in use,
+#                           memory PSI 0.00 across every window, `pswpout`
+#                           unmoved over forty minutes.
+#   MEMORY_PRESSURE_ACTIVE  work is stalling NOW. A machine in that state
+#                           should not be handed another persistent process,
+#                           and refusing one is the only consequence §25
+#                           permits.
 ADMISSION_LEVELS = {
     "DISK_CRITICAL": "refuse",
     "INODE_CRITICAL": "refuse",
     "MEMORY_PRESSURE": "refuse",
-    "SWAP_PRESSURE": "refuse",
+    "MEMORY_PRESSURE_ACTIVE": "refuse",
+    "SWAP_PRESSURE": "advisory",
     "DISK_WARNING": "advisory",
     "DOCKER_STORAGE_HIGH": "advisory",
     "BUILD_CACHE_HIGH": "advisory",

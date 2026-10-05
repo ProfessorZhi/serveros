@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-"""The fifteen situations, loaded and turned into models — one source for both
-the tests and the previews a person reviews.
+"""The sixteen situations, loaded and turned into models — one source for both the
+tests and the previews a person reviews.
 
 Why one source and not two
 --------------------------
@@ -326,20 +326,31 @@ def model_for(scenario: dict, *, at: str | None = None,
 
 
 def rendered(*, sample: bool = True) -> list[dict]:
-    """Every scenario, as `cards.preview` output plus its own provenance."""
+    """Every scenario, as `cards.preview` output plus its own provenance.
+
+    `model_for` is called WITHOUT an `at`, so a scenario that carries its own
+    wins and the rest fall back to the document's. Passing the document's down
+    from here — which this did until a scenario needed its own — made every
+    scenario's `at` unreachable from the one path that writes the previews:
+    the per-scenario key worked under `--print-model` and silently did nothing
+    under `--out`. A row whose `first_seen` is later than the instant it is
+    rendered against prints a negative duration, and that reads as a renderer
+    defect rather than as the fixture defect it is.
+    """
     cards = _load("serveros_runtime_cards", "cards.py")
     document_ = document()
     out = []
     for scenario in scenarios():
-        # The document's instant is the default and a scenario may fix its own.
-        # A status fixture needs one: its `at` decides which HOUR the reading is
+        # The instant is resolved inside `model_for`, and a scenario's own `at`
+        # wins over the document's. That resolution lives in exactly one place
+        # on purpose: a status fixture's `at` decides which HOUR the reading is
         # and whether the day it carries could have had a routine card at all,
         # and the document's instant is a Sunday — a day on which «已更新 7/13
         # 个时点» is a sentence about a card that cannot exist. Reproducibility
         # is what the fixed instant is for, and a per-scenario instant is just
-        # as fixed.
-        at = scenario.get("at") or document_.get("at") or ""
-        model = model_for(scenario, at=at, sample=sample)
+        # as fixed. Recomputing it here would be a second source for one string,
+        # free to drift from the one the tests assert against.
+        model = model_for(scenario, sample=sample)
         caption = (f"{scenario.get('title')} · 来源："
                    f"{' '.join(str(scenario.get('source') or '').split())}\n"
                    f"{' '.join(str(document_.get('preview_note') or '').split())}")
@@ -370,7 +381,7 @@ def write(out_dir, *, sample: bool = True) -> list[Path]:
         written += [path_html, path_json]
     index = target / "README.txt"
     index.write_text(
-        "这十五个文件由同一个 renderer 从 runtime/card-scenarios.yaml 生成。\n"
+        "这十六个文件由同一个 renderer 从 runtime/card-scenarios.yaml 生成。\n"
         "每个场景一对：.html 是人看的预览（含 390px 窄屏与桌面两帧），\n"
         ".json 是同一张卡实际会发出去的 payload。\n\n"
         "它们全部带「示例」标识，且均未发送。预览证明 renderer 产出什么，\n"
@@ -384,7 +395,7 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover - hand check
     import argparse
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--out", required=True,
-                        help="directory to write the fifteen previews into")
+                        help="directory to write the sixteen previews into")
     parser.add_argument("--unsampled", action="store_true",
                         help="omit the SAMPLE mark. For looking at layout "
                              "only; never for a file somebody reviews")

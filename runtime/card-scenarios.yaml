@@ -1,15 +1,15 @@
-# The fifteen situations a card has to survive, as input documents.
+# The sixteen situations a card has to survive, as input documents.
 #
 # WHY THIS IS DATA AND NOT A TEST HELPER
 #
-# The same fifteen documents have two consumers and they must not drift: the
+# The same sixteen documents have two consumers and they must not drift: the
 # tests that assert the cards behave, and the previews a person is asked to look
 # at before approving any of this. If the previews were generated from one set
 # of inputs and the tests asserted against another, a reviewer would be
 # approving a card the suite never ran — and the difference would be invisible,
 # because both would look like cards.
 #
-# The count is fifteen and the number is worth keeping exact. It has been wrong
+# The count is sixteen and the number is worth keeping exact. It has been wrong
 # twice already: the header said "six" while the file held ten, and the figure
 # is the only thing that tells a reviewer whether a whole class of card is
 # missing from the set they are approving. It is written down in seven places —
@@ -18,6 +18,16 @@
 # docstring, the README text `write()` emits, and the `--out` help). Every
 # addition edits all seven, and that is the price of writing a count down at
 # all: the number is a thing to go looking for, not a thing to remember.
+#
+# THE TWELFTH IS NOT A FOURTH GROUP
+#
+# The other eleven come from three places — §6's list, AC18–AC21, and one
+# scenario that belongs to neither. The twelfth belongs to none of them either,
+# but it is not "the one that renders red" a second time: it is this round's own
+# subject, and it is the only preview in the file whose two rows carry the same
+# instant and two different measurements. It sits directly after the three
+# groups, so that they stay contiguous and readable as groups; the four the
+# acceptance round of 2026-09-30 named afterwards close the file.
 #
 # WHAT SAMPLE MEANS HERE
 #
@@ -389,8 +399,10 @@ scenarios:
   # -- separate for that reason: if the two lists are merged, a reviewer cannot
   # -- tell a design example from a criterion's fixture. The last one is on
   # -- neither list and says so where it stands. Six + four + one = eleven. The
-  # -- twelfth and thirteenth are later still and say so in their own comments;
-  # -- the fourteenth and fifteenth close the file, each where it stands. --
+  # -- twelfth is the watermark/pressure split's own subject and says so where it
+  # -- stands; the thirteenth through sixteenth are the four the acceptance round
+  # -- of 2026-09-30 named after both lists were already written, and each says so
+  # -- in its own comment. Six + four + one + one + four = sixteen. --
 
   - name: normal
     card: status
@@ -750,8 +762,17 @@ scenarios:
       说明「一个测量越过为它自己写的阈值」在卡上的样子：它必须能打断人，且
       不必读代码、不必展开任何东西就知道越线的是哪个对象。与 one_critical 用
       不同的 code，是为了让两张预览各自证明一件不同的事，而不是同一张卡印两遍。
-      四个数字取自本机登记表里那条 MEMORY_PRESSURE 的 measured，不是编的：
-      97.3%（阈值 90.0%，可用 6.64 GiB / 总量 247.0 GiB）。
+      三个头条数字是实测的：本机记录里只有一条 MEMORY_PRESSURE 行
+      （runtime/alerts/ledger.json 的 alert:b365d49b09ee39b6，2026-10-02
+      00:01:35 北京开、00:05:35 关），97.3% / 阈值 90.0 / 总量 265182715904
+      与 resource_ref 为 null 四条与它相符。登记表按 identity 每个 subject 只留
+      一行，所以这棵树写作时引的那次 2026-09-29 读数今天已取不回来 —— 不等于
+      它没发生过，只等于它不可复核，而不可复核的出处不该写成一条承诺。
+      下面的字节数（258050740224 + 7131975680 仍等于同一个总量）、first_seen、
+      observed_at、occurrence_count 与 severity 都是示例值：那一条 episode 的
+      两个字节数是 258005381120 / 7177334784，与这里各差 45,359,104 字节。
+      severity 取 high 而不是 medium，是因为这一张要证明它**能打断人** ——
+      卡首的 🚨 是这一张存在的理由，不是对某一次事件的转述。
     digest:
       counts: {new: 1, escalated: 0, reopened: 0}
       severity_counts: {high: 1}
@@ -765,23 +786,40 @@ scenarios:
           severity: high
           severity_word: CRITICAL
           subject_ref: "host:memory"
-          resource_ref: "host:memory"
+          # null, and by measurement rather than by choice: `alerting.
+          # resource_ref` returns a ref only for `filesystem:` / `runtime-group:`
+          # / `container:` / `runtime:` / `tunnel:` subjects, and the live
+          # register's `host:memory` row carries `resource_ref: null`. This line
+          # used to read `"host:memory"`, which is a state the resolver cannot
+          # produce — a fixture describing a card that would never be built.
+          resource_ref: null
           first_seen: "2026-09-20T04:05:00+00:00"
           resolved_at: null
           occurrence_count: 4
           state: OPEN
-          # 本机登记表里那条 MEMORY_PRESSURE 的 measured，值都是它的。键只留
-          # 生产者投影里真的有的那几个：登记表还有 available_bytes，而
-          # `_row_of` 不搬运它，写在这里就是让 fixture 声明一件卡片读不到的
-          # 事 —— 上面那条测试会当场挡下（它就是这么发现这一行的）。
-          used_percent: 97.3
-          threshold_percent: 90.0
-          total_bytes: 265182715904
-          used_bytes: 258050740224
           # No owner: `_owner_of` reads `measured.ownership`, which the
           # detector that raises this code does not write. Live register:
           # 0 of this code's rows carry one.
           owner: null
+          # The measurement, without which this card prints "no measurement"
+          # and the scenario named 资源压力越线 shows a card with no number on
+          # it. `presentation._for_detail` rebuilds `measured` from the row's
+          # own fields, so a digest row that omits them renders as a code with
+          # nothing measured — which is what this one did until the numbers
+          # below were added.
+          #
+          # 键只留生产者投影里真的有的那几个：`available_bytes` /
+          # `available_percent` 写在这里是合法的，因为
+          # `alert_digest.MEASUREMENT_FIELDS` 收着它们 —— 那是本轮水位/压力
+          # 分家加进去的，`_row_of` 按这张白名单逐个搬运。加白名单之前它们
+          # 会被 `TheFixturesSpeakTheProducersVocabularyTests` 当场挡下，
+          # 那条测试的名字就是这条规则（fixture 只许说生产者会说的话）。
+          used_percent: 97.3
+          threshold_percent: 90.0
+          used_bytes: 258050740224
+          total_bytes: 265182715904
+          available_bytes: 7131975680
+          available_percent: 2.7
           provenance:
             freshness: FRESH
             source: host-memory
@@ -1011,10 +1049,122 @@ scenarios:
               axis: transport
               path: /run/user/1002/serveros/serveros.sock
 
+  # -- Not §6's, not AC18–AC21's, not the red one either: this round's own
+  # -- subject. A watermark and a stall are two measurements, and until this
+  # -- round one code carried both and reported them as one. The preview exists
+  # -- so a reviewer can see them arrive as two rows with two subject_refs, which
+  # -- is the shape a person has to read — not two sentences in a changelog.
+  # --
+  # -- It sits directly after the groups above it and not at the end of the
+  # -- file: the four the 2026-09-30 acceptance round named come after it, and
+  # -- the comment at the head of this list says why. --
+  - name: watermark_beside_stall
+    card: alert
+    title: 水位与停顿各报各的
+    # The instant is per-scenario because the readings below are 2026-09-29's.
+    # It cannot come from the document: the document's `at` is twelve days
+    # earlier, and every duration on the card would render negative.
+    at: "2026-09-29T15:00:00+08:00"
+    source: constructed — 交换区那一行是真的一条：数值、阈值、首次观测逐字取自
+      本节点登记表里 SWAP_PRESSURE 的那一行（2026-09-29 14:46:27 北京，92.0%，
+      阈值 90.0）。登记表里它现已 RESOLVED，开了 61 秒；预览画的是它刚开火的
+      样子，所以下面的时长是示例瞬时与真实首次观测之差，不是那次 episode 的
+      长度。压力那一行不是记录：MEMORY_PRESSURE_ACTIVE 是本轮新增的 code，在
+      本节点从未开火过，无法从登记表取。它的 PSI 与 paging 读数是本轮改造前的
+      探查读数，而那次记录把本机内存总量写成了 256 GiB（实测 247.0 GiB），所以
+      这几个数只作示意，不作为某一秒的测量保留；available 的百分数已按实测
+      总量重算。两行共用同一瞬时，是为了让审阅者看到两根轴并排时长什么样，
+      不代表这个 code 在那一刻真的开过火。
+    digest:
+      counts: {new: 2, escalated: 0, reopened: 0}
+      severity_counts: {medium: 2}
+      more: 0
+      backlog: 0
+      silent_resolutions: 0
+      rows:
+        - key: alert:fixture0000000e01
+          kind: NEW
+          code: SWAP_PRESSURE
+          severity: medium
+          severity_word: WARNING
+          subject_ref: "host:swap"
+          resource_ref: null
+          first_seen: "2026-09-29T06:46:27.898360+00:00"
+          resolved_at: null
+          occurrence_count: 1
+          state: OPEN
+          # 无 owner：`_owner_of` 读 `measured.ownership`，这个 code 的检测器
+          # 不写它。登记表实测：host: 两个 code 的行里 0 行带。
+          owner: null
+          # 真读数。判据是水位，所以卡上要能读到水位本身——这是这一行存在的
+          # 全部理由，而它同时是 SWAP_PRESSURE 与 MEMORY_PRESSURE_ACTIVE 的
+          # 分家现场：92.0% 是水位越线，旁边那一行说的才是停顿。
+          threshold_percent: 90.0
+          used_percent: 92.0
+          used_bytes: 15813074944
+          total_bytes: 17179865088
+          memory_pressure:
+            state: PRESENT
+            some: {avg10: 7.31, avg60: 6.80, avg300: 3.94, total: 4820013}
+            full: {avg10: 7.28, avg60: 6.74, avg300: 3.90, total: 4793118}
+          paging:
+            state: PRESENT
+            window_seconds: 1.02
+            pswpin_per_second: 0.0
+            pswpout_per_second: 53238.0
+            pgmajfault_per_second: 12.0
+            pgsteal_direct_per_second: 0.0
+          psi_memory_some_avg60_percent_high: 1.0
+          psi_memory_full_avg60_percent_high: 0.5
+          provenance:
+            source: host-memory
+            evidence_kind: measurement
+            observed_at: "2026-09-29T06:46:27.898360+00:00"
+            freshness: FRESH
+        - key: alert:fixture0000000e02
+          kind: NEW
+          code: MEMORY_PRESSURE_ACTIVE
+          severity: medium
+          severity_word: WARNING
+          # 与 host:swap / host:memory 都不同，所以两条 alert 的 identity 天然
+          # 不冲突。同一个瞬间两条 alert 不是重复：一条说水位高，一条说正在
+          # 停顿，是两个独立测量。
+          subject_ref: "host:memory-pressure"
+          resource_ref: null
+          first_seen: "2026-09-29T06:46:27.898360+00:00"
+          resolved_at: null
+          occurrence_count: 1
+          state: OPEN
+          owner: null
+          # 这一行的 measured 是 provider 自己的形状，不是判决：PSI 原文照抄，
+          # 阈值与它并排，判据由读者自己比。上一轮的教训正是把读数做成了结论。
+          memory_pressure:
+            state: PRESENT
+            some: {avg10: 7.31, avg60: 6.80, avg300: 3.94, total: 4820013}
+            full: {avg10: 7.28, avg60: 6.74, avg300: 3.90, total: 4793118}
+          available_bytes: 213855011602
+          available_percent: 80.7
+          swap_used_percent: 92.0
+          paging:
+            state: PRESENT
+            window_seconds: 1.02
+            pswpin_per_second: 0.0
+            pswpout_per_second: 53238.0
+            pgmajfault_per_second: 12.0
+            pgsteal_direct_per_second: 0.0
+          psi_memory_some_avg60_percent_high: 1.0
+          psi_memory_full_avg60_percent_high: 0.5
+          provenance:
+            source: host-memory
+            evidence_kind: measurement
+            observed_at: "2026-09-29T06:46:27.898360+00:00"
+            freshness: FRESH
+
   # -- 下面两张不在 §6 的六条里，也不在 AC18–AC21 的四条里。它们是 2026-09-30
-  # -- 这一轮的验收点名要看、而前面十一张都没有覆盖的两个状态：⚠️ 建议查看，
-  # -- 以及一台正常机器上有一段没人看的时点。放在最后是为了不搅乱上面
-  # -- 「六个 + 四个 + 一个」那段来历 —— 它们是在那两份名单写完之后才被点名的。 --
+  # -- 这一轮的验收点名要看、而前面十二张都没有覆盖的两个状态：⚠️ 建议查看，
+  # -- 以及一台正常机器上有一段没人看的时点。放在那三组之后是为了不搅乱上面
+  # -- 「六个 + 四个 + 一个」那段来历 —— 它们是在那两份名单写完之后才被点名的；
+  # -- 这一轮点名的另外两张排在它们后面，文件以第十六张收尾。 --
 
   - name: host_attention
     card: status
@@ -1125,8 +1275,8 @@ scenarios:
               axis: liveness
               unit: serverosd.service
 
-  # -- 第十五张，也是最后加的一张：§3.4/§13 的第四块「当前问题」在**非空**时的
-  # -- 样子。前面十四张里没有一张让这一块离开绿色，所以这一块此前只在
+  # -- 第十六张，也是最后加的一张：§3.4/§13 的第四块「当前问题」在**非空**时的
+  # -- 样子。前面十五张里没有一张让这一块离开绿色，所以这一块此前只在
   # -- `test_cards.py` 的构造模型里出现过，没有一张图给人看过。 --
 
   - name: problems_on_the_face

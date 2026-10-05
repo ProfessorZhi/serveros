@@ -6893,7 +6893,7 @@ def cmd_resource_anomaly(args) -> int:
     The second half is the point of the command and is why it prints
     `codes_not_evaluated` before it prints anything reassuring: a code nobody
     looked for and a code looked for and not found are the same empty list, and
-    on this node two of the fifteen need a `docker system df` nobody has paid
+    on this node two of the sixteen need a `docker system df` nobody has paid
     for.
     """
     space = bool(getattr(args, "space", False))
